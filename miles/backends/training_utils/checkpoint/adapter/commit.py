@@ -57,7 +57,7 @@ def _broadcast_from_rank0(value):
     return box[0]
 
 
-def _raise_if_any_rank_failed(error: BaseException | None) -> None:
+def raise_if_any_rank_failed(error: BaseException | None) -> None:
     errors = [error]
     if dist.is_initialized():
         errors = [None] * dist.get_world_size()
@@ -76,19 +76,21 @@ def write_adapter_dir(root: Path, name: str, *, tenant: str | None = None):
     assert not name.startswith("."), f"adapter name {name!r} must not start with '.'"
     commit_id = _broadcast_from_rank0(secrets.token_hex(_COMMIT_ID_NBYTES))
     path = _physical_dir(Path(root), name, commit_id)
-    is_rank0 = not dist.is_initialized() or dist.get_rank() == 0
-    if is_rank0:
-        path.mkdir(parents=True)
-        if tenant is not None:
-            (path / TENANT_FILENAME).write_text(json.dumps({"tenant_digest": tenant_digest(tenant)}))
-    if dist.is_initialized():
-        dist.barrier(group=gloo_group())
+    prepare_error = None
+    if not dist.is_initialized() or dist.get_rank() == 0:
+        try:
+            path.mkdir(parents=True)
+            if tenant is not None:
+                (path / TENANT_FILENAME).write_text(json.dumps({"tenant_digest": tenant_digest(tenant)}))
+        except Exception as exc:
+            prepare_error = exc
+    raise_if_any_rank_failed(prepare_error)
     error = None
     try:
         yield UncommittedAdapterDir(path, commit_id)
     except Exception as exc:
         error = exc
-    _raise_if_any_rank_failed(error)
+    raise_if_any_rank_failed(error)
 
 
 def _link_target(link: Path) -> Path | None:
