@@ -209,6 +209,34 @@ class TestCustomArgumentRegistration:
         with pytest.raises(SystemExit):
             parser.parse_args([])
 
+    def test_a_hook_redeclaring_a_core_flag_still_conflicts(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Only flags an earlier hook registered are shared; an identical core flag is not silently absorbed."""
+        from miles.utils.args.custom_function import add_user_provided_function_arguments
+
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--first", default="first-legacy")
+        parser.add_argument("--second", default=None)
+        parser.add_argument("--max-turns", type=int, default=8)
+        monkeypatch.setattr("sys.argv", ["test"])
+        hook = SimpleNamespace(add_arguments=lambda p: p.add_argument("--max-turns", type=int, default=8))
+        with function_registry.temporary("first-legacy", hook):
+            with pytest.raises(argparse.ArgumentError, match="conflicting option string"):
+                add_user_provided_function_arguments(parser, config_class=_RunConfig)
+
+    def test_a_hook_may_reset_a_core_flag(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from miles.utils.args.custom_function import add_user_provided_function_arguments
+        from miles.utils.args.schema import reset_arg
+
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--first", default="first-legacy")
+        parser.add_argument("--second", default=None)
+        parser.add_argument("--max-turns", type=int, default=8)
+        monkeypatch.setattr("sys.argv", ["test"])
+        hook = SimpleNamespace(add_arguments=lambda p: reset_arg(p, "--max-turns", type=int, default=50))
+        with function_registry.temporary("first-legacy", hook):
+            add_user_provided_function_arguments(parser, config_class=_RunConfig)
+        assert parser.parse_args([]).max_turns == 50
+
     def test_a_hook_sharing_only_some_flags_is_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from miles.utils.args.custom_function import add_user_provided_function_arguments
 
