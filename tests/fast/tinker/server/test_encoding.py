@@ -4,11 +4,11 @@ import pytest
 
 from miles.tinker.core.types import UserInputError
 from miles.tinker.server.encoding import (
+    assert_installed_sdk_version,
     build_datum,
     decode_command,
     decode_sample_request,
     render_result,
-    assert_installed_sdk_version,
     tensor_data_to_list,
     validate_create_model,
 )
