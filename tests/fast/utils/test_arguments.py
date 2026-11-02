@@ -414,13 +414,13 @@ class TestEventDirectoryDefaults:
         assert defaulted.save_debug_event_data == "/checkpoints/run/events"
         assert explicit.save_debug_event_data == "/audit/events"
 
-    def test_an_explicit_event_directory_asks_for_engine_weight_checksums(self) -> None:
-        """Requesting an event dump opts into the engine checksum event it is meant to collect."""
+    def test_an_explicit_event_directory_does_not_ask_for_engine_weight_checksums(self) -> None:
+        """Nothing checks the checksums without the analyzer, so an event dump alone must not pay for them."""
         args = self._parse(["--save-debug-event-data", "/audit/events"])
 
         miles_validate_args(args)
 
-        assert args.log_inference_engine_weight_checksums is True
+        assert args.log_inference_engine_weight_checksums is False
 
     def test_the_save_event_directory_fallback_does_not_ask_for_engine_weight_checksums(self) -> None:
         """A checkpoint root alone must not make every weight update checksum all engine weights."""
@@ -450,7 +450,7 @@ class TestEventDirectoryDefaults:
         assert args.log_inference_engine_weight_checksums is False
 
     def test_ci_with_an_event_analyzer_collects_engine_weight_checksums(self) -> None:
-        """Enabling analysis preserves checksum evidence even with an implicit CI directory."""
+        """The analyzer checks every publication's checksums, so it turns their collection on."""
         args = self._parse(["--ci-test", "--enable-event-analyzer"])
 
         miles_validate_args(args)
@@ -458,12 +458,20 @@ class TestEventDirectoryDefaults:
         assert args.log_inference_engine_weight_checksums is True
 
     def test_engine_weight_checksums_can_be_requested_explicitly_in_ci(self) -> None:
-        """The explicit flag overrides the directory-derived default."""
+        """A harness that compares checksums itself asks for them with the flag."""
         args = self._parse(["--ci-test", "--run-uuid", "0123456789abcdef", "--log-inference-engine-weight-checksums"])
 
         miles_validate_args(args)
 
         assert args.log_inference_engine_weight_checksums is True
+
+    def test_train_fault_tolerance_collects_engine_weight_checksums(self) -> None:
+        """Train FT turns the analyzer on, so the checksum default must resolve after it or the analyzer runs blind."""
+        args = _parse_megatron_args(["--use-fault-tolerance", "--ft-components", "train", *DYNAMIC_BATCH_ARGS])
+
+        miles_validate_args(args)
+
+        assert (args.enable_event_analyzer, args.log_inference_engine_weight_checksums) == (True, True)
 
     def test_dump_details_places_events_under_the_dump_root(self) -> None:
         """A dump root keeps audit events with its other debug artifacts even when checkpoints are saved."""

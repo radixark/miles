@@ -157,6 +157,30 @@ class TestSglangOverridePrecedence:
         assert server_args["mem_fraction_static"] == 0.7
 
 
+class TestDecoderSwaBoundedReplay:
+    """SGLang resolves an unset value to on for DeepSeek-V4.1, which breaks rollout/trainer logprob parity."""
+
+    def test_an_unset_value_keeps_full_prefill(self):
+        args = make_args()
+        args.sglang.base_args["enable_decoder_swa_bounded_replay"] = None
+
+        assert compute(args)["enable_decoder_swa_bounded_replay"] is False
+
+    def test_an_explicit_user_choice_is_kept(self):
+        args = make_args()
+        args.sglang.base_args["enable_decoder_swa_bounded_replay"] = True
+
+        assert compute(args)["enable_decoder_swa_bounded_replay"] is True
+
+    def test_a_group_override_still_wins(self):
+        args = make_args()
+        args.sglang.base_args["enable_decoder_swa_bounded_replay"] = None
+
+        server_args = compute(args, sglang_overrides={"enable_decoder_swa_bounded_replay": True})
+
+        assert server_args["enable_decoder_swa_bounded_replay"] is True
+
+
 class TestOutputStore:
     def test_every_engine_writes_to_the_run_store_with_its_own_host(self, monkeypatch):
         """The engine's address goes into its store config, without the IPv6 brackets."""
