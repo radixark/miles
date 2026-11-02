@@ -176,6 +176,7 @@ def find_load_mismatch(
     try:
         kind = classify_adapter_source(path, targets, load_optimizer=load_optimizer)
         if kind == AdapterSourceKind.LEGACY_TINKER_CHECKPOINT:
+            _read_legacy_meta(path, run)
             # TE's _extra_state objects are stored per shard (<key>/shard_i_j); the tensors decide the layout
             saved = {
                 k
@@ -222,19 +223,23 @@ class LegacyTinkerCheckpointLoader:
         self._model, self._optimizer, self._run, self._load_optimizer = model, slot_optimizer, run, load_optimizer
 
     def __call__(self, path: Path) -> AdapterParametrization:
-        # checkpoints written before the layout was recorded are all fused, per-expert
-        meta = {
-            "lora_type": "lora",
-            "experts_shared_outer_loras": False,
-            **json.loads((path / "META.json").read_text()),
-        }
-        run = asdict(self._run)
-        for field in ("base_model", "lora_rank", "lora_type", "experts_shared_outer_loras"):
-            assert (
-                meta[field] == run[field]
-            ), f"{path} was saved with {field}={meta[field]!r}; this run has {run[field]!r}"
+        meta = _read_legacy_meta(path, self._run)
         _load_legacy_slot(self._model, self._optimizer, str(path), self._load_optimizer)
         return replace(self._run, lora_alpha=meta["lora_alpha"])
+
+
+def _read_legacy_meta(path: Path, run: AdapterParametrization) -> dict:
+    """META.json, asserted to agree with ``run`` on what fixes the slot's tensor shapes."""
+    # checkpoints written before the layout was recorded are all fused, per-expert
+    meta = {
+        "lora_type": "lora",
+        "experts_shared_outer_loras": False,
+        **json.loads((path / "META.json").read_text()),
+    }
+    run = asdict(run)
+    for field in ("base_model", "lora_rank", "lora_type", "experts_shared_outer_loras"):
+        assert meta[field] == run[field], f"{path} was saved with {field}={meta[field]!r}; this run has {run[field]!r}"
+    return meta
 
 
 def _slot_weights_sharded_state_dict(model: Sequence[DDP], slot: int) -> dict:
