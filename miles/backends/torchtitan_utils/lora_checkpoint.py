@@ -1,0 +1,102 @@
+"""torchtitan LoRA's adapter checkpoint members and the HF layout of its adapter elements.
+
+The layout comes from the model's own state-dict adapter: ``sd_adapter.to_hf`` runs on index-valued tensors of each
+adapter's global shape, so fused projections (wqkv, w13) split exactly as their base weights do; each rank keeps the
+HF positions its DTensor shard holds. Needs no collective except agreeing who writes replicated pieces.
+"""
+
+from collections.abc import Mapping
+
+import torch
+from torch.distributed.tensor import DTensor
+from torch.distributed.tensor._utils import compute_local_shape_and_global_offset
+
+from miles.backends.training_utils.checkpoint.adapter.probed_slots import (
+    HfPiece,
+    ProbedAdapterSlots,
+    RowMapping,
+    rectangle,
+)
+from miles.backends.torchtitan_utils.lora_names import split_adapter_key
+from miles.backends.training_utils.checkpoint.adapter.key_mapping import map_peft_keys_to_hf_keys
+from miles.utils.lora.hf_lora_targets import HfLoraTargets
+
+_PEFT_FACTOR = {"lora_a": "lora_A", "lora_b": "lora_B"}
+
+
+def hf_export_names(sd_adapter, projection: str, weight_shape: tuple[int, ...]) -> list[str]:
+    """The HF modules a titan projection's weight exports as; several for a fused projection."""
+    probe = torch.empty(weight_shape, device="meta")
+    return [name.removesuffix(".weight") for name in sd_adapter.to_hf({f"{projection}.weight": probe})]
+
+
+def _local_box(param: torch.Tensor) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    if isinstance(param, DTensor):
+        shape, offset = compute_local_shape_and_global_offset(param.shape, param.device_mesh, param.placements)
+        return tuple(shape), tuple(offset)
+    return tuple(param.shape), (0,) * param.dim()
+
+
+def _local_codes(param: torch.Tensor, start: int) -> torch.Tensor:
+    """A global-shaped tensor: this rank's elements numbered from ``start`` in local row-major order, others -1."""
+    shape, offset = _local_box(param)
+    codes = torch.full(tuple(param.shape), -1, dtype=torch.long)
+    box = tuple(slice(o, o + n) for o, n in zip(offset, shape, strict=True))
+    codes[box] = torch.arange(start, start + int(torch.Size(shape).numel())).view(shape)
+    return codes
+
+
+def probe_torchtitan_row_mapping(
+    params: Mapping[str, torch.Tensor], sd_adapter, targets: HfLoraTargets
+) -> RowMapping:
+    """``params``: the adapter parameters by titan key, in the order their local shards are concatenated."""
+    starts, start = {}, 0
+    for key, param in params.items():
+        starts[key] = start
+        start += int(torch.Size(_local_box(param)[0]).numel())
+    pieces, groups, modules = [], [], set()
+    for key in params:
+        projection, factor = split_adapter_key(key)
+        if factor != "lora_b":
+            continue
+        lora_a_key = f"{projection}.lora_a.weight"
+        lora_b = sd_adapter.to_hf({f"{projection}.weight": _local_codes(params[key], starts[key])})
+        lora_a = _local_codes(params[lora_a_key], starts[lora_a_key])
+        hf_modules = [map_peft_keys_to_hf_keys(f"{name.removesuffix('.weight')}.lora_A.weight").key for name in lora_b]
+        hf_modules = [k.removesuffix(".lora_A") for k in hf_modules]
+        modules.update(hf_modules)
+        if len(hf_modules) > 1:
+            # one titan lora_a serves every HF projection of a fused weight; it is stored once, under the first
+            groups.append(tuple(hf_modules))
+        named = [(f"{hf_modules[0]}.lora_A", lora_a)]
+        named += [(f"{module}.lora_B", part) for module, part in zip(hf_modules, lora_b.values(), strict=True)]
+        for hf_key, codes in named:
+            if (mine := codes >= 0).any():
+                box = rectangle(hf_key, mine)
+                pieces.append(HfPiece(hf_key, tuple(codes.shape), tuple(s.start for s in box), codes[box]))
+    covered = torch.zeros(start, dtype=torch.bool)
+    for piece in pieces:
+        covered[piece.local_elements.flatten()] = True
+    assert covered.all(), f"to_hf does not reach {int((~covered).sum())} of this rank's adapter elements"
+    return RowMapping(pieces, tuple(sorted(groups)), tuple(sorted(modules)))
+
+
+class TorchtitanAdapterSlots(ProbedAdapterSlots):
+    """Single-LoRA checkpoint members of the torchtitan backend; ``slot_parameters`` are the local shards."""
+
+    bf16_adapter_key_style = "peft"
+
+    def __init__(self, model_parts, iterator, sd_adapter, targets: HfLoraTargets):
+        self._iterator, self.targets = iterator, targets
+        self._specs = {}
+        self._params = {
+            key: param
+            for part in model_parts
+            for key, param in part.named_parameters()
+            if split_adapter_key(key) is not None
+        }
+        self.row_mapping = probe_torchtitan_row_mapping(self._params, sd_adapter, targets)
+
+    def slot_parameters(self, slot: int) -> list[torch.Tensor]:
+        assert slot == 0, "the torchtitan backend trains a single LoRA adapter"
+        return [p.to_local() if isinstance(p, DTensor) else p for p in self._params.values()]

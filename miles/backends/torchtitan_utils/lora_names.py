@@ -37,9 +37,3 @@ def split_adapter_key(key: str) -> tuple[str, str] | None:
         if key.endswith(suffix):
             return key.removesuffix(suffix), factor
     return None
-
-
-def hf_export_names(sd_adapter, projection: str, weight_shape: tuple[int, ...]) -> list[str]:
-    """The HF modules a titan projection's weight exports as; several for a fused projection."""
-    probe = torch.empty(weight_shape, device="meta")
-    return [name.removesuffix(".weight") for name in sd_adapter.to_hf({f"{projection}.weight": probe})]
