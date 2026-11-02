@@ -149,7 +149,7 @@ class TestUpdateWeightFromDistributedConnect:
             intra_dp_cp=SimpleNamespace(rank=0),
         )
         with patch(f"{_BROADCAST_MODULE}.get_parallel_state", return_value=initial_parallel_state):
-            protocol = UpdateWeightFromDistributed(Namespace())
+            protocol = UpdateWeightFromDistributed(Namespace(check_weight_update_equal=False))
 
         engines = [MagicMock(name="prefill"), MagicMock(name="decode")]
         parallel_state = SimpleNamespace(pp=SimpleNamespace(rank=0))
