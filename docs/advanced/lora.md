@@ -212,8 +212,9 @@ compatibility conversion at startup. Adapter factories receive only Megatron
 targets; they do not overwrite the HF selection. Arbitrary layer/expert subsets
 within a registry template are not implemented and are rejected.
 For Bridge, standard LoRA requires all projections of a fused weight together, and argument validation
-refuses a target set that splits one (for example Qwen3.5's `attn` group, which leaves `in_proj_b` /
-`in_proj_a` out of the fused GDN `in_proj`);
+refuses a target set that splits one (for example `in_proj_qkv` without `in_proj_b` / `in_proj_a` on
+Qwen3.5's fused GDN `in_proj`); under `--lora-type lora` the `attn` group takes that `in_proj` whole,
+`in_proj_b` / `in_proj_a` included;
 `canonical_lora` supports individual Q/K/V and dense gate/up selections, and
 Qwen3.5 / 3.6 GDN input projections as `in_proj_q`/`in_proj_k`/`in_proj_v`/`in_proj_z`/`in_proj_b`/`in_proj_a`
 adapters, each with its own `lora_A`, served to SGLang under those names; `in_proj_qkv` and `in_proj_z` are

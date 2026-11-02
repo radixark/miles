@@ -121,7 +121,9 @@ def _resolve_lora_targets(args, hf_config) -> list[str]:
         assert not conflicts, f"Explicit LoRA targets overlap --exclude-modules: {sorted(conflicts)}"
     if targets is None and args.multi_lora:
         targets = list(LORA_TARGET_GROUPS)
-    targets = resolve_hf_lora_targets(hf_config.to_dict(), target_modules=targets)
+    targets = resolve_hf_lora_targets(
+        hf_config.to_dict(), target_modules=targets, whole_fused=args.lora_type == "lora"
+    )
     targets = exclude_hf_lora_targets(targets, exclusions)
 
     if all(any(matches_lora_target(module, target) for module in hf_modules) for target in targets + exclusions):
