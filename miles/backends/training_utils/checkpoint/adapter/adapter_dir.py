@@ -9,7 +9,7 @@ from typing import Literal, Protocol
 
 import torch
 
-from miles.backends.training_utils.checkpoint.adapter.adapter_exports import write_peft_adapter
+from miles.backends.training_utils.checkpoint.adapter.adapter_exports import write_peft_adapter, write_sampler_adapter
 from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
     AdapterState,
     LocalShardSpec,
@@ -111,6 +111,21 @@ def _assert_real_rank(specs: list[LocalShardSpec], lora_rank: int) -> None:
         ), f"{spec.key}: rank {spec.global_shape[rank_axis]} != {lora_rank}"
 
 
+def _hf_keyed_bf16_adapter(
+    named_tensors: list[tuple[str, torch.Tensor]], members: AdapterCheckpointMembers, targets: HfLoraTargets
+) -> dict[str, torch.Tensor]:
+    if members.bf16_adapter_key_style == "peft":
+        map_name = map_peft_keys_to_hf_keys
+    else:
+        map_name = partial(map_tinker_keys_to_hf_keys, targets=targets)
+    weights, _ = map_named_tensors_to_hf_keys(named_tensors, map_name, targets)
+    return weights
+
+
+def _is_writer() -> bool:
+    return not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0
+
+
 def write_peft_export(
     directory: Path,
     members: AdapterCheckpointMembers,
@@ -121,17 +136,33 @@ def write_peft_export(
     """All ranks call; rank 0 writes ``slot``'s bf16 PEFT export into ``directory``."""
     named_tensors = list(members.export_bf16_adapter(slot))
     error = None
-    if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
+    if _is_writer():
         try:
-            if members.bf16_adapter_key_style == "peft":
-                map_name = map_peft_keys_to_hf_keys
-            else:
-                map_name = partial(map_tinker_keys_to_hf_keys, targets=targets)
-            weights, _ = map_named_tensors_to_hf_keys(named_tensors, map_name, targets)
-            write_peft_adapter(directory, weights, parametrization, targets)
+            write_peft_adapter(
+                directory, _hf_keyed_bf16_adapter(named_tensors, members, targets), parametrization, targets
+            )
         except Exception as exc:
             error = exc
     raise_if_any_rank_failed(error)
+
+
+def write_sampler_export(
+    root: Path,
+    name: str,
+    members: AdapterCheckpointMembers,
+    slot: int,
+    parametrization: AdapterParametrization,
+    targets: HfLoraTargets,
+    *,
+    tenant: str | None,
+) -> UncommittedAdapterDir:
+    """All ranks call; rank 0 writes ``slot``'s bf16 sampler export. The caller's committer then commits it."""
+    with write_adapter_dir(root, name, tenant=tenant) as written:
+        named_tensors = list(members.export_bf16_adapter(slot))
+        if _is_writer():
+            weights = _hf_keyed_bf16_adapter(named_tensors, members, targets)
+            write_sampler_adapter(written.path, weights, parametrization, targets)
+    return written
 
 
 def _slice(full: torch.Tensor, spec: LocalShardSpec) -> torch.Tensor:

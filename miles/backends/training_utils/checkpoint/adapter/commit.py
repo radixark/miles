@@ -49,6 +49,11 @@ def tenant_digest(tenant: str) -> str:
     return hashlib.sha256(tenant.encode()).hexdigest()
 
 
+def format_sglang_lora_name(model_id: str, name: str, commit_id: str) -> str:
+    """sglang's adapter name; a re-save under the same name never hits the previous commit's cached weights."""
+    return f"{model_id}@{name}@{commit_id}"
+
+
 def _physical_dir(root: Path, name: str, commit_id: str) -> Path:
     return root / f".{name}.{commit_id}"
 
