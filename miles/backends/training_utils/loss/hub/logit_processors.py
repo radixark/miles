@@ -125,8 +125,11 @@ def _iter_response_chunks(
             yield logits_chunk, tokens_chunk, response_indices
         return
 
+    # a slice's backward builds a zero gradient the size of the logits, so every sample this rank
+    # holds no rows of shares one empty slice instead of taking its own
+    no_rows = logits[:0]
     for row_ranges, tokens_chunk, response_indices in layout:
-        pieces = [logits[row_start:row_end] for row_start, row_end in row_ranges]
+        pieces = [logits[row_start:row_end] for row_start, row_end in row_ranges if row_end > row_start] or [no_rows]
         logits_chunk = pieces[0] if len(pieces) == 1 else torch.cat(pieces, dim=0)
         yield logits_chunk, tokens_chunk, response_indices
 
