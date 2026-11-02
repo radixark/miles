@@ -184,6 +184,8 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
             status=b.status,
             metadata=_merge_metadata(),
             generate_function_path=_merge_equal_value("generate_function_path"),
+            agent_function_path=_merge_equal_value("agent_function_path"),
+            max_seq_len=_merge_equal_value("max_seq_len"),
             train_metadata=_merge_equal_value("train_metadata"),
             reward_spec=_merge_equal_value("reward_spec"),
             routing_key=_merge_equal_value("routing_key"),

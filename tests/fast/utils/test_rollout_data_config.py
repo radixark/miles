@@ -268,5 +268,15 @@ class TestDatasetHookSettings:
         with pytest.raises(ValueError, match="exceeds --max-seq-len 65536"):
             _parse("--rollout-data-yaml-config", _inline(document), "--max-seq-len", "65536")
 
+    @pytest.mark.parametrize("field", [{"agent_function": "json.loads"}, {"max_seq_len": 4096}])
+    @pytest.mark.parametrize("generate_function", [None, "json.dumps"])
+    def test_agentic_only_fields_need_the_agentic_generate_function(self, field, generate_function):
+        """agent_function and max_seq_len were silently ignored by every other generate function."""
+        fields = dict(field)
+        if generate_function is not None:
+            fields["generate_function"] = generate_function
+        with pytest.raises(ValueError, match="only miles.rollout.generate_hub.agentic_tool_call.generate reads"):
+            _parse("--rollout-data-yaml-config", _inline(_with_dataset(**fields)))
+
     def test_a_run_without_yaml_hooks_has_none(self):
         assert _parse("--prompt-data", "/dev/null").rollout_dataset_functions == {}

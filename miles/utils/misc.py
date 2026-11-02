@@ -59,17 +59,22 @@ async def call_agent_abort_hook(args) -> None:
     until it hits its own limit. The agent integration knows how to tell its
     backend to stop, so we look for a sibling ``abort`` callable in the same module
     as each agent function -- ``--custom-agent-function-path`` and every
-    ``--rollout-data-yaml-config`` dataset's ``agent_function`` -- and call it.
+    ``--rollout-data-yaml-config`` dataset's ``agent_function`` -- and call it once per
+    distinct (module, config).
     Backends that don't expose one are left to drain as before.
     """
     from miles.utils.args.custom_view import compute_custom_function_config
 
-    called_modules: set[str] = set()
-    for agent_function in _compute_agent_function_configs(args):
+    agent_functions = [args.custom_agent_function_path] if args.custom_agent_function_path else []
+    # resolved at startup and carried by both rollout and orchestrator configs, so abort never rereads the YAML
+    agent_functions += args.rollout_dataset_agent_functions
+    # one abort per (module, config): two agents in one module with different typed configs each get theirs
+    called: list[tuple[str, Any]] = []
+    for agent_function in agent_functions:
         module_path, _, _ = agent_function.path.rpartition(".")
-        if not module_path or module_path in called_modules:
+        if not module_path or (module_path, agent_function.config) in called:
             continue
-        called_modules.add(module_path)
+        called.append((module_path, agent_function.config))
         try:
             abort_hook = load_function(f"{module_path}.abort")
         except (AttributeError, ModuleNotFoundError):
@@ -80,15 +85,6 @@ async def call_agent_abort_hook(args) -> None:
             await abort_hook(fn_args)
         except Exception as e:
             logger.warning(f"Agent abort hook {module_path}.abort failed: {e}")
-
-
-def _compute_agent_function_configs(args) -> list:
-    agent_functions = [args.custom_agent_function_path] if args.custom_agent_function_path else []
-    # resolved at startup and carried by both rollout and orchestrator configs, so abort never rereads the YAML
-    agent_functions += (
-        getattr(args, "rollout_dataset_agent_functions", None) or []  # config-access-exempt: hook-only test views
-    )
-    return agent_functions
 
 
 class SingletonMeta(type):

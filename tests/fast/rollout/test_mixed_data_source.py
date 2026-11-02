@@ -151,8 +151,8 @@ class TestMixedRolloutDataSource:
 
         by_name = {group[0].metadata["dataset_name"]: group for group in source.get_samples(8)}
         code, math = by_name["code"][0], by_name["math"][0]
-        assert (code.metadata["agent_function_path"], code.metadata["dataset_max_seq_len"]) == ("json.loads", 4096)
-        assert "agent_function_path" not in math.metadata and "dataset_max_seq_len" not in math.metadata
+        assert (code.agent_function_path, code.max_seq_len) == ("json.loads", 4096)
+        assert (math.agent_function_path, math.max_seq_len) == (None, None)
 
     def test_max_prompt_len_filters_only_its_dataset(self, tmp_path):
         datasets = _two_datasets(tmp_path)
@@ -171,13 +171,15 @@ class TestMixedRolloutDataSource:
             _make_source(tmp_path, datasets)
 
     def test_a_prompt_row_cannot_choose_the_agent(self, tmp_path):
-        """Row metadata is copied into samples, so a data row could otherwise name the agent code that runs."""
+        """The agent travels on a Sample field only the mixer sets; a row's metadata key of that name is just data."""
         datasets = _two_datasets(tmp_path)
         datasets["math"]["path"] = str(
             _write_jsonl(tmp_path / "math.jsonl", ["p0"], metadata={"agent_function_path": "evil.run"})
         )
-        with pytest.raises(ValueError, match="reserved keys \\['agent_function_path'\\]"):
-            _make_source(tmp_path, datasets)
+        group = next(
+            g for g in _make_source(tmp_path, datasets).get_samples(8) if g[0].metadata["dataset_name"] == "math"
+        )
+        assert group[0].agent_function_path is None
 
     def test_a_dataset_empty_after_filtering_fails_at_startup(self, tmp_path):
         datasets = _two_datasets(tmp_path)

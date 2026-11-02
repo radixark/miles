@@ -478,6 +478,7 @@ def _resolve_eval_datasets(args) -> list[EvalDatasetConfig]:
 
 
 _DEFAULT_GENERATE_FUNCTION_PATH = "miles.rollout.generate_hub.single_turn.generate"
+_AGENTIC_GENERATE_FUNCTION_PATH = "miles.rollout.generate_hub.agentic_tool_call.generate"
 # built-in generate functions that never read a sample's metadata["agent_config"]
 _GENERATE_FUNCTIONS_WITHOUT_AGENT_CONFIG = frozenset(
     {
@@ -517,6 +518,13 @@ def _validate_rollout_data_yaml_config(args) -> None:
     )
     for dataset in datasets:
         generate_path = dataset.generate_function or default_generate or _DEFAULT_GENERATE_FUNCTION_PATH
+        # agent_function and max_seq_len are only read by agentic_tool_call; the agent block by any non-built-in too
+        agentic_only = [f for f in ("agent_function", "max_seq_len") if getattr(dataset, f) is not None]
+        if agentic_only and generate_path != _AGENTIC_GENERATE_FUNCTION_PATH:
+            raise ValueError(
+                f"--rollout-data-yaml-config dataset {dataset.name!r} sets {', '.join(agentic_only)}, which only "
+                f"{_AGENTIC_GENERATE_FUNCTION_PATH} reads, but its generate function is {generate_path}"
+            )
         if dataset.agent is not None and generate_path in _GENERATE_FUNCTIONS_WITHOUT_AGENT_CONFIG:
             raise ValueError(
                 f"--rollout-data-yaml-config dataset {dataset.name!r} sets an agent block, but its generate function "

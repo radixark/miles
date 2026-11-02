@@ -9,12 +9,7 @@ from pathlib import Path
 from miles.utils.data import Dataset, _parse_generalized_path
 from miles.utils.function_registry import load_function
 from miles.utils.processing_utils import load_processor, load_tokenizer
-from miles.utils.rollout_data_config import (
-    AGENT_FUNCTION_METADATA_KEY,
-    MAX_SEQ_LEN_METADATA_KEY,
-    RolloutDatasetConfig,
-    load_rollout_data_config,
-)
+from miles.utils.rollout_data_config import RolloutDatasetConfig, load_rollout_data_config, lower_limit
 from miles.utils.simple_checkpointer import load_simple_checkpoint, save_simple_checkpoint
 from miles.utils.types import Sample
 
@@ -274,7 +269,7 @@ class MixedRolloutDataSource(DataSource):
                 config.path,
                 tokenizer=tokenizer,
                 processor=processor,
-                max_length=_lower_limit(config.max_prompt_len, args.rollout_max_prompt_len),
+                max_length=lower_limit(config.max_prompt_len, args.rollout_max_prompt_len),
             )
             if len(dataset) == 0:
                 raise ValueError(f"rollout dataset {config.name!r} ({config.path}) has no prompts after filtering")
@@ -386,19 +381,12 @@ class MixedRolloutDataSource(DataSource):
             sample.metadata["dataset_name"] = config.name
             if config.agent is not None:
                 sample.metadata["agent_config"] = copy.deepcopy(config.agent)
-            if config.agent_function is not None:
-                sample.metadata[AGENT_FUNCTION_METADATA_KEY] = config.agent_function
-            if config.max_seq_len is not None:
-                sample.metadata[MAX_SEQ_LEN_METADATA_KEY] = config.max_seq_len
+            sample.agent_function_path = config.agent_function
+            sample.max_seq_len = config.max_seq_len
             sample.generate_function_path = config.generate_function
             group.append(sample)
         self.sample_group_index += 1
         return group
-
-
-def _lower_limit(*limits: int | None) -> int | None:
-    known = [limit for limit in limits if limit is not None]
-    return min(known) if known else None
 
 
 def _hash_file(path: str) -> str:

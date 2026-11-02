@@ -32,10 +32,6 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from miles.utils.file_arg_utils import resolve_file_arg
 
-# sample metadata the mixer writes for agentic_tool_call, which reads it before the run-wide flags
-AGENT_FUNCTION_METADATA_KEY = "agent_function_path"
-MAX_SEQ_LEN_METADATA_KEY = "dataset_max_seq_len"
-RESERVED_SAMPLE_METADATA_KEYS = frozenset({AGENT_FUNCTION_METADATA_KEY, MAX_SEQ_LEN_METADATA_KEY})
 
 _SHA256_PREFIX_PATTERN = re.compile(r"[0-9a-f]{8}")
 
@@ -113,3 +109,9 @@ def check_dataset_length_limits(
                     f"--rollout-data-yaml-config dataset {dataset.name!r}: {field_name}={value} exceeds "
                     f"{flag} {upper_bound}; a dataset limit may only lower the run-wide one"
                 )
+
+
+def lower_limit(*limits: int | None) -> int | None:
+    """The tightest of the given limits; None when none is set."""
+    known = [limit for limit in limits if limit is not None]
+    return min(known) if known else None

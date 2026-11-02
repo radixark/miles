@@ -34,7 +34,9 @@ class TestTypedAgentAbort:
         self, caplog: pytest.LogCaptureFixture, fails: bool
     ) -> None:
         """The sibling abort callback receives the same plugin settings and failed teardown remains visible."""
-        args = ImmutableNamespace(custom_agent_function_path=_hook("test86.agent.run"))
+        args = ImmutableNamespace(
+            custom_agent_function_path=_hook("test86.agent.run"), rollout_dataset_agent_functions=[]
+        )
         seen: list[Any] = []
 
         async def abort(view: ImmutableNamespace) -> None:
@@ -106,7 +108,12 @@ class TestTypedAgentAbort:
 
         with function_registry.temporary("test86.dsagent.run", agent):
             with function_registry.temporary("test86.dsagent.abort", abort):
-                config_all = parse_fsdp_test_config("--rollout-data-yaml-config", str(config))
+                config_all = parse_fsdp_test_config(
+                    "--rollout-data-yaml-config",
+                    str(config),
+                    "--custom-generate-function-path",
+                    "miles.rollout.generate_hub.agentic_tool_call.generate",
+                )
                 args = OrchestratorConfig.slice_from(config_all)
                 controller = AsyncMock()
                 controller.is_initialized.return_value = True
@@ -114,8 +121,24 @@ class TestTypedAgentAbort:
 
         assert aborted == [41]
 
+    async def test_two_agents_in_one_module_each_get_their_own_abort(self) -> None:
+        """Abort was deduplicated by module, so a second agent with a different typed config was never torn down."""
+        first, second = _hook("test86.shared.run_a"), _hook("test86.shared.run_b")
+        second = second.model_copy(update={"config": second.config.model_copy(update={"hook_marker": 7})})
+        args = ImmutableNamespace(custom_agent_function_path=first, rollout_dataset_agent_functions=[second])
+        markers: list[int] = []
+
+        async def abort(view: ImmutableNamespace) -> None:
+            markers.append(view.hook_marker)
+
+        with function_registry.temporary("test86.shared.abort", abort):
+            await call_agent_abort_hook(args)
+        assert sorted(markers) == [7, 41]
+
     @pytest.mark.parametrize("path", [None, "single_component", "missing_test86_package.agent"])
     async def test_absent_agent_or_abort_callback_does_not_require_plugin_state(self, path: str | None) -> None:
         """Optional abort teardown tolerates absent configuration and integrations with no sibling module."""
-        args = ImmutableNamespace(custom_agent_function_path=None if path is None else _hook(path))
+        args = ImmutableNamespace(
+            custom_agent_function_path=None if path is None else _hook(path), rollout_dataset_agent_functions=[]
+        )
         await call_agent_abort_hook(args)
