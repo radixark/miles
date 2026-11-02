@@ -745,7 +745,7 @@ def setup_train_iteration_config(args, model, optimizer, disable_optimizer):
         param_sync_funcs = [model_chunk.start_param_sync for model_chunk in model]
         config.param_sync_func = param_sync_funcs[0] if len(model) == 1 else param_sync_funcs
     finalize = finalize_model_grads
-    if is_multi_lora_enabled(args) or (is_lora_enabled(args) and args.megatron_to_hf_mode == "bridge"):
+    if is_lora_enabled(args) and args.megatron_to_hf_mode == "bridge":
         # Bridge expert adapters sum their EP-replicated grads in finalize; other runs need no Bridge
         from megatron.bridge.peft.utils import finalize_model_grads_with_expert_adapter_sync as finalize
     config.finalize_model_grads_func = partial(finalize_model_grads_with_empty_cache, finalize=finalize)
