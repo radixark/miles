@@ -52,15 +52,16 @@ def validate_sdk_version(payload) -> None:
         )
 
 
-def validate_optimizer_is_adam(optimizer_config) -> None:
-    if optimizer_config is not None and not isinstance(optimizer_config, tinker_types.AdamOptimizerConfig):
+def validate_plain_adam(field: str, value, adam_type) -> None:
+    if not isinstance(value, adam_type):
         raise UserInputError(
-            f"optimizer_config {optimizer_config.model_dump()} is not supported: this gateway trains with Adam"
+            f"{field} {value.model_dump()} is not supported: this gateway serves only plain Adam ({adam_type.__name__})"
         )
 
 
 def validate_create_model(payload: dict) -> None:
-    validate_optimizer_is_adam(validate_against_sdk(tinker_types.CreateModelRequest, payload).optimizer_config)
+    request = validate_against_sdk(tinker_types.CreateModelRequest, payload)
+    validate_plain_adam("optimizer_config", request.optimizer_config, tinker_types.AdamOptimizerConfig)
 
 
 def validate_sample_options(request) -> None:
@@ -111,17 +112,15 @@ def _decode_command(op: str, payload: dict, decoded: dict) -> tuple[str, dict]:
         }
         return ("forward_only" if payload.get("forward_only") else op), decoded
     if op == "optim_step":
-        if not isinstance(request.optim_params, tinker_types.AdamParams):
-            raise UserInputError(
-                f"optimizer params {request.optim_params.model_dump()} are not supported: this gateway trains with Adam"
-            )
+        validate_plain_adam("optimizer params", request.optim_params, tinker_types.AdamParams)
         # model_dump fills every default so core and the executor can require every key
         return op, decoded | {"adam_params": request.optim_params.model_dump()}
     if op == "save_state":
         validate_save_options(payload)
         return op, decoded | {"name": payload.get("path"), "overwrite": bool(payload.get("overwrite", False))}
     if op == "load_state":
-        validate_optimizer_is_adam(request.optimizer_config)
+        if request.optimizer_config is not None:
+            raise UserInputError("optimizer_config is not supported: this gateway does not create models via load_weights")
         return op, decoded | {
             "path": payload["path"],
             "optimizer": payload["optimizer"],

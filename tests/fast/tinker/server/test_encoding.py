@@ -83,7 +83,7 @@ class TestAdamParams:
     )
     def test_a_non_adam_step_is_rejected(self, params):
         _, decoded = decode_command("optim_step", {"model_id": "m", "seq_id": 1, **params})
-        assert "are not supported: this gateway trains with Adam" in decoded["validation_error"]
+        assert "this gateway serves only plain Adam (AdamParams)" in decoded["validation_error"]
 
     def test_the_optim_params_alias_is_read(self):
         payload = {"model_id": "m", "seq_id": 1, "optim_params": {"learning_rate": 3e-4}}
@@ -94,16 +94,17 @@ class TestAdamParams:
 @pytest.mark.parametrize(
     "optimizer_config", [{"type": "dimuon"}, {"type": "adamw", "extra": 1}], ids=["dimuon", "adamw_with_extras"]
 )
-class TestNonAdamModels:
-    def test_create_model_rejects(self, optimizer_config):
-        payload = {"base_model": "base", "session_id": "s", "model_seq_id": 0, "optimizer_config": optimizer_config}
-        with pytest.raises(UserInputError, match="this gateway trains with Adam"):
-            validate_create_model(payload)
+def test_a_non_adam_model_is_rejected(optimizer_config):
+    payload = {"base_model": "base", "session_id": "s", "model_seq_id": 0, "optimizer_config": optimizer_config}
+    with pytest.raises(UserInputError, match=r"serves only plain Adam \(AdamOptimizerConfig\)"):
+        validate_create_model(payload)
 
-    def test_load_state_rejects(self, optimizer_config):
-        payload = {"model_id": "m", "seq_id": 1, "path": "tinker://x/weights/y", "optimizer": False}
-        _, decoded = decode_command("load_state", payload | {"optimizer_config": optimizer_config})
-        assert "this gateway trains with Adam" in decoded["validation_error"]
+
+def test_load_state_rejects_an_optimizer_config():
+    """optimizer_config on load_weights only configures create-via-load, which this gateway does not serve."""
+    payload = {"model_id": "m", "seq_id": 1, "path": "tinker://x/weights/y", "optimizer": False}
+    _, decoded = decode_command("load_state", payload | {"optimizer_config": {"type": "adamw"}})
+    assert "does not create models via load_weights" in decoded["validation_error"]
 
 
 def test_an_off_model_key_is_rejected():
