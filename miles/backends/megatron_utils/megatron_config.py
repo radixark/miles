@@ -16,6 +16,7 @@ from miles.utils.args.custom_function import resolve_custom_function_overrides
 from miles.utils.args.enhanced_argparse_namespace import EnhancedArgparseNamespace, SerializableConfigDict
 from miles.utils.file_arg_utils import resolve_file_arg
 from miles.utils.megatron_args_utils import compute_trainer_num_cells
+from miles.utils.msc_utils import storage_path
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.workers.argv_utils import coerce_dict_to_args, declared_arg_dests
 from miles.utils.workers.naming import DNS_LABEL_PATTERN, TRAINER_ID_MAX_LENGTH
@@ -488,13 +489,12 @@ def resolve_args_checkpoint_load(args: Namespace, *, role: str) -> bool:
 
 
 def has_megatron_checkpoint(load_dir: str | None, ckpt_step: int | None = None) -> bool:
-    return (
-        load_dir is not None
-        and os.path.exists(load_dir)
-        and (
-            os.path.exists(os.path.join(load_dir, "latest_checkpointed_iteration.txt"))
-            or (ckpt_step is not None and os.path.isdir(os.path.join(load_dir, f"iter_{ckpt_step:07d}")))
-        )
+    if load_dir is None:
+        return False
+    path = storage_path(load_dir)
+    return path.exists() and (
+        (path / "latest_checkpointed_iteration.txt").exists()
+        or (ckpt_step is not None and (path / f"iter_{ckpt_step:07d}").is_dir())
     )
 
 

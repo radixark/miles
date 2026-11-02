@@ -7,7 +7,6 @@ import math
 from collections.abc import Callable, Sequence
 from contextlib import nullcontext
 from functools import partial
-from pathlib import Path
 
 import torch
 from megatron.core import mpu
@@ -49,6 +48,7 @@ from miles.utils.audit_utils.witness.module import witness_dump_and_clear_stale
 from miles.utils.dumper_utils import DumperMegatronUtil, DumperPhase
 from miles.utils.lora.utils import is_multi_lora_enabled
 from miles.utils.memory_utils import clear_memory
+from miles.utils.msc_utils import storage_path
 from miles.utils.test_utils.fault_injector.controller import reach_fault_hook
 from miles.utils.test_utils.fault_injector.models import FaultHookName
 from miles.utils.tracking_utils.structured_log import log_structured
@@ -78,7 +78,10 @@ logger = logging.getLogger(__name__)
 
 def _has_loadable_ckpt(load_dir: str | None) -> bool:
     """Whether ``--load`` holds anything; ``load_checkpoint`` dispatches dist vs HF itself."""
-    return bool(load_dir) and Path(load_dir).is_dir() and any(Path(load_dir).iterdir())
+    if not load_dir:
+        return False
+    path = storage_path(load_dir)
+    return path.is_dir() and any(path.iterdir())
 
 
 from .fp32_param_utils import enforce_marked_param_dtypes

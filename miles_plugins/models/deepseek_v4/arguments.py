@@ -56,18 +56,16 @@ def _validate_impl(args: Namespace) -> None:
 
 def assert_checkpoint_is_current(load_dir: str) -> None:
     """Reject DeepSeek-V4 checkpoints from before the weights took Megatron's names."""
-    from pathlib import Path
+    from miles.utils.msc_utils import storage_path, storage_reader
 
-    from torch.distributed.checkpoint import FileSystemReader
-
-    path = Path(load_dir)
+    path = storage_path(load_dir)
     step_file = path / "latest_checkpointed_iteration.txt"
     if step_file.is_file():
         path = path / step_file.read_text().strip()
     if not path.is_dir():
         return
 
-    if any("self_attention.wq_a." in key for key in FileSystemReader(path).read_metadata().state_dict_metadata):
+    if any("self_attention.wq_a." in key for key in storage_reader(str(path)).read_metadata().state_dict_metadata):
         raise ValueError(
             f"{load_dir} was written before the DeepSeek-V4 weights took Megatron's names and "
             "would load half-initialized. Re-convert it from the HuggingFace checkpoint."

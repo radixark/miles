@@ -96,6 +96,7 @@ def _initialization_args(**overrides: Any) -> Any:
         "use_tp_pp_dp_mapping": False,
         "use_gloo_process_groups": False,
         "enable_experimental": False,
+        "enable_msc": False,
         "tp_comm_overlap": False,
         "deterministic_mode": False,
         "rank": 0,

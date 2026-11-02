@@ -81,6 +81,7 @@ class TestTypedModelHooks:
         args = make_trainer_config(
             custom_megatron_init_path=hook,
             enable_experimental=False,
+            enable_msc=False,
             rank=0,
             rampup_batch_size=None,
             global_batch_size=1,
