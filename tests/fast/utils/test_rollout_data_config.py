@@ -104,6 +104,15 @@ class TestRejects:
         with pytest.raises(ValueError, match="--rollout-data-yaml-config"):
             parse_rollout_datasets({"datasets": {name: {"path": "/data/x.jsonl", "samples_per_step": 1}}})
 
+    @pytest.mark.parametrize("sha256", ["00001234", "1234e567"])
+    def test_an_unquoted_numeric_sha256_says_to_quote_it(self, sha256, tmp_path):
+        config = tmp_path / "mix.yaml"
+        config.write_text(
+            f"datasets:\n  math:\n    path: /data/math.jsonl\n    samples_per_step: 1\n    sha256: {sha256}\n"
+        )
+        with pytest.raises(ValueError, match="quote it"):
+            load_rollout_data_config(str(config))
+
     @pytest.mark.parametrize("missing", ["path", "samples_per_step"])
     def test_a_missing_required_field(self, missing):
         document = _with_dataset()
