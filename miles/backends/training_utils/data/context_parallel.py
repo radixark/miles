@@ -1,3 +1,4 @@
+import itertools
 import logging
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
@@ -410,8 +411,9 @@ class CPLayout:
     cp_rank: int
     cp_size: int
     zigzag: bool
+    per_pack: bool  # thd all-gather CP: the micro batch's concatenation is split once
     max_seq_len: int | None  # bshd: every sequence is padded to this length before the split
-    pack_multiple: int | None  # thd all-gather CP: the concatenation is padded to a multiple of this
+    pad_size: int | None  # thd: every rank's packed micro batch is a multiple of this
 
     @classmethod
     def build(
@@ -435,14 +437,10 @@ class CPLayout:
             cp_rank=cp_rank,
             cp_size=cp_size,
             zigzag=cp_size > 1 and not allgather_cp,
+            per_pack=per_pack,
             max_seq_len=max_seq_len if qkv_format == "bshd" else None,
-            pack_multiple=cp_size * pad_size if per_pack else None,
+            pad_size=pad_size if qkv_format == "thd" else None,
         )
-
-    @property
-    def per_pack(self) -> bool:
-        """Whether the micro batch's sequences are concatenated and split once (thd all-gather CP)."""
-        return self.pack_multiple is not None
 
     def local_ranges(self, lengths: Sequence[int]) -> list[tuple[tuple[int, int], ...]]:
         """Per sequence, the half-open position ranges this rank holds, in local order.
@@ -461,7 +459,7 @@ class CPLayout:
     def _pack_ranges(self, lengths: Sequence[int]) -> list[tuple[tuple[int, int], ...]]:
         """Cut this rank's piece of the padded concatenation back into per-sequence ranges."""
         total = sum(lengths)
-        padded = (total + self.pack_multiple - 1) // self.pack_multiple * self.pack_multiple
+        padded = _round_up(total, self.cp_size * self.pad_size)
         ((rank_start, rank_end),) = self._split(padded)
         ranges = []
         seq_start = 0
@@ -475,6 +473,26 @@ class CPLayout:
                 ranges.append(((0, 0),))
             seq_start += length
         return ranges
+
+    def pack(self, pieces: Sequence[torch.Tensor], pad_value: int | float | Callable) -> torch.Tensor:
+        """This rank's micro batch from each sequence's rows at :meth:`local_ranges`."""
+        # bshd
+        if self.max_seq_len is not None:
+            return torch.stack(pieces)
+        # thd: under all-gather CP the ranges already end at a multiple of pad_size
+        assert self.pad_size is not None, "a thd micro batch is padded to a multiple of pad_size"
+        packed = torch.cat(pieces)
+        return _pad_rows(packed, _round_up(packed.size(0), self.pad_size) - packed.size(0), pad_value)
+
+    def cu_seqlens(self, lengths: Sequence[int]) -> list[int]:
+        """thd: the sequence boundaries of the whole micro batch before the split, its padding last."""
+        assert self.pad_size is not None, "cu_seqlens describes a thd micro batch"
+        # zigzag CP pads each sequence to a multiple of 2 * cp_size
+        spans = [_round_up(length, 2 * self.cp_size) if self.zigzag else length for length in lengths]
+        boundaries = list(itertools.accumulate(spans, initial=0))
+        # so that every rank packs a multiple of pad_size
+        total = _round_up(boundaries[-1], self.cp_size * self.pad_size)
+        return boundaries + [total] if total > boundaries[-1] else boundaries
 
     def _split(self, length: int) -> tuple[tuple[int, int], ...]:
         rank = self.cp_rank
@@ -494,15 +512,22 @@ def take_ranges(
     ``pad_value`` is a fill value, or a function ``(tensor, num_rows) -> tensor`` that appends
     ``num_rows`` rows of padding.
     """
-    end = max(stop for _, stop in ranges)
-    if end > tensor.size(0):
-        pad = end - tensor.size(0)
-        if callable(pad_value):
-            tensor = pad_value(tensor, pad)
-        else:
-            tensor = F.pad(tensor, (0, 0) * (tensor.dim() - 1) + (0, pad), value=pad_value)
+    tensor = _pad_rows(tensor, max(0, max(stop for _, stop in ranges) - tensor.size(0)), pad_value)
     pieces = [tensor[start:stop] for start, stop in ranges]
     return pieces[0] if len(pieces) == 1 else torch.cat(pieces)
+
+
+def _pad_rows(tensor: torch.Tensor, num_rows: int, pad_value: int | float | Callable) -> torch.Tensor:
+    """Append ``num_rows`` rows of padding along dim 0, as ``take_ranges`` describes ``pad_value``."""
+    if num_rows == 0:
+        return tensor
+    if callable(pad_value):
+        return pad_value(tensor, num_rows)
+    return F.pad(tensor, (0, 0) * (tensor.dim() - 1) + (0, num_rows), value=pad_value)
+
+
+def _round_up(n: int, multiple: int) -> int:
+    return (n + multiple - 1) // multiple * multiple
 
 
 def slice_with_cp(
