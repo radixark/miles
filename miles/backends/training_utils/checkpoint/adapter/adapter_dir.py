@@ -73,6 +73,7 @@ def save_adapter_dir(
         # DCP writes primary pieces only; replicas cannot stand in for a missing primary
         keys = _all_ranks_keys([s for s in state.shard_specs if s.is_primary])
         try:
+            _assert_real_rank(state.shard_specs, parametrization.lora_rank)
             expected = parametrization.adapter_state_keys()
             assert keys == expected, (
                 f"the backend's adapter state does not match the parametrization: "
@@ -88,6 +89,15 @@ def save_adapter_dir(
             (written.path / TRAINING_STATE_FILENAME).write_text(json.dumps(training_state, indent=2))
         write_parametrization(written.path, parametrization)
     return written
+
+
+def _assert_real_rank(specs: list[LocalShardSpec], lora_rank: int) -> None:
+    """adapter_state/ holds the real rank: A's rows and B's columns, never a multi-LoRA slot's padding."""
+    for spec in specs:
+        rank_axis = -2 if spec.key.endswith(".lora_A") else -1
+        assert (
+            spec.global_shape[rank_axis] == lora_rank
+        ), f"{spec.key}: rank {spec.global_shape[rank_axis]} != {lora_rank}"
 
 
 def _slice(full: torch.Tensor, spec: LocalShardSpec) -> torch.Tensor:
@@ -139,11 +149,18 @@ def load_adapter_dir(
         error = exc
     raise_if_any_rank_failed(error)
     if kind.is_read_into_model():
-        source = _with_run_alpha_if_unknown(in_model_loaders_by_kind[kind](path), run)
-        steps = plan_parametrization_conversion(source, run, source_dtype=torch.float32)
-        # an in-model loader reads straight into the run's parametrization; it cannot convert
-        assert not steps, f"{path} needs {steps} to match the run, which an in-model loader cannot do"
-        assert_parametrization_matches_run(source, run, steps, load_optimizer=load_optimizer, has_optimizer_state=True)
+        source = None
+        try:
+            source = _with_run_alpha_if_unknown(in_model_loaders_by_kind[kind](path), run)
+            steps = plan_parametrization_conversion(source, run, source_dtype=torch.float32)
+            # an in-model loader reads straight into the run's parametrization; it cannot convert
+            assert not steps, f"{path} needs {steps} to match the run, which an in-model loader cannot do"
+            assert_parametrization_matches_run(
+                source, run, steps, load_optimizer=load_optimizer, has_optimizer_state=True
+            )
+        except Exception as exc:
+            error = exc
+        raise_if_any_rank_failed(error)
         return source
 
     specs, reader, source, steps = None, None, None, None
@@ -185,7 +202,11 @@ def load_adapter_dir(
         except Exception as exc:
             error = exc
         raise_if_any_rank_failed(error)
-    members.import_adapter_state(slot, state)
+    try:
+        members.import_adapter_state(slot, state)
+    except Exception as exc:
+        error = exc
+    raise_if_any_rank_failed(error)
     return source
 
 
