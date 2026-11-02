@@ -11,7 +11,7 @@ from miles.utils.function_registry import load_function
 from miles.utils.processing_utils import load_processor, load_tokenizer
 from miles.utils.rollout_data_config import RolloutDatasetConfig, load_rollout_data_config, lower_limit
 from miles.utils.simple_checkpointer import load_simple_checkpoint, save_simple_checkpoint
-from miles.utils.types import Sample
+from miles.utils.types import RewardSpec, Sample
 
 logger = logging.getLogger(__name__)
 
@@ -384,6 +384,8 @@ class MixedRolloutDataSource(DataSource):
             sample.agent_function_path = config.custom_agent_function_path
             sample.max_seq_len = config.max_seq_len
             sample.generate_function_path = config.custom_generate_function_path
+            if config.custom_rm_path is not None or config.rm_type is not None:
+                sample.reward_spec = RewardSpec(rm_type=config.rm_type, custom_rm_path=config.custom_rm_path)
             group.append(sample)
         self.sample_group_index += 1
         return group

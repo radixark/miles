@@ -53,6 +53,9 @@ class RolloutDatasetConfig(BaseModel):
     # agent function for agentic_tool_call, instead of --custom-agent-function-path
     custom_agent_function_path: str | None = Field(default=None, min_length=1)
     max_seq_len: int | None = Field(default=None, ge=1)
+    # set as this dataset's Sample.reward_spec, winning over --custom-rm-path / --rm-type
+    custom_rm_path: str | None = Field(default=None, min_length=1)
+    rm_type: str | None = Field(default=None, min_length=1)
     # free-form, for this dataset's generate function
     agent: dict[str, Any] | None = None
 
