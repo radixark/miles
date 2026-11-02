@@ -250,6 +250,37 @@ class TestStartupValidation:
         args = _parse("--rollout-data-yaml-config", _inline(_with_dataset(**fields)))
         assert args.data_source_path.path == "miles.rollout.data_source.MixedRolloutDataSource"
 
+    @pytest.mark.parametrize("reward", [{"rm_type": "gpqa"}, {"custom_rm_path": "json.loads"}])
+    def test_a_dataset_reward_under_a_batched_group_rm_fails_at_startup(self, reward):
+        """--group-rm scores each group with the batched --custom-rm-path, so a dataset's own reward never runs."""
+        with pytest.raises(ValueError, match="--group-rm scores every group"):
+            _parse(
+                "--rollout-data-yaml-config",
+                _inline(_with_dataset(**reward)),
+                "--group-rm",
+                "--custom-rm-path",
+                "json.dumps",
+            )
+
+    def test_a_dataset_naming_the_batched_group_rm_function_is_accepted(self):
+        args = _parse(
+            "--rollout-data-yaml-config",
+            _inline(_with_dataset(custom_rm_path="json.dumps")),
+            "--group-rm",
+            "--custom-rm-path",
+            "json.dumps",
+        )
+        assert args.data_source_path.path == "miles.rollout.data_source.MixedRolloutDataSource"
+
+    def test_a_dataset_reward_function_with_its_own_config_fails_at_startup(self):
+        async def typed_reward(args, sample):
+            pass
+
+        typed_reward.add_arguments = lambda parser: parser.add_argument("--test-typed-reward-scale", type=float)
+        with function_registry.temporary("test4553.typed_reward", typed_reward):
+            with pytest.raises(ValueError, match="declares its own config"):
+                _parse("--rollout-data-yaml-config", _inline(_with_dataset(custom_rm_path="test4553.typed_reward")))
+
     def test_unset_leaves_startup_unchanged(self):
         assert _parse("--prompt-data", "/dev/null").rollout_data_yaml_config is None
 
