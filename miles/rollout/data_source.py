@@ -276,8 +276,8 @@ class MixedRolloutDataSource(DataSource):
                     f"rollout dataset {config.name!r}: row {bad} has non-mapping metadata "
                     f"({type(dataset.samples[bad].metadata).__name__}); --metadata-key must name a JSON object"
                 )
-            # the file is reopened to parse it; a rewrite since hashing would train on unpinned bytes
-            if (pinned := self.dataset_sha256[config.name]) is not None:
+            # the file is reopened to parse it; for a pinned file a rewrite since hashing would train on unpinned bytes
+            if config.sha256 is not None and (pinned := self.dataset_sha256[config.name]) is not None:
                 path, _ = _parse_generalized_path(config.path)
                 if (loaded := _hash_file(path)) != pinned:
                     raise ValueError(
