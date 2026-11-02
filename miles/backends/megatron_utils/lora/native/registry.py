@@ -19,6 +19,7 @@ from miles.backends.megatron_utils.lora.native.spec.attention import (
     MLAAttentionSpec,
 )
 from miles.backends.megatron_utils.lora.native.spec.base import FixedTargets, LoRAArchSpec
+from miles.backends.megatron_utils.lora.native.spec.gdn import Qwen35GDNSpec
 from miles.backends.megatron_utils.lora.native.spec.layout import AttentionSpecBase
 from miles.backends.megatron_utils.lora.native.spec.lm_head import InklingLMHeadSpec
 from miles.backends.megatron_utils.lora.native.spec.mlp import (
@@ -35,12 +36,15 @@ logger = logging.getLogger(__name__)
 _SHARED_EXPERT_BLOCK = re.compile(r"(?:^|\.)shared_experts?$")
 
 
-def _arch_spec(attention: AttentionSpecBase, *, mlp=None, has_linear_attention_layers: bool = False) -> LoRAArchSpec:
+def _arch_spec(
+    attention: AttentionSpecBase, *, mlp=None, has_linear_attention_layers: bool = False, linear_attention=None
+) -> LoRAArchSpec:
     return LoRAArchSpec(
         name=attention.name,
         attention=attention,
         mlp=mlp or SplitGateUpMLPSpec(),
         has_linear_attention_layers=has_linear_attention_layers,
+        linear_attention=linear_attention,
     )
 
 
@@ -106,6 +110,9 @@ def _build_model_specs() -> dict[str, LoRAArchSpec]:
     glm4 = _arch_spec(GQAAttentionSpec(), mlp=FusedGateUpMLPSpec())
     mla = _arch_spec(MLAAttentionSpec())
     hybrid = _arch_spec(HybridGQAGDNAttentionSpec(), has_linear_attention_layers=True)
+    qwen3_5 = _arch_spec(
+        HybridGQAGDNAttentionSpec(), has_linear_attention_layers=True, linear_attention=Qwen35GDNSpec()
+    )
     inkling = _inkling_arch_spec()
     return {
         "llama": gqa,
@@ -115,10 +122,10 @@ def _build_model_specs() -> dict[str, LoRAArchSpec]:
         "mimo": gqa,
         "glm4": glm4,
         "glm4_moe": gqa,
-        "qwen3_5": hybrid,
-        "qwen3_5_moe": hybrid,
-        "qwen3_6": hybrid,
-        "qwen3_6_moe": hybrid,
+        "qwen3_5": qwen3_5,
+        "qwen3_5_moe": qwen3_5,
+        "qwen3_6": qwen3_5,
+        "qwen3_6_moe": qwen3_5,
         "qwen3_next": hybrid,
         "deepseek_v3": mla,
         "deepseek_v32": mla,
@@ -193,7 +200,9 @@ def resolve_adapter_targets(
         f"--target-modules {attention_target_modules_csv(hf_config)}) or use --megatron-to-hf-mode bridge."
     )
     _assert_shared_expert_up_proj_has_gate_proj(selected or hf_targets)
-    return hf_targets
+    if spec.linear_attention is None:
+        return hf_targets
+    return spec.linear_attention.served_targets(selected or hf_targets, hf_targets)
 
 
 def validate_native_lora_args(args) -> None:

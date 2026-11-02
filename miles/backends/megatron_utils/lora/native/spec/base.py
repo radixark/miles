@@ -95,6 +95,18 @@ class MLPLoRASpec(Protocol):
     def attach(self, mlp: nn.Module, layer: nn.Module, context: AttachContext) -> int: ...
 
 
+class LinearAttentionLoRASpec(Protocol):
+    """Adapters on a hybrid model's linear-attention mixer layers."""
+
+    name: str
+    hf_block: str
+    supported_targets: frozenset[str]
+
+    def attach(self, block: nn.Module, layer: nn.Module, context: AttachContext) -> int: ...
+
+    def served_targets(self, modules: list[str], hf_targets: list[str]) -> list[str]: ...
+
+
 class ExpertsLoRASpec(Protocol):
     """Routed-expert attachment for architectures whose experts carry adapters."""
 
@@ -130,16 +142,20 @@ class LoRAArchSpec:
     experts: ExpertsLoRASpec | None = None
     lm_head: Any = None
     has_linear_attention_layers: bool = False
+    # adapters of the linear-attention mixer layers; None leaves those layers unadapted
+    linear_attention: LinearAttentionLoRASpec | None = None
     fixed_targets: FixedTargets | None = None
     # None names adapters after the raw-mode converter's HF weight names
     declared_naming: Any = None
 
     def attaches(self, hf_module: str) -> bool:
         """Whether this spec implements an adapter for the HF module (``*`` stands for any layer)."""
-        blocks = (
+        blocks = [
             (re.escape(self.attention.hf_block), self.attention.supported_targets),
             (self.mlp.hf_block_pattern, self.mlp.supported_targets),
-        )
+        ]
+        if self.linear_attention is not None:
+            blocks.append((re.escape(self.linear_attention.hf_block), self.linear_attention.supported_targets))
         # a target may nest below its block (GLM-5.3-Flash's forget_gate.f_a_proj)
         return any(
             re.search(rf"{_HF_LAYER}{block}\.{re.escape(target)}$", hf_module)
