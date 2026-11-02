@@ -5,6 +5,7 @@ fp32 master (a Float16 child's ``fp32_from_float16_groups``) and its Adam state;
 """
 
 import json
+import re
 from collections.abc import Iterable, Sequence
 from dataclasses import asdict, replace
 from pathlib import Path
@@ -46,6 +47,8 @@ from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
 
 _WEIGHTS_KEY = "adapter_weights"
 _OPTIM_KEY = "adapter_optimizer"
+# a ChainedOptimizer prefixes each child's keys with chained_<i>.
+_LEGACY_OPTIMIZER_KEY = re.compile(r"(chained_\d+\.)?optimizer\.")
 
 
 class LayerWiseSlotMembers:
@@ -330,18 +333,25 @@ def find_load_mismatch(
     try:
         kind = classify_adapter_source(path, targets, load_optimizer=load_optimizer)
         if kind == AdapterSourceKind.LEGACY_TINKER_CHECKPOINT:
+            _read_legacy_meta(path, run)
+            # TE's _extra_state objects are stored per shard (<key>/shard_i_j); the tensors decide the layout
             saved = {
                 k
                 for k in dcp.FileSystemReader(path).read_metadata().state_dict_metadata
-                if not k.startswith("optimizer.")
+                if ".adapter." in k and "_extra_state" not in k and not _LEGACY_OPTIMIZER_KEY.match(k)
             }
-            expected = set()
-            for sharded in nested_values(_canonicalize_slot_keys(_slot_weights_sharded_state_dict(model, slot), slot)):
-                expected.add(sharded.key)
-            if not expected <= saved:
+            expected = {
+                sharded.key
+                for sharded in nested_values(
+                    _canonicalize_slot_keys(_slot_weights_sharded_state_dict(model, slot), slot)
+                )
+                if "_extra_state" not in sharded.key
+            }
+            if expected != saved:
                 mismatch = (
                     f"{path} was saved with another adapter layout than this gateway trains "
-                    f"(missing e.g. {sorted(expected - saved)[:3]}); load it on a gateway with the layout it was saved with"
+                    f"(differing keys e.g. {sorted(expected ^ saved)[:3]}); "
+                    "load it on a gateway with the layout it was saved with"
                 )
         elif kind == AdapterSourceKind.ADAPTER_DIR:
             source = MilesAdapterDirReader(path, targets).source
@@ -370,19 +380,23 @@ class LegacyTinkerCheckpointLoader:
         self._model, self._optimizer, self._run, self._load_optimizer = model, slot_optimizer, run, load_optimizer
 
     def __call__(self, path: Path) -> AdapterParametrization:
-        # checkpoints written before the layout was recorded are all fused, per-expert
-        meta = {
-            "lora_type": "lora",
-            "experts_shared_outer_loras": False,
-            **json.loads((path / "META.json").read_text()),
-        }
-        run = asdict(self._run)
-        for field in ("base_model", "lora_rank", "lora_type", "experts_shared_outer_loras"):
-            assert (
-                meta[field] == run[field]
-            ), f"{path} was saved with {field}={meta[field]!r}; this run has {run[field]!r}"
+        meta = _read_legacy_meta(path, self._run)
         _load_legacy_slot(self._model, self._optimizer, str(path), self._load_optimizer)
         return replace(self._run, lora_alpha=meta["lora_alpha"])
+
+
+def _read_legacy_meta(path: Path, run: AdapterParametrization) -> dict:
+    """META.json, asserted to agree with ``run`` on what fixes the slot's tensor shapes."""
+    # checkpoints written before the layout was recorded are all fused, per-expert
+    meta = {
+        "lora_type": "lora",
+        "experts_shared_outer_loras": False,
+        **json.loads((path / "META.json").read_text()),
+    }
+    run = asdict(run)
+    for field in ("base_model", "lora_rank", "lora_type", "experts_shared_outer_loras"):
+        assert meta[field] == run[field], f"{path} was saved with {field}={meta[field]!r}; this run has {run[field]!r}"
+    return meta
 
 
 def _slot_weights_sharded_state_dict(model: Sequence[DDP], slot: int) -> dict:
