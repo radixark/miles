@@ -457,23 +457,40 @@ class CPLayout:
         Positions at or past a sequence's length are padding; under thd all-gather CP the padding
         that ends the concatenation belongs to its last sequence.
         """
-        if not self.per_pack:
-            return [self._split(self.max_seq_len if self.max_seq_len is not None else n) for n in lengths]
-        padded = -(-sum(lengths) // self.pack_multiple) * self.pack_multiple
-        ((piece_start, piece_end),) = self._split(padded)
+        if self.per_pack:
+            return self._pack_ranges(lengths)
+        if self.max_seq_len is not None:
+            # bshd pads every sequence to max_seq_len before splitting it.
+            return [self._split(self.max_seq_len) for _ in lengths]
+        return [self._split(length) for length in lengths]
+
+    def _pack_ranges(self, lengths: Sequence[int]) -> list[tuple[tuple[int, int], ...]]:
+        """Cut this rank's piece of the padded concatenation back into per-sequence ranges.
+
+        For example, lengths 5, 4, 2 at cp 2 with a pack multiple of 4: the 11 positions are padded to
+        12, and rank 1 holds positions [6, 12) of the concatenation. Those are positions [1, 4) of the
+        second sequence and [0, 3) of the third, whose position 2 is the pack padding.
+        """
+        total = sum(lengths)
+        padded = (total + self.pack_multiple - 1) // self.pack_multiple * self.pack_multiple
+        ((rank_start, rank_end),) = self._split(padded)
         ranges = []
-        start = 0
+        seq_start = 0
         for i, length in enumerate(lengths):
-            end = padded if i == len(lengths) - 1 else start + length
-            lo, hi = max(piece_start, start), min(piece_end, end)
-            ranges.append(((lo - start, hi - start),) if lo < hi else ((0, 0),))
-            start += length
+            # The pack padding has no sequence of its own, so it counts as the end of the last one.
+            seq_end = padded if i == len(lengths) - 1 else seq_start + length
+            overlap_start, overlap_end = max(rank_start, seq_start), min(rank_end, seq_end)
+            if overlap_start < overlap_end:
+                ranges.append(((overlap_start - seq_start, overlap_end - seq_start),))
+            else:
+                ranges.append(((0, 0),))  # none of this sequence is on this rank
+            seq_start += length
         return ranges
 
     def _split(self, length: int) -> tuple[tuple[int, int], ...]:
         rank = self.cp_rank
         if self.zigzag:
-            chunk = -(-length // (2 * self.cp_size))
+            chunk = (length + 2 * self.cp_size - 1) // (2 * self.cp_size)
             back = 2 * self.cp_size - 1 - rank
             return ((chunk * rank, chunk * (rank + 1)), (chunk * back, chunk * (back + 1)))
         piece = length // self.cp_size
