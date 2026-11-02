@@ -1,7 +1,6 @@
 """JSON decoding validates datum inputs and renders SDK result shapes."""
 
 import pytest
-from tinker import types as tinker_types
 
 from miles.tinker.core.types import UserInputError
 from miles.tinker.server.encoding import (
@@ -12,6 +11,7 @@ from miles.tinker.server.encoding import (
     tensor_data_to_list,
     validate_create_model,
 )
+from tinker import types as tinker_types
 
 
 def _datum(tokens: list[int], **extra_inputs) -> dict:
