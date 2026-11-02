@@ -32,7 +32,8 @@ def _expand_shared_lora_a(weights: dict[str, torch.Tensor], parametrization: Ada
             expanded[f"{parent}.{fused}.lora_B"] = torch.cat([expanded.pop(f"{m}.lora_B") for m in group])
         else:
             for member in group[1:]:
-                expanded[f"{member}.lora_A"] = expanded[f"{group[0]}.lora_A"]
+                # safetensors refuses tensors that share storage
+                expanded[f"{member}.lora_A"] = expanded[f"{group[0]}.lora_A"].clone()
     return expanded
 
 

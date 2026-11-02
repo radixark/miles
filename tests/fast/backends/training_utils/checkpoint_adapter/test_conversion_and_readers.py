@@ -157,3 +157,10 @@ def test_a_head_adapter_reads_back(tmp_path):
     }
     write_peft_adapter(tmp_path, weights, run)
     assert PeftAdapterReader(tmp_path, run, QWEN3).read_weights().keys() == weights.keys()
+
+
+@pytest.mark.parametrize("write", [write_peft_adapter, write_sampler_adapter])
+def test_bf16_input_with_a_shared_a_group_writes(tmp_path, write):
+    group = EXPERTS[:2]
+    weights = {k: v.to(torch.bfloat16) for k, v in _weights(False).items() if k != f"{group[1]}.lora_A"}
+    write(tmp_path, weights, _run(shared_lora_a_groups=(group,)))
