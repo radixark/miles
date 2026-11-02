@@ -78,8 +78,8 @@ cd Gym
 
 curl -LsSf https://astral.sh/uv/install.sh | sh
 source $HOME/.local/bin/env
-uv venv --python 3.12 && source .venv/bin/activate
-uv sync --extra dev
+uv venv --python 3.13 && source .venv/bin/activate
+uv sync --extra dev --extra ray
 # Do NOT install the agent's requirements.txt into this venv. `gym env start`
 # builds a per-server venv from it automatically; installing it here bumps
 # shared pins (e.g. openai) past nemo-gym's caps, and the injected versions
@@ -88,10 +88,13 @@ uv sync --extra dev
 # Global config. The model-server entry must boot but receives no policy
 # traffic in this setup — every /run carries its own policy_base_url override
 # pointing at a Miles session URL. policy_model_name is the model name the
-# harness sends on each request (any string Miles' router accepts).
+# harness sends on each request (any string Miles' router accepts). Nothing
+# answers at that placeholder URL, so skip Gym's model-endpoint readiness
+# check; with it, gym env start shuts every server down after 600s.
 echo "policy_base_url: http://localhost:9/v1
 policy_api_key: dummy
 policy_model_name: model
+model_endpoint_readiness_timeout_seconds: 0
 default_host: 0.0.0.0" > env.yaml
 ```
 
@@ -233,7 +236,7 @@ on CPU-only machines, in three independent layers (all three pass as of
    training environment — the legacy path never registers the agentic flags.
 2. `mini_swe_agent_2` dies at spin-up with an unresolvable-dependency error
    (`openai==X` vs `nemo-gym depends on openai<=Y`): the main venv has extra
-   packages installed. Recreate it with `uv sync --extra dev` only — see the
+   packages installed. Recreate it with `uv sync --extra dev --extra ray` only — see the
    setup note above.
 3. Slow episodes are usually docker pulls (each task has its own image,
    fetched on first use) or the in-container SWE-bench evaluation
