@@ -123,11 +123,10 @@ def compute_multimodal_train_inputs(
         Each sample's processor tensors and, with SGLang's placement, each sample's positions, as futures that
         resolve when the background rebuild reaches the sample.
     """
-    trainer_processor = _trainer_processor(rollout_engine_args, device)
     train_inputs, mrope_position_ids = [], []
     for sample_multimodal_inputs, sample_tokens in zip(multimodal_inputs, tokens, strict=True):
         sample_train_inputs, sample_mrope_position_ids = _submit_sample_rebuild(
-            trainer_processor,
+            rollout_engine_args,
             sample_multimodal_inputs,
             sample_tokens,
             with_sglang_placement=with_sglang_placement,
@@ -138,6 +137,11 @@ def compute_multimodal_train_inputs(
     return TokenSpaceTrainInputs(train_inputs, mrope_position_ids if with_sglang_placement else None)
 
 
+def prewarm_token_space_processor(rollout_engine_args: RolloutEngineProcessorArgs, *, device: torch.device) -> None:
+    """Queue the processor build ahead of the first rebuild, so it overlaps actor initialization."""
+    _rebuild_executor().submit(_trainer_processor, rollout_engine_args, device)
+
+
 @functools.cache
 def _rebuild_executor() -> ThreadPoolExecutor:
     # One thread: the samples share one processor, which SGLang only clones per worker when it runs its own pool.
@@ -145,7 +149,7 @@ def _rebuild_executor() -> ThreadPoolExecutor:
 
 
 def _submit_sample_rebuild(
-    trainer_processor: "_TrainerProcessor",
+    rollout_engine_args: RolloutEngineProcessorArgs,
     multimodal_inputs: dict[str, list[str]] | None,
     tokens: torch.Tensor,
     *,
@@ -157,6 +161,8 @@ def _submit_sample_rebuild(
 
     def rebuild():
         try:
+            # Built on this thread, so a prewarmed build is ready and the first rebuild never blocks the caller.
+            trainer_processor = _trainer_processor(rollout_engine_args, device)
             if multimodal_inputs:
                 sample_train_inputs, positions = _sample_train_inputs(
                     trainer_processor,
