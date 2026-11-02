@@ -1,6 +1,7 @@
 """The service preserves request ordering, tenant isolation, and failure isolation."""
 
 import asyncio
+import os
 from contextlib import suppress
 from pathlib import Path
 
@@ -13,13 +14,13 @@ from tests.fast.tinker.harness import (
     fb_payload,
     make_service,
     model_payload,
+    write_legacy_checkpoint,
 )
 
 from miles.backends.training_utils.checkpoint.adapter.commit import resolve_adapter_dir
-from miles.backends.training_utils.checkpoint.io import write_checkpoint_dir
 from miles.tinker.core.future import DONE, FAILED
 from miles.tinker.core.types import OwnershipError, UserInputError
-from miles.tinker.core.utils import build_checkpoint_metadata, resolve_checkpoint_dir, resolve_sampler_checkpoint
+from miles.tinker.core.utils import resolve_checkpoint_dir, resolve_sampler_checkpoint
 
 
 def _optim_payload(model_id: str, seq_id: int) -> dict:
@@ -133,7 +134,8 @@ async def test_save_then_load_roundtrip_paths(service):
     weights_only = service.backend.named("load_slot")[-1]
     assert weights_only["load_optimizer"] is False
     checkpoint = Path(service.config.checkpoint_root) / model_id / "weights" / "ckpt"
-    assert weights_only["ckpt_path"] == str(checkpoint.resolve())
+    # the trainer reads the commit the name pointed at when the load was scheduled
+    assert weights_only["ckpt_path"] == str(checkpoint.resolve()) and checkpoint.is_symlink()
 
 
 async def test_sampler_save_publishes_successive_versions(service):
@@ -674,42 +676,33 @@ async def test_a_named_sampler_save_uses_the_name_and_rejects_reuse(service):
     assert future.state == FAILED and "already exist" in future.error, "saved versions are immutable"
 
 
-async def test_checkpoint_meta_stores_a_digest_not_the_credential(service):
+async def test_a_checkpoint_stores_a_digest_not_the_credential(service):
     import json
-    import os
 
     model_id = await created_model(service)
     saved = service.submit(
         "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False}
     )
     await await_settled(service, "tenant", saved)
-    meta_path = os.path.join(
-        resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "weights", "ck"), "META.json"
-    )
-    meta = json.loads(open(meta_path).read())
-    assert "tenant" not in meta and meta["tenant_digest"] != "tenant", "the bearer credential must not be persisted"
+    link = Path(resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "weights", "ck"))
+    owner = json.loads((link.resolve() / "tenant.json").read_text())
+    assert owner["tenant_digest"] != "tenant", "the bearer credential must not be persisted"
     info = service.weights_info("tenant", f"tinker://{model_id}/weights/ck")
     assert (info["train_attn"], info["train_mlp"], info["train_unembed"]) == (True, True, False)
 
 
-@pytest.mark.parametrize(
-    "field,value", [("lora_alpha", 99), ("lora_type", "canonical_lora"), ("experts_shared_outer_loras", True)]
-)
-async def test_a_checkpoint_saved_under_other_settings_does_not_load(service, field, value):
+@pytest.mark.parametrize("field,value", [("base_model", "other"), ("lora_rank", 3)])
+async def test_a_checkpoint_of_another_base_or_rank_does_not_load(service, field, value):
     import json
-    import os
 
     model_id = await created_model(service)
     saved = service.submit(
         "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False}
     )
     path = (await await_settled(service, "tenant", saved)).result["path"]
-    meta_path = os.path.join(
-        resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "weights", "ck"), "META.json"
-    )
-    meta = json.loads(open(meta_path).read())
-    meta[field] = value
-    open(meta_path, "w").write(json.dumps(meta))
+    parametrization = Path(resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "weights", "ck")).resolve()
+    fields = json.loads((parametrization / "adapter_parametrization.json").read_text()) | {field: value}
+    (parametrization / "adapter_parametrization.json").write_text(json.dumps(fields))
 
     loaded = service.submit(
         "tenant", "load_state", {"model_id": model_id, "seq_id": 2, "path": path, "optimizer": True}
@@ -717,39 +710,53 @@ async def test_a_checkpoint_saved_under_other_settings_does_not_load(service, fi
     future = await await_settled(service, "tenant", loaded)
     assert (future.state, future.error_category) == (FAILED, "user") and field in future.error
     assert not service.backend.named("load_slot")[1:], "nothing may touch the slot on a mismatch"
-    if field != "lora_alpha":
-        assert "restore it on one launched with" in future.error, "a gateway-wide layout names the fix"
 
 
-@pytest.mark.parametrize("shared_outer", [False, True])
-async def test_a_checkpoint_saved_before_lora_type_was_recorded_loads_as_fused(tmp_path, shared_outer):
+async def test_a_loaded_adapter_keeps_its_own_alpha(service):
     import json
-    import os
 
-    gateway = make_service(tmp_path, experts_shared_outer_loras=shared_outer)
-    run_task = asyncio.create_task(gateway.run())
-    try:
-        model_id = await created_model(gateway)
-        saved = gateway.submit(
-            "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False}
-        )
-        path = (await await_settled(gateway, "tenant", saved)).result["path"]
-        meta_path = os.path.join(
-            resolve_checkpoint_dir(gateway.config.checkpoint_root, model_id, "weights", "ck"), "META.json"
-        )
-        meta = json.loads(open(meta_path).read())
-        assert meta["experts_shared_outer_loras"] is shared_outer, "the expert layout is written as configured"
-        del meta["lora_type"]  # what a gateway without canonical support wrote
-        open(meta_path, "w").write(json.dumps(meta))
+    model_id = await created_model(service)
+    saved = service.submit(
+        "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False}
+    )
+    path = (await await_settled(service, "tenant", saved)).result["path"]
+    parametrization = Path(resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "weights", "ck")).resolve()
+    fields = json.loads((parametrization / "adapter_parametrization.json").read_text()) | {"lora_alpha": 99.0}
+    (parametrization / "adapter_parametrization.json").write_text(json.dumps(fields))
 
-        loaded = gateway.submit(
-            "tenant", "load_state", {"model_id": model_id, "seq_id": 2, "path": path, "optimizer": True}
+    loaded = service.submit(
+        "tenant", "load_state", {"model_id": model_id, "seq_id": 2, "path": path, "optimizer": True}
+    )
+    assert (await await_settled(service, "tenant", loaded)).state == DONE
+    load = service.backend.named("load_slot")[-1]
+    assert load["alpha"] == load["parametrization_fields"]["lora_alpha"] == 99.0
+    assert service.models[model_id].lora_alpha == 99.0, "the tenant record adopts the source's alpha"
+
+
+async def test_a_checkpoint_saved_before_commits_loads_through_the_legacy_path(service):
+    model_id = await created_model(service)
+    record = service.models[model_id]
+    legacy = resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "weights", "old")
+    write_legacy_checkpoint(legacy, record, service.config)
+    loaded = service.submit(
+        "tenant",
+        "load_state",
+        {"model_id": model_id, "seq_id": 1, "path": f"tinker://{model_id}/weights/old", "optimizer": True},
+    )
+    assert (await await_settled(service, "tenant", loaded)).state == DONE
+    assert service.backend.named("load_slot")[-1]["ckpt_path"] == str(Path(legacy).resolve())
+
+
+async def test_an_overwritten_checkpoint_leaves_no_old_commit(service):
+    model_id = await created_model(service)
+    for seq_id in (1, 2):
+        saved = service.submit(
+            "tenant", "save_state", {"model_id": model_id, "seq_id": seq_id, "name": "ck", "overwrite": True}
         )
-        assert (await await_settled(gateway, "tenant", loaded)).state == DONE
-    finally:
-        run_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await run_task
+        assert (await await_settled(service, "tenant", saved)).state == DONE
+    await asyncio.gather(*service._cleanup_tasks)
+    weights = Path(resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "weights", "ck")).parent
+    assert sorted(p.name for p in weights.iterdir()) == sorted(["ck", Path(os.readlink(weights / "ck")).name])
 
 
 async def test_a_recycled_slot_belongs_to_a_fresh_model_queue(service):
@@ -958,7 +965,7 @@ async def test_a_sampler_dir_written_before_commits_still_resolves(service):
     model_id = await created_model(service)
     record = service.models[model_id]
     legacy = resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "sampler_weights", "old")
-    write_checkpoint_dir(legacy, lambda _: None, metadata=build_checkpoint_metadata(record, service.config))
+    write_legacy_checkpoint(legacy, record, service.config)
     assert resolve_sampler_checkpoint(
         service.config, "tenant", f"tinker://{model_id}/sampler_weights/old", service.backend.resolve_adapter
     ) == (

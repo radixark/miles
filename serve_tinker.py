@@ -12,7 +12,7 @@ from miles.ray.train.init_request import TrainerControllerInitRequest
 from miles.tinker.arguments import configure_tinker_args, validate_tinker_args
 from miles.tinker.core.service import TinkerService
 from miles.tinker.core.types import GatewayConfig
-from miles.tinker.runtime import MilesBackend
+from miles.tinker.runtime import MilesBackend, take_checkpoint_root
 from miles.tinker.server.app import build_app
 from miles.tinker.server.encoding import assert_installed_sdk_version
 from miles.utils.args.trainer_utils import compute_trainer_ckpt_load_config
@@ -93,6 +93,8 @@ async def serve(args, *, disposer: Disposer):
         * args.raw_megatron.base_args["pipeline_model_parallel_size"]
         * args.raw_megatron.base_args["context_parallel_size"]
     )
+    checkpoint_root_lock = take_checkpoint_root(config.checkpoint_root)
+    disposer.add(checkpoint_root_lock.close)
     service = TinkerService(MilesBackend(trainer, router_url, dp_size=dp_size), config)
 
     server = uvicorn.Server(

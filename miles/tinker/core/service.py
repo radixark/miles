@@ -13,7 +13,6 @@ from typing import NamedTuple
 from miles.tinker.core.future import RequestFuture, RequestFutureStore
 from miles.tinker.core.input_validation import (
     validate_batch_payload,
-    validate_checkpoint_compatibility,
     validate_checkpoint_segment,
     validate_model_config,
     validate_sample_payload,
@@ -32,7 +31,6 @@ from miles.tinker.core.types import (
     UserInputError,
 )
 from miles.tinker.core.utils import (
-    build_checkpoint_metadata,
     build_parametrization_fields,
     parse_tinker_path,
     read_checkpoint_metadata,
@@ -66,6 +64,7 @@ class TinkerService:
         self._trainer_lock = asyncio.Lock()
         self._sample_tasks: dict[str, tuple] = {}  # request_id -> (task, session_id)
         self._create_tasks: set = set()
+        self._cleanup_tasks: set = set()
         self._arrival_counter = 0
         self._batch_counter = 0
         self._background_error: BaseException | None = None
@@ -350,34 +349,59 @@ class TinkerService:
         name = payload["name"] or f"checkpoint-{payload['seq_id']:06d}"
         validate_checkpoint_segment(name)
         checkpoint_dir = resolve_checkpoint_dir(self.config.checkpoint_root, record.model_id, "weights", name)
-        if not payload["overwrite"] and os.path.exists(checkpoint_dir):
+        if not payload["overwrite"] and os.path.lexists(checkpoint_dir):
             raise UserInputError(f"checkpoint {name!r} already exists; pass overwrite=True to replace it")
-        failure = await self.backend.save_slot(
-            record.slot, checkpoint_dir, metadata=build_checkpoint_metadata(record, self.config)
+        root = os.path.dirname(checkpoint_dir)
+        written = await self.backend.save_slot(
+            record.slot, root, name, record.tenant, build_parametrization_fields(record, self.config)
         )
-        if failure is not None:
-            return failure
+        if isinstance(written, dict):
+            return written
+        self.backend.commit_adapter(root, name, written, payload["overwrite"])
+        self._delete_retired_outside_the_lock(root)
         return {"op": "save_state", "path": f"tinker://{record.model_id}/weights/{name}"}
+
+    def _delete_retired_outside_the_lock(self, root: str) -> None:
+        task = asyncio.create_task(asyncio.to_thread(self.backend.delete_retired_adapters, root))
+        self._cleanup_tasks.add(task)
+        task.add_done_callback(self._cleanup_tasks.discard)
 
     async def _load_state(self, record: ModelRecord, payload: dict) -> dict:
         source_id, kind, name = parse_tinker_path(payload["path"])
         if kind != "weights":
             raise UserInputError("cannot load sampler weights into a training model; use a save_state checkpoint")
-        checkpoint_dir = os.path.realpath(resolve_checkpoint_dir(self.config.checkpoint_root, source_id, kind, name))
+        checkpoint_dir = resolve_checkpoint_dir(self.config.checkpoint_root, source_id, kind, name)
         source_tenant = payload.get("weights_access_token")
         if source_tenant is None:
             source_tenant = record.tenant
-        meta = read_checkpoint_metadata(checkpoint_dir, source_tenant, payload["path"])
-        validate_checkpoint_compatibility(meta, record, self.config, payload["path"])
+        committed = self.backend.resolve_adapter(os.path.dirname(checkpoint_dir), name, source_tenant, source_id)
+        if committed is None:
+            # saved before commits: torch_dist with META.json, which the trainer's legacy loader reads
+            source, ckpt_path = (
+                read_checkpoint_metadata(checkpoint_dir, source_tenant, payload["path"]),
+                checkpoint_dir,
+            )
+        else:
+            source, ckpt_path = committed["parametrization"], committed["path"]
+        # the trainer checks the rest of the parametrization against the model
+        for key, expected in (("base_model", record.base_model), ("lora_rank", record.lora_rank)):
+            if source[key] != expected:
+                raise UserInputError(
+                    f"checkpoint {payload['path']!r} has {key}={source[key]!r}; this model has {expected!r}"
+                )
+        fields = build_parametrization_fields(record, self.config) | {"lora_alpha": source["lora_alpha"]}
         failure = await self.backend.load_slot(
             record.slot,
             record.lora_rank,
-            record.lora_alpha,
-            ckpt_path=checkpoint_dir,
+            source["lora_alpha"],
+            ckpt_path=os.path.realpath(ckpt_path),
             load_optimizer=payload["optimizer"],
+            parametrization_fields=fields,
         )
         if failure is not None:
             return failure
+        # the tenant record owns alpha; the SDK cannot set it, so a loaded adapter keeps its own
+        record.lora_alpha = source["lora_alpha"]
         return {"op": "load_state"}
 
     async def _save_weights_for_sampler(self, record: ModelRecord, payload: dict) -> dict:
@@ -396,7 +420,7 @@ class TinkerService:
         )
         if isinstance(written, dict):
             return written
-        self.backend.commit_adapter(root, version, written)
+        self.backend.commit_adapter(root, version, written, False)
         result = {
             "op": "save_weights_for_sampler",
             "path": f"tinker://{record.model_id}/sampler_weights/{version}",
@@ -412,11 +436,11 @@ class TinkerService:
         """What the SDK needs to rebuild a training client from a checkpoint."""
         model_id, kind, name = parse_tinker_path(tinker_path)
         checkpoint_dir = resolve_checkpoint_dir(self.config.checkpoint_root, model_id, kind, name)
-        if kind == "sampler_weights" and os.path.islink(checkpoint_dir):
+        if os.path.islink(checkpoint_dir):
             parametrization = self.backend.resolve_adapter(os.path.dirname(checkpoint_dir), name, tenant, model_id)[
                 "parametrization"
             ]
-            # a sampler export records targets, not group flags; it was written under this gateway's layout
+            # an adapter dir records targets, not group flags; it was written under this gateway's layout
             return {
                 "base_model": parametrization["base_model"],
                 "is_lora": True,

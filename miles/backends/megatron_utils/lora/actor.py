@@ -57,15 +57,42 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
 
     @with_logs
     def load_slot(
-        self, slot: int, rank: int, alpha: float, ckpt_path: str | None = None, load_optimizer: bool = True
+        self,
+        slot: int,
+        rank: int,
+        alpha: float,
+        ckpt_path: str | None = None,
+        load_optimizer: bool = True,
+        parametrization_fields: dict | None = None,
     ) -> None:
         self.slot_optimizers[slot] = lora_model.load_slot(self.args, self.model, slot, rank, alpha)
         if ckpt_path is not None:
-            lora_checkpoint.load_slot(self.model, self.slot_optimizers[slot], ckpt_path, load_optimizer)
+            lora_checkpoint.load_slot(
+                self.model,
+                self._checkpoint_members(),
+                self.slot_optimizers[slot],
+                ckpt_path,
+                self.adapter_slots.parametrization(**parametrization_fields),
+                self.adapter_slots.targets,
+                load_optimizer,
+            )
 
     @with_logs
-    def save_slot(self, slot: int, path: str, metadata: dict | None = None) -> None:
-        lora_checkpoint.save_slot(self.model, self.slot_optimizers[slot], path, metadata=metadata)
+    def save_slot(
+        self, slot: int, root: str, name: str, tenant: str, parametrization_fields: dict
+    ) -> UncommittedAdapterDir:
+        """Write the slot's adapter state under ``root``, uncommitted; the gateway commits it."""
+        return lora_checkpoint.save_slot(
+            self._checkpoint_members(),
+            slot,
+            root,
+            name,
+            tenant,
+            self.adapter_slots.parametrization(**parametrization_fields),
+        )
+
+    def _checkpoint_members(self) -> lora_checkpoint.LayerWiseSlotMembers:
+        return lora_checkpoint.LayerWiseSlotMembers(self.adapter_slots, self.slot_optimizers)
 
     @with_logs
     def export_slot(

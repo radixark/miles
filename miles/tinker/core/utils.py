@@ -26,21 +26,6 @@ def resolve_checkpoint_dir(checkpoint_root: str, model_id: str, kind: str, name:
     return path
 
 
-def build_checkpoint_metadata(record: ModelRecord, config: GatewayConfig) -> dict:
-    return {
-        # the digest proves ownership without persisting the bearer credential itself
-        "tenant_digest": _tenant_digest(record.tenant),
-        "base_model": record.base_model,
-        "lora_rank": record.lora_rank,
-        "lora_alpha": record.lora_alpha,
-        "lora_type": config.lora_type,
-        "experts_shared_outer_loras": config.experts_shared_outer_loras,
-        "train_attn": config.trains_attn,
-        "train_mlp": config.trains_mlp,
-        "train_unembed": config.trains_unembed,
-    }
-
-
 def build_parametrization_fields(record: ModelRecord, config: GatewayConfig) -> dict:
     """The parametrization fields the tenant record and the gateway own; targets come from the model."""
     return {

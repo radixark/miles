@@ -1,14 +1,7 @@
 import math
 import re
 
-from miles.tinker.core.types import (
-    LOSS_FN_INPUTS,
-    LOSS_INPUT_KEYS,
-    CommandOp,
-    GatewayConfig,
-    ModelRecord,
-    UserInputError,
-)
+from miles.tinker.core.types import LOSS_FN_INPUTS, LOSS_INPUT_KEYS, CommandOp, GatewayConfig, UserInputError
 
 
 def validate_model_config(lora_config: dict, config: GatewayConfig) -> None:
@@ -122,42 +115,6 @@ def validate_checkpoint_segment(segment: str) -> None:
     """Reject client path segments that could escape the checkpoint root."""
     if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", segment) is None:
         raise UserInputError(f"invalid checkpoint path segment {segment!r}")
-
-
-def validate_checkpoint_compatibility(meta: dict, record: ModelRecord, config: GatewayConfig, shown_path: str) -> None:
-    """Reject settings that would change the saved tensors' meaning."""
-    expected = {
-        "base_model": record.base_model,
-        "lora_rank": record.lora_rank,
-        "lora_alpha": record.lora_alpha,
-        "lora_type": config.lora_type,
-        "experts_shared_outer_loras": config.experts_shared_outer_loras,
-        "train_attn": config.trains_attn,
-        "train_mlp": config.trains_mlp,
-        "train_unembed": config.trains_unembed,
-    }
-    # Checkpoints written before the layout was recorded are all fused, per-expert.
-    meta = {"lora_type": "lora", "experts_shared_outer_loras": False, **meta}
-    for key, value in expected.items():
-        if meta[key] != value:
-            message = (
-                f"checkpoint {shown_path!r} was saved with {key}={meta[key]!r}; this model expects {key}={value!r}"
-            )
-            if key in _GATEWAY_LAYOUT_FLAGS:
-                message += (
-                    f". The adapter layout is set per gateway: restore it on one launched with "
-                    f"{_GATEWAY_LAYOUT_FLAGS[key](meta[key])}"
-                )
-            raise UserInputError(message)
-
-
-# a gateway-wide layout setting -> the launch flag that restores a checkpoint saved under `value`
-_GATEWAY_LAYOUT_FLAGS = {
-    "lora_type": lambda value: f"--lora-type {value}",
-    "experts_shared_outer_loras": lambda value: (
-        "--experts-shared-outer-loras" if value else "no --experts-shared-outer-loras"
-    ),
-}
 
 
 def validate_save_options(ttl_seconds: int | None, user_metadata: dict | None) -> None:

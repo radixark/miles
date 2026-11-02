@@ -3,6 +3,7 @@
 import asyncio
 from dataclasses import asdict
 from pathlib import Path
+from typing import TextIO
 
 import httpx
 
@@ -10,7 +11,10 @@ from miles.backends.training_utils.checkpoint.adapter.commit import OwnershipErr
 from miles.backends.training_utils.checkpoint.adapter.commit import (
     UncommittedAdapterDir,
     commit_adapter_dir,
+    delete_retired_adapter_dirs,
+    delete_unreferenced_adapter_dirs,
     format_sglang_lora_name,
+    lock_checkpoint_root,
     resolve_adapter_dir,
 )
 from miles.backends.training_utils.checkpoint.adapter.parametrization import read_parametrization
@@ -53,9 +57,22 @@ def _build_train_data(slot_datums: list) -> dict:
     return train_data
 
 
-def commit_adapter(root: str, name: str, written: UncommittedAdapterDir) -> None:
+def commit_adapter(root: str, name: str, written: UncommittedAdapterDir, overwrite: bool) -> None:
     """The gateway is the committer of every adapter dir under its checkpoint root."""
-    commit_adapter_dir(Path(root), name, written, overwrite=False)
+    commit_adapter_dir(Path(root), name, written, overwrite=overwrite)
+
+
+def delete_retired_adapters(root: str) -> None:
+    delete_retired_adapter_dirs(Path(root))
+
+
+def take_checkpoint_root(checkpoint_root: str) -> TextIO:
+    """Lock the root for this gateway, then recover every adapter root under it (``<model_id>/<kind>``)."""
+    lock = lock_checkpoint_root(Path(checkpoint_root))
+    for adapter_root in Path(checkpoint_root).glob("*/*"):
+        if adapter_root.is_dir():
+            delete_unreferenced_adapter_dirs(adapter_root)
+    return lock
 
 
 def resolve_adapter(root: str, name: str, tenant: str, model_id: str) -> dict | None:
@@ -83,10 +100,23 @@ class MilesBackend:
         return await self.trainer.has_errored_cell()
 
     async def load_slot(
-        self, slot: int, rank: int, alpha: float, ckpt_path: str | None = None, load_optimizer: bool = True
+        self,
+        slot: int,
+        rank: int,
+        alpha: float,
+        ckpt_path: str | None = None,
+        load_optimizer: bool = True,
+        parametrization_fields: dict | None = None,
     ) -> dict | None:
         return _slot_failure(
-            await self.trainer.load_slot(slot, rank, alpha, ckpt_path=ckpt_path, load_optimizer=load_optimizer)
+            await self.trainer.load_slot(
+                slot,
+                rank,
+                alpha,
+                ckpt_path=ckpt_path,
+                load_optimizer=load_optimizer,
+                parametrization_fields=parametrization_fields,
+            )
         )
 
     async def unload_slot(self, slot: int) -> dict | None:
@@ -136,20 +166,28 @@ class MilesBackend:
         worker_results = await self.trainer.optim_step(adam_params_by_slot=adam_params_by_slot)
         return worker_results[0]
 
-    async def save_slot(self, slot: int, path: str, metadata: dict | None = None) -> dict | None:
-        return _slot_failure(await self.trainer.save_slot(slot=slot, path=path, metadata=metadata))
+    async def save_slot(
+        self, slot: int, root: str, name: str, tenant: str, parametrization_fields: dict
+    ) -> UncommittedAdapterDir | dict:
+        """The uncommitted state every rank agreed on, or the first worker failure."""
+        return _written_or_failure(
+            await self.trainer.save_slot(
+                slot=slot, root=root, name=name, tenant=tenant, parametrization_fields=parametrization_fields
+            )
+        )
 
     async def export_slot(
         self, slot: int, root: str, name: str, tenant: str, parametrization_fields: dict
     ) -> UncommittedAdapterDir | dict:
         """The uncommitted export every rank agreed on, or the first worker failure."""
-        results = await self.trainer.export_slot(
-            slot=slot, root=root, name=name, tenant=tenant, parametrization_fields=parametrization_fields
+        return _written_or_failure(
+            await self.trainer.export_slot(
+                slot=slot, root=root, name=name, tenant=tenant, parametrization_fields=parametrization_fields
+            )
         )
-        failure = _slot_failure([result for result in results if isinstance(result, dict)])
-        return results[0] if failure is None else failure
 
     commit_adapter = staticmethod(commit_adapter)
+    delete_retired_adapters = staticmethod(delete_retired_adapters)
     resolve_adapter = staticmethod(resolve_adapter)
 
     # -------- sampling --------
@@ -211,6 +249,11 @@ class MilesBackend:
                 # request-carried backfill source: the engine refills an evicted version itself
                 request["lora_backfill_paths"] = {lora_name: lora_path}
         return request
+
+
+def _written_or_failure(worker_results: list) -> UncommittedAdapterDir | dict:
+    failure = _slot_failure([result for result in worker_results if isinstance(result, dict)])
+    return worker_results[0] if failure is None else failure
 
 
 def _slot_failure(worker_results: list) -> dict | None:

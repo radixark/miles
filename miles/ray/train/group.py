@@ -565,14 +565,28 @@ class TrainerController:
         return await self._execute_slots("forward_only", batch_id=batch_id, rollout_data_ref=data_ref)
 
     async def load_slot(
-        self, slot: int, rank: int, alpha: float, ckpt_path: str | None = None, load_optimizer: bool = True
+        self,
+        slot: int,
+        rank: int,
+        alpha: float,
+        ckpt_path: str | None = None,
+        load_optimizer: bool = True,
+        parametrization_fields: dict | None = None,
     ) -> list:
         return await self._execute_slots(
-            "load_slot", slot=slot, rank=rank, alpha=alpha, ckpt_path=ckpt_path, load_optimizer=load_optimizer
+            "load_slot",
+            slot=slot,
+            rank=rank,
+            alpha=alpha,
+            ckpt_path=ckpt_path,
+            load_optimizer=load_optimizer,
+            parametrization_fields=parametrization_fields,
         )
 
-    async def save_slot(self, slot: int, path: str, metadata: dict | None = None) -> list:
-        return await self._execute_slots("save_slot", slot=slot, path=path, metadata=metadata)
+    async def save_slot(self, slot: int, root: str, name: str, tenant: str, parametrization_fields: dict) -> list:
+        return await self._execute_slots(
+            "save_slot", slot=slot, root=root, name=name, tenant=tenant, parametrization_fields=parametrization_fields
+        )
 
     async def export_slot(self, slot: int, root: str, name: str, tenant: str, parametrization_fields: dict) -> list:
         return await self._execute_slots(
