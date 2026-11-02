@@ -407,11 +407,7 @@ def all_gather_with_cp(
 class CPLayout:
     """Which token positions of each sequence in a micro batch this context-parallel rank holds.
 
-    A sequence is split on its own: into ``2 * cp_size`` chunks under zigzag CP, rank ``r`` holding
-    chunks ``r`` and ``2 * cp_size - 1 - r``, or into ``cp_size`` contiguous pieces otherwise. Under
-    thd all-gather CP the micro batch's sequences are concatenated and the concatenation is split
-    into contiguous pieces instead. :meth:`build` derives the layout from ``qkv_format`` and
-    ``allgather_cp``.
+    :meth:`build` derives the layout from ``qkv_format`` and ``allgather_cp``.
     """
 
     cp_rank: int
@@ -454,15 +450,23 @@ class CPLayout:
     def local_ranges(self, lengths: Sequence[int]) -> list[tuple[tuple[int, int], ...]]:
         """Per sequence, the half-open position ranges this rank holds, in local order.
 
-        Positions at or past a sequence's length are padding; under thd all-gather CP the padding
-        that ends the concatenation belongs to its last sequence.
+        Three cases:
+
+        1. thd all-gather CP: the micro batch's sequences are concatenated, the concatenation is padded
+           to a multiple of ``pack_multiple`` and split into ``cp_size`` contiguous pieces. The padding
+           that ends the concatenation belongs to its last sequence.
+        2. bshd: each sequence is padded to ``max_seq_len`` and split on its own.
+        3. thd otherwise: each sequence is split on its own.
+
+        A sequence split on its own goes into ``2 * cp_size`` chunks under zigzag CP, rank ``r``
+        holding chunks ``r`` and ``2 * cp_size - 1 - r``, or into ``cp_size`` contiguous pieces
+        otherwise. Positions at or past a sequence's length are padding.
         """
-        if self.per_pack:
+        if self.per_pack:  # case 1
             return self._pack_ranges(lengths)
-        if self.max_seq_len is not None:
-            # bshd pads every sequence to max_seq_len before splitting it.
+        if self.max_seq_len is not None:  # case 2
             return [self._split(self.max_seq_len) for _ in lengths]
-        return [self._split(length) for length in lengths]
+        return [self._split(length) for length in lengths]  # case 3
 
     def _pack_ranges(self, lengths: Sequence[int]) -> list[tuple[tuple[int, int], ...]]:
         """Cut this rank's piece of the padded concatenation back into per-sequence ranges.
