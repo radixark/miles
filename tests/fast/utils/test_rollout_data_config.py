@@ -22,7 +22,7 @@ _DOCUMENT = {
             "samples_per_step": 5,
             "max_prompt_len": 8192,
             "max_response_len": 32768,
-            "generate_function": "my_pkg.agent_generate",
+            "custom_generate_function_path": "my_pkg.agent_generate",
             "agent": {"max_turns": 50, "sandbox": {"cpu": 2}},
         },
     }
@@ -53,7 +53,7 @@ class TestLoad:
                 samples_per_step=5,
                 max_prompt_len=8192,
                 max_response_len=32768,
-                generate_function="my_pkg.agent_generate",
+                custom_generate_function_path="my_pkg.agent_generate",
                 agent={"max_turns": 50, "sandbox": {"cpu": 2}},
             ),
         ]
@@ -88,7 +88,7 @@ class TestRejects:
             {"path": ""},
             {"max_prompt_len": 0},
             {"max_response_len": -1},
-            {"generate_function": ""},
+            {"custom_generate_function_path": ""},
             {"agent": ["max_turns", 50]},
             {"sha256": _SHA.upper()},
             {"sha256": _SHA[:-1]},
@@ -190,7 +190,11 @@ class TestStartupValidation:
 
     @pytest.mark.parametrize(
         "fields",
-        [{"max_response_len": 64}, {"generate_function": "my_pkg.agent_generate"}, {"agent": {"max_turns": 50}}],
+        [
+            {"max_response_len": 64},
+            {"custom_generate_function_path": "my_pkg.agent_generate"},
+            {"agent": {"max_turns": 50}},
+        ],
     )
     def test_settings_the_mixer_does_not_pass_on_yet_fail_at_startup(self, fields):
         with pytest.raises(NotImplementedError, match=f"{next(iter(fields))} not supported yet"):
