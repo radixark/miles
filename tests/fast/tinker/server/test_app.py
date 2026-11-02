@@ -7,7 +7,7 @@ import pytest
 from tests.fast.tinker.harness import ADAM
 
 from miles.tinker.server.app import build_app
-from miles.tinker.server.encoding import TINKER_SDK_VERSION
+from miles.tinker.server.encoding import TINKER_SDK_VERSION, assert_installed_sdk_version
 
 
 @pytest.fixture
@@ -138,6 +138,10 @@ async def test_capabilities_and_telemetry_shapes(client):
     capabilities = (await client.get("/api/v1/get_server_capabilities")).json()
     assert capabilities["supported_models"][0]["model_name"] == "base"
     assert (await client.post("/api/v1/telemetry", json={})).json() == {"status": "accepted"}
+
+
+def test_the_installed_sdk_is_the_pinned_one():
+    assert_installed_sdk_version()
 
 
 async def test_only_the_pinned_sdk_version_connects(client):
