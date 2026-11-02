@@ -170,7 +170,7 @@ def test_a_record_pass_queues_one_entry_per_microbatch(part):
     nothing is popped, one entry lands per microbatch, and the train pass
     replays them. The guard held every pass to a pop per microbatch, so that
     first pass raised before any entry existed."""
-    scores = torch.rand(1, 4, 8, device="cuda")
+    scores = torch.rand(4, 8, device="cuda")
     replay = routing_replay_manager.replays[0]
 
     with shared_replay.stage(shared_replay.RECORD), routing_replay.consumption_guard([part], 2):
@@ -185,7 +185,7 @@ def test_a_record_pass_queues_one_entry_per_microbatch(part):
 
 
 def test_a_record_pass_short_of_an_entry_is_reported(part):
-    scores = torch.rand(1, 4, 8, device="cuda")
+    scores = torch.rand(4, 8, device="cuda")
 
     with pytest.raises(RuntimeError, match="recorded 1 entries and popped 0 over a record pass of 2"):
         with shared_replay.stage(shared_replay.RECORD), routing_replay.consumption_guard([part], 2):
@@ -196,7 +196,7 @@ def test_a_fallthrough_pass_leaves_the_queues_alone(part):
     """The reference model's pass and a probe forward fall through: the router
     chooses for itself and the queues stay as they were."""
     _queue_microbatches(2)
-    scores = torch.rand(1, 4, 8, device="cuda")
+    scores = torch.rand(4, 8, device="cuda")
     replay = routing_replay_manager.replays[0]
 
     with shared_replay.stage(shared_replay.FALLTHROUGH), routing_replay.consumption_guard([part], 3):
@@ -237,7 +237,7 @@ def test_the_reference_model_replays_the_same_routes_as_the_actor(part):
     for replay in (actor_replay, reference_replay):
         for k in range(2):
             replay.record(torch.full((4, 2), k, dtype=torch.long))
-    scores = torch.rand(1, 4, 8, device="cuda")
+    scores = torch.rand(4, 8, device="cuda")
 
     args = SimpleNamespace(use_rollout_routing_replay=True)
     with shared_replay.stage(shared_replay.ref_log_prob_stage(args)):
