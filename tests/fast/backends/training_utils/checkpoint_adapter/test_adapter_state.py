@@ -85,3 +85,16 @@ def test_bf16_moments_are_refused():
     weight = torch.zeros(2, 2)
     with pytest.raises(AssertionError, match="fp32 only"):
         AdapterState([spec], [weight], [weight.bfloat16()], [weight], step=0)
+
+
+def _one_rank_holds_nothing(rank, world_size, port, *, directory):
+    init_gloo(rank, world_size, port=port)
+    state = _state((0, 6)) if rank == 0 else AdapterState([], [], [], [], step=None)
+    _save_adapter_state(Path(directory), state)
+    dist.destroy_process_group()
+
+
+def test_a_rank_without_parameters_agrees_on_the_step():
+    directory = tempfile.mkdtemp()
+    run_multiprocess(partial(_one_rank_holds_nothing, directory=directory))
+    assert _load_adapter_state(Path(directory), _state((0, 6), fill=-1.0, step=None)) == 7
