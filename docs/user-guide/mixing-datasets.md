@@ -53,8 +53,9 @@ other generate function, or an agentic dataset with neither `custom_agent_functi
 is rejected at startup.
 
 `custom_rm_path` and `rm_type` become the samples' `reward_spec`, so they follow the per-sample reward rules in
-[Customization](customization.md): a function with its own config must be the `--custom-rm-path` one, and under
-`--group-rm` a batched `--custom-rm-path` scores every group, so a dataset naming a different function is rejected.
+[Customization](customization.md), checked at startup: a function with its own config must be the
+`--custom-rm-path` one, and under `--group-rm` a batched `--custom-rm-path` scores every group, so a dataset that
+sets `rm_type` or names a different function is rejected.
 
 ### How prompts are drawn
 
