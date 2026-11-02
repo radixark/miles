@@ -16,6 +16,7 @@ from miles.backends.training_utils.checkpoint.adapter.adapter_exports import wri
 from miles.backends.training_utils.checkpoint.adapter.adapter_state import AdapterState, LocalShardSpec
 from miles.backends.training_utils.checkpoint.adapter.commit import commit_adapter_dir, resolve_adapter_dir
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
+from miles.backends.training_utils.checkpoint.adapter.readers import AdapterSourceKind
 from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
 
 MODULE = "model.layers.0.self_attn.q_proj"
@@ -134,3 +135,17 @@ def test_a_rank0_prepare_failure_fails_every_rank_instead_of_hanging():
     hung = process.is_alive()
     process.kill()
     assert not hung and process.exitcode == 0
+
+
+def test_an_in_model_source_without_alpha_takes_the_runs(tmp_path):
+    (tmp_path / ".metadata").write_bytes(b"")
+    source = load_adapter_dir(
+        tmp_path,
+        FakeMembers(),
+        0,
+        RUN,
+        TARGETS,
+        load_optimizer=True,
+        in_model_loaders_by_kind={AdapterSourceKind.TORCHTITAN_CHECKPOINT: lambda path: replace(RUN, lora_alpha=None)},
+    )
+    assert source.lora_alpha == RUN.lora_alpha

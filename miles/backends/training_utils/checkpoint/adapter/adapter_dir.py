@@ -93,6 +93,13 @@ def _weights_only_state(weights: dict[str, torch.Tensor], specs: list[LocalShard
     )
 
 
+def _with_run_alpha_if_unknown(source: AdapterParametrization, run: AdapterParametrization) -> AdapterParametrization:
+    if source.lora_alpha is not None:
+        return source
+    # the run's --lora-alpha was required for such a source (resolved in miles_validate_args)
+    return replace(source, lora_alpha=run.lora_alpha)
+
+
 def load_adapter_dir(
     path: Path,
     members: AdapterCheckpointMembers,
@@ -112,7 +119,7 @@ def load_adapter_dir(
         assert (
             in_model_loaders_by_kind is not None and kind in in_model_loaders_by_kind
         ), f"{path} is a {kind.value} source, which this backend cannot load"
-        source = in_model_loaders_by_kind[kind](path)
+        source = _with_run_alpha_if_unknown(in_model_loaders_by_kind[kind](path), run)
         assert_parametrization_matches_run(
             source, run, [], load_optimizer=load_optimizer, has_optimizer_state=load_optimizer
         )
@@ -123,10 +130,7 @@ def load_adapter_dir(
         reader = ExternalWeightsReader(path, run, targets)
     else:
         reader = PeftAdapterReader(path, run, targets)
-    source = reader.source.parametrization
-    if source.lora_alpha is None:
-        # the run's --lora-alpha was required for such a source (resolved in miles_validate_args)
-        source = replace(source, lora_alpha=run.lora_alpha)
+    source = _with_run_alpha_if_unknown(reader.source.parametrization, run)
     steps = plan_parametrization_conversion(source, run, source_dtype=reader.source.weight_dtype)
     assert_parametrization_matches_run(
         source, run, steps, load_optimizer=load_optimizer, has_optimizer_state=reader.source.has_optimizer_state
