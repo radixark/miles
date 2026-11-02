@@ -8,7 +8,7 @@ import math
 import pydantic
 
 import tinker
-from miles.tinker.core.input_validation import validate_sample_outputs, validate_save_options
+from miles.tinker.core.input_validation import validate_save_options
 from miles.tinker.core.types import LOSS_INPUT_KEYS, UserInputError
 from tinker import types as tinker_types
 from tinker.types.topk_logprobs import MASK_LOGPROB
@@ -61,6 +61,20 @@ def validate_optimizer_is_adam(optimizer_config) -> None:
 
 def validate_create_model(payload: dict) -> None:
     validate_optimizer_is_adam(validate_against_sdk(tinker_types.CreateModelRequest, payload).optimizer_config)
+
+
+def validate_sample_options(request) -> None:
+    """Reject sampling options the gateway does not serve instead of sampling without them."""
+    unsupported = {
+        "topk_sample_logprobs": request.topk_sample_logprobs,
+        "target_prompt_logprobs": request.target_prompt_logprobs is not None,
+        "prompt_alt_tokens_k": request.prompt_alt_tokens_k,
+        "prompt_logprobs_last_n": request.prompt_logprobs_last_n is not None,
+        "record_stability_info": request.record_stability_info,
+    }
+    for field, requested in unsupported.items():
+        if requested:
+            raise UserInputError(f"{field} is not supported by this gateway")
 
 
 def validate_create_sampling_session(payload: dict) -> None:
@@ -180,8 +194,7 @@ def _dense_from_csr(tensor_data: dict) -> list:
 
 
 def decode_sample_request(payload: dict) -> dict:
-    validate_against_sdk(tinker_types.SampleRequest, payload)
-    validate_sample_outputs(payload)
+    validate_sample_options(validate_against_sdk(tinker_types.SampleRequest, payload))
     return {
         "model_path": payload.get("model_path"),
         "base_model": payload.get("base_model"),

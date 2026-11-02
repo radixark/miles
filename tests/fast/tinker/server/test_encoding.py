@@ -120,6 +120,18 @@ class TestTensorData:
         assert tensor_data_to_list(sparse) == [0, 5.0, 0, 7.0]
 
 
+def test_the_sdk_sample_body_decodes():
+    """The SDK sends every sampling option explicitly at its default."""
+    request = tinker_types.SampleRequest(
+        prompt=tinker_types.ModelInput.from_ints([1, 2]),
+        sampling_params=tinker_types.SamplingParams(max_tokens=1),
+        record_stability_info=False,
+    )
+    payload = request.model_dump(exclude_none=True, mode="json")
+    assert {"topk_sample_logprobs", "prompt_alt_tokens_k", "record_stability_info"} <= set(payload)
+    assert decode_sample_request(payload)["prompt_tokens"] == [1, 2]
+
+
 def test_decode_sample_request_defaults():
     decoded = decode_sample_request(
         {"prompt": {"chunks": [{"type": "encoded_text", "tokens": [1, 2]}]}, "sampling_params": {"max_tokens": 1}}
@@ -140,7 +152,7 @@ def test_decode_sample_request_defaults():
     ],
     ids=lambda option: next(iter(option)),
 )
-def test_unsupported_sample_outputs_are_rejected(option):
+def test_unsupported_sample_options_are_rejected(option):
     payload = {
         "prompt": {"chunks": [{"type": "encoded_text", "tokens": [1, 2]}]},
         "sampling_params": {"max_tokens": 1},
