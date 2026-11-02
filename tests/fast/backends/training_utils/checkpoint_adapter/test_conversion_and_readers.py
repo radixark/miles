@@ -147,3 +147,13 @@ def test_tinker_names_classify_as_external(tmp_path):
     )
     (tmp_path / "adapter_config.json").write_text("{}")
     assert classify_adapter_source(tmp_path, QWEN3, load_optimizer=False) == AdapterSourceKind.EXTERNAL_WEIGHTS
+
+
+def test_a_head_adapter_reads_back(tmp_path):
+    run = _run(target_modules=("lm_head",))
+    weights = {
+        "lm_head.lora_A": torch.ones(2, 8, dtype=torch.bfloat16),
+        "lm_head.lora_B": torch.ones(16, 2, dtype=torch.bfloat16),
+    }
+    write_peft_adapter(tmp_path, weights, run)
+    assert PeftAdapterReader(tmp_path, run, QWEN3).read_weights().keys() == weights.keys()

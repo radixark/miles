@@ -131,7 +131,7 @@ def _read_peft_tensors(
             weights[f"{components[0]}.lora_A"] = value
             fused_groups.append(components)
         else:
-            rows = dict(targets.fused_component_rows)[module.rsplit(".", 1)[1]]
+            rows = dict(targets.fused_component_rows)[module.rpartition(".")[2]]
             for component, part in zip(components, value.split(rows), strict=True):
                 weights[f"{component}.lora_B"] = part.clone()
     for key, experts in per_expert.items():
@@ -190,9 +190,9 @@ def _check_peft_config(config: dict, path: Path) -> None:
 
 
 def _fused_components(module: str) -> tuple[str, ...] | None:
-    parent, leaf = module.rsplit(".", 1)
+    parent, _, leaf = module.rpartition(".")
     components = GDN_IN_PROJ_COMPONENTS_BY_MODULE.get(leaf)
-    if components is None or len(components) == 1:
+    if not parent or components is None or len(components) == 1:
         return None
     return tuple(f"{parent}.{c}" for c in components)
 
