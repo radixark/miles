@@ -1,9 +1,12 @@
 """PEFT and official Tinker tensor names <-> HF keys (``<hf module>.lora_{A,B}``); pure functions."""
 
 import re
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
-from miles.utils.lora.hf_lora_targets import HfLoraTargets
+import torch
+
+from miles.utils.lora.hf_lora_targets import GDN_IN_PROJ_COMPONENTS_BY_MODULE, HfLoraTargets
 
 _PEFT_PREFIX = "base_model.model."
 _TINKER_LAYER_PREFIX = "model.layers."
@@ -94,3 +97,69 @@ def is_tinker_only_name(name: str, targets: HfLoraTargets) -> bool:
         return True
     # Tinker drops the VL wrapper level (model.language_model.layers.* -> model.layers.*)
     return module.startswith(_TINKER_LAYER_PREFIX) and _hf_layer_prefix(targets) != _TINKER_LAYER_PREFIX
+
+
+_PACKED_GATE_UP = "gate_up_proj"
+_GATE_UP_COMPONENTS = ("gate_proj", "up_proj")
+
+
+def fused_leaves(parent: str, targets: HfLoraTargets) -> dict[str, tuple[str, ...]]:
+    """HF-fused module leaf -> the component leaves it splits into, for modules under ``parent``."""
+    leaves = {leaf: components for leaf, components in GDN_IN_PROJ_COMPONENTS_BY_MODULE.items() if len(components) > 1}
+    if targets.packed_expert_gate_up_layout is not None and parent.endswith(".experts"):
+        leaves[_PACKED_GATE_UP] = _GATE_UP_COMPONENTS
+    return leaves
+
+
+def fused_components(module: str, targets: HfLoraTargets) -> tuple[str, ...] | None:
+    """The components an HF-fused module's adapter splits into; they share its A. None for other modules."""
+    parent, _, leaf = module.rpartition(".")
+    components = fused_leaves(parent, targets).get(leaf) if parent else None
+    return None if components is None else tuple(f"{parent}.{c}" for c in components)
+
+
+def split_fused_lora_b(module: str, value: torch.Tensor, targets: HfLoraTargets) -> list[torch.Tensor]:
+    """An HF-fused module's B (output rows on dim -2) as its components' Bs."""
+    leaf = module.rpartition(".")[2]
+    if leaf == _PACKED_GATE_UP:
+        assert targets.packed_expert_gate_up_layout == "interleaved", targets.packed_expert_gate_up_layout
+        return [value[..., 0::2, :], value[..., 1::2, :]]
+    return list(value.split(dict(targets.component_rows_by_fused_module)[leaf], dim=-2))
+
+
+def fuse_lora_b(module: str, parts: list[torch.Tensor], targets: HfLoraTargets) -> torch.Tensor:
+    """Inverse of ``split_fused_lora_b``."""
+    if module.rpartition(".")[2] == _PACKED_GATE_UP:
+        return torch.stack(parts, dim=-2).flatten(-3, -2)
+    return torch.cat(parts, dim=-2)
+
+
+def map_named_tensors_to_hf_keys(
+    named_tensors: Iterable[tuple[str, torch.Tensor]], map_name: Callable[[str], HfKey], targets: HfLoraTargets
+) -> tuple[dict[str, torch.Tensor], list[tuple[str, ...]]]:
+    """Whole named tensors -> HF-keyed tensors and the HF-fused groups found.
+
+    Per-expert 2D tensors stack to 3D; an HF-fused module (GDN in_proj_qkv, packed experts.gate_up_proj) splits
+    into components that share its A.
+    """
+    per_expert: dict[str, dict[int, torch.Tensor]] = {}
+    weights, fused_groups = {}, []
+    for name, value in named_tensors:
+        hf_key = map_name(name)
+        if hf_key.expert_index is not None:
+            per_expert.setdefault(hf_key.key, {})[hf_key.expert_index] = value
+            continue
+        module, factor = hf_key.key.rsplit(".", 1)
+        components = fused_components(module, targets)
+        if components is None:
+            weights[hf_key.key] = value
+        elif factor == "lora_A":
+            weights[f"{components[0]}.lora_A"] = value
+            fused_groups.append(components)
+        else:
+            for component, part in zip(components, split_fused_lora_b(module, value, targets), strict=True):
+                weights[f"{component}.lora_B"] = part.clone()
+    for key, experts in per_expert.items():
+        assert sorted(experts) == list(range(len(experts))), f"{key}: expert indices are not 0..E-1"
+        weights[key] = torch.stack([experts[i] for i in range(len(experts))])
+    return weights, fused_groups

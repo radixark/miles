@@ -81,7 +81,7 @@ def test_round_trip_with_optimizer_under_a_different_world_size():
 
 
 def test_weights_only_from_peft_upcasts_and_zeroes_moments(tmp_path):
-    write_peft_adapter(tmp_path, {f"{MODULE}.{k}": v for k, v in FULL.items()}, RUN)
+    write_peft_adapter(tmp_path, {f"{MODULE}.{k}": v for k, v in FULL.items()}, RUN, TARGETS)
     members = FakeMembers()
     load_adapter_dir(tmp_path, members, 0, RUN, TARGETS, load_optimizer=False)
     state = members.imported
@@ -91,7 +91,7 @@ def test_weights_only_from_peft_upcasts_and_zeroes_moments(tmp_path):
 
 
 def test_a_different_source_alpha_is_returned_for_the_caller_to_adopt(tmp_path):
-    write_peft_adapter(tmp_path, {f"{MODULE}.{k}": v for k, v in FULL.items()}, RUN)
+    write_peft_adapter(tmp_path, {f"{MODULE}.{k}": v for k, v in FULL.items()}, RUN, TARGETS)
     run = replace(RUN, lora_alpha=16.0)  # a Tinker session adopts the source's alpha after loading
     assert load_adapter_dir(tmp_path, FakeMembers(), 0, run, TARGETS, load_optimizer=False).lora_alpha == 4.0
 
@@ -201,7 +201,7 @@ def _one_rank_cannot_read(rank, world_size, port, *, root):
 
 
 def test_a_load_failure_on_one_rank_fails_every_rank_instead_of_hanging(tmp_path):
-    write_peft_adapter(tmp_path, {f"{MODULE}.{k}": v for k, v in FULL.items()}, RUN)
+    write_peft_adapter(tmp_path, {f"{MODULE}.{k}": v for k, v in FULL.items()}, RUN, TARGETS)
     process = (
         __import__("multiprocessing")
         .get_context("spawn")

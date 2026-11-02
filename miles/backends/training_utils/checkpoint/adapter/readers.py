@@ -18,6 +18,7 @@ from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
 from miles.backends.training_utils.checkpoint.adapter.key_mapping import (
     HfKey,
     is_tinker_only_name,
+    map_named_tensors_to_hf_keys,
     map_peft_keys_to_hf_keys,
     map_sampler_keys_to_hf_keys,
     map_tinker_keys_to_hf_keys,
@@ -27,7 +28,7 @@ from miles.backends.training_utils.checkpoint.adapter.parametrization import (
     AdapterParametrization,
     read_parametrization,
 )
-from miles.utils.lora.hf_lora_targets import GDN_IN_PROJ_COMPONENTS_BY_MODULE, HfLoraTargets
+from miles.utils.lora.hf_lora_targets import HfLoraTargets
 
 _PEFT_FILES = ("adapter_config.json", "adapter_model.safetensors")
 # PEFT features that change what a tensor means; an adapter using them cannot be read as plain LoRA
@@ -127,31 +128,9 @@ def _collapse_shared_lora_a(
 def _read_peft_tensors(
     path: Path, map_name, targets: HfLoraTargets
 ) -> tuple[dict[str, torch.Tensor], list[tuple[str, ...]]]:
-    """HF-keyed whole tensors; per-expert 2D stacks to 3D, an HF-fused module splits into components sharing A."""
     from safetensors.torch import load_file
 
-    per_expert: dict[str, dict[int, torch.Tensor]] = {}
-    weights, fused_groups = {}, []
-    for name, value in load_file(str(path / "adapter_model.safetensors")).items():
-        hf_key = map_name(name)
-        if hf_key.expert_index is not None:
-            per_expert.setdefault(hf_key.key, {})[hf_key.expert_index] = value
-            continue
-        module, factor = hf_key.key.rsplit(".", 1)
-        components = _fused_components(module)
-        if components is None:
-            weights[hf_key.key] = value
-        elif factor == "lora_A":
-            weights[f"{components[0]}.lora_A"] = value
-            fused_groups.append(components)
-        else:
-            rows = dict(targets.component_rows_by_fused_module)[module.rpartition(".")[2]]
-            for component, part in zip(components, value.split(rows), strict=True):
-                weights[f"{component}.lora_B"] = part.clone()
-    for key, experts in per_expert.items():
-        assert sorted(experts) == list(range(len(experts))), f"{key}: expert indices are not 0..E-1"
-        weights[key] = torch.stack([experts[i] for i in range(len(experts))])
-    return weights, fused_groups
+    return map_named_tensors_to_hf_keys(load_file(str(path / "adapter_model.safetensors")).items(), map_name, targets)
 
 
 class MilesAdapterDirReader:
@@ -183,14 +162,6 @@ class MilesAdapterDirReader:
 def _check_peft_config(config: dict, path: Path) -> None:
     used = [k for k in _PEFT_CONFIG_MUST_BE_EMPTY if config.get(k)]  # absent and empty both mean unused
     assert not used, f"{path}: PEFT features {used} change what the tensors mean; only plain LoRA can be read"
-
-
-def _fused_components(module: str) -> tuple[str, ...] | None:
-    parent, _, leaf = module.rpartition(".")
-    components = GDN_IN_PROJ_COMPONENTS_BY_MODULE.get(leaf)
-    if not parent or components is None or len(components) == 1:
-        return None
-    return tuple(f"{parent}.{c}" for c in components)
 
 
 class PeftAdapterReader:

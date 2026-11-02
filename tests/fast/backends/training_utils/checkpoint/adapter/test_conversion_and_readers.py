@@ -5,7 +5,7 @@ from dataclasses import replace
 
 import pytest
 import torch
-from safetensors.torch import save_file
+from safetensors.torch import load_file, save_file
 
 from miles.backends.training_utils.checkpoint.adapter.adapter_exports import write_peft_adapter, write_sampler_adapter
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
@@ -70,7 +70,7 @@ def _weights(shared_qkv: bool):
 def test_peft_export_reads_back_bitwise(tmp_path, shared_qkv):
     run = _run(shared_lora_a_groups=(QKV,) if shared_qkv else ())
     weights = {k: v.to(torch.bfloat16) for k, v in _weights(shared_qkv).items()}
-    write_peft_adapter(tmp_path, weights, run)
+    write_peft_adapter(tmp_path, weights, run, QWEN35)
     names = json.loads((tmp_path / "adapter_config.json").read_text())["target_modules"]
     assert any("in_proj_qkv" in n for n in names) == shared_qkv, "shared-A GDN components go back to their HF name"
     assert classify_adapter_source(tmp_path, QWEN35, load_optimizer=False) == AdapterSourceKind.PEFT
@@ -83,7 +83,7 @@ def test_peft_export_reads_back_bitwise(tmp_path, shared_qkv):
 def test_sampler_export_reads_back_through_the_adapter_dir_reader(tmp_path):
     run = _run(shared_lora_a_groups=(QKV,))
     weights = {k: v.to(torch.bfloat16) for k, v in _weights(True).items()}
-    write_sampler_adapter(tmp_path, weights, run)
+    write_sampler_adapter(tmp_path, weights, run, QWEN35)
     assert classify_adapter_source(tmp_path, QWEN35, load_optimizer=False) == AdapterSourceKind.ADAPTER_DIR
     reader = MilesAdapterDirReader(tmp_path, QWEN35)
     assert not reader.source.has_optimizer_state
@@ -153,7 +153,7 @@ def test_a_head_adapter_reads_back(tmp_path):
         "lm_head.lora_A": torch.ones(2, 8, dtype=torch.bfloat16),
         "lm_head.lora_B": torch.ones(16, 2, dtype=torch.bfloat16),
     }
-    write_peft_adapter(tmp_path, weights, run)
+    write_peft_adapter(tmp_path, weights, run, QWEN35)
     assert PeftAdapterReader(tmp_path, run, QWEN3).read_weights().keys() == weights.keys()
 
 
@@ -161,7 +161,7 @@ def test_a_head_adapter_reads_back(tmp_path):
 def test_bf16_input_with_a_shared_a_group_writes(tmp_path, write):
     group = EXPERTS[:2]
     weights = {k: v.to(torch.bfloat16) for k, v in _weights(False).items() if k != f"{group[1]}.lora_A"}
-    write(tmp_path, weights, _run(shared_lora_a_groups=(group,)))
+    write(tmp_path, weights, _run(shared_lora_a_groups=(group,)), QWEN35)
 
 
 @pytest.mark.parametrize(
@@ -196,7 +196,7 @@ def test_shared_outer_is_detected_on_experts_without_a_gate(tmp_path):
         f"{down}.lora_A": torch.ones(3, 2, 8),
         f"{down}.lora_B": torch.ones(1, 8, 2),
     }
-    write_peft_adapter(tmp_path, weights, run)
+    write_peft_adapter(tmp_path, weights, run, QWEN35)
     assert PeftAdapterReader(tmp_path, _run(), QWEN3).source.parametrization.experts_shared_outer_loras
 
 
@@ -205,6 +205,7 @@ def test_fan_in_fan_out_is_refused(tmp_path):
         tmp_path,
         {f"{QKV[0]}.lora_A": torch.ones(2, 8), f"{QKV[0]}.lora_B": torch.ones(4, 2)},
         _run(target_modules=QKV[:1]),
+        QWEN35,
     )
     config = json.loads((tmp_path / "adapter_config.json").read_text()) | {"fan_in_fan_out": True}
     (tmp_path / "adapter_config.json").write_text(json.dumps(config))
@@ -227,8 +228,34 @@ def test_a_fused_gdn_module_inside_a_larger_shared_a_group_round_trips(tmp_path)
     run = _run(target_modules=(*QKV, z), shared_lora_a_groups=((*QKV, z),))
     weights = {k: v.to(torch.bfloat16) for k, v in _weights(True).items() if k.split(".lora_")[0] in QKV}
     weights[f"{z}.lora_B"] = torch.ones(4, 2, dtype=torch.bfloat16)
-    write_sampler_adapter(tmp_path, weights, run)
+    write_sampler_adapter(tmp_path, weights, run, QWEN35)
     names = json.loads((tmp_path / "adapter_config.json").read_text())["target_modules"]
     assert sorted(n.rsplit(".", 1)[-1] for n in names) == ["in_proj_qkv", "in_proj_z"]
     read = MilesAdapterDirReader(tmp_path, QWEN35).read_weights()
     assert read.keys() == weights.keys() and all(torch.equal(read[k], v) for k, v in weights.items())
+
+
+GPT_OSS = get_hf_lora_targets({"model_type": "gpt_oss", "num_hidden_layers": 1})
+
+
+def test_gpt_oss_packed_experts_round_trip_through_hf_components(tmp_path):
+    gate, up, down = (f"{L}.mlp.experts.{p}" for p in ("gate_proj", "up_proj", "down_proj"))
+    run = _run(target_modules=(gate, up, down), shared_lora_a_groups=((gate, up),))
+    g = torch.Generator().manual_seed(0)
+    weights = {
+        f"{gate}.lora_A": torch.randn(3, 2, 8, generator=g),
+        f"{gate}.lora_B": torch.randn(3, 4, 2, generator=g),
+        f"{up}.lora_B": torch.randn(3, 4, 2, generator=g),
+        f"{down}.lora_A": torch.randn(3, 2, 4, generator=g),
+        f"{down}.lora_B": torch.randn(3, 8, 2, generator=g),
+    }
+    weights = {k: v.to(torch.bfloat16) for k, v in weights.items()}
+    write_peft_adapter(tmp_path, weights, run, GPT_OSS)
+    packed = load_file(str(tmp_path / "adapter_model.safetensors"))
+    # HF gpt-oss interleaves gate and up rows in gate_up_proj
+    b = packed[f"{L}.mlp.experts.gate_up_proj.lora_B.weight"]
+    assert torch.equal(b[:, 0::2], weights[f"{gate}.lora_B"]) and torch.equal(b[:, 1::2], weights[f"{up}.lora_B"])
+    assert packed[f"{L}.mlp.experts.down_proj.lora_A.weight"].shape == (3, 2, 4), "packed experts stay 3D"
+    read = PeftAdapterReader(tmp_path, run, GPT_OSS)
+    assert read.source.parametrization.shared_lora_a_groups == ((gate, up),)
+    assert all(torch.equal(read.read_weights()[k], v) for k, v in weights.items())
