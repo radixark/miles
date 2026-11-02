@@ -54,13 +54,11 @@ def assert_parametrization_matches_run(
     load_optimizer: bool,
     has_optimizer_state: bool,
 ) -> None:
+    """Alpha is not compared: the caller owns it (Tinker adopts the source's, RL compares it to ``--lora-alpha``)."""
     assert (
         source.base_model == target.base_model
     ), f"adapter base {source.base_model!r} != run base {target.base_model!r}"
     assert source.lora_rank == target.lora_rank, f"adapter rank {source.lora_rank} != run rank {target.lora_rank}"
-    assert (
-        source.lora_alpha == target.lora_alpha
-    ), f"adapter alpha {source.lora_alpha} != run alpha {target.lora_alpha}"
     missing, extra = set(target.target_modules) - set(source.target_modules), set(source.target_modules) - set(
         target.target_modules
     )

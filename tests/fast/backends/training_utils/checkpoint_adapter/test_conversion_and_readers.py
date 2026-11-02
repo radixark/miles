@@ -110,7 +110,7 @@ def test_shared_outer_broadcasts_for_weights_and_collapses_only_if_equal():
         apply_parametrization_conversion(_weights(False), back)
 
 
-@pytest.mark.parametrize("field, value", [("base_model", "other"), ("lora_rank", 4), ("lora_alpha", 8.0)])
+@pytest.mark.parametrize("field, value", [("base_model", "other"), ("lora_rank", 4)])
 def test_mismatches_are_refused(field, value):
     with pytest.raises(AssertionError):
         assert_parametrization_matches_run(
