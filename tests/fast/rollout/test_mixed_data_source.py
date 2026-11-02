@@ -218,6 +218,20 @@ class TestMixedRolloutDataSource:
         with pytest.raises(ValueError, match="past the end"):
             _make_source(tmp_path, datasets).load(tmp_path / "ckpt")
 
+    def test_resume_with_new_weights_keeps_each_position_and_applies_the_new_ratio(self, tmp_path):
+        datasets = _two_datasets(tmp_path)
+        source = _make_source(tmp_path, datasets)
+        source.get_samples(8)
+        source.save(tmp_path / "ckpt")
+
+        datasets["math"]["samples_per_step"] = 1
+        datasets["code"]["samples_per_step"] = 1
+        resumed = _make_source(tmp_path, datasets)
+        resumed.load(tmp_path / "ckpt")
+
+        assert (resumed.offsets, resumed.epoch_ids) == (source.offsets, source.epoch_ids)
+        assert Counter(_names(resumed.get_samples(100))) == {"math": 50, "code": 50}
+
     def test_resume_refuses_a_different_dataset_list(self, tmp_path):
         datasets = _two_datasets(tmp_path)
         _make_source(tmp_path, datasets).save(tmp_path / "ckpt")

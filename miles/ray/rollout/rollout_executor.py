@@ -463,9 +463,14 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
         self._output_snapshotter.discard_completed(
             completed_rollout_ids={None: rollout_id} if completed_rollout_ids is None else completed_rollout_ids
         )
-        self.data_source.load(directory / _DATA_SOURCE_DIRNAME)
+        # in-flight prompt groups came from the saved data source, so a data reset drops them too
+        reset_data = self.args.rollout_data_reset_on_load
+        if reset_data:
+            logger.info("--rollout-data-reset-on-load: the data source and in-flight prompt groups start fresh")
+        else:
+            self.data_source.load(directory / _DATA_SOURCE_DIRNAME)
         if not self.use_legacy_rollout_v1:
-            if self.generate_rollout is not None:
+            if self.generate_rollout is not None and not reset_data:
                 self.generate_rollout.load(directory / _GENERATE_ROLLOUT_DIRNAME)
             if (eval_fn := self.eval_generate_rollout) is not None and eval_fn is not self.generate_rollout:
                 eval_fn.load(directory / _EVAL_GENERATE_ROLLOUT_DIRNAME)

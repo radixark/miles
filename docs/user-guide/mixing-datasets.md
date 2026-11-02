@@ -68,6 +68,14 @@ sets `rm_type` or names a different function is rejected.
 - **Separate epochs.** Each dataset has its own position, epoch and shuffle, and wraps around on its own.
   The checkpoint saves all of them, and resuming also re-checks every file's SHA-256.
 
+### Resuming with different datasets
+
+A resumed run continues every dataset from its saved position, so `--load` refuses a YAML that lists other
+datasets, a changed file, or a dataset filtered shorter than its saved position. Changing only the
+`samples_per_step` weights is fine. To switch datasets mid-training, add `--rollout-data-reset-on-load`: the
+model, optimizer and rollout step still resume from `--load`, while every dataset starts from its beginning and
+fully async prompt groups that were in flight at the save are dropped.
+
 Every sample carries `metadata["dataset_name"]`, and the rollout metrics add
 `rollout/dataset/<name>/{episode_raw_reward,response_len/mean,truncated_ratio,num_training_samples}`.
 

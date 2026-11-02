@@ -71,6 +71,16 @@ class DataConfig(BaseConfig):
             )
         ),
     ] = None
+    rollout_data_reset_on_load: A[
+        bool,
+        Arg(
+            help=(
+                "With --load, start the training data source and fully async in-flight prompt groups fresh instead "
+                "of restoring them, e.g. to resume a run with different --rollout-data-yaml-config datasets. The "
+                "model, optimizer and rollout step still resume from the checkpoint."
+            )
+        ),
+    ] = False
     apply_chat_template: A[bool, Arg()] = False
     # Temporarily be JSON-serialized str, will be a real dict after using Omegaconf
     apply_chat_template_kwargs: A[Any, Arg(type_parser=json.loads)] = "{}"
