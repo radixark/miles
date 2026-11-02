@@ -198,6 +198,9 @@ def lock_checkpoint_root(root: Path) -> TextIO:
     except BlockingIOError as error:
         handle.close()
         raise RuntimeError(f"another process already commits under {root}") from error
+    except OSError as error:
+        handle.close()
+        raise RuntimeError(f"cannot lock {root}: one committer per root needs a filesystem with flock") from error
     return handle
 
 
