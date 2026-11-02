@@ -61,11 +61,15 @@ def _broadcast_from_rank0(value):
     return box[0]
 
 
+def _assert_user_name(name: str) -> None:
+    assert not name.startswith("."), f"adapter name {name!r} must not start with '.'"
+    assert name and "/" not in name, f"adapter name {name!r} must be one path component"
+
+
 @contextmanager
 def write_adapter_dir(root: Path, name: str, *, tenant: str | None = None):
     """All ranks write into the yielded physical directory; the result is not visible until committed."""
-    assert not name.startswith("."), f"adapter name {name!r} must not start with '.'"
-    assert name and "/" not in name, f"adapter name {name!r} must be one path component"
+    _assert_user_name(name)
     commit_id = _broadcast_from_rank0(secrets.token_hex(_COMMIT_ID_NBYTES))
     path = _physical_dir(Path(root), name, commit_id)
     prepare_error = None
@@ -96,6 +100,7 @@ def commit_adapter_dir(
 ) -> CommittedAdapterDir:
     """Atomically point ``<name>`` at ``written``; the replaced commit is removed afterwards."""
     root, link = Path(root), Path(root) / name
+    assert written.path == _physical_dir(root, name, written.commit_id), f"{written.path} was not written for {name!r}"
     delete_unreferenced_adapter_dirs(root, name, keep=written.path.name)
     previous = _link_target(link)
     assert not link.exists() or link.is_symlink(), f"{link} exists and is not an adapter link"
@@ -112,11 +117,14 @@ def commit_adapter_dir(
 
 def resolve_adapter_dir(root: Path, name: str, *, tenant: str | None) -> CommittedAdapterDir | None:
     """The committed directory behind ``name``; ``tenant`` must own it. RL, which has no tenants, passes None."""
+    _assert_user_name(name)
     target = _link_target(Path(root) / name)
     if target is None or not target.is_dir():
         return None
     if tenant is not None:
-        owner = json.loads((target / TENANT_FILENAME).read_text())["tenant_digest"]
+        tenant_file = target / TENANT_FILENAME
+        # an RL adapter has no tenant and belongs to no Tinker tenant
+        owner = json.loads(tenant_file.read_text())["tenant_digest"] if tenant_file.is_file() else None
         if owner != tenant_digest(tenant):
             raise OwnershipError(f"adapter {name!r} does not belong to this tenant")
     return CommittedAdapterDir(target, target.name.rsplit(".", 1)[1])

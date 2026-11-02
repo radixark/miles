@@ -89,3 +89,14 @@ def test_user_names_must_be_one_path_component(tmp_path):
     with pytest.raises(AssertionError, match="one path component"):
         with write_adapter_dir(tmp_path, "x/../y"):
             pass
+
+
+def test_an_adapter_without_a_tenant_belongs_to_no_tenant(tmp_path):
+    _save(tmp_path, "w", "1", tenant=None)
+    with pytest.raises(OwnershipError):
+        resolve_adapter_dir(tmp_path, "w", tenant="alice")
+
+
+def test_resolve_refuses_a_path_as_a_name(tmp_path):
+    with pytest.raises(AssertionError, match="one path component"):
+        resolve_adapter_dir(tmp_path, "x/../w", tenant=None)
