@@ -217,8 +217,8 @@ def test_hf_import_counts_the_tensors_other_pipeline_stages_take(tmp_path, monke
     other_stage = "model.layers.9.self_attn.o_proj.lora_A.weight"
     save_file({**exported, other_stage: torch.zeros(RANK, 12)}, str(tmp_path / "adapter_model.safetensors"))
 
-    def all_gather_object(stages, taken, group):
-        stages[:] = [taken, {other_stage}]
+    def all_gather_object(stages, payload, group):
+        stages[:] = [payload, ({other_stage}, None)]
 
     monkeypatch.setattr(hf_adapter.dist, "is_initialized", lambda: True)
     monkeypatch.setattr(hf_adapter.dist, "all_gather_object", all_gather_object)
@@ -226,6 +226,34 @@ def test_hf_import_counts_the_tensors_other_pipeline_stages_take(tmp_path, monke
     monkeypatch.setattr(parallel_state, "get_pipeline_model_parallel_group", lambda: None)
 
     load_lora_adapter_hf([_model()], str(tmp_path))
+
+
+@pytest.mark.parametrize("failing_stage", ["local", "other"])
+def test_hf_import_fails_every_pipeline_stage_together(tmp_path, monkeypatch, failing_stage):
+    """A stage missing a tensor still joins the pipeline gather, and every stage raises its failure."""
+    from megatron.core import parallel_state
+
+    from miles.backends.megatron_utils.lora.native import hf_adapter
+
+    exported = dict(export_lora_hf_named(iter_adapters([_model()])))
+    if failing_stage == "local":
+        exported.pop(next(iter(exported)))
+    save_file(exported, str(tmp_path / "adapter_model.safetensors"))
+    gathered = []
+
+    def all_gather_object(stages, payload, group):
+        gathered.append(payload)
+        other = (set(), None) if failing_stage == "local" else (set(), "KeyError: missing on stage 1")
+        stages[:] = [payload, other]
+
+    monkeypatch.setattr(hf_adapter.dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(hf_adapter.dist, "all_gather_object", all_gather_object)
+    monkeypatch.setattr(parallel_state, "get_pipeline_model_parallel_world_size", lambda: 2)
+    monkeypatch.setattr(parallel_state, "get_pipeline_model_parallel_group", lambda: None)
+
+    with pytest.raises(AssertionError, match="failed on a pipeline stage: KeyError"):
+        load_lora_adapter_hf([_model()], str(tmp_path))
+    assert len(gathered) == 1
 
 
 def test_hf_import_refuses_peft_tensors_it_cannot_load(tmp_path):
