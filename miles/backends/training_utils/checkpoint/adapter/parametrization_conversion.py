@@ -1,4 +1,4 @@
-"""Steps from a source parametrization to the run's, each declaring whether it is exact for weights / optimizer."""
+"""Steps from a source parametrization to the run's; weights convert exactly, optimizer state does not convert."""
 
 import enum
 from dataclasses import dataclass
@@ -17,10 +17,6 @@ class ConversionOp(str, enum.Enum):
     MERGE_SHARED_LORA_A = "merge_shared_lora_a"
     BROADCAST_SHARED_EXPERT_SIDE = "broadcast_shared_expert_side"
     COLLAPSE_SHARED_EXPERT_SIDE = "collapse_shared_expert_side"
-
-    def is_exact_for_optimizer(self) -> bool:
-        # splitting or broadcasting changes the trained parametrization even though copying is exact
-        return False
 
 
 @dataclass(frozen=True)
@@ -65,8 +61,8 @@ def assert_parametrization_matches_run(
     assert not missing and not extra, f"target modules differ: missing {sorted(missing)}, unexpected {sorted(extra)}"
     if load_optimizer:
         assert has_optimizer_state, "the source has no optimizer state; load weights only (--no-load-optim)"
-        inexact = [s for s in steps if not s.op.is_exact_for_optimizer()]
-        assert not inexact, f"loading optimizer state needs the source's own parametrization, but it needs {inexact}"
+        # every step changes what the optimizer state describes, even when the weights convert exactly
+        assert not steps, f"loading optimizer state needs the source's own parametrization, but it needs {steps}"
 
 
 def _side_of_shared_expert_factor(key: str) -> bool:
