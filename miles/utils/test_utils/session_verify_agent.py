@@ -251,6 +251,14 @@ async def _chat(client, base_url, messages, request_kwargs, *, label):
     return resp.json()
 
 
+def _append_tool_results(messages, tool_calls, counters) -> None:
+    """Answer each of *tool_calls* with the next mock tool result."""
+    for i, tc in enumerate(tool_calls):
+        result_idx = (counters["tool_result_count"] + i) % len(MOCK_TOOL_RESULTS)
+        messages.append({"role": "tool", "content": MOCK_TOOL_RESULTS[result_idx], "tool_call_id": tc["id"]})
+    counters["tool_result_count"] += len(tool_calls)
+
+
 async def _chat_complete(client, base_url, messages, request_kwargs, *, label):
     for retry in range(_MAX_INCOMPLETE_TURN_RETRIES + 1):
         attempt_kwargs = request_kwargs
@@ -320,27 +328,17 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
         for step_idx, action in enumerate(schedule):
             label = f"Step {step_idx + 1} {action.value}"
 
-            # Roll back a tool call this step will not answer before running the step:
+            # Answer a tool call before a step that appends another turn:
             # strict renderers (DeepSeek V4 / V4.1) reject an unanswered call.
             if action not in (DriverAction.TOOL_RESULT, DriverAction.ROLLBACK) and assistant.get("tool_calls"):
-                messages.pop()
-                counters["rollback_count"] += 1
-                events.append("unexpected_tool_call_rollback")
+                _append_tool_results(messages, assistant["tool_calls"], counters)
+                events.append("append_tool")
 
             if action is DriverAction.TOOL_RESULT:
                 tool_calls = assistant.get("tool_calls") or []
                 if tool_calls:
                     consecutive_failure_rollbacks = 0
-                    for i, tc in enumerate(tool_calls):
-                        result_idx = (counters["tool_result_count"] + i) % len(MOCK_TOOL_RESULTS)
-                        messages.append(
-                            {
-                                "role": "tool",
-                                "content": MOCK_TOOL_RESULTS[result_idx],
-                                "tool_call_id": tc["id"],
-                            }
-                        )
-                    counters["tool_result_count"] += len(tool_calls)
+                    _append_tool_results(messages, tool_calls, counters)
                     events.append("append_tool")
                 else:
                     # Model emitted no tool_calls — apply the configured fallback.

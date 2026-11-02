@@ -206,7 +206,7 @@ def test_assistant_input_generated_response_is_rolled_back_and_regenerated(monke
     assert result["rollback_count"] == 1
 
 
-def test_unanswered_tool_call_is_rolled_back_before_force_final(monkeypatch):
+def test_unanswered_tool_call_is_answered_before_force_final(monkeypatch):
     calls = []
     tool_call = {
         "id": "call_0",
@@ -248,10 +248,19 @@ def test_unanswered_tool_call_is_rolled_back_before_force_final(monkeypatch):
     )
 
     force_final_request = calls[2]
-    assert [message["role"] for message in force_final_request] == ["system", "user", "assistant", "tool", "user"]
+    assert [message["role"] for message in force_final_request] == [
+        "system",
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+        "tool",
+        "user",
+    ]
+    assert force_final_request[-2]["tool_call_id"] == "call_0"
     assert force_final_request[-1] == {"role": "user", "content": FORCE_FINAL_TEXT}
-    assert result["driver_events"] == ["initial", "append_tool", "unexpected_tool_call_rollback", "force_final"]
-    assert result["rollback_count"] == 1
+    assert result["driver_events"] == ["initial", "append_tool", "append_tool", "force_final"]
+    assert result["tool_result_count"] == 2
 
 
 def _qwen3_verified_sample(mismatches):
