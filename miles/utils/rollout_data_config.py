@@ -7,7 +7,7 @@ datasets:
     samples_per_step: 3
   agentic:
     path: /data/agentic.jsonl
-    sha256: 51b70c3d
+    sha256: "51b70c3d"  # quoted: YAML reads an all-digit or 1e5-like prefix as a number
     samples_per_step: 5
     max_prompt_len: 8192
     max_response_len: 32768
@@ -48,6 +48,13 @@ class RolloutDatasetConfig(BaseModel):
     generate_function: str | None = Field(default=None, min_length=1)
     # free-form, for this dataset's generate function
     agent: dict[str, Any] | None = None
+
+    @field_validator("sha256", mode="before")
+    @classmethod
+    def _require_quoted_sha256(cls, value: Any) -> Any:
+        if isinstance(value, int | float):
+            raise ValueError("YAML read the sha256 prefix as a number; quote it, e.g. sha256: \"00001234\"")
+        return value
 
     @field_validator("sha256")
     @classmethod
