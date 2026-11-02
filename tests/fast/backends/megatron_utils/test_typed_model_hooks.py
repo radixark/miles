@@ -163,7 +163,7 @@ class TestTypedModelHooks:
         worker._heartbeat = SimpleNamespace(bump=lambda: None)
         worker.model = [torch.nn.Linear(1, 1)]
         worker.model[0].lora_attached = False
-        worker.optimizer = worker.opt_param_scheduler = worker.snapshot_publisher = None
+        worker.optimizer = worker.opt_param_scheduler = worker.snapshot_publisher = worker.adapter_slots = None
         saved = []
         monkeypatch.setattr(model_module, "save_checkpoint", lambda *args, **kwargs: saved.append(args[0]))
         monkeypatch.setattr(actor_module.dist, "get_rank", lambda: rank)

@@ -64,6 +64,8 @@ from .ci_utils import (
     save_model_hashes,
 )
 from .initialize import is_first_replica_megatron_main_rank
+from .lora.bridge_checkpoint import BridgeAdapterSlots
+from .lora.checkpoint import restore_single_lora, save_single_lora
 from .lora.utils import (
     is_lora_enabled,
     is_lora_model,
@@ -935,6 +937,7 @@ def save(
     non_persistent_ckpt: bool = False,
     *,
     snapshot_publisher: SnapshotPublisher | None = None,
+    adapter_slots: BridgeAdapterSlots | None = None,
 ) -> None:
     """Persist a training checkpoint safely with forward hooks disabled.
 
@@ -953,7 +956,9 @@ def save(
     if should_disable_forward_pre_hook(args):
         disable_forward_pre_hook(model)
 
-    if is_lora_model(model):
+    if is_lora_model(model) and args.megatron_to_hf_mode == "bridge":
+        save_single_lora(model, optimizer, opt_param_scheduler, adapter_slots, args, iteration)
+    elif is_lora_model(model):
         save_checkpoint_with_lora(
             iteration, model, optimizer, opt_param_scheduler, args=args, publisher=snapshot_publisher
         )
@@ -1075,9 +1080,8 @@ def load_model_state(
 
     adapter_iteration = None
     if is_lora_enabled(args) and role == "actor" and args.lora_adapter_path is not None:
-        adapter_iteration = restore_lora_adapter(
-            model, args, optimizer=optimizer, opt_param_scheduler=opt_param_scheduler
-        )
+        restore = restore_single_lora if args.megatron_to_hf_mode == "bridge" else restore_lora_adapter
+        adapter_iteration = restore(model, args, optimizer=optimizer, opt_param_scheduler=opt_param_scheduler)
         if adapter_iteration is not None:
             iteration = adapter_iteration
             restored_trained_iteration = True

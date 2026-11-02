@@ -936,6 +936,7 @@ class MegatronTrainRayActor(TrainRayActor):
             self.optimizer,
             self.opt_param_scheduler,
             snapshot_publisher=self.snapshot_publisher,
+            adapter_slots=self.adapter_slots,
         )
 
         if self.args.save_hf is not None and self.role == "actor":
