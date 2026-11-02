@@ -14,12 +14,9 @@ from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
     _save_adapter_state,
     assert_adapter_state_keys,
     gloo_group,
-)
-from miles.backends.training_utils.checkpoint.adapter.commit import (
-    UncommittedAdapterDir,
     raise_if_any_rank_failed,
-    write_adapter_dir,
 )
+from miles.backends.training_utils.checkpoint.adapter.commit import UncommittedAdapterDir, write_adapter_dir
 from miles.backends.training_utils.checkpoint.adapter.parametrization import (
     AdapterParametrization,
     write_parametrization,
@@ -60,18 +57,29 @@ def save_adapter_dir(
     slot: int,
     parametrization: AdapterParametrization,
     *,
-    tenant: str | None = None,
+    tenant: str | None,
     training_state: dict | None = None,
 ) -> UncommittedAdapterDir:
     """All ranks call; the caller's committer then runs ``commit_adapter_dir``."""
+    assert parametrization.lora_alpha is not None, "lora_alpha must be resolved before an adapter dir is saved"
     with write_adapter_dir(root, name, tenant=tenant) as written:
-        state, export_error = None, None
+        state, error = None, None
         try:
             state = members.export_adapter_state(slot)
         except Exception as exc:
-            export_error = exc
-        # agree before the collective DCP write, so one rank's failure cannot leave the others waiting in it
-        raise_if_any_rank_failed(export_error)
+            error = exc
+        # agree before any collective, so one rank's failure cannot leave the others waiting in it
+        raise_if_any_rank_failed(error)
+        keys = _all_ranks_keys(state.shard_specs)
+        try:
+            expected = parametrization.adapter_state_keys()
+            assert keys == expected, (
+                f"the backend's adapter state does not match the parametrization: "
+                f"missing {sorted(expected - keys)[:8]}, unexpected {sorted(keys - expected)[:8]}"
+            )
+        except Exception as exc:
+            error = exc
+        raise_if_any_rank_failed(error)
         _save_adapter_state(written.path, state)
         if torch.distributed.is_initialized() and torch.distributed.get_rank() != 0:
             return written
@@ -131,9 +139,10 @@ def load_adapter_dir(
     raise_if_any_rank_failed(error)
     if kind.is_read_into_model():
         source = _with_run_alpha_if_unknown(in_model_loaders_by_kind[kind](path), run)
-        assert_parametrization_matches_run(
-            source, run, [], load_optimizer=load_optimizer, has_optimizer_state=load_optimizer
-        )
+        steps = plan_parametrization_conversion(source, run, source_dtype=torch.float32)
+        # an in-model loader reads straight into the run's parametrization; it cannot convert
+        assert not steps, f"{path} needs {steps} to match the run, which an in-model loader cannot do"
+        assert_parametrization_matches_run(source, run, steps, load_optimizer=load_optimizer, has_optimizer_state=True)
         return source
 
     specs = members.get_local_shard_specs(slot)

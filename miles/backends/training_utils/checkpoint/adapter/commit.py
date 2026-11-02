@@ -17,7 +17,7 @@ from pathlib import Path
 
 import torch.distributed as dist
 
-from miles.backends.training_utils.checkpoint.adapter.adapter_state import gloo_group
+from miles.backends.training_utils.checkpoint.adapter.adapter_state import gloo_group, raise_if_any_rank_failed
 
 logger = logging.getLogger(__name__)
 
@@ -59,20 +59,6 @@ def _broadcast_from_rank0(value):
     box = [value]
     dist.broadcast_object_list(box, src=0, group=gloo_group())
     return box[0]
-
-
-def raise_if_any_rank_failed(error: BaseException | None) -> None:
-    errors = [error]
-    if dist.is_initialized():
-        errors = [None] * dist.get_world_size()
-        # waits for every writer; a rank-local failure must not leave the others in a collective
-        dist.all_gather_object(
-            errors, None if error is None else f"{type(error).__name__}: {error}", group=gloo_group()
-        )
-    failed = [(rank, e) for rank, e in enumerate(errors) if e is not None]
-    if failed:
-        message = "adapter checkpoint failed: " + "; ".join(f"rank {rank}: {e}" for rank, e in failed)
-        raise RuntimeError(message) from error
 
 
 @contextmanager

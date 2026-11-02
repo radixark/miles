@@ -68,6 +68,20 @@ def gloo_group():
     return distributed_utils.GLOO_GROUP
 
 
+def raise_if_any_rank_failed(error: BaseException | None) -> None:
+    errors = [error]
+    if dist.is_initialized():
+        errors = [None] * dist.get_world_size()
+        # waits for every rank; a rank-local failure must not leave the others in a collective
+        dist.all_gather_object(
+            errors, None if error is None else f"{type(error).__name__}: {error}", group=gloo_group()
+        )
+    failed = [(rank, e) for rank, e in enumerate(errors) if e is not None]
+    if failed:
+        message = "adapter checkpoint failed: " + "; ".join(f"rank {rank}: {e}" for rank, e in failed)
+        raise RuntimeError(message) from error
+
+
 def _agree_on_step(step: int | None) -> int:
     steps = [step]
     if dist.is_initialized():
@@ -123,24 +137,39 @@ def _state_dict(state: AdapterState, *, for_save: bool) -> dict:
     return state_dict
 
 
+def _agreed_state_dict(state: AdapterState, *, for_save: bool) -> dict:
+    state_dict, error = None, None
+    try:
+        state_dict = _state_dict(state, for_save=for_save)
+    except Exception as exc:
+        error = exc
+    raise_if_any_rank_failed(error)
+    return state_dict
+
+
 def _save_adapter_state(directory: Path, state: AdapterState) -> None:
-    state_dict = _state_dict(state, for_save=True)
+    state_dict = _agreed_state_dict(state, for_save=True)
     step = _agree_on_step(state.step)
     if not dist.is_initialized() or dist.get_rank() == 0:
         state_dict[STEP_KEY] = torch.tensor(step, dtype=torch.int64)
-    dcp.save(state_dict, checkpoint_id=directory / ADAPTER_STATE_DIRNAME, no_dist=not dist.is_initialized())
+    dcp.save(
+        state_dict,
+        checkpoint_id=directory / ADAPTER_STATE_DIRNAME,
+        process_group=gloo_group(),
+        no_dist=not dist.is_initialized(),
+    )
 
 
 def _load_adapter_state(directory: Path, template: AdapterState) -> int:
-    """Fill ``template``'s tensors in place from ``adapter_state/``; returns the saved step."""
-    state_dict = _state_dict(template, for_save=False)
+    """Fill ``template``'s tensors in place (its local shards are those tensors); returns the saved step."""
+    state_dict = _agreed_state_dict(template, for_save=False)
     state_dict[STEP_KEY] = torch.tensor(0, dtype=torch.int64)
-    dcp.load(state_dict, checkpoint_id=directory / ADAPTER_STATE_DIRNAME, no_dist=not dist.is_initialized())
-    for suffix, tensors in template.tensors_by_suffix().items():
-        for spec, tensor in zip(template.shard_specs, tensors, strict=True):
-            loaded = state_dict[f"{spec.key}.{suffix}"]
-            if isinstance(loaded, ShardedTensor):
-                tensor.copy_(loaded.local_shards()[0].tensor)
+    dcp.load(
+        state_dict,
+        checkpoint_id=directory / ADAPTER_STATE_DIRNAME,
+        process_group=gloo_group(),
+        no_dist=not dist.is_initialized(),
+    )
     return int(state_dict[STEP_KEY])
 
 
@@ -155,7 +184,7 @@ def assert_adapter_state_keys(directory: Path, run_keys: set[str], *, with_optim
     stored = read_adapter_state_keys(directory)
     suffixes = _STATE_SUFFIXES if with_optimizer else ("weight",)
     missing = {f"{key}.{suffix}" for key in run_keys for suffix in suffixes} - stored
-    unexpected = {name for name in stored if name.rsplit(".", 1)[0] not in run_keys}
+    unexpected = stored - {f"{key}.{suffix}" for key in run_keys for suffix in _STATE_SUFFIXES}
     assert not missing and not unexpected, (
         f"{directory}: adapter_state/ does not match the run: "
         f"missing {sorted(missing)[:8]}, unexpected {sorted(unexpected)[:8]}"

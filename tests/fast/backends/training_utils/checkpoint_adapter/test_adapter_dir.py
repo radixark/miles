@@ -123,7 +123,7 @@ def _rank0_cannot_create(rank, world_size, port, *, root):
     else:
         root = str(Path(root, "blocker"))
     with pytest.raises(RuntimeError, match="adapter checkpoint failed"):
-        save_adapter_dir(Path(root), "w", FakeMembers(), 0, RUN)
+        save_adapter_dir(Path(root), "w", FakeMembers(), 0, RUN, tenant=None)
     dist.destroy_process_group()
 
 
@@ -166,7 +166,7 @@ class WeightsOnlyMembers(FakeMembers):
 
 
 def test_a_weights_only_dir_loads_without_optimizer_and_refuses_with_it(tmp_path):
-    written = save_adapter_dir(tmp_path, "w", WeightsOnlyMembers(), 0, RUN)
+    written = save_adapter_dir(tmp_path, "w", WeightsOnlyMembers(), 0, RUN, tenant=None)
     members = FakeMembers()
     load_adapter_dir(written.path, members, 0, RUN, TARGETS, load_optimizer=False)
     assert torch.equal(members.imported.weights[1], FULL["lora_B"]) and members.imported.step == 0
@@ -186,10 +186,10 @@ class ExtraKeyMembers(FakeMembers):
         )
 
 
-def test_an_unexpected_adapter_state_key_is_refused(tmp_path):
-    written = save_adapter_dir(tmp_path, "w", ExtraKeyMembers(), 0, RUN)
+def test_a_backend_state_that_does_not_match_the_parametrization_is_refused_at_save(tmp_path):
     with pytest.raises(RuntimeError, match="unexpected .*k_proj"):
-        load_adapter_dir(written.path, FakeMembers(), 0, RUN, TARGETS, load_optimizer=True)
+        save_adapter_dir(tmp_path, "w", ExtraKeyMembers(), 0, RUN, tenant=None)
+    assert resolve_adapter_dir(tmp_path, "w", tenant=None) is None
 
 
 def _one_rank_cannot_read(rank, world_size, port, *, root):
@@ -212,3 +212,20 @@ def test_a_load_failure_on_one_rank_fails_every_rank_instead_of_hanging(tmp_path
     hung = process.is_alive()
     process.kill()
     assert not hung and process.exitcode == 0
+
+
+def test_an_in_model_source_with_another_parametrization_is_refused(tmp_path):
+    torch.distributed.checkpoint.save(
+        {"model.layers.0.attention.wq.lora_a.weight": torch.zeros(2)}, checkpoint_id=tmp_path, no_dist=True
+    )
+    shared = replace(RUN, target_modules=(MODULE, "m.k_proj"), shared_lora_a_groups=((MODULE, "m.k_proj"),))
+    with pytest.raises(AssertionError, match="cannot do"):
+        load_adapter_dir(
+            tmp_path,
+            FakeMembers(),
+            0,
+            replace(shared, shared_lora_a_groups=()),
+            TARGETS,
+            load_optimizer=False,
+            in_model_loaders_by_kind={AdapterSourceKind.TORCHTITAN_CHECKPOINT: lambda path: shared},
+        )

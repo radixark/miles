@@ -28,6 +28,13 @@ class AdapterParametrization:
         unknown = set(grouped) - set(self.target_modules)
         assert not unknown, f"shared-A group members are not targets: {sorted(unknown)}"
 
+    def adapter_state_keys(self) -> set[str]:
+        """The HF keys ``adapter_state/`` holds: every B, and each A once, under its group's first member."""
+        shared_copies = {module for group in self.shared_lora_a_groups for module in group[1:]}
+        return {f"{m}.lora_B" for m in self.target_modules} | {
+            f"{m}.lora_A" for m in self.target_modules if m not in shared_copies
+        }
+
 
 def write_parametrization(directory: Path, parametrization: AdapterParametrization) -> None:
     assert parametrization.lora_alpha is not None, "lora_alpha must be resolved before it is written"
