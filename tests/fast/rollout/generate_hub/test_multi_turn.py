@@ -15,7 +15,6 @@ from miles.rollout.session.types import SessionServerInstance
 from miles.utils.chat_template_utils import TITOTokenizerType, get_tito_tokenizer
 from miles.utils.function_registry import function_registry
 from miles.utils.processing_utils import load_tokenizer
-from miles.utils.rollout_data_config import AGENT_FUNCTION_METADATA_KEY, MAX_SEQ_LEN_METADATA_KEY
 from miles.utils.test_utils import mock_tools
 from miles.utils.test_utils.mock_sglang_server import ProcessResult, ProcessResultMetaInfo
 from miles.utils.test_utils.mock_tools import SAMPLE_TOOLS, ThreeTurnStub, TwoTurnStub
@@ -737,7 +736,8 @@ class TestAgentMetadata:
             return await mock_tools.run_agentic_tool_call(**kwargs)
 
         sample = make_sample(prompt=TwoTurnStub.PROMPT)
-        sample.metadata = {AGENT_FUNCTION_METADATA_KEY: "test3947.dataset_agent", MAX_SEQ_LEN_METADATA_KEY: 100}
+        sample.agent_function_path = "test3947.dataset_agent"
+        sample.max_seq_len = 100
         run_limit = generation_env.args.max_seq_len
         with function_registry.temporary("test3947.dataset_agent", dataset_agent):
             _run_generate(variant, generation_env, sample)
