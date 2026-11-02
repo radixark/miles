@@ -513,7 +513,7 @@ def _validate_rollout_data_yaml_config(args) -> None:
         args.custom_generate_function_path, "path", args.custom_generate_function_path
     )
     for dataset in datasets:
-        generate_path = dataset.generate_function or default_generate or _DEFAULT_GENERATE_FUNCTION_PATH
+        generate_path = dataset.custom_generate_function_path or default_generate or _DEFAULT_GENERATE_FUNCTION_PATH
         if dataset.agent is not None and generate_path in _GENERATE_FUNCTIONS_WITHOUT_AGENT_CONFIG:
             raise ValueError(
                 f"--rollout-data-yaml-config dataset {dataset.name!r} sets an agent block, but its generate function "

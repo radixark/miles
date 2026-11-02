@@ -27,7 +27,7 @@ _DOCUMENT = {
             "samples_per_step": 5,
             "max_prompt_len": 8192,
             "max_response_len": 32768,
-            "generate_function": "miles.rollout.generate_hub.single_turn.generate",
+            "custom_generate_function_path": "miles.rollout.generate_hub.single_turn.generate",
             "agent": {"max_turns": 50, "sandbox": {"cpu": 2}},
         },
     }
@@ -58,7 +58,7 @@ class TestLoad:
                 samples_per_step=5,
                 max_prompt_len=8192,
                 max_response_len=32768,
-                generate_function="miles.rollout.generate_hub.single_turn.generate",
+                custom_generate_function_path="miles.rollout.generate_hub.single_turn.generate",
                 agent={"max_turns": 50, "sandbox": {"cpu": 2}},
             ),
         ]
@@ -93,7 +93,7 @@ class TestRejects:
             {"path": ""},
             {"max_prompt_len": 0},
             {"max_response_len": -1},
-            {"generate_function": ""},
+            {"custom_generate_function_path": ""},
             {"agent": ["max_turns", 50]},
             {"sha256": _SHA.upper()},
             {"sha256": _SHA[:-1]},
@@ -231,19 +231,19 @@ class TestStartupValidation:
         with pytest.raises(ValueError, match="exceeds --rollout-max-prompt-len 8191"):
             _parse("--rollout-data-yaml-config", _inline(too_long), "--rollout-max-context-len", "8192")
 
-    @pytest.mark.parametrize("generate_function", [None, "miles.rollout.generate_hub.multi_turn.generate"])
-    def test_an_agent_block_no_generate_function_reads_is_rejected(self, generate_function):
+    @pytest.mark.parametrize("custom_generate_function_path", [None, "miles.rollout.generate_hub.multi_turn.generate"])
+    def test_an_agent_block_no_generate_function_reads_is_rejected(self, custom_generate_function_path):
         """Under single_turn or multi_turn the agent block would silently do nothing."""
         fields = {"agent": {"max_turns": 50}}
-        if generate_function is not None:
-            fields["generate_function"] = generate_function
+        if custom_generate_function_path is not None:
+            fields["custom_generate_function_path"] = custom_generate_function_path
         with pytest.raises(ValueError, match="never reads it"):
             _parse("--rollout-data-yaml-config", _inline(_with_dataset(**fields)))
 
     def test_an_agent_block_is_accepted_for_an_agentic_generate_function(self):
         fields = {
             "agent": {"max_turns": 50},
-            "generate_function": "miles.rollout.generate_hub.agentic_tool_call.generate",
+            "custom_generate_function_path": "miles.rollout.generate_hub.agentic_tool_call.generate",
         }
         args = _parse("--rollout-data-yaml-config", _inline(_with_dataset(**fields)))
         assert args.data_source_path.path == "miles.rollout.data_source.MixedRolloutDataSource"
@@ -259,7 +259,7 @@ class _TypedGenerateConfig(BaseConfig):
 class TestDatasetHookSettings:
     def test_a_dataset_generate_function_gets_its_own_flags(self):
         """A hook named only in the YAML must have its flags registered, resolved and merged into the rollout view."""
-        document = _with_dataset(generate_function="test3947.typed_generate")
+        document = _with_dataset(custom_generate_function_path="test3947.typed_generate")
         with function_registry.temporary(
             "test3947.typed_generate", SimpleNamespace(config_class=_TypedGenerateConfig)
         ):

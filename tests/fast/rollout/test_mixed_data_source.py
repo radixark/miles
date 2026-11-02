@@ -126,7 +126,7 @@ class TestMixedRolloutDataSource:
 
     def test_a_dataset_generate_function_reaches_its_samples_only(self, tmp_path):
         datasets = _two_datasets(tmp_path)
-        datasets["code"]["generate_function"] = "json.dumps"
+        datasets["code"]["custom_generate_function_path"] = "json.dumps"
         source = _make_source(tmp_path, datasets)
 
         by_name = {group[0].metadata["dataset_name"]: group for group in source.get_samples(8)}

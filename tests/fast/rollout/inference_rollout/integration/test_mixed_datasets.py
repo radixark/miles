@@ -72,7 +72,7 @@ async def counted_generate(input):
                     "math": _MIXED_DATASETS["math"],
                     "science": (
                         _MIXED_DATASETS["science"][0],
-                        {"samples_per_step": 3, "generate_function": f"{_THIS_MODULE}.counted_generate"},
+                        {"samples_per_step": 3, "custom_generate_function_path": f"{_THIS_MODULE}.counted_generate"},
                     ),
                 },
             ),
