@@ -29,7 +29,7 @@ def resolve_checkpoint_dir(checkpoint_root: str, model_id: str, kind: str, name:
 def build_checkpoint_metadata(record: ModelRecord, config: GatewayConfig) -> dict:
     return {
         # the digest proves ownership without persisting the bearer credential itself
-        "tenant_digest": _tenant_digest(record.tenant),
+        "tenant_digest": tenant_digest(record.tenant),
         "base_model": record.base_model,
         "lora_rank": record.lora_rank,
         "lora_alpha": record.lora_alpha,
@@ -61,7 +61,7 @@ def read_checkpoint_metadata(checkpoint_dir: str, tenant: str, shown_path: str) 
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise UserInputError(f"cannot read checkpoint {shown_path!r}: {error}") from error
     validate_checkpoint_metadata(meta, shown_path)
-    if meta["tenant_digest"] != _tenant_digest(tenant):
+    if meta["tenant_digest"] != tenant_digest(tenant):
         raise OwnershipError(f"checkpoint {shown_path!r} does not belong to this tenant")
     return meta
 
@@ -91,5 +91,5 @@ def resolve_sampler_checkpoint(
     return lora_name, checkpoint_dir
 
 
-def _tenant_digest(tenant: str) -> str:
+def tenant_digest(tenant: str) -> str:
     return hashlib.sha256(tenant.encode()).hexdigest()

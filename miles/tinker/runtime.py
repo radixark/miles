@@ -140,11 +140,15 @@ class MilesBackend:
         return _slot_failure(await self.trainer.save_slot(slot=slot, path=path, metadata=metadata))
 
     async def export_slot(
-        self, slot: int, root: str, name: str, tenant: str, parametrization_fields: dict
+        self, slot: int, root: str, name: str, tenant_digest: str, parametrization_fields: dict
     ) -> UncommittedAdapterDir | dict:
         """The uncommitted export every rank agreed on, or the first worker failure."""
         results = await self.trainer.export_slot(
-            slot=slot, root=root, name=name, tenant=tenant, parametrization_fields=parametrization_fields
+            slot=slot,
+            root=root,
+            name=name,
+            tenant_digest=tenant_digest,
+            parametrization_fields=parametrization_fields,
         )
         failure = _slot_failure([result for result in results if isinstance(result, dict)])
         return results[0] if failure is None else failure

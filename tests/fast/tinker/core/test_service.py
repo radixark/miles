@@ -1,6 +1,7 @@
 """The service preserves request ordering, tenant isolation, and failure isolation."""
 
 import asyncio
+import hashlib
 from contextlib import suppress
 from pathlib import Path
 
@@ -978,3 +979,12 @@ async def test_another_tenants_sampler_export_does_not_resolve(service):
         service.models[model_id].base_model,
         service.models[model_id].lora_rank,
     )
+
+
+async def test_trainer_ranks_get_only_the_tenant_digest(service):
+    """The API key is the tenant's credential; it must not travel to trainer processes."""
+    model_id = await created_model(service)
+    save = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
+    assert (await await_settled(service, "tenant", save)).state == DONE
+    (export,) = service.backend.named("export_slot")
+    assert export["tenant_digest"] == hashlib.sha256(b"tenant").hexdigest()

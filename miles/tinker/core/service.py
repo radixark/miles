@@ -38,6 +38,7 @@ from miles.tinker.core.utils import (
     read_checkpoint_metadata,
     resolve_checkpoint_dir,
     resolve_sampler_checkpoint,
+    tenant_digest,
 )
 
 logger = logging.getLogger(__name__)
@@ -391,8 +392,13 @@ class TinkerService:
         if os.path.lexists(path):
             raise UserInputError(f"sampler weights {version!r} already exist; save under a new name")
         root = os.path.dirname(path)
+        # the tenant's key stays on the gateway; the trainer ranks see only its digest
         written = await self.backend.export_slot(
-            record.slot, root, version, record.tenant, build_parametrization_fields(record, self.config)
+            slot=record.slot,
+            root=root,
+            name=version,
+            tenant_digest=tenant_digest(record.tenant),
+            parametrization_fields=build_parametrization_fields(record, self.config),
         )
         if isinstance(written, dict):
             return written
