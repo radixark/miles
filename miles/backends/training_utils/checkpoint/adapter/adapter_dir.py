@@ -11,9 +11,9 @@ import torch
 from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
     AdapterState,
     LocalShardSpec,
+    _save_adapter_state,
     assert_adapter_state_keys,
     gloo_group,
-    save_adapter_state,
 )
 from miles.backends.training_utils.checkpoint.adapter.commit import (
     UncommittedAdapterDir,
@@ -72,7 +72,7 @@ def save_adapter_dir(
             export_error = exc
         # agree before the collective DCP write, so one rank's failure cannot leave the others waiting in it
         raise_if_any_rank_failed(export_error)
-        save_adapter_state(written.path, state)
+        _save_adapter_state(written.path, state)
         if torch.distributed.is_initialized() and torch.distributed.get_rank() != 0:
             return written
         if training_state is not None:

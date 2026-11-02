@@ -11,7 +11,7 @@ import torch.distributed.checkpoint as dcp
 from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
     ADAPTER_STATE_DIRNAME,
     AdapterState,
-    load_adapter_state,
+    _load_adapter_state,
     read_adapter_state_keys,
     read_adapter_state_weights,
 )
@@ -137,7 +137,7 @@ def _read_peft_tensors(
             weights[f"{components[0]}.lora_A"] = value
             fused_groups.append(components)
         else:
-            rows = dict(targets.fused_component_rows)[module.rpartition(".")[2]]
+            rows = dict(targets.component_rows_by_fused_module)[module.rpartition(".")[2]]
             for component, part in zip(components, value.split(rows), strict=True):
                 weights[f"{component}.lora_B"] = part.clone()
     for key, experts in per_expert.items():
@@ -163,7 +163,7 @@ class MilesAdapterDirReader:
         return (self.path / ADAPTER_STATE_DIRNAME).is_dir()
 
     def load_state(self, template: AdapterState) -> int:
-        return load_adapter_state(self.path, template)
+        return _load_adapter_state(self.path, template)
 
     def read_weights(self) -> dict[str, torch.Tensor]:
         if self.has_adapter_state():

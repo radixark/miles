@@ -123,7 +123,7 @@ def _state_dict(state: AdapterState, *, for_save: bool) -> dict:
     return state_dict
 
 
-def save_adapter_state(directory: Path, state: AdapterState) -> None:
+def _save_adapter_state(directory: Path, state: AdapterState) -> None:
     state_dict = _state_dict(state, for_save=True)
     step = _agree_on_step(state.step)
     if not dist.is_initialized() or dist.get_rank() == 0:
@@ -131,7 +131,7 @@ def save_adapter_state(directory: Path, state: AdapterState) -> None:
     dcp.save(state_dict, checkpoint_id=directory / ADAPTER_STATE_DIRNAME, no_dist=not dist.is_initialized())
 
 
-def load_adapter_state(directory: Path, template: AdapterState) -> int:
+def _load_adapter_state(directory: Path, template: AdapterState) -> int:
     """Fill ``template``'s tensors in place from ``adapter_state/``; returns the saved step."""
     state_dict = _state_dict(template, for_save=False)
     state_dict[STEP_KEY] = torch.tensor(0, dtype=torch.int64)

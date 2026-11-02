@@ -12,9 +12,9 @@ from tests.fast.dist_utils import init_gloo, run_multiprocess
 from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
     AdapterState,
     LocalShardSpec,
-    load_adapter_state,
+    _load_adapter_state,
+    _save_adapter_state,
     read_adapter_state_keys,
-    save_adapter_state,
 )
 
 FULL = torch.arange(6 * 4, dtype=torch.float32).reshape(6, 4)
@@ -29,9 +29,9 @@ def _state(rows, *, primary=True, fill=None, step=7):
 
 def _save_then_reload(rank, world_size, port, *, directory, save_rows, load_rows, primaries):
     init_gloo(rank, world_size, port=port)
-    save_adapter_state(Path(directory), _state(save_rows[rank], primary=primaries[rank]))
+    _save_adapter_state(Path(directory), _state(save_rows[rank], primary=primaries[rank]))
     template = _state(load_rows[rank], fill=-1.0, step=None)
-    step = load_adapter_state(Path(directory), template)
+    step = _load_adapter_state(Path(directory), template)
     lo, hi = load_rows[rank]
     assert step == 7
     assert torch.equal(template.weights[0], FULL[lo:hi])
@@ -56,7 +56,7 @@ def test_reload_under_a_different_split_is_bitwise(save_rows, primaries):
         )
     )
     template = _state((0, 6), fill=-1.0, step=None)
-    assert load_adapter_state(Path(directory), template) == 7
+    assert _load_adapter_state(Path(directory), template) == 7
     assert torch.equal(template.weights[0], FULL)
     assert read_adapter_state_keys(Path(directory)) == {"m.lora_A.weight", "m.lora_A.exp_avg", "m.lora_A.exp_avg_sq"}
 
@@ -64,7 +64,7 @@ def test_reload_under_a_different_split_is_bitwise(save_rows, primaries):
 def _disagree_on_step(rank, world_size, port, *, directory):
     init_gloo(rank, world_size, port=port)
     with pytest.raises(AssertionError, match="disagree on the optimizer step"):
-        save_adapter_state(Path(directory), _state([(0, 3), (3, 6)][rank], step=rank))
+        _save_adapter_state(Path(directory), _state([(0, 3), (3, 6)][rank], step=rank))
     dist.destroy_process_group()
 
 

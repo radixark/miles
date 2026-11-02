@@ -22,7 +22,7 @@ class HfLoraTargets:
     # (official Tinker name fragment, HF fragment) pairs; empty when no official export of the family was checked
     tinker_name_renames: tuple[tuple[str, str], ...] = ()
     # HF-fused module leaf -> its components' output rows, in HF row order
-    fused_component_rows: tuple[tuple[str, tuple[int, ...]], ...] = ()
+    component_rows_by_fused_module: tuple[tuple[str, tuple[int, ...]], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -34,7 +34,7 @@ class _HfLoraModelSpec:
     default_train_unembed: bool = False
     build_whole_fused_attention: Callable[[dict], tuple[str, ...]] = lambda config: ()
     tinker_name_renames: tuple[tuple[str, str], ...] = ()
-    fused_component_rows: Callable[[dict], tuple[tuple[str, tuple[int, ...]], ...]] = lambda config: ()
+    component_rows_by_fused_module: Callable[[dict], tuple[tuple[str, tuple[int, ...]], ...]] = lambda config: ()
 
 
 # official Tinker exports (design 6.12): HF names except the head and the stacked 3D experts
@@ -274,12 +274,12 @@ _HF_LORA_MODELS = {
     "qwen3_5_text": _HfLoraModelSpec(
         _qwen3_5_targets,
         build_whole_fused_attention=_qwen3_5_whole_fused_attention,
-        fused_component_rows=_gdn_35_component_rows,
+        component_rows_by_fused_module=_gdn_35_component_rows,
     ),
     "qwen3_5_moe_text": _HfLoraModelSpec(
         _qwen3_5_moe_targets,
         build_whole_fused_attention=_qwen3_5_whole_fused_attention,
-        fused_component_rows=_gdn_35_component_rows,
+        component_rows_by_fused_module=_gdn_35_component_rows,
     ),
     "qwen3_5": _HfLoraModelSpec(
         _qwen3_5_targets,
@@ -287,7 +287,7 @@ _HF_LORA_MODELS = {
         unwrap_text_config=True,
         build_whole_fused_attention=_qwen3_5_whole_fused_attention,
         tinker_name_renames=_TINKER_RENAMES,
-        fused_component_rows=_gdn_35_component_rows,
+        component_rows_by_fused_module=_gdn_35_component_rows,
     ),
     "qwen3_5_moe": _HfLoraModelSpec(
         _qwen3_5_moe_targets,
@@ -295,7 +295,7 @@ _HF_LORA_MODELS = {
         unwrap_text_config=True,
         build_whole_fused_attention=_qwen3_5_whole_fused_attention,
         tinker_name_renames=_TINKER_RENAMES,
-        fused_component_rows=_gdn_35_component_rows,
+        component_rows_by_fused_module=_gdn_35_component_rows,
     ),
     "gpt_oss": _HfLoraModelSpec(_gpt_oss_targets, tinker_name_renames=_GPT_OSS_TINKER_RENAMES),
     "deepseek_v2": _HfLoraModelSpec(_deepseek_targets),
@@ -345,7 +345,7 @@ def get_hf_lora_targets(hf_config: dict) -> HfLoraTargets:
         default_train_unembed=spec.default_train_unembed,
         whole_fused_attention=_prefix_paths(spec.layer_prefix, *spec.build_whole_fused_attention(text_config)),
         tinker_name_renames=spec.tinker_name_renames,
-        fused_component_rows=spec.fused_component_rows(text_config),
+        component_rows_by_fused_module=spec.component_rows_by_fused_module(text_config),
     )
 
 
