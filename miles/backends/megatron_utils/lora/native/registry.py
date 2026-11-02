@@ -234,6 +234,8 @@ def validate_native_lora_args(args) -> None:
         spec.experts is None or args.expert_tensor_parallel_size == 1
     ), f"native {spec.name} expert LoRA assumes --expert-tensor-parallel-size 1"
     if spec.lm_head is not None and _selects_head(spec, args.hf_checkpoint, args.hf_lora_targets):
+        if isinstance(spec.lm_head, LMHeadSpec):
+            assert args.vocab_size is not None, "native LoRA's lm_head adapter exports over --vocab-size; set it"
         assert not args.enable_mtp_training, (
             "native LoRA's lm_head adapter does not support --enable-mtp-training: the MTP heads reuse the output "
             "layer, so their loss would train the adapter"

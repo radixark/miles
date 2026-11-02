@@ -247,6 +247,7 @@ def _native_run_args(tmp_path, model_type, **overrides):
         save_hf=None,
         eval_uses_snapshots=False,
         eval_hf_dir=None,
+        vocab_size=32,
     )
     return SimpleNamespace(**(defaults | overrides))
 
@@ -279,6 +280,7 @@ def test_native_run_contract_accepts_its_validated_configs(tmp_path):
         ({"enable_mtp_training": True}, "enable-mtp-training"),
         ({"save_hf": "/out/{rollout_id}"}, "tied lm_head adapter cannot be merged"),
         ({"eval_uses_snapshots": True, "eval_hf_dir": "/eval"}, "tied lm_head adapter cannot be merged"),
+        ({"vocab_size": None}, "--vocab-size"),
     ],
 )
 @pytest.mark.parametrize("head_target", ["lm_head", "*head"])
