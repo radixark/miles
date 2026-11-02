@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import torch
 
+from miles.backends.training_utils.model_companion import ModelCompanion
 from miles.utils import dumper_utils
 from miles.utils.dumper_utils import DumperMegatronUtil, DumperPhase
 
@@ -257,6 +258,61 @@ class TestDumperMegatronUtilFinalize:
         assert dumped["meta"]["name"] == "grad__param__weight"
         assert torch.equal(dumped["value"], torch.full((1, 2), 3.5))
 
+    def test_finalize_skips_model_companion_parameters(self, tmp_path: Path) -> None:
+        args = _make_args(tmp_path)
+        args.dumper_fwd_bwd = ["enable_model_value=true"]
+        model = torch.nn.Linear(2, 1, bias=False)
+        companion = ModelCompanion(pipeline_rank=0, chunk_index=0, replica_id=(0, 0, 0))
+        model.add_module("model_companion", companion)
+        state = SimpleNamespace(
+            effective_dp=SimpleNamespace(rank=0),
+            indep_dp=SimpleNamespace(rank=0, group=None),
+        )
+
+        with (
+            patch("miles.utils.dumper_utils.get_parallel_state", return_value=state),
+            patch("miles.utils.dumper_utils.dist") as mock_dist,
+        ):
+            mock_dist.is_initialized.return_value = False
+            util = DumperMegatronUtil(args, [model], DumperPhase.FWD_BWD, rollout_id=2)
+            try:
+                util.finalize([model])
+            finally:
+                dumper_utils.dumper.reset()
+                dumper_utils.dumper.configure(enable=False)
+
+        dump_files = sorted((tmp_path / "fwd_bwd" / "rollout_2").glob("*.pt"))
+        assert [torch.load(f, weights_only=False)["meta"]["name"] for f in dump_files] == ["param__weight"]
+        assert model.model_companion is companion
+
+    def test_finalize_leaves_the_model_companion_out_of_the_model_dump(self, tmp_path: Path) -> None:
+        """Companion rows are bookkeeping, not weights, and an empty row tensor breaks the dump comparator."""
+        args = _make_args(tmp_path)
+        args.dumper_fwd_bwd = ["enable_model_value=true"]
+        model = torch.nn.Linear(2, 1, bias=False)
+        companion = ModelCompanion(pipeline_rank=0, chunk_index=0, replica_id=(0, 0, 0))
+        model.model_companion = companion
+        state = SimpleNamespace(
+            effective_dp=SimpleNamespace(rank=0),
+            indep_dp=SimpleNamespace(rank=0, group=None),
+        )
+
+        with (
+            patch("miles.utils.dumper_utils.get_parallel_state", return_value=state),
+            patch("miles.utils.dumper_utils.dist") as mock_dist,
+        ):
+            mock_dist.is_initialized.return_value = False
+            util = DumperMegatronUtil(args, [model], DumperPhase.FWD_BWD, rollout_id=2)
+            try:
+                util.finalize([model])
+            finally:
+                dumper_utils.dumper.reset()
+                dumper_utils.dumper.configure(enable=False)
+
+        dump_files = sorted((tmp_path / "fwd_bwd" / "rollout_2").glob("*.pt"))
+        assert [torch.load(f, weights_only=False)["meta"]["name"] for f in dump_files] == ["param__weight"]
+        assert model.model_companion is companion
+
 
 class TestBarrierAfterDumpDirCleanup:
     @staticmethod
@@ -381,14 +437,13 @@ class TestCleanupDumpDir:
 
 
 class TestConfigureSglang:
-    resolved_config = SimpleNamespace(models=[SimpleNamespace(num_server_cells=2)])
-
     @staticmethod
     def _make_args(tmp_path: Path) -> SimpleNamespace:
         return SimpleNamespace(
             dumper_enable=True,
             dumper_inference=[],
             dumper_dir=str(tmp_path),
+            init_expected_num_cells=2,
         )
 
     @pytest.mark.asyncio
@@ -404,7 +459,6 @@ class TestConfigureSglang:
                 "miles.rollout.inference_rollout.inference_rollout_train.get_worker_urls",
                 new=AsyncMock(return_value=["http://a:1", "http://b:2"]),
             ),
-            patch("miles.utils.dumper_utils.resolve_sglang_config", return_value=self.resolved_config),
             patch("miles.utils.http_utils.post", new=_post),
             patch("miles.utils.dumper_utils._cleanup_dump_dir"),
         ):
@@ -427,7 +481,6 @@ class TestConfigureSglang:
                 "miles.rollout.inference_rollout.inference_rollout_train.get_worker_urls",
                 new=get_worker_urls,
             ),
-            patch("miles.utils.dumper_utils.resolve_sglang_config", return_value=self.resolved_config),
             patch("miles.utils.http_utils.post", new=_post),
             patch("miles.utils.dumper_utils._cleanup_dump_dir"),
         ):
@@ -453,7 +506,6 @@ class TestConfigureSglang:
                 "miles.rollout.inference_rollout.inference_rollout_train.get_worker_urls",
                 new=AsyncMock(return_value=["http://a:1", "http://b:2"]),
             ),
-            patch("miles.utils.dumper_utils.resolve_sglang_config", return_value=self.resolved_config),
             patch("miles.utils.http_utils.post", new=_post),
             patch("miles.utils.dumper_utils._cleanup_dump_dir"),
             patch("miles.utils.dumper_utils.dist") as mock_dist,
@@ -479,7 +531,6 @@ class TestConfigureSglang:
                 "miles.rollout.inference_rollout.inference_rollout_train.get_worker_urls",
                 new=get_worker_urls,
             ),
-            patch("miles.utils.dumper_utils.resolve_sglang_config", return_value=self.resolved_config),
             patch("miles.utils.http_utils.post", new=_post),
             patch("miles.utils.dumper_utils._cleanup_dump_dir"),
         ):
@@ -496,9 +547,33 @@ class TestConfigureSglang:
                 "miles.rollout.inference_rollout.inference_rollout_train.get_worker_urls",
                 new=AsyncMock(return_value=["http://a:1"]),
             ),
-            patch("miles.utils.dumper_utils.resolve_sglang_config", return_value=self.resolved_config),
             patch("miles.utils.dumper_utils._cleanup_dump_dir"),
             patch("miles.utils.dumper_utils._WORKER_REGISTRATION_TIMEOUT_SECONDS", 0.05),
             pytest.raises(AssertionError, match="1/2 inference engines"),
         ):
             await dumper_utils.configure_sglang(self._make_args(tmp_path))
+
+
+class TestDeclaredEngineCount:
+    async def test_first_model_count_gates_configuration_independently_of_mapping_order(self, tmp_path: Path) -> None:
+        """The first rollout model's declared count gates configuration rather than another model or deployment shape."""
+        args = SimpleNamespace(
+            dumper_enable=True,
+            dumper_inference=[],
+            dumper_dir=str(tmp_path),
+            init_expected_num_cells={"other": 5, "primary": 2},
+            sglang=SimpleNamespace(models=[SimpleNamespace(name="primary"), SimpleNamespace(name="other")]),
+        )
+        urls = ["http://a:1", "http://b:2"]
+        get_worker_urls = AsyncMock(side_effect=[[urls[0]], urls])
+        post = AsyncMock()
+
+        with (
+            patch("miles.rollout.inference_rollout.inference_rollout_train.get_worker_urls", new=get_worker_urls),
+            patch("miles.utils.http_utils.post", new=post),
+            patch("miles.utils.dumper_utils._cleanup_dump_dir"),
+        ):
+            await dumper_utils.configure_sglang(args)
+
+        assert get_worker_urls.await_count == 2
+        assert [call.args[0] for call in post.await_args_list] == [f"{url}/dumper/configure" for url in urls]

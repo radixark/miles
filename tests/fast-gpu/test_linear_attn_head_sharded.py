@@ -13,7 +13,7 @@ import torch.distributed as dist
 from megatron.core import parallel_state
 from megatron.core.tensor_parallel.random import model_parallel_cuda_manual_seed
 from megatron.core.transformer.transformer_config import TransformerConfig
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 from miles.backends.megatron_utils.megatron_to_hf.linear_attn_layout import LinearAttnHeads
 
@@ -30,24 +30,30 @@ from linear_attn_reference import (  # noqa: E402
 )
 
 register_cuda_ci(
-    est_time=300, suite="stage-c-4-gpu-h200", labels=["precision"], hardware=["hopper", "blackwell"], num_gpus=4
+    est_time=300, suite="stage-b-2-gpu-h200", labels=["precision"], hardware=["hopper", "blackwell"], num_gpus=2
 )
+register_rocm_ci(est_time=190, suite="nightly-stage-c-2-gpu-mi350", labels=["precision"])
 
 HIDDEN = 256
 CASES = {
-    "qwen3_5": LinearAttnHeads(num_k_heads=4, num_v_heads=8, head_k_dim=64, head_v_dim=64),
-    "qwen3_next": LinearAttnHeads(num_k_heads=4, num_v_heads=8, head_k_dim=64, head_v_dim=64),
-    "kda": LinearAttnHeads(num_k_heads=8, num_v_heads=8, head_k_dim=64, head_v_dim=64),
+    "qwen3_5": ("qwen3_5", LinearAttnHeads(num_k_heads=4, num_v_heads=8, head_k_dim=64, head_v_dim=64)),
+    "qwen3_next": ("qwen3_next", LinearAttnHeads(num_k_heads=4, num_v_heads=8, head_k_dim=64, head_v_dim=64)),
+    "qwen3_5_3v_per_k": ("qwen3_5", LinearAttnHeads(num_k_heads=4, num_v_heads=12, head_k_dim=64, head_v_dim=64)),
+    "qwen3_next_3v_per_k": (
+        "qwen3_next",
+        LinearAttnHeads(num_k_heads=4, num_v_heads=12, head_k_dim=64, head_v_dim=64),
+    ),
+    "kda": ("kda", LinearAttnHeads(num_k_heads=8, num_v_heads=8, head_k_dim=64, head_v_dim=64)),
 }
 
 
 def check(name, config, tp_group):
     torch.manual_seed(7)
-    heads = CASES[name]
+    family, heads = CASES[name]
     ref = (
         ReplicatedKDA(HIDDEN, heads, torch.bfloat16)
-        if name == "kda"
-        else ReplicatedGDN(name, HIDDEN, heads, torch.bfloat16)
+        if family == "kda"
+        else ReplicatedGDN(family, HIDDEN, heads, torch.bfloat16)
     ).cuda()
     layer = build_layer(ref, config)
     core = layer.linear_attn
@@ -63,8 +69,8 @@ def check(name, config, tp_group):
     out_ref.backward(grad_out)
     out_new.backward(grad_out.transpose(0, 1))
 
-    norm_ref = ref.o_norm if name == "kda" else ref.norm
-    out_proj_ref = ref.o_proj if name == "kda" else ref.out_proj
+    norm_ref = ref.o_norm if family == "kda" else ref.norm
+    out_proj_ref = ref.o_proj if family == "kda" else ref.out_proj
     errors = {
         "out": rel_err(out_ref, out_new.transpose(0, 1)),
         "dx": rel_err(x_ref.grad, x_new.grad.transpose(0, 1)),
@@ -77,7 +83,7 @@ def check(name, config, tp_group):
         errors[conv] = rel_err(full_grad, gather(getattr(core, conv).weight.grad, 0, tp_group))
     for proj, full_grad in sharded_projections(ref, grad=True).items():
         errors[proj] = rel_err(full_grad, gather(getattr(core, proj).weight.grad, 0, tp_group))
-    if name == "kda":
+    if family == "kda":
         errors["f_a_proj"] = rel_err(ref.f_a_proj.weight.grad, core.f_a_proj.weight.grad)
     return errors
 

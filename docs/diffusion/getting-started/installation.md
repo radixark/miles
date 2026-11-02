@@ -5,7 +5,7 @@ description: Get a working miles-diffusion environment — Docker (recommended) 
 miles-diffusion trains a diffusion DiT with FSDP2 while
 [sglang-diffusion](https://github.com/sgl-project/sglang/tree/main/python/sglang/multimodal_gen) serves the rollout.
 The two halves must agree numerically, so the pinned versions matter more than usual: the rollout engine tracks
-**sglang main**, not a release tag, and the training side pins **torch 2.11.0** (an FSDP monkey patch is version-gated
+sglang's **`sglang-miles`** branch, not a release tag, and the training side pins **torch 2.11.0** (an FSDP monkey patch is version-gated
 on it). A future update will upgrade the training stack to **torch 2.13**.
 
 Use Docker unless you have a reason not to.
@@ -16,7 +16,8 @@ Use Docker unless you have a reason not to.
 docker pull radixark/miles_diffusion:latest
 ```
 
-`latest` tracks sglang main and is rebuilt every few days; dated tags
+`latest` carries the `sglang-miles` tip as of its last build, and is rebuilt when `docker/Dockerfile` or
+`requirements.txt` changes on main (or on a manual dispatch); dated tags
 (`dev-cu129-sglang-main-YYYYMMDD`) pin a specific build. CUDA 12.9 is the only supported
 build — the Dockerfile carries a CUDA 13 recipe in a comment, but its `sglang-kernel` pin is
 hardcoded to cu129 and no CI covers it.
@@ -34,7 +35,7 @@ Useful build args:
 | Arg | Default | What it does |
 |---|---|---|
 | `SGLANG_IMAGE_TAG` | `v0.5.12-cu129` | Base `lmsysorg/sglang` image. |
-| `SGLANG_DIFFUSION_BRANCH` | `main` | sglang branch the rollout engine is built from. |
+| `SGLANG_DIFFUSION_BRANCH` | `sglang-miles` | sglang branch the rollout engine is built from; carries upstream `main` plus the diffusion rollouts this repo needs ahead of it. |
 | `SGLANG_DIFFUSION_COMMIT` | `none` | Pin a sglang sha; `none` follows the branch tip. |
 | `FA3_WHEELS_TAG` | `cu129-x86_64` | Which prebuilt FlashAttention-3 wheel to pull. |
 | `MILES_DIFFUSION_COMMIT` | `main` | Ref of miles_diffusion baked into the image. |
@@ -54,7 +55,7 @@ docker run --rm \
 The image ships with:
 
 - PyTorch 2.11.0 and the sglang base image's CUDA stack
-- sglang built from main (`/sgl-workspace/sglang`, editable) with `sglang.multimodal_gen`
+- sglang built from the `sglang-miles` branch (`/sgl-workspace/sglang`, editable) with `sglang.multimodal_gen`
 - FlashAttention-3 (`flash_attn_interface`), `sglang-kernel==0.4.5`, `torch_memory_saver==0.0.9`
 - `diffusers`, `peft`, `transformers`, `ray`, `wandb`, and `ltx-core` from `requirements.txt`
 - miles_diffusion installed editable at `/root/miles_diffusion`
@@ -101,22 +102,22 @@ bash .claude/skills/install-miles-diffusion/install.sh
 
 Written against a CUDA 12.9 / Ubuntu 24.04 host, to match the image. Nothing enforces that,
 but the apt versions are unpinned, so another release hands out different versions of the
-apt-sourced dists and the verify step reports drift.
+apt-sourced dists, which the verify step counts under `expected-absent` instead of flagging.
 
 The installer has six idempotent steps, and `--from STEP` resumes a failed run. The last step diffs every installed
-package against the image's snapshot — a clean run ends with:
-
-```
-matched 369   mismatched 0   missing 0   expected-absent 4   extra 0
-environment matches the official image
-```
+package against the snapshot of one image tag (`OFFICIAL_IMAGE` in `snapshot/pins.env`, refreshed by hand with
+`refresh.sh`, so it can lag `latest`) — a clean run reports `mismatched 0   missing 0` and ends with
+`environment matches the official image`; the `matched` and `expected-absent` counts depend on the snapshot
+and on which apt-sourced dists the host provides.
 
 To check an existing machine against the image without installing anything:
 `python3 .claude/skills/install-miles-diffusion/verify_env.py`.
 
-Plain `pip install -r requirements.txt && pip install -e . --no-deps` installs, but leaves a
-**trainer-only** environment: CPU tests and `--train-only` SFT run, RL does not —
-`sglang.multimodal_gen` and FlashAttention-3 are not on PyPI. Resolving the full set through
+Plain `pip install -r requirements.txt && pip install -e . --no-deps` is not enough on its own:
+`requirements.txt` has no sglang, and `miles.utils.arguments` imports `sglang.multimodal_gen` at load. Adding
+sglang the way CI's CPU job does (`sglang-miles` installed `--no-deps`, plus `tests/ci/requirements-ci-cpu.txt`
+and the CPU stubs) leaves a **trainer-only** environment: CPU tests run, but RL does not, and neither does MiniMax H3 SFT, whose
+encoder calls sglang's FA3 kernel — the engine's GPU kernels and FlashAttention-3 are not part of that install. Resolving the full set through
 pip is not possible (it is only consistent under `--no-deps` replay), which is what the
 installer handles.
 
@@ -160,9 +161,9 @@ so the floor is set by whichever of the two needs more memory, not by their sum.
 
 | Variable | When you need it |
 |---|---|
-| `HF_TOKEN` | Gated checkpoints. SD3.5 needs it **even when the weights are cached** — sglang still fetches `model_index.json` from the hub at startup. |
-| `WANDB_API_KEY` | Without it the launch scripts silently drop all `--use-wandb` flags. |
-| `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` | Set by every launch script; reduces fragmentation OOMs. |
+| `HF_TOKEN` | Gated checkpoints (SD3.5): required to download them. Keep it set on cached runs too — the engine re-fetches `model_index.json` from the Hub at startup and, without access, falls back to the cached copy with a warning that it may be out of date. |
+| `WANDB_API_KEY` | Without it the launch scripts drop all wandb flags (`--use-wandb` included) and only print a one-line notice. |
+| `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` | Set by most RL launch scripts (the Wan2.2 and Cosmos3 recipes set `expandable_segments:False`; the SFT scripts leave it unset); reduces fragmentation OOMs. |
 | `MILES_DIFFUSION_MODEL_FAMILY` | Escape hatch when `--diffusion-model-family` is unset. It overrides checkpoint-name auto-detection, but an explicit CLI family takes precedence. |
 
 ## Next

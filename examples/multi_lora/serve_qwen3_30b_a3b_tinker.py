@@ -81,6 +81,8 @@ def serve(args: ScriptArgs):
         "--pipeline-model-parallel-size 1 --context-parallel-size 1 "
         f"--expert-model-parallel-size {args.ep} --expert-tensor-parallel-size 1 "
         "--use-dynamic-batch-size --max-tokens-per-gpu 8192 "
+        # Tinker targets cover full sequences; bound the FP32 cross-entropy temporaries
+        "--log-probs-chunk-size 1024 "
     )
 
     sglang_args = (

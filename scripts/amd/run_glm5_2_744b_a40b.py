@@ -165,7 +165,7 @@ def _execute_train(args: ScriptArgs):
     )
 
     perf_args = (
-        "--tensor-model-parallel-size 4 "
+        f"--tensor-model-parallel-size {min(4, args.num_gpus_per_node)} "
         "--sequence-parallel "
         "--pipeline-model-parallel-size 1 "
         "--context-parallel-size 1 "

@@ -90,6 +90,19 @@ def validate_batch_payload(op: CommandOp, payload: dict, config: GatewayConfig) 
 
 def validate_sample_payload(payload: dict, config: GatewayConfig) -> None:
     validate_token_ids(payload["prompt_tokens"], config.vocab_size, "prompt")
+    max_tokens = payload["sampling_params"].get("max_tokens")
+    if type(max_tokens) is not int or max_tokens < 0:
+        raise UserInputError("sampling_params.max_tokens must be a nonnegative integer")
+    prompt_length = len(payload["prompt_tokens"])
+    # compute_logprobs scores a full sampled sequence with max_tokens=1; at the window it is clamped to 0
+    scoring = bool(payload.get("prompt_logprobs") or payload.get("topk_prompt_logprobs"))
+    if prompt_length > config.max_tokens_per_sample or (
+        max_tokens > 0 and prompt_length == config.max_tokens_per_sample and not scoring
+    ):
+        raise UserInputError(
+            f"prompt is too long: {prompt_length} prompt tokens leave no generation budget "
+            f"in the {config.max_tokens_per_sample}-token context window"
+        )
     num_samples = payload.get("num_samples", 1)
     if type(num_samples) is not int or not 1 <= num_samples <= config.max_samples_per_request:
         raise UserInputError(f"num_samples must be an integer in [1, {config.max_samples_per_request}]")
@@ -117,15 +130,34 @@ def validate_checkpoint_compatibility(meta: dict, record: ModelRecord, config: G
         "base_model": record.base_model,
         "lora_rank": record.lora_rank,
         "lora_alpha": record.lora_alpha,
+        "lora_type": config.lora_type,
+        "experts_shared_outer_loras": config.experts_shared_outer_loras,
         "train_attn": config.trains_attn,
         "train_mlp": config.trains_mlp,
         "train_unembed": config.trains_unembed,
     }
+    # Checkpoints written before the layout was recorded are all fused, per-expert.
+    meta = {"lora_type": "lora", "experts_shared_outer_loras": False, **meta}
     for key, value in expected.items():
         if meta[key] != value:
-            raise UserInputError(
+            message = (
                 f"checkpoint {shown_path!r} was saved with {key}={meta[key]!r}; this model expects {key}={value!r}"
             )
+            if key in _GATEWAY_LAYOUT_FLAGS:
+                message += (
+                    f". The adapter layout is set per gateway: restore it on one launched with "
+                    f"{_GATEWAY_LAYOUT_FLAGS[key](meta[key])}"
+                )
+            raise UserInputError(message)
+
+
+# a gateway-wide layout setting -> the launch flag that restores a checkpoint saved under `value`
+_GATEWAY_LAYOUT_FLAGS = {
+    "lora_type": lambda value: f"--lora-type {value}",
+    "experts_shared_outer_loras": lambda value: (
+        "--experts-shared-outer-loras" if value else "no --experts-shared-outer-loras"
+    ),
+}
 
 
 def validate_save_options(payload: dict) -> None:

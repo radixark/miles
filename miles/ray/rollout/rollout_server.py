@@ -4,14 +4,13 @@ import logging
 from typing import Any
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
-from miles.backends.sglang_utils.sglang_config import resolve_sglang_config
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
+from miles.ray.rollout.serving_registry import ServingRegistry
 from miles.utils import async_utils
 from miles.utils.context_lock import ContextLock, enforce_lock_discipline, lock_exempt, requires_lock
 from miles.utils.ft_utils.health_checker import ActivenessTracker
 from miles.utils.retry_utils import retry_until_deadline
-from miles.utils.workers.types import DeployComponent
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider
 from miles.utils.workers.worker_spec import HostAndPort
 
@@ -33,7 +32,7 @@ async def create_rollout_servers(
     router_addrs: dict[str, HostAndPort],
 ) -> dict[str, "RolloutServer"]:
     """Create rollout servers: one per model, each with its own router."""
-    config = resolve_sglang_config(args)
+    config = args.sglang
 
     servers: dict[str, RolloutServer] = {}
 
@@ -41,7 +40,7 @@ async def create_rollout_servers(
         router_addr = router_addrs[model_cfg.name]
 
         servers[model_cfg.name] = RolloutServer(
-            server_cells={},
+            all_server_cells={},
             args=args,
             context_lock=context_lock,
             engine_provider=engine_provider,
@@ -56,12 +55,13 @@ async def create_rollout_servers(
 
 
 def _compute_init_expected_num_cells(args, engine_provider: BaseWorkerProvider, *, model_cfg) -> int:
-    if (declared := args.init_expected_num_cells) is not None:
+    declared = args.init_expected_num_cells
+    if isinstance(declared, dict):
+        declared = declared.get(model_cfg.name)
+    if declared is not None:
         return declared
     if (answered := engine_provider.expected_num_cells(group_id=model_cfg.name)) is not None:
         return answered
-    if DeployComponent(args.deploy_component).deploys_own_inference_engines():
-        return model_cfg.num_server_cells
     return _DEFAULT_INIT_EXPECTED_NUM_CELLS
 
 
@@ -73,7 +73,7 @@ class RolloutServer:
     Each RolloutServer represents one model deployed behind a single router.
     """
 
-    server_cells: dict[str, ServerCell]
+    all_server_cells: dict[str, ServerCell]
     args: Any
     context_lock: ContextLock
     engine_provider: BaseWorkerProvider
@@ -85,6 +85,7 @@ class RolloutServer:
         default_factory=lambda: ActivenessTracker(active=True)
     )
     init_expected_num_cells: int = 0
+    serving_registry: ServingRegistry | None = None
 
     @property
     @requires_lock
@@ -103,39 +104,50 @@ class RolloutServer:
     def engine_gpu_offsets(self) -> list[int]:
         return [cell.meta.gpu_offset for cell in self._cells_by_gpu_offset()]
 
+    @property
+    @requires_lock
+    def engine_cell_ids(self) -> list[str]:
+        return [cell.meta.cell_id for cell in self._cells_by_gpu_offset()]
+
+    @property
+    @requires_lock
+    def normal_server_cells(self) -> dict[str, ServerCell]:
+        return {cell_id: cell for cell_id, cell in self.all_server_cells.items() if not cell.is_errored}
+
     @requires_lock
     def _cells_by_gpu_offset(self) -> list[ServerCell]:
-        return sorted(self.server_cells.values(), key=lambda cell: cell.meta.gpu_offset)
+        return sorted(self.normal_server_cells.values(), key=lambda cell: cell.meta.gpu_offset)
 
     @requires_lock
     async def add_cell(self, cell_meta: ServerCellMetadata):
         cell_id = cell_meta.cell_id
-        assert cell_id not in self.server_cells
+        assert cell_id not in self.all_server_cells
         cell = ServerCell(
             args=self.args,
             router_api_client=self._router_api_client,
             meta=cell_meta,
             provider=self.engine_provider,
             health_checker_activeness=self.health_checker_activeness.get,
+            serving_registry=self.serving_registry,
         )
-        self.server_cells[cell_id] = cell
+        self.all_server_cells[cell_id] = cell
         if not (self.args.colocate and cell_meta.needs_offload):
             try:
                 await cell.init()
             except Exception:
-                del self.server_cells[cell_id]
+                del self.all_server_cells[cell_id]
                 await cell.dispose()
                 raise
 
     @requires_lock
     async def remove_cell(self, cell_id: str):
         logger.info(f"Killing server {cell_id=}...")
-        await self.server_cells[cell_id].dispose()
-        del self.server_cells[cell_id]
+        await self.all_server_cells[cell_id].dispose()
+        del self.all_server_cells[cell_id]
 
     @requires_lock
     async def dispose(self) -> None:
-        for cell_id in list(self.server_cells.keys()):
+        for cell_id in list(self.all_server_cells.keys()):
             await self.remove_cell(cell_id)
 
     @requires_lock
@@ -151,6 +163,18 @@ class RolloutServer:
         )
 
     @requires_lock
+    async def pause_generation(self, mode: str):
+        return await asyncio.gather(*[cell.pause_generation(mode=mode) for cell in self._addressable_cells()])
+
+    @requires_lock
+    async def continue_generation(self):
+        return await asyncio.gather(*[cell.continue_generation() for cell in self._addressable_cells()])
+
+    @requires_lock
+    async def flush_cache(self):
+        return await asyncio.gather(*[cell.flush_cache() for cell in self._addressable_cells()])
+
+    @requires_lock
     async def abort_all(self) -> None:
         cells = self._addressable_cells()
         await async_utils.gather_and_raise_first(
@@ -163,20 +187,27 @@ class RolloutServer:
 
     @requires_lock
     async def check_weights(
-        self, action: str, allow_quant_error: bool = False, selector: str = "all", skip_list: list[str] | None = None
-    ):
-        return await asyncio.gather(
+        self,
+        action: str,
+        allow_quant_error: bool = False,
+        selector: str = "all",
+        skip_list: list[str] | None = None,
+        cell_ids: list[str] | None = None,
+    ) -> list[tuple[ServerCellMetadata, Any]]:
+        cells = [cell for cell in self._addressable_cells() if cell_ids is None or cell.meta.cell_id in cell_ids]
+        bodies = await asyncio.gather(
             *[
                 cell.check_weights(
                     action=action, allow_quant_error=allow_quant_error, selector=selector, skip_list=skip_list
                 )
-                for cell in self._addressable_cells()
+                for cell in cells
             ]
         )
+        return [(cell.meta, body) for cell, body in zip(cells, bodies, strict=True)]
 
     @requires_lock
     def _addressable_cells(self) -> list[ServerCell]:
-        return [cell for cell in self.server_cells.values() if cell.is_pending_weights_or_serving]
+        return [cell for cell in self.all_server_cells.values() if cell.is_pending_weights_or_serving]
 
     @lock_exempt
     async def wait_init_expected_num_cells(self, timeout: float = 3600):
@@ -198,8 +229,9 @@ class RolloutServer:
     def _count_startable_cells(self) -> int:
         return sum(
             1
-            for cell in self.server_cells.values()
-            if (self.args.colocate and cell.meta.needs_offload) or cell.is_pending_weights_or_serving
+            for cell in self.all_server_cells.values()
+            if not cell.is_errored
+            and ((self.args.colocate and cell.meta.needs_offload) or cell.is_pending_weights_or_serving)
         )
 
     @property

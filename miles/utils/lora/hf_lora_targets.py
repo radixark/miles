@@ -40,6 +40,18 @@ _QWEN_SHARED_EXPERT = _prefix_paths("mlp.shared_expert", "gate_proj", "up_proj",
 _PACKED_EXPERTS = _prefix_paths("mlp.experts", "gate_up_proj", "down_proj")
 _GDN_NEXT = _prefix_paths("linear_attn", "in_proj_qkvz", "in_proj_ba", "out_proj")
 _GDN_35 = _prefix_paths("linear_attn", "in_proj_qkv", "in_proj_z", "in_proj_b", "in_proj_a", "out_proj")
+_KDA = _prefix_paths(
+    "self_attn",
+    "q_proj",
+    "k_proj",
+    "v_proj",
+    "b_proj",
+    "forget_gate.f_a_proj",
+    "forget_gate.f_b_proj",
+    "g_a_proj",
+    "g_b_proj",
+    "o_proj",
+)
 
 
 def _dense_targets(config):
@@ -68,6 +80,14 @@ def _mla_attention_targets(config):
 
 def _deepseek_targets(config):
     return _mla_attention_targets(config), _deepseek_mlp_targets(config)
+
+
+def _deepseek_v41_targets(config):
+    # every V4.1 layer is MoE
+    mlp = list(_prefix_paths("ffn.experts.*", "w1", "w2", "w3"))
+    if config["n_shared_experts"]:
+        mlp.extend(_prefix_paths("ffn.shared_experts", "w1", "w2", "w3"))
+    return _prefix_paths("attn", "wq_a", "wq_b", "wkv", "wo_a", "wo_b"), tuple(mlp)
 
 
 def _kimi_targets(config):
@@ -117,6 +137,17 @@ def _glm_dsa_targets(config):
         if config["n_shared_experts"]:
             mlp.extend(_SHARED_EXPERTS)
     return _mla_attention_targets(config), tuple(mlp)
+
+
+def _glm5_next_targets(config):
+    # GLM-5.3-Flash interleaves KDA layers into the GLM-5 DSA stack
+    dsa_attention, mlp = _glm_dsa_targets(config)
+    attention = []
+    if "linear_attention" in config["layer_types"]:
+        attention.extend(_KDA)
+    if "indexed_attention" in config["layer_types"]:
+        attention.extend(dsa_attention)
+    return tuple(dict.fromkeys(attention)), mlp
 
 
 def _qwen_moe_mlp_targets(config, *, shared_expert=False):
@@ -185,6 +216,16 @@ def _inkling_targets(config):
     return attention, tuple(mlp)
 
 
+def _mimo_v2_targets(config):
+    # moe_layer_freq lists every layer's MLP: 1 for routed experts (per-expert modules), 0 for dense.
+    mlp = []
+    if not all(config["moe_layer_freq"]):
+        mlp.extend(_DENSE_MLP)
+    if any(config["moe_layer_freq"]):
+        mlp.extend(_ROUTED_EXPERTS)
+    return _QKVO_ATTENTION, tuple(mlp)
+
+
 _HF_LORA_MODELS = {
     "llama": _HfLoraModelSpec(_dense_targets),
     "qwen2": _HfLoraModelSpec(_dense_targets),
@@ -203,6 +244,7 @@ _HF_LORA_MODELS = {
     "deepseek_v2": _HfLoraModelSpec(_deepseek_targets),
     "deepseek_v3": _HfLoraModelSpec(_deepseek_targets),
     "deepseek_v32": _HfLoraModelSpec(_deepseek_targets),
+    "deepseek_v41": _HfLoraModelSpec(_deepseek_v41_targets, layer_prefix="layers.*", unembed="head"),
     "kimi_k2": _HfLoraModelSpec(_kimi_targets),
     "kimi_k25": _HfLoraModelSpec(
         _kimi_targets,
@@ -218,6 +260,10 @@ _HF_LORA_MODELS = {
     ),
     "glm4_moe": _HfLoraModelSpec(_glm4_moe_targets),
     "glm_moe_dsa": _HfLoraModelSpec(_glm_dsa_targets),
+    "glm5_next": _HfLoraModelSpec(
+        _glm5_next_targets, layer_prefix="model.language_model.layers.*", unwrap_text_config=True
+    ),
+    "mimo_v2": _HfLoraModelSpec(_mimo_v2_targets),
     "inkling_text": _HfLoraModelSpec(_inkling_targets, default_train_unembed=True),
     "inkling_model": _HfLoraModelSpec(_inkling_targets, default_train_unembed=True),
     "inkling_mm_model": _HfLoraModelSpec(

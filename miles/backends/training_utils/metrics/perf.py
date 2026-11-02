@@ -17,7 +17,10 @@ def log_perf_data_raw(
     is_primary_rank: bool,
     compute_total_fwd_flops: Callable,
     extra_metrics: dict | None = None,
+    compute_total_train_flops: Callable | None = None,
 ) -> None:
+    """compute_total_train_flops defaults to three forwards; pass it when part of the
+    forward (a frozen indexer) has no backward."""
     timer_instance = Timer()
     log_dict_raw = deepcopy(timer_instance.log_dict())
     timer_instance.reset()
@@ -39,10 +42,15 @@ def log_perf_data_raw(
             log_dict["perf/ref_log_probs_tflops"] = total_fwd_flops / log_dict["perf/ref_log_probs_time"]
 
         if log_dict["perf/actor_train_time"] > 0:
-            log_dict["perf/actor_train_tflops"] = 3 * total_fwd_flops / log_dict["perf/actor_train_time"]
+            total_train_flops = (
+                3 * total_fwd_flops
+                if compute_total_train_flops is None
+                else compute_total_train_flops(seq_lens=timer_instance.seq_lens)
+            )
+            log_dict["perf/actor_train_tflops"] = total_train_flops / log_dict["perf/actor_train_time"]
             log_dict["perf/actor_train_tok_per_s"] = sum(timer_instance.seq_lens) / log_dict["perf/actor_train_time"]
 
-            peak_tflops = getattr(args, "mfu_peak_tflops", None) or local_peak_bf16_tflops()
+            peak_tflops = args.mfu_peak_tflops or local_peak_bf16_tflops()
             if peak_tflops:
                 log_dict["perf/mfu_peak_tflops"] = peak_tflops
                 log_dict["perf/actor_train_mfu"] = log_dict["perf/actor_train_tflops"] / peak_tflops

@@ -85,6 +85,11 @@ roughly 1000, initialize derived values once, keep imports at the top, use absol
 imports, prefer keyword arguments where they add clarity. It applies to `miles/**/*.py`,
 `scripts/**/*.py`, `tools/**/*.py`, `train.py` and `train_async.py`.
 
+Miles trains on more than one kind of accelerator (CUDA GPUs and TPU today).
+[`.claude/rules/multi-hardware.md`](https://github.com/radixark/miles/blob/main/.claude/rules/multi-hardware.md)
+says how to keep shared code device-agnostic through `miles.platforms` and when
+CUDA-only code is acceptable.
+
 ## What lives in `.claude`
 
 The `.claude` directory is how the repo hands its conventions to coding agents, and it is
@@ -106,6 +111,7 @@ are workflows rather than style rules:
 | `doc-dev` | Keeping a file and its governing document in sync (see below) |
 | `ci-fetch-log` | Pulling complete GitHub Actions logs and diagnosing a failed run from saved evidence |
 | `ci-e2e-time-tune` | Recalibrating `register_cuda_ci(est_time=...)` from real run times |
+| `pr-ci-targeted` | Running only the GPU test files a PR's diff reaches, with per-file `/rerun-test`, and iterating fixes until they pass |
 | `mechanical-refactor-verify` | Reviewing a file split or move by requiring a reproducible transform script |
 | `setup-ci-host`, `manage-gh-runners` | Provisioning a CI host and its self-hosted runners |
 

@@ -4,8 +4,14 @@ import shlex
 
 import pytest
 
+from miles.utils.audit_utils.config_snapshot.generated_value_registry import (
+    GENERATED_VALUES_ENV_VAR,
+    GeneratedValueRegistry,
+)
+from miles.utils.env_report.redaction import redact_arg
 from miles.utils.external_utils.command_utils import common
 from miles.utils.external_utils.command_utils.common import MOONCAKE_INIT_KWARGS_FLAG, get_mooncake_object_store_args
+from miles.utils.test_utils.snapshot import SNAPSHOT_RECORD_DIR_ENV_VAR
 
 
 class TestGetMooncakeObjectStoreArgs:
@@ -42,3 +48,23 @@ class TestGetDefaultWandbArgs:
             common.logger.removeHandler(handler)
 
         assert events == ["configure:launcher", "Skip wandb configuration since WANDB_API_KEY is not found"]
+
+    @pytest.mark.skip(reason="Snapshot testing is disabled by op48-277")
+    def test_environment_credentials_register_only_the_digest(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Snapshot provenance exports no credential while the launch retains the actual key."""
+        secret = "test-environment-wandb-secret"
+        monkeypatch.setenv("WANDB_API_KEY", secret)
+        monkeypatch.setenv(SNAPSHOT_RECORD_DIR_ENV_VAR, "/snapshot/records")
+        monkeypatch.delenv(GENERATED_VALUES_ENV_VAR, raising=False)
+        monkeypatch.delenv("GITHUB_COMMIT_NAME", raising=False)
+        registry = GeneratedValueRegistry()
+        monkeypatch.setattr(common, "generated_value_registry", registry)
+
+        argv = shlex.split(common.get_default_wandb_args("tests/e2e/test_run.py", run_id="fixed"))
+        exported = registry.to_env()[GENERATED_VALUES_ENV_VAR]
+
+        assert argv[argv.index("--wandb-key") + 1] == secret
+        assert json.loads(exported) == [
+            {"kind": "wandb_key", "name": "environment", "value": redact_arg("wandb_key", secret)}
+        ]
+        assert secret not in exported

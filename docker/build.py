@@ -46,6 +46,13 @@ VARIANTS = {
         "dockerfile": "docker/Dockerfile.rubin",
         "build_args": {},
     },
+    "tpu": {
+        "image": "radixark/miles",
+        "platforms": ["linux/amd64"],
+        "tag_postfix": "-tpu",
+        "dockerfile": "docker/Dockerfile.tpu",
+        "build_args": {},
+    },
     "rocm724-mi35x": {
         "image": "rocm/sgl-dev",
         "tag_postfix": "-rocm724-mi35x",
@@ -54,7 +61,7 @@ VARIANTS = {
         "build_args": {
             "GPU_ARCH": "gfx950",
             "SGLANG_IMAGE_REPO": "lmsysorg/sglang",
-            "SGLANG_IMAGE_TAG": "v0.5.21-rocm724-mi35x",
+            "SGLANG_IMAGE_TAG": "v0.5.22-rocm724-mi35x",
             "WHEELS_TAG_ROCM": "rocm724-gfx950-v0.5.20",
             "APPLY_ROCR_VMMFIX": "1",
             "TE_USE_WHEEL": "1",
@@ -68,7 +75,7 @@ VARIANTS = {
         "build_args": {
             "GPU_ARCH": "gfx950",
             "SGLANG_IMAGE_REPO": "lmsysorg/sglang",
-            "SGLANG_IMAGE_TAG": "v0.5.21-rocm10-mi35x",
+            "SGLANG_IMAGE_TAG": "v0.5.22-rocm10-mi35x",
             "WHEELS_TAG_ROCM": "rocm10-gfx950-v0.5.18",
             "APEX_USE_PREBUILT": "1",
             "TE_USE_WHEEL": "1",
@@ -82,7 +89,7 @@ VARIANTS = {
         "build_args": {
             "GPU_ARCH": "gfx942",
             "SGLANG_IMAGE_REPO": "lmsysorg/sglang",
-            "SGLANG_IMAGE_TAG": "v0.5.21-rocm10-mi30x",
+            "SGLANG_IMAGE_TAG": "v0.5.22-rocm10-mi30x",
             "WHEELS_TAG_ROCM": "rocm10-gfx942-v0.5.20",
             "APEX_USE_PREBUILT": "1",
             "TE_USE_WHEEL": "1",
@@ -183,6 +190,7 @@ class Variant(str, Enum):
     cu13_x86 = "cu13-x86"
     cu13_aarch64 = "cu13-aarch64"
     rubin = "rubin"
+    tpu = "tpu"
     rocm724_mi35x = "rocm724-mi35x"
     rocm10_mi35x = "rocm10-mi35x"
     rocm10_mi30x = "rocm10-mi30x"

@@ -204,7 +204,7 @@ class TestAsyncInit:
         cell = make_cell(actor_count=2)
         info = make_indep_dp_info()
 
-        results = await cell.init(indep_dp_info=info, indep_dp_store_addr="10.0.0.9:1234")
+        results = await cell.init(ckpt_load_config=None, indep_dp_info=info, indep_dp_store_addr="10.0.0.9:1234")
 
         assert len(results) == 2
         assert cell.is_alive
@@ -225,7 +225,7 @@ class TestAsyncInit:
         cell = make_cell(actor_count=1, health_checker=checker)
         checker.observe_alive = lambda: cell.is_alive
 
-        await cell.init(indep_dp_info=make_indep_dp_info(), indep_dp_store_addr=None)
+        await cell.init(ckpt_load_config=None, indep_dp_info=make_indep_dp_info(), indep_dp_store_addr=None)
 
         assert checker.start_count == 1
         assert checker.alive_when_started is True
@@ -304,7 +304,7 @@ class TestAsyncInitFailure:
             ray.get(handle.set_fail_methods.remote(["init"]))
 
         with pytest.raises(RuntimeError, match="Injected failure"):
-            await cell.init(indep_dp_info=make_indep_dp_info(), indep_dp_store_addr=None)
+            await cell.init(ckpt_load_config=None, indep_dp_info=make_indep_dp_info(), indep_dp_store_addr=None)
 
         assert not cell.is_alive
         for handle in get_raw_actor_handles(cell):
@@ -414,3 +414,77 @@ class TestFullLifecycle:
         cell._mark_as_alive(indep_dp_info=info_v2)
         assert cell.is_alive
         assert cell.indep_dp_info.quorum_id == 2
+
+
+class _HangingWorkerHandle:
+    def __init__(self, released: asyncio.Event) -> None:
+        self._released = released
+        self.killed = False
+
+    async def update_weights(self, **_kwargs) -> str:
+        await self._released.wait()
+        return "done"
+
+    async def kill_self(self) -> None:
+        self.killed = True
+
+    async def wait_dead(self, *, timeout: float) -> None:
+        assert self.killed
+
+
+class _SlowWorkerHandle:
+    def __init__(self, delay: float) -> None:
+        self._delay = delay
+
+    async def update_weights(self, **_kwargs) -> str:
+        await asyncio.sleep(self._delay)
+        return "done"
+
+
+class TestExecuteDeadline:
+    async def test_an_update_that_never_returns_errors_and_kills_the_cell(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A trainer cell hung on a weight update would stall the whole run instead of being replaced."""
+        cell = make_alive_cell(0, alive_cell_indices=[0])
+        released = asyncio.Event()
+        handles = [_HangingWorkerHandle(released) for _ in range(2)]
+        monkeypatch.setattr(cell, "_get_worker_handles", lambda: handles)
+
+        with pytest.raises(TimeoutError):
+            await cell.execute("update_weights", timeout=0.05, info=None)
+
+        assert cell.is_errored
+        assert all(handle.killed for handle in handles)
+
+    async def test_a_call_that_beats_its_deadline_returns_normally(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A deadline that fires on a healthy update would recycle cells that are doing their job."""
+        cell = make_alive_cell(0, alive_cell_indices=[0])
+        monkeypatch.setattr(cell, "_get_worker_handles", lambda: [_SlowWorkerHandle(0.01) for _ in range(2)])
+
+        assert await cell.execute("update_weights", timeout=30.0, info=None) == ["done", "done"]
+        assert cell.is_alive
+
+    async def test_a_call_without_a_deadline_is_left_to_run_as_long_as_it_needs(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Training steps and checkpoint loads legitimately outlast any weight-update deadline."""
+        cell = make_alive_cell(0, alive_cell_indices=[0])
+        monkeypatch.setattr(cell, "_get_worker_handles", lambda: [_SlowWorkerHandle(0.2)])
+
+        assert await cell.execute("update_weights", info=None) == ["done"]
+        assert cell.is_alive
+
+    async def test_a_timed_out_call_that_must_not_kill_leaves_the_cell_alive(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The deadline reports the failure the same way any other one does, kill decision included."""
+        cell = make_alive_cell(0, alive_cell_indices=[0])
+        released = asyncio.Event()
+        monkeypatch.setattr(cell, "_get_worker_handles", lambda: [_HangingWorkerHandle(released)])
+
+        with pytest.raises(TimeoutError):
+            await cell.execute("update_weights", kill_on_failure=False, timeout=0.05, info=None)
+
+        assert cell.is_alive
+        assert not cell.is_errored

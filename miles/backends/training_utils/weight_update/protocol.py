@@ -3,13 +3,16 @@
 from abc import ABC, abstractmethod
 from argparse import Namespace
 from collections.abc import Callable, Iterator, Sequence
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 import torch
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
+
+if TYPE_CHECKING:
+    from miles.backends.training_utils.weight_update.rollout_cell_updater import _RolloutCellUpdater
 
 
 class WeightTransferProtocol(ABC):
@@ -23,6 +26,8 @@ class WeightTransferProtocol(ABC):
 
     required_placement: ClassVar[WeightUpdatePlacement] = WeightUpdatePlacement(gather_pp=False)
     supports_lora: ClassVar[bool] = False
+    # Opt in only when separate instances own independent transfer state.
+    supports_receiver_pools: ClassVar[bool] = False
     use_weight_update_session: ClassVar[bool] = True
     needs_base_resync_for_lora: bool = False
 
@@ -32,6 +37,7 @@ class WeightTransferProtocol(ABC):
         self.is_sender: bool | None = None
         self.group_name = "miles"
         self.update_weight_metrics: dict[str, float] = {}
+        self.cell_updaters_of_cell_id: dict[str, _RolloutCellUpdater] = {}
 
     @abstractmethod
     def connect(
@@ -39,6 +45,7 @@ class WeightTransferProtocol(ABC):
         rollout_engines: Sequence[SGLangApiClient],
         engine_gpu_counts: Sequence[int] | None,
         engine_gpu_offsets: Sequence[int] | None,
+        engine_cell_ids: Sequence[str],
         parallel_state: ParallelState,
         placement: WeightUpdatePlacement,
         selector: str,
@@ -71,10 +78,10 @@ class WeightTransferProtocol(ABC):
 
 
 def get_weight_transfer_protocol(args: Namespace) -> WeightTransferProtocol:
-    mode = getattr(args, "update_weight_transfer_mode", "broadcast")
+    mode = args.update_weight_transfer_mode
     if mode not in ("broadcast", "broadcast_packed", "p2p", "disk-delta"):
         raise ValueError(f"Unknown --update-weight-transfer-mode {mode!r}")
-    if mode == "broadcast_packed" and (getattr(args, "train_backend", None) != "megatron" or args.colocate):
+    if mode == "broadcast_packed" and (args.train_backend != "megatron" or args.colocate):
         raise ValueError("broadcast_packed requires Megatron non-colocated weight transfer")
     if args.colocate:
         from miles.backends.training_utils.weight_update.protocols.cuda_ipc import UpdateWeightFromTensor

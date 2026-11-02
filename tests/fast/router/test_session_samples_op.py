@@ -23,9 +23,11 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from tests.fast.fixtures.session_fixtures import make_session_server_config
-from tests.fast.rollout.session.test_samples import _make_record
+from tests.fast.rollout.session.test_samples import _make_record, _routed_experts, _store_record
+from tests.fast.utils.output_store.test_plan import fake_store_refs
 
 from miles.rollout.session.core import SessionCore
+from miles.rollout.session.errors import OutputStoreContractError
 from miles.rollout.session.linear_trajectory import SessionRegistry
 from miles.rollout.session.samples.codec import decode_samples_and_merge_input_sample
 from miles.rollout.session.sessions import setup_session_routes
@@ -199,8 +201,12 @@ async def test_assembled_sample_golden(core):
     assert m.rollout_log_probs == [-0.125, -0.25, 0.0, 0.0, -0.5, -1.0]
     assert m.status == Sample.Status.COMPLETED
     assert m.weight_versions == [
-        WeightVersionsPerCall(spans=[WeightVersionSpan(version="w1", abs_start=3, abs_end=5)]),
-        WeightVersionsPerCall(spans=[WeightVersionSpan(version="w2", abs_start=7, abs_end=9)]),
+        WeightVersionsPerCall(
+            spans=[WeightVersionSpan(version="w1", abs_start=3, abs_end=5)], output_start=3, prompt_tokens=3
+        ),
+        WeightVersionsPerCall(
+            spans=[WeightVersionSpan(version="w2", abs_start=7, abs_end=9)], output_start=7, prompt_tokens=7
+        ),
     ]
     assert np.array_equal(m.rollout_routed_experts, _expected_r3(100, 8))
     assert m.prefix_cache_info.to_dict() == {"cached_tokens": 5, "total_prompt_tokens": 10}
@@ -237,6 +243,42 @@ async def test_spec_info_crosses_samples_wire(spec_core):
         "spec_verify_ct": 2,
         "completion_tokens": 7,
     }
+
+
+async def test_assembled_sample_carries_prefill_spans_per_turn(core):
+    """Each turn's prompt KV versions land on that turn's call in absolute coordinates, starting at token 0."""
+    records = _two_turn_records()
+    records[0].response["choices"][0]["meta_info"]["prefill_weight_versions"] = [
+        {"version": "w1", "start": 0, "end": 3}
+    ]
+    records[1].response["choices"][0]["meta_info"]["prefill_weight_versions"] = [
+        {"version": "w1", "start": 0, "end": 5},
+        {"version": "w2", "start": 5, "end": 7},
+    ]
+    sid = await _make_session(core, records, _ACCUMULATED)
+    status, payload = await _collect_via_op(core, sid)
+    assert status == 200
+    samples, _ = _new_pipeline(payload, _input_sample())
+    (m,) = samples
+
+    assert m.weight_versions == [
+        WeightVersionsPerCall(
+            spans=[WeightVersionSpan(version="w1", abs_start=3, abs_end=5)],
+            prefill_spans=[WeightVersionSpan(version="w1", abs_start=0, abs_end=3)],
+            output_start=3,
+            prompt_tokens=3,
+        ),
+        WeightVersionsPerCall(
+            spans=[WeightVersionSpan(version="w2", abs_start=7, abs_end=9)],
+            prefill_spans=[
+                WeightVersionSpan(version="w1", abs_start=0, abs_end=5),
+                WeightVersionSpan(version="w2", abs_start=5, abs_end=7),
+            ],
+            output_start=7,
+            prompt_tokens=7,
+        ),
+    ]
+    m.validate()
 
 
 async def test_truncation_golden(core):
@@ -367,6 +409,52 @@ async def test_addition_gap_returns_422(addition_core):
 
     health = await addition_core.health()
     assert health.status_code == 200
+
+
+def _two_turn_store_records(turn2_start_len: int | None = 4):
+    """The _two_turn_addition_records trajectory with its replay arrays in the output store."""
+    full = _expected_r3(100, 8)
+    start = turn2_start_len or 0
+    turn1, arrays1 = _store_record(
+        "turn1", [1, 2, 3], [10, 11], routed_experts=full[:4], routed_experts_start_len=0 if turn2_start_len else None
+    )
+    turn2, arrays2 = _store_record(
+        "turn2",
+        [1, 2, 3, 10, 11, 20, 21],
+        [30, 31],
+        routed_experts=full[start:],
+        routed_experts_start_len=turn2_start_len,
+    )
+    return [turn1, turn2], {"turn1": arrays1, "turn2": arrays2}
+
+
+@pytest.mark.parametrize(("use_addition", "turn2_start_len"), [(True, 4), (False, None)])
+async def test_store_assembled_sample_matches_full_reference(
+    addition_core, core, monkeypatch, use_addition, turn2_start_len
+):
+    """The plan crosses the wire and materializes the routed experts the inline fixtures assemble."""
+    fake_store_refs(monkeypatch)
+    session_core = addition_core if use_addition else core
+    records, objects = _two_turn_store_records(turn2_start_len)
+    sid = await _make_session(session_core, records, _ACCUMULATED)
+    status, payload = await _collect_via_op(session_core, sid)
+    assert status == 200, payload
+    samples, _ = _new_pipeline(payload, _input_sample())
+    (m,) = samples
+
+    assert m.tokens == _ACCUMULATED and m.loss_mask == [1, 1, 0, 0, 1, 1]
+    assert m.rollout_routed_experts is None and m.rollout_sampling_mask is None
+    assert np.array_equal(_routed_experts(m, objects), _expected_r3(100, 8))
+    assert [ref.key for ref in m.rollout_store_plan.owned_refs] == ["turn1", "turn2"]
+
+
+async def test_store_gap_is_an_output_store_contract_error(addition_core, monkeypatch):
+    """Unlike the inline gap's 422, a StorePlanError reaches the client as 424, which stops the rollout."""
+    fake_store_refs(monkeypatch)
+    records, _ = _two_turn_store_records(turn2_start_len=5)
+    sid = await _make_session(addition_core, records, _ACCUMULATED)
+    with pytest.raises(OutputStoreContractError, match="continues from row 5, but only 4 rows precede it"):
+        await _collect_via_op(addition_core, sid)
 
 
 # ── empty_reason discriminator ──

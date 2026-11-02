@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 _TESTS_ROOT = Path(__file__).resolve().parents[1]
-_SNAPSHOTS_ROOT = _TESTS_ROOT / "snapshots"
+_SNAPSHOTS_ROOTS = (_TESTS_ROOT / "snapshots", _TESTS_ROOT / "snapshots_before")
 
 
 def test_only_the_session_fixture_starts_the_ray_cluster():
@@ -25,7 +25,11 @@ def _test_files_calling_ray_init() -> list[Path]:
     # Snapshot fixtures include directories named like modules, and the launch scripts
     # recorded under them are rendered output rather than code this suite runs.
     candidates = (path for path in _TESTS_ROOT.rglob("*.py") if path.is_file())
-    return [path for path in candidates if _SNAPSHOTS_ROOT not in path.parents and _calls_ray_init(path)]
+    return [
+        path
+        for path in candidates
+        if not any(root in path.parents for root in _SNAPSHOTS_ROOTS) and _calls_ray_init(path)
+    ]
 
 
 def _calls_ray_init(path: Path) -> bool:

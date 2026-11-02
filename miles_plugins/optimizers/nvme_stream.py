@@ -33,19 +33,27 @@ rest alone. Those buffers are unlinked once mapped, so they show up in ``df``, n
 """
 
 import atexit
-import ctypes
-import errno
 import json
 import logging
 import os
 import shutil
-import tempfile
 import time
+from collections import deque
+from concurrent.futures import Future, ThreadPoolExecutor
 from types import MethodType
 from typing import TYPE_CHECKING, NamedTuple
 
 import torch
 from megatron.core.fp8_utils import is_float8tensor
+
+from miles.utils.disk_backed_tensor import (
+    disk_backed_like,
+    flush_mapping,
+    is_disk_backed,
+    optimizer_state_dir_root,
+    purge_rank_dir,
+    reserve_file,
+)
 
 if TYPE_CHECKING:
     from megatron.core.optimizer.distrib_optimizer import DistributedOptimizer
@@ -79,23 +87,9 @@ def _resize(tensor: torch.Tensor, numel: int) -> None:
     tensor.untyped_storage().resize_(numel * tensor.element_size())
 
 
-def _reserve(fd: int, nbytes: int) -> None:
-    """Reserve blocks up front, so a full filesystem fails here as ENOSPC.
-
-    Sizing a file with ftruncate alone leaves it sparse: the mapping succeeds and the
-    process dies on SIGBUS at first touch instead, with nothing to point at.
-    """
-    try:
-        os.posix_fallocate(fd, 0, nbytes)
-    except OSError as e:
-        if e.errno not in (errno.EOPNOTSUPP, errno.ENOTSUP, errno.EINVAL):
-            raise
-        os.ftruncate(fd, nbytes)
-
-
 def _allocate_file(path: str, nbytes: int) -> int:
     fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
-    _reserve(fd, nbytes)
+    reserve_file(fd, nbytes)
     return fd
 
 
@@ -109,41 +103,53 @@ def _rw_full(op, fd: int, offset: int, buf) -> None:
         done += n
 
 
-def _disk_backed_like(tensor: torch.Tensor, directory: str) -> torch.Tensor:
-    nbytes = max(tensor.numel() * tensor.element_size(), 1)
-    fd, path = tempfile.mkstemp(dir=directory, suffix=".bin")
+def _drop_from_page_cache(fd: int) -> None:
+    """Write the file back and drop it from the host page cache; DONTNEED drops only clean pages."""
+    os.fdatasync(fd)
+    os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+
+
+def _drop_path_from_page_cache(path: str) -> None:
+    fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC)
     try:
-        _reserve(fd, nbytes)
+        _drop_from_page_cache(fd)
     finally:
         os.close(fd)
-    storage = torch.UntypedStorage.from_file(path, shared=True, nbytes=nbytes)
-    os.unlink(path)
-    buffer = torch.empty(0, dtype=tensor.dtype).set_(storage, 0, tensor.shape)
-    buffer._miles_disk_backed = True
-    return buffer
 
 
-def _is_disk_backed(tensor: torch.Tensor) -> bool:
-    return getattr(tensor, "_miles_disk_backed", False)
+class _PageCacheWindow:
+    """Caps the page cache of the store's files and their checkpoint copies; no flush waits on its own writeback.
 
-
-_MS_SYNC = 4
-_libc = ctypes.CDLL(None, use_errno=True)
-
-
-def _flush_mapping(tensor: torch.Tensor) -> int:
-    """msync one file-backed buffer, returning the bytes it covered.
-
-    Checkpointing calls os.fsync on its own files, which waits on the kernel's writeback
-    queue -- and our mappings are rewritten every step, so that queue is carrying gigabytes
-    of our dirty pages by then. Flushing them here keeps that cost attributable and cheap
-    to repeat: msync over an already-clean mapping returns immediately.
+    A writer thread drops each released file in release order; both syscalls release the GIL, so a file's
+    writeback overlaps the buckets after it. A release waits only while more than the cap is still waiting to be
+    dropped, and only for the oldest files. The bucket being read for the next step comes on top of the cap.
     """
-    storage = tensor.untyped_storage()
-    nbytes = storage.nbytes()
-    if _libc.msync(ctypes.c_void_p(storage.data_ptr()), ctypes.c_size_t(nbytes), _MS_SYNC) != 0:
-        raise OSError(ctypes.get_errno(), "msync of optimizer state mapping failed")
-    return nbytes
+
+    def __init__(self, cap_bytes: int):
+        self._cap_bytes = cap_bytes
+        self._writer = ThreadPoolExecutor(max_workers=1, thread_name_prefix="nvme-page-cache")
+        self._waiting: deque[tuple[int, Future]] = deque()
+        self._waiting_bytes = 0
+
+    def release(self, file: int | str, nbytes: int) -> None:
+        """Queue a file just written or read, ``nbytes`` of it now in the page cache, to be dropped.
+
+        ``file`` is a store file's fd, or the path of a checkpoint copy, which the writer opens and closes itself.
+        """
+        drop = _drop_path_from_page_cache if isinstance(file, str) else _drop_from_page_cache
+        self._waiting.append((nbytes, self._writer.submit(drop, file)))
+        self._waiting_bytes += nbytes
+        while self._waiting and (self._waiting_bytes > self._cap_bytes or self._waiting[0][1].done()):
+            self._retire_oldest()
+
+    def drain(self) -> None:
+        while self._waiting:
+            self._retire_oldest()
+
+    def _retire_oldest(self) -> None:
+        nbytes, dropped = self._waiting.popleft()
+        self._waiting_bytes -= nbytes
+        dropped.result()  # a failed writeback surfaces here, on the training thread
 
 
 def plan_buckets(entries_by_ddp_bucket: dict, limit: int = BUCKET_NUMEL_LIMIT) -> list[list[_Entry]]:
@@ -214,12 +220,15 @@ class _Bucket:
         self.numel = sum(e.main_param.numel() for e in entries)
 
         self.offsets: dict[str, list[int]] = {}
+        self.segment_nbytes: dict[str, int] = {}  # page-aligned, which is what a segment occupies in the cache
         at = 0
         for segment in SEGMENTS:
             self.offsets[segment] = []
+            start = at
             for entry in entries:
                 self.offsets[segment].append(at)
                 at += _align(entry.main_param.numel() * dtypes[segment].itemsize)
+            self.segment_nbytes[segment] = at - start
         self.nbytes = at
         self.fd = _allocate_file(path, at)
         self.moments_ready = False
@@ -243,8 +252,10 @@ class _Bucket:
     def fetch(self) -> int:
         return self._move(SEGMENTS if self.moments_ready else SEGMENTS[:1], to_disk=False)
 
-    def flush(self, segments=SEGMENTS) -> int:
+    def flush(self, segments=SEGMENTS, *, page_cache: _PageCacheWindow | None) -> int:
         moved = self._move(segments, to_disk=True)
+        if page_cache is not None:
+            page_cache.release(self.fd, nbytes=sum(self.segment_nbytes[segment] for segment in segments))
         self.moments_ready = self.moments_ready or tuple(segments) == SEGMENTS
         return moved
 
@@ -272,9 +283,11 @@ class NVMeOptimizerStateStore:
         chunk_mb: int,
         moment_dtype: str = "fp32",
         allow_fresh_state: bool = False,
+        page_cache: _PageCacheWindow | None = None,
     ):
         self.dist_opt = distrib_optimizer
         self._allow_fresh_state = allow_fresh_state
+        self._page_cache = page_cache
         self.uid = NVMeOptimizerStateStore._next_uid
         NVMeOptimizerStateStore._next_uid += 1
         config = distrib_optimizer.config
@@ -435,8 +448,12 @@ class NVMeOptimizerStateStore:
         from megatron.core.transformer.module import param_is_not_shared
 
         dist_opt = self.dist_opt
-        tp_group = getattr(dist_opt, "tp_group", None)
-        expert_tp_group = getattr(dist_opt, "expert_tp_group", None)
+        tp_group = getattr(
+            dist_opt, "tp_group", None
+        )  # config-access-exempt: Megatron optimizer versions may omit the tensor parallel group
+        expert_tp_group = getattr(
+            dist_opt, "expert_tp_group", None
+        )  # config-access-exempt: Megatron optimizer versions may omit the expert tensor parallel group
         sum_sq = torch.zeros((), dtype=torch.float32, device=torch.cuda.current_device())
         for bucket in self.buckets:
             for entry in bucket.entries:
@@ -446,7 +463,9 @@ class NVMeOptimizerStateStore:
                     and param_is_not_tensor_parallel_duplicate(
                         main, tp_group=tp_group, expert_tp_group=expert_tp_group
                     )
-                    and not getattr(main, "_is_witness_param", False)
+                    and not getattr(
+                        main, "_is_witness_param", False
+                    )  # config-access-exempt: only witness parameters carry the witness marker
                 ):
                     sum_sq += torch.linalg.vector_norm(self._model_grad_shard(entry), dtype=torch.float32) ** 2
         return [sum_sq.sqrt().reshape(1)]
@@ -483,10 +502,11 @@ class NVMeOptimizerStateStore:
             bucket.adam.step()
             self._detach_grads(bucket.entries)
             self._copy_main_to_model_params(bucket.entries)
-            written += bucket.flush()
+            written += bucket.flush(page_cache=self._page_cache)
         if self._fp32_adam is not None:
             self._sync_lr_wd(self._fp32_adam, self._fp32_group_indices)
             self._fp32_adam.step()
+        self._drain_page_cache_window()
         logger.info(
             f"NVMe streaming step: {len(self.buckets)} buckets, read {read / 1024**3:.1f} GB, "
             f"wrote {written / 1024**3:.1f} GB in {time.monotonic() - started:.1f}s"
@@ -504,9 +524,12 @@ class NVMeOptimizerStateStore:
                 assert param_range.size == entry.main_param.nelement()
                 source_shard = entry.model_param.view(-1)[param_range.start : param_range.end]
                 entry.main_param.copy_(source_shard)
-            written += bucket.flush(segments=("main",))
-            os.fdatasync(bucket.fd)
-            os.posix_fadvise(bucket.fd, 0, bucket.offsets["exp_avg"][0], os.POSIX_FADV_DONTNEED)
+            written += bucket.flush(segments=("main",), page_cache=self._page_cache)
+            if self._page_cache is None:
+                # Initialization writes the whole main state in one pass, just before the checkpoint load and
+                # the engines' pinned allocations, so even with no cap it leaves none of that cached.
+                _drop_from_page_cache(bucket.fd)
+        self._drain_page_cache_window()
         return written
 
     @torch.no_grad()
@@ -515,7 +538,14 @@ class NVMeOptimizerStateStore:
             bucket.materialize_main()
         copy_fn()
         for bucket in self.buckets:
-            bucket.flush(segments=("main",))
+            bucket.flush(segments=("main",), page_cache=self._page_cache)
+        self._drain_page_cache_window()
+
+    def _drain_page_cache_window(self) -> None:
+        # Every operation on the store's files drains the window before it returns, so no file stays cached past it
+        # and a failed writeback fails that operation rather than a later one, or none after the last.
+        if self._page_cache is not None:
+            self._page_cache.drain()
 
     @torch.no_grad()
     def save_to(self, base_dir: str) -> None:
@@ -534,7 +564,14 @@ class NVMeOptimizerStateStore:
             ],
         }
         for bucket in self.buckets:
-            shutil.copyfile(bucket.path, os.path.join(dirpath, os.path.basename(bucket.path)))
+            copy = os.path.join(dirpath, os.path.basename(bucket.path))
+            shutil.copyfile(bucket.path, copy)
+            if self._page_cache is not None:
+                # Both ends of the copy are a full bucket in the cache; both go through the window, so one bucket's
+                # writeback overlaps the next bucket's copy.
+                self._page_cache.release(bucket.fd, nbytes=bucket.nbytes)
+                self._page_cache.release(copy, nbytes=bucket.nbytes)
+        self._drain_page_cache_window()
         if self._fp32_adam is not None:
             torch.save(self._fp32_adam.state_dict(), os.path.join(dirpath, "fp32_resident_optimizer.pt"))
         with open(os.path.join(dirpath, "manifest.json"), "w") as f:
@@ -575,11 +612,16 @@ class NVMeOptimizerStateStore:
         for bucket, meta in zip(self.buckets, manifest["buckets"], strict=True):
             assert meta["numel"] == bucket.numel
             assert meta["entry_numels"] == [e.main_param.numel() for e in bucket.entries]
-            shutil.copyfile(os.path.join(dirpath, meta["file"]), bucket.path)
+            source = os.path.join(dirpath, meta["file"])
+            shutil.copyfile(source, bucket.path)
+            if self._page_cache is not None:
+                self._page_cache.release(bucket.fd, nbytes=bucket.nbytes)
+                self._page_cache.release(source, nbytes=bucket.nbytes)
             for group, step in zip(bucket.adam.param_groups, meta["steps"], strict=True):
                 if step:
                     group["step"] = step
             bucket.allocate_moments()
+        self._drain_page_cache_window()
         fp32_state = os.path.join(dirpath, "fp32_resident_optimizer.pt")
         if self._fp32_adam is not None and os.path.isfile(fp32_state):
             self._fp32_adam.load_state_dict(torch.load(fp32_state))
@@ -596,8 +638,12 @@ def setup_optimizer_state_streaming(args, optimizer) -> None:
     """
     from megatron.core.optimizer.distrib_optimizer import DistributedOptimizer
 
-    dir_root = _state_dir_root(args)
-    _purge_rank_dir(dir_root)
+    dir_root = optimizer_state_dir_root(args)
+    purge_rank_dir(dir_root)
+    # One window per rank: the chained dense and expert stores share this process's page cache.
+    page_cache = None
+    if args.stream_optimizer_state_page_cache_mb is not None:
+        page_cache = _PageCacheWindow(cap_bytes=args.stream_optimizer_state_page_cache_mb * 1024 * 1024)
     stores = []
     for dist_opt in optimizer.chained_optimizers:
         assert isinstance(
@@ -614,7 +660,8 @@ def setup_optimizer_state_streaming(args, optimizer) -> None:
             dir_root,
             args.offload_train_disk_chunk_mb,
             args.stream_optimizer_state_moment_dtype,
-            allow_fresh_state=args.no_load_optim,
+            allow_fresh_state=args.backend.no_load_optim,
+            page_cache=page_cache,
         )
         written = store.initialize_main_from_model_params()
         logger.info(
@@ -636,7 +683,7 @@ def setup_muon_state_on_disk(args) -> None:
     base = defining_module.ChunkedOptimizerStateOffloader
     if base.__name__ == "DiskOptimizerStateOffloader":
         return
-    rank_dir = _purge_rank_dir(_state_dir_root(args))
+    rank_dir = purge_rank_dir(optimizer_state_dir_root(args))
 
     class DiskOptimizerStateOffloader(base):
         state_dir = rank_dir
@@ -646,9 +693,9 @@ def setup_muon_state_on_disk(args) -> None:
             # adopt_cpu_optimizer_state reallocates every non-pinned CPU tensor it finds in
             # optimizer.state, and ours never report pinned, so each checkpoint would otherwise
             # copy the whole state into fresh mappings.
-            if _is_disk_backed(tensor):
+            if is_disk_backed(tensor):
                 return tensor
-            buffer = _disk_backed_like(tensor, self.state_dir)
+            buffer = disk_backed_like(tensor, self.state_dir)
             self._disk_bytes += buffer.numel() * buffer.element_size()
             return buffer
 
@@ -661,35 +708,14 @@ def setup_muon_state_on_disk(args) -> None:
             super().synchronize_for_checkpoint()
             flushed = 0
             for state in self._cpu_state.values():
-                flushed += sum(_flush_mapping(t) for t in state.values() if _is_disk_backed(t))
-            flushed += sum(_flush_mapping(t) for t in self._cpu_master.values() if _is_disk_backed(t))
+                flushed += sum(flush_mapping(t) for t in state.values() if is_disk_backed(t))
+            flushed += sum(flush_mapping(t) for t in self._cpu_master.values() if is_disk_backed(t))
             logger.info(f"Muon disk state flushed before checkpoint: {flushed / 1024**3:.2f} GB")
 
     # optimizer.py imported the name directly, so rebinding only the defining module is a no-op.
     defining_module.ChunkedOptimizerStateOffloader = DiskOptimizerStateOffloader
     consuming_module.ChunkedOptimizerStateOffloader = DiskOptimizerStateOffloader
     logger.info(f"Muon optimizer state on disk: buffers backed by files under {rank_dir}")
-
-
-def _state_dir_root(args) -> str:
-    return os.path.join(args.offload_train_disk_dir, "optimizer_state")
-
-
-def _purge_rank_dir(dir_root: str) -> str:
-    """Drop everything this rank left behind, before any store claims its own path.
-
-    A store only removes the exact path it is about to use, so state written under a
-    different layout -- another parallelism, a renamed directory scheme -- survives
-    forever, and a run killed by the scheduler never reaches its atexit cleanup either.
-    On a 744B DP1 model that is hundreds of GB per rank per stale run, and node-local
-    NVMe fills up until allocation fails. The rank subtree is exclusively this rank's,
-    so clearing it whole is safe, and it must happen before the chained dense and
-    expert stores are constructed, since they share it.
-    """
-    rank_dir = os.path.join(dir_root, f"rank{torch.distributed.get_rank():05d}")
-    shutil.rmtree(rank_dir, ignore_errors=True)
-    os.makedirs(rank_dir, exist_ok=True)
-    return rank_dir
 
 
 def _record_grad_norm_into(optimizer, stores: list[NVMeOptimizerStateStore]) -> None:

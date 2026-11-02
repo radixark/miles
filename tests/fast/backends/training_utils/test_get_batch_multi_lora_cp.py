@@ -54,8 +54,7 @@ def _make_batch(max_seqlen: int | None = None) -> dict:
 
 @pytest.fixture(autouse=True)
 def _stub_cuda(monkeypatch):
-    monkeypatch.setattr(torch.Tensor, "cuda", lambda self, *args, **kwargs: self, raising=False)
-    monkeypatch.setattr(torch.cuda, "current_device", lambda: "cpu", raising=False)
+    monkeypatch.setattr(data_mod.current_platform, "current_device", lambda: torch.device("cpu"))
 
 
 def _patch_state(monkeypatch, state: SimpleNamespace) -> None:

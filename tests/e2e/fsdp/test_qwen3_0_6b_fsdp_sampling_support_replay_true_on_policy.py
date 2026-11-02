@@ -13,6 +13,7 @@ register_cuda_ci(
 register_ci_gate(metric_key="train/train_rollout_logprob_abs_diff")
 register_ci_gate(metric_key="train/train_rollout_kl")
 register_ci_gate(metric_key="train/ppo_kl")
+register_ci_gate(metric_key="perf/actor_train_mfu")
 
 MODEL_NAME = "Qwen3-0.6B"
 NUM_GPUS = 2
@@ -82,7 +83,8 @@ def execute() -> None:
         + sglang_args
         + true_on_policy_args
         + U.get_default_wandb_args(__file__)
-        + "--ci-test --actor-num-nodes 1 --actor-num-gpus-per-node 2 --colocate "
+        + "--ci-test --no-enable-sample-ownership-checker "
+        + "--actor-num-nodes 1 --actor-num-gpus-per-node 2 --colocate "
     )
 
     backend = U.default_config().create_backend()

@@ -6,8 +6,15 @@ register_cuda_ci(
     est_time=1200, suite="stage-c-2-gpu-h200", labels=["sglang"], hardware=["hopper", "blackwell"], num_gpus=2
 )
 register_rocm_ci(est_time=700, suite="nightly-stage-c-2-gpu-mi350", labels=["sglang"])
-register_ci_gate(metric_key="rollout/tito_session_mismatch_rate/v1/assistant_text")
-register_ci_gate(metric_key="rollout/tito_session_mismatch_rate/v2/assistant_text")
+# Each rate covers 32 sessions, so it moves in 1/32 steps and healthy runs land up to 0.125 above the mean.
+register_ci_gate(
+    metric_key="rollout/tito_session_mismatch_rate/v1/assistant_text",
+    constraint={"rel_up": 1.0, "abs_floor_up": 0.15, "rel_down": 1.0},
+)
+register_ci_gate(
+    metric_key="rollout/tito_session_mismatch_rate/v2/assistant_text",
+    constraint={"rel_up": 1.0, "abs_floor_up": 0.15, "rel_down": 1.0},
+)
 
 
 CONFIG = ModelConfig(

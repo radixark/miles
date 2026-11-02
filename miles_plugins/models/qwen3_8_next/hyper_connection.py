@@ -173,7 +173,7 @@ class Qwen38NextPLEHyperConnection(Qwen38NextHyperConnection):
         overwritten by a later microbatch, so the checkpointed pass enqueues its batch
         and the recompute pass pops it. FIFO matches non-interleaved 1F1B.
         """
-        if not hasattr(self, "_ple_recompute_fifo"):
+        if not hasattr(self, "_ple_recompute_fifo"):  # config-access-exempt: the recompute FIFO is created lazily
             self._ple_recompute_fifo = []
 
         if is_checkpointing() and torch.is_grad_enabled():
@@ -219,7 +219,9 @@ class Qwen38NextPLEHyperConnection(Qwen38NextHyperConnection):
         ngram_ids, cu_seqlens = self._resolve_ple_batch()
 
         sp_size = 1
-        if getattr(self.config, "sequence_parallel", False):
+        if getattr(
+            self.config, "sequence_parallel", False
+        ):  # config-access-exempt: model configs may omit sequence_parallel
             sp_size = get_tensor_model_parallel_world_size()
         if sp_size > 1:
             sp_rank = get_tensor_model_parallel_rank()

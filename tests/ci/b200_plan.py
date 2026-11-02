@@ -5,7 +5,7 @@ import os
 import shlex
 
 from tests.ci.ci_policy import resolve_policy
-from tests.ci.ci_register import HWBackend
+from tests.ci.ci_register import HWBackend, file_timeout
 from tests.ci.file_run import collect_snapshot_tests
 from tests.ci.labels import KNOWN_LABELS
 from tests.ci.run_suite import filter_tests
@@ -40,7 +40,7 @@ def plan_jobs(registrations, suites, cadence, labels, match_all_labels=False):
                     "suite": suite,
                     "num_gpus": test.required_gpus,
                     "runs_on": json.dumps(["b200", f"{test.required_gpus}gpu"]),
-                    "timeout_minutes": math.ceil((max(1800, test.est_time * 1.25) + 1200) / 60),
+                    "timeout_minutes": math.ceil((file_timeout(test.est_time, test.labels, 1800) + 1200) / 60),
                     "est_time": test.est_time,
                 }
             )

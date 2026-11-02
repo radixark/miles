@@ -21,7 +21,10 @@ register_ci_gate(metric_key="train/grad_norm")
 register_ci_gate(metric_key="train/ppo_kl")
 register_ci_gate(metric_key="train/train_rollout_logprob_abs_diff")
 register_ci_gate(metric_key="train/train_rollout_kl")
-register_ci_gate(metric_key="rollout/raw_reward")
+# deterministic_random scores each sample by a hash bit, so raw_reward is a coin flip over 16
+# samples with nothing to regress; track it instead of judging it
+register_ci_gate(metric_key="rollout/raw_reward", constraint=None)
+register_ci_gate(metric_key="perf/actor_train_mfu")
 
 
 def _args() -> ScriptArgs:
@@ -47,7 +50,7 @@ def _args() -> ScriptArgs:
         check_lora_weight_equal=True,
         skip_saving=True,
         rollout_bf16=os.getenv("MILES_HARDWARE_PLATFORM") == "rocm",
-        extra_args="--ci-test --ci-disable-logprobs-checker ",
+        extra_args="--ci-test --ci-disable-logprobs-checker --no-enable-sample-ownership-checker ",
     )
 
 

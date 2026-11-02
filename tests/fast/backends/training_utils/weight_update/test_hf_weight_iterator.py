@@ -7,7 +7,7 @@ shares.
 
 from tests.ci.ci_register import register_cpu_ci
 
-register_cpu_ci(est_time=60, suite="stage-a-cpu", labels=[])
+register_cpu_ci(est_time=60, suite="stage-b-cpu", labels=["weight-update"])
 
 
 from argparse import Namespace
@@ -139,7 +139,7 @@ def test_only_tower_keys_stream_with_or_without_an_index(tmp_path):
         root = tmp_path / ("indexed" if indexed else "flat")
         root.mkdir()
         ckpt = _tower_checkpoint(root, indexed=indexed)
-        with patch(f"{_TOWERS_MODULE}.torch.cuda.current_device", return_value="cpu"):
+        with patch(f"{_TOWERS_MODULE}.current_platform.current_device", return_value=torch.device("cpu")):
             units = list(checkpoint_towers.iter_checkpoint_tower_units(ckpt, materialize=True))
         assert _tower_names(units) == [
             "audio.encoder.weight",
@@ -161,7 +161,7 @@ def test_non_materializing_ranks_yield_nothing_and_read_nothing(tmp_path):
 def test_the_checkpoint_is_read_once_per_path(tmp_path):
     ckpt = _tower_checkpoint(tmp_path, indexed=True)
     checkpoint_towers._load_towers.cache_clear()
-    with patch(f"{_TOWERS_MODULE}.torch.cuda.current_device", return_value="cpu"):
+    with patch(f"{_TOWERS_MODULE}.current_platform.current_device", return_value=torch.device("cpu")):
         list(checkpoint_towers.iter_checkpoint_tower_units(ckpt, materialize=True))
         with patch(f"{_TOWERS_MODULE}.safe_open") as opened:
             list(checkpoint_towers.iter_checkpoint_tower_units(ckpt, materialize=True))

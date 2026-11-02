@@ -57,7 +57,9 @@ def _decode_forward_backward(message) -> dict:
             kind = value.WhichOneof("value")
             if kind is None:
                 raise UserInputError(f"loss_fn_config[{name!r}]: missing number or text value")
-            loss_fn_config[name] = getattr(value, kind)
+            loss_fn_config[name] = getattr(
+                value, kind
+            )  # config-access-exempt: attribute selected at runtime from kind
 
     decoded = {
         "model_id": message.model_id,

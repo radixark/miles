@@ -101,12 +101,11 @@ message/token ownership contract.
 ```python
 class CustomDataSource(DataSource):
     def get_samples(self, num_samples) -> list[list[Sample]]: ...
-    def add_samples(self, samples) -> None: ...
-    def save(self, rollout_id) -> None: ...
-    def load(self, rollout_id=None) -> None: ...
+    def save(self, directory: Path) -> None: ...
+    def load(self, directory: Path) -> None: ...
 ```
 
-**Default:** `miles.rollout.data_source.RolloutDataSourceWithBuffer`.
+**Default:** `miles.rollout.data_source.RolloutDataSource`.
 
 ### `--eval-function-path`
 
@@ -327,5 +326,7 @@ ROLLOUT_ARGS+=(
 ```
 
 That is the entire delta from the stock GRPO recipe, with no source changes to Miles.
+
+For built-in group-relative reward shaping, see [Length penalties](/advanced/algorithms/length-penalties).
 
 → Next: [Server arguments reference](/user-guide/cli-reference)

@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import os
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any, Generic, TypeVar
 
@@ -26,6 +26,25 @@ class MutableBox(Generic[_T]):
     value: _T
 
 
+def split_evenly(total: int, num_parts: int) -> list[slice]:
+    quotient, remainder = divmod(total, num_parts)
+    slices = []
+    start = 0
+    for i in range(num_parts):
+        stop = start + quotient + (1 if i < remainder else 0)
+        slices.append(slice(start, stop))
+        start = stop
+    return slices
+
+
+def partition(xs: Iterable[_T], predicate: Callable[[_T], bool]) -> tuple[list[_T], list[_T]]:
+    falses: list[_T] = []
+    trues: list[_T] = []
+    for x in xs:
+        (trues if predicate(x) else falses).append(x)
+    return falses, trues
+
+
 def merge_asserting_consistency(a: dict[_K, _V], b: dict[_K, _V]) -> dict[_K, _V]:
     conflicts = {key: (a[key], b[key]) for key in a.keys() & b.keys() if a[key] != b[key]}
     assert not conflicts, f"cannot merge two dicts that disagree: {conflicts}"
@@ -42,11 +61,13 @@ async def call_agent_abort_hook(args) -> None:
     sibling ``abort`` callable in the same module as the configured agent function
     and call it. Backends that don't expose one are left to drain as before.
     """
-    agent_function_path = getattr(args, "custom_agent_function_path", None)
+    from miles.utils.args.custom_view import compute_custom_function_config
+
+    agent_function_path = args.custom_agent_function_path
     if not agent_function_path:
         return
 
-    module_path, _, _ = agent_function_path.rpartition(".")
+    module_path, _, _ = agent_function_path.path.rpartition(".")
     if not module_path:
         return
     try:
@@ -55,7 +76,8 @@ async def call_agent_abort_hook(args) -> None:
         return  # plugin doesn't expose an abort hook; nothing to tear down
 
     try:
-        await abort_hook(args)
+        fn_args = compute_custom_function_config(args, agent_function_path)
+        await abort_hook(fn_args)
     except Exception as e:
         logger.warning(f"Agent abort hook {module_path}.abort failed: {e}")
 
@@ -67,10 +89,14 @@ class SingletonMeta(type):
 
     _instances = {}
 
-    def __call__(cls, *args, **kwargs):
+    def __call__(cls, *args: Any, **kwargs: Any) -> Any:
         if cls not in cls._instances:
             instance = super().__call__(*args, **kwargs)
             cls._instances[cls] = instance
+        elif (
+            validate_reuse := getattr(cls, "_validate_reuse", None)
+        ) is not None:  # config-access-exempt: optional singleton reuse protocol
+            validate_reuse(cls._instances[cls], *args, **kwargs)
         return cls._instances[cls]
 
     @staticmethod

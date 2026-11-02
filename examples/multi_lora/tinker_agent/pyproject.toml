@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tinker-agent-rollouts"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "aiohttp>=3.9",
+    "tinker==0.26.2",
+    "tinker-cookbook @ git+https://github.com/thinking-machines-lab/tinker-cookbook@1f962eda3a2cec8de284725f2adc9978e93dfcd3",
+]
+
+[project.optional-dependencies]
+harbor = ["harbor @ git+https://github.com/harbor-framework/harbor@917b3c1be7cf6553a7a9fe25de8adb6f8e639287"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.uv]
+cache-keys = [{ file = "pyproject.toml" }, { file = "src/**/*.py" }]

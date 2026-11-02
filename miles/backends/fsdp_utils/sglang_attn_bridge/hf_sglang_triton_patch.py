@@ -121,5 +121,7 @@ def apply_sglang_triton_attention_patch(model):
     ALL_ATTENTION_FUNCTIONS["triton"] = _sglang_triton_attention
     model.config._attn_implementation = "triton"
 
-    patched = sum(1 for _, m in model.named_modules() if hasattr(m, "q_proj") and hasattr(m, "o_proj"))
+    patched = sum(
+        1 for _, m in model.named_modules() if hasattr(m, "q_proj") and hasattr(m, "o_proj")
+    )  # config-access-exempt: identify attention modules by their projection capabilities
     return patched

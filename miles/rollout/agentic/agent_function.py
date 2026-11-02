@@ -42,6 +42,33 @@ _CHILD_BOOTSTRAP = (
 
 _PR_SET_PDEATHSIG = 1
 
+# frames on the child's result pipe: a report sent while the call runs, or the call's outcome
+_REPORT_FRAME, _OUTCOME_FRAME = b"r", b"o"
+_FRAME_HEADER_BYTES = 9  # frame kind + 8-byte payload length
+
+
+class _ResultPipe:
+    """The child's end of the pipe to the caller; agent threads may report concurrently."""
+
+    def __init__(self, file: BinaryIO):
+        self._file = file
+        self._lock = threading.Lock()
+
+    def send(self, kind: bytes, payload: bytes) -> None:
+        with self._lock:
+            if self._file.closed:
+                return  # the call is over and the caller has stopped reading
+            self._file.write(kind + len(payload).to_bytes(8, "big") + payload)
+            self._file.flush()
+
+    def close(self) -> None:
+        with self._lock:
+            self._file.close()
+
+
+# set in a ``subproc`` agent process only (see report_to_caller)
+_result_pipe: _ResultPipe | None = None
+
 
 class _RemoteTraceback(Exception):
     """The agent process's traceback, chained under the error it raised, as concurrent.futures does."""
@@ -54,8 +81,27 @@ class _RemoteTraceback(Exception):
         return self.tb
 
 
-async def call_agent_function(fn: Callable[..., Awaitable[Any]], *, mode: str, **kwargs: Any) -> Any:
-    """Await ``fn(**kwargs)`` on this loop (``inline``) or in a child process of its own (``subproc``)."""
+def report_to_caller(item: Any) -> bool:
+    """Send a picklable ``item`` to the process that made this ``subproc`` agent call.
+
+    The caller gets it right away, while the call still runs, through ``on_child_reports``.
+    Returns False, sending nothing, when not inside a ``subproc`` agent call."""
+    if _result_pipe is None:
+        return False
+    _result_pipe.send(_REPORT_FRAME, pickle.dumps(item))
+    return True
+
+
+async def call_agent_function(
+    fn: Callable[..., Awaitable[Any]],
+    *,
+    mode: str,
+    on_child_reports: Callable[[list[Any]], None] | None = None,
+    **kwargs: Any,
+) -> Any:
+    """Await ``fn(**kwargs)`` on this loop (``inline``) or in a child process of its own (``subproc``).
+
+    Under ``subproc``, ``on_child_reports`` receives each item the agent sends with ``report_to_caller``."""
     if mode == "inline":
         return await fn(**kwargs)
     # pickled before the process starts, so an unpicklable argument fails here
@@ -70,18 +116,19 @@ async def call_agent_function(fn: Callable[..., Awaitable[Any]], *, mode: str, *
         env={**os.environ, rollout_limits.SCOPE_ENV_VAR: rollout_limits.current_scope()},
     )
     try:
-        output = await _exchange(proc, call)
+        await _send_call(proc, call)
+        # not cancelled with the call, so reports from the agent's cancel cleanup (its teardown) still arrive
+        output = await asyncio.shield(_read_results(proc, on_child_reports))
     except asyncio.CancelledError:
         _terminate(proc)
         raise
-    if not output:
+    if output is None:
         returncode = await proc.wait()
         raise RuntimeError(f"The agent process exited with code {returncode} before returning a result")
     return _unpack_outcome(output)
 
 
-async def _exchange(proc: asyncio.subprocess.Process, call: bytes) -> bytes:
-    """Send the call and read the outcome, which arrives before the process finishes its leftover cleanup."""
+async def _send_call(proc: asyncio.subprocess.Process, call: bytes) -> None:
     try:
         proc.stdin.write(call)
         await proc.stdin.drain()
@@ -89,7 +136,27 @@ async def _exchange(proc: asyncio.subprocess.Process, call: bytes) -> bytes:
         pass  # the agent process died before reading its call; its exit code says why
     finally:
         proc.stdin.close()
-    return await proc.stdout.read()
+
+
+async def _read_results(
+    proc: asyncio.subprocess.Process, on_child_reports: Callable[[list[Any]], None] | None
+) -> bytes | None:
+    """Pass on reports as they arrive and return the pickled outcome, or None if none came.
+
+    The outcome arrives before the process finishes its leftover cleanup."""
+    while True:
+        try:
+            header = await proc.stdout.readexactly(_FRAME_HEADER_BYTES)
+            payload = await proc.stdout.readexactly(int.from_bytes(header[1:], "big"))
+        except asyncio.IncompleteReadError:
+            return None
+        if header[:1] == _OUTCOME_FRAME:
+            return payload
+        if on_child_reports is not None:
+            try:
+                on_child_reports([pickle.loads(payload)])
+            except Exception:
+                logger.exception("handling a report from the agent process failed")
 
 
 def _terminate(proc: asyncio.subprocess.Process) -> None:
@@ -113,19 +180,20 @@ def _unpack_outcome(output: bytes) -> Any:
 
 
 def _child_main(parent_pid: int) -> None:
+    global _result_pipe
     _die_with_parent(parent_pid)
-    # The outcome goes to the original stdout; what the agent prints goes to stderr instead.
-    outcome_file = os.fdopen(os.dup(1), "wb")
+    # Reports and the outcome go to the original stdout; what the agent prints goes to stderr instead.
+    _result_pipe = result_pipe = _ResultPipe(os.fdopen(os.dup(1), "wb"))
     os.dup2(2, 1)
     configure_logger_raw(f"agent_function pid={os.getpid()}")
     try:
         fn, kwargs, cancel_grace_s, leftover_cleanup_s = pickle.load(sys.stdin.buffer)
     except Exception as error:
-        _send_outcome(outcome_file, ("error", error, traceback.format_exc()))
+        _send_outcome(result_pipe, ("error", error, traceback.format_exc()))
         _exit(0)
     threads_before = set(threading.enumerate())
     try:
-        asyncio.run(_run_and_report(fn, kwargs, outcome_file, cancel_grace_s, leftover_cleanup_s))
+        asyncio.run(_run_and_report(fn, kwargs, result_pipe, cancel_grace_s, leftover_cleanup_s))
     except BaseException:
         traceback.print_exc()
         _exit(1)
@@ -149,7 +217,7 @@ def _die_with_parent(parent_pid: int) -> None:
 async def _run_and_report(
     fn: Callable[..., Awaitable[Any]],
     kwargs: dict[str, Any],
-    outcome_file: BinaryIO,
+    result_pipe: _ResultPipe,
     cancel_grace_s: float,
     leftover_cleanup_s: float,
 ) -> None:
@@ -178,7 +246,7 @@ async def _run_and_report(
     loop.remove_signal_handler(signal.SIGTERM)
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
     # sent before the loop shuts down, which waits for the agent's leftover executor threads
-    _send_outcome(outcome_file, outcome)
+    _send_outcome(result_pipe, outcome)
     _exit_after(leftover_cleanup_s)
 
 
@@ -189,10 +257,10 @@ def _exit_after(seconds: float) -> threading.Timer:
     return timer
 
 
-def _send_outcome(outcome_file: BinaryIO, outcome: tuple | None) -> None:
+def _send_outcome(result_pipe: _ResultPipe, outcome: tuple | None) -> None:
     if outcome is not None:
-        outcome_file.write(_dump_outcome(outcome))
-    outcome_file.close()  # the caller stops waiting here
+        result_pipe.send(_OUTCOME_FRAME, _dump_outcome(outcome))
+    result_pipe.close()  # the caller stops waiting here
 
 
 def _exit(code: int) -> NoReturn:

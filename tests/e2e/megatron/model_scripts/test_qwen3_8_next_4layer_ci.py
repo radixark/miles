@@ -24,6 +24,7 @@ register_ci_gate(metric_key="train/ppo_kl")
 register_ci_gate(metric_key="train/train_rollout_logprob_abs_diff")
 register_ci_gate(metric_key="train/train_rollout_kl")
 register_ci_gate(metric_key="rollout/raw_reward")
+register_ci_gate(metric_key="perf/actor_train_mfu")
 
 _MODEL_ORG = "CharyZeng"
 
@@ -31,6 +32,7 @@ _MODEL_ORG = "CharyZeng"
 def _args() -> ScriptArgs:
     return ScriptArgs.from_env(
         model_name="Qwen3.8-Flash-Next-4layer",
+        ckpt_dir="/root/models",
         num_nodes=1,
         num_gpus_per_node=8,
         num_rollout=5,

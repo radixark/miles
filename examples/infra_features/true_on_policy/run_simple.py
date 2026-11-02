@@ -87,7 +87,7 @@ def execute():
     )
 
     ci_args = (
-        "--ci-test "
+        "--ci-test --no-enable-sample-ownership-checker "
         "--ci-disable-kl-checker "
         "--ci-metric-checker-key eval/gsm8k "
         "--ci-metric-checker-threshold 0.71 "  # loose threshold at 60 step

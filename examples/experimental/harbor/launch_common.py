@@ -87,7 +87,9 @@ def harbor_env_vars(args) -> dict[str, str]:
     if args.harbor_env_kwargs:
         env["HARBOR_ENV_KWARGS"] = args.harbor_env_kwargs
     if spec := PROVIDER_CREDENTIALS.get(env_type):
-        provision_provider(env, spec, arg_path=getattr(args, spec["arg_attr"], "") or "")
+        provision_provider(
+            env, spec, arg_path=getattr(args, spec["arg_attr"], "") or ""
+        )  # config-access-exempt: provider registry selects credential fields; launchers may instead use environment credentials
     else:
         # Any other Harbor backend still passes straight through; there is just
         # no credential wiring known here, so the worker environment must carry

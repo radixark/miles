@@ -4,7 +4,8 @@ import argparse
 
 import pytest
 
-from miles.utils.arguments import get_miles_extra_args_provider, miles_validate_args
+from miles.backends.megatron_utils.megatron_config import get_megatron_arg_parser
+from miles.utils.arguments import miles_validate_args
 from miles.utils.workers.types import ClusterBackend, WorkerCommBackend, resolve_worker_comm_backend
 
 
@@ -51,8 +52,7 @@ class TestTheChoiceThatIsStored:
     @pytest.mark.parametrize("requested, expected", [([], "ray"), (["--worker-comm-backend", "rpc"], "rpc")])
     def test_validation_leaves_the_resolved_wire_on_the_arguments(self, requested: list[str], expected: str):
         """The wire is resolved once, so everything downstream reads a value rather than resolving again."""
-        parser = argparse.ArgumentParser()
-        get_miles_extra_args_provider()(parser)
+        parser = get_megatron_arg_parser()
         args = parser.parse_args([*requested, "--rollout-batch-size", "64", "--num-rollout", "1"])
 
         miles_validate_args(args)
@@ -73,8 +73,7 @@ class TestTheChoiceThatIsStored:
 
 
 def _validated_args(argv: list[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser()
-    get_miles_extra_args_provider()(parser)
+    parser = get_megatron_arg_parser()
     args = parser.parse_args([*argv, "--rollout-batch-size", "64", "--num-rollout", "1"])
     miles_validate_args(args)
     return args

@@ -41,7 +41,9 @@ class GLM4MoELiteBridge(DeepseekV3Bridge):
             "original_max_position_embeddings": 4096,
             "type": "rope",
         }
-        rope_scaling = getattr(hf_config, "rope_scaling", None)
+        rope_scaling = getattr(
+            hf_config, "rope_scaling", None
+        )  # config-access-exempt: HF checkpoints may omit rotary scaling
         if rope_scaling is not None:
             mla_rope_config.update(rope_scaling)
 
@@ -58,14 +60,20 @@ class GLM4MoELiteBridge(DeepseekV3Bridge):
             "moe_router_topk": hf_config.num_experts_per_tok,
             "num_moe_experts": hf_config.n_routed_experts,
             "moe_shared_expert_intermediate_size": hf_config.moe_intermediate_size
-            * getattr(hf_config, "n_shared_experts", 1),
-            "moe_aux_loss_coeff": getattr(hf_config, "aux_loss_alpha", 0.001),
+            * getattr(
+                hf_config, "n_shared_experts", 1
+            ),  # config-access-exempt: HF checkpoints may omit shared expert count
+            "moe_aux_loss_coeff": getattr(
+                hf_config, "aux_loss_alpha", 0.001
+            ),  # config-access-exempt: HF checkpoints may omit auxiliary loss coefficient
             "moe_router_load_balancing_type": "none",
             "moe_shared_expert_overlap": True,
             "moe_grouped_gemm": True,
             "moe_router_score_function": "sigmoid",
             "moe_router_pre_softmax": True,
-            "moe_router_topk_scaling_factor": getattr(hf_config, "routed_scaling_factor", 1.0),
+            "moe_router_topk_scaling_factor": getattr(
+                hf_config, "routed_scaling_factor", 1.0
+            ),  # config-access-exempt: HF checkpoints may omit routing scale
             "moe_layer_freq": self.moe_layer_freq,
             # MLA
             "q_lora_rank": hf_config.q_lora_rank,
@@ -91,14 +99,18 @@ class GLM4MoELiteBridge(DeepseekV3Bridge):
 
         import megatron.core
 
-        megatron_version = getattr(megatron.core, "__version__", "0.0")
+        megatron_version = getattr(
+            megatron.core, "__version__", "0.0"
+        )  # config-access-exempt: Megatron distributions may omit package version metadata
         if megatron_version >= "0.14":
             base_config["original_max_position_embeddings"] = mla_rope_config["original_max_position_embeddings"]
         else:
             base_config["max_position_embeddings"] = mla_rope_config["original_max_position_embeddings"]
 
         mtp_args = {}
-        num_nextn_predict_layers = getattr(hf_config, "num_nextn_predict_layers", None)
+        num_nextn_predict_layers = getattr(
+            hf_config, "num_nextn_predict_layers", None
+        )  # config-access-exempt: HF checkpoints may omit MTP depth
         if num_nextn_predict_layers is not None:
             mtp_args["mtp_num_layers"] = num_nextn_predict_layers
             mtp_args["mtp_loss_scaling_factor"] = 0.1

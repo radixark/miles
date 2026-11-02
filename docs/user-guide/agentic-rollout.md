@@ -152,7 +152,7 @@ sequence, trims model-specific boundary tokens, and builds the training sample.
 
 </Warning>
 
-Chat responses from both session-server versions omit `choices[*].meta_info`. Ordinary JSON replies retain the message and `usage`, and carry standard `logprobs` only when the request set `logprobs`. The server keeps the full metadata and logprobs in session records for training sample collection and inspection through `GET /sessions/{id}`. Streaming chunks omit both.
+Chat responses from both session-server versions omit `choices[*].meta_info`. Ordinary JSON replies retain the message and `usage`, and carry standard `logprobs` only when the request set `logprobs`. On training sessions that record score-centering candidates, their `top_logprobs` lists are empty: the candidates travel as arrays in `meta_info`. The server keeps the full metadata and logprobs in session records for training sample collection and inspection through `GET /sessions/{id}`. Streaming chunks omit both.
 
 ### Choose template options per session
 

@@ -31,7 +31,7 @@ _BROAD_PR_SCOPES = frozenset({"nightly", "run-ci-all", "run-ci-image", "run-ci-b
 # Keep this allowlist to paths proven not to affect GPU runtime. Every
 # unmatched path deliberately fans out to all local GPU stages.
 _NO_GPU_PATHS = frozenset({".pre-commit-config.yaml", "scripts/tools/sync_example_docs.py"})
-_NO_GPU_PREFIXES = ("docs/",)
+_NO_GPU_PREFIXES = ("docs/", ".claude/")
 _NO_GPU_SUFFIXES = (".md", ".mdx")
 _STATUS = re.compile(r"^(?:[ADMTUXB]|[RC][0-9]{1,3})$")
 
@@ -135,7 +135,7 @@ def _explicit_scope_stages(
     return stages
 
 
-def _known_no_gpu_path(path: str) -> bool:
+def known_no_gpu_path(path: str) -> bool:
     return path in _NO_GPU_PATHS or path.startswith(_NO_GPU_PREFIXES) or path.endswith(_NO_GPU_SUFFIXES)
 
 
@@ -157,7 +157,7 @@ def _affected_stages(
         for path in changed_file.paths:
             if path in registered_files:
                 affected.update(stages_by_file.get(path, ()))
-            elif _known_no_gpu_path(path):
+            elif known_no_gpu_path(path):
                 continue
             else:
                 return set(PR_GPU_STAGES)

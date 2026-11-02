@@ -20,9 +20,11 @@ from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
+from miles.backends.training_utils.weight_update.protocols.utils.data_replica import get_data_replica_rank_and_size
+from miles.backends.training_utils.weight_update.rollout_cell_updater import create_rollout_cell_updaters
 from miles.backends.training_utils.weight_update.session import check_weight_sync_results
-from miles.backends.training_utils.weight_update.utils import get_data_replica_rank_and_size
 from miles.utils import async_utils
+from miles.utils.args.custom_view import compute_custom_function_config
 from miles.utils.disk_delta import NUM_WORKERS, checksum, make_tensor_reader, overwrite_encode
 from miles.utils.distributed_utils import get_gloo_group
 
@@ -44,7 +46,9 @@ _SAFETENSORS_DTYPE_BY_TORCH_DTYPE = {
     torch.bool: "BOOL",
     torch.complex64: "C64",
     **{
-        getattr(torch, torch_dtype_name): safetensors_dtype
+        getattr(
+            torch, torch_dtype_name
+        ): safetensors_dtype  # config-access-exempt: attribute selected at runtime from torch_dtype_name
         for torch_dtype_name, safetensors_dtype in (
             ("float8_e4m3fn", "F8_E4M3"),
             ("float8_e4m3fnuz", "F8_E4M3FNUZ"),
@@ -54,7 +58,9 @@ _SAFETENSORS_DTYPE_BY_TORCH_DTYPE = {
             ("uint32", "U32"),
             ("uint16", "U16"),
         )
-        if hasattr(torch, torch_dtype_name)
+        if hasattr(
+            torch, torch_dtype_name
+        )  # config-access-exempt: attribute selected at runtime from torch_dtype_name
     },
 }
 
@@ -89,6 +95,7 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
         self.checksum_algorithm = args.update_weight_delta_checksum
         self._snapshot: dict[str, np.ndarray] = {}
         self._baseline_captured = False
+        self._snapshot_file_version = 0
         # Post-write hook: object-store-backed shared filesystems lack cross-host
         # read-after-write consistency, so written files need an explicit step
         # (e.g. uploading them to the backing object store) before the engines can see them.
@@ -103,6 +110,7 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
         rollout_engines: Sequence[SGLangApiClient],
         engine_gpu_counts: Sequence[int] | None,
         engine_gpu_offsets: Sequence[int] | None,
+        engine_cell_ids: Sequence[str],
         parallel_state: ParallelState,
         placement: WeightUpdatePlacement,
         selector: str,
@@ -111,17 +119,18 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
         # uses isn't needed either — the engine-side apply is serialized by a per-host flock
         # behind /pull_weights.
         self.rollout_engines = rollout_engines
+        self.cell_updaters_of_cell_id = create_rollout_cell_updaters(self.args, self.rollout_engines, engine_cell_ids)
         self.group_name = "miles-disk-delta"
         replica_rank, _ = get_data_replica_rank_and_size(parallel_state, placement)
         self.is_sender = replica_rank == 0
 
     def begin_sync(self, weight_version: int, iter_buckets) -> bool:
-        # The first call only captures the baseline snapshot the next sync diffs against.
+        # Capture the HF baseline before the first publication.
         if not self._baseline_captured:
             self._capture_baseline(iter_buckets)
             self._baseline_captured = True
-            return False
-        self._begin_encode(weight_version)
+        self._snapshot_file_version += 1
+        self._begin_encode()
         return True
 
     def send_bucket(self, bucket: list[tuple[str, torch.Tensor]]) -> None:
@@ -150,9 +159,9 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
 
     def finalize(self, weight_version: int) -> None:
         """Write this version as a canonical HF dir, have the engines pull and reload it."""
-        self._write_delta_files(weight_version)
-        self._reload_engines(weight_version)
-        self._record_metrics(weight_version)
+        self._write_delta_files()
+        self._reload_engines(weight_version=weight_version)
+        self._record_metrics(weight_version=weight_version)
 
     def _capture_baseline(self, iter_buckets) -> None:
         """Capture the baseline snapshot the first delta diffs against (no publish), and clear any
@@ -160,15 +169,16 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
         base from — so the invariant ``snapshot == engine base`` holds even where the megatron->HF
         round-trip trims vocab-padding rows (embed/lm_head). Every emitted tensor must have the same
         layout as that canonical checkpoint because deltas operate on raw bytes. pull_weights(0)
-        makes each host materialize its local base now, overlapped with the snapshot gather, so the
-        first real sync only pays the delta apply."""
+        makes each host materialize its local base now, overlapped with the snapshot gather.
+        The same sync then publishes the loaded trainer weights and reloads the engines."""
         # a prior run's versions would apply against the wrong base; start the dir clean
         pulls = []
         if dist.get_rank() == 0:
             shutil.rmtree(self.delta_dir, ignore_errors=True)
             os.makedirs(self.delta_dir, exist_ok=True)
             if self._post_write_hook is not None:
-                self._post_write_hook(self.args, self.delta_dir, list(self.rollout_engines))
+                fn_args = compute_custom_function_config(self.args, self.args.custom_update_weight_post_write_path)
+                self._post_write_hook(fn_args, self.delta_dir, list(self.rollout_engines))
             pulls = [
                 async_utils.submit(
                     client.pull_weights(
@@ -232,26 +242,6 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
 
         if dist.get_rank() == 0:
             check_weight_sync_results(async_utils.wait_futures(pulls), is_lora=False)
-            if self.args.check_weight_update_equal:
-                # The weights checker resets engine tensors at startup and compares after the
-                # first sync, expecting it to rewrite every tensor. The baseline publishes
-                # nothing, so reload the just-pulled base checkpoint to restore engine state
-                # (and set the engine weight version the CI equality check expects).
-                results = async_utils.wait_futures(
-                    [
-                        async_utils.submit(
-                            client.update_weights_from_disk(
-                                model_path=self.args.update_weight_local_checkpoint_dir,
-                                weight_version="0",
-                            )
-                        )
-                        for client in self.rollout_engines
-                    ]
-                )
-                check_weight_sync_results(results, is_lora=False)
-            else:
-                # TODO: temporarily weaken checkers; should enhance and fix related logics
-                _update_weight_version_if_unset(self.rollout_engines, "0")
             logger.info(
                 "[disk delta] captured baseline snapshot of %d tensors from %s",
                 len(self._snapshot),
@@ -259,13 +249,13 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
             )
         dist.barrier(group=get_gloo_group())
 
-    def _begin_encode(self, weight_version: int) -> None:
+    def _begin_encode(self) -> None:
         """Set up this version's diff/compress pipeline: each ``send_bucket`` copies one tensor at
         a time to a pinned buffer and submits it; pool workers diff against the snapshot and
         compress in parallel (each is a few big GIL-releasing numpy/zstd calls)."""
         if self._pool is not None:
             self._pool.shutdown(wait=False, cancel_futures=True)
-        self._version_dir = os.path.join(self.delta_dir, f"weight_v{weight_version:06d}")
+        self._version_dir = os.path.join(self.delta_dir, f"weight_v{self._snapshot_file_version:06d}")
         if self.is_sender:
             os.makedirs(self._version_dir, exist_ok=True)
         self._delta: dict[str, np.ndarray] = {}  # changed tensor name -> compressed diff
@@ -335,7 +325,7 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
                 del self._delta[name]
                 del self._checksums[name]
 
-    def _write_delta_files(self, weight_version: int) -> None:
+    def _write_delta_files(self) -> None:
         """Write this rank's changed tensors as one canonical model-NNNNN.safetensors, and on rank
         0 the HF index. The sequential file numbers and the index are coordinated over gloo (small
         object gathers), not the filesystem — a non-POSIX shared filesystem may not surface one
@@ -363,8 +353,8 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
         if rank == 0:
             index = {
                 "metadata": {
-                    "version": f"{weight_version:06d}",
-                    "base_version": f"{weight_version - 1:06d}",
+                    "version": f"{self._snapshot_file_version:06d}",
+                    "base_version": f"{self._snapshot_file_version - 1:06d}",
                     "delta_encoding": self.delta_encoding,
                     "compression_format": "zstd",
                     "checksum_format": self.checksum_algorithm,
@@ -374,19 +364,20 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
             _atomic_write(os.path.join(self._version_dir, "model.safetensors.index.json"), json.dumps(index).encode())
         dist.barrier(group=group)
 
-    def _reload_engines(self, weight_version: int) -> None:
+    def _reload_engines(self, *, weight_version: int) -> None:
         """Commit the published files, have each engine pull the delta onto every host it spans
         (checksum-verified), then reload the engines. The pull is disk-only, so it runs before
         pause and overlaps generation."""
         if self._post_write_hook is not None:
-            self._post_write_hook(self.args, self._version_dir, list(self.rollout_engines))
+            fn_args = compute_custom_function_config(self.args, self.args.custom_update_weight_post_write_path)
+            self._post_write_hook(fn_args, self._version_dir, list(self.rollout_engines))
         dist.barrier(group=get_gloo_group())
         if dist.get_rank() == 0:
             pulls = async_utils.wait_futures(
                 [
                     async_utils.submit(
                         client.pull_weights(
-                            target_version=weight_version,
+                            target_version=self._snapshot_file_version,
                             local_checkpoint_dir=self.args.update_weight_local_checkpoint_dir,
                             source_dir=self.args.update_weight_disk_dir,
                         )
@@ -418,7 +409,7 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
             )
         dist.barrier(group=get_gloo_group())
 
-    def _record_metrics(self, weight_version: int) -> None:
+    def _record_metrics(self, *, weight_version: int) -> None:
         """All-reduce the byte counts and record changed-fraction / wire size; the actor drains
         update_weight_metrics onto the step log."""
         counts = torch.tensor(
@@ -448,23 +439,3 @@ def _atomic_write(path: str, data: bytes) -> None:
         f.flush()
         os.fsync(f.fileno())
     os.replace(tmp, path)
-
-
-_UNSET_WEIGHT_VERSION = "default"
-
-
-def _update_weight_version_if_unset(rollout_engines: Sequence[SGLangApiClient], weight_version: str) -> None:
-    reported = async_utils.wait_futures(
-        [async_utils.submit(client.get_weight_version()) for client in rollout_engines]
-    )
-    unset = [
-        client
-        for client, version in zip(rollout_engines, reported, strict=True)
-        if version in (None, _UNSET_WEIGHT_VERSION)
-    ]
-    async_utils.wait_futures(
-        [
-            async_utils.submit(client.update_weight_version(weight_version=weight_version, abort_all_requests=False))
-            for client in unset
-        ]
-    )

@@ -4,6 +4,7 @@ import shlex
 from dataclasses import dataclass
 
 import typer
+from tests.utils.soak.ft.types import ACTOR_CELL_TYPE, ROLLOUT_CELL_TYPE
 
 MODEL_NAME: str = "Qwen3-30B-A3B-5layer"
 MODEL_HF_REPO: str = f"fzyzcjy/{MODEL_NAME}"
@@ -31,18 +32,14 @@ class FTTestMode:
     train_gpus_per_node: int = 8
     rollout_num_engines: int = 0
     rollout_gpus_per_engine: int = 0
-    colocate: bool = False
     ft_components: tuple[str, ...] = ("train",)
     num_steps: int = 10
+    max_tokens_per_gpu: int = 32768
 
     def __post_init__(self) -> None:
         assert "rollout" not in self.ft_components or self.has_real_rollout, (
             f"Mode declares ft components {self.ft_components} but has no real rollout engines, so a rollout "
             f"injection would have nothing to crash and the soak would silently prove nothing about rollout ft"
-        )
-        assert not self.colocate or self.total_rollout_gpus <= self.train_gpus_per_node, (
-            f"Colocated mode oversubscribes its node: {self.total_rollout_gpus} rollout gpus "
-            f"do not fit in {self.train_gpus_per_node} train gpus"
         )
 
     @property
@@ -55,9 +52,11 @@ class FTTestMode:
 
     @property
     def total_node_gpus(self) -> int:
-        if self.colocate:
-            return self.train_gpus_per_node
         return self.train_gpus_per_node + self.total_rollout_gpus
+
+    @property
+    def cell_counts_of_type(self) -> dict[str, int]:
+        return {ACTOR_CELL_TYPE: self.num_cells, ROLLOUT_CELL_TYPE: self.rollout_num_engines}
 
 
 KILL_SEGMENT_OF_FT_COMPONENTS: dict[tuple[str, ...], str] = {
@@ -88,9 +87,6 @@ def compute_mode_name(mode: FTTestMode) -> str:
         segments.append("fake_rollout")
     if (model_segment := MODEL_SEGMENT_OF_MODEL_NAME[mode.model_name]) is not None:
         segments.append(model_segment)
-    if mode.colocate:
-        segments.append("colocate")
-
     return "__".join(segments)
 
 
@@ -107,6 +103,38 @@ def _compute_parallelism_segment(mode: FTTestMode) -> str:
 
 
 MODES: dict[str, FTTestMode] = {
+    "kill_rollout__dp4": FTTestMode(
+        model_name=DENSE_MODEL_NAME,
+        model_hf_repo=DENSE_MODEL_HF_REPO,
+        megatron_model_type=DENSE_MODEL_TYPE,
+        num_cells=4,
+        train_gpus_per_node=4,
+        rollout_num_engines=4,
+        rollout_gpus_per_engine=1,
+        ft_components=("rollout",),
+        parallel_args="",
+    ),
+    "kill_train__dp2_tp2": FTTestMode(
+        model_name=DENSE_MODEL_NAME,
+        model_hf_repo=DENSE_MODEL_HF_REPO,
+        megatron_model_type=DENSE_MODEL_TYPE,
+        num_cells=2,
+        train_gpus_per_node=4,
+        rollout_num_engines=4,
+        rollout_gpus_per_engine=1,
+        parallel_args="--tensor-model-parallel-size 2 --sequence-parallel",
+    ),
+    "kill_rollout__dp2_tp2": FTTestMode(
+        model_name=DENSE_MODEL_NAME,
+        model_hf_repo=DENSE_MODEL_HF_REPO,
+        megatron_model_type=DENSE_MODEL_TYPE,
+        num_cells=2,
+        train_gpus_per_node=4,
+        rollout_num_engines=4,
+        rollout_gpus_per_engine=1,
+        parallel_args="--tensor-model-parallel-size 2 --sequence-parallel",
+        ft_components=("rollout",),
+    ),
     # --- 1-node (8 GPUs) variants ---
     "kill_train__dp2_cp2_tp2_ep2__fake_rollout__moe_5layer": FTTestMode(
         model_name=MODEL_NAME,
@@ -148,6 +176,7 @@ MODES: dict[str, FTTestMode] = {
         rollout_num_engines=4,
         rollout_gpus_per_engine=1,
         parallel_args="--context-parallel-size 2",
+        max_tokens_per_gpu=8192,
     ),
     # Same topology as kill_train__dp2_cp2__moe_5layer but a small real dense model (see README).
     "kill_train__dp2_cp2": FTTestMode(
@@ -171,19 +200,6 @@ MODES: dict[str, FTTestMode] = {
         rollout_gpus_per_engine=1,
         ft_components=("train", "rollout"),
         parallel_args="--context-parallel-size 2",
-    ),
-    # --- 1-node (8 GPUs) colocated: engines share the trainer's gpus ---
-    "kill_rollout__dp4__colocate": FTTestMode(
-        model_name=DENSE_MODEL_NAME,
-        model_hf_repo=DENSE_MODEL_HF_REPO,
-        megatron_model_type=DENSE_MODEL_TYPE,
-        num_cells=4,
-        train_gpus_per_node=4,
-        rollout_num_engines=4,
-        rollout_gpus_per_engine=1,
-        colocate=True,
-        ft_components=("rollout",),
-        parallel_args="",
     ),
     # --- 6-node (48 GPUs) disaggregated: 4 train nodes + 2 rollout nodes ---
     "kill_train__dp4_cp2_tp2_pp2_ep2_etp2__moe_full": FTTestMode(

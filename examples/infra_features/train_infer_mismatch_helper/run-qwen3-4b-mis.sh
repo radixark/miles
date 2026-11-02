@@ -122,7 +122,36 @@ MISC_ARGS=(
 )
 
 CUSTOM_ARGS=(
-   --custom-config-path examples/infra_features/train_infer_mismatch_helper/mis.yaml
+   # Enable importance sampling, details refer to the comments of compute_mis_weights in mis.py
+   --use-rs
+   # Aggregation level for importance sampling weights:
+   # token: per-token
+   # sequence: product over tokens
+   # geometric: geometric mean
+   --tis-level token
+   --rs-level token
+   # Handling mode for IS weights:
+   # truncate: cap to upper bound, TIS
+   # mask: zero outside [lower, upper], MIS
+   # clip: clip to [lower, upper], CIS
+   --tis-mode truncate
+   # For clip mode, the lower bound of the IS weights.
+   # For truncate mode, it will not be used.
+   # If not set, it will be set to 1.0 / mis_upper_bound
+   # For Geometry level, the lower bound should be 0.9999
+   --tis-lower-bound 0.5
+   # For truncate or clip mode, the upper bound of the IS weights
+   # For Geometry level, the upper bound should be 1.0001
+   --tis-upper-bound 2.0
+   # Lower and upper bound for rejection sampling.
+   # If not set, it will be same as tis_lower_bound and tis_upper_bound.
+
+   # Per-token veto threshold. If any token ratio < this, zero the entire sequence weight, the sequences won't have gradient
+   # Note: float number must be written with dot e.g. 1.0e-4, not 1e-4
+   --rs-veto-threshold 1.0e-4
+   # Batch normalization: normalize IS weights to mean=1.0 across entire batch
+   # This reduces variance in gradient updates
+   --tis-batch-normalize
    --custom-tis-function-path examples.infra_features.train_infer_mismatch_helper.mis.compute_mis_weights_with_cp
 )
 

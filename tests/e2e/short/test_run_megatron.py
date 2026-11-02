@@ -121,7 +121,7 @@ def run(
         f"python -m miles.utils.debug_utils.run_megatron run-and-compare "
         f"--model-type {MODEL_TYPE} "
         f"--hf-checkpoint /root/models/{MODEL_NAME} "
-        f"--ref-load /root/{MODEL_NAME}_torch_dist "
+        f"--ref-load /root/models/{MODEL_NAME}_torch_dist "
         f"--output-base-dir {dump_dir} "
         f"--baseline '{config.baseline_args}' "
         f"--target '{config.target_args}' "

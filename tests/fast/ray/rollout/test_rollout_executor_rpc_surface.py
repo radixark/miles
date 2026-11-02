@@ -1,13 +1,21 @@
 from __future__ import annotations
 
+import asyncio
+import threading
+from argparse import Namespace
+from pathlib import Path
+from types import SimpleNamespace
+
 import pytest
 from pydantic import ValidationError
+from tests.fast.utils.workers.rpc.server.fake_workers import OutcomeRecorder
 
-from miles.ray.rollout.rollout_executor import RolloutExecutor
+from miles.ray.rollout.rollout_executor import RolloutExecutor, compute_rollout_checkpoint_dir
 from miles.ray.train.group import TrainerController
 from miles.utils.data import RolloutDataPack
 from miles.utils.object_store import _MooncakeStoreObjectRef
 from miles.utils.workers.rpc.common.metadata import collect_rpc_method_specs
+from miles.utils.workers.rpc.server.executor import RpcCallExecutor
 
 
 def _round_trip(pack: RolloutDataPack) -> RolloutDataPack:
@@ -41,6 +49,45 @@ class TestWhatARolloutHandsToTheDriver:
             RolloutDataPack(sample_indices=[0], data_reference=None)
 
 
+class TestRolloutExecutorLifecycleRpc:
+    async def test_load_restores_on_the_isolated_worker_event_loop(self, tmp_path: Path) -> None:
+        """The native RPC executor awaits checkpoint state restoration."""
+        worker = RolloutExecutor.__new__(RolloutExecutor)
+        loaded = threading.Event()
+
+        rpc_loop = asyncio.get_running_loop()
+
+        def load_state(_directory) -> None:
+            assert asyncio.get_running_loop() is not rpc_loop
+            loaded.set()
+
+        worker.args = Namespace(save_debug_event_data=None)
+        worker.use_legacy_rollout_v1 = True
+        compute_rollout_checkpoint_dir(tmp_path, rollout_id=7).mkdir(parents=True)
+        worker._output_snapshotter = SimpleNamespace(
+            load=lambda _directory: None, discard_completed=lambda **_kwargs: None
+        )
+        worker.data_source = SimpleNamespace(load=load_state)
+        specs = collect_rpc_method_specs(RolloutExecutor)
+        assert specs["load"].is_async and specs["save"].is_async
+        executor = RpcCallExecutor(worker=worker, specs=specs)
+        recorder = OutcomeRecorder()
+
+        executor.start(
+            spec=specs["load"],
+            kwargs={"rollout_id": 7, "load": str(tmp_path)},
+            call_id="load",
+            finish=recorder.finish,
+        )
+        try:
+            await asyncio.gather(*executor._background_tasks)
+        finally:
+            await executor.close()
+
+        assert loaded.is_set()
+        assert [outcome.status for outcome in recorder.outcomes] == ["success"]
+
+
 class TestThePackTheTrainerControllerIsGiven:
     def test_the_controller_receives_the_same_pack_the_executor_returned(self):
         """The controller forwards data_ref to its cells, so it must arrive as a reference here too."""
@@ -53,3 +100,31 @@ class TestThePackTheTrainerControllerIsGiven:
 
         assert decoded["rollout_data_pack"] == pack
         assert isinstance(decoded["rollout_data_pack"].data_ref, _MooncakeStoreObjectRef)
+
+
+class TestInferenceRuntimeRefresh:
+    async def test_each_refresh_replaces_counts_from_the_current_controller_snapshot(self) -> None:
+        """Scaling changes reach existing rollout configuration without replacing its mutable state object."""
+        from miles.utils.args.component_rollout import InferenceRuntimeImmutState, InferenceRuntimeMutState
+
+        snapshots = iter(
+            [
+                InferenceRuntimeImmutState(engine_count=2, gpu_count=4, eval_engine_count=1),
+                InferenceRuntimeImmutState(engine_count=1, gpu_count=2, eval_engine_count=0),
+            ]
+        )
+
+        class Controller:
+            async def get_inference_runtime_immut_state(self) -> InferenceRuntimeImmutState:
+                return next(snapshots)
+
+        state = InferenceRuntimeMutState()
+        worker = RolloutExecutor.__new__(RolloutExecutor)
+        worker.args = SimpleNamespace(starts_inference_engines=True, inference_runtime_mut_state=state)
+        worker._inference_controller_provider = SimpleNamespace(get_handle=lambda name: Controller())
+
+        await worker._refresh_inference_runtime_mut_state()
+        assert state.model_dump() == {"engine_count": 2, "gpu_count": 4, "eval_engine_count": 1}
+        await worker._refresh_inference_runtime_mut_state()
+        assert worker.args.inference_runtime_mut_state is state
+        assert state.model_dump() == {"engine_count": 1, "gpu_count": 2, "eval_engine_count": 0}

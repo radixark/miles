@@ -11,7 +11,8 @@ pipeline, or from a native package when a family brings its own modeling. Shippe
 ## Core features
 
 - **Verified Recipes for Latest Diffusion Models.** Launchers for Wan2.2-T2V-A14B, Qwen-Image,
-  LTX-2.3, Cosmos3-Nano, and SD3.5. `TrainPipelineConfig` allows for easy model support.
+  LTX-2.3, Cosmos3-Nano, SD3.5, Krea-2, FLUX 3 Image Klein, and MiniMax H3. `TrainPipelineConfig` allows for easy
+  model support.
 - **Quality control on three fronts.** Deterministic mode supports bit-for-bit comparisons for recipes covered by
   committed E2E standards; sglang-side monkey patches reduce train/rollout mismatches; and an FSDP2 param-dtype patch
   provides per-parameter fp32 control under the mixed-precision policy. See [Deterministic
@@ -26,26 +27,31 @@ pipeline, or from a native package when a family brings its own modeling. Shippe
   and very long contexts; training scales with **USP (Ulysses × Ring)**, built from each family's diffusers `_cp_plan` —
   or a self-written one — for agile model integration.
 - **LoRA training support.** With `--lora-ipc-weight-sync`, PEFT LoRA on the FSDP2 actor ships only
-  `lora_A`/`lora_B` pairs to colocated rollout engines over CUDA IPC and merges them engine-side. See
+  `lora_A`/`lora_B` pairs to colocated rollout engines over CUDA IPC; the engine merges them into its weights or
+  evaluates them unmerged, per `--sglang-lora-merge-mode`. See
   [LoRA Training and Weight Sync](/diffusion/advanced/lora).
 
 
 
 ## Supported models
 
-Each model links to its recipe page; see
-[verification levels](/diffusion/user-guide/recipe-verification). Validated models also
-appear in the [Miles model list](/#supported-models).
+Each model name links to its recipe page. Every documented recipe is labeled with a
+[recipe verification level](/diffusion/user-guide/recipe-verification). SD3.5, Qwen-Image, Wan2.2,
+LTX-2.3, Cosmos3-Nano, and MiniMax H3 also appear in the
+[Miles model list](https://miles.radixark.com/docs#supported-models).
 
 
 | Model                                                   | Task      | Canonical recipes                         |
 | ------------------------------------------------------- | --------- | ----------------------------------------- |
-| [Stable Diffusion 3.5](/diffusion/models/sd3/sd3)                 | T2I       | Flow-GRPO + OCR, DiffusionNFT + PickScore |
+| [Stable Diffusion 3.5](/diffusion/models/sd3/sd3)                 | T2I       | Flow-GRPO + OCR, Flow-GRPO + HPSv2.1, Flow-GRPO + OCR & PickScore, DiffusionNFT + PickScore |
 | [Qwen-Image](/diffusion/models/qwen-image/qwen-image)             | T2I       | Flow-GRPO + PickScore (flow_grpo-aligned) |
+| [Qwen-Image 2.1](/diffusion/models/qwen-image/qwen-image-21)      | T2I       | Flow-GRPO + PickScore                     |
 | [Wan2.2-T2V-A14B](/diffusion/models/wan/wan2-2)                   | T2V       | Flow-GRPO + PickScore, LoRA SFT           |
 | [LTX-2.3](/diffusion/models/ltx/ltx2)                             | T2V       | Flow-GRPO + PickScore                     |
-| [Cosmos3 (Edge / Nano / Super)](/diffusion/models/cosmos/cosmos3) | T2I       | Flow-GRPO + PickScore                     |
-| [MiniMax H3](/diffusion/models/h3/h3)                             | T2VA      | **Not merged** — [PR #154](https://github.com/radixark/miles_diffusion/pull/154); 2-GPU PR-only recipe |
+| [Cosmos3-Nano](/diffusion/models/cosmos/cosmos3)                   | T2I       | Flow-GRPO + PickScore                     |
+| [Krea-2](/diffusion/models/krea/krea2)                             | T2I       | DiffusionNFT + OCR (2- and 8-GPU sync, 6 + 2 async) |
+| [FLUX 3 Image Klein](/diffusion/models/flux3/flux3-image)          | T2I       | DiffusionNFT + PickScore (LoRA), Flow-GRPO + HPSv2.1 (full finetune) |
+| [MiniMax H3](/diffusion/models/h3/h3)                             | T2VA      | Flow-GRPO + PickScore (t2va, video branch, 2 GPUs), LoRA SFT (t2va, 8 GPUs) |
 
 
 
@@ -61,11 +67,14 @@ appear in the [Miles model list](/#supported-models).
 | ---------------------------------------- | ----- | ---------- | ------ | ------- | ------- |
 | Flow-GRPO (`policy_loss`)                | ✅     | ✅          | ✅      | ✅       | ✅       |
 | DiffusionNFT (`nft`)                     | ✅     | 🟡         | 🟡     | 🟡      | 🟡      |
-| SFT (`sft_loss`, `--train-only`)         | 🟡    | 🟡         | ✅      | 🟡      | 🟡      |
+| SFT (`sft_loss`, `--train-only`)         | ❌    | ❌         | ✅      | ❌      | ❌      |
 | LoRA + IPC weight sync                   | ✅     | ✅          | ✅      | 🟡    | ✅       |
 | Single-prompt multi-gen (microgroup > 1) | ✅     | ✅          | ✅      | 🟡       | ❌      |
 | USP sequence parallelism                 | ❌     | ❌          | ✅    | ❌       | ❌       |
-| Deterministic mode                       | ✅     | ✅          | ✅      | ✅       | ❌       |
+| Deterministic mode                       | ✅     | ✅          | ✅      | ✅       | ✅       |
+
+The built-in SFT rollout encodes only Wan2.2 and MiniMax H3 (`miles/rollout/encoder_hub/`); other families need a custom
+encoder or rollout.
 
 
 

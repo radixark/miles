@@ -1,5 +1,8 @@
 import copy
 
+import torch
+import torch.nn as nn
+import transformer_engine.pytorch as te
 from megatron.core.models.gpt.gpt_layer_specs import get_gpt_decoder_block_spec
 from megatron.core.process_groups_config import ProcessGroupCollection
 from megatron.core.transformer.spec_utils import ModuleSpec
@@ -10,14 +13,29 @@ from transformers.models.qwen3_next.modeling_qwen3_next import Qwen3NextRMSNorm
 
 from miles.backends.megatron_utils.megatron_to_hf.linear_attn_layout import gdn_heads
 from miles.utils.hf_utils.config import load_hf_config
-from miles_plugins.models.linear_attn import GatedDeltaNet, LinearAttentionLayer, Projections
+from miles_plugins.models.linear_attn import GatedDeltaNet, LinearAttentionLayer
 
 
 def _get_text_config(hf_config):
     """Extract text config from a VLM config if needed."""
-    if hasattr(hf_config, "text_config"):
+    if hasattr(
+        hf_config, "text_config"
+    ):  # config-access-exempt: HF configs may wrap text_config for multimodal checkpoints
         return hf_config.text_config
     return hf_config
+
+
+class _TEZeroCenteredRMSNorm(te.RMSNorm):
+    get_extra_state = nn.Module.get_extra_state
+    set_extra_state = nn.Module.set_extra_state
+
+
+def gdn_input_layernorm(kind: str, hidden_size: int, eps: float, params_dtype: torch.dtype) -> nn.Module:
+    """``weight`` holds w of the ``(1 + w)`` scale under either kernel, so checkpoints and conversion see the same
+    parameter."""
+    if kind == "hf":
+        return Qwen3NextRMSNorm(hidden_size, eps=eps)
+    return _TEZeroCenteredRMSNorm(hidden_size, eps=eps, zero_centered_gamma=True, params_dtype=params_dtype)
 
 
 class Qwen3_5GatedDeltaNet(GatedDeltaNet):
@@ -30,8 +48,8 @@ class Qwen3_5GatedDeltaNet(GatedDeltaNet):
         self.in_proj_b = self.sharded_linear("in_proj_b", hidden, local.num_v_heads)
         self.in_proj_a = self.sharded_linear("in_proj_a", hidden, local.num_v_heads)
 
-    def project(self, x):
-        return Projections(self.in_proj_qkv(x), self.in_proj_z(x), self.in_proj_b(x), self.in_proj_a(x))
+    def in_proj_sections(self):
+        return self.in_proj_qkv.weight, self.in_proj_z.weight, self.in_proj_b.weight, self.in_proj_a.weight
 
 
 class Attention(LinearAttentionLayer):
@@ -52,13 +70,15 @@ class Attention(LinearAttentionLayer):
             backend=args.linear_attention_backend,
             norm_activation=text_config.hidden_act,
         )
-        input_layernorm = Qwen3NextRMSNorm(text_config.hidden_size, eps=text_config.rms_norm_eps)
+        input_layernorm = gdn_input_layernorm(
+            args.linear_attention_input_norm, text_config.hidden_size, text_config.rms_norm_eps, config.params_dtype
+        )
         super().__init__(config, linear_attn, input_layernorm, pg_collection, allgather_cp=args.allgather_cp)
 
 
 def get_qwen3_5_spec(args, config, vp_stage):
     # always use the moe path for MoE models
-    if not args.num_experts:
+    if not args.backend.num_experts:
         config.moe_layer_freq = [0] * config.num_layers
 
     # Define the decoder block spec
@@ -79,8 +99,10 @@ def get_qwen3_5_spec(args, config, vp_stage):
     text_config = _get_text_config(hf_config)
 
     # Compute layer_types if the config class doesn't expose it
-    if not hasattr(text_config, "layer_types"):
-        interval = getattr(text_config, "full_attention_interval", 4)
+    if not hasattr(text_config, "layer_types"):  # config-access-exempt: older HF checkpoints omit explicit layer_types
+        interval = getattr(
+            text_config, "full_attention_interval", 4
+        )  # config-access-exempt: older HF checkpoints encode full-attention cadence with this optional field
         n = text_config.num_hidden_layers
         text_config.layer_types = [
             "full_attention" if (i + 1) % interval == 0 else "linear_attention" for i in range(n)

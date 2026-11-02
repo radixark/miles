@@ -61,12 +61,14 @@ class TestConnect:
     def _make_protocol() -> UpdateWeightFromTensor:
         protocol = UpdateWeightFromTensor.__new__(UpdateWeightFromTensor)
         protocol.args = Namespace(
+            train_backend="megatron",
             rollout_num_gpus_per_engine=2,
             actor_num_nodes=1,
             actor_num_gpus_per_node=8,
             check_weight_update_equal=False,
             colocate=True,
             offload_rollout=True,
+            lora_sync_sends_base=True,
         )
         protocol.rollout_engines = None
         protocol._model_update_groups = None
@@ -90,10 +92,12 @@ class TestConnect:
             patch(f"{_TENSOR_MODULE}.disconnect_rollout_engines_from_distributed") as disconnect,
         ):
             dist_mock.get_rank.return_value = rank
+            dist_mock.get_world_size.return_value = 8
             protocol.connect(
                 engines,
                 engine_gpu_counts=_ENGINE_GPU_COUNTS,
                 engine_gpu_offsets=_SPARSE_GPU_OFFSETS,
+                engine_cell_ids=[f"cell-{i}" for i in range(len(_ENGINE_GPU_COUNTS))],
                 parallel_state=parallel_state,
                 placement=SimpleNamespace(gather_pp=True),
                 selector="all",
@@ -119,7 +123,7 @@ class TestConnect:
         assert protocol.use_distribute is True
         assert protocol.rollout_engines == engines[:3]
         assert protocol.distributed_rollout_engines == engines[3:]
-        connect.assert_called_once_with(protocol.args, "miles", engines[3:], engine_gpu_counts=[2])
+        connect.assert_called_once_with("miles", engines[3:], engine_gpu_counts=[2])
         disconnect.assert_not_called()
         assert protocol._model_update_groups is connect.return_value
         assert protocol._ipc_engine is engines[expected_engine_index]
@@ -143,6 +147,27 @@ class TestConnect:
 
 
 class TestColocatedBaseSend:
+    def test_bucket_storage_is_released_after_all_ipc_consumers_finish(self) -> None:
+        protocol = UpdateWeightFromTensor.__new__(UpdateWeightFromTensor)
+        protocol.use_distribute = False
+        protocol._ipc_engine = MagicMock()
+        protocol._ipc_gather_src = 0
+        protocol._ipc_gather_group = MagicMock(name="ipc_group")
+        protocol._selector = "all"
+        future = MagicMock(name="engine_future")
+
+        with (
+            patch(f"{_TENSOR_MODULE}._send_to_colocated_engine", return_value=([future], object())),
+            patch(f"{_TENSOR_MODULE}.async_utils.wait_futures", return_value=[{"success": True}]) as wait,
+            patch(f"{_TENSOR_MODULE}.check_weight_sync_results") as check,
+            patch(f"{_TENSOR_MODULE}.dist.barrier") as barrier,
+        ):
+            protocol.send_bucket([("weight", torch.zeros(1))])
+
+        wait.assert_called_once_with([future])
+        check.assert_called_once_with([{"success": True}], is_lora=False)
+        barrier.assert_called_once_with(group=protocol._ipc_gather_group)
+
     def test_multiple_colocated_buckets_are_sent_serially_in_source_order(self) -> None:
         """Two dtype buckets reach the engine one at a time and in the order they were built."""
         engine = _SerialProbeEngine()
@@ -172,3 +197,17 @@ class TestColocatedBaseSend:
             "serialized:model.layers.0.mlp.up_proj.weight",
         ]
         assert engine.max_active == 1
+
+
+class TestObservedWorldSize:
+    def test_colocation_uses_the_live_world_instead_of_declared_actor_capacity(self) -> None:
+        """A smaller live trainer world sends engines outside that world through distributed transfer."""
+        protocol = TestConnect._make_protocol()
+        protocol.args.actor_num_gpus_per_node = 32
+        engines = [MagicMock(name=f"engine{i}") for i in range(4)]
+
+        _, connect, _ = TestConnect._connect(protocol, engines, rank=0, tp_rank=0)
+
+        assert protocol.rollout_engines == engines[:3]
+        assert protocol.distributed_rollout_engines == engines[3:]
+        connect.assert_called_once_with("miles", engines[3:], engine_gpu_counts=[2])

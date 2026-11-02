@@ -24,8 +24,12 @@ class StateServing(FrozenStrictBaseModel):
     addr_info: CellAddrInfo
 
 
+class StateErrored(FrozenStrictBaseModel):
+    addr_info: CellAddrInfo
+
+
 class StateDisposed(FrozenStrictBaseModel):
     pass
 
 
-CellState = StateUninitialized | StateInitializing | StatePendingWeights | StateServing | StateDisposed
+CellState = StateUninitialized | StateInitializing | StatePendingWeights | StateServing | StateErrored | StateDisposed

@@ -55,4 +55,18 @@ class TestClusterToolsInEveryTrainingImage:
 
     def test_every_variant_of_the_build_script_is_covered(self):
         """A new variant pointing at a third Dockerfile must not quietly opt out of this check."""
-        assert len(training_dockerfiles()) == 3
+        assert len(training_dockerfiles()) == 4
+
+
+def _arg_default(dockerfile: str, name: str) -> str:
+    match = re.search(rf"^ARG {name}=(\S+)$", (REPO_ROOT / dockerfile).read_text(), re.MULTILINE)
+    assert match, f"{dockerfile} has no ARG {name} default"
+    return match.group(1)
+
+
+def test_the_tpu_image_takes_the_cuda_images_torchtitan_and_router():
+    """Bumping only docker/Dockerfile would leave the TPU image on the old torchtitan and router build."""
+    assert _arg_default("docker/Dockerfile.tpu", "TORCHTITAN_COMMIT") == _arg_default(
+        "docker/Dockerfile", "TORCHTITAN_COMMIT"
+    )
+    assert _arg_default("docker/Dockerfile.tpu", "WHEELS_TAG") == _arg_default("docker/Dockerfile", "WHEELS_TAG_X86")

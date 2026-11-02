@@ -30,11 +30,9 @@ setup(
             extra_compile_args={
                 "cxx": [
                     "-O3",
-                    "-std=c++17",
                 ],
                 "nvcc": [
                     "-O3",
-                    "-std=c++17",
                     "--expt-relaxed-constexpr",
                     "-Xcompiler",
                     "-fPIC",

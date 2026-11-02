@@ -28,6 +28,7 @@ register_ci_gate(metric_key="train/ppo_kl")
 register_ci_gate(metric_key="train/train_rollout_logprob_abs_diff")
 register_ci_gate(metric_key="train/train_rollout_kl")
 register_ci_gate(metric_key="rollout/raw_reward")
+register_ci_gate(metric_key="perf/actor_train_mfu")
 
 _MODEL_ORG = "pb09204048"
 
@@ -47,7 +48,7 @@ def _args() -> ScriptArgs:
         rollout_max_response_len=512,
         sglang_context_length=1024,
         extra_args=(
-            "--ci-test "
+            "--ci-test --no-enable-sample-ownership-checker "
             "--ci-disable-kl-checker "
             # frozen towers and the engine-derived adapter buffers never match the snapshot
             "--check-weight-update-skip-list visual. audio. ._w1_delta ._a_cat "

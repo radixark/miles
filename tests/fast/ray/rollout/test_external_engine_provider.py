@@ -8,6 +8,7 @@ import httpx
 import pytest
 from tests.fast.ray.rollout.conftest import make_args
 
+from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.ray.rollout import external_engine_provider as external_engine_provider_module
 from miles.ray.rollout.external_engine_provider import (
     _EXTERNAL_ENGINE_POOL_ID,
@@ -138,7 +139,7 @@ class TestDiscoverExternalEngine:
 
         engine = await _discover_external_engine("http://host1:8000", api_key=None)
 
-        assert (engine.num_gpus, engine.worker_type) == (8, "regular")
+        assert (engine.num_gpus, engine.worker_type) == (8, WorkerType.REGULAR)
         assert (engine.host, engine.port) == ("host1", 8000)
 
     async def test_a_prefill_engine_reports_its_type_and_bootstrap_port(self, monkeypatch):
@@ -150,7 +151,7 @@ class TestDiscoverExternalEngine:
 
         engine = await _discover_external_engine("http://host1:8000", api_key=None)
 
-        assert (engine.worker_type, engine.disaggregation_bootstrap_port) == ("prefill", 12090)
+        assert (engine.worker_type, engine.disaggregation_bootstrap_port) == (WorkerType.PREFILL, 12090)
 
     async def test_a_decode_engine_reports_its_type_without_a_bootstrap_port(self, monkeypatch):
         """Only prefill engines own a bootstrap port; decode must come back None."""
@@ -158,7 +159,7 @@ class TestDiscoverExternalEngine:
 
         engine = await _discover_external_engine("http://host1:8000", api_key=None)
 
-        assert (engine.worker_type, engine.disaggregation_bootstrap_port) == ("decode", None)
+        assert (engine.worker_type, engine.disaggregation_bootstrap_port) == (WorkerType.DECODE, None)
 
 
 class _FakeApiClient:
@@ -290,17 +291,20 @@ class TestStaticInferenceEngineWorkerProvider:
         offsets = [info.meta["gpu_offset"] for info in provider.cell_infos]
         assert offsets == [0, 2, 4]
 
-    async def test_a_fleet_with_a_different_gpu_total_is_rejected(self, monkeypatch):
-        """--rollout-num-gpus sizes the placement group and the router, so a fleet that is smaller
-        than it claims must fail at startup instead of hanging in NCCL."""
+    async def test_a_fleet_whose_gpu_total_differs_from_the_arguments_is_described_as_observed(self, monkeypatch):
+        """The run sizes weight transfer from the observed layout, so each engine keeps the gpus it reported."""
         args = _make_args(["host1:8000", "host2:8000"], num_gpus_per_engine=4)
         payloads = {
             "http://host1:8000": _regular_payload(num_gpus=4),
             "http://host2:8000": _regular_payload(num_gpus=2),
         }
 
-        with pytest.raises(AssertionError, match="6 gpus in total"):
-            await self._make_provider(monkeypatch, args, payloads)
+        provider = await self._make_provider(monkeypatch, args, payloads)
+
+        assert [(info.meta["num_gpus_per_engine"], info.meta["gpu_offset"]) for info in provider.cell_infos] == [
+            (4, 0),
+            (2, 4),
+        ]
 
     async def test_a_pd_fleet_without_the_router_flag_is_rejected(self, monkeypatch):
         """The router was already launched non-PD, so serving a PD fleet behind it would misroute."""
@@ -425,7 +429,7 @@ class TestStaticInferenceEngineWorkerProvider:
         meta = _compute_server_cell_meta_from_info(info)
 
         assert (meta.worker_type, meta.num_gpus_per_engine, meta.workers_hash) == (
-            "decode",
+            WorkerType.DECODE,
             2,
             "http://host1:8000",
         )
@@ -437,23 +441,22 @@ def _engine(*, url: str, num_gpus: int) -> _ExternalEngineInfo:
         url=url,
         host=url.removeprefix("http://").split(":")[0],
         port=8000,
-        worker_type="regular",
+        worker_type=WorkerType.REGULAR,
         num_gpus=num_gpus,
         disaggregation_bootstrap_port=None,
     )
 
 
 class TestARaggedExternalFleet:
-    def test_engines_that_do_not_each_report_the_per_engine_argument_are_refused(self):
-        """Engines of unequal size cannot each hold --rollout-num-gpus-per-engine gpus."""
+    def test_engines_of_unequal_size_pass_the_argument_check(self):
+        """The per-engine argument no longer describes the fleet, so engines of their own size are accepted."""
         args = _make_args(["host1:8000", "host2:8000"], num_gpus_per_engine=2, rollout_num_gpus=6)
         engines = [_engine(url="http://host1:8000", num_gpus=4), _engine(url="http://host2:8000", num_gpus=2)]
 
-        with pytest.raises(AssertionError, match="rollout-num-gpus-per-engine"):
-            _assert_engines_match_args(args, engines=engines)
+        _assert_engines_match_args(args, engines=engines)
 
-    async def test_a_fleet_of_unequal_engines_is_refused_before_the_run_is_handed_an_engine(self, monkeypatch):
-        """Discovery refuses the fleet, so nothing downstream ever sees it."""
+    async def test_a_fleet_of_unequal_engines_hands_the_run_each_engine_at_its_own_size(self, monkeypatch):
+        """Each discovered engine becomes a cell carrying the gpus it reported and the offset after the previous one."""
         args = _make_args(["host1:8000", "host2:8000"], num_gpus_per_engine=2, rollout_num_gpus=6)
         payloads = {
             "http://host1:8000": _regular_payload(num_gpus=4),
@@ -462,14 +465,24 @@ class TestARaggedExternalFleet:
 
         _install_payloads(monkeypatch, payloads)
         provider = StaticInferenceEngineWorkerProvider(args=args)
+        await provider.init()
 
-        with pytest.raises(AssertionError, match="rollout-num-gpus-per-engine"):
-            await provider.init()
+        assert [(info.meta["num_gpus_per_engine"], info.meta["gpu_offset"]) for info in provider.cell_infos] == [
+            (4, 0),
+            (2, 4),
+        ]
 
 
 class TestAPdFleetRoles:
-    @pytest.mark.parametrize("worker_types", [["prefill"], ["decode"], ["prefill", "decode", "regular"]])
-    def test_a_pd_fleet_without_exactly_both_roles_is_refused(self, worker_types: list[str]) -> None:
+    @pytest.mark.parametrize(
+        "worker_types",
+        [
+            [WorkerType.PREFILL],
+            [WorkerType.DECODE],
+            [WorkerType.PREFILL, WorkerType.DECODE, WorkerType.REGULAR],
+        ],
+    )
+    def test_a_pd_fleet_without_exactly_both_roles_is_refused(self, worker_types: list[WorkerType]) -> None:
         """A PD router requires prefill and decode engines without regular-engine contamination."""
         args = _make_args(
             [f"host{index}:8000" for index in range(len(worker_types))],
@@ -482,7 +495,7 @@ class TestAPdFleetRoles:
                 port=8000,
                 worker_type=worker_type,
                 num_gpus=1,
-                disaggregation_bootstrap_port=12090 if worker_type == "prefill" else None,
+                disaggregation_bootstrap_port=12090 if worker_type == WorkerType.PREFILL else None,
             )
             for index, worker_type in enumerate(worker_types)
         ]

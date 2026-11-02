@@ -24,6 +24,7 @@ register_ci_gate(metric_key="train/ppo_kl")
 register_ci_gate(metric_key="train/train_rollout_logprob_abs_diff")
 register_ci_gate(metric_key="train/train_rollout_kl")
 register_ci_gate(metric_key="rollout/raw_reward")
+register_ci_gate(metric_key="perf/actor_train_mfu")
 
 # Fully-async rollout on the disaggregated topology (it cannot colocate). Three
 # rollouts exercise the states that only exist with a persistent worker: a cold
@@ -48,7 +49,10 @@ CASE = CaseConfig(
     update_weight_transfer_mode="broadcast",
     num_rollout=3,
     fully_async=True,
-    extra_args="--decoder-first-pipeline-num-layers 17 --decoder-last-pipeline-num-layers 14 ",
+    extra_args=(
+        "--decoder-first-pipeline-num-layers 17 --decoder-last-pipeline-num-layers 14 "
+        "--sample-ownership-grace-steps 4"
+    ),
 )
 
 

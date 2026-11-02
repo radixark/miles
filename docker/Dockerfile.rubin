@@ -99,7 +99,7 @@ RUN git init /root/Megatron-LM && \
     python3 -m pip install --no-deps --no-build-isolation \
       git+https://github.com/ISEEKYAN/mbridge.git@89eb10887887bc74853f89a4de258c0702932a1c && \
     TMS_CUDA_MAJOR=13 python3 -m pip install --force-reinstall --no-deps --no-build-isolation \
-      git+https://github.com/fzyzcjy/torch_memory_saver.git@b5588e83de86412a48689a6583a4b567e75f7acc
+      git+https://github.com/fzyzcjy/torch_memory_saver.git@118b09b3bc7b0cf386745db1eac2601d4aa7e681
 
 # Megatron's build requires <80; ModelOpt needs >=80 and still imports pkg_resources.
 RUN python3 -m pip install --no-deps setuptools==80.9.0

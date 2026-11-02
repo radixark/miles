@@ -1,8 +1,8 @@
 """Multi-process load generator for the session-server HTTP benchmark.
 
-Lives beside `bench_session_server_overhead` so it is importable by qualified
-module name in spawn children (`sys.path[0]` is the script dir, inherited by
-the spawn bootstrap) — the same mechanism `_mock_r3_backend` relies on.
+Imported as `tests.manual.session._bench_load_generator`, including in spawn
+children. The benchmark adds the repository root to the import path when run
+directly; the spawn bootstrap inherits that path.
 
 Why a separate, multi-process driver
 ------------------------------------

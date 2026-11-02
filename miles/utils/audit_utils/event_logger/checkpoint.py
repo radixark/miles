@@ -1,4 +1,4 @@
-"""Snapshot/restore the event directory alongside model checkpoints."""
+"""Snapshot/restore the event directory alongside the rollout-side checkpoint state."""
 
 import logging
 import shutil
@@ -7,45 +7,38 @@ import uuid
 from argparse import Namespace
 from pathlib import Path
 
-from miles.backends.megatron_utils.megatron_config import compute_trainer_checkpoint_dir, resolve_megatron_config
+from miles.backends.megatron_utils.megatron_config import compute_trainer_checkpoint_dir
 from miles.backends.training_utils.checkpoint.tracker import read_checkpoint_tracker_iteration
 
 logger = logging.getLogger(__name__)
 
+SNAPSHOT_DIRNAME = "debug_events"
 
-def snapshot(args: Namespace, iteration: int) -> None:
-    if args.save_debug_event_data is None or args.save is None:
+
+def snapshot(args: Namespace, directory: Path) -> None:
+    if args.save_debug_event_data is None:
         return
 
     src = Path(args.save_debug_event_data)
-    if not src.is_dir():
-        return
+    assert src.is_dir(), f"--save-debug-event-data names {src}, and a checkpoint cannot copy a log that is not there"
 
-    dst = _snapshot_dir(Path(args.save), iteration)
-    if dst.exists():
-        shutil.rmtree(dst)
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(src, dst)
-    logger.info("Snapshotted event dir %s -> %s", src, dst)
+    shutil.copytree(src, directory)
+    logger.info("Snapshotted event dir %s -> %s", src, directory)
 
 
 def restore(args: Namespace) -> None:
-    if args.save_debug_event_data is None or args.requested_load is None:
-        return
-
-    requested_load = Path(args.requested_load)
-    iteration = _read_checkpoint_iteration(args)
-    if iteration is None:
-        return
-
-    src = _snapshot_dir(requested_load, iteration)
-    if not src.is_dir():
+    if args.save_debug_event_data is None:
         return
 
     dst = Path(args.save_debug_event_data)
     if dst.exists():
         trash = _move_aside(dst)
         logger.info("Moved pre-restore event dir %s -> %s", dst, trash)
+
+    src = _restorable_snapshot_dir(args)
+    if src is None:
+        return
+
     shutil.copytree(src, dst)
     logger.info("Restored event dir %s <- %s", dst, src)
 
@@ -65,8 +58,25 @@ def discard(args: Namespace) -> None:
     logger.info("Moved the log of the run a hot restart takes over %s -> %s", dst, trash)
 
 
+def _restorable_snapshot_dir(args: Namespace) -> Path | None:
+    if args.train_backend == "megatron":
+        backend_args = args.raw_megatron.base_args | args.raw_megatron.trainers[0].overrides
+        if backend_args["finetune"]:
+            return None
+
+    if args.requested_load is None:
+        return None
+
+    iteration = _read_checkpoint_iteration(args)
+    if iteration is None:
+        return None
+
+    src = _snapshot_dir(Path(args.requested_load), iteration)
+    return src if src.is_dir() else None
+
+
 def _read_checkpoint_iteration(args: Namespace) -> int | None:
-    leader = resolve_megatron_config(args).trainers[0]
+    leader = args.raw_megatron.trainers[0]
     load_dir = (
         compute_trainer_checkpoint_dir(base_dir=args.requested_load, trainer_id=leader.trainer_id)
         if leader.model_id is not None
@@ -82,4 +92,6 @@ def _move_aside(dst: Path) -> Path:
 
 
 def _snapshot_dir(checkpoint_root: Path, iteration: int) -> Path:
-    return checkpoint_root / f"iter_{iteration:07d}" / "debug_events"
+    from miles.ray.rollout.rollout_executor import compute_rollout_checkpoint_dir
+
+    return compute_rollout_checkpoint_dir(checkpoint_root, rollout_id=iteration) / SNAPSHOT_DIRNAME
