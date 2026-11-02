@@ -793,3 +793,19 @@ class TestObservedGpuThroughput:
         else:
             assert "tokens_per_gpu_per_sec" not in metrics
             assert "effective_tokens_per_gpu_per_sec" not in metrics
+
+
+def test_zero_std_metrics_skip_a_group_whose_episode_aborted():
+    """An agentic episode that never opened its environment comes back ABORTED
+    with reward None; the zero-std metric must not round it (eval crashed on
+    `round(None)` with every episode aborted, 2026-10-12)."""
+    args = make_args(advantage_estimator="grpo", reward_key=None)
+    samples = [
+        make_sample(group_index=0, index=0, reward=None, status=Sample.Status.ABORTED),
+        make_sample(group_index=0, index=1, reward=None, status=Sample.Status.ABORTED),
+        make_sample(group_index=1, index=2, reward=1.0),
+        make_sample(group_index=1, index=3, reward=1.0),
+    ]
+    out = _compute_zero_std_metrics(args, samples)
+    assert out["zero_std/count_1.0"] == 1 and "zero_std/count_None" not in out
+    assert out["zero_std/all_one_percentage"] == 0.5
