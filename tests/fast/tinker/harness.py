@@ -1,12 +1,21 @@
 """Shared fakes for the tinker gateway suite."""
 
 import asyncio
+from pathlib import Path
 
+import torch
+
+from miles.backends.training_utils.checkpoint.adapter.adapter_exports import write_sampler_adapter
+from miles.backends.training_utils.checkpoint.adapter.commit import write_adapter_dir
+from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
 from miles.backends.training_utils.checkpoint.io import write_checkpoint_dir
 from miles.tinker.core.future import DONE, PENDING, RequestFuture
 from miles.tinker.core.service import TinkerService
 from miles.tinker.core.types import Command, CommandOp, GatewayConfig
+from miles.tinker.runtime import commit_adapter, resolve_adapter
+from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
 
+_TARGETS = get_hf_lora_targets({"model_type": "qwen3", "num_hidden_layers": 1})
 ADAM = {
     "learning_rate": 1e-4,
     "beta1": 0.9,
@@ -80,8 +89,31 @@ class FakeBackend:
     async def save_slot(self, slot, path, metadata=None):
         return self._write_checkpoint("save_slot", path, metadata, slot=slot)
 
-    async def export_slot(self, slot, rank, alpha, path, metadata=None):
-        return self._write_checkpoint("export_slot", path, metadata, slot=slot, rank=rank, alpha=alpha)
+    commit_adapter = staticmethod(commit_adapter)
+    resolve_adapter = staticmethod(resolve_adapter)
+
+    async def export_slot(self, slot, root, name, tenant, parametrization_fields):
+        failure = self._record(
+            "export_slot",
+            slot=slot,
+            root=root,
+            adapter_name=name,
+            tenant=tenant,
+            parametrization_fields=parametrization_fields,
+        )
+        if failure is not None:
+            return failure
+        # one tiny module stands in for the model's targets
+        parametrization = AdapterParametrization(
+            **parametrization_fields, target_modules=("model.layers.0.self_attn.q_proj",)
+        )
+        weights = {
+            "model.layers.0.self_attn.q_proj.lora_A": torch.zeros(parametrization.lora_rank, 4),
+            "model.layers.0.self_attn.q_proj.lora_B": torch.zeros(4, parametrization.lora_rank),
+        }
+        with write_adapter_dir(Path(root), name, tenant=tenant) as written:
+            write_sampler_adapter(written.path, weights, parametrization, _TARGETS)
+        return written
 
     def _write_checkpoint(self, name, path, metadata, **kwargs):
         failure = self._record(name, path=path, metadata=metadata, **kwargs)

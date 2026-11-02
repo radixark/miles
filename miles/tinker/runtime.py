@@ -1,11 +1,21 @@
 """Translate gateway datums to trainer batches and sampling requests to SGLang."""
 
 import asyncio
+from dataclasses import asdict
+from pathlib import Path
 
 import httpx
 
+from miles.backends.training_utils.checkpoint.adapter.commit import OwnershipError as AdapterOwnershipError
+from miles.backends.training_utils.checkpoint.adapter.commit import (
+    UncommittedAdapterDir,
+    commit_adapter_dir,
+    format_sglang_lora_name,
+    resolve_adapter_dir,
+)
+from miles.backends.training_utils.checkpoint.adapter.parametrization import read_parametrization
 from miles.ray.rollout.train_data_conversion import ROLLOUT_DATA_VALUE_SPEC
-from miles.tinker.core.types import UserInputError
+from miles.tinker.core.types import OwnershipError, UserInputError
 from miles.utils import object_store
 from miles.utils.http_utils import post
 from tinker.types.topk_logprobs import MASK_LOGPROB
@@ -41,6 +51,26 @@ def _build_train_data(slot_datums: list) -> dict:
         if datum_key in datums[0]:
             train_data[batch_key] = [datum[datum_key] for datum in datums]
     return train_data
+
+
+def commit_adapter(root: str, name: str, written: UncommittedAdapterDir) -> None:
+    """The gateway is the committer of every adapter dir under its checkpoint root."""
+    commit_adapter_dir(Path(root), name, written, overwrite=False)
+
+
+def resolve_adapter(root: str, name: str, tenant: str, model_id: str) -> dict | None:
+    """A committed adapter's physical dir, sglang name and parametrization; None for a dir written before commits."""
+    try:
+        committed = resolve_adapter_dir(Path(root), name, tenant=tenant)
+    except AdapterOwnershipError as error:
+        raise OwnershipError(f"adapter {name!r} does not belong to this tenant") from error
+    if committed is None:
+        return None
+    return {
+        "path": str(committed.path),
+        "lora_name": format_sglang_lora_name(model_id, name, committed.commit_id),
+        "parametrization": asdict(read_parametrization(committed.path)),
+    }
 
 
 class MilesBackend:
@@ -110,11 +140,17 @@ class MilesBackend:
         return _slot_failure(await self.trainer.save_slot(slot=slot, path=path, metadata=metadata))
 
     async def export_slot(
-        self, slot: int, rank: int, alpha: float, path: str, metadata: dict | None = None
-    ) -> dict | None:
-        return _slot_failure(
-            await self.trainer.export_slot(slot=slot, rank=rank, alpha=alpha, path=path, metadata=metadata)
+        self, slot: int, root: str, name: str, tenant: str, parametrization_fields: dict
+    ) -> UncommittedAdapterDir | dict:
+        """The uncommitted export every rank agreed on, or the first worker failure."""
+        results = await self.trainer.export_slot(
+            slot=slot, root=root, name=name, tenant=tenant, parametrization_fields=parametrization_fields
         )
+        failure = _slot_failure([result for result in results if isinstance(result, dict)])
+        return results[0] if failure is None else failure
+
+    commit_adapter = staticmethod(commit_adapter)
+    resolve_adapter = staticmethod(resolve_adapter)
 
     # -------- sampling --------
 
