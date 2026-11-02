@@ -4,6 +4,8 @@ from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from typing import Any
 
+import yaml
+from omegaconf.errors import OmegaConfBaseException
 from pydantic import ConfigDict, SerializeAsAny, create_model, model_validator
 
 from miles.utils.args.schema import BaseConfig, validate_complete_config
@@ -75,8 +77,9 @@ def _add_function_arguments(
 ) -> None:
     """Register a hook's flags on the real parser, or skip a hook whose flags an earlier hook declared identically.
 
-    Two hooks can share flags, e.g. a wrapper reusing agentic_tool_call's add_arguments; the first registration
-    already built their groups and defaults, so the second adds nothing.
+    Hook flags form one run-wide namespace: two hooks can share flags, e.g. a wrapper reusing agentic_tool_call's
+    add_arguments, and then see the same value. The first registration already built their groups and defaults,
+    so the second adds nothing. Per-dataset values belong in a flag of their own or the dataset's `agent` block.
     """
     hook_option_strings = set() if hook_option_strings is None else hook_option_strings
     # a scratch run only compares the hook's flags with already-declared ones
@@ -219,8 +222,8 @@ def _compute_rollout_dataset_function_infos(
         return []
     try:
         datasets = load_rollout_data_config(value)
-    except Exception:
-        # any bad file (missing, invalid YAML, failed schema) is reported by startup validation, not the pre-parse
+    except (OSError, ValueError, yaml.YAMLError, OmegaConfBaseException):
+        # a missing file, invalid YAML or failed schema is reported by startup validation, not the pre-parse
         if partial:
             return []
         raise
