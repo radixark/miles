@@ -67,6 +67,8 @@ def make_args(**overrides: Any) -> Namespace:
         advantage_estimator="grpo",
         rewards_normalization=True,
         grpo_std_normalization=False,
+        length_penalty_coeff=0.0,
+        length_penalty_min_tokens=1,
         reward_key=None,
         log_reward_category=None,
         log_passrate=False,

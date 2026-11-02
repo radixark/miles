@@ -26,6 +26,7 @@ from miles.backends.torchtitan_utils.args_namespace import TorchtitanArgsNamespa
 from miles.dashboard.args import validate_dashboard_args
 from miles.ray.specs.train import external_trainer_controller_addrs
 from miles.rollout.checkpoint_eval import is_checkpoint_eval_fn
+from miles.rollout.reward_shaping import validate_length_penalty_args
 from miles.router.backend import RouterKind
 from miles.utils.args.configs.fault_tolerance import _DEFAULT_FT_API_SERVER_PORT
 from miles.utils.args.configs.router import RouterConfig
@@ -871,6 +872,7 @@ def miles_validate_args(args):
         logger.warning("--custom-config-path is deprecated; use the custom function's declared CLI arguments instead.")
         _apply_custom_config(args, yaml.safe_load(resolve_file_arg(args.custom_config_path)) or {})
 
+    validate_length_penalty_args(args)
     mode = args.update_weight_transfer_mode
     if mode not in ("broadcast", "broadcast_packed", "p2p", "disk-delta"):
         raise ValueError(f"Unknown --update-weight-transfer-mode {mode!r}")
@@ -1855,12 +1857,17 @@ def hf_validate_args(args, hf_config):
     if (hf_config.model_type == "deepseek_v4" or "deepseekv4" in model_name) and args.context_parallel_size > 1:
         assert args.allgather_cp, "zigzag CP is not supported for DeepSeek V4."
 
+    # MiniMax-M3 names the dense width dense_intermediate_size and the expert width intermediate_size
+    if hasattr(hf_config, "dense_intermediate_size"):  # config-access-exempt: model-specific key
+        dense_ffn_key, moe_ffn_key = "dense_intermediate_size", "intermediate_size"
+    else:
+        dense_ffn_key, moe_ffn_key = "intermediate_size", "moe_intermediate_size"
     for hf_config_name, megatron_config_name, compare_fn in [
         ("hidden_size", "hidden_size", equal),
         ("num_attention_heads", "num_attention_heads", equal),
         ("num_hidden_layers", "num_layers", equal),
-        ("intermediate_size", "ffn_hidden_size", equal),
-        ("moe_intermediate_size", "moe_ffn_hidden_size", equal),
+        (dense_ffn_key, "ffn_hidden_size", equal),
+        (moe_ffn_key, "moe_ffn_hidden_size", equal),
         ("tie_word_embeddings", "untie_embeddings_and_output_weights", lambda x, y: not x == y),
         (
             "rms_norm_eps",
