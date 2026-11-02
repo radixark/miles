@@ -10,7 +10,7 @@ for example math, science QA and agentic tasks. Miles draws each rollout step fr
 datasets:
   math:
     path: /data/math.jsonl
-    sha256: 9f2c0e41
+    sha256: "9f2c0e41"  # quoted, so YAML never reads a prefix like 00001234 as a number
     samples_per_step: 3
   science:
     path: /data/science.jsonl
@@ -35,6 +35,8 @@ The flag also accepts an inline `base64:<payload>`, like `--eval-config`.
 | `custom_agent_function_path` | no | Agent function for `agentic_tool_call` on this dataset, instead of `--custom-agent-function-path`. |
 | `max_seq_len` | no | Agentic sequence limit for this dataset. At most `--max-seq-len`. |
 | `agent` | no | Free-form settings for this dataset's agent, passed as `metadata["agent_config"]`. |
+| `custom_rm_path` | no | Reward function for this dataset's samples, instead of `--custom-rm-path`. |
+| `rm_type` | no | Built-in reward for this dataset's samples, instead of `--rm-type`. |
 
 Unknown fields are rejected, so a typo fails at startup instead of being ignored. A `custom_generate_function_path` or
 `custom_agent_function_path` that declares its own options (`config_class` or `add_arguments`) gets them registered as
@@ -49,6 +51,10 @@ block).
 a wrapper around it that sets `reads_sample_agent_fields = True` on itself. A dataset that sets them under any
 other generate function, or an agentic dataset with neither `custom_agent_function_path` nor `--custom-agent-function-path`,
 is rejected at startup.
+
+`custom_rm_path` and `rm_type` become the samples' `reward_spec`, so they follow the per-sample reward rules in
+[Customization](customization.md): a function with its own config must be the `--custom-rm-path` one, and under
+`--group-rm` a batched `--custom-rm-path` scores every group, so a dataset naming a different function is rejected.
 
 ### How prompts are drawn
 
