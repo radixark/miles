@@ -68,7 +68,8 @@ def _assert_user_name(name: str) -> None:
 
 @contextmanager
 def write_adapter_dir(root: Path, name: str, *, tenant_digest: str | None = None):
-    """All ranks write into the yielded physical directory; the result is not visible until committed.
+    """All ranks write into the yielded physical directory; the result is not visible until committed, and a failed
+    write leaves nothing behind.
 
     ``tenant_digest``: the committer digests the tenant's key, so the key itself never reaches the writing ranks.
     """
@@ -89,7 +90,12 @@ def write_adapter_dir(root: Path, name: str, *, tenant_digest: str | None = None
         yield UncommittedAdapterDir(path, commit_id)
     except Exception as exc:
         error = exc
-    raise_if_any_rank_failed(error)
+    try:
+        raise_if_any_rank_failed(error)
+    except RuntimeError:
+        if not dist.is_initialized() or dist.get_rank() == 0:
+            _rmtree(path)
+        raise
 
 
 def _link_target(link: Path) -> Path | None:

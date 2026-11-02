@@ -47,14 +47,13 @@ def test_another_tenant_cannot_resolve_or_delete(tmp_path):
     assert resolve_adapter_dir(tmp_path, "w", tenant=None) is None
 
 
-def test_a_failed_write_is_never_visible(tmp_path):
+def test_a_failed_write_is_never_visible_and_leaves_nothing(tmp_path):
     with pytest.raises(RuntimeError, match="adapter checkpoint failed"):
         with write_adapter_dir(tmp_path, "w") as written:
             (written.path / "partial").write_text("x")
             raise OSError("disk full")
     assert resolve_adapter_dir(tmp_path, "w", tenant=None) is None
-    delete_unreferenced_adapter_dirs(tmp_path)
-    assert list(tmp_path.iterdir()) == []
+    assert list(tmp_path.iterdir()) == [], "a retry under a new name must not leave the failed write behind"
 
 
 def test_recovery_of_one_name_does_not_touch_a_dotted_neighbour(tmp_path):
