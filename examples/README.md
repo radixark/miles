@@ -8,6 +8,7 @@ End-to-end training workflows — the place to start.
 
 - **[geo3k_vlm](./geo3k_vlm)**: Training VLMs with FSDP using GRPO on the GEO3K dataset.
   - **[multi_turn](./geo3k_vlm/multi_turn)**: The same dataset over multiple turns, with the model cropping images through an interactive environment.
+- **[timelens_video](./timelens_video)**: Video temporal-grounding RL for Qwen3.5 with token-space media and a frozen vision tower.
 - **[lora](./lora)**: LoRA fine-tuning with the Megatron backend.
 - **[multi_lora](./multi_lora)**: Serve concurrent LoRA fine-tuning clients on one shared base model through the Tinker protocol.
   - **[harbor_tinker](./multi_lora/harbor_tinker)**: Terminal-Bench 2 training with Harbor sandboxes and the official Tinker cookbook RL loop.
