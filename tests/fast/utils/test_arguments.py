@@ -2911,7 +2911,14 @@ class TestMultiLoRAValidation:
     def test_bridge_attn_group_takes_the_fused_gdn_in_proj_whole_under_lora(self, monkeypatch, lora_type, gdn_leaves):
         """lora shares one lora_A across Qwen3.5's fused GDN in_proj, so attn adapts it whole; canonical_lora
         keeps official Tinker's q / k / v / z."""
-        config = {"model_type": "qwen3_5_text", "layer_types": ["linear_attention"]}
+        config = {
+            "model_type": "qwen3_5_text",
+            "layer_types": ["linear_attention"],
+            "linear_num_key_heads": 2,
+            "linear_key_head_dim": 4,
+            "linear_num_value_heads": 4,
+            "linear_value_head_dim": 4,
+        }
         monkeypatch.setattr(
             "miles.utils.lora.arguments.load_hf_config",
             lambda path: SimpleNamespace(model_type=config["model_type"], to_dict=lambda: config),
