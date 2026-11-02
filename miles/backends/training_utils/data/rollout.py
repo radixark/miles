@@ -358,6 +358,10 @@ def get_batch(
             raise NotImplementedError
         return ids
 
+    if (mrope_position_ids := batch.pop("mrope_position_ids", None)) is not None:
+        assert qkv_format == "thd" and not allgather_cp, "mRoPE positions need the per-sample THD CP layout"
+        batch["position_ids"] = _pack_natural_position_ids(mrope_position_ids, cu_seqlens_host)
+
     if get_position_ids:
         position_ids_list = []
         for t in batch["unconcat_tokens"]:
@@ -407,6 +411,20 @@ def get_batch(
         batch["multimodal_num_items"] = multimodal_num_items
 
     return batch
+
+
+def _pack_natural_position_ids(sample_positions: list[torch.Tensor], cu_seqlens_host: tuple[int, ...]) -> torch.Tensor:
+    """Pack each sample's [num_tokens, 3] positions into the [3, 1, T] natural (not CP-sliced) packed row.
+
+    Each sample starts at its ``cu_seqlens`` boundary, the same packing the tokens get before the CP split;
+    Megatron's THD rotary picks each CP rank's rows from it. Padding keeps position 0: it only follows the
+    real tokens, so causal attention never lets them see it.
+    """
+    positions = sample_positions[0].new_zeros(cu_seqlens_host[-1], sample_positions[0].size(1))
+    for sample, start, end in zip(sample_positions, cu_seqlens_host, cu_seqlens_host[1:], strict=False):
+        assert sample.size(0) <= end - start, f"{sample.size(0)} positions for a {end - start}-token segment"
+        positions[start : start + sample.size(0)] = sample
+    return positions.T.unsqueeze(1)
 
 
 class DataIterator:
