@@ -73,8 +73,8 @@ Inkling and Kimi K3 accept only their verified adapter layout (Kimi K3 may omit 
 projection), so omit `--target-modules` for them.
 Qwen3.5 / Qwen3.6 GDN layers adapt `linear_attn.out_proj` and the input projections as independent
 `in_proj_q`/`in_proj_k`/`in_proj_v`/`in_proj_z`/`in_proj_b`/`in_proj_a` adapters. Official Tinker adapters
-train `in_proj_q/k/v/z` (four distinct A's); `in_proj_b`/`in_proj_a` are adapted only when targeted, which
-the `attn` group currently does. SGLang stacks the components only as complete groups, so `in_proj_qkv` and
+train `in_proj_q/k/v/z` (four distinct A's), which is what the `attn` group selects; `in_proj_b`/`in_proj_a`
+are adapted only when targeted by name. SGLang stacks the components only as complete groups, so `in_proj_qkv` and
 `in_proj_z` are selected together, and so are `in_proj_b` and `in_proj_a`.
 Selecting a projection the spec does not implement
 (for example routed experts or Qwen3-Next GDN projections) fails at startup; use
@@ -204,12 +204,16 @@ checkpoint keys to the current HF model namespace, without loading base weights.
 This resolves renamed and packed parameter names. Custom models absent from
 native Transformers keep their existing checkpoint namespace.
 
-Bridge resolves mappings against parameters that actually exist across PP/EP
-ranks before checking fused selections. Explicit Megatron selectors retain a
+Argument validation checks fused selections against Bridge's mapping registry and
+the HF model's modules; a model whose HF implementation lists no modules (remote
+code) is checked only at model build, where Bridge resolves mappings against
+parameters that actually exist across PP/EP ranks. Explicit Megatron selectors retain a
 compatibility conversion at startup. Adapter factories receive only Megatron
 targets; they do not overwrite the HF selection. Arbitrary layer/expert subsets
 within a registry template are not implemented and are rejected.
-For Bridge, standard LoRA requires all projections of a fused weight together;
+For Bridge, standard LoRA requires all projections of a fused weight together, and argument validation
+refuses a target set that splits one (for example Qwen3.5's `attn` group, which leaves `in_proj_b` /
+`in_proj_a` out of the fused GDN `in_proj`);
 `canonical_lora` supports individual Q/K/V and dense gate/up selections, and
 Qwen3.5 / 3.6 GDN input projections as `in_proj_q`/`in_proj_k`/`in_proj_v`/`in_proj_z`/`in_proj_b`/`in_proj_a`
 adapters, each with its own `lora_A`, served to SGLang under those names; `in_proj_qkv` and `in_proj_z` are
