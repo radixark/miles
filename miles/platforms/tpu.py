@@ -11,6 +11,7 @@ class TpuPlatform(Platform):
     # the tpu compile backend takes static shapes only
     dynamic_shapes = False
     nvml_numa_affinity = False
+    pin_host_buffers_on_huge_pages = False
 
     def bind_device_before_process_group(self, local_rank: int) -> None:
         # touching the device before init_process_group breaks the multi-process rendezvous

@@ -1,5 +1,6 @@
 """A transfer buffer stays unchanged for healthy cells and registered for every unfinished write."""
 
+import gc
 import threading
 from argparse import Namespace
 from concurrent.futures import Future
@@ -217,3 +218,52 @@ def test_completion_before_tracking_does_not_retain_the_future(make_transfer_buf
     assert buffers.acquire() is buffer
     buffers.release()
     assert registered == []
+
+
+class TestHugePageHostTransferBuffers:
+    """Where the platform asks for it (ROCm), host transfer buffers are page-locked mappings on 2 MiB pages."""
+
+    @pytest.fixture
+    def huge_pages(self, monkeypatch: pytest.MonkeyPatch) -> Namespace:
+        calls = Namespace(registered=[], unregistered=[], register_error=0)
+        cudart = Namespace(
+            cudaHostRegister=lambda ptr, nbytes, flags: calls.registered.append((ptr, nbytes)) or calls.register_error,
+            cudaHostUnregister=lambda ptr: calls.unregistered.append(ptr) or 0,
+        )
+        monkeypatch.setattr(transfer_buffers_module.current_platform, "pin_host_buffers_on_huge_pages", True)
+        monkeypatch.setattr(torch.cuda, "cudart", lambda: cudart)
+        return calls
+
+    def test_the_memory_is_unlocked_only_after_its_last_view_is_gone(self, huge_pages: Namespace) -> None:
+        """A view of another dtype holds the storage but not the tensor: unlocking with the tensor would leave the
+        view on memory the NIC may no longer DMA into."""
+        buffer = transfer_buffers_module._allocate_transfer_buffer(4 << 20, torch.device("cpu"))
+        address = buffer.data_ptr()
+        view = buffer.view(torch.float32)
+
+        del buffer
+        gc.collect()
+        view.fill_(1.0)
+        assert (huge_pages.registered, huge_pages.unregistered) == ([(address, 4 << 20)], [])
+        del view
+        gc.collect()
+        assert huge_pages.unregistered == [address]
+
+    def test_a_failed_page_lock_raises_and_unlocks_nothing(self, huge_pages: Namespace) -> None:
+        huge_pages.register_error = 1
+
+        with pytest.raises(RuntimeError, match="cudaHostRegister of a 4194304-byte transfer buffer failed: error 1"):
+            transfer_buffers_module._allocate_transfer_buffer(4 << 20, torch.device("cpu"))
+        gc.collect()
+        assert huge_pages.unregistered == []
+
+    def test_transparent_huge_pages_off_is_reported(
+        self, huge_pages: Namespace, monkeypatch: pytest.MonkeyPatch, tmp_path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        enabled = tmp_path / "enabled"
+        enabled.write_text("always madvise [never]\n")
+        monkeypatch.setattr(transfer_buffers_module, "_THP_ENABLED", str(enabled))
+
+        transfer_buffers_module._allocate_transfer_buffer(4 << 20, torch.device("cpu"))
+
+        assert "Transfer buffers stay on 4 KiB pages: no transparent huge pages" in caplog.text
