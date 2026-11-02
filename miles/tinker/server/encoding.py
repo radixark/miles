@@ -97,8 +97,6 @@ def decode_command(op: str, payload: dict) -> tuple[str, dict]:
 
 
 def _decode_command(op: str, payload: dict, decoded: dict) -> tuple[str, dict]:
-    if (request_type := REQUEST_TYPES.get(op)) is not None:
-        request = validate_against_sdk(request_type, payload)
     if op == "forward_backward":
         fb_input = payload["forward_backward_input"]
         datums = [
@@ -111,6 +109,7 @@ def _decode_command(op: str, payload: dict, decoded: dict) -> tuple[str, dict]:
             "loss_fn_config": fb_input.get("loss_fn_config") or {},
         }
         return ("forward_only" if payload.get("forward_only") else op), decoded
+    request = validate_against_sdk(REQUEST_TYPES[op], payload)
     if op == "optim_step":
         validate_plain_adam("optimizer params", request.optim_params, tinker_types.AdamParams)
         # model_dump fills every default so core and the executor can require every key
@@ -131,7 +130,7 @@ def _decode_command(op: str, payload: dict, decoded: dict) -> tuple[str, dict]:
     if op == "save_weights_for_sampler":
         validate_save_options(payload)
         return op, decoded | {"sampler_path": payload.get("path")}
-    raise UserInputError(f"unknown command op {op!r}")
+    raise AssertionError(f"unhandled command op {op!r}")
 
 
 def model_input_tokens(model_input: dict) -> list[int]:
