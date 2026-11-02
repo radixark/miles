@@ -73,3 +73,14 @@ def test_user_names_cannot_start_with_a_dot(tmp_path):
     with pytest.raises(AssertionError, match="must not start with"):
         with write_adapter_dir(tmp_path, ".w"):
             pass
+
+
+def test_recovery_removes_a_crashed_commits_staging_link_and_leaves_foreign_hidden_dirs(tmp_path):
+    with write_adapter_dir(tmp_path, "w") as crashed:
+        pass
+    # crash between creating the staging link and renaming it onto the name
+    (tmp_path / f"{crashed.path.name}.link").symlink_to(crashed.path.name)
+    (tmp_path / ".git").mkdir()
+    delete_unreferenced_adapter_dirs(tmp_path)
+    assert sorted(p.name for p in tmp_path.iterdir()) == [".git"]
+

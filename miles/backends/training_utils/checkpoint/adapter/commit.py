@@ -8,6 +8,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import secrets
 import shutil
 from contextlib import contextmanager
@@ -22,7 +23,10 @@ logger = logging.getLogger(__name__)
 
 TENANT_FILENAME = "tenant.json"
 _DELETING_SUFFIX = ".deleting"
+_STAGING_SUFFIX = ".link"
 _COMMIT_ID_NBYTES = 8
+# what this library creates in a root: .<name>.<commit_id>, its retired form and a crashed commit's staging link
+_INTERNAL_ENTRY = re.compile(r"^\.(?P<name>.+)\.[0-9a-f]{%d}(?P<suffix>\.deleting|\.link)?$" % (2 * _COMMIT_ID_NBYTES))
 
 
 class OwnershipError(PermissionError):
@@ -109,7 +113,7 @@ def commit_adapter_dir(
     assert not link.exists() or link.is_symlink(), f"{link} exists and is not an adapter link"
     if previous is not None and not overwrite:
         raise FileExistsError(f"adapter {name!r} already exists")
-    staging_link = root / f".{name}.{written.commit_id}.link"
+    staging_link = root / f".{name}.{written.commit_id}{_STAGING_SUFFIX}"
     staging_link.symlink_to(written.path.name)
     os.replace(staging_link, link)
     _fsync_dir(root)
@@ -147,25 +151,24 @@ def delete_unreferenced_adapter_dirs(root: Path, name: str | None = None, *, kee
         return
     referenced = set()
     for entry in root.iterdir():
-        if entry.is_symlink():
-            target = _link_target(entry)
-            if target.exists():
-                referenced.add(target.name)
-            elif name is None or entry.name == name:
+        if not entry.is_symlink():
+            continue
+        internal = _INTERNAL_ENTRY.match(entry.name)
+        if internal is not None and internal["suffix"] == _STAGING_SUFFIX:
+            # a staging link never made it to its name; it references nothing
+            if name is None or internal["name"] == name:
                 entry.unlink()
+        elif _link_target(entry).exists():
+            referenced.add(_link_target(entry).name)
+        elif name is None or entry.name == name:
+            entry.unlink()
     for entry in root.iterdir():
-        if not entry.name.startswith(".") or entry.is_symlink() or not entry.is_dir():
+        internal = _INTERNAL_ENTRY.match(entry.name)
+        if internal is None or internal["suffix"] == _STAGING_SUFFIX or entry.is_symlink() or entry.name == keep:
             continue
-        if entry.name == keep:
-            continue
-        if entry.name.endswith(_DELETING_SUFFIX) or entry.name not in referenced:
-            if name is None or _physical_name(entry.name) == name:
+        if internal["suffix"] == _DELETING_SUFFIX or entry.name not in referenced:
+            if name is None or internal["name"] == name:
                 _rmtree(entry)
-
-
-def _physical_name(dirname: str) -> str:
-    stem = dirname.removesuffix(_DELETING_SUFFIX)
-    return stem[1:].rsplit(".", 1)[0]
 
 
 def _retire(path: Path) -> None:
