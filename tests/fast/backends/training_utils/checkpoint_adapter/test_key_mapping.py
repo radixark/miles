@@ -45,7 +45,14 @@ def test_tinker_names_round_trip(model_type, tinker_name, hf_key):
 
 
 def test_tinker_names_gain_the_vl_layer_prefix():
-    text_config = {"num_hidden_layers": 4, "layer_types": ["linear_attention", "full_attention"] * 2}
+    text_config = {
+        "num_hidden_layers": 4,
+        "layer_types": ["linear_attention", "full_attention"] * 2,
+        "linear_num_key_heads": 2,
+        "linear_key_head_dim": 2,
+        "linear_num_value_heads": 4,
+        "linear_value_head_dim": 2,
+    }
     targets = get_hf_lora_targets({"model_type": "qwen3_5", "text_config": text_config})
     name = "base_model.model.model.layers.1.linear_attn.in_proj_q.lora_A.weight"
     assert (

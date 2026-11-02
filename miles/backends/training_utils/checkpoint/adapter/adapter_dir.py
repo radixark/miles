@@ -118,7 +118,7 @@ def load_adapter_dir(
         )
         return source
     if kind == AdapterSourceKind.ADAPTER_DIR:
-        reader = MilesAdapterDirReader(path)
+        reader = MilesAdapterDirReader(path, targets)
     elif kind == AdapterSourceKind.EXTERNAL_WEIGHTS:
         reader = ExternalWeightsReader(path, run, targets)
     else:

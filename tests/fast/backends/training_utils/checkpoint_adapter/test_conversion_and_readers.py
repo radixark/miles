@@ -29,6 +29,18 @@ L = "model.layers.0"
 QKV = (f"{L}.linear_attn.in_proj_q", f"{L}.linear_attn.in_proj_k", f"{L}.linear_attn.in_proj_v")
 EXPERTS = (f"{L}.mlp.experts.gate_proj", f"{L}.mlp.experts.up_proj", f"{L}.mlp.experts.down_proj")
 QWEN3 = get_hf_lora_targets({"model_type": "qwen3", "num_hidden_layers": 1})
+# GDN v has more rows than q / k, as in Qwen3.5 (more value heads than key heads)
+QWEN35 = get_hf_lora_targets(
+    {
+        "model_type": "qwen3_5_text",
+        "layer_types": ["linear_attention"],
+        "linear_num_key_heads": 2,
+        "linear_key_head_dim": 2,
+        "linear_num_value_heads": 4,
+        "linear_value_head_dim": 2,
+    }
+)
+QKV_ROWS = (4, 4, 8)
 
 
 def _run(**overrides):
@@ -46,10 +58,10 @@ def _run(**overrides):
 def _weights(shared_qkv: bool):
     g = torch.Generator().manual_seed(0)
     w = {}
-    for i, m in enumerate(QKV):
+    for i, (m, rows) in enumerate(zip(QKV, QKV_ROWS, strict=True)):
         if not shared_qkv or i == 0:
             w[f"{m}.lora_A"] = torch.randn(2, 8, generator=g)
-        w[f"{m}.lora_B"] = torch.randn(4, 2, generator=g)
+        w[f"{m}.lora_B"] = torch.randn(rows, 2, generator=g)
     for m in EXPERTS:
         w[f"{m}.lora_A"] = torch.randn(3, 2, 8, generator=g)
         w[f"{m}.lora_B"] = torch.randn(3, 8, 2, generator=g)
@@ -63,8 +75,8 @@ def test_peft_export_reads_back_bitwise(tmp_path, shared_qkv):
     write_peft_adapter(tmp_path, weights, run)
     names = json.loads((tmp_path / "adapter_config.json").read_text())["target_modules"]
     assert any("in_proj_qkv" in n for n in names) == shared_qkv, "shared-A GDN components go back to their HF name"
-    assert classify_adapter_source(tmp_path, QWEN3, load_optimizer=False) == AdapterSourceKind.PEFT
-    reader = PeftAdapterReader(tmp_path, run, QWEN3)
+    assert classify_adapter_source(tmp_path, QWEN35, load_optimizer=False) == AdapterSourceKind.PEFT
+    reader = PeftAdapterReader(tmp_path, run, QWEN35)
     assert reader.read_weights().keys() == weights.keys()
     assert all(torch.equal(reader.read_weights()[k], v) for k, v in weights.items())
     assert reader.source.parametrization.shared_lora_a_groups == run.shared_lora_a_groups
@@ -75,7 +87,7 @@ def test_sampler_export_reads_back_through_the_adapter_dir_reader(tmp_path):
     weights = {k: v.to(torch.bfloat16) for k, v in _weights(True).items()}
     write_sampler_adapter(tmp_path, weights, run)
     write_parametrization(tmp_path, run)
-    reader = MilesAdapterDirReader(tmp_path)
+    reader = MilesAdapterDirReader(tmp_path, QWEN35)
     assert not reader.source.has_optimizer_state
     assert all(torch.equal(reader.read_weights()[k], v) for k, v in weights.items())
 

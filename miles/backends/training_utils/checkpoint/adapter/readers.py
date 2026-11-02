@@ -110,7 +110,9 @@ def _collapse_shared_lora_a(weights: dict, parametrization: AdapterParametrizati
     return weights
 
 
-def _read_peft_tensors(path: Path, map_name) -> tuple[dict[str, torch.Tensor], list[tuple[str, ...]]]:
+def _read_peft_tensors(
+    path: Path, map_name, targets: HfLoraTargets
+) -> tuple[dict[str, torch.Tensor], list[tuple[str, ...]]]:
     """HF-keyed whole tensors; per-expert 2D stacks to 3D, an HF-fused module splits into components sharing A."""
     from safetensors.torch import load_file
 
@@ -129,7 +131,8 @@ def _read_peft_tensors(path: Path, map_name) -> tuple[dict[str, torch.Tensor], l
             weights[f"{components[0]}.lora_A"] = value
             fused_groups.append(components)
         else:
-            for component, part in zip(components, value.chunk(len(components)), strict=True):
+            rows = dict(targets.fused_component_rows)[module.rsplit(".", 1)[1]]
+            for component, part in zip(components, value.split(rows), strict=True):
                 weights[f"{component}.lora_B"] = part.clone()
     for key, experts in per_expert.items():
         assert sorted(experts) == list(range(len(experts))), f"{key}: expert indices are not 0..E-1"
@@ -140,8 +143,8 @@ def _read_peft_tensors(path: Path, map_name) -> tuple[dict[str, torch.Tensor], l
 class MilesAdapterDirReader:
     """A directory this library wrote: ``adapter_state/`` (training) or a sampler export (weights only)."""
 
-    def __init__(self, path: Path):
-        self.path = Path(path)
+    def __init__(self, path: Path, targets: HfLoraTargets):
+        self.path, self.targets = Path(path), targets
         parametrization = read_parametrization(self.path)
         has_state = (self.path / ADAPTER_STATE_DIRNAME).is_dir()
         has_optimizer_state = has_state and any(k.endswith(".exp_avg") for k in read_adapter_state_keys(self.path))
@@ -171,7 +174,7 @@ class MilesAdapterDirReader:
                 name = name.replace(sglang_fragment, hf_fragment)
             return map_peft_keys_to_hf_keys(name)
 
-        weights, fused_groups = _read_peft_tensors(self.path, map_name)
+        weights, fused_groups = _read_peft_tensors(self.path, map_name, self.targets)
         unfused = replace(
             self.source.parametrization,
             shared_lora_a_groups=tuple(
@@ -203,7 +206,9 @@ class PeftAdapterReader:
         self.path, self.targets = Path(path), targets
         config = json.loads((self.path / "adapter_config.json").read_text())
         _check_peft_config(config, self.path)
-        self._weights, self._fused_groups = _read_peft_tensors(self.path, lambda name: self._map_name(name, targets))
+        self._weights, self._fused_groups = _read_peft_tensors(
+            self.path, lambda name: self._map_name(name, targets), targets
+        )
         modules = sorted({k.rsplit(".", 1)[0] for k in self._weights if k.endswith(".lora_B")})
         shared_outer = any(
             k.endswith(".experts.gate_proj.lora_A") and v.shape[0] == 1 for k, v in self._weights.items()

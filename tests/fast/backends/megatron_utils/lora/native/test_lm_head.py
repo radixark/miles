@@ -224,7 +224,14 @@ def test_every_head_family_converter_names_the_declared_leaf(model_type):
 
 _QWEN3_5 = {
     "model_type": "qwen3_5",
-    "text_config": {"layer_types": ["linear_attention", "full_attention"], "tie_word_embeddings": True},
+    "text_config": {
+        "layer_types": ["linear_attention", "full_attention"],
+        "tie_word_embeddings": True,
+        "linear_num_key_heads": 2,
+        "linear_key_head_dim": 2,
+        "linear_num_value_heads": 4,
+        "linear_value_head_dim": 2,
+    },
 }
 _DEEPSEEK_V3 = {
     "model_type": "deepseek_v3",

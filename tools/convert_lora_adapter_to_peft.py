@@ -25,7 +25,7 @@ def main() -> None:
         f"{args.src} is a {kind.value} source; convert it to the miles adapter format first "
         "(load it in a training run with --lora-adapter-convert-save)"
     )
-    reader = MilesAdapterDirReader(args.src)
+    reader = MilesAdapterDirReader(args.src, targets)
     write_peft_adapter(args.dst, reader.read_weights(), reader.source.parametrization)
 
 
