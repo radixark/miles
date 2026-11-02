@@ -1,8 +1,12 @@
 import logging
+from pathlib import Path
 from typing import Any
+
+import torch
 
 from miles.backends.megatron_utils.lora.native import resolve_adapter_targets, validate_native_lora_args
 from miles.backends.sglang_utils.arguments import sglang_attention_dp_enabled
+from miles.backends.training_utils.checkpoint.adapter.readers import classify_adapter_source, read_source_lora_alpha
 from miles.utils.hf_utils.config import load_hf_config
 from miles.utils.hf_utils.weight_mapping import HfWeightMapping
 from miles.utils.lora.hf_lora_targets import (
@@ -15,9 +19,16 @@ from miles.utils.lora.hf_lora_targets import (
     parse_lora_targets,
     resolve_hf_lora_targets,
 )
-from miles.utils.lora.utils import is_lora_enabled, matches_lora_target, targets_expert_leaves
+from miles.utils.lora.utils import (
+    engine_loads_adapter_from_disk,
+    is_lora_enabled,
+    matches_lora_target,
+    targets_expert_leaves,
+)
 
 logger = logging.getLogger(__name__)
+
+_DEFAULT_LORA_ALPHA = 16.0
 
 
 def validate_lora_args(args):
@@ -26,6 +37,11 @@ def validate_lora_args(args):
     validate_multi_lora_args(args)
     if not is_lora_enabled(args):
         return
+    args.lora_alpha = _resolve_lora_alpha(args)
+    if args.lora_adapter_convert_save is not None:
+        assert args.lora_adapter_path is not None, "--lora-adapter-convert-save converts --lora-adapter-path"
+    if engine_loads_adapter_from_disk(args):
+        _validate_rollout_only_adapter(args)
     assert args.train_backend in (
         "megatron",
         "torchtitan",
@@ -63,6 +79,34 @@ def validate_lora_args(args):
         )
 
 
+def _resolve_lora_alpha(args) -> float:
+    """The source adapter owns alpha when there is one; --lora-alpha may only repeat it."""
+    if args.lora_adapter_path is None:
+        return _DEFAULT_LORA_ALPHA if args.lora_alpha is None else args.lora_alpha
+    source = read_source_lora_alpha(Path(args.lora_adapter_path))
+    if source is None:
+        assert args.lora_alpha is not None, f"{args.lora_adapter_path} records no LoRA alpha; pass --lora-alpha"
+        return args.lora_alpha
+    assert args.lora_alpha in (
+        None,
+        source,
+    ), f"--lora-alpha {args.lora_alpha} differs from {args.lora_adapter_path}'s {source}; drop the flag to use it"
+    return source
+
+
+def _validate_rollout_only_adapter(args) -> None:
+    """With no trainer, the engines load --lora-adapter-path from disk: it must carry a PEFT file pair."""
+    path = Path(args.lora_adapter_path)
+    kind = classify_adapter_source(
+        path, get_hf_lora_targets(load_hf_config(args.hf_checkpoint).to_dict()), load_optimizer=False
+    )
+    assert not kind.is_read_into_model(), (
+        f"{path} is a {kind.value} checkpoint, which only a trainer can read; "
+        "convert it first with --lora-adapter-convert-save"
+    )
+    assert (path / "adapter_model.safetensors").is_file(), f"{path} has no PEFT export for the engines to load"
+
+
 def _default_lora_type(args) -> str:
     """The one owner of --lora-type's default. Native gives every projection its spec declares its own lora_A
     and Tinker serves the PEFT / cookbook layout; Bridge's LoRA and torchtitan share one lora_A per fused
@@ -75,14 +119,33 @@ def _default_lora_type(args) -> str:
 
 
 def validate_lora_args_after_megatron(args):
-    """Megatron's native (raw-mode) LoRA: the targets its spec serves, and the run checks that read
-    Megatron's resolved args (e.g. the expert TP size it defaults from TP)."""
+    """Checks that read Megatron's resolved args; for native (raw-mode) LoRA also the targets its spec serves
+    (e.g. the expert TP size it defaults from TP)."""
+    if is_lora_enabled(args) and not args.multi_lora and args.megatron_to_hf_mode == "bridge":
+        _validate_adapter_state_args(args)
     if not (is_lora_enabled(args) and args.megatron_to_hf_mode == "raw"):
         return
     hf_config = load_hf_config(args.hf_checkpoint)
     hf_modules = _hf_modules(hf_config)
     args.lora_adapter_targets = _native_serving_targets(args, hf_config, args.hf_lora_targets, hf_modules)
     validate_native_lora_args(args, hf_modules)
+
+
+def _validate_adapter_state_args(args) -> None:
+    """adapter_state/ holds Adam's fp32 master, fp32 moments and step, gathered whole per DP group over Gloo."""
+    if args.save is None and args.lora_adapter_path is None:
+        return
+    assert args.optimizer == "adam", f"--save / --lora-adapter-path store Adam state; got --optimizer {args.optimizer}"
+    assert args.exp_avg_dtype == args.exp_avg_sq_dtype == torch.float32, "the adapter checkpoint stores fp32 moments"
+    if args.use_distributed_optimizer:
+        assert args.use_gloo_process_groups, "the adapter checkpoint gathers optimizer state over Gloo"
+        # TE FusedAdam keeps the master as an int16 remainder unless the optimizer runs on the host
+        assert (
+            not args.use_precision_aware_optimizer or args.optimizer_cpu_offload
+        ), "--use-precision-aware-optimizer needs --optimizer-cpu-offload to save or load a LoRA adapter"
+    if args.lora_adapter_path is not None:
+        # loading writes masters and re-casts them, which an overlapped param all-gather would race
+        assert not args.overlap_param_gather, "--lora-adapter-path cannot be combined with --overlap-param-gather"
 
 
 def _native_serving_targets(args, hf_config, hf_targets: list[str], hf_modules: list[str]) -> list[str] | str:
