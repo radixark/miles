@@ -430,32 +430,36 @@ class DataIterator:
 
         Returns a dict mapping each key to a list subset (or None if absent).
         """
+        rows, next_offset = self._rows_at(self.offset)
         batch = {}
         for key in keys:
             vals = self.rollout_data.get(key, None)
             if vals is None:
                 batch[key] = None
+            elif isinstance(rows, slice):
+                assert rows.stop <= len(
+                    vals
+                ), f"offset: {self.offset}, micro_batch_size: {self.micro_batch_size}, len(vals): {len(vals)}"
+                batch[key] = vals[rows]
             else:
-                if self.micro_batch_indices is not None:
-                    indices = self.micro_batch_indices[self.offset]
-                    batch[key] = [vals[i] for i in indices]
-                else:
-                    assert self.offset + self.micro_batch_size <= len(
-                        vals
-                    ), f"offset: {self.offset}, micro_batch_size: {self.micro_batch_size}, len(vals): {len(vals)}"
-                    batch[key] = vals[self.offset : self.offset + self.micro_batch_size]
+                batch[key] = [vals[i] for i in rows]
 
-        if self.micro_batch_indices is not None:
-            self.offset += 1
-        else:
-            self.offset += self.micro_batch_size
+        self.offset = next_offset
         return batch
 
     def microbatch_indices(self, count: int) -> list[list[int]]:
         """Sample indices of the first `count` micro-batches, in the order `get_next` yields them."""
+        indices, offset = [], 0
+        for _ in range(count):
+            rows, offset = self._rows_at(offset)
+            indices.append(list(range(rows.start, rows.stop)) if isinstance(rows, slice) else rows)
+        return indices
+
+    def _rows_at(self, offset: int) -> tuple[slice | list[int], int]:
+        """Rows of the micro-batch that starts at `offset`, and the offset after it."""
         if self.micro_batch_indices is not None:
-            return self.micro_batch_indices[:count]
-        return [list(range(i * self.micro_batch_size, (i + 1) * self.micro_batch_size)) for i in range(count)]
+            return self.micro_batch_indices[offset], offset + 1
+        return slice(offset, offset + self.micro_batch_size), offset + self.micro_batch_size
 
     def reset(self) -> "DataIterator":
         """Reset internal offset to the start and return self."""
