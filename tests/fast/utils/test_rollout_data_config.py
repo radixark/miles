@@ -27,7 +27,7 @@ _DOCUMENT = {
             "samples_per_step": 5,
             "max_prompt_len": 8192,
             "max_response_len": 32768,
-            "generate_function": "miles.rollout.generate_hub.single_turn.generate",
+            "custom_generate_function_path": "miles.rollout.generate_hub.single_turn.generate",
             "agent": {"max_turns": 50, "sandbox": {"cpu": 2}},
         },
     }
@@ -58,7 +58,7 @@ class TestLoad:
                 samples_per_step=5,
                 max_prompt_len=8192,
                 max_response_len=32768,
-                generate_function="miles.rollout.generate_hub.single_turn.generate",
+                custom_generate_function_path="miles.rollout.generate_hub.single_turn.generate",
                 agent={"max_turns": 50, "sandbox": {"cpu": 2}},
             ),
         ]
@@ -93,7 +93,7 @@ class TestRejects:
             {"path": ""},
             {"max_prompt_len": 0},
             {"max_response_len": -1},
-            {"generate_function": ""},
+            {"custom_generate_function_path": ""},
             {"agent": ["max_turns", 50]},
             {"sha256": _SHA.upper()},
             {"sha256": _SHA[:-1]},
@@ -246,7 +246,7 @@ class _TypedGenerateConfig(BaseConfig):
 class TestDatasetHookSettings:
     def test_a_dataset_generate_function_gets_its_own_flags(self):
         """A hook named only in the YAML must have its flags registered, resolved and merged into the rollout view."""
-        document = _with_dataset(generate_function="test3947.typed_generate")
+        document = _with_dataset(custom_generate_function_path="test3947.typed_generate")
         with function_registry.temporary(
             "test3947.typed_generate", SimpleNamespace(config_class=_TypedGenerateConfig)
         ):

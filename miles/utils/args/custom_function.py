@@ -210,7 +210,7 @@ def _compute_custom_function_field_infos(
     return infos
 
 
-_ROLLOUT_DATASET_FUNCTION_FIELDS = ("generate_function",)
+_ROLLOUT_DATASET_FUNCTION_FIELDS = ("custom_generate_function_path",)
 
 
 def _compute_rollout_dataset_function_infos(
