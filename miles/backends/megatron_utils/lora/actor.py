@@ -1,12 +1,14 @@
 from contextlib import ExitStack
+from pathlib import Path
 
 from miles.backends.megatron_utils.actor import MegatronTrainRayActor
 from miles.backends.megatron_utils.lora import checkpoint as lora_checkpoint
 from miles.backends.megatron_utils.lora import model as lora_model
 from miles.backends.megatron_utils.lora.optimizer import SlotOptimizer
+from miles.backends.training_utils.checkpoint.adapter.adapter_dir import write_sampler_export
+from miles.backends.training_utils.checkpoint.adapter.commit import UncommittedAdapterDir
 from miles.backends.training_utils.data.rollout import get_rollout_data
 from miles.backends.training_utils.parallel import get_parallel_state
-from miles.utils.lora.utils import AdapterSpec
 from miles.utils.object_store import StoreObjectRef
 from miles.utils.tracking_utils.structured_log import with_logs
 
@@ -66,12 +68,17 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
         lora_checkpoint.save_slot(self.model, self.slot_optimizers[slot], path, metadata=metadata)
 
     @with_logs
-    def export_slot(self, slot: int, rank: int, alpha: float, path: str, metadata: dict | None = None) -> None:
-        """Write the slot's adapter as an engine-loadable dir."""
+    def export_slot(
+        self, slot: int, root: str, name: str, tenant: str, parametrization_fields: dict
+    ) -> UncommittedAdapterDir:
+        """Write the slot's sampler export under ``root``, uncommitted; the gateway commits it."""
         self._heartbeat.bump()
-        assert self.snapshot_publisher is not None, "adapter export requires a snapshot publisher"
-        self.snapshot_publisher.publish_adapter(
-            AdapterSpec(slot=slot, rank=rank, alpha=alpha), path, metadata=metadata
+        parametrization = self.adapter_slots.parametrization(**parametrization_fields)
+        assert parametrization.lora_rank == self.adapter_slots.lora_rank(
+            slot
+        ), "the gateway and the slot disagree on rank"
+        return write_sampler_export(
+            Path(root), name, self.adapter_slots, slot, parametrization, self.adapter_slots.targets, tenant=tenant
         )
 
     @with_logs

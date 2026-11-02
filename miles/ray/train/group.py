@@ -574,9 +574,14 @@ class TrainerController:
     async def save_slot(self, slot: int, path: str, metadata: dict | None = None) -> list:
         return await self._execute_slots("save_slot", slot=slot, path=path, metadata=metadata)
 
-    async def export_slot(self, slot: int, rank: int, alpha: float, path: str, metadata: dict | None = None) -> list:
+    async def export_slot(self, slot: int, root: str, name: str, tenant: str, parametrization_fields: dict) -> list:
         return await self._execute_slots(
-            "export_slot", slot=slot, rank=rank, alpha=alpha, path=path, metadata=metadata
+            "export_slot",
+            slot=slot,
+            root=root,
+            name=name,
+            tenant=tenant,
+            parametrization_fields=parametrization_fields,
         )
 
     async def unload_slot(self, slot: int) -> list:
