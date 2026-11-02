@@ -28,13 +28,6 @@ class AdapterParametrization:
         unknown = set(grouped) - set(self.target_modules)
         assert not unknown, f"shared-A group members are not targets: {sorted(unknown)}"
 
-    def shared_lora_a_owner(self, module: str) -> str:
-        """The module whose ``lora_A`` holds ``module``'s A."""
-        for group in self.shared_lora_a_groups:
-            if module in group:
-                return group[0]
-        return module
-
 
 def write_parametrization(directory: Path, parametrization: AdapterParametrization) -> None:
     assert parametrization.lora_alpha is not None, "lora_alpha must be resolved before it is written"

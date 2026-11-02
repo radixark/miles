@@ -104,7 +104,10 @@ def test_weights_only_from_the_same_parametrization_reads_only_local_pieces(monk
     def whole_tensor_read(*args, **kwargs):
         raise AssertionError("a same-parametrization load must not read whole tensors")
 
-    monkeypatch.setattr("torch.distributed.checkpoint.state_dict_loader._load_state_dict_from_keys", whole_tensor_read)
+    monkeypatch.setattr(
+        "miles.backends.training_utils.checkpoint.adapter.readers.MilesAdapterDirReader.read_weights",
+        whole_tensor_read,
+    )
     members = FakeMembers()
     load_adapter_dir(committed.path, members, 0, RUN, TARGETS, load_optimizer=False)
     assert members.imported.step == 0 and not members.imported.exp_avgs[0].any()

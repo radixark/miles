@@ -35,6 +35,20 @@ def map_peft_keys_to_hf_keys(name: str) -> HfKey:
     return HfKey(f"{match['head']}.{match['tail']}.{factor}", int(match["index"]))
 
 
+# sglang's stacked-expert names, which sampler exports use (main's native export serves the same)
+SAMPLER_EXPERT_NAMES_BY_HF = {
+    ".experts.gate_proj.": ".experts.w1.",
+    ".experts.up_proj.": ".experts.w3.",
+    ".experts.down_proj.": ".experts.w2.",
+}
+
+
+def map_sampler_keys_to_hf_keys(name: str) -> HfKey:
+    for hf_fragment, sglang_fragment in SAMPLER_EXPERT_NAMES_BY_HF.items():
+        name = name.replace(sglang_fragment, hf_fragment)
+    return map_peft_keys_to_hf_keys(name)
+
+
 def map_hf_keys_to_peft_keys(key: str, expert_index: int | None = None) -> str:
     module, factor = key.rsplit(".", 1)
     if expert_index is not None:

@@ -49,7 +49,9 @@ class AdapterState:
         assert len(lengths) == 1, f"shard specs and tensors are misaligned: {lengths}"
         for tensors in self.tensors_by_suffix().values():
             for spec, tensor in zip(self.shard_specs, tensors, strict=True):
-                assert tuple(tensor.shape) == spec.local_shape, f"{spec.key}: {tuple(tensor.shape)} != {spec.local_shape}"
+                assert (
+                    tuple(tensor.shape) == spec.local_shape
+                ), f"{spec.key}: {tuple(tensor.shape)} != {spec.local_shape}"
                 assert tensor.dtype == torch.float32, f"{spec.key}: adapter_state/ holds fp32 only, got {tensor.dtype}"
 
     def tensors_by_suffix(self) -> dict[str, list[torch.Tensor]]:
@@ -158,3 +160,15 @@ def assert_adapter_state_keys(directory: Path, run_keys: set[str], *, with_optim
         f"{directory}: adapter_state/ does not match the run: "
         f"missing {sorted(missing)[:8]}, unexpected {sorted(unexpected)[:8]}"
     )
+
+
+def read_adapter_state_weights(directory: Path) -> dict[str, torch.Tensor]:
+    """Whole fp32 weights by HF key, read on this process alone; for conversions, which need whole tensors."""
+    metadata = dcp.FileSystemReader(directory / ADAPTER_STATE_DIRNAME).read_metadata().state_dict_metadata
+    state_dict = {
+        name: torch.empty(metadata[name].size, dtype=metadata[name].properties.dtype)
+        for name in metadata
+        if name.endswith(".weight")
+    }
+    dcp.load(state_dict, checkpoint_id=directory / ADAPTER_STATE_DIRNAME, no_dist=True)
+    return {name.removesuffix(".weight"): tensor for name, tensor in state_dict.items()}

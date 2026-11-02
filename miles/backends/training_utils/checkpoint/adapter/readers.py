@@ -13,10 +13,13 @@ from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
     AdapterState,
     load_adapter_state,
     read_adapter_state_keys,
+    read_adapter_state_weights,
 )
 from miles.backends.training_utils.checkpoint.adapter.key_mapping import (
+    HfKey,
     is_tinker_only_name,
     map_peft_keys_to_hf_keys,
+    map_sampler_keys_to_hf_keys,
     map_tinker_keys_to_hf_keys,
 )
 from miles.backends.training_utils.checkpoint.adapter.parametrization import (
@@ -40,11 +43,6 @@ _PEFT_CONFIG_MUST_BE_EMPTY = (
     "layer_replication",
     "lora_bias",
 )
-_SAMPLER_EXPERT_NAMES = {
-    ".experts.w1.": ".experts.gate_proj.",
-    ".experts.w3.": ".experts.up_proj.",
-    ".experts.w2.": ".experts.down_proj.",
-}
 
 
 class AdapterSourceKind(str, enum.Enum):
@@ -153,14 +151,12 @@ class MilesAdapterDirReader:
 
     def __init__(self, path: Path, targets: HfLoraTargets):
         self.path, self.targets = Path(path), targets
-        parametrization = read_parametrization(self.path)
-        has_state = (self.path / ADAPTER_STATE_DIRNAME).is_dir()
-        has_optimizer_state = has_state and any(k.endswith(".exp_avg") for k in read_adapter_state_keys(self.path))
+        has_state = self.has_adapter_state()
         self.source = AdapterSource(
             AdapterSourceKind.ADAPTER_DIR,
-            parametrization,
-            has_optimizer_state,
-            torch.float32 if has_state else torch.bfloat16,
+            read_parametrization(self.path),
+            has_optimizer_state=has_state and any(k.endswith(".exp_avg") for k in read_adapter_state_keys(self.path)),
+            weight_dtype=torch.float32 if has_state else torch.bfloat16,
         )
 
     def has_adapter_state(self) -> bool:
@@ -170,19 +166,9 @@ class MilesAdapterDirReader:
         return load_adapter_state(self.path, template)
 
     def read_weights(self) -> dict[str, torch.Tensor]:
-        if (self.path / ADAPTER_STATE_DIRNAME).is_dir():
-            from torch.distributed.checkpoint.state_dict_loader import _load_state_dict_from_keys
-
-            keys = {k for k in read_adapter_state_keys(self.path) if k.endswith(".weight")}
-            loaded = _load_state_dict_from_keys(keys, checkpoint_id=self.path / ADAPTER_STATE_DIRNAME)
-            return {k.removesuffix(".weight"): v for k, v in loaded.items()}
-
-        def map_name(name):
-            for sglang_fragment, hf_fragment in _SAMPLER_EXPERT_NAMES.items():
-                name = name.replace(sglang_fragment, hf_fragment)
-            return map_peft_keys_to_hf_keys(name)
-
-        weights, fused_groups = _read_peft_tensors(self.path, map_name, self.targets)
+        if self.has_adapter_state():
+            return read_adapter_state_weights(self.path)
+        weights, fused_groups = _read_peft_tensors(self.path, map_sampler_keys_to_hf_keys, self.targets)
         unfused = replace(
             self.source.parametrization,
             shared_lora_a_groups=tuple(
@@ -208,15 +194,13 @@ def _fused_components(module: str) -> tuple[str, ...] | None:
 class PeftAdapterReader:
     """HF-named PEFT (main's exports, HF Hub); per-expert 2D tensors are stacked to 3D."""
 
-    _map_name = staticmethod(lambda name, targets: map_peft_keys_to_hf_keys(name))
+    kind = AdapterSourceKind.PEFT
 
     def __init__(self, path: Path, run: AdapterParametrization, targets: HfLoraTargets):
         self.path, self.targets = Path(path), targets
         config = json.loads((self.path / "adapter_config.json").read_text())
         _check_peft_config(config, self.path)
-        self._weights, self._fused_groups = _read_peft_tensors(
-            self.path, lambda name: self._map_name(name, targets), targets
-        )
+        self._weights, self._fused_groups = _read_peft_tensors(self.path, self._map_name, targets)
         modules = sorted({k.rsplit(".", 1)[0] for k in self._weights if k.endswith(".lora_B")})
         shared_outer = any(".experts." in k and v.dim() == 3 and v.shape[0] == 1 for k, v in self._weights.items())
         groups = tuple(self._fused_groups)
@@ -235,7 +219,8 @@ class PeftAdapterReader:
             weight_dtype=next(iter(self._weights.values())).dtype,
         )
 
-    kind = AdapterSourceKind.PEFT
+    def _map_name(self, name: str) -> HfKey:
+        return map_peft_keys_to_hf_keys(name)
 
     def read_weights(self) -> dict[str, torch.Tensor]:
         return dict(self._weights)
@@ -245,4 +230,6 @@ class ExternalWeightsReader(PeftAdapterReader):
     """Official Tinker export (F32, Tinker names, stacked 3D experts)."""
 
     kind = AdapterSourceKind.EXTERNAL_WEIGHTS
-    _map_name = staticmethod(map_tinker_keys_to_hf_keys)
+
+    def _map_name(self, name: str) -> HfKey:
+        return map_tinker_keys_to_hf_keys(name, self.targets)
