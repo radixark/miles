@@ -29,6 +29,7 @@ class TestBackendRolloutSizes:
             data_pad_size_multiplier=1,
             delay_split_train_data_by_dp=False,
             enable_witness=False,
+            multimodal_token_space_processing=False,
         )
 
         batch, _ = get_rollout_data(

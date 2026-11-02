@@ -76,13 +76,20 @@ def get_rollout_data(
             for t, sid in zip(rollout_data["tokens"], seq_witness_ids, strict=True)
         ]
 
-    if "multimodal_inputs" in rollout_data:
-        rollout_data["multimodal_train_inputs"] = compute_multimodal_train_inputs(
+    if args.multimodal_token_space_processing:
+        # A rollout without media ships no references, but its tokens still need the model's mRoPE positions.
+        multimodal_inputs = rollout_data.pop("multimodal_inputs", [None] * len(rollout_data["tokens"]))
+        token_space_train_inputs = compute_multimodal_train_inputs(
             RolloutEngineProcessorArgs.from_sglang_config(args.sglang, hf_checkpoint=args.hf_checkpoint),
-            rollout_data.pop("multimodal_inputs"),
+            multimodal_inputs,
             rollout_data["tokens"],
+            # Megatron-Bridge and torch-native models place their media rows and rotate by themselves.
+            with_sglang_placement=args.train_backend == "megatron" and args.megatron_to_hf_mode == "raw",
             device=current_platform.current_device(),
         )
+        rollout_data["multimodal_train_inputs"] = token_space_train_inputs.multimodal_train_inputs
+        if token_space_train_inputs.mrope_position_ids is not None:
+            rollout_data["mrope_position_ids"] = token_space_train_inputs.mrope_position_ids
     elif "multimodal_train_inputs" in rollout_data:
         # Move multimodal training tensors to the device in advance
         rollout_data["multimodal_train_inputs"] = [
