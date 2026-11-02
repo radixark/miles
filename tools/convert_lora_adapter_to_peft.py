@@ -1,4 +1,4 @@
-"""Write a 2D-per-expert bf16 PEFT adapter from any file-only adapter source (CPU only)."""
+"""Write a 2D-per-expert bf16 PEFT adapter from a miles adapter dir, training or sampler (CPU only)."""
 
 import argparse
 import json
@@ -21,10 +21,9 @@ def main() -> None:
     args = parser.parse_args()
     targets = get_hf_lora_targets(json.loads(args.hf_config.read_text()))
     kind = classify_adapter_source(args.src, targets, load_optimizer=False)
-    assert kind == AdapterSourceKind.ADAPTER_DIR, (
-        f"{args.src} is a {kind.value} source; convert it to the miles adapter format first "
-        "(load it in a training run with --lora-adapter-convert-save)"
-    )
+    assert (
+        kind == AdapterSourceKind.ADAPTER_DIR
+    ), f"{args.src} is a {kind.value} source; load it in a training run and save it in the miles format first"
     reader = MilesAdapterDirReader(args.src, targets)
     write_peft_adapter(args.dst, reader.read_weights(), reader.source.parametrization)
 
