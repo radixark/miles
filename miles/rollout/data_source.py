@@ -13,6 +13,9 @@ from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
 
+# a prime stride keeps (rollout_seed, request number) pairs from mapping to the same in-request shuffle seed
+_MIX_SEED_STRIDE = 1_000_003
+
 
 class DataSource(abc.ABC):
     @abc.abstractmethod
@@ -290,7 +293,7 @@ class MixedRolloutDataSource(DataSource):
             for config, count in zip(self.dataset_configs, counts, strict=True)
             for prompt in self._take(config.name, count)
         ]
-        random.Random(self.args.rollout_seed * 1_000_003 + self.num_requests).shuffle(prompts)
+        random.Random(self.args.rollout_seed * _MIX_SEED_STRIDE + self.num_requests).shuffle(prompts)
         self.num_requests += 1
         return [self._make_group(config, prompt) for config, prompt in prompts]
 
