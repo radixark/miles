@@ -1291,6 +1291,12 @@ def miles_validate_args(args):
         )
         assert args.prefill_num_servers is None, "P2P weight transfer mode has not been tested when PD is enabled."
         assert args.lora_rank <= 0, "LoRA weight sync is not supported for p2p (RDMA) weight transfer."
+    if args.update_weight_transfer_mode == "p2p" and args.p2p_transport == "mori":
+        args.p2p_mori_transfer_buffer = args.p2p_mori_transfer_buffer or "gpu"
+    else:
+        assert (
+            args.p2p_mori_transfer_buffer is None
+        ), "--p2p-mori-transfer-buffer applies only with --update-weight-transfer-mode p2p --p2p-transport mori"
 
     if args.update_weight_transfer_mode == "disk-delta":
         assert not args.colocate, (

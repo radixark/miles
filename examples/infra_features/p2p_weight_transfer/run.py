@@ -979,9 +979,11 @@ def cmd_run(
     # P2P-specific SGLang args
     if mode == "p2p":
         args.append(
-            "--sglang-remote-instance-weight-loader-start-seed-via-nixl"
-            if p2p_transport == "nixl"
-            else "--sglang-remote-instance-weight-loader-start-seed-via-transfer-engine"
+            {
+                "mooncake": "--sglang-remote-instance-weight-loader-start-seed-via-transfer-engine",
+                "nixl": "--sglang-remote-instance-weight-loader-start-seed-via-nixl",
+                "mori": "--sglang-remote-instance-weight-loader-start-seed-via-mori",
+            }[p2p_transport]
         )
 
     # Skip validation / model loader
@@ -1032,8 +1034,8 @@ def cmd_run(
         args.append("--check-weight-update-equal")
 
     args.extend(["--update-weight-transfer-mode", mode])
-    if mode == "p2p" and p2p_transport == "nixl":
-        args.extend(["--p2p-transport", "nixl"])
+    if mode == "p2p" and p2p_transport != "mooncake":
+        args.extend(["--p2p-transport", p2p_transport])
 
     # --- Submit Ray job (head node only, or single-node) ---
     if is_single_node or node_rank == 0:
@@ -1127,7 +1129,7 @@ def main():
         parser.add_argument(
             "--p2p-transport",
             default="mooncake",
-            choices=["mooncake", "nixl"],
+            choices=["mooncake", "nixl", "mori"],
             help="P2P transport (default: mooncake)",
         )
         parsed = parser.parse_args(sys.argv[2:])

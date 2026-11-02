@@ -6,6 +6,7 @@ import functools
 import importlib
 import sys
 import threading
+import weakref
 from argparse import Namespace
 from collections import defaultdict
 from collections.abc import Callable, Iterator
@@ -255,6 +256,107 @@ class _FakeNixlAgent:
         pass
 
 
+class _FakeMoriStatus:
+    def __init__(self, state: str, message: str = "") -> None:
+        self.state = state
+        self.message = message
+
+    def InProgress(self) -> bool:  # noqa: N802 - MoRI's TransferStatus API
+        return self.state == "PROC"
+
+    def Succeeded(self) -> bool:  # noqa: N802
+        return self.state == "DONE"
+
+    def Failed(self) -> bool:  # noqa: N802
+        return self.state == "ERR"
+
+    def Message(self) -> str:  # noqa: N802
+        return self.message
+
+
+class _FakeMoriEngine:
+    """Transfers like a MoRI IOEngine through the fake transfer engine, so a MoRI write lands where a Mooncake one
+    would: the remote engine's key is the session the fake rollout engine publishes, and a memory desc names the
+    engine, address and size it was registered with."""
+
+    def __init__(self, transfer_engine: _FakeTransferEngine) -> None:
+        self._transfer_engine = transfer_engine
+        self.remote_engines: list[str] = []
+        self.batch_writes: list[tuple[str, int]] = []
+        self.stuck_remote_engines: set[str] = set()
+        # weak, as MoRI's completion handler holds a status by raw pointer
+        self.stuck_statuses: list[weakref.ref[_FakeMoriStatus]] = []
+        self._next_uid = 0
+
+    def register_memory(self, address: int, size: int, device: int, location: str) -> SimpleNamespace:
+        self._transfer_engine.register_memory(address, size)
+        return SimpleNamespace(engine_key="local", data=address, size=size, device=device, location=location)
+
+    def deregister_memory(self, memory_desc: SimpleNamespace) -> None:
+        self._transfer_engine.unregister_memory(memory_desc.data)
+
+    def register_remote_engine(self, engine_desc: SimpleNamespace) -> None:
+        assert engine_desc.key not in self.remote_engines, f"{engine_desc.key} registered twice"
+        self.remote_engines.append(engine_desc.key)
+
+    def deregister_remote_engine(self, engine_desc: SimpleNamespace) -> None:
+        self.remote_engines.remove(engine_desc.key)
+
+    def allocate_transfer_uid(self) -> int:
+        self._next_uid += 1
+        return self._next_uid
+
+    def batch_write(
+        self,
+        local_descs: list,
+        local_offsets: list[list[int]],
+        remote_descs: list,
+        remote_offsets: list[list[int]],
+        sizes: list[list[int]],
+        uids: list[int],
+    ) -> list[_FakeMoriStatus]:
+        assert len(set(uids)) == len(uids) == len(local_descs) == len(remote_descs)
+        (remote_key,) = {remote_desc.engine_key for remote_desc in remote_descs}
+        assert remote_key in self.remote_engines, f"write to unregistered remote engine {remote_key}"
+        source_ptrs, target_ptrs, lengths = [], [], []
+        for local_desc, local_offs, remote_desc, remote_offs, lens in zip(
+            local_descs, local_offsets, remote_descs, remote_offsets, sizes, strict=True
+        ):
+            for local_off, remote_off, length in zip(local_offs, remote_offs, lens, strict=True):
+                # MoRI checks every range against the desc it names
+                assert 0 <= local_off and local_off + length <= local_desc.size
+                assert 0 <= remote_off and remote_off + length <= remote_desc.size
+                source_ptrs.append(local_desc.data + local_off)
+                target_ptrs.append(remote_desc.data + remote_off)
+                lengths.append(length)
+        self.batch_writes.append((remote_key, len(local_descs)))
+        if remote_key in self.stuck_remote_engines:
+            statuses = [_FakeMoriStatus("PROC") for _ in uids]
+            self.stuck_statuses += [weakref.ref(status) for status in statuses]
+            return statuses
+        ret = self._transfer_engine.batch_transfer_sync_write(remote_key, source_ptrs, target_ptrs, lengths)
+        return [_FakeMoriStatus("DONE") if ret == 0 else _FakeMoriStatus("ERR", "ERR_RDMA_OP") for _ in uids]
+
+
+def _fake_mori_io_module() -> ModuleType:
+    def unpack_engine_desc(blob: bytes) -> SimpleNamespace:
+        return SimpleNamespace(key=blob.decode())
+
+    def unpack_memory_desc(blob: bytes) -> SimpleNamespace:
+        engine_key, address, size = blob.decode().rsplit("|", 2)
+        return SimpleNamespace(engine_key=engine_key, data=int(address), size=int(size))
+
+    module = ModuleType("mori.io")
+    module.EngineDesc = SimpleNamespace(unpack=unpack_engine_desc)
+    module.MemoryDesc = SimpleNamespace(unpack=unpack_memory_desc)
+    module.MemoryLocationType = SimpleNamespace(CPU="CPU", GPU="GPU")
+    return module
+
+
+def _pack_fake_mori_memory_desc(engine_key: str, address: int, size: int) -> str:
+    return base64.b64encode(f"{engine_key}|{address}|{size}".encode()).decode("ascii")
+
+
 class _FakeRolloutApi:
     def __init__(
         self,
@@ -305,6 +407,19 @@ class _FakeRolloutApi:
             name: (self.published_address(rank, name, role), self.published_weight_numel, 4)
             for name in _PUBLISHED_PARAM_NAMES_BY_RUNNER_ROLE[role]
         }
+        if self.transport == "mori":
+            engine_key = self.session_id(rank, role)
+            return {
+                "transport": "mori",
+                "engine_desc": base64.b64encode(engine_key.encode()).decode("ascii"),
+                # one registered block per weight, as sglang registers each weight's allocation
+                "memory_blocks": [
+                    [address, nbytes, _pack_fake_mori_memory_desc(engine_key, address, nbytes)]
+                    for address, numel, element_size in weights.values()
+                    for nbytes in [numel * element_size]
+                ],
+                "weights_info_dict": weights,
+            }
         if self.transport == "nixl":
             return {
                 "transport": "nixl",
@@ -383,6 +498,7 @@ class _P2PSenderHarness:
         self.log: list[tuple] = []
         self.transfer_engine = _FakeTransferEngine(self.log)
         self.nixl_agent = _FakeNixlAgent(self.transfer_engine)
+        self.mori_engine = _FakeMoriEngine(self.transfer_engine)
         self.transfer_engines_created = 0
         self.replicas_created: list[_FakeModelReplica] = []
         self._loaded_events: dict[int, threading.Event] = {}
@@ -398,6 +514,12 @@ class _P2PSenderHarness:
         monkeypatch.setattr(
             sys.modules[p2p_protocol.NixlTransport.__module__], "_create_nixl_agent", self._create_nixl_agent
         )
+        monkeypatch.setattr(
+            sys.modules[p2p_protocol.MoriTransport.__module__], "_create_io_engine", self._create_mori_engine
+        )
+        # MoriTransport imports mori.io when it runs, after the import-time stubs are gone
+        monkeypatch.setitem(sys.modules, "mori", sys.modules.get("mori") or ModuleType("mori"))
+        monkeypatch.setitem(sys.modules, "mori.io", _fake_mori_io_module())
         monkeypatch.setattr(p2p_protocol, "assign_rollout_engine_ranks", self._assign_rollout_engine_ranks)
         monkeypatch.setattr(p2p_protocol, "get_gloo_group", lambda: None)
         monkeypatch.setattr(p2p_protocol, "dist", SimpleNamespace(get_rank=lambda group=None: 0))
@@ -431,6 +553,8 @@ class _P2PSenderHarness:
             check_weight_transfer_checksum=check_weight_transfer_checksum,
             sglang=SglangConfig(models=[], base_args={"pp_size": 1}),
             p2p_transport=self.p2p_transport,
+            # CPU CI: MoRI's default GPU transfer buffers need a GPU
+            p2p_mori_transfer_buffer="cpu" if self.p2p_transport == "mori" else None,
         )
         protocol = self._p2p_protocol.UpdateWeightP2P(args)
         self._protocols.append(protocol)
@@ -491,6 +615,10 @@ class _P2PSenderHarness:
     def _create_nixl_agent(self) -> _FakeNixlAgent:
         self.transfer_engines_created += 1
         return self.nixl_agent
+
+    def _create_mori_engine(self) -> _FakeMoriEngine:
+        self.transfer_engines_created += 1
+        return self.mori_engine
 
     def _build_model_replica(
         self, config: Any, model_path: str, *, transfer_buffer_device: torch.device
@@ -588,7 +716,7 @@ def model_replica_module(p2p_protocol: ModuleType) -> ModuleType:
     return sys.modules[p2p_protocol.query_rollout_engine_rank_configs.__module__]
 
 
-@pytest.fixture(params=["mooncake", "nixl"])
+@pytest.fixture(params=["mooncake", "nixl", "mori"])
 def p2p_transport(request: pytest.FixtureRequest) -> str:
     return request.param
 

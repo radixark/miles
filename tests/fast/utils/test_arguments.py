@@ -3687,6 +3687,27 @@ class TestWeightTransferModeSelection:
             miles_validate_args(args)
 
 
+class TestP2PMoriTransferBuffer:
+    """--p2p-mori-transfer-buffer only means something to the MoRI transport; with any other it would do nothing."""
+
+    def _validate(self, extra):
+        args = get_megatron_arg_parser().parse_args(["--num-rollout", "1", *extra, *REQUIRED_ARGS])
+        _set_megatron_parallel_sizes(args)
+        miles_validate_args(args)
+        return args
+
+    @pytest.mark.parametrize("extra", [[*_P2P_ARGS, "--p2p-transport", "mooncake"], ["--p2p-transport", "mori"]])
+    def test_it_is_refused_without_a_p2p_update_over_mori(self, extra):
+        with pytest.raises(AssertionError, match="applies only with --update-weight-transfer-mode p2p"):
+            self._validate([*extra, "--p2p-mori-transfer-buffer", "cpu"])
+
+    @pytest.mark.parametrize("extra,buffer", [([], "gpu"), (["--p2p-mori-transfer-buffer", "cpu"], "cpu")])
+    def test_a_p2p_update_over_mori_takes_it_and_defaults_to_gpu(self, extra, buffer):
+        args = self._validate([*_P2P_ARGS, "--p2p-transport", "mori", *extra])
+
+        assert args.p2p_mori_transfer_buffer == buffer
+
+
 def test_fully_async_warns_that_over_sampling_batch_size_is_ignored(caplog):
     """Fully-async never reads --over-sampling-batch-size; passing it silently does nothing."""
     args = _fully_async_candidate_args(fully_async=True, over_sampling_batch_size=32)
