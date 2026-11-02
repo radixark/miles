@@ -100,9 +100,9 @@ class LoraConfig(BaseConfig):
         bool,
         Arg(
             help=(
-                "Verify the megatron->sglang LoRA adapter weight-sync on the colocated "
-                "(from_tensors) path: on every sync the trainer ships a per-tensor sha256 "
-                "manifest of the adapter it sends, and each rollout engine hashes the "
+                "Verify the megatron->sglang LoRA adapter weight sync: on every sync each "
+                "sender ships a per-tensor sha256 manifest of the adapter tensors it sends, "
+                "and each rollout engine hashes the "
                 "tensors it received and fails the load on any mismatch/missing/extra "
                 "name. The LoRA analogue of --check-weight-update-equal, which only "
                 "covers base weights."
