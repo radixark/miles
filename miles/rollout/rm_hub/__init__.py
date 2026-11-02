@@ -36,13 +36,9 @@ async def remote_rm(args, sample: Sample):
             return await resp.json()
 
 
-def _read_row_custom_rm_path(sample: Sample) -> str | None:
-    """`metadata['custom_rm_path']`, or None when unset or empty."""
-    metadata = sample.metadata if isinstance(sample.metadata, dict) else {}
-    path = metadata.get("custom_rm_path")
-    if path is not None and not isinstance(path, str):
-        raise TypeError(f"metadata['custom_rm_path'] must be a function path string, got {type(path).__name__}")
-    return path or None
+def _spec_custom_rm_path(sample: Sample) -> str | None:
+    spec = sample.reward_spec
+    return (spec.custom_rm_path if spec is not None else None) or None
 
 
 def _run_custom_rm_path(args) -> str | None:
@@ -50,14 +46,14 @@ def _run_custom_rm_path(args) -> str | None:
     return run_hook.path if isinstance(run_hook, CustomFunctionConfig) else run_hook
 
 
-def _resolve_row_custom_rm_path(args, path: str) -> CustomFunctionConfig:
-    """A row naming the run's hook reuses its config; a row cannot supply config for any other hook."""
+def _resolve_spec_custom_rm_path(args, path: str) -> CustomFunctionConfig:
+    """A spec naming the run's hook reuses its config; a spec cannot supply config for any other hook."""
     if path == _run_custom_rm_path(args) and isinstance(args.custom_rm_path, CustomFunctionConfig):
         return args.custom_rm_path
     if _compute_config_class(load_function(path), path=path) is not None:
         raise ValueError(
-            f"metadata['custom_rm_path']={path!r} names a reward function with its own config, which a dataset row "
-            "cannot carry; set it as --custom-rm-path instead"
+            f"reward_spec.custom_rm_path={path!r} names a reward function with its own config, which a per-sample "
+            "spec cannot carry; set it as --custom-rm-path instead"
         )
     return CustomFunctionConfig(path=path)
 
@@ -66,11 +62,8 @@ def _resolve_reward_config(args, sample: Sample) -> tuple[CustomFunctionConfig |
     # Spec fields win when set; unset/empty fields fall back to sample metadata and process-wide args.
     spec = sample.reward_spec
     metadata = sample.metadata if isinstance(sample.metadata, dict) else {}
-    row_custom_rm_path = _read_row_custom_rm_path(sample)
-    if spec is not None and spec.custom_rm_path:
-        custom_rm_path = spec.custom_rm_path
-    elif row_custom_rm_path is not None:
-        custom_rm_path = _resolve_row_custom_rm_path(args, row_custom_rm_path)
+    if (spec_path := _spec_custom_rm_path(sample)) is not None:
+        custom_rm_path = _resolve_spec_custom_rm_path(args, spec_path)
     else:
         custom_rm_path = args.custom_rm_path
     if isinstance(custom_rm_path, str):
@@ -146,11 +139,11 @@ async def batched_async_rm(
 
     if args.custom_rm_path is not None:
         run_path = _run_custom_rm_path(args)
-        row_paths = [_read_row_custom_rm_path(sample) for sample in samples]
-        if rows_with_other_path := [i for i, path in enumerate(row_paths) if path not in (None, run_path)]:
+        spec_paths = [_spec_custom_rm_path(sample) for sample in samples]
+        if samples_with_other_path := [i for i, path in enumerate(spec_paths) if path not in (None, run_path)]:
             raise ValueError(
-                f"metadata['custom_rm_path'] on group rows {rows_with_other_path} differs from --custom-rm-path, "
-                "but --group-rm scores the whole group with that one batched function; drop one of the two"
+                f"reward_spec.custom_rm_path on group samples {samples_with_other_path} differs from "
+                "--custom-rm-path, but --group-rm scores the whole group with that one batched function"
             )
         rm_function = load_function(args.custom_rm_path)
         fn_args = compute_custom_function_config(args, args.custom_rm_path)

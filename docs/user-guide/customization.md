@@ -142,12 +142,11 @@ async def batched_custom_rm(args, samples: list[Sample]) -> list[float]:
     ...
 ```
 
-**Per-row override:** a dataset row can choose its own grader through its metadata:
-`metadata.custom_rm_path` names a per-sample reward function and `metadata.rm_type` a built-in
-one, and each wins over the matching flag. A row cannot carry hook config, so a per-row function that
-declares its own config (`config_class` or `add_arguments`) must be the `--custom-rm-path` one. Under
-`--group-rm`, a batched `--custom-rm-path` scores the whole group, so rows naming a different function
-are rejected.
+**Per-sample override:** a data source can set `Sample.reward_spec` to choose a sample's grader:
+`reward_spec.custom_rm_path` names a reward function and `reward_spec.rm_type` a built-in one, and each wins
+over the matching flag. A spec cannot carry hook config, so a per-sample function that declares its own config
+(`config_class` or `add_arguments`) must be the `--custom-rm-path` one. Under `--group-rm`, a batched
+`--custom-rm-path` scores the whole group, so samples naming a different function are rejected.
 
 **Built-in `--rm-type` options:** `math`, `dapo`, `deepscaler`, `gemma_math`, `f1`,
 `gpqa`, `ifbench`, `remote_rm` (with `--rm-url`), `random`, `deterministic_random`.
