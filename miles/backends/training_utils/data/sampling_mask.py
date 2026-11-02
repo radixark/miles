@@ -89,3 +89,17 @@ def rollout_topk_candidate_ids(batch: RolloutBatch, sample: int, indices: torch.
     ids = torch.full((len(indices), width), -1, dtype=torch.long)
     ids[valid] = support[(offsets[:, None] + columns)[valid]].long()
     return ids
+
+
+def local_support_ids(sampling_mask: RolloutSamplingMask, response_indices: Sequence[int]) -> torch.Tensor:
+    """``[R, S]`` support token ids of the response rows a rank holds, ``-1`` past each row's support.
+
+    Built on the CPU, where the mask lives; the fused path copies it to the GPU without a sync.
+    """
+    selected_ids, lengths = sampling_mask._select_masks(response_indices)
+    width = int(lengths.max()) if lengths.numel() else 0
+    rows = torch.repeat_interleave(torch.arange(lengths.numel()), lengths)
+    columns = torch.arange(selected_ids.numel()) - torch.repeat_interleave(torch.cumsum(lengths, 0) - lengths, lengths)
+    ids = torch.full((lengths.numel(), width), -1, dtype=torch.long)
+    ids[rows, columns] = selected_ids.long()
+    return ids
