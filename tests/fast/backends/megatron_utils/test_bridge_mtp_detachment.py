@@ -1,4 +1,4 @@
-"""CPU regression tests for MTP detachment on bridge-built providers."""
+"""CPU regression tests for bridge-built providers: MTP detachment and the vision freeze."""
 
 import argparse
 from collections.abc import Callable
@@ -43,3 +43,22 @@ def test_bridge_mtp_runtime_depth(apply_bridge_runtime_config, runtime_args, mtp
     apply_bridge_runtime_config(provider, runtime_args)
 
     assert provider.mtp_num_layers == expected_layers
+
+
+def test_freeze_vision_model_freezes_the_tower_and_its_projection(apply_bridge_runtime_config, runtime_args):
+    """Setting only freeze_vision_model would leave the vision projection (merger) training."""
+    runtime_args.freeze_vision_model = True
+    provider = SimpleNamespace(mtp_num_layers=1, freeze_vision_model=False, freeze_vision_projection=False)
+
+    apply_bridge_runtime_config(provider, runtime_args)
+
+    assert provider.freeze_vision_model is True
+    assert provider.freeze_vision_projection is True
+
+
+def test_freeze_vision_model_rejects_a_text_only_provider(apply_bridge_runtime_config, runtime_args):
+    """A provider without a vision tower would ignore the flag and train everything."""
+    runtime_args.freeze_vision_model = True
+
+    with pytest.raises(ValueError, match="no vision tower"):
+        apply_bridge_runtime_config(SimpleNamespace(mtp_num_layers=1), runtime_args)

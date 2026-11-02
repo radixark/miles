@@ -42,6 +42,7 @@ def _runtime_args(**overrides):
     return SimpleNamespace(
         backend=SimpleNamespace(**values),
         enable_mtp_training=False,
+        freeze_vision_model=False,
         dsa_attention_backend=values.get("dsa_attention_backend"),
     )
 
