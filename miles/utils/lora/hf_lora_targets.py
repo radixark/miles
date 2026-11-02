@@ -274,11 +274,13 @@ _HF_LORA_MODELS = {
     "qwen3_5_text": _HfLoraModelSpec(
         _qwen3_5_targets,
         build_whole_fused_attention=_qwen3_5_whole_fused_attention,
+        tinker_name_renames=_TINKER_RENAMES,
         component_rows_by_fused_module=_gdn_35_component_rows,
     ),
     "qwen3_5_moe_text": _HfLoraModelSpec(
         _qwen3_5_moe_targets,
         build_whole_fused_attention=_qwen3_5_whole_fused_attention,
+        tinker_name_renames=_TINKER_RENAMES,
         component_rows_by_fused_module=_gdn_35_component_rows,
     ),
     "qwen3_5": _HfLoraModelSpec(
