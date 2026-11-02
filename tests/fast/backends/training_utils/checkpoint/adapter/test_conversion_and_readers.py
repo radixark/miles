@@ -7,7 +7,11 @@ import pytest
 import torch
 from safetensors.torch import load_file, save_file
 
-from miles.backends.training_utils.checkpoint.adapter.adapter_exports import write_peft_adapter, write_sampler_adapter
+from miles.backends.training_utils.checkpoint.adapter.adapter_exports import (
+    write_external_adapter,
+    write_peft_adapter,
+    write_sampler_adapter,
+)
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
 from miles.backends.training_utils.checkpoint.adapter.parametrization_conversion import (
     ConversionOp,
@@ -17,6 +21,7 @@ from miles.backends.training_utils.checkpoint.adapter.parametrization_conversion
 )
 from miles.backends.training_utils.checkpoint.adapter.readers import (
     AdapterSourceKind,
+    ExternalWeightsReader,
     MilesAdapterDirReader,
     PeftAdapterReader,
     classify_adapter_source,
@@ -136,6 +141,39 @@ def test_peft_features_that_change_tensor_meaning_are_refused(tmp_path):
     (tmp_path / "adapter_config.json").write_text(json.dumps({"r": 2, "lora_alpha": 4, "use_dora": True}))
     with pytest.raises(AssertionError, match="use_dora"):
         PeftAdapterReader(tmp_path, _run(), QWEN3)
+
+
+@pytest.mark.parametrize("shared_qkv", [False, True], ids=["canonical", "fused_gdn"])
+def test_external_export_reads_back_through_the_external_reader(tmp_path, shared_qkv):
+    run = _run(shared_lora_a_groups=(QKV,) if shared_qkv else ())
+    weights = _weights(shared_qkv)
+    write_external_adapter(tmp_path, weights, run, QWEN35)
+    tensors = load_file(str(tmp_path / "adapter_model.safetensors"))
+    assert all(t.dtype == torch.float32 for t in tensors.values())
+    assert any(".experts.w1." in name for name in tensors), "gated experts take Tinker's names"
+    assert classify_adapter_source(tmp_path, QWEN35, load_optimizer=False) == AdapterSourceKind.EXTERNAL_WEIGHTS
+    read = ExternalWeightsReader(tmp_path, run, QWEN35).read_weights()
+    for module in run.target_modules:
+        # each member carries its own copy of a shared A
+        source = QKV[0] if shared_qkv and module in QKV else module
+        assert torch.equal(read[f"{module}.lora_A"], weights[f"{source}.lora_A"])
+        assert torch.equal(read[f"{module}.lora_B"], weights[f"{module}.lora_B"])
+
+
+def test_an_encrypted_external_export_decrypts_to_the_plain_one(tmp_path):
+    pyrage = pytest.importorskip("pyrage")
+    identity = pyrage.x25519.Identity.generate()
+    write_external_adapter(tmp_path / "plain", _weights(False), _run(), QWEN35)
+    write_external_adapter(
+        tmp_path / "age", _weights(False), _run(), QWEN35, age_recipients=[str(identity.to_public())]
+    )
+    assert sorted(p.name for p in (tmp_path / "age").iterdir()) == [
+        "adapter_config.json.age",
+        "adapter_model.safetensors.age",
+    ]
+    for name in ("adapter_config.json", "adapter_model.safetensors"):
+        decrypted = pyrage.decrypt((tmp_path / "age" / f"{name}.age").read_bytes(), [identity])
+        assert decrypted == (tmp_path / "plain" / name).read_bytes()
 
 
 def test_tinker_names_classify_as_external(tmp_path):

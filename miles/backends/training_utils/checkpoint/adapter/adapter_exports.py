@@ -1,5 +1,6 @@
-"""PEFT and sampler exports, written from whole HF-keyed tensors on one process."""
+"""PEFT, sampler and external (official Tinker) exports, written from whole HF-keyed tensors on one process."""
 
+from collections.abc import Sequence
 from pathlib import Path
 
 import torch
@@ -9,6 +10,7 @@ from miles.backends.training_utils.checkpoint.adapter.key_mapping import (
     fuse_lora_b,
     fused_leaves,
     map_hf_keys_to_peft_keys,
+    map_hf_keys_to_tinker_keys,
 )
 from miles.backends.training_utils.checkpoint.adapter.parametrization import (
     AdapterParametrization,
@@ -102,3 +104,38 @@ def write_sampler_adapter(
     hf_names = [map_hf_keys_to_peft_keys(key) for key in expanded]
     save_adapter_to_disk(directory, _adapter_config(parametrization, hf_names), tensors)
     write_parametrization(Path(directory), parametrization)
+
+
+def write_external_adapter(
+    directory: Path,
+    weights: dict[str, torch.Tensor],
+    parametrization: AdapterParametrization,
+    targets: HfLoraTargets,
+    *,
+    age_recipients: Sequence[str] = (),
+) -> None:
+    """The official Tinker export: F32 under Tinker names, experts stacked 3D as the parametrization has them
+    (``[1, ...]`` on a shared-outer side), and every module its own copy of a shared A (no re-fusing: Tinker trains
+    the components apart). With ``age_recipients`` every file is age-encrypted to them and named ``<file>.age``."""
+    tensors = {}
+    shared_copies = {member: group[0] for group in parametrization.shared_lora_a_groups for member in group[1:]}
+    for module in parametrization.target_modules:
+        for factor in ("lora_A", "lora_B"):
+            source = f"{shared_copies.get(module, module)}.lora_A" if factor == "lora_A" else f"{module}.lora_B"
+            tensors[map_hf_keys_to_tinker_keys(f"{module}.{factor}", targets)] = weights[source].to(
+                torch.float32, copy=True
+            )
+    hf_names = [map_hf_keys_to_peft_keys(f"{module}.lora_A") for module in parametrization.target_modules]
+    save_adapter_to_disk(directory, _adapter_config(parametrization, hf_names), tensors)
+    if age_recipients:
+        _age_encrypt_in_place(Path(directory), age_recipients)
+
+
+def _age_encrypt_in_place(directory: Path, recipients: Sequence[str]) -> None:
+    # optional dependency: only an encrypted export needs it
+    import pyrage
+
+    parsed = [pyrage.x25519.Recipient.from_str(r) for r in recipients]
+    for path in sorted(directory.iterdir()):
+        path.with_name(path.name + ".age").write_bytes(pyrage.encrypt(path.read_bytes(), parsed))
+        path.unlink()

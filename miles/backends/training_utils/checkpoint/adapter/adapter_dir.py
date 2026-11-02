@@ -1,7 +1,7 @@
 """The save / load flow, written once; backends only provide their checkpoint members."""
 
 import json
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import replace
 from functools import partial
 from pathlib import Path
@@ -9,7 +9,11 @@ from typing import Literal, Protocol
 
 import torch
 
-from miles.backends.training_utils.checkpoint.adapter.adapter_exports import write_peft_adapter, write_sampler_adapter
+from miles.backends.training_utils.checkpoint.adapter.adapter_exports import (
+    write_external_adapter,
+    write_peft_adapter,
+    write_sampler_adapter,
+)
 from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
     AdapterState,
     LocalShardSpec,
@@ -204,6 +208,27 @@ def write_sampler_export(
         if _is_writer():
             weights = _hf_keyed_bf16_adapter(named_tensors, members, targets)
             write_sampler_adapter(written.path, weights, parametrization, targets)
+    return written
+
+
+def write_external_export(
+    root: Path,
+    name: str,
+    members: AdapterCheckpointMembers,
+    slot: int,
+    parametrization: AdapterParametrization,
+    targets: HfLoraTargets,
+    *,
+    tenant: str | None,
+    age_recipients: Sequence[str] = (),
+) -> UncommittedAdapterDir:
+    """All ranks call; rank 0 writes ``slot``'s external export (no parametrization: it is a download, not a
+    checkpoint). The caller's committer then commits it."""
+    with write_adapter_dir(root, name, tenant=tenant) as written:
+        named_tensors = list(members.export_bf16_adapter(slot))
+        if _is_writer():
+            weights = _hf_keyed_bf16_adapter(named_tensors, members, targets)
+            write_external_adapter(written.path, weights, parametrization, targets, age_recipients=age_recipients)
     return written
 
 
