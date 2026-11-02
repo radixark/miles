@@ -14,9 +14,10 @@ from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
 
 
 def test_per_expert_peft_names_stack_under_one_hf_key():
-    name = "base_model.model.model.layers.3.mlp.experts.17.gate_proj.lora_A.weight"
+    name = "model.layers.3.mlp.experts.17.gate_proj.lora_A.weight"
     assert map_peft_keys_to_hf_keys(name) == HfKey("model.layers.3.mlp.experts.gate_proj.lora_A", 17)
-    assert map_hf_keys_to_peft_keys("model.layers.3.mlp.experts.gate_proj.lora_A", 17) == name
+    assert map_peft_keys_to_hf_keys(f"base_model.model.{name}") == map_peft_keys_to_hf_keys(name)
+    assert map_hf_keys_to_peft_keys("model.layers.3.mlp.experts.gate_proj.lora_A", 17) == name, "main's bare names"
 
 
 @pytest.mark.parametrize(
