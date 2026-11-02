@@ -316,3 +316,29 @@ def test_an_edited_sampler_config_is_refused(tmp_path):
     (tmp_path / "adapter_config.json").write_text(json.dumps(config))
     with pytest.raises(AssertionError, match="disagrees"):
         MilesAdapterDirReader(tmp_path, QWEN35)
+
+
+def test_gpt_oss_experts_without_a_shared_a_stay_per_expert(tmp_path):
+    gate, up, down = (f"{L}.mlp.experts.{p}" for p in ("gate_proj", "up_proj", "down_proj"))
+    run = _run(target_modules=(gate, up, down))
+    weights = {
+        f"{m}.lora_{f}": torch.ones(3, 2, 8) if f == "A" else torch.ones(3, 8, 2)
+        for m in (gate, up, down)
+        for f in "AB"
+    }
+    write_peft_adapter(tmp_path, weights, run, GPT_OSS)
+    names = set(load_file(str(tmp_path / "adapter_model.safetensors")))
+    assert f"{L}.mlp.experts.2.up_proj.lora_A.weight" in names and not any("gate_up_proj" in n for n in names)
+
+
+def test_gpt_oss_sampler_export_keeps_packed_hf_names(tmp_path):
+    gate, up, down = (f"{L}.mlp.experts.{p}" for p in ("gate_proj", "up_proj", "down_proj"))
+    run = _run(target_modules=(gate, up, down), shared_lora_a_groups=((gate, up),))
+    weights = (
+        {f"{gate}.lora_A": torch.ones(3, 2, 8)}
+        | {f"{m}.lora_B": torch.ones(3, 8, 2) for m in (gate, up, down)}
+        | {f"{down}.lora_A": torch.ones(3, 2, 8)}
+    )
+    write_sampler_adapter(tmp_path, weights, run, GPT_OSS)
+    names = set(load_file(str(tmp_path / "adapter_model.safetensors")))
+    assert names == {f"{L}.mlp.experts.{p}.lora_{f}.weight" for p in ("gate_up_proj", "down_proj") for f in "AB"}
