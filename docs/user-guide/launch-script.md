@@ -191,6 +191,9 @@ commands you see in the log, in order:
 1. Kills leftover `sglang`, `miles`, and `redis` processes and stops any previous Ray
    cluster.
 2. Starts a fresh cluster with `ray start --head`, using `--num-gpus-per-node` GPUs.
+   Where the host's ephemeral port range (`net.ipv4.ip_local_port_range`) overlaps Ray's
+   default worker ports 10002-19999, it adds `--min-worker-port 0 --max-worker-port 0`,
+   so each Ray worker binds a port the kernel assigns.
 3. Runs the launcher's `before_ray_job_submit` hook, if it has one (used for the ssh
    fan-out below).
 4. Builds the Ray runtime env for the job: `PYTHONUNBUFFERED`,
@@ -201,12 +204,13 @@ commands you see in the log, in order:
 5. Submits the job: `ray job submit -- python3 train.py <architecture flags>
    <recipe flags>`.
 
-Two environment variables skip parts of this sequence:
+These environment variables change the sequence or the ports the job uses:
 
 | Env var | Effect |
 |---|---|
-| `MILES_SCRIPT_EXTERNAL_RAY=1` | The Ray cluster is already running: skip the Ray teardown and `ray start`, only submit |
+| `MILES_SCRIPT_EXTERNAL_RAY=1` | The Ray cluster is already running: skip the Ray teardown and `ray start`, only submit. The worker port flags from step 2 are then not added; whoever starts Ray, including the `ray start` lines in the model guides, passes them where step 2 would |
 | `MILES_SCRIPT_ENABLE_RAY_SUBMIT=0` | Run everything except the submission — shows what a launcher would do |
+| `MILES_DYNAMIC_PORT_START` | First port of the range Miles allocates service ports from: the dynamic ports its Ray workers serve on, such as rollout engines and routers, and the training process group's master port. Unset, the range starts at 20000 and ends below the ephemeral range, or moves to the wider stretch outside the ephemeral range when that covers 20000. It is read on each node, so it reaches the job only through `--extra-env-vars` or the environment of the shell that runs `ray start` |
 
 The head-node address defaults to `127.0.0.1` and is taken from `MASTER_ADDR`; export
 it on multi-node runs so Ray and torch distributed bind to the right interface.

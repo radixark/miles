@@ -6,8 +6,11 @@ process binds it seconds or minutes later. A port inside the kernel's ephemeral 
 outgoing connection, and the bind then fails with "Address already in use".
 """
 
+import logging
 import os
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 _EPHEMERAL_PORT_RANGE_FILE = Path("/proc/sys/net/ipv4/ip_local_port_range")
 _DYNAMIC_PORT_START_ENV = "MILES_DYNAMIC_PORT_START"
@@ -78,6 +81,11 @@ def _widest_range_outside(ephemeral: tuple[int, int]) -> tuple[int, int]:
     above = (max(ephemeral[1], _RAY_DEFAULT_WORKER_PORTS[1]) + 1, _MAX_PORT)
     candidates = [(low, high) for low, high in (below, above) if low <= high]
     if not candidates:
+        logger.warning(
+            f"The ephemeral port range {ephemeral[0]}-{ephemeral[1]} (net.ipv4.ip_local_port_range) leaves no "
+            f"ports outside it, so service ports come from {_DEFAULT_SERVICE_PORT_START}-{_MAX_PORT}, where an "
+            "outgoing connection can take a probed port before it is bound; narrow the ephemeral range to avoid this"
+        )
         return _DEFAULT_SERVICE_PORT_START, _MAX_PORT
     return max(candidates, key=lambda candidate: candidate[1] - candidate[0])
 

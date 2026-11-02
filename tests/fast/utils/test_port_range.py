@@ -65,11 +65,14 @@ class TestServicePortRange:
 
         assert service_port_range() == (40001, 65535)
 
-    def test_a_range_with_no_room_outside_it_falls_back_to_the_default(self, ephemeral_range_file):
-        """There is nothing safe to choose, so allocation behaves as it did before."""
+    def test_a_range_with_no_room_outside_it_falls_back_to_the_default(self, ephemeral_range_file, caplog):
+        """There is nothing safe to choose, so allocation behaves as it did before and says why."""
         ephemeral_range_file(1024, 65535)
 
-        assert service_port_range() == (20000, 65535)
+        with caplog.at_level("WARNING", logger=port_range.__name__):
+            assert service_port_range() == (20000, 65535)
+
+        assert "ephemeral port range 1024-65535" in caplog.text
 
     def test_an_unknown_range_keeps_the_default(self, ephemeral_range_file):
         assert service_port_range() == (20000, 65535)
