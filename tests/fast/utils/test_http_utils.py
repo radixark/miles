@@ -22,7 +22,10 @@ This lets us simulate 20 seconds of polling in <1ms of real time.
 """
 
 import asyncio
+import functools
+import gzip
 import inspect
+import json
 import multiprocessing
 import socket
 import subprocess
@@ -34,6 +37,7 @@ from types import SimpleNamespace
 from typing import Any, NamedTuple
 from unittest.mock import patch
 
+import aiohttp
 import httpx
 import pytest
 import ray
@@ -574,11 +578,11 @@ class TestGeneralHttpClientProvider:
         connections at 100 by default."""
         num_requests = 101
         arrived = _ArrivalGate()
-        server = _BlockingHttpServer(arrived)
+        server = _HttpServer(_blocking_handler(arrived))
 
         try:
             client = GeneralHttpClientProvider.client()
-            requests = [asyncio.create_task(client.get(server.url)) for _ in range(num_requests)]
+            requests = [asyncio.create_task(client.get(f"{server.url}/health_generate")) for _ in range(num_requests)]
 
             deadline = time.monotonic() + 60
             while arrived.count < num_requests:
@@ -661,32 +665,40 @@ class _ArrivalGate:
         self._released.set()
 
 
-class _BlockingHttpServer:
-    def __init__(self, gate: _ArrivalGate):
-        handler = self._make_handler(gate)
-        self._server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
-        self.url = f"http://127.0.0.1:{self._server.server_address[1]}/health_generate"
+class _ThreadingServer(ThreadingHTTPServer):
+    # socketserver listens with a backlog of 5, so 101 connects at once can wait out a 10 s connect deadline
+    request_queue_size = 128
+
+
+class _HttpServer:
+    """Serves one handler class on a free local port from a background thread."""
+
+    def __init__(self, handler: type[BaseHTTPRequestHandler]):
+        self._server = _ThreadingServer(("127.0.0.1", 0), handler)
+        self.url = f"http://127.0.0.1:{self._server.server_address[1]}"
         threading.Thread(target=self._server.serve_forever, daemon=True).start()
 
     def close(self) -> None:
         self._server.shutdown()
         self._server.server_close()
 
-    @staticmethod
-    def _make_handler(gate: _ArrivalGate):
-        class _Handler(BaseHTTPRequestHandler):
-            protocol_version = "HTTP/1.1"
 
-            def do_GET(self):
-                gate.wait_for_release()
-                self.send_response(200)
-                self.send_header("Content-Length", "0")
-                self.end_headers()
+class _QuietHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
 
-            def log_message(self, format, *args):
-                pass
+    def log_message(self, format, *args):
+        pass
 
-        return _Handler
+
+def _blocking_handler(gate: _ArrivalGate) -> type[BaseHTTPRequestHandler]:
+    class _Handler(_QuietHandler):
+        def do_GET(self):
+            gate.wait_for_release()
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+    return _Handler
 
 
 class _RecordingTransport(httpx.AsyncBaseTransport):
@@ -696,6 +708,39 @@ class _RecordingTransport(httpx.AsyncBaseTransport):
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         self.deadlines = request.extensions["timeout"]
         return httpx.Response(200)
+
+
+class _EchoHandler(_QuietHandler):
+    """Answers with the method, path, headers and body that reached it. /fail answers 500, /gzip answers a gzip body,
+    and /disconnect closes the connection without an answer."""
+
+    def do_GET(self):
+        self._answer()
+
+    def do_POST(self):
+        self._answer()
+
+    def _answer(self):
+        body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        if self.path == "/disconnect":
+            self.close_connection = True
+            return
+        encoding = None
+        if self.path == "/fail":
+            status, content_type, reply = 500, "text/plain", b"engine down"
+        elif self.path == "/gzip":
+            status, content_type, reply, encoding = 200, "application/json", gzip.compress(b'{"ok": true}'), "gzip"
+        else:
+            headers = {name.lower(): value for name, value in self.headers.items()}
+            echoed = {"method": self.command, "path": self.path, "headers": headers, "body": body.decode()}
+            status, content_type, reply = 200, "application/json", json.dumps(echoed).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        if encoding is not None:
+            self.send_header("Content-Encoding", encoding)
+        self.send_header("Content-Length", str(len(reply)))
+        self.end_headers()
+        self.wfile.write(reply)
 
 
 class TestDistributedPostActors:
@@ -856,3 +901,143 @@ assert wrap_ipv6("::1") == "[::1]"
 assert wrap_ipv6("127.0.0.1") == "127.0.0.1"
 """,
     )
+
+
+class TestRolloutClient:
+    """Rollout requests keep httpx's API but go through aiohttp's connection pool."""
+
+    _CONNECTIONS = 3
+
+    @pytest.fixture
+    async def client(self, monkeypatch):
+        monkeypatch.setattr(http_utils, "_http_clients", {})
+        monkeypatch.setattr(http_utils, "_client_concurrency", self._CONNECTIONS)
+        client = http_utils._rollout_client()
+        yield client
+        await client.aclose()
+
+    @pytest.fixture
+    def echo_server(self):
+        server = _HttpServer(_EchoHandler)
+        yield server
+        server.close()
+
+    async def test_a_json_post_reaches_the_server_as_httpx_writes_it(self, client, echo_server):
+        """SGLang parses the body by its Content-Type, so aiohttp must not replace any header httpx set."""
+        echoed = (await client.post(f"{echo_server.url}/generate", json={"input_ids": [1, 2]})).json()
+
+        assert (echoed["method"], echoed["path"]) == ("POST", "/generate")
+        assert json.loads(echoed["body"]) == {"input_ids": [1, 2]}
+        assert echoed["headers"]["content-type"] == "application/json"
+        assert echoed["headers"]["user-agent"].startswith("python-httpx/")
+
+    async def test_a_get_goes_out_without_body_headers(self, client, echo_server):
+        """httpx sends a GET with no body headers; aiohttp adds an octet-stream Content-Type to an empty body."""
+        echoed = (await client.get(f"{echo_server.url}/workers")).json()
+
+        assert echoed["method"] == "GET"
+        assert "content-type" not in echoed["headers"]
+        assert "content-length" not in echoed["headers"]
+
+    async def test_a_streamed_body_goes_out_whole_with_only_the_headers_httpx_set(self, client, echo_server):
+        """httpx marks a body of unknown length as chunked, but aiohttp sends it whole with a Content-Length, and a
+        request with both headers is invalid HTTP. aiohttp would also give a raw body its own Content-Type."""
+
+        async def _chunks():
+            yield b'{"input_ids": '
+            yield b"[1, 2]}"
+
+        echoed = (await client.post(f"{echo_server.url}/generate", content=_chunks())).json()
+
+        assert echoed["body"] == '{"input_ids": [1, 2]}'
+        assert echoed["headers"]["content-length"] == str(len(echoed["body"]))
+        assert "transfer-encoding" not in echoed["headers"]
+        assert "content-type" not in echoed["headers"]
+
+    async def test_a_gzip_reply_is_decoded_once_by_httpx(self, client, echo_server):
+        """aiohttp must hand the body over still compressed: httpx decodes it again by its Content-Encoding."""
+        response = await client.get(f"{echo_server.url}/gzip")
+
+        assert response.json() == {"ok": True}
+
+    async def test_an_error_reply_keeps_its_body_for_the_retry_log(self, client, echo_server):
+        """_post logs the body of an HTTPStatusError, which is how an engine tells why it refused."""
+        response = await client.post(f"{echo_server.url}/fail", json={})
+
+        with pytest.raises(httpx.HTTPStatusError) as raised:
+            response.raise_for_status()
+        assert raised.value.response.status_code == 500
+        assert raised.value.response.text == "engine down"
+
+    async def test_a_refused_connection_is_an_httpx_connect_error(self, client):
+        """Callers tell a request that never reached the server from one cut off mid-reply by httpx's types."""
+        with pytest.raises(httpx.ConnectError):
+            await client.get(f"http://127.0.0.1:{_find_free_port()}/workers")
+
+    async def test_a_server_that_hangs_up_is_an_httpx_remote_protocol_error(self, client, echo_server):
+        """httpx reports a peer that closed the connection without an answer as RemoteProtocolError."""
+        with pytest.raises(httpx.RemoteProtocolError):
+            await client.get(f"{echo_server.url}/disconnect")
+
+    async def test_a_per_request_timeout_ends_a_slow_request_with_httpx_read_timeout(self, client):
+        """A caller that passes timeout= must not wait for a server that does not answer."""
+        gate = _ArrivalGate()
+        server = _HttpServer(_blocking_handler(gate))
+        try:
+            with pytest.raises(httpx.ReadTimeout):
+                await client.get(f"{server.url}/health_generate", timeout=0.3)
+        finally:
+            gate.release()
+            server.close()
+
+    async def test_a_rollout_request_has_no_deadline(self, client):
+        """A generation can run for many minutes, and the transport applies only the deadlines httpx hands it."""
+        assert client.timeout == httpx.Timeout(None)
+
+    async def test_closing_the_rollout_client_lets_a_later_request_open_a_new_one(self, client):
+        """RolloutExecutor.dispose closes the client, so the process does not exit with an open aiohttp session."""
+        await http_utils.close_rollout_client()
+        reopened = http_utils._rollout_client()
+        try:
+            assert client.is_closed
+            assert reopened is not client and not reopened.is_closed
+        finally:
+            await reopened.aclose()
+
+    async def test_no_more_requests_than_the_client_concurrency_reach_the_server_at_once(self, monkeypatch):
+        """The connection cap sized from the engines' concurrency still bounds what one process sends."""
+        extra = 2
+        queued = 0
+
+        async def _count_queued(_session, _context, _params):
+            nonlocal queued
+            queued += 1
+
+        trace = aiohttp.TraceConfig()
+        trace.on_connection_queued_start.append(_count_queued)
+        monkeypatch.setattr(aiohttp, "ClientSession", functools.partial(aiohttp.ClientSession, trace_configs=[trace]))
+        monkeypatch.setattr(http_utils, "_http_clients", {})
+        monkeypatch.setattr(http_utils, "_client_concurrency", self._CONNECTIONS)
+        client = http_utils._rollout_client()
+        arrived = _ArrivalGate()
+        server = _HttpServer(_blocking_handler(arrived))
+
+        try:
+            urls = [f"{server.url}/health_generate"] * (self._CONNECTIONS + extra)
+            requests = [asyncio.create_task(client.get(url)) for url in urls]
+            # Until the gate opens no connection frees, so a request that waits for one cannot arrive later.
+            deadline = time.monotonic() + 60
+            while queued < extra or arrived.count < self._CONNECTIONS:
+                assert time.monotonic() < deadline, (
+                    f"{arrived.count} requests arrived and {queued} waited for a connection; "
+                    f"expected {self._CONNECTIONS} and {extra}"
+                )
+                await asyncio.sleep(0.01)
+            assert arrived.count == self._CONNECTIONS
+
+            arrived.release()
+            assert [response.status_code for response in await asyncio.gather(*requests)] == [200] * len(urls)
+        finally:
+            arrived.release()
+            await client.aclose()
+            server.close()
