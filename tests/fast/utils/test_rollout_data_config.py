@@ -84,7 +84,9 @@ class TestRejects:
         "fields",
         [
             {"sample_per_step": 2},
-            {"rm_type": "math"},
+            {"input_key": "question"},
+            {"rm_type": ""},
+            {"custom_rm_path": ""},
             {"name": "other"},
             {"samples_per_step": 0},
             {"samples_per_step": True},
