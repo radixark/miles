@@ -13,7 +13,7 @@ one.
 |---|:---:|:---:|:---:|:---:|
 | [AgentENV](https://github.com/kvcache-ai/AgentENV) | ✓ | | | [✓](https://github.com/radixark/miles/tree/main/examples/experimental/agentenv) |
 | [Daytona](https://www.daytona.io/) | ✓ | ✓ | ✓ | ✓ |
-| [E2B](https://e2b.dev/) | ✓ | | | ✓ |
+| [E2B](https://e2b.dev/) | ✓ | | ✓ | ✓ |
 | [Modal](https://modal.com/) | ✓ | | | ✓ |
 
 The rest of this page is how to set each provider up. Its SDK is installed per
@@ -48,6 +48,28 @@ Firecracker microVMs behind the E2B API — and deploying one is
 E2B Cloud builds templates as a non-root user, so a task Dockerfile whose `RUN`
 layers need root fails to build there. Terminal-Bench-2 tasks ship prebuilt
 images and are unaffected.
+
+For the [NeMo Gym](https://github.com/radixark/miles/tree/main/examples/experimental/nemo-gym)
+recipe (NeMo Gym `main` at or after TODO-GYM-COMMIT, which accepts the agent's
+scheduling hints on E2B), each task image needs an E2B template before the run, because E2B
+starts sandboxes from templates rather than from image references. NeMo Gym's
+builder makes them from the task images (named as in the
+[`mini_swe_agent_2` README](https://github.com/NVIDIA-NeMo/Gym/tree/main/responses_api_agents/mini_swe_agent_2#dataset-information))
+and writes the mapping the provider reads; the
+[provider README](https://github.com/NVIDIA-NeMo/Gym/tree/main/nemo_gym/sandbox/providers/e2b#templates)
+has the details:
+
+```bash
+python -m nemo_gym.sandbox.providers.e2b.build --images-file images.txt \
+    --cpu-count 2 --memory-mb 4096 --output template_map.yaml
+```
+
+Put that `template_map` under `sandbox.e2b.create` in a config file, and pass
+it after `nemo_gym/sandbox/providers/e2b/configs/e2b.yaml`, which replaces the
+docker config in `gym env start`. On E2B's Hobby tier a sandbox lives at most
+one hour, less than the agent's default `sandbox_spec.ttl_s`, so add
+`'++mini_swe_agent_2.responses_api_agents.mini_swe_agent_2.sandbox_spec.ttl_s=3600'`
+there.
 
 ## Daytona
 

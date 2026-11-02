@@ -22,7 +22,7 @@ Miles trainer ── session server (records every chat-completions turn: token
 NeMo Gym responses-API agent server (mini_swe_agent_2)
    │  runs mini-swe-agent v2 against policy_base_url,
    │  per-task container via a nemo_gym.sandbox provider (docker here;
-   │  daytona / apptainer / ecs_fargate / opensandbox also exist)
+   │  daytona / e2b / apptainer / ecs_fargate / opensandbox also exist)
    ▼
 reward (official SWE-bench harness) ──► sample.metadata ──► reward hook
 ```
@@ -51,6 +51,12 @@ ones used:
   container on the NeMo Gym host, the SWE-bench harness executed the task's
   full test suite (e.g. 175/175 PASS_TO_PASS on an unresolved attempt), and
   the grade flowed back into `rollout/raw_reward`.
+- **On E2B** (2026-11-02, no GPU, provider setup in
+  [Sandbox Providers](../../../docs/user-guide/sandbox-providers.md#e2b)):
+  golden scan 5/5 reward 1.0 on the five SWE-bench Verified rows of NeMo Gym's
+  `mini_swe_agent_2/data/example.jsonl`, run concurrently; API-policy scan with
+  `gemini-3.5-flash-lite` through Google's OpenAI-compatible endpoint finished
+  both episodes (one resolved, reward 1.0). The GPU smoke above ran on docker.
 
 Two known limitations from the smoke run:
 
@@ -109,6 +115,10 @@ gym env start \
     '++mini_swe_agent_2.responses_api_agents.mini_swe_agent_2.port=12000' \
     '++mini_swe_agent_2.responses_api_agents.mini_swe_agent_2.concurrency=16'
 ```
+
+To run the task containers on another provider, swap the docker config for
+that provider's; E2B needs a template per task image first, see
+[Sandbox Providers](../../../docs/user-guide/sandbox-providers.md#e2b).
 
 The first spin-up resolves each server's own venv, which takes a few minutes;
 the server is ready when the startup table lists `mini_swe_agent_2` on
