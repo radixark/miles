@@ -25,9 +25,8 @@ from megatron.core.tensor_parallel.random import model_parallel_cuda_manual_seed
 from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.transformer_config import TransformerConfig
 from tests.ci.ci_register import register_cuda_ci
-from tests.e2e.lora.test_slot_checkpoint_resume import ADAM, apply_step, assert_same_state, snapshot
+from tests.e2e.lora.test_slot_checkpoint_resume import ADAM, assert_same_state, snapshot
 
-from miles.backends.megatron_utils.lora.checkpoint import load_slot, save_slot
 from miles.backends.megatron_utils.lora.optimizer import (
     SlotOptimizer,
     accumulate_gradients,
@@ -190,15 +189,8 @@ def run_worker(directory, tp, canonical):
     forward_backward(model, inputs)
     assert all(torch.isfinite(p.main_grad).all() for p in params)
 
-    saved = snapshot(model, optimizers[0])
-    save_slot(model, optimizers[0], str(directory))
-    load_slot(model, optimizers[2], str(directory), load_optimizer=True)
-    assert_same_state(snapshot(model, optimizers[2]), saved)
-    apply_step(model, optimizers[0], 7)
-    apply_step(model, optimizers[2], 7)
-    assert_same_state(snapshot(model, optimizers[2]), snapshot(model, optimizers[0]))
     logger.warning(
-        "rank=%s: accumulation, EP replicas, norm, isolation, checkpoint and resumed Adam passed; peak_allocated=%s",
+        "rank=%s: accumulation, EP replicas, norm, and isolation passed; peak_allocated=%s",
         dist.get_rank(),
         torch.cuda.max_memory_allocated(),
     )

@@ -32,6 +32,15 @@ def test_overwrite_points_the_name_at_the_new_commit_and_removes_the_old(tmp_pat
     assert not os.path.isabs(os.readlink(tmp_path / "w")), "links must be relative so copies keep working"
 
 
+def test_a_commit_leaves_retired_dirs_to_the_cleanup_task(tmp_path):
+    first = _save(tmp_path, "w", "1")
+    _save(tmp_path, "w", "2")
+    _save(tmp_path, "w", "3")
+    assert first.path.with_name(first.path.name + ".deleting").is_dir(), "a cleanup task may be removing it"
+    delete_unreferenced_adapter_dirs(tmp_path)
+    assert not any(p.name.endswith(".deleting") for p in tmp_path.iterdir())
+
+
 def test_refuses_to_overwrite_when_asked_not_to(tmp_path):
     _save(tmp_path, "w", "1")
     with pytest.raises(FileExistsError):
