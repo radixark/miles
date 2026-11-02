@@ -405,10 +405,7 @@ def all_gather_with_cp(
 
 @dataclass(frozen=True)
 class CPLayout:
-    """Which token positions of each sequence in a micro batch this context-parallel rank holds.
-
-    :meth:`build` derives the layout from ``qkv_format`` and ``allgather_cp``.
-    """
+    """Which token positions of each sequence in a micro batch this context-parallel rank holds."""
 
     cp_rank: int
     cp_size: int
@@ -450,31 +447,19 @@ class CPLayout:
     def local_ranges(self, lengths: Sequence[int]) -> list[tuple[tuple[int, int], ...]]:
         """Per sequence, the half-open position ranges this rank holds, in local order.
 
-        Three cases:
-
-        1. thd all-gather CP: the micro batch's sequences are concatenated, the concatenation is padded
-           to a multiple of ``pack_multiple`` and split into ``cp_size`` contiguous pieces. The padding
-           that ends the concatenation belongs to its last sequence.
-        2. bshd: each sequence is padded to ``max_seq_len`` and split on its own.
-        3. thd otherwise: each sequence is split on its own.
-
-        A sequence split on its own goes into ``2 * cp_size`` chunks under zigzag CP, rank ``r``
-        holding chunks ``r`` and ``2 * cp_size - 1 - r``, or into ``cp_size`` contiguous pieces
-        otherwise. Positions at or past a sequence's length are padding.
+        Positions at or past a sequence's length are padding.
         """
-        if self.per_pack:  # case 1
+        # thd all-gather CP
+        if self.per_pack:
             return self._pack_ranges(lengths)
-        if self.max_seq_len is not None:  # case 2
+        # bshd
+        if self.max_seq_len is not None:
             return [self._split(self.max_seq_len) for _ in lengths]
-        return [self._split(length) for length in lengths]  # case 3
+        # thd zigzag, or no CP
+        return [self._split(length) for length in lengths]
 
     def _pack_ranges(self, lengths: Sequence[int]) -> list[tuple[tuple[int, int], ...]]:
-        """Cut this rank's piece of the padded concatenation back into per-sequence ranges.
-
-        For example, lengths 5, 4, 2 at cp 2 with a pack multiple of 4: the 11 positions are padded to
-        12, and rank 1 holds positions [6, 12) of the concatenation. Those are positions [1, 4) of the
-        second sequence and [0, 3) of the third, whose position 2 is the pack padding.
-        """
+        """Cut this rank's piece of the padded concatenation back into per-sequence ranges."""
         total = sum(lengths)
         padded = (total + self.pack_multiple - 1) // self.pack_multiple * self.pack_multiple
         ((rank_start, rank_end),) = self._split(padded)
@@ -487,7 +472,7 @@ class CPLayout:
             if overlap_start < overlap_end:
                 ranges.append(((overlap_start - seq_start, overlap_end - seq_start),))
             else:
-                ranges.append(((0, 0),))  # none of this sequence is on this rank
+                ranges.append(((0, 0),))
             seq_start += length
         return ranges
 
