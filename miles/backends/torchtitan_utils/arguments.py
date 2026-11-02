@@ -99,8 +99,6 @@ def _validate_lora_args(args) -> None:
         )
     if args.lora_dropout != 0:
         raise ValueError(f"torchtitan's LoRA has no dropout; got --lora-dropout {args.lora_dropout}")
-    if args.lora_adapter_path is not None:
-        raise ValueError("--lora-adapter-path is not wired up for the torchtitan backend; resume with --load")
     if lora_rollout_enabled(args) and args.colocate_memory_peak_device == "gpu":
         raise ValueError(
             "--colocate-memory-peak-device gpu pauses the LoRA grad buffers of the megatron backend, "

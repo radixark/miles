@@ -90,8 +90,6 @@ def test_lora_flags_torchtitan_cannot_honor_are_rejected(monkeypatch):
         validate_torchtitan_args(_args(lora_rank=8, lora_A_init_method="xavier"))
     with pytest.raises(ValueError, match="no dropout"):
         validate_torchtitan_args(_args(lora_rank=8, lora_dropout=0.05))
-    with pytest.raises(ValueError, match="--lora-adapter-path"):
-        validate_torchtitan_args(_args(lora_rank=8, lora_adapter_path="/adapter"))
     with pytest.raises(ValueError, match="grad buffers"):
         validate_torchtitan_args(_args(lora_rank=8, colocate_memory_peak_device="gpu"))
     validate_torchtitan_args(_args(lora_rank=8, colocate_memory_peak_device="gpu", lora_train_only=True))
@@ -373,6 +371,29 @@ def test_resume_reads_from_load_and_writes_to_save(tmp_path, single_gpu_dims):
     )
     assert fresh.checkpointer.initial_load_path is None
     assert (fresh.checkpointer.initial_load_model_only, fresh.checkpointer.initial_load_in_hf) == (True, True)
+
+
+def test_lora_resumes_only_through_the_adapter_path(tmp_path):
+    """A step dir under --load or --save would resume the adapters through torchtitan's checkpointer."""
+    pytest.importorskip("torchtitan")
+    from miles.backends.torchtitan_utils.config import _checkpointer_config
+
+    def config(load=None, save=None):
+        args = SimpleNamespace(backend=SimpleNamespace(load=load, save=save))
+        return _checkpointer_config(args, dump_subdir="actor", with_lora=True)
+
+    old = tmp_path / "old"
+    step = old / "torchtitan" / "actor" / "checkpoint" / "step-4"
+    step.mkdir(parents=True)
+    for flag in ("load", "save"):
+        with pytest.raises(ValueError, match=f"--{flag} holds the torchtitan checkpoint {step}"):
+            config(**{flag: str(old)})
+    adapters = tmp_path / "adapters"
+    (adapters / "iter_0000003" / "adapter").mkdir(parents=True)
+    with pytest.raises(ValueError, match="--load is the base model"):
+        config(load=str(adapters))
+    base = config(load=str(tmp_path / "empty"), save=str(tmp_path / "save"))
+    assert (base.initial_load_path, base.initial_load_model_only, base.initial_load_in_hf) == (None, True, True)
 
 
 def test_routing_replay_hooks_the_router_where_it_picks_experts():

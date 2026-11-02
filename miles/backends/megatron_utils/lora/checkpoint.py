@@ -533,7 +533,8 @@ def restore_single_lora(model, args, *, optimizer, opt_param_scheduler) -> int |
         )
     if training_state is None:
         return None
-    if opt_param_scheduler is not None and training_state["opt_param_scheduler"] is not None:
+    # a torchtitan run's training state has its own scheduler state, not Megatron's
+    if opt_param_scheduler is not None and training_state.get("opt_param_scheduler") is not None:
         opt_param_scheduler.load_state_dict(training_state["opt_param_scheduler"])
     return training_state["iteration"]
 
