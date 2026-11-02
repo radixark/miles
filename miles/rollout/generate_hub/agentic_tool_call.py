@@ -174,6 +174,10 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         for s in samples:
             s.metadata.update(agent_metadata or {})
 
+    for sample in samples:
+        # The tracer owns this identity; agent metadata must not replace it.
+        sample.metadata["session_id"] = tracer.session_id
+
     # If the agent function reports wall-clock time spent outside policy generation
     # (env/tool steps), surface it on Sample.non_generation_time so throughput
     # accounting subtracts it.

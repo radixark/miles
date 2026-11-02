@@ -54,7 +54,7 @@ def _resolve_adapter_targets(megatron_module, checkpoint_parameters, selected, *
         selected == checkpoint_parameters
     ), f"LoRA on fused module {megatron_module!r} requires all HF targets with this adapter"
     if canonical and ".experts." in megatron_module and megatron_module.endswith(".linear_fc1"):
-        # CanonicalLoRA requires split aliases even for fused expert adapters.
+        # canonical expert gate/up are independent even when HF packs gate_up_proj
         return [f"{megatron_module}_gate", f"{megatron_module}_up"]
     return [megatron_module]
 
