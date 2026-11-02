@@ -1,5 +1,8 @@
 """JSON decoding validates datum inputs and renders SDK result shapes."""
 
+import pytest
+
+from miles.tinker.core.types import UserInputError
 from miles.tinker.server.encoding import (
     ADAM_PARAM_DEFAULTS,
     build_datum,
@@ -7,6 +10,7 @@ from miles.tinker.server.encoding import (
     decode_sample_request,
     render_result,
     tensor_data_to_list,
+    validate_create_model,
 )
 
 
@@ -72,6 +76,19 @@ class TestAdamParams:
         _, decoded = decode_command("optim_step", {"model_id": "m", "seq_id": 1, "adam_params": {"momentum": 0.9}})
         assert "momentum" in decoded["validation_error"]
 
+    def test_a_non_adam_step_is_rejected(self):
+        payload = {"model_id": "m", "seq_id": 1, "optimizer_params": {"type": "dimuon", "learning_rate": 1e-3}}
+        _, decoded = decode_command("optim_step", payload)
+        assert "optimizer_params is not supported" in decoded["validation_error"]
+
+    def test_a_non_adam_model_is_rejected(self):
+        payload = {"base_model": "base", "session_id": "s", "model_seq_id": 0, "optimizer_config": {"type": "dimuon"}}
+        with pytest.raises(UserInputError, match="'dimuon' is not supported"):
+            validate_create_model(payload)
+        payload = {"model_id": "m", "seq_id": 1, "path": "tinker://x/weights/y", "optimizer": False}
+        _, decoded = decode_command("load_state", payload | {"optimizer_config": {"type": "dimuon"}})
+        assert "'dimuon' is not supported" in decoded["validation_error"]
+
 
 def test_an_off_model_key_is_rejected():
     _, decoded = decode_command("save_state", {"model_id": "m", "seq_id": 1, "bogus": 1})
@@ -94,6 +111,24 @@ def test_decode_sample_request_defaults():
     assert decoded["num_samples"] == 1
     assert decoded["prompt_tokens"] == [1, 2]
     assert decoded["topk_prompt_logprobs"] == 0
+
+
+@pytest.mark.parametrize(
+    ("field", "option"),
+    [
+        ("topk_sample_logprobs", {"topk_sample_logprobs": 2}),
+        ("target_prompt_logprobs", {"target_prompt_logprobs": {"data": [3], "dtype": "int64", "shape": [1, 1]}}),
+        ("prompt_alt_tokens_k", {"prompt_alt_tokens_k": 2}),
+        ("prompt_logprobs_last_n", {"prompt_logprobs": True, "prompt_logprobs_last_n": 1}),
+    ],
+)
+def test_unproduced_sample_outputs_are_rejected(field, option):
+    payload = {
+        "prompt": {"chunks": [{"type": "encoded_text", "tokens": [1, 2]}]},
+        "sampling_params": {"max_tokens": 1},
+    }
+    with pytest.raises(UserInputError, match=f"{field} is not supported"):
+        decode_sample_request(payload | option)
 
 
 class TestRenderResult:

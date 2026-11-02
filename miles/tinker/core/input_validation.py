@@ -167,6 +167,27 @@ def validate_save_options(payload: dict) -> None:
         raise UserInputError("user_metadata is not supported by this gateway")
 
 
+def validate_adam_optimizer(payload: dict) -> None:
+    optimizer_config = payload.get("optimizer_config")
+    if optimizer_config is not None and optimizer_config["type"] != "adamw":
+        raise UserInputError(f"optimizer {optimizer_config['type']!r} is not supported: this gateway trains with Adam")
+    if "optimizer_params" in payload:
+        raise UserInputError("optimizer_params is not supported: this gateway trains with Adam (send adam_params)")
+
+
+def validate_sample_options(payload: dict) -> None:
+    """Reject SDK sampling outputs the gateway does not produce instead of omitting them."""
+    unsupported = {
+        "topk_sample_logprobs": 0,
+        "target_prompt_logprobs": None,
+        "prompt_alt_tokens_k": 0,
+        "prompt_logprobs_last_n": None,
+    }
+    for field, default in unsupported.items():
+        if payload.get(field, default) != default:
+            raise UserInputError(f"{field} is not supported by this gateway")
+
+
 def validate_token_ids(tokens: list, vocab_size: int, field: str) -> None:
     if any(type(token) is not int or not 0 <= token < vocab_size for token in tokens):
         raise UserInputError(f"{field} must contain integer token IDs in [0, {vocab_size})")

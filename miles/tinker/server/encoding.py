@@ -8,7 +8,7 @@ import math
 import pydantic
 
 import tinker
-from miles.tinker.core.input_validation import validate_save_options
+from miles.tinker.core.input_validation import validate_adam_optimizer, validate_sample_options, validate_save_options
 from miles.tinker.core.types import LOSS_INPUT_KEYS, UserInputError
 from tinker import types as tinker_types
 from tinker.types.topk_logprobs import MASK_LOGPROB
@@ -48,6 +48,7 @@ def validate_sdk_version(payload: dict) -> None:
 
 def validate_create_model(payload: dict) -> None:
     validate_against_sdk(tinker_types.CreateModelRequest, payload)
+    validate_adam_optimizer(payload)
 
 
 def validate_create_sampling_session(payload: dict) -> None:
@@ -84,11 +85,13 @@ def _decode_command(op: str, payload: dict, decoded: dict) -> tuple[str, dict]:
         }
         return ("forward_only" if payload.get("forward_only") else op), decoded
     if op == "optim_step":
+        validate_adam_optimizer(payload)
         return op, decoded | {"adam_params": {**ADAM_PARAM_DEFAULTS, **payload["adam_params"]}}
     if op == "save_state":
         validate_save_options(payload)
         return op, decoded | {"name": payload.get("path"), "overwrite": bool(payload.get("overwrite", False))}
     if op == "load_state":
+        validate_adam_optimizer(payload)
         return op, decoded | {
             "path": payload["path"],
             "optimizer": payload["optimizer"],
@@ -162,6 +165,7 @@ def _dense_from_csr(tensor_data: dict) -> list:
 
 def decode_sample_request(payload: dict) -> dict:
     validate_against_sdk(tinker_types.SampleRequest, payload)
+    validate_sample_options(payload)
     return {
         "model_path": payload.get("model_path"),
         "base_model": payload.get("base_model"),
