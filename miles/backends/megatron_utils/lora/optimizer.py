@@ -140,6 +140,11 @@ class SlotOptimizer:
         for child in self._inner.chained_optimizers:
             child.grad_stats_parallel_group = None
 
+    @property
+    def chained_optimizers(self) -> list:
+        """The slot's Float16 children: masters in ``fp32_from_float16_groups``, Adam state in ``.optimizer``."""
+        return self._inner.chained_optimizers
+
     def apply_adam_params(self, adam_params: dict) -> None:
         for child in self._inner.chained_optimizers:
             for group in child.param_groups:

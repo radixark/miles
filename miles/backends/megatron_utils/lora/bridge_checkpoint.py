@@ -4,6 +4,7 @@ The HF layout of every Megatron adapter element (TP / EP shards, the qkv group p
 GDN in_proj, per-expert names) comes from Bridge's own export, run once on index-valued parameters.
 """
 
+import bisect
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Literal
@@ -169,6 +170,12 @@ def probe_bridge_row_mapping(
     )
 
 
+def _owning_parameter(starts: list[int], elements: torch.Tensor) -> int:
+    index = bisect.bisect_right(starts, int(elements.min())) - 1
+    assert int(elements.max()) < starts[index + 1], "a piece spans two parameters"
+    return index
+
+
 def _rank_axis(key: str, ndim: int) -> int:
     return ndim - 2 if key.endswith(".lora_A") else ndim - 1
 
@@ -220,11 +227,14 @@ class BridgeAdapterSlots:
         spec = self._slot_spec(slot)
         return None if spec is None else spec.rank
 
-    def _pieces(self, slot: int) -> list[tuple[_HfPiece, tuple[slice, ...]]]:
-        """Each piece with the part of it inside the slot's real rank."""
+    def _pieces(self, slot: int, holds: frozenset[int] | None = None) -> list[tuple[_HfPiece, tuple[slice, ...]]]:
+        """Each piece (of a held parameter) with the part of it inside the slot's real rank."""
         rank = self.lora_rank(slot)
+        starts = self._param_starts(slot) if holds is not None else None
         result = []
         for piece in self.row_mapping.pieces:
+            if holds is not None and _owning_parameter(starts, piece.local_elements) not in holds:
+                continue
             within = [slice(None)] * len(piece.global_shape)
             if rank is not None:
                 axis = _rank_axis(piece.key, len(piece.global_shape))
@@ -234,10 +244,18 @@ class BridgeAdapterSlots:
         return result
 
     def get_local_shard_specs(self, slot: int) -> list[LocalShardSpec]:
+        return self.local_shard_specs(slot, holds=None)
+
+    def local_shard_specs(self, slot: int, holds: frozenset[int] | None) -> list[LocalShardSpec]:
+        """Collective. ``holds``: indices into ``slot_parameters(slot)`` whose state this rank keeps (None: all).
+
+        Among ranks holding an identical piece, the lowest writes it.
+        """
         rank = self.lora_rank(slot)
-        if rank not in self._specs:
+        key = (rank, holds)
+        if key not in self._specs:
             boxes = []
-            for piece, within in self._pieces(slot):
+            for piece, within in self._pieces(slot, holds):
                 global_shape = list(piece.global_shape)
                 if rank is not None:
                     global_shape[_rank_axis(piece.key, len(global_shape))] = rank
@@ -250,19 +268,36 @@ class BridgeAdapterSlots:
             for holder, rank_boxes in enumerate(gathered):
                 for box in rank_boxes:
                     first_holder.setdefault(box, holder)
-            self._specs[rank] = [
-                LocalShardSpec(*box, is_primary=first_holder[box] == dist.get_rank()) for box in boxes
-            ]
-        return self._specs[rank]
+            self._specs[key] = [LocalShardSpec(*box, is_primary=first_holder[box] == dist.get_rank()) for box in boxes]
+        return self._specs[key]
 
-    def local_pieces(self, slot: int, tensors: Sequence[torch.Tensor]) -> list[torch.Tensor]:
+    def local_pieces(
+        self, slot: int, tensors: Sequence[torch.Tensor], holds: frozenset[int] | None = None
+    ) -> list[torch.Tensor]:
         """``tensors`` aligned with ``slot_parameters(slot)`` (the parameters, their masters or moments) cut into
-        the pieces ``get_local_shard_specs(slot)`` describes."""
-        pieces = self._pieces(slot)
+        the pieces ``local_shard_specs(slot, holds)`` describes."""
+        pieces = self._pieces(slot, holds)
         if not pieces:
             return []
         flat = torch.cat([t.detach().reshape(-1) for t in tensors])
         return [flat[piece.local_elements[within].to(flat.device)] for piece, within in pieces]
+
+    def piece_parameter(self, slot: int, holds: frozenset[int] | None) -> list[tuple[int, torch.Tensor]]:
+        """For each piece: the index of the one parameter it comes from and its elements' offsets in it."""
+        starts = self._param_starts(slot)
+        result = []
+        for piece, within in self._pieces(slot, holds):
+            elements = piece.local_elements[within]
+            index = _owning_parameter(starts, elements)
+            result.append((index, elements - starts[index]))
+        return result
+
+    def _param_starts(self, slot: int) -> list[int]:
+        starts, start = [], 0
+        for param in self.slot_parameters(slot):
+            starts.append(start)
+            start += param.numel()
+        return [*starts, start]
 
     def export_bf16_adapter(self, slot: int) -> Iterable[tuple[str, torch.Tensor]]:
         is_writer = dist.get_rank() == 0
