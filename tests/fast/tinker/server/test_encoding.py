@@ -8,10 +8,15 @@ from miles.tinker.server.encoding import (
     decode_command,
     decode_sample_request,
     render_result,
+    assert_installed_sdk_version,
     tensor_data_to_list,
     validate_create_model,
 )
 from tinker import types as tinker_types
+
+
+def test_the_installed_sdk_is_the_pinned_one():
+    assert_installed_sdk_version()
 
 
 def _datum(tokens: list[int], **extra_inputs) -> dict:
