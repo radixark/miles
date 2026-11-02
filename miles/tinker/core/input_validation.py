@@ -167,16 +167,17 @@ def validate_save_options(payload: dict) -> None:
         raise UserInputError("user_metadata is not supported by this gateway")
 
 
-def validate_sample_options(payload: dict) -> None:
+def validate_sample_outputs(payload: dict) -> None:
     """Reject SDK sampling outputs the gateway does not produce instead of omitting them."""
     unsupported = {
         "topk_sample_logprobs": 0,
         "target_prompt_logprobs": None,
         "prompt_alt_tokens_k": 0,
         "prompt_logprobs_last_n": None,
+        "record_stability_info": False,
     }
     for field, default in unsupported.items():
-        if payload.get(field, default) != default:
+        if payload.get(field) not in (None, default):
             raise UserInputError(f"{field} is not supported by this gateway")
 
 

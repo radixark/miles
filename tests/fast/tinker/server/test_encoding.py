@@ -130,20 +130,22 @@ def test_decode_sample_request_defaults():
 
 
 @pytest.mark.parametrize(
-    ("field", "option"),
+    "option",
     [
-        ("topk_sample_logprobs", {"topk_sample_logprobs": 2}),
-        ("target_prompt_logprobs", {"target_prompt_logprobs": {"data": [3], "dtype": "int64", "shape": [1, 1]}}),
-        ("prompt_alt_tokens_k", {"prompt_alt_tokens_k": 2}),
-        ("prompt_logprobs_last_n", {"prompt_logprobs": True, "prompt_logprobs_last_n": 1}),
+        {"topk_sample_logprobs": 2},
+        {"target_prompt_logprobs": {"data": [3], "dtype": "int64", "shape": [1, 1]}},
+        {"prompt_alt_tokens_k": 2},
+        {"prompt_logprobs_last_n": 1, "prompt_logprobs": True},
+        {"record_stability_info": True},
     ],
+    ids=lambda option: next(iter(option)),
 )
-def test_unproduced_sample_outputs_are_rejected(field, option):
+def test_unsupported_sample_outputs_are_rejected(option):
     payload = {
         "prompt": {"chunks": [{"type": "encoded_text", "tokens": [1, 2]}]},
         "sampling_params": {"max_tokens": 1},
     }
-    with pytest.raises(UserInputError, match=f"{field} is not supported"):
+    with pytest.raises(UserInputError, match=f"{next(iter(option))} is not supported"):
         decode_sample_request(payload | option)
 
 

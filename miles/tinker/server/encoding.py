@@ -8,7 +8,7 @@ import math
 import pydantic
 
 import tinker
-from miles.tinker.core.input_validation import validate_sample_options, validate_save_options
+from miles.tinker.core.input_validation import validate_sample_outputs, validate_save_options
 from miles.tinker.core.types import LOSS_INPUT_KEYS, UserInputError
 from tinker import types as tinker_types
 from tinker.types.topk_logprobs import MASK_LOGPROB
@@ -181,7 +181,7 @@ def _dense_from_csr(tensor_data: dict) -> list:
 
 def decode_sample_request(payload: dict) -> dict:
     validate_against_sdk(tinker_types.SampleRequest, payload)
-    validate_sample_options(payload)
+    validate_sample_outputs(payload)
     return {
         "model_path": payload.get("model_path"),
         "base_model": payload.get("base_model"),
