@@ -229,3 +229,49 @@ def test_an_in_model_source_with_another_parametrization_is_refused(tmp_path):
             load_optimizer=False,
             in_model_loaders_by_kind={AdapterSourceKind.TORCHTITAN_CHECKPOINT: lambda path: shared},
         )
+
+
+class NoPrimaryAMembers(FakeMembers):
+    """Every rank marks lora_A a replica, so no rank writes it."""
+
+    def get_local_shard_specs(self, slot):
+        a, b = super().get_local_shard_specs(slot)
+        return [replace(a, is_primary=False), b]
+
+
+def _save_without_a_primary(rank, world_size, port, *, root):
+    init_gloo(rank, world_size, port=port)
+    with pytest.raises(RuntimeError, match="missing .*lora_A"):
+        save_adapter_dir(Path(root), "w", NoPrimaryAMembers(), 0, RUN, tenant=None)
+    dist.destroy_process_group()
+
+
+def test_a_key_without_a_primary_is_refused_at_save():
+    run_multiprocess(partial(_save_without_a_primary, root=tempfile.mkdtemp()))
+
+
+class SpecsFailOnRank1(FakeMembers):
+    def get_local_shard_specs(self, slot):
+        assert self.rank != 1, "rank 1 cannot describe its pieces"
+        return super().get_local_shard_specs(slot)
+
+
+def _specs_fail_on_one_rank(rank, world_size, port, *, root):
+    init_gloo(rank, world_size, port=port)
+    with pytest.raises(RuntimeError, match="rank 1 cannot describe"):
+        load_adapter_dir(Path(root), SpecsFailOnRank1(), 0, RUN, TARGETS, load_optimizer=False)
+    dist.destroy_process_group()
+
+
+def test_a_shard_spec_failure_on_one_rank_fails_every_rank(tmp_path):
+    write_peft_adapter(tmp_path, {f"{MODULE}.{k}": v for k, v in FULL.items()}, RUN, TARGETS)
+    process = (
+        __import__("multiprocessing")
+        .get_context("spawn")
+        .Process(target=run_multiprocess, args=(partial(_specs_fail_on_one_rank, root=str(tmp_path)),))
+    )
+    process.start()
+    process.join(timeout=60)
+    hung = process.is_alive()
+    process.kill()
+    assert not hung and process.exitcode == 0

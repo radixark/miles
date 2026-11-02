@@ -115,6 +115,11 @@ def _collapse_shared_lora_a(
     """
     read_without_a = {member for fused in fused_groups for member in fused[1:]}
     for group in parametrization.shared_lora_a_groups:
+        if group[0] in read_without_a:
+            # the re-fused A came back under the fused module's first component, not the group's first member
+            holder = next(f for fused in fused_groups if group[0] in fused for f in fused[:1])
+            weights[f"{group[0]}.lora_A"] = weights.pop(f"{holder}.lora_A")
+            read_without_a = (read_without_a - {group[0]}) | {holder}
         first = weights[f"{group[0]}.lora_A"]
         for member in group[1:]:
             if member in read_without_a:
@@ -155,7 +160,9 @@ class MilesAdapterDirReader:
     def read_weights(self) -> dict[str, torch.Tensor]:
         if self.has_adapter_state():
             return read_adapter_state_weights(self.path)
-        weights, fused_groups = _read_peft_tensors(self.path, map_sampler_keys_to_hf_keys, self.targets)
+        weights, fused_groups = _read_peft_tensors(
+            self.path, lambda name: map_sampler_keys_to_hf_keys(name, self.targets), self.targets
+        )
         return _collapse_shared_lora_a(weights, self.source.parametrization, fused_groups)
 
 

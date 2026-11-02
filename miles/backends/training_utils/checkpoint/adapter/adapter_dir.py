@@ -81,7 +81,8 @@ def save_adapter_dir(
             error = exc
         # agree before any collective, so one rank's failure cannot leave the others waiting in it
         raise_if_any_rank_failed(error)
-        keys = _all_ranks_keys(state.shard_specs)
+        # DCP writes primary pieces only; replicas cannot stand in for a missing primary
+        keys = _all_ranks_keys([s for s in state.shard_specs if s.is_primary])
         try:
             expected = parametrization.adapter_state_keys()
             assert keys == expected, (
@@ -179,9 +180,9 @@ def load_adapter_dir(
         assert_parametrization_matches_run(source, run, steps, load_optimizer=load_optimizer, has_optimizer_state=True)
         return source
 
-    specs = members.get_local_shard_specs(slot)
-    reader, source, steps = None, None, None
+    specs, reader, source, steps = None, None, None, None
     try:
+        specs = members.get_local_shard_specs(slot)
         if kind == AdapterSourceKind.ADAPTER_DIR:
             reader = MilesAdapterDirReader(path, targets)
         elif kind == AdapterSourceKind.EXTERNAL_WEIGHTS:
@@ -205,12 +206,9 @@ def load_adapter_dir(
             error = exc
         raise_if_any_rank_failed(error)
         # same parametrization: every rank reads only its own pieces, and moments only when it loads them
-        state = AdapterState(
-            specs,
-            *[[torch.empty(s.local_shape) for s in specs] for _ in range(3)],
-            step=None,
-            has_optimizer_state=load_optimizer,
-        )
+        weights = [torch.empty(s.local_shape) for s in specs]
+        moments = [[torch.empty(s.local_shape) for s in specs] for _ in range(2)] if load_optimizer else [[], []]
+        state = AdapterState(specs, weights, *moments, step=None, has_optimizer_state=load_optimizer)
         state.step = reader.load_state(state)
         if not load_optimizer:
             state = _with_zero_moments(specs, state.weights)

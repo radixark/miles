@@ -259,3 +259,25 @@ def test_gpt_oss_packed_experts_round_trip_through_hf_components(tmp_path):
     read = PeftAdapterReader(tmp_path, run, GPT_OSS)
     assert read.source.parametrization.shared_lora_a_groups == ((gate, up),)
     assert all(torch.equal(read.read_weights()[k], v) for k, v in weights.items())
+
+
+def test_a_sampler_export_of_a_w1_w2_w3_family_reads_back_under_its_own_names(tmp_path):
+    targets = get_hf_lora_targets({"model_type": "deepseek_v41", "num_hidden_layers": 1, "n_shared_experts": 0})
+    w1 = "layers.0.ffn.experts.w1"
+    run = _run(target_modules=(w1,))
+    weights = {
+        f"{w1}.lora_A": torch.ones(3, 2, 8, dtype=torch.bfloat16),
+        f"{w1}.lora_B": torch.ones(3, 8, 2, dtype=torch.bfloat16),
+    }
+    write_sampler_adapter(tmp_path, weights, run, targets)
+    assert MilesAdapterDirReader(tmp_path, targets).read_weights().keys() == weights.keys()
+
+
+def test_a_sampler_export_reads_back_when_the_group_starts_at_a_later_gdn_component(tmp_path):
+    reordered = (QKV[1], QKV[0], QKV[2])
+    run = _run(shared_lora_a_groups=(reordered,))
+    weights = {k: v.to(torch.bfloat16) for k, v in _weights(True).items()}
+    weights[f"{QKV[1]}.lora_A"] = weights.pop(f"{QKV[0]}.lora_A")
+    write_sampler_adapter(tmp_path, weights, run, QWEN35)
+    read = MilesAdapterDirReader(tmp_path, QWEN35).read_weights()
+    assert read.keys() == weights.keys() and all(torch.equal(read[k], v) for k, v in weights.items())

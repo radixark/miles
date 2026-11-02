@@ -34,7 +34,8 @@ def test_sampler_export_converts_to_per_expert_peft(tmp_path, monkeypatch):
             }
         )
     )
-    spec = importlib.util.spec_from_file_location("convert", Path("tools/convert_lora_adapter_to_peft.py"))
+    tool_path = Path(__file__).parents[6] / "tools" / "convert_lora_adapter_to_peft.py"
+    spec = importlib.util.spec_from_file_location("convert", tool_path)
     tool = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(tool)
     monkeypatch.setattr(
