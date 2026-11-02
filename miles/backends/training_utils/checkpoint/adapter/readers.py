@@ -17,6 +17,7 @@ from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
 )
 from miles.backends.training_utils.checkpoint.adapter.key_mapping import (
     HfKey,
+    is_hf_only_name,
     is_tinker_only_name,
     map_named_tensors_to_hf_keys,
     map_peft_keys_to_hf_keys,
@@ -43,7 +44,11 @@ _PEFT_CONFIG_MUST_BE_EMPTY = (
     "layers_to_transform",
     "layer_replication",
     "lora_bias",
+    "loftq_config",
+    "alora_invocation_tokens",
 )
+# initializations that rewrite the base model the adapter was trained against
+_BASE_REWRITING_INITS = ("pissa", "olora", "corda", "loftq")
 
 
 class AdapterSourceKind(str, enum.Enum):
@@ -101,6 +106,8 @@ def classify_adapter_source(path: Path, targets: HfLoraTargets, *, load_optimize
     if _has_peft_files(path):
         names = _safetensors_names(path)
         if targets.tinker_name_renames and any(is_tinker_only_name(n, targets) for n in names):
+            hf_only = [n for n in names if is_hf_only_name(n, targets)]
+            assert not hf_only, f"{path} mixes official Tinker and HF names, e.g. {hf_only[:3]}"
             return AdapterSourceKind.EXTERNAL_WEIGHTS
         return AdapterSourceKind.PEFT
     raise ValueError(f"{path} is not a recognized LoRA adapter source")
@@ -144,9 +151,17 @@ class MilesAdapterDirReader:
     def __init__(self, path: Path, targets: HfLoraTargets):
         self.path, self.targets = Path(path), targets
         has_state = self.has_adapter_state()
+        parametrization = read_parametrization(self.path)
+        if not has_state:
+            config = json.loads((self.path / "adapter_config.json").read_text())
+            # adapter_config.json is derived from the parametrization; a mismatch means the export was edited
+            assert (config["r"], config["lora_alpha"]) == (
+                parametrization.lora_rank,
+                parametrization.lora_alpha,
+            ), f"{self.path}: adapter_config.json disagrees with {PARAMETRIZATION_FILENAME}"
         self.source = AdapterSource(
             AdapterSourceKind.ADAPTER_DIR,
-            read_parametrization(self.path),
+            parametrization,
             has_optimizer_state=has_state and any(k.endswith(".exp_avg") for k in read_adapter_state_keys(self.path)),
             weight_dtype=torch.float32 if has_state else torch.bfloat16,
         )
@@ -168,6 +183,9 @@ class MilesAdapterDirReader:
 
 def _check_peft_config(config: dict, path: Path) -> None:
     used = [k for k in _PEFT_CONFIG_MUST_BE_EMPTY if config.get(k)]  # absent and empty both mean unused
+    init = config.get("init_lora_weights")
+    if isinstance(init, str) and init.startswith(_BASE_REWRITING_INITS):
+        used.append(f"init_lora_weights={init}")
     assert not used, f"{path}: PEFT features {used} change what the tensors mean; only plain LoRA can be read"
 
 

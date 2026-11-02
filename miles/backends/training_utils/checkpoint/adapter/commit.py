@@ -132,7 +132,8 @@ def resolve_adapter_dir(root: Path, name: str, *, tenant: str | None) -> Committ
 
 def delete_adapter_dir(root: Path, name: str, *, tenant: str | None) -> None:
     committed = resolve_adapter_dir(root, name, tenant=tenant)
-    assert committed is not None, f"adapter {name!r} does not exist"
+    if committed is None:
+        raise FileNotFoundError(f"adapter {name!r} does not exist")
     os.unlink(Path(root) / name)
     _retire(committed.path)
 
@@ -169,7 +170,12 @@ def delete_unreferenced_adapter_dirs(root: Path, name: str | None = None, *, kee
 
 def _retire(path: Path) -> None:
     retired = path.with_name(path.name + _DELETING_SUFFIX)
-    os.replace(path, retired)
+    try:
+        os.replace(path, retired)
+    except OSError:
+        # the link already moved; recovery removes the unreferenced dir, so the commit stands
+        logger.exception(f"failed to retire {path}")
+        return
     _rmtree(retired)
 
 

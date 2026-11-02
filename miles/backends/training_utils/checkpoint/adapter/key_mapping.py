@@ -92,6 +92,17 @@ def map_hf_keys_to_tinker_keys(key: str, targets: HfLoraTargets) -> str:
     return f"{_PEFT_PREFIX}{module}.{factor}.weight"
 
 
+def is_hf_only_name(name: str, targets: HfLoraTargets) -> bool:
+    """True when ``name`` exists only in HF naming (per-expert index, HF head, or a VL layer prefix Tinker drops)."""
+    module, _ = _split_weight_name(name)
+    hf_layer_prefix = _hf_layer_prefix(targets)
+    return (
+        _PER_EXPERT.match(module) is not None
+        or module == targets.unembed[0]
+        or (hf_layer_prefix != _TINKER_LAYER_PREFIX and module.startswith(hf_layer_prefix))
+    )
+
+
 def is_tinker_only_name(name: str, targets: HfLoraTargets) -> bool:
     """True when ``name`` exists only in the official Tinker naming (head, stacked experts or layer prefix)."""
     module, _ = _split_weight_name(name)

@@ -219,7 +219,7 @@ def test_an_in_model_source_with_another_parametrization_is_refused(tmp_path):
         {"model.layers.0.attention.wq.lora_a.weight": torch.zeros(2)}, checkpoint_id=tmp_path, no_dist=True
     )
     shared = replace(RUN, target_modules=(MODULE, "m.k_proj"), shared_lora_a_groups=((MODULE, "m.k_proj"),))
-    with pytest.raises(AssertionError, match="cannot do"):
+    with pytest.raises(RuntimeError, match="cannot do"):
         load_adapter_dir(
             tmp_path,
             FakeMembers(),
@@ -275,3 +275,21 @@ def test_a_shard_spec_failure_on_one_rank_fails_every_rank(tmp_path):
     hung = process.is_alive()
     process.kill()
     assert not hung and process.exitcode == 0
+
+
+class PaddedRankMembers(FakeMembers):
+    """A multi-LoRA backend that forgot to cut a max-rank slot to its real rank."""
+
+    def get_local_shard_specs(self, slot):
+        a, b = super().get_local_shard_specs(slot)
+        return [a, replace(b, global_shape=(4, 3), local_shape=(4 // self.world, 3))]
+
+    def export_adapter_state(self, slot):
+        specs = self.get_local_shard_specs(slot)
+        pieces = [FULL["lora_A"].clone(), torch.zeros(specs[1].local_shape)]
+        return AdapterState(specs, pieces, pieces, pieces, step=1)
+
+
+def test_a_padded_rank_is_refused_at_save(tmp_path):
+    with pytest.raises(RuntimeError, match="rank 3 != 2"):
+        save_adapter_dir(tmp_path, "w", PaddedRankMembers(), 0, RUN, tenant=None)

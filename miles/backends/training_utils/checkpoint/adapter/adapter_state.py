@@ -133,7 +133,7 @@ def _state_dict(state: AdapterState, *, for_save: bool) -> dict:
                 assert spec.is_full(), f"{name}: a non-distributed run must hold whole tensors"
                 state_dict[name] = tensor
             elif spec.is_primary or not for_save:
-                state_dict[name] = _sharded(spec, tensor.cpu() if for_save else tensor)
+                state_dict[name] = _sharded(spec, tensor.cpu().contiguous() if for_save else tensor)
     return state_dict
 
 
