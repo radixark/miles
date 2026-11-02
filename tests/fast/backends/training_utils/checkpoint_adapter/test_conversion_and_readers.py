@@ -220,3 +220,15 @@ def test_shared_outer_flag_is_ignored_without_routed_experts():
         )
         == []
     )
+
+
+def test_a_fused_gdn_module_inside_a_larger_shared_a_group_round_trips(tmp_path):
+    z = f"{L}.linear_attn.in_proj_z"
+    run = _run(target_modules=(*QKV, z), shared_lora_a_groups=((*QKV, z),))
+    weights = {k: v.to(torch.bfloat16) for k, v in _weights(True).items() if k.split(".lora_")[0] in QKV}
+    weights[f"{z}.lora_B"] = torch.ones(4, 2, dtype=torch.bfloat16)
+    write_sampler_adapter(tmp_path, weights, run)
+    names = json.loads((tmp_path / "adapter_config.json").read_text())["target_modules"]
+    assert sorted(n.rsplit(".", 1)[-1] for n in names) == ["in_proj_qkv", "in_proj_z"]
+    read = MilesAdapterDirReader(tmp_path, QWEN35).read_weights()
+    assert read.keys() == weights.keys() and all(torch.equal(read[k], v) for k, v in weights.items())

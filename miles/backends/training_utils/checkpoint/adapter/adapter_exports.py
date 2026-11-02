@@ -23,17 +23,19 @@ _FUSED_MODULE_BY_COMPONENTS = {
 def _expand_shared_lora_a(weights: dict[str, torch.Tensor], parametrization: AdapterParametrization) -> dict:
     expanded = dict(weights)
     for group in parametrization.shared_lora_a_groups:
-        leaves = tuple(m.rsplit(".", 1)[1] for m in group)
-        fused = _FUSED_MODULE_BY_COMPONENTS.get(leaves)
-        if fused is not None:
-            # an HF-fused module whose components share A goes back to its HF name: one A, B stacked [q | k | v]
-            parent = group[0].rsplit(".", 1)[0]
-            expanded[f"{parent}.{fused}.lora_A"] = expanded.pop(f"{group[0]}.lora_A")
-            expanded[f"{parent}.{fused}.lora_B"] = torch.cat([expanded.pop(f"{m}.lora_B") for m in group])
-        else:
-            for member in group[1:]:
-                # safetensors refuses tensors that share storage
-                expanded[f"{member}.lora_A"] = expanded[f"{group[0]}.lora_A"].clone()
+        shared_a = expanded.pop(f"{group[0]}.lora_A")
+        parent = group[0].rpartition(".")[0]
+        unfused = list(group)
+        for components, fused in _FUSED_MODULE_BY_COMPONENTS.items():
+            members = [f"{parent}.{c}" for c in components]
+            if all(m in unfused for m in members):
+                # an HF-fused module whose components share A goes back to its HF name: one A, B stacked [q | k | v]
+                expanded[f"{parent}.{fused}.lora_A"] = shared_a.clone()
+                expanded[f"{parent}.{fused}.lora_B"] = torch.cat([expanded.pop(f"{m}.lora_B") for m in members])
+                unfused = [m for m in unfused if m not in members]
+        for member in unfused:
+            # safetensors refuses tensors that share storage
+            expanded[f"{member}.lora_A"] = shared_a.clone()
     return expanded
 
 
