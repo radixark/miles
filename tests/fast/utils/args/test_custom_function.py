@@ -184,6 +184,50 @@ class TestCustomArgumentRegistration:
         _add_function_arguments(parser, _adapt_legacy_custom_config(add_arguments), path="probe.generate")
         assert parser.parse_args([]).backend_mode == "required-by-hook"
 
+    def test_two_hooks_sharing_a_required_exclusive_group_keep_it_working(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Replacing shared flags left the first hook's group holding nameless actions: valid --local was rejected."""
+        from miles.utils.args.custom_function import add_user_provided_function_arguments
+
+        def add_target(parser: argparse.ArgumentParser) -> None:
+            group = parser.add_mutually_exclusive_group(required=True)
+            group.add_argument("--local", action="store_true")
+            group.add_argument("--remote", action="store_true")
+
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--first", default="first-legacy")
+        parser.add_argument("--second", default="second-legacy")
+        monkeypatch.setattr("sys.argv", ["test", "--local"])
+        with function_registry.temporary("first-legacy", SimpleNamespace(add_arguments=add_target)):
+            with function_registry.temporary("second-legacy", SimpleNamespace(add_arguments=add_target)):
+                add_user_provided_function_arguments(parser, config_class=_RunConfig)
+
+        assert parser.parse_args(["--local"]).local
+        with pytest.raises(SystemExit):
+            parser.parse_args(["--local", "--remote"])
+        with pytest.raises(SystemExit):
+            parser.parse_args([])
+
+    def test_a_hook_sharing_only_some_flags_is_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from miles.utils.args.custom_function import add_user_provided_function_arguments
+
+        def add_first(parser: argparse.ArgumentParser) -> None:
+            parser.add_argument("--max-turns", type=int, default=8)
+
+        def add_second(parser: argparse.ArgumentParser) -> None:
+            parser.add_argument("--max-turns", type=int, default=8)
+            parser.add_argument("--timeout-s", type=int, default=60)
+
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--first", default="first-legacy")
+        parser.add_argument("--second", default="second-legacy")
+        monkeypatch.setattr("sys.argv", ["test"])
+        with function_registry.temporary("first-legacy", SimpleNamespace(add_arguments=add_first)):
+            with function_registry.temporary("second-legacy", SimpleNamespace(add_arguments=add_second)):
+                with pytest.raises(ValueError, match="share all of its flags"):
+                    add_user_provided_function_arguments(parser, config_class=_RunConfig)
+
     def test_a_flag_declared_differently_by_two_hooks_is_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from miles.utils.args.custom_function import add_user_provided_function_arguments
 
