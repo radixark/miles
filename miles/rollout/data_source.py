@@ -20,6 +20,9 @@ from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
 
+# a prime stride keeps (rollout_seed, request number) pairs from mapping to the same in-request shuffle seed
+_MIX_SEED_STRIDE = 1_000_003
+
 
 class DataSource(abc.ABC):
     @abc.abstractmethod
@@ -282,8 +285,8 @@ class MixedRolloutDataSource(DataSource):
                     f"rollout dataset {config.name!r}: row {bad} has non-mapping metadata "
                     f"({type(dataset.samples[bad].metadata).__name__}); --metadata-key must name a JSON object"
                 )
-            # the file is reopened to parse it; a rewrite since hashing would train on unpinned bytes
-            if (pinned := self.dataset_sha256[config.name]) is not None:
+            # the file is reopened to parse it; for a pinned file a rewrite since hashing would train on unpinned bytes
+            if config.sha256 is not None and (pinned := self.dataset_sha256[config.name]) is not None:
                 path, _ = _parse_generalized_path(config.path)
                 if (loaded := _hash_file(path)) != pinned:
                     raise ValueError(
@@ -310,7 +313,7 @@ class MixedRolloutDataSource(DataSource):
             for config, count in zip(self.dataset_configs, counts, strict=True)
             for prompt in self._take(config.name, count)
         ]
-        random.Random(self.args.rollout_seed * 1_000_003 + self.num_requests).shuffle(prompts)
+        random.Random(self.args.rollout_seed * _MIX_SEED_STRIDE + self.num_requests).shuffle(prompts)
         self.num_requests += 1
         return [self._make_group(config, prompt) for config, prompt in prompts]
 
