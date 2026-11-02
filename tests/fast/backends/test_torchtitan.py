@@ -164,6 +164,7 @@ def test_lora_targets_bypass_megatrons_native_spec(monkeypatch):
         hf_checkpoint="/hf",
         lora_rank=8,
         lora_adapter_path=None,
+        save_hf=None,
         lora_type="lora",
         target_modules="q_proj",
         exclude_modules=None,
