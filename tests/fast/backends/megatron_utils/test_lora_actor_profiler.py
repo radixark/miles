@@ -17,13 +17,14 @@ def test_lora_pass_emits_scheduled_trace(monkeypatch, method):
         "miles.backends.megatron_utils.actor": {"MegatronTrainRayActor": object},
         "miles.backends.megatron_utils.lora": {"checkpoint": None, "model": model},
         "miles.backends.megatron_utils.lora.optimizer": {"SlotOptimizer": object},
+        "miles.backends.training_utils.checkpoint.adapter.adapter_dir": {"write_sampler_export": None},
+        "miles.backends.training_utils.checkpoint.adapter.commit": {"UncommittedAdapterDir": object},
         "miles.backends.training_utils.data.rollout": {
             "get_rollout_data": lambda *args, **kwargs: ({}, nullcontext())
         },
         "miles.backends.training_utils.parallel": {
             "get_parallel_state": lambda: SimpleNamespace(train_parallel_config=lambda **kwargs: None)
         },
-        "miles.utils.lora.utils": {"AdapterSpec": object},
         "miles.utils.object_store": {"StoreObjectRef": object},
         "miles.utils.tracking_utils.structured_log": {"with_logs": lambda fn: fn},
     }
