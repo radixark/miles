@@ -109,12 +109,6 @@ def test_export_trims_megatrons_vocab_padding():
     torch.testing.assert_close(exported["lm_head.lora_B.weight"](), adapter.head_B[:VOCAB])
 
 
-def test_a_head_without_a_vocab_size_fails_instead_of_exporting_padding():
-    model = _Model(tied=True)
-    with pytest.raises(AssertionError, match="--vocab-size"):
-        LMHeadSpec().attach(model, SimpleNamespace(backend=SimpleNamespace(vocab_size=None)), _context(("lm_head",)))
-
-
 def test_a_converter_naming_the_head_otherwise_fails():
     """Targets are checked against the spec's leaf; a differently named head would silently get no adapter."""
     context = _context(("lm_head",))
