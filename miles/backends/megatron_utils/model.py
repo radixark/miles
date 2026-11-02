@@ -424,6 +424,11 @@ def forward_only(
     # Move model back to the train mode.
     for model_module in model:
         model_module.train()
+    # A train-mode forward records its MTP loss for the training step's log; drop what these passes recorded
+    if args.enable_mtp_training:
+        from megatron.core.transformer.multi_token_prediction import MTPLossLoggingHelper
+
+        MTPLossLoggingHelper.clean_loss_in_tracker()
 
     dumper_phase_util.finalize(model)
 

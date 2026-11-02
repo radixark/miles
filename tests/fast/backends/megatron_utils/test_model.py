@@ -341,6 +341,41 @@ def test_forward_only_omits_sampling_mask_for_callbacks_that_do_not_replay_sampl
     assert "rollout_sampling_mask" not in callback_kwargs
 
 
+def test_forward_only_drops_the_mtp_loss_its_train_mode_passes_record(monkeypatch):
+    """Log-prob passes run in train mode, where Megatron records MTP loss; the training step must not report it."""
+    from megatron.core.transformer.multi_token_prediction import MTPLossLoggingHelper
+
+    from miles.backends.megatron_utils import model as model_module
+
+    chunk = torch.nn.Linear(1, 1)
+
+    def forward_backward(**kwargs):
+        # Megatron's process_mtp_loss records only when the model is in train mode
+        assert chunk.training
+        MTPLossLoggingHelper.tracker["loss_sums"] += 3.0
+        return []
+
+    args = make_trainer_args(
+        enable_mtp_training=True,
+        custom_megatron_before_log_prob_hook_path=None,
+        lora_dropout=0.0,
+        seq_length=8,
+        micro_batch_size=1,
+    )
+    dumper = Mock()
+    dumper.wrap_forward_step.side_effect = lambda fn: fn
+    model_config = SimpleNamespace(timers=None, hidden_dropout=0.0, attention_dropout=0.0)
+    monkeypatch.setattr(MTPLossLoggingHelper, "tracker", {"loss_sums": torch.zeros(1)})
+    monkeypatch.setattr(model_module, "DumperMegatronUtil", lambda *_args, **_kwargs: dumper)
+    monkeypatch.setattr(model_module, "get_model_config", lambda _model: model_config)
+    monkeypatch.setattr(model_module, "get_forward_backward_func", lambda: forward_backward)
+    monkeypatch.setattr(model_module, "mpu", FakeMpu())
+
+    model_module.forward_only(lambda *_args, **_kwargs: {}, args, [chunk], [Mock()], [2, 2], rollout_id=0)
+
+    assert MTPLossLoggingHelper.tracker["loss_sums"].item() == 0.0
+
+
 @pytest.mark.parametrize(
     ("loss_type", "fetched"),
     [("policy_loss", True), ("score_centering", True), ("custom_loss", True), ("sft_loss", False)],
