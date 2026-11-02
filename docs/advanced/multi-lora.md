@@ -134,7 +134,12 @@ any other SDK version when they connect; pin that version on the client, with
   tokens with their logprobs, `prompt_logprobs`, and `topk_prompt_logprobs`.
 
 Checkpoint download (`save_weights_external`, `get_external_weights_urls`) is not
-served; sampler checkpoints have no download path.
+served. SDK 0.36 downloads only external weights, so sampler checkpoints cannot be
+downloaded from any Tinker service.
+
+The cookbook's `rl_loop` recipe defaults to the `stable_reinforce` loss, which
+the gateway does not serve; pass `loss_fn="importance_sampling"` (or another
+supported loss).
 
 Futures, model leases, and request deduplication live in gateway memory and do
 not survive a restart; saved checkpoints do.
