@@ -5,6 +5,7 @@ fp32 master (a Float16 child's ``fp32_from_float16_groups``) and its Adam state;
 """
 
 import json
+import re
 from collections.abc import Iterable, Sequence
 from dataclasses import asdict, replace
 from pathlib import Path
@@ -35,6 +36,8 @@ from miles.backends.training_utils.checkpoint.adapter.readers import (
 
 _WEIGHTS_KEY = "adapter_weights"
 _OPTIM_KEY = "adapter_optimizer"
+# a ChainedOptimizer prefixes each child's keys with chained_<i>.
+_LEGACY_OPTIMIZER_KEY = re.compile(r"(chained_\d+\.)?optimizer\.")
 
 
 class LayerWiseSlotMembers:
@@ -173,18 +176,24 @@ def find_load_mismatch(
     try:
         kind = classify_adapter_source(path, targets, load_optimizer=load_optimizer)
         if kind == AdapterSourceKind.LEGACY_TINKER_CHECKPOINT:
+            # TE's _extra_state objects are stored per shard (<key>/shard_i_j); the tensors decide the layout
             saved = {
                 k
                 for k in dcp.FileSystemReader(path).read_metadata().state_dict_metadata
-                if not k.startswith("optimizer.")
+                if ".adapter." in k and "_extra_state" not in k and not _LEGACY_OPTIMIZER_KEY.match(k)
             }
-            expected = set()
-            for sharded in nested_values(_canonicalize_slot_keys(_slot_weights_sharded_state_dict(model, slot), slot)):
-                expected.add(sharded.key)
-            if not expected <= saved:
+            expected = {
+                sharded.key
+                for sharded in nested_values(
+                    _canonicalize_slot_keys(_slot_weights_sharded_state_dict(model, slot), slot)
+                )
+                if "_extra_state" not in sharded.key
+            }
+            if expected != saved:
                 mismatch = (
                     f"{path} was saved with another adapter layout than this gateway trains "
-                    f"(missing e.g. {sorted(expected - saved)[:3]}); load it on a gateway with the layout it was saved with"
+                    f"(differing keys e.g. {sorted(expected ^ saved)[:3]}); "
+                    "load it on a gateway with the layout it was saved with"
                 )
         elif kind == AdapterSourceKind.ADAPTER_DIR:
             source = MilesAdapterDirReader(path, targets).source
