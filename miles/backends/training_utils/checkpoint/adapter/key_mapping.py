@@ -74,6 +74,9 @@ def map_hf_keys_to_tinker_keys(key: str, targets: HfLoraTargets) -> str:
 
 
 def is_tinker_only_name(name: str, targets: HfLoraTargets) -> bool:
-    """True when ``name`` exists only in the official Tinker naming (head or stacked experts)."""
+    """True when ``name`` exists only in the official Tinker naming (head, stacked experts or layer prefix)."""
     module, _ = _split_weight_name(name)
-    return module == _TINKER_UNEMBED or any(t in module for t, _ in targets.tinker_name_renames)
+    if module == _TINKER_UNEMBED or any(t in module for t, _ in targets.tinker_name_renames):
+        return True
+    # Tinker drops the VL wrapper level (model.language_model.layers.* -> model.layers.*)
+    return module.startswith(_TINKER_LAYER_PREFIX) and _hf_layer_prefix(targets) != _TINKER_LAYER_PREFIX
