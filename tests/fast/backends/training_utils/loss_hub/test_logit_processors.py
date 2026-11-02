@@ -14,8 +14,12 @@ from miles.backends.training_utils.loss.hub import logit_processors
     [([17, 13, 9, 12], [16, 6, 0, 11], 7), ([5, 4], [4, 4], 0), ([7], [0], 0)],
 )
 def test_packed_response_views_preserve_values_and_gradients(monkeypatch, dtype, lengths, responses, padding):
-    monkeypatch.setattr(logit_processors, "get_parallel_state", lambda: SimpleNamespace(cp=SimpleNamespace(size=1)))
-    monkeypatch.setattr(context_parallel, "get_parallel_state", lambda: SimpleNamespace(cp=SimpleNamespace(size=1)))
+    monkeypatch.setattr(
+        logit_processors, "get_parallel_state", lambda: SimpleNamespace(cp=SimpleNamespace(rank=0, size=1))
+    )
+    monkeypatch.setattr(
+        context_parallel, "get_parallel_state", lambda: SimpleNamespace(cp=SimpleNamespace(rank=0, size=1))
+    )
     args = Namespace(qkv_format="thd", true_on_policy_mode=False, allgather_cp=False)
     logits = torch.randn(1, sum(lengths) + padding, 16, dtype=dtype, requires_grad=True)
     reference = logits.detach().clone().requires_grad_()
@@ -44,8 +48,12 @@ def test_packed_response_views_preserve_values_and_gradients(monkeypatch, dtype,
 
 
 def test_packed_response_backward_does_not_allocate_a_full_gradient_per_sample(monkeypatch):
-    monkeypatch.setattr(logit_processors, "get_parallel_state", lambda: SimpleNamespace(cp=SimpleNamespace(size=1)))
-    monkeypatch.setattr(context_parallel, "get_parallel_state", lambda: SimpleNamespace(cp=SimpleNamespace(size=1)))
+    monkeypatch.setattr(
+        logit_processors, "get_parallel_state", lambda: SimpleNamespace(cp=SimpleNamespace(rank=0, size=1))
+    )
+    monkeypatch.setattr(
+        context_parallel, "get_parallel_state", lambda: SimpleNamespace(cp=SimpleNamespace(rank=0, size=1))
+    )
     logits = torch.ones(1, 16 * 17 + 7, 256, requires_grad=True)
     with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU], profile_memory=True) as profiler:
         chunks = logit_processors._iter_response_chunks(
