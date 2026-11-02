@@ -201,6 +201,7 @@ class PeftAdapterReader:
     def __init__(self, path: Path, run: AdapterParametrization, targets: HfLoraTargets):
         self.path, self.targets = Path(path), targets
         config = json.loads((self.path / "adapter_config.json").read_text())
+        assert config.get("peft_type", "LORA") == "LORA", f"{self.path}: {config['peft_type']} is not LoRA"
         _check_peft_config(config, self.path)
         self._weights, self._fused_groups = _read_peft_tensors(self.path, self._map_name, targets)
         modules = sorted({k.rsplit(".", 1)[0] for k in self._weights if k.endswith(".lora_B")})

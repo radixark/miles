@@ -39,9 +39,9 @@ class _HfLoraModelSpec:
 
 # official Tinker exports (design 6.12): HF names except the head and the stacked 3D experts
 _TINKER_RENAMES = (
-    ("experts.w1", "experts.gate_proj"),
-    ("experts.w3", "experts.up_proj"),
-    ("experts.w2", "experts.down_proj"),
+    (".experts.w1", ".experts.gate_proj"),
+    (".experts.w3", ".experts.up_proj"),
+    (".experts.w2", ".experts.down_proj"),
 )
 _GPT_OSS_TINKER_RENAMES = (*_TINKER_RENAMES, (".attn.", ".self_attn."))
 
