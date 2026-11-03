@@ -426,3 +426,10 @@ def test_mains_native_export_with_sglang_expert_names_reads_back(tmp_path, targe
     expected = {hf_key(name): value for name, value in tensors.items()}
     assert weights.keys() == expected.keys()
     assert all(torch.equal(weights[k], v) for k, v in expected.items())
+
+
+def test_one_local_base_under_another_path_string_matches(tmp_path):
+    (tmp_path / "model").mkdir()
+    (tmp_path / "link").symlink_to(tmp_path / "model")
+    source, run = _run(base_model=f"{tmp_path}/model/"), _run(base_model=str(tmp_path / "link"))
+    assert_parametrization_matches_run(source, run, [], load_optimizer=False, has_optimizer_state=False)
