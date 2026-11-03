@@ -881,6 +881,38 @@ async def test_a_failed_cleanup_after_a_save_keeps_the_gateway_serving(service):
         await asyncio.gather(*service._cleanup_tasks)
 
 
+async def test_a_stopping_dispatcher_waits_for_pending_cleanups(tmp_path):
+    gateway = make_service(tmp_path)
+    run_task = asyncio.create_task(gateway.run())
+    release, deleted = threading.Event(), threading.Event()
+    delete = gateway.backend.delete_retired_adapters
+
+    def blocking_delete(root):
+        release.wait(timeout=5)
+        delete(root)
+        deleted.set()
+
+    gateway.backend.delete_retired_adapters = blocking_delete
+    try:
+        model_id = await created_model(gateway)
+        saved = gateway.submit(
+            "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False}
+        )
+        assert (await await_settled(gateway, "tenant", saved)).state == DONE
+        gateway.backend.fail_on["optim_step"] = RuntimeError("fatal execution failure")
+        gateway.submit("tenant", "optim_step", _optim_payload(model_id, 2))
+        asyncio.get_running_loop().call_later(0.2, release.set)
+        with pytest.raises(RuntimeError, match="fatal execution failure"):
+            await asyncio.wait_for(run_task, timeout=2)
+        assert deleted.is_set(), "the dispatcher returned while a cleanup was still deleting"
+    finally:
+        release.set()
+        if not run_task.done():
+            run_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await run_task
+
+
 @pytest.mark.parametrize("source", ["handler", "worker", "create", "sweep", "export", "load"])
 async def test_an_unknown_failure_stops_the_dispatcher(tmp_path, source):
     from tests.fast.tinker.harness import make_service

@@ -110,7 +110,8 @@ class TinkerService:
             for task in tasks:
                 task.cancel()
             # Cleanup failures must not replace the error that stopped the dispatcher.
-            await asyncio.gather(*tasks, return_exceptions=True)
+            # awaited, not cancelled: a cancelled to_thread rmtree would outlive the root lock
+            await asyncio.gather(*tasks, *self._cleanup_tasks, return_exceptions=True)
 
     def _observe_background_task(self, task: asyncio.Task) -> None:
         if not task.cancelled() and (error := task.exception()) is not None:
