@@ -136,9 +136,28 @@ def test_the_adapter_checkpoint_requires_the_distributed_optimizer():
         optimizer="adam",
         exp_avg_dtype=torch.float32,
         exp_avg_sq_dtype=torch.float32,
+        main_params_dtype=torch.float32,
         use_distributed_optimizer=False,
     )
     with pytest.raises(AssertionError, match="distributed optimizer"):
+        _validate_adapter_state_args(args)
+
+
+def test_the_adapter_checkpoint_requires_fp32_masters():
+    args = Namespace(
+        save="/save",
+        lora_adapter_path=None,
+        debug_disable_optimizer=False,
+        optimizer="adam",
+        exp_avg_dtype=torch.float32,
+        exp_avg_sq_dtype=torch.float32,
+        main_params_dtype=torch.float16,
+        use_distributed_optimizer=True,
+        use_gloo_process_groups=True,
+        use_precision_aware_optimizer=True,
+        optimizer_cpu_offload=True,
+    )
+    with pytest.raises(AssertionError, match="fp32 masters"):
         _validate_adapter_state_args(args)
 
 
