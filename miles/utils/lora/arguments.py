@@ -174,12 +174,12 @@ def _validate_adapter_state_args(args) -> None:
     )
     assert args.optimizer == "adam", f"--save / --lora-adapter-path store Adam state; got --optimizer {args.optimizer}"
     assert args.exp_avg_dtype == args.exp_avg_sq_dtype == torch.float32, "the adapter checkpoint stores fp32 moments"
-    if args.use_distributed_optimizer:
-        assert args.use_gloo_process_groups, "the adapter checkpoint gathers optimizer state over Gloo"
-        # TE FusedAdam keeps the master as an int16 remainder unless the optimizer runs on the host
-        assert (
-            not args.use_precision_aware_optimizer or args.optimizer_cpu_offload
-        ), "--use-precision-aware-optimizer needs --optimizer-cpu-offload to save or load a LoRA adapter"
+    assert args.use_distributed_optimizer, "the adapter checkpoint gathers optimizer state from the distributed optimizer"
+    assert args.use_gloo_process_groups, "the adapter checkpoint gathers optimizer state over Gloo"
+    # TE FusedAdam keeps the master as an int16 remainder unless the optimizer runs on the host
+    assert (
+        not args.use_precision_aware_optimizer or args.optimizer_cpu_offload
+    ), "--use-precision-aware-optimizer needs --optimizer-cpu-offload to save or load a LoRA adapter"
     if args.lora_adapter_path is not None:
         # loading writes masters and re-casts them, which an overlapped param all-gather would race
         assert not args.overlap_param_gather, "--lora-adapter-path cannot be combined with --overlap-param-gather"

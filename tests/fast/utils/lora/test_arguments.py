@@ -112,6 +112,20 @@ def test_a_disabled_optimizer_cannot_save_or_load_the_adapter_checkpoint(save, l
         _validate_adapter_state_args(args)
 
 
+def test_the_adapter_checkpoint_requires_the_distributed_optimizer():
+    args = Namespace(
+        save="/save",
+        lora_adapter_path=None,
+        debug_disable_optimizer=False,
+        optimizer="adam",
+        exp_avg_dtype=torch.float32,
+        exp_avg_sq_dtype=torch.float32,
+        use_distributed_optimizer=False,
+    )
+    with pytest.raises(AssertionError, match="distributed optimizer"):
+        _validate_adapter_state_args(args)
+
+
 class TestRolloutOnlyAdapter:
     @pytest.fixture(autouse=True)
     def _qwen3(self, monkeypatch):
