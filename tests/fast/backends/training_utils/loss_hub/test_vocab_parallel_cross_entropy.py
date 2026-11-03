@@ -1,5 +1,7 @@
 """The vocab-parallel cross entropy behind every backend's torch log-probs."""
 
+import math
+
 import pytest
 import torch
 import torch.distributed as dist
@@ -48,23 +50,25 @@ def _check_against_full_softmax(rank: int, world_size: int, group: dist.ProcessG
         )
 
 
-def _check_against_megatron(rank: int, world_size: int, group: dist.ProcessGroup) -> None:
-    from megatron.core.tensor_parallel.cross_entropy import vocab_parallel_cross_entropy as megatron_cross_entropy
-
-    def megatron(logits, target, group):
-        return megatron_cross_entropy(logits, target, tp_group=group)
-
+def _check_confident_target(rank: int, world_size: int, group: dist.ProcessGroup) -> None:
+    """A target leading by 20 (past fp32's ~16.6 cliff) keeps a non-zero loss and target gradient,
+    and the gradient still sums to zero: https://jonbarron.info/softmaxfix/."""
+    margin = 20.0
+    full = torch.zeros(1, 1, VOCAB)
+    full[0, 0, 0] = margin
     shard = VOCAB // world_size
-    for dtype in (torch.float32, torch.bfloat16):
-        full = _full_logits(dtype)
-        results = []
-        for fn in (vocab_parallel_cross_entropy, megatron):
-            local = full[..., rank * shard : (rank + 1) * shard].clone().requires_grad_()
-            loss = fn(local, _target(), group)
-            loss.backward(_grad_output())
-            results.append((loss.detach(), local.grad))
-        (loss, grad), (megatron_loss, megatron_grad) = results
-        assert torch.equal(loss, megatron_loss) and torch.equal(grad, megatron_grad), dtype
+    local = full[..., rank * shard : (rank + 1) * shard].clone().requires_grad_()
+
+    loss = vocab_parallel_cross_entropy(local, torch.tensor([[0]]), group)
+    loss.backward(torch.ones(1, 1))
+
+    expected = torch.nn.functional.softplus(torch.tensor(math.log(VOCAB - 1) - margin))
+    torch.testing.assert_close(loss, expected.view(1, 1), atol=0, rtol=1e-5)
+    grad = [torch.zeros_like(local.grad) for _ in range(world_size)]
+    dist.all_gather(grad, local.grad.contiguous(), group=group)
+    grad = torch.cat(grad, dim=-1)
+    torch.testing.assert_close(grad[0, 0, 0], -expected, atol=0, rtol=1e-5)
+    assert abs(grad.sum().item()) < 1e-6 * expected.item()
 
 
 def _check_compute_log_probs(group: dist.ProcessGroup) -> None:
@@ -81,16 +85,9 @@ def _run_checks(rank: int, world_size: int, port: int) -> None:
     try:
         group = dist.new_group(list(range(world_size)))
         _check_against_full_softmax(rank, world_size, group)
+        _check_confident_target(rank, world_size, group)
         if world_size == 1:
             _check_compute_log_probs(group)
-    finally:
-        dist.destroy_process_group()
-
-
-def _run_megatron_check(rank: int, world_size: int, port: int) -> None:
-    init_gloo(rank, world_size, port=port)
-    try:
-        _check_against_megatron(rank, world_size, dist.new_group(list(range(world_size))))
     finally:
         dist.destroy_process_group()
 
@@ -99,11 +96,3 @@ def _run_megatron_check(rank: int, world_size: int, port: int) -> None:
 def test_vocab_parallel_cross_entropy(world_size: int) -> None:
     """Loss and gradient equal a plain log-softmax over the whole vocabulary, however it is split."""
     run_multiprocess(_run_checks, world_size=world_size)
-
-
-@pytest.mark.parametrize("world_size", [1, 2])
-def test_matches_megatron_vocab_parallel_cross_entropy(world_size: int) -> None:
-    """Bit for bit Megatron's math. Its fused kernel differs in the last bits, from torch.compile's
-    exp and summation order, and rounds the gradient to bf16."""
-    pytest.importorskip("megatron.core.tensor_parallel.cross_entropy")
-    run_multiprocess(_run_megatron_check, world_size=world_size)

@@ -309,8 +309,12 @@ def compute_log_probs(
 class _VocabParallelCrossEntropy(torch.autograd.Function):
     """Cross entropy over logits split along the vocabulary over ``group``, in plain torch.
 
-    Megatron's unfused vocab-parallel cross entropy, bit for bit, so every backend and install runs one
-    implementation. Like it, the forward works in place on fp32 ``logits`` (callers pass a copy).
+    Megatron's unfused vocab-parallel cross entropy, except that it never adds the target's exp to the
+    sum of the others: with ``S`` the non-target sum and ``d_t`` the shifted target logit, the loss is
+    ``softplus(log S - d_t)`` and the target gradient ``-S / (exp(d_t) + S)``. Megatron's
+    ``log(exp(d_t) + S) - d_t`` and ``p_t - 1`` round both to zero once the target leads by ~16.6 in
+    fp32 while the other gradients stay positive (https://jonbarron.info/softmaxfix/).
+    Like Megatron, the forward works in place on fp32 ``logits`` (callers pass a copy).
     The gradient comes back in the input's dtype; Megatron's fused version always rounds it to bf16.
     """
 
@@ -326,25 +330,31 @@ class _VocabParallelCrossEntropy(torch.autograd.Function):
         # group.rank(), as Megatron: None or a rank outside the group fails here instead of reducing over the world
         vocab_start = group.rank() * partition_vocab_size
         target_mask = (target < vocab_start) | (target >= vocab_start + partition_vocab_size)
-        masked_target = (target - vocab_start).masked_fill(target_mask, 0)
-        predicted_logits = logits.gather(-1, masked_target.unsqueeze(-1)).squeeze(-1).masked_fill(target_mask, 0.0)
+        masked_target = (target - vocab_start).masked_fill(target_mask, 0).unsqueeze(-1)
+        predicted_logits = logits.gather(-1, masked_target).squeeze(-1).masked_fill(target_mask, 0.0)
         exp_logits = logits.exp_()
-        sum_exp_logits = exp_logits.sum(dim=-1)
+        # drop the target's exp from the sum; the backward writes the target's gradient directly
+        at_target = exp_logits.gather(-1, masked_target).masked_fill(~target_mask.unsqueeze(-1), 0.0)
+        exp_logits.scatter_(-1, masked_target, at_target)
+        sum_exp_others = exp_logits.sum(dim=-1)
 
         # one all-reduce for both, as in Megatron
-        predicted_and_sum = torch.cat((predicted_logits, sum_exp_logits))
+        predicted_and_sum = torch.cat((predicted_logits, sum_exp_others))
         dist.all_reduce(predicted_and_sum, op=dist.ReduceOp.SUM, group=group)
-        predicted_logits, sum_exp_logits = predicted_and_sum.split(predicted_logits.size(0))
+        predicted_logits, sum_exp_others = predicted_and_sum.split(predicted_logits.size(0))
 
-        softmax = exp_logits.div_(sum_exp_logits.unsqueeze(-1))
-        ctx.save_for_backward(softmax, target_mask, masked_target)
-        return torch.log(sum_exp_logits) - predicted_logits
+        loss = torch.nn.functional.softplus(torch.log(sum_exp_others) - predicted_logits)
+        softmax = exp_logits.div_((predicted_logits.exp() + sum_exp_others).unsqueeze(-1))
+        one_minus_p = -torch.expm1(-loss)  # S / (exp(d_t) + S), exact for a confident target
+        ctx.save_for_backward(softmax, target_mask, masked_target, one_minus_p)
+        return loss
 
     @staticmethod
     def backward(ctx, grad_output: torch.Tensor):
-        softmax, target_mask, masked_target = ctx.saved_tensors
-        # softmax - one_hot(target); the one-hot lives on the rank owning the target
-        grad_input = softmax.scatter_add_(-1, masked_target.unsqueeze(-1), -(~target_mask).unsqueeze(-1).float())
+        softmax, target_mask, masked_target, one_minus_p = ctx.saved_tensors
+        # softmax - one_hot(target); the target entry lives on the rank owning it
+        at_target = torch.where(target_mask, softmax.gather(-1, masked_target).squeeze(-1), -one_minus_p)
+        grad_input = softmax.scatter_(-1, masked_target, at_target.unsqueeze(-1))
         return grad_input.mul_(grad_output.unsqueeze(-1)).to(ctx.input_dtype), None, None
 
 
