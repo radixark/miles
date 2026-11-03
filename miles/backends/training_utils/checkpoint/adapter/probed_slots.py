@@ -106,11 +106,11 @@ class ProbedAdapterSlots:
                 result.append((piece, tuple(within)))
         return result
 
-    def global_shapes(self, rank: int) -> dict[str, tuple[int, ...]]:
-        """The whole shape at ``rank`` of each HF-keyed tensor this process holds a piece of."""
+    def global_shapes(self, lora_rank: int) -> dict[str, tuple[int, ...]]:
+        """The whole shape at ``lora_rank`` of each HF-keyed tensor this process holds a piece of."""
         return {
             piece.key: tuple(
-                rank if axis == _rank_axis(piece.key, len(piece.global_shape)) else n
+                lora_rank if axis == _rank_axis(piece.key, len(piece.global_shape)) else n
                 for axis, n in enumerate(piece.global_shape)
             )
             for piece in self.row_mapping.pieces
