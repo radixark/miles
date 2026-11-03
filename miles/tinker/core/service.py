@@ -367,6 +367,9 @@ class TinkerService:
         # the commit's recovery walk and fsyncs hit shared storage; keep the event loop serving
         try:
             await asyncio.to_thread(self.backend.commit_adapter, root, name, written, overwrite=payload["overwrite"])
+        except ValueError as error:
+            # the commit refuses to replace a link it did not write (e.g. an operator's link to a shared adapter)
+            raise UserInputError(f"cannot commit checkpoint {name!r}: {error}") from None
         except OSError as error:
             # a storage failure loses only this save; the trainer and other tenants are unaffected
             return {"error": f"cannot commit checkpoint {name!r}: {error}", "error_category": "server"}
@@ -449,6 +452,9 @@ class TinkerService:
         # the commit's recovery walk and fsyncs hit shared storage; keep the event loop serving
         try:
             await asyncio.to_thread(self.backend.commit_adapter, root, version, written, overwrite=False)
+        except ValueError as error:
+            # the commit refuses to replace a link it did not write (e.g. an operator's link to a shared adapter)
+            raise UserInputError(f"cannot commit sampler weights {version!r}: {error}") from None
         except OSError as error:
             # a storage failure loses only this export; the trainer and other tenants are unaffected
             return {"error": f"cannot commit sampler weights {version!r}: {error}", "error_category": "server"}
