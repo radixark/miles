@@ -28,8 +28,8 @@ CONFIG = ModelConfig(
     # order, so a sentinel tool_call_id would not roundtrip; use the
     # universal rollback recovery when the model emits no tool_calls.
     tool_call_failure_mode="rollback",
-    # tool_choice "none" is not V4's real parse failure: the recipe then drops the
-    # blank line after </think>, while a real failure returns empty content.
+    # tool_choice "none" is not V4's real parse failure: a real failure returns empty
+    # content, while this step's reply keeps the call text in content.
     parse_failure_step=False,
     anthropic_intermediate_system_expectation="forbidden",
 )
