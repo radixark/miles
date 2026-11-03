@@ -307,12 +307,17 @@ class TorchtitanCheckpointLoader:
         except Exception as exc:
             error = exc
         raise_if_any_rank_failed(error)
-        source_tensors = self._base_fingerprint_tensors(path, metadata)
-        hf_dir = resolve_hf_dir(self._run.base_model)
-        assert (
-            hf_dir is not None
-        ), f"--hf-checkpoint {self._run.base_model} has no local HF weights to compare {path} with"
-        assert_same_base_tensors(str(path), source_tensors, hf_fingerprint_tensors(hf_dir), self._run.base_model)
+        # agreed before the collective dcp.load below: e.g. one node's HF cache may lack --hf-checkpoint
+        try:
+            source_tensors = self._base_fingerprint_tensors(path, metadata)
+            hf_dir = resolve_hf_dir(self._run.base_model)
+            assert (
+                hf_dir is not None
+            ), f"--hf-checkpoint {self._run.base_model} has no local HF weights to compare {path} with"
+            assert_same_base_tensors(str(path), source_tensors, hf_fingerprint_tensors(hf_dir), self._run.base_model)
+        except Exception as exc:
+            error = exc
+        raise_if_any_rank_failed(error)
 
         states = self._members.adam_states()
         loaded = dict(params)

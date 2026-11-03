@@ -7,6 +7,7 @@ import pytest
 import torch
 import torch.distributed as dist
 import torch.distributed.checkpoint as dcp
+import torch.multiprocessing as mp
 
 pytest.importorskip("torchtitan")
 
@@ -16,6 +17,7 @@ from miles.backends.torchtitan_utils.lora_checkpoint import (  # noqa: E402
     TorchtitanLoraCheckpoint,
     TorchtitanOptimizerMembers,
 )
+from tests.fast.dist_utils import find_free_port, init_gloo  # noqa: E402
 
 _LORA_A, _LORA_B = "layers.0.attention.wq.lora_a.weight", "layers.0.attention.wq.lora_b.weight"
 
@@ -69,6 +71,31 @@ def test_a_full_dcp_loads_its_training_state(tmp_path, single_rank_gloo):
     loader = _load_dcp(tmp_path, saved)
     assert loader.train_state == {"step": 8, "ntokens_seen": 640}
     assert loader.lr_scheduler_state == {"last_epoch": 8}
+
+
+def _base_check_worker(rank: int, world_size: int, port: int, path) -> None:
+    init_gloo(rank, world_size, port=port)
+    params = {key: torch.nn.Parameter(torch.zeros(2, 2)) for key in (_LORA_A, _LORA_B)}
+    members = SimpleNamespace(adam_states=lambda: [{"step": torch.tensor(0.0)} for _ in params])
+    sd_adapter = SimpleNamespace(to_hf=lambda tensors: {})
+    loader = TorchtitanCheckpointLoader(
+        SimpleNamespace(parameters=params), members, [], sd_adapter, _Run("hub/model", 16), load_optimizer=False
+    )
+    with (
+        patch.object(lora_checkpoint, "resolve_hf_dir", return_value=path if rank == 0 else None),
+        patch.object(lora_checkpoint, "hf_fingerprint_tensors", return_value={}),
+        patch.object(lora_checkpoint, "assert_same_base_tensors"),
+        pytest.raises(RuntimeError, match="rank 1: .*has no local HF weights"),
+    ):
+        loader(path)
+    dist.destroy_process_group()
+
+
+def test_a_base_check_failing_on_one_rank_fails_every_rank(tmp_path):
+    """Otherwise the other ranks wait in the collective dcp.load for the rank that failed."""
+    path = tmp_path / "step-10"
+    dcp.save({_LORA_A: torch.ones(2, 2), _LORA_B: torch.ones(2, 2)}, checkpoint_id=path, no_dist=True)
+    mp.spawn(_base_check_worker, args=(2, find_free_port(), path), nprocs=2, join=True)
 
 
 _STEPS_PER_ROLLOUT = 4
