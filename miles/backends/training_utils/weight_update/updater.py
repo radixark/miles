@@ -163,6 +163,8 @@ class WeightUpdater:
         dist.barrier(group=get_gloo_group())
 
         checksums = {name: {} for name, _ in adapters} if self.is_lora and self.args.check_lora_weight_equal else None
+        # a full gather gives rank 0 the whole adapter; a PP-local sync splits it across senders
+        records_checksums = protocol.is_sender and (driver or not self._hf_weight_iterator.placement.gather_pp)
         with timer("update_weights_implementation"):
             pbar = tqdm(desc=f"[{protocol.group_name}] Update weights", total=0) if protocol.is_sender else None
             for bucket in self._hf_weight_iterator.iter_hf_weights(
@@ -172,7 +174,7 @@ class WeightUpdater:
                 materialize=protocol.is_sender,
             ):
                 if protocol.is_sender:
-                    if checksums is not None:
+                    if checksums is not None and records_checksums:
                         record_lora_checksums(bucket, checksums)
                     protocol.send_bucket(bucket)
                     pbar.update(1)
