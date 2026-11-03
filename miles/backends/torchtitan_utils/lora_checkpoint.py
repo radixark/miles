@@ -379,9 +379,13 @@ class TorchtitanLoraCheckpoint:
             completed_rollouts = self._trainer.step // self._steps_per_rollout
             training_state = self._training_state(completed_rollouts - 1 if completed_rollouts else None)
         elif training_state is not None and "lr_scheduler" in training_state:
-            # written by a torchtitan run; a Megatron run's scheduler state does not apply here
             load_lr_schedulers(self._trainer.engine.optim.lr_schedulers, training_state["lr_scheduler"])
             self._trainer.engine.num_completed_steps = training_state["step"]
+        elif training_state is not None and training_state["iteration"] is not None:
+            # written by a Megatron run, whose scheduler state does not apply here: resume the schedule at its rollout
+            step = (training_state["iteration"] + 1) * self._steps_per_rollout
+            load_lr_schedulers(self._trainer.engine.optim.lr_schedulers, {"last_epoch": step})
+            self._trainer.engine.num_completed_steps = step
         if self._args.lora_adapter_convert_save is not None:
             destination = Path(self._args.lora_adapter_convert_save)
             save_and_commit_adapter_dir(
