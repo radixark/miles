@@ -50,6 +50,9 @@ async def serve(args, *, disposer: Disposer):
     # SGLang rejects inputs with len >= min(context_len - 1, kv_capacity - 1) - 5, assuming the KV pool
     # exceeds one context; a sequence sampled up to the window must still be accepted as a scoring prompt.
     max_tokens_per_sample = min(max_tokens_per_datum, engine_context_length - 7)
+    # a second gateway on this root fails here, not after the trainer and engines start; released after they stop
+    checkpoint_root_lock = take_checkpoint_root(args.tinker_checkpoint_root)
+    disposer.add(checkpoint_root_lock.close)
     capability = init_orchestration_script(ArgvOrchestratorStartupInfo.create(args), disposer=disposer)
     trainer_request = TrainerControllerInitRequest(
         num_rollout=args.num_rollout,
@@ -93,8 +96,6 @@ async def serve(args, *, disposer: Disposer):
         * args.raw_megatron.base_args["pipeline_model_parallel_size"]
         * args.raw_megatron.base_args["context_parallel_size"]
     )
-    checkpoint_root_lock = take_checkpoint_root(config.checkpoint_root)
-    disposer.add(checkpoint_root_lock.close)
     service = TinkerService(MilesBackend(trainer, router_url, dp_size=dp_size), config)
 
     server = uvicorn.Server(

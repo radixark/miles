@@ -90,6 +90,14 @@ def test_sampler_export_reads_back_through_the_adapter_dir_reader(tmp_path):
     assert all(torch.equal(reader.read_weights()[k], v) for k, v in weights.items())
 
 
+def test_sampler_export_target_modules_name_hf_modules_not_sglang_tensors(tmp_path):
+    write_sampler_adapter(tmp_path, {k: v.to(torch.bfloat16) for k, v in _weights(False).items()}, _run(), QWEN35)
+    names = set(load_file(str(tmp_path / "adapter_model.safetensors")))
+    assert any(".experts.w1." in n for n in names) and not any(".experts.gate_proj." in n for n in names)
+    config = json.loads((tmp_path / "adapter_config.json").read_text())
+    assert config["target_modules"] == sorted((*QKV, *EXPERTS))
+
+
 def test_splitting_a_shared_a_is_weights_only():
     source, target = _run(shared_lora_a_groups=(QKV,)), _run()
     steps = plan_parametrization_conversion(source, target, source_dtype=torch.float32)

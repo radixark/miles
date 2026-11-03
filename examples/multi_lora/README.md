@@ -114,8 +114,10 @@ loading and `update_weights: true` are rejected. Ordinary full-model and
 single-LoRA training continue to use the existing weight updater.
 
 `--tinker-checkpoint-root` must be on storage shared by the trainers, gateway,
-and every inference engine. All trainer ranks participate in adapter gathering;
-rank 0 writes the tensors and config, then `META.json` after all ranks finish.
+and every inference engine. All trainer ranks participate in adapter gathering.
+`sampler_weights/<v>` is a link to `.<v>.<commit_id>/`, which holds the adapter
+files, `tenant.json` (the tenant digest) and `adapter_parametrization.json`; the
+gateway commits the link after all ranks finish writing.
 Existing sampler versions cannot be overwritten. Saving between `forward_backward`
 and `optim_step` neither applies nor discards pending gradients.
 
