@@ -1,6 +1,7 @@
 """Translate gateway datums to trainer batches and sampling requests to SGLang."""
 
 import asyncio
+import json
 from dataclasses import asdict
 from pathlib import Path
 from typing import TextIO
@@ -86,14 +87,17 @@ def resolve_adapter(root: str, name: str, tenant: str, model_id: str) -> dict | 
         return None
     try:
         committed = resolve_adapter_dir(Path(root), name, tenant=tenant)
+        if committed is None:
+            return None
+        parametrization = read_parametrization(committed.path)
     except AdapterOwnershipError as error:
         raise OwnershipError(f"adapter {name!r} does not belong to this tenant") from error
-    if committed is None:
-        return None
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise UserInputError(f"cannot read adapter {name!r}: {error}") from error
     return {
         "path": str(committed.path),
         "lora_name": format_sglang_lora_name(model_id, name, committed.commit_id),
-        "parametrization": asdict(read_parametrization(committed.path)),
+        "parametrization": asdict(parametrization),
     }
 
 

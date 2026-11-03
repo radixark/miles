@@ -10,6 +10,7 @@ from miles.backends.megatron_utils.lora import checkpoint
 from miles.backends.training_utils.checkpoint.adapter.adapter_exports import write_peft_adapter
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
 from miles.backends.training_utils.checkpoint.adapter.readers import AdapterSourceKind
+from miles.utils.distributed_utils import init_gloo_group
 from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
 
 Q, K = "model.layers.0.self_attn.q_proj", "model.layers.0.self_attn.k_proj"
@@ -20,6 +21,7 @@ TARGETS = get_hf_lora_targets({"model_type": "qwen3", "num_hidden_layers": 1})
 @pytest.fixture
 def legacy_source(monkeypatch):
     init_gloo(0, 1, port=find_free_port())
+    init_gloo_group()
     monkeypatch.setattr(
         checkpoint, "check_adapter_source", lambda *_, **__: AdapterSourceKind.LEGACY_TINKER_CHECKPOINT
     )
@@ -41,6 +43,7 @@ def test_a_legacy_checkpoint_with_the_slots_keys_loads(legacy_source, load_optim
 @pytest.fixture
 def gloo():
     init_gloo(0, 1, port=find_free_port())
+    init_gloo_group()
     yield
     dist.destroy_process_group()
 

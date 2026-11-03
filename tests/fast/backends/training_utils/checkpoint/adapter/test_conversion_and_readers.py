@@ -8,6 +8,7 @@ import torch
 from safetensors.torch import load_file, save_file
 
 from miles.backends.training_utils.checkpoint.adapter.adapter_exports import write_peft_adapter, write_sampler_adapter
+from miles.backends.training_utils.checkpoint.adapter.key_mapping import map_peft_keys_to_hf_keys
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
 from miles.backends.training_utils.checkpoint.adapter.parametrization_conversion import (
     ConversionOp,
@@ -19,6 +20,7 @@ from miles.backends.training_utils.checkpoint.adapter.readers import (
     AdapterSourceKind,
     MilesAdapterDirReader,
     PeftAdapterReader,
+    _read_peft_tensors,
     classify_adapter_source,
 )
 from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
@@ -78,6 +80,13 @@ def test_peft_export_reads_back_bitwise(tmp_path, shared_qkv):
     assert reader.read_weights().keys() == weights.keys()
     assert all(torch.equal(reader.read_weights()[k], v) for k, v in weights.items())
     assert reader.source.parametrization.shared_lora_a_groups == run.shared_lora_a_groups
+
+
+def test_a_fused_gdn_module_keeps_its_a_under_the_sorted_first_component(tmp_path):
+    write_peft_adapter(tmp_path, _weights(True), _run(shared_lora_a_groups=(QKV,)), QWEN35)
+    weights, fused_groups = _read_peft_tensors(tmp_path, map_peft_keys_to_hf_keys, QWEN35)
+    assert fused_groups == [QKV] and min(QKV) != QKV[0]
+    assert {k for k in weights if k.endswith(".lora_A") and k.split(".lora_")[0] in QKV} == {f"{min(QKV)}.lora_A"}
 
 
 def test_sampler_export_reads_back_through_the_adapter_dir_reader(tmp_path):
