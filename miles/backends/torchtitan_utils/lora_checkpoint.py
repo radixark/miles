@@ -13,14 +13,14 @@ import torch.distributed as dist
 from torch.distributed.tensor import DTensor
 from torch.distributed.tensor._utils import compute_local_shape_and_global_offset
 
+from miles.backends.torchtitan_utils.lora_names import is_adapter_key, split_adapter_key
+from miles.backends.training_utils.checkpoint.adapter.adapter_state import gloo_group, raise_if_any_rank_failed
 from miles.backends.training_utils.checkpoint.adapter.probed_slots import (
     HfPiece,
     ProbedAdapterSlots,
     RowMapping,
     rectangle,
 )
-from miles.backends.torchtitan_utils.lora_names import is_adapter_key, split_adapter_key
-from miles.backends.training_utils.checkpoint.adapter.adapter_state import gloo_group, raise_if_any_rank_failed
 from miles.utils.lora.hf_lora_targets import HfLoraTargets
 
 
@@ -40,9 +40,7 @@ def _local_codes(param: torch.Tensor, start: int) -> torch.Tensor:
     return codes
 
 
-def probe_torchtitan_row_mapping(
-    params: Mapping[str, torch.Tensor], sd_adapter, targets: HfLoraTargets
-) -> RowMapping:
+def probe_torchtitan_row_mapping(params: Mapping[str, torch.Tensor], sd_adapter, targets: HfLoraTargets) -> RowMapping:
     """Collective. ``params``: the adapter parameters by titan key, in the order their local shards are
     concatenated."""
     error = None
@@ -105,10 +103,7 @@ class TorchtitanAdapterSlots(ProbedAdapterSlots):
         self._iterator, self.targets = iterator, targets
         self._specs = {}
         self._params = {
-            key: param
-            for part in model_parts
-            for key, param in part.named_parameters()
-            if is_adapter_key(key)
+            key: param for part in model_parts for key, param in part.named_parameters() if is_adapter_key(key)
         }
         self.row_mapping = probe_torchtitan_row_mapping(self._params, sd_adapter, targets)
 

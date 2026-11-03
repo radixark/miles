@@ -47,7 +47,9 @@ def _adapter(rank: int = 8) -> tuple[object, dict[str, torch.Tensor]]:
 
 
 def _expected(sd_adapter, params) -> dict[str, torch.Tensor]:
-    weights, _ = map_named_tensors_to_hf_keys(iter_hf_adapter_tensors(sd_adapter, params), map_peft_keys_to_hf_keys, _TARGETS)
+    weights, _ = map_named_tensors_to_hf_keys(
+        iter_hf_adapter_tensors(sd_adapter, params), map_peft_keys_to_hf_keys, _TARGETS
+    )
     return weights
 
 
