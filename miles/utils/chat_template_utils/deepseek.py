@@ -26,6 +26,10 @@ if TYPE_CHECKING:
     from sglang.srt.parser.deepseek_recipe_renderer import DeepSeekRecipe
 
 _ASSISTANT_SP_TOKEN = "<｜Assistant｜>"
+_THINK_END = "</think>"
+# A stored V4 / V4.1 assistant turn keeps here the whitespace the model sampled before
+# its content, which deepseek-recipe's output parser strips, so a re-render reproduces it.
+CONTENT_LEADING_WHITESPACE_KEY = "content_leading_whitespace"
 
 
 @functools.cache
@@ -178,7 +182,23 @@ def _numeric_effort(effort: Any) -> Any:
     return effort
 
 
+def stripped_content_whitespace(completion_text: str, content: str) -> str:
+    """Return the whitespace a parser dropped from the start of *content*, or ``""``.
+
+    *completion_text* is the decoded completion.  Its content starts after ``</think>``
+    in thinking mode and at its start otherwise, where the prompt already closed it.
+    """
+    _, think_end, after = completion_text.partition(_THINK_END)
+    tail = after if think_end else completion_text
+    body = tail.lstrip()
+    return tail[: len(tail) - len(body)] if content and body.startswith(content) else ""
+
+
 def _wire_message(message: dict[str, Any]) -> dict[str, Any]:
+    if CONTENT_LEADING_WHITESPACE_KEY in message:
+        whitespace = message[CONTENT_LEADING_WHITESPACE_KEY]
+        message = {k: v for k, v in message.items() if k != CONTENT_LEADING_WHITESPACE_KEY}
+        message["content"] = whitespace + message["content"]
     # sglang's chat endpoint renders a null content as "".
     return message if message.get("content") is not None else {**message, "content": ""}
 
