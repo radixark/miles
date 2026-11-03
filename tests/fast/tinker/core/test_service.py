@@ -6,6 +6,8 @@ import json
 import os
 import re
 import shutil
+import subprocess
+import sys
 import tempfile
 import time
 from contextlib import suppress
@@ -1280,6 +1282,22 @@ async def test_a_malformed_import_is_a_user_error_and_the_gateway_keeps_serving(
         run_task.cancel()
         with suppress(asyncio.CancelledError):
             await run_task
+
+
+def test_an_import_with_a_string_alpha_is_a_user_error_under_python_O(tmp_path):
+    """python -O strips asserts; the client's types must be checked without them."""
+    (tmp_path / "adapter_config.json").write_text(json.dumps({"r": 8, "lora_alpha": "32"}))
+    code = (
+        "from miles.tinker.core.types import UserInputError\n"
+        "from miles.tinker.runtime import read_imported_adapter\n"
+        "try:\n"
+        f"    read_imported_adapter({str(tmp_path)!r})\n"
+        "except UserInputError:\n"
+        "    pass\n"
+        "else:\n"
+        "    raise SystemExit('accepted a string alpha')\n"
+    )
+    subprocess.run([sys.executable, "-O", "-c", code], check=True)
 
 
 @pytest.mark.parametrize(

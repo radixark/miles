@@ -138,14 +138,12 @@ def read_imported_adapter(path: str) -> dict:
             }
         else:
             raise UserInputError(f"{path} holds no adapter ({PARAMETRIZATION_FILENAME} or adapter_config.json)")
-        assert source["base_model"] is None or isinstance(
-            source["base_model"], str
-        ), f"base model {source['base_model']!r} is not a name"
-        assert type(source["lora_rank"]) is int, f"rank {source['lora_rank']!r} is not an integer"
-        assert source["lora_alpha"] is None or type(source["lora_alpha"]) in (
-            int,
-            float,
-        ), f"alpha {source['lora_alpha']!r} is not a number"
+        if source["base_model"] is not None and not isinstance(source["base_model"], str):
+            raise TypeError(f"base model {source['base_model']!r} is not a name")
+        if type(source["lora_rank"]) is not int:
+            raise TypeError(f"rank {source['lora_rank']!r} is not an integer")
+        if source["lora_alpha"] is not None and type(source["lora_alpha"]) not in (int, float):
+            raise TypeError(f"alpha {source['lora_alpha']!r} is not a number")
     except (OSError, ValueError, KeyError, TypeError, AssertionError) as error:
         raise UserInputError(f"{path} is not a readable adapter: {type(error).__name__}: {error}") from error
     return source
