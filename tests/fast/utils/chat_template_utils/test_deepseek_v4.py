@@ -338,3 +338,52 @@ def test_appended_messages_tokenize_as_the_render_tail(spec, thinking, shape):
     if history[-1]["role"] == "assistant":
         # A sampled turn ends on a special token, so nothing merges across the boundary.
         assert prefix + delta == full
+
+
+# ---------------------------------------------------------------------------
+# Session: a stored answer re-renders as the model sampled it
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("whitespace", ["", "\n\n"], ids=["none", "blank_line"])
+@pytest.mark.parametrize("thinking", [False, True], ids=["chat", "thinking"])
+@pytest.mark.parametrize("spec", _SPECS)
+def test_stored_answer_renders_the_whitespace_the_parser_stripped(spec, thinking, whitespace):
+    tito = _TITO_CLASSES[spec](_tokenizer(spec), chat_template_kwargs={"thinking": thinking})
+    args = tito.default_template_args(_TOOLS)
+    render = functools.partial(tito.apply_chat_template, tokenize=True, template_args=args)
+    prompt = render([_USER], add_generation_prompt=True)
+    sampled = render([_USER, {**_ANSWER, "content": whitespace + _ANSWER["content"]}], add_generation_prompt=False)
+    assert sampled[: len(prompt)] == prompt
+
+    # recipe's output parser returns the content without its leading whitespace.
+    stored = tito.postprocess_completion(
+        choice={}, assistant_message=dict(_ANSWER), completion_token_ids=sampled[len(prompt) :]
+    )
+
+    decode = functools.partial(_tokenizer(spec).decode, skip_special_tokens=False)
+    assert decode(render([_USER, stored], add_generation_prompt=False)) == decode(sampled)
+    assert stored.get(deepseek.CONTENT_LEADING_WHITESPACE_KEY, "") == whitespace
+
+
+@pytest.mark.parametrize(
+    "completion_text, content",
+    [("Plan.</think>\n\nIt is sunny.", "Other."), ("Plan.</think>\n\n", ""), ("\n\nIt is sunny.", "\n\nIt is sunny.")],
+    ids=["content_differs", "no_content", "content_kept_it"],
+)
+def test_no_whitespace_is_restored_unless_the_content_follows_it(completion_text, content):
+    assert deepseek.stripped_content_whitespace(completion_text, content) == ""
+
+
+@pytest.mark.parametrize("spec", _SPECS)
+def test_client_replay_keeps_the_stored_whitespace(spec):
+    tito = _TITO_CLASSES[spec](_tokenizer(spec))
+    stored = {**_ANSWER, deepseek.CONTENT_LEADING_WHITESPACE_KEY: "\n\n"}
+    edited = {**_ANSWER, "content": "It is rainy."}
+
+    assert tito.preserve_server_message_state([_USER, stored], [_USER, _ANSWER, _FOLLOW_UP]) == [
+        _USER,
+        stored,
+        _FOLLOW_UP,
+    ]
+    assert tito.preserve_server_message_state([_USER, stored], [_USER, edited]) == [_USER, edited]
