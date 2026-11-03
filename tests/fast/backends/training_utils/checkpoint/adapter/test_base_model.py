@@ -5,6 +5,7 @@ import pytest
 import torch
 from safetensors.torch import save_file
 
+from miles.backends.training_utils.checkpoint.adapter import base_model
 from miles.backends.training_utils.checkpoint.adapter.base_model import (
     assert_same_base_model,
     hf_fingerprint_tensors,
@@ -70,3 +71,14 @@ def test_another_base_or_an_unresolvable_one_is_refused(tmp_path):
         assert_same_base_model("src", [None, str(tmp_path / "missing")], b)
     with pytest.raises(AssertionError, match="--hf-checkpoint org/model has no local HF weights"):
         assert_same_base_model("src", [a], "org/model")
+
+
+def test_the_same_dir_on_both_sides_is_not_read(tmp_path, monkeypatch):
+    base = _hf_dir(tmp_path / "base", **{NORM: torch.ones(4)})
+    (tmp_path / "link").symlink_to(tmp_path / "base")
+
+    def read(hf_dir):
+        raise AssertionError(f"read {hf_dir}")
+
+    monkeypatch.setattr(base_model, "hf_fingerprint_tensors", read)
+    assert_same_base_model("src", [base], str(tmp_path / "link"))

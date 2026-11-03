@@ -90,6 +90,8 @@ def assert_same_base_model(source: str, candidates: Iterable[str], run_hf_checkp
     )
     run_dir = resolve_hf_dir(run_hf_checkpoint)
     assert run_dir is not None, f"--hf-checkpoint {run_hf_checkpoint} has no local HF weights to compare with"
+    if hf_dir.resolve() == run_dir.resolve():
+        return
     assert_same_base_tensors(
         source, hf_fingerprint_tensors(hf_dir), hf_fingerprint_tensors(run_dir), run_hf_checkpoint
     )
