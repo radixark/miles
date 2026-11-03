@@ -160,7 +160,7 @@ class BridgeAdapterSlots(ProbedAdapterSlots):
     def __init__(self, model, iterator, targets: HfLoraTargets, *, multi_lora: bool):
         """Collective: probes the row mapping now, while nothing else touches the parameters."""
         self._model, self._iterator, self.targets, self._multi_lora = model, iterator, targets, multi_lora
-        self._specs: dict[int, list[LocalShardSpec]] = {}
+        self._specs: dict[tuple[int | None, frozenset[int] | None], list[LocalShardSpec]] = {}
         # every slot has the same layout
         self.row_mapping = probe_bridge_row_mapping(
             self.slot_parameters(0), self._export_probe, targets, self._map_name

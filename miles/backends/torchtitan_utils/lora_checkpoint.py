@@ -19,12 +19,9 @@ from miles.backends.training_utils.checkpoint.adapter.probed_slots import (
     RowMapping,
     rectangle,
 )
-from miles.backends.torchtitan_utils.lora_names import split_adapter_key
+from miles.backends.torchtitan_utils.lora_names import is_adapter_key, split_adapter_key
 from miles.backends.training_utils.checkpoint.adapter.adapter_state import gloo_group, raise_if_any_rank_failed
-from miles.backends.training_utils.checkpoint.adapter.key_mapping import map_peft_keys_to_hf_keys
 from miles.utils.lora.hf_lora_targets import HfLoraTargets
-
-_PEFT_FACTOR = {"lora_a": "lora_A", "lora_b": "lora_B"}
 
 
 def _local_box(param: torch.Tensor) -> tuple[tuple[int, ...], tuple[int, ...]]:
@@ -81,8 +78,7 @@ def _probe_local(
         lora_b = sd_adapter.to_hf({f"{projection}.weight": _local_codes(params[key], starts[key])})
         assert lora_b, f"{projection}: to_hf exports nothing"
         lora_a = _local_codes(params[lora_a_key], starts[lora_a_key])
-        hf_modules = [map_peft_keys_to_hf_keys(f"{name.removesuffix('.weight')}.lora_A.weight").key for name in lora_b]
-        hf_modules = [k.removesuffix(".lora_A") for k in hf_modules]
+        hf_modules = [name.removesuffix(".weight") for name in lora_b]
         modules.update(hf_modules)
         if len(hf_modules) > 1:
             # one titan lora_a serves every HF projection of a fused weight; it is stored once, under the first
@@ -112,7 +108,7 @@ class TorchtitanAdapterSlots(ProbedAdapterSlots):
             key: param
             for part in model_parts
             for key, param in part.named_parameters()
-            if split_adapter_key(key) is not None
+            if is_adapter_key(key)
         }
         self.row_mapping = probe_torchtitan_row_mapping(self._params, sd_adapter, targets)
 

@@ -30,7 +30,7 @@ class HfPiece:
 @dataclass(frozen=True)
 class RowMapping:
     pieces: list[HfPiece]
-    # HF modules whose lora_A is one Megatron parameter, in export order
+    # HF modules whose lora_A is one backend parameter, in export order
     shared_lora_a_groups: tuple[tuple[str, ...], ...]
     target_modules: tuple[str, ...]
 
