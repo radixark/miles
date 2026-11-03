@@ -429,7 +429,7 @@ class TinkerService:
         )
         if isinstance(written, dict):
             return written
-        self.backend.commit_adapter(root, version, written, False)
+        self.backend.commit_adapter(root, version, written, overwrite=False)
         result = {
             "op": "save_weights_for_sampler",
             "path": f"tinker://{record.model_id}/sampler_weights/{version}",
