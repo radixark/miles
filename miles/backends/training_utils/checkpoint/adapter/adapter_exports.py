@@ -140,8 +140,15 @@ def write_external_adapter(
         _age_encrypt_in_place(Path(directory), age_recipients)
 
 
+def parse_age_recipient(recipient: str) -> pyrage.x25519.Recipient | pyrage.ssh.Recipient:
+    """The SDK documents both native age (age1...) and SSH (ssh-...) public keys."""
+    if recipient.startswith("ssh-"):
+        return pyrage.ssh.Recipient.from_str(recipient)
+    return pyrage.x25519.Recipient.from_str(recipient)
+
+
 def _age_encrypt_in_place(directory: Path, recipients: Sequence[str]) -> None:
-    parsed = [pyrage.x25519.Recipient.from_str(r) for r in recipients]
+    parsed = [parse_age_recipient(r) for r in recipients]
     # not the whole directory: it also holds the gateway's tenant.json, which must stay readable to resolve the owner
     for name in ("adapter_config.json", "adapter_model.safetensors"):
         path = directory / name

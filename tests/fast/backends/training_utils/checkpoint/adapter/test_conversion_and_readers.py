@@ -6,6 +6,8 @@ from dataclasses import replace
 import pyrage
 import pytest
 import torch
+from cryptography.hazmat.primitives.asymmetric import ed25519
+from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat, PublicFormat
 from safetensors.torch import load_file, save_file
 
 from miles.backends.training_utils.checkpoint.adapter.adapter_exports import (
@@ -174,12 +176,22 @@ def test_external_export_reads_back_through_the_external_reader(tmp_path, shared
         assert torch.equal(read[f"{module}.lora_B"], weights[f"{module}.lora_B"])
 
 
-def test_an_encrypted_external_export_decrypts_to_the_plain_one(tmp_path):
-    identity = pyrage.x25519.Identity.generate()
+def _ssh_identity() -> tuple[pyrage.ssh.Identity, str]:
+    key = ed25519.Ed25519PrivateKey.generate()
+    private = key.private_bytes(Encoding.PEM, PrivateFormat.OpenSSH, NoEncryption())
+    public = key.public_key().public_bytes(Encoding.OpenSSH, PublicFormat.OpenSSH).decode()
+    return pyrage.ssh.Identity.from_buffer(private), public
+
+
+@pytest.mark.parametrize("key_type", ["x25519", "ssh"])
+def test_an_encrypted_external_export_decrypts_to_the_plain_one(tmp_path, key_type):
+    if key_type == "ssh":
+        identity, recipient = _ssh_identity()
+    else:
+        identity = pyrage.x25519.Identity.generate()
+        recipient = str(identity.to_public())
     write_external_adapter(tmp_path / "plain", _weights(False), _run(), QWEN35)
-    write_external_adapter(
-        tmp_path / "age", _weights(False), _run(), QWEN35, age_recipients=[str(identity.to_public())]
-    )
+    write_external_adapter(tmp_path / "age", _weights(False), _run(), QWEN35, age_recipients=[recipient])
     assert sorted(p.name for p in (tmp_path / "age").iterdir()) == [
         "adapter_config.json.age",
         "adapter_model.safetensors.age",
