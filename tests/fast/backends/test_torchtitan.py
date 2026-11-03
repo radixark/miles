@@ -29,6 +29,7 @@ def _args(**overrides) -> Namespace:
         rollout_max_response_len=4096,
         ref_update_interval=None,
         save_debug_train_data=None,
+        update_weight_transfer_mode="broadcast",
         optimizer_cpu_offload=False,
         stream_optimizer_state_to_disk=False,
         stream_optimizer_state_moment_dtype="fp32",
@@ -54,6 +55,15 @@ def test_the_backend_needs_torch_214(monkeypatch):
         validate_torchtitan_args(_args())
     monkeypatch.setattr(torch, "__version__", "2.14.0")
     validate_torchtitan_args(_args())
+
+
+def test_ici_weight_sync_needs_the_shared_slice_env(monkeypatch):
+    monkeypatch.setattr(torch, "__version__", "2.14.0")
+    monkeypatch.delenv("MILES_TPU_SHARED_SLICE", raising=False)
+    with pytest.raises(ValueError, match="MILES_TPU_SHARED_SLICE"):
+        validate_torchtitan_args(_args(update_weight_transfer_mode="ici"))
+    monkeypatch.setenv("MILES_TPU_SHARED_SLICE", "0,8,localhost:29600")
+    validate_torchtitan_args(_args(update_weight_transfer_mode="ici"))
 
 
 def test_the_sequence_must_cover_the_rotary_tables(monkeypatch):
