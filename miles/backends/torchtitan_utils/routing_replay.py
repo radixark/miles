@@ -135,6 +135,7 @@ def _stage_forward_ids(replays: list[Replay]):
     """Pop a part's ids for this microbatch before its blocks run, so a compiled block does not pop inside the graph."""
     try:
         for replay in replays:
+            routing_replay_manager.fill_through(replay.forward_index)
             replay.staged_forward_ids = replay.pop_forward()
         yield
     finally:

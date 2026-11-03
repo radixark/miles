@@ -77,7 +77,8 @@ def attach_replay_data(
     Micro batch `index` holds the samples the log-prob and train forwards see as their
     `index`-th micro batch; their rows are padded/sliced to match the local CP/SP token
     layout, and stream-to-module mapping is delegated to `manager.register_replay_list_func`.
-    Every micro batch is filled before this returns.
+    The manager fills the micro batches in order on its worker thread, ahead of the forwards
+    that pop them; the column is dropped once the last one has been waited for.
 
     For `bshd`, `sequence_first` selects Megatron MoE's `[S, B]` token order;
     indexer replay consumes the default `[B, S]` order. `align`, if given, is
@@ -181,14 +182,15 @@ def attach_replay_data(
         if align is not None:
             replay_data = align(replay_data, -1)
         manager.register_replay_list_func(manager.replays, replay_data, models=models)
-        if index == len(order) - 1:
-            if keep_column:
-                rollout_data[data_key] = [kept_rows.get(j) for j in range(len(column))]
-            else:
-                del rollout_data[data_key]
 
-    manager.attach(fill)
-    manager.fill_through(len(order) - 1)
+    def finish():
+        # On the main thread: it may be iterating rollout_data while the worker fills.
+        if keep_column:
+            rollout_data[data_key] = [kept_rows.get(j) for j in range(len(column))]
+        else:
+            del rollout_data[data_key]
+
+    manager.attach(fill, len(order), finish)
 
 
 def _read_local_rows(
