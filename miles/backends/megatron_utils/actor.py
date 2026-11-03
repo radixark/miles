@@ -607,6 +607,12 @@ class MegatronTrainRayActor(TrainRayActor):
         for m in all_replay_managers:
             m.stage = stage
 
+    def _clear_replays(self) -> None:
+        """Drop this step's replay entries, stopping the fills still running."""
+        for m in all_replay_managers:
+            if m.enabled:
+                m.clear_all()
+
     @with_logs
     def _compute_log_prob(
         self,
@@ -660,6 +666,8 @@ class MegatronTrainRayActor(TrainRayActor):
                     ),
                 )
                 stack.enter_context(store_get_result)
+                # Before the shard is released, on failure too: the replay fills still read it.
+                stack.callback(self._clear_replays)
                 if self.args.debug_rollout_only:
                     log_rollout_data(rollout_id, self.args, rollout_data)
                     return TrainStepOutput(outcome=TrainStepOutcome.NORMAL)
@@ -851,10 +859,6 @@ class MegatronTrainRayActor(TrainRayActor):
             self.prof.step(rollout_id=rollout_id)
 
         train_dump.save_debug_train_data(self.args, rollout_id=rollout_id, rollout_data=rollout_data)
-
-        for m in all_replay_managers:
-            if m.enabled:
-                m.clear_all()
 
         if train_step_outcome == TrainStepOutcome.NORMAL:
             # update the cpu actor weight to the latest model

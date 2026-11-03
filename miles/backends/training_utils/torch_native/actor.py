@@ -169,7 +169,11 @@ class TorchNativeTrainRayActor(TrainRayActor):
             with store_get_result:
                 if self.args.debug_rollout_only:
                     return TrainStepOutput(outcome=TrainStepOutcome.NORMAL)
-                self._train_core(rollout_id=rollout_id, rollout_data=rollout_data)
+                try:
+                    self._train_core(rollout_id=rollout_id, rollout_data=rollout_data)
+                finally:
+                    # Before the shard is released, on failure too: the replay fills still read it.
+                    routing_replay.reset()
 
         perf.log_perf_data_raw(
             rollout_id=rollout_id,
@@ -208,7 +212,6 @@ class TorchNativeTrainRayActor(TrainRayActor):
 
         with routing_replay.stage(routing_replay.REPLAY_BACKWARD), timer("actor_train"):
             self._optimizer_steps(runner, data_iterator, num_microbatches, rollout_id)
-        routing_replay.reset()
 
         self.prof.step(rollout_id=rollout_id)
         self._after_rollout(rollout_id, rollout_data)

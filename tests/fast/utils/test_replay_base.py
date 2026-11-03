@@ -2,6 +2,9 @@ from tests.ci.ci_register import register_cpu_ci
 
 register_cpu_ci(est_time=60, suite="stage-b-cpu", labels=["replay"])
 
+import threading
+
+import pytest
 import torch
 
 from miles.utils.replay_base import BaseReplayManager
@@ -10,6 +13,7 @@ from miles.utils.replay_base import BaseReplayManager
 class _FakeReplay:
     def __init__(self, *top_indices):
         self.top_indices = list(top_indices)
+        self.forward_index = self.backward_index = 0
 
     def pop_forward(self):
         return self.top_indices.pop(0)
@@ -53,31 +57,123 @@ def test_get_topk_fn_preserves_partial_padding():
     torch.testing.assert_close(topk_fn(scores, 3), replayed_top_indices)
 
 
-def test_fill_through_fills_each_micro_batch_once_up_to_the_cursor():
+class _QueueReplay:
+    """A replay whose entries a fill appends, popped by cursor as `Replay` does."""
+
+    def __init__(self):
+        self.top_indices_list = []
+        self.forward_index = 0
+
+    def pop_forward(self):
+        top_indices = self.top_indices_list[self.forward_index]
+        self.forward_index += 1
+        return top_indices
+
+
+def test_fills_run_in_order_on_the_worker_and_fill_through_waits_up_to_the_cursor():
+    manager = BaseReplayManager()
+    filled, release = [], threading.Event()
+
+    def fill(index):
+        if index == 1:
+            release.wait(timeout=5)
+        filled.append((index, threading.current_thread().name))
+
+    manager.attach(fill, 3)
+    manager.fill_through(0)
+    assert [index for index, _ in filled] == [0]
+    release.set()
+    manager.fill_through(2)
+    manager.fill_through(1)
+
+    assert [index for index, _ in filled] == [0, 1, 2]
+    assert {name.startswith("replay-") for _, name in filled} == {True}
+
+
+def test_finish_runs_once_on_the_waiting_thread_after_the_last_fill():
+    manager = BaseReplayManager()
+    finished = []
+    manager.attach(lambda index: None, 2, lambda: finished.append(threading.current_thread()))
+
+    manager.fill_through(0)
+    assert finished == []
+    manager.fill_through(1)
+    manager.fill_through(1)
+
+    assert finished == [threading.current_thread()]
+
+
+def test_a_failed_fill_raises_at_its_pop_and_the_later_fills_are_skipped():
     manager = BaseReplayManager()
     filled = []
-    manager.attach(filled.append)
 
-    manager.fill_through(1)
+    def fill(index):
+        if index == 1:
+            raise RuntimeError("store read failed")
+        filled.append(index)
+
+    manager.attach(fill, 3)
     manager.fill_through(0)
-    manager.fill_through(2)
+    with pytest.raises(RuntimeError, match="store read failed"):
+        manager.fill_through(2)
+    with pytest.raises(RuntimeError, match="store read failed"):
+        manager.fill_through(1)
+    manager.clear_all()
 
-    assert filled == [0, 1, 2]
+    assert filled == [0]
 
 
-def test_attach_and_clear_all_drop_the_previous_source_and_entries():
+def test_clear_all_drains_the_running_fill_and_drops_the_queued_ones_and_the_entries():
+    manager = BaseReplayManager()
+    replay = manager.create_replay()
+    filled, release = [], threading.Event()
+
+    def fill(index):
+        release.wait(timeout=5)
+        replay.top_indices_list.append(torch.zeros(1))
+        filled.append(index)
+
+    manager.attach(fill, 2)
+    threading.Timer(0.05, release.set).start()
+    manager.clear_all()
+
+    assert filled == [0]
+    assert replay.top_indices_list == []
+    manager.fill_through(5)
+
+
+def test_attach_drops_the_previous_step_before_filling_the_next():
     manager = BaseReplayManager()
     replay = manager.create_replay()
     replay.top_indices_list = [torch.zeros(1)]
     first, second = [], []
 
-    manager.attach(first.append)
+    manager.attach(first.append, 1)
     assert replay.top_indices_list == []
     manager.fill_through(0)
-    manager.attach(second.append)
+    manager.attach(second.append, 2)
     manager.fill_through(1)
-    manager.clear_all()
-    manager.fill_through(2)
 
     assert first == [0]
     assert second == [0, 1]
+
+
+def test_replay_forward_pops_only_after_its_micro_batch_is_filled():
+    manager = BaseReplayManager()
+    manager.enable_check_replay_result = False
+    manager.enabled = True
+    manager.stage = "replay_forward"
+    replay = _QueueReplay()
+    manager.set_current(replay)
+    release = threading.Event()
+    expected = torch.tensor([[1, 0]], dtype=torch.int32)
+
+    def fill(index):
+        release.wait(timeout=5)
+        replay.top_indices_list.append(expected)
+
+    manager.attach(fill, 1)
+    threading.Timer(0.05, release.set).start()
+    topk_fn = manager.get_topk_fn(_topk, return_probs=False)
+
+    torch.testing.assert_close(topk_fn(torch.tensor([[0.1, 0.9]]), 2), expected)
