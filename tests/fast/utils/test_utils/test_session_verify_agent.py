@@ -74,7 +74,7 @@ def test_assistant_input_appends_two_text_messages_then_user(monkeypatch):
     monkeypatch.setattr(
         session_verify_agent,
         "select_schedule",
-        lambda allowed_roles, *, cycles: [DriverAction.ASSISTANT_INPUT],
+        lambda allowed_roles, *, cycles, parse_failure: [DriverAction.ASSISTANT_INPUT],
     )
 
     result = asyncio.run(
@@ -182,7 +182,7 @@ def test_assistant_input_generated_response_is_rolled_back_and_regenerated(monke
     monkeypatch.setattr(
         session_verify_agent,
         "select_schedule",
-        lambda allowed_roles, *, cycles: [DriverAction.ASSISTANT_INPUT, DriverAction.ROLLBACK],
+        lambda allowed_roles, *, cycles, parse_failure: [DriverAction.ASSISTANT_INPUT, DriverAction.ROLLBACK],
     )
 
     result = asyncio.run(
@@ -237,7 +237,7 @@ def test_unanswered_tool_call_is_answered_before_force_final(monkeypatch):
     monkeypatch.setattr(
         session_verify_agent,
         "select_schedule",
-        lambda allowed_roles, *, cycles: [DriverAction.TOOL_RESULT, DriverAction.FORCE_FINAL],
+        lambda allowed_roles, *, cycles, parse_failure: [DriverAction.TOOL_RESULT, DriverAction.FORCE_FINAL],
     )
 
     result = asyncio.run(
@@ -273,6 +273,13 @@ def test_schedule_places_parse_failure_right_before_force_final():
     assert schedule[force_final - 1] is DriverAction.PARSE_FAILURE
 
 
+def test_schedule_with_parse_failure_off_keeps_force_final_only():
+    schedule = select_schedule(VALID_APPEND_ROLES, cycles=2, parse_failure=False)
+
+    assert DriverAction.PARSE_FAILURE not in schedule
+    assert schedule.count(DriverAction.FORCE_FINAL) == 1
+
+
 def test_schedule_without_user_role_has_no_parse_failure():
     schedule = select_schedule(("tool",), cycles=1)
 
@@ -304,7 +311,7 @@ def _run_parse_failure_schedule(monkeypatch, parse_failure_reply):
     monkeypatch.setattr(
         session_verify_agent,
         "select_schedule",
-        lambda allowed_roles, *, cycles: [DriverAction.PARSE_FAILURE, DriverAction.FORCE_FINAL],
+        lambda allowed_roles, *, cycles, parse_failure: [DriverAction.PARSE_FAILURE, DriverAction.FORCE_FINAL],
     )
     result = asyncio.run(
         run_agent(
@@ -360,6 +367,36 @@ def _qwen3_verified_sample(mismatches):
             "tito_session_mismatch": mismatches,
         }
     )
+
+
+@pytest.mark.parametrize("parse_failure", [True, False])
+def test_generate_requires_parse_failure_event_only_when_the_step_is_on(monkeypatch, parse_failure):
+    monkeypatch.delenv("MILES_SESSION_VERIFY_METRICS_PATH", raising=False)
+    sample = _qwen3_verified_sample([])
+    sample.metadata["driver_events"].remove("parse_failure")
+    seen_metadata = []
+
+    async def fake_base_generate(input):
+        seen_metadata.append(dict(input.sample.metadata))
+        return GenerateFnOutput(samples=[sample])
+
+    monkeypatch.setattr(session_verify_agent, "_base_generate", fake_base_generate)
+    input_value = SimpleNamespace(
+        sample=Sample(),
+        args=SimpleNamespace(
+            tito_model="qwen3",
+            session_verify_cycles=3,
+            tool_call_failure_mode="rollback",
+            session_verify_parse_failure=parse_failure,
+        ),
+    )
+
+    if parse_failure:
+        with pytest.raises(AssertionError, match=r"missing required driver events \['parse_failure'\]"):
+            asyncio.run(session_verify_agent.generate(input_value))
+    else:
+        assert asyncio.run(session_verify_agent.generate(input_value)).samples == [sample]
+    assert seen_metadata[0]["session_verify_parse_failure"] is parse_failure
 
 
 def test_generate_records_hard_mismatch_without_dropping_sample(monkeypatch, tmp_path):

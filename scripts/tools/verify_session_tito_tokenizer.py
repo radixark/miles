@@ -129,6 +129,7 @@ def _runner_namespace(*, config: AllConfig, assistant_text_threshold: float, ena
         custom_agent_function_path=agent.path,
         session_verify_cycles=generate_values["session_verify_cycles"],
         tool_call_failure_mode=generate_values["tool_call_failure_mode"],
+        session_verify_parse_failure=generate_values["session_verify_parse_failure"],
         tito_model=config.tito_model,
         session_message_matcher=config.session_message_matcher,
         rollout_num_gpus_per_engine=config.rollout_num_gpus_per_engine,
@@ -161,8 +162,8 @@ def _runner_namespace(*, config: AllConfig, assistant_text_threshold: float, ena
     )
 
 
-def _print_action_table(allowed_roles: list[str], *, cycles: int) -> None:
-    schedule = select_schedule(allowed_roles, cycles=cycles)
+def _print_action_table(allowed_roles: list[str], *, cycles: int, parse_failure: bool) -> None:
+    schedule = select_schedule(allowed_roles, cycles=cycles, parse_failure=parse_failure)
     print("Driver schedule (after initial completion):")
     for i, action in enumerate(schedule, 1):
         print(f"  {i}. {action.value}")
@@ -171,7 +172,8 @@ def _print_action_table(allowed_roles: list[str], *, cycles: int) -> None:
     print("  - rollback         (deterministic; always required)")
     if "user" in allowed_roles:
         print("  - append_user      (deterministic; required because 'user' in roles)")
-        print("  - parse_failure    (deterministic; required because 'user' in roles)")
+        if parse_failure:
+            print("  - parse_failure    (deterministic; required because 'user' in roles)")
     if "system" in allowed_roles:
         print("  - append_system    (deterministic; required because 'system' in roles)")
     if "assistant" in allowed_roles:
@@ -207,15 +209,20 @@ def main() -> int:
     print(f"Samples per prompt:     {args.n_samples_per_prompt}")
     print(f"Cycles per sample:      {args.session_verify_cycles}")
     print(f"Tool-call failure mode: {args.tool_call_failure_mode}")
+    print(f"Parse-failure step:     {args.session_verify_parse_failure}")
     print()
 
     try:
-        select_schedule(allowed_roles, cycles=args.session_verify_cycles)
+        select_schedule(
+            allowed_roles, cycles=args.session_verify_cycles, parse_failure=args.session_verify_parse_failure
+        )
     except ValueError as e:
         print(f"Verdict: FAIL -- {e}", file=sys.stderr)
         return 1
 
-    _print_action_table(allowed_roles, cycles=args.session_verify_cycles)
+    _print_action_table(
+        allowed_roles, cycles=args.session_verify_cycles, parse_failure=args.session_verify_parse_failure
+    )
 
     try:
         run_session_verify(args=args)

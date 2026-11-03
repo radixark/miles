@@ -218,6 +218,8 @@ def namespace_to_train_args(ns: argparse.Namespace) -> str:
         parts.append("--ci-test")
     if ns.ci_tito_special_token_count_threshold:
         parts.append(f"--ci-tito-special-token-count-threshold {ns.ci_tito_special_token_count_threshold}")
+    if not ns.session_verify_parse_failure:
+        parts.append("--no-session-verify-parse-failure")
     if not ns.enable_sample_ownership_checker:
         parts.append("--no-enable-sample-ownership-checker")
     if ns.colocate:
@@ -247,7 +249,8 @@ def run_session_verify(args: argparse.Namespace, *, wire_format: SessionWireForm
 
     ``args`` MUST be a fully-shaped Namespace carrying miles-canonical field
     names plus the session-verify-specific fields (``session_verify_cycles``,
-    ``tool_call_failure_mode``, ``assistant_text_threshold``).  Build it via
+    ``tool_call_failure_mode``, ``session_verify_parse_failure``,
+    ``assistant_text_threshold``).  Build it via
     the CLI entrypoint's ``_parse_session_verify_args()`` adapter for the CLI
     path or by spreading ``SESSION_VERIFY_INVARIANT_ARGS`` into
     ``argparse.Namespace(...)`` for tests.

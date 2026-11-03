@@ -21,7 +21,9 @@ class TestSessionVerifierAdapterFields:
         }
         generate = CustomFunctionConfig(
             path="test86.generate",
-            config=ImmutableNamespace(session_verify_cycles=3, tool_call_failure_mode="append_user"),
+            config=ImmutableNamespace(
+                session_verify_cycles=3, tool_call_failure_mode="append_user", session_verify_parse_failure=False
+            ),
         )
         agent = CustomFunctionConfig(path="test86.agent")
         config = parse_megatron_test_config().model_copy(
@@ -40,6 +42,7 @@ class TestSessionVerifierAdapterFields:
         assert args.custom_agent_function_path == agent.path
         assert args.session_verify_cycles == 3
         assert args.tool_call_failure_mode == "append_user"
+        assert args.session_verify_parse_failure is False
         assert args.assistant_text_threshold == 0.73
         assert args.enable_spec is True
         assert args.hf_checkpoint == config.hf_checkpoint
