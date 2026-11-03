@@ -15,6 +15,7 @@ import torch.distributed as dist
 import torch.distributed.checkpoint as dcp
 from megatron.core import dist_checkpointing
 from megatron.core.dist_checkpointing.dict_utils import nested_values
+from megatron.core.dist_checkpointing.mapping import apply_factories
 from megatron.core.distributed import DistributedDataParallel as DDP
 from megatron.core.optimizer import DistributedOptimizer
 from megatron.core.optimizer.cpu_offloading.hybrid_optimizer import HybridDeviceOptimizer
@@ -419,22 +420,30 @@ def find_load_mismatch(
             _read_legacy_meta(path, run)
             # TE's _extra_state objects are stored per shard (<key>/shard_i_j); the tensors decide the layout
             saved = {
-                k
-                for k in dcp.FileSystemReader(path).read_metadata().state_dict_metadata
+                k: tuple(metadata.size)
+                for k, metadata in dcp.FileSystemReader(path).read_metadata().state_dict_metadata.items()
                 if ".adapter." in k and "_extra_state" not in k and not OPTIMIZER_KEY.match(k)
             }
+            slot_state = _canonicalize_slot_keys(_slot_weights_sharded_state_dict(model, slot), slot)
+            # shared grouped-expert adapters are factories; built, they carry the global expert axis
+            apply_factories(slot_state)
             expected = {
-                sharded.key
-                for sharded in nested_values(
-                    _canonicalize_slot_keys(_slot_weights_sharded_state_dict(model, slot), slot)
-                )
+                sharded.key: tuple(sharded.global_shape)
+                for sharded in nested_values(slot_state)
                 if "_extra_state" not in sharded.key
             }
-            if expected != saved:
+            if expected.keys() != saved.keys():
                 mismatch = (
                     f"{path} was saved with another adapter layout than this gateway trains "
-                    f"(differing keys e.g. {sorted(expected ^ saved)[:3]}); "
+                    f"(differing keys e.g. {sorted(expected.keys() ^ saved.keys())[:3]}); "
                     "load it on a gateway with the layout it was saved with"
+                )
+            elif expected != saved:
+                key = next(k for k in sorted(expected) if expected[k] != saved[k])
+                mismatch = (
+                    f"{path} was saved with other tensor shapes than this gateway's slots ({key}: saved "
+                    f"{saved[key]}, slot {expected[key]}); legacy tensors are padded to the gateway's --lora-rank, "
+                    "so load it on a gateway launched with the one it was saved with"
                 )
         elif kind.is_read_into_model():
             # load_adapter_dir refuses it only after the slot reset
@@ -577,9 +586,9 @@ def save_single_lora(model, optimizer, opt_param_scheduler, adapter_slots: Bridg
     )
 
 
-def restore_single_lora(model, args, *, optimizer, opt_param_scheduler) -> tuple[int | None, bool]:
-    """``--lora-adapter-path`` from any recognized source; returns the saved iteration when the source has one, and
-    whether it restored the scheduler.
+def restore_single_lora(model, args, *, optimizer, opt_param_scheduler) -> tuple[int | None, bool, int]:
+    """``--lora-adapter-path`` from any recognized source; returns the saved iteration when the source has one,
+    whether it restored the scheduler, and the rollout the saving run's schedule started at.
 
     ``--lora-adapter-convert-save`` then commits the loaded state there in the adapter format.
     """
@@ -648,12 +657,14 @@ def restore_single_lora(model, args, *, optimizer, opt_param_scheduler) -> tuple
             training_state=training_state,
         )
     if training_state is None:
-        return None, False
+        return None, False, 0
     # a torchtitan run's training state has its own scheduler state, not Megatron's
     scheduler_state = training_state.get("opt_param_scheduler")
     if opt_param_scheduler is not None and scheduler_state is not None:
         opt_param_scheduler.load_state_dict(scheduler_state)
-    return training_state["iteration"], scheduler_state is not None
+    # only a torchtitan run records it; Megatron's own scheduler state already counts from its first rollout
+    first_rollout = training_state.get("first_rollout", 0)
+    return training_state["iteration"], scheduler_state is not None, first_rollout
 
 
 class LegacyRankShardLoader:

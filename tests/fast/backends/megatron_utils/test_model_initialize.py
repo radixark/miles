@@ -234,6 +234,7 @@ def _load_model_state_with(
     restored_trained_iteration: bool | None = None,
     adapter_iteration: int | None = None,
     adapter_scheduler_restored: bool = True,
+    adapter_first_rollout: int = 0,
     opt_param_scheduler=None,
     lora_adapter_path: str | None = None,
     write_tracker: bool = True,
@@ -262,7 +263,7 @@ def _load_model_state_with(
         stack.enter_context(
             patch(
                 "miles.backends.megatron_utils.model.restore_single_lora",
-                return_value=(adapter_iteration, adapter_scheduler_restored),
+                return_value=(adapter_iteration, adapter_scheduler_restored, adapter_first_rollout),
             )
         )
         _patch_initialize_side_effects(stack)
@@ -417,6 +418,26 @@ class TestALoraAdapterThatCarriesItsOwnIteration:
                 use_dynamic_global_batch_size=dynamic,
             )
         scheduler.step.assert_called_once_with(increment=101 * 16)
+
+    def test_an_adapter_from_a_run_started_at_a_later_rollout_steps_the_scheduler_past_its_trained_rollouts(
+        self, tmp_path: Path
+    ) -> None:
+        """A torchtitan run from --start-rollout-id 5 saved iteration 6 after training rollouts 5 and 6 alone."""
+        scheduler = MagicMock()
+        _load_model_state_with(
+            tmp_path=tmp_path,
+            finetune=True,
+            iteration=0,
+            adapter_iteration=6,
+            adapter_scheduler_restored=False,
+            adapter_first_rollout=5,
+            opt_param_scheduler=scheduler,
+            lora_adapter_path=str(tmp_path / "adapter"),
+            resume_from_ckpt=False,
+            rollout_batch_size=5,
+            n_samples_per_prompt=4,
+        )
+        scheduler.step.assert_called_once_with(increment=2 * 16)
 
 
 class TestCheckpointSourceRequirement:

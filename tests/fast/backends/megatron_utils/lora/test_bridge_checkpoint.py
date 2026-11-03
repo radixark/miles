@@ -336,6 +336,10 @@ def test_the_base_is_bridge_pretrained_checkpoint_not_the_hf_template(tmp_path):
     config["checkpoint"]["hf_source_path"] = None
     config["tokenizer"]["tokenizer_model"] = template
     assert_same_base_model("src", bridge_base_model_candidates(config), template)
+    # Bridge's template is hf_model_id, absent here: a later candidate that resolves must not stand in for it
+    config["model"]["hf_model_id"] = str(tmp_path / "missing")
+    with pytest.raises(AssertionError, match="has no local HF files"):
+        assert_same_base_model("src", bridge_base_model_candidates(config), template)
 
 
 GDN = "model.layers.0.linear_attn"
