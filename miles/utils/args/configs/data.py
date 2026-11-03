@@ -23,6 +23,15 @@ class DataConfig(BaseConfig):
             help="Exit training after this many rollouts (for testing checkpoint resume with consistent scheduler params)."
         ),
     ] = None
+    debug_exit_after_first_weight_update: A[
+        bool,
+        Arg(
+            help=(
+                "Exit right after the initial weight update and its --check-weight-update-equal comparison, "
+                "before any rollout; for validating a weight-transfer path."
+            )
+        ),
+    ] = False
     num_epoch: A[
         int | None,
         Arg(

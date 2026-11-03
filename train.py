@@ -73,6 +73,9 @@ async def train(startup_info: OrchestratorStartupInfo, *, disposer: Disposer):
             selector=args.check_weight_update_selector,
             skip_list=args.check_weight_update_skip_list,
         )
+    if args.debug_exit_after_first_weight_update:
+        logger.info("debug_exit_after_first_weight_update set: exiting after the initial weight update")
+        return
 
     if args.offload_rollout:
         await inference_controller.onload_kv()

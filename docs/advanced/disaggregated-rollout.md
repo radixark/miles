@@ -106,6 +106,7 @@ miles-managed path:
 | `broadcast` | Gather and convert trainer weights, then broadcast each tensor separately to the SGLang ranks over NCCL | Trainer and rollout ranks have NCCL connectivity; this remains the default |
 | `broadcast_packed` | Pack each weight bucket into one byte buffer and issue one NCCL broadcast | Non-colocated Megatron with SGLang mixed-dtype flattened-bucket support; trades contiguous bucket storage for fewer collectives |
 | `p2p` | Convert and re-shard weights, then write them directly to rollout-rank memory over RDMA | miles-managed, in-cluster jobs with direct rank-to-rank connectivity; see [P2P Weight Transfer](/advanced/p2p-weight-transfer) |
+| `weightbridge` | Every trainer rank writes its own shards straight into the rollout ranks that need them over RDMA, rollout replicas exchange the rest among themselves, and each engine pauses, loads and resumes on its own | Disaggregated Megatron jobs with an RDMA fabric, especially at high rollout DP; see [WeightBridge Weight Transfer](/advanced/weightbridge-weight-transfer) |
 | `disk-delta` | Publish changed canonical checkpoint bytes to shared storage, let rollout hosts materialize them locally, then reload | Trainer and rollout cannot share an NCCL fabric, or model-sized full-weight transfer dominates the update |
 
 These are weight synchronization choices, not different rollout APIs. In the

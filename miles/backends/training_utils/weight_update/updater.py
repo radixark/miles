@@ -61,6 +61,7 @@ class WeightUpdater:
         self.args = args
         self.parallel_state = parallel_state
         self.protocol = get_weight_transfer_protocol(args)
+        self.protocol.bind_trainer_model(model)
         self.conn_status = ConnStatusManager()
         assert (
             not is_lora or self.protocol.supports_lora
@@ -140,6 +141,11 @@ class WeightUpdater:
     def update_weights(self, weight_version: int) -> bool:
         """Run one weight sync: session frame + base-bucket stream + adapter pushes for LoRA."""
         protocol = self.protocol
+        if not protocol.streams_buckets:
+            # The protocol owns the engine side end to end: no session RPCs, no HF bucket stream.
+            with timer("update_weights_implementation"):
+                protocol.send_live_weights(weight_version)
+            return True
         if not protocol.begin_sync(weight_version, self._iter_base_buckets):
             return False
 
