@@ -18,26 +18,30 @@ UNSHARED = AdapterParametrization("m", 2, 4.0, "canonical_lora", (Q, K), False)
 TARGETS = get_hf_lora_targets({"model_type": "qwen3", "num_hidden_layers": 1})
 
 
-@pytest.fixture
-def legacy_source(monkeypatch):
-    init_gloo(0, 1, port=find_free_port())
-    init_gloo_group()
+def _legacy_source(monkeypatch, saved_shape):
     monkeypatch.setattr(
         checkpoint, "check_adapter_source", lambda *_, **__: AdapterSourceKind.LEGACY_TINKER_CHECKPOINT
     )
     monkeypatch.setattr(checkpoint, "_read_legacy_meta", lambda *_: {})
-    metadata = SimpleNamespace(state_dict_metadata={"layer.adapter.w": None})
+    metadata = SimpleNamespace(state_dict_metadata={"layer.adapter.w": SimpleNamespace(size=torch.Size(saved_shape))})
     monkeypatch.setattr(checkpoint.dcp, "FileSystemReader", lambda _: SimpleNamespace(read_metadata=lambda: metadata))
     monkeypatch.setattr(
-        checkpoint, "_slot_weights_sharded_state_dict", lambda *_: {"w": SimpleNamespace(key="layer.adapters.0.w")}
+        checkpoint,
+        "_slot_weights_sharded_state_dict",
+        lambda *_: {"w": SimpleNamespace(key="layer.adapters.0.w", global_shape=(32, 6))},
     )
-    yield
-    dist.destroy_process_group()
 
 
 @pytest.mark.parametrize("load_optimizer", [True, False])
-def test_a_legacy_checkpoint_with_the_slots_keys_loads(legacy_source, load_optimizer):
+def test_a_legacy_checkpoint_with_the_slots_keys_loads(gloo, monkeypatch, load_optimizer):
+    _legacy_source(monkeypatch, saved_shape=(32, 6))
     assert checkpoint.find_load_mismatch(None, 0, "/ckpt", None, None, load_optimizer) is None
+
+
+def test_a_legacy_checkpoint_padded_to_another_max_rank_is_a_mismatch(gloo, monkeypatch):
+    _legacy_source(monkeypatch, saved_shape=(64, 6))
+    mismatch = checkpoint.find_load_mismatch(None, 0, "/ckpt", None, None, load_optimizer=False)
+    assert mismatch is not None and "layer.adapter.w: saved (64, 6), slot (32, 6)" in mismatch
 
 
 @pytest.fixture
