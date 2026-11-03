@@ -377,6 +377,13 @@ def test_a_megatron_bridge_source_records_its_alpha_in_run_config(tmp_path):
     assert read_source_lora_alpha(tmp_path) == 32.0
 
 
+def test_a_megatron_bridge_full_fine_tune_is_no_lora_source(tmp_path):
+    (tmp_path / ".metadata").touch()
+    (tmp_path / "run_config.yaml").write_text("peft: null\n")
+    with pytest.raises(AssertionError, match="without PEFT"):
+        read_source_lora_alpha(tmp_path)
+
+
 def test_a_peft_dir_takes_its_alpha_from_adapter_config_despite_a_run_config(tmp_path):
     (tmp_path / "adapter_config.json").write_text(json.dumps({"lora_alpha": 4}))
     (tmp_path / "run_config.yaml").write_text("peft:\n  alpha: 32\n")
