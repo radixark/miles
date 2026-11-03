@@ -421,6 +421,16 @@ class SGLangApiClient:
     async def abort_all_requests(self, timeout: float | None = None):
         return await self._make_request("abort_request", {"abort_all": True}, timeout=timeout)
 
+    async def update_weights_from_colocated_param_bytes(
+        self, socket_paths_by_device_uuid: dict[str, str], timeout_s: float
+    ):
+        """Inside an open session, each engine rank pulls param bytes in its own layout from the trainer rank on
+        its GPU; returns once every rank copied the whole stream, so no HTTP timeout bounds it."""
+        return await self._make_request(
+            "update_weights_from_colocated_param_bytes",
+            {"socket_paths_by_device_uuid": socket_paths_by_device_uuid, "timeout_s": timeout_s},
+        )
+
     async def begin_weight_update(self, selector: str = "all", sync_base: bool = True):
         """Open a weight-update session on the engine. sync_base=False declares an
         adapter-only session (no quant unpack; base tensors rejected)."""

@@ -9,7 +9,7 @@ import torch
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.parallel import ParallelState
-from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
+from miles.backends.training_utils.weight_update.hf_weight_iterator import HfNameRoute, WeightUpdatePlacement
 
 if TYPE_CHECKING:
     from miles.backends.training_utils.weight_update.rollout_cell_updater import _RolloutCellUpdater
@@ -30,6 +30,8 @@ class WeightTransferProtocol(ABC):
     supports_receiver_pools: ClassVar[bool] = False
     use_weight_update_session: ClassVar[bool] = True
     needs_base_resync_for_lora: bool = False
+    # the HF names each rank's rollout engine rank loads, passed to the iterator so it can skip the rest
+    hf_name_route: HfNameRoute | None = None
 
     def __init__(self, args: Namespace) -> None:
         self.args = args
@@ -86,6 +88,10 @@ def get_weight_transfer_protocol(args: Namespace) -> WeightTransferProtocol:
         raise ValueError(f"Unknown --update-weight-transfer-mode {mode!r}")
     if mode == "broadcast_packed" and (args.train_backend != "megatron" or args.colocate):
         raise ValueError("broadcast_packed requires Megatron non-colocated weight transfer")
+    if args.colocate and mode == "p2p":
+        from miles.backends.training_utils.weight_update.protocols.colocated_p2p import UpdateWeightFromColocatedP2P
+
+        return UpdateWeightFromColocatedP2P(args)
     if args.colocate:
         from miles.backends.training_utils.weight_update.protocols.cuda_ipc import UpdateWeightFromTensor
 

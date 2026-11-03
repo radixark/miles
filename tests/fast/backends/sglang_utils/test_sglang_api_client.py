@@ -282,6 +282,11 @@ _REMAINING_POST_CASES = [
             "selector": "all",
         },
     ),
+    (
+        lambda c: c.update_weights_from_colocated_param_bytes({"GPU-0": "ipc:///tmp/s"}, 30.0),
+        "update_weights_from_colocated_param_bytes",
+        {"socket_paths_by_device_uuid": {"GPU-0": "ipc:///tmp/s"}, "timeout_s": 30.0},
+    ),
     (lambda c: c.pause_generation(mode="abort"), "pause_generation", {"mode": "abort"}),
     (lambda c: c.continue_generation(), "continue_generation", {}),
     (

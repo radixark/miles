@@ -91,6 +91,7 @@ def _make_updater(
     protocol = SimpleNamespace(
         use_weight_update_session=True,
         needs_base_resync_for_lora=False,
+        hf_name_route=None,
         is_sender=True,
         group_name="test",
         rollout_engines=engines,
