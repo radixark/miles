@@ -296,9 +296,10 @@ def test_gpt_oss_packed_experts_round_trip_through_hf_components(tmp_path):
     write_peft_adapter(tmp_path, weights, run, GPT_OSS)
     packed = load_file(str(tmp_path / "adapter_model.safetensors"))
     # HF gpt-oss interleaves gate and up rows in gate_up_proj
-    b = packed[f"{L}.mlp.experts.gate_up_proj.lora_B.weight"]
+    experts = f"base_model.model.{L}.mlp.experts"
+    b = packed[f"{experts}.gate_up_proj.lora_B.weight"]
     assert torch.equal(b[:, 0::2], weights[f"{gate}.lora_B"]) and torch.equal(b[:, 1::2], weights[f"{up}.lora_B"])
-    assert packed[f"{L}.mlp.experts.down_proj.lora_A.weight"].shape == (3, 2, 4), "packed experts stay 3D"
+    assert packed[f"{experts}.down_proj.lora_A.weight"].shape == (3, 2, 4), "packed experts stay 3D"
     read = PeftAdapterReader(tmp_path, run, GPT_OSS)
     assert read.source.parametrization.shared_lora_a_groups == ((gate, up),)
     assert all(torch.equal(read.read_weights()[k], v) for k, v in weights.items())
@@ -370,7 +371,9 @@ def test_gpt_oss_experts_without_a_shared_a_stay_per_expert(tmp_path):
     }
     write_peft_adapter(tmp_path, weights, run, GPT_OSS)
     names = set(load_file(str(tmp_path / "adapter_model.safetensors")))
-    assert f"{L}.mlp.experts.2.up_proj.lora_A.weight" in names and not any("gate_up_proj" in n for n in names)
+    assert f"base_model.model.{L}.mlp.experts.2.up_proj.lora_A.weight" in names and not any(
+        "gate_up_proj" in n for n in names
+    )
 
 
 def test_gpt_oss_sampler_export_keeps_packed_hf_names(tmp_path):
@@ -392,7 +395,7 @@ def test_gpt_oss_down_proj_alone_stays_one_packed_3d_tensor(tmp_path):
     weights = {f"{down}.lora_A": torch.ones(3, 2, 4), f"{down}.lora_B": torch.ones(3, 8, 2)}
     write_peft_adapter(tmp_path / "peft", weights, _run(target_modules=(down,)), GPT_OSS)
     write_sampler_adapter(tmp_path / "sampler", weights, _run(target_modules=(down,)), GPT_OSS)
-    for export in ("peft", "sampler"):
+    for export, prefix in (("peft", "base_model.model."), ("sampler", "")):
         tensors = load_file(str(tmp_path / export / "adapter_model.safetensors"))
-        assert set(tensors) == {f"{down}.lora_A.weight", f"{down}.lora_B.weight"}, export
-        assert tensors[f"{down}.lora_A.weight"].shape == (3, 2, 4)
+        assert set(tensors) == {f"{prefix}{down}.lora_A.weight", f"{prefix}{down}.lora_B.weight"}, export
+        assert tensors[f"{prefix}{down}.lora_A.weight"].shape == (3, 2, 4)
