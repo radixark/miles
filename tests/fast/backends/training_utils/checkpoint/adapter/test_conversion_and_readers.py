@@ -83,7 +83,7 @@ def test_peft_export_reads_back_bitwise(tmp_path, shared_qkv):
 
 
 def test_a_fused_gdn_module_keeps_its_a_under_the_sorted_first_component(tmp_path):
-    write_peft_adapter(tmp_path, _weights(True), _run(shared_lora_a_groups=(QKV,)))
+    write_peft_adapter(tmp_path, _weights(True), _run(shared_lora_a_groups=(QKV,)), QWEN35)
     weights, fused_groups = _read_peft_tensors(tmp_path, map_peft_keys_to_hf_keys, QWEN35)
     assert fused_groups == [QKV] and min(QKV) != QKV[0]
     assert {k for k in weights if k.endswith(".lora_A") and k.split(".lora_")[0] in QKV} == {f"{min(QKV)}.lora_A"}
