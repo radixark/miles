@@ -134,9 +134,14 @@ def write_external_adapter(
             tensors[map_hf_keys_to_tinker_keys(f"{module}.{factor}", targets)] = weights[source].to(
                 torch.float32, copy=True
             )
-    hf_names = [map_hf_keys_to_peft_keys(f"{module}.lora_A") for module in parametrization.target_modules]
-    # as the official export writes it: the training run, not the file, names the base
-    config = _adapter_config(parametrization, hf_names) | {"base_model_name_or_path": None}
+    # as the official export writes it: the training run, not the file, names the base and the adapted modules (an
+    # explicit list of HF leaves would not match the Tinker-named expert tensors)
+    config = _adapter_config(parametrization, ()) | {
+        "target_modules": "all-linear",
+        "modules_to_save": None,
+        "target_parameters": None,
+        "base_model_name_or_path": None,
+    }
     if not age_recipients:
         save_adapter_to_disk(directory, config, tensors)
         return
