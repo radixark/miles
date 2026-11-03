@@ -90,3 +90,46 @@ def _probe_experts(rank, world_size, port):
 
 def test_probe_stacks_ep_split_experts_and_stores_a_shared_expert_a_once():
     run_multiprocess(_probe_experts)
+
+
+GDN = "model.layers.0.linear_attn"
+GDN_TARGETS = get_hf_lora_targets(
+    {
+        "model_type": "qwen3_5_text",
+        "num_hidden_layers": 1,
+        "layer_types": ["linear_attention"],
+        "linear_num_key_heads": 1,
+        "linear_key_head_dim": 2,
+        "linear_num_value_heads": 1,
+        "linear_value_head_dim": 3,
+    }
+)
+
+
+def _gdn_export(params):
+    """Bridge-like GDN in_proj: the fused in_proj_qkv and in_proj_z export one A."""
+    a, b_qkv, b_z = params
+    yield f"{GDN}.in_proj_qkv.lora_A.weight", a.data.clone()
+    yield f"{GDN}.in_proj_qkv.lora_B.weight", b_qkv.data.clone()
+    yield f"{GDN}.in_proj_z.lora_A.weight", a.data.clone()
+    yield f"{GDN}.in_proj_z.lora_B.weight", b_z.data.clone()
+
+
+def _probe_gdn(rank, world_size, port):
+    init_gloo(rank, world_size, port=port)
+    init_gloo_group()
+    params = [torch.nn.Parameter(torch.randn(4, 6)), torch.nn.Parameter(torch.randn(7, 4))]
+    params.append(torch.nn.Parameter(torch.randn(3, 4)))
+    mapping = probe_bridge_row_mapping(params, lambda: _gdn_export(params), GDN_TARGETS)
+    group = tuple(f"{GDN}.in_proj_{m}" for m in "kqvz")
+    assert mapping.shared_lora_a_groups == (group,)
+    pieces = {p.key: p for p in mapping.pieces}
+    assert set(pieces) == {f"{group[0]}.lora_A"} | {f"{m}.lora_B" for m in group}
+    flat = torch.cat([p.data.reshape(-1) for p in params])
+    assert torch.equal(flat[pieces[f"{group[0]}.lora_A"].local_elements], params[0].data)
+    assert torch.equal(flat[pieces[f"{GDN}.in_proj_k.lora_B"].local_elements], params[1].data[2:4])
+    dist.destroy_process_group()
+
+
+def test_probe_stores_a_fused_gdn_modules_shared_a_under_the_sorted_first_member():
+    run_multiprocess(_probe_gdn)
