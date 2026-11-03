@@ -9,7 +9,7 @@ import pydantic
 import pyrage
 
 import tinker
-from miles.tinker.core.input_validation import validate_save_options
+from miles.tinker.core.input_validation import validate_save_options, validate_ttl_seconds
 from miles.tinker.core.types import LOSS_INPUT_KEYS, UserInputError
 from tinker import types as tinker_types
 from tinker.types.topk_logprobs import MASK_LOGPROB
@@ -154,7 +154,7 @@ def _decode_command(op: str, payload: dict, decoded: dict) -> tuple[str, dict]:
         validate_save_options(request.ttl_seconds, request.user_metadata)
         return op, decoded | {"sampler_path": request.path, "ttl_seconds": request.ttl_seconds}
     if op == "save_weights_external":
-        validate_save_options(request.ttl_seconds, request.user_metadata)
+        validate_ttl_seconds(request.ttl_seconds)
         recipients = request.age_encryption_recipients or []
         validate_age_recipients(recipients)
         return op, decoded | {"name": request.path, "ttl_seconds": request.ttl_seconds, "age_recipients": recipients}
