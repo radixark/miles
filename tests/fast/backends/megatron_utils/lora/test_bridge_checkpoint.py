@@ -292,6 +292,10 @@ def test_the_base_is_bridge_pretrained_checkpoint_not_the_hf_template(tmp_path):
     config = {"checkpoint": {"pretrained_checkpoint": sft, "hf_source_path": template}, "model": {}}
     with pytest.raises(AssertionError, match="another base model"):
         assert_same_base_model("src", bridge_base_model_candidates(config), template)
-    # a torch_dist base has no HF files: its HF template stands in
+    # a torch_dist base cannot be fingerprinted; its HF template would miss a base fine-tuned in Megatron
     config["checkpoint"]["pretrained_checkpoint"] = str(tmp_path)
+    with pytest.raises(AssertionError, match="has no HF weights"):
+        assert_same_base_model("src", bridge_base_model_candidates(config), template)
+    # another machine's base: the HF template stands in
+    config["checkpoint"]["pretrained_checkpoint"] = str(tmp_path / "elsewhere")
     assert_same_base_model("src", bridge_base_model_candidates(config), template)
