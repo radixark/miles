@@ -143,13 +143,14 @@ def probe_bridge_row_mapping(
         for param, data in zip(params, saved, strict=True):
             param.data = data
 
-    groups = []
+    # every expert's shared A yields the same group
+    groups = set()
     if error is None:
         try:
             for members in a_sources.values():
                 flat = [m for member in members for m in ((member,) if isinstance(member, str) else member)]
                 if len(flat) > 1:
-                    groups.append(tuple(sorted(flat)))
+                    groups.add(tuple(sorted(flat)))
             pieces = [p for p in pieces if p is not None]
             pieces += [_stack_experts(key, by_expert, num_experts[key]) for key, by_expert in per_expert.items()]
             # a group's A pieces are copies of one parameter; the library stores it once, under the group's first
