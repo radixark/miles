@@ -17,7 +17,7 @@ def configured_args(tmp_path, monkeypatch):
     path = tmp_path / "dynamo.json"
     path.write_text(config.model_dump_json())
     monkeypatch.setattr("miles.backends.dynamo_utils.arguments.use_legacy_rollout_v1", lambda: False)
-    return make_args(dynamo_config=str(path))
+    return make_args(router="dynamo", dynamo_config=str(path))
 
 
 def test_fault_tolerance_and_api_key_are_accepted(configured_args):
@@ -29,20 +29,30 @@ def test_fault_tolerance_and_api_key_are_accepted(configured_args):
 
 
 def test_dynamo_configuration_survives_controller_config_transport(configured_args):
-    parsed = parse_fsdp_test_config("--dynamo-config", configured_args.dynamo_config, "--rollout-num-gpus", "1")
+    parsed = parse_fsdp_test_config(
+        "--router", "dynamo", "--dynamo-config", configured_args.dynamo_config, "--rollout-num-gpus", "1"
+    )
     config = InferenceControllerConfig.slice_from(parsed)
 
     restored = InferenceControllerConfig.model_validate_json(config.model_dump_json())
 
     assert restored.dynamo_config.namespace == "test-run"
     assert restored.dynamo_config == parsed.dynamo_config
+    assert restored.router == "dynamo"
+
+
+def test_dynamo_router_requires_configuration(configured_args):
+    configured_args.dynamo_config = None
+    with pytest.raises(ValueError, match="requires --dynamo-config"):
+        configure_dynamo(configured_args, sglang=configured_args.sglang)
 
 
 @pytest.mark.parametrize(
     "name,value",
     [
         ("rollout_external", True),
-        ("use_miles_router", True),
+        ("router", "miles"),
+        ("router", "sglang"),
         ("sglang_dp_size", 2),
         ("eval_uses_snapshots", True),
         ("sglang_grpc_port", 1234),

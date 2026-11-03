@@ -17,6 +17,7 @@ from miles.rollout.generate_utils.sampling_mask import (
     read_sampled_logprobs,
     should_return_sampling_mask,
 )
+from miles.router.backend import make_router_backend
 from miles.utils.lora.utils import LORA_ADAPTER_NAME, lora_rollout_enabled
 from miles.utils.output_store.plan import (
     FIELDS,
@@ -51,19 +52,12 @@ def compute_prompt_ids_from_sample(state, sample, tools=None):
         return state.tokenizer.encode(prompt, add_special_tokens=False)
 
 
-def policy_uses_routing_key(args) -> bool:
-    return args.sglang_router_policy in ("consistent_hashing", "manual")
+def router_routes_by_key(args) -> bool:
+    return make_router_backend(args).routes_by_key(args.sglang.models)
 
 
-def compute_routing_headers(args, sample: Sample) -> dict[str, str] | None:
-    if policy_uses_routing_key(args) and not sample.routing_key:
-        raise ValueError(
-            f"router policy {args.sglang_router_policy} routes by X-SMG-Routing-Key, "
-            f"but sample (index={sample.index}) has no routing_key set"
-        )
-    if sample.routing_key:
-        return {"X-SMG-Routing-Key": sample.routing_key}
-    return None
+def compute_routing_headers(args, sample: Sample) -> dict[str, str]:
+    return make_router_backend(args).routing_headers(sample.routing_key, args.sglang.models)
 
 
 def compute_request_payload(

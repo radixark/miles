@@ -51,6 +51,8 @@ def _args(**overrides: object) -> Namespace:
         advantage_estimator="grpo",
         rewards_normalization=False,
         reward_key=None,
+        length_penalty_coeff=0.0,
+        length_penalty_min_tokens=1,
         use_dynamic_global_batch_size=False,
         balance_data=False,
         qkv_format="thd",
