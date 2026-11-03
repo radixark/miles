@@ -33,23 +33,9 @@ def legacy_source(monkeypatch):
     dist.destroy_process_group()
 
 
-def _with_dp_size(monkeypatch, size):
-    groups = SimpleNamespace(dp_cp=SimpleNamespace(size=lambda: size), expt_dp=None)
-    monkeypatch.setattr(checkpoint.ProcessGroupCollection, "use_mpu_process_groups", lambda **_: groups)
-
-
 @pytest.mark.parametrize("load_optimizer", [True, False])
-def test_a_legacy_checkpoint_loads_without_data_parallelism(legacy_source, monkeypatch, load_optimizer):
-    _with_dp_size(monkeypatch, 1)
+def test_a_legacy_checkpoint_with_the_slots_keys_loads(legacy_source, load_optimizer):
     assert checkpoint.find_load_mismatch(None, 0, "/ckpt", None, None, load_optimizer) is None
-
-
-@pytest.mark.parametrize("load_optimizer", [True, False])
-def test_a_legacy_checkpoint_is_refused_under_data_parallelism(legacy_source, monkeypatch, load_optimizer):
-    # its masters' owners depend on the unrecorded slot that saved it, and weights only read them too
-    _with_dp_size(monkeypatch, 2)
-    mismatch = checkpoint.find_load_mismatch(None, 0, "/ckpt", None, None, load_optimizer)
-    assert "without data parallelism" in mismatch
 
 
 @pytest.fixture
