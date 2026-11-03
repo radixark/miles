@@ -9,6 +9,13 @@ from miles.utils.object_store_config import ObjectStoreBackend
 
 # rollout
 class RolloutRelatedConfig(BaseConfig):
+    rollout_engine_backend: A[
+        str, Arg(choices=["sglang", "lmdeploy"], help="Engine used to generate rollout samples.")
+    ] = "sglang"
+    lmdeploy_python: A[
+        str | None, Arg(help="Python executable of the LMDeploy environment, including the Miles compatibility server.")
+    ] = None
+    lmdeploy_max_batch_size: A[int, Arg(help="Maximum active sequences per LMDeploy instance.")] = 64
     custom_agent_function_path: A[CustomFunctionConfig | None, Arg()] = None
     use_sampling_support_replay: bool
     rollout_sampling_logprobs_mode: Literal["selected", "support"]

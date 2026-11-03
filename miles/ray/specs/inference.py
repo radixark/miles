@@ -4,6 +4,7 @@ from typing import Any, ClassVar
 
 from typing_extensions import Self
 
+from miles.backends.lmdeploy_utils.launch import compute_lmdeploy_launch_cmd
 from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig
 from miles.backends.sglang_utils.sglang_engine import compute_engine_launch_cmd
@@ -333,6 +334,16 @@ class InferenceEngineSpec(BaseCommandSpec):
     def launch_command(self, ctx: LaunchCommandContext) -> str:
         args = ctx.args
         server_group_config = self.server_group_config
+        if args.rollout_engine_backend == "lmdeploy":
+            return compute_lmdeploy_launch_cmd(
+                args=args,
+                model_path=server_group_config.overrides["model_path"],
+                host=ctx.self_addrs["primary"].host,
+                port=ctx.self_addrs["primary"].port,
+                gate_port=ctx.self_addrs[GATE_PORT_NAME].port,
+                base_gpu_id=ctx.local_gpu_ids[0],
+                cache_fraction=args.sglang.get_value("mem_fraction_static", group=server_group_config),
+            )
         num_workers_per_cell = ctx.num_workers_per_cell
         group_scaling = ctx.scaling.sglang_scaling.group(model_name=self.model_cfg.name, group_index=self.group_index)
         interpreter_prefix = self.interpreter_prefix

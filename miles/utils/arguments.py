@@ -11,6 +11,7 @@ from typing import Any
 import yaml
 
 from miles.backends.fsdp_utils.config import FsdpArgsNamespace
+from miles.backends.lmdeploy_utils.launch import validate_lmdeploy_args
 from miles.backends.megatron_utils.megatron_config import (
     ACTOR_ROLE,
     CRITIC_ROLE,
@@ -402,7 +403,9 @@ def parse_args_and_get_parser(
         ),
     }
     values.update(RouterConfig.from_args(args))
-    return AllConfig.model_validate(values), parser
+    config = AllConfig.model_validate(values)
+    validate_lmdeploy_args(config)
+    return config, parser
 
 
 def _validate_argument_ownership(
