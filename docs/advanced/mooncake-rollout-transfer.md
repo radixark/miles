@@ -257,7 +257,10 @@ this Mooncake and returns a ref instead: routed experts (`--use-rollout-routing-
 indexer top-k (`--use-rollout-indexer-replay`) and the sampling mask (a positive
 `--rollout-top-k`). The trainer reads them back and receives the same columns as without
 the option. Miles deletes the objects once nothing can read them, at the latest after the
-rollout's `train` step.
+rollout's `train` step. Each trainer rank reads only its own rows: with Megatron pipeline
+parallelism, Miles sends the layers where its stages meet with each request
+(`replay_layer_splits`), SGLang stores routed experts and indexer top-k in parts split at
+them, and each stage reads only the parts of its layers.
 
 ```bash
 --object-store-backend mooncake \
@@ -268,8 +271,9 @@ rollout's `train` step.
 Requirements:
 
 - SGLang with the output store, including
-  [sgl-project/sglang#46288](https://github.com/sgl-project/sglang/pull/46288), on every
-  engine, trainer and the session server. Miles configures each engine's store; do not
+  [sgl-project/sglang#46288](https://github.com/sgl-project/sglang/pull/46288), that stores
+  the forward fields in layer parts (`replay_layer_splits`), on every engine, trainer and the
+  session server. Miles configures each engine's store; do not
   set `output_store_backend` through `--sglang-*` flags or `sglang_overrides`.
 - `--use-miles-router`, or an `sgl-router` from `radixark/sgl-router-for-miles` that
   forwards `return_outputs_via_store`; a router that drops it fails the rollout.

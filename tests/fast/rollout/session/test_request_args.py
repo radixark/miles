@@ -17,7 +17,7 @@ from miles.rollout.session.request_args import (
 )
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer, extract_template_args
 from miles.utils.lora.utils import LORA_ADAPTER_NAME
-from miles.utils.output_store.plan import OUTPUT_STORE_REQUEST_KEY
+from miles.utils.output_store.plan import OUTPUT_STORE_REQUEST_KEY, REPLAY_LAYER_SPLITS_KEY
 
 
 class TestResolveRequestArgsByConfig:
@@ -174,10 +174,11 @@ class TestPrepareChatRequest:
         config = make_session_server_config(
             use_rollout_routing_replay=routed_experts,
             output_store_backend_config={"master_server_address": "unused"} if store else None,
+            replay_layer_splits=[12, 24, 36],
         )
 
         prepared = prepare_chat_request(
-            {OUTPUT_STORE_REQUEST_KEY: not expected},
+            {OUTPUT_STORE_REQUEST_KEY: not expected, REPLAY_LAYER_SPLITS_KEY: [5]},
             self._tito(),
             config=config,
             turn_args=None,
@@ -185,6 +186,8 @@ class TestPrepareChatRequest:
         )
 
         assert prepared.body.get(OUTPUT_STORE_REQUEST_KEY, False) is expected
+        # The trainer's pipeline layout owns the splits, sent only with the store.
+        assert prepared.body.get(REPLAY_LAYER_SPLITS_KEY) == ([12, 24, 36] if expected else None)
 
     def test_bounded_request_requires_session_sampling_replay(self):
         with pytest.raises(MessageValidationError, match="bounded training-request sampling"):

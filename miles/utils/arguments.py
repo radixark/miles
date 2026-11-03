@@ -50,7 +50,7 @@ from miles.utils.hf_utils.config import is_dsa, load_hf_config
 from miles.utils.logging_utils import configure_logger_raw
 from miles.utils.lora.arguments import validate_lora_args, validate_lora_args_after_megatron
 from miles.utils.lora.utils import is_lora_enabled, lora_sync_sends_base
-from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
+from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp, pp_layer_splits
 from miles.utils.object_store_config import (
     MOONCAKE_MASTER_ADDRESS_KEY,
     ObjectStoreBackend,
@@ -362,6 +362,9 @@ def parse_args_and_get_parser(
                 "decoder_first_pipeline_num_layers and decoder_last_pipeline_num_layers should be None when "
                 "pipeline_model_parallel_size is 1."
             )
+        # After megatron_validate_args, which derives the virtual pipeline size. SGLang stores each replay field in
+        # parts split at these layers, so each pipeline stage reads only its own (non-Megatron backends: none).
+        args.replay_layer_splits = pp_layer_splits(args)
         training_backend_arg_names.update(vars(args).keys() - previous_arg_names)
     elif backend == "torchtitan":
         from miles.backends.torchtitan_utils.arguments import validate_torchtitan_args

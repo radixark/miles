@@ -9,11 +9,15 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import torch
-from tests.fast.utils.output_store.test_plan import Ref, Spec
+from tests.fast.utils.output_store.test_plan import Ref, Spec, stored_parts
 
 from miles.backends.training_utils import parallel
 from miles.backends.training_utils.data.rollout import DataIterator
-from miles.backends.training_utils.replay.data import attach_replay_data, register_replay_list_sequential
+from miles.backends.training_utils.replay.data import (
+    attach_replay_data,
+    register_replay_list_sequential,
+    stream_blocks,
+)
 from miles.utils.output_store.plan import IndexerTopkSegments, RoutedExpertsSegments, Seg, StorePlanError
 from miles.utils.replay_base import BaseReplayManager
 
@@ -55,7 +59,7 @@ def test_register_replay_list_sequential_falls_back_to_enum_when_no_stream_idx()
     replay_data = torch.arange(5 * 3 * 2).reshape(5, 3, 2)
     replays = [_Replay(), _Replay(), _Replay()]
 
-    register_replay_list_sequential(replays, replay_data)
+    register_replay_list_sequential(replays, [replay_data], blocks=stream_blocks(replays))
 
     for replay_idx, replay in enumerate(replays):
         assert len(replay.recorded) == 1
@@ -63,11 +67,13 @@ def test_register_replay_list_sequential_falls_back_to_enum_when_no_stream_idx()
 
 
 def test_register_replay_list_sequential_uses_stream_idx_when_set():
-    # PP case: 2 local modules at global streams 1 and 3 out of 4.
+    # PP case: 2 local modules at global streams 1 and 3 out of 4, whose rows this rank holds as two blocks.
     replay_data = torch.arange(5 * 4 * 2).reshape(5, 4, 2)
     replays = [_Replay(stream_idx=1), _Replay(stream_idx=3)]
+    blocks = stream_blocks(replays)
+    assert blocks == [(1, 2), (3, 4)]
 
-    register_replay_list_sequential(replays, replay_data)
+    register_replay_list_sequential(replays, [replay_data[:, a:b] for a, b in blocks], blocks=blocks)
 
     torch.testing.assert_close(replays[0].recorded[0], replay_data[:, 1])
     torch.testing.assert_close(replays[1].recorded[0], replay_data[:, 3])
@@ -78,7 +84,15 @@ def test_register_replay_list_sequential_rejects_out_of_range_stream_idx():
     replays = [_Replay(stream_idx=4)]
 
     with pytest.raises(AssertionError, match="out of range"):
-        register_replay_list_sequential(replays, replay_data)
+        register_replay_list_sequential(replays, [replay_data], blocks=[(0, 4)])
+
+
+def test_stream_blocks_are_the_runs_of_the_registered_streams():
+    # A VPP stage's indexer layers: two runs; a replay without stream_idx takes its position.
+    replays = [_Replay(stream_idx=s) for s in (4, 5, 0, 1)] + [_Replay()]
+    assert stream_blocks(replays) == [(0, 2), (4, 6)]
+    assert stream_blocks([_Replay(), _Replay()]) == [(0, 2)]
+    assert stream_blocks([]) == []
 
 
 @pytest.mark.parametrize("lengths", [(3, 3), (3, 5), (3,)])
@@ -441,10 +455,12 @@ def fake_plugin(monkeypatch):
     monkeypatch.setitem(sys.modules, "radix_transfer_plugins", module)
 
 
-def _stored(routes, *, indexer):
-    """Each sample's rows as segments of two objects (a two-turn session), and the objects."""
+def _stored(routes, *, indexer, splits=()):
+    """Each sample's rows as segments of two objects (a two-turn session), and the objects.
+
+    Each object holds the field's parts split at the layers ``splits``, as SGLang stores them.
+    """
     cls = IndexerTopkSegments if indexer else RoutedExpertsSegments
-    (name,) = cls.stored
     column, objects = [], {}
     for i, rows in enumerate(routes):
         rows = rows.numpy().astype(np.int32)
@@ -452,20 +468,40 @@ def _stored(routes, *, indexer):
         segs = []
         for key, part in ((f"{i}/a", rows[:cut]), (f"{i}/b", rows[cut:])):
             if len(part):
-                objects[key] = {name: part}
-                segs.append(Seg(Ref(key, (Spec(name, "int32", part.shape),)), 0, len(part)))
+                objects[key] = stored_parts(cls.name, part, list(splits))
+                specs = tuple(Spec(name, "int32", array.shape) for name, array in objects[key].items())
+                segs.append(Seg(Ref(key, specs), 0, len(part)))
         column.append(cls(tuple(segs)))
     return column, objects
 
 
-def _attach_both(monkeypatch, args, *, state, lengths, max_seq_len, indexer, store, manager=None, dump=False):
-    """Recorded entries and the column left behind, filling 2 micro batches from inline or store rows."""
+def _attach_both(
+    monkeypatch,
+    args,
+    *,
+    state,
+    lengths,
+    max_seq_len,
+    indexer,
+    store,
+    manager=None,
+    dump=False,
+    num_streams=2,
+    streams=(None, None),
+    blocks=None,
+    splits=(),
+):
+    """Recorded entries and the column left behind, filling 2 micro batches from inline or store rows.
+
+    A replay per entry of ``streams``, its ``stream_idx``; ``blocks`` and ``splits`` as ``attach_replay_data``
+    takes them and as SGLang stores the rows.
+    """
     monkeypatch.setattr(parallel, "_parallel_state", state)
     routes = [
-        100 * (i + 1) + torch.arange((n - 1) * 2 * 2, dtype=torch.int32).reshape(n - 1, 2, 2)
+        100 * (i + 1) + torch.arange((n - 1) * num_streams * 2, dtype=torch.int32).reshape(n - 1, num_streams, 2)
         for i, n in enumerate(lengths)
     ]
-    column, objects = _stored(routes, indexer=indexer) if store is not None else (routes, None)
+    column, objects = _stored(routes, indexer=indexer, splits=splits) if store is not None else (routes, None)
     if store is not None:
         store.objects.update(objects)
     rollout_data = {
@@ -473,7 +509,7 @@ def _attach_both(monkeypatch, args, *, state, lengths, max_seq_len, indexer, sto
         "tokens": [torch.arange(n) for n in lengths],
         "max_seq_lens": [max_seq_len] * len(lengths),
     }
-    replays = [_Replay(), _Replay()]
+    replays = [_Replay(stream_idx=stream) for stream in streams]
     manager = manager or _manager(replays, indexer=indexer, kept_in_train_dump=dump)
     manager.replays = replays
     _attach(
@@ -484,6 +520,7 @@ def _attach_both(monkeypatch, args, *, state, lengths, max_seq_len, indexer, sto
         num_microbatches=[(len(lengths) + 1) // 2],
         rollout_data=rollout_data,
         output_store=store,
+        blocks=blocks,
     )
     return [replay.recorded for replay in replays], rollout_data.get("routes")
 
@@ -571,3 +608,123 @@ def test_store_rows_need_an_output_store_client(monkeypatch, fake_plugin):
             num_microbatches=[1],
             rollout_data=rollout_data,
         )
+
+
+def _real_rows(dump):
+    """A dump's rows that hold replay data rather than -1 padding."""
+    return sum(int((rows != -1).flatten(1).all(dim=1).sum()) for rows in dump if rows is not None)
+
+
+@pytest.mark.parametrize("indexer", [False, True], ids=["moe", "indexer"])
+@pytest.mark.parametrize("blocks", [[(1, 3)], [(0, 1), (3, 4)]], ids=["pp-stage", "vpp-stage"])
+@pytest.mark.parametrize("qkv_format,cp_size,allgather_cp", [("thd", 1, False), ("thd", 2, False), ("bshd", 2, True)])
+def test_a_pipeline_stage_reads_and_registers_only_its_blocks(
+    monkeypatch, fake_plugin, blocks, qkv_format, cp_size, allgather_cp, indexer
+):
+    # 4 streams stored in parts split at 1 and 3, as a two-stage pipeline (or two VPP chunks each) has them;
+    # this rank's replays are the streams of its blocks.
+    lengths, max_seq_len = (5, 3, 8, 2), 8
+    args = SimpleNamespace(
+        qkv_format=qkv_format,
+        allgather_cp=allgather_cp,
+        train_backend="megatron",
+        backend=SimpleNamespace(sequence_parallel=False),
+        data_pad_size_multiplier=2,
+        save_debug_train_data="/tmp/{rollout_id}_{rank}.pt",
+    )
+    streams = [stream for start, end in blocks for stream in range(start, end)]
+    row_bytes = len(streams) * 2 * 4
+    read_bytes = 0
+    for cp_rank in range(cp_size):
+        state = SimpleNamespace(cp=SimpleNamespace(size=cp_size, rank=cp_rank), tp=SimpleNamespace(size=1, rank=0))
+        common = dict(
+            state=state,
+            lengths=lengths,
+            max_seq_len=max_seq_len,
+            indexer=indexer,
+            dump=True,
+            num_streams=4,
+            streams=streams,
+        )
+        whole, _ = _attach_both(monkeypatch, args, store=None, **common)
+        inline, inline_dump = _attach_both(monkeypatch, args, store=None, blocks=blocks, **common)
+        store = _FakeOutputStore({})
+        stored, stored_dump = _attach_both(monkeypatch, args, store=store, blocks=blocks, splits=(1, 3), **common)
+        # Each replay records what it records from whole rows.
+        for entries in zip(whole, inline, stored, strict=True):
+            for a, b, c in zip(*entries, strict=True):
+                assert torch.equal(a, b) and torch.equal(a, c)
+        # A dump holds each sample's local rows of this rank's streams, the same both ways.
+        for a, b in zip(inline_dump, stored_dump, strict=True):
+            assert a.shape[1] == len(streams) and torch.equal(a, b)
+        # The rank reads only its local rows of its own parts.
+        assert store.read_bytes == _real_rows(stored_dump) * row_bytes
+        read_bytes += store.read_bytes
+    assert read_bytes == sum(n - 1 for n in lengths) * row_bytes
+
+
+def test_a_block_the_objects_do_not_store_fails_the_fill(monkeypatch, fake_plugin):
+    args = SimpleNamespace(
+        qkv_format="thd",
+        allgather_cp=False,
+        train_backend="megatron",
+        backend=SimpleNamespace(sequence_parallel=False),
+        data_pad_size_multiplier=1,
+        save_debug_train_data=None,
+    )
+    state = SimpleNamespace(cp=SimpleNamespace(size=1, rank=0), tp=SimpleNamespace(size=1, rank=0))
+    # SGLang split at layer 2, but this rank asks for layers 1-3.
+    with pytest.raises(
+        StorePlanError, match=r"streams 1-3 are not a stored part: object 0/a has parts \[\(0, 2\), \(2, 4\)\]"
+    ):
+        _attach_both(
+            monkeypatch,
+            args,
+            state=state,
+            lengths=(5, 3),
+            max_seq_len=None,
+            indexer=False,
+            store=_FakeOutputStore({}),
+            num_streams=4,
+            streams=(1, 2),
+            blocks=[(1, 3)],
+            splits=(2,),
+        )
+
+
+def test_all_zero_routed_experts_fail_only_a_rank_that_replays_them(monkeypatch, fake_plugin):
+    args = SimpleNamespace(
+        qkv_format="thd",
+        allgather_cp=False,
+        train_backend="megatron",
+        backend=SimpleNamespace(sequence_parallel=False),
+        data_pad_size_multiplier=1,
+        save_debug_train_data=None,
+    )
+    monkeypatch.setattr(
+        parallel,
+        "_parallel_state",
+        SimpleNamespace(cp=SimpleNamespace(size=1, rank=0), tp=SimpleNamespace(size=1, rank=0)),
+    )
+    # Layer 0 is dense: SGLang stores zeros for it. Layer 1 is MoE.
+    rows = torch.stack([torch.zeros(4, 2, dtype=torch.int32), torch.full((4, 2), 7, dtype=torch.int32)], dim=1)
+    column, objects = _stored([rows], indexer=False, splits=(1,))
+
+    def attach(blocks, replays):
+        rollout_data = {"routes": list(column), "tokens": [torch.arange(5)], "max_seq_lens": None}
+        _attach(
+            _manager(replays),
+            args=args,
+            models=None,
+            data_iterator=[DataIterator(rollout_data, micro_batch_size=1)],
+            num_microbatches=[1],
+            rollout_data=rollout_data,
+            output_store=_FakeOutputStore(objects),
+            blocks=blocks,
+        )
+
+    # A rank holding both parts (two VPP chunks), and a stage of the dense layer only, which replays nothing.
+    attach([(0, 1), (1, 2)], [_Replay(stream_idx=1)])
+    attach([(0, 1)], [])
+    with pytest.raises(StorePlanError, match="all zeros"):
+        attach([(0, 1)], [_Replay(stream_idx=0)])

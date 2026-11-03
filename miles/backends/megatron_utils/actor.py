@@ -92,7 +92,7 @@ from .model import (
 from .named_weights import named_params_and_buffers
 from .optimizer_utils import reset_optimizer_state
 from .parallel import verify_megatron_parallel_state
-from .replay_utils import register_replay_list_moe
+from .replay_utils import register_replay_list_moe, replay_blocks
 
 logging.getLogger("megatron").setLevel(logging.WARNING)
 
@@ -764,6 +764,7 @@ class MegatronTrainRayActor(TrainRayActor):
                     rollout_data=rollout_data,
                     output_store=self.output_store,
                     sequence_first=m is routing_replay_manager,
+                    blocks=replay_blocks(m, self.model),
                 )
 
         with inverse_timer("train_wait"), timer("train"):
