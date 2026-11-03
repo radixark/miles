@@ -609,8 +609,13 @@ class LegacyRankShardLoader:
 
 
 def _read_legacy_training_state(path: Path) -> dict | None:
-    """The iteration and scheduler state of an old-format save (``training_state_rank*.pt``), if it has them."""
-    state = _load_training_state(path)
-    if state is None:
+    """The iteration and scheduler state of an old-format save (``training_state_rank*.pt``), if it has them.
+
+    Every rank reads rank 0's copy: a run on more ranks than saved has no file of its own, yet must agree.
+    """
+    state_file = path / "training_state_rank0.pt"
+    if not state_file.exists():
         return None
+    # optimizer state dicts hold non-tensor objects (step counts, param group metadata)
+    state = torch.load(state_file, map_location="cpu", weights_only=False)
     return {"iteration": state["iteration"], "opt_param_scheduler": state["opt_param_scheduler"]}
