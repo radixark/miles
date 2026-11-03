@@ -3,6 +3,7 @@
 The trainer lock serializes trainer calls across dispatch, model creation, and lease expiry."""
 
 import asyncio
+import json
 import logging
 import os
 import secrets
@@ -49,16 +50,32 @@ logger = logging.getLogger(__name__)
 _SDK_FINISH_RETRY_S = 300.0
 
 
-def _reads_under(path: str, root: str) -> bool:
-    """Whether reading ``path`` can read a file under ``root``: by an ancestor that is ``root`` under another name
-    (a bind mount), by a symlink anywhere below it, or by a hard link, which cannot be told from its origin."""
-    real_root = os.path.realpath(root)
-    if os.path.commonpath([os.path.realpath(path), real_root]) == real_root:
+# commit.TENANT_FILENAME; the gateway does not import torch
+_TENANT_FILENAME = "tenant.json"
+
+
+def _is_checkpoint_marker(real: str) -> bool:
+    """A file only a tinker:// checkpoint holds: its tenant record, or a pre-commit checkpoint's META.json."""
+    name = os.path.basename(real)
+    if name == _TENANT_FILENAME:
         return True
-    if not os.path.exists(root):
-        # nothing saved yet
+    if name != "META.json":
         return False
-    root_stat = os.stat(root)
+    with open(real) as f:
+        meta = json.load(f)
+    return isinstance(meta, dict) and "tenant_digest" in meta
+
+
+def _check_import_tree(uri: str, path: str, import_root: str, checkpoint_root: str) -> None:
+    """Refuse an import that leaves ``import_root`` (a real path) by a symlink, or that reads a tinker:// checkpoint,
+    whose owner a file:// load would skip: by an ancestor that is the checkpoint root under another name (a bind mount
+    of it), a symlink, a hard link, or a checkpoint's own files, which give away any mount of its subdirectories."""
+    reaches = UserInputError(f"{uri} reaches a tinker:// checkpoint; load it by its tinker:// path")
+    real_root = os.path.realpath(checkpoint_root)
+    if os.path.commonpath([path, real_root]) == real_root:
+        raise reaches
+    # None: nothing saved yet
+    root_stat = os.stat(checkpoint_root) if os.path.exists(checkpoint_root) else None
 
     def has_root_ancestor(real: str) -> bool:
         while True:
@@ -79,14 +96,18 @@ def _reads_under(path: str, root: str) -> bool:
         if (entry.st_dev, entry.st_ino) in seen:
             continue
         seen.add((entry.st_dev, entry.st_ino))
-        if has_root_ancestor(real):
-            return True
+        if root_stat is not None and has_root_ancestor(real):
+            raise reaches
+        # checked before listing: a link to / would otherwise walk the whole filesystem
+        if os.path.commonpath([real, import_root]) != import_root:
+            raise UserInputError(f"{uri} links outside the import root")
         if stat.S_ISDIR(entry.st_mode):
             pending += [os.path.join(real, name) for name in os.listdir(real)]
-        elif entry.st_nlink > 1 and entry.st_dev == root_stat.st_dev:
+        elif _is_checkpoint_marker(real):
+            raise reaches
+        elif root_stat is not None and entry.st_nlink > 1 and entry.st_dev == root_stat.st_dev:
             # a hard link cannot cross filesystems
-            return True
-    return False
+            raise reaches
 
 
 class _EndedSession(NamedTuple):
@@ -567,13 +588,10 @@ class TinkerService:
         if not path.startswith(root + os.sep):
             raise UserInputError(f"{uri} is outside the import root {self.config.import_root}")
         try:
-            reaches_checkpoint = _reads_under(path, self.config.checkpoint_root)
-        except OSError as error:
+            _check_import_tree(uri, path, root, self.config.checkpoint_root)
+        except (OSError, ValueError) as error:
             # a tenant's unreadable import must not stop the gateway
             raise UserInputError(f"cannot read {uri}: {error}") from None
-        # a tinker:// checkpoint's owner is checked; reaching it by file:// would skip that
-        if reaches_checkpoint:
-            raise UserInputError(f"{uri} reaches a tinker:// checkpoint; load it by its tinker:// path")
         return path
 
     async def _save_weights_external(self, record: ModelRecord, payload: dict) -> dict:

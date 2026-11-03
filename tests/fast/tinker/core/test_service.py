@@ -1446,3 +1446,34 @@ async def test_a_hard_link_on_another_filesystem_is_importable(tmp_path):
         assert service.weights_info("tenant", f"file://{adapter}")["lora_rank"] == 8
     finally:
         shutil.rmtree(root)
+
+
+@pytest.mark.parametrize(
+    "plant, error",
+    [
+        (lambda adapter, tmp_path: (adapter / "weights").symlink_to(tmp_path / "outside"), "links outside"),
+        # refused before it is listed, so the walk never reaches the rest of the filesystem
+        (lambda adapter, tmp_path: (adapter / "everything").symlink_to("/"), "links outside"),
+        # a mount of a checkpoint's subdirectory shows no link and no shared inode; its files give it away
+        (lambda adapter, tmp_path: (adapter / "tenant.json").write_text("{}"), "reaches a tinker:// checkpoint"),
+        (
+            lambda adapter, tmp_path: (adapter / "META.json").write_text(json.dumps({"tenant_digest": "x"})),
+            "reaches a tinker:// checkpoint",
+        ),
+        (lambda adapter, tmp_path: (adapter / "META.json").write_text("{"), "cannot read"),
+        (lambda adapter, tmp_path: (adapter / "META.json").write_text(json.dumps({"lora_rank": 8})), None),
+    ],
+)
+async def test_a_file_import_stays_under_the_import_root_and_holds_no_checkpoint(tmp_path, plant, error):
+    adapter = tmp_path / "imports" / "adapter"
+    adapter.mkdir(parents=True)
+    (adapter / "adapter_config.json").write_text(json.dumps({"r": 8, "lora_alpha": 32}))
+    (tmp_path / "outside").mkdir()
+    (tmp_path / "root").mkdir()
+    plant(adapter, tmp_path)
+    service = make_service(tmp_path / "root", import_root=str(tmp_path / "imports"))
+    if error is None:
+        assert service.weights_info("tenant", f"file://{adapter}")["lora_rank"] == 8
+    else:
+        with pytest.raises(UserInputError, match=error):
+            service.weights_info("tenant", f"file://{adapter}")
