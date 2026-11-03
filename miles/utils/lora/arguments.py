@@ -177,7 +177,9 @@ def _validate_adapter_state_args(args) -> None:
     assert args.optimizer == "adam", f"--save / --lora-adapter-path store Adam state; got --optimizer {args.optimizer}"
     assert args.exp_avg_dtype == args.exp_avg_sq_dtype == torch.float32, "the adapter checkpoint stores fp32 moments"
     assert args.main_params_dtype == torch.float32, "the adapter checkpoint stores fp32 masters"
-    assert args.use_distributed_optimizer, "the adapter checkpoint gathers optimizer state from the distributed optimizer"
+    assert (
+        args.use_distributed_optimizer
+    ), "the adapter checkpoint gathers optimizer state from the distributed optimizer"
     assert args.use_gloo_process_groups, "the adapter checkpoint gathers optimizer state over Gloo"
     # TE FusedAdam keeps the master as an int16 remainder unless the optimizer runs on the host
     assert (
