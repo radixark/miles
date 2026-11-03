@@ -408,13 +408,26 @@ def test_lora_resumes_only_through_the_adapter_path(tmp_path):
     adapters = tmp_path / "adapters"
     adapter = adapters / "iter_0000003" / "adapter"
     adapter.mkdir(parents=True)
-    with pytest.raises(ValueError, match=f"--save {adapters} holds LoRA adapter checkpoints"):
-        config(save=str(adapters))
+    for flag in ("load", "save"):
+        with pytest.raises(ValueError, match=f"--{flag} {adapters} holds LoRA adapter checkpoints"):
+            config(**{flag: str(adapters)})
     # --load still restores the rollout state; the adapter comes from --lora-adapter-path
     resumed = config(load=str(adapters), save=str(adapters), lora_adapter_path=str(adapter))
     assert resumed.initial_load_path is None
     base = config(load=str(tmp_path / "empty"), save=str(tmp_path / "save"))
     assert (base.initial_load_path, base.initial_load_model_only, base.initial_load_in_hf) == (None, True, True)
+
+
+@pytest.mark.parametrize("dynamic, steps", [(False, 4), (True, 1)])
+def test_a_dynamic_global_batch_is_one_step_per_rollout(dynamic, steps):
+    """The LR schedule length and the adapter dirs' step grid count optimizer steps per rollout."""
+    pytest.importorskip("torchtitan")
+    from miles.backends.torchtitan_utils.actor import _steps_per_rollout
+
+    args = SimpleNamespace(
+        rollout_batch_size=8, n_samples_per_prompt=4, global_batch_size=8, use_dynamic_global_batch_size=dynamic
+    )
+    assert _steps_per_rollout(args) == steps
 
 
 def test_routing_replay_hooks_the_router_where_it_picks_experts():

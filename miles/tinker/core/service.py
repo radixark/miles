@@ -212,7 +212,8 @@ class TinkerService:
             for task in tasks:
                 task.cancel()
             # Cleanup failures must not replace the error that stopped the dispatcher.
-            await asyncio.gather(*tasks, return_exceptions=True)
+            # awaited, not cancelled: a cancelled to_thread rmtree would outlive the root lock
+            await asyncio.gather(*tasks, *self._cleanup_tasks, return_exceptions=True)
 
     def _observe_background_task(self, task: asyncio.Task) -> None:
         if not task.cancelled() and (error := task.exception()) is not None:
@@ -475,12 +476,15 @@ class TinkerService:
             self.expiry.drop(tinker_path)
         try:
             # the commit's recovery walk and fsyncs hit shared storage; keep the event loop serving
-            await asyncio.to_thread(self.backend.commit_adapter, root, name, written, payload["overwrite"])
-        except Exception:
+            await asyncio.to_thread(self.backend.commit_adapter, root, name, written, overwrite=payload["overwrite"])
+        except Exception as error:
             # the commit can fail before or after its link swap; only the old commit keeps the old expiry
             if old_expires_at is not None and self._live_commit_id(root, name) == old_commit_id:
                 self.expiry.restore(tinker_path, old_expires_at)
-            raise
+            if not isinstance(error, OSError):
+                raise
+            # a storage failure loses only this save; the trainer and other tenants are unaffected
+            return {"error": f"cannot commit checkpoint {name!r}: {error}", "error_category": "server"}
         self._delete_retired_outside_the_lock(root)
         self.expiry.set(tinker_path, payload["ttl_seconds"], time.time())
         return {"op": "save_state", "path": tinker_path}
@@ -565,7 +569,11 @@ class TinkerService:
         if isinstance(written, dict):
             return written
         # the commit's recovery walk and fsyncs hit shared storage; keep the event loop serving
-        await asyncio.to_thread(self.backend.commit_adapter, root, version, written, False)
+        try:
+            await asyncio.to_thread(self.backend.commit_adapter, root, version, written, overwrite=False)
+        except OSError as error:
+            # a storage failure loses only this export; the trainer and other tenants are unaffected
+            return {"error": f"cannot commit sampler weights {version!r}: {error}", "error_category": "server"}
         result = {
             "op": "save_weights_for_sampler",
             "path": f"tinker://{record.model_id}/sampler_weights/{version}",

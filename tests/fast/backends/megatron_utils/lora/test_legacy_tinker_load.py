@@ -68,6 +68,15 @@ def test_an_unreadable_source_is_a_mismatch(gloo, tmp_path):
     assert mismatch is not None and "cannot load into this model" in mismatch
 
 
+def test_an_in_model_source_without_a_loader_is_a_mismatch(gloo, tmp_path):
+    (tmp_path / "adapter_config.json").write_text("{}")
+    torch.save({}, tmp_path / "adapter_megatron_rank0.pt")
+    mismatch = checkpoint.find_load_mismatch(
+        None, 0, str(tmp_path), UNSHARED, TARGETS, load_optimizer=False, run_shapes={}
+    )
+    assert mismatch is not None and "legacy_rank_shard source, which this backend cannot load" in mismatch
+
+
 def test_a_legacy_layout_mismatch_names_the_gateway_flag(tmp_path):
     # META.json from before the layout was recorded: fused, per-expert
     (tmp_path / "META.json").write_text('{"base_model": "m", "lora_rank": 2, "lora_alpha": 4.0}')

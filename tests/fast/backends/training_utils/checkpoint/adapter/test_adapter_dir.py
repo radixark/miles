@@ -18,7 +18,11 @@ from miles.backends.training_utils.checkpoint.adapter.adapter_dir import (
     write_peft_export,
 )
 from miles.backends.training_utils.checkpoint.adapter.adapter_exports import write_peft_adapter
-from miles.backends.training_utils.checkpoint.adapter.adapter_state import AdapterState, LocalShardSpec
+from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
+    AdapterState,
+    LocalShardSpec,
+    raise_if_any_rank_failed,
+)
 from miles.backends.training_utils.checkpoint.adapter.commit import (
     commit_adapter_dir,
     resolve_adapter_dir,
@@ -126,6 +130,20 @@ def test_weights_only_from_the_same_parametrization_reads_only_local_pieces(monk
     assert torch.equal(members.imported.weights[1], FULL["lora_B"])
 
 
+def test_a_same_parametrization_load_reads_fp32_under_a_bf16_default_dtype():
+    root = tempfile.mkdtemp()
+    run_multiprocess(partial(_save, root=root))
+    committed = resolve_adapter_dir(Path(root), "w", tenant="alice")
+    members = FakeMembers()
+    default_dtype = torch.get_default_dtype()
+    torch.set_default_dtype(torch.bfloat16)
+    try:
+        load_adapter_dir(committed.path, members, 0, RUN, TARGETS, load_optimizer=True)
+    finally:
+        torch.set_default_dtype(default_dtype)
+    assert torch.equal(members.imported.exp_avgs[1], FULL["lora_B"] * 2)
+
+
 def _rank0_cannot_create(rank, world_size, port, *, root):
     init_gloo(rank, world_size, port=port)
     init_gloo_group()
@@ -208,6 +226,37 @@ def test_a_backend_state_that_does_not_match_the_parametrization_is_refused_at_s
 def test_a_backend_state_that_does_not_match_the_parametrization_is_refused_at_external_export(tmp_path):
     with pytest.raises(RuntimeError, match="unexpected .*k_proj"):
         write_external_export(tmp_path, "w", ExtraKeyMembers(), 0, RUN, TARGETS, tenant_digest=None)
+
+
+def _refused_by_an_in_model_loader(path):
+    try:
+        raise ValueError("base mismatch")
+    except ValueError as error:
+        raise_if_any_rank_failed(error)
+
+
+def _every_rank_refuses_the_same_source(rank, world_size, port, *, root):
+    init_gloo(rank, world_size, port=port)
+    init_gloo_group()
+    with pytest.raises(RuntimeError) as refused:
+        load_adapter_dir(
+            Path(root),
+            FakeMembers(),
+            0,
+            RUN,
+            TARGETS,
+            load_optimizer=True,
+            in_model_loaders_by_kind={AdapterSourceKind.TORCHTITAN_CHECKPOINT: _refused_by_an_in_model_loader},
+        )
+    assert str(refused.value) == "adapter checkpoint failed: rank 0,1,2: ValueError: base mismatch"
+    dist.destroy_process_group()
+
+
+def test_an_error_every_rank_agreed_on_is_reported_once(tmp_path):
+    torch.distributed.checkpoint.save(
+        {"model.layers.0.attention.wq.lora_a.weight": torch.zeros(2)}, checkpoint_id=tmp_path, no_dist=True
+    )
+    run_multiprocess(partial(_every_rank_refuses_the_same_source, root=str(tmp_path)), world_size=3)
 
 
 def _one_rank_cannot_read(rank, world_size, port, *, root):

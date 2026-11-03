@@ -170,11 +170,12 @@ def _refuse_lora_resume_through_checkpointer(args: TrainerConfig, dump_subdir: s
             f"--load holds the torchtitan checkpoint {load_step}, which LoRA does not resume from: resume it with "
             f"--lora-adapter-path {load_step}"
         )
-    if args.backend.save and any(Path(args.backend.save).glob("iter_*/adapter")):
-        raise ValueError(
-            f"--save {args.backend.save} holds LoRA adapter checkpoints (iter_*/adapter): resume one with "
-            "--lora-adapter-path, or save elsewhere"
-        )
+    for flag, root in (("--load", args.backend.load), ("--save", args.backend.save)):
+        if root and any(Path(root).glob("iter_*/adapter")):
+            raise ValueError(
+                f"{flag} {root} holds LoRA adapter checkpoints (iter_*/adapter): resume one with "
+                f"--lora-adapter-path, or point {flag} elsewhere"
+            )
 
 
 def build_trainer_config(

@@ -605,6 +605,28 @@ async def test_the_commit_runs_off_the_event_loop(service, monkeypatch, op):
     assert commit_threads and commit_threads[0] is not threading.current_thread()
 
 
+async def test_a_failed_sampler_commit_fails_only_that_request(service, monkeypatch):
+    model_id = await created_model(service)
+    commit = service.backend.commit_adapter
+
+    def failing_commit(*_, **__):
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr(service.backend, "commit_adapter", failing_commit)
+    failed = service.submit(
+        "tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1, "ttl_seconds": None}
+    )
+    future = await await_settled(service, "tenant", failed)
+    assert (future.state, future.error_category) == (FAILED, "server")
+    assert "No space left on device" in future.error
+
+    monkeypatch.setattr(service.backend, "commit_adapter", commit)
+    retried = service.submit(
+        "tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 2, "ttl_seconds": None}
+    )
+    assert (await await_settled(service, "tenant", retried)).state == DONE
+
+
 async def test_an_unnamed_sampler_save_returns_a_sampling_session(service):
     model_id = await created_model(service)
     unnamed = service.submit(
@@ -931,6 +953,20 @@ async def test_a_recycled_slot_belongs_to_a_fresh_model_queue(service):
     assert future.state == DONE, "a fresh model may use the successfully recycled slot"
 
 
+async def test_a_failed_save_commit_fails_only_that_request(service, monkeypatch):
+    def failing_commit(*_, **__):
+        raise OSError("checkpoint IO failed")
+
+    monkeypatch.setattr(service.backend, "commit_adapter", failing_commit)
+    model_id = await created_model(service)
+    payload = {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False, "ttl_seconds": None}
+    future = await await_settled(service, "tenant", service.submit("tenant", "save_state", payload))
+    assert (future.state, future.error_category) == (FAILED, "server")
+    assert "checkpoint IO failed" in future.error
+    step = service.submit("tenant", "forward_backward", fb_payload(model_id, 2, [datum()]))
+    assert (await await_settled(service, "tenant", step)).state == DONE
+
+
 async def test_a_failed_cleanup_after_a_save_keeps_the_gateway_serving(service):
     def failing_delete(root):
         raise OSError("checkpoint IO failed")
@@ -941,6 +977,40 @@ async def test_a_failed_cleanup_after_a_save_keeps_the_gateway_serving(service):
         payload = {"model_id": model_id, "seq_id": seq_id, "name": "ck", "overwrite": True, "ttl_seconds": None}
         assert (await await_settled(service, "tenant", service.submit("tenant", "save_state", payload))).state == DONE
         await asyncio.gather(*service._cleanup_tasks)
+
+
+async def test_a_stopping_dispatcher_waits_for_pending_cleanups(tmp_path):
+    gateway = make_service(tmp_path)
+    run_task = asyncio.create_task(gateway.run())
+    release, deleted = threading.Event(), threading.Event()
+    delete = gateway.backend.delete_retired_adapters
+
+    def blocking_delete(root):
+        release.wait(timeout=5)
+        delete(root)
+        deleted.set()
+
+    gateway.backend.delete_retired_adapters = blocking_delete
+    try:
+        model_id = await created_model(gateway)
+        saved = gateway.submit(
+            "tenant",
+            "save_state",
+            {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False, "ttl_seconds": None},
+        )
+        assert (await await_settled(gateway, "tenant", saved)).state == DONE
+        gateway.backend.fail_on["optim_step"] = RuntimeError("fatal execution failure")
+        gateway.submit("tenant", "optim_step", _optim_payload(model_id, 2))
+        asyncio.get_running_loop().call_later(0.2, release.set)
+        with pytest.raises(RuntimeError, match="fatal execution failure"):
+            await asyncio.wait_for(run_task, timeout=2)
+        assert deleted.is_set(), "the dispatcher returned while a cleanup was still deleting"
+    finally:
+        release.set()
+        if not run_task.done():
+            run_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await run_task
 
 
 @pytest.mark.parametrize("source", ["handler", "worker", "create", "sweep", "export", "load"])
@@ -1158,6 +1228,23 @@ async def test_a_truncated_sampler_commit_file_is_a_user_error(service, filename
         resolve_sampler_checkpoint(service.config, "tenant", path, service.backend.resolve_adapter)
 
 
+@pytest.mark.parametrize(
+    "filename, content", [("tenant.json", "{}"), ("tenant.json", "[]"), ("adapter_parametrization.json", "{}")]
+)
+async def test_a_sampler_commit_file_of_the_wrong_schema_is_a_user_error(service, filename, content):
+    model_id = await created_model(service)
+    save = service.submit(
+        "tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1, "ttl_seconds": None}
+    )
+    path = (await await_settled(service, "tenant", save)).result["path"]
+    root = Path(resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "sampler_weights", "1")).parent
+    (resolve_adapter_dir(root, "1", tenant=None).path / filename).write_text(content)
+    with pytest.raises(UserInputError, match="cannot read adapter"):
+        service.weights_info("tenant", path)
+    with pytest.raises(UserInputError, match="cannot read adapter"):
+        resolve_sampler_checkpoint(service.config, "tenant", path, service.backend.resolve_adapter)
+
+
 async def test_another_tenants_sampler_export_does_not_resolve(service):
     model_id = await created_model(service)
     save = service.submit(
@@ -1332,14 +1419,14 @@ async def test_a_failed_overwrite_commit_keeps_the_old_expiry_only_on_the_old_co
 
     def failing_commit(root, name, written, overwrite):
         if swapped:
-            commit(root, name, written, overwrite)
+            commit(root, name, written, overwrite=overwrite)
         raise OSError(28, "No space left on device")
 
     monkeypatch.setattr(service.backend, "commit_adapter", failing_commit)
-    with pytest.raises(OSError, match="No space left"):
-        await service._save_state(
-            service.models[model_id], {"seq_id": 2, "name": "ck", "overwrite": True, "ttl_seconds": None}
-        )
+    failed = await service._save_state(
+        service.models[model_id], {"seq_id": 2, "name": "ck", "overwrite": True, "ttl_seconds": None}
+    )
+    assert failed["error_category"] == "server" and "No space left" in failed["error"]
     expected = None if swapped else old_expires_at
     assert CheckpointExpiry(service.config.checkpoint_root).expires_at(path) == expected
 
