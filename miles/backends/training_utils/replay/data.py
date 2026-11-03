@@ -35,7 +35,8 @@ class ReadSlots:
     """The ReadBuffers a replay manager reads output store rows into.
 
     Kept across steps, so each is registered once; a slot too small for a micro batch is replaced
-    by one that fits.
+    by one that fits. Registering per read would take about half of each read, and over 80% below
+    4 GiB; measurements: https://github.com/radixark/miles/pull/4573#issuecomment-6593240538
     """
 
     def __init__(self, store: "OutputStore", *, count: int):
