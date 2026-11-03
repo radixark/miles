@@ -16,7 +16,7 @@ import torch
 from tests.fast.fixtures.driver_fakes import FakeObjectStore
 from tests.fast.ray.rollout.conftest import make_args
 from tests.fast.train_parallel_config_utils import make_train_parallel_config
-from tests.fast.utils.output_store.test_plan import fake_store_refs
+from tests.fast.utils.output_store.test_plan import fake_store_refs, read_rows
 from tests.fast.utils.output_store.test_plan_vs_inline import LAYERS, run_case
 
 from miles.ray.rollout.train_data_conversion import (
@@ -64,14 +64,6 @@ class FakeOutputStore:
         return [SimpleNamespace(**{name: self.objects[ref.key][name] for name in names}) for ref, names in requests]
 
 
-def segment_rows(column: list, objects: dict) -> list[np.ndarray]:
-    """Each sample's rows of a segments column, read whole: what the inline column holds."""
-    return [
-        np.concatenate([objects[seg.ref.key][segments.stored[0]][seg.start : seg.end] for seg in segments.segs])
-        for segments in column
-    ]
-
-
 def rollout(seed: int):
     rng = np.random.default_rng(seed)
     launch_mode, k = [("selected", 0), ("support", int(rng.integers(1, 5))), ("support", 0)][seed % 3]
@@ -103,7 +95,7 @@ def rollout(seed: int):
 
 def assert_same_column(store, inline, name, objects):
     if is_segments_column(store):
-        store = segment_rows(store, objects)
+        store = [read_rows(segments, objects) for segments in store]
     assert len(store) == len(inline), name
     for s, i in zip(store, inline, strict=True):
         assert type(s) is type(i), (name, type(s), type(i))
