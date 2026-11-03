@@ -276,11 +276,13 @@ def assert_bridge_run_config_matches(
     assert peft["dropout"] == 0, f"LoRA dropout {peft['dropout']} is not supported"
     assert not peft["exclude_modules"], f"exclude_modules {peft['exclude_modules']} is not supported"
     assert not peft.get("normalize_moe_lora", False), "normalize_moe_lora makes expert ranks depend on the saving ETP"
-    assert not peft["a2a_experimental"], "a2a_experimental LoRA is not supported"
-    assert _yaml_dtype(peft["lora_dtype"]) in (
-        None,
-        str(params_dtype),
-    ), f"lora_dtype {_yaml_dtype(peft['lora_dtype'])} differs from the model's {params_dtype}"
+    # CanonicalLoRA has neither field
+    if lora_type == "lora":
+        assert not peft["a2a_experimental"], "a2a_experimental LoRA is not supported"
+        assert _yaml_dtype(peft["lora_dtype"]) in (
+            None,
+            str(params_dtype),
+        ), f"lora_dtype {_yaml_dtype(peft['lora_dtype'])} differs from the model's {params_dtype}"
     if any(".experts." in module for module in run.target_modules) and not run.experts_shared_outer_loras:
         # Bridge's default shares one adapter across all experts; miles trains one per expert
         assert not peft.get("share_expert_adapters", True), "share_expert_adapters=True is not supported"
