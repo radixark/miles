@@ -323,6 +323,28 @@ def expand_packed_hf_lora_targets(targets: list[str], modules: list[str]) -> lis
     return list(dict.fromkeys([target for target in targets if target not in replaced] + added))
 
 
+def expand_wildcard_leaf_targets(targets: list[str], modules: list[str]) -> list[str]:
+    """Replace each target whose leaf is a glob with one target per leaf it selects, keeping its prefix.
+
+    SGLang matches targets by their literal leaf, so a glob leaf would be rejected at engine startup.
+    """
+    expanded = []
+    for target in targets:
+        prefix, dot, leaf = target.rpartition(".")
+        if not any(char in leaf for char in "*?["):
+            expanded.append(target)
+            continue
+        selected = [module for module in modules if matches_lora_target(module, target)]
+        leaf_targets = list(dict.fromkeys(prefix + dot + module.rsplit(".", 1)[-1] for module in selected))
+        reselected = [module for module in modules if any(matches_lora_target(module, t) for t in leaf_targets)]
+        assert reselected == selected, (
+            f"LoRA target {target!r} cannot be rewritten as concrete leaves {leaf_targets}; "
+            "name the projection leaf explicitly"
+        )
+        expanded.extend(leaf_targets)
+    return list(dict.fromkeys(expanded))
+
+
 def parse_lora_targets(value: str | list[str] | None) -> list[str] | None:
     if value is None:
         return None

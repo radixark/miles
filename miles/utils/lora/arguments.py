@@ -10,6 +10,7 @@ from miles.utils.lora.hf_lora_targets import (
     exclude_hf_lora_targets,
     expand_hf_lora_targets,
     expand_packed_hf_lora_targets,
+    expand_wildcard_leaf_targets,
     get_hf_lora_targets,
     parse_lora_targets,
     resolve_hf_lora_targets,
@@ -97,7 +98,7 @@ def _resolve_lora_targets(args, hf_config) -> list[str]:
     targets = exclude_hf_lora_targets(targets, exclusions)
 
     if all(any(matches_lora_target(module, target) for module in hf_modules) for target in targets + exclusions):
-        hf_targets = targets
+        hf_targets = expand_wildcard_leaf_targets(targets, hf_modules)
         if exclusions:
             selected = [
                 module for module in hf_modules if any(matches_lora_target(module, target) for target in targets)
