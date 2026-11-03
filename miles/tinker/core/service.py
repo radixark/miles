@@ -419,9 +419,11 @@ class TinkerService:
         model_id, kind, name = parse_tinker_path(tinker_path)
         checkpoint_dir = resolve_checkpoint_dir(self.config.checkpoint_root, model_id, kind, name)
         if kind == "sampler_weights" and os.path.islink(checkpoint_dir):
-            parametrization = self.backend.resolve_adapter(os.path.dirname(checkpoint_dir), name, tenant, model_id)[
-                "parametrization"
-            ]
+            committed = self.backend.resolve_adapter(os.path.dirname(checkpoint_dir), name, tenant, model_id)
+            if committed is None:
+                # the link outlived its target
+                raise UserInputError(f"unknown checkpoint {tinker_path!r}")
+            parametrization = committed["parametrization"]
             # a sampler export records targets, not group flags; it was written under this gateway's layout
             return {
                 "base_model": parametrization["base_model"],
