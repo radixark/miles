@@ -207,6 +207,9 @@ class DistributedOptimizerMembers:
         specs = self._slots.local_shard_specs(0, holds)
 
         def pieces(key: str) -> list[torch.Tensor]:
+            if not holds:
+                # no piece is cut here; the aligned copies would only pad the index space
+                return []
             aligned = [whole[i][key] if i in whole else p.detach().float().cpu() for i, p in enumerate(params)]
             return [
                 piece.reshape(spec.local_shape)
