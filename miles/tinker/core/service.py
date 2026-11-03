@@ -16,6 +16,7 @@ from typing import NamedTuple
 from miles.tinker.core.checkpoint_expiry import CheckpointExpiry
 from miles.tinker.core.future import RequestFuture, RequestFutureStore
 from miles.tinker.core.input_validation import (
+    MIN_TTL_S,
     validate_batch_payload,
     validate_checkpoint_segment,
     validate_model_config,
@@ -131,6 +132,8 @@ class _Download(NamedTuple):
 
 # as official Tinker: a download URL lives an hour, and never past its checkpoint's expiry
 _DOWNLOAD_URL_TTL_S = 3600
+# a TTL set after a URL was signed can shorten the checkpoint's life to no less than this, so no URL outlives it
+assert _DOWNLOAD_URL_TTL_S <= MIN_TTL_S
 _EXPIRY_SWEEP_S = 60
 
 
