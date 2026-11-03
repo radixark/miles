@@ -439,6 +439,24 @@ def test_a_platform_without_sparse_flex_attention_gets_blocked_sdpa_in_every_lay
     assert inner == {BlockedSdpaInnerAttention.Config}
 
 
+def test_mla_keeps_its_wrapper_and_runs_blocked_sdpa_inside_it(on_tpu):
+    """MLA wraps the flex kernel in its own inner attention; only the kernel has a TPU replacement."""
+    pytest.importorskip("torchtitan")
+    from torchtitan.config.parallelism import ParallelismConfig
+    from torchtitan.models.common.attention import MLAAttention
+
+    from miles.backends.torchtitan_utils.config import build_model_config
+    from miles.backends.torchtitan_utils.sdpa_document_attention import BlockedSdpaInnerAttention
+
+    model = build_model_config(
+        _config_args(titan_model_name="glm4_moe_lite", titan_model_flavor="4layer"), parallelism=ParallelismConfig()
+    )
+    assert len(model.layers) == 4
+    mla = [layer.attention.inner_attention for layer in model.layers]
+    assert {type(wrapper) for wrapper in mla} == {MLAAttention.Config}
+    assert {type(wrapper.inner_attention) for wrapper in mla} == {BlockedSdpaInnerAttention.Config}
+
+
 def test_context_parallelism_swaps_in_the_all_gather_kv_attention(tmp_path, monkeypatch):
     """torchtitan refuses CP on a plain flex attention; the backend converts every layer's inner attention."""
     pytest.importorskip("torchtitan")
