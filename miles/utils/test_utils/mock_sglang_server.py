@@ -171,7 +171,8 @@ class MockSGLangServer:
 
         finish_reason = process_result.finish_reason
         tool_calls = None
-        if tools and finish_reason == "stop":
+        # Like SGLang, tool_choice "none" leaves a tool call in content unparsed.
+        if tools and payload.get("tool_choice") != "none" and finish_reason == "stop":
             parser = FunctionCallParser(
                 tools=TypeAdapter(list[Tool]).validate_python(tools),
                 tool_call_parser="qwen25",

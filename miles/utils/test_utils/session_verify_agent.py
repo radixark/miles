@@ -80,6 +80,9 @@ class DriverAction(Enum):
     SYSTEM_REMINDER = "system_reminder"
     ASSISTANT_INPUT = "assistant_input"
     ROLLBACK = "rollback"
+    # A user turn whose reply runs with tool-call parsing off, so a call the
+    # model emits stays in content as when SGLang's parser fails on it.
+    PARSE_FAILURE = "parse_failure"
     FORCE_FINAL = "force_final"
 
 
@@ -88,6 +91,7 @@ _U = DriverAction.USER_FOLLOWUP
 _S = DriverAction.SYSTEM_REMINDER
 _A = DriverAction.ASSISTANT_INPUT
 _R = DriverAction.ROLLBACK
+_P = DriverAction.PARSE_FAILURE
 _F = DriverAction.FORCE_FINAL
 
 
@@ -162,6 +166,7 @@ def _build_cycle(role_surface: frozenset[str]) -> list[DriverAction]:
 # English-only on purpose: matches the production agentic flows tokenization
 # and tool-call parsing are tuned against.
 USER_FOLLOWUP_TEXT = "Now check the weather in Shanghai."
+PARSE_FAILURE_USER_TEXT = "Now check the weather in Hangzhou."
 SYSTEM_REMINDER_TEXT = "Note: from now on, answer in a single sentence; skip all pleasantries."
 ASSISTANT_INPUT_TEXTS = (
     "The earlier Beijing weather result was 22 degrees Celsius and sunny.",
@@ -169,6 +174,9 @@ ASSISTANT_INPUT_TEXTS = (
 )
 ASSISTANT_INPUT_FOLLOWUP_TEXT = "Summarize the two weather results above in one sentence without calling a tool."
 FORCE_FINAL_TEXT = "Please summarize all results inside <final_answer>...</final_answer> tags."
+# SGLang skips its tool-call parser for tool_choice "none". A real parse failure
+# runs with parsing on, where SGLang keeps special tokens, so keep them here too.
+PARSE_FAILURE_REQUEST_ARGS = {"tool_choice": "none", "skip_special_tokens": False}
 
 TOOLS = [
     {
@@ -223,7 +231,8 @@ def select_schedule(allowed_roles, *, cycles: int = DEFAULT_CYCLES) -> list[Driv
     # which cycle-repeat alone never produces.
     schedule = list(cycle) + [_R] + cycle * (cycles - 1)
     if "user" in key:
-        schedule.append(_F)
+        # FORCE_FINAL then follows an assistant whose tool call went unparsed.
+        schedule += [_P, _F]
     # Keep injected assistants after every rollback: they are prompt messages,
     # not generated checkpoints, so rollback across them is a separate contract.
     if "assistant" in key:
@@ -390,6 +399,11 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
                 counters["user_count"] += 1
                 events.append("append_user")
 
+            elif action is DriverAction.PARSE_FAILURE:
+                messages.append({"role": "user", "content": PARSE_FAILURE_USER_TEXT})
+                counters["user_count"] += 1
+                events.append("parse_failure")
+
             elif action is DriverAction.SYSTEM_REMINDER:
                 messages.append({"role": "system", "content": SYSTEM_REMINDER_TEXT})
                 counters["system_count"] += 1
@@ -424,8 +438,13 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
             else:
                 raise AssertionError(f"Unknown DriverAction {action!r}")
 
-            resp = await _chat_complete(client, base_url, messages, rk, label=label)
+            step_kwargs = {**rk, **PARSE_FAILURE_REQUEST_ARGS} if action is DriverAction.PARSE_FAILURE else rk
+            resp = await _chat_complete(client, base_url, messages, step_kwargs, label=label)
             assistant = resp["choices"][0]["message"]
+            if action is DriverAction.PARSE_FAILURE and assistant.get("tool_calls"):
+                raise AssertionError(
+                    f"{label}: tool_choice='none' still returned tool_calls={assistant['tool_calls']}"
+                )
             messages.append(assistant)
             counters["tool_call_count"] += len(assistant.get("tool_calls") or [])
 
@@ -499,7 +518,8 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     """Custom-generate wrapper that asserts driver-action coverage.
 
     - Per-sample: every sample must contain ``rollback``, plus ``append_user``
-      / ``append_system`` / ``append_assistant`` when those roles are allowed.
+      and ``parse_failure`` when ``user`` is allowed, and ``append_system`` /
+      ``append_assistant`` when those roles are allowed.
     - Cross-sample: at least one sample must contain ``append_tool``
       (model-dependent on emitting a tool_call).
     """
@@ -528,7 +548,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
 
     required_per_sample = ["rollback"]
     if "user" in allowed_roles:
-        required_per_sample.append("append_user")
+        required_per_sample += ["append_user", "parse_failure"]
     if "system" in allowed_roles:
         required_per_sample.append("append_system")
     if "assistant" in allowed_roles:
