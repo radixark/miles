@@ -127,7 +127,7 @@ def commit_adapter_dir(
     if _link_target(link) == written.path:
         # a retry after the link swap; the commit already stands
         return CommittedAdapterDir(written.path, written.commit_id)
-    if not overwrite and (link.is_dir() or link.is_symlink()):
+    if not overwrite and os.path.lexists(link):
         _rmtree(written.path)
         raise FileExistsError(f"adapter {name!r} already exists")
     if link.is_dir() and not link.is_symlink():

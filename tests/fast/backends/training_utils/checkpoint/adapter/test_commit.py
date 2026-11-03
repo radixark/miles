@@ -41,6 +41,13 @@ def test_refuses_to_overwrite_when_asked_not_to(tmp_path):
     assert sorted(p.name for p in tmp_path.iterdir()) == sorted(["w", first.path.name]), "the refused write is removed"
 
 
+def test_refuses_to_overwrite_a_regular_file(tmp_path):
+    (tmp_path / "w").write_text("user file")
+    with pytest.raises(FileExistsError):
+        _save(tmp_path, "w", "2", overwrite=False)
+    assert (tmp_path / "w").read_text() == "user file"
+
+
 def test_another_tenant_cannot_resolve_or_delete(tmp_path):
     _save(tmp_path, "w", "1")
     with pytest.raises(OwnershipError):
