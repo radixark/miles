@@ -1,4 +1,5 @@
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +50,10 @@ def validate_lora_args(args):
             "--lora-adapter-convert-save is implemented only for single LoRA on --train-backend megatron "
             "--megatron-to-hf-mode bridge"
         )
+        # the commit would retire and delete whatever sits there, including the source when converting in place
+        assert not os.path.lexists(
+            args.lora_adapter_convert_save
+        ), f"--lora-adapter-convert-save {args.lora_adapter_convert_save} already exists; pass a new path"
     if engine_loads_adapter_from_disk(args):
         _validate_rollout_only_adapter(args)
     assert args.train_backend in (

@@ -83,6 +83,23 @@ def test_convert_save_is_refused_outside_bridge_single_lora(tmp_path, train_back
         validate_lora_args(args)
 
 
+def test_convert_save_refuses_an_existing_destination(tmp_path):
+    destination = tmp_path / "converted"
+    destination.mkdir()
+    args = Namespace(
+        lora_type="lora",
+        multi_lora_n_adapters=0,
+        lora_rank=8,
+        lora_alpha=16.0,
+        lora_adapter_path=str(tmp_path),
+        lora_adapter_convert_save=str(destination),
+        train_backend="megatron",
+        megatron_to_hf_mode="bridge",
+    )
+    with pytest.raises(AssertionError, match="already exists"):
+        validate_lora_args(args)
+
+
 def test_multi_lora_refuses_an_adapter_path():
     with pytest.raises(AssertionError, match="--lora-adapter-path is single LoRA only"):
         validate_multi_lora_args(Namespace(multi_lora_n_adapters=2, lora_rank=8, lora_adapter_path="/adapter"))
