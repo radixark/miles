@@ -100,6 +100,22 @@ def test_convert_save_refuses_an_existing_destination(tmp_path):
         validate_lora_args(args)
 
 
+def test_convert_save_is_refused_under_rollout_only(tmp_path):
+    args = Namespace(
+        lora_type="lora",
+        multi_lora_n_adapters=0,
+        lora_rank=8,
+        lora_alpha=16.0,
+        lora_adapter_path=str(tmp_path),
+        lora_adapter_convert_save=str(tmp_path / "converted"),
+        train_backend="megatron",
+        megatron_to_hf_mode="bridge",
+        debug_rollout_only=True,
+    )
+    with pytest.raises(AssertionError, match="--debug-rollout-only"):
+        validate_lora_args(args)
+
+
 def test_multi_lora_refuses_an_adapter_path():
     with pytest.raises(AssertionError, match="--lora-adapter-path is single LoRA only"):
         validate_multi_lora_args(Namespace(multi_lora_n_adapters=2, lora_rank=8, lora_adapter_path="/adapter"))

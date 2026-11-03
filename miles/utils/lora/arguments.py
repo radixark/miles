@@ -54,6 +54,8 @@ def validate_lora_args(args):
         assert not os.path.lexists(
             args.lora_adapter_convert_save
         ), f"--lora-adapter-convert-save {args.lora_adapter_convert_save} already exists; pass a new path"
+        # rollout-only builds no model, so nothing would load or write the adapter
+        assert not args.debug_rollout_only, "--lora-adapter-convert-save needs the trainer; drop --debug-rollout-only"
     if engine_loads_adapter_from_disk(args):
         _validate_rollout_only_adapter(args)
     assert args.train_backend in (
