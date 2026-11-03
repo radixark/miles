@@ -606,6 +606,15 @@ def restore_single_lora(model, args, *, optimizer, opt_param_scheduler) -> int |
         in_model_loaders_by_kind[AdapterSourceKind.MEGATRON_BRIDGE_CHECKPOINT] = MegatronBridgeCheckpointLoader(
             model, optimizer, members, run, load_optimizer
         )
+    else:
+
+        def refuse_bridge_checkpoint(path: Path) -> AdapterParametrization:
+            raise AssertionError(
+                f"{path} is a Megatron-Bridge checkpoint, which only --megatron-to-hf-mode bridge loads; "
+                "convert it there first with --lora-adapter-convert-save"
+            )
+
+        in_model_loaders_by_kind[AdapterSourceKind.MEGATRON_BRIDGE_CHECKPOINT] = refuse_bridge_checkpoint
     load_adapter_dir(
         path,
         members,

@@ -67,6 +67,7 @@ def _restore(path, *, convert_save=None, megatron_to_hf_mode="bridge"):
             load_hf_config=DEFAULT,
             BridgeAdapterSlots=DEFAULT,
             DistributedOptimizerMembers=DEFAULT,
+            MegatronBridgeCheckpointLoader=DEFAULT,
             load_adapter_dir=DEFAULT,
             save_and_commit_adapter_dir=DEFAULT,
         ) as mocks,
@@ -98,11 +99,14 @@ def test_a_weights_only_convert_save_writes_neither_moments_nor_a_placeholder_tr
     assert mocks["save_and_commit_adapter_dir"].call_args.kwargs["training_state"] is None
 
 
-@pytest.mark.parametrize("megatron_to_hf_mode, loads_bridge", [("bridge", True), ("raw", False)])
-def test_only_the_bridge_backend_loads_a_megatron_bridge_checkpoint(tmp_path, megatron_to_hf_mode, loads_bridge):
-    _, _, mocks = _restore(tmp_path, megatron_to_hf_mode=megatron_to_hf_mode)
+def test_only_the_bridge_backend_loads_a_megatron_bridge_checkpoint(tmp_path):
+    _, _, mocks = _restore(tmp_path, megatron_to_hf_mode="bridge")
     loaders = mocks["load_adapter_dir"].call_args.kwargs["in_model_loaders_by_kind"]
-    assert (AdapterSourceKind.MEGATRON_BRIDGE_CHECKPOINT in loaders) is loads_bridge
+    assert loaders[AdapterSourceKind.MEGATRON_BRIDGE_CHECKPOINT] is mocks["MegatronBridgeCheckpointLoader"].return_value
+    _, _, mocks = _restore(tmp_path, megatron_to_hf_mode="raw")
+    loaders = mocks["load_adapter_dir"].call_args.kwargs["in_model_loaders_by_kind"]
+    with pytest.raises(AssertionError, match="convert it there first with --lora-adapter-convert-save"):
+        loaders[AdapterSourceKind.MEGATRON_BRIDGE_CHECKPOINT](tmp_path)
 
 
 def test_a_mix_of_distributed_and_plain_optimizers_is_refused():
