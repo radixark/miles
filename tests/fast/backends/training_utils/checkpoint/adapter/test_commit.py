@@ -177,6 +177,16 @@ def test_a_link_to_a_foreign_dir_is_never_replaced_or_deleted(tmp_path):
     assert [p.name for p in root.iterdir()] == ["w"], "the refused write is removed"
 
 
+@pytest.mark.parametrize("target", ["pretrained_adapter", "my.adapter.v1"])
+def test_resolve_refuses_a_link_to_a_foreign_dir(tmp_path, target):
+    (tmp_path / target).mkdir()
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "w").symlink_to(tmp_path / target)
+    with pytest.raises(ValueError, match="did not write"):
+        resolve_adapter_dir(root, "w", tenant=None)
+
+
 def test_the_written_files_and_dir_are_synced_before_the_link_swap(tmp_path, monkeypatch):
     events, path_by_fd = [], {}
     real_open, real_fsync, real_replace = os.open, os.fsync, os.replace

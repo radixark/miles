@@ -161,6 +161,8 @@ def resolve_adapter_dir(root: Path, name: str, *, tenant: str | None) -> Committ
     """The committed directory behind ``name``; ``tenant`` must own it. RL, which has no tenants, passes None."""
     _assert_user_name(name)
     target = _link_target(Path(root) / name)
+    if target is not None and not _is_library_dir(Path(root), name, target):
+        raise _foreign_link_error(Path(root) / name, target)
     if target is None or not target.is_dir():
         return None
     if tenant is not None:
@@ -183,9 +185,6 @@ def _foreign_link_error(link: Path, target: Path) -> ValueError:
 
 
 def delete_adapter_dir(root: Path, name: str, *, tenant: str | None) -> None:
-    target = _link_target(Path(root) / name)
-    if target is not None and not _is_library_dir(Path(root), name, target):
-        raise _foreign_link_error(Path(root) / name, target)
     committed = resolve_adapter_dir(root, name, tenant=tenant)
     if committed is None:
         raise FileNotFoundError(f"adapter {name!r} does not exist")
