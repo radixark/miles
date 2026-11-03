@@ -166,6 +166,9 @@ def test_rollout_engine_args_read_the_parsed_engine_config():
             "sglang_revision": "v1",
             "sglang_image_processor_backend": "pil",
             "sglang_mm_process_config": {"video": {"fps": 2}},
+            "sglang_token_space_preprocess_cache_trust_url": True,
+            "sglang_enable_token_space_preprocess_cache": True,
+            "sglang_token_space_preprocess_cache_dir": "/shared/cache",
         }
     )
 
@@ -175,6 +178,8 @@ def test_rollout_engine_args_read_the_parsed_engine_config():
     assert rollout_engine_args.revision == "v1"
     assert rollout_engine_args.image_processor_backend == "pil"
     assert rollout_engine_args.mm_process_config_json == '{"video": {"fps": 2}}'
+    # The trainer reads the engines' disk cache, so it reuses the features they computed.
+    assert rollout_engine_args.token_space_preprocess_cache_dir == "/shared/cache"
 
 
 def test_rollout_engine_args_take_the_actor_model():
