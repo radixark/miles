@@ -200,6 +200,24 @@ def _expand_inkling_rollout_data_in_place(rollout_data: RolloutBatch) -> None:
         )
 
 
+def media_expansion_pending(rollout_data: RolloutBatch) -> bool:
+    """Whether ``expand_multimodal_rollout_data_in_place`` would still change the tokens: a Kimi-VL sample with
+    one placeholder per image, or an Inkling sample with media sentinels. Costs a few dict lookups per sample unless
+    a sample carries those keys."""
+    multimodal_train_inputs = rollout_data.get("multimodal_train_inputs") or []
+    for tokens, mm in zip(rollout_data["tokens"], multimodal_train_inputs, strict=False):
+        if mm is None:
+            continue
+        if "mm_vision_num_patches" in mm or "mm_audio_num_tokens" in mm:
+            if ((tokens == INKLING_IMAGE_SENTINEL_ID) | (tokens == INKLING_AUDIO_SENTINEL_ID)).any():
+                return True
+        elif "grid_thws" in mm and len(mm["grid_thws"]):
+            num_placeholders = int((tokens == KIMI_VL_MEDIA_TOKEN_ID).sum())
+            if num_placeholders and num_placeholders != sum(_num_image_tokens_from_grid(g) for g in mm["grid_thws"]):
+                return True
+    return False
+
+
 def expand_multimodal_rollout_data_in_place(
     rollout_data: RolloutBatch,
     media_token_id: int = KIMI_VL_MEDIA_TOKEN_ID,
