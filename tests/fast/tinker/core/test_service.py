@@ -804,7 +804,9 @@ async def test_an_overwrite_interrupted_after_adopting_a_legacy_dir_keeps_it_loa
     assert service.weights_info("tenant", path)["lora_rank"] == service.models[model_id].lora_rank
     with pytest.raises(OwnershipError):
         service.weights_info("intruder", path)
-    loaded = service.submit("tenant", "load_state", {"model_id": model_id, "seq_id": 1, "path": path, "optimizer": True})
+    loaded = service.submit(
+        "tenant", "load_state", {"model_id": model_id, "seq_id": 1, "path": path, "optimizer": True}
+    )
     assert (await await_settled(service, "tenant", loaded)).state == DONE
     assert service.backend.named("load_slot")[-1]["ckpt_path"] == str(Path(legacy).resolve())
 
@@ -874,7 +876,9 @@ async def test_an_unknown_failure_stops_the_dispatcher(tmp_path, source):
     gateway = make_service(tmp_path)
     run_task = asyncio.create_task(gateway.run())
     error = (
-        OSError("checkpoint IO failed") if source in ("export", "load", "cleanup") else RuntimeError("fatal execution failure")
+        OSError("checkpoint IO failed")
+        if source in ("export", "load", "cleanup")
+        else RuntimeError("fatal execution failure")
     )
     try:
         model_id = await created_model(gateway)
@@ -896,7 +900,9 @@ async def test_an_unknown_failure_stops_the_dispatcher(tmp_path, source):
                 raise error
 
             gateway.backend.delete_retired_adapters = failing_delete
-            gateway.submit("tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False})
+            gateway.submit(
+                "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False}
+            )
         elif source == "create":
             gateway.backend.fail_on["load_slot"] = RuntimeError("fatal execution failure")
             gateway.create_model("tenant", model_payload(gateway))
