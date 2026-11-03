@@ -186,7 +186,8 @@ def run_worker(checkpoint_dir):
     print(f"rank={dist.get_rank()} resumed Adam step is exact", flush=True)
 
     load_slot(model, members, resumed, str(checkpoint_dir), run, targets, load_optimizer=True)
-    resumed.reload_masters()
+    # round the FP32 masters to the bf16 model params
+    resumed._inner.reload_model_params()
     with pytest.raises(AssertionError):
         assert_same_state(snapshot(model, resumed), saved)
     print(f"rank={dist.get_rank()} negative control: rounding masters is detected", flush=True)

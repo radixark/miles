@@ -178,10 +178,6 @@ class SlotOptimizer:
     def allgather_params(self) -> None:
         self._inner.allgather_params()
 
-    def reload_masters(self) -> None:
-        """Refresh this slot's FP32 masters from its model parameters."""
-        self._inner.reload_model_params()
-
     def sharded_state(self, model_sharded_state_dict: dict, *, is_loading: bool) -> dict:
         """torch_dist form: every state tensor carries its param's global coordinates."""
         return self._inner.sharded_state_dict(model_sharded_state_dict, is_loading=is_loading)

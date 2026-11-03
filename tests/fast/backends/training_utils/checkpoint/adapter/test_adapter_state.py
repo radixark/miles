@@ -14,8 +14,10 @@ from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
     LocalShardSpec,
     _load_adapter_state,
     _save_adapter_state,
+    gloo_group,
     read_adapter_state_keys,
 )
+from miles.utils.distributed_utils import init_gloo_group
 
 FULL = torch.arange(6 * 4, dtype=torch.float32).reshape(6, 4)
 
@@ -29,6 +31,7 @@ def _state(rows, *, primary=True, fill=None, step=7):
 
 def _save_then_reload(rank, world_size, port, *, directory, save_rows, load_rows, primaries):
     init_gloo(rank, world_size, port=port)
+    init_gloo_group()
     _save_adapter_state(Path(directory), _state(save_rows[rank], primary=primaries[rank]))
     template = _state(load_rows[rank], fill=-1.0, step=None)
     step = _load_adapter_state(Path(directory), template)
@@ -70,6 +73,7 @@ def _banded_state(bands, *, fill=None, step=7):
 
 def _save_then_reload_bands(rank, world_size, port, *, directory, save_bands, load_bands):
     init_gloo(rank, world_size, port=port)
+    init_gloo_group()
     _save_adapter_state(Path(directory), _banded_state(save_bands[rank]))
     template = _banded_state(load_bands[rank], fill=-1.0, step=None)
     assert _load_adapter_state(Path(directory), template) == 7
@@ -97,6 +101,7 @@ def test_several_pieces_of_one_key_on_a_rank_reload_bitwise(save_bands, load_ban
 
 def _disagree_on_step(rank, world_size, port, *, directory):
     init_gloo(rank, world_size, port=port)
+    init_gloo_group()
     with pytest.raises(AssertionError, match="disagree on the optimizer step"):
         _save_adapter_state(Path(directory), _state([(0, 3), (3, 6)][rank], step=rank))
     dist.destroy_process_group()
@@ -123,6 +128,7 @@ def test_bf16_moments_are_refused():
 
 def _one_rank_holds_nothing(rank, world_size, port, *, directory):
     init_gloo(rank, world_size, port=port)
+    init_gloo_group()
     state = _state((0, 6)) if rank == 0 else AdapterState([], [], [], [], step=None)
     _save_adapter_state(Path(directory), state)
     dist.destroy_process_group()
@@ -132,3 +138,13 @@ def test_a_rank_without_parameters_agrees_on_the_step():
     directory = tempfile.mkdtemp()
     run_multiprocess(partial(_one_rank_holds_nothing, directory=directory))
     assert _load_adapter_state(Path(directory), _state((0, 6), fill=-1.0, step=None)) == 7
+
+
+def _without_gloo_group(rank, world_size, port):
+    init_gloo(rank, world_size, port=port)
+    with pytest.raises(RuntimeError, match="Gloo group has not been initialized"):
+        gloo_group()
+
+
+def test_an_uninitialized_gloo_group_fails_instead_of_falling_back_to_the_default_group():
+    run_multiprocess(_without_gloo_group, world_size=1)

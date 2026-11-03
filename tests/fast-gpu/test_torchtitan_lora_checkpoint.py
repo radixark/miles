@@ -24,6 +24,7 @@ from miles.backends.training_utils.checkpoint.adapter.key_mapping import (
     map_named_tensors_to_hf_keys,
     map_peft_keys_to_hf_keys,
 )
+from miles.utils.distributed_utils import init_gloo_group
 from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
 
 _TARGETS = get_hf_lora_targets({"model_type": "qwen3", "num_hidden_layers": 28})
@@ -62,8 +63,9 @@ def _check(mapping, params_local: list[torch.Tensor], expected: dict[str, torch.
 
 def _whole(rank, world_size, port):
     init_gloo(rank, world_size, port=port)
+    init_gloo_group()
     sd_adapter, params = _adapter()
-    mapping = probe_torchtitan_row_mapping(params, sd_adapter, _TARGETS)
+    mapping = probe_torchtitan_row_mapping(params, sd_adapter)
     attn, mlp = "model.layers.3.self_attn", "model.layers.3.mlp"
     assert mapping.shared_lora_a_groups == (
         (f"{mlp}.gate_proj", f"{mlp}.up_proj"),
@@ -85,11 +87,12 @@ def test_whole_tensors_map_through_the_models_own_split():
 
 def _sharded(rank, world_size, port):
     init_gloo(rank, world_size, port=port)
+    init_gloo_group()
     mesh = init_device_mesh("cpu", (world_size,))
     sd_adapter, params = _adapter()
     expected = _expected(sd_adapter, params)
     sharded = {key: distribute_tensor(value, mesh, [Shard(0)]) for key, value in params.items()}
-    mapping = probe_torchtitan_row_mapping(sharded, sd_adapter, _TARGETS)
+    mapping = probe_torchtitan_row_mapping(sharded, sd_adapter)
     _check(mapping, [p.to_local() for p in sharded.values()], expected)
     dist.destroy_process_group()
 

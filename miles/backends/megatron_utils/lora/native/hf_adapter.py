@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import os
 import re
-import time
 from collections.abc import Iterable
 
 import torch
@@ -28,7 +27,6 @@ def export_lora_hf_named(
     This representation preserves the exact target set; the serving exporter adds the
     zero siblings SGLang's fused buffers need. The weight iterator gathers across PP.
     """
-    started = time.perf_counter()
     gather = ParallelGather()
     plan: list[tuple[str, object]] = []
 
@@ -48,21 +46,9 @@ def export_lora_hf_named(
             plan.append((f"{export.hf_name}.lora_B.weight", b))
 
     gather.flush()
-    exported = [
+    return [
         (name, (source() if callable(source) else source).detach().to(dtype).contiguous()) for name, source in plan
     ]
-    if not dist.is_initialized() or dist.get_rank() == 0:
-        peak_b = max(
-            (tensor.abs().max().item() for name, tensor in exported if name.endswith("lora_B.weight")),
-            default=0.0,
-        )
-        logger.info(
-            "[lora-native] exported %d adapter tensors in %.1f ms (max|lora_B|=%.3e)",
-            len(exported),
-            (time.perf_counter() - started) * 1e3,
-            peak_b,
-        )
-    return exported
 
 
 def load_lora_adapter_hf(model_chunks, adapter_path: str) -> int:
