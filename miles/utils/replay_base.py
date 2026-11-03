@@ -24,8 +24,8 @@ class Replay:
 
     def record(self, top_indices: torch.Tensor):
         if not current_platform.dynamic_shapes:
-            # pad on the host: on the device each new length compiles a new program
-            self.top_indices_list.append(top_indices.clone())
+            # keep the ids on the host until popped: on the device each new length compiles a new program
+            self.top_indices_list.append(top_indices.to("cpu", copy=True))
             return
         buf = torch.empty_like(top_indices, device="cpu", pin_memory=True)
         buf.copy_(top_indices)
