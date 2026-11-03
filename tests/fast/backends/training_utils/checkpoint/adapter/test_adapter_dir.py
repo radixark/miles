@@ -11,7 +11,11 @@ import torch.distributed as dist
 import torch.distributed.checkpoint
 from tests.fast.dist_utils import init_gloo, run_multiprocess
 
-from miles.backends.training_utils.checkpoint.adapter.adapter_dir import load_adapter_dir, save_adapter_dir
+from miles.backends.training_utils.checkpoint.adapter.adapter_dir import (
+    load_adapter_dir,
+    save_adapter_dir,
+    write_external_export,
+)
 from miles.backends.training_utils.checkpoint.adapter.adapter_exports import write_peft_adapter
 from miles.backends.training_utils.checkpoint.adapter.adapter_state import AdapterState, LocalShardSpec
 from miles.backends.training_utils.checkpoint.adapter.commit import (
@@ -20,7 +24,7 @@ from miles.backends.training_utils.checkpoint.adapter.commit import (
     tenant_digest,
 )
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
-from miles.backends.training_utils.checkpoint.adapter.readers import AdapterSourceKind
+from miles.backends.training_utils.checkpoint.adapter.readers import AdapterSourceKind, ExternalWeightsReader
 from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
 
 MODULE = "model.layers.0.self_attn.q_proj"
@@ -298,3 +302,23 @@ class PaddedRankMembers(FakeMembers):
 def test_a_padded_rank_is_refused_at_save(tmp_path):
     with pytest.raises(RuntimeError, match="rank 3 != 2"):
         save_adapter_dir(tmp_path, "w", PaddedRankMembers(), 0, RUN, tenant_digest=None)
+
+
+def _export_external(rank, world_size, port, *, root):
+    init_gloo(rank, world_size, port=port)
+    written = write_external_export(Path(root), "x", FakeMembers(scale=1 / 3), 0, RUN, TARGETS, tenant_digest=None)
+    if rank == 0:
+        commit_adapter_dir(Path(root), "x", written, overwrite=False)
+    dist.destroy_process_group()
+
+
+def test_the_external_export_is_the_fp32_masters_gathered_across_ranks():
+    """Not the bf16 weights upcast: values bf16 cannot hold come out bitwise."""
+    root = tempfile.mkdtemp()
+    run_multiprocess(partial(_export_external, root=root))
+    committed = resolve_adapter_dir(Path(root), "x", tenant=None)
+    exported = ExternalWeightsReader(committed.path, RUN, TARGETS).read_weights()
+    for factor, full in FULL.items():
+        master = full * (1 / 3)
+        assert not torch.equal(master, master.bfloat16().float()), "the masters must not be bf16-exact"
+        assert torch.equal(exported[f"{MODULE}.{factor}"], master)

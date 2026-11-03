@@ -224,14 +224,40 @@ def write_external_export(
     tenant_digest: str | None,
     age_recipients: Sequence[str] = (),
 ) -> UncommittedAdapterDir:
-    """All ranks call; rank 0 writes ``slot``'s external export (no parametrization: it is a download, not a
-    checkpoint). The caller's committer then commits it."""
+    """All ranks call; rank 0 writes ``slot``'s external export from the fp32 masters (no parametrization: it is a
+    download, not a checkpoint). The caller's committer then commits it."""
     with write_adapter_dir(root, name, tenant_digest=tenant_digest) as written:
-        named_tensors = list(members.export_bf16_adapter(slot))
+        state, error = None, None
+        try:
+            state = members.export_adapter_state(slot)
+        except Exception as exc:
+            error = exc
+        # agree before the gather, so one rank's failure cannot leave the others waiting in it
+        raise_if_any_rank_failed(error)
+        weights = _gather_whole_weights(state)
         if _is_writer():
-            weights = _hf_keyed_bf16_adapter(named_tensors, members, targets)
             write_external_adapter(written.path, weights, parametrization, targets, age_recipients=age_recipients)
     return written
+
+
+def _gather_whole_weights(state: AdapterState) -> dict[str, torch.Tensor] | None:
+    """Collective: each key's whole fp32 weight, assembled on rank 0 from the primary pieces; None elsewhere."""
+    pieces = [(s, w.cpu()) for s, w in zip(state.shard_specs, state.weights, strict=True) if s.is_primary]
+    gathered = [pieces]
+    if torch.distributed.is_initialized():
+        gathered = [None] * torch.distributed.get_world_size() if _is_writer() else None
+        torch.distributed.gather_object(pieces, gathered, dst=0, group=gloo_group())
+    if not _is_writer():
+        return None
+    whole, filled = {}, {}
+    for spec, piece in (p for rank_pieces in gathered for p in rank_pieces):
+        full = whole.setdefault(spec.key, torch.empty(spec.global_shape, dtype=torch.float32))
+        full[tuple(slice(o, o + n) for o, n in zip(spec.offsets, spec.local_shape, strict=True))] = piece
+        filled[spec.key] = filled.get(spec.key, 0) + piece.numel()
+    # primary pieces never overlap, so a tensor is whole exactly when they cover all of its elements
+    partial_keys = sorted(key for key, tensor in whole.items() if filled[key] != tensor.numel())
+    assert not partial_keys, f"the primary pieces do not cover {partial_keys[:8]}"
+    return whole
 
 
 def _slice(full: torch.Tensor, spec: LocalShardSpec) -> torch.Tensor:

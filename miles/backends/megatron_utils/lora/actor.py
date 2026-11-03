@@ -146,7 +146,7 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
         return write_external_export(
             Path(root),
             name,
-            self.adapter_slots,
+            self._checkpoint_members(),
             slot,
             parametrization,
             self.adapter_slots.targets,
