@@ -179,6 +179,8 @@ class DistributedOptimizerMembers:
             # a never-stepped optimizer has no Adam state yet (zero moments); this fills only empty states
             if sub.init_state_fn is not None:
                 sub.init_state_fn(sub.optimizer, sub.config)
+            elif isinstance(sub.optimizer, HybridDeviceOptimizer) and not sub.optimizer.state:
+                _init_zero_hdo_state(sub.optimizer)
             gathered = sub.get_parameter_state_dp_zero(use_gloo_comm=True)
             if (step := _distributed_optimizer_step(sub)) is not None:
                 steps.add(step)
@@ -228,7 +230,8 @@ class DistributedOptimizerMembers:
         for sub in self._distributed_optimizers():
             if sub.init_state_fn is not None:
                 sub.init_state_fn(sub.optimizer, sub.config)
-            gathered = sub.get_parameter_state_dp_zero(use_gloo_comm=True)
+            # every element is overwritten below, so nothing is gathered
+            gathered = sub.get_parameter_state_dp_zero(use_gloo_comm=True, empty_data=True)
             if gathered is not None:
                 for buffer_index, buffer in enumerate(sub.buffers):
                     for param in buffer.param_index_map:
@@ -267,6 +270,22 @@ def _distributed_optimizer_step(sub) -> int | None:
         return steps.pop() if steps else (0 if sub.optimizer.state else None)
     groups = [group for group in sub.optimizer.param_groups if group["params"]]
     return groups[0].get("step", 0) if groups else None
+
+
+def _init_zero_hdo_state(hdo: HybridDeviceOptimizer) -> None:
+    """The state a never-stepped HDO is equivalent to: its fp32 master, zero moments, step 0.
+
+    Megatron's own dummy_step would take a real Adam step on random gradients.
+    """
+    for group in hdo.param_groups:
+        for param in group["params"]:
+            master = hdo.param_to_inner_param[param]
+            hdo.state[param] = {
+                "step": torch.tensor(0.0),
+                "exp_avg": torch.zeros_like(master),
+                "exp_avg_sq": torch.zeros_like(master),
+                "master_param": master,
+            }
 
 
 def _set_distributed_optimizer_step(sub, step: int) -> None:
