@@ -24,9 +24,13 @@ logger = logging.getLogger(__name__)
 TENANT_FILENAME = "tenant.json"
 _DELETING_SUFFIX = ".deleting"
 _STAGING_SUFFIX = ".link"
+_ADOPTING_SUFFIX = ".adopting"
 _COMMIT_ID_NBYTES = 8
-# what this library creates in a root: .<name>.<commit_id>, its retired form and a crashed commit's staging link
-_INTERNAL_ENTRY = re.compile(rf"^\.(?P<name>.+)\.[0-9a-f]{{{2 * _COMMIT_ID_NBYTES}}}(?P<suffix>\.deleting|\.link)?$")
+# what this library creates in a root: .<name>.<commit_id>, its retired form and a crashed commit's or adoption's
+# staging link
+_INTERNAL_ENTRY = re.compile(
+    rf"^\.(?P<name>.+)\.[0-9a-f]{{{2 * _COMMIT_ID_NBYTES}}}(?P<suffix>\.deleting|\.link|\.adopting)?$"
+)
 
 
 class OwnershipError(PermissionError):
@@ -88,6 +92,10 @@ def write_adapter_dir(root: Path, name: str, *, tenant_digest: str | None = None
     error = None
     try:
         yield UncommittedAdapterDir(path, commit_id)
+        if not dist.is_initialized() or dist.get_rank() == 0:
+            # the commit must follow a durable write; DCP syncs only its own files
+            for entry in (*path.iterdir(), path):
+                _fsync(entry)
     except Exception as exc:
         error = exc
     try:
@@ -111,17 +119,16 @@ def commit_adapter_dir(
     root, link = Path(root), Path(root) / name
     assert written.path == _physical_dir(root, name, written.commit_id), f"{written.path} was not written for {name!r}"
     delete_unreferenced_adapter_dirs(root, name, keep=written.path.name)
+    if not overwrite and (link.is_dir() or link.is_symlink()):
+        _rmtree(written.path)
+        raise FileExistsError(f"adapter {name!r} already exists")
     if link.is_dir() and not link.is_symlink():
-        if not overwrite:
-            raise FileExistsError(f"adapter {name!r} already exists")
         _adopt_pre_commit_dir(root, name)
     previous = _link_target(link)
-    if previous is not None and not overwrite:
-        raise FileExistsError(f"adapter {name!r} already exists")
     staging_link = root / f".{name}.{written.commit_id}{_STAGING_SUFFIX}"
     staging_link.symlink_to(written.path.name)
     os.replace(staging_link, link)
-    _fsync_dir(root)
+    _fsync(root)
     if previous is not None and previous.exists():
         _retire(previous)
     return CommittedAdapterDir(written.path, written.commit_id)
@@ -131,11 +138,12 @@ def _adopt_pre_commit_dir(root: Path, name: str) -> None:
     """Give a checkpoint saved before commits (a plain ``<name>/`` dir) the committed layout, so an overwrite
     replaces and retires it like any commit."""
     physical = _physical_dir(root, name, secrets.token_hex(_COMMIT_ID_NBYTES))
-    os.rename(root / name, physical)
-    staging_link = root / f"{physical.name}{_STAGING_SUFFIX}"
+    # linked before the rename, so recovery finishes an adoption that stops between the rename and the swap
+    staging_link = root / f"{physical.name}{_ADOPTING_SUFFIX}"
     staging_link.symlink_to(physical.name)
+    os.rename(root / name, physical)
     os.replace(staging_link, root / name)
-    _fsync_dir(root)
+    _fsync(root)
 
 
 def resolve_adapter_dir(root: Path, name: str, *, tenant: str | None) -> CommittedAdapterDir | None:
@@ -174,7 +182,16 @@ def delete_unreferenced_adapter_dirs(root: Path, name: str | None = None, *, kee
         if not entry.is_symlink():
             continue
         internal = _INTERNAL_ENTRY.match(entry.name)
-        if internal is not None and internal["suffix"] == _STAGING_SUFFIX:
+        if internal is not None and internal["suffix"] == _ADOPTING_SUFFIX:
+            if name is None or internal["name"] == name:
+                link = root / internal["name"]
+                if _link_target(entry).exists() and not os.path.lexists(link):
+                    # the pre-commit dir was renamed and is reachable only through this link
+                    os.replace(entry, link)
+                    referenced.add(_link_target(link).name)
+                else:
+                    entry.unlink()
+        elif internal is not None and internal["suffix"] == _STAGING_SUFFIX:
             # a staging link never made it to its name; it references nothing
             if name is None or internal["name"] == name:
                 entry.unlink()
@@ -210,7 +227,7 @@ def _rmtree(path: Path) -> None:
         logger.exception(f"failed to remove {path}")
 
 
-def _fsync_dir(path: Path) -> None:
+def _fsync(path: Path) -> None:
     fd = os.open(path, os.O_RDONLY)
     try:
         os.fsync(fd)

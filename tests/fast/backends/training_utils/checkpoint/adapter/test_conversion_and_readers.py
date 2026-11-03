@@ -56,8 +56,8 @@ def _run(**overrides):
 def _weights(shared_qkv: bool):
     g = torch.Generator().manual_seed(0)
     w = {}
-    for i, (m, rows) in enumerate(zip(QKV, QKV_ROWS, strict=True)):
-        if not shared_qkv or i == 0:
+    for m, rows in zip(QKV, QKV_ROWS, strict=True):
+        if not shared_qkv or m == min(QKV):
             w[f"{m}.lora_A"] = torch.randn(2, 8, generator=g)
         w[f"{m}.lora_B"] = torch.randn(rows, 2, generator=g)
     for m in EXPERTS:
@@ -99,6 +99,13 @@ def test_splitting_a_shared_a_is_weights_only():
         assert_parametrization_matches_run(source, target, steps, load_optimizer=True, has_optimizer_state=True)
     split = apply_parametrization_conversion(_weights(True), steps)
     assert torch.equal(split[f"{QKV[1]}.lora_A"], split[f"{QKV[0]}.lora_A"])
+
+
+def test_the_same_shared_a_groups_in_another_order_need_no_conversion():
+    hf_order = _run(shared_lora_a_groups=(QKV, EXPERTS[:2]))
+    reordered = _run(shared_lora_a_groups=(EXPERTS[1::-1], (QKV[2], QKV[0], QKV[1])))
+    assert reordered == hf_order
+    assert plan_parametrization_conversion(reordered, hf_order, source_dtype=torch.float32) == []
 
 
 def test_merging_requires_equal_copies():
@@ -277,7 +284,6 @@ def test_a_sampler_export_reads_back_when_the_group_starts_at_a_later_gdn_compon
     reordered = (QKV[1], QKV[0], QKV[2])
     run = _run(shared_lora_a_groups=(reordered,))
     weights = {k: v.to(torch.bfloat16) for k, v in _weights(True).items()}
-    weights[f"{QKV[1]}.lora_A"] = weights.pop(f"{QKV[0]}.lora_A")
     write_sampler_adapter(tmp_path, weights, run, QWEN35)
     read = MilesAdapterDirReader(tmp_path, QWEN35).read_weights()
     assert read.keys() == weights.keys() and all(torch.equal(read[k], v) for k, v in weights.items())

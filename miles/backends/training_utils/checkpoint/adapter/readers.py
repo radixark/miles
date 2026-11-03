@@ -217,6 +217,8 @@ class PeftAdapterReader:
             has_optimizer_state=False,
             weight_dtype=next(iter(self._weights.values())).dtype,
         )
+        # a fused module's A was read under its first component, which need not be the group's first member
+        self._weights = _collapse_shared_lora_a(self._weights, self.source.parametrization, self._fused_groups)
 
     def _map_name(self, name: str) -> HfKey:
         return map_peft_keys_to_hf_keys(name)
