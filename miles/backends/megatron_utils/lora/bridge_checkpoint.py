@@ -252,7 +252,8 @@ def assert_bridge_run_config_matches(
     peft = config["peft"]
     lora_type = _BRIDGE_LORA_TYPES.get(peft["_target_"])
     assert lora_type is not None, f"Megatron-Bridge PEFT {peft['_target_']} is neither LoRA nor CanonicalLoRA"
-    # fields a Bridge version may predate default to its behaviour before them
+    # .get: a field newer than the Bridge that wrote the config is absent and takes the dataclass default, which is
+    # Bridge's behaviour before the field (experts_shared_outer_loras, share_expert_adapters, normalize_moe_lora)
     source = {
         "lora_type": lora_type,
         "lora_rank": peft["dim"],
@@ -262,10 +263,10 @@ def assert_bridge_run_config_matches(
     for field, value in source.items():
         assert value == run_fields[field], f"the source has {field}={value!r}; this run has {run_fields[field]!r}"
     assert peft["dropout"] == 0, f"LoRA dropout {peft['dropout']} is not supported"
-    assert not peft.get("exclude_modules"), f"exclude_modules {peft['exclude_modules']} is not supported"
+    assert not peft["exclude_modules"], f"exclude_modules {peft['exclude_modules']} is not supported"
     assert not peft.get("normalize_moe_lora", False), "normalize_moe_lora makes expert ranks depend on the saving ETP"
-    assert not peft.get("a2a_experimental", False), "a2a_experimental LoRA is not supported"
-    assert _yaml_dtype(peft.get("lora_dtype")) in (
+    assert not peft["a2a_experimental"], "a2a_experimental LoRA is not supported"
+    assert _yaml_dtype(peft["lora_dtype"]) in (
         None,
         str(params_dtype),
     ), f"lora_dtype {_yaml_dtype(peft['lora_dtype'])} differs from the model's {params_dtype}"
@@ -280,22 +281,19 @@ def assert_bridge_run_config_matches(
         assert optimizer[
             "use_distributed_optimizer"
         ], "the source did not use the DistributedOptimizer; pass --no-load-optim"
-        assert not optimizer.get(
-            "use_precision_aware_optimizer", False
-        ), "precision-aware optimizer state is not supported"
+        assert not optimizer["use_precision_aware_optimizer"], "precision-aware optimizer state is not supported"
         for field in ("main_params_dtype", "exp_avg_dtype", "exp_avg_sq_dtype"):
-            assert _yaml_dtype(optimizer.get(field)) in (None, "torch.float32"), f"{field} must be fp32"
-        assert config["checkpoint"].get(
-            "save_optim", True
-        ), "the source saved no optimizer state; pass --no-load-optim"
+            assert _yaml_dtype(optimizer[field]) in (None, "torch.float32"), f"{field} must be fp32"
+        assert config["checkpoint"]["save_optim"], "the source saved no optimizer state; pass --no-load-optim"
 
 
 def bridge_base_model_candidates(config: dict) -> tuple[str | None, ...]:
     """Bridge PEFT loads its base from pretrained_checkpoint. Only when that is not on this machine does the HF
     template it was converted from stand in, in Bridge's _resolve_hf_source order."""
     checkpoint = config["checkpoint"]
+    # hf_source_path and hf_model_id are newer than some Bridge configs
     return (
-        checkpoint.get("pretrained_checkpoint"),
+        checkpoint["pretrained_checkpoint"],
         checkpoint.get("hf_source_path"),
         config["model"].get("hf_model_id"),
         config["tokenizer"]["tokenizer_model"],

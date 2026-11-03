@@ -202,6 +202,9 @@ def _run(**overrides) -> AdapterParametrization:
     return AdapterParametrization(**(fields | overrides))
 
 
+FP32 = {"_target_": "torch.float32", "_call_": False}
+
+
 def _bridge_config(**peft) -> dict:
     return {
         "peft": {
@@ -212,9 +215,15 @@ def _bridge_config(**peft) -> dict:
             "exclude_modules": [],
             "lora_dtype": None,
             "share_expert_adapters": False,
+            "a2a_experimental": False,
         }
         | peft,
-        "optimizer": {"optimizer": "adam", "use_distributed_optimizer": True, "exp_avg_dtype": None},
+        "optimizer": {
+            "optimizer": "adam",
+            "use_distributed_optimizer": True,
+            "use_precision_aware_optimizer": False,
+        }
+        | {field: FP32 for field in ("main_params_dtype", "exp_avg_dtype", "exp_avg_sq_dtype")},
         "checkpoint": {"save_optim": True},
     }
 
