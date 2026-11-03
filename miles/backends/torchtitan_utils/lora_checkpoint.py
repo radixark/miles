@@ -191,7 +191,7 @@ class TorchtitanOptimizerMembers:
                 for destination, piece in zip(destinations, pieces, strict=True):
                     destination.view(-1)[offsets.flatten().to(destination.device)] = piece.flatten().to(destination)
             for adam in states:
-                adam["step"].fill_(state.step or 0)
+                adam["step"].fill_(state.step)
 
 
 class TorchtitanCheckpointLoader:
