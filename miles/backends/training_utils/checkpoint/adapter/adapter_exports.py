@@ -6,6 +6,7 @@ import torch
 
 from miles.backends.training_utils.checkpoint.adapter.key_mapping import (
     SAMPLER_EXPERT_NAMES_BY_HF,
+    map_hf_keys_to_peft_export_keys,
     map_hf_keys_to_peft_keys,
 )
 from miles.backends.training_utils.checkpoint.adapter.parametrization import (
@@ -61,9 +62,9 @@ def write_peft_adapter(
         value = value.to(torch.bfloat16).contiguous()
         if ".experts." in key and value.dim() == 3 and value.shape[0] > 1:
             for expert_index in range(value.shape[0]):
-                tensors[map_hf_keys_to_peft_keys(key, expert_index)] = value[expert_index].clone()
+                tensors[map_hf_keys_to_peft_export_keys(key, expert_index)] = value[expert_index].clone()
         else:
-            tensors[map_hf_keys_to_peft_keys(key)] = value
+            tensors[map_hf_keys_to_peft_export_keys(key)] = value
     save_adapter_to_disk(directory, _adapter_config(parametrization, tensors), tensors)
 
 

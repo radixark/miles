@@ -20,7 +20,7 @@ class HfKey:
 
 
 def _split_weight_name(name: str) -> tuple[str, str]:
-    # HF PEFT prefixes the model path; miles' exports (main's and this library's) use the bare HF path
+    # HF PEFT prefixes the model path; main's exports and sampler exports use the bare HF path
     assert name.endswith(".weight"), f"not a PEFT LoRA tensor name: {name!r}"
     module, factor = name.removeprefix(_PEFT_PREFIX).removesuffix(".weight").rsplit(".", 1)
     assert factor in ("lora_A", "lora_B"), f"not a LoRA factor: {name!r}"
@@ -57,6 +57,11 @@ def map_hf_keys_to_peft_keys(key: str, expert_index: int | None = None) -> str:
         head, tail = module.split(".experts.", 1)
         module = f"{head}.experts.{expert_index}.{tail}"
     return f"{module}.{factor}.weight"
+
+
+def map_hf_keys_to_peft_export_keys(key: str, expert_index: int | None = None) -> str:
+    # HF PEFT's set_peft_model_state_dict matches only names under the PeftModel's base_model.model.
+    return _PEFT_PREFIX + map_hf_keys_to_peft_keys(key, expert_index)
 
 
 def _hf_layer_prefix(targets: HfLoraTargets) -> str:
