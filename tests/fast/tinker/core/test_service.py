@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import shutil
+import threading
 from contextlib import suppress
 from pathlib import Path
 
@@ -549,6 +550,21 @@ async def test_sampler_paths_resolve_independently_of_the_lease(service, expire_
     service.config.base_model = "other"
     with pytest.raises(UserInputError, match="base_model"):
         resolve_sampler_checkpoint(service.config, "tenant", path, service.backend.resolve_adapter)
+
+
+async def test_the_sampler_commit_runs_off_the_event_loop(service, monkeypatch):
+    model_id = await created_model(service)
+    commit = service.backend.commit_adapter
+    commit_threads = []
+
+    def recording_commit(root, name, written):
+        commit_threads.append(threading.current_thread())
+        commit(root, name, written)
+
+    monkeypatch.setattr(service.backend, "commit_adapter", recording_commit)
+    save = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
+    assert (await await_settled(service, "tenant", save)).state == DONE
+    assert commit_threads and commit_threads[0] is not threading.current_thread()
 
 
 async def test_an_unnamed_sampler_save_returns_a_sampling_session(service):

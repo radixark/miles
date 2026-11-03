@@ -401,7 +401,8 @@ class TinkerService:
         )
         if isinstance(written, dict):
             return written
-        self.backend.commit_adapter(root, version, written)
+        # the commit's recovery walk and fsyncs hit shared storage; keep the event loop serving
+        await asyncio.to_thread(self.backend.commit_adapter, root, version, written)
         result = {
             "op": "save_weights_for_sampler",
             "path": f"tinker://{record.model_id}/sampler_weights/{version}",
