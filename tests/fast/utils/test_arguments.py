@@ -38,6 +38,7 @@ from miles.utils.arguments import (
     _validate_deploy_component,
     _validate_rematerialize_param_from_master_weight,
     get_miles_extra_args_provider,
+    hf_validate_args,
     miles_validate_args,
     parse_args_and_get_parser,
     resolve_rollout_function_paths,
@@ -3942,3 +3943,36 @@ def test_native_backends_own_the_mtp_detach_heads_argument(
     assert native_args is not None
     assert native_args.mtp_detach_heads is detach_heads
     assert "mtp_detach_heads" not in args.model_fields
+
+
+def _dsv41_thd_args(**overrides) -> SimpleNamespace:
+    args = dict(
+        model_name="deepseekv41",
+        context_parallel_size=1,
+        allgather_cp=True,
+        qkv_format="thd",
+        use_dynamic_batch_size=False,
+        micro_batch_size=1,
+        use_indexer_replay=False,
+        use_rollout_indexer_replay=False,
+    )
+    return SimpleNamespace(**(args | overrides))
+
+
+@pytest.mark.parametrize("flag", ["use_indexer_replay", "use_rollout_indexer_replay"])
+@pytest.mark.parametrize("use_dynamic_batch_size,micro_batch_size", [(True, 1), (False, 2)])
+def test_hf_validate_args_rejects_indexer_replay_on_packed_thd_for_deepseek_v41(
+    flag, use_dynamic_batch_size, micro_batch_size
+) -> None:
+    # One replay entry covers a micro-batch's rows, while the DeepSeek-V4.1 attention selects each packed sample on
+    # its own.
+    hf_config = SimpleNamespace(model_type="deepseek_v41")
+    args = _dsv41_thd_args(use_dynamic_batch_size=use_dynamic_batch_size, micro_batch_size=micro_batch_size)
+    hf_validate_args(args, hf_config)
+    setattr(args, flag, True)
+    with pytest.raises(AssertionError, match="indexer replay cannot run on packed samples"):
+        hf_validate_args(args, hf_config)
+    args.use_dynamic_batch_size, args.micro_batch_size = False, 1
+    hf_validate_args(args, hf_config)
+    args.qkv_format, args.use_dynamic_batch_size = "bshd", True
+    hf_validate_args(args, hf_config)

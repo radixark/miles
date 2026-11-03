@@ -200,6 +200,21 @@ def indexer_select_segments(
     return idx, candidates
 
 
+def selection_spans(spans: list[SegmentSpan] | None) -> list[SegmentSpan] | None:
+    """The segments a THD stream is selected over one at a time; None selects the whole stream at once.
+
+    One indexer replay entry covers a micro-batch's rows, and hf_validate_args allows the replay under THD only at
+    one sample per micro-batch, so its stream is that sample and the padding get_batch appends as a segment of its
+    own. Selected as one stream the sample's rows pick the same keys: its segment starts at key 0, so its
+    compressed lengths count from there either way.
+    """
+    if spans is None or not indexer_replay_manager.enabled or indexer_replay_manager.stage == "fallthrough":
+        return spans
+    if len(spans) > 2:
+        raise NotImplementedError("DeepSeek-V4.1 indexer replay of a THD-packed stream: use --qkv-format bshd")
+    return None
+
+
 class DeepSeekV41Indexer(MegatronModule):
     def __init__(
         self,
@@ -295,9 +310,7 @@ class DeepSeekV41Indexer(MegatronModule):
             and (not indexer_replay_manager.enabled or indexer_replay_manager.stage == "fallthrough"),
             query_chunk=INDEXER_QUERY_CHUNK,
         )
+        spans = selection_spans(spans)
         if spans is None:
             return indexer_select(q, index_k, weights, compress_lens, candidates, **options)
-        if len(spans) > 1 and indexer_replay_manager.enabled and indexer_replay_manager.stage != "fallthrough":
-            # One replay entry covers a micro-batch's rows, while each segment is selected on its own.
-            raise NotImplementedError("DeepSeek-V4.1 indexer replay of a THD-packed stream: use --qkv-format bshd")
         return indexer_select_segments(q, index_k, weights, compress_lens, candidates, spans, **options)

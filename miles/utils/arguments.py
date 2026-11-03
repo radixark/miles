@@ -1822,6 +1822,14 @@ def hf_validate_args(args, hf_config):
     model_name = (args.model_name or "").lower().replace("-", "").replace("_", "")
     if (hf_config.model_type == "deepseek_v4" or "deepseekv4" in model_name) and args.context_parallel_size > 1:
         assert args.allgather_cp, "zigzag CP is not supported for DeepSeek V4."
+    if ("deepseek_v41" in hf_config.model_type or "deepseekv41" in model_name) and args.qkv_format == "thd":
+        # One indexer replay entry covers a micro-batch's rows, while the attention selects each sample packed into
+        # a THD micro-batch on its own.
+        packs = args.use_dynamic_batch_size or args.micro_batch_size > 1
+        assert not (packs and (args.use_indexer_replay or args.use_rollout_indexer_replay)), (
+            "DeepSeek-V4.1 indexer replay cannot run on packed samples under --qkv-format thd: use "
+            "--micro-batch-size 1 without --use-dynamic-batch-size, or --qkv-format bshd."
+        )
 
     for hf_config_name, megatron_config_name, compare_fn in [
         ("hidden_size", "hidden_size", equal),

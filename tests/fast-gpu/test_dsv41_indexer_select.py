@@ -2,6 +2,7 @@
 and a THD-packed stream selected segment by segment picks what each segment picks alone."""
 
 import sys
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -14,10 +15,12 @@ pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA requ
 
 from miles.kernels.attention.dsa.topk import get_dsa_topk_fn  # noqa: E402
 from miles_plugins.models.deepseek_v4.ops.thd_utils import ThdLayout  # noqa: E402
+from miles_plugins.models.deepseek_v4_1.ops import indexer as ix  # noqa: E402
 from miles_plugins.models.deepseek_v4_1.ops.indexer import (  # noqa: E402
     indexer_select,
     indexer_select_segments,
     segment_spans,
+    selection_spans,
 )
 
 HEADS, DIM, TOPK = 32, 128, 512
@@ -120,6 +123,58 @@ def test_select_segments_matches_each_segment_alone(topk_backend, candidates, ra
         if candidates == "source":
             assert torch.equal(cand[:, rows, :n], alone_cand)
             assert not cand[:, rows, n:].any()
+
+
+def _layout(lengths):
+    cu = [0] + torch.tensor(lengths).cumsum(0).tolist()
+    return ThdLayout(
+        cu_seqlens=torch.tensor(cu, dtype=torch.int32, device="cuda"),
+        seq_lens=tuple(lengths),
+        global_start=0,
+        max_seqlen=max(lengths),
+    )
+
+
+def test_indexer_replay_selects_one_sample_and_its_padding_as_one_stream(monkeypatch):
+    """Under indexer replay a THD micro-batch is one sample plus get_batch's padding segment (hf_validate_args):
+    it is selected as one stream, and anything more is refused; without replay the segments stay."""
+    spans = [ix.SegmentSpan(0, 1100, 0, 550), ix.SegmentSpan(1100, 1152, 550, 576)]
+    monkeypatch.setattr(ix, "indexer_replay_manager", SimpleNamespace(enabled=True, stage="record"))
+    assert selection_spans(spans) is None and selection_spans(spans[:1]) is None and selection_spans(None) is None
+    with pytest.raises(NotImplementedError, match="THD-packed stream"):
+        selection_spans([*spans, ix.SegmentSpan(1152, 1200, 576, 600)])
+    for manager in (
+        SimpleNamespace(enabled=True, stage="fallthrough"),
+        SimpleNamespace(enabled=False, stage="record"),
+    ):
+        monkeypatch.setattr(ix, "indexer_replay_manager", manager)
+        assert selection_spans(spans) is spans
+
+
+@pytest.mark.parametrize("topk_backend", ["canonical", "torch"])
+@pytest.mark.parametrize("candidates", ["none", "source"])
+@pytest.mark.parametrize("ratio", [1, 2])
+def test_one_sample_selected_with_its_padding_picks_what_it_picks_alone(topk_backend, candidates, ratio):
+    """The sample's rows of a sample + padding stream pick the same keys selected as one stream (indexer replay)
+    as selected segment by segment."""
+    torch.manual_seed(0)
+    lengths = (1100, 52)
+    total = sum(lengths)
+    spans = segment_spans(_layout(lengths), ratio=ratio, seqlen_local=total)
+    q = torch.randn(1, total, HEADS, DIM, device="cuda", dtype=torch.bfloat16)
+    index_k = torch.randn(1, spans[-1].key_end, DIM, device="cuda", dtype=torch.bfloat16)
+    weights = torch.randn(1, total, HEADS, device="cuda") * HEADS**-0.5 * DIM**-0.5
+    compress_lens = (torch.cat([torch.arange(n, device="cuda") for n in lengths]) + 1) // ratio
+    options = _options(
+        topk_backend, is_candidate_source=candidates == "source", uses_candidates=False, query_chunk=1024
+    )
+    whole_idx, whole_cand = indexer_select(q, index_k, weights, compress_lens, None, **options)
+    seg_idx, seg_cand = indexer_select_segments(q, index_k, weights, compress_lens, None, spans, **options)
+
+    rows, n = slice(spans[0].row_start, spans[0].row_end), spans[0].key_end
+    assert torch.equal(whole_idx[:, rows], seg_idx[:, rows])
+    if candidates == "source":
+        assert torch.equal(whole_cand[:, rows, :n], seg_cand[:, rows, :n])
 
 
 if __name__ == "__main__":
