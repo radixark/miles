@@ -134,15 +134,15 @@ def write_peft_export(
     targets: HfLoraTargets,
 ) -> None:
     """All ranks call; rank 0 writes ``slot``'s bf16 PEFT export into ``directory``."""
-    named_tensors = list(members.export_bf16_adapter(slot))
     error = None
-    if _is_writer():
-        try:
-            write_peft_adapter(
-                directory, _hf_keyed_bf16_adapter(named_tensors, members, targets), parametrization, targets
-            )
-        except Exception as exc:
-            error = exc
+    try:
+        # the gathered adapter leaves the GPU before rank 0 splits and copies it
+        named_tensors = [(name, tensor.cpu()) for name, tensor in members.export_bf16_adapter(slot)]
+        if _is_writer():
+            weights = _hf_keyed_bf16_adapter(named_tensors, members, targets)
+            write_peft_adapter(directory, weights, parametrization, targets)
+    except Exception as exc:
+        error = exc
     raise_if_any_rank_failed(error)
 
 

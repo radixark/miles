@@ -112,3 +112,15 @@ def test_an_adapter_without_a_tenant_belongs_to_no_tenant(tmp_path):
 def test_resolve_refuses_a_path_as_a_name(tmp_path):
     with pytest.raises(AssertionError, match="one path component"):
         resolve_adapter_dir(tmp_path, "x/../w", tenant=None)
+
+
+def test_an_overwrite_replaces_a_checkpoint_saved_before_commits(tmp_path):
+    (tmp_path / "w").mkdir()
+    (tmp_path / "w" / "payload").write_text("legacy")
+    with pytest.raises(FileExistsError):
+        _save(tmp_path, "w", "new", overwrite=False)
+    assert (tmp_path / "w" / "payload").read_text() == "legacy", "a refused save leaves the old checkpoint"
+    _save(tmp_path, "w", "new", overwrite=True)
+    assert (resolve_adapter_dir(tmp_path, "w", tenant="alice").path / "payload").read_text() == "new"
+    delete_unreferenced_adapter_dirs(tmp_path)
+    assert len(list(tmp_path.iterdir())) == 2, "the name and its one commit; the adopted old dir is gone"
