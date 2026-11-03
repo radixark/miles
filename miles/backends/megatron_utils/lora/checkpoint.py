@@ -507,9 +507,7 @@ def restore_single_lora(model, args, *, optimizer, opt_param_scheduler) -> int |
     load_optimizer = not args.backend.no_load_optim
     path = Path(args.lora_adapter_path)
     legacy = LegacyRankShardLoader(model, optimizer, run, load_optimizer)
-    bridge = MegatronBridgeCheckpointLoader(
-        model, optimizer, lambda: members.export_adapter_state(0), run, load_optimizer
-    )
+    bridge = MegatronBridgeCheckpointLoader(model, optimizer, members, run, load_optimizer)
     load_adapter_dir(
         path,
         members,

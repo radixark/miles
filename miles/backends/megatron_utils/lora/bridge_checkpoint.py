@@ -20,6 +20,7 @@ from megatron.core.optimizer import DistributedOptimizer
 from megatron.core.utils import unwrap_model
 
 from miles.backends.megatron_utils.lora.utils import adapter_named_parameters
+from miles.backends.training_utils.checkpoint.adapter.adapter_dir import AdapterCheckpointMembers
 from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
     LocalShardSpec,
     gloo_group,
@@ -271,16 +272,15 @@ class MegatronBridgeCheckpointLoader:
     under any TP / PP / EP / DP layout. The source's iteration, scheduler and RNG are not resumed."""
 
     def __init__(
-        self, model, optimizer, verify_masters: Callable[[], object], run: AdapterParametrization, load_optimizer: bool
+        self, model, optimizer, members: AdapterCheckpointMembers, run: AdapterParametrization, load_optimizer: bool
     ):
-        """``verify_masters``: collective; asserts every bf16 adapter parameter is its fp32 master."""
-        self._model, self._optimizer, self._verify_masters = model, optimizer, verify_masters
+        self._model, self._optimizer, self._members = model, optimizer, members
         self._run, self._load_optimizer = run, load_optimizer
 
     def __call__(self, path: Path) -> AdapterParametrization:
         chunks = unwrap_model(self._model)
         names = ["model"] if len(chunks) == 1 else [f"model{i}" for i in range(len(chunks))]
-        config, full, adapter, error = None, None, None, None
+        config, model_state_dicts, adapter, error = None, None, None, None
         try:
             config = yaml.safe_load((path / "run_config.yaml").read_text())
             assert config["checkpoint"]["ckpt_format"] == "torch_dist", f"{path} is not a torch_dist checkpoint"
@@ -308,8 +308,10 @@ class MegatronBridgeCheckpointLoader:
                     "from Megatron-Bridge with dist_ckpt_optim_fully_reshardable=True, or pass --no-load-optim"
                 )
             metadata["dp_cp_group"] = get_parallel_state().intra_dp_cp.group
-            full = [chunk.sharded_state_dict(metadata=metadata) for chunk in chunks]
-            adapter = [{k: v for k, v in sd.items() if ".adapter." in k and "_extra_state" not in k} for sd in full]
+            model_state_dicts = [chunk.sharded_state_dict(metadata=metadata) for chunk in chunks]
+            adapter = [
+                {k: v for k, v in sd.items() if ".adapter." in k and "_extra_state" not in k} for sd in model_state_dicts
+            ]
         except Exception as exc:
             error = exc
         raise_if_any_rank_failed(error)
@@ -327,28 +329,29 @@ class MegatronBridgeCheckpointLoader:
             expected == saved
         ), f"{path} holds other adapters than this run's model, e.g. {sorted(expected ^ saved)[:3]}"
 
-        shells = dict(zip(names, adapter, strict=True))
+        requested = dict(zip(names, adapter, strict=True))
         if self._load_optimizer:
-            shells["optimizer"] = self._optimizer.sharded_state_dict(
-                dict(zip(names, full, strict=True)), is_loading=True, metadata=metadata
+            requested["optimizer"] = self._optimizer.sharded_state_dict(
+                dict(zip(names, model_state_dicts, strict=True)), is_loading=True, metadata=metadata
             )
-        loaded = dist_checkpointing.load(shells, str(path))
+        loaded = dist_checkpointing.load(requested, str(path))
         try:
             for name, chunk in zip(names, chunks, strict=True):
                 result = chunk.load_state_dict(loaded[name], strict=False)
                 assert not result.unexpected_keys, f"unexpected adapter keys {result.unexpected_keys[:3]}"
             if self._load_optimizer:
                 # the run owns the schedule: only state and step come from the source, not its lr or weight decay
-                own = [
+                run_hyperparameters = [
                     {k: v for k, v in g.items() if k not in ("params", "step")} for g in self._optimizer.param_groups
                 ]
                 self._optimizer.load_state_dict(loaded["optimizer"])
-                for group, hyperparameters in zip(self._optimizer.param_groups, own, strict=True):
+                for group, hyperparameters in zip(self._optimizer.param_groups, run_hyperparameters, strict=True):
                     group.update(hyperparameters)
             else:
                 self._optimizer.reload_model_params()
         except Exception as exc:
             error = exc
         raise_if_any_rank_failed(error)
-        self._verify_masters()
+        # collective; asserts each bf16 adapter parameter is its fp32 master
+        self._members.export_adapter_state(0)
         return replace(self._run, lora_alpha=float(config["peft"]["alpha"]))
