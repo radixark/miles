@@ -8,6 +8,7 @@ Args:
   --recipe: smoke (3 short rollouts), bench (4 full-shape rollouts, no eval) or full.
   --model-dir / --data-dir: directories holding Qwen3-4B / dapo-math-17k and aime-2024.
   --sglang-port: port of the sglang server `train` connects to.
+  --kv-cache-dtype: the engine's KV cache dtype; bfloat16 (default) or fp8_e4m3 for capacity.
   --sglang-env-script: sglang-torchtpu's environment script, sourced before the server starts.
   --slice-port-base: first of the 9 local ports the shared slice uses (8 slice builders, 1 store).
   --extra-args: more train.py flags, appended last.

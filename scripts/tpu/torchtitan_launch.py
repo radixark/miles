@@ -59,6 +59,8 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     model_dir: str = "/root/models"
     data_dir: str = "/root/datasets"
     sglang_port: int = 30000
+    # sglang-torchtpu defaults to fp8 without scales, whose logprobs drift from the bf16 trainer's
+    kv_cache_dtype: str = "bfloat16"
     sglang_env_script: str = "/sgl-workspace/sglang/benchmark/tpu/common_env.sh"
     slice_port_base: int = 30100
     extra_args: str = ""
@@ -122,6 +124,7 @@ def serve_sglang(args: ScriptArgs, model: TitanTpuModel) -> None:
         # Required: it disables the piecewise prefill graph, which TPU does not implement.
         "--enable-torch-compile "
         "--page-size 64 "
+        f"--kv-cache-dtype {args.kv_cache_dtype} "
         f"--context-length {SEQ_LEN} "
         "--chunked-prefill-size 2048 "
         f"--tp-size {NUM_ENGINE_DEVICES} "

@@ -34,7 +34,7 @@ Weight sync over ICI also needs:
 - `--update-weight-transfer-mode ici` in miles (radixark/miles#4587);
 - a torch_tpu build with job-local worlds (`TORCH_TPU_JOB_DEVICE_IDS`), so each job compiles and runs its
   collectives over its own devices (radixark/miles#4598 puts it in the image);
-- sglang-torchtpu's shared-slice receiver (sgl-project/sglang-torchtpu#1883);
+- sglang-torchtpu's shared-slice receiver (sgl-project/sglang-torchtpu#1884);
 - libtpu 0.0.48: 0.0.49 and later halt the SparseCore when two jobs share the slice.
 
 Compiled programs are not cached (libtpu cannot load an executable built for part of a slice), so the
