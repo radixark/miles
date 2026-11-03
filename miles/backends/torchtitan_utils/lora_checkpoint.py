@@ -154,8 +154,10 @@ class TorchtitanOptimizerMembers:
 
     bf16_adapter_key_style = "peft"
 
-    def __init__(self, adapter_slots: TorchtitanAdapterSlots, optimizers: list[torch.optim.Optimizer]):
-        self._slots, self._optimizers = adapter_slots, optimizers
+    def __init__(
+        self, adapter_slots: TorchtitanAdapterSlots, optimizers: list[torch.optim.Optimizer], *, save_moments: bool
+    ):
+        self._slots, self._optimizers, self._save_moments = adapter_slots, optimizers, save_moments
 
     def export_bf16_adapter(self, slot: int):
         return self._slots.export_bf16_adapter(slot)
@@ -183,9 +185,12 @@ class TorchtitanOptimizerMembers:
                 for piece, spec in zip(self._slots.local_pieces(slot, tensors), specs, strict=True)
             ]
 
+        weights = pieces(self._slots.slot_parameters(slot))
+        if not self._save_moments:
+            return AdapterState(specs, weights, [], [], step=steps.pop(), has_optimizer_state=False)
         return AdapterState(
             specs,
-            pieces(self._slots.slot_parameters(slot)),
+            weights,
             pieces([_local(state["exp_avg"]) for state in states]),
             pieces([_local(state["exp_avg_sq"]) for state in states]),
             step=steps.pop(),
@@ -361,7 +366,9 @@ class TorchtitanLoraCheckpoint:
     def __init__(self, trainer, args, steps_per_rollout: int):
         self._trainer, self._args, self._steps_per_rollout = trainer, args, steps_per_rollout
         self.slots = _torchtitan_adapter_slots(trainer, args)
-        self.members = TorchtitanOptimizerMembers(self.slots, trainer.optimizers.optimizers)
+        self.members = TorchtitanOptimizerMembers(
+            self.slots, trainer.optimizers.optimizers, save_moments=not args.backend.no_save_optim
+        )
         self.run = self.slots.parametrization(
             base_model=args.hf_checkpoint,
             lora_rank=args.lora_rank,
@@ -433,10 +440,16 @@ class TorchtitanLoraCheckpoint:
             self._trainer.engine.num_completed_steps = step
         if self._args.lora_adapter_convert_save is not None:
             destination = Path(self._args.lora_adapter_convert_save)
+            # a convert-save writes moments only when they were loaded
+            convert_members = TorchtitanOptimizerMembers(
+                self.slots,
+                self._trainer.optimizers.optimizers,
+                save_moments=load_optimizer and not self._args.backend.no_save_optim,
+            )
             save_and_commit_adapter_dir(
                 destination.parent,
                 destination.name,
-                self.members,
+                convert_members,
                 0,
                 self.run,
                 self.slots.targets,

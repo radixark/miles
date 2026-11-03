@@ -14,6 +14,7 @@ from miles.backends.torchtitan_utils import lora_checkpoint  # noqa: E402
 from miles.backends.torchtitan_utils.lora_checkpoint import (  # noqa: E402
     TorchtitanCheckpointLoader,
     TorchtitanLoraCheckpoint,
+    TorchtitanOptimizerMembers,
 )
 
 _LORA_A, _LORA_B = "layers.0.attention.wq.lora_a.weight", "layers.0.attention.wq.lora_b.weight"
@@ -137,3 +138,34 @@ def test_a_dcp_off_this_runs_rollout_grid_is_refused(tmp_path, step):
     """A standalone torchtitan run's step count says nothing about this run's rollouts."""
     with pytest.raises(AssertionError, match=f"at step {step}, not a whole rollout"):
         _restore(tmp_path, dcp_step=step)
+
+
+@pytest.mark.parametrize("save_moments", [True, False])
+def test_the_adapter_state_carries_moments_only_when_they_are_saved(save_moments):
+    """--no-save-optim writes the fp32 masters alone, as Megatron does."""
+    param = torch.nn.Parameter(torch.ones(2, 2))
+    slots = SimpleNamespace(
+        parameters={_LORA_A: param},
+        slot_parameters=lambda slot: [param],
+        get_local_shard_specs=lambda slot: [SimpleNamespace(key="q_proj.lora_A", local_shape=(2, 2))],
+        local_pieces=lambda slot, tensors: tensors,
+    )
+    optimizer = torch.optim.AdamW([param])
+    state = TorchtitanOptimizerMembers(slots, [optimizer], save_moments=save_moments).export_adapter_state(0)
+    assert state.has_optimizer_state is save_moments
+    assert torch.equal(state.weights[0], param.detach())
+    assert len(state.exp_avgs) == (1 if save_moments else 0)
+
+
+@pytest.mark.parametrize(
+    "no_load_optim, no_save_optim, moments",
+    [(False, False, True), (True, False, False), (False, True, False)],
+)
+def test_a_convert_save_writes_moments_only_when_they_were_loaded(tmp_path, no_load_optim, no_save_optim, moments):
+    restored = _restore(
+        tmp_path,
+        lora_adapter_convert_save=str(tmp_path / "converted"),
+        no_load_optim=no_load_optim,
+        no_save_optim=no_save_optim,
+    )
+    assert restored.save.call_args.args[2]._save_moments is moments
