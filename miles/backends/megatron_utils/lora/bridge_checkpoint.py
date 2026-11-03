@@ -348,22 +348,27 @@ class MegatronBridgeCheckpointLoader:
         expected = [None] * dist.get_world_size()
         dist.all_gather_object(expected, {t.key for sd in adapter for t in nested_values(sd)}, group=gloo_group())
         expected = set().union(*expected)
-        saved = {
-            k
-            for k in dcp.FileSystemReader(path).read_metadata().state_dict_metadata
-            if ".adapter." in k and "_extra_state" not in k and not OPTIMIZER_KEY.match(k)
-        }
-        assert (
-            expected == saved
-        ), f"{path} holds other adapters than this run's model, e.g. {sorted(expected ^ saved)[:3]}"
-
         requested = dict(zip(names, adapter, strict=True))
-        if self._load_optimizer:
-            requested["optimizer"] = self._optimizer.sharded_state_dict(
-                dict(zip(names, model_state_dicts, strict=True)), is_loading=True, metadata=metadata
-            )
-        loaded = dist_checkpointing.load(requested, str(path))
         try:
+            saved = {
+                k
+                for k in dcp.FileSystemReader(path).read_metadata().state_dict_metadata
+                if ".adapter." in k and "_extra_state" not in k and not OPTIMIZER_KEY.match(k)
+            }
+            assert (
+                expected == saved
+            ), f"{path} holds other adapters than this run's model, e.g. {sorted(expected ^ saved)[:3]}"
+            if self._load_optimizer:
+                requested["optimizer"] = self._optimizer.sharded_state_dict(
+                    dict(zip(names, model_state_dicts, strict=True)), is_loading=True, metadata=metadata
+                )
+        except Exception as exc:
+            error = exc
+        raise_if_any_rank_failed(error)
+
+        try:
+            # a rank-local failure inside load's own collectives still hangs; one after them is agreed below
+            loaded = dist_checkpointing.load(requested, str(path))
             for name, chunk in zip(names, chunks, strict=True):
                 result = chunk.load_state_dict(loaded[name], strict=False)
                 assert not result.unexpected_keys, f"unexpected adapter keys {result.unexpected_keys[:3]}"
