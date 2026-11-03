@@ -36,6 +36,7 @@ from miles.backends.training_utils.checkpoint.adapter.base_model import (
     fingerprint_named_tensors,
     hf_base_fingerprint,
     is_fingerprint_tensor,
+    resolve_hf_dir,
 )
 from miles.backends.training_utils.checkpoint.adapter.key_mapping import map_peft_keys_to_hf_keys
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
@@ -220,21 +221,25 @@ class TorchtitanCheckpointLoader:
         self.train_state: dict | None = None
         self.lr_scheduler_state: dict | None = None
 
-    def _base_fingerprint(self, path: Path, metadata) -> str:
-        names = {}
+    def _base_fingerprint(self, path: Path, metadata) -> tuple[str, list[str]]:
+        """The DCP's base fingerprint, and the HF names it hashes (only what the titan model holds, e.g. no MTP)."""
+        fqns = set()
         for part in self._model_parts:
             for fqn, param in part.named_parameters():
-                if "norm" in fqn and fqn in metadata:
-                    (hf_name,) = self._sd_adapter.to_hf({fqn: torch.empty(param.shape, device="meta")})
-                    if is_fingerprint_tensor(hf_name):
-                        names[fqn] = hf_name
-        # pipeline stages hold different norms; every rank reads them all
+                candidate = "norm" in fqn or fqn.startswith("layers.0.attention.")
+                if candidate and split_adapter_key(fqn) is None and fqn in metadata:
+                    hf_names = self._sd_adapter.to_hf({fqn: torch.empty(param.shape, device="meta")})
+                    if any(is_fingerprint_tensor(name) for name in hf_names):
+                        fqns.add(fqn)
+        # pipeline stages hold different layers; every rank reads them all
         gathered = [None] * dist.get_world_size()
-        dist.all_gather_object(gathered, names, group=gloo_group())
-        names = {fqn: hf for rank_names in gathered for fqn, hf in rank_names.items()}
-        tensors = {fqn: torch.empty(metadata[fqn].size, dtype=metadata[fqn].properties.dtype) for fqn in names}
+        dist.all_gather_object(gathered, fqns, group=gloo_group())
+        tensors = {
+            fqn: torch.empty(metadata[fqn].size, dtype=metadata[fqn].properties.dtype) for fqn in set().union(*gathered)
+        }
         dcp.load(tensors, checkpoint_id=path, no_dist=True)
-        return fingerprint_named_tensors((names[fqn], tensor) for fqn, tensor in tensors.items())
+        named = {name: t for name, t in self._sd_adapter.to_hf(tensors).items() if is_fingerprint_tensor(name)}
+        return fingerprint_named_tensors(named.items()), list(named)
 
     def __call__(self, path: Path) -> AdapterParametrization:
         metadata = dcp.FileSystemReader(path).read_metadata().state_dict_metadata
@@ -266,8 +271,11 @@ class TorchtitanCheckpointLoader:
         except Exception as exc:
             error = exc
         raise_if_any_rank_failed(error)
-        assert self._base_fingerprint(path, metadata) == hf_base_fingerprint(
-            Path(self._run.base_model)
+        fingerprint, hf_names = self._base_fingerprint(path, metadata)
+        hf_dir = resolve_hf_dir(self._run.base_model)
+        assert hf_dir is not None, f"--hf-checkpoint {self._run.base_model} has no local HF weights to compare {path} with"
+        assert fingerprint == hf_base_fingerprint(
+            hf_dir, names=hf_names
         ), f"{path} was trained on another base model than --hf-checkpoint {self._run.base_model}"
 
         states = self._members._states()
