@@ -109,8 +109,10 @@ def _check_import_tree(uri: str, path: str, import_root: str, checkpoint_root: s
         elif _is_checkpoint_marker(real):
             raise reaches
         elif root_stat is not None and entry.st_nlink > 1 and entry.st_dev == root_stat.st_dev:
-            # a hard link cannot cross filesystems
-            raise reaches
+            # a hard link cannot cross filesystems; which of its links is the checkpoint's cannot be told
+            raise UserInputError(
+                f"{uri} holds {real}, which is hard-linked on the checkpoint root's filesystem; copy it instead"
+            )
 
 
 class _EndedSession(NamedTuple):

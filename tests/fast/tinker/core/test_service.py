@@ -1506,7 +1506,7 @@ async def test_file_imports_stay_under_the_import_root_and_load_weights_only(tmp
                 (f"file://{imports}/../outside", "outside the import root"),
                 (f"file://{imports}/link", "outside the import root"),
                 (f"file://{imports}/symlinked", "reaches a tinker:// checkpoint"),
-                (f"file://{imports}/hardlinked", "reaches a tinker:// checkpoint"),
+                (f"file://{imports}/hardlinked", "hard-linked"),
                 (f"file://{adapter}", "weights only"),
             ),
             start=2,
