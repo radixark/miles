@@ -11,6 +11,7 @@ from .joyai_llm_flash import JoyAILLMFlashBridge
 from .kimi_k3 import KimiK3Bridge
 from .kimi_k25 import KimiK25Bridge
 from .mimo import MimoBridge
+from .minimax_m3 import MiniMaxM3Bridge
 from .qwen3_5 import Qwen3_5Bridge
 from .qwen3_8_next import Qwen38NextBridge
 from .qwen3_next import Qwen3NextBridge
@@ -23,6 +24,7 @@ __all__ = [
     "Qwen3_5Bridge",
     "Qwen38NextBridge",
     "MimoBridge",
+    "MiniMaxM3Bridge",
     "DeepseekV32Bridge",
     "Glm5NextBridge",
     "DeepseekV4Bridge",
