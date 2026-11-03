@@ -8,6 +8,9 @@ remains a separate checkpoint handoff path. GPU-delta supports `snappy-zstd`
 `lz4`, with `--update-weight-delta-encoding xor`. Changed scalar/vector tensors
 carry complete target bytes; the `overwrite` transport option belongs to disk-delta.
 
+See [GPU-accelerated weight teleportation](https://humansand.ai/blog/gpu-accelerated-weight-teleportation)
+for the design and motivation.
+
 Backend-neutral admission, encoding, cached recovery payloads and publication
 live in `miles.utils.gpu_delta`. Training protocol, session, and metrics live in
 `miles.backends.training_utils.weight_update.protocols.gpu_delta`; Megatron export
@@ -34,7 +37,7 @@ The original checkpoint must already be available and is never modified.
 Install the prebuilt encoder/decoder without changing the image dependency closure:
 
 ```bash
-python -m pip install --no-deps nvidia-libnvcomp-cu13==5.3.0.16
+python -m pip install --no-deps nvidia-libnvcomp-cu13==6.0.0.12
 ```
 
 The optional CPU correctness oracles require `python-snappy`, `lz4` and

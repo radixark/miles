@@ -1,4 +1,4 @@
-"""Asynchronous GPU compression using nvCOMP's prebuilt batched C API.
+"""Asynchronous CUDA compression using nvCOMP 6's prebuilt batched C API.
 
 Compression runs on CUDA SMs. Blackwell's fixed-function engine can decompress
 the inner Snappy or LZ4 frames at the receiver.
@@ -14,7 +14,7 @@ import torch
 
 
 class _Options(ctypes.Structure):
-    # nvCOMP 5.3 Snappy and Zstd compression options have the same public ABI.
+    # nvCOMP 6 Snappy and Zstd compression options have the same public ABI.
     _fields_ = [("reserved", ctypes.c_char * 64)]
 
 
@@ -53,11 +53,11 @@ class NvcompCompressor:
             raise ValueError("GPU delta compressor requires an explicit CUDA device")
         package = f"nvidia-libnvcomp-cu{torch.version.cuda.split('.')[0]}"
         distribution = importlib.metadata.distribution(package)
-        version = tuple(int(v) for v in distribution.version.split(".")[:2])
-        if not (5, 3) <= version < (6, 0) or ctypes.sizeof(ctypes.c_size_t) != 8:
-            raise RuntimeError("GPU deltas require the 64-bit nvCOMP 5.3+ ABI")
+        major = int(distribution.version.split(".")[0])
+        if major != 6 or ctypes.sizeof(ctypes.c_size_t) != 8:
+            raise RuntimeError("GPU deltas require the 64-bit nvCOMP 6 ABI")
         self.version = distribution.version
-        self._library = ctypes.CDLL(str(distribution.locate_file("nvidia/libnvcomp/lib64/libnvcomp.so.5")))
+        self._library = ctypes.CDLL(str(distribution.locate_file("nvidia/libnvcomp/lib64/libnvcomp.so.6")))
         self._symbol, options = {
             "snappy": ("Snappy", _Options),
             "lz4": ("LZ4", _LZ4Options),
@@ -66,7 +66,7 @@ class NvcompCompressor:
         pointer, size = ctypes.c_void_p, ctypes.c_size_t
         self._options = options()
         self._bound = self._bind("GetMaxOutputChunkSize", [size, options, ctypes.POINTER(size)])
-        self._temporary = self._bind("GetTempSizeAsync", [size, size, options, ctypes.POINTER(size), size])
+        self._temporary = self._bind("GetTempSize", [size, size, options, ctypes.POINTER(size), size, pointer])
         align = self._bind("GetRequiredAlignments", [options, ctypes.POINTER(_Alignments)])
         self._compress = self._bind(
             "Async", [pointer, pointer, size, size, pointer, size, pointer, pointer, options, pointer, pointer]
@@ -86,11 +86,14 @@ class NvcompCompressor:
         if status:
             raise RuntimeError(f"nvCOMP {self.codec} compression failed: status={status}")
 
-    def _temporary_bytes(self, count, maximum, total):
-        key = count, maximum, total
+    def _temporary_bytes(self, count, maximum, total, stream):
+        stream_handle = stream.cuda_stream
+        key = count, maximum, total, stream_handle
         if key not in self._size_cache:
             temporary = ctypes.c_size_t()
-            self._check(self._temporary(count, maximum, self._options, ctypes.byref(temporary), total))
+            # The query enqueues no work. Cache its result for the batch geometry
+            # and stream on this compressor's fixed device/options.
+            self._check(self._temporary(count, maximum, self._options, ctypes.byref(temporary), total, stream_handle))
             self._size_cache[key] = temporary.value
         return self._size_cache[key]
 
@@ -136,7 +139,7 @@ class NvcompCompressor:
             return CompressionBatch([], sizes, statuses, ())
         lengths = [frame.numel() for frame in frames]
         maximum = max(lengths)
-        temporary_bytes = self._temporary_bytes(count, maximum, sum(lengths))
+        temporary_bytes = self._temporary_bytes(count, maximum, sum(lengths), stream)
         # One output allocation avoids per-frame allocator traffic. Rounded
         # strides preserve the independently queried nvCOMP output alignment.
         if compact_outputs:
