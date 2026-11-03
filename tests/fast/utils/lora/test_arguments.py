@@ -24,7 +24,7 @@ class TestLoraTargetOrdering:
             lora_type="canonical_lora",
         )
 
-        hf_targets = _resolve_lora_targets(args, config)
+        hf_targets = _resolve_lora_targets(args, config, merged_rollout=False)
 
         expected = [
             "model.layers.0.mlp.down_proj",

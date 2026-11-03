@@ -106,7 +106,7 @@ def launcher_targets(monkeypatch) -> list[str]:
     launch_args.lora_type, launch_args.experts_shared_outer_loras = "lora", False
     register_hf_config_aliases()
     hf_config = AutoConfig.for_model("deepseek_v41")
-    hf_targets = _resolve_lora_targets(launch_args, hf_config)
+    hf_targets = _resolve_lora_targets(launch_args, hf_config, merged_rollout=False)
     assert _native_serving_targets(launch_args, hf_config, hf_targets) == hf_targets
     return hf_targets
 

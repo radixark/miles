@@ -117,16 +117,20 @@ def test_the_adapter_names_every_decoder_tensor_of_the_checkpoint(tmp_path):
     assert expected <= named
 
 
-def test_all_linear_targets_attention_only(tmp_path):
-    """Routed experts are grouped weights the torchtitan backend does not adapt."""
+def test_all_linear_targets_attention_and_under_a_merged_rollout_the_packed_routed_experts(tmp_path):
+    """Every layer is MoE without dense or shared experts, and sglang has no LoRA for the compressed experts:
+    served adapters cover attention only, a merged rollout adds the packed experts."""
     from miles.utils.lora.hf_lora_targets import resolve_hf_lora_targets
 
     _write_checkpoint_config(tmp_path)
     hf_config = json.loads((tmp_path / "config.json").read_text())
-    prefix = "model.language_model.layers.*.self_attn."
-    assert resolve_hf_lora_targets(hf_config, target_modules=["all-linear"]) == [
-        f"{prefix}{p}" for p in ["q_proj", "k_proj", "v_proj", "o_proj"]
-    ]
+    prefix = "model.language_model.layers.*."
+    attention = [f"{prefix}self_attn.{p}" for p in ["q_proj", "k_proj", "v_proj", "o_proj"]]
+    experts = [f"{prefix}mlp.experts.{p}" for p in ["gate_up_proj", "down_proj"]]
+    assert resolve_hf_lora_targets(hf_config, target_modules=["all-linear"]) == attention
+    assert (
+        resolve_hf_lora_targets(hf_config, target_modules=["all-linear"], merged_rollout=True) == attention + experts
+    )
 
 
 def test_attention_lora_adapts_the_decoder_projections_only(tmp_path):
@@ -146,6 +150,32 @@ def test_attention_lora_adapts_the_decoder_projections_only(tmp_path):
     )
     adapted = {fqn for fqn, cfg, _, _ in config.traverse(Linear.Config) if hasattr(cfg, "rank")}
     assert adapted == {f"layers.{i}.attention.{p}" for i in range(4) for p in ("qkv_linear.wqkv", "wo")}
+
+
+def test_a_merged_rollout_adapts_the_packed_routed_experts_in_the_shared_outer_layout(tmp_path):
+    """The packed experts become shared-outer grouped projections next to the attention ones."""
+    from torchtitan.models.common.linear import GroupedLinear, Linear
+
+    from miles.backends.torchtitan_utils.lora import convert_model_config
+    from miles.utils.lora.hf_lora_targets import LORA_TARGET_GROUPS, resolve_hf_lora_targets
+
+    hf_config = {"model_type": "muse_spark", "text_config": _HF_TEXT_CONFIG}
+    targets = resolve_hf_lora_targets(hf_config, merged_rollout=True)
+    layout = resolve_hf_lora_targets(hf_config, target_modules=list(LORA_TARGET_GROUPS), merged_rollout=True)
+    config = convert_model_config(
+        _model_config(tmp_path), hf_targets=targets, layout=layout, rank=8, alpha=16, experts_shared_outer=True
+    )
+    experts = {
+        fqn: cfg.shared_factor for fqn, cfg, _, _ in config.traverse(GroupedLinear.Config) if hasattr(cfg, "rank")
+    }
+    assert experts == {
+        f"layers.{i}.feed_forward.routed_experts.{p}": factor
+        for i in range(4)
+        for p, factor in (("w13", "lora_a"), ("w2", "lora_b"))
+    }
+    assert {fqn for fqn, cfg, _, _ in config.traverse(Linear.Config) if hasattr(cfg, "rank")} == {
+        f"layers.{i}.attention.{p}" for i in range(4) for p in ("qkv_linear.wqkv", "wo")
+    }
 
 
 def test_the_hf_config_loads_without_a_transformers_class(tmp_path):
@@ -189,3 +219,27 @@ def test_the_adapter_converts_a_streamed_part_and_a_rank_wide_factor(tmp_path):
     }
     with pytest.raises(ValueError, match="unexpected native keys"):
         adapter.to_hf({"layers.0.nope.weight": weight})
+
+
+def test_the_target_resolver_keeps_the_merged_rollout_experts_without_a_transformers_model(tmp_path):
+    """Spark's compatibility config has no Transformers model, so the resolver expands the targets from the
+    layout instead of the model's parameter names; the merged-rollout experts must survive that path too."""
+    from argparse import Namespace
+
+    from miles.utils.hf_utils.config import load_hf_config
+    from miles.utils.lora.arguments import _resolve_lora_targets
+
+    hf_config = load_hf_config(_write_checkpoint_config(tmp_path))
+    args = Namespace(
+        target_modules="all-linear",
+        exclude_modules=None,
+        multi_lora=False,
+        megatron_to_hf_mode="raw",
+        lora_type="lora",
+    )
+    prefix = "model.language_model.layers.*."
+    attention = [f"{prefix}self_attn.{p}" for p in ["q_proj", "k_proj", "v_proj", "o_proj"]]
+    experts = [f"{prefix}mlp.experts.{p}" for p in ["gate_up_proj", "down_proj"]]
+    assert _resolve_lora_targets(args, hf_config, merged_rollout=False) == attention
+    assert _resolve_lora_targets(args, hf_config, merged_rollout=True) == attention + experts
+
