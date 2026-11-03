@@ -468,14 +468,26 @@ class TinkerService:
         if isinstance(written, dict):
             return written
         tinker_path = f"tinker://{record.model_id}/weights/{name}"
-        if payload["overwrite"]:
+        old_expires_at = self.expiry.expires_at(tinker_path) if payload["overwrite"] else None
+        if old_expires_at is not None:
+            old_commit_id = self._live_commit_id(root, name)
             # a crash between the commit and the new TTL must not leave the new commit the old one's expiry
             self.expiry.drop(tinker_path)
-        # the commit's recovery walk and fsyncs hit shared storage; keep the event loop serving
-        await asyncio.to_thread(self.backend.commit_adapter, root, name, written, payload["overwrite"])
+        try:
+            # the commit's recovery walk and fsyncs hit shared storage; keep the event loop serving
+            await asyncio.to_thread(self.backend.commit_adapter, root, name, written, payload["overwrite"])
+        except Exception:
+            # the commit can fail before or after its link swap; only the old commit keeps the old expiry
+            if old_expires_at is not None and self._live_commit_id(root, name) == old_commit_id:
+                self.expiry.restore(tinker_path, old_expires_at)
+            raise
         self._delete_retired_outside_the_lock(root)
         self.expiry.set(tinker_path, payload["ttl_seconds"], time.time())
         return {"op": "save_state", "path": tinker_path}
+
+    def _live_commit_id(self, root: str, name: str) -> str | None:
+        files = self.backend.resolve_checkpoint_files(root, name, None)
+        return None if files is None else files["commit_id"]
 
     def _delete_retired_outside_the_lock(self, root: str) -> None:
         task = asyncio.create_task(self._delete_retired(root))

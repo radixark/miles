@@ -1302,6 +1302,32 @@ async def test_an_overwrite_that_crashes_before_its_ttl_does_not_inherit_the_old
     assert CheckpointExpiry(service.config.checkpoint_root).expires_at(path) is None
 
 
+@pytest.mark.parametrize("swapped", [False, True], ids=["before_the_swap", "after_the_swap"])
+async def test_a_failed_overwrite_commit_keeps_the_old_expiry_only_on_the_old_commit(service, monkeypatch, swapped):
+    model_id = await created_model(service)
+    save = service.submit(
+        "tenant",
+        "save_state",
+        {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False, "ttl_seconds": 3600},
+    )
+    path = (await await_settled(service, "tenant", save)).result["path"]
+    old_expires_at = service.expiry.expires_at(path)
+    commit = service.backend.commit_adapter
+
+    def failing_commit(root, name, written, overwrite):
+        if swapped:
+            commit(root, name, written, overwrite)
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(service.backend, "commit_adapter", failing_commit)
+    with pytest.raises(OSError, match="No space left"):
+        await service._save_state(
+            service.models[model_id], {"seq_id": 2, "name": "ck", "overwrite": True, "ttl_seconds": None}
+        )
+    expected = None if swapped else old_expires_at
+    assert CheckpointExpiry(service.config.checkpoint_root).expires_at(path) == expected
+
+
 async def test_a_sweep_with_nothing_expired_does_not_wait_for_the_trainer(service):
     async with service._trainer_lock:
         await asyncio.wait_for(service._expire_checkpoints(), timeout=1.0)

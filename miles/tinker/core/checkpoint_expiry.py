@@ -37,6 +37,11 @@ class CheckpointExpiry:
             self._expires_at[tinker_path] = now + ttl_seconds
         self._write()
 
+    def restore(self, tinker_path: str, expires_at: float) -> None:
+        """Put back an expiry ``drop`` removed; it was validated when it was set."""
+        self._expires_at[tinker_path] = expires_at
+        self._write()
+
     def expired(self, now: float) -> list[str]:
         return sorted(path for path, expires_at in self._expires_at.items() if expires_at <= now)
 
