@@ -40,6 +40,9 @@ from miles.tinker.core.utils import (
 
 logger = logging.getLogger(__name__)
 
+# how long the Tinker SDK keeps retrying a finish (InternalClientHolder.execute_with_retries)
+_SDK_FINISH_RETRY_S = 300.0
+
 
 class _EndedSession(NamedTuple):
     tenant: str
@@ -66,7 +69,7 @@ class TinkerService:
         self._background_error: BaseException | None = None
         # why each model closed, so later requests get the reason instead of "unknown model"
         self._close_reasons: dict[str, str] = {}
-        # ended sessions, kept one lease long so a retried SDK finish is answered
+        # ended sessions, kept a lease long and at least the SDK's retry window so a retried finish is answered
         self._ended_sessions: dict[str, _EndedSession] = {}
 
     async def run(self) -> None:
@@ -548,8 +551,9 @@ class TinkerService:
             }
             await self._end_sessions(expired_sessions, "lease expired", lease_expired=True)
             # a client silent for longer than a lease would have lost the session anyway
+            retention_s = max(self.config.lease_timeout_s, _SDK_FINISH_RETRY_S)
             for session_id, ended in list(self._ended_sessions.items()):
-                if now - ended.ended_at >= self.config.lease_timeout_s:
+                if now - ended.ended_at >= retention_s:
                     del self._ended_sessions[session_id]
 
     async def finish_session(self, tenant: str, session_id: str, reason: str, detail: str | None) -> bool:
