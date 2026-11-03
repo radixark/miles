@@ -136,7 +136,7 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
         assert adapter is None, "multi-LoRA export requires --megatron-to-hf-mode bridge"
         started = time.perf_counter()
         exported = export_lora_hf_named(iter_adapters(self.model))
-        if dist.get_rank() == 0:
+        if not dist.is_initialized() or dist.get_rank() == 0:
             peak_b = max(
                 (tensor.abs().max().item() for name, tensor in exported if name.endswith("lora_B.weight")),
                 default=0.0,
