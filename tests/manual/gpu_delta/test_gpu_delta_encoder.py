@@ -1,7 +1,7 @@
 """Native producer and cached recovery oracles; CPU decoding is test-only.
 
 python -m pytest tests/manual/gpu_delta/test_gpu_delta_encoder.py -q
-Requires CUDA, nvCOMP >=5.3,<6, zstandard, python-snappy and lz4. No model is loaded.
+Requires CUDA, nvCOMP 6, zstandard, python-snappy and lz4. No model is loaded.
 """
 
 import json

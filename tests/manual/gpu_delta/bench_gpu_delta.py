@@ -4,7 +4,7 @@ Run from the Miles checkout with paired SGLang on PYTHONPATH::
 
     python tests/manual/gpu_delta/bench_gpu_delta.py --model /models/base
 
-Requires eight Blackwell GPUs, CUDA 13 and nvCOMP >=5.3. The GLM5.2 W4A16
+Requires eight Blackwell GPUs, CUDA 13 and nvCOMP 6. The GLM5.2 W4A16
 workload uses static bundled MTP and two independent TP4/DP4/EP4 receivers.
 Sender processes split whole layers across GPUs; no Megatron checkpoint is needed.
 Defaults: three codecs x payload hashing on/off, all with 1 MiB inner frames.

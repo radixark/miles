@@ -1,7 +1,7 @@
 """Native nvCOMP compression/CPU interoperability on CUDA; no model required.
 
 python tests/manual/gpu_delta/test_gpu_delta_nvcomp.py
-Requires nvCOMP >=5.3,<6, zstandard, python-snappy and lz4. CPU decoding here is a
+Requires nvCOMP 6, zstandard, python-snappy and lz4. CPU decoding here is a
 byte-exact test oracle, never a production fallback.
 """
 
