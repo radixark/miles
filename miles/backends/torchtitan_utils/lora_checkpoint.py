@@ -223,14 +223,18 @@ class TorchtitanCheckpointLoader:
 
     def _base_fingerprint(self, path: Path, metadata) -> tuple[str, list[str]]:
         """The DCP's base fingerprint, and the HF names it hashes (only what the titan model holds, e.g. no MTP)."""
-        fqns = set()
-        for part in self._model_parts:
-            for fqn, param in part.named_parameters():
-                candidate = "norm" in fqn or fqn.startswith("layers.0.attention.")
-                if candidate and split_adapter_key(fqn) is None and fqn in metadata:
-                    hf_names = self._sd_adapter.to_hf({fqn: torch.empty(param.shape, device="meta")})
-                    if any(is_fingerprint_tensor(name) for name in hf_names):
-                        fqns.add(fqn)
+        fqns, error = set(), None
+        try:
+            for part in self._model_parts:
+                for fqn, param in part.named_parameters():
+                    candidate = "norm" in fqn or fqn.startswith("layers.0.attention.")
+                    if candidate and split_adapter_key(fqn) is None and fqn in metadata:
+                        hf_names = self._sd_adapter.to_hf({fqn: torch.empty(param.shape, device="meta")})
+                        if any(is_fingerprint_tensor(name) for name in hf_names):
+                            fqns.add(fqn)
+        except Exception as exc:
+            error = exc
+        raise_if_any_rank_failed(error)
         # pipeline stages hold different layers; every rank reads them all
         gathered = [None] * dist.get_world_size()
         dist.all_gather_object(gathered, fqns, group=gloo_group())
@@ -242,9 +246,13 @@ class TorchtitanCheckpointLoader:
         return fingerprint_named_tensors(named.items()), list(named)
 
     def __call__(self, path: Path) -> AdapterParametrization:
-        metadata = dcp.FileSystemReader(path).read_metadata().state_dict_metadata
+        metadata, error = None, None
+        try:
+            metadata = dcp.FileSystemReader(path).read_metadata().state_dict_metadata
+        except Exception as exc:
+            error = exc
+        raise_if_any_rank_failed(error)
         params = self._slots.parameters
-        error = None
         try:
             saved = {k for k in metadata if is_adapter_key(k)}
             expected = [None] * dist.get_world_size()
