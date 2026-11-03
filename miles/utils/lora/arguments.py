@@ -203,6 +203,10 @@ def _validate_adapter_state_args(args) -> None:
     if args.lora_adapter_path is not None:
         # loading writes masters and re-casts them, which an overlapped param all-gather would race
         assert not args.overlap_param_gather, "--lora-adapter-path cannot be combined with --overlap-param-gather"
+        # the load picks each DP group's leader on the full DP ranks, but the optimizer scatters per instance
+        assert (
+            args.num_distributed_optimizer_instances == 1
+        ), "--lora-adapter-path cannot be combined with --num-distributed-optimizer-instances > 1"
 
 
 def _native_serving_targets(args, hf_config, hf_targets: list[str], hf_modules: list[str]) -> list[str] | str:

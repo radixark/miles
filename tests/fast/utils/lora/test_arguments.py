@@ -226,6 +226,25 @@ def test_the_adapter_checkpoint_requires_fp32_masters():
         _validate_adapter_state_args(args)
 
 
+def test_loading_the_adapter_checkpoint_refuses_several_distributed_optimizer_instances():
+    args = Namespace(
+        save=None,
+        lora_adapter_path="/adapter",
+        debug_disable_optimizer=False,
+        optimizer="adam",
+        exp_avg_dtype=torch.float32,
+        exp_avg_sq_dtype=torch.float32,
+        main_params_dtype=torch.float32,
+        use_distributed_optimizer=True,
+        use_gloo_process_groups=True,
+        use_precision_aware_optimizer=False,
+        overlap_param_gather=False,
+        num_distributed_optimizer_instances=2,
+    )
+    with pytest.raises(AssertionError, match="--num-distributed-optimizer-instances"):
+        _validate_adapter_state_args(args)
+
+
 class TestRolloutOnlyAdapter:
     @pytest.fixture(autouse=True)
     def _qwen3(self, monkeypatch):
