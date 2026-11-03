@@ -180,8 +180,12 @@ def build_app(service: TinkerService) -> FastAPI:
     @app.get("/api/v1/external_weights/{token}/{filename}")
     async def download_external_weights(token: str, filename: str):
         """The URL is the credential (the SDK downloads without one). The file is opened before the headers go
-        out, so a concurrent delete yields a complete file or an error, never a truncated one."""
-        handle = open(service.download_path(token, filename), "rb")
+        out, so a concurrent delete yields the complete file or a 404, never a truncated one."""
+        path = service.download_path(token, filename)
+        try:
+            handle = open(path, "rb")
+        except FileNotFoundError:
+            raise NotFoundError(f"{filename} was deleted") from None
         size = os.fstat(handle.fileno()).st_size
 
         def chunks():
