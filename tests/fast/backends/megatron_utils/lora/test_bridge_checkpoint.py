@@ -39,7 +39,7 @@ def _probe(rank, world_size, port):
     assert mapping.shared_lora_a_groups == ((K, Q),)
     assert all(torch.equal(p.data, b) for p, b in zip(params, before, strict=True)), "the probe restores the params"
     pieces = {p.key: p for p in mapping.pieces}
-    assert set(pieces) == {f"{K}.lora_A", f"{Q}.lora_B", f"{K}.lora_B"}, "a shared A is stored once, under the sorted first member"
+    assert set(pieces) == {f"{K}.lora_A", f"{Q}.lora_B", f"{K}.lora_B"}, "a shared A is stored once"
     assert pieces[f"{Q}.lora_B"].offsets == (2 * rank, 0) and pieces[f"{Q}.lora_B"].global_shape == (4, 3)
     flat = torch.cat([p.data.reshape(-1) for p in params])
     assert torch.equal(flat[pieces[f"{K}.lora_B"].local_elements], params[2].data)
