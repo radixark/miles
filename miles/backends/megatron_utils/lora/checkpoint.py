@@ -44,9 +44,7 @@ from miles.backends.training_utils.checkpoint.adapter.adapter_dir import (
 from miles.backends.training_utils.checkpoint.adapter.adapter_state import AdapterState, gloo_group
 from miles.backends.training_utils.checkpoint.adapter.commit import UncommittedAdapterDir
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
-from miles.backends.training_utils.checkpoint.adapter.readers import (
-    AdapterSourceKind,
-)
+from miles.backends.training_utils.checkpoint.adapter.readers import AdapterSourceKind
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.hf_utils.config import load_hf_config
 from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
