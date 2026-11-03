@@ -40,14 +40,14 @@ def _probe(rank, world_size, port):
     before = [p.data.clone() for p in params]
     mapping = probe_bridge_row_mapping(params, lambda: _export(params), TARGETS)
 
-    assert mapping.shared_lora_a_groups == ((Q, K),)
+    assert mapping.shared_lora_a_groups == ((K, Q),)
     assert all(torch.equal(p.data, b) for p, b in zip(params, before, strict=True)), "the probe restores the params"
     pieces = {p.key: p for p in mapping.pieces}
-    assert set(pieces) == {f"{Q}.lora_A", f"{Q}.lora_B", f"{K}.lora_B"}, "a shared A is stored once"
+    assert set(pieces) == {f"{K}.lora_A", f"{Q}.lora_B", f"{K}.lora_B"}, "a shared A is stored once, under the sorted first member"
     assert pieces[f"{Q}.lora_B"].offsets == (2 * rank, 0) and pieces[f"{Q}.lora_B"].global_shape == (4, 3)
     flat = torch.cat([p.data.reshape(-1) for p in params])
     assert torch.equal(flat[pieces[f"{K}.lora_B"].local_elements], params[2].data)
-    assert torch.equal(flat[pieces[f"{Q}.lora_A"].local_elements], params[0].data)
+    assert torch.equal(flat[pieces[f"{K}.lora_A"].local_elements], params[0].data)
     dist.destroy_process_group()
 
 
