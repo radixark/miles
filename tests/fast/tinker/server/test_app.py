@@ -275,3 +275,20 @@ async def test_a_finished_session_is_remembered_for_one_lease(client):
 
     assert aged_retry.status_code == 400
     assert fresh_retry.status_code == 204
+
+
+async def test_a_finish_retried_past_a_short_lease_is_still_accepted(client):
+    """The SDK retries finish for 300 s, so a lease shorter than that must not turn a retry into a 400."""
+    finish_body = {"reason": {"type": "success"}, "detail": None}
+    session_id = (await _model_body(client))["session_id"]
+    await client.post(f"/api/v1/sessions/{session_id}/finish", json=finish_body, headers=_headers())
+    service = client.service
+    service.config.lease_timeout_s = 10.0
+    service._ended_sessions[session_id] = service._ended_sessions[session_id]._replace(
+        ended_at=service._ended_sessions[session_id].ended_at - 11.0
+    )
+    await service._expire_sessions()
+
+    retried = await client.post(f"/api/v1/sessions/{session_id}/finish", json=finish_body, headers=_headers())
+
+    assert retried.status_code == 204

@@ -1,4 +1,5 @@
 import json
+import sys
 from argparse import Namespace
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -9,8 +10,8 @@ from tests.ci.ci_register import register_cpu_ci
 
 from miles.backends.torchtitan_utils import parallel as tp
 from miles.backends.torchtitan_utils.args_namespace import TorchtitanArgsNamespace
-from miles.backends.torchtitan_utils.arguments import build_torchtitan_parser, validate_torchtitan_args
-from miles.utils.arguments import get_miles_extra_args_provider
+from miles.backends.torchtitan_utils.arguments import validate_torchtitan_args
+from miles.utils.arguments import parse_args_and_get_parser
 from miles.utils.hf_utils.weight_mapping import HfWeightMapping
 from miles.utils.lora import arguments as lora_arguments
 
@@ -96,35 +97,51 @@ def test_lora_flags_torchtitan_cannot_honor_are_rejected(monkeypatch):
     validate_torchtitan_args(_args(lora_rank=8, colocate_memory_peak_device="gpu", lora_train_only=True))
 
 
-def test_lora_defaults_are_the_values_torchtitan_honors(monkeypatch):
+def test_lora_defaults_are_the_values_torchtitan_honors(tmp_path, monkeypatch):
     """A torchtitan LoRA command without --lora-type or --lora-A-init-method must not hit the refusals.
 
-    torchtitan runs in the default raw mode, so a default keyed on raw mode alone would pick canonical_lora.
+    Parsed end to end: validate_torchtitan_args refuses any --lora-type but lora, so it only passes after
+    miles_validate_args has resolved the default. torchtitan runs in the default raw mode, so a default
+    keyed on raw mode alone would pick canonical_lora.
     """
-    parser = build_torchtitan_parser(get_miles_extra_args_provider())
-    assert (parser.get_default("lora_type"), parser.get_default("lora_A_init_method")) == (None, "kaiming")
-    hf_config = SimpleNamespace(model_type="qwen3", to_dict=lambda: {"model_type": "qwen3"})
-    monkeypatch.setattr(lora_arguments, "load_hf_config", lambda path: hf_config)
+    from transformers import Qwen3Config
+
+    Qwen3Config(num_hidden_layers=1).save_pretrained(tmp_path)
+    monkeypatch.setattr(torch, "__version__", "2.14.0")
     monkeypatch.setattr(
         lora_arguments.HfWeightMapping,
         "from_config",
         lambda config: HfWeightMapping(frozenset({"model.layers.0.self_attn.q_proj.weight"})),
     )
-    args = Namespace(
-        train_backend="torchtitan",
-        megatron_to_hf_mode="raw",
-        entry="train",
-        hf_checkpoint="/hf",
-        lora_rank=8,
-        lora_adapter_path=None,
-        lora_type=None,
-        target_modules="q_proj",
-        exclude_modules=None,
-        experts_shared_outer_loras=False,
-        multi_lora_n_adapters=0,
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "test",
+            "--train-backend",
+            "torchtitan",
+            "--hf-checkpoint",
+            str(tmp_path),
+            "--lora-rank",
+            "8",
+            "--target-modules",
+            "q_proj",
+            "--rollout-batch-size",
+            "2",
+            "--num-rollout",
+            "1",
+            "--actor-num-gpus-per-node",
+            "1",
+            "--micro-batch-size",
+            "1",
+            "--rollout-max-response-len",
+            "1024",
+        ],
     )
-    lora_arguments.validate_lora_args(args)
-    assert args.lora_type == "lora"
+
+    args, _ = parse_args_and_get_parser()
+
+    assert (args.lora_type, args.lora_A_init_method) == ("lora", "kaiming")
 
 
 def test_lora_targets_bypass_megatrons_native_spec(monkeypatch):

@@ -228,9 +228,10 @@ def test_hf_import_counts_the_tensors_other_pipeline_stages_take(tmp_path, monke
     load_lora_adapter_hf([_model()], str(tmp_path))
 
 
-@pytest.mark.parametrize("failing_stage", ["local", "other"])
+@pytest.mark.parametrize("failing_stage", ["local", "local_shape", "other"])
 def test_hf_import_fails_every_pipeline_stage_together(tmp_path, monkeypatch, failing_stage):
-    """A stage missing a tensor still joins the pipeline gather, and every stage raises its failure."""
+    """A stage missing a tensor or holding a wrong-shaped one still joins the pipeline gather, and every
+    stage raises its failure."""
     from megatron.core import parallel_state
 
     from miles.backends.megatron_utils.lora.native import hf_adapter
@@ -238,12 +239,16 @@ def test_hf_import_fails_every_pipeline_stage_together(tmp_path, monkeypatch, fa
     exported = dict(export_lora_hf_named(iter_adapters([_model()])))
     if failing_stage == "local":
         exported.pop(next(iter(exported)))
+    elif failing_stage == "local_shape":
+        # a wrong --lora-rank: the generic projection load raises ValueError on the global shape
+        name = f"{PREFIX}4.self_attn.o_proj.lora_A.weight"
+        exported[name] = torch.zeros(RANK + 1, exported[name].shape[1])
     save_file(exported, str(tmp_path / "adapter_model.safetensors"))
     gathered = []
 
     def all_gather_object(stages, payload, group):
         gathered.append(payload)
-        other = (set(), None) if failing_stage == "local" else (set(), "KeyError: missing on stage 1")
+        other = (set(), None) if failing_stage != "other" else (set(), "KeyError: missing on stage 1")
         stages[:] = [payload, other]
 
     monkeypatch.setattr(hf_adapter.dist, "is_initialized", lambda: True)
@@ -251,7 +256,8 @@ def test_hf_import_fails_every_pipeline_stage_together(tmp_path, monkeypatch, fa
     monkeypatch.setattr(parallel_state, "get_pipeline_model_parallel_world_size", lambda: 2)
     monkeypatch.setattr(parallel_state, "get_pipeline_model_parallel_group", lambda: None)
 
-    with pytest.raises(AssertionError, match="failed on a pipeline stage: KeyError"):
+    error = "ValueError" if failing_stage == "local_shape" else "KeyError"
+    with pytest.raises(AssertionError, match=f"failed on a pipeline stage: {error}"):
         load_lora_adapter_hf([_model()], str(tmp_path))
     assert len(gathered) == 1
 

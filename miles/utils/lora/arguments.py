@@ -79,17 +79,19 @@ def validate_lora_args_after_megatron(args):
     Megatron's resolved args (e.g. the expert TP size it defaults from TP)."""
     if not (is_lora_enabled(args) and args.megatron_to_hf_mode == "raw"):
         return
-    args.lora_adapter_targets = _native_serving_targets(args, load_hf_config(args.hf_checkpoint), args.hf_lora_targets)
-    validate_native_lora_args(args)
+    hf_config = load_hf_config(args.hf_checkpoint)
+    hf_modules = _hf_modules(hf_config)
+    args.lora_adapter_targets = _native_serving_targets(args, hf_config, args.hf_lora_targets, hf_modules)
+    validate_native_lora_args(args, hf_modules)
 
 
-def _native_serving_targets(args, hf_config, hf_targets: list[str]) -> list[str] | str:
+def _native_serving_targets(args, hf_config, hf_targets: list[str], hf_modules: list[str]) -> list[str] | str:
     """The targets SGLang serves for ``hf_targets`` under Megatron's native spec, which refuses
     projections it has no adapter for."""
     return resolve_adapter_targets(
         hf_config.to_dict(),
         hf_targets,
-        hf_modules=_hf_modules(hf_config),
+        hf_modules=hf_modules,
         lora_type=args.lora_type,
         experts_shared_outer_loras=args.experts_shared_outer_loras,
     )

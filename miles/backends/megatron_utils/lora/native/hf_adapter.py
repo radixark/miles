@@ -94,7 +94,7 @@ def load_lora_adapter_hf(model_chunks, adapter_path: str) -> int:
         try:
             for adapter in iter_adapters(model_chunks):
                 load_plan.extend(_load_adapter(adapter, take))
-        except (KeyError, AssertionError) as error:
+        except (KeyError, ValueError, AssertionError) as error:
             # a stage that fails here still joins the pipeline gather, or the other stages hang in it
             failure = f"{type(error).__name__}: {error}"
 

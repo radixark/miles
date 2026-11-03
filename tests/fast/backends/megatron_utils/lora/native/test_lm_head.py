@@ -32,13 +32,13 @@ class _OutputLayer(nn.Module):
 
 
 class _Model(nn.Module):
-    def __init__(self, *, tied):
+    def __init__(self, *, tied, vocab_rows=PADDED_VOCAB):
         super().__init__()
         self.post_process = True
         self.share_embeddings_and_output_weights = tied
-        self.embedding = nn.Embedding(PADDED_VOCAB, HIDDEN)
+        self.embedding = nn.Embedding(vocab_rows, HIDDEN)
         self.embedding.weight.requires_grad_(False)
-        head = None if tied else nn.Parameter(torch.randn(PADDED_VOCAB, HIDDEN), requires_grad=False)
+        head = None if tied else nn.Parameter(torch.randn(vocab_rows, HIDDEN), requires_grad=False)
         self.output_layer = _OutputLayer(head)
 
     def shared_embedding_or_output_weight(self):
@@ -56,12 +56,12 @@ class _HeadNaming:
         return "lm_head."
 
 
-def _context(targets):
+def _context(targets, *, tp_size=1, tp_rank=0):
     return AttachContext(
         lora=LoRAConfig(rank=2, alpha=4, dropout=0.0, target_modules=targets),
         transformer_config=SimpleNamespace(hidden_size=HIDDEN, sequence_parallel=False),
-        tp_size=1,
-        tp_rank=0,
+        tp_size=tp_size,
+        tp_rank=tp_rank,
         naming=_HeadNaming(),
     )
 
@@ -145,6 +145,29 @@ def test_loading_the_served_vocab_zero_fills_megatrons_padding():
     for rows in (VOCAB - 1, PADDED_VOCAB + 1):
         with pytest.raises(AssertionError, match="not between the served 10 and the padded 12"):
             adapter.load_plan({**tensors, "lm_head.lora_B.weight": torch.randn(rows, 2)}.__getitem__)
+
+
+def test_a_tp2_load_then_export_round_trips_the_served_b():
+    """Rank 1's vocab shard ends in Megatron's padding: the load pads then slices it, the export gathers then trims."""
+    tp_size = 2
+    head_b = torch.randn(VOCAB, 2)
+    tensors = {"lm_head.lora_A.weight": torch.randn(2, HIDDEN), "lm_head.lora_B.weight": head_b}
+    adapters = []
+    for tp_rank in range(tp_size):
+        model = _Model(tied=True, vocab_rows=PADDED_VOCAB // tp_size)
+        assert LMHeadSpec().attach(model, _ARGS, _context(("lm_head",), tp_size=tp_size, tp_rank=tp_rank)) == 1
+        adapter = model.lora_lm_head_adapter
+        with torch.no_grad():
+            for parameter, tensor in adapter.load_plan(tensors.__getitem__):
+                parameter.copy_(tensor)
+        adapters.append(adapter)
+    shards = [adapter.head_B for adapter in adapters]
+    gather = SimpleNamespace(request=lambda tensor, dim: lambda: torch.cat(shards, dim))
+
+    assert not shards[1][VOCAB - PADDED_VOCAB // tp_size :].any()
+    for adapter in adapters:
+        exported = dict(adapter.export_plan(gather))
+        torch.testing.assert_close(exported["lm_head.lora_B.weight"](), head_b)
 
 
 def test_an_adapter_over_the_padded_vocab_loads_as_is():
