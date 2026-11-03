@@ -16,6 +16,7 @@ from miles.utils.lora.hf_lora_targets import (
     expand_packed_hf_lora_targets,
     gdn_in_proj_served_targets,
     get_hf_lora_targets,
+    has_hf_lora_targets,
     parse_lora_targets,
     resolve_hf_lora_targets,
 )
@@ -53,6 +54,12 @@ def validate_lora_args(args):
     if args.train_backend == "megatron" and args.megatron_to_hf_mode == "bridge":
         from miles.backends.megatron_utils.lora.target_modules import check_fused_lora_selection
 
+        # the actor builds the adapter slots whenever it publishes snapshots (--save-hf, eval snapshots, --save)
+        publishes_snapshots = args.save_hf is not None or args.eval_hf_dir is not None or args.save is not None
+        assert not publishes_snapshots or has_hf_lora_targets(hf_config.to_dict()), (
+            f"Bridge LoRA snapshots and checkpoints need the HF LoRA target layout of model_type="
+            f"{hf_config.model_type!r}, which miles does not define"
+        )
         canonical = args.lora_type == "canonical_lora"
         check_fused_lora_selection(args.hf_checkpoint, args.hf_lora_targets, canonical=canonical)
         if canonical:
