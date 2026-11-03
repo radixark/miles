@@ -193,6 +193,34 @@ def test_fill_replay_thd_preserves_packed_order(
         assert ("routes" in rollout_data) == (kept_in_train_dump and save_debug_train_data is not None)
 
 
+def test_a_dump_keeps_none_for_a_sample_no_micro_batch_holds(monkeypatch):
+    # A fixed schedule of one micro batch of 2 leaves sample 2 out, as torch_native does with untrimmed samples.
+    args = SimpleNamespace(
+        qkv_format="thd",
+        allgather_cp=False,
+        train_backend="megatron",
+        backend=SimpleNamespace(sequence_parallel=False),
+        data_pad_size_multiplier=1,
+        save_debug_train_data="/tmp/{rollout_id}_{rank}.pt",
+    )
+    state = SimpleNamespace(cp=SimpleNamespace(size=1, rank=0), tp=SimpleNamespace(size=1, rank=0))
+    monkeypatch.setattr(parallel, "_parallel_state", state)
+    rollout_data = {
+        "routes": [torch.full((2, 1, 1), i) for i in range(3)],
+        "tokens": [torch.arange(3)] * 3,
+        "max_seq_lens": None,
+    }
+    attach_replay_data(
+        _manager([_Replay()], kept_in_train_dump=True),
+        args=args,
+        models=None,
+        data_iterator=[DataIterator(rollout_data, micro_batch_size=2)],
+        num_microbatches=[1],
+        rollout_data=rollout_data,
+    )
+    assert [rows is None for rows in rollout_data["routes"]] == [False, False, True]
+
+
 def _fill_thd_cp2(monkeypatch, *, cp_rank, allgather_cp, lengths, data_pad_size_multiplier, indexer):
     """Fill one thd micro batch on CP rank ``cp_rank`` of 2; sample ``i`` has replay rows ``10(i+1) + j``."""
     args = SimpleNamespace(
