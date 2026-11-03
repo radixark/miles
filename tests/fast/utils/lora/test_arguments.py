@@ -66,7 +66,7 @@ def test_lora_arguments_import_no_megatron_to_hf():
     assert subprocess.run([sys.executable, "-c", code]).returncode == 0
 
 
-_NO_SNAPSHOTS = dict(save_hf=None, eval_hf_dir=None, save=None, lora_adapter_path=None)
+_NO_SNAPSHOTS = dict(save_hf=None, eval_hf_dir=None, save=None, lora_adapter_path=None, debug_rollout_only=False)
 
 
 @pytest.mark.parametrize(
@@ -79,6 +79,11 @@ def test_adapter_slots_need_the_families_hf_lora_layout(flag, value) -> None:
     with pytest.raises(AssertionError, match="model_type='glm4', which miles does not define"):
         _assert_adapter_layout_defined(args, AutoConfig.for_model("glm4"))
     _assert_adapter_layout_defined(args, AutoConfig.for_model("qwen3"))
+
+
+def test_a_rollout_only_run_builds_no_slots_for_any_family() -> None:
+    args = Namespace(**(_NO_SNAPSHOTS | {"lora_adapter_path": "/adapter", "debug_rollout_only": True}))
+    _assert_adapter_layout_defined(args, AutoConfig.for_model("glm4"))
 
 
 def test_a_run_without_adapter_snapshots_trains_any_family() -> None:

@@ -92,7 +92,8 @@ def validate_lora_args(args):
 def _assert_adapter_layout_defined(args, hf_config) -> None:
     """Megatron builds the adapter slots, which need the family's HF LoRA target layout, to publish snapshots
     (--save-hf, eval snapshots, --save) and to restore --lora-adapter-path; runs without them train any family."""
-    builds_slots = (
+    # a rollout-only run has no trainer; SGLang reads its adapter
+    builds_slots = not args.debug_rollout_only and (
         args.save_hf is not None
         or args.eval_hf_dir is not None
         or args.save is not None
