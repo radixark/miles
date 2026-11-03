@@ -23,6 +23,12 @@ from megatron.core.utils import unwrap_model
 
 from miles.backends.megatron_utils.lora.bridge_checkpoint import BridgeAdapterSlots
 from miles.backends.megatron_utils.lora.optimizer import SlotOptimizer
+from miles.backends.megatron_utils.lora.utils import (
+    _distributed_optimizers,
+    _load_native_adapter_shard,
+    _load_training_state,
+    _native_adapter_shard,
+)
 from miles.backends.megatron_utils.rematerialize_utils import _build_cast_main_to_params_fn
 from miles.backends.training_utils.checkpoint.adapter.adapter_dir import (
     load_adapter_dir,
@@ -559,13 +565,6 @@ class LegacyRankShardLoader:
         self._model, self._optimizer, self._run, self._load_optimizer = model, optimizer, run, load_optimizer
 
     def __call__(self, path: Path) -> AdapterParametrization:
-        from miles.backends.megatron_utils.lora.utils import (
-            _distributed_optimizers,
-            _load_native_adapter_shard,
-            _load_training_state,
-            _native_adapter_shard,
-        )
-
         shard = _native_adapter_shard(path)
         assert shard is not None, f"{path} has no adapter shard for this rank"
         _load_native_adapter_shard(self._model, shard)
@@ -582,15 +581,12 @@ class LegacyRankShardLoader:
         else:
             # the fp32 masters were built before the adapter load
             self._optimizer.reload_model_params()
-        config_file = path / "adapter_config.json"
-        alpha = json.loads(config_file.read_text())["lora_alpha"] if config_file.is_file() else self._run.lora_alpha
-        return replace(self._run, lora_alpha=alpha)
+        # _resolve_lora_alpha already made the run's alpha the source's
+        return self._run
 
 
 def _read_legacy_training_state(path: Path) -> dict | None:
     """The iteration and scheduler state of an old-format save (``training_state_rank*.pt``), if it has them."""
-    from miles.backends.megatron_utils.lora.utils import _load_training_state
-
     state = _load_training_state(path)
     if state is None:
         return None
