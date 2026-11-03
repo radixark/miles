@@ -9,7 +9,6 @@ import time
 import uuid
 from typing import NamedTuple
 
-
 from miles.tinker.core.future import RequestFuture, RequestFutureStore
 from miles.tinker.core.input_validation import (
     validate_batch_payload,
