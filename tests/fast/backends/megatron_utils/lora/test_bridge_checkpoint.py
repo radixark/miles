@@ -289,7 +289,11 @@ def test_the_base_is_bridge_pretrained_checkpoint_not_the_hf_template(tmp_path):
         return str(tmp_path / name)
 
     template, sft = hf_dir("template", torch.ones(4)), hf_dir("sft", torch.ones(4) * 2)
-    config = {"checkpoint": {"pretrained_checkpoint": sft, "hf_source_path": template}, "model": {}}
+    config = {
+        "checkpoint": {"pretrained_checkpoint": sft, "hf_source_path": template},
+        "model": {},
+        "tokenizer": {"tokenizer_model": None},
+    }
     with pytest.raises(AssertionError, match="another base model"):
         assert_same_base_model("src", bridge_base_model_candidates(config), template)
     # a torch_dist base cannot be fingerprinted; its HF template would miss a base fine-tuned in Megatron
@@ -298,4 +302,8 @@ def test_the_base_is_bridge_pretrained_checkpoint_not_the_hf_template(tmp_path):
         assert_same_base_model("src", bridge_base_model_candidates(config), template)
     # another machine's base: the HF template stands in
     config["checkpoint"]["pretrained_checkpoint"] = str(tmp_path / "elsewhere")
+    assert_same_base_model("src", bridge_base_model_candidates(config), template)
+    # Bridge's last fallback
+    config["checkpoint"]["hf_source_path"] = None
+    config["tokenizer"]["tokenizer_model"] = template
     assert_same_base_model("src", bridge_base_model_candidates(config), template)

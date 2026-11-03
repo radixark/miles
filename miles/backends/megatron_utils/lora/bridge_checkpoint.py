@@ -298,6 +298,7 @@ def bridge_base_model_candidates(config: dict) -> tuple[str | None, ...]:
         checkpoint.get("pretrained_checkpoint"),
         checkpoint.get("hf_source_path"),
         config["model"].get("hf_model_id"),
+        config["tokenizer"]["tokenizer_model"],
     )
 
 
