@@ -21,7 +21,7 @@ class FSDPHfWeightIterator(HfWeightIteratorBase):
         )
         self._arch_adapter = resolve_arch_adapter(self.model.config)
 
-    def _iter_hf_param_units(self, weights, *, materialize):
+    def _iter_hf_param_units(self, weights, *, materialize, route):
         pending: deque[tuple[str, torch.Tensor, torch.Tensor]] = deque()
         pending_bytes = 0
         for name, param in self.model.state_dict().items():
