@@ -173,6 +173,13 @@ def test_a_dcp_off_this_runs_rollout_grid_is_refused(tmp_path, step):
         _restore(tmp_path, dcp_step=step)
 
 
+@pytest.mark.parametrize("step", [6, 11 * _STEPS_PER_ROLLOUT])
+def test_a_dcp_off_this_runs_rollout_grid_loads_its_weights_and_starts_fresh(tmp_path, step):
+    restored = _restore(tmp_path, dcp_step=step, no_load_optim=True, lora_adapter_convert_save=str(tmp_path / "out"))
+    assert (restored.iteration, restored.step, restored.lr_states) == (None, 0, [])
+    assert restored.save.call_args.kwargs["training_state"] is None
+
+
 @pytest.mark.parametrize("save_moments", [True, False])
 def test_the_adapter_state_carries_moments_only_when_they_are_saved(save_moments):
     """--no-save-optim writes the fp32 masters alone, as Megatron does."""
