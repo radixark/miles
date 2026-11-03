@@ -33,10 +33,11 @@ def test_overwrite_points_the_name_at_the_new_commit_and_removes_the_old(tmp_pat
 
 
 def test_refuses_to_overwrite_when_asked_not_to(tmp_path):
-    _save(tmp_path, "w", "1")
+    first = _save(tmp_path, "w", "1")
     with pytest.raises(FileExistsError):
         _save(tmp_path, "w", "2", overwrite=False)
     assert (resolve_adapter_dir(tmp_path, "w", tenant=None).path / "payload").read_text() == "1"
+    assert sorted(p.name for p in tmp_path.iterdir()) == sorted(["w", first.path.name]), "the refused write is removed"
 
 
 def test_another_tenant_cannot_resolve_or_delete(tmp_path):
