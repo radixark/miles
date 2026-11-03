@@ -231,3 +231,18 @@ class TestUpdateWeightsFromDistributed:
         assert [handle.waited for handle in handles] == [True, True]
         assert [tensor.is_contiguous() for tensor in broadcast_tensors] == [True, True]
         assert torch.equal(broadcast_tensors[1], _BASE_NAMED_TENSORS[1][1])
+
+
+class TestUpdateWeightFromDistributedLoraBaseResync:
+    @pytest.mark.parametrize("checker", [True, False])
+    def test_the_weight_checker_forces_a_base_resync(self, checker: bool) -> None:
+        """The checker scrambles the engine base before the first sync, so a LoRA sync must resend it."""
+        parallel_state = SimpleNamespace(
+            pp=SimpleNamespace(size=1, rank=0),
+            tp=SimpleNamespace(rank=0),
+            intra_dp_cp=SimpleNamespace(rank=0),
+        )
+        with patch(f"{_BROADCAST_MODULE}.get_parallel_state", return_value=parallel_state):
+            protocol = UpdateWeightFromDistributed(Namespace(check_weight_update_equal=checker))
+
+        assert protocol.needs_base_resync_for_lora is checker
