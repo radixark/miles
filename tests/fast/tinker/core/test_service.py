@@ -714,6 +714,33 @@ async def test_a_checkpoint_of_another_base_or_rank_does_not_load(service, field
     assert not service.backend.named("load_slot")[1:], "nothing may touch the slot on a mismatch"
 
 
+@pytest.mark.parametrize("refused_by", ["gateway", "trainer"])
+async def test_a_refused_load_leaves_the_model_usable(service, refused_by):
+    import json
+
+    model_id = await created_model(service)
+    saved = service.submit(
+        "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False}
+    )
+    path = (await await_settled(service, "tenant", saved)).result["path"]
+    if refused_by == "gateway":
+        committed = Path(resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "weights", "ck")).resolve()
+        fields = json.loads((committed / "adapter_parametrization.json").read_text()) | {"lora_rank": 3}
+        (committed / "adapter_parametrization.json").write_text(json.dumps(fields))
+    else:
+        service.backend.fail_on["load_slot"] = {"error": "another adapter layout", "error_category": "user"}
+
+    loaded = service.submit(
+        "tenant", "load_state", {"model_id": model_id, "seq_id": 2, "path": path, "optimizer": True}
+    )
+    future = await await_settled(service, "tenant", loaded)
+    assert (future.state, future.error_category) == (FAILED, "user")
+    saved = service.submit(
+        "tenant", "save_state", {"model_id": model_id, "seq_id": 3, "name": "after", "overwrite": False}
+    )
+    assert (await await_settled(service, "tenant", saved)).state == DONE
+
+
 async def test_a_loaded_adapter_keeps_its_own_alpha(service):
     import json
 

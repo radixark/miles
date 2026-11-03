@@ -332,7 +332,7 @@ class TinkerService:
     async def _finish_request(self, model_queue, pending, outcome: dict) -> None:
         if "error" in outcome:
             category = outcome.get("error_category", "server")
-            if pending.command.op.requires_model_close_on_failure():
+            if pending.command.op.requires_model_close_on_failure(category):
                 await self._close_model(
                     model_queue.model_id,
                     f"model training failed ({outcome['error']}); create a new model and restore from a checkpoint",
