@@ -195,7 +195,7 @@ def execute():
     U = command_utils.default_config().create_backend()
     weight_transfer_args = (
         "--update-weight-transfer-mode gpu-delta "
-        f"--update-weight-disk-dir /root/shared_data/{RUN_ID}/gpu_delta "
+        f"--update-weight-disk-dir /root/delta-updates/{RUN_ID}/gpu_delta "
         "--custom-update-weight-post-write-path "
         "tests.e2e.megatron.test_glm5_2_744b_a40b_5layer_nvfp4_w4a16._assert_gpu_delta_weights_changed "
     )
@@ -222,11 +222,11 @@ def execute():
         "--rollout-shuffle "
         "--rm-type deterministic_random "
         "--num-rollout 4 "
-        "--rollout-batch-size 8 "
-        "--n-samples-per-prompt 8 "
+        "--rollout-batch-size 4 "
+        "--n-samples-per-prompt 4 "
         "--rollout-max-response-len 100 "
         "--rollout-temperature 1 "
-        "--global-batch-size 64 "
+        "--global-batch-size 16 "
     )
 
     perf_args = (
