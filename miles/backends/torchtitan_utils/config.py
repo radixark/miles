@@ -14,13 +14,16 @@ from torchtitan.config.transform import ContextParallelTransform
 from torchtitan.config.transform.apply import transform_model_config_
 from torchtitan.distributed.activation_remat import FullActivationRematConfig
 from torchtitan.models.base import BaseModel
-from torchtitan.models.common.attention import FlexInnerAttention
+from torchtitan.models.common.attention import FlexInnerAttention, InnerAttention
 from torchtitan.models.common.attention.cp_attention import AllGatherKVFlexInnerAttention
+from torchtitan.models.common.linear import Linear
 from torchtitan.models.common.moe import MoE
 
+from miles import platforms
 from miles.backends.torchtitan_utils import lora
 from miles.backends.torchtitan_utils.components import TiedCheckpointManager
 from miles.backends.torchtitan_utils.loss import RLLossAdapter
+from miles.backends.torchtitan_utils.sdpa_document_attention import BlockedSdpaInnerAttention
 from miles.backends.torchtitan_utils.trainer import TitanTrainer
 from miles.utils.args.runtime import TrainerConfig
 from miles.utils.hf_utils.config import load_hf_config
@@ -62,11 +65,24 @@ def build_model_config(
         kwargs["hf_config"] = load_hf_config(hf_assets_path)
     model = builder(args.backend.titan_model_flavor, **kwargs)
     _disable_load_balancing(model)
+    if not platforms.current_platform.flex_attention:
+        _use_blocked_sdpa_attention(model)
     if parallelism.context_parallel_degree > 1:
         model = transform_model_config_(
             model, [ContextParallelTransform(inner_attention_map={FlexInnerAttention: AllGatherKVFlexInnerAttention})]
         )
     return model
+
+
+def _use_blocked_sdpa_attention(model: BaseModel.Config) -> None:
+    for layer in model.layers:
+        for _, inner, parent, field_name in layer.traverse(InnerAttention.Config):
+            if type(inner) is not FlexInnerAttention.Config:
+                raise ValueError(
+                    f"on {platforms.current_platform.device_type} only document-causal FlexAttention has a "
+                    f"replacement; {type(inner).__qualname__} has none"
+                )
+            setattr(parent, field_name, BlockedSdpaInnerAttention.Config())
 
 
 # not FreezeMoERoutingTransform: it also freezes the router gate, which RL trains
@@ -149,6 +165,23 @@ def _checkpointer_config(args: TrainerConfig, *, dump_subdir: str) -> TiedCheckp
     )
 
 
+def _compile_backend(args: TrainerConfig) -> str | None:
+    platform = platforms.current_platform
+    # a static-shape platform (TPU) always compiles, whatever --titan-compile says: eager runs every op separately
+    if args.backend.titan_compile or not platform.dynamic_shapes:
+        return platform.compile_backend
+    return None
+
+
+def _prepare_blocks_for_compile(model: BaseModel.Config) -> None:
+    # the compiled blocks trace these regions in; compiled alone they would take inductor options
+    model.local_compile_regions = []
+    # a traced backward cannot add a weight gradient into .grad in place
+    for layer in model.layers:
+        for _, linear, _, _ in layer.traverse(Linear.Config):
+            linear.inplace_wgrad_accum = False
+
+
 def build_trainer_config(
     args: TrainerConfig,
     *,
@@ -177,10 +210,14 @@ def build_trainer_config(
         model = lora.convert_model_config(
             model, hf_targets=args.hf_lora_targets, rank=args.lora_rank, alpha=args.lora_alpha
         )
+    compile_backend = _compile_backend(args)
+    if compile_backend is not None:
+        _prepare_blocks_for_compile(model)
 
     return TitanTrainer.Config(
         model=model,
         hf_assets_path=hf_assets_path,
+        compile_backend=compile_backend,
         output_dir=os.path.join(
             args.backend.save or tempfile.mkdtemp(prefix="miles-torchtitan-"), "torchtitan", dump_subdir
         ),

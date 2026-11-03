@@ -16,6 +16,7 @@ def titan_actor_module(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
     config.build_trainer_config = _unexpected_backend_call
     trainer = ModuleType("miles.backends.torchtitan_utils.trainer")
     trainer.TitanTrainer = _unexpected_backend_call
+    trainer.configure_fixed_shape_compile = _unexpected_backend_call
     monkeypatch.setitem(sys.modules, config.__name__, config)
     monkeypatch.setitem(sys.modules, trainer.__name__, trainer)
 

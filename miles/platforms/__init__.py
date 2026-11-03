@@ -13,6 +13,16 @@ class Platform:
     """CUDA, and the base other platforms override: every method is the call main makes on CUDA."""
 
     device_type = "cuda"
+    # the torch.compile backend for model code
+    compile_backend = "inductor"
+    # Triton kernels (e.g. --log-probs-backend fused) run here
+    triton_kernels = True
+    # FlexAttention compiles to a block-sparse kernel here
+    flex_attention = True
+    # the process group has a rooted reduce
+    rooted_reduce = True
+    # the --update-weight-transfer-mode values an engine on this platform can receive; None: all of them
+    weight_transfer_modes: frozenset[str] | None = None
     # torch.compile(dynamic=True) works here; a platform without it runs dynamic-shape helpers eager
     dynamic_shapes = True
     # NVML sees the devices, so each training rank is pinned to its GPU's NUMA node

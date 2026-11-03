@@ -1,0 +1,77 @@
+diff --git a/torchtitan/tools/utils.py b/torchtitan/tools/utils.py
+index 5e1810edd..5d180169f 100644
+--- a/torchtitan/tools/utils.py
++++ b/torchtitan/tools/utils.py
+@@ -60,9 +60,72 @@ def has_rocm_capability(major: int, minor: int) -> bool:
+     )
+ 
+ 
++class _TpuDeviceModule(ModuleType):
++    """``torch.tpu`` as torchtitan calls it, with torch.accelerator-backed device APIs.
++
++    torch_tpu marks the ``torch.tpu`` APIs that have a ``torch.accelerator``
++    equivalent as internal (PyTorch >= 2.11) and refuses calls to them from
++    outside the torch / torch_tpu packages. torchtitan reaches them through
++    ``device_module``, so this view routes them to ``torch.accelerator`` and
++    forwards every other attribute to ``torch.tpu`` untouched. It is a separate
++    object rather than a patch on ``torch.tpu`` because torch_tpu calls these
++    same functions on ``torch.tpu`` internally.
++    """
++
++    def __init__(self, tpu_module: ModuleType) -> None:
++        super().__init__(tpu_module.__name__, tpu_module.__doc__)
++        self._tpu_module = tpu_module
++
++    def __getattr__(self, name: str):
++        return getattr(self._tpu_module, name)
++
++    @staticmethod
++    def is_available() -> bool:
++        return torch.accelerator.is_available()
++
++    @staticmethod
++    def device_count() -> int:
++        return torch.accelerator.device_count()
++
++    @staticmethod
++    def current_device() -> int:
++        return torch.accelerator.current_device_index()
++
++    @staticmethod
++    def set_device(device: int | str | torch.device) -> None:
++        torch.accelerator.set_device_index(device)
++
++    @staticmethod
++    def synchronize(device: int | str | torch.device | None = None) -> None:
++        torch.accelerator.synchronize(device)
++
++    @staticmethod
++    def current_stream(device: int | str | torch.device | None = None):
++        return torch.accelerator.current_stream(device)
++
++    @staticmethod
++    def set_stream(stream) -> None:
++        torch.accelerator.set_stream(stream)
++
++    # torch_tpu implements these through torch.accelerator only
++    @staticmethod
++    def reset_peak_memory_stats(device: int | str | torch.device | None = None) -> None:
++        torch.accelerator.reset_peak_memory_stats(device)
++
++    @staticmethod
++    def empty_cache() -> None:
++        torch.accelerator.empty_cache()
++
++    @staticmethod
++    def memory_stats(device: int | str | torch.device | None = None) -> dict:
++        return torch.accelerator.memory_stats(device)
++
++
+ def get_device_info() -> tuple[str, ModuleType]:
+     device_type = _get_available_device_type() or "cuda"
+     device_module = _get_device_module(device_type)  # default device_module:torch.cuda
++    if device_type == "tpu":
++        device_module = _TpuDeviceModule(device_module)
+     return device_type, device_module
+ 
+ 

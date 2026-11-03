@@ -2,6 +2,7 @@ from dataclasses import dataclass
 
 import torch
 
+from miles import platforms
 from miles.backends.fsdp_utils.arguments import FSDPArgs, build_dataclass_parser, load_args_from_parser
 from miles.utils.lora.utils import is_lora_enabled, lora_rollout_enabled
 
@@ -17,6 +18,9 @@ class TorchtitanArgs(FSDPArgs):
     tensor_model_parallel_size: int = 1
     pipeline_model_parallel_size: int = 1
     expert_model_parallel_size: int = 1
+
+    # torch.compile each transformer block; always on where shapes are static (TPU), opt-in elsewhere
+    titan_compile: bool = False
 
 
 def build_torchtitan_parser(extra_args_provider=None):
@@ -52,6 +56,7 @@ def validate_torchtitan_args(args) -> None:
             "inside the rope kernel"
         )
 
+    _validate_platform_args(args)
     if args.ref_update_interval is not None:
         raise ValueError("--ref-update-interval is not supported by the torchtitan backend")
     if args.fp16:
@@ -105,4 +110,38 @@ def _validate_lora_args(args) -> None:
         raise ValueError(
             "--colocate-memory-peak-device gpu pauses the LoRA grad buffers of the megatron backend, "
             "which the torchtitan backend does not have; use the default cpu"
+        )
+
+
+def _validate_platform_args(args) -> None:
+    platform = platforms.current_platform
+    if args.log_probs_backend == "fused" and not platform.triton_kernels:
+        raise ValueError(
+            f"--log-probs-backend fused is a Triton kernel; on {platform.device_type} use --log-probs-backend torch"
+        )
+    # colocate syncs through CUDA IPC, outside the transfer modes
+    modes = platform.weight_transfer_modes
+    if modes is not None and (args.colocate or args.update_weight_transfer_mode not in modes):
+        raise ValueError(
+            f"on {platform.device_type} the trainer syncs weights with --update-weight-transfer-mode "
+            f"{' or '.join(sorted(modes))} to disaggregated engines; got "
+            f"{args.update_weight_transfer_mode!r}{' with --colocate' if args.colocate else ''}"
+        )
+    if platform.dynamic_shapes:
+        return
+    # without dynamic shapes, packed microbatches are padded to a power-of-two bucket capped at --seq-length
+    if args.context_parallel_size != 1:
+        raise ValueError(
+            f"--context-parallel-size {args.context_parallel_size} is not supported on {platform.device_type}: "
+            "its length buckets do not align microbatches to the CP shards"
+        )
+    if args.use_dynamic_batch_size and args.max_tokens_per_gpu > args.seq_length:
+        raise ValueError(
+            f"--max-tokens-per-gpu {args.max_tokens_per_gpu} exceeds --seq-length {args.seq_length}, "
+            "the largest length bucket"
+        )
+    if not args.use_dynamic_batch_size and args.micro_batch_size > 1:
+        raise ValueError(
+            f"--micro-batch-size {args.micro_batch_size} can pack more than --seq-length {args.seq_length} "
+            "tokens, the largest length bucket; use --use-dynamic-batch-size with --max-tokens-per-gpu"
         )

@@ -612,6 +612,11 @@ memory is set by the shard, pipeline and tensor degrees together; MoE dispatch b
 *not* shrink with sharding, so adding nodes only helps if it raises the shard degree —
 replication alone does not.
 
+`--titan-compile` compiles each transformer block with `torch.compile(fullgraph=True)`. On TPU
+the blocks are always compiled, microbatches are padded to power-of-two lengths up to
+`--seq-length`, and `--max-tokens-per-gpu` may not exceed `--seq-length`
+(`scripts/tpu/README.md`).
+
 ### 4. Getting weights in and out
 
 Nothing to configure: weights are streamed to SGLang under HF names through the model's own
