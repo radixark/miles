@@ -307,7 +307,9 @@ alternative aligned-expert path.
   any parallel layout; masters only with `--no-save-optim`, which SGD needs;
   SGD must run with `--sgd-momentum 0` and resumes with `--no-load-optim`), the iteration and scheduler state, and an HF PEFT
   `adapter_model.safetensors` plus `adapter_config.json` export. A failed PEFT
-  export fails the save; the committed checkpoint is kept. `--save-hf` exports a
+  export fails the save; the committed checkpoint is kept. `{save}/iter_N/adapter`
+  is a symlink to the hidden dir `{save}/iter_N/.adapter.<commit_id>/`, so copy it
+  with symlinks followed (e.g. `cp -rL`, `rsync -L`). `--save-hf` exports a
   merged model and an HF adapter; native LoRA merges each adapter into its host
   weights before the ordinary base-weight conversion, so the merged model uses the
   same converters as full-model exports. Both need the family's HF LoRA target

@@ -149,19 +149,21 @@ def probe_bridge_row_mapping(
                 except Exception as exc:
                     error = exc
     except Exception as exc:
-        # the export's own failure goes through the rank agreement too, so the other ranks fail instead of waiting
+        # an export failure outside Bridge's collectives goes through the rank agreement, so the other ranks fail
+        # instead of waiting; a rank failing mid-collective still leaves the others hanging in Bridge's NCCL
         error = exc
     finally:
         for param, data in zip(params, saved, strict=True):
             param.data = data
 
-    groups = []
+    # every expert's shared A yields the same group
+    groups = set()
     if error is None:
         try:
             for members in a_sources.values():
                 flat = [m for member in members for m in ((member,) if isinstance(member, str) else member)]
                 if len(flat) > 1:
-                    groups.append(tuple(sorted(flat)))
+                    groups.add(tuple(sorted(flat)))
             pieces += [
                 piece
                 for key, by_expert in per_expert.items()
