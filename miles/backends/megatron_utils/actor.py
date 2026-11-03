@@ -931,7 +931,6 @@ class MegatronTrainRayActor(TrainRayActor):
             self.model,
             self.optimizer,
             self.opt_param_scheduler,
-            snapshot_publisher=self.snapshot_publisher,
             adapter_slots=self.adapter_slots,
         )
 

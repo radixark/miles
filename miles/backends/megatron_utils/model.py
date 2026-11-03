@@ -42,7 +42,6 @@ from miles.backends.training_utils.model_companion import (
     SampleIdentityExtractor,
 )
 from miles.backends.training_utils.types import TrainStepOutcome
-from miles.backends.training_utils.weight_update.snapshot_publisher import SnapshotPublisher
 from miles.utils.args.runtime import TrainerConfig
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.audit_utils.witness.module import witness_dump_and_clear_stale
@@ -931,7 +930,6 @@ def save(
     checkpointing_context: dict | None = None,
     non_persistent_ckpt: bool = False,
     *,
-    snapshot_publisher: SnapshotPublisher | None = None,
     adapter_slots: BridgeAdapterSlots | None = None,
 ) -> None:
     """Persist a training checkpoint safely with forward hooks disabled.
