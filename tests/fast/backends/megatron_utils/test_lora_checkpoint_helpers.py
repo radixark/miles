@@ -1,9 +1,4 @@
-"""Unit tests for LoRA-related helpers in miles.backends.megatron_utils.checkpoint.
-
-Covers pure path-detection functions and the LoRA branch routing in
-save_checkpoint_with_lora / load_checkpoint — the latter using mocks to avoid
-GPU / distributed requirements.
-"""
+"""Unit tests for the checkpoint path detection in miles.backends.megatron_utils.checkpoint."""
 
 import pytest
 

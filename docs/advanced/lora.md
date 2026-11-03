@@ -144,7 +144,7 @@ Ordinary LoRA also accepts specific HF targets mixed with group names, such as
 | `--lora-type` | per backend | `lora` shares one `lora_A` across each fused projection; `canonical_lora` gives Q/K/V, gate/up and the Qwen3.5 / 3.6 GDN `in_proj` components their own. Native gives every projection its spec declares its own `lora_A`, so it defaults to and accepts only `canonical_lora`; `serve_tinker.py` defaults to `canonical_lora`; Bridge otherwise defaults to `lora`; torchtitan fuses q/k/v and gate/up, so it defaults to and accepts only `lora`. The gpt-oss MoE LoRA CI test trains both expert layouts with `canonical_lora`. |
 | `--target-modules` | none | Uses HF model defaults when omitted. Accepts `all-linear`, `attn/mlp/unembed` groups, HF leaf names or scoped HF paths; Bridge also accepts Megatron selectors. |
 | `--exclude-modules` | none | Comma-separated HF leaf names or scoped HF paths removed after selection; Bridge also accepts Megatron selectors. |
-| `--lora-adapter-path` | none | Warm-start/resume path. Also provide the matching positive rank, alpha, and target modules. Bridge training resume currently requires miles' per-rank adapter shards and the same parallel topology; an HF PEFT-only adapter cannot yet be loaded directly into the Bridge model. Inkling native has its own HF adapter loader. |
+| `--lora-adapter-path` | none | Warm-start/resume path. Also provide the matching positive rank and target modules. Single LoRA (Bridge or native) reads an adapter dir (any parallel layout; with optimizer state unless `--no-load-optim`), an HF PEFT pair, including main's native export with sglang expert names (weights only, needs `--no-load-optim`), or miles' older per-rank shards (same parallel layout). |
 | `--lora-base-cpu-backup` | off | Colocated mode only: keep a CPU mirror of the frozen SGLang base and avoid re-sending base weights. This trades host RAM for faster and more reliable pause/resume. |
 | `--lora-train-only` | off | Train the adapter while keeping ordinary rollout engines on the frozen base policy. |
 | `--experts-shared-outer-loras` | off | Use shared outer factors for grouped MoE experts. This layout is not checkpoint-compatible with per-expert LoRA. |
@@ -301,17 +301,16 @@ alternative aligned-expert path.
   does not yet have a dedicated LoRA-SFT E2E test. Shared actor/critic PPO with
   Bridge LoRA is untested: the critic is always built as a full model without
   adapters.
-- **Checkpoints.** miles saves native per-rank adapter shards and
-  optimizer/scheduler state. Exact resume expects the same TP/PP topology. It
-  also attempts a best-effort HF PEFT `adapter_model.safetensors` plus
-  `adapter_config.json` export in Bridge mode, through the same snapshot publisher
-  used by Tinker. HF export errors are logged while native checkpoint saving
-  continues. Raw mode saves native shards and a rank-sharded adapter config without
-  HF export. `--save-hf` exports a merged model and an HF adapter without native
-  training shards; native LoRA merges each adapter into its host weights before the
-  ordinary base-weight conversion, so the merged model uses the same converters as
-  full-model exports. Direct HF PEFT-to-Bridge resume is not implemented yet;
-  native LoRA imports HF adapters through `--lora-adapter-path`.
+- **Checkpoints.** Single LoRA (Bridge or native) saves `{save}/iter_N/adapter`
+  as an adapter dir: whole fp32 masters, Adam moments and step (resumable under
+  any parallel layout; masters only with `--no-save-optim`, which a non-Adam
+  optimizer needs), the iteration and scheduler state, and an HF PEFT
+  `adapter_model.safetensors` plus `adapter_config.json` export. A failed PEFT
+  export fails the save; the committed checkpoint is kept. `--save-hf` exports a
+  merged model and an HF adapter; native LoRA merges each adapter into its host
+  weights before the ordinary base-weight conversion, so the merged model uses the
+  same converters as full-model exports. Both need the family's HF LoRA target
+  layout in `miles/utils/lora/hf_lora_targets.py`.
 - **Weight synchronization.** Colocated IPC and remote NCCL broadcast both ship
   adapter tensors at each configured update boundary without merging them into
   the base. `--check-lora-weight-equal` verifies them with SHA-256.
