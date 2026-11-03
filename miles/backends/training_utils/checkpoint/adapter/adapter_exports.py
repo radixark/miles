@@ -3,6 +3,7 @@
 from collections.abc import Sequence
 from pathlib import Path
 
+import pyrage
 import torch
 
 from miles.backends.training_utils.checkpoint.adapter.key_mapping import (
@@ -140,9 +141,6 @@ def write_external_adapter(
 
 
 def _age_encrypt_in_place(directory: Path, recipients: Sequence[str]) -> None:
-    # optional dependency: only an encrypted export needs it
-    import pyrage
-
     parsed = [pyrage.x25519.Recipient.from_str(r) for r in recipients]
     # not the whole directory: it also holds the gateway's tenant.json, which must stay readable to resolve the owner
     for name in ("adapter_config.json", "adapter_model.safetensors"):

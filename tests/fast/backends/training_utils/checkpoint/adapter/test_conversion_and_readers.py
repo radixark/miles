@@ -3,6 +3,7 @@
 import json
 from dataclasses import replace
 
+import pyrage
 import pytest
 import torch
 from safetensors.torch import load_file, save_file
@@ -163,7 +164,6 @@ def test_external_export_reads_back_through_the_external_reader(tmp_path, shared
 
 
 def test_an_encrypted_external_export_decrypts_to_the_plain_one(tmp_path):
-    pyrage = pytest.importorskip("pyrage")
     identity = pyrage.x25519.Identity.generate()
     write_external_adapter(tmp_path / "plain", _weights(False), _run(), QWEN35)
     write_external_adapter(
