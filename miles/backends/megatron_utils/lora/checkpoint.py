@@ -16,7 +16,8 @@ import torch.distributed.checkpoint as dcp
 from megatron.core import dist_checkpointing
 from megatron.core.dist_checkpointing.dict_utils import nested_values
 from megatron.core.distributed import DistributedDataParallel as DDP
-from megatron.core.utils import unwrap_model
+from megatron.core.process_groups_config import ProcessGroupCollection
+from megatron.core.utils import get_pg_size, unwrap_model
 
 from miles.backends.megatron_utils.lora.bridge_checkpoint import BridgeAdapterSlots
 from miles.backends.megatron_utils.lora.optimizer import SlotOptimizer
@@ -177,6 +178,15 @@ def find_load_mismatch(
         kind = classify_adapter_source(path, targets, load_optimizer=load_optimizer)
         if kind == AdapterSourceKind.LEGACY_TINKER_CHECKPOINT:
             _read_legacy_meta(path, run)
+            if load_optimizer:
+                # SlotOptimizer's LayerWise shards state over these groups, owner per param differing by slot;
+                # META.json does not record the slot that saved it
+                groups = ProcessGroupCollection.use_mpu_process_groups(required_pgs=["dp_cp", "expt_dp"])
+                if max(get_pg_size(groups.dp_cp), get_pg_size(groups.expt_dp)) > 1:
+                    raise ValueError(
+                        "a checkpoint saved before adapter checkpoints cannot restore optimizer state under data "
+                        "parallelism; load it with optimizer=False (weights only)"
+                    )
             # TE's _extra_state objects are stored per shard (<key>/shard_i_j); the tensors decide the layout
             saved = {
                 k
