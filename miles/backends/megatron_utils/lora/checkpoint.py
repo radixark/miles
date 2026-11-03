@@ -558,7 +558,9 @@ def restore_single_lora(model, args, *, optimizer, opt_param_scheduler) -> int |
     )
     run = single_lora_parametrization(slots, args)
     path = Path(args.lora_adapter_path)
-    legacy = LegacyRankShardLoader(model, optimizer, run, load_optimizer)
+    legacy = LegacyRankShardLoader(
+        model, optimizer, run, load_optimizer, precision_aware=args.backend.use_precision_aware_optimizer
+    )
     load_adapter_dir(
         path,
         members,
@@ -592,8 +594,9 @@ class LegacyRankShardLoader:
     """A single-LoRA ``--save`` written before the adapter format (``adapter_megatron_rank*.pt``), read into the
     model under the parallel layout it was saved with."""
 
-    def __init__(self, model, optimizer, run: AdapterParametrization, load_optimizer: bool):
+    def __init__(self, model, optimizer, run: AdapterParametrization, load_optimizer: bool, *, precision_aware: bool):
         self._model, self._optimizer, self._run, self._load_optimizer = model, optimizer, run, load_optimizer
+        self._precision_aware = precision_aware
 
     def __call__(self, path: Path) -> AdapterParametrization:
         shard = _native_adapter_shard(path)
@@ -604,11 +607,21 @@ class LegacyRankShardLoader:
             assert (
                 state is not None and state["optimizer"] is not None and "parameter_state" in state
             ), f"{path} has no optimizer state to resume; pass --no-load-optim"
+            subs = _distributed_optimizers(self._optimizer)
+            for sub in subs:
+                # on an empty HDO state Megatron's load_state_dict would run dummy_step, a real Adam step
+                if isinstance(sub.optimizer, HybridDeviceOptimizer) and not sub.optimizer.state:
+                    _init_zero_hdo_state(sub.optimizer)
             self._optimizer.load_state_dict(state["optimizer"])
-            for sub, parameter_state in zip(
-                _distributed_optimizers(self._optimizer), state["parameter_state"], strict=True
-            ):
+            for sub, parameter_state in zip(subs, state["parameter_state"], strict=True):
                 sub.load_parameter_state_from_dp_reshardable(parameter_state)
+                if isinstance(sub.optimizer, HybridDeviceOptimizer):
+                    # unlike Megatron's other parameter-state loaders, this one leaves the sub-optimizers'
+                    # fp32 params and state devices stale
+                    sub.optimizer._sync_hdo_state_to_sub_optimizers()
+            _build_cast_main_to_params_fn(self._optimizer, precision_aware=self._precision_aware)()
+            for chunk in self._model:
+                chunk.start_param_sync(force_sync=True)
         else:
             # the fp32 masters were built before the adapter load
             self._optimizer.reload_model_params()
