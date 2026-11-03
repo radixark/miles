@@ -1,5 +1,6 @@
 """Kimi K3 through the generic native-LoRA tables: export/import, merge, SP semantics, targets — no GPU."""
 
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -179,6 +180,13 @@ def test_export_names_and_shapes_match_sglang(include_fc2):
     if include_fc2:
         assert exported[f"{experts}w2.lora_A.weight"].shape == (3, RANK, 5)
         assert exported[f"{experts}w2.lora_B.weight"].shape == (1, LATENT, RANK)
+
+
+def test_the_export_writes_no_log_line(caplog):
+    """The checkpoint probe exports index codes; a logged max|lora_B| of those reads like a diverged adapter."""
+    with caplog.at_level(logging.DEBUG):
+        export_lora_hf_named(iter_adapters([_model()]), dtype=torch.float64)
+    assert not caplog.records
 
 
 def test_hf_import_round_trips_the_export(tmp_path):
