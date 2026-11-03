@@ -16,6 +16,7 @@ from miles.utils.lora.hf_lora_targets import (
     expand_packed_hf_lora_targets,
     gdn_in_proj_served_targets,
     get_hf_lora_targets,
+    has_hf_lora_targets,
     parse_lora_targets,
     resolve_hf_lora_targets,
 )
@@ -50,6 +51,10 @@ def validate_lora_args(args):
     hf_config = load_hf_config(args.hf_checkpoint)
     args.hf_lora_targets = _resolve_lora_targets(args, hf_config)
     args.lora_adapter_targets = list(args.hf_lora_targets)
+    assert args.save_hf is None or has_hf_lora_targets(hf_config.to_dict()), (
+        f"--save-hf writes a PEFT adapter, which needs the HF LoRA target layout of model_type="
+        f"{hf_config.model_type!r}; add it to miles/utils/lora/hf_lora_targets.py"
+    )
     if args.train_backend == "megatron" and args.megatron_to_hf_mode == "bridge":
         from miles.backends.megatron_utils.lora.target_modules import check_fused_lora_selection
 

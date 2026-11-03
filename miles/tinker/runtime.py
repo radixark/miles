@@ -167,22 +167,30 @@ class MilesBackend:
         return worker_results[0]
 
     async def save_slot(
-        self, slot: int, root: str, name: str, tenant: str, parametrization_fields: dict
+        self, slot: int, root: str, name: str, tenant_digest: str, parametrization_fields: dict
     ) -> UncommittedAdapterDir | dict:
         """The uncommitted state every rank agreed on, or the first worker failure."""
         return _written_or_failure(
             await self.trainer.save_slot(
-                slot=slot, root=root, name=name, tenant=tenant, parametrization_fields=parametrization_fields
+                slot=slot,
+                root=root,
+                name=name,
+                tenant_digest=tenant_digest,
+                parametrization_fields=parametrization_fields,
             )
         )
 
     async def export_slot(
-        self, slot: int, root: str, name: str, tenant: str, parametrization_fields: dict
+        self, slot: int, root: str, name: str, tenant_digest: str, parametrization_fields: dict
     ) -> UncommittedAdapterDir | dict:
         """The uncommitted export every rank agreed on, or the first worker failure."""
         return _written_or_failure(
             await self.trainer.export_slot(
-                slot=slot, root=root, name=name, tenant=tenant, parametrization_fields=parametrization_fields
+                slot=slot,
+                root=root,
+                name=name,
+                tenant_digest=tenant_digest,
+                parametrization_fields=parametrization_fields,
             )
         )
 

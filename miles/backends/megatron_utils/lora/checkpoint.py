@@ -290,10 +290,10 @@ def save_slot(
     slot: int,
     root: str,
     name: str,
-    tenant: str,
+    tenant_digest: str,
     parametrization: AdapterParametrization,
 ) -> UncommittedAdapterDir:
-    return save_adapter_dir(Path(root), name, members, slot, parametrization, tenant=tenant)
+    return save_adapter_dir(Path(root), name, members, slot, parametrization, tenant_digest=tenant_digest)
 
 
 def load_slot(
