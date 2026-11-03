@@ -23,6 +23,10 @@ from tests.fast.tinker.harness import (
 )
 
 from miles.backends.training_utils.checkpoint.adapter.commit import resolve_adapter_dir
+from miles.backends.training_utils.checkpoint.adapter.parametrization import (
+    AdapterParametrization,
+    write_parametrization,
+)
 from miles.tinker.core.checkpoint_expiry import CheckpointExpiry
 from miles.tinker.core.future import DONE, FAILED
 from miles.tinker.core.types import NotFoundError, OwnershipError, UserInputError
@@ -1152,6 +1156,36 @@ async def test_a_malformed_import_is_a_user_error_and_the_gateway_keeps_serving(
         run_task.cancel()
         with suppress(asyncio.CancelledError):
             await run_task
+
+
+@pytest.mark.parametrize(
+    "kind,recorded_base,accepted",
+    [
+        ("peft", None, True),
+        ("peft", "/models/base", True),
+        ("peft", "org/other", False),
+        ("peft", "/models/other", False),
+        ("adapter_dir", "/models/base", True),
+        ("adapter_dir", "other", False),
+    ],
+)
+def test_an_import_trained_on_another_base_is_refused(tmp_path, kind, recorded_base, accepted):
+    """The gateway serves "base"; a source that records no base (official Tinker writes null) is accepted."""
+    adapter = tmp_path / "imports" / "adapter"
+    adapter.mkdir(parents=True)
+    if kind == "peft":
+        config = {"r": 8, "lora_alpha": 32, "base_model_name_or_path": recorded_base}
+        (adapter / "adapter_config.json").write_text(json.dumps(config))
+    else:
+        write_parametrization(
+            adapter, AdapterParametrization(recorded_base, 8, 32.0, "lora", ("model.layers.0.self_attn.q_proj",), False)
+        )
+    service = make_service(tmp_path / "root", import_root=str(tmp_path / "imports"))
+    if accepted:
+        assert service.weights_info("tenant", f"file://{adapter}")["lora_rank"] == 8
+    else:
+        with pytest.raises(UserInputError, match=f"trained on '{recorded_base}'"):
+            service.weights_info("tenant", f"file://{adapter}")
 
 
 async def test_file_imports_stay_under_the_import_root_and_load_weights_only(tmp_path):

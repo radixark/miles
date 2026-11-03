@@ -67,6 +67,18 @@ _DOWNLOAD_URL_TTL_S = 3600
 _EXPIRY_SWEEP_S = 60
 
 
+def _is_same_base_model(a: str, b: str) -> bool:
+    """By name: equal, or the same last path component when one side is a local path (e.g. --hf-checkpoint)."""
+
+    def is_path(name: str) -> bool:
+        return os.path.isabs(name) or os.path.exists(name)
+
+    def last_component(name: str) -> str:
+        return os.path.basename(os.path.normpath(name))
+
+    return a == b or ((is_path(a) or is_path(b)) and last_component(a) == last_component(b))
+
+
 class TinkerService:
     def __init__(self, backend, config: GatewayConfig) -> None:
         self.backend = backend
@@ -478,8 +490,7 @@ class TinkerService:
         """An adapter from under --tinker-import-root; it has no Adam state this gateway could resume."""
         if payload["optimizer"]:
             raise UserInputError(f"{payload['path']} loads weights only; load it without optimizer state")
-        path = self._imported_path(payload["path"])
-        source = self.backend.read_imported_adapter(path)
+        path, source = self._read_imported_adapter(payload["path"])
         if source["lora_alpha"] is None:
             raise UserInputError(f"{payload['path']} records no LoRA alpha, which a Tinker adapter must carry")
         if source["lora_rank"] != record.lora_rank:
@@ -499,6 +510,16 @@ class TinkerService:
             return failure
         record.lora_alpha = source["lora_alpha"]
         return {"op": "load_state"}
+
+    def _read_imported_adapter(self, uri: str) -> tuple[str, dict]:
+        path = self._imported_path(uri)
+        source = self.backend.read_imported_adapter(path)
+        # a source that records no base (official Tinker exports write null) is taken as trained on this one
+        if source["base_model"] is not None and not _is_same_base_model(source["base_model"], self.config.base_model):
+            raise UserInputError(
+                f"{uri} was trained on {source['base_model']!r}; this gateway serves {self.config.base_model!r}"
+            )
+        return path, source
 
     def _imported_path(self, uri: str) -> str:
         if self.config.import_root is None:
@@ -614,7 +635,7 @@ class TinkerService:
     def weights_info(self, tenant: str, tinker_path: str) -> dict:
         """What the SDK needs to rebuild a training client from a checkpoint."""
         if tinker_path.startswith("file://"):
-            source = self.backend.read_imported_adapter(self._imported_path(tinker_path))
+            _, source = self._read_imported_adapter(tinker_path)
             return {
                 "base_model": self.config.base_model,
                 "is_lora": True,
