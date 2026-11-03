@@ -272,8 +272,10 @@ class DistributedOptimizerMembers:
         for sub in self._distributed_optimizers():
             if sub.init_state_fn is not None:
                 sub.init_state_fn(sub.optimizer, sub.config)
-            # every element is overwritten below, so nothing is gathered
-            gathered = sub.get_parameter_state_dp_zero(use_gloo_comm=True, empty_data=True)
+            elif isinstance(sub.optimizer, HybridDeviceOptimizer) and not sub.optimizer.state:
+                _init_zero_hdo_state(sub.optimizer)
+            # gathered, not empty: elements no piece holds (vocab padding) must keep their master and moments
+            gathered = sub.get_parameter_state_dp_zero(use_gloo_comm=True)
             if gathered is not None:
                 for buffer_index, buffer in enumerate(sub.buffers):
                     for param in buffer.param_index_map:
