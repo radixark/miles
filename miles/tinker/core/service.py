@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 import secrets
+import stat
 import time
 import uuid
 from datetime import UTC, datetime
@@ -46,6 +47,45 @@ logger = logging.getLogger(__name__)
 
 # how long the Tinker SDK keeps retrying a finish (InternalClientHolder.execute_with_retries)
 _SDK_FINISH_RETRY_S = 300.0
+
+
+def _reads_under(path: str, root: str) -> bool:
+    """Whether reading ``path`` can read a file under ``root``: by an ancestor that is ``root`` under another name
+    (a bind mount), by a symlink anywhere below it, or by a hard link, which cannot be told from its origin."""
+    real_root = os.path.realpath(root)
+    if os.path.commonpath([os.path.realpath(path), real_root]) == real_root:
+        return True
+    if not os.path.exists(root):
+        # nothing saved yet
+        return False
+    root_stat = os.stat(root)
+
+    def has_root_ancestor(real: str) -> bool:
+        while True:
+            if os.path.samestat(os.stat(real), root_stat):
+                return True
+            parent = os.path.dirname(real)
+            if parent == real:
+                return False
+            real = parent
+
+    seen, pending = set(), [path]
+    while pending:
+        real = os.path.realpath(pending.pop())
+        if not os.path.exists(real):
+            # a dangling symlink reads nothing; a missing import fails in its reader
+            continue
+        entry = os.stat(real)
+        if (entry.st_dev, entry.st_ino) in seen:
+            continue
+        seen.add((entry.st_dev, entry.st_ino))
+        if has_root_ancestor(real):
+            return True
+        if stat.S_ISDIR(entry.st_mode):
+            pending += [os.path.join(real, name) for name in os.listdir(real)]
+        elif entry.st_nlink > 1:
+            return True
+    return False
 
 
 class _EndedSession(NamedTuple):
@@ -526,9 +566,8 @@ class TinkerService:
         if not path.startswith(root + os.sep):
             raise UserInputError(f"{uri} is outside the import root {self.config.import_root}")
         # a tinker:// checkpoint's owner is checked; reaching it by file:// would skip that
-        checkpoint_root = os.path.realpath(self.config.checkpoint_root)
-        if path == checkpoint_root or path.startswith(checkpoint_root + os.sep):
-            raise UserInputError(f"{uri} is a tinker:// checkpoint; load it by its tinker:// path")
+        if _reads_under(path, self.config.checkpoint_root):
+            raise UserInputError(f"{uri} reaches a tinker:// checkpoint; load it by its tinker:// path")
         return path
 
     async def _save_weights_external(self, record: ModelRecord, payload: dict) -> dict:

@@ -1331,6 +1331,14 @@ async def test_file_imports_stay_under_the_import_root_and_load_weights_only(tmp
     (tmp_path / "outside" / "adapter_config.json").write_text(json.dumps({"r": 8, "lora_alpha": 32}))
     (imports / "link").symlink_to(tmp_path / "outside")
     service = make_service(tmp_path / "root", import_root=str(imports))
+    # another tenant's checkpoint files, reached from a dir of the import root by a symlink or a hard link
+    stolen = tmp_path / "root" / "victim" / "weights" / "x"
+    stolen.mkdir(parents=True)
+    (stolen / "adapter_config.json").write_text(json.dumps({"r": 8, "lora_alpha": 32}))
+    (imports / "symlinked").mkdir()
+    (imports / "symlinked" / "adapter_config.json").symlink_to(stolen / "adapter_config.json")
+    (imports / "hardlinked").mkdir()
+    (imports / "hardlinked" / "adapter_config.json").hardlink_to(stolen / "adapter_config.json")
     run_task = asyncio.create_task(service.run())
     try:
         model_id = await created_model(service)
@@ -1350,6 +1358,8 @@ async def test_file_imports_stay_under_the_import_root_and_load_weights_only(tmp
             (
                 (f"file://{imports}/../outside", "outside the import root"),
                 (f"file://{imports}/link", "outside the import root"),
+                (f"file://{imports}/symlinked", "reaches a tinker:// checkpoint"),
+                (f"file://{imports}/hardlinked", "reaches a tinker:// checkpoint"),
                 (f"file://{adapter}", "weights only"),
             ),
             start=2,
