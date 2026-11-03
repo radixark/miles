@@ -1,3 +1,10 @@
+from tests.ci.ci_register import register_cuda_ci
+
+# CPU-only checks, on this stage because only the GPU image ships torchtitan
+register_cuda_ci(
+    est_time=30, suite="stage-b-2-gpu-h200", labels=["torchtitan", "lora"], hardware=["hopper"], num_gpus=2
+)
+
 import socket
 from dataclasses import dataclass
 from types import SimpleNamespace
@@ -8,16 +15,14 @@ import torch
 import torch.distributed as dist
 import torch.distributed.checkpoint as dcp
 import torch.multiprocessing as mp
+from tests.fast.dist_utils import find_free_port, init_gloo
 
-pytest.importorskip("torchtitan")
-
-from miles.backends.torchtitan_utils import lora_checkpoint  # noqa: E402
-from miles.backends.torchtitan_utils.lora_checkpoint import (  # noqa: E402
+from miles.backends.torchtitan_utils import lora_checkpoint
+from miles.backends.torchtitan_utils.lora_checkpoint import (
     TorchtitanCheckpointLoader,
     TorchtitanLoraCheckpoint,
     TorchtitanOptimizerMembers,
 )
-from tests.fast.dist_utils import find_free_port, init_gloo  # noqa: E402
 
 _LORA_A, _LORA_B = "layers.0.attention.wq.lora_a.weight", "layers.0.attention.wq.lora_b.weight"
 
