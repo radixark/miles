@@ -160,10 +160,10 @@ _GATEWAY_LAYOUT_FLAGS = {
 }
 
 
-def validate_save_options(payload: dict) -> None:
-    if payload.get("ttl_seconds") is not None:
+def validate_save_options(ttl_seconds: int | None, user_metadata: dict | None) -> None:
+    if ttl_seconds is not None:
         raise UserInputError("ttl_seconds is not supported: checkpoints on this gateway do not expire")
-    if payload.get("user_metadata") is not None:
+    if user_metadata is not None:
         raise UserInputError("user_metadata is not supported by this gateway")
 
 

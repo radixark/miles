@@ -120,7 +120,7 @@ def _decode_command(op: str, payload: dict, decoded: dict) -> tuple[str, dict]:
         # model_dump fills every default so core and the executor can require every key
         return op, decoded | {"adam_params": request.optim_params.model_dump()}
     if op == "save_state":
-        validate_save_options(payload)
+        validate_save_options(request.ttl_seconds, request.user_metadata)
         return op, decoded | {"name": request.path, "overwrite": request.overwrite}
     if op == "load_state":
         if request.optimizer_config is not None:
@@ -133,7 +133,7 @@ def _decode_command(op: str, payload: dict, decoded: dict) -> tuple[str, dict]:
             "weights_access_token": request.weights_access_token,
         }
     if op == "save_weights_for_sampler":
-        validate_save_options(payload)
+        validate_save_options(request.ttl_seconds, request.user_metadata)
         return op, decoded | {"sampler_path": request.path}
     raise AssertionError(f"unhandled command op {op!r}")
 
