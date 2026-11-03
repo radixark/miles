@@ -206,12 +206,16 @@ class TorchtitanOptimizerMembers:
                 adam["step"].fill_(state.step)
 
 
+_TRAINING_STATE_KEYS = ("train_state.step", "train_state.ntokens_seen", "lr_scheduler.last_epoch")
+
+
 class TorchtitanCheckpointLoader:
     """A torchtitan DCP checkpoint (``step-N/`` of torchtitan v0.4.0, or of miles before the adapter format), read
     straight into this run's adapter parameters and AdamW state under any parallel layout.
 
     Only lora_a / lora_b, their ``optimizer.state.<fqn>.*``, ``train_state`` and ``lr_scheduler`` are read; the base
-    must match the run's HF files. The DCP records no alpha: the run's (``--lora-alpha``) is used.
+    must match the run's HF files. The DCP records no alpha: the run's (``--lora-alpha``) is used. A model-only DCP
+    leaves ``train_state`` None.
     """
 
     def __init__(
@@ -277,6 +281,8 @@ class TorchtitanCheckpointLoader:
                 assert (
                     tuple(metadata[key].size) == shape
                 ), f"{path}: {key} is {tuple(metadata[key].size)}, this run's is {shape} (another --lora-rank?)"
+            present = [key in metadata for key in _TRAINING_STATE_KEYS]
+            assert all(present) or not any(present), f"{path} holds part of {_TRAINING_STATE_KEYS}"
             if self._load_optimizer:
                 for key in params:
                     for name in ("exp_avg", "exp_avg_sq", "step"):
@@ -303,12 +309,19 @@ class TorchtitanCheckpointLoader:
         if self._load_optimizer:
             for key, state in zip(params, states, strict=True):
                 loaded |= {f"optimizer.state.{key}.{name}": state[name] for name in ("exp_avg", "exp_avg_sq", "step")}
-        # non-tensor entries: DCP replaces these placeholders with the saved values
-        loaded |= {"train_state.step": 0, "train_state.ntokens_seen": 0, "lr_scheduler.last_epoch": 0}
+        # torchtitan's default final checkpoint (last_save_model_only) holds the model alone: no training state
+        has_training_state = all(key in metadata for key in _TRAINING_STATE_KEYS)
+        if has_training_state:
+            # non-tensor entries: DCP replaces these placeholders with the saved values
+            loaded |= dict.fromkeys(_TRAINING_STATE_KEYS, 0)
         with torch.no_grad():
             dcp.load(loaded, checkpoint_id=path)
-        self.train_state = {"step": loaded["train_state.step"], "ntokens_seen": loaded["train_state.ntokens_seen"]}
-        self.lr_scheduler_state = {"last_epoch": loaded["lr_scheduler.last_epoch"]}
+        if has_training_state:
+            self.train_state = {
+                "step": loaded["train_state.step"],
+                "ntokens_seen": loaded["train_state.ntokens_seen"],
+            }
+            self.lr_scheduler_state = {"last_epoch": loaded["lr_scheduler.last_epoch"]}
         steps = [None] * dist.get_world_size()
         dist.all_gather_object(steps, {int(state["step"]) for state in states}, group=gloo_group())
         steps = set().union(*steps)
