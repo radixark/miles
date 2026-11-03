@@ -152,4 +152,5 @@ def _probe_export_fails(rank, world_size, port):
 
 
 def test_an_export_failure_on_one_rank_fails_every_rank():
+    """The fake export has no collectives; a rank failing inside one of Bridge's still hangs the others."""
     run_multiprocess(_probe_export_fails)
