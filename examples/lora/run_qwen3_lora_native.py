@@ -64,7 +64,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
     num_gpus_per_node: int = 8
     tensor_model_parallel_size: int = 2
-    # off: engines on half the node, the trainer on the other half (keeps DP a divisor of the batch)
+    # off: one engine on rollout_num_gpus_per_engine GPUs, the trainer on half the node (DP divides the batch)
     colocate: bool = True
 
     lr: float = 1e-5
@@ -162,7 +162,7 @@ def _train(args: ScriptArgs):
         placement_args = "--colocate "
     else:
         actor_num_gpus //= 2
-        placement_args = f"--rollout-num-gpus {args.num_gpus_per_node - actor_num_gpus} "
+        placement_args = f"--rollout-num-gpus {args.rollout_num_gpus_per_engine} "
 
     ckpt_args = (
         f"--hf-checkpoint {args.hf_checkpoint} --load {args.torch_dist} "
