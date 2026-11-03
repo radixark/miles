@@ -309,7 +309,9 @@ class TestSaveHfModelBridgeLoRA:
             experts_shared_outer_loras=False,
         )
 
-        save_hf_model(args, 0, [MagicMock()], publisher=MagicMock(), adapter_slots=slots, path=tmp_path, raise_on_error=True)
+        save_hf_model(
+            args, 0, [MagicMock()], publisher=MagicMock(), adapter_slots=slots, path=tmp_path, raise_on_error=True
+        )
 
         slots.slot_spec.assert_called_once_with(0)
         slots.parametrization.assert_called_once_with(
