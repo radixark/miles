@@ -1,13 +1,12 @@
 import asyncio
 import copy
 import logging
-import uuid
 from typing import Any
 
 from tqdm import tqdm
 
 from miles.rollout.base_types import stamp_kv_cache_namespace
-from miles.rollout.generate_utils.generate_endpoint_utils import router_routes_by_key
+from miles.rollout.generate_utils.generate_endpoint_utils import stamp_group_routing_key
 from miles.rollout.inference_rollout.inference_rollout_common import (
     GenerateState,
     compute_sampling_params,
@@ -84,17 +83,16 @@ async def eval_rollout_single_dataset(
     tasks = []
     # do multiple samples for eval prompts
     sample_index = 0
-    for _i, prompt_sample in enumerate(dataset.samples):
-        for j in range(dataset_cfg.n_samples_per_eval_prompt):
-            # use the same prompt for multiple samples
-            sample = copy.deepcopy(prompt_sample)
+    for prompt_sample in dataset.samples:
+        # use the same prompt for multiple samples
+        group = [copy.deepcopy(prompt_sample) for _ in range(dataset_cfg.n_samples_per_eval_prompt)]
+        stamp_group_routing_key(args, group)
+        for j, sample in enumerate(group):
             sample.index = sample_index
             sample_index += 1
             sample.metadata = dataset_cfg.inject_metadata(sample.metadata)
             sample.generate_function_path = x.path if (x := dataset_cfg.custom_generate_function_path) else None
             stamp_kv_cache_namespace(sample, namespace=kv_cache_namespace)
-            if router_routes_by_key(args):
-                sample.routing_key = str(uuid.uuid4())
             sampling_params = base_sampling_params
             if args.sglang.common_value("enable_deterministic_inference"):
                 sampling_params = base_sampling_params.copy()

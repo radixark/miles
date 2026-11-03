@@ -1,4 +1,5 @@
 import pytest
+from tests.fast.fixtures.args_fixtures import sglang_router_args
 from tests.fast.rollout.inference_rollout.conftest import make_eval_args, make_eval_prompt_dataset_cache, make_state
 from tests.fast.rollout.test_sglang_rollout import _make_generate_args
 
@@ -53,3 +54,43 @@ class TestEvalDatasetHook:
         assert result[dataset.name]["rewards"] == [1.0, 1.0]
         assert [sample.index for sample in result[dataset.name]["samples"]] == [0, 1]
         assert next(iter(cache.values())).samples[0].generate_function_path is None
+
+
+class TestEvalGroupRoutingKey:
+    @pytest.mark.parametrize("legacy", [False, True])
+    async def test_the_samples_of_an_eval_prompt_share_one_routing_key(
+        self, monkeypatch: pytest.MonkeyPatch, legacy: bool
+    ) -> None:
+        """Both evaluation engines key the n samples of a prompt together, so a key-routed fleet prefills it once."""
+        captured: list[Sample] = []
+
+        async def generate(input: GenerateFnInput) -> GenerateFnOutput:
+            captured.append(input.sample)
+            input.sample.response = "answer"
+            input.sample.status = Sample.Status.COMPLETED
+            input.sample.reward = 1.0
+            return GenerateFnOutput(samples=input.sample)
+
+        args = _make_generate_args()
+        vars(args).update(make_eval_args() | sglang_router_args("manual"))
+        args.sglang.base_args["dp_size"] = 1
+        args.inference_runtime_mut_state = InferenceRuntimeMutState(engine_count=1, gpu_count=1)
+        [dataset] = args.eval_datasets
+        dataset.custom_generate_function_path = CustomFunctionConfig(path="test-group-key-generator")
+        cache = make_eval_prompt_dataset_cache(args)
+        state = make_state(generate, args=args)
+        monkeypatch.setattr(sglang_rollout.SingletonMeta, "_instances", {})
+        monkeypatch.setattr(sglang_rollout, "load_tokenizer", lambda *args, **kwargs: object())
+        monkeypatch.setattr(sglang_rollout, "load_processor", lambda *args, **kwargs: None)
+        monkeypatch.setattr(sglang_rollout, "EVAL_PROMPT_DATASET", cache)
+
+        with function_registry.temporary("test-group-key-generator", generate):
+            if legacy:
+                await sglang_rollout.eval_rollout_single_dataset(args, 0, dataset)
+            else:
+                await eval_rollout_single_dataset(state, dataset, cache)
+
+        assert len(captured) == 2
+        keys = {sample.routing_key for sample in captured}
+        assert len(keys) == 1 and None not in keys
+        assert next(iter(cache.values())).samples[0].routing_key is None

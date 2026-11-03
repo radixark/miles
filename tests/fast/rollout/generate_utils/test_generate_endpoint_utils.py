@@ -1,10 +1,12 @@
 from types import SimpleNamespace
 
 import pytest
+from tests.fast.fixtures.args_fixtures import sglang_router_args
 
 from miles.rollout.generate_utils import generate_endpoint_utils
-from miles.rollout.generate_utils.generate_endpoint_utils import compute_request_payload
+from miles.rollout.generate_utils.generate_endpoint_utils import compute_request_payload, stamp_group_routing_key
 from miles.utils.output_store.plan import OUTPUT_STORE_REQUEST_KEY, StorePlanError
+from miles.utils.types import Sample
 
 
 def _make_args() -> SimpleNamespace:
@@ -72,3 +74,47 @@ class TestComputeRequestPayloadOutputStore:
                 sampling_params={},
                 multimodal_inputs={"images": [object()]},
             )
+
+
+def _make_router_args(policy: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        **sglang_router_args(policy), sglang=SimpleNamespace(models=[SimpleNamespace(has_pd_disaggregation=False)])
+    )
+
+
+class TestStampGroupRoutingKey:
+    def test_a_key_routed_group_shares_one_key(self):
+        """The samples of one prompt land on one engine, so the prompt is prefilled once for the group."""
+        group = [Sample(prompt="p") for _ in range(3)]
+
+        stamp_group_routing_key(_make_router_args("manual"), group)
+
+        keys = {sample.routing_key for sample in group}
+        assert len(keys) == 1 and None not in keys
+
+    def test_each_group_gets_its_own_key(self):
+        """Different prompts stay free to spread across engines."""
+        first, second = [Sample(prompt="p")], [Sample(prompt="q")]
+        args = _make_router_args("consistent_hashing")
+
+        stamp_group_routing_key(args, first)
+        stamp_group_routing_key(args, second)
+
+        assert first[0].routing_key != second[0].routing_key
+
+    def test_a_sample_that_already_carries_a_key_keeps_it(self):
+        """A re-sampled or derived sample keeps the engine it is bound to; only keyless siblings join the new key."""
+        kept, fresh = Sample(prompt="p", routing_key="bound"), Sample(prompt="p")
+
+        stamp_group_routing_key(_make_router_args("manual"), [kept, fresh])
+
+        assert kept.routing_key == "bound"
+        assert fresh.routing_key not in (None, "bound")
+
+    def test_a_router_that_ignores_keys_leaves_the_samples_unkeyed(self):
+        """Under a load or cache policy no request carries a routing header."""
+        group = [Sample(prompt="p") for _ in range(2)]
+
+        stamp_group_routing_key(_make_router_args("round_robin"), group)
+
+        assert [sample.routing_key for sample in group] == [None, None]

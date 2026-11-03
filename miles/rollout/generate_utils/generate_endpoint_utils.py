@@ -2,6 +2,7 @@
 Utils to integrate SGLang's `/generate` endpoint with RL things like Sample.
 """
 
+import uuid
 from copy import deepcopy
 from typing import Any
 
@@ -80,6 +81,21 @@ def apply_sample_max_response_len(sampling_params: dict[str, Any], sample: Sampl
             "the run's max_new_tokens"
         )
     return {**sampling_params, "max_new_tokens": limit}
+
+
+def stamp_group_routing_key(args, group: list[Sample]) -> None:
+    """Give the samples of one prompt group a shared routing key.
+
+    Key-routing policies then place the group on one engine, where the prompt is
+    prefilled once and cached for its siblings. Samples that already carry a key
+    keep it, so re-sampled and derived samples keep their affinity.
+    """
+    if not router_routes_by_key(args):
+        return
+    key = str(uuid.uuid4())
+    for sample in group:
+        if sample.routing_key is None:
+            sample.routing_key = key
 
 
 def compute_request_payload(
