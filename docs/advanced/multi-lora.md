@@ -106,6 +106,7 @@ support that SGLang can serve LoRA for, within the constraints below. Models wit
 
 The trainer rejects a multi-LoRA launch that breaks any of these constraints:
 
+- `--megatron-to-hf-mode bridge`: the adapter slots are Megatron-Bridge adapters.
 - Separate training and sampling GPUs: no `--colocate` and no `--offload-train`,
   because each adapter's gradients stay in GPU buffers between calls.
 - `--pipeline-model-parallel-size 1` and `--qkv-format thd`.
