@@ -1,6 +1,7 @@
 """Tinker SDK endpoints with JSON/protobuf translation and tenant authentication."""
 
 import asyncio
+import json
 from contextlib import suppress
 
 from fastapi import FastAPI, Request
@@ -15,6 +16,7 @@ from miles.tinker.server.encoding import (
     render_result,
     validate_create_model,
     validate_create_sampling_session,
+    validate_sdk_version,
 )
 from miles.tinker.server.proto_codec import (
     PROTO_CONTENT_TYPE,
@@ -60,8 +62,12 @@ def build_app(service: TinkerService) -> FastAPI:
         return {"status": "ok"}
 
     @app.post("/api/v1/client/config")
-    @app.get("/api/v1/client/config")
-    async def client_config():
+    async def client_config(request: Request):
+        try:
+            payload = await request.json()
+        except json.JSONDecodeError:
+            raise UserInputError("client/config needs a JSON body carrying sdk_version") from None
+        validate_sdk_version(payload)
         return {}
 
     @app.post("/api/v1/client/dynamic_config")

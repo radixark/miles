@@ -26,10 +26,10 @@ training. Tinker accepts only these group names and rejects `--exclude-modules`.
 
 ## Run
 
-The gateway implements the `tinker==0.26.2` wire schema (newer SDKs renamed protobuf fields); install that exact version on the serving node and the client:
+The gateway validates requests with the `tinker==0.36.0` request models and rejects clients on any other SDK version, patch releases included; install that exact version on the serving node and the client (`tinker-cookbook` only requires `tinker>=0.35`, so pin the SDK explicitly):
 
 ```bash
-pip install "tinker==0.26.2"
+pip install "tinker==0.36.0"
 ```
 
 Start the gateway:

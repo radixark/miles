@@ -14,6 +14,7 @@ from miles.tinker.core.service import TinkerService
 from miles.tinker.core.types import GatewayConfig
 from miles.tinker.runtime import MilesBackend
 from miles.tinker.server.app import build_app
+from miles.tinker.server.encoding import assert_installed_sdk_version
 from miles.utils.args.trainer_utils import compute_trainer_ckpt_load_config
 from miles.utils.arguments import parse_args
 from miles.utils.async_utils import Disposer, with_disposer
@@ -25,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 
 async def serve(args, *, disposer: Disposer):
+    assert_installed_sdk_version()
     assert args.multi_lora, "serve_tinker requires --multi-lora-n-adapters > 0"
     validate_tinker_args(args)
     trainer_configs = compute_trainer_configs(args)

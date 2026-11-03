@@ -9,6 +9,7 @@ from tests.fast.fixtures.serve_tinker_fakes import tinker_startup
 from miles.tinker.runtime import MilesBackend
 from miles.utils import http_utils
 from miles.utils.async_utils import with_disposer
+from tinker import types as tinker_types
 
 _ = tinker_startup
 
@@ -30,7 +31,7 @@ class TestServe:
             payload={
                 "prompt_tokens": [1, 2],
                 "num_samples": 1,
-                "sampling_params": {"max_tokens": 1},
+                "sampling_params": tinker_types.SamplingParams(max_tokens=1).model_dump(),
                 "prompt_logprobs": False,
                 "topk_prompt_logprobs": 0,
             },
