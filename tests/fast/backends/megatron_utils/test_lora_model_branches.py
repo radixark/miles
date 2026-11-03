@@ -7,6 +7,8 @@ route to LoRA-specific code paths depending on configuration — without GPU.
 from argparse import Namespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from tests.fast.fixtures.args_fixtures import make_trainer_args, make_trainer_config
 
 # ---------------------------------------------------------------------------
@@ -192,9 +194,18 @@ class TestSaveLoRaBranch:
         from miles.backends.megatron_utils.model import save
 
         model = [MagicMock()]
-        save(make_trainer_args(), 42, model, MagicMock(), MagicMock())
+        slots = MagicMock()
+        save(make_trainer_args(), 42, model, MagicMock(), MagicMock(), adapter_slots=slots)
 
-        mock_save_lora.assert_called_once()
+        assert mock_save_lora.call_args.args[3] is slots
+
+    @patch(f"{_MODEL_MODULE}.should_disable_forward_pre_hook", return_value=False)
+    @patch(f"{_MODEL_MODULE}.is_lora_model", return_value=True)
+    def test_lora_save_without_adapter_slots_fails(self, mock_is_lora, mock_should):
+        from miles.backends.megatron_utils.model import save
+
+        with pytest.raises(AssertionError, match="needs the model's adapter slots"):
+            save(make_trainer_args(), 42, [MagicMock()], MagicMock(), MagicMock())
 
     @patch(f"{_MODEL_MODULE}.save_model_hashes")
     @patch(f"{_MODEL_MODULE}.enable_forward_pre_hook")
