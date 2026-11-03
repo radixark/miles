@@ -9,10 +9,19 @@ int ceil_div(int a, int b) {
 }
 
 __device__ __forceinline__
+float warpShuffleXor(float val, int mask) {
+#if defined(__HIP_PLATFORM_AMD__)
+    return __shfl_xor(val, mask, 32);
+#else
+    return __shfl_xor_sync(FINAL_MASK, val, mask, 32);
+#endif
+}
+
+__device__ __forceinline__
 float warpReduceMax(float val) {
 #pragma unroll
     for (int mask = 16; mask > 0; mask >>= 1)
-        val = fmaxf(val, __shfl_xor_sync(FINAL_MASK, val, mask, 32));
+        val = fmaxf(val, warpShuffleXor(val, mask));
     return val;
 }
 
@@ -21,7 +30,7 @@ __device__ __forceinline__
 float warpReduceMin(float val) {
 #pragma unroll
     for (int mask = 16; mask > 0; mask >>= 1)
-        val = fminf(val, __shfl_xor_sync(FINAL_MASK, val, mask, 32));
+        val = fminf(val, warpShuffleXor(val, mask));
     return val;
 }
 
@@ -345,7 +354,11 @@ fake_int4_quant_cuda(
         at::ScalarType::BFloat16,
         x.scalar_type(), "int4_quant_cuda", [&] {
         launch_int4_quant_kernel<scalar_t>(
+#if defined(__HIP_PLATFORM_AMD__)
+            x.data_ptr<scalar_t>(),
+#else
             x.const_data_ptr<scalar_t>(),
+#endif
             out.data_ptr<scalar_t>(),
             out_scale.data_ptr<scalar_t>(),
             out_zero.data_ptr<scalar_t>(),

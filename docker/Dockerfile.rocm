@@ -235,6 +235,8 @@ RUN git clone https://github.com/radixark/miles.git /root/miles && \
     git checkout ${MILES_COMMIT} && \
     pip install -e . --no-deps
 
+RUN pip install /root/miles/miles/kernels/quant/int4_fake --no-build-isolation --no-deps
+
 RUN python -c "import miles.backends.fsdp_utils.actor; import miles.backends.fsdp_utils.arguments; import miles.backends.megatron_utils; print('miles backends: OK')"
 
 # ====================================== Install sgl-model-gateway ============================================
