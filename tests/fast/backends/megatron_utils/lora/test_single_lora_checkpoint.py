@@ -64,7 +64,7 @@ def _restore(path, *, convert_save=None):
             save_and_commit_adapter_dir=DEFAULT,
         ) as mocks,
     ):
-        iteration = restore_single_lora([], args, optimizer=MagicMock(), opt_param_scheduler=scheduler)
+        iteration, _ = restore_single_lora([], args, optimizer=MagicMock(), opt_param_scheduler=scheduler)
     return iteration, scheduler, mocks
 
 

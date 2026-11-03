@@ -45,9 +45,6 @@ def validate_lora_args(args):
     args.lora_alpha = _resolve_lora_alpha(args)
     if args.lora_adapter_convert_save is not None:
         assert args.lora_adapter_path is not None, "--lora-adapter-convert-save converts --lora-adapter-path"
-        assert (
-            args.train_backend == "megatron" and not args.multi_lora
-        ), "--lora-adapter-convert-save is implemented only for single LoRA on --train-backend megatron"
     if engine_loads_adapter_from_disk(args):
         _validate_rollout_only_adapter(args)
     assert args.train_backend in (

@@ -15,7 +15,6 @@ from miles.utils.lora.arguments import (
     _resolve_lora_targets,
     _validate_adapter_state_args,
     _validate_rollout_only_adapter,
-    validate_lora_args,
     validate_multi_lora_args,
 )
 
@@ -119,22 +118,6 @@ def test_a_non_adam_optimizer_cannot_store_adapter_optimizer_state(overrides) ->
 @pytest.mark.parametrize("overrides", [{}, {"lora_adapter_path": "/adapter", "no_load_optim": True}])
 def test_a_non_adam_optimizer_saves_and_loads_the_masters_alone(overrides) -> None:
     _validate_adapter_state_args(_adapter_state_args(no_save_optim=True, **overrides))
-
-
-@pytest.mark.parametrize("train_backend, megatron_to_hf_mode", [("torchtitan", "bridge")], ids=["torchtitan"])
-def test_convert_save_is_refused_outside_megatron_single_lora(tmp_path, train_backend, megatron_to_hf_mode):
-    args = Namespace(
-        lora_type="lora",
-        multi_lora_n_adapters=0,
-        lora_rank=8,
-        lora_alpha=16.0,
-        lora_adapter_path=str(tmp_path),
-        lora_adapter_convert_save=str(tmp_path / "converted"),
-        train_backend=train_backend,
-        megatron_to_hf_mode=megatron_to_hf_mode,
-    )
-    with pytest.raises(AssertionError, match="--lora-adapter-convert-save is implemented only"):
-        validate_lora_args(args)
 
 
 def test_multi_lora_refuses_an_adapter_path():
