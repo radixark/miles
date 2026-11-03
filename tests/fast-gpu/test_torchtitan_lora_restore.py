@@ -166,14 +166,14 @@ def _restore(tmp_path, *, dcp_step=None, training_state=None, **flags):
     return SimpleNamespace(iteration=iteration, step=trainer.step, lr_states=lr_states, save=save)
 
 
-@pytest.mark.parametrize("step", [6, 11 * _STEPS_PER_ROLLOUT])
+@pytest.mark.parametrize("step", [6, 11 * _STEPS_PER_ROLLOUT + 1])
 def test_a_dcp_off_this_runs_rollout_grid_is_refused(tmp_path, step):
     """A standalone torchtitan run's step count says nothing about this run's rollouts."""
     with pytest.raises(AssertionError, match=f"at step {step}, not a whole rollout"):
         _restore(tmp_path, dcp_step=step)
 
 
-@pytest.mark.parametrize("step", [6, 11 * _STEPS_PER_ROLLOUT])
+@pytest.mark.parametrize("step", [6, 11 * _STEPS_PER_ROLLOUT + 1])
 def test_a_dcp_off_this_runs_rollout_grid_loads_its_weights_and_starts_fresh(tmp_path, step):
     restored = _restore(tmp_path, dcp_step=step, no_load_optim=True, lora_adapter_convert_save=str(tmp_path / "out"))
     assert (restored.iteration, restored.step, restored.lr_states) == (None, 0, [])
@@ -250,6 +250,15 @@ def test_a_convert_save_of_a_model_only_source_writes_no_training_state(tmp_path
     """As Megatron's convert-save: a step and schedule the source never had would resume as if real."""
     restored = _restore(tmp_path, lora_adapter_convert_save=str(tmp_path / "out"))
     assert restored.save.call_args.kwargs["training_state"] is None
+
+
+def test_a_convert_save_at_num_rollout_zero_keeps_a_dcps_training_state(tmp_path):
+    """The documented convert run passes --num-rollout 0; a DCP past it is still on the rollout grid."""
+    restored = _restore(
+        tmp_path, dcp_step=2 * _STEPS_PER_ROLLOUT, num_rollout=0, lora_adapter_convert_save=str(tmp_path / "out")
+    )
+    assert restored.save.call_args.kwargs["training_state"]["step"] == 8
+    assert restored.save.call_args.args[2]._save_moments
 
 
 def test_a_convert_save_of_a_dcp_records_its_rollout(tmp_path):
