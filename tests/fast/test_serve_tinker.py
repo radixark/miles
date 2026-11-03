@@ -94,7 +94,6 @@ class TestServe:
         assert not tinker_startup.controller.initialized
         assert tinker_startup.trainer.request is None
 
-
     async def test_a_second_gateway_on_the_root_fails_before_startup(
         self, tinker_startup: SimpleNamespace, tmp_path
     ) -> None:
@@ -109,6 +108,7 @@ class TestServe:
         assert not tinker_startup.orchestration_calls
         assert not tinker_startup.controller.initialized
         assert tinker_startup.trainer.request is None
+
 
 class TestTrainerTokenBudget:
     @pytest.mark.parametrize(
