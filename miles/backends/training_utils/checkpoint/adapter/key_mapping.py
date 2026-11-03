@@ -167,7 +167,8 @@ def map_named_tensors_to_hf_keys(
         if components is None:
             weights[hf_key.key] = value
         elif factor == "lora_A":
-            weights[f"{components[0]}.lora_A"] = value
+            # under the sorted first component, where a shared-A group keeps its A
+            weights[f"{min(components)}.lora_A"] = value
             fused_groups.append(components)
         else:
             for component, part in zip(components, split_fused_lora_b(module, value, targets), strict=True):

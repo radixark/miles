@@ -5,6 +5,7 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
 import torch
 from safetensors.torch import load_file
 
@@ -13,6 +14,14 @@ from miles.backends.training_utils.checkpoint.adapter.parametrization import Ada
 from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
 
 EXPERTS = tuple(f"model.layers.0.mlp.experts.{p}" for p in ("gate_proj", "up_proj", "down_proj"))
+
+
+def _load_tool():
+    tool_path = Path(__file__).parents[6] / "tools" / "convert_lora_adapter_to_peft.py"
+    spec = importlib.util.spec_from_file_location("convert", tool_path)
+    tool = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(tool)
+    return tool
 
 
 def test_sampler_export_converts_to_per_expert_peft(tmp_path, monkeypatch):
@@ -34,10 +43,7 @@ def test_sampler_export_converts_to_per_expert_peft(tmp_path, monkeypatch):
             }
         )
     )
-    tool_path = Path(__file__).parents[6] / "tools" / "convert_lora_adapter_to_peft.py"
-    spec = importlib.util.spec_from_file_location("convert", tool_path)
-    tool = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(tool)
+    tool = _load_tool()
     monkeypatch.setattr(
         sys, "argv", ["convert", str(tmp_path / "src"), str(tmp_path / "dst"), "--hf-config", str(config)]
     )
@@ -47,3 +53,12 @@ def test_sampler_export_converts_to_per_expert_peft(tmp_path, monkeypatch):
         out["model.layers.0.mlp.experts.2.down_proj.lora_B.weight"], weights[f"{EXPERTS[2]}.lora_B"][2].bfloat16()
     )
     assert len(out) == 3 * 2 * 3
+
+
+@pytest.mark.parametrize("dst", ["src", "existing"])
+def test_an_existing_dst_is_refused(tmp_path, monkeypatch, dst):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "existing").mkdir()
+    monkeypatch.setattr(sys, "argv", ["convert", str(tmp_path / "src"), str(tmp_path / dst), "--hf-config", "unused"])
+    with pytest.raises(AssertionError, match="exists"):
+        _load_tool().main()
