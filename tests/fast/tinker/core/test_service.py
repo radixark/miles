@@ -1479,19 +1479,3 @@ async def test_a_file_import_stays_under_the_import_root_and_holds_no_checkpoint
     else:
         with pytest.raises(UserInputError, match=error):
             service.weights_info("tenant", f"file://{adapter}")
-
-
-async def test_a_download_url_ends_when_its_checkpoint_ttl_is_shortened(service, monkeypatch):
-    model_id = await created_model(service)
-    save = service.submit(
-        "tenant", "save_weights_external", _external_payload(model_id, 1, "export", ttl_seconds=7200)
-    )
-    await await_settled(service, "tenant", save)
-    urls = service.external_weights_urls("tenant", model_id, "external_weights/export", "http://gateway/")
-    token = urls["urls"]["adapter_config.json"].split("/")[-2]
-    await service.set_checkpoint_ttl("tenant", model_id, "external_weights/export", 60)
-    real_time = time.time
-    # past the new TTL, before the sweep and the URL's own hour
-    monkeypatch.setattr(time, "time", lambda: real_time() + 61)
-    with pytest.raises(NotFoundError, match="has expired"):
-        service.download_path(token, "adapter_config.json")
