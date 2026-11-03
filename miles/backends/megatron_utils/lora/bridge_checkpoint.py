@@ -136,7 +136,8 @@ def probe_bridge_row_mapping(
                 except Exception as exc:
                     error = exc
     except Exception as exc:
-        # the export's own failure goes through the rank agreement too, so the other ranks fail instead of waiting
+        # an export failure outside Bridge's collectives goes through the rank agreement, so the other ranks fail
+        # instead of waiting; a rank failing mid-collective still leaves the others hanging in Bridge's NCCL
         error = exc
     finally:
         for param, data in zip(params, saved, strict=True):
