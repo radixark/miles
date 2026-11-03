@@ -193,7 +193,7 @@ def delete_adapter_dir(root: Path, name: str, *, tenant: str | None) -> None:
 
 
 def delete_unreferenced_adapter_dirs(root: Path, name: str | None = None, *, keep: str | None = None) -> None:
-    """Remove physical directories no link in ``root`` points to, retired directories and dangling links.
+    """Remove physical directories no link in ``root`` points to, retired directories and dangling links to them.
 
     Referenced-ness is decided by the links, not by name prefixes, so recovering ``foo`` never touches ``foo.bar``.
     """
@@ -220,7 +220,8 @@ def delete_unreferenced_adapter_dirs(root: Path, name: str | None = None, *, kee
                 entry.unlink()
         elif _link_target(entry).exists():
             referenced.add(_link_target(entry).name)
-        elif name is None or entry.name == name:
+        elif (name is None or entry.name == name) and _is_library_dir(root, entry.name, _link_target(entry)):
+            # a dangling foreign link (e.g. to an unmounted share) is the user's, like a live one
             entry.unlink()
     for entry in root.iterdir():
         internal = _INTERNAL_ENTRY.match(entry.name)

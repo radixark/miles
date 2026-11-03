@@ -72,13 +72,25 @@ def test_recovery_of_one_name_does_not_touch_a_dotted_neighbour(tmp_path):
     kept = _save(tmp_path, "foo.bar", "neighbour")
     with write_adapter_dir(tmp_path, "foo") as orphan:
         pass
-    (tmp_path / "dangling").symlink_to(".gone.0011223344556677")
+    (tmp_path / "dangling").symlink_to(".dangling.0011223344556677")
     delete_unreferenced_adapter_dirs(tmp_path, "foo")
     assert not orphan.path.exists()
     assert kept.path.exists() and resolve_adapter_dir(tmp_path, "foo.bar", tenant=None) == kept
     assert (tmp_path / "dangling").is_symlink(), "recovery scoped to 'foo' must leave other names alone"
     delete_unreferenced_adapter_dirs(tmp_path)
     assert not (tmp_path / "dangling").is_symlink()
+
+
+def test_recovery_keeps_a_dangling_foreign_link(tmp_path):
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "y").symlink_to(tmp_path / "unmounted" / "adapter")
+    (root / "z").symlink_to(".other.0011223344556677")
+    delete_unreferenced_adapter_dirs(root)
+    assert sorted(p.name for p in root.iterdir()) == ["y", "z"]
+    with pytest.raises(FileExistsError):
+        _save(root, "y", "new", overwrite=False)
+    assert os.readlink(root / "y") == str(tmp_path / "unmounted" / "adapter")
 
 
 def test_user_names_cannot_start_with_a_dot(tmp_path):
