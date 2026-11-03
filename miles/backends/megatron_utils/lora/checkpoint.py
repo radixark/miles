@@ -21,19 +21,15 @@ from megatron.core.utils import get_pg_size, unwrap_model
 
 from miles.backends.megatron_utils.lora.bridge_checkpoint import BridgeAdapterSlots
 from miles.backends.megatron_utils.lora.optimizer import SlotOptimizer
-from miles.backends.training_utils.checkpoint.adapter.adapter_dir import load_adapter_dir, save_adapter_dir
+from miles.backends.training_utils.checkpoint.adapter.adapter_dir import (
+    check_adapter_source,
+    load_adapter_dir,
+    save_adapter_dir,
+)
 from miles.backends.training_utils.checkpoint.adapter.adapter_state import AdapterState, gloo_group
 from miles.backends.training_utils.checkpoint.adapter.commit import UncommittedAdapterDir
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
-from miles.backends.training_utils.checkpoint.adapter.parametrization_conversion import (
-    assert_parametrization_matches_run,
-    plan_parametrization_conversion,
-)
-from miles.backends.training_utils.checkpoint.adapter.readers import (
-    AdapterSourceKind,
-    MilesAdapterDirReader,
-    classify_adapter_source,
-)
+from miles.backends.training_utils.checkpoint.adapter.readers import AdapterSourceKind
 
 _WEIGHTS_KEY = "adapter_weights"
 _OPTIM_KEY = "adapter_optimizer"
@@ -175,7 +171,7 @@ def find_load_mismatch(
     path = Path(path)
     mismatch = None
     try:
-        kind = classify_adapter_source(path, targets, load_optimizer=load_optimizer)
+        kind = check_adapter_source(path, run, targets, load_optimizer=load_optimizer)
         if kind == AdapterSourceKind.LEGACY_TINKER_CHECKPOINT:
             _read_legacy_meta(path, run)
             if load_optimizer:
@@ -206,17 +202,8 @@ def find_load_mismatch(
                     f"(differing keys e.g. {sorted(expected ^ saved)[:3]}); "
                     "load it on a gateway with the layout it was saved with"
                 )
-        elif kind == AdapterSourceKind.ADAPTER_DIR:
-            source = MilesAdapterDirReader(path, targets).source
-            steps = plan_parametrization_conversion(source.parametrization, run, source_dtype=source.weight_dtype)
-            assert_parametrization_matches_run(
-                source.parametrization,
-                run,
-                steps,
-                load_optimizer=load_optimizer,
-                has_optimizer_state=source.has_optimizer_state,
-            )
-    except (AssertionError, ValueError) as error:
+    # any failure to read the user's source is theirs; raised after the slot reset, it kills the trainer cell
+    except Exception as error:
         mismatch = f"{path} cannot load into this model: {error}"
     gathered = [None] * dist.get_world_size()
     dist.all_gather_object(gathered, mismatch, group=gloo_group())
