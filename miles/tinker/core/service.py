@@ -565,7 +565,8 @@ class TinkerService:
         """An adapter from under --tinker-import-root; it has no Adam state this gateway could resume."""
         if payload["optimizer"]:
             raise UserInputError(f"{payload['path']} loads weights only; load it without optimizer state")
-        path, source = self._read_imported_adapter(payload["path"])
+        # the import walk must not block the event loop
+        path, source = await asyncio.to_thread(self._read_imported_adapter, payload["path"])
         if source["lora_alpha"] is None:
             raise UserInputError(f"{payload['path']} records no LoRA alpha, which a Tinker adapter must carry")
         if source["lora_rank"] != record.lora_rank:

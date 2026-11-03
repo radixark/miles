@@ -1489,6 +1489,20 @@ async def test_file_imports_stay_under_the_import_root_and_load_weights_only(tmp
             await run_task
 
 
+async def test_a_file_import_load_reads_the_import_off_the_event_loop(service, monkeypatch):
+    model_id = await created_model(service)
+    threads = []
+
+    def read_imported_adapter(uri):
+        threads.append(threading.current_thread())
+        return "/imports/adapter", {"lora_rank": service.models[model_id].lora_rank, "lora_alpha": 32}
+
+    monkeypatch.setattr(service, "_read_imported_adapter", read_imported_adapter)
+    payload = {"model_id": model_id, "seq_id": 1, "path": "file:///imports/adapter", "optimizer": False}
+    assert (await await_settled(service, "tenant", service.submit("tenant", "load_state", payload))).state == DONE
+    assert threads and threads[0] is not threading.main_thread()
+
+
 async def test_weights_info_rejects_a_sampler_link_whose_target_is_gone(service):
     model_id = await created_model(service)
     save = service.submit(
