@@ -51,15 +51,11 @@ def validate_lora_args(args):
     hf_config = load_hf_config(args.hf_checkpoint)
     args.hf_lora_targets = _resolve_lora_targets(args, hf_config)
     args.lora_adapter_targets = list(args.hf_lora_targets)
+    if args.train_backend == "megatron":
+        _assert_adapter_layout_defined(args, hf_config)
     if args.train_backend == "megatron" and args.megatron_to_hf_mode == "bridge":
         from miles.backends.megatron_utils.lora.target_modules import check_fused_lora_selection
 
-        # the actor builds the adapter slots whenever it publishes snapshots (--save-hf, eval snapshots, --save)
-        publishes_snapshots = args.save_hf is not None or args.eval_hf_dir is not None or args.save is not None
-        assert not publishes_snapshots or has_hf_lora_targets(hf_config.to_dict()), (
-            f"Bridge LoRA snapshots and checkpoints need the HF LoRA target layout of model_type="
-            f"{hf_config.model_type!r}, which miles does not define"
-        )
         canonical = args.lora_type == "canonical_lora"
         check_fused_lora_selection(args.hf_checkpoint, args.hf_lora_targets, canonical=canonical)
         if canonical:
@@ -84,6 +80,22 @@ def validate_lora_args(args):
             "MoE-expert LoRA layout: %s (--experts-shared-outer-loras).",
             "shared-outer" if args.experts_shared_outer_loras else "per-expert",
         )
+
+
+def _assert_adapter_layout_defined(args, hf_config) -> None:
+    """Megatron builds the adapter slots, which need the family's HF LoRA target layout, to publish snapshots
+    (--save-hf, eval snapshots, --save) and to restore --lora-adapter-path; runs without them train any family."""
+    builds_slots = (
+        args.save_hf is not None
+        or args.eval_hf_dir is not None
+        or args.save is not None
+        or args.lora_adapter_path is not None
+    )
+    assert not builds_slots or has_hf_lora_targets(hf_config.to_dict()), (
+        f"LoRA --save, --save-hf, eval snapshots and --lora-adapter-path need the HF LoRA target layout of "
+        f"model_type={hf_config.model_type!r}, which miles does not define (miles/utils/lora/hf_lora_targets.py); "
+        "run without them or define the layout"
+    )
 
 
 def _resolve_lora_alpha(args) -> float:

@@ -2,9 +2,10 @@ import subprocess
 import sys
 from argparse import Namespace
 
-from transformers import LlamaConfig
+import pytest
+from transformers import AutoConfig, LlamaConfig
 
-from miles.utils.lora.arguments import _resolve_lora_targets
+from miles.utils.lora.arguments import _assert_adapter_layout_defined, _resolve_lora_targets
 
 
 class TestLoraTargetOrdering:
@@ -51,3 +52,22 @@ def test_lora_arguments_import_no_megatron_to_hf():
     """megatron_to_hf loads every converter and SGLang's quantization kernels, which probe the GPU on ROCm (#4201)."""
     code = "import sys, miles.utils.lora.arguments; sys.exit('miles.backends.megatron_utils.megatron_to_hf' in sys.modules)"
     assert subprocess.run([sys.executable, "-c", code]).returncode == 0
+
+
+_NO_SNAPSHOTS = dict(save_hf=None, eval_hf_dir=None, save=None, lora_adapter_path=None)
+
+
+@pytest.mark.parametrize(
+    "flag, value",
+    [("save", "/ckpt"), ("save_hf", "/hf/{rollout_id}"), ("eval_hf_dir", "/eval"), ("lora_adapter_path", "/adapter")],
+)
+def test_adapter_slots_need_the_families_hf_lora_layout(flag, value) -> None:
+    """Native trains glm4, which has no HF LoRA layout; saving or loading its adapter would crash building the slots."""
+    args = Namespace(**(_NO_SNAPSHOTS | {flag: value}))
+    with pytest.raises(AssertionError, match="model_type='glm4', which miles does not define"):
+        _assert_adapter_layout_defined(args, AutoConfig.for_model("glm4"))
+    _assert_adapter_layout_defined(args, AutoConfig.for_model("qwen3"))
+
+
+def test_a_run_without_adapter_snapshots_trains_any_family() -> None:
+    _assert_adapter_layout_defined(Namespace(**_NO_SNAPSHOTS), AutoConfig.for_model("glm4"))
