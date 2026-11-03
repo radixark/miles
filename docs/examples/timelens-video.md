@@ -38,6 +38,26 @@ parameter names), and trains 300 steps of 16 prompts x 8 samples on 8 GPUs, eval
 The trainer and the engines share the GPUs and offload in turn. The vision tower is frozen, and every weight sync
 re-sends it from the checkpoint, so the engines get it back after each offload.
 
+## Results
+
+Qwen3.5-9B, 300 steps on 8 H200 (TP4), scored every 10 steps on 600 held-out Charades-STA items (none of the
+training videos come from Charades): tIoU 0.48 at step 0, 0.56-0.57 from step 150 on, best 0.573. The train vs
+rollout logprob gap stays around 0.006 for the whole run.
+
+![eval/charades](https://raw.githubusercontent.com/radixark/miles/main/examples/timelens_video/timelens_qwen35_9b_eval.png)
+
+![rollout/raw_reward](https://raw.githubusercontent.com/radixark/miles/main/examples/timelens_video/timelens_qwen35_9b_reward.png)
+
+Three held-out Charades items, answered by the model at step 0 and at step 299. Each strip shows eight frames of the
+video and, below them, the ground-truth span (green), the step-0 prediction (gray) and the step-299 prediction (blue).
+Over the 600 items, 180 improve by more than 0.2 tIoU and 68 get worse by more than 0.2.
+
+![A person is looking in the mirror: tIoU 0.00 at step 0, 1.00 at step 299](https://raw.githubusercontent.com/radixark/miles/main/examples/timelens_video/timelens_qwen35_9b_sample_AYZS4.jpg)
+
+![person sits on the floor smiling: tIoU 0.16 at step 0, 0.96 at step 299](https://raw.githubusercontent.com/radixark/miles/main/examples/timelens_video/timelens_qwen35_9b_sample_SE2K2.jpg)
+
+![A person is drinking water: tIoU 0.00 at step 0, 0.67 at step 299](https://raw.githubusercontent.com/radixark/miles/main/examples/timelens_video/timelens_qwen35_9b_sample_JBFPI.jpg)
+
 ## Notes
 
 - Responses cut at the 512-token limit score 0 in training (`zero_truncated_rewards`). This step is ours, not part
