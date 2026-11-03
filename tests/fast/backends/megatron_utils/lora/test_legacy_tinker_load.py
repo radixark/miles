@@ -38,18 +38,18 @@ def _with_dp_size(monkeypatch, size):
     monkeypatch.setattr(checkpoint.ProcessGroupCollection, "use_mpu_process_groups", lambda **_: groups)
 
 
-@pytest.mark.parametrize("dp_size, load_optimizer", [(1, True), (2, False)])
-def test_a_legacy_checkpoint_loads_where_its_optimizer_ownership_is_unambiguous(
-    legacy_source, monkeypatch, dp_size, load_optimizer
-):
-    _with_dp_size(monkeypatch, dp_size)
+@pytest.mark.parametrize("load_optimizer", [True, False])
+def test_a_legacy_checkpoint_loads_without_data_parallelism(legacy_source, monkeypatch, load_optimizer):
+    _with_dp_size(monkeypatch, 1)
     assert checkpoint.find_load_mismatch(None, 0, "/ckpt", None, None, load_optimizer) is None
 
 
-def test_a_legacy_checkpoint_with_optimizer_state_is_refused_under_data_parallelism(legacy_source, monkeypatch):
+@pytest.mark.parametrize("load_optimizer", [True, False])
+def test_a_legacy_checkpoint_is_refused_under_data_parallelism(legacy_source, monkeypatch, load_optimizer):
+    # its masters' owners depend on the unrecorded slot that saved it, and weights only read them too
     _with_dp_size(monkeypatch, 2)
-    mismatch = checkpoint.find_load_mismatch(None, 0, "/ckpt", None, None, load_optimizer=True)
-    assert "optimizer=False" in mismatch
+    mismatch = checkpoint.find_load_mismatch(None, 0, "/ckpt", None, None, load_optimizer)
+    assert "without data parallelism" in mismatch
 
 
 @pytest.fixture
