@@ -102,7 +102,9 @@ def test_a_weights_only_convert_save_writes_neither_moments_nor_a_placeholder_tr
 def test_only_the_bridge_backend_loads_a_megatron_bridge_checkpoint(tmp_path):
     _, _, mocks = _restore(tmp_path, megatron_to_hf_mode="bridge")
     loaders = mocks["load_adapter_dir"].call_args.kwargs["in_model_loaders_by_kind"]
-    assert loaders[AdapterSourceKind.MEGATRON_BRIDGE_CHECKPOINT] is mocks["MegatronBridgeCheckpointLoader"].return_value
+    assert (
+        loaders[AdapterSourceKind.MEGATRON_BRIDGE_CHECKPOINT] is mocks["MegatronBridgeCheckpointLoader"].return_value
+    )
     _, _, mocks = _restore(tmp_path, megatron_to_hf_mode="raw")
     loaders = mocks["load_adapter_dir"].call_args.kwargs["in_model_loaders_by_kind"]
     with pytest.raises(AssertionError, match="convert it there first with --lora-adapter-convert-save"):
