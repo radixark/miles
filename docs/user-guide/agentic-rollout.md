@@ -245,6 +245,8 @@ python scripts/tools/verify_session_tito_tokenizer.py \
     --rollout-num-gpus-per-engine 1
 ```
 
+For a family that allows `user` turns, the GPU check also sends one turn with `tool_choice: "none"`, so a tool call stays unparsed in content as when SGLang's parser fails on it. Pass `--no-session-verify-parse-failure` when that reply differs from the family's real parse failure.
+
 ### Choose replay matching
 
 Some agent harnesses do not replay model messages verbatim: they may reserialize tool-call arguments, replace empty `arguments` with `"{}"`, or omit `reasoning_content` on the next request. Under the default matcher those replays count as divergence — v1 rolls back (or rejects), v2 branches a new lineage.

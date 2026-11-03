@@ -237,7 +237,7 @@ def select_schedule(
     # which cycle-repeat alone never produces.
     schedule = list(cycle) + [_R] + cycle * (cycles - 1)
     if "user" in key:
-        # With PARSE_FAILURE, FORCE_FINAL follows an assistant whose tool call went unparsed.
+        # With PARSE_FAILURE, FORCE_FINAL follows a reply SGLang returned with tool-call parsing off.
         schedule += [_P, _F] if parse_failure else [_F]
     # Keep injected assistants after every rollback: they are prompt messages,
     # not generated checkpoints, so rollback across them is a separate contract.

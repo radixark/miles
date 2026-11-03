@@ -10,6 +10,7 @@ import argparse
 from dataclasses import dataclass
 from typing import Literal
 
+from miles.utils.test_utils.session_verify_agent import DEFAULT_PARSE_FAILURE
 from miles.utils.test_utils.session_verify_runner import (
     ASSISTANT_TEXT_MISMATCH_RATIO_THRESHOLD,
     SESSION_VERIFY_INVARIANT_ARGS,
@@ -70,7 +71,7 @@ class ModelConfig:
     tool_call_failure_mode: str = "rollback"
     # Inject one tool-call parse failure via tool_choice "none" (needs "user").
     # Turn off where that does not reproduce the family's real parse failure.
-    parse_failure_step: bool = True
+    parse_failure_step: bool = DEFAULT_PARSE_FAILURE
 
 
 def run_one(
