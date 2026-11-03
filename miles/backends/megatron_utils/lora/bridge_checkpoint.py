@@ -285,8 +285,10 @@ def assert_bridge_run_config_matches(
             None,
             str(params_dtype),
         ), f"lora_dtype {_yaml_dtype(peft['lora_dtype'])} differs from the model's {params_dtype}"
-    if any(".experts." in module for module in run.target_modules) and not run.experts_shared_outer_loras:
-        # Bridge's default shares one adapter across all experts; miles trains one per expert
+    expert_targets = any(".experts." in module for module in run.target_modules)
+    if expert_targets and config["model"]["moe_grouped_gemm"] and not run.experts_shared_outer_loras:
+        # Bridge shares one adapter across grouped experts by default; sequential experts always get one each,
+        # and a grouping that differs from this run's fails the adapter key check
         assert not peft.get("share_expert_adapters", True), "share_expert_adapters=True is not supported"
     if load_optimizer:
         optimizer = config["optimizer"]
