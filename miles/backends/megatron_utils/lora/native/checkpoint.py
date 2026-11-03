@@ -20,10 +20,6 @@ class NativeAdapterSlots(BridgeAdapterSlots):
     def _map_name(self, name: str) -> HfKey:
         return map_sampler_keys_to_hf_keys(name, self.targets)
 
-    def slot_parameters(self, slot: int) -> list[torch.nn.Parameter]:
-        assert slot == 0, "native LoRA has only slot 0"
-        return [param for adapter in iter_adapters(self._model) for param in adapter.parameters()]
-
     def _unexported_elements(self) -> torch.Tensor:
         """head_B's padded vocab rows: the export trims them, so no checkpoint holds them and a load leaves them."""
         padded_rows = {
