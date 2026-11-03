@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import time
+from collections.abc import Iterable
 
 import torch
 import torch.distributed as dist
@@ -17,8 +18,10 @@ from miles.backends.megatron_utils.lora.native.spec.base import ShardLayout
 logger = logging.getLogger(__name__)
 
 
-def export_lora_hf_named(model_chunks) -> list[tuple[str, torch.Tensor]]:
-    """Materialize full HF/PEFT adapter tensors on every TP rank.
+def export_lora_hf_named(adapters: Iterable[NativeLoRAAdapter]) -> list[tuple[str, torch.Tensor]]:
+    """Materialize full HF/PEFT adapter tensors of ``adapters`` on every TP rank.
+
+    Collective: every TP/EP rank must pass the same adapters in the same order.
 
     This representation preserves the exact target set; the serving exporter adds the
     zero siblings SGLang's fused buffers need. The weight iterator gathers across PP.
@@ -27,7 +30,7 @@ def export_lora_hf_named(model_chunks) -> list[tuple[str, torch.Tensor]]:
     gather = ParallelGather()
     plan: list[tuple[str, object]] = []
 
-    for adapter in iter_adapters(model_chunks):
+    for adapter in adapters:
         custom = adapter.export_plan(gather)
         if custom is not None:
             plan.extend(custom)

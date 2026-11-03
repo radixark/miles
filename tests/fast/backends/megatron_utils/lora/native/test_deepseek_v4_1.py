@@ -12,6 +12,7 @@ from transformers import AutoConfig
 from miles.backends.megatron_utils.lora.native.config import LoRAConfig
 from miles.backends.megatron_utils.lora.native.hf_adapter import export_lora_hf_named
 from miles.backends.megatron_utils.lora.native.lora import _attach_layer
+from miles.backends.megatron_utils.lora.native.modules.linear import iter_adapters
 from miles.backends.megatron_utils.lora.native.naming import ConverterNaming
 from miles.backends.megatron_utils.lora.native.registry import MODEL_SPECS
 from miles.backends.megatron_utils.lora.native.spec.base import AttachContext
@@ -120,7 +121,7 @@ def test_the_launcher_trains_attention_and_the_shared_expert(launcher_targets):
 
 def test_adapters_carry_the_converter_names_the_targets_select(launcher_targets):
     """An adapter whose converter name no target selects is never attached, so it trains nothing."""
-    exported = dict(export_lora_hf_named([_model(launcher_targets)]))
+    exported = dict(export_lora_hf_named(iter_adapters([_model(launcher_targets)])))
 
     assert set(get_adapter_target_modules(exported)) == {f"layers.0.attn.{leaf}" for leaf in _ATTENTION_LEAVES} | {
         f"layers.0.ffn.shared_experts.{leaf}" for leaf in _SHARED_EXPERT_LEAVES
@@ -131,7 +132,7 @@ def test_grouped_wo_a_delta_is_a_lora_on_the_wo_a_weight(launcher_targets):
     """Each head group meets only its own rows of ``wo_a``, as after merging the exported LoRA into it."""
     model = _model(launcher_targets)
     attention = model.layers[0].self_attention
-    exported = dict(export_lora_hf_named([model]))
+    exported = dict(export_lora_hf_named(iter_adapters([model])))
     lora_a, lora_b = exported["layers.0.attn.wo_a.lora_A.weight"], exported["layers.0.attn.wo_a.lora_B.weight"]
     merged = attention.linear_o_group_proj + ALPHA / RANK * lora_b.float() @ lora_a.float()
 
