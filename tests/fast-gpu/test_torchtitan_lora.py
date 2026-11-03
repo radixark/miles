@@ -15,6 +15,7 @@ import miles.backends.torchtitan_utils  # noqa: F401
 
 # isort: split
 from torchtitan.config.parallelism import ParallelismConfig
+from torchtitan.config.transform import LoRATransform
 from torchtitan.models.common.linear import Linear
 from torchtitan.models.qwen3 import build_model_config
 
@@ -27,9 +28,19 @@ _QWEN3_ALL_LINEAR = resolve_hf_lora_targets(_QWEN3_HF_CONFIG)
 _QWEN3_MOE_HF_CONFIG = {"model_type": "qwen3_moe", "num_experts": 128, "num_hidden_layers": 48}
 
 
-def _convert(model_config, hf_targets, hf_config=_QWEN3_HF_CONFIG):
+def _convert(model_config, hf_targets, hf_config=_QWEN3_HF_CONFIG, *, experts_shared_outer=False):
     layout = resolve_hf_lora_targets(hf_config, target_modules=list(LORA_TARGET_GROUPS))
-    return convert_model_config(model_config, hf_targets=hf_targets, layout=layout, rank=8, alpha=16)
+    return convert_model_config(
+        model_config,
+        hf_targets=hf_targets,
+        layout=layout,
+        rank=8,
+        alpha=16,
+        experts_shared_outer=experts_shared_outer,
+    )
+
+
+_SHARED_OUTER_IN_TORCHTITAN = "expert_adapter_layout" in LoRATransform.__dataclass_fields__
 
 
 def _qwen3(flavor: str = "0.6B"):
@@ -62,8 +73,8 @@ def test_a_single_layer_can_be_targeted():
     assert {fqn for fqn, rank in _lora_ranks(converted).items() if rank} == {"layers.0.attention.wo"}
 
 
-def test_moe_experts_are_refused_but_moe_attention_is_adapted():
-    with pytest.raises(ValueError, match="name no Linear projection"):
+def test_moe_experts_need_the_shared_outer_layout_and_moe_attention_does_not():
+    with pytest.raises(ValueError, match="experts-shared-outer-loras"):
         _convert(_qwen3("30B-A3B"), resolve_hf_lora_targets(_QWEN3_MOE_HF_CONFIG), _QWEN3_MOE_HF_CONFIG)
 
     attention = resolve_hf_lora_targets(_QWEN3_MOE_HF_CONFIG, target_modules=["attn"])
@@ -71,6 +82,40 @@ def test_moe_experts_are_refused_but_moe_attention_is_adapted():
     adapted = {fqn for fqn, rank in _lora_ranks(converted).items() if rank}
     assert all(".attention." in fqn for fqn in adapted)
     assert len(adapted) == 2 * len(converted.layers)
+
+
+@pytest.mark.skipif(not _SHARED_OUTER_IN_TORCHTITAN, reason="torchtitan without the shared-outer expert layout")
+def test_shared_outer_experts_export_as_the_packed_adapters_the_engine_serves():
+    """w13 shares lora_A and w2 shares lora_B; the export restacks the per-expert factor into one tensor per
+    packed HF module and ships the shared one with an expert axis of 1, as the Megatron path does."""
+    from miles.backends.torchtitan_utils.lora_names import iter_hf_adapter_tensors
+
+    all_linear = resolve_hf_lora_targets(_QWEN3_MOE_HF_CONFIG)
+    converted = _convert(_qwen3("30B-A3B"), all_linear, _QWEN3_MOE_HF_CONFIG, experts_shared_outer=True)
+    experts = converted.layers[0].feed_forward.routed_experts
+    assert (experts.w13.shared_factor, experts.w2.shared_factor) == ("lora_a", "lora_b")
+    num_experts, hidden, moe_dim, rank = experts.w13.group_size, experts.w13.in_features, experts.w13.out_features, 8
+    state = {
+        "layers.0.feed_forward.routed_experts.w13.lora_a.weight": torch.randn(rank, hidden),
+        "layers.0.feed_forward.routed_experts.w13.lora_b.weight": torch.randn(num_experts, 2, moe_dim, rank),
+        "layers.0.feed_forward.routed_experts.w2.lora_a.weight": torch.randn(num_experts, rank, moe_dim),
+        "layers.0.feed_forward.routed_experts.w2.lora_b.weight": torch.randn(hidden, rank),
+    }
+    sd_adapter = type(converted)._owner.state_dict_adapter_cls(converted, None)
+    exported = dict(iter_hf_adapter_tensors(sd_adapter, state))
+
+    prefix = "model.layers.0.mlp.experts."
+    assert {name: tuple(t.shape) for name, t in exported.items()} == {
+        f"{prefix}gate_up_proj.lora_A.weight": (1, rank, hidden),
+        f"{prefix}gate_up_proj.lora_B.weight": (num_experts, 2 * moe_dim, rank),
+        f"{prefix}down_proj.lora_A.weight": (num_experts, rank, moe_dim),
+        f"{prefix}down_proj.lora_B.weight": (1, hidden, rank),
+    }
+    w13_b = state["layers.0.feed_forward.routed_experts.w13.lora_b.weight"]
+    torch.testing.assert_close(exported[f"{prefix}gate_up_proj.lora_B.weight"], w13_b.flatten(1, 2))
+    torch.testing.assert_close(
+        exported[f"{prefix}down_proj.lora_A.weight"], state["layers.0.feed_forward.routed_experts.w2.lora_a.weight"]
+    )
 
 
 def test_fused_adapters_export_as_one_peft_adapter_per_hf_projection():

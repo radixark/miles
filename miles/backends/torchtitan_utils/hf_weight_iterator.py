@@ -11,6 +11,7 @@ import torch.distributed as dist
 
 from miles.backends.fsdp_utils.dtensor import gather_full_param
 from miles.backends.torchtitan_utils import lora_names
+from miles.backends.torchtitan_utils.lora_names import ROUTED_EXPERTS
 from miles.backends.training_utils.weight_update.hf_weight_iterator import HfWeightIteratorBase
 from miles.backends.training_utils.weight_update.hf_weight_iterator.atomic_groups import get_hf_atomic_update_groups
 from miles.backends.training_utils.weight_update.hf_weight_iterator.checkpoint_towers import (
@@ -79,7 +80,8 @@ def hf_adapter_weights(trainer, *, complete_across_pp: bool) -> Iterator[tuple[s
     """The LoRA adapter as HF PEFT tensors, gathered like the base weights. Only the adapter
     tensors visit the GPU, so an offloaded frozen base stays on the host."""
     adapter_state = {
-        k: v.to(current_platform.current_device())
+        # a routed-expert factor is split by expert under EP; the adapter restacks the full tensor
+        k: gather_full_param(v) if ROUTED_EXPERTS in k else v.to(current_platform.current_device())
         for part in trainer.model_parts
         for k, v in part.state_dict().items()
         if lora_names.is_adapter_key(k)
@@ -98,9 +100,6 @@ def _stage_process_groups(stage_ranks: tuple[tuple[int, ...], ...]) -> tuple:
     return tuple(dist.new_group(list(ranks)) for ranks in stage_ranks)
 
 
-_GROUPED_EXPERTS = ".routed_experts."
-
-
 def _hf_weights_on_device(trainer, *, complete_across_pp: bool) -> Iterator[tuple[str, torch.Tensor]]:
     sd_adapter = _state_dict_adapter(trainer)
     state = {
@@ -108,10 +107,10 @@ def _hf_weights_on_device(trainer, *, complete_across_pp: bool) -> Iterator[tupl
     }
     layout = _StageLayout.from_trainer(trainer, complete_across_pp=complete_across_pp)
 
-    dense = {k: v for k, v in state.items() if _GROUPED_EXPERTS not in k}
+    dense = {k: v for k, v in state.items() if ROUTED_EXPERTS not in k}
     yield from layout.stream(sd_adapter.to_hf(dense))
 
-    mine = sorted(k for k in state if _GROUPED_EXPERTS in k)
+    mine = sorted(k for k in state if ROUTED_EXPERTS in k)
     everyone: list = [None] * layout.world
     dist.all_gather_object(everyone, mine)
     for key in sorted(set().union(*everyone)):

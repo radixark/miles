@@ -141,7 +141,9 @@ def test_attention_lora_adapts_the_decoder_projections_only(tmp_path):
     hf_config = {"model_type": "muse_spark", "text_config": _HF_TEXT_CONFIG}
     targets = resolve_hf_lora_targets(hf_config, target_modules=["attn"])
     layout = resolve_hf_lora_targets(hf_config, target_modules=list(LORA_TARGET_GROUPS))
-    config = convert_model_config(_model_config(tmp_path), hf_targets=targets, layout=layout, rank=8, alpha=16)
+    config = convert_model_config(
+        _model_config(tmp_path), hf_targets=targets, layout=layout, rank=8, alpha=16, experts_shared_outer=False
+    )
     adapted = {fqn for fqn, cfg, _, _ in config.traverse(Linear.Config) if hasattr(cfg, "rank")}
     assert adapted == {f"layers.{i}.attention.{p}" for i in range(4) for p in ("qkv_linear.wqkv", "wo")}
 
