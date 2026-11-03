@@ -81,7 +81,9 @@ def assert_same_base_model(source: str, candidates: Iterable[str], run_hf_checkp
     for candidate in candidates:
         if (hf_dir := resolve_hf_dir(candidate)) is not None:
             break
-        assert not Path(candidate).exists(), (
+        assert not Path(
+            candidate
+        ).exists(), (
             f"{source}'s base model {candidate} has no HF weights to compare with --hf-checkpoint {run_hf_checkpoint}"
         )
     assert hf_dir is not None, (
