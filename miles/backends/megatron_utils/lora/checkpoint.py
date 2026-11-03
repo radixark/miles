@@ -138,8 +138,6 @@ class DistributedOptimizerMembers:
     it scatters them back, and every rank re-casts its bf16 shard and all-gathers the parameters.
     """
 
-    bf16_adapter_key_style = "peft"
-
     def __init__(
         self,
         adapter_slots: BridgeAdapterSlots,
@@ -151,6 +149,8 @@ class DistributedOptimizerMembers:
     ):
         self._slots, self._optimizer, self._model = adapter_slots, optimizer, model
         self._precision_aware, self._save_moments = precision_aware, save_moments
+        # the export is the slots'; native's names its experts like sglang
+        self.bf16_adapter_key_style = adapter_slots.bf16_adapter_key_style
 
     def export_bf16_adapter(self, slot: int) -> Iterable[tuple[str, torch.Tensor]]:
         return self._slots.export_bf16_adapter(slot)
