@@ -123,6 +123,17 @@ def test_padded_local_rows_are_the_rows_the_export_trims(tp_rank, padded):
     assert head.padded_local_rows() == padded
 
 
+def test_megatrons_vocab_padding_gets_no_gradient():
+    """The loss softmaxes over the padded vocab, but no checkpoint holds the padded rows, so they must not train."""
+    model = _attached(tied=False)
+    adapter = model.lora_lm_head_adapter
+
+    torch.log_softmax(model(torch.tensor([1, 4, 7])), dim=-1)[:, 3].sum().backward()
+
+    assert adapter.head_B.grad[:VOCAB].any()
+    assert not adapter.head_B.grad[VOCAB:].any()
+
+
 def test_a_converter_naming_the_head_otherwise_fails():
     """Targets are checked against the spec's leaf; a differently named head would silently get no adapter."""
     context = _context(("lm_head",))

@@ -29,6 +29,7 @@ from miles.utils.lora.utils import (
     engine_loads_adapter_from_disk,
     is_lora_enabled,
     matches_lora_target,
+    publishes_snapshots,
     targets_expert_leaves,
 )
 
@@ -49,6 +50,8 @@ def validate_lora_args(args):
         assert (
             args.train_backend == "megatron" and not args.multi_lora
         ), "--lora-adapter-convert-save is implemented only for single LoRA on --train-backend megatron"
+        # the trainer actors write it from their own working directory, which need not be the driver's
+        args.lora_adapter_convert_save = os.path.abspath(args.lora_adapter_convert_save)
         # the commit would retire and delete whatever sits there, including the source when converting in place
         assert not os.path.lexists(
             args.lora_adapter_convert_save
@@ -65,8 +68,6 @@ def validate_lora_args(args):
     hf_config = load_hf_config(args.hf_checkpoint)
     args.hf_lora_targets = _resolve_lora_targets(args, hf_config)
     args.lora_adapter_targets = list(args.hf_lora_targets)
-    if args.train_backend == "megatron":
-        _assert_adapter_layout_defined(args, hf_config)
     if args.train_backend == "megatron" and args.megatron_to_hf_mode == "bridge":
         from miles.backends.megatron_utils.lora.target_modules import check_fused_lora_selection
 
@@ -101,10 +102,7 @@ def _assert_adapter_layout_defined(args, hf_config) -> None:
     (--save-hf, eval snapshots, --save) and to restore --lora-adapter-path; runs without them train any family."""
     # a rollout-only run has no trainer; SGLang reads its adapter
     builds_slots = not args.debug_rollout_only and (
-        args.save_hf is not None
-        or args.eval_hf_dir is not None
-        or args.save is not None
-        or args.lora_adapter_path is not None
+        publishes_snapshots(args, args.save) or args.lora_adapter_path is not None
     )
     assert not builds_slots or has_hf_lora_targets(hf_config.to_dict()), (
         f"LoRA --save, --save-hf, eval snapshots and --lora-adapter-path need the HF LoRA target layout of "
@@ -151,7 +149,9 @@ def _validate_rollout_only_adapter(args) -> None:
         f"{path} uses official Tinker tensor names, which need a conversion that rollout-only does not do; "
         "convert it first with --lora-adapter-convert-save"
     )
-    assert (path / "adapter_model.safetensors").is_file(), f"{path} has no PEFT export for the engines to load"
+    assert (
+        path / "adapter_model.safetensors"
+    ).is_file(), f"{path} has no PEFT export for the engines to load; write one first with --lora-adapter-convert-save"
 
 
 def _default_lora_type(args) -> str:
@@ -168,8 +168,12 @@ def _default_lora_type(args) -> str:
 def validate_lora_args_after_megatron(args):
     """Checks that read Megatron's resolved args; for native (raw-mode) LoRA also the targets its spec serves
     (e.g. the expert TP size it defaults from TP)."""
-    if is_lora_enabled(args) and not args.multi_lora:
+    # rollout-only builds no optimizer and saves nothing
+    if is_lora_enabled(args) and not args.multi_lora and not args.debug_rollout_only:
         _validate_adapter_state_args(args)
+    if is_lora_enabled(args) and not args.debug_rollout_only:
+        # after miles_validate_args: the actor's predicate reads eval_uses_snapshots, resolved there
+        _assert_adapter_layout_defined(args, load_hf_config(args.hf_checkpoint))
     if not (is_lora_enabled(args) and args.megatron_to_hf_mode == "raw"):
         return
     hf_config = load_hf_config(args.hf_checkpoint)

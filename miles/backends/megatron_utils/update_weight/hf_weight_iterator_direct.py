@@ -1,5 +1,7 @@
 import itertools
+import logging
 import re
+import time
 from argparse import Namespace
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -24,6 +26,8 @@ from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.test_utils.fault_injector.controller import reach_fault_hook
 from miles.utils.test_utils.fault_injector.models import FaultHookName
 from miles.utils.types import ParamInfo
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -130,7 +134,20 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
 
     def _export_pp_local_lora(self, adapter):
         assert adapter is None, "multi-LoRA export requires --megatron-to-hf-mode bridge"
-        return export_lora_hf_named(iter_adapters(self.model))
+        started = time.perf_counter()
+        exported = export_lora_hf_named(iter_adapters(self.model))
+        if dist.get_rank() == 0:
+            peak_b = max(
+                (tensor.abs().max().item() for name, tensor in exported if name.endswith("lora_B.weight")),
+                default=0.0,
+            )
+            logger.info(
+                "[lora-native] exported %d adapter tensors in %.1f ms (max|lora_B|=%.3e)",
+                len(exported),
+                (time.perf_counter() - started) * 1e3,
+                peak_b,
+            )
+        return exported
 
     def _convert_to_hf_param_units(self, named_params: Sequence[tuple[str, torch.Tensor]]):
         for name, param in named_params:

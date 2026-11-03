@@ -45,6 +45,7 @@ from miles.backends.training_utils.checkpoint.adapter.readers import (
     ExternalWeightsReader,
     MilesAdapterDirReader,
     PeftAdapterReader,
+    _collapse_shared_lora_a,
     classify_adapter_source,
 )
 from miles.utils.lora.hf_lora_targets import HfLoraTargets
@@ -125,15 +126,19 @@ def _assert_real_rank(specs: list[LocalShardSpec], lora_rank: int) -> None:
 
 
 def _hf_keyed_bf16_adapter(
-    named_tensors: list[tuple[str, torch.Tensor]], members: AdapterCheckpointMembers, targets: HfLoraTargets
+    named_tensors: list[tuple[str, torch.Tensor]],
+    members: AdapterCheckpointMembers,
+    parametrization: AdapterParametrization,
+    targets: HfLoraTargets,
 ) -> dict[str, torch.Tensor]:
     map_name = {
         "peft": map_peft_keys_to_hf_keys,
         "tinker": partial(map_tinker_keys_to_hf_keys, targets=targets),
         "sampler": partial(map_sampler_keys_to_hf_keys, targets=targets),
     }[members.bf16_adapter_key_style]
-    weights, _ = map_named_tensors_to_hf_keys(named_tensors, map_name, targets)
-    return weights
+    weights, fused_groups = map_named_tensors_to_hf_keys(named_tensors, map_name, targets)
+    # the export names a shared A once per module; the writers expect it once per group
+    return _collapse_shared_lora_a(weights, parametrization, fused_groups)
 
 
 def _is_writer() -> bool:
@@ -153,7 +158,7 @@ def write_peft_export(
         # the gathered adapter leaves the GPU before rank 0 splits and copies it
         named_tensors = [(key, tensor.cpu()) for key, tensor in members.export_bf16_adapter(slot)]
         if _is_writer():
-            weights = _hf_keyed_bf16_adapter(named_tensors, members, targets)
+            weights = _hf_keyed_bf16_adapter(named_tensors, members, parametrization, targets)
             write_peft_adapter(directory, weights, parametrization, targets)
     except Exception as exc:
         error = exc
@@ -205,7 +210,7 @@ def write_sampler_export(
         # the gathered adapter leaves the GPU before rank 0 splits and copies it
         named_tensors = [(key, tensor.cpu()) for key, tensor in members.export_bf16_adapter(slot)]
         if _is_writer():
-            weights = _hf_keyed_bf16_adapter(named_tensors, members, targets)
+            weights = _hf_keyed_bf16_adapter(named_tensors, members, parametrization, targets)
             write_sampler_adapter(written.path, weights, parametrization, targets)
     return written
 
@@ -234,7 +239,7 @@ def _weights_only_state(weights: dict[str, torch.Tensor], specs: list[LocalShard
 def _with_run_alpha_if_unknown(source: AdapterParametrization, run: AdapterParametrization) -> AdapterParametrization:
     if source.lora_alpha is not None:
         return source
-    # the run's --lora-alpha was required for such a source (resolved in miles_validate_args)
+    # a source that records no alpha is taken to use the run's
     return replace(source, lora_alpha=run.lora_alpha)
 
 
