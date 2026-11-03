@@ -1081,10 +1081,11 @@ async def test_a_download_url_expires_with_its_checkpoint(service, monkeypatch):
         "tenant", "save_weights_external", _external_payload(model_id, 1, "export", ttl_seconds=3600)
     )
     await await_settled(service, "tenant", save)
-    await service.set_checkpoint_ttl("tenant", model_id, "external_weights/export", 3600)
+    real_time = time.time
+    # signed with half an hour of the checkpoint left, less than a URL's hour
+    monkeypatch.setattr(time, "time", lambda: real_time() + 1800)
     urls = service.external_weights_urls("tenant", model_id, "external_weights/export", "http://gateway/")
     token = urls["urls"]["adapter_config.json"].split("/")[-2]
-    real_time = time.time
     monkeypatch.setattr(time, "time", lambda: real_time() + 3601)
     with pytest.raises(NotFoundError, match="expired"):
         service.download_path(token, "adapter_config.json")
