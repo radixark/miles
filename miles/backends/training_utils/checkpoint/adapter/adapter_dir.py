@@ -194,7 +194,9 @@ def _with_run_alpha_if_unknown(source: AdapterParametrization, run: AdapterParam
     return replace(source, lora_alpha=run.lora_alpha)
 
 
-def _open_source(path: Path, kind: AdapterSourceKind, run: AdapterParametrization, targets: HfLoraTargets, *, load_optimizer: bool):
+def _open_source(
+    path: Path, kind: AdapterSourceKind, run: AdapterParametrization, targets: HfLoraTargets, *, load_optimizer: bool
+):
     """-> (reader, source parametrization, conversion steps), asserted loadable into ``run``."""
     if kind == AdapterSourceKind.ADAPTER_DIR:
         reader = MilesAdapterDirReader(path, targets)
