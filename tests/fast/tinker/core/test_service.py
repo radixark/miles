@@ -869,16 +869,26 @@ async def test_a_recycled_slot_belongs_to_a_fresh_model_queue(service):
     assert future.state == DONE, "a fresh model may use the successfully recycled slot"
 
 
-@pytest.mark.parametrize("source", ["handler", "worker", "create", "sweep", "export", "load", "cleanup"])
+async def test_a_failed_cleanup_after_a_save_keeps_the_gateway_serving(service):
+    def failing_delete(root):
+        raise OSError("checkpoint IO failed")
+
+    service.backend.delete_retired_adapters = failing_delete
+    model_id = await created_model(service)
+    for seq_id in (1, 2):
+        payload = {"model_id": model_id, "seq_id": seq_id, "name": "ck", "overwrite": True}
+        assert (await await_settled(service, "tenant", service.submit("tenant", "save_state", payload))).state == DONE
+        await asyncio.gather(*service._cleanup_tasks)
+
+
+@pytest.mark.parametrize("source", ["handler", "worker", "create", "sweep", "export", "load"])
 async def test_an_unknown_failure_stops_the_dispatcher(tmp_path, source):
     from tests.fast.tinker.harness import make_service
 
     gateway = make_service(tmp_path)
     run_task = asyncio.create_task(gateway.run())
     error = (
-        OSError("checkpoint IO failed")
-        if source in ("export", "load", "cleanup")
-        else RuntimeError("fatal execution failure")
+        OSError("checkpoint IO failed") if source in ("export", "load") else RuntimeError("fatal execution failure")
     )
     try:
         model_id = await created_model(gateway)
@@ -893,15 +903,6 @@ async def test_an_unknown_failure_stops_the_dispatcher(tmp_path, source):
             gateway.backend.fail_on["load_slot"] = error
             gateway.submit(
                 "tenant", "load_state", {"model_id": model_id, "seq_id": 2, "path": path, "optimizer": True}
-            )
-        elif source == "cleanup":
-
-            def failing_delete(root):
-                raise error
-
-            gateway.backend.delete_retired_adapters = failing_delete
-            gateway.submit(
-                "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False}
             )
         elif source == "create":
             gateway.backend.fail_on["load_slot"] = RuntimeError("fatal execution failure")
