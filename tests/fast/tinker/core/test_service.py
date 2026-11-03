@@ -19,7 +19,7 @@ from tests.fast.tinker.harness import (
     write_legacy_checkpoint,
 )
 
-from miles.backends.training_utils.checkpoint.adapter.commit import resolve_adapter_dir
+from miles.backends.training_utils.checkpoint.adapter.commit import _adopt_pre_commit_dir, resolve_adapter_dir
 from miles.tinker.core.future import DONE, FAILED
 from miles.tinker.core.types import OwnershipError, UserInputError
 from miles.tinker.core.utils import resolve_checkpoint_dir, resolve_sampler_checkpoint
@@ -772,6 +772,21 @@ async def test_a_checkpoint_saved_before_commits_loads_through_the_legacy_path(s
         "load_state",
         {"model_id": model_id, "seq_id": 1, "path": f"tinker://{model_id}/weights/old", "optimizer": True},
     )
+    assert (await await_settled(service, "tenant", loaded)).state == DONE
+    assert service.backend.named("load_slot")[-1]["ckpt_path"] == str(Path(legacy).resolve())
+
+
+async def test_an_overwrite_interrupted_after_adopting_a_legacy_dir_keeps_it_loadable(service):
+    model_id = await created_model(service)
+    legacy = resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "weights", "old")
+    write_legacy_checkpoint(legacy, service.models[model_id], service.config)
+    # the state a crash leaves between the adoption and the link swap
+    _adopt_pre_commit_dir(Path(legacy).parent, "old")
+    path = f"tinker://{model_id}/weights/old"
+    assert service.weights_info("tenant", path)["lora_rank"] == service.models[model_id].lora_rank
+    with pytest.raises(OwnershipError):
+        service.weights_info("intruder", path)
+    loaded = service.submit("tenant", "load_state", {"model_id": model_id, "seq_id": 1, "path": path, "optimizer": True})
     assert (await await_settled(service, "tenant", loaded)).state == DONE
     assert service.backend.named("load_slot")[-1]["ckpt_path"] == str(Path(legacy).resolve())
 

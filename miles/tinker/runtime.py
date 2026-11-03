@@ -17,7 +17,10 @@ from miles.backends.training_utils.checkpoint.adapter.commit import (
     lock_checkpoint_root,
     resolve_adapter_dir,
 )
-from miles.backends.training_utils.checkpoint.adapter.parametrization import read_parametrization
+from miles.backends.training_utils.checkpoint.adapter.parametrization import (
+    PARAMETRIZATION_FILENAME,
+    read_parametrization,
+)
 from miles.ray.rollout.train_data_conversion import ROLLOUT_DATA_VALUE_SPEC
 from miles.tinker.core.types import OwnershipError, UserInputError
 from miles.utils import object_store
@@ -77,6 +80,10 @@ def take_checkpoint_root(checkpoint_root: str) -> TextIO:
 
 def resolve_adapter(root: str, name: str, tenant: str, model_id: str) -> dict | None:
     """A committed adapter's physical dir, sglang name and parametrization; None for a dir written before commits."""
+    checkpoint_dir = Path(root) / name
+    # by content, not by link: an overwrite interrupted after adopting a pre-commit dir leaves <name> linked to it
+    if (checkpoint_dir / "META.json").is_file() and not (checkpoint_dir / PARAMETRIZATION_FILENAME).is_file():
+        return None
     try:
         committed = resolve_adapter_dir(Path(root), name, tenant=tenant)
     except AdapterOwnershipError as error:

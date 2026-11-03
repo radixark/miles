@@ -445,11 +445,8 @@ class TinkerService:
         """What the SDK needs to rebuild a training client from a checkpoint."""
         model_id, kind, name = parse_tinker_path(tinker_path)
         checkpoint_dir = resolve_checkpoint_dir(self.config.checkpoint_root, model_id, kind, name)
-        if os.path.islink(checkpoint_dir):
-            committed = self.backend.resolve_adapter(os.path.dirname(checkpoint_dir), name, tenant, model_id)
-            if committed is None:
-                # the link outlived its target
-                raise UserInputError(f"unknown checkpoint {tinker_path!r}")
+        committed = self.backend.resolve_adapter(os.path.dirname(checkpoint_dir), name, tenant, model_id)
+        if committed is not None:
             parametrization = committed["parametrization"]
             # an adapter dir records targets, not group flags; it was written under this gateway's layout
             return {
