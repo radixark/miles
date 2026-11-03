@@ -133,13 +133,9 @@ def test_a_restore_keeps_the_state_of_elements_no_checkpoint_holds():
     slots.slot_parameters.return_value = [param]
     # element 3 is vocab padding: no piece holds it
     slots.piece_parameter.return_value = [(0, torch.tensor([0, 1, 2]))]
-    members = DistributedOptimizerMembers(
-        slots, SimpleNamespace(chained_optimizers=[sub]), [], precision_aware=False
-    )
+    members = DistributedOptimizerMembers(slots, SimpleNamespace(chained_optimizers=[sub]), [], precision_aware=False)
     spec = LocalShardSpec("model.lm_head.lora_B", (4,), (0,), (3,))
-    state = AdapterState(
-        [spec], [torch.full((3,), 5.0)], [torch.full((3,), 6.0)], [torch.full((3,), 7.0)], step=9
-    )
+    state = AdapterState([spec], [torch.full((3,), 5.0)], [torch.full((3,), 6.0)], [torch.full((3,), 7.0)], step=9)
     parallel = SimpleNamespace(intra_dp_cp=SimpleNamespace(rank=0), edp=SimpleNamespace(rank=0))
 
     with patch.multiple(_MODULE, get_parallel_state=lambda: parallel, _build_cast_main_to_params_fn=MagicMock()):

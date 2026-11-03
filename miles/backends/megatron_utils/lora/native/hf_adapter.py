@@ -76,9 +76,9 @@ def load_lora_adapter_hf(model_chunks, adapter_path: str) -> int:
     from safetensors import safe_open
 
     path = os.path.join(adapter_path, "adapter_model.safetensors")
-    assert os.path.exists(path), (
-        f"[lora-native] no adapter_model.safetensors under {adapter_path}; PEFT exports use that name"
-    )
+    assert os.path.exists(
+        path
+    ), f"[lora-native] no adapter_model.safetensors under {adapter_path}; PEFT exports use that name"
     with safe_open(path, framework="pt") as adapter_file:
         keys = {re.sub(r"^base_model\.model\.", "", key): key for key in adapter_file.keys()}
         taken: set[str] = set()

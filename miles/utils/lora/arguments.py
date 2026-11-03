@@ -181,9 +181,10 @@ def _validate_adapter_state_args(args) -> None:
         "--debug-disable-optimizer does not build; drop one of them"
     )
     # other optimizers (Muon, ...) keep masters the adapter checkpoint cannot find
-    assert args.optimizer in ("adam", "sgd"), (
-        f"--save / --lora-adapter-path support --optimizer adam or sgd; got --optimizer {args.optimizer}"
-    )
+    assert args.optimizer in (
+        "adam",
+        "sgd",
+    ), f"--save / --lora-adapter-path support --optimizer adam or sgd; got --optimizer {args.optimizer}"
     saves_optimizer = args.save is not None and not args.no_save_optim
     loads_optimizer = args.lora_adapter_path is not None and not args.no_load_optim
     if saves_optimizer or loads_optimizer:
@@ -195,9 +196,9 @@ def _validate_adapter_state_args(args) -> None:
             args.exp_avg_dtype == args.exp_avg_sq_dtype == torch.float32
         ), "the adapter checkpoint stores fp32 moments"
     # SGD's checkpoint holds the masters alone, which would drop a momentum buffer
-    assert args.optimizer != "sgd" or args.sgd_momentum == 0, (
-        f"--save / --lora-adapter-path with --optimizer sgd need --sgd-momentum 0; got {args.sgd_momentum}"
-    )
+    assert (
+        args.optimizer != "sgd" or args.sgd_momentum == 0
+    ), f"--save / --lora-adapter-path with --optimizer sgd need --sgd-momentum 0; got {args.sgd_momentum}"
     if args.use_distributed_optimizer:
         assert args.use_gloo_process_groups, "the adapter checkpoint gathers optimizer state over Gloo"
         # TE FusedAdam keeps the master as an int16 remainder unless the optimizer runs on the host
