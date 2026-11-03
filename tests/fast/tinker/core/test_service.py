@@ -821,6 +821,30 @@ async def test_an_overwritten_checkpoint_leaves_no_old_commit(service):
     assert sorted(p.name for p in weights.iterdir()) == sorted(["ck", Path(os.readlink(weights / "ck")).name])
 
 
+async def test_overlapping_cleanups_run_one_at_a_time(service, monkeypatch):
+    model_id = await created_model(service)
+    delete = service.backend.delete_retired_adapters
+    release, active, peak = threading.Event(), [0], [0]
+
+    def blocking_delete(root):
+        active[0] += 1
+        peak[0] = max(peak[0], active[0])
+        release.wait(timeout=5)
+        active[0] -= 1
+        delete(root)
+
+    monkeypatch.setattr(service.backend, "delete_retired_adapters", blocking_delete)
+    for seq_id in (1, 2):
+        saved = service.submit(
+            "tenant", "save_state", {"model_id": model_id, "seq_id": seq_id, "name": "ck", "overwrite": True}
+        )
+        assert (await await_settled(service, "tenant", saved)).state == DONE
+    await asyncio.sleep(0.1)
+    release.set()
+    await asyncio.gather(*service._cleanup_tasks)
+    assert peak[0] == 1
+
+
 async def test_a_recycled_slot_belongs_to_a_fresh_model_queue(service):
     session_id = service.create_session("tenant")
     model_id = await created_model(service, session_id=session_id)
@@ -843,14 +867,14 @@ async def test_a_recycled_slot_belongs_to_a_fresh_model_queue(service):
     assert future.state == DONE, "a fresh model may use the successfully recycled slot"
 
 
-@pytest.mark.parametrize("source", ["handler", "worker", "create", "sweep", "export", "load"])
+@pytest.mark.parametrize("source", ["handler", "worker", "create", "sweep", "export", "load", "cleanup"])
 async def test_an_unknown_failure_stops_the_dispatcher(tmp_path, source):
     from tests.fast.tinker.harness import make_service
 
     gateway = make_service(tmp_path)
     run_task = asyncio.create_task(gateway.run())
     error = (
-        OSError("checkpoint IO failed") if source in ("export", "load") else RuntimeError("fatal execution failure")
+        OSError("checkpoint IO failed") if source in ("export", "load", "cleanup") else RuntimeError("fatal execution failure")
     )
     try:
         model_id = await created_model(gateway)
@@ -866,6 +890,13 @@ async def test_an_unknown_failure_stops_the_dispatcher(tmp_path, source):
             gateway.submit(
                 "tenant", "load_state", {"model_id": model_id, "seq_id": 2, "path": path, "optimizer": True}
             )
+        elif source == "cleanup":
+
+            def failing_delete(root):
+                raise error
+
+            gateway.backend.delete_retired_adapters = failing_delete
+            gateway.submit("tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False})
         elif source == "create":
             gateway.backend.fail_on["load_slot"] = RuntimeError("fatal execution failure")
             gateway.create_model("tenant", model_payload(gateway))

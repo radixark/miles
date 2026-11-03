@@ -65,6 +65,8 @@ class TinkerService:
         self._sample_tasks: dict[str, tuple] = {}  # request_id -> (task, session_id)
         self._create_tasks: set = set()
         self._cleanup_tasks: set = set()
+        # two cleanups would race on the same .deleting dirs
+        self._cleanup_lock = asyncio.Lock()
         self._arrival_counter = 0
         self._batch_counter = 0
         self._background_error: BaseException | None = None
@@ -367,9 +369,14 @@ class TinkerService:
         return {"op": "save_state", "path": f"tinker://{record.model_id}/weights/{name}"}
 
     def _delete_retired_outside_the_lock(self, root: str) -> None:
-        task = asyncio.create_task(asyncio.to_thread(self.backend.delete_retired_adapters, root))
+        task = asyncio.create_task(self._delete_retired(root))
         self._cleanup_tasks.add(task)
         task.add_done_callback(self._cleanup_tasks.discard)
+        task.add_done_callback(self._observe_background_task)
+
+    async def _delete_retired(self, root: str) -> None:
+        async with self._cleanup_lock:
+            await asyncio.to_thread(self.backend.delete_retired_adapters, root)
 
     async def _load_state(self, record: ModelRecord, payload: dict) -> dict:
         source_id, kind, name = parse_tinker_path(payload["path"])
