@@ -74,6 +74,7 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
                 self.adapter_slots.parametrization(**parametrization_fields),
                 self.adapter_slots.targets,
                 load_optimizer,
+                run_shapes=self.adapter_slots.global_shapes(rank),
             )
             if mismatch is not None:
                 return {"error": mismatch, "error_category": "user"}

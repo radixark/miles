@@ -34,10 +34,10 @@ def test_a_legacy_checkpoint_loads_where_its_optimizer_ownership_is_unambiguous(
     legacy_source, monkeypatch, dp_size, load_optimizer
 ):
     _with_dp_size(monkeypatch, dp_size)
-    assert checkpoint.find_load_mismatch(None, 0, "/ckpt", None, None, load_optimizer) is None
+    assert checkpoint.find_load_mismatch(None, 0, "/ckpt", None, None, load_optimizer, run_shapes={}) is None
 
 
 def test_a_legacy_checkpoint_with_optimizer_state_is_refused_under_data_parallelism(legacy_source, monkeypatch):
     _with_dp_size(monkeypatch, 2)
-    mismatch = checkpoint.find_load_mismatch(None, 0, "/ckpt", None, None, load_optimizer=True)
+    mismatch = checkpoint.find_load_mismatch(None, 0, "/ckpt", None, None, load_optimizer=True, run_shapes={})
     assert "optimizer=False" in mismatch

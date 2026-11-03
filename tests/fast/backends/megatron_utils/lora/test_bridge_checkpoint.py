@@ -5,6 +5,7 @@ import torch.distributed as dist
 from tests.fast.dist_utils import init_gloo, run_multiprocess
 
 from miles.backends.megatron_utils.lora.bridge_checkpoint import probe_bridge_row_mapping
+from miles.backends.training_utils.checkpoint.adapter.probed_slots import ProbedAdapterSlots
 from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
 
 Q, K = "model.layers.0.self_attn.q_proj", "model.layers.0.self_attn.k_proj"
@@ -44,6 +45,9 @@ def _probe(rank, world_size, port):
     flat = torch.cat([p.data.reshape(-1) for p in params])
     assert torch.equal(flat[pieces[f"{K}.lora_B"].local_elements], params[2].data)
     assert torch.equal(flat[pieces[f"{Q}.lora_A"].local_elements], params[0].data)
+    slots = ProbedAdapterSlots()
+    slots.row_mapping = mapping
+    assert slots.global_shapes(2) == {f"{Q}.lora_A": (2, 5), f"{Q}.lora_B": (4, 2), f"{K}.lora_B": (4, 2)}
     dist.destroy_process_group()
 
 

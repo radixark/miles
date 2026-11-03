@@ -20,6 +20,7 @@ from megatron.core.optimizer import DistributedOptimizer
 from megatron.core.optimizer.cpu_offloading.hybrid_optimizer import HybridDeviceOptimizer
 from megatron.core.process_groups_config import ProcessGroupCollection
 from megatron.core.utils import get_pg_size, unwrap_model
+from safetensors import SafetensorError
 
 from miles.backends.megatron_utils.lora.bridge_checkpoint import (
     OPTIMIZER_KEY,
@@ -44,6 +45,7 @@ from miles.backends.training_utils.checkpoint.adapter.adapter_state import Adapt
 from miles.backends.training_utils.checkpoint.adapter.commit import UncommittedAdapterDir
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
 from miles.backends.training_utils.checkpoint.adapter.parametrization_conversion import (
+    apply_parametrization_conversion,
     assert_parametrization_matches_run,
     plan_parametrization_conversion,
 )
@@ -391,11 +393,13 @@ def find_load_mismatch(
     run: AdapterParametrization,
     targets,
     load_optimizer: bool,
+    run_shapes: dict[str, tuple[int, ...]],
 ) -> str | None:
     """Collective: why ``path`` cannot load into ``slot`` (every rank gets the same answer), or None.
 
     A legacy checkpoint records no adapter layout in META.json, so its tensor keys are compared with the slot's,
     e.g. one fused GDN in_proj adapter saved before the canonical in_proj_q/k/v/z split.
+    ``run_shapes``: the whole shape of each HF-keyed tensor this rank loads.
     """
     path = Path(path)
     mismatch = None
@@ -447,11 +451,21 @@ def find_load_mismatch(
                 load_optimizer=load_optimizer,
                 has_optimizer_state=source.has_optimizer_state,
             )
-    except (AssertionError, ValueError) as error:
+            if not (isinstance(reader, MilesAdapterDirReader) and reader.has_adapter_state()):
+                # a file:// import's tensors are the client's: a wrong one must be refused before the slot resets
+                _assert_weights_fit(apply_parametrization_conversion(reader.read_weights(), steps), run_shapes)
+    except (AssertionError, ValueError, KeyError, TypeError, OSError, SafetensorError) as error:
         mismatch = f"{path} cannot load into this model: {error}"
     gathered = [None] * dist.get_world_size()
     dist.all_gather_object(gathered, mismatch, group=gloo_group())
     return next((m for m in gathered if m is not None), None)
+
+
+def _assert_weights_fit(weights: dict[str, torch.Tensor], run_shapes: dict[str, tuple[int, ...]]) -> None:
+    missing = sorted(run_shapes.keys() - weights.keys())
+    assert not missing, f"the source lacks tensors this model trains, e.g. {missing[:3]}"
+    differing = [f"{k}: {tuple(weights[k].shape)} != {s}" for k, s in run_shapes.items() if tuple(weights[k].shape) != s]
+    assert not differing, f"tensor shapes differ from this model's, e.g. {differing[:3]}"
 
 
 class LegacyTinkerCheckpointLoader:
