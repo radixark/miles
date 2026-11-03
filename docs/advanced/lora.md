@@ -306,7 +306,9 @@ alternative aligned-expert path.
   dir: whole fp32 masters, Adam moments and step (resumable under any parallel
   layout), the iteration and scheduler state, and an HF PEFT
   `adapter_model.safetensors` plus `adapter_config.json` export. A failed PEFT
-  export fails the save; the committed checkpoint is kept. Raw mode saves native
+  export fails the save; the committed checkpoint is kept. `{save}/iter_N/adapter`
+  is a symlink to the hidden dir `{save}/iter_N/.adapter.<commit_id>/`, so copy it
+  with symlinks followed (e.g. `cp -rL`, `rsync -L`). Raw mode saves native
   per-rank shards, optimizer/scheduler state and a rank-sharded adapter config
   without HF export; exact resume expects the same TP/PP topology. `--save-hf`
   exports a merged model and an HF adapter without native training shards; native
