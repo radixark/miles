@@ -497,6 +497,13 @@ def _check_dataset_rewards(args, datasets: list[RolloutDatasetConfig]) -> None:
                 f"--rollout-data-yaml-config dataset {dataset.name!r} sets its own reward, but --group-rm scores "
                 f"every group with the batched --custom-rm-path {run_rm_path}; drop the dataset's reward fields"
             )
+        # a custom reward function outranks any rm_type, so the dataset's rm_type would never run
+        if run_rm_path is not None and dataset.rm_type is not None and dataset.custom_rm_path is None:
+            raise ValueError(
+                f"--rollout-data-yaml-config dataset {dataset.name!r} sets rm_type {dataset.rm_type}, but "
+                f"--custom-rm-path {run_rm_path} scores every sample without a custom_rm_path of its own; set the "
+                "dataset's custom_rm_path or drop --custom-rm-path"
+            )
         if other_rm_path and _compute_config_class(load_function(dataset.custom_rm_path), path=dataset.custom_rm_path):
             raise ValueError(
                 f"--rollout-data-yaml-config dataset {dataset.name!r}: custom_rm_path {dataset.custom_rm_path} "
