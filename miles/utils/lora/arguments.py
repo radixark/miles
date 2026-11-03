@@ -92,7 +92,8 @@ def validate_lora_args(args):
 def _assert_adapter_layout_defined(args, hf_config) -> None:
     """Megatron builds the adapter slots, which need the family's HF LoRA target layout, to publish snapshots
     (--save-hf, eval snapshots, --save) and to restore --lora-adapter-path; runs without them train any family."""
-    builds_slots = (
+    # a rollout-only run has no trainer; SGLang reads its adapter
+    builds_slots = not args.debug_rollout_only and (
         args.save_hf is not None
         or args.eval_hf_dir is not None
         or args.save is not None
@@ -126,12 +127,12 @@ def _validate_rollout_only_adapter(args) -> None:
     recognizes must carry an HF-named PEFT pair; anything else (a hub id, a PEFT dir with adapter_model.bin)
     is SGLang's to read."""
     path = Path(args.lora_adapter_path)
-    if not path.is_dir():
+    hf_config = load_hf_config(args.hf_checkpoint).to_dict()
+    # without the family's layout the library reads no source; SGLang gets it as before
+    if not path.is_dir() or not has_hf_lora_targets(hf_config):
         return
     try:
-        kind = classify_adapter_source(
-            path, get_hf_lora_targets(load_hf_config(args.hf_checkpoint).to_dict()), load_optimizer=False
-        )
+        kind = classify_adapter_source(path, get_hf_lora_targets(hf_config), load_optimizer=False)
     except ValueError:
         # not a source the library reads
         return
