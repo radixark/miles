@@ -59,7 +59,7 @@ class AdapterCheckpointMembers(Protocol):
     bf16_adapter_key_style: Literal["peft", "tinker", "sampler"]
 
     def export_bf16_adapter(self, slot: int) -> Iterable[tuple[str, torch.Tensor]]:
-        """Collective; whole bf16 tensors on rank 0, nothing elsewhere."""
+        """Collective; whole tensors on rank 0, nothing elsewhere. Any float dtype; the exports cast to bf16."""
 
     def get_local_shard_specs(self, slot: int) -> list[LocalShardSpec]: ...
 
