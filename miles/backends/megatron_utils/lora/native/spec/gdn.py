@@ -11,18 +11,14 @@ from miles.backends.megatron_utils.lora.native.modules.linear import LoRAUnreduc
 from miles.backends.megatron_utils.lora.native.spec import layout as L
 from miles.backends.megatron_utils.lora.native.spec.base import AttachContext, ProjectionSpec, ShardLayout
 from miles.backends.megatron_utils.lora.native.spec.layout import ModuleLayout, ProjectionBinding, attach_layout
+from miles.utils.lora.hf_lora_targets import GDN_IN_PROJ_COMPONENTS_BY_MODULE, gdn_in_proj_served_targets
 
-# (HF module a target selects, exported component, parameter prefix); official Tinker trains q / k / v / z apart
-GDN_IN_PROJ_COMPONENTS = (
-    ("in_proj_qkv", "in_proj_q", "q"),
-    ("in_proj_qkv", "in_proj_k", "k"),
-    ("in_proj_qkv", "in_proj_v", "v"),
-    ("in_proj_z", "in_proj_z", "z"),
-    ("in_proj_b", "in_proj_b", "b"),
-    ("in_proj_a", "in_proj_a", "a"),
+# (HF module a target selects, exported component, parameter prefix)
+GDN_IN_PROJ_COMPONENTS = tuple(
+    (module, component, component.removeprefix("in_proj_"))
+    for module, components in GDN_IN_PROJ_COMPONENTS_BY_MODULE.items()
+    for component in components
 )
-# SGLang stacks the components into in_proj_qkvz and in_proj_ba only as complete groups
-GDN_IN_PROJ_SERVED_GROUPS = (frozenset({"in_proj_qkv", "in_proj_z"}), frozenset({"in_proj_b", "in_proj_a"}))
 
 
 class Qwen35GDNSpec:
@@ -74,29 +70,4 @@ class Qwen35GDNSpec:
         return count + attach_layout(gdn, self.out_proj_layout, layer, context)
 
     def served_targets(self, modules: list[str], hf_targets: list[str]) -> list[str]:
-        """Check the in_proj selection and name its targets after the components native exports.
-
-        SGLang stacks the components only as complete groups.
-        """
-        leaves_by_block: dict[str, set[str]] = {}
-        for module in modules:
-            block, _, leaf = module.rpartition(".")
-            if block.endswith(self.hf_block) or not block:
-                leaves_by_block.setdefault(block, set()).add(leaf)
-        for block, leaves in leaves_by_block.items():
-            for group in GDN_IN_PROJ_SERVED_GROUPS:
-                assert leaves & group in (set(), group), (
-                    f"native GDN LoRA needs {sorted(group)} selected together in {block or self.hf_block} "
-                    f"(got {sorted(leaves & group)}): SGLang serves the components only as a stacked group"
-                )
-        components: dict[str, list[str]] = {}
-        for host, component, _prefix in GDN_IN_PROJ_COMPONENTS:
-            components.setdefault(host, []).append(component)
-        served = []
-        for target in hf_targets:
-            block, dot, leaf = target.rpartition(".")
-            if leaf in components and (block.endswith(self.hf_block) or not block):
-                served.extend(f"{block}{dot}{component}" for component in components[leaf])
-            else:
-                served.append(target)
-        return served
+        return gdn_in_proj_served_targets(modules, hf_targets, self.hf_block)

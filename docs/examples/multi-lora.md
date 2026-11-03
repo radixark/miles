@@ -135,7 +135,7 @@ matching PEFT and the Tinker cookbook; it is the default for `serve_tinker.py`.
 It can be combined with `--experts-shared-outer-loras`: expert gate and up then each
 have their own A matrix shared across experts; their B matrices remain per expert.
 These settings are fixed for the gateway, and training checkpoints must use the same layout.
-GDN projections keep their existing fused layout; this does not promise full Tinker-hosted model equivalence.
+Under `canonical_lora` the Qwen3.5 / 3.6 GDN input projection trains the selected `in_proj_q/k/v/z/b/a` components, each with its own `lora_A`; under `lora` it stays one fused adapter.
 Canonical Q/K/V needs every TP rank to hold whole KV heads (`num_query_groups >= tensor_model_parallel_size`),
 and canonical gate/up needs separate HF gate and up tensors in dense MLPs; a model or layout outside that fails at
 startup, so launch it with `--lora-type lora`.
