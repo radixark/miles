@@ -35,6 +35,7 @@ from miles.backends.megatron_utils.lora.utils import (
 )
 from miles.backends.megatron_utils.rematerialize_utils import _build_cast_main_to_params_fn
 from miles.backends.training_utils.checkpoint.adapter.adapter_dir import (
+    check_adapter_source,
     load_adapter_dir,
     read_training_state,
     save_adapter_dir,
@@ -192,7 +193,7 @@ class DistributedOptimizerMembers:
 
     def _replicated_masters(self) -> dict[int, torch.Tensor]:
         """Index in ``slot_parameters(0)`` -> fp32 master, of the parameters a plain Float16 optimizer steps: miles
-        runs a non-Adam optimizer (SGD) without the DistributedOptimizer, and it keeps no moments."""
+        runs SGD without the DistributedOptimizer, and SGD without momentum keeps no other state."""
         index_of = {id(p): i for i, p in enumerate(self._slots.slot_parameters(0))}
         masters = {}
         for child in self._optimizer.chained_optimizers:
@@ -231,7 +232,7 @@ class DistributedOptimizerMembers:
     def export_adapter_state(self, slot: int) -> AdapterState:
         assert not (
             self._save_moments and self._replicated_masters()
-        ), "a non-Adam optimizer keeps no moments; save its adapter with --no-save-optim"
+        ), "SGD without momentum keeps no moments; save its adapter with --no-save-optim"
         whole, step = self._whole_state()
         holds = self._holds()
         params = self._slots.slot_parameters(0)
@@ -273,8 +274,10 @@ class DistributedOptimizerMembers:
         for sub in self._distributed_optimizers():
             if sub.init_state_fn is not None:
                 sub.init_state_fn(sub.optimizer, sub.config)
-            # every element is overwritten below, so nothing is gathered
-            gathered = sub.get_parameter_state_dp_zero(use_gloo_comm=True, empty_data=True)
+            elif isinstance(sub.optimizer, HybridDeviceOptimizer) and not sub.optimizer.state:
+                _init_zero_hdo_state(sub.optimizer)
+            # gathered, not empty: elements no piece holds (vocab padding) must keep their master and moments
+            gathered = sub.get_parameter_state_dp_zero(use_gloo_comm=True)
             if gathered is not None:
                 for buffer_index, buffer in enumerate(sub.buffers):
                     for param in buffer.param_index_map:
@@ -398,7 +401,7 @@ def find_load_mismatch(
     path = Path(path)
     mismatch = None
     try:
-        kind = classify_adapter_source(path, targets, load_optimizer=load_optimizer)
+        kind = check_adapter_source(path, run, targets, load_optimizer=load_optimizer)
         if kind == AdapterSourceKind.LEGACY_TINKER_CHECKPOINT:
             _read_legacy_meta(path, run)
             if load_optimizer:
@@ -429,17 +432,8 @@ def find_load_mismatch(
                     f"(differing keys e.g. {sorted(expected ^ saved)[:3]}); "
                     "load it on a gateway with the layout it was saved with"
                 )
-        elif kind == AdapterSourceKind.ADAPTER_DIR:
-            source = MilesAdapterDirReader(path, targets).source
-            steps = plan_parametrization_conversion(source.parametrization, run, source_dtype=source.weight_dtype)
-            assert_parametrization_matches_run(
-                source.parametrization,
-                run,
-                steps,
-                load_optimizer=load_optimizer,
-                has_optimizer_state=source.has_optimizer_state,
-            )
-    except (AssertionError, ValueError) as error:
+    # any failure to read the user's source is theirs; raised after the slot reset, it kills the trainer cell
+    except Exception as error:
         mismatch = f"{path} cannot load into this model: {error}"
     gathered = [None] * dist.get_world_size()
     dist.all_gather_object(gathered, mismatch, group=gloo_group())
@@ -496,20 +490,18 @@ def _canonicalize_slot_keys(tree: dict, slot: int) -> dict:
 
 def _load_legacy_slot(model: Sequence[DDP], slot_optimizer: SlotOptimizer, path: str, load_optimizer: bool) -> None:
     weights = _slot_weights_sharded_state_dict(model, slot_optimizer.slot)
-    shells = {_WEIGHTS_KEY: weights}
-    if load_optimizer:
-        shells[_OPTIM_KEY] = slot_optimizer.sharded_state(weights, is_loading=True)
+    shells = {_WEIGHTS_KEY: weights, _OPTIM_KEY: slot_optimizer.sharded_state(weights, is_loading=True)}
     _canonicalize_slot_keys(shells, slot_optimizer.slot)
 
     loaded = dist_checkpointing.load(shells, path)
-    if load_optimizer:
-        slot_optimizer.load_sharded_state(loaded[_OPTIM_KEY])
-        # the masters are authoritative: main's layout leaves grouped-expert adapter weights unloaded in the model
-        for child in slot_optimizer.chained_optimizers:
-            child._copy_main_params_to_model_params()
-        slot_optimizer.allgather_params()
-    else:
-        slot_optimizer.reload_masters()
+    slot_optimizer.load_sharded_state(loaded[_OPTIM_KEY])
+    if not load_optimizer:
+        slot_optimizer.reset_adam_state()
+    # the masters are authoritative, also for weights only: main's layout leaves grouped-expert adapter weights
+    # unloaded in the model
+    for child in slot_optimizer.chained_optimizers:
+        child._copy_main_params_to_model_params()
+    slot_optimizer.allgather_params()
 
 
 def build_adapter_slots(args, model, iterator, targets) -> BridgeAdapterSlots:
@@ -589,8 +581,14 @@ def restore_single_lora(model, args, *, optimizer, opt_param_scheduler) -> tuple
     )
     run = single_lora_parametrization(slots, args)
     path = Path(args.lora_adapter_path)
-    legacy = LegacyRankShardLoader(model, optimizer, run, load_optimizer)
-    bridge = MegatronBridgeCheckpointLoader(model, optimizer, members, run, load_optimizer)
+    in_model_loaders_by_kind = {
+        AdapterSourceKind.LEGACY_RANK_SHARD: LegacyRankShardLoader(model, optimizer, run, load_optimizer)
+    }
+    # a Bridge checkpoint's sharded keys exist only in a Bridge model
+    if args.megatron_to_hf_mode == "bridge":
+        in_model_loaders_by_kind[AdapterSourceKind.MEGATRON_BRIDGE_CHECKPOINT] = MegatronBridgeCheckpointLoader(
+            model, optimizer, members, run, load_optimizer
+        )
     load_adapter_dir(
         path,
         members,
@@ -598,10 +596,7 @@ def restore_single_lora(model, args, *, optimizer, opt_param_scheduler) -> tuple
         run,
         targets,
         load_optimizer=load_optimizer,
-        in_model_loaders_by_kind={
-            AdapterSourceKind.LEGACY_RANK_SHARD: legacy,
-            AdapterSourceKind.MEGATRON_BRIDGE_CHECKPOINT: bridge,
-        },
+        in_model_loaders_by_kind=in_model_loaders_by_kind,
     )
     # an old-format save holds its training state beside the rank shards, whichever reader loaded the weights
     training_state = read_training_state(path) or _read_legacy_training_state(path)

@@ -189,6 +189,13 @@ class SlotOptimizer:
     def load_sharded_state(self, loaded: dict) -> None:
         self._inner.load_state_dict(loaded)
 
+    def reset_adam_state(self) -> None:
+        """Drop the Adam moments and step, keeping the masters: the state of a slot that never stepped."""
+        for child in self._inner.chained_optimizers:
+            child.optimizer.state.clear()
+            for group in child.optimizer.param_groups:
+                group.pop("step", None)
+
     def zero_grads(self) -> None:
         """Zero the slot's gradients everywhere they live: the DDP ``main_grad``
         buffer views and any lingering ``grad``/``main_param.grad`` references."""

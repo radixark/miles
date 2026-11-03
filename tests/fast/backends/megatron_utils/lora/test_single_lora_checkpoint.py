@@ -14,6 +14,8 @@ from miles.backends.megatron_utils.lora.checkpoint import (
     restore_single_lora,
     single_lora_parametrization,
 )
+from miles.backends.training_utils.checkpoint.adapter.adapter_state import AdapterState, LocalShardSpec
+from miles.backends.training_utils.checkpoint.adapter.readers import AdapterSourceKind
 
 _MODULE = "miles.backends.megatron_utils.lora.checkpoint"
 
@@ -39,7 +41,7 @@ def test_a_hub_id_is_kept():
     assert _base_model("Qwen/Qwen3-8B") == "Qwen/Qwen3-8B"
 
 
-def _restore(path, *, convert_save=None):
+def _restore(path, *, convert_save=None, megatron_to_hf_mode="bridge"):
     """``restore_single_lora`` with the model-facing pieces mocked; returns (iteration, scheduler, mocks)."""
     args = SimpleNamespace(
         hf_checkpoint="/hf",
@@ -49,13 +51,14 @@ def _restore(path, *, convert_save=None):
         lora_alpha=16.0,
         lora_type="lora",
         experts_shared_outer_loras=False,
-        megatron_to_hf_mode="bridge",
+        megatron_to_hf_mode=megatron_to_hf_mode,
         multi_lora=False,
         backend=SimpleNamespace(no_load_optim=True, no_save_optim=False, use_precision_aware_optimizer=False),
     )
     scheduler = MagicMock()
     with (
         patch("miles.backends.megatron_utils.update_weight.hf_weight_iterator.get_hf_weight_iterator"),
+        patch("miles.backends.megatron_utils.lora.native.checkpoint.NativeAdapterSlots"),
         patch.multiple(
             _MODULE,
             get_hf_lora_targets=DEFAULT,
@@ -93,6 +96,13 @@ def test_a_weights_only_convert_save_writes_neither_moments_nor_a_placeholder_tr
     assert mocks["save_and_commit_adapter_dir"].call_args.kwargs["training_state"] is None
 
 
+@pytest.mark.parametrize("megatron_to_hf_mode, loads_bridge", [("bridge", True), ("raw", False)])
+def test_only_the_bridge_backend_loads_a_megatron_bridge_checkpoint(tmp_path, megatron_to_hf_mode, loads_bridge):
+    _, _, mocks = _restore(tmp_path, megatron_to_hf_mode=megatron_to_hf_mode)
+    loaders = mocks["load_adapter_dir"].call_args.kwargs["in_model_loaders_by_kind"]
+    assert (AdapterSourceKind.MEGATRON_BRIDGE_CHECKPOINT in loaders) is loads_bridge
+
+
 def test_a_mix_of_distributed_and_plain_optimizers_is_refused():
     distributed = DistributedOptimizer.__new__(DistributedOptimizer)
     optimizer = SimpleNamespace(chained_optimizers=[distributed, MagicMock()])
@@ -106,3 +116,41 @@ def test_a_plain_optimizer_is_checkpointed_by_its_replicated_masters():
     members = DistributedOptimizerMembers.__new__(DistributedOptimizerMembers)
     members._optimizer = SimpleNamespace(chained_optimizers=[object(), object()])
     assert members._distributed_optimizers() == []
+
+
+def test_a_restore_keeps_the_state_of_elements_no_checkpoint_holds():
+    """Native head_B's vocab-padding rows are left out of every checkpoint; a restore must not zero them."""
+    param = torch.zeros(4)
+    current = {key: torch.full((4,), value) for key, value in (("param", 1.0), ("exp_avg", 2.0), ("exp_avg_sq", 3.0))}
+    buffer = SimpleNamespace(
+        param_index_map={param: (0, 4, 0)}, bucket_indices=[(0, 4)], param_dtype="p", grad_dtype="g"
+    )
+    loaded = {}
+
+    def get_parameter_state_dp_zero(use_gloo_comm, empty_data=False):
+        # Megatron's world tensors start from zeros and are filled only without empty_data
+        world = {key: torch.zeros(4) if empty_data else tensor.clone() for key, tensor in current.items()}
+        return {0: {("p", "g"): world}, "buckets_coalesced": True}
+
+    sub = DistributedOptimizer.__new__(DistributedOptimizer)
+    sub.init_state_fn = None
+    sub.optimizer = SimpleNamespace(param_groups=[])
+    sub.buffers = [buffer]
+    sub.get_parameter_state_dp_zero = get_parameter_state_dp_zero
+    sub.load_parameter_state_from_dp_zero = loaded.update
+    slots = MagicMock()
+    slots.slot_parameters.return_value = [param]
+    # element 3 is vocab padding: no piece holds it
+    slots.piece_parameter.return_value = [(0, torch.tensor([0, 1, 2]))]
+    members = DistributedOptimizerMembers(slots, SimpleNamespace(chained_optimizers=[sub]), [], precision_aware=False)
+    spec = LocalShardSpec("model.lm_head.lora_B", (4,), (0,), (3,))
+    state = AdapterState([spec], [torch.full((3,), 5.0)], [torch.full((3,), 6.0)], [torch.full((3,), 7.0)], step=9)
+    parallel = SimpleNamespace(intra_dp_cp=SimpleNamespace(rank=0), edp=SimpleNamespace(rank=0))
+
+    with patch.multiple(_MODULE, get_parallel_state=lambda: parallel, _build_cast_main_to_params_fn=MagicMock()):
+        members.import_adapter_state(0, state)
+
+    world = loaded[0][("p", "g")]
+    assert world["param"].tolist() == [5.0, 5.0, 5.0, 1.0]
+    assert world["exp_avg"].tolist() == [6.0, 6.0, 6.0, 2.0]
+    assert world["exp_avg_sq"].tolist() == [7.0, 7.0, 7.0, 3.0]
