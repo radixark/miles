@@ -1,34 +1,49 @@
 import math
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 import numpy as np
 import torch
 
 from miles.backends.training_utils.data.context_parallel import CPLayout, take_ranges
 from miles.backends.training_utils.parallel import get_parallel_state
-from miles.utils.output_store.plan import ForwardSegments, StorePlanError, is_segments_column
+from miles.utils.output_store.plan import ForwardSegments, RowRead, StorePlanError, is_segments_column
 from miles.utils.replay_base import BaseReplayManager
 
 if TYPE_CHECKING:
     from radix_transfer_plugins import OutputStore, ReadBuffer
 
 
-def register_replay_list_sequential(replay_list, replay_data, **_kwargs):
+def register_replay_list_sequential(replay_list, replay_data, *, blocks, **_kwargs):
     """Map replay streams to registered modules.
 
-    Each replay records `replay_data[:, replay.stream_idx]` if `stream_idx` is
-    set (used for sparse layer layouts under PP/VPP, where the global replay
-    tensor contains more streams than this rank registered). Otherwise falls
-    back to 1:1 enumeration order.
+    `replay_data[b]` holds streams `blocks[b]`. Each replay records stream `replay.stream_idx` if
+    set (used for sparse layer layouts under PP/VPP, where the global replay tensor contains more
+    streams than this rank registered). Otherwise falls back to 1:1 enumeration order.
     """
     for replay_idx, replay in enumerate(replay_list):
         stream_idx = replay.stream_idx if replay.stream_idx is not None else replay_idx
-        if not 0 <= stream_idx < replay_data.shape[1]:
-            raise AssertionError(
-                f"replay stream_idx {stream_idx} out of range " f"(replay_data has {replay_data.shape[1]} streams)"
-            )
-        replay.record(replay_data[:, stream_idx])
+        block, column = locate_stream(blocks, stream_idx)
+        replay.record(replay_data[block][:, column])
+
+
+def locate_stream(blocks: Sequence[tuple[int, int]], stream: int) -> tuple[int, int]:
+    """The block holding `stream`, and its column there."""
+    for i, (start, end) in enumerate(blocks):
+        if start <= stream < end:
+            return i, stream - start
+    raise AssertionError(f"replay stream {stream} out of range (this rank's replay rows hold streams {blocks})")
+
+
+def stream_blocks(replays) -> list[tuple[int, int]]:
+    """The streams `register_replay_list_sequential` records for `replays`, as ascending runs `(start, end)`."""
+    blocks = []
+    for stream in sorted({r.stream_idx if r.stream_idx is not None else i for i, r in enumerate(replays)}):
+        if blocks and blocks[-1][1] == stream:
+            blocks[-1] = (blocks[-1][0], stream + 1)
+        else:
+            blocks.append((stream, stream + 1))
+    return blocks
 
 
 class ReadSlots:
@@ -68,6 +83,7 @@ def attach_replay_data(
     output_store=None,
     sequence_first=False,
     align=None,
+    blocks=None,
 ):
     """Load rollout replay tensors into `manager`'s replay queues, one micro batch per `fill(index)`.
 
@@ -79,6 +95,10 @@ def attach_replay_data(
     layout, and stream-to-module mapping is delegated to `manager.register_replay_list_func`.
     The manager fills the micro batches in order on its worker thread, ahead of the forwards
     that pop them; the column is dropped once the last one has been waited for.
+
+    `blocks` are the `(start, end)` stream ranges this rank registers (Megatron: `replay_blocks`),
+    each a stored part from the output store; None means every stream, the whole stored field.
+    Only their streams are read and padded, one tensor per block, and registered with `blocks=`.
 
     For `bshd`, `sequence_first` selects Megatron MoE's `[S, B]` token order;
     indexer replay consumes the default `[B, S]` order. `align`, if given, is
@@ -98,9 +118,12 @@ def attach_replay_data(
             if manager.read_slots is not None:
                 manager.read_slots.close()
             manager.read_slots = ReadSlots(output_store, count=1)
+    if blocks is None:
+        blocks = (column[0].parts() if from_store else [(0, column[0].shape[1])]) if column else []
     # A train-data dump, written after training, replaces the column with each sample's local rows
-    # (after CP padding, before packing), what replay consumed on this rank; None for a sample
-    # no micro batch holds, which a fixed schedule leaves when the batch does not divide evenly.
+    # (after CP padding, before packing) of every block in turn, what replay consumed on this rank;
+    # None for a sample no micro batch holds, which a fixed schedule leaves when the batch does not
+    # divide evenly.
     keep_column = manager.kept_in_train_dump and args.save_debug_train_data is not None
     kept_rows = {}
 
@@ -120,9 +143,9 @@ def attach_replay_data(
         return torch.cat([data, pad_tensor], dim=0)
 
     def fill(index):
-        replay_data = [column[j] for j in order[index]]
+        samples = [column[j] for j in order[index]]
         tokens = [rollout_data["tokens"][j] for j in order[index]]
-        for a, b in zip(replay_data, tokens, strict=False):
+        for a, b in zip(samples, tokens, strict=False):
             rows = a.num_rows() if from_store else a.shape[0]
             assert rows == b.shape[0] - 1, f"{rows}, {b.shape}"
 
@@ -140,17 +163,24 @@ def attach_replay_data(
         )
         local_ranges = layout.local_ranges([t.size(0) for t in tokens])
         if from_store:
-            replay_data = _read_local_rows(manager.read_slots, replay_data, local_ranges)
+            # A rank that replays nothing, e.g. a pipeline stage of dense layers only, may read all-zero rows.
+            rows = _read_local_rows(
+                manager.read_slots, samples, local_ranges, blocks=blocks, check=bool(manager.replays)
+            )
         else:
-            replay_data = [
-                take_ranges(r, ranges, pad_func) for r, ranges in zip(replay_data, local_ranges, strict=True)
+            rows = [
+                [r[:, start:end] for start, end in blocks]
+                for r in (take_ranges(s, ranges, pad_func) for s, ranges in zip(samples, local_ranges, strict=True))
             ]
         if keep_column:
-            # Store rows are views of a slot the next micro batch overwrites.
-            kept_rows.update(
-                (j, r.clone() if from_store else r) for j, r in zip(order[index], replay_data, strict=True)
-            )
+            # A copy: store rows are views of a slot the next micro batch overwrites.
+            kept_rows.update((j, torch.cat(r, dim=1)) for j, r in zip(order[index], rows, strict=True))
 
+        replay_data = [pack([r[i] for r in rows], layout, pad_size) for i in range(len(blocks))]
+        manager.register_replay_list_func(manager.replays, replay_data, models=models, blocks=blocks)
+
+    def pack(replay_data, layout, pad_size):
+        """One block's rows of the micro batch's samples, in the token layout its forward consumes."""
         if qkv_format == "bshd":
             replay_data = torch.stack(replay_data, dim=0)
             batch_size, seqlen, num_layers, topk = replay_data.shape
@@ -181,7 +211,7 @@ def attach_replay_data(
 
         if align is not None:
             replay_data = align(replay_data, -1)
-        manager.register_replay_list_func(manager.replays, replay_data, models=models)
+        return replay_data
 
     def finish():
         # On the main thread: it may be iterating rollout_data while the worker fills.
@@ -194,40 +224,90 @@ def attach_replay_data(
 
 
 def _read_local_rows(
-    slots: ReadSlots, samples: Sequence[ForwardSegments], local_ranges: Sequence[Sequence[tuple[int, int]]]
-) -> list[torch.Tensor]:
-    """Each sample's rows at this rank's local positions, read in one call into a reused slot.
+    slots: ReadSlots,
+    samples: Sequence[ForwardSegments],
+    local_ranges: Sequence[Sequence[tuple[int, int]]],
+    *,
+    blocks: Sequence[tuple[int, int]],
+    check: bool,
+) -> list[list[torch.Tensor]]:
+    """Each sample's rows at this rank's local positions, one tensor per block, read in one call into a reused slot.
 
-    Positions past a sample's last row are padded with -1, as `take_ranges` pads inline rows.
+    The slot holds each block's part in turn, every sample's local rows of it. Positions past a sample's
+    last row are padded with -1, as `take_ranges` pads inline rows. With `check`, the rows read from each
+    object are checked, those of every block together.
     """
+    if not blocks:
+        # This rank registers no stream.
+        return [[] for _ in samples]
     # radix_transfer_plugins ships with SGLang and is not a Miles dependency.
     from radix_transfer_plugins import RangeRead
 
-    formats = {segments.row_format() for segments in samples}
-    if len(formats) != 1:
-        raise StorePlanError(f"a micro batch's {samples[0].name} rows come in {len(formats)} formats: {formats}")
-    ((dtype, row_shape),) = formats
-    row_bytes = dtype.itemsize * math.prod(row_shape)
-    reads, pads, counts = [], [], []
-    for segments, ranges in zip(samples, local_ranges, strict=True):
-        first = sum(counts)
-        sample_reads, sample_pads = segments.range_reads(ranges, dst_offset=first * row_bytes)
-        reads += sample_reads
-        pads += [(first + start, first + end) for start, end in sample_pads]
-        counts.append(sum(end - start for start, end in ranges))
-    buffer = slots.get(0, sum(counts) * row_bytes)
-    (name,) = samples[0].stored
+    counts = [sum(end - start for start, end in ranges) for ranges in local_ranges]
+    regions, reads, offset = [], [], 0
+    for block in blocks:
+        region = _BlockRegion.plan(samples, local_ranges, counts, block=block, offset=offset)
+        regions.append(region)
+        reads += [(block, r) for r in region.reads]
+        offset += sum(counts) * region.row_bytes
+    buffer = slots.get(0, offset)
     slots.store.read_ranges(
         [
-            RangeRead(ref=r.ref, field=name, src_offset=r.src_offset, nbytes=r.nbytes, dst_offset=r.dst_offset)
-            for r in reads
+            RangeRead(
+                ref=r.ref,
+                field=samples[0].part_name(block),
+                src_offset=r.src_offset,
+                nbytes=r.nbytes,
+                dst_offset=r.dst_offset,
+            )
+            for block, r in reads
         ],
         into=buffer,
     )
-    rows = np.frombuffer(buffer.view, dtype=dtype, count=sum(counts) * math.prod(row_shape))
-    rows = rows.reshape(sum(counts), *row_shape)
-    for start, end in pads:
-        rows[start:end] = -1
-    for r in reads:
-        samples[0].check_rows(rows[r.dst_offset // row_bytes : (r.dst_offset + r.nbytes) // row_bytes])
-    return list(torch.from_numpy(rows).split(counts))
+    rows = [region.rows(buffer, num_rows=sum(counts)) for region in regions]
+    if check:
+        # Every region holds the same local rows: check those of each object read of the first block in all.
+        first = regions[0]
+        for r in first.reads:
+            start = (r.dst_offset - first.offset) // first.row_bytes
+            end = start + r.nbytes // first.row_bytes
+            samples[0].check_rows([block_rows[start:end] for block_rows in rows])
+    by_block = [torch.from_numpy(block_rows).split(counts) for block_rows in rows]
+    return [list(sample_rows) for sample_rows in zip(*by_block, strict=True)]
+
+
+class _BlockRegion(NamedTuple):
+    """Where one block's rows of a micro batch's samples land in a slot, and the reads that put them there."""
+
+    offset: int
+    dtype: np.dtype
+    row_shape: tuple[int, ...]
+    row_bytes: int
+    reads: list[RowRead]
+    pads: list[tuple[int, int]]
+
+    @classmethod
+    def plan(cls, samples, local_ranges, counts, *, block, offset) -> "_BlockRegion":
+        formats = {segments.row_format(block) for segments in samples}
+        if len(formats) != 1:
+            raise StorePlanError(f"a micro batch's {samples[0].name} rows come in {len(formats)} formats: {formats}")
+        ((dtype, row_shape),) = formats
+        row_bytes = dtype.itemsize * math.prod(row_shape)
+        reads, pads, first = [], [], 0
+        for segments, ranges, count in zip(samples, local_ranges, counts, strict=True):
+            sample_reads, sample_pads = segments.range_reads(
+                ranges, dst_offset=offset + first * row_bytes, block=block
+            )
+            reads += sample_reads
+            pads += [(first + start, first + end) for start, end in sample_pads]
+            first += count
+        return cls(offset, dtype, row_shape, row_bytes, reads, pads)
+
+    def rows(self, buffer: "ReadBuffer", *, num_rows: int) -> np.ndarray:
+        """The region's rows in `buffer` once read, padding filled."""
+        count = num_rows * math.prod(self.row_shape)
+        rows = np.frombuffer(buffer.view, dtype=self.dtype, count=count, offset=self.offset)
+        rows = rows.reshape(num_rows, *self.row_shape)
+        for start, end in self.pads:
+            rows[start:end] = -1
+        return rows

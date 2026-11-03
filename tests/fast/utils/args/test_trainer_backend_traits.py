@@ -35,3 +35,32 @@ class TestTrainerBackendTraits:
         assert expected.items() <= values.items()
         assert not expected.keys() & TrainerConfig.model_fields.keys()
         assert config.model_dump(mode="json") == before
+
+    @pytest.mark.parametrize(
+        "parallel,splits",
+        [
+            ((), []),
+            (
+                (
+                    "--pipeline-model-parallel-size",
+                    "2",
+                    "--decoder-first-pipeline-num-layers",
+                    "3",
+                    "--decoder-last-pipeline-num-layers",
+                    "2",
+                ),
+                [3],
+            ),
+        ],
+        ids=["pp1", "pp2-uneven"],
+    )
+    def test_the_replay_layer_splits_follow_the_megatron_pipeline_layout(self, parallel, splits) -> None:
+        """The layers where pipeline stages meet are derived at launch and reach the rollout and every trainer."""
+        config = parse_megatron_test_config("--num-layers", "5", "--actor-num-gpus-per-node", "2", *parallel)
+        trainer = compute_trainer_config(config, config.raw_megatron.trainers[0])
+
+        assert config.replay_layer_splits == splits
+        assert trainer.backend.replay_layer_splits == splits
+
+    def test_a_non_megatron_backend_has_no_replay_layer_splits(self) -> None:
+        assert parse_fsdp_test_config().replay_layer_splits == []
