@@ -153,6 +153,22 @@ def test_a_retried_commit_of_the_same_write_keeps_it(tmp_path, monkeypatch, over
     assert not first.path.exists()
 
 
+def test_a_link_to_a_foreign_dir_is_never_replaced_or_deleted(tmp_path):
+    shared = tmp_path / "shared" / "pretrained_adapter"
+    shared.mkdir(parents=True)
+    (shared / "payload").write_text("shared")
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "w").symlink_to(shared)
+    with pytest.raises(ValueError, match="did not write"):
+        _save(root, "w", "new", overwrite=True)
+    with pytest.raises(ValueError, match="did not write"):
+        delete_adapter_dir(root, "w", tenant=None)
+    assert (shared / "payload").read_text() == "shared"
+    assert os.readlink(root / "w") == str(shared)
+    assert [p.name for p in root.iterdir()] == ["w"], "the refused write is removed"
+
+
 def test_the_written_files_and_dir_are_synced_before_the_link_swap(tmp_path, monkeypatch):
     events, path_by_fd = [], {}
     real_open, real_fsync, real_replace = os.open, os.fsync, os.replace

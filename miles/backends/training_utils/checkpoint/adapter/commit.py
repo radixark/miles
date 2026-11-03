@@ -129,6 +129,9 @@ def commit_adapter_dir(
     if link.is_dir() and not link.is_symlink():
         _adopt_pre_commit_dir(root, name)
     previous = _link_target(link)
+    if previous is not None and not _is_library_dir(root, name, previous):
+        _rmtree(written.path)
+        raise _foreign_link_error(link, previous)
     staging_link = root / f".{name}.{written.commit_id}{_STAGING_SUFFIX}"
     staging_link.symlink_to(written.path.name)
     os.replace(staging_link, link)
@@ -165,7 +168,20 @@ def resolve_adapter_dir(root: Path, name: str, *, tenant: str | None) -> Committ
     return CommittedAdapterDir(target, target.name.rsplit(".", 1)[1])
 
 
+def _is_library_dir(root: Path, name: str, path: Path) -> bool:
+    internal = _INTERNAL_ENTRY.match(path.name)
+    return path.parent == root and internal is not None and internal["name"] == name and internal["suffix"] is None
+
+
+def _foreign_link_error(link: Path, target: Path) -> ValueError:
+    # e.g. a user's symlink to a shared adapter; replacing it must never retire the shared dir
+    return ValueError(f"{link} points to {target}, which this library did not write; refusing to replace or delete it")
+
+
 def delete_adapter_dir(root: Path, name: str, *, tenant: str | None) -> None:
+    target = _link_target(Path(root) / name)
+    if target is not None and not _is_library_dir(Path(root), name, target):
+        raise _foreign_link_error(Path(root) / name, target)
     committed = resolve_adapter_dir(root, name, tenant=tenant)
     if committed is None:
         raise FileNotFoundError(f"adapter {name!r} does not exist")
