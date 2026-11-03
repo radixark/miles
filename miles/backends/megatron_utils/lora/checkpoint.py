@@ -273,17 +273,15 @@ def _canonicalize_slot_keys(tree: dict, slot: int) -> dict:
 
 def _load_legacy_slot(model: Sequence[DDP], slot_optimizer: SlotOptimizer, path: str, load_optimizer: bool) -> None:
     weights = _slot_weights_sharded_state_dict(model, slot_optimizer.slot)
-    shells = {_WEIGHTS_KEY: weights}
-    if load_optimizer:
-        shells[_OPTIM_KEY] = slot_optimizer.sharded_state(weights, is_loading=True)
+    shells = {_WEIGHTS_KEY: weights, _OPTIM_KEY: slot_optimizer.sharded_state(weights, is_loading=True)}
     _canonicalize_slot_keys(shells, slot_optimizer.slot)
 
     loaded = dist_checkpointing.load(shells, path)
-    if load_optimizer:
-        slot_optimizer.load_sharded_state(loaded[_OPTIM_KEY])
-        # the masters are authoritative: main's layout leaves grouped-expert adapter weights unloaded in the model
-        for child in slot_optimizer.chained_optimizers:
-            child._copy_main_params_to_model_params()
-        slot_optimizer.allgather_params()
-    else:
-        slot_optimizer.reload_masters()
+    slot_optimizer.load_sharded_state(loaded[_OPTIM_KEY])
+    if not load_optimizer:
+        slot_optimizer.reset_adam_state()
+    # the masters are authoritative, also for weights only: main's layout leaves grouped-expert adapter weights
+    # unloaded in the model
+    for child in slot_optimizer.chained_optimizers:
+        child._copy_main_params_to_model_params()
+    slot_optimizer.allgather_params()
