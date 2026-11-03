@@ -171,6 +171,7 @@ def _print_action_table(allowed_roles: list[str], *, cycles: int) -> None:
     print("  - rollback         (deterministic; always required)")
     if "user" in allowed_roles:
         print("  - append_user      (deterministic; required because 'user' in roles)")
+        print("  - parse_failure    (deterministic; required because 'user' in roles)")
     if "system" in allowed_roles:
         print("  - append_system    (deterministic; required because 'system' in roles)")
     if "assistant" in allowed_roles:
