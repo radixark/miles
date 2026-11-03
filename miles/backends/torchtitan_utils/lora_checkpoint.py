@@ -40,7 +40,7 @@ def _local_codes(param: torch.Tensor, start: int) -> torch.Tensor:
     return codes
 
 
-def probe_torchtitan_row_mapping(params: Mapping[str, torch.Tensor], sd_adapter, targets: HfLoraTargets) -> RowMapping:
+def probe_torchtitan_row_mapping(params: Mapping[str, torch.Tensor], sd_adapter) -> RowMapping:
     """Collective. ``params``: the adapter parameters by titan key, in the order their local shards are
     concatenated."""
     error = None
@@ -110,7 +110,7 @@ class TorchtitanAdapterSlots(ProbedAdapterSlots):
         self._params = {
             key: param for part in model_parts for key, param in part.named_parameters() if is_adapter_key(key)
         }
-        self.row_mapping = probe_torchtitan_row_mapping(self._params, sd_adapter, targets)
+        self.row_mapping = probe_torchtitan_row_mapping(self._params, sd_adapter)
 
     def slot_parameters(self, slot: int) -> list[torch.Tensor]:
         assert slot == 0, "the torchtitan backend trains a single LoRA adapter"

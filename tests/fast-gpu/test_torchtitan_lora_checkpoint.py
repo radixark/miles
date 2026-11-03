@@ -63,7 +63,7 @@ def _check(mapping, params_local: list[torch.Tensor], expected: dict[str, torch.
 def _whole(rank, world_size, port):
     init_gloo(rank, world_size, port=port)
     sd_adapter, params = _adapter()
-    mapping = probe_torchtitan_row_mapping(params, sd_adapter, _TARGETS)
+    mapping = probe_torchtitan_row_mapping(params, sd_adapter)
     attn, mlp = "model.layers.3.self_attn", "model.layers.3.mlp"
     assert mapping.shared_lora_a_groups == (
         (f"{mlp}.gate_proj", f"{mlp}.up_proj"),
@@ -89,7 +89,7 @@ def _sharded(rank, world_size, port):
     sd_adapter, params = _adapter()
     expected = _expected(sd_adapter, params)
     sharded = {key: distribute_tensor(value, mesh, [Shard(0)]) for key, value in params.items()}
-    mapping = probe_torchtitan_row_mapping(sharded, sd_adapter, _TARGETS)
+    mapping = probe_torchtitan_row_mapping(sharded, sd_adapter)
     _check(mapping, [p.to_local() for p in sharded.values()], expected)
     dist.destroy_process_group()
 
