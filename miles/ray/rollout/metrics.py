@@ -321,7 +321,7 @@ def _compute_zero_std_metrics(args, all_samples: list[Sample]):
     interesting_sample_groups = [g for g in all_sample_groups.values() if _is_zero_std(g)]
 
     uniform_rewards = [g[0].get_reward_value(args) for g in interesting_sample_groups]
-    interesting_rewards = [str(round(reward, 1)) for reward in uniform_rewards]
+    interesting_rewards = [str(round(reward, 1)) for reward in uniform_rewards if reward is not None]
 
     counts = {reward: len(items) for reward, items in group_by(interesting_rewards).items()}
     log_dict = {f"zero_std/count_{reward}": count for reward, count in counts.items()}
