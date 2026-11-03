@@ -82,6 +82,33 @@ def test_peft_export_reads_back_bitwise(tmp_path, shared_qkv):
     assert reader.source.parametrization.shared_lora_a_groups == run.shared_lora_a_groups
 
 
+def test_hf_peft_loads_the_peft_export(tmp_path):
+    peft = pytest.importorskip("peft")
+    transformers = pytest.importorskip("transformers")
+    config = transformers.Qwen3Config(
+        vocab_size=16,
+        hidden_size=8,
+        intermediate_size=16,
+        num_hidden_layers=1,
+        num_attention_heads=2,
+        num_key_value_heads=1,
+        head_dim=4,
+    )
+    model = transformers.AutoModelForCausalLM.from_config(config)
+    modules = (f"{L}.self_attn.q_proj", f"{L}.mlp.down_proj")
+    g = torch.Generator().manual_seed(0)
+    weights = {}
+    for m in modules:
+        rows, cols = model.get_submodule(m).weight.shape
+        weights[f"{m}.lora_A"] = torch.randn(2, cols, generator=g).to(torch.bfloat16)
+        weights[f"{m}.lora_B"] = torch.randn(rows, 2, generator=g).to(torch.bfloat16)
+    write_peft_adapter(tmp_path, weights, _run(lora_type="lora", target_modules=modules), QWEN3)
+    loaded = peft.PeftModel.from_pretrained(model, tmp_path).base_model.model
+    for key, value in weights.items():
+        module, factor = key.rsplit(".", 1)
+        assert torch.equal(getattr(loaded.get_submodule(module), factor)["default"].weight.to(torch.bfloat16), value)
+
+
 def test_a_fused_gdn_module_keeps_its_a_under_the_sorted_first_component(tmp_path):
     write_peft_adapter(tmp_path, _weights(True), _run(shared_lora_a_groups=(QKV,)), QWEN35)
     weights, fused_groups = _read_peft_tensors(tmp_path, map_peft_keys_to_hf_keys, QWEN35)
