@@ -132,7 +132,7 @@ async def test_optim_step_returns_the_slot_grad_norm(service):
 async def test_save_then_load_roundtrip_paths(service):
     model_id = await created_model(service)
     save = service.submit(
-        "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": "ckpt", "overwrite": False}
+        "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": "ckpt", "overwrite": False, "ttl_seconds": None}
     )
     saved_path = (await await_settled(service, "tenant", save)).result["path"]
     assert saved_path == f"tinker://{model_id}/weights/ckpt"
@@ -151,7 +151,7 @@ async def test_save_then_load_roundtrip_paths(service):
 async def test_sampler_save_publishes_successive_versions(service):
     model_id = await created_model(service)
     for seq_id in (1, 2):
-        request_id = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": seq_id})
+        request_id = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": seq_id, "ttl_seconds": None})
         future = await await_settled(service, "tenant", request_id)
         assert future.result["path"] == f"tinker://{model_id}/sampler_weights/{seq_id}"
     root = Path(resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "sampler_weights", "1")).parent
@@ -164,7 +164,7 @@ async def test_sampler_save_publishes_successive_versions(service):
 
 async def test_sampling_resolves_against_the_saved_version(service):
     model_id = await created_model(service)
-    save = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
+    save = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1, "ttl_seconds": None})
     sampler_path = (await await_settled(service, "tenant", save)).result["path"]
 
     request_id, sequence_ids = service.submit_sample(
@@ -243,7 +243,7 @@ async def test_a_short_inference_window_does_not_shrink_the_training_window(serv
 
 async def test_sampler_requests_carry_the_published_checkpoint_path(service):
     model_id = await created_model(service)
-    request_id = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
+    request_id = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1, "ttl_seconds": None})
     path = (await await_settled(service, "tenant", request_id)).result["path"]
 
     link = Path(resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "sampler_weights", "1"))
@@ -269,7 +269,7 @@ async def test_sampler_requests_carry_the_published_checkpoint_path(service):
 
 async def test_sample_failure_preserves_the_snapshot_and_training_model_queue(service):
     model_id = await created_model(service)
-    request_id = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
+    request_id = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1, "ttl_seconds": None})
     future = await await_settled(service, "tenant", request_id)
     assert future.result["path"] == f"tinker://{model_id}/sampler_weights/1"
 
@@ -329,7 +329,7 @@ async def test_a_fresh_heartbeat_keeps_the_model(service):
 async def test_traversal_checkpoint_names_are_rejected(service, name):
     model_id = await created_model(service)
     request_id = service.submit(
-        "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": name, "overwrite": False}
+        "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": name, "overwrite": False, "ttl_seconds": None}
     )
     future = await await_settled(service, "tenant", request_id)
     assert (future.state, future.error_category) == (FAILED, "user")
@@ -373,7 +373,7 @@ async def test_expired_result_on_resubmit_fails_instead_of_410(service, monkeypa
 
 async def test_save_state_refuses_to_overwrite_unless_asked(service):
     model_id = await created_model(service)
-    payload = {"model_id": model_id, "name": "ckpt", "overwrite": False}
+    payload = {"model_id": model_id, "name": "ckpt", "overwrite": False, "ttl_seconds": None}
     first = service.submit("tenant", "save_state", payload | {"seq_id": 1})
     assert (await await_settled(service, "tenant", first)).state == DONE
 
@@ -390,7 +390,7 @@ async def test_checkpoints_outlive_the_lease(service):
     session_id = service.create_session("tenant")
     model_id = await created_model(service, session_id=session_id)
     save = service.submit(
-        "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": "kept", "overwrite": False}
+        "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": "kept", "overwrite": False, "ttl_seconds": None}
     )
     path = (await await_settled(service, "tenant", save)).result["path"]
 
@@ -407,7 +407,7 @@ async def test_checkpoints_outlive_the_lease(service):
 async def test_a_foreign_tenants_checkpoint_does_not_load(service):
     model_id = await created_model(service)
     save = service.submit(
-        "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": "mine", "overwrite": False}
+        "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": "mine", "overwrite": False, "ttl_seconds": None}
     )
     path = (await await_settled(service, "tenant", save)).result["path"]
 
@@ -459,7 +459,7 @@ async def test_a_nonfinite_step_reports_the_skip(service):
 
 async def test_num_samples_is_capped(service):
     model_id = await created_model(service)
-    version = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
+    version = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1, "ttl_seconds": None})
     path = (await await_settled(service, "tenant", version)).result["path"]
     with pytest.raises(UserInputError):
         service.submit_sample(
@@ -539,7 +539,7 @@ async def test_unsupported_lora_configs_are_rejected(service):
 async def test_sampler_paths_resolve_independently_of_the_lease(service, expire_lease):
     session_id = service.create_session("tenant")
     model_id = await created_model(service, session_id=session_id)
-    save = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
+    save = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1, "ttl_seconds": None})
     path = (await await_settled(service, "tenant", save)).result["path"]
 
     if expire_lease:
@@ -564,14 +564,14 @@ async def test_sampler_paths_resolve_independently_of_the_lease(service, expire_
 async def test_an_unnamed_sampler_save_returns_a_sampling_session(service):
     model_id = await created_model(service)
     unnamed = service.submit(
-        "tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1, "sampler_path": None}
+        "tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1, "sampler_path": None, "ttl_seconds": None}
     )
     result = (await await_settled(service, "tenant", unnamed)).result
     session = service.sampling_sessions[result["sampling_session_id"]]
     assert (session.tenant, session.model_path) == ("tenant", result["path"])
 
     named = service.submit(
-        "tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 2, "sampler_path": "ckpt"}
+        "tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 2, "sampler_path": "ckpt", "ttl_seconds": None}
     )
     assert "sampling_session_id" not in (await await_settled(service, "tenant", named)).result
 
@@ -579,7 +579,7 @@ async def test_an_unnamed_sampler_save_returns_a_sampling_session(service):
 async def test_weights_info_reads_the_checkpoint_not_the_lease(service):
     model_id = await created_model(service)
     save = service.submit(
-        "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False}
+        "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False, "ttl_seconds": None}
     )
     path = (await await_settled(service, "tenant", save)).result["path"]
     del service.models[model_id]
@@ -659,7 +659,7 @@ async def test_a_failed_unload_keeps_the_slot_out_of_the_free_pool(service):
 async def test_a_named_sampler_save_uses_the_name_and_rejects_reuse(service):
     model_id = await created_model(service)
     save = service.submit(
-        "tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1, "sampler_path": "v1"}
+        "tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1, "sampler_path": "v1", "ttl_seconds": None}
     )
     result = (await await_settled(service, "tenant", save)).result
     assert result["path"] == f"tinker://{model_id}/sampler_weights/v1"
@@ -680,7 +680,7 @@ async def test_a_named_sampler_save_uses_the_name_and_rejects_reuse(service):
     assert service.backend.named("sample")[0]["lora_name"].startswith(f"{model_id}@v1@")
 
     reuse = service.submit(
-        "tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 2, "sampler_path": "v1"}
+        "tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 2, "sampler_path": "v1", "ttl_seconds": None}
     )
     future = await await_settled(service, "tenant", reuse)
     assert future.state == FAILED and "already exist" in future.error, "saved versions are immutable"
@@ -691,7 +691,7 @@ async def test_a_checkpoint_stores_a_digest_not_the_credential(service):
 
     model_id = await created_model(service)
     saved = service.submit(
-        "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False}
+        "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False, "ttl_seconds": None}
     )
     await await_settled(service, "tenant", saved)
     link = Path(resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "weights", "ck"))
@@ -707,7 +707,7 @@ async def test_a_checkpoint_of_another_base_or_rank_does_not_load(service, field
 
     model_id = await created_model(service)
     saved = service.submit(
-        "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False}
+        "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False, "ttl_seconds": None}
     )
     path = (await await_settled(service, "tenant", saved)).result["path"]
     parametrization = Path(resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "weights", "ck")).resolve()
@@ -727,7 +727,7 @@ async def test_a_loaded_adapter_keeps_its_own_alpha(service):
 
     model_id = await created_model(service)
     saved = service.submit(
-        "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False}
+        "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False, "ttl_seconds": None}
     )
     path = (await await_settled(service, "tenant", saved)).result["path"]
     parametrization = Path(resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "weights", "ck")).resolve()
@@ -761,7 +761,7 @@ async def test_an_overwritten_checkpoint_leaves_no_old_commit(service):
     model_id = await created_model(service)
     for seq_id in (1, 2):
         saved = service.submit(
-            "tenant", "save_state", {"model_id": model_id, "seq_id": seq_id, "name": "ck", "overwrite": True}
+            "tenant", "save_state", {"model_id": model_id, "seq_id": seq_id, "name": "ck", "overwrite": True, "ttl_seconds": None}
         )
         assert (await await_settled(service, "tenant", saved)).state == DONE
     await asyncio.gather(*service._cleanup_tasks)
@@ -804,10 +804,10 @@ async def test_an_unknown_failure_stops_the_dispatcher(tmp_path, source):
         model_id = await created_model(gateway)
         if source == "export":
             gateway.backend.fail_on["export_slot"] = error
-            gateway.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
+            gateway.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1, "ttl_seconds": None})
         elif source == "load":
             saved = gateway.submit(
-                "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False}
+                "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False, "ttl_seconds": None}
             )
             path = (await await_settled(gateway, "tenant", saved)).result["path"]
             gateway.backend.fail_on["load_slot"] = error
@@ -883,7 +883,7 @@ async def test_a_retried_sampling_session_returns_the_same_id(service):
 
 async def test_a_retried_sample_does_not_sample_again(service):
     model_id = await created_model(service)
-    save = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
+    save = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1, "ttl_seconds": None})
     path = (await await_settled(service, "tenant", save)).result["path"]
     sampling_session_id = service.create_sampling_session(
         "tenant", {"session_id": service.create_session("tenant"), "sampling_session_seq_id": 1, "model_path": path}
@@ -986,7 +986,7 @@ async def test_a_sampler_dir_written_before_commits_still_resolves(service):
 
 async def test_another_tenants_sampler_export_does_not_resolve(service):
     model_id = await created_model(service)
-    save = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
+    save = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1, "ttl_seconds": None})
     path = (await await_settled(service, "tenant", save)).result["path"]
     with pytest.raises(OwnershipError):
         resolve_sampler_checkpoint(service.config, "mallory", path, service.backend.resolve_adapter)
@@ -1027,7 +1027,7 @@ async def test_an_external_save_is_downloadable_by_its_tenant_only(service):
     with pytest.raises(OwnershipError):
         service.external_weights_urls("mallory", model_id, "external_weights/export", "http://gateway/")
     save = service.submit(
-        "tenant", "save_state", {"model_id": model_id, "seq_id": 2, "name": "ck", "overwrite": False}
+        "tenant", "save_state", {"model_id": model_id, "seq_id": 2, "name": "ck", "overwrite": False, "ttl_seconds": None}
     )
     await await_settled(service, "tenant", save)
     with pytest.raises(UserInputError, match="not an external_weights"):
@@ -1239,7 +1239,7 @@ async def test_file_imports_stay_under_the_import_root_and_load_weights_only(tmp
 async def test_trainer_ranks_get_only_the_tenant_digest(service):
     """The API key is the tenant's credential; it must not travel to trainer processes."""
     model_id = await created_model(service)
-    save = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
+    save = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1, "ttl_seconds": None})
     assert (await await_settled(service, "tenant", save)).state == DONE
     (export,) = service.backend.named("export_slot")
     assert export["tenant_digest"] == hashlib.sha256(b"tenant").hexdigest()

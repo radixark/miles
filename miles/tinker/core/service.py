@@ -406,7 +406,7 @@ class TinkerService:
             self.expiry.drop(tinker_path)
         self.backend.commit_adapter(root, name, written, payload["overwrite"])
         self._delete_retired_outside_the_lock(root)
-        self.expiry.set(tinker_path, payload.get("ttl_seconds"), time.time())
+        self.expiry.set(tinker_path, payload["ttl_seconds"], time.time())
         return {"op": "save_state", "path": tinker_path}
 
     def _delete_retired_outside_the_lock(self, root: str) -> None:
@@ -480,7 +480,7 @@ class TinkerService:
             "op": "save_weights_for_sampler",
             "path": f"tinker://{record.model_id}/sampler_weights/{version}",
         }
-        self.expiry.set(result["path"], payload.get("ttl_seconds"), time.time())
+        self.expiry.set(result["path"], payload["ttl_seconds"], time.time())
         if payload.get("sampler_path") is None:
             # unnamed saves return a sampling session bound to the new version
             result["sampling_session_id"] = self._new_sampling_session(
@@ -552,7 +552,7 @@ class TinkerService:
             return written
         self.backend.commit_adapter(root, name, written, False)
         tinker_path = f"tinker://{record.model_id}/external_weights/{name}"
-        self.expiry.set(tinker_path, payload.get("ttl_seconds"), time.time())
+        self.expiry.set(tinker_path, payload["ttl_seconds"], time.time())
         files = self.backend.resolve_checkpoint_files(root, name, record.tenant)
         size = sum(os.path.getsize(os.path.join(files["path"], f)) for f in files["files"])
         return {"op": "save_weights_external", "path": tinker_path, "size_bytes": size}
