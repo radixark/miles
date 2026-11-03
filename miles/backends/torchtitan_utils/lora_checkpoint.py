@@ -202,7 +202,7 @@ class TorchtitanOptimizerMembers:
         )
 
     def import_adapter_state(self, slot: int, state: AdapterState) -> None:
-        """In place: the moments may be file-backed (--stream-optimizer-state-to-disk)."""
+        """In place, into the AdamW state; restore() runs before --stream-optimizer-state-to-disk moves it to files."""
         states = self.adam_states()
         params = self._slots.slot_parameters(slot)
         with torch.no_grad():
