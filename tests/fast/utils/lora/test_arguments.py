@@ -102,6 +102,7 @@ def _adapter_state_args(**overrides) -> Namespace:
             "sgd_momentum": 0.0,
             "exp_avg_dtype": torch.float32,
             "exp_avg_sq_dtype": torch.float32,
+            "main_params_dtype": torch.float32,
             "use_distributed_optimizer": True,
             "use_gloo_process_groups": True,
             "use_precision_aware_optimizer": False,
@@ -155,6 +156,39 @@ def test_convert_save_is_refused_outside_megatron_single_lora(tmp_path, train_ba
         validate_lora_args(args)
 
 
+def test_convert_save_refuses_an_existing_destination(tmp_path):
+    destination = tmp_path / "converted"
+    destination.mkdir()
+    args = Namespace(
+        lora_type="lora",
+        multi_lora_n_adapters=0,
+        lora_rank=8,
+        lora_alpha=16.0,
+        lora_adapter_path=str(tmp_path),
+        lora_adapter_convert_save=str(destination),
+        train_backend="megatron",
+        megatron_to_hf_mode="bridge",
+    )
+    with pytest.raises(AssertionError, match="already exists"):
+        validate_lora_args(args)
+
+
+def test_convert_save_is_refused_under_rollout_only(tmp_path):
+    args = Namespace(
+        lora_type="lora",
+        multi_lora_n_adapters=0,
+        lora_rank=8,
+        lora_alpha=16.0,
+        lora_adapter_path=str(tmp_path),
+        lora_adapter_convert_save=str(tmp_path / "converted"),
+        train_backend="megatron",
+        megatron_to_hf_mode="bridge",
+        debug_rollout_only=True,
+    )
+    with pytest.raises(AssertionError, match="--debug-rollout-only"):
+        validate_lora_args(args)
+
+
 def test_multi_lora_refuses_an_adapter_path():
     with pytest.raises(AssertionError, match="--lora-adapter-path is single LoRA only"):
         validate_multi_lora_args(Namespace(multi_lora_n_adapters=2, lora_rank=8, lora_adapter_path="/adapter"))
@@ -165,6 +199,11 @@ def test_a_disabled_optimizer_cannot_save_or_load_the_adapter_checkpoint(save, l
     args = Namespace(save=save, lora_adapter_path=lora_adapter_path, debug_disable_optimizer=True)
     with pytest.raises(AssertionError, match="--debug-disable-optimizer"):
         _validate_adapter_state_args(args)
+
+
+def test_the_adapter_checkpoint_requires_fp32_masters():
+    with pytest.raises(AssertionError, match="fp32 masters"):
+        _validate_adapter_state_args(_adapter_state_args(no_save_optim=True, main_params_dtype=torch.float16))
 
 
 class TestRolloutOnlyAdapter:

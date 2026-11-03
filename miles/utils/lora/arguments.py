@@ -1,4 +1,5 @@
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -48,6 +49,12 @@ def validate_lora_args(args):
         assert (
             args.train_backend == "megatron" and not args.multi_lora
         ), "--lora-adapter-convert-save is implemented only for single LoRA on --train-backend megatron"
+        # the commit would retire and delete whatever sits there, including the source when converting in place
+        assert not os.path.lexists(
+            args.lora_adapter_convert_save
+        ), f"--lora-adapter-convert-save {args.lora_adapter_convert_save} already exists; pass a new path"
+        # rollout-only builds no model, so nothing would load or write the adapter
+        assert not args.debug_rollout_only, "--lora-adapter-convert-save needs the trainer; drop --debug-rollout-only"
     if engine_loads_adapter_from_disk(args):
         _validate_rollout_only_adapter(args)
     assert args.train_backend in (
@@ -195,6 +202,7 @@ def _validate_adapter_state_args(args) -> None:
         assert (
             args.exp_avg_dtype == args.exp_avg_sq_dtype == torch.float32
         ), "the adapter checkpoint stores fp32 moments"
+    assert args.main_params_dtype == torch.float32, "the adapter checkpoint stores fp32 masters"
     # SGD's checkpoint holds the masters alone, which would drop a momentum buffer
     assert (
         args.optimizer != "sgd" or args.sgd_momentum == 0

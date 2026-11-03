@@ -181,7 +181,7 @@ def probe_bridge_row_mapping(
             for members in a_sources.values():
                 flat = [m for member in members for m in ((member,) if isinstance(member, str) else member)]
                 if len(flat) > 1:
-                    groups.append(tuple(flat))
+                    groups.append(tuple(sorted(flat)))
             pieces += [
                 piece
                 for key, by_expert in per_expert.items()
