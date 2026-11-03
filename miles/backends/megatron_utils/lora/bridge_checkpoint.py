@@ -290,6 +290,14 @@ def assert_bridge_run_config_matches(
         ), "the source saved no optimizer state; pass --no-load-optim"
 
 
+def bridge_base_model_candidates(config: dict) -> tuple[str | None, ...]:
+    """Bridge PEFT loads its base from pretrained_checkpoint. When that is no HF dir here (torch_dist, or another
+    machine's path), the HF template it was converted from stands in, in Bridge's _resolve_hf_source order; that
+    stand-in misses a base fine-tuned in Megatron."""
+    checkpoint = config["checkpoint"]
+    return checkpoint.get("pretrained_checkpoint"), checkpoint.get("hf_source_path"), config["model"].get("hf_model_id")
+
+
 class MegatronBridgeCheckpointLoader:
     """A Megatron-Bridge PEFT ``iter_N/`` (torch_dist), read straight into this run's model and DistributedOptimizer
     under any TP / PP / EP / DP layout. The source's iteration, scheduler and RNG are not resumed."""
@@ -310,11 +318,7 @@ class MegatronBridgeCheckpointLoader:
             assert_bridge_run_config_matches(
                 config, self._run, params_dtype=chunks[0].config.params_dtype, load_optimizer=self._load_optimizer
             )
-            assert_same_base_model(
-                str(path),
-                (config["model"].get("hf_model_id"), config["checkpoint"].get("hf_source_path")),
-                self._run.base_model,
-            )
+            assert_same_base_model(str(path), bridge_base_model_candidates(config), self._run.base_model)
             # the master check after loading reads the DistributedOptimizer's masters, weights-only too
             assert all(
                 isinstance(sub, DistributedOptimizer) for sub in self._optimizer.chained_optimizers

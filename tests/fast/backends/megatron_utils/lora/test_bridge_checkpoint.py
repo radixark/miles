@@ -5,13 +5,16 @@ from datetime import timedelta
 import pytest
 import torch
 import torch.distributed as dist
+from safetensors.torch import save_file
 from tests.fast.dist_utils import init_gloo, run_multiprocess
 
 from miles.backends.megatron_utils.lora.bridge_checkpoint import (
     BridgeAdapterSlots,
     assert_bridge_run_config_matches,
+    bridge_base_model_candidates,
     probe_bridge_row_mapping,
 )
+from miles.backends.training_utils.checkpoint.adapter.base_model import assert_same_base_model
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
 from miles.backends.training_utils.checkpoint.adapter.probed_slots import RowMapping
 from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
@@ -277,3 +280,18 @@ def test_adam_state_needs_a_distributed_fp32_adam_source():
     config["optimizer"]["exp_avg_dtype"] = {"_target_": "torch.bfloat16", "_call_": False}
     with pytest.raises(AssertionError, match="exp_avg_dtype must be fp32"):
         assert_bridge_run_config_matches(config, _run(), params_dtype=torch.bfloat16, load_optimizer=True)
+
+
+def test_the_base_is_bridge_pretrained_checkpoint_not_the_hf_template(tmp_path):
+    def hf_dir(name, norm):
+        (tmp_path / name).mkdir()
+        save_file({"model.norm.weight": norm}, tmp_path / name / "model.safetensors")
+        return str(tmp_path / name)
+
+    template, sft = hf_dir("template", torch.ones(4)), hf_dir("sft", torch.ones(4) * 2)
+    config = {"checkpoint": {"pretrained_checkpoint": sft, "hf_source_path": template}, "model": {}}
+    with pytest.raises(AssertionError, match="another base model"):
+        assert_same_base_model("src", bridge_base_model_candidates(config), template)
+    # a torch_dist base has no HF files: its HF template stands in
+    config["checkpoint"]["pretrained_checkpoint"] = str(tmp_path)
+    assert_same_base_model("src", bridge_base_model_candidates(config), template)
