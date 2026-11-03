@@ -321,6 +321,9 @@ def _train(args: ScriptArgs) -> None:
             lora_args += "--experts-shared-outer-loras "
         if args.check_lora_weight_equal:
             lora_args += "--check-lora-weight-equal "
+        if is_debug:
+            # SGD keeps no Adam state for the adapter checkpoint to store
+            lora_args += "--no-save-optim "
 
     reward_model = args.reward_model or (
         "math" if args.task == "gsm8k" else ("deterministic_random" if is_debug else "deepscaler")

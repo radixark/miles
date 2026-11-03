@@ -8,6 +8,8 @@ import bisect
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
+from itertools import groupby
+
 import torch
 import torch.distributed as dist
 
@@ -30,17 +32,35 @@ class HfPiece:
 @dataclass(frozen=True)
 class RowMapping:
     pieces: list[HfPiece]
-    # HF modules whose lora_A is one Megatron parameter, in export order
+    # HF modules whose lora_A is one backend parameter, in export order
     shared_lora_a_groups: tuple[tuple[str, ...], ...]
     target_modules: tuple[str, ...]
 
 
-def rectangle(name: str, mine: torch.Tensor) -> tuple[slice, ...]:
-    positions = mine.nonzero()
-    low, high = positions.min(0).values.tolist(), (positions.max(0).values + 1).tolist()
-    box = tuple(slice(lo, hi) for lo, hi in zip(low, high, strict=True))
-    assert mine[box].all(), f"{name}: this rank's elements are not one rectangle"
-    return box
+def rectangles(name: str, mine: torch.Tensor, box: tuple[slice, ...] | None = None) -> list[tuple[slice, ...]]:
+    """``mine``'s elements inside ``box`` as rectangles, split at empty hyperplanes: an export that concatenates
+    separately gathered shards (e.g. gate and up, or several shared experts) gives a rank several bands of a tensor."""
+    if box is None:
+        positions = mine.nonzero()
+        low, high = positions.min(0).values.tolist(), (positions.max(0).values + 1).tolist()
+        box = tuple(slice(lo, hi) for lo, hi in zip(low, high, strict=True))
+    inside = mine[box]
+    if inside.all():
+        return [box]
+    for dim in range(inside.dim()):
+        occupied = inside.movedim(dim, 0).reshape(inside.shape[dim], -1).any(1).tolist()
+        if all(occupied):
+            continue
+        runs = [list(run) for is_mine, run in groupby(range(len(occupied)), key=occupied.__getitem__) if is_mine]
+        origin = box[dim].start
+        return [
+            rectangle
+            for run in runs
+            for rectangle in rectangles(
+                name, mine, (*box[:dim], slice(origin + run[0], origin + run[-1] + 1), *box[dim + 1 :])
+            )
+        ]
+    raise AssertionError(f"{name}: this rank's elements are not a union of rectangles split at empty hyperplanes")
 
 
 def _owning_parameter(starts: list[int], elements: torch.Tensor) -> int:
@@ -96,7 +116,8 @@ class ProbedAdapterSlots:
         Among ranks holding an identical piece, the lowest writes it.
         """
         rank = self.lora_rank(slot)
-        key = (rank, holds)
+        # LayerWise ownership differs per slot: a cache hit keyed without it would skip the gather on one process alone
+        key = (slot, rank, holds)
         if key not in self._specs:
             boxes = []
             for piece, within in self._pieces(slot, holds):

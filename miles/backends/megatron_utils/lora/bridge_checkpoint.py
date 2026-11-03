@@ -38,7 +38,7 @@ from miles.backends.training_utils.checkpoint.adapter.probed_slots import (
     HfPiece,
     ProbedAdapterSlots,
     RowMapping,
-    rectangle,
+    rectangles,
 )
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.lora.hf_lora_targets import HfLoraTargets
@@ -56,28 +56,37 @@ _BRIDGE_LORA_TYPES = {
 _RANK_STRIDE = 2**40
 
 
-def _piece(key: str, codes: torch.Tensor, rank: int) -> HfPiece | None:
+def _pieces_of(key: str, codes: torch.Tensor, rank: int) -> list[HfPiece]:
     mine = codes // _RANK_STRIDE == rank
     if not mine.any():
-        return None
-    box = rectangle(key, mine)
-    return HfPiece(key, tuple(codes.shape), tuple(s.start for s in box), (codes[box] % _RANK_STRIDE).cpu())
+        return []
+    return [
+        HfPiece(key, tuple(codes.shape), tuple(s.start for s in box), (codes[box] % _RANK_STRIDE).cpu())
+        for box in rectangles(key, mine)
+    ]
 
 
-def _stack_experts(key: str, pieces_by_expert: dict[int, HfPiece], num_experts: int) -> HfPiece:
+def _stack_experts(key: str, pieces_by_expert: dict[int, list[HfPiece]], num_experts: int) -> list[HfPiece]:
     experts = sorted(pieces_by_expert)
     assert experts == list(range(experts[0], experts[-1] + 1)), f"{key}: this rank's experts are not contiguous"
     first = pieces_by_expert[experts[0]]
     assert all(
-        p.offsets == first.offsets and p.local_elements.shape == first.local_elements.shape
-        for p in pieces_by_expert.values()
+        len(pieces) == len(first)
+        and all(
+            p.offsets == f.offsets and p.local_elements.shape == f.local_elements.shape
+            for p, f in zip(pieces, first, strict=True)
+        )
+        for pieces in pieces_by_expert.values()
     ), f"{key}: this rank holds different rectangles of different experts"
-    return HfPiece(
-        key,
-        (num_experts, *first.global_shape),
-        (experts[0], *first.offsets),
-        torch.stack([pieces_by_expert[e].local_elements for e in experts]),
-    )
+    return [
+        HfPiece(
+            key,
+            (num_experts, *piece.global_shape),
+            (experts[0], *piece.offsets),
+            torch.stack([pieces_by_expert[e][j].local_elements for e in experts]),
+        )
+        for j, piece in enumerate(first)
+    ]
 
 
 def probe_bridge_row_mapping(
@@ -85,15 +94,19 @@ def probe_bridge_row_mapping(
     export_adapter: Callable[[], Iterable[tuple[str, torch.Tensor]]],
     targets: HfLoraTargets,
     map_name: Callable[[str], HfKey] = map_peft_keys_to_hf_keys,
+    unexported: torch.Tensor | None = None,
 ) -> RowMapping:
     """Collective: run ``export_adapter`` (a backend's HF-named export, names mapped by ``map_name``) on
-    index-valued ``params``."""
+    index-valued ``params``.
+
+    ``unexported``: offsets of the elements the export leaves out by construction; no checkpoint holds them.
+    """
     rank = dist.get_rank()
     total = sum(p.numel() for p in params)
     assert total < _RANK_STRIDE and dist.get_world_size() < 2**53 // _RANK_STRIDE, "the probe encoding overflows"
     saved = [p.data for p in params]
     pieces, a_sources, modules = [], {}, set()
-    per_expert: dict[str, dict[int, HfPiece]] = {}
+    per_expert: dict[str, dict[int, list[HfPiece]]] = {}
     num_experts: dict[str, int] = {}
 
     def decode(name: str, tensor: torch.Tensor) -> None:
@@ -108,18 +121,18 @@ def probe_bridge_row_mapping(
             a_sources.setdefault(source, []).append(module if components is None else components)
         if hf_key.expert_index is not None:
             num_experts[hf_key.key] = max(num_experts.get(hf_key.key, 0), hf_key.expert_index + 1)
-            if (piece := _piece(hf_key.key, codes, rank)) is not None:
-                per_expert.setdefault(hf_key.key, {})[hf_key.expert_index] = piece
+            if expert_pieces := _pieces_of(hf_key.key, codes, rank):
+                per_expert.setdefault(hf_key.key, {})[hf_key.expert_index] = expert_pieces
             modules.add(module)
         elif components is None:
-            pieces.append(_piece(hf_key.key, codes, rank))
+            pieces.extend(_pieces_of(hf_key.key, codes, rank))
             modules.add(module)
         elif factor == "lora_A":
-            pieces.append(_piece(f"{components[0]}.lora_A", codes, rank))
+            pieces.extend(_pieces_of(f"{components[0]}.lora_A", codes, rank))
             modules.update(components)
         else:
             for component, part in zip(components, split_fused_lora_b(module, codes, targets), strict=True):
-                pieces.append(_piece(f"{component}.lora_B", part, rank))
+                pieces.extend(_pieces_of(f"{component}.lora_B", part, rank))
 
     error = None
     try:
@@ -146,15 +159,21 @@ def probe_bridge_row_mapping(
                 flat = [m for member in members for m in ((member,) if isinstance(member, str) else member)]
                 if len(flat) > 1:
                     groups.append(tuple(flat))
-            pieces = [p for p in pieces if p is not None]
-            pieces += [_stack_experts(key, by_expert, num_experts[key]) for key, by_expert in per_expert.items()]
+            pieces += [
+                piece
+                for key, by_expert in per_expert.items()
+                for piece in _stack_experts(key, by_expert, num_experts[key])
+            ]
             # the library stores a shared A once, under the group's first member
             shared_copies = {f"{member}.lora_A" for group in groups for member in group[1:]}
             pieces = [p for p in pieces if p.key not in shared_copies]
             covered = torch.zeros(total, dtype=torch.bool)
             for piece in pieces:
                 covered[piece.local_elements.flatten()] = True
-            assert covered.all(), f"Bridge's export does not reach {int((~covered).sum())} of this rank's elements"
+            if unexported is not None:
+                assert not covered[unexported].any(), "the export reaches elements declared unexported"
+                covered[unexported] = True
+            assert covered.all(), f"the export does not reach {int((~covered).sum())} of this rank's elements"
         except Exception as exc:
             error = exc
     raise_if_any_rank_failed(error)
@@ -180,14 +199,18 @@ class BridgeAdapterSlots(ProbedAdapterSlots):
     def __init__(self, model, iterator, targets: HfLoraTargets, *, multi_lora: bool):
         """Collective: probes the row mapping now, while nothing else touches the parameters."""
         self._model, self._iterator, self.targets, self._multi_lora = model, iterator, targets, multi_lora
-        self._specs: dict[int, list[LocalShardSpec]] = {}
+        self._specs: dict[tuple[int, int | None, frozenset[int] | None], list[LocalShardSpec]] = {}
         # every slot has the same layout
         self.row_mapping = probe_bridge_row_mapping(
-            self.slot_parameters(0), self._export_probe, targets, self._map_name
+            self.slot_parameters(0), self._export_probe, targets, self._map_name, self._unexported_elements()
         )
 
     def _map_name(self, name: str) -> HfKey:
         return map_peft_keys_to_hf_keys(name)
+
+    def _unexported_elements(self) -> torch.Tensor | None:
+        # Bridge exports every adapter element
+        return None
 
     def slot_parameters(self, slot: int) -> list[torch.nn.Parameter]:
         if self._multi_lora:
