@@ -102,7 +102,8 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
 
         self.trainer.engine.load_checkpoint()
         iteration = None
-        if is_lora_enabled(args):
+        # only saves and --lora-adapter-path use it, and building it probes the layout collectively
+        if is_lora_enabled(args) and (args.backend.save is not None or args.lora_adapter_path is not None):
             self._lora_checkpoint = TorchtitanLoraCheckpoint(self.trainer, args, _steps_per_rollout(args))
             # before the moments move to disk: the restore writes them in place
             if args.lora_adapter_path is not None:
