@@ -36,7 +36,8 @@ Unknown fields are rejected, so a typo fails at startup instead of being ignored
 `custom_rm_path` and `rm_type` become the samples' `reward_spec`, so they follow the per-sample reward rules in
 [Customization](customization.md), checked at startup: a function with its own config must be the
 `--custom-rm-path` one, and under `--group-rm` a batched `--custom-rm-path` scores every group, so a dataset that
-sets `rm_type` or names a different function is rejected.
+sets `rm_type` or names a different function is rejected. A custom reward function also outranks any `rm_type`,
+so with `--custom-rm-path` set, a dataset's `rm_type` needs its own `custom_rm_path` too.
 
 ### How prompts are drawn
 
