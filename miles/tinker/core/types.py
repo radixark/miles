@@ -21,8 +21,11 @@ class CommandOp(str, Enum):
         """Batch ops pack into BatchUnits; every other op is a barrier."""
         return self in (CommandOp.FORWARD_BACKWARD, CommandOp.FORWARD_ONLY)
 
-    def requires_model_close_on_failure(self) -> bool:
-        return self in (CommandOp.FORWARD_BACKWARD, CommandOp.OPTIM_STEP, CommandOp.LOAD_STATE)
+    def requires_model_close_on_failure(self, category: str) -> bool:
+        if self == CommandOp.LOAD_STATE:
+            # a load is refused as a user error before the slot changes
+            return category != "user"
+        return self in (CommandOp.FORWARD_BACKWARD, CommandOp.OPTIM_STEP)
 
 
 # wire loss_fn_inputs key -> internal datum key

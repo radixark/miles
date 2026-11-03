@@ -42,7 +42,6 @@ from miles.backends.training_utils.model_companion import (
     SampleIdentityExtractor,
 )
 from miles.backends.training_utils.types import TrainStepOutcome
-from miles.backends.training_utils.weight_update.snapshot_publisher import SnapshotPublisher
 from miles.utils.args.runtime import TrainerConfig
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.audit_utils.witness.module import witness_dump_and_clear_stale
@@ -931,7 +930,6 @@ def save(
     checkpointing_context: dict | None = None,
     non_persistent_ckpt: bool = False,
     *,
-    snapshot_publisher: SnapshotPublisher | None = None,
     adapter_slots: BridgeAdapterSlots | None = None,
 ) -> None:
     """Persist a training checkpoint safely with forward hooks disabled.
@@ -952,6 +950,7 @@ def save(
         disable_forward_pre_hook(model)
 
     if is_lora_model(model):
+        assert adapter_slots is not None, "a LoRA --save needs the model's adapter slots"
         save_single_lora(model, optimizer, opt_param_scheduler, adapter_slots, args, iteration)
     else:
         save_checkpoint(
@@ -1071,13 +1070,13 @@ def load_model_state(
 
     adapter_iteration = None
     if is_lora_enabled(args) and role == "actor" and args.lora_adapter_path is not None:
-        adapter_iteration = restore_single_lora(
+        adapter_iteration, adapter_scheduler_restored = restore_single_lora(
             model, args, optimizer=optimizer, opt_param_scheduler=opt_param_scheduler
         )
         if adapter_iteration is not None:
             iteration = adapter_iteration
             restored_trained_iteration = True
-            scheduler_restored = True
+            scheduler_restored = adapter_scheduler_restored
 
     check_peak_gpu_memory_after_load(args)
     clear_memory()

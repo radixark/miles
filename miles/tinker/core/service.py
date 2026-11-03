@@ -369,7 +369,7 @@ class TinkerService:
     async def _finish_request(self, model_queue, pending, outcome: dict) -> None:
         if "error" in outcome:
             category = outcome.get("error_category", "server")
-            if pending.command.op.requires_model_close_on_failure():
+            if pending.command.op.requires_model_close_on_failure(category):
                 await self._close_model(
                     model_queue.model_id,
                     f"model training failed ({outcome['error']}); create a new model and restore from a checkpoint",
@@ -473,7 +473,7 @@ class TinkerService:
         )
         if isinstance(written, dict):
             return written
-        self.backend.commit_adapter(root, version, written, False)
+        self.backend.commit_adapter(root, version, written, overwrite=False)
         result = {
             "op": "save_weights_for_sampler",
             "path": f"tinker://{record.model_id}/sampler_weights/{version}",
@@ -654,9 +654,11 @@ class TinkerService:
             raise UserInputError(f"{tinker_path} is a download; create a training client from a weights checkpoint")
         checkpoint_dir = resolve_checkpoint_dir(self.config.checkpoint_root, model_id, kind, name)
         if os.path.islink(checkpoint_dir):
-            parametrization = self.backend.resolve_adapter(os.path.dirname(checkpoint_dir), name, tenant, model_id)[
-                "parametrization"
-            ]
+            committed = self.backend.resolve_adapter(os.path.dirname(checkpoint_dir), name, tenant, model_id)
+            if committed is None:
+                # the link outlived its target
+                raise UserInputError(f"unknown checkpoint {tinker_path!r}")
+            parametrization = committed["parametrization"]
             # an adapter dir records targets, not group flags; it was written under this gateway's layout
             return {
                 "base_model": parametrization["base_model"],

@@ -172,7 +172,7 @@ def save_and_commit_adapter_dir(
     parametrization: AdapterParametrization,
     targets: HfLoraTargets,
     *,
-    training_state: dict,
+    training_state: dict | None = None,
 ) -> CommittedAdapterDir:
     """RL's ``--save``: all ranks write, rank 0 commits over any earlier save of ``name``, then the PEFT export.
 

@@ -6,7 +6,7 @@ import pytest
 import serve_tinker
 from tests.fast.fixtures.serve_tinker_fakes import tinker_startup
 
-from miles.tinker.runtime import MilesBackend
+from miles.tinker.runtime import MilesBackend, take_checkpoint_root
 from miles.utils import http_utils
 from miles.utils.async_utils import with_disposer
 from tinker import types as tinker_types
@@ -89,6 +89,21 @@ class TestServe:
 
         with pytest.raises(AssertionError, match="same frozen HF base"):
             await with_disposer(serve_tinker.serve, tinker_startup.args)
+
+        assert not tinker_startup.orchestration_calls
+        assert not tinker_startup.controller.initialized
+        assert tinker_startup.trainer.request is None
+
+    async def test_a_second_gateway_on_the_root_fails_before_startup(
+        self, tinker_startup: SimpleNamespace, tmp_path
+    ) -> None:
+        tinker_startup.args.tinker_checkpoint_root = str(tmp_path)
+        held = take_checkpoint_root(str(tmp_path))
+        try:
+            with pytest.raises(RuntimeError, match="another process already commits"):
+                await with_disposer(serve_tinker.serve, tinker_startup.args)
+        finally:
+            held.close()
 
         assert not tinker_startup.orchestration_calls
         assert not tinker_startup.controller.initialized

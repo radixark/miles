@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import time
 from contextlib import suppress
 from pathlib import Path
@@ -756,6 +757,37 @@ async def test_a_checkpoint_of_another_base_or_rank_does_not_load(service, field
     assert not service.backend.named("load_slot")[1:], "nothing may touch the slot on a mismatch"
 
 
+@pytest.mark.parametrize("refused_by", ["gateway", "trainer"])
+async def test_a_refused_load_leaves_the_model_usable(service, refused_by):
+    import json
+
+    model_id = await created_model(service)
+    saved = service.submit(
+        "tenant",
+        "save_state",
+        {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False, "ttl_seconds": None},
+    )
+    path = (await await_settled(service, "tenant", saved)).result["path"]
+    if refused_by == "gateway":
+        committed = Path(resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "weights", "ck")).resolve()
+        fields = json.loads((committed / "adapter_parametrization.json").read_text()) | {"lora_rank": 3}
+        (committed / "adapter_parametrization.json").write_text(json.dumps(fields))
+    else:
+        service.backend.fail_on["load_slot"] = {"error": "another adapter layout", "error_category": "user"}
+
+    loaded = service.submit(
+        "tenant", "load_state", {"model_id": model_id, "seq_id": 2, "path": path, "optimizer": True}
+    )
+    future = await await_settled(service, "tenant", loaded)
+    assert (future.state, future.error_category) == (FAILED, "user")
+    saved = service.submit(
+        "tenant",
+        "save_state",
+        {"model_id": model_id, "seq_id": 3, "name": "after", "overwrite": False, "ttl_seconds": None},
+    )
+    assert (await await_settled(service, "tenant", saved)).state == DONE
+
+
 async def test_a_loaded_adapter_keeps_its_own_alpha(service):
     import json
 
@@ -1269,26 +1301,40 @@ async def test_file_imports_stay_under_the_import_root_and_load_weights_only(tmp
         info = service.weights_info("tenant", f"file://{adapter}")
         assert (info["base_model"], info["lora_rank"]) == ("base", 8)
 
-        def load(model_id, path, optimizer=False):
-            payload = {"model_id": model_id, "seq_id": 1, "path": path, "optimizer": optimizer}
+        def load(model_id, path, optimizer=False, seq_id=1):
+            payload = {"model_id": model_id, "seq_id": seq_id, "path": path, "optimizer": optimizer}
             return await_settled(service, "tenant", service.submit("tenant", "load_state", payload))
 
         assert (await load(model_id, f"file://{adapter}")).state == DONE
         loaded = service.backend.named("load_slot")[-1]
         assert (loaded["ckpt_path"], loaded["load_optimizer"]) == (str(adapter.resolve()), False)
         assert service.models[model_id].lora_alpha == 32
-        # a failed load closes its model (freeing its slot), so each refusal gets a new one
-        for path, error in (
-            (f"file://{imports}/../outside", "outside the import root"),
-            (f"file://{imports}/link", "outside the import root"),
-            (f"file://{adapter}", "weights only"),
+        # a refused load leaves the model open
+        for seq_id, (path, error) in enumerate(
+            (
+                (f"file://{imports}/../outside", "outside the import root"),
+                (f"file://{imports}/link", "outside the import root"),
+                (f"file://{adapter}", "weights only"),
+            ),
+            start=2,
         ):
-            model_id = await created_model(service)
-            assert error in (await load(model_id, path, optimizer=error == "weights only")).error
+            assert error in (await load(model_id, path, optimizer=error == "weights only", seq_id=seq_id)).error
     finally:
         run_task.cancel()
         with suppress(asyncio.CancelledError):
             await run_task
+
+
+async def test_weights_info_rejects_a_sampler_link_whose_target_is_gone(service):
+    model_id = await created_model(service)
+    save = service.submit(
+        "tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1, "ttl_seconds": None}
+    )
+    path = (await await_settled(service, "tenant", save)).result["path"]
+    link = Path(resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "sampler_weights", "1"))
+    shutil.rmtree(resolve_adapter_dir(link.parent, "1", tenant="tenant").path)
+    with pytest.raises(UserInputError, match="unknown checkpoint"):
+        service.weights_info("tenant", path)
 
 
 async def test_trainer_ranks_get_only_the_tenant_digest(service):

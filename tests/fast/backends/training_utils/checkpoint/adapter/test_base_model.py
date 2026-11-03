@@ -10,7 +10,6 @@ from miles.backends.training_utils.checkpoint.adapter.base_model import (
     fingerprint_named_tensors,
     hf_base_fingerprint,
 )
-from miles.backends.training_utils.checkpoint.adapter.readers import read_source_lora_alpha
 
 
 def _hf_dir(path, norm: torch.Tensor):
@@ -49,8 +48,3 @@ def test_another_base_or_an_unresolvable_one_is_refused(tmp_path):
         assert_same_base_model("src", [str(a)], str(b))
     with pytest.raises(AssertionError, match="has no local HF files"):
         assert_same_base_model("src", [None, str(tmp_path / "missing")], str(b))
-
-
-def test_a_megatron_bridge_source_records_its_alpha_in_run_config(tmp_path):
-    (tmp_path / "run_config.yaml").write_text("peft:\n  alpha: 32\n")
-    assert read_source_lora_alpha(tmp_path) == 32.0

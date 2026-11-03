@@ -233,6 +233,8 @@ def _load_model_state_with(
     iteration: int,
     restored_trained_iteration: bool | None = None,
     adapter_iteration: int | None = None,
+    adapter_scheduler_restored: bool = True,
+    opt_param_scheduler=None,
     lora_adapter_path: str | None = None,
     write_tracker: bool = True,
     ckpt_step: int | None = None,
@@ -257,7 +259,10 @@ def _load_model_state_with(
             )
         )
         stack.enter_context(
-            patch("miles.backends.megatron_utils.model.restore_single_lora", return_value=adapter_iteration)
+            patch(
+                "miles.backends.megatron_utils.model.restore_single_lora",
+                return_value=(adapter_iteration, adapter_scheduler_restored),
+            )
         )
         _patch_initialize_side_effects(stack)
         return load_model_state(
@@ -274,7 +279,7 @@ def _load_model_state_with(
             ),
             model=[_FakeModelChunk()],
             optimizer=None,
-            opt_param_scheduler=None,
+            opt_param_scheduler=opt_param_scheduler,
             role="actor",
             checkpointing_context=None,
             resume_from_ckpt=resume_from_ckpt,
@@ -384,6 +389,23 @@ class TestALoraAdapterThatCarriesItsOwnIteration:
     def test_adapter_weights_without_training_state_start_at_rollout_zero(self, tmp_path: Path) -> None:
         """An HF adapter or shards saved without training state carry no iteration to continue from."""
         assert self._start(tmp_path, adapter_iteration=None).start_rollout_id == 0
+
+    def test_an_adapter_without_megatron_scheduler_state_steps_the_scheduler_to_its_iteration(
+        self, tmp_path: Path
+    ) -> None:
+        """A torchtitan-written adapter dir has an iteration but no Megatron scheduler state."""
+        scheduler = MagicMock()
+        _load_model_state_with(
+            tmp_path=tmp_path,
+            finetune=True,
+            iteration=0,
+            adapter_iteration=100,
+            adapter_scheduler_restored=False,
+            opt_param_scheduler=scheduler,
+            lora_adapter_path=str(tmp_path / "adapter"),
+            resume_from_ckpt=False,
+        )
+        scheduler.step.assert_called_once_with(increment=800)
 
 
 class TestCheckpointSourceRequirement:

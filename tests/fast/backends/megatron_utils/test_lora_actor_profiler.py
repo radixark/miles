@@ -17,7 +17,10 @@ def test_lora_pass_emits_scheduled_trace(monkeypatch, method):
         "miles.backends.megatron_utils.actor": {"MegatronTrainRayActor": object},
         "miles.backends.megatron_utils.lora": {"checkpoint": None, "model": model},
         "miles.backends.megatron_utils.lora.optimizer": {"SlotOptimizer": object},
-        "miles.backends.training_utils.checkpoint.adapter.adapter_dir": {"write_sampler_export": None},
+        "miles.backends.training_utils.checkpoint.adapter.adapter_dir": {
+            "write_external_export": None,
+            "write_sampler_export": None,
+        },
         "miles.backends.training_utils.checkpoint.adapter.commit": {"UncommittedAdapterDir": object},
         "miles.backends.training_utils.data.rollout": {
             "get_rollout_data": lambda *args, **kwargs: ({}, nullcontext())

@@ -26,6 +26,7 @@ from miles.backends.training_utils.checkpoint.adapter.readers import (
     MilesAdapterDirReader,
     PeftAdapterReader,
     classify_adapter_source,
+    read_source_lora_alpha,
 )
 from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
 
@@ -96,6 +97,14 @@ def test_sampler_export_reads_back_through_the_adapter_dir_reader(tmp_path):
     assert all(torch.equal(reader.read_weights()[k], v) for k, v in weights.items())
 
 
+def test_sampler_export_target_modules_name_hf_modules_not_sglang_tensors(tmp_path):
+    write_sampler_adapter(tmp_path, {k: v.to(torch.bfloat16) for k, v in _weights(False).items()}, _run(), QWEN35)
+    names = set(load_file(str(tmp_path / "adapter_model.safetensors")))
+    assert any(".experts.w1." in n for n in names) and not any(".experts.gate_proj." in n for n in names)
+    config = json.loads((tmp_path / "adapter_config.json").read_text())
+    assert config["target_modules"] == sorted((*QKV, *EXPERTS))
+
+
 def test_splitting_a_shared_a_is_weights_only():
     source, target = _run(shared_lora_a_groups=(QKV,)), _run()
     steps = plan_parametrization_conversion(source, target, source_dtype=torch.float32)
@@ -152,7 +161,9 @@ def test_external_export_reads_back_through_the_external_reader(tmp_path, shared
     tensors = load_file(str(tmp_path / "adapter_model.safetensors"))
     assert all(t.dtype == torch.float32 for t in tensors.values())
     assert any(".experts.w1." in name for name in tensors), "gated experts take Tinker's names"
-    assert classify_adapter_source(tmp_path, QWEN35, load_optimizer=False) == AdapterSourceKind.EXTERNAL_WEIGHTS
+    # experts' Tinker names are sglang's too; without Tinker's head the layout reads either way
+    kind = classify_adapter_source(tmp_path, QWEN35, load_optimizer=False)
+    assert kind in (AdapterSourceKind.PEFT, AdapterSourceKind.EXTERNAL_WEIGHTS)
     config = json.loads((tmp_path / "adapter_config.json").read_text())
     assert "base_model_name_or_path" in config and config["base_model_name_or_path"] is None, "as the official export"
     read = ExternalWeightsReader(tmp_path, run, QWEN35).read_weights()
@@ -394,3 +405,66 @@ def test_gpt_oss_down_proj_alone_stays_one_packed_3d_tensor(tmp_path):
         tensors = load_file(str(tmp_path / export / "adapter_model.safetensors"))
         assert set(tensors) == {f"{down}.lora_A.weight", f"{down}.lora_B.weight"}, export
         assert tensors[f"{down}.lora_A.weight"].shape == (3, 2, 4)
+
+
+def test_a_megatron_bridge_source_records_its_alpha_in_run_config(tmp_path):
+    (tmp_path / ".metadata").touch()
+    (tmp_path / "run_config.yaml").write_text("peft:\n  alpha: 32\n")
+    assert read_source_lora_alpha(tmp_path) == 32.0
+
+
+def test_a_peft_dir_takes_its_alpha_from_adapter_config_despite_a_run_config(tmp_path):
+    (tmp_path / "adapter_config.json").write_text(json.dumps({"lora_alpha": 4}))
+    (tmp_path / "run_config.yaml").write_text("peft:\n  alpha: 32\n")
+    assert read_source_lora_alpha(tmp_path) == 4
+
+
+_GLM5 = get_hf_lora_targets(
+    {"model_type": "glm_moe_dsa", "mlp_layer_types": ["sparse"], "n_shared_experts": 0, "q_lora_rank": 4}
+)
+_QWEN35_MOE = get_hf_lora_targets(
+    {
+        "model_type": "qwen3_5_moe",
+        "text_config": {
+            "layer_types": ["full_attention"],
+            "shared_expert_intermediate_size": 0,
+            "linear_num_key_heads": 2,
+            "linear_key_head_dim": 2,
+            "linear_num_value_heads": 2,
+            "linear_value_head_dim": 2,
+        },
+    }
+)
+_INKLING = get_hf_lora_targets({"model_type": "inkling_model", "mlp_layer_types": ["sparse"], "n_shared_experts": 0})
+
+
+@pytest.mark.parametrize(
+    "targets, layer",
+    [(_GLM5, "model.layers.0"), (_QWEN35_MOE, "model.language_model.layers.0"), (_INKLING, "model.layers.0")],
+    ids=["glm_moe_dsa", "qwen3_5_moe", "inkling"],
+)
+def test_mains_native_export_with_sglang_expert_names_reads_back(tmp_path, targets, layer):
+    """main's native --save-hf stacks experts under sglang's w1 / w3 / w2 and keeps HF names otherwise."""
+    g = torch.Generator().manual_seed(0)
+    hf_by_sglang = {"w1": "gate_proj", "w3": "up_proj", "w2": "down_proj"}
+    tensors = {
+        f"{layer}.self_attn.o_proj.lora_A.weight": torch.randn(2, 8, generator=g),
+        f"{layer}.self_attn.o_proj.lora_B.weight": torch.randn(8, 2, generator=g),
+    }
+    for sglang in hf_by_sglang:
+        tensors[f"{layer}.mlp.experts.{sglang}.lora_A.weight"] = torch.randn(3, 2, 8, generator=g)
+        tensors[f"{layer}.mlp.experts.{sglang}.lora_B.weight"] = torch.randn(3, 8, 2, generator=g)
+    save_file(tensors, str(tmp_path / "adapter_model.safetensors"))
+    (tmp_path / "adapter_config.json").write_text(json.dumps({"peft_type": "LORA", "r": 2, "lora_alpha": 4.0}))
+
+    assert classify_adapter_source(tmp_path, targets, load_optimizer=False) == AdapterSourceKind.PEFT
+    weights = PeftAdapterReader(tmp_path, _run(), targets).read_weights()
+
+    def hf_key(name: str) -> str:
+        for sglang, hf in hf_by_sglang.items():
+            name = name.replace(f".experts.{sglang}.", f".experts.{hf}.")
+        return name.removesuffix(".weight")
+
+    expected = {hf_key(name): value for name, value in tensors.items()}
+    assert weights.keys() == expected.keys()
+    assert all(torch.equal(weights[k], v) for k, v in expected.items())

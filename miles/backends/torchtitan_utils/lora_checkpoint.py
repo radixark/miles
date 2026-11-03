@@ -3,7 +3,8 @@ torchtitan's own DCP checkpoints.
 
 The layout comes from the model's own state-dict adapter: ``sd_adapter.to_hf`` runs on index-valued tensors of each
 adapter's global shape, so fused projections (wqkv, w13) split exactly as their base weights do; each rank keeps the
-HF positions its DTensor shard holds. Needs no collective except agreeing who writes replicated pieces.
+HF positions its DTensor shard holds. Collective: ranks agree on a probe failure, then gather every pipeline stage's
+targets and shared-A groups.
 
 The fp32 parameters are their own masters; AdamW keeps ``exp_avg`` / ``exp_avg_sq`` as DTensors shaped like them and
 one ``step`` per parameter.
@@ -18,6 +19,7 @@ import torch.distributed as dist
 import torch.distributed.checkpoint as dcp
 from torch.distributed.tensor import DTensor
 from torch.distributed.tensor._utils import compute_local_shape_and_global_offset
+from torch.optim.lr_scheduler import _update_param_group_val
 from torchtitan.components.optim.utils import init_optim_state
 
 from miles.backends.torchtitan_utils.lora_names import is_adapter_key, split_adapter_key
@@ -35,25 +37,17 @@ from miles.backends.training_utils.checkpoint.adapter.base_model import (
     fingerprint_named_tensors,
     hf_base_fingerprint,
     is_fingerprint_tensor,
+    resolve_hf_dir,
 )
-from miles.backends.training_utils.checkpoint.adapter.key_mapping import map_peft_keys_to_hf_keys
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
 from miles.backends.training_utils.checkpoint.adapter.probed_slots import (
     HfPiece,
     ProbedAdapterSlots,
     RowMapping,
-    rectangle,
+    rectangles,
 )
 from miles.backends.training_utils.checkpoint.adapter.readers import AdapterSourceKind
 from miles.utils.lora.hf_lora_targets import HfLoraTargets
-
-_PEFT_FACTOR = {"lora_a": "lora_A", "lora_b": "lora_B"}
-
-
-def hf_export_names(sd_adapter, projection: str, weight_shape: tuple[int, ...]) -> list[str]:
-    """The HF modules a titan projection's weight exports as; several for a fused projection."""
-    probe = torch.empty(weight_shape, device="meta")
-    return [name.removesuffix(".weight") for name in sd_adapter.to_hf({f"{projection}.weight": probe})]
 
 
 def _local_box(param: torch.Tensor) -> tuple[tuple[int, ...], tuple[int, ...]]:
@@ -73,7 +67,28 @@ def _local_codes(param: torch.Tensor, start: int) -> torch.Tensor:
 
 
 def probe_torchtitan_row_mapping(params: Mapping[str, torch.Tensor], sd_adapter, targets: HfLoraTargets) -> RowMapping:
-    """``params``: the adapter parameters by titan key, in the order their local shards are concatenated."""
+    """Collective. ``params``: the adapter parameters by titan key, in the order their local shards are
+    concatenated."""
+    error = None
+    try:
+        pieces, groups, modules = _probe_local(params, sd_adapter)
+    except Exception as exc:
+        error = exc
+    raise_if_any_rank_failed(error)
+
+    # pipeline stages hold different layers; every rank needs the whole parametrization
+    gathered = [None] * dist.get_world_size()
+    dist.all_gather_object(gathered, (sorted(groups), sorted(modules)), group=gloo_group())
+    return RowMapping(
+        pieces,
+        tuple(sorted({g for rank_groups, _ in gathered for g in rank_groups})),
+        tuple(sorted({m for _, rank_modules in gathered for m in rank_modules})),
+    )
+
+
+def _probe_local(
+    params: Mapping[str, torch.Tensor], sd_adapter
+) -> tuple[list[HfPiece], list[tuple[str, ...]], set[str]]:
     starts, start = {}, 0
     for key, param in params.items():
         starts[key] = start
@@ -85,9 +100,9 @@ def probe_torchtitan_row_mapping(params: Mapping[str, torch.Tensor], sd_adapter,
             continue
         lora_a_key = f"{projection}.lora_a.weight"
         lora_b = sd_adapter.to_hf({f"{projection}.weight": _local_codes(params[key], starts[key])})
+        assert lora_b, f"{projection}: to_hf exports nothing"
         lora_a = _local_codes(params[lora_a_key], starts[lora_a_key])
-        hf_modules = [map_peft_keys_to_hf_keys(f"{name.removesuffix('.weight')}.lora_A.weight").key for name in lora_b]
-        hf_modules = [k.removesuffix(".lora_A") for k in hf_modules]
+        hf_modules = [name.removesuffix(".weight") for name in lora_b]
         modules.update(hf_modules)
         if len(hf_modules) > 1:
             # one titan lora_a serves every HF projection of a fused weight; it is stored once, under the first
@@ -96,13 +111,15 @@ def probe_torchtitan_row_mapping(params: Mapping[str, torch.Tensor], sd_adapter,
         named += [(f"{module}.lora_B", part) for module, part in zip(hf_modules, lora_b.values(), strict=True)]
         for hf_key, codes in named:
             if (mine := codes >= 0).any():
-                box = rectangle(hf_key, mine)
-                pieces.append(HfPiece(hf_key, tuple(codes.shape), tuple(s.start for s in box), codes[box]))
+                pieces += [
+                    HfPiece(hf_key, tuple(codes.shape), tuple(s.start for s in box), codes[box].clone())
+                    for box in rectangles(hf_key, mine)
+                ]
     covered = torch.zeros(start, dtype=torch.bool)
     for piece in pieces:
         covered[piece.local_elements.flatten()] = True
     assert covered.all(), f"to_hf does not reach {int((~covered).sum())} of this rank's adapter elements"
-    return RowMapping(pieces, tuple(sorted(groups)), tuple(sorted(modules)))
+    return pieces, groups, modules
 
 
 class TorchtitanAdapterSlots(ProbedAdapterSlots):
@@ -114,10 +131,7 @@ class TorchtitanAdapterSlots(ProbedAdapterSlots):
         self._iterator, self.targets = iterator, targets
         self._specs = {}
         self._params = {
-            key: param
-            for part in model_parts
-            for key, param in part.named_parameters()
-            if split_adapter_key(key) is not None
+            key: param for part in model_parts for key, param in part.named_parameters() if is_adapter_key(key)
         }
         self.row_mapping = probe_torchtitan_row_mapping(self._params, sd_adapter, targets)
 
@@ -149,7 +163,7 @@ class TorchtitanOptimizerMembers:
     def get_local_shard_specs(self, slot: int):
         return self._slots.get_local_shard_specs(slot)
 
-    def _states(self) -> list[dict]:
+    def adam_states(self) -> list[dict]:
         """Each adapter parameter's AdamW state, created (zero, step 0) where no step has run yet."""
         state_of = {}
         for optimizer in self._optimizers:
@@ -158,7 +172,7 @@ class TorchtitanOptimizerMembers:
         return [state_of[id(p)] for p in self._slots.parameters.values()]
 
     def export_adapter_state(self, slot: int) -> AdapterState:
-        states = self._states()
+        states = self.adam_states()
         steps = {int(state["step"]) for state in states}
         assert len(steps) == 1, f"the adapter parameters disagree on the AdamW step: {steps}"
         specs = self._slots.get_local_shard_specs(slot)
@@ -179,7 +193,7 @@ class TorchtitanOptimizerMembers:
 
     def import_adapter_state(self, slot: int, state: AdapterState) -> None:
         """In place: the moments may be file-backed (--stream-optimizer-state-to-disk)."""
-        states = self._states()
+        states = self.adam_states()
         params = self._slots.slot_parameters(slot)
         with torch.no_grad():
             for (index, offsets), *pieces in zip(
@@ -189,15 +203,15 @@ class TorchtitanOptimizerMembers:
                 for destination, piece in zip(destinations, pieces, strict=True):
                     destination.view(-1)[offsets.flatten().to(destination.device)] = piece.flatten().to(destination)
             for adam in states:
-                adam["step"].fill_(state.step or 0)
+                adam["step"].fill_(state.step)
 
 
 class TorchtitanCheckpointLoader:
     """A torchtitan DCP checkpoint (``step-N/`` of torchtitan v0.4.0, or of miles before the adapter format), read
     straight into this run's adapter parameters and AdamW state under any parallel layout.
 
-    Only lora_a / lora_b and their ``optimizer.state.<fqn>.*`` are read; the base must match the run's HF files. The
-    DCP records no alpha: the run's (``--lora-alpha``) is used.
+    Only lora_a / lora_b, their ``optimizer.state.<fqn>.*``, ``train_state`` and ``lr_scheduler`` are read; the base
+    must match the run's HF files. The DCP records no alpha: the run's (``--lora-alpha``) is used.
     """
 
     def __init__(
@@ -216,27 +230,42 @@ class TorchtitanCheckpointLoader:
             sd_adapter,
         )
         self._run, self._load_optimizer = run, load_optimizer
+        self.train_state: dict | None = None
+        self.lr_scheduler_state: dict | None = None
 
-    def _base_fingerprint(self, path: Path, metadata) -> str:
-        names = {}
-        for part in self._model_parts:
-            for fqn, param in part.named_parameters():
-                if "norm" in fqn and fqn in metadata:
-                    (hf_name,) = self._sd_adapter.to_hf({fqn: torch.empty(param.shape, device="meta")})
-                    if is_fingerprint_tensor(hf_name):
-                        names[fqn] = hf_name
-        # pipeline stages hold different norms; every rank reads them all
+    def _base_fingerprint(self, path: Path, metadata) -> tuple[str, list[str]]:
+        """The DCP's base fingerprint, and the HF names it hashes (only what the titan model holds, e.g. no MTP)."""
+        fqns, error = set(), None
+        try:
+            for part in self._model_parts:
+                for fqn, param in part.named_parameters():
+                    candidate = "norm" in fqn or fqn.startswith("layers.0.attention.")
+                    if candidate and split_adapter_key(fqn) is None and fqn in metadata:
+                        hf_names = self._sd_adapter.to_hf({fqn: torch.empty(param.shape, device="meta")})
+                        if any(is_fingerprint_tensor(name) for name in hf_names):
+                            fqns.add(fqn)
+        except Exception as exc:
+            error = exc
+        raise_if_any_rank_failed(error)
+        # pipeline stages hold different layers; every rank reads them all
         gathered = [None] * dist.get_world_size()
-        dist.all_gather_object(gathered, names, group=gloo_group())
-        names = {fqn: hf for rank_names in gathered for fqn, hf in rank_names.items()}
-        tensors = {fqn: torch.empty(metadata[fqn].size, dtype=metadata[fqn].properties.dtype) for fqn in names}
+        dist.all_gather_object(gathered, fqns, group=gloo_group())
+        tensors = {
+            fqn: torch.empty(metadata[fqn].size, dtype=metadata[fqn].properties.dtype)
+            for fqn in set().union(*gathered)
+        }
         dcp.load(tensors, checkpoint_id=path, no_dist=True)
-        return fingerprint_named_tensors((names[fqn], tensor) for fqn, tensor in tensors.items())
+        named = {name: t for name, t in self._sd_adapter.to_hf(tensors).items() if is_fingerprint_tensor(name)}
+        return fingerprint_named_tensors(named.items()), list(named)
 
     def __call__(self, path: Path) -> AdapterParametrization:
-        metadata = dcp.FileSystemReader(path).read_metadata().state_dict_metadata
+        metadata, error = None, None
+        try:
+            metadata = dcp.FileSystemReader(path).read_metadata().state_dict_metadata
+        except Exception as exc:
+            error = exc
+        raise_if_any_rank_failed(error)
         params = self._slots.parameters
-        error = None
         try:
             saved = {k for k in metadata if is_adapter_key(k)}
             expected = [None] * dist.get_world_size()
@@ -263,22 +292,39 @@ class TorchtitanCheckpointLoader:
         except Exception as exc:
             error = exc
         raise_if_any_rank_failed(error)
-        assert self._base_fingerprint(path, metadata) == hf_base_fingerprint(
-            Path(self._run.base_model)
+        fingerprint, hf_names = self._base_fingerprint(path, metadata)
+        hf_dir = resolve_hf_dir(self._run.base_model)
+        assert (
+            hf_dir is not None
+        ), f"--hf-checkpoint {self._run.base_model} has no local HF weights to compare {path} with"
+        assert fingerprint == hf_base_fingerprint(
+            hf_dir, names=hf_names
         ), f"{path} was trained on another base model than --hf-checkpoint {self._run.base_model}"
 
-        states = self._members._states()
+        states = self._members.adam_states()
         loaded = dict(params)
         if self._load_optimizer:
             for key, state in zip(params, states, strict=True):
                 loaded |= {f"optimizer.state.{key}.{name}": state[name] for name in ("exp_avg", "exp_avg_sq", "step")}
+        # non-tensor entries: DCP replaces these placeholders with the saved values
+        loaded |= {"train_state.step": 0, "train_state.ntokens_seen": 0, "lr_scheduler.last_epoch": 0}
         with torch.no_grad():
             dcp.load(loaded, checkpoint_id=path)
+        self.train_state = {"step": loaded["train_state.step"], "ntokens_seen": loaded["train_state.ntokens_seen"]}
+        self.lr_scheduler_state = {"last_epoch": loaded["lr_scheduler.last_epoch"]}
         steps = [None] * dist.get_world_size()
         dist.all_gather_object(steps, {int(state["step"]) for state in states}, group=gloo_group())
         steps = set().union(*steps)
         assert len(steps) == 1, f"{path}'s adapter parameters disagree on the AdamW step: {steps}"
         return replace(self._run, lora_alpha=None)
+
+
+def load_lr_schedulers(lr_schedulers, state: dict) -> None:
+    lr_schedulers.load_state_dict(state)
+    # load_state_dict sets only the schedulers' own lr; the optimizers would take their next step at the fresh one
+    for scheduler in lr_schedulers:
+        for group, lr in zip(scheduler.optimizer.param_groups, scheduler.get_last_lr(), strict=True):
+            _update_param_group_val(group, "lr", lr)
 
 
 def _torchtitan_adapter_slots(trainer, args) -> TorchtitanAdapterSlots:
@@ -302,8 +348,8 @@ def _torchtitan_adapter_slots(trainer, args) -> TorchtitanAdapterSlots:
 class TorchtitanLoraCheckpoint:
     """Single-LoRA RL checkpoints of the torchtitan backend: ``{save}/iter_N/adapter`` and ``--lora-adapter-path``."""
 
-    def __init__(self, trainer, args):
-        self._trainer, self._args = trainer, args
+    def __init__(self, trainer, args, steps_per_rollout: int):
+        self._trainer, self._args, self._steps_per_rollout = trainer, args, steps_per_rollout
         self.slots = _torchtitan_adapter_slots(trainer, args)
         self.members = TorchtitanOptimizerMembers(self.slots, trainer.optimizers.optimizers)
         self.run = self.slots.parametrization(
@@ -357,10 +403,20 @@ class TorchtitanLoraCheckpoint:
             in_model_loaders_by_kind={AdapterSourceKind.TORCHTITAN_CHECKPOINT: loader},
         )
         training_state = read_training_state(path)
-        if training_state is not None and "lr_scheduler" in training_state:
-            # written by a torchtitan run; a Megatron run's scheduler state does not apply here
-            self._trainer.engine.optim.lr_schedulers.load_state_dict(training_state["lr_scheduler"])
+        if loader.train_state is not None:
+            self._trainer.engine.load_state_dict(loader.train_state)
+            load_lr_schedulers(self._trainer.engine.optim.lr_schedulers, loader.lr_scheduler_state)
+            # a torchtitan DCP records steps, not the rollout; miles saved it after a whole rollout's steps
+            completed_rollouts = self._trainer.step // self._steps_per_rollout
+            training_state = self._training_state(completed_rollouts - 1 if completed_rollouts else None)
+        elif training_state is not None and "lr_scheduler" in training_state:
+            load_lr_schedulers(self._trainer.engine.optim.lr_schedulers, training_state["lr_scheduler"])
             self._trainer.engine.num_completed_steps = training_state["step"]
+        elif training_state is not None and training_state["iteration"] is not None:
+            # written by a Megatron run, whose scheduler state does not apply here: resume the schedule at its rollout
+            step = (training_state["iteration"] + 1) * self._steps_per_rollout
+            load_lr_schedulers(self._trainer.engine.optim.lr_schedulers, {"last_epoch": step})
+            self._trainer.engine.num_completed_steps = step
         if self._args.lora_adapter_convert_save is not None:
             destination = Path(self._args.lora_adapter_convert_save)
             save_and_commit_adapter_dir(
