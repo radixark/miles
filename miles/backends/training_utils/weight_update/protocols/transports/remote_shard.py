@@ -24,7 +24,7 @@ class RemoteShard:
     rollout_engine_ind: int
     rollout_engine_rank: int
     runner_role: str
-    # what the transport names the runner it writes into, such as a Mooncake session
+    # what the transport names the runner it writes into, such as a Mooncake session or a NIXL agent
     transport_peer: str
     weight_locations_by_name: dict[str, RemoteWeightLocation]
 
@@ -40,11 +40,11 @@ def query_remote_shards(
     engine_cell_ids: Sequence[str],
     assignments: Sequence[RolloutEngineRankAssignment],
     runner_roles: Sequence[str],
-    connect_peer: Callable[[dict], str],
+    connect_peer: Callable[[dict | None], str],
 ) -> dict[str, dict[int, list[RemoteShard]]]:
-    """Return assigned shards by runner role and rollout rank, built from the transfer engine info each rollout engine
-    rank published; `connect_peer` turns that info into the shard's transport peer. A rank whose cell returned no info
-    is left out."""
+    """Return assigned shards by runner role and rollout rank, built from the rank info each rollout engine rank
+    published; `connect_peer` turns its transfer engine info into the shard's transport peer. A rank whose cell
+    returned no info is left out."""
     return {
         runner_role: {
             assignment.rollout_engine_rank: [
@@ -82,12 +82,20 @@ def assert_tensors_fit(remote_shard: RemoteShard, tensors_by_name: dict[str, tor
         )
 
 
+def assert_published_for(transport_name: str, transfer_engine_info: dict | None) -> None:
+    published_transport = None if transfer_engine_info is None else transfer_engine_info["transport"]
+    assert published_transport == transport_name, (
+        f"a rollout engine rank publishes its weights for {published_transport}, but --p2p-transport is "
+        f"{transport_name}"
+    )
+
+
 def _query_remote_shard(
     cell_updater: _RolloutCellUpdater,
     rollout_engine_ind: int,
     rollout_engine_rank: int,
     runner_role: str,
-    connect_peer: Callable[[dict], str],
+    connect_peer: Callable[[dict | None], str],
 ) -> RemoteShard | None:
     rank_info = cell_updater.submit_client_call("get_rank_info", rank=rollout_engine_rank, role=runner_role).result()
     if rank_info is None:
@@ -97,7 +105,7 @@ def _query_remote_shard(
         rollout_engine_ind=rollout_engine_ind,
         rollout_engine_rank=rollout_engine_rank,
         runner_role=runner_role,
-        transport_peer=connect_peer(rank_info),
+        transport_peer=connect_peer(rank_info["transfer_engine_info"]),
         weight_locations_by_name={
             name: RemoteWeightLocation(*location) for name, location in rank_info["weight_locations"].items()
         },

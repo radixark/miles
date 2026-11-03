@@ -32,6 +32,7 @@ from miles_plugins.models.deepseek_v4.ops.cp_utils import (
     get_q_positions_for_cp,
     get_window_topk_idxs_cp,
 )
+from miles_plugins.models.deepseek_v4.ops.grouped_matmul import grouped_matmul
 from miles_plugins.models.deepseek_v4.ops.qat import fp8_simulate_qat
 from miles_plugins.models.deepseek_v4.ops.rope import apply_rotary_emb, wrapped_precompute_freqs_cis
 from miles_plugins.models.deepseek_v4.ops.thd_utils import (
@@ -422,9 +423,7 @@ class DeepSeekV4Attention(MegatronModule):
 
         o = torch.cat((o[..., :-rd], apply_rotary_emb(o[..., -rd:].clone(), freqs_cis, inverse=True)), dim=-1)
 
-        o = o.view(bsz, seqlen_local, self.n_local_groups, -1)
-        wo_a = self.linear_o_group_proj.view(self.n_local_groups, self.o_lora_rank, -1)
-        o = torch.einsum("bsgd,grd->bsgr", o, wo_a)
+        o = grouped_matmul(o.view(bsz, seqlen_local, self.n_local_groups, -1), self.linear_o_group_proj)
         x, _ = self.linear_proj(o.flatten(2))
 
         output = einops.rearrange(x, "b s d -> s b d")

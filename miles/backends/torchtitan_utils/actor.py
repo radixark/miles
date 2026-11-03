@@ -10,7 +10,7 @@ from miles.backends.torchtitan_utils.args_namespace import TorchtitanArgsNamespa
 from miles.backends.torchtitan_utils.config import build_trainer_config
 from miles.backends.torchtitan_utils.hf_weight_iterator import TitanHfWeightIterator
 from miles.backends.torchtitan_utils.optimizer_state_on_disk import setup_adam_state_on_disk
-from miles.backends.torchtitan_utils.parallel import create_titan_parallel_state, parallel_dims_from_config
+from miles.backends.torchtitan_utils.parallel import create_titan_parallel_state, parallelism_context_from_config
 from miles.backends.torchtitan_utils.routing_replay import install as install_routing_replay
 from miles.backends.torchtitan_utils.trainer import TitanTrainer
 from miles.backends.training_utils.parallel import get_parallel_state, set_parallel_state
@@ -23,6 +23,7 @@ from miles.utils.context_utils import with_defer
 from miles.utils.disk_backed_tensor import optimizer_state_dir_root
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
+from miles.utils.lora.utils import is_lora_enabled
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.profile_utils import TrainProfiler
 from miles.utils.timer import Timer
@@ -67,12 +68,17 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
             hf_assets_path=args.hf_checkpoint,
             lr_total_steps=args.num_rollout * _steps_per_rollout(args),
             dump_subdir="actor",
+            with_lora=is_lora_enabled(args),
         )
 
         enable_routing_replay(args)
 
         if args.debug_rollout_only:
-            set_parallel_state(create_titan_parallel_state(parallel_dims_from_config(config.parallelism)))
+            set_parallel_state(
+                create_titan_parallel_state(
+                    parallelism_context_from_config(config.parallelism, output_dir=config.output_dir)
+                )
+            )
             return 0
 
         self.prof = TrainProfiler(args)
@@ -84,16 +90,16 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
         self.align_token_side_channel = self.trainer.align_token_side_channel
         self.trainer.configure_loss_reduction()
         set_parallel_state(
-            create_titan_parallel_state(self.trainer.parallel_dims, is_pp_last_stage=self.trainer.has_last_stage())
+            create_titan_parallel_state(self.trainer.parallelism, is_pp_last_stage=self.trainer.has_last_stage())
         )
         install_routing_replay(self.trainer.model_parts)
 
-        cp_mesh = self.trainer.parallel_dims.get_optional_mesh("cp")
+        cp_mesh = self.trainer.parallelism.get_optional_mesh("cp")
         cp_rank0 = cp_mesh is None or dist.get_rank(cp_mesh.get_group()) == 0
         if cp_rank0 and get_parallel_state().is_metrics_rank:
             init_tracking(args, primary=False)
 
-        self.trainer.checkpointer.load()
+        self.trainer.engine.load_checkpoint()
         if args.stream_optimizer_state_to_disk:
             setup_adam_state_on_disk(self.optimizers, state_dir_root=optimizer_state_dir_root(args))
         start_rollout_id = self.trainer.step // _steps_per_rollout(args)
@@ -127,9 +133,9 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
         if not args.ref_load:
             raise ValueError("--ref-load is required to build a torchtitan reference model")
         ref_config = build_trainer_config(args, hf_assets_path=args.ref_load, lr_total_steps=1, dump_subdir="ref")
-        ref_trainer = TitanTrainer(ref_config)
+        ref_trainer = TitanTrainer(ref_config, parallelism=self.trainer.parallelism)
         ref_trainer.configure_loss_reduction()
-        ref_trainer.checkpointer.load()
+        ref_trainer.engine.load_checkpoint()
         for part in ref_trainer.model_parts:
             part.eval()
             part.requires_grad_(False)
@@ -151,4 +157,4 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
             torch.accelerator.empty_cache()
 
     def _save_checkpoint(self, rollout_id: int) -> None:
-        self.trainer.checkpointer.save(self.trainer.step, last_step=True)
+        self.trainer.engine.save_checkpoint(last_step=True)

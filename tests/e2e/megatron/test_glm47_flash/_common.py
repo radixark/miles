@@ -39,6 +39,8 @@ class CaseConfig:
     # Off: no draft runs, the trainer builds no MTP layer, and the weight check covers the target only.
     use_spec: bool = True
     use_r3: bool = True
+    # Send the replay arrays through the output store (--use-output-store) instead of inline.
+    use_output_store: bool = False
     # "bshd" (Megatron only) trains fixed micro-batches of micro_batch_size samples instead of
     # dynamic THD batches.
     qkv_format: str = "thd"
@@ -282,6 +284,8 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
 
     if case.fully_async:
         misc_args += "--fully-async "
+    if case.use_output_store:
+        misc_args += command_utils.get_output_store_args()
 
     if case.use_deepep:
         misc_args += "--moe-token-dispatcher-type flex --moe-enable-deepep "

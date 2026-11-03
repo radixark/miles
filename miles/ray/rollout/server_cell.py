@@ -9,7 +9,7 @@ from sglang.srt.constants import GPU_MEMORY_TYPE_WEIGHTS
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient, WorkerType, probe_server_healthy
 from miles.backends.sglang_utils.sglang_engine import build_server_url
-from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient, use_legacy_router_api
+from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient
 from miles.ray.rollout.cell_state import (
     CellAddrInfo,
     CellState,
@@ -245,9 +245,7 @@ class ServerCell:
     @property
     def _registry(self) -> ServingRegistry:
         if self.serving_registry is None:
-            self.serving_registry = SGLangServingRegistry(
-                client=self.router_api_client, use_legacy_api=use_legacy_router_api(self.args)
-            )
+            self.serving_registry = SGLangServingRegistry(client=self.router_api_client)
         return self.serving_registry
 
     async def mark_errored(self) -> None:
@@ -279,9 +277,7 @@ class ServerCell:
 
     async def _unregister_from_router(self) -> None:
         await retry_until_deadline(
-            lambda _: self._registry.unregister(
-                worker_url=self.server_url,
-            ),
+            lambda _: self._registry.unregister(worker_url=self.server_url),
             total_seconds=UNREGISTER_FROM_ROUTER_TIMEOUT,
             attempt_seconds=SHUTDOWN_TIMEOUT,
             retry_on=Exception,

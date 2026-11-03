@@ -41,6 +41,7 @@ _ARGS = SimpleNamespace(
     save_debug_trajectory_data=None,
     session_sample_picker_path="miles.rollout.session.v2.picker_hub.drop_rolled_back_leaves",
     session_sample_postprocessor_path="miles.rollout.session.v2.postprocessor_hub.default_postprocess",
+    output_store_backend_config=None,
 )
 
 

@@ -499,7 +499,7 @@ class TestInformationGetters:
         record = {
             "parallelism_config": {"tp_rank": 2},
             "weight_locations": {"w": [1, 2, 4]},
-            "transfer_session_id": "s",
+            "transfer_engine_info": {"transport": "mooncake", "session_id": "s"},
         }
         rec.install(monkeypatch, responses=[_FakeResponse(payload=record)])
 

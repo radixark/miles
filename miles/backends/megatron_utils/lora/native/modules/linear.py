@@ -13,6 +13,7 @@ import torch.nn.functional as F
 
 from miles.backends.megatron_utils.lora.native.distributed import apply_lora_dropout, branch_input, reduce_row_parallel
 from miles.backends.megatron_utils.lora.native.spec.base import AttachContext, ProjectionSpec, ShardLayout
+from miles_plugins.models.deepseek_v4.ops.grouped_matmul import grouped_matmul
 
 
 @dataclass(frozen=True)
@@ -264,6 +265,42 @@ class LoRAReplicatedPlainLinear(LoRALinear):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         assert self.layout == ShardLayout.REPLICATED, f"{type(self).__name__} requires a replicated projection"
+
+
+class LoRAGroupedColumnLinear(LoRALinear):
+    """Column-parallel adapter on a grouped product: one ``A`` for every group, ``B`` split by group.
+
+    The host multiplies group ``g`` of its input by row block ``g`` of its weight only, and so does the
+    adapter, which makes its merged delta ``B @ A`` a plain LoRA on that weight. Each rank's input holds
+    only that rank's groups, so unlike ``LoRALinear`` the input takes no TP copy.
+    """
+
+    host_returns_bias = False
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        assert self.layout == ShardLayout.COLUMN, f"{type(self).__name__} requires a column-parallel projection"
+        # the host weight lives on the attention block; a list keeps it out of this adapter's parameters
+        self._host_weight = [kwargs["reference"]]
+
+    def forward(self, x: torch.Tensor, base_module: nn.Module, *_host_args) -> torch.Tensor:
+        x = apply_lora_dropout(x, self.context, base_module.training)
+        down = F.linear(
+            x, getattr(self, f"{self.param_prefix}_A")
+        )  # config-access-exempt: the projection prefix selects its registered A parameter
+        return grouped_matmul(
+            down, getattr(self, f"{self.param_prefix}_B")
+        )  # config-access-exempt: the projection prefix selects its registered B parameter
+
+    def weight_deltas(self):
+        (weight,) = self._host_weight
+        a = getattr(
+            self, f"{self.param_prefix}_A"
+        )  # config-access-exempt: the projection prefix selects its registered A parameter
+        b = getattr(
+            self, f"{self.param_prefix}_B"
+        )  # config-access-exempt: the projection prefix selects its registered B parameter
+        yield weight, lambda: self.context.lora.scale * (b.float() @ a.float())
 
 
 class LoRASplitAdapter(NativeLoRAAdapter):

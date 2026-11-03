@@ -16,6 +16,12 @@ from .math_dapo_utils import compute_score as compute_score_dapo
 from .math_utils import extract_answer as extract_boxed_answer
 from .math_utils import grade_answer_verl
 
+# `math`, `deepscaler` and `gemma_math` already grade the last `\boxed{}` themselves (deepscaler and
+# gemma_math only after their end-of-reasoning marker), so their `boxed_` variants grade the response
+# unchanged. `dapo` reads `Answer: ...`
+# instead, so the extracted answer is re-wrapped in that form.
+_BOXED_GRADES_ORIGINAL_RESPONSE = {"math", "deepscaler", "gemma_math"}
+
 
 async def remote_rm(args, sample: Sample):
     payload = {
@@ -53,8 +59,11 @@ async def async_rm(args, sample: Sample, **kwargs):
     label = sample.label
     metadata = sample.metadata if isinstance(sample.metadata, dict) else {}
     if rm_type.startswith("boxed_"):
-        response = extract_boxed_answer(response) or ""
         rm_type = rm_type[len("boxed_") :]
+        if rm_type not in _BOXED_GRADES_ORIGINAL_RESPONSE:
+            response = extract_boxed_answer(response) or ""
+            if response and rm_type == "dapo":
+                response = f"Answer: {response}"
 
     # This function is intended for remote or time-consuming reward model evaluation.
     # Implement the actual logic as needed.
