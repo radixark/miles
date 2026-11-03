@@ -182,6 +182,31 @@ def test_export_names_and_shapes_match_sglang(include_fc2):
         assert exported[f"{experts}w2.lora_B.weight"].shape == (1, LATENT, RANK)
 
 
+def test_the_checkpoint_probe_exports_one_adapter_at_a_time(monkeypatch):
+    """A float64 export of the whole model holds every gathered expert factor at once (~97 GB per GPU on K3)."""
+    from miles.backends.megatron_utils.lora.native import checkpoint
+
+    model = _model()
+    slots = object.__new__(checkpoint.NativeAdapterSlots)
+    slots._model = [model]
+    batch_sizes = []
+
+    def export(adapters, dtype):
+        adapters = list(adapters)
+        batch_sizes.append(len(adapters))
+        return export_lora_hf_named(adapters, dtype)
+
+    monkeypatch.setattr(checkpoint, "export_lora_hf_named", export)
+    probed = list(slots._export_probe())
+
+    assert set(batch_sizes) == {1} and len(batch_sizes) == len(list(iter_adapters([model])))
+    whole = export_lora_hf_named(iter_adapters([model]), dtype=torch.float64)
+    assert [name for name, _ in probed] == [name for name, _ in whole]
+    for (name, tensor), (_, expected) in zip(probed, whole, strict=True):
+        assert tensor.dtype == torch.float64
+        torch.testing.assert_close(tensor, expected, rtol=0, atol=0, msg=name)
+
+
 def test_the_export_writes_no_log_line(caplog):
     """The checkpoint probe exports index codes; a logged max|lora_B| of those reads like a diverged adapter."""
     with caplog.at_level(logging.DEBUG):
