@@ -1409,3 +1409,20 @@ async def test_a_file_import_cannot_reach_into_the_checkpoint_root(tmp_path):
     service = make_service(tmp_path / "root", import_root=str(tmp_path))
     with pytest.raises(UserInputError, match="load it by its tinker:// path"):
         service.weights_info("tenant", f"file://{tmp_path / 'root' / 'model' / 'weights' / 'ck'}")
+
+
+async def test_an_unreadable_import_is_a_user_error(tmp_path):
+    adapter = tmp_path / "imports" / "adapter"
+    (adapter / "locked").mkdir(parents=True)
+    (adapter / "adapter_config.json").write_text(json.dumps({"r": 8, "lora_alpha": 32}))
+    # an existing checkpoint root makes the guard walk the import
+    (tmp_path / "root").mkdir()
+    service = make_service(tmp_path / "root", import_root=str(tmp_path / "imports"))
+    (adapter / "locked").chmod(0)
+    try:
+        if os.access(adapter / "locked", os.R_OK):
+            pytest.skip("running as root: chmod 000 does not stop reads")
+        with pytest.raises(UserInputError, match="cannot read"):
+            service.weights_info("tenant", f"file://{adapter}")
+    finally:
+        (adapter / "locked").chmod(0o755)

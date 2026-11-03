@@ -565,8 +565,13 @@ class TinkerService:
         path = os.path.realpath(uri.removeprefix("file://"))
         if not path.startswith(root + os.sep):
             raise UserInputError(f"{uri} is outside the import root {self.config.import_root}")
+        try:
+            reaches_checkpoint = _reads_under(path, self.config.checkpoint_root)
+        except OSError as error:
+            # a tenant's unreadable import must not stop the gateway
+            raise UserInputError(f"cannot read {uri}: {error}") from None
         # a tinker:// checkpoint's owner is checked; reaching it by file:// would skip that
-        if _reads_under(path, self.config.checkpoint_root):
+        if reaches_checkpoint:
             raise UserInputError(f"{uri} reaches a tinker:// checkpoint; load it by its tinker:// path")
         return path
 
