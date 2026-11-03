@@ -362,3 +362,10 @@ def test_gpt_oss_down_proj_alone_stays_one_packed_3d_tensor(tmp_path):
         tensors = load_file(str(tmp_path / export / "adapter_model.safetensors"))
         assert set(tensors) == {f"{down}.lora_A.weight", f"{down}.lora_B.weight"}, export
         assert tensors[f"{down}.lora_A.weight"].shape == (3, 2, 4)
+
+
+def test_one_local_base_under_another_path_string_matches(tmp_path):
+    (tmp_path / "model").mkdir()
+    (tmp_path / "link").symlink_to(tmp_path / "model")
+    source, run = _run(base_model=f"{tmp_path}/model/"), _run(base_model=str(tmp_path / "link"))
+    assert_parametrization_matches_run(source, run, [], load_optimizer=False, has_optimizer_state=False)
