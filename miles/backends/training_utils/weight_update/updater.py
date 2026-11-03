@@ -164,10 +164,8 @@ class WeightUpdater:
         protocol.after_session_open()
 
         checksums = {name: {} for name, _ in adapters} if self.is_lora and self.args.check_lora_weight_equal else None
-        if checksums is not None:
-            assert (
-                self._hf_weight_iterator.placement.gather_pp
-            ), "the LoRA checksum manifest is recorded on one rank, which must hold the full adapter"
+        # a full gather gives rank 0 the whole adapter; a PP-local sync splits it across senders
+        records_checksums = protocol.is_sender and (driver or not self._hf_weight_iterator.placement.gather_pp)
         with timer("update_weights_implementation"):
             pbar = tqdm(desc=f"[{protocol.group_name}] Update weights", total=0) if protocol.is_sender else None
             for bucket in self._hf_weight_iterator.iter_hf_weights(
@@ -177,12 +175,14 @@ class WeightUpdater:
                 materialize=protocol.is_sender,
             ):
                 if protocol.is_sender:
-                    if driver and checksums is not None:
+                    if checksums is not None and records_checksums:
                         record_lora_checksums(bucket, checksums)
                     protocol.send_bucket(bucket)
                     pbar.update(1)
             protocol.after_base_weights()
             dist.barrier(group=get_gloo_group())
+        if checksums is not None:
+            checksums = _gather_lora_checksums(checksums)
 
         with timer("finalize_and_resume_engines"):
             protocol.finalize(weight_version)
@@ -226,6 +226,20 @@ class WeightUpdater:
                 ),
             )
             self._registered_adapters.add(lora_name)
+
+
+def _gather_lora_checksums(checksums: dict[str, dict[str, str]]) -> dict[str, dict[str, str]] | None:
+    """Union of every sender's manifest, on rank 0; a PP-local sync splits the adapter across senders."""
+    group = get_gloo_group()
+    gathered = [None] * dist.get_world_size(group) if dist.get_rank() == 0 else None
+    dist.gather_object(checksums, gathered, dst=0, group=group)
+    if gathered is None:
+        return None
+    merged = {name: {} for name in checksums}
+    for sender_checksums in gathered:
+        for name, entries in sender_checksums.items():
+            merged[name].update(entries)
+    return merged
 
 
 def _mark_cells_errored_on_any_rank(cell_updaters: Sequence[_RolloutCellUpdater]) -> set[str]:

@@ -1,6 +1,7 @@
 """Tinker SDK endpoints with JSON/protobuf translation and tenant authentication."""
 
 import asyncio
+import json
 from contextlib import suppress
 
 from fastapi import FastAPI, Request
@@ -15,6 +16,7 @@ from miles.tinker.server.encoding import (
     render_result,
     validate_create_model,
     validate_create_sampling_session,
+    validate_sdk_version,
 )
 from miles.tinker.server.proto_codec import (
     PROTO_CONTENT_TYPE,
@@ -60,8 +62,12 @@ def build_app(service: TinkerService) -> FastAPI:
         return {"status": "ok"}
 
     @app.post("/api/v1/client/config")
-    @app.get("/api/v1/client/config")
-    async def client_config():
+    async def client_config(request: Request):
+        try:
+            payload = await request.json()
+        except json.JSONDecodeError:
+            raise UserInputError("client/config needs a JSON body carrying sdk_version") from None
+        validate_sdk_version(payload)
         return {}
 
     @app.post("/api/v1/client/dynamic_config")
@@ -85,6 +91,16 @@ def build_app(service: TinkerService) -> FastAPI:
         if not service.heartbeat(tenant, payload["session_id"]):
             return JSONResponse(status_code=410, content={"error": "unknown or expired session"})
         return {"type": "session_heartbeat"}
+
+    @app.post("/api/v1/sessions/{session_id}/finish")
+    async def finish_session(session_id: str, request: Request):
+        payload = await request.json()
+        reason = payload["reason"]["type"]
+        if reason not in ("success", "errored", "interrupted"):
+            raise UserInputError(f"unknown session finish reason {reason!r}")
+        if not await service.finish_session(_tenant(request), session_id, reason, payload["detail"]):
+            return JSONResponse(status_code=410, content={"error": "session lease expired before it finished"})
+        return Response(status_code=204)
 
     @app.post("/api/v1/get_server_capabilities")
     @app.get("/api/v1/get_server_capabilities")
