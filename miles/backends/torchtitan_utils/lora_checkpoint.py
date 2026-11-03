@@ -102,6 +102,7 @@ class TorchtitanAdapterSlots(ProbedAdapterSlots):
     bf16_adapter_key_style = "peft"
 
     def __init__(self, model_parts, iterator, sd_adapter, targets: HfLoraTargets):
+        """Collective: probes the row mapping now, while nothing else touches the parameters."""
         self._iterator, self.targets = iterator, targets
         self._specs = {}
         self._params = {
