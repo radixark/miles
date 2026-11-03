@@ -571,6 +571,24 @@ async def test_the_commit_runs_off_the_event_loop(service, monkeypatch, op):
     assert commit_threads and commit_threads[0] is not threading.current_thread()
 
 
+async def test_a_failed_sampler_commit_fails_only_that_request(service, monkeypatch):
+    model_id = await created_model(service)
+    commit = service.backend.commit_adapter
+
+    def failing_commit(*_, **__):
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr(service.backend, "commit_adapter", failing_commit)
+    failed = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
+    future = await await_settled(service, "tenant", failed)
+    assert (future.state, future.error_category) == (FAILED, "server")
+    assert "No space left on device" in future.error
+
+    monkeypatch.setattr(service.backend, "commit_adapter", commit)
+    retried = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 2})
+    assert (await await_settled(service, "tenant", retried)).state == DONE
+
+
 async def test_an_unnamed_sampler_save_returns_a_sampling_session(service):
     model_id = await created_model(service)
     unnamed = service.submit(
@@ -1128,6 +1146,21 @@ async def test_a_truncated_sampler_commit_file_is_a_user_error(service, filename
     root = Path(resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "sampler_weights", "1")).parent
     commit_file = resolve_adapter_dir(root, "1", tenant=None).path / filename
     commit_file.write_text(commit_file.read_text()[:-1])
+    with pytest.raises(UserInputError, match="cannot read adapter"):
+        service.weights_info("tenant", path)
+    with pytest.raises(UserInputError, match="cannot read adapter"):
+        resolve_sampler_checkpoint(service.config, "tenant", path, service.backend.resolve_adapter)
+
+
+@pytest.mark.parametrize(
+    "filename, content", [("tenant.json", "{}"), ("tenant.json", "[]"), ("adapter_parametrization.json", "{}")]
+)
+async def test_a_sampler_commit_file_of_the_wrong_schema_is_a_user_error(service, filename, content):
+    model_id = await created_model(service)
+    save = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
+    path = (await await_settled(service, "tenant", save)).result["path"]
+    root = Path(resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "sampler_weights", "1")).parent
+    (resolve_adapter_dir(root, "1", tenant=None).path / filename).write_text(content)
     with pytest.raises(UserInputError, match="cannot read adapter"):
         service.weights_info("tenant", path)
     with pytest.raises(UserInputError, match="cannot read adapter"):
