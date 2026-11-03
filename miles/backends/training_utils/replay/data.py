@@ -44,7 +44,7 @@ def attach_replay_data(
 
     For `bshd`, `sequence_first` selects Megatron MoE's `[S, B]` token order;
     indexer replay consumes the default `[B, S]` order. `align`, if given, is
-    applied to each recorded entry.
+    applied to each micro batch's rows before they are registered.
     """
     data_key = manager.data_key
     if data_key not in rollout_data:
@@ -118,10 +118,9 @@ def attach_replay_data(
             start, end = seqlen // tp_size * tp_rank, seqlen // tp_size * (tp_rank + 1)
             replay_data = replay_data[start:end]
 
-        manager.register_replay_list_func(manager.replays, replay_data, models=models)
         if align is not None:
-            for replay in manager.replays:
-                replay.top_indices_list[-1] = align(replay.top_indices_list[-1], -1)
+            replay_data = align(replay_data, -1)
+        manager.register_replay_list_func(manager.replays, replay_data, models=models)
         if index == len(order) - 1 and not keep_column:
             del rollout_data[data_key]
 
