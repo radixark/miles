@@ -217,6 +217,16 @@ class TestStartupValidation:
                 "json.dumps",
             )
 
+    def test_a_dataset_rm_type_under_a_run_wide_custom_rm_path_fails_at_startup(self):
+        """A custom reward function outranks any rm_type, so the dataset would be scored by --custom-rm-path."""
+        with pytest.raises(ValueError, match="sets rm_type gpqa, but --custom-rm-path json.dumps"):
+            _parse(
+                "--rollout-data-yaml-config",
+                _inline(_with_dataset(rm_type="gpqa")),
+                "--custom-rm-path",
+                "json.dumps",
+            )
+
     def test_a_dataset_naming_the_batched_group_rm_function_is_accepted(self):
         with pytest.raises(NotImplementedError, match="valid"):
             _parse(
