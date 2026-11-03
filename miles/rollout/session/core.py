@@ -28,6 +28,7 @@ from miles.rollout.session.errors import (
     UpstreamGenerationAbortedError,
     UpstreamResponseError,
 )
+from miles.rollout.session.image_expansion import ImageTokenCounter, assert_engine_expansion_matches
 from miles.rollout.session.linear_trajectory import LinearTrajectory, SessionRegistry
 from miles.rollout.session.request_args import ClientResponseIntent, filter_turn_args, parse_chat_request
 from miles.rollout.session.samples.codec import COMPUTED_FIELDS, ROLLOUT_SAMPLING_MASK_FIELDS, encode_samples
@@ -223,6 +224,7 @@ class SessionCore:
         *,
         use_addition_r3=False,
         output_store=None,
+        image_token_counter: ImageTokenCounter | None = None,
     ):
         self.backend = backend
         self.registry = registry
@@ -235,6 +237,7 @@ class SessionCore:
         self.use_addition_r3 = use_addition_r3
         # The output store client deleting what this server's sessions did not hand over; None without one.
         self._output_store = output_store
+        self.image_token_counter = image_token_counter
 
     async def _take_store_ref(self, session, request_body: dict, result: dict) -> None:
         """Record the output store ref of a proxied response before anything can drop the response."""
@@ -474,6 +477,7 @@ class SessionCore:
 
         response, choice, assistant_message, completion_token_ids = completion
         check_engine_prompt(request_body, choice)
+        self._check_engine_expansion(request_body, choice)
         assistant_message = tito_tokenizer.postprocess_completion(
             choice=choice,
             assistant_message=assistant_message,
@@ -521,11 +525,15 @@ class SessionCore:
 
         return _chat_client_response(result, response, response_intent)
 
+    def _check_engine_expansion(self, request_body: dict, choice: dict) -> None:
+        if self.image_token_counter is not None:
+            assert_engine_expansion_matches(request_body, choice, self.image_token_counter)
+
     def _store_message_media(self, client_args: dict) -> dict:
         return store_message_media(
             client_args,
             token_space=self.config.multimodal_token_space_processing,
-            media_dir=self.config.shared_media_dir,
+            media_dir=self.config.run_media_dir,
         )
 
     def _with_routing_key(self, headers: dict, session_id: str) -> dict:

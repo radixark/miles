@@ -13,6 +13,7 @@ from miles.rollout.session.samples.merge import (
 )
 from miles.rollout.session.token_space import engine_token_ids
 from miles.rollout.session.v2.session_state import SessionRegistryV2, SessionStateV2
+from miles.utils.media_refs import collect_media_refs
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
@@ -100,6 +101,11 @@ def build_leaf_material(
                 "response_id": leaf.response_id,
             },
         }
+        prompt_media_refs = {
+            str(node.seq): collect_media_refs(node.record.request.get("messages") or [], None) for node in path
+        }
+        if any(prompt_media_refs.values()):
+            flat["prompt_media_refs"] = prompt_media_refs
         if computed_mismatch is not None and leaf.seq in computed_mismatch:
             mismatch = computed_mismatch[leaf.seq]
         else:

@@ -2,6 +2,7 @@ import logging
 from typing import Any
 
 from miles.router.backend import make_router_backend
+from miles.utils.media_refs import run_media_dir
 from miles.utils.output_store.config import output_store_backend_config
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
@@ -43,9 +44,9 @@ class SessionServerConfig(FrozenStrictBaseModel):
     rollout_temperature: float
     # The run's output store with --use-output-store, else None; the server resolves its own local_hostname.
     output_store_backend_config: dict[str, Any] | None
-    # Media on the session path: SGLang expands the placeholders, sources are written to shared_media_dir.
+    # Media on the session path: SGLang expands the placeholders, sources are written to run_media_dir.
     multimodal_token_space_processing: bool
-    shared_media_dir: str | None
+    run_media_dir: str | None
 
 
 def compute_session_server_config(
@@ -86,7 +87,7 @@ def compute_session_server_config(
         ),  # config-access-exempt: legacy session inputs omit rollout_temperature
         output_store_backend_config=(output_store_backend_config(args) if args.use_output_store else None),
         multimodal_token_space_processing=args.multimodal_token_space_processing,
-        shared_media_dir=args.shared_media_dir,
+        run_media_dir=run_media_dir(args),
     )
 
 

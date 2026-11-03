@@ -17,12 +17,15 @@ stateless `/generate` interface.
 <Warning>
 
 **Media need `--multimodal-token-space-processing`.** With it, a chat request may carry images, audio or video
-parts (data URLs or shared paths). The server writes each item once under `--shared-media-dir`, named by content,
-and stores the path in the session. TITO renders one placeholder per item. Each turn sends the stored turns as the
+parts (data URLs or shared paths). The server writes each item once under the run's directory in
+`--shared-media-dir`, which is removed when the run ends, named by content, and stores the path in the session.
+TITO renders one placeholder per item. Each turn sends the stored turns as the
 expanded IDs SGLang returned for them, sets `mm_token_expansion_start_len` to their length, and SGLang expands the
 placeholders after it. The collected sample carries the expanded tokens and the media paths
 (`multimodal_inputs`); the trainer rebuilds the processor inputs from them. Without the flag, a request with
-media is refused with a 400. Needs an SGLang whose chat endpoint keeps the message media of an `input_ids`
+media is refused with a 400. With `--tito-model qwen3_vl`, the server counts each new image's tokens and refuses a
+turn whose expanded prompt differs from its own expansion. The retry picker compares the prompts' media as well as
+their tokens. Needs an SGLang whose chat endpoint keeps the message media of an `input_ids`
 request at `mm_token_expansion_start_len` 0.
 
 </Warning>

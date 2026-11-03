@@ -55,6 +55,7 @@ class SessionCoreV2(SessionCore):
         *,
         use_addition_r3=False,
         output_store=None,
+        image_token_counter=None,
     ):
         super().__init__(
             backend,
@@ -63,6 +64,7 @@ class SessionCoreV2(SessionCore):
             session_server_instance_id,
             use_addition_r3=use_addition_r3,
             output_store=output_store,
+            image_token_counter=image_token_counter,
         )
         # Import-path only in production: function_registry is process-local.
         self.sample_picker = load_function(config.session_sample_picker_path, sync_required=True)
@@ -261,6 +263,7 @@ class SessionCoreV2(SessionCore):
 
         response, choice, assistant_message, completion_token_ids = completion
         check_engine_prompt(request_body, choice)
+        self._check_engine_expansion(request_body, choice)
         assistant_message = tito_tokenizer.postprocess_completion(
             choice=choice,
             assistant_message=assistant_message,

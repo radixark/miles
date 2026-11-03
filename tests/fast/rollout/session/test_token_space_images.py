@@ -272,7 +272,7 @@ def _make_core(
             "session_sample_picker_path": "miles.rollout.session.v2.picker_hub.drop_rolled_back_leaves",
             "session_sample_postprocessor_path": "miles.rollout.session.v2.postprocessor_hub.default_postprocess",
             "multimodal_token_space_processing": token_space,
-            "shared_media_dir": str(media_dir),
+            "run_media_dir": str(media_dir),
             **overrides,
         }
     )

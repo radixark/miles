@@ -146,7 +146,7 @@ class TestConfigToArgv:
             rollout_temperature=0.7,
             output_store_backend_config={"master_server_address": "10.0.0.1:50051", "local_hostname": None},
             multimodal_token_space_processing=True,
-            shared_media_dir="/shared/media",
+            run_media_dir="/shared/media",
         )
         assert parse_config_argv(SessionServerConfig, config_to_argv(session_config)) == session_config
 
