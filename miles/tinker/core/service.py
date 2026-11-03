@@ -83,7 +83,8 @@ def _reads_under(path: str, root: str) -> bool:
             return True
         if stat.S_ISDIR(entry.st_mode):
             pending += [os.path.join(real, name) for name in os.listdir(real)]
-        elif entry.st_nlink > 1:
+        elif entry.st_nlink > 1 and entry.st_dev == root_stat.st_dev:
+            # a hard link cannot cross filesystems
             return True
     return False
 

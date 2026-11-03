@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shutil
+import tempfile
 import time
 from contextlib import suppress
 from pathlib import Path
@@ -1426,3 +1427,22 @@ async def test_an_unreadable_import_is_a_user_error(tmp_path):
             service.weights_info("tenant", f"file://{adapter}")
     finally:
         (adapter / "locked").chmod(0o755)
+
+
+async def test_a_hard_link_on_another_filesystem_is_importable(tmp_path):
+    """``cp -al`` of an adapter: its files have two links, neither of which can be in the checkpoint root."""
+    if not os.path.isdir("/dev/shm"):
+        pytest.skip("needs /dev/shm for a second filesystem")
+    root = Path(tempfile.mkdtemp(dir="/dev/shm"))
+    try:
+        if os.stat(root).st_dev == os.stat(tmp_path).st_dev:
+            pytest.skip("/dev/shm is on the same filesystem as tmp_path")
+        adapter = tmp_path / "imports" / "adapter"
+        adapter.mkdir(parents=True)
+        (adapter / "adapter_config.json").write_text(json.dumps({"r": 8, "lora_alpha": 32}))
+        (tmp_path / "copy").mkdir()
+        (tmp_path / "copy" / "adapter_config.json").hardlink_to(adapter / "adapter_config.json")
+        service = make_service(root, import_root=str(tmp_path / "imports"))
+        assert service.weights_info("tenant", f"file://{adapter}")["lora_rank"] == 8
+    finally:
+        shutil.rmtree(root)
