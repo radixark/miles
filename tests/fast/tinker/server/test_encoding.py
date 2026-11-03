@@ -1,5 +1,6 @@
 """JSON decoding validates datum inputs and renders SDK result shapes."""
 
+import pyrage
 import pytest
 
 from miles.tinker.core.types import UserInputError
@@ -187,3 +188,22 @@ class TestRenderResult:
         assert rendered["loss_fn_output_type"] == "ArrayRecord"
         assert rendered["metrics"] == {"loss:sum": 2.0}
         assert rendered["loss_fn_outputs"][0]["logprobs"] == {"dtype": "float32", "shape": [2], "data": [0.1, 0.2]}
+
+
+_RECIPIENT = str(pyrage.x25519.Identity.generate().to_public())
+
+
+@pytest.mark.parametrize(
+    "recipients,error",
+    [
+        (["ssh-ed25519 AAA"], "not an age X25519 recipient"),
+        (["age1notbech32"], "not an age X25519 recipient"),
+        ([_RECIPIENT] * 11, "at most 10"),
+    ],
+)
+def test_bad_age_recipients_are_refused_at_decode(recipients, error):
+    payload = {"model_id": "m", "seq_id": 1, "path": "export", "age_encryption_recipients": recipients}
+    _, decoded = decode_command("save_weights_external", payload)
+    assert error in decoded["validation_error"]
+    _, decoded = decode_command("save_weights_external", payload | {"age_encryption_recipients": [_RECIPIENT] * 10})
+    assert "validation_error" not in decoded and decoded["age_recipients"] == [_RECIPIENT] * 10

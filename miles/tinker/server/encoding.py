@@ -6,6 +6,7 @@ so each output scores logprob(t[i] | x[0..i])."""
 import math
 
 import pydantic
+import pyrage
 
 import tinker
 from miles.tinker.core.input_validation import validate_save_options
@@ -62,6 +63,21 @@ def validate_plain_adam(field: str, value, adam_type) -> None:
         raise UserInputError(
             f"{field} {value.model_dump()} is not supported: this gateway serves only plain Adam ({adam_type.__name__})"
         )
+
+
+# the SDK's documented limit for age_encryption_recipients
+MAX_AGE_RECIPIENTS = 10
+
+
+def validate_age_recipients(recipients: list[str]) -> None:
+    """Refuse a bad recipient before the export, not after the trainer wrote it."""
+    if len(recipients) > MAX_AGE_RECIPIENTS:
+        raise UserInputError(f"at most {MAX_AGE_RECIPIENTS} age recipients, got {len(recipients)}")
+    for recipient in recipients:
+        try:
+            pyrage.x25519.Recipient.from_str(recipient)
+        except pyrage.RecipientError as error:
+            raise UserInputError(f"{recipient!r} is not an age X25519 recipient (age1...): {error}") from None
 
 
 def validate_create_model(payload: dict) -> None:
@@ -138,11 +154,9 @@ def _decode_command(op: str, payload: dict, decoded: dict) -> tuple[str, dict]:
         return op, decoded | {"sampler_path": request.path, "ttl_seconds": request.ttl_seconds}
     if op == "save_weights_external":
         validate_save_options(request.ttl_seconds, request.user_metadata)
-        return op, decoded | {
-            "name": request.path,
-            "ttl_seconds": request.ttl_seconds,
-            "age_recipients": request.age_encryption_recipients or [],
-        }
+        recipients = request.age_encryption_recipients or []
+        validate_age_recipients(recipients)
+        return op, decoded | {"name": request.path, "ttl_seconds": request.ttl_seconds, "age_recipients": recipients}
     raise AssertionError(f"unhandled command op {op!r}")
 
 

@@ -1067,16 +1067,12 @@ async def test_a_download_url_does_not_serve_a_resave_under_the_same_name(servic
         service.download_path(token, "adapter_config.json")
 
 
-async def test_an_external_save_refuses_an_existing_name_and_non_age_recipients(service):
+async def test_an_external_save_refuses_an_existing_name(service):
     model_id = await created_model(service)
     first = service.submit("tenant", "save_weights_external", _external_payload(model_id, 1, "export"))
     assert (await await_settled(service, "tenant", first)).state == DONE
     again = service.submit("tenant", "save_weights_external", _external_payload(model_id, 2, "export"))
     assert "already exist" in (await await_settled(service, "tenant", again)).error
-    ssh = service.submit(
-        "tenant", "save_weights_external", _external_payload(model_id, 3, "other", age_recipients=["ssh-ed25519 AAA"])
-    )
-    assert "age1" in (await await_settled(service, "tenant", ssh)).error
 
 
 async def test_a_download_url_expires_with_its_checkpoint(service, monkeypatch):

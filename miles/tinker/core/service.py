@@ -536,8 +536,6 @@ class TinkerService:
         """The official Tinker export of the adapter, for download (get_external_weights_urls)."""
         name = payload["name"]
         validate_checkpoint_segment(name)
-        if any(not recipient.startswith("age1") for recipient in payload["age_recipients"]):
-            raise UserInputError("only age X25519 recipients (age1...) are supported")
         path = resolve_checkpoint_dir(self.config.checkpoint_root, record.model_id, "external_weights", name)
         if os.path.lexists(path):
             raise UserInputError(f"external weights {name!r} already exist; save under a new name")
