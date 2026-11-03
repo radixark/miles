@@ -90,7 +90,7 @@ def validate_batch_payload(op: CommandOp, payload: dict, config: GatewayConfig) 
 
 def validate_sample_payload(payload: dict, config: GatewayConfig) -> None:
     validate_token_ids(payload["prompt_tokens"], config.vocab_size, "prompt")
-    max_tokens = payload["sampling_params"].get("max_tokens")
+    max_tokens = payload["sampling_params"]["max_tokens"]
     if type(max_tokens) is not int or max_tokens < 0:
         raise UserInputError("sampling_params.max_tokens must be a nonnegative integer")
     prompt_length = len(payload["prompt_tokens"])

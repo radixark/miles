@@ -145,19 +145,17 @@ class MilesBackend:
         return result
 
     def _generate_request(self, payload: dict, lora_name: str | None, lora_path: str | None = None) -> dict:
+        # every SDK SamplingParams field, which core has already validated
         params = payload["sampling_params"]
-        max_tokens = params.get("max_tokens")
-        if max_tokens is None:
-            raise UserInputError("sampling_params.max_tokens is required")
         sampling_params = {
-            "max_new_tokens": max_tokens,
-            "temperature": params.get("temperature", 1.0),
-            "top_p": params.get("top_p", 1.0),
-            "top_k": params.get("top_k", -1),
+            "max_new_tokens": params["max_tokens"],
+            "temperature": params["temperature"],
+            "top_p": params["top_p"],
+            "top_k": params["top_k"],
         }
-        if params.get("seed") is not None:
+        if params["seed"] is not None:
             sampling_params["sampling_seed"] = params["seed"]
-        stop = params.get("stop")
+        stop = params["stop"]
         if stop is not None:
             if stop == []:
                 # tinker defines stop=[] as disabling every stop token, EOS included
