@@ -169,3 +169,38 @@ def test_a_convert_save_writes_moments_only_when_they_were_loaded(tmp_path, no_l
         no_save_optim=no_save_optim,
     )
     assert restored.save.call_args.args[2]._save_moments is moments
+
+
+def test_a_dcp_resumes_after_its_last_whole_rollout(tmp_path):
+    restored = _restore(tmp_path, dcp_step=2 * _STEPS_PER_ROLLOUT)
+    assert (restored.iteration, restored.step) == (1, 8)
+    assert restored.lr_states == [{"last_epoch": 8}]
+
+
+def test_a_dcp_at_step_zero_starts_the_run(tmp_path):
+    restored = _restore(tmp_path, dcp_step=0)
+    assert (restored.iteration, restored.step) == (None, 0)
+
+
+def test_a_model_only_dcp_starts_a_fresh_schedule(tmp_path):
+    restored = _restore(tmp_path)
+    assert (restored.iteration, restored.step, restored.lr_states) == (None, 0, [])
+
+
+def test_a_torchtitan_adapter_dir_restores_its_own_schedule(tmp_path):
+    schedule = {"last_epoch": 12, "_step_count": 13}
+    restored = _restore(tmp_path, training_state={"iteration": 2, "step": 12, "lr_scheduler": schedule})
+    assert (restored.iteration, restored.step, restored.lr_states) == (2, 12, [schedule])
+
+
+def test_a_megatron_adapter_dir_resumes_the_schedule_after_its_rollout(tmp_path):
+    """Megatron's scheduler state does not apply here; rollouts 0..2 are done."""
+    restored = _restore(tmp_path, training_state={"iteration": 2, "opt_param_scheduler": {"num_steps": 96}})
+    assert (restored.iteration, restored.step) == (2, 3 * _STEPS_PER_ROLLOUT)
+    assert restored.lr_states == [{"last_epoch": 3 * _STEPS_PER_ROLLOUT}]
+
+
+def test_a_convert_save_of_a_dcp_records_its_rollout(tmp_path):
+    restored = _restore(tmp_path, dcp_step=2 * _STEPS_PER_ROLLOUT, lora_adapter_convert_save=str(tmp_path / "out"))
+    assert restored.save.call_args.kwargs["training_state"]["iteration"] == 1
+    assert restored.save.call_args.kwargs["training_state"]["step"] == 8
