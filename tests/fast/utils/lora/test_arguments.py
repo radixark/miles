@@ -1,13 +1,19 @@
+import json
 import subprocess
 import sys
 from argparse import Namespace
+from types import SimpleNamespace
 
 import pytest
+import torch
+from safetensors.torch import save_file
 from transformers import LlamaConfig
 
+from miles.utils.lora import arguments as lora_arguments
 from miles.utils.lora.arguments import (
     _resolve_lora_targets,
     _validate_adapter_state_args,
+    _validate_rollout_only_adapter,
     validate_lora_args,
     validate_multi_lora_args,
 )
@@ -87,3 +93,36 @@ def test_a_disabled_optimizer_cannot_save_or_load_the_adapter_checkpoint(save, l
     args = Namespace(save=save, lora_adapter_path=lora_adapter_path, debug_disable_optimizer=True)
     with pytest.raises(AssertionError, match="--debug-disable-optimizer"):
         _validate_adapter_state_args(args)
+
+
+class TestRolloutOnlyAdapter:
+    @pytest.fixture(autouse=True)
+    def _qwen3(self, monkeypatch):
+        config = SimpleNamespace(to_dict=lambda: {"model_type": "qwen3", "num_hidden_layers": 1})
+        monkeypatch.setattr(lora_arguments, "load_hf_config", lambda _: config)
+
+    @staticmethod
+    def _validate(path):
+        _validate_rollout_only_adapter(Namespace(lora_adapter_path=str(path), hf_checkpoint="/hf"))
+
+    def test_a_hub_id_goes_to_sglang_as_is(self):
+        self._validate("org/adapter")
+
+    def test_a_peft_dir_the_library_does_not_read_goes_to_sglang_as_is(self, tmp_path):
+        (tmp_path / "adapter_config.json").write_text(json.dumps({"r": 2, "lora_alpha": 4}))
+        (tmp_path / "adapter_model.bin").write_bytes(b"")
+        self._validate(tmp_path)
+
+    def test_official_tinker_names_are_refused(self, tmp_path):
+        save_file(
+            {"base_model.model.model.unembed_tokens.lora_A.weight": torch.zeros(2, 2)},
+            str(tmp_path / "adapter_model.safetensors"),
+        )
+        (tmp_path / "adapter_config.json").write_text("{}")
+        with pytest.raises(AssertionError, match="official Tinker tensor names"):
+            self._validate(tmp_path)
+
+    def test_a_checkpoint_only_a_trainer_reads_is_refused(self, tmp_path):
+        torch.save({}, tmp_path / "adapter_megatron_rank0.pt")
+        with pytest.raises(AssertionError, match="only a trainer can read"):
+            self._validate(tmp_path)

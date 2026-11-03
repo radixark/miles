@@ -29,3 +29,8 @@ def test_a_source_without_alpha_needs_the_flag(tmp_path):
     with pytest.raises(AssertionError, match="pass --lora-alpha"):
         _resolve_lora_alpha(_args(tmp_path, None))
     assert _resolve_lora_alpha(_args(tmp_path, 4.0)) == 4.0
+
+
+def test_a_hub_id_takes_the_flag_or_the_default():
+    assert _resolve_lora_alpha(_args("org/adapter", None)) == 16.0
+    assert _resolve_lora_alpha(_args("org/adapter", 8.0)) == 8.0

@@ -6,7 +6,11 @@ import torch
 
 from miles.backends.megatron_utils.lora.native import resolve_adapter_targets, validate_native_lora_args
 from miles.backends.sglang_utils.arguments import sglang_attention_dp_enabled
-from miles.backends.training_utils.checkpoint.adapter.readers import classify_adapter_source, read_source_lora_alpha
+from miles.backends.training_utils.checkpoint.adapter.readers import (
+    AdapterSourceKind,
+    classify_adapter_source,
+    read_source_lora_alpha,
+)
 from miles.utils.hf_utils.config import load_hf_config
 from miles.utils.hf_utils.weight_mapping import HfWeightMapping
 from miles.utils.lora.hf_lora_targets import (
@@ -92,7 +96,8 @@ def validate_lora_args(args):
 
 def _resolve_lora_alpha(args) -> float:
     """The source adapter owns alpha when there is one; --lora-alpha may only repeat it."""
-    if args.lora_adapter_path is None:
+    # a hub id is no local source: SGLang, not miles, reads its alpha
+    if args.lora_adapter_path is None or not Path(args.lora_adapter_path).is_dir():
         return _DEFAULT_LORA_ALPHA if args.lora_alpha is None else args.lora_alpha
     source = read_source_lora_alpha(Path(args.lora_adapter_path))
     if source is None:
@@ -106,13 +111,25 @@ def _resolve_lora_alpha(args) -> float:
 
 
 def _validate_rollout_only_adapter(args) -> None:
-    """With no trainer, the engines load --lora-adapter-path from disk: it must carry a PEFT file pair."""
+    """With no trainer, the engines load --lora-adapter-path as given. A local source the adapter library
+    recognizes must carry an HF-named PEFT pair; anything else (a hub id, a PEFT dir with adapter_model.bin)
+    is SGLang's to read."""
     path = Path(args.lora_adapter_path)
-    kind = classify_adapter_source(
-        path, get_hf_lora_targets(load_hf_config(args.hf_checkpoint).to_dict()), load_optimizer=False
-    )
+    if not path.is_dir():
+        return
+    try:
+        kind = classify_adapter_source(
+            path, get_hf_lora_targets(load_hf_config(args.hf_checkpoint).to_dict()), load_optimizer=False
+        )
+    except ValueError:
+        # not a source the library reads
+        return
     assert not kind.is_read_into_model(), (
         f"{path} is a {kind.value} checkpoint, which only a trainer can read; "
+        "convert it first with --lora-adapter-convert-save"
+    )
+    assert kind != AdapterSourceKind.EXTERNAL_WEIGHTS, (
+        f"{path} uses official Tinker tensor names, which need a conversion that rollout-only does not do; "
         "convert it first with --lora-adapter-convert-save"
     )
     assert (path / "adapter_model.safetensors").is_file(), f"{path} has no PEFT export for the engines to load"
