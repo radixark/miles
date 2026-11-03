@@ -1,4 +1,4 @@
-"""τ²-bench GRPO launcher (Qwen3-4B-Instruct-2507): tau2 tasks through the TITO session server.
+"""τ²-bench GRPO launcher (Qwen3.8-27B): tau2 tasks through the TITO session server.
 
 Trains on one tau2 domain's ``train`` split and evaluates on its ``test`` split.
 Each sample is one tau2 task, played by ``tau2_agent_function.run``: tau2's own
@@ -11,12 +11,19 @@ judges -- exported in the launcher's environment, which ray workers inherit.
 Self-hosted models served behind an OpenAI-compatible endpoint need no key (see
 README.md). ``execute`` checks the keys before claiming any GPU.
 
+Qwen3.8-27B thinks before every reply, and its template keeps each turn's
+thinking in the history, so the recipe asks for the template's low reasoning
+effort. Training runs TP4 x CP2 per 8 GPUs and data-parallel across nodes; it
+was validated on 2 x 8 H200 (--num-nodes 2, with an external ray cluster).
+
 Args:
   --domain: tau2 domain to train on: airline, retail or telecom (default: retail).
   --mode: normal, or debug_rollout_only to skip training.
   --skip-prepare: skip the model download, checkpoint conversion and task files.
   --model-dir / --data-dir: model and dataset directories.
-  --num-gpus-per-node: GPUs per node (default: 4).
+  --num-gpus-per-node: GPUs per node (default: 8); --num-nodes: nodes (default: 1).
+  --reasoning-effort: Qwen3.8 template reasoning effort (default: low).
+  --enable-eval / --save: evaluate on the test split / write checkpoints (default: on).
 
 Env vars forwarded to the agent: TAU2_USER_LLM, TAU2_USER_LLM_ARGS,
 TAU2_JUDGE_LLM, TAU2_JUDGE_LLM_ARGS (see tau2_agent_function.py), and
@@ -25,10 +32,12 @@ TAU2_DATA_DIR when tau2-bench is not installed from its source checkout.
 Usage:
     OPENAI_API_KEY=... python run.py
     OPENAI_API_KEY=... python run.py --domain telecom --mode debug_rollout_only
+    MILES_SCRIPT_EXTERNAL_RAY=1 python run.py --num-nodes 2
 """
 
 import json
 import os
+import shlex
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -38,6 +47,9 @@ import typer
 from miles.utils.external_utils import command_utils
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+
+# Each sample is one whole conversation, split over the context-parallel ranks.
+_CONTEXT_PARALLEL_SIZE = 2
 
 _FORWARDED_ENV_VARS = (
     "TAU2_USER_LLM",
@@ -52,9 +64,9 @@ _FORWARDED_ENV_VARS = (
 class ScriptArgs(command_utils.ExecuteTrainConfig):
     mode: Literal["normal", "debug_rollout_only"] = "normal"
     domain: Literal["airline", "retail", "telecom"] = "retail"
-    model_name: str = "Qwen3-4B-Instruct-2507"
-    megatron_model_type: str = "qwen3-4B-Instruct-2507"
-    num_gpus_per_node: int = 4
+    model_name: str = "Qwen3.8-27B"
+    megatron_model_type: str = "qwen3.8-27B"
+    num_gpus_per_node: int = 8
     skip_prepare: bool = False
     model_dir: str = "/root/models"
     data_dir: str = "/root/datasets"
@@ -63,11 +75,14 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     num_rollout: int = 200
     rollout_batch_size: int = 16
     n_samples_per_prompt: int = 8
-    # Per policy turn; --max-seq-len caps the whole conversation.
-    rollout_max_response_len: int = 2048
+    # Per policy turn, thinking included; --max-seq-len caps the whole conversation.
+    rollout_max_response_len: int = 8192
     max_seq_len: int = 32768
-    save_interval: int = 20
+    reasoning_effort: Literal["low", "medium", "xhigh"] = "low"
+    enable_eval: bool = True
     eval_interval: int = 10
+    save: bool = True
+    save_interval: int = 20
 
     def task_file(self, split: str) -> str:
         return f"{self.data_dir}/tau2-bench/{self.domain}_{split}.jsonl"
@@ -144,9 +159,9 @@ def execute(args: ScriptArgs):
         f"--hf-checkpoint {args.model_dir}/{args.model_name} "
         f"--ref-load {args.model_dir}/{args.model_name}_torch_dist "
         f"--load {args.output_dir}/checkpoints "
-        f"--save {args.output_dir}/checkpoints "
-        f"--save-interval {args.save_interval} "
     )
+    if args.save:
+        ckpt_args += f"--save {args.output_dir}/checkpoints " f"--save-interval {args.save_interval} "
 
     rollout_args = (
         f"--prompt-data {args.task_file('train')} "
@@ -164,25 +179,27 @@ def execute(args: ScriptArgs):
         "--dynamic-sampling-filter-path miles.rollout.filter_hub.common_filters.apply_reward_nonzero_std_filter "
     )
 
-    eval_args = (
-        f"--eval-interval {args.eval_interval} "
-        f"--eval-prompt-data {args.domain}-test {args.task_file('test')} "
-        "--n-samples-per-eval-prompt 4 "
-        f"--eval-max-response-len {args.rollout_max_response_len} "
-    )
+    eval_args = ""
+    if args.enable_eval:
+        eval_args = (
+            f"--eval-interval {args.eval_interval} "
+            f"--eval-prompt-data {args.domain}-test {args.task_file('test')} "
+            "--n-samples-per-eval-prompt 4 "
+            f"--eval-max-response-len {args.rollout_max_response_len} "
+        )
 
     perf_args = (
-        "--tensor-model-parallel-size 2 "
+        "--tensor-model-parallel-size 4 "
         "--sequence-parallel "
         "--pipeline-model-parallel-size 1 "
-        "--context-parallel-size 1 "
+        f"--context-parallel-size {_CONTEXT_PARALLEL_SIZE} "
         "--expert-model-parallel-size 1 "
         "--expert-tensor-parallel-size 1 "
         "--recompute-granularity full "
         "--recompute-method uniform "
         "--recompute-num-layers 1 "
         "--use-dynamic-batch-size "
-        f"--max-tokens-per-gpu {args.max_seq_len} "
+        f"--max-tokens-per-gpu {args.max_seq_len // _CONTEXT_PARALLEL_SIZE} "
     )
 
     grpo_args = (
@@ -202,12 +219,19 @@ def execute(args: ScriptArgs):
         "--weight-decay 0.1 "
         "--adam-beta1 0.9 "
         "--adam-beta2 0.98 "
+        # The 27B Adam state goes to host memory, as in scripts/run_qwen3_dense.py.
+        "--optimizer-cpu-offload "
+        "--overlap-cpu-optimizer-d2h-h2d "
+        "--use-precision-aware-optimizer "
     )
 
-    # The tool-call parser is load-bearing: without it the policy's tool calls stay
-    # plain text, and every task ends in a reply to the user.
+    # Both parsers are load-bearing: without the tool-call parser the policy's tool calls
+    # stay plain text, and without the reasoning parser its thinking reaches tau2 as replies.
     sglang_args = (
-        "--rollout-num-gpus-per-engine 1 " "--sglang-mem-fraction-static 0.7 " "--sglang-tool-call-parser qwen25 "
+        "--rollout-num-gpus-per-engine 1 "
+        "--sglang-mem-fraction-static 0.8 "
+        "--sglang-reasoning-parser qwen3 "
+        "--sglang-tool-call-parser qwen3_coder "
     )
 
     agent_args = (
@@ -215,7 +239,8 @@ def execute(args: ScriptArgs):
         "--custom-agent-function-path tau2_agent_function.run "
         "--custom-rm-path tau2_agent_function.reward_func "
         "--use-session-server "
-        "--tito-model qwen3 "
+        "--tito-model qwen38small "
+        f"--apply-chat-template-kwargs {shlex.quote(json.dumps({'reasoning_effort': args.reasoning_effort}))} "
     )
 
     misc_args = (
