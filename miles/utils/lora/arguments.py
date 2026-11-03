@@ -50,6 +50,8 @@ def validate_lora_args(args):
             "--lora-adapter-convert-save is implemented only for single LoRA on --train-backend megatron "
             "--megatron-to-hf-mode bridge"
         )
+        # every cell loads the source and its rank 0 would commit into the same destination
+        assert not args.indep_dp, "--lora-adapter-convert-save does not support --indep-dp (or train fault tolerance)"
         # the trainer actors write it from their own working directory, which need not be the driver's
         args.lora_adapter_convert_save = os.path.abspath(args.lora_adapter_convert_save)
         # the commit would retire and delete whatever sits there, including the source when converting in place
