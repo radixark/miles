@@ -2,6 +2,8 @@ import importlib.util
 from pathlib import Path
 from types import ModuleType
 
+import torch
+
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 register_cuda_ci(
@@ -23,6 +25,10 @@ def _load_base_test() -> ModuleType:
 
 
 if __name__ == "__main__":
+    print(
+        f"CI visible GPUs: {[torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())]}",
+        flush=True,
+    )
     base = _load_base_test()
     base.entrypoint(
         comm_backend=base.WorkerCommBackend.RPC,
