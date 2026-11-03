@@ -76,3 +76,9 @@ def test_a_source_without_training_state_restarts_at_rollout_0(tmp_path):
     iteration, scheduler, _ = _restore(tmp_path)
     assert iteration is None
     scheduler.load_state_dict.assert_not_called()
+
+
+def test_a_weights_only_convert_save_writes_neither_moments_nor_a_placeholder_training_state(tmp_path):
+    _, _, mocks = _restore(tmp_path / "source", convert_save=str(tmp_path / "converted"))
+    assert mocks["DistributedOptimizerMembers"].call_args.kwargs["save_moments"] is False
+    assert mocks["save_and_commit_adapter_dir"].call_args.kwargs["training_state"] is None

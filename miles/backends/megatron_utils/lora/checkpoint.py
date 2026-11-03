@@ -521,11 +521,16 @@ def restore_single_lora(model, args, *, optimizer, opt_param_scheduler) -> int |
     )
     targets = get_hf_lora_targets(load_hf_config(args.hf_checkpoint).to_dict())
     slots = BridgeAdapterSlots(model, iterator, targets, multi_lora=False)
+    load_optimizer = not args.backend.no_load_optim
+    # a convert-save writes moments only when they were loaded
     members = DistributedOptimizerMembers(
-        slots, optimizer, model, precision_aware=args.backend.use_precision_aware_optimizer
+        slots,
+        optimizer,
+        model,
+        precision_aware=args.backend.use_precision_aware_optimizer,
+        save_moments=load_optimizer and not args.backend.no_save_optim,
     )
     run = single_lora_parametrization(slots, args)
-    load_optimizer = not args.backend.no_load_optim
     path = Path(args.lora_adapter_path)
     legacy = LegacyRankShardLoader(model, optimizer, run, load_optimizer)
     load_adapter_dir(
@@ -548,7 +553,7 @@ def restore_single_lora(model, args, *, optimizer, opt_param_scheduler) -> int |
             0,
             run,
             targets,
-            training_state=training_state or {"iteration": None, "opt_param_scheduler": None},
+            training_state=training_state,
         )
     if training_state is None:
         return None
