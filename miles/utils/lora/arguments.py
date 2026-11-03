@@ -141,7 +141,9 @@ def _validate_rollout_only_adapter(args) -> None:
         f"{path} uses official Tinker tensor names, which need a conversion that rollout-only does not do; "
         "convert it first with --lora-adapter-convert-save"
     )
-    assert (path / "adapter_model.safetensors").is_file(), f"{path} has no PEFT export for the engines to load"
+    assert (path / "adapter_model.safetensors").is_file(), (
+        f"{path} has no PEFT export for the engines to load; write one first with --lora-adapter-convert-save"
+    )
 
 
 def _default_lora_type(args) -> str:
