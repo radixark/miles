@@ -1,5 +1,6 @@
 import json
 import os
+import shlex
 from pathlib import Path
 
 from tests.ci.ci_register import register_cuda_ci
@@ -149,6 +150,134 @@ def _gpu_delta_env():
     }
 
 
+def _install_gpu_delta_performance_check(args):
+    from miles.backends.training_utils.weight_update.protocols.gpu_delta import session
+
+    activate = session.activate_publication
+    ordinary_codec = _gpu_delta_env()["GPU_DELTA_CODEC"]
+    seen, engines, updates = set(), {}, []
+    encoding_seen, encoding_updates = set(), {}
+    report_path = Path(args.update_weight_disk_dir) / "ci-performance.json"
+
+    async def checked_activate(clients, cohort, publication, session_id=None, weight_version=None):
+        result = await activate(clients, cohort, publication, session_id, weight_version)
+        expected = {identity["rank_id"] for group in cohort.participants for identity in group}
+        receipts = result["resumed_receipts"]
+        assert len(receipts) == len(expected) and {r["identity"]["rank_id"] for r in receipts} == expected
+        codec, version = publication["codec"], publication["target_version"]
+        for group in cohort.participants:
+            engines[group[0]["engine_id"]] = {"ranks": [r["rank_id"] for r in group], "version": version}
+        warm = []
+        for receipt in receipts:
+            rank = receipt["identity"]["rank_id"]
+            timing = receipt["result"]["timings"]
+            # No-op publications do not warm the DE path or satisfy its performance gate.
+            if timing["compressed_batches"] > 0 and timing["de_host_input_bytes"] > 0:
+                key = rank, codec
+                if key in seen and version > 1:
+                    scheduler = receipt["scheduler_timing"]
+                    warm.append(
+                        {
+                            "rank": rank,
+                            "prepare_s": timing["host_prepare_s"],
+                            "pause_s": (scheduler["resumed_ns"] - scheduler["pause_started_ns"]) / 1e9,
+                        }
+                    )
+                seen.add(key)
+        if warm:
+            updates.append({"version": version, "codec": codec, "ranks": warm})
+        if (
+            codec == ordinary_codec
+            and version > 1
+            and version not in encoding_updates
+            and "producer_metrics" in publication
+        ):
+            owners = []
+            for owner in publication["producer_metrics"]:
+                key = owner["owner_rank"], codec
+                nonempty = (
+                    owner["encoder_batches"] > 0 and owner["changed_bytes"] > 0 and owner["matrix_payload_bytes"] > 0
+                )
+                owners.append(
+                    {
+                        "owner_rank": owner["owner_rank"],
+                        "nonempty": nonempty,
+                        "warm": nonempty and key in encoding_seen,
+                        # Sequential measured stages, not pure compressor time. Includes
+                        # H2D/XOR, metadata waits (including export dependencies), and final D2H.
+                        "encoding_stage_wall_s": owner["encode_tensor_wall_sum_s"] + owner["finalize_wall_s"],
+                    }
+                )
+                if nonempty:
+                    encoding_seen.add(key)
+            encoding_updates[version] = {"codec": codec, "owners": owners}
+        # This runs after every engine in the cohort resumed, outside measured prepare/pause.
+        report_path.write_text(
+            json.dumps(
+                {
+                    "last_version": args.num_rollout,
+                    "engines": engines,
+                    "ordinary_codec": ordinary_codec,
+                    "updates": updates,
+                    "encoding_updates": encoding_updates,
+                },
+                allow_nan=False,
+            )
+        )
+        return result
+
+    # The protocol resolves this module function at activation time. Install only in this CI trainer.
+    session.activate_publication = checked_activate
+
+
+def _assert_gpu_delta_performance(report_path):
+    report = json.loads(Path(report_path).read_text())
+    engines = report["engines"]
+    assert len(engines) == ROLLOUT_NUM_GPUS // ROLLOUT_GPUS_PER_ENGINE
+    current_ranks = set()
+    for engine in engines.values():
+        assert engine["version"] == report["last_version"]
+        assert len(engine["ranks"]) == ROLLOUT_GPUS_PER_ENGINE
+        current_ranks.update(engine["ranks"])
+    assert len(current_ranks) == ROLLOUT_NUM_GPUS
+    missing = current_ranks - {
+        rank["rank"]
+        for update in report["updates"]
+        if update["codec"] == report["ordinary_codec"]
+        for rank in update["ranks"]
+    }
+    assert not missing, f"GPU-delta CI has no nonempty warm ordinary-codec update for {len(missing)} current ranks"
+    warm = [rank for update in report["updates"] for rank in update["ranks"]]
+    assert warm, "GPU-delta CI did not validate any nonempty warm update"
+    # Provisional five-layer CI limits: allow CPU headroom over the full-model <5s prepare proxy.
+    for name, limit in (("prepare_s", 6.0), ("pause_s", 0.3)):
+        failures = [rank[name] for rank in warm if not 0 <= rank[name] < limit]
+        assert not failures, f"GPU-delta CI warm {name} must be <{limit}s; violations={failures}"
+    owners = [owner for update in report["encoding_updates"].values() for owner in update["owners"]]
+    nonempty_owners = {owner["owner_rank"] for owner in owners if owner["nonempty"]}
+    warm_owners = [owner for owner in owners if owner["warm"]]
+    assert nonempty_owners and nonempty_owners == {
+        owner["owner_rank"] for owner in warm_owners
+    }, "GPU-delta CI requires nonempty warm ordinary encoding for every matrix-producing owner"
+    # Provisional budget from full-model measured encoding stages, not pure compression.
+    # Actual five-layer timings are not yet calibrated.
+    encoding_limit_s = 6.0
+    failures = [
+        owner["encoding_stage_wall_s"]
+        for owner in warm_owners
+        if not 0 <= owner["encoding_stage_wall_s"] < encoding_limit_s
+    ]
+    assert not failures, f"GPU-delta CI warm encoding_stage_wall_s must be <{encoding_limit_s}s; violations={failures}"
+    print(
+        f"GPU-delta CI warm ranks={len(current_ranks)} checks={len(warm)} "
+        f"prepare_max_s={max(rank['prepare_s'] for rank in warm)} "
+        f"scheduler_pause_max_s={max(rank['pause_s'] for rank in warm)} "
+        f"encoding_owners={len(nonempty_owners)} "
+        f"encoding_stage_wall_max_s={max(owner['encoding_stage_wall_s'] for owner in warm_owners)}",
+        flush=True,
+    )
+
+
 def _assert_gpu_delta_weights_changed(args, version_dir, _rollout_engines):
     """Reject a successful-looking E2E whose learned publications were all no-ops."""
     import torch.distributed as dist
@@ -157,6 +286,8 @@ def _assert_gpu_delta_weights_changed(args, version_dir, _rollout_engines):
         return
     version_dir = Path(version_dir)
     current = json.loads((version_dir / "manifest.json").read_text())
+    if current["target_version"] == 1:
+        _install_gpu_delta_performance_check(args)
     # This E2E publishes once at startup and between rollouts, independently of optimizer steps.
     startup_publications = 1
     last_version = startup_publications + args.num_rollout - 1
@@ -221,7 +352,8 @@ def execute():
         "--apply-chat-template "
         "--rollout-shuffle "
         "--rm-type deterministic_random "
-        "--num-rollout 4 "
+        # Give restarted ranks two ordinary-codec updates so their second apply is warm.
+        "--num-rollout 5 "
         "--rollout-batch-size 4 "
         "--n-samples-per-prompt 4 "
         "--rollout-max-response-len 100 "
@@ -369,6 +501,11 @@ def execute():
         megatron_path=MEGATRON_PATH,
         extra_env_vars={**NVFP4_ENV, **GLM5_ENV, **delta_env},
     )
+    check = (
+        "from tests.e2e.megatron.test_glm5_2_744b_a40b_5layer_nvfp4_w4a16 import _assert_gpu_delta_performance; "
+        f"_assert_gpu_delta_performance('/root/delta-updates/{RUN_ID}/gpu_delta/ci-performance.json')"
+    )
+    U.exec_command_cpu(f"python -c {shlex.quote(check)}")
 
 
 if __name__ == "__main__":
