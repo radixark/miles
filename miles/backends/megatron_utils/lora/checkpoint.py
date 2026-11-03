@@ -215,8 +215,17 @@ class LegacyTinkerCheckpointLoader:
         return replace(self._run, lora_alpha=meta["lora_alpha"])
 
 
+# a gateway-wide layout setting -> the launch flag that restores a checkpoint saved under `value`
+_GATEWAY_LAYOUT_FLAGS = {
+    "lora_type": lambda value: f"--lora-type {value}",
+    "experts_shared_outer_loras": lambda value: (
+        "--experts-shared-outer-loras" if value else "no --experts-shared-outer-loras"
+    ),
+}
+
+
 def _read_legacy_meta(path: Path, run: AdapterParametrization) -> dict:
-    """META.json, asserted to agree with ``run`` on what fixes the slot's tensor shapes."""
+    """META.json, checked to agree with ``run`` on what fixes the slot's tensor shapes."""
     # checkpoints written before the layout was recorded are all fused, per-expert
     meta = {
         "lora_type": "lora",
@@ -225,7 +234,14 @@ def _read_legacy_meta(path: Path, run: AdapterParametrization) -> dict:
     }
     run = asdict(run)
     for field in ("base_model", "lora_rank", "lora_type", "experts_shared_outer_loras"):
-        assert meta[field] == run[field], f"{path} was saved with {field}={meta[field]!r}; this run has {run[field]!r}"
+        if meta[field] != run[field]:
+            message = f"{path} was saved with {field}={meta[field]!r}; this run has {run[field]!r}"
+            if field in _GATEWAY_LAYOUT_FLAGS:
+                message += (
+                    f". The adapter layout is set per gateway: restore it on one launched with "
+                    f"{_GATEWAY_LAYOUT_FLAGS[field](meta[field])}"
+                )
+            raise ValueError(message)
     return meta
 
 

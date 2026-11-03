@@ -59,3 +59,10 @@ def test_an_unreadable_source_is_a_mismatch(gloo, tmp_path):
     (tmp_path / "adapter_model.safetensors").write_bytes(b"not safetensors")
     mismatch = checkpoint.find_load_mismatch(None, 0, str(tmp_path), UNSHARED, TARGETS, load_optimizer=False)
     assert mismatch is not None and "cannot load into this model" in mismatch
+
+
+def test_a_legacy_layout_mismatch_names_the_gateway_flag(tmp_path):
+    # META.json from before the layout was recorded: fused, per-expert
+    (tmp_path / "META.json").write_text('{"base_model": "m", "lora_rank": 2, "lora_alpha": 4.0}')
+    with pytest.raises(ValueError, match="launched with --lora-type lora"):
+        checkpoint._read_legacy_meta(tmp_path, UNSHARED)
