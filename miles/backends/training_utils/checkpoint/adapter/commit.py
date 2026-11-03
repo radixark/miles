@@ -84,8 +84,12 @@ def write_adapter_dir(root: Path, name: str, *, tenant_digest: str | None = None
     if not dist.is_initialized() or dist.get_rank() == 0:
         try:
             path.mkdir(parents=True)
-            if tenant_digest is not None:
-                (path / TENANT_FILENAME).write_text(json.dumps({"tenant_digest": tenant_digest}))
+            try:
+                if tenant_digest is not None:
+                    (path / TENANT_FILENAME).write_text(json.dumps({"tenant_digest": tenant_digest}))
+            except Exception:
+                _rmtree(path)
+                raise
         except Exception as exc:
             prepare_error = exc
     raise_if_any_rank_failed(prepare_error)

@@ -60,6 +60,14 @@ def test_a_failed_write_is_never_visible_and_leaves_nothing(tmp_path):
     assert list(tmp_path.iterdir()) == [], "a retry under a new name must not leave the failed write behind"
 
 
+def test_a_failed_prepare_leaves_nothing(tmp_path):
+    with pytest.raises(RuntimeError, match="adapter checkpoint failed"):
+        # a digest json cannot encode fails the tenant.json write after the mkdir
+        with write_adapter_dir(tmp_path, "w", tenant_digest=object()):
+            pass
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_recovery_of_one_name_does_not_touch_a_dotted_neighbour(tmp_path):
     kept = _save(tmp_path, "foo.bar", "neighbour")
     with write_adapter_dir(tmp_path, "foo") as orphan:
