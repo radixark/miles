@@ -35,9 +35,13 @@ class LocalPullTransport:
         self.socket_path = f"ipc://{tempfile.gettempdir()}/miles-colocated-pull-{uuid.uuid4().hex}.sock"
         self._sock.bind(self.socket_path)
 
-    def connect_peer(self, rank_info: dict) -> str:
+    def connect_peer(self, transfer_engine_info: dict | None) -> str:
         """The engine rank on this GPU reaches this process's own socket, whatever it published."""
         return self.socket_path
+
+    def remove_peers(self) -> None:
+        # every peer is this process's own socket, which stays bound
+        pass
 
     def register_tensor(self, tensor: torch.Tensor) -> torch.Tensor:
         self._transfer_buffers.append(tensor)
