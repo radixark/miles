@@ -14,7 +14,7 @@ from torchtitan.config.transform import ContextParallelTransform
 from torchtitan.config.transform.apply import transform_model_config_
 from torchtitan.distributed.activation_remat import FullActivationRematConfig
 from torchtitan.models.base import BaseModel
-from torchtitan.models.common.attention import FlexInnerAttention, InnerAttention
+from torchtitan.models.common.attention import FlexInnerAttention, InnerAttention, MLAAttention
 from torchtitan.models.common.attention.cp_attention import AllGatherKVFlexInnerAttention
 from torchtitan.models.common.linear import Linear
 from torchtitan.models.common.moe import MoE
@@ -76,7 +76,10 @@ def build_model_config(
 
 def _use_blocked_sdpa_attention(model: BaseModel.Config) -> None:
     for layer in model.layers:
-        for _, inner, parent, field_name in layer.traverse(InnerAttention.Config):
+        for _, inner, parent, field_name in layer.traverse(InnerAttention.Config, recurse=True):
+            # MLA wraps the attention kernel it runs
+            if isinstance(inner, MLAAttention.Config):
+                continue
             if type(inner) is not FlexInnerAttention.Config:
                 raise ValueError(
                     f"on {platforms.current_platform.device_type} only document-causal FlexAttention has a "
