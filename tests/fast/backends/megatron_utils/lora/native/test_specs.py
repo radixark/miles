@@ -230,6 +230,10 @@ class TestAttachWalk:
         assert GQAAttentionSpec().attach(mixer, None, named(self._context(None), "model.layers.0.self_attn.")) == 0
 
 
+# a glob target such as ``*head`` reaches the head only through the HF module list
+_HF_MODULES = ["model.embed_tokens", "model.layers.0.self_attn.q_proj", "lm_head"]
+
+
 def _native_run_args(tmp_path, model_type, **overrides):
     (tmp_path / "config.json").write_text(json.dumps({"model_type": model_type}))
     defaults = dict(
@@ -263,15 +267,15 @@ def _native_run_args(tmp_path, model_type, **overrides):
 )
 def test_native_run_contract_rejects_unvalidated_configs(tmp_path, override, message):
     with pytest.raises(AssertionError, match=message):
-        validate_native_lora_args(_native_run_args(tmp_path, "kimi_k3", **override))
+        validate_native_lora_args(_native_run_args(tmp_path, "kimi_k3", **override), _HF_MODULES)
 
 
 def test_native_run_contract_accepts_its_validated_configs(tmp_path):
-    validate_native_lora_args(_native_run_args(tmp_path, "kimi_k3"))
-    validate_native_lora_args(_native_run_args(tmp_path, "kimi_k3", colocate=False))
-    validate_native_lora_args(_native_run_args(tmp_path, "kimi_k3", colocate=False, lora_train_only=True))
+    validate_native_lora_args(_native_run_args(tmp_path, "kimi_k3"), _HF_MODULES)
+    validate_native_lora_args(_native_run_args(tmp_path, "kimi_k3", colocate=False), _HF_MODULES)
+    validate_native_lora_args(_native_run_args(tmp_path, "kimi_k3", colocate=False, lora_train_only=True), _HF_MODULES)
     # expert TP only matters for specs whose routed experts carry adapters
-    validate_native_lora_args(_native_run_args(tmp_path, "qwen3_moe", expert_tensor_parallel_size=2))
+    validate_native_lora_args(_native_run_args(tmp_path, "qwen3_moe", expert_tensor_parallel_size=2), _HF_MODULES)
 
 
 @pytest.mark.parametrize(
@@ -286,15 +290,20 @@ def test_native_run_contract_accepts_its_validated_configs(tmp_path):
 @pytest.mark.parametrize("head_target", ["lm_head", "*head"])
 def test_native_run_contract_rejects_head_adapter_configs(tmp_path, override, message, head_target):
     with pytest.raises(AssertionError, match=message):
-        validate_native_lora_args(_native_run_args(tmp_path, "qwen3", hf_lora_targets=[head_target], **override))
+        validate_native_lora_args(
+            _native_run_args(tmp_path, "qwen3", hf_lora_targets=[head_target], **override), _HF_MODULES
+        )
 
 
 def test_native_run_contract_accepts_merged_export_without_a_tied_head(tmp_path):
-    validate_native_lora_args(_native_run_args(tmp_path, "qwen3", hf_lora_targets=["q_proj"], save_hf="/out"))
+    validate_native_lora_args(
+        _native_run_args(tmp_path, "qwen3", hf_lora_targets=["q_proj"], save_hf="/out"), _HF_MODULES
+    )
     validate_native_lora_args(
         _native_run_args(
             tmp_path, "qwen3", hf_lora_targets=["lm_head"], save_hf="/out", untie_embeddings_and_output_weights=True
-        )
+        ),
+        _HF_MODULES,
     )
 
 
