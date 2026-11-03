@@ -116,12 +116,14 @@ def _flash_attn_varlen_func():
     major, _ = torch.cuda.get_device_capability()
     if major == 9:
         from flash_attn_interface import flash_attn_varlen_func
-    elif major == 10:
+
+        return flash_attn_varlen_func
+    if major == 10:
         from flash_attn.cute.interface import flash_attn_varlen_func
-    else:
-        raise RuntimeError(f"the Qwen3.5 vision tower needs FA3 (SM90) or FA4 (SM100); got SM{major}x")
-    # Both packages return (out, lse).
-    return lambda *args, **kwargs: flash_attn_varlen_func(*args, **kwargs)[0]
+
+        # FA4 returns (out, lse); FA3 returns out alone.
+        return lambda *args, **kwargs: flash_attn_varlen_func(*args, **kwargs)[0]
+    raise RuntimeError(f"the Qwen3.5 vision tower needs FA3 (SM90) or FA4 (SM100); got SM{major}x")
 
 
 class _MLP(nn.Module):
