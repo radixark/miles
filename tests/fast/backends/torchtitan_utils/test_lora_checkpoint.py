@@ -1,7 +1,7 @@
 import socket
 from dataclasses import dataclass
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 import torch
@@ -11,7 +11,10 @@ import torch.distributed.checkpoint as dcp
 pytest.importorskip("torchtitan")
 
 from miles.backends.torchtitan_utils import lora_checkpoint  # noqa: E402
-from miles.backends.torchtitan_utils.lora_checkpoint import TorchtitanCheckpointLoader  # noqa: E402
+from miles.backends.torchtitan_utils.lora_checkpoint import (  # noqa: E402
+    TorchtitanCheckpointLoader,
+    TorchtitanLoraCheckpoint,
+)
 
 _LORA_A, _LORA_B = "layers.0.attention.wq.lora_a.weight", "layers.0.attention.wq.lora_b.weight"
 
@@ -67,3 +70,70 @@ def test_a_full_dcp_loads_its_training_state(tmp_path, single_rank_gloo):
     loader = _load_dcp(tmp_path, saved)
     assert loader.train_state == {"step": 8, "ntokens_seen": 640}
     assert loader.lr_scheduler_state == {"last_epoch": 8}
+
+
+_STEPS_PER_ROLLOUT = 4
+
+
+class _Engine:
+    def __init__(self):
+        self.num_completed_steps, self.ntokens_seen = 0, 0
+        self.optim = SimpleNamespace(lr_schedulers=MagicMock())
+        self.state_dict_adapter = None
+
+    def load_state_dict(self, state: dict) -> None:
+        self.num_completed_steps, self.ntokens_seen = state["step"], state["ntokens_seen"]
+
+
+class _Trainer:
+    model_parts = []
+
+    def __init__(self):
+        self.engine = _Engine()
+        self.optimizers = SimpleNamespace(optimizers=[])
+
+    @property
+    def step(self) -> int:
+        return self.engine.num_completed_steps
+
+
+def _restore(tmp_path, *, dcp_step=None, training_state=None, **flags):
+    """``dcp_step``: the source is a torchtitan DCP with this train_state step; ``training_state``: an adapter dir's."""
+
+    def load_adapter_dir(path, members, slot, run, targets, *, load_optimizer, in_model_loaders_by_kind):
+        if dcp_step is not None:
+            (loader,) = in_model_loaders_by_kind.values()
+            loader.train_state = {"step": dcp_step, "ntokens_seen": 7}
+            loader.lr_scheduler_state = {"last_epoch": dcp_step}
+
+    backend = SimpleNamespace(no_load_optim=False, no_save_optim=False, save=None)
+    args = SimpleNamespace(
+        lora_adapter_path=str(tmp_path / "source"),
+        lora_adapter_convert_save=None,
+        num_rollout=10,
+        hf_checkpoint=str(tmp_path),
+        lora_rank=8,
+        lora_alpha=16,
+        lora_type="lora",
+        backend=backend,
+    )
+    for name, value in flags.items():
+        setattr(backend if hasattr(backend, name) else args, name, value)
+    trainer = _Trainer()
+    with (
+        patch.object(lora_checkpoint, "_torchtitan_adapter_slots", return_value=MagicMock()),
+        patch.object(lora_checkpoint, "load_adapter_dir", side_effect=load_adapter_dir),
+        patch.object(lora_checkpoint, "read_training_state", return_value=training_state),
+        patch.object(lora_checkpoint, "load_lr_schedulers") as load_lr_schedulers,
+        patch.object(lora_checkpoint, "save_and_commit_adapter_dir") as save,
+    ):
+        iteration = TorchtitanLoraCheckpoint(trainer, args, _STEPS_PER_ROLLOUT).restore()
+    lr_states = [call.args[1] for call in load_lr_schedulers.call_args_list]
+    return SimpleNamespace(iteration=iteration, step=trainer.step, lr_states=lr_states, save=save)
+
+
+@pytest.mark.parametrize("step", [6, 11 * _STEPS_PER_ROLLOUT])
+def test_a_dcp_off_this_runs_rollout_grid_is_refused(tmp_path, step):
+    """A standalone torchtitan run's step count says nothing about this run's rollouts."""
+    with pytest.raises(AssertionError, match=f"at step {step}, not a whole rollout"):
+        _restore(tmp_path, dcp_step=step)

@@ -414,10 +414,14 @@ class TorchtitanLoraCheckpoint:
         )
         training_state = read_training_state(path)
         if loader.train_state is not None:
+            # a torchtitan DCP records steps, not the rollout; only one miles saved on this run's rollout grid maps
+            completed_rollouts, remainder = divmod(loader.train_state["step"], self._steps_per_rollout)
+            assert remainder == 0 and completed_rollouts <= self._args.num_rollout, (
+                f"{path} is at step {loader.train_state['step']}, not a whole rollout of this run's "
+                f"{self._steps_per_rollout} steps within --num-rollout {self._args.num_rollout}"
+            )
             self._trainer.engine.load_state_dict(loader.train_state)
             load_lr_schedulers(self._trainer.engine.optim.lr_schedulers, loader.lr_scheduler_state)
-            # a torchtitan DCP records steps, not the rollout; miles saved it after a whole rollout's steps
-            completed_rollouts = self._trainer.step // self._steps_per_rollout
             training_state = self._training_state(completed_rollouts - 1 if completed_rollouts else None)
         elif training_state is not None and "lr_scheduler" in training_state:
             load_lr_schedulers(self._trainer.engine.optim.lr_schedulers, training_state["lr_scheduler"])
