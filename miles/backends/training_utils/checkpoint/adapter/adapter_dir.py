@@ -119,18 +119,19 @@ def write_peft_export(
     targets: HfLoraTargets,
 ) -> None:
     """All ranks call; rank 0 writes ``slot``'s bf16 PEFT export into ``directory``."""
-    named_tensors = list(members.export_bf16_adapter(slot))
     error = None
-    if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
-        try:
+    try:
+        # the gathered adapter leaves the GPU before rank 0 splits and copies it
+        named_tensors = [(name, tensor.cpu()) for name, tensor in members.export_bf16_adapter(slot)]
+        if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
             if members.bf16_adapter_key_style == "peft":
                 map_name = map_peft_keys_to_hf_keys
             else:
                 map_name = partial(map_tinker_keys_to_hf_keys, targets=targets)
             weights, _ = map_named_tensors_to_hf_keys(named_tensors, map_name, targets)
             write_peft_adapter(directory, weights, parametrization, targets)
-        except Exception as exc:
-            error = exc
+    except Exception as exc:
+        error = exc
     raise_if_any_rank_failed(error)
 
 
