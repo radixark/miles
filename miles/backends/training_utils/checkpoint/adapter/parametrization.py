@@ -23,6 +23,10 @@ class AdapterParametrization:
 
     def __post_init__(self):
         assert self.lora_rank > 0, f"lora_rank must be positive, got {self.lora_rank}"
+        # backends list members in their own order; one order makes equal groups equal and fixes which member holds A
+        object.__setattr__(
+            self, "shared_lora_a_groups", tuple(sorted(tuple(sorted(group)) for group in self.shared_lora_a_groups))
+        )
         grouped = [module for group in self.shared_lora_a_groups for module in group]
         assert len(grouped) == len(set(grouped)), f"a module is in two shared-A groups: {self.shared_lora_a_groups}"
         unknown = set(grouped) - set(self.target_modules)
