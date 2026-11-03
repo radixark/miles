@@ -296,7 +296,8 @@ def _dp_spread_hint(args: dict) -> str:
     """Which knob actually decides how requests spread across dp ranks. Only a
     dp-aware sglang router routes per rank; otherwise the engine looks like one
     worker and sglang's own dp controller dispatches."""
-    if args.get("use_miles_router"):
+    # runs recorded before --router carry use_miles_router
+    if args.get("router") == "miles" or args.get("use_miles_router"):
         return "the miles router routes per engine; --sglang-load-balance-method decides the rank"
     if not args.get("router_dp_aware"):
         return "the router sees one worker per engine; --router-dp-aware makes it route per rank"
