@@ -18,8 +18,7 @@ from megatron.core.dist_checkpointing.dict_utils import nested_values
 from megatron.core.distributed import DistributedDataParallel as DDP
 from megatron.core.optimizer import DistributedOptimizer
 from megatron.core.optimizer.cpu_offloading.hybrid_optimizer import HybridDeviceOptimizer
-from megatron.core.process_groups_config import ProcessGroupCollection
-from megatron.core.utils import get_pg_size, unwrap_model
+from megatron.core.utils import unwrap_model
 
 from miles.backends.megatron_utils.lora.bridge_checkpoint import (
     OPTIMIZER_KEY,
@@ -302,14 +301,31 @@ def _world_slice(gathered: dict, buffer_index: int, buffer, param) -> tuple[dict
     return gathered[buffer_index][(buffer.param_dtype, buffer.grad_dtype)], offset, offset + (end - start)
 
 
+def _adam_optimizers(sub) -> list[torch.optim.Optimizer]:
+    """The optimizers that step: an offloaded optimizer runs torch Adam on the host and TE FusedAdam on the GPU."""
+    if isinstance(sub.optimizer, HybridDeviceOptimizer):
+        return sub.optimizer.sub_optimizers
+    return [sub.optimizer]
+
+
+def _steps_per_parameter(optimizer: torch.optim.Optimizer) -> bool:
+    # torch Adam keeps the step in each parameter's state; TE FusedAdam keeps it in each param group
+    return isinstance(optimizer, torch.optim.Adam | torch.optim.AdamW)
+
+
 def _distributed_optimizer_step(sub) -> int | None:
     """None when this rank's shard of the optimizer holds no parameters (its groups are never stepped)."""
-    if isinstance(sub.optimizer, HybridDeviceOptimizer):
-        steps = {int(state["step"]) for state in sub.optimizer.state.values() if "step" in state}
-        assert len(steps) <= 1, f"offloaded Adam states disagree on the step: {steps}"
-        return steps.pop() if steps else (0 if sub.optimizer.state else None)
-    groups = [group for group in sub.optimizer.param_groups if group["params"]]
-    return groups[0].get("step", 0) if groups else None
+    steps = set()
+    for optimizer in _adam_optimizers(sub):
+        if not any(group["params"] for group in optimizer.param_groups):
+            continue
+        if _steps_per_parameter(optimizer):
+            # a never-stepped torch Adam has no state yet
+            steps |= {int(state["step"]) for state in optimizer.state.values()} or {0}
+        else:
+            steps |= {int(group.get("step", 0)) for group in optimizer.param_groups if group["params"]}
+    assert len(steps) <= 1, f"the Adam optimizers of one DistributedOptimizer disagree on the step: {steps}"
+    return steps.pop() if steps else None
 
 
 def _init_zero_hdo_state(hdo: HybridDeviceOptimizer) -> None:
@@ -330,13 +346,16 @@ def _init_zero_hdo_state(hdo: HybridDeviceOptimizer) -> None:
 
 def _set_distributed_optimizer_step(sub, step: int) -> None:
     if isinstance(sub.optimizer, HybridDeviceOptimizer):
-        for shard in sub.optimizer.state:
-            sub.optimizer.state[shard]["step"] = torch.tensor(float(step))
+        # the sub-optimizers' states become the HDO's state dicts, so the step written below reaches both
         sub.optimizer._sync_hdo_state_to_sub_optimizers()
-        return
-    for group in sub.optimizer.param_groups:
-        if group["params"]:
-            group["step"] = step
+    for optimizer in _adam_optimizers(sub):
+        if _steps_per_parameter(optimizer):
+            for state in optimizer.state.values():
+                state["step"] = torch.tensor(float(step))
+            continue
+        for group in optimizer.param_groups:
+            if group["params"]:
+                group["step"] = step
 
 
 def _moment(state: dict, master: torch.Tensor, key: str) -> torch.Tensor:
@@ -398,15 +417,6 @@ def find_load_mismatch(
         kind = check_adapter_source(path, run, targets, load_optimizer=load_optimizer, run_shapes=run_shapes)
         if kind == AdapterSourceKind.LEGACY_TINKER_CHECKPOINT:
             _read_legacy_meta(path, run)
-            # SlotOptimizer's LayerWise shards state over these groups, owner per param differing by slot, and
-            # META.json does not record the slot that saved it. Weights only need those masters too: main's layout
-            # leaves grouped-expert adapter weights unloaded in the model.
-            groups = ProcessGroupCollection.use_mpu_process_groups(required_pgs=["dp_cp", "expt_dp"])
-            if max(get_pg_size(groups.dp_cp), get_pg_size(groups.expt_dp)) > 1:
-                raise ValueError(
-                    "a checkpoint saved before adapter checkpoints cannot load under data parallelism; load it on "
-                    "a gateway without data parallelism and save_state it there to convert it"
-                )
             # TE's _extra_state objects are stored per shard (<key>/shard_i_j); the tensors decide the layout
             saved = {
                 k
@@ -449,8 +459,17 @@ class LegacyTinkerCheckpointLoader:
         return replace(self._run, lora_alpha=meta["lora_alpha"])
 
 
+# a gateway-wide layout setting -> the launch flag that restores a checkpoint saved under `value`
+_GATEWAY_LAYOUT_FLAGS = {
+    "lora_type": lambda value: f"--lora-type {value}",
+    "experts_shared_outer_loras": lambda value: (
+        "--experts-shared-outer-loras" if value else "no --experts-shared-outer-loras"
+    ),
+}
+
+
 def _read_legacy_meta(path: Path, run: AdapterParametrization) -> dict:
-    """META.json, asserted to agree with ``run`` on what fixes the slot's tensor shapes."""
+    """META.json, checked to agree with ``run`` on what fixes the slot's tensor shapes."""
     # checkpoints written before the layout was recorded are all fused, per-expert
     meta = {
         "lora_type": "lora",
@@ -459,7 +478,14 @@ def _read_legacy_meta(path: Path, run: AdapterParametrization) -> dict:
     }
     run = asdict(run)
     for field in ("base_model", "lora_rank", "lora_type", "experts_shared_outer_loras"):
-        assert meta[field] == run[field], f"{path} was saved with {field}={meta[field]!r}; this run has {run[field]!r}"
+        if meta[field] != run[field]:
+            message = f"{path} was saved with {field}={meta[field]!r}; this run has {run[field]!r}"
+            if field in _GATEWAY_LAYOUT_FLAGS:
+                message += (
+                    f". The adapter layout is set per gateway: restore it on one launched with "
+                    f"{_GATEWAY_LAYOUT_FLAGS[field](meta[field])}"
+                )
+            raise ValueError(message)
     return meta
 
 

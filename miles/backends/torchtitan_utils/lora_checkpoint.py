@@ -20,7 +20,6 @@ import torch.distributed.checkpoint as dcp
 from torch.distributed.tensor import DTensor
 from torch.distributed.tensor._utils import compute_local_shape_and_global_offset
 from torch.optim.lr_scheduler import _update_param_group_val
-from torchtitan.components.optim.utils import init_optim_state
 
 from miles.backends.torchtitan_utils.lora_names import is_adapter_key, split_adapter_key
 from miles.backends.training_utils.checkpoint.adapter.adapter_dir import (
@@ -66,7 +65,7 @@ def _local_codes(param: torch.Tensor, start: int) -> torch.Tensor:
     return codes
 
 
-def probe_torchtitan_row_mapping(params: Mapping[str, torch.Tensor], sd_adapter, targets: HfLoraTargets) -> RowMapping:
+def probe_torchtitan_row_mapping(params: Mapping[str, torch.Tensor], sd_adapter) -> RowMapping:
     """Collective. ``params``: the adapter parameters by titan key, in the order their local shards are
     concatenated."""
     error = None
@@ -91,8 +90,11 @@ def _probe_local(
 ) -> tuple[list[HfPiece], list[tuple[str, ...]], set[str]]:
     starts, start = {}, 0
     for key, param in params.items():
+        shape = _local_box(param)[0]
+        # pieces index the to_local() shards, so the computed box must be exactly that shard
+        assert not isinstance(param, DTensor) or shape == tuple(param.to_local().shape), (key, shape)
         starts[key] = start
-        start += int(torch.Size(_local_box(param)[0]).numel())
+        start += int(torch.Size(shape).numel())
     pieces, groups, modules = [], [], set()
     for key in params:
         projection, factor = split_adapter_key(key)
@@ -130,13 +132,13 @@ class TorchtitanAdapterSlots(ProbedAdapterSlots):
     bf16_adapter_key_style = "peft"
 
     def __init__(self, model_parts, iterator, sd_adapter, targets: HfLoraTargets):
-        """Collective: probes the row mapping now, while nothing else touches the parameters."""
+        """Collective: probes the row mapping."""
         self._iterator, self.targets = iterator, targets
         self._specs = {}
         self._params = {
             key: param for part in model_parts for key, param in part.named_parameters() if is_adapter_key(key)
         }
-        self.row_mapping = probe_torchtitan_row_mapping(self._params, sd_adapter, targets)
+        self.row_mapping = probe_torchtitan_row_mapping(self._params, sd_adapter)
 
     @property
     def parameters(self) -> dict[str, torch.nn.Parameter]:
@@ -170,6 +172,9 @@ class TorchtitanOptimizerMembers:
 
     def adam_states(self) -> list[dict]:
         """Each adapter parameter's AdamW state, created (zero, step 0) where no step has run yet."""
+        # lazy: actor.py imports this module, and its CPU tests run without torchtitan
+        from torchtitan.components.optim.utils import init_optim_state
+
         state_of = {}
         for optimizer in self._optimizers:
             init_optim_state(optimizer)
@@ -200,7 +205,7 @@ class TorchtitanOptimizerMembers:
         )
 
     def import_adapter_state(self, slot: int, state: AdapterState) -> None:
-        """In place: the moments may be file-backed (--stream-optimizer-state-to-disk)."""
+        """In place, into the AdamW state; restore() runs before --stream-optimizer-state-to-disk moves it to files."""
         states = self.adam_states()
         params = self._slots.slot_parameters(slot)
         with torch.no_grad():
@@ -305,12 +310,17 @@ class TorchtitanCheckpointLoader:
         except Exception as exc:
             error = exc
         raise_if_any_rank_failed(error)
-        source_tensors = self._base_fingerprint_tensors(path, metadata)
-        hf_dir = resolve_hf_dir(self._run.base_model)
-        assert (
-            hf_dir is not None
-        ), f"--hf-checkpoint {self._run.base_model} has no local HF weights to compare {path} with"
-        assert_same_base_tensors(str(path), source_tensors, hf_fingerprint_tensors(hf_dir), self._run.base_model)
+        # agreed before the collective dcp.load below: e.g. one node's HF cache may lack --hf-checkpoint
+        try:
+            source_tensors = self._base_fingerprint_tensors(path, metadata)
+            hf_dir = resolve_hf_dir(self._run.base_model)
+            assert (
+                hf_dir is not None
+            ), f"--hf-checkpoint {self._run.base_model} has no local HF weights to compare {path} with"
+            assert_same_base_tensors(str(path), source_tensors, hf_fingerprint_tensors(hf_dir), self._run.base_model)
+        except Exception as exc:
+            error = exc
+        raise_if_any_rank_failed(error)
 
         states = self._members.adam_states()
         loaded = dict(params)
@@ -434,6 +444,13 @@ class TorchtitanLoraCheckpoint:
             load_lr_schedulers(self._trainer.engine.optim.lr_schedulers, loader.lr_scheduler_state)
             training_state = self._training_state(completed_rollouts - 1 if completed_rollouts else None)
         elif training_state is not None and "lr_scheduler" in training_state:
+            iteration = training_state["iteration"]
+            # the schedule is restored by step: on another --global-batch-size grid it would not match the rollout
+            grid_step = 0 if iteration is None else (iteration + 1) * self._steps_per_rollout
+            assert training_state["step"] == grid_step, (
+                f"{path} is at step {training_state['step']} after iteration {iteration}, but this run takes "
+                f"{self._steps_per_rollout} steps per rollout (step {grid_step}): keep its rollout and batch sizes"
+            )
             load_lr_schedulers(self._trainer.engine.optim.lr_schedulers, training_state["lr_scheduler"])
             self._trainer.engine.num_completed_steps = training_state["step"]
         elif training_state is not None and training_state["iteration"] is not None:
@@ -456,6 +473,6 @@ class TorchtitanLoraCheckpoint:
                 0,
                 self.run,
                 self.slots.targets,
-                training_state=training_state or self._training_state(None),
+                training_state=training_state,
             )
         return None if training_state is None else training_state["iteration"]

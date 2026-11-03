@@ -36,4 +36,6 @@ class NativeAdapterSlots(BridgeAdapterSlots):
         return torch.cat(offsets)
 
     def _export_probe(self):
-        return export_lora_hf_named(iter_adapters(self._model), dtype=torch.float64)
+        # one adapter at a time: a float64 export gathers every expert factor over EP onto every rank
+        for adapter in iter_adapters(self._model):
+            yield from export_lora_hf_named([adapter], dtype=torch.float64)

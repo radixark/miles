@@ -153,6 +153,8 @@ class TinkerService:
         self._sample_tasks: dict[str, tuple] = {}  # request_id -> (task, session_id)
         self._create_tasks: set = set()
         self._cleanup_tasks: set = set()
+        # two cleanups would race on the same .deleting dirs
+        self._cleanup_lock = asyncio.Lock()
         self._arrival_counter = 0
         self._batch_counter = 0
         self._background_error: BaseException | None = None
@@ -461,15 +463,21 @@ class TinkerService:
         if payload["overwrite"]:
             # a crash between the commit and the new TTL must not leave the new commit the old one's expiry
             self.expiry.drop(tinker_path)
-        self.backend.commit_adapter(root, name, written, payload["overwrite"])
+        # the commit's recovery walk and fsyncs hit shared storage; keep the event loop serving
+        await asyncio.to_thread(self.backend.commit_adapter, root, name, written, payload["overwrite"])
         self._delete_retired_outside_the_lock(root)
         self.expiry.set(tinker_path, payload["ttl_seconds"], time.time())
         return {"op": "save_state", "path": tinker_path}
 
     def _delete_retired_outside_the_lock(self, root: str) -> None:
-        task = asyncio.create_task(asyncio.to_thread(self.backend.delete_retired_adapters, root))
+        task = asyncio.create_task(self._delete_retired(root))
         self._cleanup_tasks.add(task)
         task.add_done_callback(self._cleanup_tasks.discard)
+        task.add_done_callback(self._observe_background_task)
+
+    async def _delete_retired(self, root: str) -> None:
+        async with self._cleanup_lock:
+            await asyncio.to_thread(self.backend.delete_retired_adapters, root)
 
     async def _load_state(self, record: ModelRecord, payload: dict) -> dict:
         if payload["path"].startswith("file://"):
@@ -532,7 +540,8 @@ class TinkerService:
         )
         if isinstance(written, dict):
             return written
-        self.backend.commit_adapter(root, version, written, overwrite=False)
+        # the commit's recovery walk and fsyncs hit shared storage; keep the event loop serving
+        await asyncio.to_thread(self.backend.commit_adapter, root, version, written, False)
         result = {
             "op": "save_weights_for_sampler",
             "path": f"tinker://{record.model_id}/sampler_weights/{version}",
@@ -612,7 +621,7 @@ class TinkerService:
         )
         if isinstance(written, dict):
             return written
-        self.backend.commit_adapter(root, name, written, False)
+        await asyncio.to_thread(self.backend.commit_adapter, root, name, written, False)
         tinker_path = f"tinker://{record.model_id}/external_weights/{name}"
         self.expiry.set(tinker_path, payload["ttl_seconds"], time.time())
         files = self.backend.resolve_checkpoint_files(root, name, record.tenant)
@@ -725,11 +734,8 @@ class TinkerService:
         if kind == "external_weights":
             raise UserInputError(f"{tinker_path} is a download; create a training client from a weights checkpoint")
         checkpoint_dir = resolve_checkpoint_dir(self.config.checkpoint_root, model_id, kind, name)
-        if os.path.islink(checkpoint_dir):
-            committed = self.backend.resolve_adapter(os.path.dirname(checkpoint_dir), name, tenant, model_id)
-            if committed is None:
-                # the link outlived its target
-                raise UserInputError(f"unknown checkpoint {tinker_path!r}")
+        committed = self.backend.resolve_adapter(os.path.dirname(checkpoint_dir), name, tenant, model_id)
+        if committed is not None:
             parametrization = committed["parametrization"]
             # an adapter dir records targets, not group flags; it was written under this gateway's layout
             return {

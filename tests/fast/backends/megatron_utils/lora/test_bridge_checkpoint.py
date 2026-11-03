@@ -17,6 +17,7 @@ from miles.backends.megatron_utils.lora.bridge_checkpoint import (
 from miles.backends.training_utils.checkpoint.adapter.base_model import assert_same_base_model
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
 from miles.backends.training_utils.checkpoint.adapter.probed_slots import ProbedAdapterSlots, RowMapping
+from miles.utils.distributed_utils import init_gloo_group
 from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
 
 Q, K = "model.layers.0.self_attn.q_proj", "model.layers.0.self_attn.k_proj"
@@ -40,6 +41,7 @@ def _export(params):
 
 def _probe(rank, world_size, port):
     init_gloo(rank, world_size, port=port)
+    init_gloo_group()
     params = [
         torch.nn.Parameter(torch.randn(3, 5)),
         torch.nn.Parameter(torch.randn(2, 3)),
@@ -88,6 +90,7 @@ def _expert_export(params):
 
 def _probe_experts(rank, world_size, port):
     init_gloo(rank, world_size, port=port)
+    init_gloo_group()
     params = [torch.nn.Parameter(torch.randn(2, 4, 5)), torch.nn.Parameter(torch.randn(2, 6, 4))]
     mapping = probe_bridge_row_mapping(params, lambda: _expert_export(params), TARGETS)
     gate, up = GATE.format("x").replace(".x.", "."), UP.format("x").replace(".x.", ".")
@@ -118,6 +121,7 @@ def _trimmed_head_export(params, served_rows):
 
 def _probe_trimmed_head(rank, world_size, port):
     init_gloo(rank, world_size, port=port)
+    init_gloo_group()
     # vocab 7 padded to 8: rank 1's last row of B is padding
     params = [torch.nn.Parameter(torch.randn(2, 5)), torch.nn.Parameter(torch.randn(4, 2))]
     padding = torch.arange(10 + 3 * 2, 10 + 4 * 2) if rank == 1 else torch.empty(0, dtype=torch.long)
@@ -157,6 +161,7 @@ def _fused_gate_up_export(params):
 
 def _probe_fused_gate_up(rank, world_size, port):
     init_gloo(rank, world_size, port=port)
+    init_gloo_group()
     params = [torch.nn.Parameter(torch.randn(4, 3))]
     mapping = probe_bridge_row_mapping(params, lambda: _fused_gate_up_export(params), TARGETS)
 
@@ -181,6 +186,7 @@ def _specs_of_two_slots(rank, world_size, port):
     dist.init_process_group(
         "gloo", init_method=f"tcp://localhost:{port}", rank=rank, world_size=world_size, timeout=timedelta(seconds=10)
     )
+    init_gloo_group()
     slots = BridgeAdapterSlots.__new__(BridgeAdapterSlots)
     slots._specs, slots._multi_lora, slots.slot_parameters = {}, False, lambda slot: []
     slots.row_mapping = RowMapping(pieces=[], shared_lora_a_groups=(), target_modules=())
@@ -205,6 +211,9 @@ def _run(**overrides) -> AdapterParametrization:
     return AdapterParametrization(**(fields | overrides))
 
 
+FP32 = {"_target_": "torch.float32", "_call_": False}
+
+
 def _bridge_config(**peft) -> dict:
     return {
         "peft": {
@@ -215,9 +224,15 @@ def _bridge_config(**peft) -> dict:
             "exclude_modules": [],
             "lora_dtype": None,
             "share_expert_adapters": False,
+            "a2a_experimental": False,
         }
         | peft,
-        "optimizer": {"optimizer": "adam", "use_distributed_optimizer": True, "exp_avg_dtype": None},
+        "optimizer": {
+            "optimizer": "adam",
+            "use_distributed_optimizer": True,
+            "use_precision_aware_optimizer": False,
+        }
+        | {field: FP32 for field in ("main_params_dtype", "exp_avg_dtype", "exp_avg_sq_dtype")},
         "checkpoint": {"save_optim": True},
     }
 
@@ -292,9 +307,79 @@ def test_the_base_is_bridge_pretrained_checkpoint_not_the_hf_template(tmp_path):
         return str(tmp_path / name)
 
     template, sft = hf_dir("template", torch.ones(4)), hf_dir("sft", torch.ones(4) * 2)
-    config = {"checkpoint": {"pretrained_checkpoint": sft, "hf_source_path": template}, "model": {}}
+    config = {
+        "checkpoint": {"pretrained_checkpoint": sft, "hf_source_path": template},
+        "model": {},
+        "tokenizer": {"tokenizer_model": None},
+    }
     with pytest.raises(AssertionError, match="another base model"):
         assert_same_base_model("src", bridge_base_model_candidates(config), template)
     # a torch_dist base has no HF files: its HF template stands in
     config["checkpoint"]["pretrained_checkpoint"] = str(tmp_path)
     assert_same_base_model("src", bridge_base_model_candidates(config), template)
+    # Bridge's last fallback
+    config["checkpoint"]["hf_source_path"] = None
+    config["tokenizer"]["tokenizer_model"] = template
+    assert_same_base_model("src", bridge_base_model_candidates(config), template)
+
+
+GDN = "model.layers.0.linear_attn"
+GDN_TARGETS = get_hf_lora_targets(
+    {
+        "model_type": "qwen3_5_text",
+        "num_hidden_layers": 1,
+        "layer_types": ["linear_attention"],
+        "linear_num_key_heads": 1,
+        "linear_key_head_dim": 2,
+        "linear_num_value_heads": 1,
+        "linear_value_head_dim": 3,
+    }
+)
+
+
+def _gdn_export(params):
+    """Bridge-like GDN in_proj: the fused in_proj_qkv and in_proj_z export one A."""
+    a, b_qkv, b_z = params
+    yield f"{GDN}.in_proj_qkv.lora_A.weight", a.data.clone()
+    yield f"{GDN}.in_proj_qkv.lora_B.weight", b_qkv.data.clone()
+    yield f"{GDN}.in_proj_z.lora_A.weight", a.data.clone()
+    yield f"{GDN}.in_proj_z.lora_B.weight", b_z.data.clone()
+
+
+def _probe_gdn(rank, world_size, port):
+    init_gloo(rank, world_size, port=port)
+    init_gloo_group()
+    params = [torch.nn.Parameter(torch.randn(4, 6)), torch.nn.Parameter(torch.randn(7, 4))]
+    params.append(torch.nn.Parameter(torch.randn(3, 4)))
+    mapping = probe_bridge_row_mapping(params, lambda: _gdn_export(params), GDN_TARGETS)
+    group = tuple(f"{GDN}.in_proj_{m}" for m in "kqvz")
+    assert mapping.shared_lora_a_groups == (group,)
+    pieces = {p.key: p for p in mapping.pieces}
+    assert set(pieces) == {f"{group[0]}.lora_A"} | {f"{m}.lora_B" for m in group}
+    flat = torch.cat([p.data.reshape(-1) for p in params])
+    assert torch.equal(flat[pieces[f"{group[0]}.lora_A"].local_elements], params[0].data)
+    assert torch.equal(flat[pieces[f"{GDN}.in_proj_k.lora_B"].local_elements], params[1].data[2:4])
+    dist.destroy_process_group()
+
+
+def test_probe_stores_a_fused_gdn_modules_shared_a_under_the_sorted_first_member():
+    run_multiprocess(_probe_gdn)
+
+
+def _export_fails_on_rank_1(params):
+    yield f"{Q}.lora_A.weight", params[0].data.clone()
+    if dist.get_rank() == 1:
+        raise ValueError("rank 1 cannot export")
+
+
+def _probe_export_fails(rank, world_size, port):
+    init_gloo(rank, world_size, port=port)
+    init_gloo_group()
+    params = [torch.nn.Parameter(torch.randn(3, 5))]
+    with pytest.raises(RuntimeError, match="adapter checkpoint failed: rank 1: ValueError: rank 1 cannot export"):
+        probe_bridge_row_mapping(params, lambda: _export_fails_on_rank_1(params), TARGETS)
+    dist.destroy_process_group()
+
+
+def test_an_export_failure_on_one_rank_fails_every_rank():
+    run_multiprocess(_probe_export_fails)

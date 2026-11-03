@@ -10,6 +10,7 @@ from tests.fast.dist_utils import find_free_port, init_gloo
 from miles.backends.megatron_utils.lora import checkpoint
 from miles.backends.training_utils.checkpoint.adapter.adapter_exports import write_peft_adapter
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
+from miles.utils.distributed_utils import init_gloo_group
 from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
 
 Q, K = "model.layers.0.self_attn.q_proj", "model.layers.0.self_attn.k_proj"
@@ -21,6 +22,7 @@ RUN_SHAPES = {f"{Q}.lora_A": (2, 8), f"{Q}.lora_B": (8, 2), f"{K}.lora_A": (2, 8
 @pytest.fixture(autouse=True)
 def gloo():
     init_gloo(0, 1, port=find_free_port())
+    init_gloo_group()
     yield
     dist.destroy_process_group()
 

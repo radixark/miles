@@ -83,16 +83,23 @@ def take_checkpoint_root(checkpoint_root: str) -> TextIO:
 
 def resolve_adapter(root: str, name: str, tenant: str, model_id: str) -> dict | None:
     """A committed adapter's physical dir, sglang name and parametrization; None for a dir written before commits."""
+    checkpoint_dir = Path(root) / name
+    # by content, not by link: an overwrite interrupted after adopting a pre-commit dir leaves <name> linked to it
+    if (checkpoint_dir / "META.json").is_file() and not (checkpoint_dir / PARAMETRIZATION_FILENAME).is_file():
+        return None
     try:
         committed = resolve_adapter_dir(Path(root), name, tenant=tenant)
+        if committed is None:
+            return None
+        parametrization = read_parametrization(committed.path)
     except AdapterOwnershipError as error:
         raise OwnershipError(f"adapter {name!r} does not belong to this tenant") from error
-    if committed is None:
-        return None
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise UserInputError(f"cannot read adapter {name!r}: {error}") from error
     return {
         "path": str(committed.path),
         "lora_name": format_sglang_lora_name(model_id, name, committed.commit_id),
-        "parametrization": asdict(read_parametrization(committed.path)),
+        "parametrization": asdict(parametrization),
     }
 
 

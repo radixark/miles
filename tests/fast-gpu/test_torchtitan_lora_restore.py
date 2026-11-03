@@ -1,3 +1,10 @@
+from tests.ci.ci_register import register_cuda_ci
+
+# CPU-only checks, on this stage because only the GPU image ships torchtitan
+register_cuda_ci(
+    est_time=30, suite="stage-b-2-gpu-h200", labels=["torchtitan", "lora"], hardware=["hopper"], num_gpus=2
+)
+
 import socket
 from dataclasses import dataclass
 from types import SimpleNamespace
@@ -7,15 +14,16 @@ import pytest
 import torch
 import torch.distributed as dist
 import torch.distributed.checkpoint as dcp
+import torch.multiprocessing as mp
+from tests.fast.dist_utils import find_free_port, init_gloo
 
-pytest.importorskip("torchtitan")
-
-from miles.backends.torchtitan_utils import lora_checkpoint  # noqa: E402
-from miles.backends.torchtitan_utils.lora_checkpoint import (  # noqa: E402
+from miles.backends.torchtitan_utils import lora_checkpoint
+from miles.backends.torchtitan_utils.lora_checkpoint import (
     TorchtitanCheckpointLoader,
     TorchtitanLoraCheckpoint,
     TorchtitanOptimizerMembers,
 )
+from miles.utils.distributed_utils import init_gloo_group
 
 _LORA_A, _LORA_B = "layers.0.attention.wq.lora_a.weight", "layers.0.attention.wq.lora_b.weight"
 
@@ -26,6 +34,7 @@ def single_rank_gloo():
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
     dist.init_process_group("gloo", init_method=f"tcp://127.0.0.1:{port}", rank=0, world_size=1)
+    init_gloo_group()
     try:
         yield
     finally:
@@ -69,6 +78,32 @@ def test_a_full_dcp_loads_its_training_state(tmp_path, single_rank_gloo):
     loader = _load_dcp(tmp_path, saved)
     assert loader.train_state == {"step": 8, "ntokens_seen": 640}
     assert loader.lr_scheduler_state == {"last_epoch": 8}
+
+
+def _base_check_worker(rank: int, world_size: int, port: int, path) -> None:
+    init_gloo(rank, world_size, port=port)
+    init_gloo_group()
+    params = {key: torch.nn.Parameter(torch.zeros(2, 2)) for key in (_LORA_A, _LORA_B)}
+    members = SimpleNamespace(adam_states=lambda: [{"step": torch.tensor(0.0)} for _ in params])
+    sd_adapter = SimpleNamespace(to_hf=lambda tensors: {})
+    loader = TorchtitanCheckpointLoader(
+        SimpleNamespace(parameters=params), members, [], sd_adapter, _Run("hub/model", 16), load_optimizer=False
+    )
+    with (
+        patch.object(lora_checkpoint, "resolve_hf_dir", return_value=path if rank == 0 else None),
+        patch.object(lora_checkpoint, "hf_fingerprint_tensors", return_value={}),
+        patch.object(lora_checkpoint, "assert_same_base_tensors"),
+        pytest.raises(RuntimeError, match="rank 1: .*has no local HF weights"),
+    ):
+        loader(path)
+    dist.destroy_process_group()
+
+
+def test_a_base_check_failing_on_one_rank_fails_every_rank(tmp_path):
+    """Otherwise the other ranks wait in the collective dcp.load for the rank that failed."""
+    path = tmp_path / "step-10"
+    dcp.save({_LORA_A: torch.ones(2, 2), _LORA_B: torch.ones(2, 2)}, checkpoint_id=path, no_dist=True)
+    mp.spawn(_base_check_worker, args=(2, find_free_port(), path), nprocs=2, join=True)
 
 
 _STEPS_PER_ROLLOUT = 4
@@ -191,11 +226,23 @@ def test_a_torchtitan_adapter_dir_restores_its_own_schedule(tmp_path):
     assert (restored.iteration, restored.step, restored.lr_states) == (2, 12, [schedule])
 
 
+def test_a_torchtitan_adapter_dir_off_this_runs_rollout_grid_is_refused(tmp_path):
+    """Saved at 2 steps per rollout: its iteration-9 schedule would sit at rollout 5 of this run's 4."""
+    with pytest.raises(AssertionError, match="at step 20 after iteration 9, but this run takes 4 steps per rollout"):
+        _restore(tmp_path, training_state={"iteration": 9, "step": 20, "lr_scheduler": {"last_epoch": 20}})
+
+
 def test_a_megatron_adapter_dir_resumes_the_schedule_after_its_rollout(tmp_path):
     """Megatron's scheduler state does not apply here; rollouts 0..2 are done."""
     restored = _restore(tmp_path, training_state={"iteration": 2, "opt_param_scheduler": {"num_steps": 96}})
     assert (restored.iteration, restored.step) == (2, 3 * _STEPS_PER_ROLLOUT)
     assert restored.lr_states == [{"last_epoch": 3 * _STEPS_PER_ROLLOUT}]
+
+
+def test_a_convert_save_of_a_model_only_source_writes_no_training_state(tmp_path):
+    """As Megatron's convert-save: a step and schedule the source never had would resume as if real."""
+    restored = _restore(tmp_path, lora_adapter_convert_save=str(tmp_path / "out"))
+    assert restored.save.call_args.kwargs["training_state"] is None
 
 
 def test_a_convert_save_of_a_dcp_records_its_rollout(tmp_path):

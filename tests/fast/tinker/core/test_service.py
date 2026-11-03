@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from contextlib import suppress
 from pathlib import Path
@@ -26,7 +27,7 @@ from tests.fast.tinker.harness import (
     write_legacy_checkpoint,
 )
 
-from miles.backends.training_utils.checkpoint.adapter.commit import resolve_adapter_dir
+from miles.backends.training_utils.checkpoint.adapter.commit import _adopt_pre_commit_dir, resolve_adapter_dir
 from miles.backends.training_utils.checkpoint.adapter.parametrization import (
     AdapterParametrization,
     write_parametrization,
@@ -398,7 +399,7 @@ async def test_save_state_refuses_to_overwrite_unless_asked(service):
     assert (future.state, future.error_category) == (FAILED, "user")
     assert "overwrite" in future.error
 
-    replace = service.submit("tenant", "save_state", payload | {"seq_id": 3, "overwrite": True})
+    replace = service.submit("tenant", "save_state", payload | {"seq_id": 3, "overwrite": True, "ttl_seconds": None})
     assert (await await_settled(service, "tenant", replace)).state == DONE
 
 
@@ -583,6 +584,25 @@ async def test_sampler_paths_resolve_independently_of_the_lease(service, expire_
     service.config.base_model = "other"
     with pytest.raises(UserInputError, match="base_model"):
         resolve_sampler_checkpoint(service.config, "tenant", path, service.backend.resolve_adapter)
+
+
+@pytest.mark.parametrize("op", ["save_state", "save_weights_for_sampler"])
+async def test_the_commit_runs_off_the_event_loop(service, monkeypatch, op):
+    model_id = await created_model(service)
+    commit = service.backend.commit_adapter
+    commit_threads = []
+
+    def recording_commit(root, name, written, overwrite):
+        commit_threads.append(threading.current_thread())
+        commit(root, name, written, overwrite)
+
+    monkeypatch.setattr(service.backend, "commit_adapter", recording_commit)
+    payload = {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False, "ttl_seconds": None}
+    save = service.submit(
+        "tenant", op, payload if op == "save_state" else {"model_id": model_id, "seq_id": 1, "ttl_seconds": None}
+    )
+    assert (await await_settled(service, "tenant", save)).state == DONE
+    assert commit_threads and commit_threads[0] is not threading.current_thread()
 
 
 async def test_an_unnamed_sampler_save_returns_a_sampling_session(service):
@@ -828,6 +848,23 @@ async def test_a_checkpoint_saved_before_commits_loads_through_the_legacy_path(s
     assert service.backend.named("load_slot")[-1]["ckpt_path"] == str(Path(legacy).resolve())
 
 
+async def test_an_overwrite_interrupted_after_adopting_a_legacy_dir_keeps_it_loadable(service):
+    model_id = await created_model(service)
+    legacy = resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "weights", "old")
+    write_legacy_checkpoint(legacy, service.models[model_id], service.config)
+    # the state a crash leaves between the adoption and the link swap
+    _adopt_pre_commit_dir(Path(legacy).parent, "old")
+    path = f"tinker://{model_id}/weights/old"
+    assert service.weights_info("tenant", path)["lora_rank"] == service.models[model_id].lora_rank
+    with pytest.raises(OwnershipError):
+        service.weights_info("intruder", path)
+    loaded = service.submit(
+        "tenant", "load_state", {"model_id": model_id, "seq_id": 1, "path": path, "optimizer": True}
+    )
+    assert (await await_settled(service, "tenant", loaded)).state == DONE
+    assert service.backend.named("load_slot")[-1]["ckpt_path"] == str(Path(legacy).resolve())
+
+
 async def test_an_overwritten_checkpoint_leaves_no_old_commit(service):
     model_id = await created_model(service)
     for seq_id in (1, 2):
@@ -840,6 +877,32 @@ async def test_an_overwritten_checkpoint_leaves_no_old_commit(service):
     await asyncio.gather(*service._cleanup_tasks)
     weights = Path(resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "weights", "ck")).parent
     assert sorted(p.name for p in weights.iterdir()) == sorted(["ck", Path(os.readlink(weights / "ck")).name])
+
+
+async def test_overlapping_cleanups_run_one_at_a_time(service, monkeypatch):
+    model_id = await created_model(service)
+    delete = service.backend.delete_retired_adapters
+    release, active, peak = threading.Event(), [0], [0]
+
+    def blocking_delete(root):
+        active[0] += 1
+        peak[0] = max(peak[0], active[0])
+        release.wait(timeout=5)
+        active[0] -= 1
+        delete(root)
+
+    monkeypatch.setattr(service.backend, "delete_retired_adapters", blocking_delete)
+    for seq_id in (1, 2):
+        saved = service.submit(
+            "tenant",
+            "save_state",
+            {"model_id": model_id, "seq_id": seq_id, "name": "ck", "overwrite": True, "ttl_seconds": None},
+        )
+        assert (await await_settled(service, "tenant", saved)).state == DONE
+    await asyncio.sleep(0.1)
+    release.set()
+    await asyncio.gather(*service._cleanup_tasks)
+    assert peak[0] == 1
 
 
 async def test_a_recycled_slot_belongs_to_a_fresh_model_queue(service):
@@ -864,14 +927,16 @@ async def test_a_recycled_slot_belongs_to_a_fresh_model_queue(service):
     assert future.state == DONE, "a fresh model may use the successfully recycled slot"
 
 
-@pytest.mark.parametrize("source", ["handler", "worker", "create", "sweep", "export", "load"])
+@pytest.mark.parametrize("source", ["handler", "worker", "create", "sweep", "export", "load", "cleanup"])
 async def test_an_unknown_failure_stops_the_dispatcher(tmp_path, source):
     from tests.fast.tinker.harness import make_service
 
     gateway = make_service(tmp_path)
     run_task = asyncio.create_task(gateway.run())
     error = (
-        OSError("checkpoint IO failed") if source in ("export", "load") else RuntimeError("fatal execution failure")
+        OSError("checkpoint IO failed")
+        if source in ("export", "load", "cleanup")
+        else RuntimeError("fatal execution failure")
     )
     try:
         model_id = await created_model(gateway)
@@ -890,6 +955,17 @@ async def test_an_unknown_failure_stops_the_dispatcher(tmp_path, source):
             gateway.backend.fail_on["load_slot"] = error
             gateway.submit(
                 "tenant", "load_state", {"model_id": model_id, "seq_id": 2, "path": path, "optimizer": True}
+            )
+        elif source == "cleanup":
+
+            def failing_delete(root):
+                raise error
+
+            gateway.backend.delete_retired_adapters = failing_delete
+            gateway.submit(
+                "tenant",
+                "save_state",
+                {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False, "ttl_seconds": None},
             )
         elif source == "create":
             gateway.backend.fail_on["load_slot"] = RuntimeError("fatal execution failure")
@@ -1061,6 +1137,22 @@ async def test_a_sampler_dir_written_before_commits_still_resolves(service):
         f"{model_id}@old",
         legacy,
     )
+
+
+@pytest.mark.parametrize("filename", ["tenant.json", "adapter_parametrization.json"])
+async def test_a_truncated_sampler_commit_file_is_a_user_error(service, filename):
+    model_id = await created_model(service)
+    save = service.submit(
+        "tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1, "ttl_seconds": None}
+    )
+    path = (await await_settled(service, "tenant", save)).result["path"]
+    root = Path(resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "sampler_weights", "1")).parent
+    commit_file = resolve_adapter_dir(root, "1", tenant=None).path / filename
+    commit_file.write_text(commit_file.read_text()[:-1])
+    with pytest.raises(UserInputError, match="cannot read adapter"):
+        service.weights_info("tenant", path)
+    with pytest.raises(UserInputError, match="cannot read adapter"):
+        resolve_sampler_checkpoint(service.config, "tenant", path, service.backend.resolve_adapter)
 
 
 async def test_another_tenants_sampler_export_does_not_resolve(service):

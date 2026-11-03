@@ -42,6 +42,12 @@ class LoRAOutputHead(NativeLoRAAdapter):
         self.register_parameter(
             "head_B", new_lora_parameter(reference, (vocab_local, context.lora.rank), init="zero", partition_dim=0)
         )
+        padded = self.padded_local_rows()
+        if padded.start < padded.stop:
+            # the loss softmaxes over the padded vocab, but no checkpoint holds these rows: keep them at init
+            self.head_B.register_hook(
+                lambda grad: grad.index_fill(0, torch.arange(padded.start, padded.stop, device=grad.device), 0)
+            )
 
     def forward(self, x: torch.Tensor, base_module: nn.Module, *_host_args) -> torch.Tensor:
         scaled = x / self.mup if self.mup else x
