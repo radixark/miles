@@ -68,15 +68,12 @@ _EXPIRY_SWEEP_S = 60
 
 
 def _is_same_base_model(a: str, b: str) -> bool:
-    """By name: equal, or the same last path component when one side is a local path (e.g. --hf-checkpoint)."""
+    """Names match exactly; local paths (e.g. --hf-checkpoint) when they are the same directory."""
 
     def is_path(name: str) -> bool:
         return os.path.isabs(name) or os.path.exists(name)
 
-    def last_component(name: str) -> str:
-        return os.path.basename(os.path.normpath(name))
-
-    return a == b or ((is_path(a) or is_path(b)) and last_component(a) == last_component(b))
+    return a == b or (is_path(a) and is_path(b) and os.path.realpath(a) == os.path.realpath(b))
 
 
 class TinkerService:

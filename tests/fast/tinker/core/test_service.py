@@ -1257,18 +1257,28 @@ async def test_a_malformed_import_is_a_user_error_and_the_gateway_keeps_serving(
 
 
 @pytest.mark.parametrize(
-    "kind,recorded_base,accepted",
+    "served,kind,recorded_base,accepted",
     [
-        ("peft", None, True),
-        ("peft", "/models/base", True),
-        ("peft", "org/other", False),
-        ("peft", "/models/other", False),
-        ("adapter_dir", "/models/base", True),
-        ("adapter_dir", "other", False),
+        ("base", "peft", None, True),
+        ("base", "peft", "base", True),
+        ("base", "peft", "/models/base", False),
+        ("base", "peft", "org/other", False),
+        ("{models}/base/hf", "peft", "{models}/base/hf", True),
+        ("{models}/base/hf", "peft", "{models}/link/hf", True),
+        ("{models}/base/hf", "peft", "{models}/other/hf", False),
+        ("{models}/base/hf", "peft", "hf", False),
+        ("{models}/base/hf", "adapter_dir", "{models}/base/hf", True),
+        ("{models}/base/hf", "adapter_dir", "other", False),
     ],
 )
-def test_an_import_trained_on_another_base_is_refused(tmp_path, kind, recorded_base, accepted):
-    """The gateway serves "base"; a source that records no base (official Tinker writes null) is accepted."""
+def test_an_import_trained_on_another_base_is_refused(tmp_path, served, kind, recorded_base, accepted):
+    """A source that records no base (official Tinker writes null) is accepted."""
+    models = tmp_path / "models"
+    for name in ("base", "other"):
+        (models / name / "hf").mkdir(parents=True)
+    (models / "link").symlink_to(models / "base")
+    served = served.format(models=models)
+    recorded_base = recorded_base and recorded_base.format(models=models)
     adapter = tmp_path / "imports" / "adapter"
     adapter.mkdir(parents=True)
     if kind == "peft":
@@ -1279,11 +1289,11 @@ def test_an_import_trained_on_another_base_is_refused(tmp_path, kind, recorded_b
             adapter,
             AdapterParametrization(recorded_base, 8, 32.0, "lora", ("model.layers.0.self_attn.q_proj",), False),
         )
-    service = make_service(tmp_path / "root", import_root=str(tmp_path / "imports"))
+    service = make_service(tmp_path / "root", import_root=str(tmp_path / "imports"), base_model=served)
     if accepted:
         assert service.weights_info("tenant", f"file://{adapter}")["lora_rank"] == 8
     else:
-        with pytest.raises(UserInputError, match=f"trained on '{recorded_base}'"):
+        with pytest.raises(UserInputError, match=re.escape(f"trained on '{recorded_base}'")):
             service.weights_info("tenant", f"file://{adapter}")
 
 
