@@ -29,6 +29,7 @@ from miles.utils.lora.utils import (
     engine_loads_adapter_from_disk,
     is_lora_enabled,
     matches_lora_target,
+    publishes_snapshots,
     targets_expert_leaves,
 )
 
@@ -65,8 +66,6 @@ def validate_lora_args(args):
     hf_config = load_hf_config(args.hf_checkpoint)
     args.hf_lora_targets = _resolve_lora_targets(args, hf_config)
     args.lora_adapter_targets = list(args.hf_lora_targets)
-    if args.train_backend == "megatron":
-        _assert_adapter_layout_defined(args, hf_config)
     if args.train_backend == "megatron" and args.megatron_to_hf_mode == "bridge":
         from miles.backends.megatron_utils.lora.target_modules import check_fused_lora_selection
 
@@ -101,10 +100,7 @@ def _assert_adapter_layout_defined(args, hf_config) -> None:
     (--save-hf, eval snapshots, --save) and to restore --lora-adapter-path; runs without them train any family."""
     # a rollout-only run has no trainer; SGLang reads its adapter
     builds_slots = not args.debug_rollout_only and (
-        args.save_hf is not None
-        or args.eval_hf_dir is not None
-        or args.save is not None
-        or args.lora_adapter_path is not None
+        publishes_snapshots(args, args.save) or args.lora_adapter_path is not None
     )
     assert not builds_slots or has_hf_lora_targets(hf_config.to_dict()), (
         f"LoRA --save, --save-hf, eval snapshots and --lora-adapter-path need the HF LoRA target layout of "
@@ -170,6 +166,9 @@ def validate_lora_args_after_megatron(args):
     (e.g. the expert TP size it defaults from TP)."""
     if is_lora_enabled(args) and not args.multi_lora:
         _validate_adapter_state_args(args)
+    if is_lora_enabled(args):
+        # after miles_validate_args: the actor's predicate reads eval_uses_snapshots, resolved there
+        _assert_adapter_layout_defined(args, load_hf_config(args.hf_checkpoint))
     if not (is_lora_enabled(args) and args.megatron_to_hf_mode == "raw"):
         return
     hf_config = load_hf_config(args.hf_checkpoint)

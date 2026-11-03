@@ -66,16 +66,30 @@ def test_lora_arguments_import_no_megatron_to_hf():
     assert subprocess.run([sys.executable, "-c", code]).returncode == 0
 
 
-_NO_SNAPSHOTS = dict(save_hf=None, eval_hf_dir=None, save=None, lora_adapter_path=None, debug_rollout_only=False)
+_NO_SNAPSHOTS = dict(
+    save_hf=None,
+    eval_hf_dir=None,
+    eval_uses_snapshots=False,
+    save=None,
+    lora_rank=8,
+    lora_adapter_path=None,
+    debug_rollout_only=False,
+)
 
 
 @pytest.mark.parametrize(
-    "flag, value",
-    [("save", "/ckpt"), ("save_hf", "/hf/{rollout_id}"), ("eval_hf_dir", "/eval"), ("lora_adapter_path", "/adapter")],
+    "overrides",
+    [
+        {"save": "/ckpt"},
+        {"save_hf": "/hf/{rollout_id}"},
+        {"eval_hf_dir": "/eval", "eval_uses_snapshots": True},
+        {"lora_adapter_path": "/adapter"},
+    ],
+    ids=["save", "save_hf", "eval_snapshots", "lora_adapter_path"],
 )
-def test_adapter_slots_need_the_families_hf_lora_layout(flag, value) -> None:
+def test_adapter_slots_need_the_families_hf_lora_layout(overrides) -> None:
     """Native trains glm4, which has no HF LoRA layout; saving or loading its adapter would crash building the slots."""
-    args = Namespace(**(_NO_SNAPSHOTS | {flag: value}))
+    args = Namespace(**(_NO_SNAPSHOTS | overrides))
     with pytest.raises(AssertionError, match="model_type='glm4', which miles does not define"):
         _assert_adapter_layout_defined(args, AutoConfig.for_model("glm4"))
     _assert_adapter_layout_defined(args, AutoConfig.for_model("qwen3"))
@@ -83,6 +97,12 @@ def test_adapter_slots_need_the_families_hf_lora_layout(flag, value) -> None:
 
 def test_a_rollout_only_run_builds_no_slots_for_any_family() -> None:
     args = Namespace(**(_NO_SNAPSHOTS | {"lora_adapter_path": "/adapter", "debug_rollout_only": True}))
+    _assert_adapter_layout_defined(args, AutoConfig.for_model("glm4"))
+
+
+def test_an_eval_dir_without_eval_snapshots_builds_no_slots() -> None:
+    """The actor publishes eval snapshots only under eval_uses_snapshots; validation must not refuse the run."""
+    args = Namespace(**(_NO_SNAPSHOTS | {"eval_hf_dir": "/eval"}))
     _assert_adapter_layout_defined(args, AutoConfig.for_model("glm4"))
 
 
