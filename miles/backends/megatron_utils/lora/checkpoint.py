@@ -575,9 +575,9 @@ def save_single_lora(model, optimizer, opt_param_scheduler, adapter_slots: Bridg
     )
 
 
-def restore_single_lora(model, args, *, optimizer, opt_param_scheduler) -> tuple[int | None, bool]:
-    """``--lora-adapter-path`` from any recognized source; returns the saved iteration when the source has one, and
-    whether it restored the scheduler.
+def restore_single_lora(model, args, *, optimizer, opt_param_scheduler) -> tuple[int | None, bool, int]:
+    """``--lora-adapter-path`` from any recognized source; returns the saved iteration when the source has one,
+    whether it restored the scheduler, and the rollout the saving run's schedule started at.
 
     ``--lora-adapter-convert-save`` then commits the loaded state there in the adapter format.
     """
@@ -646,12 +646,14 @@ def restore_single_lora(model, args, *, optimizer, opt_param_scheduler) -> tuple
             training_state=training_state,
         )
     if training_state is None:
-        return None, False
+        return None, False, 0
     # a torchtitan run's training state has its own scheduler state, not Megatron's
     scheduler_state = training_state.get("opt_param_scheduler")
     if opt_param_scheduler is not None and scheduler_state is not None:
         opt_param_scheduler.load_state_dict(scheduler_state)
-    return training_state["iteration"], scheduler_state is not None
+    # only a torchtitan run records it; Megatron's own scheduler state already counts from its first rollout
+    first_rollout = training_state.get("first_rollout", 0)
+    return training_state["iteration"], scheduler_state is not None, first_rollout
 
 
 class LegacyRankShardLoader:

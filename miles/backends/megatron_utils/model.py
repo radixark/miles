@@ -1073,7 +1073,7 @@ def load_model_state(
 
     adapter_iteration = None
     if is_lora_enabled(args) and role == "actor" and args.lora_adapter_path is not None:
-        adapter_iteration, adapter_scheduler_restored = restore_single_lora(
+        adapter_iteration, adapter_scheduler_restored, adapter_first_rollout = restore_single_lora(
             model, args, optimizer=optimizer, opt_param_scheduler=opt_param_scheduler
         )
         if adapter_iteration is not None:
@@ -1095,8 +1095,8 @@ def load_model_state(
                 batch_size = get_parallel_state().effective_dp.size
             else:
                 batch_size = args.backend.global_batch_size
-            # an adapter's iteration is its last completed rollout
-            increment = (adapter_iteration + 1) * (rollout_samples // batch_size * batch_size)
+            # an adapter's iteration is its last completed rollout; its run trained from its first rollout on
+            increment = (adapter_iteration + 1 - adapter_first_rollout) * (rollout_samples // batch_size * batch_size)
         else:
             increment = iteration * args.backend.global_batch_size
         opt_param_scheduler.step(increment=increment)

@@ -44,7 +44,7 @@ def test_a_hub_id_is_kept():
 
 
 def _restore(path, *, convert_save=None, megatron_to_hf_mode="bridge"):
-    """``restore_single_lora`` with the model-facing pieces mocked; returns (iteration, scheduler, mocks)."""
+    """``restore_single_lora`` with the model-facing pieces mocked; returns (its result, scheduler, mocks)."""
     args = SimpleNamespace(
         hf_checkpoint="/hf",
         lora_adapter_path=str(path),
@@ -72,8 +72,8 @@ def _restore(path, *, convert_save=None, megatron_to_hf_mode="bridge"):
             save_and_commit_adapter_dir=DEFAULT,
         ) as mocks,
     ):
-        iteration, _ = restore_single_lora([], args, optimizer=MagicMock(), opt_param_scheduler=scheduler)
-    return iteration, scheduler, mocks
+        restored = restore_single_lora([], args, optimizer=MagicMock(), opt_param_scheduler=scheduler)
+    return restored, scheduler, mocks
 
 
 def test_an_old_format_save_resumes_its_iteration_whichever_reader_loads_the_weights(tmp_path):
@@ -82,13 +82,22 @@ def test_an_old_format_save_resumes_its_iteration_whichever_reader_loads_the_wei
         {"iteration": 7, "optimizer": None, "parameter_state": None, "opt_param_scheduler": {"num_steps": 56}},
         tmp_path / "training_state_rank0.pt",
     )
-    iteration, scheduler, _ = _restore(tmp_path)
+    (iteration, _, _), scheduler, _ = _restore(tmp_path)
     assert iteration == 7
     scheduler.load_state_dict.assert_called_once_with({"num_steps": 56})
 
 
+def test_a_torchtitan_dir_reports_the_rollout_its_schedule_started_at(tmp_path):
+    """Saved by a run from --start-rollout-id 5: Megatron's scheduler catch-up counts only rollouts 5..6."""
+    training_state = {"iteration": 6, "step": 8, "first_rollout": 5, "lr_scheduler": {"last_epoch": 8}}
+    with patch(f"{_MODULE}.read_training_state", return_value=training_state):
+        restored, scheduler, _ = _restore(tmp_path)
+    assert restored == (6, False, 5)
+    scheduler.load_state_dict.assert_not_called()
+
+
 def test_a_source_without_training_state_restarts_at_rollout_0(tmp_path):
-    iteration, scheduler, _ = _restore(tmp_path)
+    (iteration, _, _), scheduler, _ = _restore(tmp_path)
     assert iteration is None
     scheduler.load_state_dict.assert_not_called()
 
