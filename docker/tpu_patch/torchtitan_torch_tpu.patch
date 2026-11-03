@@ -1,8 +1,142 @@
+diff --git a/torchtitan/distributed/fsdp.py b/torchtitan/distributed/fsdp.py
+index 0f6dd9ee2..3231350e9 100644
+--- a/torchtitan/distributed/fsdp.py
++++ b/torchtitan/distributed/fsdp.py
+@@ -24,6 +24,7 @@ from torchtitan.config.parallelism import FSDPSymmMemScope
+ from torchtitan.distributed.parallelism_context import ParallelismContext
+ from torchtitan.models.common.linear import GroupedLinear
+ from torchtitan.models.common.moe import MoE
++from torchtitan.tools.utils import device_type
+ 
+ __all__ = [
+     "apply_fsdp_to_decoder",
+@@ -153,6 +154,11 @@ def resolve_sparse_fsdp_mesh(
+     return sparse_mesh, DataParallelMeshDims(shard="edp_shard", replicate=replicate)
+ 
+ 
++def _cpu_offload_policy() -> CPUOffloadPolicy:
++    # on TPU, pinned non-blocking copies deadlock against compiled activation-checkpointed blocks
++    return CPUOffloadPolicy(pin_memory=device_type != "tpu")
++
++
+ def disable_fsdp_gradient_division(model: nn.Module) -> None:
+     """
+     Disable FSDP's automatic gradient division for all FSDP modules.
+@@ -251,7 +257,7 @@ def apply_fsdp_to_multimodal_encoder(
+         "dp_mesh_dims": dp_mesh_dims,
+     }
+     if cpu_offload:
+-        fsdp_config["offload_policy"] = CPUOffloadPolicy()
++        fsdp_config["offload_policy"] = _cpu_offload_policy()
+     fully_shard(encoder, **fsdp_config)
+ 
+ 
+@@ -323,7 +329,7 @@ def apply_fsdp_to_decoder(
+     if dp_mesh_dims is not None:
+         fsdp_config["dp_mesh_dims"] = dp_mesh_dims
+     if cpu_offload:
+-        fsdp_config["offload_policy"] = CPUOffloadPolicy()
++        fsdp_config["offload_policy"] = _cpu_offload_policy()
+ 
+     reshard_after_forward = get_fsdp_reshard_after_forward_policy(
+         reshard_after_forward_policy, pp_enabled
+diff --git a/torchtitan/models/common/linear/linear.py b/torchtitan/models/common/linear/linear.py
+index de150b017..a8e744d02 100644
+--- a/torchtitan/models/common/linear/linear.py
++++ b/torchtitan/models/common/linear/linear.py
+@@ -29,6 +29,7 @@ from torchtitan.models.common.linear.inplace_wgrad_accum import (
+     running_grad,
+     uses_inplace_wgrad_accum,
+ )
++from torchtitan.tools.utils import integer_cumsum
+ 
+ 
+ class Linear(nn.Linear, Module):
+@@ -450,6 +451,8 @@ class GroupedLinear(Module):
+         offsets_E: torch.Tensor,
+     ) -> torch.Tensor:
+         """Execute ``input_RI @ weight_EOI.transpose(-2, -1)`` by expert."""
++        if input_RI.device.type == "tpu":
++            return _TpuGroupedMM.apply(input_RI, weight_EOI.bfloat16().transpose(-2, -1), offsets_E)
+         return torch._grouped_mm(
+             input_RI,
+             weight_EOI.bfloat16().transpose(-2, -1),
+@@ -457,6 +460,49 @@ class GroupedLinear(Module):
+         )
+ 
+ 
++# group size from which torch_tpu's grouped weight-gradient kernels are right
++_TPU_GROUP_ROWS = 256
++
++
++class _TpuGroupedMM(torch.autograd.Function):
++    """``torch._grouped_mm`` whose weight gradient is right for small and empty groups on TPU.
++
++    torch_tpu's grouped weight-gradient kernels return wrong values for groups under ~256 rows and leave empty
++    groups unwritten, so the backward starts every group at a 256-row boundary (zero rows between) and zeroes the
++    empty groups.
++    """
++
++    @staticmethod
++    def forward(ctx, input_RI: torch.Tensor, weight_EIO: torch.Tensor, offsets_E: torch.Tensor) -> torch.Tensor:
++        ctx.save_for_backward(input_RI, weight_EIO, offsets_E)
++        return torch._grouped_mm(input_RI, weight_EIO, offs=offsets_E)
++
++    @staticmethod
++    def backward(ctx, grad_RO: torch.Tensor):
++        input_RI, weight_EIO, offsets_E = ctx.saved_tensors
++        grad_RO = grad_RO.contiguous()
++        grad_input_RI = torch._grouped_mm(grad_RO, weight_EIO.transpose(-2, -1), offs=offsets_E)
++
++        num_groups, num_rows = offsets_E.shape[0], input_RI.shape[0]
++        rows_R = torch.arange(num_rows, device=input_RI.device)
++        # rows past offsets_E[-1] (dispatcher padding) form one more group, dropped from the result: indexing past
++        # the last group would be clamped and add them to the last expert
++        ends = torch.cat([offsets_E.long(), offsets_E.new_full((1,), num_rows).long()])
++        sizes = torch.diff(ends, prepend=ends.new_zeros(1))
++        padded = (sizes + _TPU_GROUP_ROWS - 1) // _TPU_GROUP_ROWS * _TPU_GROUP_ROWS
++        capacity = -(-(num_rows + (num_groups + 1) * (_TPU_GROUP_ROWS - 1)) // _TPU_GROUP_ROWS) * _TPU_GROUP_ROWS
++        # a row's group is the number of group ends at or below it (repeat_interleave lowers through a cumsum)
++        group_R = (rows_R[:, None] >= ends[None, :num_groups]).sum(1)
++        dest_R = (integer_cumsum(padded) - padded)[group_R] + rows_R - (ends - sizes)[group_R]
++        input_padded = input_RI.new_zeros(capacity, input_RI.shape[1]).index_copy(0, dest_R, input_RI)
++        grad_padded = grad_RO.new_zeros(capacity, grad_RO.shape[1]).index_copy(0, dest_R, grad_RO)
++        # rows past the padded groups form a last group whose result is dropped too
++        group_sizes = torch.cat([padded, (capacity - padded.sum()).reshape(1)]).to(torch.int32)
++        grad_weight = torch.tpu.ops.ragged_dot_weight_grad(input_padded, grad_padded, group_sizes)[:num_groups]
++        grad_weight = torch.where((sizes[:num_groups] > 0)[:, None, None], grad_weight, 0).to(weight_EIO.dtype)
++        return grad_input_RI, grad_weight, None
++
++
+ __all__ = [
+     "ColumnParallelLinear",
+     "GroupedLinear",
+diff --git a/torchtitan/models/common/moe/moe.py b/torchtitan/models/common/moe/moe.py
+index 9bf5614f5..5ed033f70 100644
+--- a/torchtitan/models/common/moe/moe.py
++++ b/torchtitan/models/common/moe/moe.py
+@@ -40,6 +40,7 @@ from torchtitan.models.common.aux_loss import AuxLoss
+ from torchtitan.models.common.feed_forward import DenseFeedForward, FeedForward
+ from torchtitan.models.common.linear import GroupedLinear
+ from torchtitan.models.common.linear.hi_mid_lo_linear import HiMidLoLinear
++from torchtitan.tools.utils import integer_cumsum
+ 
+ from .token_dispatcher import LocalTokenDispatcher
+ 
+@@ -133,7 +134,7 @@ class RoutedExperts(Module):
+             topk_expert_ids_TK,
+             num_local_tokens_per_expert_E,
+         )
+-        offsets_E = torch.cumsum(
++        offsets_E = integer_cumsum(
+             num_global_tokens_per_local_expert_e,
+             dim=0,
+             dtype=torch.int32,
 diff --git a/torchtitan/tools/utils.py b/torchtitan/tools/utils.py
-index 5e1810edd..5d180169f 100644
+index 5e1810edd..7ca25048e 100644
 --- a/torchtitan/tools/utils.py
 +++ b/torchtitan/tools/utils.py
-@@ -60,9 +60,67 @@ def has_rocm_capability(major: int, minor: int) -> bool:
+@@ -60,9 +60,78 @@ def has_rocm_capability(major: int, minor: int) -> bool:
      )
  
  
@@ -60,6 +194,17 @@ index 5e1810edd..5d180169f 100644
 +    @staticmethod
 +    def memory_stats(device: int | str | torch.device | None = None) -> dict:
 +        return torch.accelerator.memory_stats(device)
++
++
++def integer_cumsum(x: torch.Tensor, dim: int = 0, *, dtype: torch.dtype | None = None) -> torch.Tensor:
++    """``torch.cumsum`` for integer tensors, in float32 on TPU (exact below 2**24).
++
++    With ``--xla_tpu_use_associative_scan_emitter=false``, which the TPU trainer sets because the emitter
++    miscompiles scans not a multiple of 1024 long, torch_tpu lowers no integer cumsum.
++    """
++    if x.device.type != "tpu" or x.is_floating_point():
++        return torch.cumsum(x, dim, dtype=dtype)
++    return torch.cumsum(x, dim, dtype=torch.float32).to(dtype or x.dtype)
 +
 +
  def get_device_info() -> tuple[str, ModuleType]:
