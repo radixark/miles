@@ -38,6 +38,7 @@ from miles.backends.training_utils.checkpoint.adapter.readers import (
     ExternalWeightsReader,
     MilesAdapterDirReader,
     PeftAdapterReader,
+    _collapse_shared_lora_a,
     classify_adapter_source,
 )
 from miles.utils.lora.hf_lora_targets import HfLoraTargets
@@ -128,7 +129,9 @@ def write_peft_export(
                 map_name = map_peft_keys_to_hf_keys
             else:
                 map_name = partial(map_tinker_keys_to_hf_keys, targets=targets)
-            weights, _ = map_named_tensors_to_hf_keys(named_tensors, map_name, targets)
+            weights, fused_groups = map_named_tensors_to_hf_keys(named_tensors, map_name, targets)
+            # the export names a shared A once per module; the writer expects it once per group
+            weights = _collapse_shared_lora_a(weights, parametrization, fused_groups)
             write_peft_adapter(directory, weights, parametrization, targets)
     except Exception as exc:
         error = exc
