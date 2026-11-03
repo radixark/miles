@@ -365,7 +365,11 @@ class TinkerService:
         if isinstance(written, dict):
             return written
         # the commit's recovery walk and fsyncs hit shared storage; keep the event loop serving
-        await asyncio.to_thread(self.backend.commit_adapter, root, name, written, overwrite=payload["overwrite"])
+        try:
+            await asyncio.to_thread(self.backend.commit_adapter, root, name, written, overwrite=payload["overwrite"])
+        except OSError as error:
+            # a storage failure loses only this save; the trainer and other tenants are unaffected
+            return {"error": f"cannot commit checkpoint {name!r}: {error}", "error_category": "server"}
         self._delete_retired_outside_the_lock(root)
         return {"op": "save_state", "path": f"tinker://{record.model_id}/weights/{name}"}
 

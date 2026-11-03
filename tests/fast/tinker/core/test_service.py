@@ -869,6 +869,20 @@ async def test_a_recycled_slot_belongs_to_a_fresh_model_queue(service):
     assert future.state == DONE, "a fresh model may use the successfully recycled slot"
 
 
+async def test_a_failed_save_commit_fails_only_that_request(service, monkeypatch):
+    def failing_commit(*_, **__):
+        raise OSError("checkpoint IO failed")
+
+    monkeypatch.setattr(service.backend, "commit_adapter", failing_commit)
+    model_id = await created_model(service)
+    payload = {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False}
+    future = await await_settled(service, "tenant", service.submit("tenant", "save_state", payload))
+    assert (future.state, future.error_category) == (FAILED, "server")
+    assert "checkpoint IO failed" in future.error
+    step = service.submit("tenant", "forward_backward", fb_payload(model_id, 2, [datum()]))
+    assert (await await_settled(service, "tenant", step)).state == DONE
+
+
 async def test_a_failed_cleanup_after_a_save_keeps_the_gateway_serving(service):
     def failing_delete(root):
         raise OSError("checkpoint IO failed")
