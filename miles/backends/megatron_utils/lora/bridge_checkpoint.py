@@ -304,18 +304,19 @@ def assert_bridge_run_config_matches(
         assert config["checkpoint"]["save_optim"], "the source saved no optimizer state; pass --no-load-optim"
 
 
-def bridge_base_model_candidates(config: dict) -> tuple[str | None, ...]:
+def bridge_base_model_candidates(config: dict) -> tuple[str | None, str | None]:
     """Bridge PEFT loads its base from pretrained_checkpoint. When that is no HF dir here (torch_dist, or another
-    machine's path), the HF template it was converted from stands in, in Bridge's _resolve_hf_source order; that
+    machine's path), the HF template it was converted from stands in, as Bridge's _resolve_hf_source picks it; that
     stand-in misses a base fine-tuned in Megatron."""
     checkpoint = config["checkpoint"]
-    # hf_source_path and hf_model_id are newer than some Bridge configs
-    return (
-        checkpoint["pretrained_checkpoint"],
-        checkpoint.get("hf_source_path"),
-        config["model"].get("hf_model_id"),
-        config["tokenizer"]["tokenizer_model"],
+    # hf_source_path and hf_model_id are newer than some Bridge configs; Bridge takes the first non-empty one even
+    # when it is no HF dir here, so a later one would compare a model Bridge never used
+    template = (
+        checkpoint.get("hf_source_path")
+        or config["model"].get("hf_model_id")
+        or config["tokenizer"]["tokenizer_model"]
     )
+    return checkpoint["pretrained_checkpoint"], template
 
 
 class MegatronBridgeCheckpointLoader:
