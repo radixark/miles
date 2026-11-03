@@ -44,7 +44,11 @@ def prune(src: Path, dst: Path, num_layers: int) -> None:
     (dst / "config.json").write_text(json.dumps(config, indent=2))
     # tokenizer, chat template and generation config travel unchanged
     for path in src.iterdir():
-        if path.is_file() and path.suffix != ".safetensors" and path.name not in ("config.json", "model.safetensors.index.json"):
+        if (
+            path.is_file()
+            and path.suffix != ".safetensors"
+            and path.name not in ("config.json", "model.safetensors.index.json")
+        ):
             shutil.copy2(path, dst / path.name)
 
 
