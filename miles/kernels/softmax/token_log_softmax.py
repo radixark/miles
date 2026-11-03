@@ -238,6 +238,8 @@ def row_statistics(
             WITH_ENTROPY=with_entropy,
             BLOCK_V=launch.block_v,
             num_warps=launch.num_warps,
+            # ROCm fuses a*b+c differently in the two entropy specializations; keep their sums identical.
+            **({"enable_fp_fusion": False} if torch.version.hip else {}),
         )
     logit_max, sum_exp, sum_exp_logit, target_logit = stats
     return ShardStats(logit_max, sum_exp, sum_exp_logit if with_entropy else None, target_logit)

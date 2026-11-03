@@ -64,7 +64,7 @@ class TransferBuffers:
         writes = [write.future for pending in self._pending_writes_by_buffer_index for write in pending]
         concurrent.futures.wait([write for write in writes if not write.done()], timeout=self._write_timeout)
         if any(not write.done() for write in writes):
-            raise RuntimeError("Cannot release transfer buffers while Mooncake writes are still running")
+            raise RuntimeError("Cannot release transfer buffers while P2P writes are still running")
         for buffer in self._buffers:
             self._unregister_memory(buffer)
 

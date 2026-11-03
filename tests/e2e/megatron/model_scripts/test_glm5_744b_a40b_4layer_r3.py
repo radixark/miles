@@ -10,16 +10,18 @@ from scripts.run_glm5_744b_a40b import (
 from tests.ci.ci_register import register_cuda_ci
 from tests.ci.metric_history import register_ci_gate
 
+from miles.utils.external_utils import command_utils
 
 # Basic smoke test that exercises the rollout indexer-topk replay path on
 # GLM-5 (every layer has an indexer). Enabling --use-rollout-indexer-replay
 # also forces --use-indexer-replay via miles_validate_args, so the training
-# side consumes the per-layer topk emitted by SGLang.
+# side consumes the per-layer topk emitted by SGLang. The top-k reaches the
+# trainer through the output store (--use-output-store), not inline.
 
 register_cuda_ci(
     est_time=1100,
     suite="stage-c-2-gpu-h200",
-    labels=["megatron", "model-scripts", "replay"],
+    labels=["megatron", "model-scripts", "replay", "mooncake"],
     hardware=["hopper", "blackwell"],
     num_gpus=2,
 )
@@ -47,6 +49,10 @@ def _args() -> ScriptArgs:
             "--ci-test "
             "--ci-disable-logprobs-checker "
             "--use-rollout-indexer-replay "
+            "--use-output-store "
+            # 4 layers x 2048 int32 ids per token: 16 responses of 4k tokens store about 2.1 GiB,
+            # more than the CI 2gb segment, which Miles' own rollout data also uses.
+            f"{command_utils.get_mooncake_object_store_args(global_segment_size='8gb')}"
             "--skip-actor-forward-only "
             "--rollout-max-response-len 4096 "
             # preserve to avoid CPU OOM

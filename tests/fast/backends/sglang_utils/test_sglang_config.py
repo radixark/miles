@@ -615,6 +615,23 @@ class TestMegatronNumGpus:
             _compute_megatron_num_gpus(args)
 
 
+class TestOutputStoreOverrideRejection:
+    def test_a_group_may_not_set_the_output_store(self, tmp_path):
+        """--use-output-store configures every engine's store; a group override would bypass it."""
+        with pytest.raises(AssertionError, match="must not set"):
+            _resolve_yaml(
+                tmp_path,
+                "sglang:\n"
+                "  - name: actor\n"
+                "    server_groups:\n"
+                "      - worker_type: regular\n"
+                "        num_gpus: 8\n"
+                "        overrides:\n"
+                "          output_store_backend: mooncake\n",
+                rollout_num_gpus=8,
+            )
+
+
 class TestHostPortOverrideRejection:
     @pytest.mark.parametrize("mode", ["null", "prefill", "decode"])
     def test_a_disaggregation_mode_override_is_rejected_at_resolve_time(self, tmp_path, mode: str):

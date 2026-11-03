@@ -10,6 +10,7 @@ from miles.utils.lora.hf_lora_targets import (
     exclude_hf_lora_targets,
     expand_hf_lora_targets,
     expand_packed_hf_lora_targets,
+    gdn_in_proj_served_targets,
     get_hf_lora_targets,
     parse_lora_targets,
     resolve_hf_lora_targets,
@@ -20,6 +21,8 @@ logger = logging.getLogger(__name__)
 
 
 def validate_lora_args(args):
+    if args.lora_type is None:
+        args.lora_type = _default_lora_type(args)
     validate_multi_lora_args(args)
     if not is_lora_enabled(args):
         return
@@ -28,8 +31,22 @@ def validate_lora_args(args):
         "torchtitan",
     ), f"LoRA injection is not implemented for --train-backend {args.train_backend}; use megatron or torchtitan"
     assert args.lora_rank > 0, "LoRA requires a positive --lora-rank, including when loading an adapter"
-    args.hf_lora_targets = _resolve_lora_targets(args, load_hf_config(args.hf_checkpoint))
+    hf_config = load_hf_config(args.hf_checkpoint)
+    args.hf_lora_targets = _resolve_lora_targets(args, hf_config)
     args.lora_adapter_targets = list(args.hf_lora_targets)
+    if args.train_backend == "megatron" and args.megatron_to_hf_mode == "bridge":
+        from miles.backends.megatron_utils.lora.target_modules import check_fused_lora_selection
+
+        canonical = args.lora_type == "canonical_lora"
+        check_fused_lora_selection(args.hf_checkpoint, args.hf_lora_targets, canonical=canonical)
+        if canonical:
+            # Bridge's canonical adapters export a GDN in_proj by component
+            modules = [
+                m for m in _hf_modules(hf_config) if any(matches_lora_target(m, t) for t in args.hf_lora_targets)
+            ]
+            args.lora_adapter_targets = gdn_in_proj_served_targets(
+                modules or args.hf_lora_targets, args.hf_lora_targets
+            )
 
     # Training and serving must agree on shared-outer grouped-expert LoRA (expert_dim=1).
     if args.experts_shared_outer_loras and hasattr(
@@ -46,22 +63,35 @@ def validate_lora_args(args):
         )
 
 
+def _default_lora_type(args) -> str:
+    """The one owner of --lora-type's default. Native gives every projection its spec declares its own lora_A
+    and Tinker serves the PEFT / cookbook layout; Bridge's LoRA and torchtitan share one lora_A per fused
+    projection."""
+    if args.train_backend == "megatron" and args.megatron_to_hf_mode == "raw":
+        return "canonical_lora"
+    if args.entry == "serve":
+        return "canonical_lora"
+    return "lora"
+
+
 def validate_lora_args_after_megatron(args):
     """Megatron's native (raw-mode) LoRA: the targets its spec serves, and the run checks that read
     Megatron's resolved args (e.g. the expert TP size it defaults from TP)."""
     if not (is_lora_enabled(args) and args.megatron_to_hf_mode == "raw"):
         return
-    args.lora_adapter_targets = _native_serving_targets(args, load_hf_config(args.hf_checkpoint), args.hf_lora_targets)
-    validate_native_lora_args(args)
+    hf_config = load_hf_config(args.hf_checkpoint)
+    hf_modules = _hf_modules(hf_config)
+    args.lora_adapter_targets = _native_serving_targets(args, hf_config, args.hf_lora_targets, hf_modules)
+    validate_native_lora_args(args, hf_modules)
 
 
-def _native_serving_targets(args, hf_config, hf_targets: list[str]) -> list[str] | str:
+def _native_serving_targets(args, hf_config, hf_targets: list[str], hf_modules: list[str]) -> list[str] | str:
     """The targets SGLang serves for ``hf_targets`` under Megatron's native spec, which refuses
     projections it has no adapter for."""
     return resolve_adapter_targets(
         hf_config.to_dict(),
         hf_targets,
-        hf_modules=_hf_modules(hf_config),
+        hf_modules=hf_modules,
         lora_type=args.lora_type,
         experts_shared_outer_loras=args.experts_shared_outer_loras,
     )
@@ -93,7 +123,9 @@ def _resolve_lora_targets(args, hf_config) -> list[str]:
         assert not conflicts, f"Explicit LoRA targets overlap --exclude-modules: {sorted(conflicts)}"
     if targets is None and args.multi_lora:
         targets = list(LORA_TARGET_GROUPS)
-    targets = resolve_hf_lora_targets(hf_config.to_dict(), target_modules=targets)
+    targets = resolve_hf_lora_targets(
+        hf_config.to_dict(), target_modules=targets, whole_fused=args.lora_type == "lora"
+    )
     targets = exclude_hf_lora_targets(targets, exclusions)
 
     if all(any(matches_lora_target(module, target) for module in hf_modules) for target in targets + exclusions):
@@ -142,10 +174,6 @@ def validate_multi_lora_args(args: Any) -> None:
         "Multi-LoRA requires --qkv-format thd: per-adapter token spans assume the "
         f"micro-batch packs samples contiguously, which bshd does not (got {args.qkv_format!r})."
     )
-    assert not args.experts_shared_outer_loras, (
-        "Multi-LoRA does not support --experts-shared-outer-loras; MoE expert adapters "
-        "use the per-expert layout. Drop the flag (and --sglang-experts-shared-outer-loras)."
-    )
     assert "muon" not in str(args.optimizer).lower(), (
         "Multi-LoRA does not support Muon: per-adapter decoupled stepping is only "
         "implemented for Adam-family per-slot optimizers"
@@ -184,4 +212,7 @@ def validate_multi_lora_args(args: Any) -> None:
         "Multi-LoRA requires --optimizer adam: the per-slot SlotOptimizer only "
         f"implements Adam semantics; got --optimizer {args.optimizer}"
     )
-    args.megatron_to_hf_mode = "bridge"
+    assert args.megatron_to_hf_mode == "bridge", (
+        "Multi-LoRA runs on Megatron-Bridge adapters; pass --megatron-to-hf-mode bridge "
+        f"(got {args.megatron_to_hf_mode!r})"
+    )

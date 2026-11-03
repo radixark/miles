@@ -162,6 +162,7 @@ class TorchNativeTrainRayActor(TrainRayActor):
             rollout_data, store_get_result = get_rollout_data(
                 args=self.args,
                 rollout_data_ref=rollout_data_ref,
+                output_store_read=self.output_store_read,
                 witness_info=None,
                 train_parallel_config=self.train_parallel_config,
             )

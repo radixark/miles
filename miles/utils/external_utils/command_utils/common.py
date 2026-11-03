@@ -6,9 +6,10 @@ import json
 import logging
 import os
 import platform
-import random
+import secrets
 import shlex
 import socket
+import string
 import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
@@ -129,8 +130,14 @@ def get_default_wandb_args(test_file: str, run_name_prefix: str | None = None, r
     )
 
 
+_RUN_ID_SUFFIX_ALPHABET = string.ascii_lowercase + string.digits
+
+
 def create_run_id() -> str:
-    value = datetime.datetime.utcnow().strftime("%y%m%d-%H%M%S") + f"-{random.Random().randint(0, 999):03d}"
+    # 4 base-36 characters: launches in the same second, in any process, collide with odds of 1 in 1.7M, and the id
+    # stays at 18 characters, all that the split-deployment example's release names leave it.
+    suffix = "".join(secrets.choice(_RUN_ID_SUFFIX_ALPHABET) for _ in range(4))
+    value = datetime.datetime.utcnow().strftime("%y%m%d-%H%M%S") + f"-{suffix}"
     if SNAPSHOT_TESTING_ENABLED:
         generated_value_registry.register(kind="run_id", value=value)
     return value
@@ -225,12 +232,21 @@ def get_mooncake_master_port(train_argv: list[str]) -> int:
     return parse_host_and_port(address).port
 
 
-def get_mooncake_object_store_args(master_port: int = MOONCAKE_MASTER_PORT, master_host: str = "127.0.0.1") -> str:
+def get_mooncake_object_store_args(
+    master_port: int = MOONCAKE_MASTER_PORT, master_host: str = "127.0.0.1", global_segment_size: str | None = None
+) -> str:
     init_kwargs = compute_mooncake_init_kwargs_vanilla(host=master_host, master_port=master_port)
+    if global_segment_size is not None:
+        init_kwargs["global_segment_size"] = global_segment_size
     return (
         f"{OBJECT_STORE_BACKEND_FLAG} {MOONCAKE_BACKEND_NAME} "
         f"{MOONCAKE_INIT_KWARGS_FLAG} {shlex.quote(json.dumps(init_kwargs))} "
     )
+
+
+def get_output_store_args(global_segment_size: str | None = None) -> str:
+    """--use-output-store with the Mooncake object store it lives in."""
+    return f"{get_mooncake_object_store_args(global_segment_size=global_segment_size)}--use-output-store "
 
 
 def _is_tcp_server_ready(host: str, port: int) -> bool:

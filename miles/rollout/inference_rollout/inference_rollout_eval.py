@@ -7,7 +7,7 @@ from typing import Any
 from tqdm import tqdm
 
 from miles.rollout.base_types import stamp_kv_cache_namespace
-from miles.rollout.generate_utils.generate_endpoint_utils import policy_uses_routing_key
+from miles.rollout.generate_utils.generate_endpoint_utils import router_routes_by_key
 from miles.rollout.inference_rollout.inference_rollout_common import (
     GenerateState,
     compute_sampling_params,
@@ -93,7 +93,7 @@ async def eval_rollout_single_dataset(
             sample.metadata = dataset_cfg.inject_metadata(sample.metadata)
             sample.generate_function_path = x.path if (x := dataset_cfg.custom_generate_function_path) else None
             stamp_kv_cache_namespace(sample, namespace=kv_cache_namespace)
-            if policy_uses_routing_key(args):
+            if router_routes_by_key(args):
                 sample.routing_key = str(uuid.uuid4())
             sampling_params = base_sampling_params
             if args.sglang.common_value("enable_deterministic_inference"):

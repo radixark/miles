@@ -118,6 +118,7 @@ class TestConfigToArgv:
             port=30100,
             instance_id="abc",
             backend_url="http://127.0.0.1:30000",
+            routing_key_header="X-SMG-Routing-Key",
             timeout=600.0,
             hf_checkpoint="/fake/model",
             chat_template_path=None,
@@ -142,6 +143,7 @@ class TestConfigToArgv:
             rollout_top_logprobs_num=128,
             rollout_sampling_logprobs_mode="selected",
             rollout_temperature=0.7,
+            output_store_backend_config={"master_server_address": "10.0.0.1:50051", "local_hostname": None},
         )
         assert parse_config_argv(SessionServerConfig, config_to_argv(session_config)) == session_config
 

@@ -12,6 +12,7 @@ register_ci_gate(metric_key="rollout/raw_reward")
 register_ci_gate(metric_key="perf/actor_train_mfu")
 
 CASE = CaseConfig(
+    use_output_store=True,
     model_name="Qwen3.5-35B-A3B",
     hf_repo="Qwen/Qwen3.5-35B-A3B",
     num_gpus=8,

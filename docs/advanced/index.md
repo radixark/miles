@@ -66,4 +66,11 @@ speculative decoding, sampling-support replay, and LoRA training and serving.
 
   </Card>
 
+  <Card title="Multi-LoRA Training Service" icon="users" href="/advanced/multi-lora">
+
+    Serve many concurrent LoRA fine-tuning clients on one shared base model
+    through the Tinker API.
+
+  </Card>
+
 </CardGroup>

@@ -62,6 +62,7 @@ button, .btn {
   border-radius: 4px; padding: 4px 10px; cursor: pointer; font-size: 13px;
 }
 button:hover { border-color: var(--accent); }
+button:disabled, button:disabled:hover { color: var(--muted); border-color: var(--border); cursor: default; }
 button.active { border-color: var(--accent); color: var(--accent); }
 
 .keylist { max-height: 300px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }

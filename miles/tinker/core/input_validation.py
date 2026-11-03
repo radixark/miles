@@ -90,7 +90,7 @@ def validate_batch_payload(op: CommandOp, payload: dict, config: GatewayConfig) 
 
 def validate_sample_payload(payload: dict, config: GatewayConfig) -> None:
     validate_token_ids(payload["prompt_tokens"], config.vocab_size, "prompt")
-    max_tokens = payload["sampling_params"].get("max_tokens")
+    max_tokens = payload["sampling_params"]["max_tokens"]
     if type(max_tokens) is not int or max_tokens < 0:
         raise UserInputError("sampling_params.max_tokens must be a nonnegative integer")
     prompt_length = len(payload["prompt_tokens"])
@@ -130,21 +130,40 @@ def validate_checkpoint_compatibility(meta: dict, record: ModelRecord, config: G
         "base_model": record.base_model,
         "lora_rank": record.lora_rank,
         "lora_alpha": record.lora_alpha,
+        "lora_type": config.lora_type,
+        "experts_shared_outer_loras": config.experts_shared_outer_loras,
         "train_attn": config.trains_attn,
         "train_mlp": config.trains_mlp,
         "train_unembed": config.trains_unembed,
     }
+    # Checkpoints written before the layout was recorded are all fused, per-expert.
+    meta = {"lora_type": "lora", "experts_shared_outer_loras": False, **meta}
     for key, value in expected.items():
         if meta[key] != value:
-            raise UserInputError(
+            message = (
                 f"checkpoint {shown_path!r} was saved with {key}={meta[key]!r}; this model expects {key}={value!r}"
             )
+            if key in _GATEWAY_LAYOUT_FLAGS:
+                message += (
+                    f". The adapter layout is set per gateway: restore it on one launched with "
+                    f"{_GATEWAY_LAYOUT_FLAGS[key](meta[key])}"
+                )
+            raise UserInputError(message)
 
 
-def validate_save_options(payload: dict) -> None:
-    if payload.get("ttl_seconds") is not None:
+# a gateway-wide layout setting -> the launch flag that restores a checkpoint saved under `value`
+_GATEWAY_LAYOUT_FLAGS = {
+    "lora_type": lambda value: f"--lora-type {value}",
+    "experts_shared_outer_loras": lambda value: (
+        "--experts-shared-outer-loras" if value else "no --experts-shared-outer-loras"
+    ),
+}
+
+
+def validate_save_options(ttl_seconds: int | None, user_metadata: dict | None) -> None:
+    if ttl_seconds is not None:
         raise UserInputError("ttl_seconds is not supported: checkpoints on this gateway do not expire")
-    if payload.get("user_metadata") is not None:
+    if user_metadata is not None:
         raise UserInputError("user_metadata is not supported by this gateway")
 
 
