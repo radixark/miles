@@ -50,7 +50,8 @@ def test_sampler_export_converts_to_per_expert_peft(tmp_path, monkeypatch):
     tool.main()
     out = load_file(tmp_path / "dst" / "adapter_model.safetensors")
     assert torch.equal(
-        out["model.layers.0.mlp.experts.2.down_proj.lora_B.weight"], weights[f"{EXPERTS[2]}.lora_B"][2].bfloat16()
+        out["base_model.model.model.layers.0.mlp.experts.2.down_proj.lora_B.weight"],
+        weights[f"{EXPERTS[2]}.lora_B"][2].bfloat16(),
     )
     assert len(out) == 3 * 2 * 3
 

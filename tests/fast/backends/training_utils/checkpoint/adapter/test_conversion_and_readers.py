@@ -91,6 +91,33 @@ def test_peft_export_reads_back_bitwise(tmp_path, shared_qkv):
     assert reader.source.parametrization.shared_lora_a_groups == run.shared_lora_a_groups
 
 
+def test_hf_peft_loads_the_peft_export(tmp_path):
+    peft = pytest.importorskip("peft")
+    transformers = pytest.importorskip("transformers")
+    config = transformers.Qwen3Config(
+        vocab_size=16,
+        hidden_size=8,
+        intermediate_size=16,
+        num_hidden_layers=1,
+        num_attention_heads=2,
+        num_key_value_heads=1,
+        head_dim=4,
+    )
+    model = transformers.AutoModelForCausalLM.from_config(config)
+    modules = (f"{L}.self_attn.q_proj", f"{L}.mlp.down_proj")
+    g = torch.Generator().manual_seed(0)
+    weights = {}
+    for m in modules:
+        rows, cols = model.get_submodule(m).weight.shape
+        weights[f"{m}.lora_A"] = torch.randn(2, cols, generator=g).to(torch.bfloat16)
+        weights[f"{m}.lora_B"] = torch.randn(rows, 2, generator=g).to(torch.bfloat16)
+    write_peft_adapter(tmp_path, weights, _run(lora_type="lora", target_modules=modules), QWEN3)
+    loaded = peft.PeftModel.from_pretrained(model, tmp_path).base_model.model
+    for key, value in weights.items():
+        module, factor = key.rsplit(".", 1)
+        assert torch.equal(getattr(loaded.get_submodule(module), factor)["default"].weight.to(torch.bfloat16), value)
+
+
 def test_a_fused_gdn_module_keeps_its_a_under_the_sorted_first_component(tmp_path):
     write_peft_adapter(tmp_path, _weights(True), _run(shared_lora_a_groups=(QKV,)), QWEN35)
     weights, fused_groups = _read_peft_tensors(tmp_path, map_peft_keys_to_hf_keys, QWEN35)
@@ -351,9 +378,10 @@ def test_gpt_oss_packed_experts_round_trip_through_hf_components(tmp_path):
     write_peft_adapter(tmp_path, weights, run, GPT_OSS)
     packed = load_file(str(tmp_path / "adapter_model.safetensors"))
     # HF gpt-oss interleaves gate and up rows in gate_up_proj
-    b = packed[f"{L}.mlp.experts.gate_up_proj.lora_B.weight"]
+    experts = f"base_model.model.{L}.mlp.experts"
+    b = packed[f"{experts}.gate_up_proj.lora_B.weight"]
     assert torch.equal(b[:, 0::2], weights[f"{gate}.lora_B"]) and torch.equal(b[:, 1::2], weights[f"{up}.lora_B"])
-    assert packed[f"{L}.mlp.experts.down_proj.lora_A.weight"].shape == (3, 2, 4), "packed experts stay 3D"
+    assert packed[f"{experts}.down_proj.lora_A.weight"].shape == (3, 2, 4), "packed experts stay 3D"
     read = PeftAdapterReader(tmp_path, run, GPT_OSS)
     assert read.source.parametrization.shared_lora_a_groups == ((gate, up),)
     assert all(torch.equal(read.read_weights()[k], v) for k, v in weights.items())
@@ -425,7 +453,9 @@ def test_gpt_oss_experts_without_a_shared_a_stay_per_expert(tmp_path):
     }
     write_peft_adapter(tmp_path, weights, run, GPT_OSS)
     names = set(load_file(str(tmp_path / "adapter_model.safetensors")))
-    assert f"{L}.mlp.experts.2.up_proj.lora_A.weight" in names and not any("gate_up_proj" in n for n in names)
+    assert f"base_model.model.{L}.mlp.experts.2.up_proj.lora_A.weight" in names and not any(
+        "gate_up_proj" in n for n in names
+    )
 
 
 def test_gpt_oss_sampler_export_keeps_packed_hf_names(tmp_path):
@@ -447,10 +477,10 @@ def test_gpt_oss_down_proj_alone_stays_one_packed_3d_tensor(tmp_path):
     weights = {f"{down}.lora_A": torch.ones(3, 2, 4), f"{down}.lora_B": torch.ones(3, 8, 2)}
     write_peft_adapter(tmp_path / "peft", weights, _run(target_modules=(down,)), GPT_OSS)
     write_sampler_adapter(tmp_path / "sampler", weights, _run(target_modules=(down,)), GPT_OSS)
-    for export in ("peft", "sampler"):
+    for export, prefix in (("peft", "base_model.model."), ("sampler", "")):
         tensors = load_file(str(tmp_path / export / "adapter_model.safetensors"))
-        assert set(tensors) == {f"{down}.lora_A.weight", f"{down}.lora_B.weight"}, export
-        assert tensors[f"{down}.lora_A.weight"].shape == (3, 2, 4)
+        assert set(tensors) == {f"{prefix}{down}.lora_A.weight", f"{prefix}{down}.lora_B.weight"}, export
+        assert tensors[f"{prefix}{down}.lora_A.weight"].shape == (3, 2, 4)
 
 
 def test_a_megatron_bridge_source_records_its_alpha_in_run_config(tmp_path):

@@ -430,7 +430,7 @@ def test_peft_export_of_a_fused_gdn_group_writes_one_a_per_exported_module(tmp_p
     run = AdapterParametrization("m", 4, 8.0, "lora", group, False, shared_lora_a_groups=(group,))
     write_peft_export(tmp_path, members, 0, run, GDN_TARGETS)
     tensors = load_file(str(tmp_path / "adapter_model.safetensors"))
-    assert set(tensors) == {f"{GDN}.{m}.lora_{f}.weight" for m in modules for f in "AB"}
+    assert set(tensors) == {f"base_model.model.{GDN}.{m}.lora_{f}.weight" for m in modules for f in "AB"}
     for module, b in members.b.items():
-        assert torch.equal(tensors[f"{GDN}.{module}.lora_A.weight"], members.a.to(torch.bfloat16))
-        assert torch.equal(tensors[f"{GDN}.{module}.lora_B.weight"], b.to(torch.bfloat16))
+        assert torch.equal(tensors[f"base_model.model.{GDN}.{module}.lora_A.weight"], members.a.to(torch.bfloat16))
+        assert torch.equal(tensors[f"base_model.model.{GDN}.{module}.lora_B.weight"], b.to(torch.bfloat16))
