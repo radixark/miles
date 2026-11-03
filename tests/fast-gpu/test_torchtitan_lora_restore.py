@@ -145,6 +145,7 @@ def _restore(tmp_path, *, dcp_step=None, training_state=None, **flags):
         lora_adapter_path=str(tmp_path / "source"),
         lora_adapter_convert_save=None,
         num_rollout=10,
+        start_rollout_id=None,
         hf_checkpoint=str(tmp_path),
         lora_rank=8,
         lora_alpha=16,
@@ -162,7 +163,8 @@ def _restore(tmp_path, *, dcp_step=None, training_state=None, **flags):
         patch.object(lora_checkpoint, "load_lr_schedulers") as load_lr_schedulers,
         patch.object(lora_checkpoint, "save_and_commit_adapter_dir") as save,
     ):
-        iteration = TorchtitanLoraCheckpoint(trainer, args, _STEPS_PER_ROLLOUT).restore()
+        checkpoint = TorchtitanLoraCheckpoint(trainer, args, _STEPS_PER_ROLLOUT)
+        iteration = checkpoint.restore()
     lr_states = [call.args[1] for call in load_lr_schedulers.call_args_list]
     return SimpleNamespace(
         iteration=iteration,
@@ -170,6 +172,7 @@ def _restore(tmp_path, *, dcp_step=None, training_state=None, **flags):
         lr_states=lr_states,
         save=save,
         base_model=slots.parametrization.call_args.kwargs["base_model"],
+        checkpoint=checkpoint,
     )
 
 
@@ -236,14 +239,14 @@ def test_a_model_only_dcp_starts_a_fresh_schedule(tmp_path):
 
 def test_a_torchtitan_adapter_dir_restores_its_own_schedule(tmp_path):
     schedule = {"last_epoch": 12, "_step_count": 13}
-    restored = _restore(tmp_path, training_state={"iteration": 2, "step": 12, "lr_scheduler": schedule})
+    restored = _restore(tmp_path, training_state={"iteration": 2, "step": 12, "first_rollout": 0, "lr_scheduler": schedule})
     assert (restored.iteration, restored.step, restored.lr_states) == (2, 12, [schedule])
 
 
 def test_a_torchtitan_adapter_dir_off_this_runs_rollout_grid_is_refused(tmp_path):
     """Saved at 2 steps per rollout: its iteration-9 schedule would sit at rollout 5 of this run's 4."""
     with pytest.raises(AssertionError, match="at step 20 after iteration 9, but this run takes 4 steps per rollout"):
-        _restore(tmp_path, training_state={"iteration": 9, "step": 20, "lr_scheduler": {"last_epoch": 20}})
+        _restore(tmp_path, training_state={"iteration": 9, "step": 20, "first_rollout": 0, "lr_scheduler": {"last_epoch": 20}})
 
 
 def test_a_dir_records_the_base_its_path_resolves_to_at_save(tmp_path):
@@ -256,6 +259,30 @@ def test_a_dir_records_the_base_its_path_resolves_to_at_save(tmp_path):
     (tmp_path / "cur").symlink_to(tmp_path / "v2")
     resumed = _restore(tmp_path, hf_checkpoint=str(tmp_path / "cur")).base_model
     assert (saved, resumed) == (str((tmp_path / "v1").resolve()), str((tmp_path / "v2").resolve()))
+
+
+def test_a_dir_saved_by_a_run_from_start_rollout_id_resumes(tmp_path):
+    """--start-rollout-id 5 starts the steps at rollout 5: its rollout-6 save is at step 8, on its own grid."""
+    trainer = _Trainer()
+    trainer.engine.num_completed_steps = 2 * _STEPS_PER_ROLLOUT
+    args = SimpleNamespace(
+        start_rollout_id=5,
+        hf_checkpoint="hub/model",
+        lora_rank=8,
+        lora_alpha=16,
+        lora_type="lora",
+        backend=SimpleNamespace(no_save_optim=False, save=str(tmp_path)),
+    )
+    with (
+        patch.object(lora_checkpoint, "_torchtitan_adapter_slots", return_value=MagicMock()),
+        patch.object(lora_checkpoint, "save_and_commit_adapter_dir") as save,
+    ):
+        TorchtitanLoraCheckpoint(trainer, args, _STEPS_PER_ROLLOUT).save(6)
+    training_state = save.call_args.kwargs["training_state"]
+    restored = _restore(tmp_path, training_state=training_state)
+    assert (restored.iteration, restored.step) == (6, 8)
+    # the resumed run's own saves count their steps from the same rollout
+    assert restored.checkpoint._training_state(7)["first_rollout"] == 5
 
 
 def test_a_megatron_adapter_dir_resumes_the_schedule_after_its_rollout(tmp_path):

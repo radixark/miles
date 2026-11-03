@@ -379,6 +379,8 @@ class TorchtitanLoraCheckpoint:
 
     def __init__(self, trainer, args, steps_per_rollout: int):
         self._trainer, self._args, self._steps_per_rollout = trainer, args, steps_per_rollout
+        # the rollout at this schedule's step 0: --start-rollout-id starts the steps there, not at rollout 0
+        self._first_rollout = 0 if args.start_rollout_id is None else args.start_rollout_id
         self.slots = _torchtitan_adapter_slots(trainer, args)
         self.members = TorchtitanOptimizerMembers(
             self.slots, trainer.optimizers.optimizers, save_moments=not args.backend.no_save_optim
@@ -399,6 +401,7 @@ class TorchtitanLoraCheckpoint:
         return {
             "iteration": iteration,
             "step": self._trainer.step,
+            "first_rollout": self._first_rollout,
             "lr_scheduler": self._trainer.engine.optim.lr_schedulers.state_dict(),
         }
 
@@ -450,13 +453,15 @@ class TorchtitanLoraCheckpoint:
                 "fresh"
             )
         if on_grid:
+            self._first_rollout = 0
             self._trainer.engine.load_state_dict(loader.train_state)
             load_lr_schedulers(self._trainer.engine.optim.lr_schedulers, loader.lr_scheduler_state)
             training_state = self._training_state(completed_rollouts - 1 if completed_rollouts else None)
         elif training_state is not None and "lr_scheduler" in training_state:
             iteration = training_state["iteration"]
+            self._first_rollout = training_state["first_rollout"]
             # the schedule is restored by step: on another --global-batch-size grid it would not match the rollout
-            grid_step = 0 if iteration is None else (iteration + 1) * self._steps_per_rollout
+            grid_step = 0 if iteration is None else (iteration + 1 - self._first_rollout) * self._steps_per_rollout
             assert training_state["step"] == grid_step, (
                 f"{path} is at step {training_state['step']} after iteration {iteration}, but this run takes "
                 f"{self._steps_per_rollout} steps per rollout (step {grid_step}): keep its rollout and batch sizes"
@@ -465,6 +470,7 @@ class TorchtitanLoraCheckpoint:
             self._trainer.engine.num_completed_steps = training_state["step"]
         elif training_state is not None and training_state["iteration"] is not None:
             # written by a Megatron run, whose scheduler state does not apply here: resume the schedule at its rollout
+            self._first_rollout = 0
             step = (training_state["iteration"] + 1) * self._steps_per_rollout
             load_lr_schedulers(self._trainer.engine.optim.lr_schedulers, {"last_epoch": step})
             self._trainer.engine.num_completed_steps = step
