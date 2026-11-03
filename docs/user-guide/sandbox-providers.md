@@ -64,12 +64,19 @@ python -m nemo_gym.sandbox.providers.e2b.build --images-file images.txt \
     --cpu-count 2 --memory-mb 4096 --output template_map.yaml
 ```
 
+4096 MB graded the five SWE-bench Verified rows in NeMo Gym's
+`mini_swe_agent_2/data/example.jsonl`; the agent's own
+`sandbox_spec.resources` ask for 8192 MiB, which memory-heavy test suites
+may need.
+
 Put that `template_map` under `sandbox.e2b.create` in a config file, and pass
 it after `nemo_gym/sandbox/providers/e2b/configs/e2b.yaml`, which replaces the
 docker config in `gym env start`. On E2B's Hobby tier a sandbox lives at most
 one hour, less than the agent's default `sandbox_spec.ttl_s`, so add
 `'++mini_swe_agent_2.responses_api_agents.mini_swe_agent_2.sandbox_spec.ttl_s=3600'`
-there.
+there. The NeMo Gym server reads the key only from `E2B_API_KEY` in its own
+environment, not from the key file, so export it on the host that runs
+`gym env start`.
 
 ## Daytona
 

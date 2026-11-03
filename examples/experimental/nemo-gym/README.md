@@ -36,8 +36,8 @@ Run the NeMo Gym server from `main` (>= `fcca3a8`).
 
 ## Validation status
 
-Validated end-to-end (2026-07-28) — the commands in this README are the exact
-ones used:
+Validated end-to-end (2026-07-28) with the commands in this README at the
+time; the server setup has since been updated for current NeMo Gym `main`:
 
 - offline contract tests: 7/7 pass;
 - golden scan: gold patch through the official
