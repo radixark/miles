@@ -44,7 +44,7 @@ def test_single_lora_peft_export_names_native_experts_by_hf_module(tmp_path):
 
     with safe_open(tmp_path / "adapter_model.safetensors", framework="pt") as exported:
         assert set(exported.keys()) == {
-            f"{experts}.{expert}.{module}.{factor}.weight"
+            f"base_model.model.{experts}.{expert}.{module}.{factor}.weight"
             for expert in range(2)
             for module in ("gate_proj", "down_proj")
             for factor in ("lora_A", "lora_B")
