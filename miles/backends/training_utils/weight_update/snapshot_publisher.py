@@ -1,6 +1,5 @@
 import json
 import logging
-import shutil
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -10,17 +9,10 @@ import torch.distributed as dist
 
 from miles.backends.training_utils.checkpoint.io import write_checkpoint_dir
 from miles.backends.training_utils.weight_update.hf_weight_iterator import HfWeightIteratorBase
+from miles.utils.hf_utils.checkpoint_files import copy_hf_metadata_files
 from miles.utils.lora.utils import AdapterSpec, get_adapter_target_modules
 
 logger = logging.getLogger(__name__)
-
-
-HF_WEIGHT_SUFFIXES = (".safetensors", ".bin", ".pt", ".pth", ".gguf")
-
-
-def _is_hf_metadata_file(path: Path) -> bool:
-    # The base checkpoint's weight index must not overwrite the exported shard mapping.
-    return path.is_file() and path.suffix not in HF_WEIGHT_SUFFIXES and not path.name.endswith(".index.json")
 
 
 class SnapshotPublisher:
@@ -90,9 +82,7 @@ class SnapshotPublisher:
             assert weight_map, f"HF export to {path} produced no weights"
             base_checkpoint = Path(hf_checkpoint)
             if base_checkpoint.is_dir():
-                for meta_file in base_checkpoint.iterdir():
-                    if _is_hf_metadata_file(meta_file):
-                        shutil.copy2(meta_file, path / meta_file.name)
+                copy_hf_metadata_files(base_checkpoint, path)
             else:
                 logger.warning(f"hf_checkpoint {hf_checkpoint} is not a local dir; metadata not copied to {path}")
             index = {"metadata": {"total_size": total_size}, "weight_map": weight_map}

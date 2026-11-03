@@ -63,6 +63,15 @@ class TestValidateMultiPolicyArgs:
         """The happy path has to stay reachable, or every refusal below is vacuous."""
         self._validate(_make_args("a", "b", sglang=_sglang_models(("a", True), ("b", True))))
 
+    def test_disk_weight_sync_is_refused(self):
+        """Every policy would write the same version directories, and reload another policy's weights."""
+        with pytest.raises(AssertionError, match="--update-weight-transfer-mode disk"):
+            self._validate(
+                _make_args(
+                    "a", "b", update_weight_transfer_mode="disk", sglang=_sglang_models(("a", True), ("b", True))
+                )
+            )
+
     def test_a_policy_without_a_matching_sglang_model_is_refused(self):
         """This is the only startup check that stops a weight update from finding no engine at all."""
         with pytest.raises(AssertionError, match=r"--megatron-config models \['b'\] have no matching"):

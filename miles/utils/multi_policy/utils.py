@@ -121,6 +121,10 @@ def validate_multi_policy_args(args, *, megatron_config: MegatronConfig) -> None
         f"mode drives one policy per rollout round"
     )
     assert not args.use_critic, "multi policy training does not support --use-critic"
+    assert args.update_weight_transfer_mode != "disk", (
+        "multi policy training does not support --update-weight-transfer-mode disk: every policy would write "
+        "the same version directories under the one --update-weight-disk-dir"
+    )
     assert not args.debug_rollout_only, (
         "multi policy training does not support --debug-rollout-only: it sizes the placement group for one "
         "trainer, while every policy still asks for a slice of its own"

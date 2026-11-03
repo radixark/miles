@@ -36,6 +36,17 @@ class Platform:
     def install_titan_attention(self) -> None:
         """Route torchtitan's document-masked attention to this platform's kernel; CUDA keeps FlexAttention."""
 
+    def pin_host_memory(self, tensor: torch.Tensor) -> None:
+        """Page-lock an existing host tensor, e.g. a shared-memory one, so device copies into it are fast and async."""
+        if not tensor.nbytes:  # CUDA rejects an empty range
+            return
+        torch.cuda.check_error(torch.cuda.cudart().cudaHostRegister(tensor.data_ptr(), tensor.nbytes, 0))
+
+    def unpin_host_memory(self, tensor: torch.Tensor) -> None:
+        if not tensor.nbytes:
+            return
+        torch.cuda.check_error(torch.cuda.cudart().cudaHostUnregister(tensor.data_ptr()))
+
     @functools.cache  # noqa: B019 -- one instance per process
     def device_name(self) -> str | None:
         """The CUDA device's marketing name (for peak-FLOPs lookup); None without a CUDA device."""

@@ -28,6 +28,7 @@ from miles.ray.specs.train import external_trainer_controller_addrs
 from miles.rollout.checkpoint_eval import is_checkpoint_eval_fn
 from miles.router.backend import RouterKind
 from miles.utils.args.configs.fault_tolerance import _DEFAULT_FT_API_SERVER_PORT
+from miles.utils.args.configs.rollout import UPDATE_WEIGHT_TRANSFER_MODES
 from miles.utils.args.configs.router import RouterConfig
 from miles.utils.args.custom_function import add_user_provided_function_arguments, resolve_custom_function_configs
 from miles.utils.args.runtime import AllConfig
@@ -871,7 +872,8 @@ def miles_validate_args(args):
         _apply_custom_config(args, yaml.safe_load(resolve_file_arg(args.custom_config_path)) or {})
 
     mode = args.update_weight_transfer_mode
-    if mode not in ("broadcast", "broadcast_packed", "p2p", "disk-delta"):
+    # --custom-config-path overrides above bypass the parser's choices
+    if mode not in UPDATE_WEIGHT_TRANSFER_MODES:
         raise ValueError(f"Unknown --update-weight-transfer-mode {mode!r}")
     if mode == "broadcast_packed" and (args.train_backend != "megatron" or args.colocate):
         raise ValueError("broadcast_packed requires Megatron non-colocated weight transfer")
@@ -1289,6 +1291,36 @@ def miles_validate_args(args):
         assert args.prefill_num_servers is None, "P2P weight transfer mode has not been tested when PD is enabled."
         assert args.lora_rank <= 0, "LoRA weight sync is not supported for p2p (RDMA) weight transfer."
 
+    if args.update_weight_transfer_mode in ("disk", "shm"):
+        mode = args.update_weight_transfer_mode
+        # colocate always syncs through CUDA IPC (get_weight_transfer_protocol)
+        assert not args.colocate, f"--update-weight-transfer-mode {mode} needs disaggregated engines; drop --colocate"
+        assert args.lora_rank <= 0, f"LoRA weight sync is not supported for --update-weight-transfer-mode {mode}"
+        assert (
+            args.prefill_num_servers is None
+        ), f"--update-weight-transfer-mode {mode} has not been tested when PD is enabled"
+    if args.update_weight_transfer_mode == "shm":
+        # the engines open the shared-memory tensors by /dev/shm file name, so they must share the trainer's host
+        assert args.actor_num_nodes == 1, "--update-weight-transfer-mode shm needs the trainer on one node"
+        assert (
+            args.rollout_num_gpus_per_engine <= args.num_gpus_per_node
+        ), "--update-weight-transfer-mode shm needs each rollout engine on one node"
+        # untested with pipeline-parallel engines
+        assert args.sglang_pp_size == 1, "--update-weight-transfer-mode shm does not support --sglang-pp-size > 1"
+    if args.update_weight_transfer_mode == "disk":
+        # /update_weights_from_disk reloads the draft model from the same directory, which has no draft weights
+        assert args.sglang_speculative_algorithm is None or args.enable_mtp_training, (
+            "--update-weight-transfer-mode disk reloads the speculative draft model from the trainer's "
+            "checkpoint; set --enable-mtp-training or drop --sglang-speculative-algorithm"
+        )
+        assert args.update_weight_disk_dir, (
+            "--update-weight-transfer-mode disk needs --update-weight-disk-dir on a filesystem "
+            "both the trainer and the rollout engines can read"
+        )
+        assert args.hf_checkpoint and os.path.isdir(args.hf_checkpoint), (
+            "--update-weight-transfer-mode disk needs --hf-checkpoint to be a local directory: "
+            "each published version copies its config and tokenizer files"
+        )
     if args.update_weight_transfer_mode == "disk-delta":
         assert not args.colocate, (
             "Disk-delta weight transfer mode is not compatible with --colocate. Colocate transfers "
@@ -1307,7 +1339,7 @@ def miles_validate_args(args):
             "--update-weight-transfer-mode=disk-delta requires --update-weight-local-checkpoint-dir "
             "(a rollout-host-local directory, e.g. NVMe)."
         )
-        assert os.path.isdir(args.hf_checkpoint), (
+        assert args.hf_checkpoint and os.path.isdir(args.hf_checkpoint), (
             "--update-weight-transfer-mode=disk-delta requires --hf-checkpoint to be a local directory: "
             "the baseline snapshot is seeded from its safetensors bytes."
         )

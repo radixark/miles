@@ -6,6 +6,8 @@ from miles.utils.args.custom_function import CustomFunctionConfig
 from miles.utils.args.schema import A, Arg, BaseConfig
 from miles.utils.object_store_config import ObjectStoreBackend
 
+UPDATE_WEIGHT_TRANSFER_MODES = ("broadcast", "broadcast_packed", "p2p", "disk-delta", "disk", "shm")
+
 
 # rollout
 class RolloutRelatedConfig(BaseConfig):
@@ -251,12 +253,17 @@ class RolloutRelatedConfig(BaseConfig):
         str,
         Arg(
             type_parser=None,
-            choices=["broadcast", "broadcast_packed", "p2p", "disk-delta"],
+            choices=list(UPDATE_WEIGHT_TRANSFER_MODES),
             help=(
                 "The method to transfer weights to remote rollout engines during update weight. "
                 "'disk-delta' diffs each sync against a CPU snapshot of the previous one and publishes "
                 "only the changed bytes to --update-weight-disk-dir; each engine's /pull_weights applies "
-                "them into a host-local checkpoint that the engine reloads from."
+                "them into a host-local checkpoint that the engine reloads from. "
+                "'disk' writes the full HF checkpoint to --update-weight-disk-dir on every sync and has "
+                "the engines reload it via /update_weights_from_disk; it needs no NCCL, CUDA IPC or "
+                "/pull_weights, so it works with engines on another accelerator stack (e.g. TPU). "
+                "'shm' hands engines on the trainer's host shared-memory tensors through "
+                "/update_weights_from_tensor, skipping the files 'disk' writes and parses."
             ),
         ),
     ] = "broadcast"
@@ -264,9 +271,11 @@ class RolloutRelatedConfig(BaseConfig):
         str | None,
         Arg(
             help=(
-                "Filesystem directory disk-delta weight sync publishes to: one delta directory "
-                "(changed tensors only) per sync, written by the trainer and read by every "
-                "rollout host. Required for --update-weight-transfer-mode=disk-delta."
+                "Filesystem directory disk and disk-delta weight sync publish to, written by the "
+                "trainer and read by every rollout host: one full checkpoint (disk) or one delta "
+                "directory with the changed tensors only (disk-delta) per sync. Required for both modes. "
+                "disk keeps each run's last version in a run-* subdirectory; a later run on the same host "
+                "deletes those of runs that ended, and runs that ended on other hosts must be cleaned by hand."
             )
         ),
     ] = None
@@ -326,7 +335,12 @@ class RolloutRelatedConfig(BaseConfig):
     ] = 30.0
     update_weight_engine_request_timeout: A[
         float,
-        Arg(help="Seconds allowed for one weight-update request to a rollout engine before its cell is given up."),
+        Arg(
+            help=(
+                "Seconds allowed for one weight-update request to a rollout engine before its cell is given up. "
+                "In --update-weight-transfer-mode disk one request reloads the whole model; raise it for large models."
+            )
+        ),
     ] = 300.0
     update_weights_timeout: A[
         float,
