@@ -233,7 +233,7 @@ class BridgeAdapterSlots(ProbedAdapterSlots):
         assert slot == 0, "single LoRA has only slot 0"
         return [param for params in adapter_named_parameters(self._model) for param in params.values()]
 
-    def _slot_spec(self, slot: int) -> AdapterSpec | None:
+    def slot_spec(self, slot: int) -> AdapterSpec | None:
         if not self._multi_lora:
             return None
         from megatron.bridge.peft.multi_lora_layers import MultiLoRALinear
