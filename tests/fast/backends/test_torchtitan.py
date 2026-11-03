@@ -403,6 +403,8 @@ def test_lora_resumes_only_through_the_adapter_path(tmp_path):
     for flag in ("load", "save"):
         with pytest.raises(ValueError, match=f"--{flag} holds the torchtitan checkpoint {step}"):
             config(**{flag: str(old)})
+    # migrating the old run: its rollout state from --load, its adapters from --lora-adapter-path
+    assert config(load=str(old), lora_adapter_path=str(step)).initial_load_path is None
     adapters = tmp_path / "adapters"
     adapter = adapters / "iter_0000003" / "adapter"
     adapter.mkdir(parents=True)

@@ -154,19 +154,23 @@ def _checkpointer_config(args: TrainerConfig, *, dump_subdir: str, with_lora: bo
 
 
 def _refuse_lora_resume_through_checkpointer(args: TrainerConfig, dump_subdir: str, load_step: str | None) -> None:
-    """LoRA resumes only through --lora-adapter-path; torchtitan's checkpointer would resume silently from a step dir
-    under --load or --save."""
-    for flag, step in (
-        ("--load", load_step),
-        ("--save", args.backend.save and _latest_step_dir(args.backend.save, dump_subdir)),
-    ):
-        if step:
-            raise ValueError(
-                f"{flag} holds the torchtitan checkpoint {step}, which carries LoRA adapters: resume it with "
-                f"--lora-adapter-path {step}, and move it out of {flag}"
-            )
-    # a restart without --lora-adapter-path would start fresh and overwrite them
-    if args.lora_adapter_path is None and args.backend.save and any(Path(args.backend.save).glob("iter_*/adapter")):
+    """LoRA resumes only through --lora-adapter-path."""
+    # torchtitan's checkpointer resumes from the latest step dir under --save whatever initial_load_path says
+    save_step = args.backend.save and _latest_step_dir(args.backend.save, dump_subdir)
+    if save_step:
+        raise ValueError(
+            f"--save holds the torchtitan checkpoint {save_step}, which torchtitan's checkpointer would resume from "
+            f"on its own: resume it with --lora-adapter-path {save_step}, and move it out of --save"
+        )
+    if args.lora_adapter_path is not None:
+        return
+    # a restart without --lora-adapter-path would start fresh: from the base model, overwriting any adapters
+    if load_step:
+        raise ValueError(
+            f"--load holds the torchtitan checkpoint {load_step}, which LoRA does not resume from: resume it with "
+            f"--lora-adapter-path {load_step}"
+        )
+    if args.backend.save and any(Path(args.backend.save).glob("iter_*/adapter")):
         raise ValueError(
             f"--save {args.backend.save} holds LoRA adapter checkpoints (iter_*/adapter): resume one with "
             "--lora-adapter-path, or save elsewhere"
