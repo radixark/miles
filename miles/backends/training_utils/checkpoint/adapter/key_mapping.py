@@ -85,6 +85,7 @@ def map_tinker_keys_to_hf_keys(name: str, targets: HfLoraTargets) -> HfKey:
 
 
 def map_hf_keys_to_tinker_keys(key: str, targets: HfLoraTargets) -> str:
+    assert targets.tinker_name_renames, "no official Tinker export of this model family has been checked"
     module, factor = key.rsplit(".", 1)
     if module == targets.unembed[0]:
         return f"{_PEFT_PREFIX}{_TINKER_UNEMBED}.{factor}.weight"

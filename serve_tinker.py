@@ -20,6 +20,7 @@ from miles.utils.arguments import parse_args
 from miles.utils.async_utils import Disposer, with_disposer
 from miles.utils.hf_utils.config import load_hf_config
 from miles.utils.http_utils import init_http_client
+from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
 from miles.utils.orchestration_utils import ArgvOrchestratorStartupInfo, init_orchestration_script
 
 logger = logging.getLogger(__name__)
@@ -34,7 +35,8 @@ async def serve(args, *, disposer: Disposer):
     ckpt_load_config = compute_trainer_ckpt_load_config(args, actor_config)
     assert ckpt_load_config is not None
     assert ckpt_load_config.load == args.hf_checkpoint, "Tinker trainers and engines must load the same frozen HF base"
-    hf_config = load_hf_config(args.hf_checkpoint).get_text_config()
+    hf_config_with_vision = load_hf_config(args.hf_checkpoint)
+    hf_config = hf_config_with_vision.get_text_config()
     max_tokens_per_datum = hf_config.max_position_embeddings
     if args.max_tokens_per_gpu is not None:
         # The trainer pads each packed microbatch to this multiple.
@@ -80,6 +82,7 @@ async def serve(args, *, disposer: Disposer):
         checkpoint_root=args.tinker_checkpoint_root,
         import_root=args.tinker_import_root,
         vocab_size=hf_config.vocab_size,
+        exports_tinker_names=bool(get_hf_lora_targets(hf_config_with_vision.to_dict()).tinker_name_renames),
         max_tokens_per_datum=max_tokens_per_datum,
         max_tokens_per_sample=max_tokens_per_sample,
         lora_alpha=args.lora_alpha,

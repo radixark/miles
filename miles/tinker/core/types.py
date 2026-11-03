@@ -59,6 +59,8 @@ class GatewayConfig:
     n_slots: int
     checkpoint_root: str
     vocab_size: int
+    # the model family's official Tinker names were checked; save_weights_external is refused otherwise
+    exports_tinker_names: bool
     max_datums_per_request: int = 1024
     max_tokens_per_datum: int = 32768
     max_tokens_per_sample: int = 32768

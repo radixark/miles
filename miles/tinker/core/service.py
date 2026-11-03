@@ -611,6 +611,10 @@ class TinkerService:
 
     async def _save_weights_external(self, record: ModelRecord, payload: dict) -> dict:
         """The official Tinker export of the adapter, for download (get_external_weights_urls)."""
+        if not self.config.exports_tinker_names:
+            raise UserInputError(
+                "this model family has no checked official Tinker names; save_weights_external is unsupported"
+            )
         name = payload["name"]
         validate_checkpoint_segment(name)
         path = resolve_checkpoint_dir(self.config.checkpoint_root, record.model_id, "external_weights", name)

@@ -1228,6 +1228,14 @@ async def test_an_encrypted_external_save_keeps_its_owner(service):
     await service.delete_checkpoint("tenant", model_id, "external_weights/export")
 
 
+async def test_an_external_save_is_refused_for_a_family_without_checked_tinker_names(service):
+    service.config.exports_tinker_names = False
+    model_id = await created_model(service)
+    save = service.submit("tenant", "save_weights_external", _external_payload(model_id, 1, "export"))
+    assert "no checked official Tinker names" in (await await_settled(service, "tenant", save)).error
+    assert not service.backend.named("export_external")
+
+
 async def test_a_download_url_does_not_serve_a_resave_under_the_same_name(service):
     model_id = await created_model(service)
     save = service.submit("tenant", "save_weights_external", _external_payload(model_id, 1, "export"))
