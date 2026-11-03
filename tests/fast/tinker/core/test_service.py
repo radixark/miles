@@ -1017,6 +1017,21 @@ async def test_a_truncated_sampler_commit_file_is_a_user_error(service, filename
         resolve_sampler_checkpoint(service.config, "tenant", path, service.backend.resolve_adapter)
 
 
+@pytest.mark.parametrize(
+    "filename, content", [("tenant.json", "{}"), ("tenant.json", "[]"), ("adapter_parametrization.json", "{}")]
+)
+async def test_a_sampler_commit_file_of_the_wrong_schema_is_a_user_error(service, filename, content):
+    model_id = await created_model(service)
+    save = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
+    path = (await await_settled(service, "tenant", save)).result["path"]
+    root = Path(resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "sampler_weights", "1")).parent
+    (resolve_adapter_dir(root, "1", tenant=None).path / filename).write_text(content)
+    with pytest.raises(UserInputError, match="cannot read adapter"):
+        service.weights_info("tenant", path)
+    with pytest.raises(UserInputError, match="cannot read adapter"):
+        resolve_sampler_checkpoint(service.config, "tenant", path, service.backend.resolve_adapter)
+
+
 async def test_another_tenants_sampler_export_does_not_resolve(service):
     model_id = await created_model(service)
     save = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})

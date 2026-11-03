@@ -1,7 +1,6 @@
 """Translate gateway datums to trainer batches and sampling requests to SGLang."""
 
 import asyncio
-import json
 from dataclasses import asdict
 from pathlib import Path
 
@@ -68,7 +67,8 @@ def resolve_adapter(root: str, name: str, tenant: str, model_id: str) -> dict | 
         parametrization = read_parametrization(committed.path)
     except AdapterOwnershipError as error:
         raise OwnershipError(f"adapter {name!r} does not belong to this tenant") from error
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+    # ValueError covers undecodable and unparseable files; KeyError and TypeError a parsed file of the wrong schema
+    except (OSError, ValueError, KeyError, TypeError) as error:
         raise UserInputError(f"cannot read adapter {name!r}: {error}") from error
     return {
         "path": str(committed.path),
