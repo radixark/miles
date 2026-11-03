@@ -483,8 +483,9 @@ def save_single_lora(model, optimizer, opt_param_scheduler, adapter_slots: Bridg
     )
 
 
-def restore_single_lora(model, args, *, optimizer, opt_param_scheduler) -> int | None:
-    """``--lora-adapter-path`` from any recognized source; returns the saved iteration when the source has one.
+def restore_single_lora(model, args, *, optimizer, opt_param_scheduler) -> tuple[int | None, bool]:
+    """``--lora-adapter-path`` from any recognized source; returns the saved iteration when the source has one, and
+    whether it restored the scheduler.
 
     ``--lora-adapter-convert-save`` then commits the loaded state there in the adapter format.
     """
@@ -535,11 +536,12 @@ def restore_single_lora(model, args, *, optimizer, opt_param_scheduler) -> int |
             training_state=training_state or {"iteration": None, "opt_param_scheduler": None},
         )
     if training_state is None:
-        return None
+        return None, False
     # a torchtitan run's training state has its own scheduler state, not Megatron's
-    if opt_param_scheduler is not None and training_state.get("opt_param_scheduler") is not None:
-        opt_param_scheduler.load_state_dict(training_state["opt_param_scheduler"])
-    return training_state["iteration"]
+    scheduler_state = training_state.get("opt_param_scheduler")
+    if opt_param_scheduler is not None and scheduler_state is not None:
+        opt_param_scheduler.load_state_dict(scheduler_state)
+    return training_state["iteration"], scheduler_state is not None
 
 
 class LegacyRankShardLoader:

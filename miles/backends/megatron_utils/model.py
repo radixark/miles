@@ -1071,13 +1071,13 @@ def load_model_state(
 
     adapter_iteration = None
     if is_lora_enabled(args) and role == "actor" and args.lora_adapter_path is not None:
-        adapter_iteration = restore_single_lora(
+        adapter_iteration, adapter_scheduler_restored = restore_single_lora(
             model, args, optimizer=optimizer, opt_param_scheduler=opt_param_scheduler
         )
         if adapter_iteration is not None:
             iteration = adapter_iteration
             restored_trained_iteration = True
-            scheduler_restored = True
+            scheduler_restored = adapter_scheduler_restored
 
     check_peak_gpu_memory_after_load(args)
     clear_memory()
