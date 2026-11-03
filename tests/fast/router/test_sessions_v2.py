@@ -18,6 +18,7 @@ import pytest
 import requests
 import safetensors.numpy
 from fastapi.responses import JSONResponse
+from tests.fast.fixtures.args_fixtures import sglang_router_args
 from tests.fast.fixtures.sglang_config_fixtures import make_sglang_config
 from tests.fast.router.test_sessions import _create_session, _post_chat
 
@@ -53,6 +54,7 @@ def _serve_router(extra_args: dict | None = None):
             "use_rollout_indexer_replay": False,
             "rollout_indexer_topk_num_streams": None,
             "use_sampling_support_replay": False,
+            "use_output_store": False,
             "rollout_top_logprobs_num": 0,
             "rollout_sampling_logprobs_mode": "selected",
             "sglang": make_sglang_config(speculative_algorithm=None),
@@ -68,6 +70,7 @@ def _serve_router(extra_args: dict | None = None):
             "pause_generation_mode": "retract",
             "session_sample_picker_path": "miles.rollout.session.v2.picker_hub.drop_same_prompt_retries",
             "session_sample_postprocessor_path": "miles.rollout.session.v2.postprocessor_hub.default_postprocess",
+            **sglang_router_args("manual"),
         }
         args_values.update(extra_args or {})
         args = SimpleNamespace(**args_values)

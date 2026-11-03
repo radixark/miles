@@ -196,6 +196,9 @@ class RouterSpec(BaseCommandSpec):
             backend.launch_argv(ctx, model_cfg=self.model_cfg, interpreter_prefix=self.interpreter_prefix)
         )
 
+    def env_var(self, ctx: WorkerLaunchContext) -> dict[str, str]:
+        return make_router_backend(ctx.args).env_var(ctx)
+
 
 def compute_router_pool_id(model_idx: int) -> str:
     return f"inference-router-{model_idx}"
@@ -427,7 +430,7 @@ def _compute_spec_inference_engine(
                 if server_group_config.worker_type == WorkerType.PREFILL
                 else []
             ),
-            PortInfo(name="engine_info_bootstrap", static_port=12000, allow_dynamic=True),
+            PortInfo(name="engine_info_bootstrap", static_port=12000, mode="master", allow_dynamic=True),
             PortInfo(name=GATE_PORT_NAME, static_port=13000, mode="master", allow_dynamic=True),
             *(
                 # Rank 0's WeightBridge control hub, reached from every node of a multi-node engine.

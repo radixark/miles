@@ -67,6 +67,8 @@ def make_args(**overrides: Any) -> Namespace:
         advantage_estimator="grpo",
         rewards_normalization=True,
         grpo_std_normalization=False,
+        length_penalty_coeff=0.0,
+        length_penalty_min_tokens=1,
         reward_key=None,
         log_reward_category=None,
         log_passrate=False,
@@ -112,7 +114,7 @@ def make_args(**overrides: Any) -> Namespace:
         prefill_num_servers=None,
         # routers / session server
         use_miles_dashboard=False,
-        use_miles_router=False,
+        router="sglang",
         miles_router_timeout=None,
         miles_router_max_connections=None,
         miles_router_health_check_failure_threshold=3,
@@ -149,6 +151,7 @@ def make_args(**overrides: Any) -> Namespace:
         fp16=False,
         use_rollout_indexer_replay=False,
         rollout_indexer_topk_num_streams=None,
+        use_output_store=False,
         env_report_interval_seconds=3600.0,
         # checkpoint / data source
         hf_checkpoint="/fake/model",
@@ -418,12 +421,17 @@ def dedent(s: str) -> str:
     return textwrap.dedent(s).lstrip("\n")
 
 
+FAKE_SERVICE_PORT_START = 20000
+
+
 def fake_engine(host: str = "10.0.0.1", port_seed: int = 30000) -> MagicMock:
     """MagicMock that mimics the engine ``CommandActor`` enough for ``addr_allocator``.
 
     Mocks ``_get_free_port_block.remote(start_port, count)`` with a
     deterministic ``max(seq, start_port)`` counter so allocator tests can
-    predict and assert on port assignment. ``_get_node_ip.remote()`` is the
+    predict and assert on port assignment. A node without a cursor starts at
+    20000, where the service port range starts on a host with the default
+    ephemeral range. ``_get_node_ip.remote()`` is the
     node-ip probe, which the cell awaits, so it returns an awaitable just like
     a real ``ObjectRef``. It also passes ``isinstance(x, ray.actor.ActorHandle)``
     so it can be handed to ``mark_allocated_uninitialized``."""
@@ -431,8 +439,8 @@ def fake_engine(host: str = "10.0.0.1", port_seed: int = 30000) -> MagicMock:
     e._spec_class = ray.actor.ActorHandle
     e._port_cursor = port_seed
 
-    async def _alloc(start_port: int = 15000, count: int = 1):
-        port = max(e._port_cursor, start_port)
+    async def _alloc(start_port: int | None = None, count: int = 1):
+        port = max(e._port_cursor, FAKE_SERVICE_PORT_START if start_port is None else start_port)
         e._port_cursor = port + count
         return port
 

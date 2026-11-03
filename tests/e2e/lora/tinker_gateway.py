@@ -14,12 +14,18 @@ MODEL_NAME = "Qwen3-4B-Instruct-2507"
 BASE_MODEL = f"Qwen/{MODEL_NAME}"
 GATEWAY_PORT = 10613
 SERVE_TIMEOUT_S = 1200
-QWEN_SERVE_CMD = (
-    "python examples/multi_lora/serve_qwen3_30b_a3b_tinker.py serve "
-    f"--hf-checkpoint /root/models/{MODEL_NAME} "
-    "--model-type qwen3-4B-Instruct-2507 --tp 2 --ep 1 --lora-rank 8 --lora-alpha 16 "
-    f'--extra-args "--tinker-base-model {BASE_MODEL}"'
-)
+
+
+def qwen_serve_cmd(extra_args: str = "") -> str:
+    return (
+        "python examples/multi_lora/serve_qwen3_30b_a3b_tinker.py serve "
+        f"--hf-checkpoint /root/models/{MODEL_NAME} "
+        "--model-type qwen3-4B-Instruct-2507 --tp 2 --ep 1 --lora-rank 8 --lora-alpha 16 "
+        f'--extra-args "--tinker-base-model {BASE_MODEL} {extra_args}"'
+    )
+
+
+QWEN_SERVE_CMD = qwen_serve_cmd()
 
 
 def prepare_gateway():

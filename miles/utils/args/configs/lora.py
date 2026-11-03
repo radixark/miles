@@ -37,7 +37,8 @@ class LoraConfig(BaseConfig):
         str,
         Arg(
             choices=["lora", "canonical_lora"],
-            help="LoRA variant to use: 'lora' (standard) or 'canonical_lora' (split Q/K/V) (default: lora)",
+            help="LoRA variant to use: 'lora' (standard) or 'canonical_lora' (independent Q/K/V and gate/up) "
+            "(default: lora; canonical_lora for serve_tinker.py)",
         ),
     ] = "lora"
     # TODO: Remove this temporary override after separating CLI input types from normalized config types.

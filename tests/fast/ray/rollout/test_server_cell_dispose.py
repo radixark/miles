@@ -81,7 +81,7 @@ class TestServerCellDispose:
 
         await cell.dispose()
 
-        client.remove_worker.assert_awaited_once_with(worker_url="http://10.0.0.2:30000", use_legacy_api=False)
+        client.remove_worker.assert_awaited_once_with(worker_url="http://10.0.0.2:30000")
         assert isinstance(cell._state, StateDisposed)
 
     @pytest.mark.asyncio
@@ -135,17 +135,6 @@ class TestServerCellDispose:
         assert isinstance(cell._state, StateDisposed)
 
     @pytest.mark.asyncio
-    async def test_use_miles_router_pins_the_legacy_api_when_disposing(self) -> None:
-        """--use-miles-router selects the query-string API on the dispose-time unregister too."""
-        client = _make_router_api_client()
-        cell = _make_cell(router_api_client=client, use_miles_router=True)
-        await _register(cell, state=StateServing, server_url="http://10.0.0.4:30000", bootstrap_port=9000)
-
-        await cell.dispose()
-
-        assert client.remove_worker.await_args.kwargs["use_legacy_api"] is True
-
-    @pytest.mark.asyncio
     async def test_disposing_a_registered_cell_twice_unregisters_it_once(self) -> None:
         """Teardown paths overlap, so a second dispose must not aim a removal at an entry the
         first one already took out."""
@@ -160,18 +149,6 @@ class TestServerCellDispose:
 
 
 class TestServerCellRegisterRobustness:
-    @pytest.mark.asyncio
-    async def test_use_miles_router_pins_the_legacy_api_when_registering_too(self) -> None:
-        """Adding through the wrong API shape lands the engine in a table the miles router never
-        reads, so it is never routed to while removals still appear to work."""
-        client = _make_router_api_client()
-        cell = _make_cell(router_api_client=client, use_miles_router=True)
-
-        await _register(cell, state=StateServing, server_url="http://10.0.0.2:30000", bootstrap_port=None)
-        await cell.dispose()
-
-        assert client.add_worker.await_args.kwargs["use_legacy_api"] is True
-
     @pytest.mark.asyncio
     async def test_a_router_that_never_answers_the_unregister_does_not_wedge_teardown(
         self, monkeypatch: pytest.MonkeyPatch

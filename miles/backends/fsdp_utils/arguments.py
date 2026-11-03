@@ -2,6 +2,7 @@ import argparse
 import dataclasses
 import difflib
 import logging
+import typing
 from dataclasses import dataclass
 
 import yaml
@@ -73,6 +74,10 @@ class FSDPArgs:
     use_pytorch_profiler: bool = False
     profile_step_start: int = 10
     profile_step_end: int = 12
+    # Names and defaults match Megatron's profiling flags, which miles/utils/profile_utils.py reads.
+    pytorch_profiler_collect_shapes: bool = False
+    pytorch_profiler_collect_callstack: bool = False
+    profile_ranks: list[int] = dataclasses.field(default_factory=list)
     tensorboard_dir: str | None = None
 
     # YAML bookkeeping
@@ -88,6 +93,13 @@ def build_dataclass_parser(
     parser.add_argument("--config", type=str, default=None, help="YAML config path")
     for f in dataclasses.fields(args_cls):
         if f.name == "config":
+            continue
+
+        if typing.get_origin(f.type) is list:
+            (item_type,) = typing.get_args(f.type)
+            parser.add_argument(
+                f"--{f.name.replace('_', '-')}", type=item_type, nargs="+", default=f.default_factory()
+            )
             continue
 
         # Handle union types like int | None, str | None, etc.

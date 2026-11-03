@@ -119,7 +119,8 @@ def _setup_disk_offload_reclaim(disk_dir: str) -> None:
 class MegatronTrainRayActor(TrainRayActor):
     @property
     def _trains_indexers(self) -> bool:
-        return (self.args.dsa_indexer_loss_coeff or 0) > 0
+        # Megatron leaves --dsa-indexer-loss-coeff None unless set, which like 0 means no indexer loss
+        return (self.args.backend.dsa_indexer_loss_coeff or 0) > 0
 
     @with_logs
     @with_defer(lambda: Timer().start("train_wait"))
@@ -652,6 +653,7 @@ class MegatronTrainRayActor(TrainRayActor):
                 rollout_data, store_get_result = get_rollout_data(
                     args=self.args,
                     rollout_data_ref=rollout_data_ref,
+                    output_store_read=self.output_store_read,
                     witness_info=witness_info,
                     train_parallel_config=get_parallel_state().train_parallel_config(
                         supports_precomputed_schedule=True
@@ -757,6 +759,7 @@ class MegatronTrainRayActor(TrainRayActor):
                     if_sp_region=m.if_sp_region,
                     indices_are_token_positions=m.replay_indices_are_token_positions,
                     sequence_first=m is routing_replay_manager,
+                    kept_in_train_dump=m.kept_in_train_dump,
                 )
 
         with inverse_timer("train_wait"), timer("train"):

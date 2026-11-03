@@ -24,6 +24,7 @@ register_ci_gate(
 register_ci_gate(metric_key="perf/actor_train_mfu")
 
 CASE = CaseConfig(
+    use_output_store=True,
     model_name="GLM-4.7-Flash",
     hf_repo="zai-org/GLM-4.7-Flash",
     num_gpus=8,

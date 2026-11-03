@@ -9,6 +9,7 @@ from miles.rollout.base_types import GenerateFnInput
 from miles.rollout.session.samples.codec import SamplesReply
 from miles.rollout.session.types import SessionServerInstance
 from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY
+from miles.utils.output_store.plan import StorePlanError
 from miles.utils.types import Sample
 
 
@@ -100,6 +101,15 @@ async def test_success_returns_list_and_forwards_agent_metadata(monkeypatch, eva
     assert output.samples == [sample]
     assert output.samples[0].rollout_id is None
     assert tracer.agent_metadata == {"agent_result": "done"}
+
+
+@pytest.mark.parametrize("version", ["v1", "v2"])
+async def test_session_identity_for_penalty_logs_is_owned_by_tracer(monkeypatch, version: str) -> None:
+    sample = Sample(status=Sample.Status.COMPLETED, response_length=1, tokens=[1], metadata={"session_id": "spoofed"})
+    tracer = _Tracer(SamplesReply(samples=[sample], session_metadata={}, empty_reason=None))
+    _patch_agent(monkeypatch, tracer)
+    await agentic_tool_call.generate(_generate_input(use_session_server=version))
+    assert sample.metadata["session_id"] == "sid-1"
 
 
 @pytest.mark.asyncio
@@ -269,9 +279,11 @@ class TestRadixCacheExtraKey:
 
 
 @pytest.mark.asyncio
-async def test_collection_error_propagates(monkeypatch):
-    tracer = _Tracer(error=RuntimeError("samples unavailable"))
+@pytest.mark.parametrize("error_type", [RuntimeError, StorePlanError])
+async def test_collection_error_propagates(monkeypatch, error_type):
+    """Only timeouts and transport errors become an ABORTED sample; a StorePlanError must reach the rollout loop."""
+    tracer = _Tracer(error=error_type("samples unavailable"))
     _patch_agent(monkeypatch, tracer)
 
-    with pytest.raises(RuntimeError, match="samples unavailable"):
+    with pytest.raises(error_type, match="samples unavailable"):
         await agentic_tool_call.generate(_generate_input())

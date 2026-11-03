@@ -357,3 +357,26 @@ class TestSubmissionSchedulers:
         assert pending == {never}
 
         never.cancel()
+
+
+async def test_a_filtered_group_hands_its_output_store_refs_over(monkeypatch):
+    from tests.fast.utils.output_store.test_plan import ref
+
+    from miles.utils.output_store import dropped
+    from miles.utils.output_store.dropped import take_dropped_refs
+    from miles.utils.output_store.plan import StorePlan
+
+    monkeypatch.setattr(dropped, "_dropped", {})
+    harness = Harness(monkeypatch, make_args(rollout_batch_size=1))
+    task = harness.run()
+    await asyncio.sleep(0)
+
+    for sample in harness.submitted_groups[0]:
+        sample.status = Sample.Status.ABORTED
+        sample.rollout_store_plan = StorePlan(fields={}, owned_refs=(ref(f"key-{sample.index}"),))
+    harness.finish_group(0)
+    await asyncio.sleep(0.01)
+    harness.finish_group(1)
+    await task
+
+    assert sorted(take_dropped_refs()) == [f"key-{10 + i}" for i in range(GROUP_SIZE)]

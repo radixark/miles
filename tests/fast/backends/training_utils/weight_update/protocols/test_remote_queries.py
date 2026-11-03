@@ -65,6 +65,7 @@ class TestQueriesGiveUpOnBrokenCells:
         make_rollout_api: Any,
         make_cell_updater: Any,
         model_replica_module: Any,
+        p2p_protocol: Any,
         mooncake_module: Any,
     ) -> None:
         """A cell removed earlier contributes neither metadata nor new requests at any query stage."""
@@ -80,7 +81,7 @@ class TestQueriesGiveUpOnBrokenCells:
             )
             == {}
         )
-        assert mooncake_module.MooncakeTransport().connect(
+        assert p2p_protocol.P2PTransport(mooncake_module.MooncakeTransport()).connect(
             {cell.cell_id: cell}, [cell.cell_id], assignments, ["target"]
         ) == {"target": {0: []}}
         assert api.calls == []

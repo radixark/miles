@@ -1,6 +1,7 @@
 from argparse import Namespace
 from collections.abc import Mapping, Sequence
 
+from miles.utils.output_store.plan import StorePlanError
 from miles.utils.sampling_mask import RolloutSamplingMask
 from miles.utils.types import Sample
 
@@ -131,6 +132,25 @@ def append_sampling_metadata(
         raise ValueError(f"Unsupported sampling logprobs mode: {sampling_logprobs_mode}")
     _append_sampling_mask(sample, sampling_mask)
     return selected
+
+
+def read_sampled_logprobs(
+    meta_info: dict, output_token_ids: Sequence[int], *, sampling_logprobs_mode: str
+) -> list[float]:
+    """The sampled tokens' log-probs, one per token, when the sampling mask went to the output store."""
+    if sampling_logprobs_mode == "support":
+        # SGLang picked each sampled token's entry out of its support row.
+        key = "output_token_sampling_selected_logprobs"
+    elif sampling_logprobs_mode == "selected":
+        key = "output_token_sampling_logprobs"
+    else:
+        raise ValueError(f"Unsupported sampling logprobs mode: {sampling_logprobs_mode}")
+    log_probs = meta_info.get(key, [])
+    if len(log_probs) != len(output_token_ids):
+        raise StorePlanError(
+            f"SGLang response {key} has {len(log_probs)} values for {len(output_token_ids)} output tokens"
+        )
+    return [float(value) for value in log_probs]
 
 
 def append_forced_sampling_tokens(sample: Sample, token_ids: Sequence[int]) -> None:
