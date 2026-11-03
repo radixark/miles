@@ -46,7 +46,7 @@ class RolloutDatasetConfig(BaseModel):
     max_prompt_len: int | None = Field(default=None, ge=1)
     max_response_len: int | None = Field(default=None, ge=1)
     custom_generate_function_path: str | None = Field(default=None, min_length=1)
-    # set as this dataset's Sample.reward_spec, winning over --custom-rm-path / --rm-type
+    # set as this dataset's Sample.reward_spec: custom_rm_path wins over --custom-rm-path, rm_type over --rm-type
     custom_rm_path: str | None = Field(default=None, min_length=1)
     rm_type: str | None = Field(default=None, min_length=1)
     # free-form, for this dataset's generate function
