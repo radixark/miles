@@ -6,7 +6,7 @@ import torch
 import torch.distributed as dist
 from tests.fast.dist_utils import init_gloo, run_multiprocess
 
-from miles.backends.megatron_utils.lora.bridge_checkpoint import check_bridge_run_config, probe_bridge_row_mapping
+from miles.backends.megatron_utils.lora.bridge_checkpoint import assert_bridge_run_config_matches, probe_bridge_row_mapping
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
 from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
 
@@ -122,7 +122,7 @@ def _bridge_config(**peft) -> dict:
 
 
 def test_a_bridge_run_config_of_the_same_lora_is_accepted():
-    check_bridge_run_config(_bridge_config(), _run(), params_dtype=torch.bfloat16, load_optimizer=True)
+    assert_bridge_run_config_matches(_bridge_config(), _run(), params_dtype=torch.bfloat16, load_optimizer=True)
 
 
 @pytest.mark.parametrize(
@@ -139,25 +139,25 @@ def test_a_bridge_run_config_of_the_same_lora_is_accepted():
 )
 def test_a_bridge_run_config_of_another_lora_is_refused(peft, match):
     with pytest.raises(AssertionError, match=match):
-        check_bridge_run_config(_bridge_config(**peft), _run(), params_dtype=torch.bfloat16, load_optimizer=False)
+        assert_bridge_run_config_matches(_bridge_config(**peft), _run(), params_dtype=torch.bfloat16, load_optimizer=False)
 
 
 def test_share_expert_adapters_defaults_to_bridge_behaviour_and_matters_only_for_per_expert_adapters():
     config = _bridge_config()
     del config["peft"]["share_expert_adapters"]
     with pytest.raises(AssertionError, match="share_expert_adapters"):
-        check_bridge_run_config(config, _run(), params_dtype=torch.bfloat16, load_optimizer=False)
+        assert_bridge_run_config_matches(config, _run(), params_dtype=torch.bfloat16, load_optimizer=False)
     dense = _run(target_modules=("model.layers.0.self_attn.q_proj",))
-    check_bridge_run_config(config, dense, params_dtype=torch.bfloat16, load_optimizer=False)
+    assert_bridge_run_config_matches(config, dense, params_dtype=torch.bfloat16, load_optimizer=False)
 
 
 def test_adam_state_needs_a_distributed_fp32_adam_source():
     config = _bridge_config()
     config["optimizer"]["use_distributed_optimizer"] = False
-    check_bridge_run_config(config, _run(), params_dtype=torch.bfloat16, load_optimizer=False)
+    assert_bridge_run_config_matches(config, _run(), params_dtype=torch.bfloat16, load_optimizer=False)
     with pytest.raises(AssertionError, match="--no-load-optim"):
-        check_bridge_run_config(config, _run(), params_dtype=torch.bfloat16, load_optimizer=True)
+        assert_bridge_run_config_matches(config, _run(), params_dtype=torch.bfloat16, load_optimizer=True)
     config = _bridge_config()
     config["optimizer"]["exp_avg_dtype"] = {"_target_": "torch.bfloat16", "_call_": False}
     with pytest.raises(AssertionError, match="exp_avg_dtype must be fp32"):
-        check_bridge_run_config(config, _run(), params_dtype=torch.bfloat16, load_optimizer=True)
+        assert_bridge_run_config_matches(config, _run(), params_dtype=torch.bfloat16, load_optimizer=True)

@@ -221,7 +221,7 @@ def _yaml_dtype(value) -> str | None:
     return None if value is None else value["_target_"]
 
 
-def check_bridge_run_config(
+def assert_bridge_run_config_matches(
     config: dict, run: AdapterParametrization, *, params_dtype: torch.dtype, load_optimizer: bool
 ) -> None:
     """A Megatron-Bridge run_config.yaml must describe the LoRA this run trains, and resumable Adam state."""
@@ -284,7 +284,7 @@ class MegatronBridgeCheckpointLoader:
         try:
             config = yaml.safe_load((path / "run_config.yaml").read_text())
             assert config["checkpoint"]["ckpt_format"] == "torch_dist", f"{path} is not a torch_dist checkpoint"
-            check_bridge_run_config(
+            assert_bridge_run_config_matches(
                 config, self._run, params_dtype=chunks[0].config.params_dtype, load_optimizer=self._load_optimizer
             )
             assert_same_base_model(
