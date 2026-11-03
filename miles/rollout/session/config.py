@@ -1,6 +1,11 @@
+import logging
 from typing import Any
 
+from miles.router.backend import make_router_backend
+from miles.utils.output_store.config import output_store_backend_config
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
+
+logger = logging.getLogger(__name__)
 
 
 class SessionServerConfig(FrozenStrictBaseModel):
@@ -8,6 +13,8 @@ class SessionServerConfig(FrozenStrictBaseModel):
     port: int
     instance_id: str | None
     backend_url: str
+    # header the router places a session by; None = turns are not pinned to one engine
+    routing_key_header: str | None
     timeout: float | None
     hf_checkpoint: str | None
     chat_template_path: str | None
@@ -32,6 +39,8 @@ class SessionServerConfig(FrozenStrictBaseModel):
     rollout_top_logprobs_num: int
     rollout_sampling_logprobs_mode: str
     rollout_temperature: float
+    # The run's output store with --use-output-store, else None; the server resolves its own local_hostname.
+    output_store_backend_config: dict[str, Any] | None
 
 
 def compute_session_server_config(
@@ -42,6 +51,7 @@ def compute_session_server_config(
         port=port,
         instance_id=instance_id,
         backend_url=backend_url,
+        routing_key_header=_routing_key_header(args),
         timeout=args.miles_router_timeout,
         hf_checkpoint=args.hf_checkpoint,
         chat_template_path=args.chat_template_path,
@@ -68,4 +78,17 @@ def compute_session_server_config(
         rollout_temperature=getattr(
             args, "rollout_temperature", 1.0
         ),  # config-access-exempt: legacy session inputs omit rollout_temperature
+        output_store_backend_config=(output_store_backend_config(args) if args.use_output_store else None),
     )
+
+
+def _routing_key_header(args) -> str | None:
+    backend = make_router_backend(args)
+    if not backend.routes_by_key(args.sglang.models):
+        # affinity only saves prefix-cache work, so a router without it is allowed
+        logger.warning(
+            "--use-session-server with a router that does not route by session: "
+            "a session's turns may land on different engines and lose prefix-cache reuse"
+        )
+        return None
+    return backend.features.routing_key_header

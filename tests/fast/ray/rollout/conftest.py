@@ -67,6 +67,8 @@ def make_args(**overrides: Any) -> Namespace:
         advantage_estimator="grpo",
         rewards_normalization=True,
         grpo_std_normalization=False,
+        length_penalty_coeff=0.0,
+        length_penalty_min_tokens=1,
         reward_key=None,
         log_reward_category=None,
         log_passrate=False,
@@ -112,7 +114,7 @@ def make_args(**overrides: Any) -> Namespace:
         prefill_num_servers=None,
         # routers / session server
         use_miles_dashboard=False,
-        use_miles_router=False,
+        router="sglang",
         miles_router_timeout=None,
         miles_router_max_connections=None,
         miles_router_health_check_failure_threshold=3,
@@ -149,6 +151,7 @@ def make_args(**overrides: Any) -> Namespace:
         fp16=False,
         use_rollout_indexer_replay=False,
         rollout_indexer_topk_num_streams=None,
+        use_output_store=False,
         env_report_interval_seconds=3600.0,
         # checkpoint / data source
         hf_checkpoint="/fake/model",
@@ -220,6 +223,7 @@ _RESOLVED_ROLLOUT_FIELDS: dict[str, Any] = dict(
     raw_torchtitan=None,
     lora_A_init_method="xavier",
     lora_B_init_method="zero",
+    lora_sync_sends_base=True,
 )
 
 _CUSTOM_FUNCTION_FIELDS = [

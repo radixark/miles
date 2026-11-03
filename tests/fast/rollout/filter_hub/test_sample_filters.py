@@ -69,6 +69,17 @@ def test_reward_key_is_respected() -> None:
     assert [passed.remove_sample, failed.remove_sample] == [False, True]
 
 
+def test_nested_session_groups_are_filtered() -> None:
+    # With the session server, each group entry is the list of samples one session produced.
+    cut_off = make_sample(status=Sample.Status.TRUNCATED)
+    finished = make_sample(reward=0.0)
+    lone = make_sample(exit_status="TimeLimitExceeded")
+
+    mask_truncated_zero_reward(ARGS, [[[cut_off, finished], lone]])
+
+    assert [cut_off.remove_sample, finished.remove_sample, lone.remove_sample] == [True, False, True]
+
+
 def test_dict_reward_without_reward_key_warns_once(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:

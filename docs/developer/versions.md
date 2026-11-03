@@ -37,7 +37,7 @@ The default build-args are the version surface:
 
 | Build-arg | Default | What it selects |
 |---|---|---|
-| `SGLANG_IMAGE_TAG` | `v0.5.22` | The `lmsysorg/sglang` base image, which brings torch, CUDA, cuDNN and Mooncake |
+| `SGLANG_IMAGE_TAG` | `v0.5.23` | The `lmsysorg/sglang` base image, which brings torch, CUDA, cuDNN and Mooncake |
 | `SGLANG_BRANCH` | `sglang-miles` | The branch fetched into the base image's SGLang checkout |
 | `SGLANG_COMMIT` | empty | Empty means the branch HEAD at build time; set it to freeze one commit |
 | `MEGATRON_REPO` / `MEGATRON_BRANCH` / `MEGATRON_COMMIT` | `radixark/Megatron-LM` / `miles-main` / empty | The Megatron-LM checkout; an empty commit follows branch HEAD, while a release build supplies the locked commit |
@@ -163,7 +163,7 @@ half a day. When you need that to stop moving underneath you, pin `ci-image-tag:
 timestamped tag; the scheduled prune keeps every timestamped tag for at least 14 days.
 
 **The ROCm images move daily too.** The sgl-project/sglang nightlies rebuild the undated
-`rocm/sgl-dev:miles-rocm*-mi35x` and `miles-rocm10-mi30x` tags from Miles `main` every day and publish a dated
+`rocm/sgl-dev:miles-rocm10-mi35x` and `miles-rocm10-mi30x` tags from Miles `main` every day and publish a dated
 `-YYYYMMDD` sibling; an out-of-band rebuild is a `workflow_dispatch` on the variant you want.
 
 ## After a bump, the usual suspects

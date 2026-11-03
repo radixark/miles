@@ -407,7 +407,8 @@ class TestAnthropicRoute:
         """Tool-bearing parity pins the canonical tools spelling: the chat
         template renders tools in dict key order, so byte-identical TITO
         input_ids require the OpenAI client to write the codec's field order
-        (function.description before function.name, no extra defaults)."""
+        (sglang keeps the client's key order; the Anthropic codec writes name,
+        description, parameters, strict)."""
         anthropic_session = _create_session(anthropic_env.url)
         openai_session = _create_session(anthropic_env.url)
 
@@ -426,9 +427,10 @@ class TestAnthropicRoute:
                     {
                         "type": "function",
                         "function": {
-                            "description": "weather",
                             "name": "get_weather",
+                            "description": "weather",
                             "parameters": {"type": "object", "properties": {}},
+                            "strict": False,
                         },
                     }
                 ],

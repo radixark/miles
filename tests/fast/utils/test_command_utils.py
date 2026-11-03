@@ -997,7 +997,7 @@ class TestCreateRunId:
 
         assert len(date_part) == 6 and date_part.isdigit()
         assert len(time_part) == 6 and time_part.isdigit()
-        assert len(random_part) == 3 and random_part.isdigit()
+        assert len(random_part) == 4 and set(random_part) <= set(common._RUN_ID_SUFFIX_ALPHABET)
 
     def test_varies_within_the_same_second(self):
         """Runs launched together in one second must not share a wandb group or dump directory."""

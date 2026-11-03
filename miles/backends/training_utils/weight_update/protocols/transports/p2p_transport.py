@@ -26,13 +26,17 @@ logger = logging.getLogger(__name__)
 
 
 class NativeTransport(Protocol):
-    """What one transport library, such as Mooncake, supplies to `P2PTransport`."""
+    """What one transport library, such as Mooncake or NIXL, supplies to `P2PTransport`."""
 
+    # the --p2p-transport value, and the transport sglang tags its published transfer engine info with
     name: ClassVar[str]
     transfer_buffer_device: ClassVar[torch.device]
 
-    def connect_peer(self, transfer_engine_info: Any) -> str:
+    def connect_peer(self, transfer_engine_info: dict) -> str:
         """Returns the transport peer of the runner that published `transfer_engine_info`."""
+
+    def remove_peers(self) -> None:
+        """Forgets every peer `connect_peer` returned."""
 
     def register_tensor(self, tensor: torch.Tensor) -> Any:
         """Registers the tensor's memory with the library; returns what `unregister_tensor` takes."""
@@ -79,8 +83,14 @@ class P2PTransport:
         for executor in self._executors_by_rollout_engine_ind.values():
             executor.shutdown(wait=False, cancel_futures=True)
         self._executors_by_rollout_engine_ind = {}
+        self._native_transport.remove_peers()
         return query_remote_shards(
-            cell_updaters_of_cell_id, engine_cell_ids, assignments, runner_roles, self._native_transport.connect_peer
+            cell_updaters_of_cell_id,
+            engine_cell_ids,
+            assignments,
+            runner_roles,
+            self._native_transport.name,
+            self._native_transport.connect_peer,
         )
 
     def register_memory(self, tensor: torch.Tensor) -> None:

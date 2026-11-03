@@ -14,6 +14,7 @@ from miles.backends.training_utils.weight_update.hf_weight_iterator import Weigh
 from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
 from miles.backends.training_utils.weight_update.protocols.p2p_rollout_cell_updater import _P2PRolloutCellUpdater
 from miles.backends.training_utils.weight_update.protocols.transports.mooncake import MooncakeTransport
+from miles.backends.training_utils.weight_update.protocols.transports.nixl import NixlTransport
 from miles.backends.training_utils.weight_update.protocols.transports.p2p_transport import (
     NativeTransport,
     P2PTransport,
@@ -65,7 +66,7 @@ class _RunnerSender:
 
 
 class UpdateWeightP2P(WeightTransferProtocol):
-    """Write target and supported MTP draft weights to published GPU addresses over Mooncake."""
+    """Write target and supported MTP draft weights to published GPU addresses over Mooncake or NIXL."""
 
     def __init__(self, args: Namespace) -> None:
         super().__init__(args)
@@ -241,6 +242,8 @@ class UpdateWeightP2P(WeightTransferProtocol):
         return assign_rollout_engine_ranks(parallel_state, placement, engine_gpu_counts)
 
     def _create_native_transport(self) -> NativeTransport:
+        if self.args.p2p_transport == NixlTransport.name:
+            return NixlTransport(write_timeout=self.args.p2p_transfer_timeout)
         return MooncakeTransport()
 
     def _connect_runner(

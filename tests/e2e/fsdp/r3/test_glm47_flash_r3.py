@@ -21,8 +21,10 @@ register_ci_gate(
     metric_key="rollout/raw_reward",
     constraint={"rel_up": 0.5, "abs_floor_up": 0.12, "rel_down": 0.2, "abs_floor_down": 0.12},
 )
+register_ci_gate(metric_key="perf/actor_train_mfu")
 
 CASE = CaseConfig(
+    use_output_store=True,
     model_name="GLM-4.7-Flash",
     hf_repo="zai-org/GLM-4.7-Flash",
     num_gpus=8,

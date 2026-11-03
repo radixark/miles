@@ -21,6 +21,7 @@ register_cuda_ci(
 register_ci_gate(metric_key="train/grad_norm")
 register_ci_gate(metric_key="train/train_rollout_logprob_abs_diff")
 register_ci_gate(metric_key="train/train_rollout_kl")
+register_ci_gate(metric_key="perf/actor_train_mfu")
 
 # The trainer is text-only and never sends the vision / audio / speech towers the engine loads.
 _FROZEN_TOWERS = "visual. audio_tokenizer. input_local_transformer. speech_embeddings. projection.mlp."

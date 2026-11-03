@@ -9,8 +9,6 @@ from typing import Any
 
 import numpy as np
 import pybase64
-import sglang_router
-from packaging.version import parse
 from tqdm import tqdm
 
 from miles.rollout.base_types import GenerateFnInput, RolloutFnEvalOutput, RolloutFnTrainOutput
@@ -44,7 +42,7 @@ from miles.utils.types import Sample
 from .generate_utils.generate_endpoint_utils import (
     compute_routing_headers,
     get_indexer_topk_from_response,
-    policy_uses_routing_key,
+    router_routes_by_key,
 )
 from .generate_utils.prefill_logprobs import recompute_samples_rollout_logprobs_via_prefill
 from .generate_utils.sample_utils import reward_log_summary, sample_text_preview
@@ -399,7 +397,7 @@ async def generate_and_rm_group(
         return group
 
     # Generate a unique routing_key for each sample in the group (routing-key policies only)
-    if policy_uses_routing_key(args):
+    if router_routes_by_key(args):
         for sample in group:
             if sample.routing_key is None:
                 sample.routing_key = str(uuid.uuid4())
@@ -432,13 +430,8 @@ async def abort(args: Namespace, rollout_id: int) -> list[list[Sample]]:
     assert not state.aborted
     state.aborted = True
 
-    if parse(sglang_router.__version__) <= parse("0.2.1") or args.use_miles_router:
-        response = await get(f"http://{args.sglang_router_ip}:{args.sglang_router_port}/list_workers")
-        urls = response["urls"]
-    else:
-        response = await get(f"http://{args.sglang_router_ip}:{args.sglang_router_port}/workers")
-        urls = [worker["url"] for worker in response["workers"]]
-    urls = router_worker_base_urls(urls)
+    response = await get(f"http://{args.sglang_router_ip}:{args.sglang_router_port}/workers")
+    urls = router_worker_base_urls([worker["url"] for worker in response["workers"]])
 
     logger.info(f"Abort request for {urls}")
     abort_tasks = [post(f"{url}/abort_request", {"abort_all": True}) for url in urls]
@@ -668,7 +661,7 @@ async def eval_rollout_single_dataset(
             sample_index += 1
             sample.metadata = dataset_cfg.inject_metadata(sample.metadata)
             sample.generate_function_path = x.path if (x := dataset_cfg.custom_generate_function_path) else None
-            if policy_uses_routing_key(args):
+            if router_routes_by_key(args):
                 sample.routing_key = str(uuid.uuid4())
             sampling_params = base_sampling_params
             if args.sglang.common_value("enable_deterministic_inference"):

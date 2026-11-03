@@ -51,11 +51,16 @@ def generate_rollout(args, rollout_id, data_buffer, evaluation=False):
         token_ids, loss_mask = MASK_GENERATOR.get_loss_mask(messages, tools=tools)
 
         response_length = MASK_GENERATOR.get_response_lengths([loss_mask])[0]
+        if response_length == 0:
+            # Nothing in this sample is trained (e.g. every turn has step_loss_mask=0). Keep its last
+            # token as a zero-weight response so the sample stays well-formed; `loss_mask[-0:]` would
+            # keep the whole mask and fail the loss-mask length check.
+            response_length = 1
 
         sample.tokens = token_ids
         sample.response_length = response_length
         sample.reward = 0
-        sample.loss_mask = loss_mask[-response_length:]
+        sample.loss_mask = loss_mask[len(loss_mask) - response_length :]
 
         if i == 0 and not SAMPLE_PRINTED:
             logger.info(

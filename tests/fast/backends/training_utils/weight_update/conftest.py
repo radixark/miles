@@ -5,6 +5,7 @@ import pytest
 
 from miles.backends.training_utils.weight_update.protocols import cuda_ipc
 from miles.backends.training_utils.weight_update.protocols.cuda_ipc import UpdateWeightFromTensor
+from miles.utils.lora.utils import lora_sync_sends_base
 
 
 @pytest.fixture
@@ -14,17 +15,17 @@ def colocated_protocol(monkeypatch: pytest.MonkeyPatch) -> Callable[..., UpdateW
     monkeypatch.setattr(cuda_ipc.dist, "new_group", lambda ranks, backend: object())
 
     def create(*, backup: bool, checker: bool, offload: bool) -> UpdateWeightFromTensor:
-        return UpdateWeightFromTensor(
-            Namespace(
-                rollout_num_gpus_per_engine=1,
-                lora_rank=8,
-                lora_adapter_path=None,
-                lora_base_cpu_backup=backup,
-                lora_train_only=False,
-                colocate=True,
-                offload_rollout=offload,
-                check_weight_update_equal=checker,
-            )
+        args = Namespace(
+            rollout_num_gpus_per_engine=1,
+            lora_rank=8,
+            lora_adapter_path=None,
+            lora_base_cpu_backup=backup,
+            lora_train_only=False,
+            colocate=True,
+            offload_rollout=offload,
+            check_weight_update_equal=checker,
         )
+        args.lora_sync_sends_base = lora_sync_sends_base(args)
+        return UpdateWeightFromTensor(args)
 
     return create

@@ -1,6 +1,6 @@
 import logging
 from argparse import Namespace
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 import torch
 import torch.distributed as dist
@@ -37,6 +37,7 @@ def get_rollout_data(
     witness_info: WitnessInfo | None = None,
     *,
     train_parallel_config: TrainParallelConfig,
+    output_store_read: Callable | None = None,
 ) -> tuple[RolloutBatch, ObjectStoreGetResult]:
     parallel_state = get_parallel_state()
     # Fetch data through ray on CPU, not sure if this will be performance bottleneck.
@@ -47,6 +48,7 @@ def get_rollout_data(
         dp_rank=parallel_state.effective_dp.rank,
         train_parallel_config=train_parallel_config,
         witness_info=witness_info,
+        output_store_read=output_store_read,
     )
     # move tokens to the device in advance
     rollout_data["tokens"] = [
