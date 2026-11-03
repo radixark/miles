@@ -148,6 +148,8 @@ async def test_only_the_pinned_sdk_version_connects(client):
     assert f"client is 0.26.2, this gateway serves the tinker=={TINKER_SDK_VERSION}" in rejected.json()["error"]
     assert (await client.post("/api/v1/client/config", json={})).status_code == 400
     assert (await client.post("/api/v1/client/config", content=b"")).status_code == 400
+    newer = await client.post("/api/v1/client/config", json={"sdk_version": "0.37.0", "new_field": 1})
+    assert "client is 0.37.0" in newer.json()["error"]
 
 
 async def test_a_request_without_an_api_key_is_rejected(client):
