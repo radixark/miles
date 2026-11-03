@@ -863,6 +863,10 @@ async def test_an_overwrite_interrupted_after_adopting_a_legacy_dir_keeps_it_loa
     )
     assert (await await_settled(service, "tenant", loaded)).state == DONE
     assert service.backend.named("load_slot")[-1]["ckpt_path"] == str(Path(legacy).resolve())
+    with pytest.raises(UserInputError, match="saved before checkpoints could expire"):
+        await service.set_checkpoint_ttl("tenant", model_id, "weights/old", 7200)
+    with pytest.raises(UserInputError, match="saved before checkpoints could expire"):
+        await service.delete_checkpoint("tenant", model_id, "weights/old")
 
 
 async def test_an_overwritten_checkpoint_leaves_no_old_commit(service):

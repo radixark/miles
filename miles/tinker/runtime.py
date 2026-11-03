@@ -81,11 +81,15 @@ def take_checkpoint_root(checkpoint_root: str) -> TextIO:
     return lock
 
 
-def resolve_adapter(root: str, name: str, tenant: str, model_id: str) -> dict | None:
-    """A committed adapter's physical dir, sglang name and parametrization; None for a dir written before commits."""
+def _is_pre_commit_dir(root: str, name: str) -> bool:
     checkpoint_dir = Path(root) / name
     # by content, not by link: an overwrite interrupted after adopting a pre-commit dir leaves <name> linked to it
-    if (checkpoint_dir / "META.json").is_file() and not (checkpoint_dir / PARAMETRIZATION_FILENAME).is_file():
+    return (checkpoint_dir / "META.json").is_file() and not (checkpoint_dir / PARAMETRIZATION_FILENAME).is_file()
+
+
+def resolve_adapter(root: str, name: str, tenant: str, model_id: str) -> dict | None:
+    """A committed adapter's physical dir, sglang name and parametrization; None for a dir written before commits."""
+    if _is_pre_commit_dir(root, name):
         return None
     try:
         committed = resolve_adapter_dir(Path(root), name, tenant=tenant)
@@ -105,7 +109,10 @@ def resolve_adapter(root: str, name: str, tenant: str, model_id: str) -> dict | 
 
 def resolve_checkpoint_files(root: str, name: str, tenant: str | None) -> dict | None:
     """A committed checkpoint's physical dir, commit id and the files a client may download (not the
-    gateway-private tenant.json); None when it does not exist. ``tenant`` None skips the ownership check."""
+    gateway-private tenant.json); None when it does not exist or was written before commits. ``tenant`` None skips
+    the ownership check."""
+    if _is_pre_commit_dir(root, name):
+        return None
     try:
         committed = resolve_adapter_dir(Path(root), name, tenant=tenant)
     except AdapterOwnershipError as error:
