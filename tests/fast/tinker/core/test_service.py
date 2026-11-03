@@ -1013,6 +1013,18 @@ async def test_a_stopping_dispatcher_waits_for_pending_cleanups(tmp_path):
                 await run_task
 
 
+async def test_an_overwrite_onto_a_foreign_link_is_a_user_error(service, tmp_path):
+    model_id = await created_model(service)
+    weights = Path(resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "weights", "ck")).parent
+    weights.mkdir(parents=True)
+    (weights / "ck").symlink_to(tmp_path / "shared_adapter")
+    payload = {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": True, "ttl_seconds": None}
+    failed = await await_settled(service, "tenant", service.submit("tenant", "save_state", payload))
+    assert failed.state == FAILED and "did not write" in failed.error
+    payload = {"model_id": model_id, "seq_id": 2, "name": "other", "overwrite": False, "ttl_seconds": None}
+    assert (await await_settled(service, "tenant", service.submit("tenant", "save_state", payload))).state == DONE
+
+
 @pytest.mark.parametrize("source", ["handler", "worker", "create", "sweep", "export", "load"])
 async def test_an_unknown_failure_stops_the_dispatcher(tmp_path, source):
     from tests.fast.tinker.harness import make_service
@@ -1331,7 +1343,7 @@ async def test_a_failed_external_commit_fails_the_request_not_the_gateway(servic
     model_id = await created_model(service)
     commit = service.backend.commit_adapter
 
-    def full_disk(*args):
+    def full_disk(*args, **kwargs):
         raise OSError(28, "No space left on device")
 
     monkeypatch.setattr(service.backend, "commit_adapter", full_disk)

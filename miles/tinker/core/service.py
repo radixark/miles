@@ -481,6 +481,9 @@ class TinkerService:
             # the commit can fail before or after its link swap; only the old commit keeps the old expiry
             if old_expires_at is not None and self._live_commit_id(root, name) == old_commit_id:
                 self.expiry.restore(tinker_path, old_expires_at)
+            if isinstance(error, ValueError):
+                # the commit refuses to replace a link it did not write (e.g. an operator's link to a shared adapter)
+                raise UserInputError(f"cannot commit checkpoint {name!r}: {error}") from None
             if not isinstance(error, OSError):
                 raise
             # a storage failure loses only this save; the trainer and other tenants are unaffected
@@ -571,6 +574,9 @@ class TinkerService:
         # the commit's recovery walk and fsyncs hit shared storage; keep the event loop serving
         try:
             await asyncio.to_thread(self.backend.commit_adapter, root, version, written, overwrite=False)
+        except ValueError as error:
+            # the commit refuses to replace a link it did not write (e.g. an operator's link to a shared adapter)
+            raise UserInputError(f"cannot commit sampler weights {version!r}: {error}") from None
         except OSError as error:
             # a storage failure loses only this export; the trainer and other tenants are unaffected
             return {"error": f"cannot commit sampler weights {version!r}: {error}", "error_category": "server"}
@@ -661,7 +667,7 @@ class TinkerService:
         if isinstance(written, dict):
             return written
         try:
-            await asyncio.to_thread(self.backend.commit_adapter, root, name, written, False)
+            await asyncio.to_thread(self.backend.commit_adapter, root, name, written, overwrite=False)
         except OSError as error:
             # e.g. a full disk: the trainer is healthy, so only this save fails
             return {"error": f"could not commit external weights {name!r}: {error}", "error_category": "server"}
