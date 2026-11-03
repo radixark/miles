@@ -80,6 +80,7 @@ def test_convert_save_is_refused_outside_bridge_single_lora(tmp_path, train_back
         lora_adapter_convert_save=str(tmp_path / "converted"),
         train_backend=train_backend,
         megatron_to_hf_mode=megatron_to_hf_mode,
+        debug_rollout_only=False,
     )
     with pytest.raises(AssertionError, match="--lora-adapter-convert-save is implemented only"):
         validate_lora_args(args)
@@ -98,6 +99,7 @@ def test_convert_save_refuses_an_existing_destination(tmp_path):
         train_backend="megatron",
         megatron_to_hf_mode="bridge",
         indep_dp=False,
+        debug_rollout_only=False,
     )
     with pytest.raises(AssertionError, match="already exists"):
         validate_lora_args(args)
@@ -126,6 +128,7 @@ def test_convert_save_is_refused_under_indep_dp(tmp_path):
         train_backend="megatron",
         megatron_to_hf_mode="bridge",
         indep_dp=True,
+        debug_rollout_only=False,
     )
     with pytest.raises(AssertionError, match="does not support --indep-dp"):
         validate_lora_args(args)
@@ -166,6 +169,29 @@ def test_a_relative_convert_save_is_made_absolute_on_the_driver(tmp_path, monkey
     with pytest.raises(AssertionError, match="--debug-rollout-only"):
         validate_lora_args(args)
     assert args.lora_adapter_convert_save == os.path.join(os.getcwd(), "converted")
+
+
+def test_a_relative_adapter_path_is_made_absolute_before_alpha_is_resolved(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "source").mkdir()
+    (tmp_path / "source" / "adapter_config.json").write_text(json.dumps({"r": 8, "lora_alpha": 32}))
+    args = Namespace(
+        lora_type="lora",
+        multi_lora_n_adapters=0,
+        lora_rank=8,
+        lora_alpha=None,
+        lora_adapter_path="source",
+        lora_adapter_convert_save=str(tmp_path / "converted"),
+        train_backend="megatron",
+        megatron_to_hf_mode="bridge",
+        indep_dp=True,
+        debug_rollout_only=False,
+    )
+    # --indep-dp stops validation right after alpha is resolved
+    with pytest.raises(AssertionError, match="does not support --indep-dp"):
+        validate_lora_args(args)
+    assert args.lora_adapter_path == os.path.join(os.getcwd(), "source")
+    assert args.lora_alpha == 32
 
 
 def test_multi_lora_refuses_an_adapter_path():

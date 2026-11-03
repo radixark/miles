@@ -47,6 +47,10 @@ def validate_lora_args(args):
     ), "--lora-adapter-convert-save converts --lora-adapter-path"
     if not is_lora_enabled(args):
         return
+    # the trainer actors load it from their own working directory, which need not be the driver's that resolves
+    # alpha; only engines alone may be given a hub id
+    if args.lora_adapter_path is not None and not args.debug_rollout_only:
+        args.lora_adapter_path = os.path.abspath(args.lora_adapter_path)
     args.lora_alpha = _resolve_lora_alpha(args)
     if args.lora_adapter_convert_save is not None:
         assert args.train_backend == "megatron" and args.megatron_to_hf_mode == "bridge" and not args.multi_lora, (
