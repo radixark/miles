@@ -68,7 +68,14 @@ def gloo_group():
     return get_gloo_group() if dist.is_initialized() else None
 
 
+class RanksFailedError(RuntimeError):
+    pass
+
+
 def raise_if_any_rank_failed(error: BaseException | None) -> None:
+    if isinstance(error, RanksFailedError):
+        # every rank raised it from the same agreement; gathering it again would nest N copies of it
+        raise error
     errors = [error]
     if dist.is_initialized():
         errors = [None] * dist.get_world_size()
@@ -76,10 +83,15 @@ def raise_if_any_rank_failed(error: BaseException | None) -> None:
         dist.all_gather_object(
             errors, None if error is None else f"{type(error).__name__}: {error}", group=gloo_group()
         )
-    failed = [(rank, e) for rank, e in enumerate(errors) if e is not None]
-    if failed:
-        message = "adapter checkpoint failed: " + "; ".join(f"rank {rank}: {e}" for rank, e in failed)
-        raise RuntimeError(message) from error
+    ranks_by_error = {}
+    for rank, e in enumerate(errors):
+        if e is not None:
+            ranks_by_error.setdefault(str(e), []).append(str(rank))
+    if ranks_by_error:
+        message = "adapter checkpoint failed: " + "; ".join(
+            f"rank {','.join(ranks)}: {e}" for e, ranks in ranks_by_error.items()
+        )
+        raise RanksFailedError(message) from error
 
 
 def _agree_on_step(step: int | None) -> int:

@@ -227,8 +227,12 @@ def load_adapter_dir(
             error = exc
         raise_if_any_rank_failed(error)
         # same parametrization: every rank reads only its own pieces, and moments only when it loads them
-        weights = [torch.empty(s.local_shape) for s in specs]
-        moments = [[torch.empty(s.local_shape) for s in specs] for _ in range(2)] if load_optimizer else [[], []]
+        weights = [torch.empty(s.local_shape, dtype=torch.float32) for s in specs]
+        moments = (
+            [[torch.empty(s.local_shape, dtype=torch.float32) for s in specs] for _ in range(2)]
+            if load_optimizer
+            else [[], []]
+        )
         state = AdapterState(specs, weights, *moments, step=None, has_optimizer_state=load_optimizer)
         state.step = reader.load_state(state)
         if not load_optimizer:

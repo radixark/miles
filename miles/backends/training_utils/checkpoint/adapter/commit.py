@@ -127,7 +127,7 @@ def commit_adapter_dir(
     if _link_target(link) == written.path:
         # a retry after the link swap; the commit already stands
         return CommittedAdapterDir(written.path, written.commit_id)
-    if not overwrite and (link.is_dir() or link.is_symlink()):
+    if not overwrite and os.path.lexists(link):
         _rmtree(written.path)
         raise FileExistsError(f"adapter {name!r} already exists")
     if link.is_dir() and not link.is_symlink():
@@ -161,6 +161,8 @@ def resolve_adapter_dir(root: Path, name: str, *, tenant: str | None) -> Committ
     """The committed directory behind ``name``; ``tenant`` must own it. RL, which has no tenants, passes None."""
     _assert_user_name(name)
     target = _link_target(Path(root) / name)
+    if target is not None and not _is_library_dir(Path(root), name, target):
+        raise _foreign_link_error(Path(root) / name, target)
     if target is None or not target.is_dir():
         return None
     if tenant is not None:
@@ -183,9 +185,6 @@ def _foreign_link_error(link: Path, target: Path) -> ValueError:
 
 
 def delete_adapter_dir(root: Path, name: str, *, tenant: str | None) -> None:
-    target = _link_target(Path(root) / name)
-    if target is not None and not _is_library_dir(Path(root), name, target):
-        raise _foreign_link_error(Path(root) / name, target)
     committed = resolve_adapter_dir(root, name, tenant=tenant)
     if committed is None:
         raise FileNotFoundError(f"adapter {name!r} does not exist")
@@ -194,7 +193,7 @@ def delete_adapter_dir(root: Path, name: str, *, tenant: str | None) -> None:
 
 
 def delete_unreferenced_adapter_dirs(root: Path, name: str | None = None, *, keep: str | None = None) -> None:
-    """Remove physical directories no link in ``root`` points to, retired directories and dangling links.
+    """Remove physical directories no link in ``root`` points to, retired directories and dangling links to them.
 
     Referenced-ness is decided by the links, not by name prefixes, so recovering ``foo`` never touches ``foo.bar``.
     """
@@ -221,7 +220,8 @@ def delete_unreferenced_adapter_dirs(root: Path, name: str | None = None, *, kee
                 entry.unlink()
         elif _link_target(entry).exists():
             referenced.add(_link_target(entry).name)
-        elif name is None or entry.name == name:
+        elif (name is None or entry.name == name) and _is_library_dir(root, entry.name, _link_target(entry)):
+            # a dangling foreign link (e.g. to an unmounted share) is the user's, like a live one
             entry.unlink()
     for entry in root.iterdir():
         internal = _INTERNAL_ENTRY.match(entry.name)
