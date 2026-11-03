@@ -1752,6 +1752,8 @@ async def test_a_hard_link_on_another_filesystem_is_importable(tmp_path):
             "reaches a tinker:// checkpoint",
         ),
         (lambda adapter, tmp_path: (adapter / "META.json").write_text("{"), "cannot read"),
+        # json raises RecursionError, not ValueError, on deep nesting
+        (lambda adapter, tmp_path: (adapter / "META.json").write_text("[" * 100_000), "cannot read"),
         (lambda adapter, tmp_path: (adapter / "META.json").write_text(json.dumps({"lora_rank": 8})), None),
         # opening a FIFO blocks until a writer appears
         (lambda adapter, tmp_path: os.mkfifo(adapter / "META.json"), "not a regular file"),

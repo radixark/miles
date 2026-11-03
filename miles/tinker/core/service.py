@@ -633,7 +633,7 @@ class TinkerService:
             raise UserInputError(f"{uri} is outside the import root {self.config.import_root}")
         try:
             _check_import_tree(uri, path, root, self.config.checkpoint_root)
-        except (OSError, ValueError) as error:
+        except (OSError, ValueError, RecursionError) as error:
             # a tenant's unreadable import must not stop the gateway
             raise UserInputError(f"cannot read {uri}: {error}") from None
         return path
