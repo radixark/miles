@@ -154,8 +154,9 @@ def _restore(tmp_path, *, dcp_step=None, training_state=None, **flags):
     for name, value in flags.items():
         setattr(backend if hasattr(backend, name) else args, name, value)
     trainer = _Trainer()
+    slots = MagicMock()
     with (
-        patch.object(lora_checkpoint, "_torchtitan_adapter_slots", return_value=MagicMock()),
+        patch.object(lora_checkpoint, "_torchtitan_adapter_slots", return_value=slots),
         patch.object(lora_checkpoint, "load_adapter_dir", side_effect=load_adapter_dir),
         patch.object(lora_checkpoint, "read_training_state", return_value=training_state),
         patch.object(lora_checkpoint, "load_lr_schedulers") as load_lr_schedulers,
@@ -163,7 +164,13 @@ def _restore(tmp_path, *, dcp_step=None, training_state=None, **flags):
     ):
         iteration = TorchtitanLoraCheckpoint(trainer, args, _STEPS_PER_ROLLOUT).restore()
     lr_states = [call.args[1] for call in load_lr_schedulers.call_args_list]
-    return SimpleNamespace(iteration=iteration, step=trainer.step, lr_states=lr_states, save=save)
+    return SimpleNamespace(
+        iteration=iteration,
+        step=trainer.step,
+        lr_states=lr_states,
+        save=save,
+        base_model=slots.parametrization.call_args.kwargs["base_model"],
+    )
 
 
 @pytest.mark.parametrize("step", [6, 11 * _STEPS_PER_ROLLOUT + 1])
@@ -237,6 +244,18 @@ def test_a_torchtitan_adapter_dir_off_this_runs_rollout_grid_is_refused(tmp_path
     """Saved at 2 steps per rollout: its iteration-9 schedule would sit at rollout 5 of this run's 4."""
     with pytest.raises(AssertionError, match="at step 20 after iteration 9, but this run takes 4 steps per rollout"):
         _restore(tmp_path, training_state={"iteration": 9, "step": 20, "lr_scheduler": {"last_epoch": 20}})
+
+
+def test_a_dir_records_the_base_its_path_resolves_to_at_save(tmp_path):
+    """A --hf-checkpoint symlink repointed at another base after the save must not let the adapter load onto it."""
+    (tmp_path / "v1").mkdir()
+    (tmp_path / "v2").mkdir()
+    (tmp_path / "cur").symlink_to(tmp_path / "v1")
+    saved = _restore(tmp_path, hf_checkpoint=str(tmp_path / "cur")).base_model
+    (tmp_path / "cur").unlink()
+    (tmp_path / "cur").symlink_to(tmp_path / "v2")
+    resumed = _restore(tmp_path, hf_checkpoint=str(tmp_path / "cur")).base_model
+    assert (saved, resumed) == (str((tmp_path / "v1").resolve()), str((tmp_path / "v2").resolve()))
 
 
 def test_a_megatron_adapter_dir_resumes_the_schedule_after_its_rollout(tmp_path):

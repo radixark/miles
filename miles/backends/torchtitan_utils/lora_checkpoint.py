@@ -10,6 +10,7 @@ The fp32 parameters are their own masters; AdamW keeps ``exp_avg`` / ``exp_avg_s
 one ``step`` per parameter.
 """
 
+import os
 from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
@@ -382,8 +383,12 @@ class TorchtitanLoraCheckpoint:
         self.members = TorchtitanOptimizerMembers(
             self.slots, trainer.optimizers.optimizers, save_moments=not args.backend.no_save_optim
         )
+        base_model = args.hf_checkpoint
+        # the base as saved, as Megatron records it: a path later repointed at another model must not match it
+        if os.path.exists(base_model):
+            base_model = os.path.realpath(base_model)
         self.run = self.slots.parametrization(
-            base_model=args.hf_checkpoint,
+            base_model=base_model,
             lora_rank=args.lora_rank,
             lora_alpha=args.lora_alpha,
             lora_type=args.lora_type,
