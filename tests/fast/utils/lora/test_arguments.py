@@ -126,6 +126,12 @@ def test_a_non_adam_optimizer_saves_and_loads_the_masters_alone(overrides) -> No
     _validate_adapter_state_args(_adapter_state_args(no_save_optim=True, **overrides))
 
 
+@pytest.mark.parametrize("optimizer", ["muon", "dist_muon", "lion"])
+def test_an_optimizer_other_than_adam_or_sgd_cannot_save_the_adapter(optimizer) -> None:
+    with pytest.raises(AssertionError, match=f"adam or sgd; got --optimizer {optimizer}"):
+        _validate_adapter_state_args(_adapter_state_args(optimizer=optimizer, no_save_optim=True))
+
+
 @pytest.mark.parametrize("train_backend, megatron_to_hf_mode", [("torchtitan", "bridge")], ids=["torchtitan"])
 def test_convert_save_is_refused_outside_megatron_single_lora(tmp_path, train_backend, megatron_to_hf_mode):
     args = Namespace(

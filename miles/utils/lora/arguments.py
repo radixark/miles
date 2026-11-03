@@ -173,12 +173,16 @@ def validate_lora_args_after_megatron(args):
 
 def _validate_adapter_state_args(args) -> None:
     """adapter_state/ holds Adam's fp32 master, fp32 moments and step, gathered whole per DP group over Gloo; without
-    optimizer state, the fp32 masters of any optimizer."""
+    optimizer state, SGD's fp32 masters."""
     if args.save is None and args.lora_adapter_path is None:
         return
     assert not args.debug_disable_optimizer, (
         "--save / --lora-adapter-path store and load the adapter's fp32 optimizer masters, which "
         "--debug-disable-optimizer does not build; drop one of them"
+    )
+    # other optimizers (Muon, ...) keep masters the adapter checkpoint cannot find
+    assert args.optimizer in ("adam", "sgd"), (
+        f"--save / --lora-adapter-path support --optimizer adam or sgd; got --optimizer {args.optimizer}"
     )
     saves_optimizer = args.save is not None and not args.no_save_optim
     loads_optimizer = args.lora_adapter_path is not None and not args.no_load_optim
