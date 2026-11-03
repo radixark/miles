@@ -215,8 +215,11 @@ def resolve_adapter_targets(
     return spec.linear_attention.served_targets(selected or hf_targets, hf_targets)
 
 
-def validate_native_lora_args(args) -> None:
-    """Reject run configurations native LoRA has not been validated with; needs Megatron's resolved args."""
+def validate_native_lora_args(args, hf_modules: list[str]) -> None:
+    """Reject run configurations native LoRA has not been validated with; needs Megatron's resolved args.
+
+    ``hf_modules`` are the checkpoint's HF module names.
+    """
     assert not args.overlap_param_gather, (
         "native LoRA does not support --overlap-param-gather: sibling-module adapter attachment has not "
         "been validated against MCore's bucket prefetch ordering."
@@ -233,7 +236,7 @@ def validate_native_lora_args(args) -> None:
     assert (
         spec.experts is None or args.expert_tensor_parallel_size == 1
     ), f"native {spec.name} expert LoRA assumes --expert-tensor-parallel-size 1"
-    if spec.lm_head is not None and _selects_head(spec, args.hf_checkpoint, args.hf_lora_targets):
+    if spec.lm_head is not None and _selects_head(spec, hf_modules, args.hf_lora_targets):
         if isinstance(spec.lm_head, LMHeadSpec):
             assert args.vocab_size is not None, "native LoRA's lm_head adapter exports over --vocab-size; set it"
         assert not args.enable_mtp_training, (
@@ -247,16 +250,9 @@ def validate_native_lora_args(args) -> None:
         )
 
 
-def _selects_head(spec: LoRAArchSpec, hf_checkpoint: str, hf_targets: list[str]) -> bool:
+def _selects_head(spec: LoRAArchSpec, hf_modules: list[str], hf_targets: list[str]) -> bool:
     """Whether the targets reach the output head; a glob like ``*head`` names it only through the HF modules."""
-    from miles.utils.hf_utils.config import load_hf_config
-    from miles.utils.hf_utils.weight_mapping import HfWeightMapping
-
-    modules = [
-        name.removesuffix(".weight")
-        for name in HfWeightMapping.from_config(load_hf_config(hf_checkpoint)).parameter_names
-    ]
-    selected = [module for module in modules if any(matches_lora_target(module, target) for target in hf_targets)]
+    selected = [module for module in hf_modules if any(matches_lora_target(module, target) for target in hf_targets)]
     return any(spec.adapts_head(name) for name in selected + hf_targets)
 
 
