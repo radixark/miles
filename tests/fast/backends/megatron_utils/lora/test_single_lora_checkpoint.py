@@ -6,11 +6,14 @@ from unittest.mock import DEFAULT, MagicMock, patch
 
 import pytest
 import torch
+from megatron.core.optimizer.cpu_offloading.hybrid_optimizer import HybridDeviceOptimizer
 
 from megatron.core.optimizer import DistributedOptimizer
 
 from miles.backends.megatron_utils.lora.checkpoint import (
     DistributedOptimizerMembers,
+    _distributed_optimizer_step,
+    _set_distributed_optimizer_step,
     restore_single_lora,
     single_lora_parametrization,
 )
@@ -145,3 +148,32 @@ def test_a_restore_keeps_the_state_of_elements_no_checkpoint_holds():
     assert world["param"].tolist() == [5.0, 5.0, 5.0, 1.0]
     assert world["exp_avg"].tolist() == [6.0, 6.0, 6.0, 2.0]
     assert world["exp_avg_sq"].tolist() == [7.0, 7.0, 7.0, 3.0]
+
+
+def _offloaded_optimizer(*, offloaded: bool) -> tuple[HybridDeviceOptimizer, torch.nn.Parameter, torch.nn.Parameter]:
+    """An HDO with one GPU-resident parameter and, if ``offloaded``, one host one; built without CUDA."""
+    host, device = torch.nn.Parameter(torch.zeros(2)), torch.nn.Parameter(torch.zeros(2))
+    hdo = HybridDeviceOptimizer.__new__(HybridDeviceOptimizer)
+    hdo.cpu_optimizers = [torch.optim.AdamW([host])] if offloaded else []
+    # stands in for TE FusedAdam, which keeps its step in the param group
+    hdo.gpu_optimizer = torch.optim.SGD([device], lr=0.1)
+    hdo.defaults = {"cpu_optimizer_cls": torch.optim.AdamW}
+    hdo.param_update_in_fp32 = False
+    hdo.inner_param_to_orig_param = {host: host, device: device}
+    hdo.state = {host: {"exp_avg": torch.zeros(2)}, device: {}} if offloaded else {device: {}}
+    return hdo, host, device
+
+
+def test_a_rank_whose_offloaded_shard_is_all_on_the_gpu_exports_the_gpu_optimizers_step():
+    hdo, _, _ = _offloaded_optimizer(offloaded=False)
+    hdo.gpu_optimizer.param_groups[0]["step"] = 3
+    assert _distributed_optimizer_step(SimpleNamespace(optimizer=hdo)) == 3
+
+
+def test_restoring_the_step_of_an_offloaded_optimizer_reaches_its_gpu_sub_optimizer():
+    hdo, host, _ = _offloaded_optimizer(offloaded=True)
+    sub = SimpleNamespace(optimizer=hdo)
+    _set_distributed_optimizer_step(sub, 5)
+    assert hdo.gpu_optimizer.param_groups[0]["step"] == 5
+    assert hdo.cpu_optimizers[0].state[host]["step"] == hdo.state[host]["step"] == 5
+    assert _distributed_optimizer_step(sub) == 5

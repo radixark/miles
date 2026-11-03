@@ -6,7 +6,7 @@ GDN in_proj, per-expert names) comes from Bridge's own export, run once on index
 
 import bisect
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from itertools import groupby
 from typing import Literal
 
@@ -171,6 +171,9 @@ def probe_bridge_row_mapping(
                     decode(name, tensor)
                 except Exception as exc:
                     error = exc
+    except Exception as exc:
+        # the export's own failure goes through the rank agreement too, so the other ranks fail instead of waiting
+        error = exc
     finally:
         for param, data in zip(params, saved, strict=True):
             param.data = data
@@ -187,9 +190,17 @@ def probe_bridge_row_mapping(
                 for key, by_expert in per_expert.items()
                 for piece in _stack_experts(key, by_expert, num_experts[key])
             ]
-            # the library stores a shared A once, under the group's first member
-            shared_copies = {f"{member}.lora_A" for group in groups for member in group[1:]}
-            pieces = [p for p in pieces if p.key not in shared_copies]
+            # a group's A pieces are copies of one parameter; the library stores it once, under the group's first
+            # member, which a fused module's A need not have been decoded under
+            for group in groups:
+                a_keys = {f"{member}.lora_A" for member in group}
+                held = [p.key for p in pieces if p.key in a_keys]
+                assert held, f"{group}: this rank holds no piece of the shared A"
+                pieces = [
+                    replace(p, key=f"{group[0]}.lora_A") if p.key == held[0] else p
+                    for p in pieces
+                    if p.key not in a_keys or p.key == held[0]
+                ]
             covered = torch.zeros(total, dtype=torch.bool)
             for piece in pieces:
                 covered[piece.local_elements.flatten()] = True
