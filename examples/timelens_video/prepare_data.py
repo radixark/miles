@@ -86,11 +86,15 @@ def eval_rows(name: str, limit: int):
     bench = json.load(open(ROOT / "TimeLens-Bench" / f"{name}-timelens.json"))
     rows = []
     for vid, item in bench.items():
-        video = ROOT / "TimeLens-Bench" / "videos" / name / name / f"{vid}.mp4"
+        # The layout the official README's extraction produces: TimeLens-Bench/videos/<dataset>/<vid>.mp4.
+        video = ROOT / "TimeLens-Bench" / "videos" / name / f"{vid}.mp4"
         for query, span in zip(item["queries"], item["spans"], strict=True):
-            rows.append({"query": parse_query(query), "video": str(video), "span": list(span)})
+            rows.append({"query": parse_query(query), "video": str(video.resolve()), "span": list(span)})
     random.Random(0).shuffle(rows)
-    return rows[:limit]
+    rows = rows[:limit]
+    missing = [r for r in rows if not Path(r["video"]).is_file()]
+    assert not missing, f"{len(missing)} eval videos are missing, e.g. {missing[0]['video']}"
+    return rows
 
 
 if __name__ == "__main__":

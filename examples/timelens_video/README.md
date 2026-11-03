@@ -16,7 +16,7 @@ in the background (`--multimodal-token-space-processing`).
 hf download --repo-type dataset TencentARC/TimeLens-Bench --local-dir /root/datasets/timelens/TimeLens-Bench
 hf download --repo-type dataset JungleGym/TimeLens-Qwen3-VL-8B-filter-data --local-dir /root/datasets/timelens/filter-data
 hf download --repo-type dataset TencentARC/TimeLens-100K --local-dir /root/datasets/timelens/TimeLens-100K
-# unpack the video shards of TimeLens-100K into TimeLens-100K/videos, then:
+# unpack each dataset's video_shards/*.tar.gz into <dataset>/videos as the TimeLens README does, then:
 python examples/timelens_video/prepare_data.py /root/datasets/timelens
 ```
 
