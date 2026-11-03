@@ -1,5 +1,4 @@
-"""The row-mapping probe recovers each rank's HF pieces, primaries and shared A from an export alone; a Megatron-Bridge
-run_config.yaml is accepted only when it trained the LoRA this run trains."""
+"""Bridge row-mapping probe and the run_config.yaml match."""
 
 import pytest
 import torch
@@ -126,20 +125,41 @@ def test_a_bridge_run_config_of_the_same_lora_is_accepted():
 
 
 @pytest.mark.parametrize(
-    "peft, match",
+    "section, fields, match",
     [
-        ({"_target_": "megatron.bridge.peft.dora.DoRA"}, "neither LoRA nor CanonicalLoRA"),
-        ({"_target_": "megatron.bridge.peft.canonical_lora.CanonicalLoRA"}, "lora_type='canonical_lora'"),
-        ({"dim": 16}, "lora_rank=16"),
-        ({"dropout": 0.1}, "dropout"),
-        ({"share_expert_adapters": True}, "share_expert_adapters"),
-        ({"lora_dtype": {"_target_": "torch.float32", "_call_": False}}, "lora_dtype"),
-        ({"normalize_moe_lora": True}, "normalize_moe_lora"),
+        ("peft", {"_target_": "megatron.bridge.peft.dora.DoRA"}, "neither LoRA nor CanonicalLoRA"),
+        ("peft", {"_target_": "megatron.bridge.peft.canonical_lora.CanonicalLoRA"}, "lora_type='canonical_lora'"),
+        ("peft", {"dim": 16}, "lora_rank=16"),
+        ("peft", {"dropout": 0.1}, "dropout"),
+        ("peft", {"share_expert_adapters": True}, "share_expert_adapters"),
+        ("peft", {"lora_dtype": {"_target_": "torch.float32", "_call_": False}}, "lora_dtype"),
+        ("peft", {"normalize_moe_lora": True}, "normalize_moe_lora"),
+        ("peft", {"exclude_modules": ["linear_fc1"]}, "exclude_modules"),
+        ("peft", {"a2a_experimental": True}, "a2a_experimental"),
+        ("optimizer", {"use_precision_aware_optimizer": True}, "precision-aware"),
+        ("optimizer", {"main_params_dtype": {"_target_": "torch.float16", "_call_": False}}, "main_params_dtype"),
+        ("checkpoint", {"save_optim": False}, "saved no optimizer state"),
+    ],
+    ids=[
+        "dora",
+        "canonical_lora",
+        "rank",
+        "dropout",
+        "shared_expert_adapters",
+        "lora_dtype",
+        "normalize_moe_lora",
+        "exclude_modules",
+        "a2a_experimental",
+        "precision_aware_optimizer",
+        "main_params_dtype",
+        "no_saved_optimizer",
     ],
 )
-def test_a_bridge_run_config_of_another_lora_is_refused(peft, match):
+def test_an_unsupported_bridge_run_config_is_refused(section, fields, match):
+    config = _bridge_config()
+    config[section] |= fields
     with pytest.raises(AssertionError, match=match):
-        assert_bridge_run_config_matches(_bridge_config(**peft), _run(), params_dtype=torch.bfloat16, load_optimizer=False)
+        assert_bridge_run_config_matches(config, _run(), params_dtype=torch.bfloat16, load_optimizer=True)
 
 
 def test_share_expert_adapters_defaults_to_bridge_behaviour_and_matters_only_for_per_expert_adapters():
