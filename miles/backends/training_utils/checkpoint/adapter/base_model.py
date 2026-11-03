@@ -24,6 +24,10 @@ def is_fingerprint_tensor(name: str) -> bool:
     return name.endswith("norm.weight") or _FIRST_LAYER_ATTENTION_WEIGHT.search(name) is not None
 
 
+# safetensors dtype names; FP8 and the integer containers of MXFP4 / int quantization are left out
+_UNQUANTIZED_DTYPES = {"F16", "BF16", "F32", "F64"}
+
+
 def hf_fingerprint_tensors(hf_dir: Path) -> dict[str, torch.Tensor]:
     """The fingerprint tensors an HF dir holds unquantized: a quantized copy of the base (FP8, MXFP4) compares by
     the tensors quantization leaves alone."""
@@ -35,9 +39,8 @@ def hf_fingerprint_tensors(hf_dir: Path) -> dict[str, torch.Tensor]:
     for file in files:
         with safe_open(str(hf_dir / file), "pt") as f:
             for name in f.keys():
-                if is_fingerprint_tensor(name) and (tensor := f.get_tensor(name)).is_floating_point():
-                    if tensor.element_size() > 1:
-                        tensors[name] = tensor
+                if is_fingerprint_tensor(name) and f.get_slice(name).get_dtype() in _UNQUANTIZED_DTYPES:
+                    tensors[name] = f.get_tensor(name)
     return tensors
 
 
