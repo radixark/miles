@@ -5,6 +5,7 @@ import torch.distributed as dist
 from tests.fast.dist_utils import init_gloo, run_multiprocess
 
 from miles.backends.megatron_utils.lora.bridge_checkpoint import probe_bridge_row_mapping
+from miles.utils.distributed_utils import init_gloo_group
 from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
 
 Q, K = "model.layers.0.self_attn.q_proj", "model.layers.0.self_attn.k_proj"
@@ -28,6 +29,7 @@ def _export(params):
 
 def _probe(rank, world_size, port):
     init_gloo(rank, world_size, port=port)
+    init_gloo_group()
     params = [
         torch.nn.Parameter(torch.randn(3, 5)),
         torch.nn.Parameter(torch.randn(2, 3)),
@@ -73,6 +75,7 @@ def _expert_export(params):
 
 def _probe_experts(rank, world_size, port):
     init_gloo(rank, world_size, port=port)
+    init_gloo_group()
     params = [torch.nn.Parameter(torch.randn(2, 4, 5)), torch.nn.Parameter(torch.randn(2, 6, 4))]
     mapping = probe_bridge_row_mapping(params, lambda: _expert_export(params), TARGETS)
     gate, up = GATE.format("x").replace(".x.", "."), UP.format("x").replace(".x.", ".")
