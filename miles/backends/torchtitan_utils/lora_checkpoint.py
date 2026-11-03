@@ -76,7 +76,7 @@ def probe_torchtitan_row_mapping(
         for hf_key, codes in named:
             if (mine := codes >= 0).any():
                 box = rectangle(hf_key, mine)
-                pieces.append(HfPiece(hf_key, tuple(codes.shape), tuple(s.start for s in box), codes[box]))
+                pieces.append(HfPiece(hf_key, tuple(codes.shape), tuple(s.start for s in box), codes[box].clone()))
     covered = torch.zeros(start, dtype=torch.bool)
     for piece in pieces:
         covered[piece.local_elements.flatten()] = True
