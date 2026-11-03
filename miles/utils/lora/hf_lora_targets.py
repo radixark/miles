@@ -340,6 +340,11 @@ _HF_LORA_MODELS = {
 }
 
 
+def has_hf_lora_targets(hf_config: dict) -> bool:
+    """Explicit --target-modules train any family; the adapter checkpoint and export need its layout."""
+    return hf_config["model_type"] in _HF_LORA_MODELS
+
+
 def get_hf_lora_targets(hf_config: dict) -> HfLoraTargets:
     model_type = hf_config["model_type"]
     assert model_type in _HF_LORA_MODELS, f"HF LoRA target layout is not defined for model_type={model_type!r}"
