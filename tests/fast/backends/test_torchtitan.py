@@ -418,6 +418,18 @@ def test_lora_resumes_only_through_the_adapter_path(tmp_path):
     assert (base.initial_load_path, base.initial_load_model_only, base.initial_load_in_hf) == (None, True, True)
 
 
+@pytest.mark.parametrize("dynamic, steps", [(False, 4), (True, 1)])
+def test_a_dynamic_global_batch_is_one_step_per_rollout(dynamic, steps):
+    """The LR schedule length and the adapter dirs' step grid count optimizer steps per rollout."""
+    pytest.importorskip("torchtitan")
+    from miles.backends.torchtitan_utils.actor import _steps_per_rollout
+
+    args = SimpleNamespace(
+        rollout_batch_size=8, n_samples_per_prompt=4, global_batch_size=8, use_dynamic_global_batch_size=dynamic
+    )
+    assert _steps_per_rollout(args) == steps
+
+
 def test_routing_replay_hooks_the_router_where_it_picks_experts():
     """routing_replay swaps TokenChoiceTopKRouter._select_experts per router; that only replays the routing if the
     upstream forward still looks the method up on the instance and gathers its scores from the returned ids."""
