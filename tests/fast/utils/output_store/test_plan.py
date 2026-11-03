@@ -15,6 +15,7 @@ from miles.utils.output_store.plan import (
     MASK_LENGTHS,
     MASK_SUPPORT_LOGPROBS,
     MASK_TOKEN_IDS,
+    ForwardSegments,
     IndexerTopkSegments,
     RoutedExpertsSegments,
     RowRead,
@@ -350,6 +351,20 @@ def seq_rows_of(name: str, *segs: tuple[str | None, int, int], rows: int = 6):
     """Segments over objects that each hold ``rows`` forward rows."""
     cls = {cls.name: cls for cls in FIELDS}[name]
     return cls(tuple(Seg(None if key is None else ref(key, seq_rows=rows), start, end) for key, start, end in segs))
+
+
+def read_rows(segments: ForwardSegments, objects: dict) -> np.ndarray:
+    """All of a sample's rows from ``objects``, read through ``range_reads`` as replay reads a rank's rows."""
+    dtype, row_shape = segments.row_format()
+    (name,) = segments.stored
+    rows = np.empty((segments.num_rows(), *row_shape), dtype=dtype)
+    dst = rows.reshape(-1).view(np.uint8)
+    reads, pads = segments.range_reads([(0, segments.num_rows())], dst_offset=0)
+    assert pads == []
+    for read in reads:
+        src = np.ascontiguousarray(objects[read.ref.key][name]).reshape(-1).view(np.uint8)
+        dst[read.dst_offset : read.dst_offset + read.nbytes] = src[read.src_offset : read.src_offset + read.nbytes]
+    return rows
 
 
 class TestMaterializeForward:
