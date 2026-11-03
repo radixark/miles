@@ -20,7 +20,6 @@ from miles.tinker.core.input_validation import (
     validate_model_config,
     validate_sample_payload,
     validate_seq_id,
-    validate_ttl_seconds,
 )
 from miles.tinker.core.model_queue import ModelRequestQueue
 from miles.tinker.core.scheduler import BarrierUnit, BatchUnit, RequestScheduler
@@ -604,7 +603,6 @@ class TinkerService:
         return os.path.join(files["path"], filename)
 
     async def set_checkpoint_ttl(self, tenant: str, model_id: str, checkpoint_id: str, ttl_seconds) -> None:
-        validate_ttl_seconds(ttl_seconds)
         async with self._trainer_lock:
             tinker_path, _, _, _ = self._owned_checkpoint(tenant, model_id, checkpoint_id)
             self.expiry.set(tinker_path, ttl_seconds, time.time())
