@@ -9,7 +9,6 @@ import pydantic
 import pyrage
 
 import tinker
-from miles.backends.training_utils.checkpoint.adapter.adapter_exports import parse_age_recipient
 from miles.tinker.core.input_validation import validate_save_options
 from miles.tinker.core.types import LOSS_INPUT_KEYS, UserInputError
 from tinker import types as tinker_types
@@ -76,7 +75,8 @@ def validate_age_recipients(recipients: list[str]) -> None:
         raise UserInputError(f"at most {MAX_AGE_RECIPIENTS} age recipients, got {len(recipients)}")
     for recipient in recipients:
         try:
-            parse_age_recipient(recipient)
+            # the trainer's export parses it the same way (adapter_exports.parse_age_recipient)
+            (pyrage.ssh if recipient.startswith("ssh-") else pyrage.x25519).Recipient.from_str(recipient)
         except pyrage.RecipientError as error:
             raise UserInputError(f"{recipient!r} is not an age recipient (age1... or ssh-...): {error}") from None
 
