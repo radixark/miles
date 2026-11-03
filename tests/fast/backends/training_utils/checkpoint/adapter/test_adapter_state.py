@@ -82,7 +82,9 @@ _BANDS = [[(0, 1), (3, 4)], [(1, 3), (4, 6)]]
 _ROWS = [[(0, 4)], [(4, 6)]]
 
 
-@pytest.mark.parametrize("save_bands, load_bands", [(_BANDS, _ROWS), (_ROWS, _BANDS)], ids=["save_bands", "load_bands"])
+@pytest.mark.parametrize(
+    "save_bands, load_bands", [(_BANDS, _ROWS), (_ROWS, _BANDS)], ids=["save_bands", "load_bands"]
+)
 def test_several_pieces_of_one_key_on_a_rank_reload_bitwise(save_bands, load_bands):
     directory = tempfile.mkdtemp()
     run_multiprocess(

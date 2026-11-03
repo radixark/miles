@@ -356,7 +356,9 @@ def test_gpt_oss_down_proj_alone_stays_one_packed_3d_tensor(tmp_path):
         assert tensors[f"{down}.lora_A.weight"].shape == (3, 2, 4)
 
 
-_GLM5 = get_hf_lora_targets({"model_type": "glm_moe_dsa", "mlp_layer_types": ["sparse"], "n_shared_experts": 0, "q_lora_rank": 4})
+_GLM5 = get_hf_lora_targets(
+    {"model_type": "glm_moe_dsa", "mlp_layer_types": ["sparse"], "n_shared_experts": 0, "q_lora_rank": 4}
+)
 _QWEN35_MOE = get_hf_lora_targets(
     {
         "model_type": "qwen3_5_moe",
