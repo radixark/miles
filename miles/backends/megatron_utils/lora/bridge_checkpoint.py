@@ -7,6 +7,7 @@ GDN in_proj, per-expert names) comes from Bridge's own export, run once on index
 import bisect
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
+from itertools import groupby
 from typing import Literal
 
 import torch
@@ -52,36 +53,63 @@ class BridgeRowMapping:
     target_modules: tuple[str, ...]
 
 
-def _rectangle(name: str, mine: torch.Tensor) -> tuple[slice, ...]:
-    positions = mine.nonzero()
-    low, high = positions.min(0).values.tolist(), (positions.max(0).values + 1).tolist()
-    box = tuple(slice(lo, hi) for lo, hi in zip(low, high, strict=True))
-    assert mine[box].all(), f"{name}: this rank's elements are not one rectangle"
-    return box
+def _rectangles(name: str, mine: torch.Tensor, box: tuple[slice, ...] | None = None) -> list[tuple[slice, ...]]:
+    """``mine``'s elements inside ``box`` as rectangles, split at empty hyperplanes: an export that concatenates
+    separately gathered shards (e.g. gate and up, or several shared experts) gives a rank several bands of a tensor."""
+    if box is None:
+        positions = mine.nonzero()
+        low, high = positions.min(0).values.tolist(), (positions.max(0).values + 1).tolist()
+        box = tuple(slice(lo, hi) for lo, hi in zip(low, high, strict=True))
+    inside = mine[box]
+    if inside.all():
+        return [box]
+    for dim in range(inside.dim()):
+        occupied = inside.movedim(dim, 0).reshape(inside.shape[dim], -1).any(1).tolist()
+        if all(occupied):
+            continue
+        runs = [list(run) for is_mine, run in groupby(range(len(occupied)), key=occupied.__getitem__) if is_mine]
+        origin = box[dim].start
+        return [
+            rectangle
+            for run in runs
+            for rectangle in _rectangles(
+                name, mine, (*box[:dim], slice(origin + run[0], origin + run[-1] + 1), *box[dim + 1 :])
+            )
+        ]
+    raise AssertionError(f"{name}: this rank's elements are not a union of rectangles split at empty hyperplanes")
 
 
-def _piece(key: str, codes: torch.Tensor, rank: int) -> _HfPiece | None:
+def _pieces_of(key: str, codes: torch.Tensor, rank: int) -> list[_HfPiece]:
     mine = codes // _RANK_STRIDE == rank
     if not mine.any():
-        return None
-    box = _rectangle(key, mine)
-    return _HfPiece(key, tuple(codes.shape), tuple(s.start for s in box), (codes[box] % _RANK_STRIDE).cpu())
+        return []
+    return [
+        _HfPiece(key, tuple(codes.shape), tuple(s.start for s in box), (codes[box] % _RANK_STRIDE).cpu())
+        for box in _rectangles(key, mine)
+    ]
 
 
-def _stack_experts(key: str, pieces_by_expert: dict[int, _HfPiece], num_experts: int) -> _HfPiece:
+def _stack_experts(key: str, pieces_by_expert: dict[int, list[_HfPiece]], num_experts: int) -> list[_HfPiece]:
     experts = sorted(pieces_by_expert)
     assert experts == list(range(experts[0], experts[-1] + 1)), f"{key}: this rank's experts are not contiguous"
     first = pieces_by_expert[experts[0]]
     assert all(
-        p.offsets == first.offsets and p.local_elements.shape == first.local_elements.shape
-        for p in pieces_by_expert.values()
+        len(pieces) == len(first)
+        and all(
+            p.offsets == f.offsets and p.local_elements.shape == f.local_elements.shape
+            for p, f in zip(pieces, first, strict=True)
+        )
+        for pieces in pieces_by_expert.values()
     ), f"{key}: this rank holds different rectangles of different experts"
-    return _HfPiece(
-        key,
-        (num_experts, *first.global_shape),
-        (experts[0], *first.offsets),
-        torch.stack([pieces_by_expert[e].local_elements for e in experts]),
-    )
+    return [
+        _HfPiece(
+            key,
+            (num_experts, *piece.global_shape),
+            (experts[0], *piece.offsets),
+            torch.stack([pieces_by_expert[e][j].local_elements for e in experts]),
+        )
+        for j, piece in enumerate(first)
+    ]
 
 
 def probe_bridge_row_mapping(
@@ -101,7 +129,7 @@ def probe_bridge_row_mapping(
     assert total < _RANK_STRIDE and dist.get_world_size() < 2**53 // _RANK_STRIDE, "the probe encoding overflows"
     saved = [p.data for p in params]
     pieces, a_sources, modules = [], {}, set()
-    per_expert: dict[str, dict[int, _HfPiece]] = {}
+    per_expert: dict[str, dict[int, list[_HfPiece]]] = {}
     num_experts: dict[str, int] = {}
 
     def decode(name: str, tensor: torch.Tensor) -> None:
@@ -116,18 +144,18 @@ def probe_bridge_row_mapping(
             a_sources.setdefault(source, []).append(module if components is None else components)
         if hf_key.expert_index is not None:
             num_experts[hf_key.key] = max(num_experts.get(hf_key.key, 0), hf_key.expert_index + 1)
-            if (piece := _piece(hf_key.key, codes, rank)) is not None:
-                per_expert.setdefault(hf_key.key, {})[hf_key.expert_index] = piece
+            if expert_pieces := _pieces_of(hf_key.key, codes, rank):
+                per_expert.setdefault(hf_key.key, {})[hf_key.expert_index] = expert_pieces
             modules.add(module)
         elif components is None:
-            pieces.append(_piece(hf_key.key, codes, rank))
+            pieces.extend(_pieces_of(hf_key.key, codes, rank))
             modules.add(module)
         elif factor == "lora_A":
-            pieces.append(_piece(f"{components[0]}.lora_A", codes, rank))
+            pieces.extend(_pieces_of(f"{components[0]}.lora_A", codes, rank))
             modules.update(components)
         else:
             for component, part in zip(components, split_fused_lora_b(module, codes, targets), strict=True):
-                pieces.append(_piece(f"{component}.lora_B", part, rank))
+                pieces.extend(_pieces_of(f"{component}.lora_B", part, rank))
 
     error = None
     try:
@@ -154,8 +182,11 @@ def probe_bridge_row_mapping(
                 flat = [m for member in members for m in ((member,) if isinstance(member, str) else member)]
                 if len(flat) > 1:
                     groups.append(tuple(flat))
-            pieces = [p for p in pieces if p is not None]
-            pieces += [_stack_experts(key, by_expert, num_experts[key]) for key, by_expert in per_expert.items()]
+            pieces += [
+                piece
+                for key, by_expert in per_expert.items()
+                for piece in _stack_experts(key, by_expert, num_experts[key])
+            ]
             # the library stores a shared A once, under the group's first member
             shared_copies = {f"{member}.lora_A" for group in groups for member in group[1:]}
             pieces = [p for p in pieces if p.key not in shared_copies]

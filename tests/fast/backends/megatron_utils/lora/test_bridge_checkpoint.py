@@ -123,3 +123,37 @@ def _probe_trimmed_head(rank, world_size, port):
 
 def test_probe_exempts_only_the_declared_unexported_elements_from_coverage():
     run_multiprocess(_probe_trimmed_head)
+
+
+GATE_UP = "model.layers.0.mlp.gate_up_proj"
+
+
+def _fused_gate_up_export(params):
+    """Native's fused gate_up at TP: gate and up gathered separately, then concatenated."""
+    (b,) = params
+
+    def gathered(local):
+        parts = [torch.empty_like(local) for _ in range(dist.get_world_size())]
+        dist.all_gather(parts, local.contiguous())
+        return torch.cat(parts)
+
+    half = b.shape[0] // 2
+    yield f"{GATE_UP}.lora_B.weight", torch.cat([gathered(b.data[:half]), gathered(b.data[half:])])
+
+
+def _probe_fused_gate_up(rank, world_size, port):
+    init_gloo(rank, world_size, port=port)
+    params = [torch.nn.Parameter(torch.randn(4, 3))]
+    mapping = probe_bridge_row_mapping(params, lambda: _fused_gate_up_export(params), TARGETS)
+
+    assert [(p.key, p.global_shape, p.offsets) for p in mapping.pieces] == [
+        (f"{GATE_UP}.lora_B", (8, 3), (2 * rank, 0)),
+        (f"{GATE_UP}.lora_B", (8, 3), (4 + 2 * rank, 0)),
+    ]
+    flat = params[0].data.reshape(-1)
+    assert torch.equal(torch.cat([flat[p.local_elements] for p in mapping.pieces]), params[0].data)
+    dist.destroy_process_group()
+
+
+def test_probe_splits_a_ranks_bands_of_one_key_into_rectangles():
+    run_multiprocess(_probe_fused_gate_up)
