@@ -158,7 +158,7 @@ def probe_bridge_row_mapping(
             for members in a_sources.values():
                 flat = [m for member in members for m in ((member,) if isinstance(member, str) else member)]
                 if len(flat) > 1:
-                    groups.append(tuple(flat))
+                    groups.append(tuple(sorted(flat)))
             pieces += [
                 piece
                 for key, by_expert in per_expert.items()
@@ -290,6 +290,18 @@ def assert_bridge_run_config_matches(
         ), "the source saved no optimizer state; pass --no-load-optim"
 
 
+def bridge_base_model_candidates(config: dict) -> tuple[str | None, ...]:
+    """Bridge PEFT loads its base from pretrained_checkpoint. When that is no HF dir here (torch_dist, or another
+    machine's path), the HF template it was converted from stands in, in Bridge's _resolve_hf_source order; that
+    stand-in misses a base fine-tuned in Megatron."""
+    checkpoint = config["checkpoint"]
+    return (
+        checkpoint.get("pretrained_checkpoint"),
+        checkpoint.get("hf_source_path"),
+        config["model"].get("hf_model_id"),
+    )
+
+
 class MegatronBridgeCheckpointLoader:
     """A Megatron-Bridge PEFT ``iter_N/`` (torch_dist), read straight into this run's model and DistributedOptimizer
     under any TP / PP / EP / DP layout. The source's iteration, scheduler and RNG are not resumed."""
@@ -310,11 +322,7 @@ class MegatronBridgeCheckpointLoader:
             assert_bridge_run_config_matches(
                 config, self._run, params_dtype=chunks[0].config.params_dtype, load_optimizer=self._load_optimizer
             )
-            assert_same_base_model(
-                str(path),
-                (config["model"].get("hf_model_id"), config["checkpoint"].get("hf_source_path")),
-                self._run.base_model,
-            )
+            assert_same_base_model(str(path), bridge_base_model_candidates(config), self._run.base_model)
             # the master check after loading reads the DistributedOptimizer's masters, weights-only too
             assert all(
                 isinstance(sub, DistributedOptimizer) for sub in self._optimizer.chained_optimizers
@@ -344,22 +352,27 @@ class MegatronBridgeCheckpointLoader:
         expected = [None] * dist.get_world_size()
         dist.all_gather_object(expected, {t.key for sd in adapter for t in nested_values(sd)}, group=gloo_group())
         expected = set().union(*expected)
-        saved = {
-            k
-            for k in dcp.FileSystemReader(path).read_metadata().state_dict_metadata
-            if ".adapter." in k and "_extra_state" not in k and not OPTIMIZER_KEY.match(k)
-        }
-        assert (
-            expected == saved
-        ), f"{path} holds other adapters than this run's model, e.g. {sorted(expected ^ saved)[:3]}"
-
         requested = dict(zip(names, adapter, strict=True))
-        if self._load_optimizer:
-            requested["optimizer"] = self._optimizer.sharded_state_dict(
-                dict(zip(names, model_state_dicts, strict=True)), is_loading=True, metadata=metadata
-            )
-        loaded = dist_checkpointing.load(requested, str(path))
         try:
+            saved = {
+                k
+                for k in dcp.FileSystemReader(path).read_metadata().state_dict_metadata
+                if ".adapter." in k and "_extra_state" not in k and not OPTIMIZER_KEY.match(k)
+            }
+            assert (
+                expected == saved
+            ), f"{path} holds other adapters than this run's model, e.g. {sorted(expected ^ saved)[:3]}"
+            if self._load_optimizer:
+                requested["optimizer"] = self._optimizer.sharded_state_dict(
+                    dict(zip(names, model_state_dicts, strict=True)), is_loading=True, metadata=metadata
+                )
+        except Exception as exc:
+            error = exc
+        raise_if_any_rank_failed(error)
+
+        try:
+            # a rank-local failure inside load's own collectives still hangs; one after them is agreed below
+            loaded = dist_checkpointing.load(requested, str(path))
             for name, chunk in zip(names, chunks, strict=True):
                 result = chunk.load_state_dict(loaded[name], strict=False)
                 assert not result.unexpected_keys, f"unexpected adapter keys {result.unexpected_keys[:3]}"

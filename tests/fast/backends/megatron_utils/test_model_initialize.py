@@ -241,6 +241,7 @@ def _load_model_state_with(
     exit_on_missing_checkpoint: bool = False,
     resume_from_ckpt: bool,
     megatron_to_hf_mode: str = "core",
+    **trainer_values,
 ) -> "LoadCheckpointOutput":
     from miles.backends.megatron_utils.model import load_model_state
 
@@ -276,6 +277,7 @@ def _load_model_state_with(
                 load=str(load_dir),
                 ckpt_step=ckpt_step,
                 exit_on_missing_checkpoint=exit_on_missing_checkpoint,
+                **trainer_values,
             ),
             model=[_FakeModelChunk()],
             optimizer=None,
@@ -390,10 +392,11 @@ class TestALoraAdapterThatCarriesItsOwnIteration:
         """An HF adapter or shards saved without training state carry no iteration to continue from."""
         assert self._start(tmp_path, adapter_iteration=None).start_rollout_id == 0
 
-    def test_an_adapter_without_megatron_scheduler_state_steps_the_scheduler_to_its_iteration(
+    def test_an_adapter_without_megatron_scheduler_state_steps_the_scheduler_past_its_rollout(
         self, tmp_path: Path
     ) -> None:
-        """A torchtitan-written adapter dir has an iteration but no Megatron scheduler state."""
+        """A torchtitan-written adapter dir has an iteration but no Megatron scheduler state; the scheduler counts
+        samples, and rollouts 0..100 are done."""
         scheduler = MagicMock()
         _load_model_state_with(
             tmp_path=tmp_path,
@@ -404,8 +407,10 @@ class TestALoraAdapterThatCarriesItsOwnIteration:
             opt_param_scheduler=scheduler,
             lora_adapter_path=str(tmp_path / "adapter"),
             resume_from_ckpt=False,
+            rollout_batch_size=4,
+            n_samples_per_prompt=4,
         )
-        scheduler.step.assert_called_once_with(increment=800)
+        scheduler.step.assert_called_once_with(increment=101 * 16)
 
 
 class TestCheckpointSourceRequirement:

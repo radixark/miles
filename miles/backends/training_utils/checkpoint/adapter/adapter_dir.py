@@ -272,9 +272,13 @@ def _with_zero_moments(specs: list[LocalShardSpec], pieces: list[torch.Tensor]) 
     )
 
 
-def _weights_only_state(weights: dict[str, torch.Tensor], specs: list[LocalShardSpec]) -> AdapterState:
-    missing = {s.key for s in specs} - set(weights)
+def _assert_has_keys(weights: dict[str, torch.Tensor], keys: set[str]) -> None:
+    missing = keys - set(weights)
     assert not missing, f"the source lacks tensors the run trains: {sorted(missing)}"
+
+
+def _weights_only_state(weights: dict[str, torch.Tensor], specs: list[LocalShardSpec]) -> AdapterState:
+    _assert_has_keys(weights, {s.key for s in specs})
     return _with_zero_moments(specs, [_slice(weights[s.key], s).float() for s in specs])
 
 
@@ -283,6 +287,58 @@ def _with_run_alpha_if_unknown(source: AdapterParametrization, run: AdapterParam
         return source
     # the run's --lora-alpha was required for such a source (resolved in miles_validate_args)
     return replace(source, lora_alpha=run.lora_alpha)
+
+
+def _open_source(
+    path: Path, kind: AdapterSourceKind, run: AdapterParametrization, targets: HfLoraTargets, *, load_optimizer: bool
+):
+    """-> (reader, source parametrization, conversion steps), asserted loadable into ``run``."""
+    if kind == AdapterSourceKind.ADAPTER_DIR:
+        reader = MilesAdapterDirReader(path, targets)
+    elif kind == AdapterSourceKind.EXTERNAL_WEIGHTS:
+        reader = ExternalWeightsReader(path, run, targets)
+    else:
+        reader = PeftAdapterReader(path, run, targets)
+    source = _with_run_alpha_if_unknown(reader.source.parametrization, run)
+    steps = plan_parametrization_conversion(source, run, source_dtype=reader.source.weight_dtype)
+    assert_parametrization_matches_run(
+        source, run, steps, load_optimizer=load_optimizer, has_optimizer_state=reader.source.has_optimizer_state
+    )
+    return reader, source, steps
+
+
+def _reads_adapter_state_pieces(reader, steps) -> bool:
+    return isinstance(reader, MilesAdapterDirReader) and reader.has_adapter_state() and not steps
+
+
+def check_adapter_source(
+    path: Path,
+    run: AdapterParametrization,
+    targets: HfLoraTargets,
+    *,
+    load_optimizer: bool,
+    run_shapes: dict[str, tuple[int, ...]] | None = None,
+) -> AdapterSourceKind:
+    """Rank-local dry run of every check ``load_adapter_dir`` makes on the files of a source it reads itself.
+
+    Raises what that load would; an in-model source is returned unchecked, its loader's checks are the backend's.
+    ``run_shapes``: the whole shape of each HF-keyed tensor this rank loads, checked on a source read as weights.
+    """
+    kind = classify_adapter_source(path, targets, load_optimizer=load_optimizer)
+    if kind.is_read_into_model():
+        return kind
+    reader, _, steps = _open_source(path, kind, run, targets, load_optimizer=load_optimizer)
+    if _reads_adapter_state_pieces(reader, steps):
+        assert_adapter_state_keys(path, run.adapter_state_keys(), with_optimizer=load_optimizer)
+    else:
+        weights = apply_parametrization_conversion(reader.read_weights(), steps)
+        _assert_has_keys(weights, run.adapter_state_keys())
+        if run_shapes is not None:
+            differing = [
+                f"{k}: {tuple(weights[k].shape)} != {s}" for k, s in run_shapes.items() if tuple(weights[k].shape) != s
+            ]
+            assert not differing, f"tensor shapes differ from this model's, e.g. {differing[:3]}"
+    return kind
 
 
 def load_adapter_dir(
@@ -327,22 +383,12 @@ def load_adapter_dir(
     specs, reader, source, steps = None, None, None, None
     try:
         specs = members.get_local_shard_specs(slot)
-        if kind == AdapterSourceKind.ADAPTER_DIR:
-            reader = MilesAdapterDirReader(path, targets)
-        elif kind == AdapterSourceKind.EXTERNAL_WEIGHTS:
-            reader = ExternalWeightsReader(path, run, targets)
-        else:
-            reader = PeftAdapterReader(path, run, targets)
-        source = _with_run_alpha_if_unknown(reader.source.parametrization, run)
-        steps = plan_parametrization_conversion(source, run, source_dtype=reader.source.weight_dtype)
-        assert_parametrization_matches_run(
-            source, run, steps, load_optimizer=load_optimizer, has_optimizer_state=reader.source.has_optimizer_state
-        )
+        reader, source, steps = _open_source(path, kind, run, targets, load_optimizer=load_optimizer)
     except Exception as exc:
         error = exc
     raise_if_any_rank_failed(error)
 
-    if isinstance(reader, MilesAdapterDirReader) and reader.has_adapter_state() and not steps:
+    if _reads_adapter_state_pieces(reader, steps):
         run_keys = _all_ranks_keys(specs)
         try:
             assert_adapter_state_keys(path, run_keys, with_optimizer=load_optimizer)

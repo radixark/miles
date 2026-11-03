@@ -7,7 +7,6 @@ concatenated adapter parameters; specs, piece extraction and scatter back follow
 import bisect
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-
 from itertools import groupby
 
 import torch

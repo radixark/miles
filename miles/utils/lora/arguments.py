@@ -1,4 +1,5 @@
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +46,12 @@ def validate_lora_args(args):
     args.lora_alpha = _resolve_lora_alpha(args)
     if args.lora_adapter_convert_save is not None:
         assert args.lora_adapter_path is not None, "--lora-adapter-convert-save converts --lora-adapter-path"
+        # the commit would retire and delete whatever sits there, including the source when converting in place
+        assert not os.path.lexists(
+            args.lora_adapter_convert_save
+        ), f"--lora-adapter-convert-save {args.lora_adapter_convert_save} already exists; pass a new path"
+        # rollout-only builds no model, so nothing would load or write the adapter
+        assert not args.debug_rollout_only, "--lora-adapter-convert-save needs the trainer; drop --debug-rollout-only"
     if engine_loads_adapter_from_disk(args):
         _validate_rollout_only_adapter(args)
     assert args.train_backend in (
@@ -170,13 +177,18 @@ def validate_lora_args_after_megatron(args):
 
 def _validate_adapter_state_args(args) -> None:
     """adapter_state/ holds Adam's fp32 master, fp32 moments and step, gathered whole per DP group over Gloo; without
-    optimizer state, the fp32 masters of any optimizer."""
+    optimizer state, the fp32 masters of SGD without momentum."""
     if args.save is None and args.lora_adapter_path is None:
         return
     assert not args.debug_disable_optimizer, (
         "--save / --lora-adapter-path store and load the adapter's fp32 optimizer masters, which "
         "--debug-disable-optimizer does not build; drop one of them"
     )
+    # other optimizers (Muon, ...) keep masters the adapter checkpoint cannot find
+    assert args.optimizer in (
+        "adam",
+        "sgd",
+    ), f"--save / --lora-adapter-path support --optimizer adam or sgd; got --optimizer {args.optimizer}"
     saves_optimizer = args.save is not None and not args.no_save_optim
     loads_optimizer = args.lora_adapter_path is not None and not args.no_load_optim
     if saves_optimizer or loads_optimizer:
@@ -187,6 +199,11 @@ def _validate_adapter_state_args(args) -> None:
         assert (
             args.exp_avg_dtype == args.exp_avg_sq_dtype == torch.float32
         ), "the adapter checkpoint stores fp32 moments"
+    assert args.main_params_dtype == torch.float32, "the adapter checkpoint stores fp32 masters"
+    # SGD's checkpoint holds the masters alone, which would drop a momentum buffer
+    assert (
+        args.optimizer != "sgd" or args.sgd_momentum == 0
+    ), f"--save / --lora-adapter-path with --optimizer sgd need --sgd-momentum 0; got {args.sgd_momentum}"
     if args.use_distributed_optimizer:
         assert args.use_gloo_process_groups, "the adapter checkpoint gathers optimizer state over Gloo"
         # TE FusedAdam keeps the master as an int16 remainder unless the optimizer runs on the host

@@ -1084,7 +1084,12 @@ def load_model_state(
     check_model_hashes(args, model, iteration)
 
     if opt_param_scheduler is not None and not scheduler_restored:
-        opt_param_scheduler.step(increment=iteration * args.backend.global_batch_size)
+        if adapter_iteration is not None:
+            # the scheduler counts samples, and an adapter's iteration is its last completed rollout
+            increment = (adapter_iteration + 1) * args.rollout_batch_size * args.n_samples_per_prompt
+        else:
+            increment = iteration * args.backend.global_batch_size
+        opt_param_scheduler.step(increment=increment)
 
     if not restored_trained_iteration:
         assert iteration == 0, f"Weight initialization returned a trained iteration: {iteration}"
