@@ -252,7 +252,8 @@ class BridgeAdapterSlots:
         Among ranks holding an identical piece, the lowest writes it.
         """
         rank = self.lora_rank(slot)
-        key = (rank, holds)
+        # LayerWise ownership differs per slot: a cache hit keyed without it would skip the gather on one process alone
+        key = (slot, rank, holds)
         if key not in self._specs:
             boxes = []
             for piece, within in self._pieces(slot, holds):
