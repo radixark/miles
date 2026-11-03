@@ -9,6 +9,7 @@ from miles.backends.training_utils.checkpoint.adapter import commit as commit_mo
 from miles.backends.training_utils.checkpoint.adapter.commit import (
     TENANT_FILENAME,
     OwnershipError,
+    UncommittedAdapterDir,
     commit_adapter_dir,
     delete_adapter_dir,
     delete_retired_adapter_dirs,
@@ -245,3 +246,9 @@ def test_the_written_files_and_dir_are_synced_before_the_link_swap(tmp_path, mon
     commit_adapter_dir(tmp_path, "w", written, overwrite=False)
     synced = {path for op, path in events[: events.index(("replace", tmp_path / "w"))] if op == "fsync"}
     assert {written.path, *(written.path / f for f in metadata)} <= synced
+
+
+def test_committing_a_dir_this_process_cannot_see_is_a_storage_error(tmp_path):
+    written = UncommittedAdapterDir(tmp_path / ".w.0123456789abcdef", "0123456789abcdef")
+    with pytest.raises(FileNotFoundError, match="does not exist"):
+        commit_adapter_dir(tmp_path, "w", written, overwrite=False)
