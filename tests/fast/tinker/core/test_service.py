@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import os
+import pickle
 import re
 import shutil
 import subprocess
@@ -1751,6 +1752,13 @@ async def test_a_hard_link_on_another_filesystem_is_importable(tmp_path):
         shutil.rmtree(root)
 
 
+def _link_to_blob(link: Path) -> None:
+    blob = link.parent.parent / "blobs" / "0123abcd"
+    blob.parent.mkdir()
+    blob.write_bytes(b"")
+    link.symlink_to(blob)
+
+
 @pytest.mark.parametrize(
     "plant, error",
     [
@@ -1767,6 +1775,8 @@ async def test_a_hard_link_on_another_filesystem_is_importable(tmp_path):
         # json raises RecursionError, not ValueError, on deep nesting
         (lambda adapter, tmp_path: (adapter / "META.json").write_text("[" * 100_000), "cannot read"),
         (lambda adapter, tmp_path: (adapter / "META.json").write_text(json.dumps({"lora_rank": 8})), None),
+        # an HF cache snapshot: judged by the name the reader opens, not the blob's
+        (lambda adapter, tmp_path: _link_to_blob(adapter / "adapter_model.safetensors"), None),
         # opening a FIFO blocks until a writer appears
         (lambda adapter, tmp_path: os.mkfifo(adapter / "META.json"), "not a regular file"),
     ],
@@ -1784,3 +1794,52 @@ async def test_a_file_import_stays_under_the_import_root_and_holds_no_checkpoint
     else:
         with pytest.raises(UserInputError, match=error):
             service.weights_info("tenant", f"file://{adapter}")
+
+
+class _WritesMarker:
+    def __init__(self, marker: Path):
+        self.marker = marker
+
+    def __reduce__(self):
+        return (Path.touch, (self.marker,))
+
+
+@pytest.mark.parametrize("pickled", [".metadata", "adapter_state/.metadata", "adapter_megatron_rank0.pt"])
+async def test_a_file_import_holding_a_pickle_is_refused_before_the_trainer_reads_it(tmp_path, monkeypatch, pickled):
+    from miles.backends.training_utils.checkpoint.adapter.adapter_dir import check_adapter_source
+    from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
+
+    adapter = tmp_path / "imports" / "adapter"
+    adapter.mkdir(parents=True)
+    (adapter / "adapter_config.json").write_text(json.dumps({"r": 8, "lora_alpha": 32}))
+    run = AdapterParametrization("base", 8, 32.0, "lora", ("model.layers.0.self_attn.q_proj",), False)
+    if pickled.startswith("adapter_state/"):
+        write_parametrization(adapter, run)
+    marker = tmp_path / "code_ran"
+    (adapter / pickled).parent.mkdir(exist_ok=True)
+    (adapter / pickled).write_bytes(pickle.dumps(_WritesMarker(marker)))
+    service = make_service(tmp_path / "root", import_root=str(tmp_path / "imports"))
+    load_slot = service.backend.load_slot
+
+    async def trainer_load_slot(slot, rank, alpha, ckpt_path=None, **kwargs):
+        # None: a new model's empty slot
+        if ckpt_path is not None:
+            # every trainer rank's dry run of the source (find_load_mismatch); a payload ran before its result fails it
+            targets = get_hf_lora_targets({"model_type": "qwen3", "num_hidden_layers": 1})
+            with suppress(Exception):
+                check_adapter_source(Path(ckpt_path), run, targets, load_optimizer=False)
+        return await load_slot(slot, rank, alpha, ckpt_path=ckpt_path, **kwargs)
+
+    monkeypatch.setattr(service.backend, "load_slot", trainer_load_slot)
+    run_task = asyncio.create_task(service.run())
+    try:
+        model_id = await created_model(service)
+        payload = {"model_id": model_id, "seq_id": 1, "path": f"file://{adapter}", "optimizer": False}
+        loaded = await await_settled(service, "tenant", service.submit("tenant", "load_state", payload))
+        assert not marker.exists(), "the client's pickle ran"
+        assert loaded.state == FAILED and "only .json and .safetensors" in loaded.error
+        assert not run_task.done()
+    finally:
+        run_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await run_task

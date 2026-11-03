@@ -89,11 +89,16 @@ def _check_import_tree(uri: str, path: str, import_root: str, checkpoint_root: s
 
     seen, pending = set(), [path]
     while pending:
-        real = os.path.realpath(pending.pop())
+        listed = pending.pop()
+        real = os.path.realpath(listed)
         if not os.path.exists(real):
             # a dangling symlink reads nothing; a missing import fails in its reader
             continue
         entry = os.stat(real)
+        # the trainer unpickles DCP (.metadata, .distcp) and .pt files; by the name a reader opens, so an HF cache's
+        # adapter_model.safetensors -> blobs/<hash> passes, and before the dedupe, so no second name of a file escapes
+        if stat.S_ISREG(entry.st_mode) and not listed.endswith((".json", ".safetensors")):
+            raise UserInputError(f"{uri} holds {listed}; an import may hold only .json and .safetensors files")
         if (entry.st_dev, entry.st_ino) in seen:
             continue
         seen.add((entry.st_dev, entry.st_ino))
