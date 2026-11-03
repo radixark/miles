@@ -9,6 +9,7 @@ import torch
 from megatron.core.distributed import DistributedDataParallel as DDP
 
 from miles.backends.megatron_utils.lora.bridge_checkpoint import BridgeAdapterSlots
+from miles.backends.megatron_utils.lora.checkpoint import single_lora_parametrization
 from miles.backends.megatron_utils.lora.native.merge import merge_lora_into_weights
 from miles.backends.megatron_utils.lora.utils import is_lora_model
 from miles.backends.megatron_utils.named_weights import named_params_and_buffers
@@ -78,13 +79,7 @@ def save_hf_model(
                 checkpoint_dir / "adapter",
                 adapter_slots,
                 0,
-                adapter_slots.parametrization(
-                    base_model=args.hf_checkpoint,
-                    lora_rank=args.lora_rank,
-                    lora_alpha=args.lora_alpha,
-                    lora_type=args.lora_type,
-                    experts_shared_outer_loras=args.experts_shared_outer_loras,
-                ),
+                single_lora_parametrization(adapter_slots, args),
                 adapter_slots.targets,
             )
 

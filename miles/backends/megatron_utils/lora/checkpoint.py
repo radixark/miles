@@ -5,6 +5,7 @@ fp32 master (a Float16 child's ``fp32_from_float16_groups``) and its Adam state;
 """
 
 import json
+import os
 import re
 from collections.abc import Iterable, Sequence
 from dataclasses import asdict, replace
@@ -459,8 +460,13 @@ def _load_legacy_slot(model: Sequence[DDP], slot_optimizer: SlotOptimizer, path:
 
 
 def single_lora_parametrization(adapter_slots: BridgeAdapterSlots, args) -> AdapterParametrization:
+    base_model = args.hf_checkpoint
+    # one local model under another path string (a trailing slash, a symlinked mount) is the same base; a hub id
+    # is no local path
+    if os.path.exists(base_model):
+        base_model = os.path.realpath(base_model)
     return adapter_slots.parametrization(
-        base_model=args.hf_checkpoint,
+        base_model=base_model,
         lora_rank=args.lora_rank,
         lora_alpha=args.lora_alpha,
         lora_type=args.lora_type,
