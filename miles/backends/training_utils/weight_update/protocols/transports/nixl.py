@@ -6,7 +6,10 @@ from typing import Any
 
 import torch
 
-from miles.backends.training_utils.weight_update.protocols.transports.remote_shard import RemoteShard
+from miles.backends.training_utils.weight_update.protocols.transports.remote_shard import (
+    RemoteShard,
+    assert_published_for,
+)
 
 # a write thread sleeps this long between checks of a running transfer, leaving the GIL to the loads
 _TRANSFER_POLL_SECONDS = 0.0005
@@ -30,7 +33,8 @@ class NixlTransport:
         # a write that did not finish does not prove NIXL stopped reading its source
         self._has_failed_writes = False
 
-    def connect_peer(self, transfer_engine_info: dict) -> str:
+    def connect_peer(self, transfer_engine_info: dict | None) -> str:
+        assert_published_for(self.name, transfer_engine_info)
         remote_agent = self._agent.add_remote_agent(base64.b64decode(transfer_engine_info["agent_metadata"]))
         self._gpu_id_by_remote_agent[remote_agent] = transfer_engine_info["gpu_id"]
         return remote_agent

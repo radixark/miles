@@ -142,14 +142,12 @@ def query_rollout_engine_rank_configs(
 def _query_config(
     cell_updater: _RolloutCellUpdater, rollout_engine_rank: int, runner_role: str
 ) -> RolloutEngineRankConfig | None:
-    parallelism_info = cell_updater.submit_client_call(
-        "get_parallelism_info", rank=rollout_engine_rank, role=runner_role
-    ).result()
-    if parallelism_info is None or (server_args := _query_server_args(cell_updater)) is None:
+    rank_info = cell_updater.submit_client_call("get_rank_info", rank=rollout_engine_rank, role=runner_role).result()
+    if rank_info is None or (server_args := _query_server_args(cell_updater)) is None:
         return None
     return RolloutEngineRankConfig(
         runner_role=runner_role,
-        parallelism=RankParallelismConfig.from_dict(parallelism_info),
+        parallelism=RankParallelismConfig.from_dict(rank_info["parallelism_config"]),
         server_args=server_args,
     )
 

@@ -4,7 +4,10 @@ from typing import Any
 import ray
 import torch
 
-from miles.backends.training_utils.weight_update.protocols.transports.remote_shard import RemoteShard
+from miles.backends.training_utils.weight_update.protocols.transports.remote_shard import (
+    RemoteShard,
+    assert_published_for,
+)
 
 
 class MooncakeTransport:
@@ -19,7 +22,8 @@ class MooncakeTransport:
         # a failed write does not prove Mooncake stopped reading its source
         self._has_failed_writes = False
 
-    def connect_peer(self, transfer_engine_info: dict) -> str:
+    def connect_peer(self, transfer_engine_info: dict | None) -> str:
+        assert_published_for(self.name, transfer_engine_info)
         return transfer_engine_info["session_id"]
 
     def remove_peers(self) -> None:

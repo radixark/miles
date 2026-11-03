@@ -32,8 +32,8 @@ class NativeTransport(Protocol):
     name: ClassVar[str]
     transfer_buffer_device: ClassVar[torch.device]
 
-    def connect_peer(self, transfer_engine_info: dict) -> str:
-        """Returns the transport peer of the runner that published `transfer_engine_info`."""
+    def connect_peer(self, transfer_engine_info: dict | None) -> str:
+        """Returns the transport peer of the runner that published `transfer_engine_info`, None if it published none."""
 
     def remove_peers(self) -> None:
         """Forgets every peer `connect_peer` returned."""
@@ -89,7 +89,6 @@ class P2PTransport:
             engine_cell_ids,
             assignments,
             runner_roles,
-            self._native_transport.name,
             self._native_transport.connect_peer,
         )
 
