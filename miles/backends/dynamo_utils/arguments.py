@@ -4,6 +4,7 @@ from pathlib import Path
 from miles.backends.dynamo_utils.config import load_dynamo_config
 from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.backends.sglang_utils.sglang_config import SglangConfig
+from miles.router.backend import RouterKind
 from miles.utils.environ import use_legacy_rollout_v1
 
 logger = logging.getLogger(__name__)
@@ -11,12 +12,16 @@ logger = logging.getLogger(__name__)
 
 def configure_dynamo(args, *, sglang: SglangConfig) -> None:
     if not args.dynamo_config:
+        if args.router == RouterKind.DYNAMO:
+            raise ValueError("--router dynamo requires --dynamo-config")
         args.dynamo_config = None
         return
+    if args.router != RouterKind.DYNAMO:
+        raise ValueError("--dynamo-config requires --router dynamo")
     args.dynamo_config = load_dynamo_config(Path(args.dynamo_config))
     logger.info("Required Dynamo/SGLang build revisions (not runtime-verified): %s", args.dynamo_config.pins)
-    if args.use_miles_router or args.rollout_external:
-        raise ValueError("--dynamo-config selects a Miles-managed router and SGLang engines")
+    if args.rollout_external:
+        raise ValueError("Dynamo requires a Miles-managed router and SGLang engines")
     config = sglang
     if len(config.models) != 1 or any(
         group.worker_type != WorkerType.REGULAR for model in config.models for group in model.server_groups
