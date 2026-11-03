@@ -39,10 +39,11 @@ re-sends it from the checkpoint, so the engines get it back after each offload.
 
 Qwen3.5-9B, 300 steps on 8 H200 (TP4), scored every 10 steps on 600 held-out Charades-STA items (none of the
 training videos come from Charades): tIoU 0.48 at step 0, 0.56-0.57 from step 150 on, best 0.573. The train vs
-rollout logprob gap stays around 0.006 for the whole run.
+rollout logprob gap is 0.010-0.016 over the first 40 steps and 0.004-0.008 after that.
 
 <img src="timelens_qwen35_9b_eval.png" alt="eval/charades" width="800">
 <img src="timelens_qwen35_9b_reward.png" alt="rollout/raw_reward" width="800">
+<img src="timelens_qwen35_9b_logprob_diff.png" alt="train/train_rollout_logprob_abs_diff" width="800">
 
 Three held-out Charades items, answered by the model at step 0 and at step 299. Each strip shows eight frames of the
 video and, below them, the ground-truth span (green), the step-0 prediction (gray) and the step-299 prediction (blue).
