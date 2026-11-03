@@ -393,8 +393,8 @@ def test_lora_resumes_only_through_the_adapter_path(tmp_path):
     pytest.importorskip("torchtitan")
     from miles.backends.torchtitan_utils.config import _checkpointer_config
 
-    def config(load=None, save=None):
-        args = SimpleNamespace(backend=SimpleNamespace(load=load, save=save))
+    def config(load=None, save=None, lora_adapter_path=None):
+        args = SimpleNamespace(backend=SimpleNamespace(load=load, save=save), lora_adapter_path=lora_adapter_path)
         return _checkpointer_config(args, dump_subdir="actor", with_lora=True)
 
     old = tmp_path / "old"
@@ -404,9 +404,13 @@ def test_lora_resumes_only_through_the_adapter_path(tmp_path):
         with pytest.raises(ValueError, match=f"--{flag} holds the torchtitan checkpoint {step}"):
             config(**{flag: str(old)})
     adapters = tmp_path / "adapters"
-    (adapters / "iter_0000003" / "adapter").mkdir(parents=True)
-    with pytest.raises(ValueError, match="--load is the base model"):
-        config(load=str(adapters))
+    adapter = adapters / "iter_0000003" / "adapter"
+    adapter.mkdir(parents=True)
+    with pytest.raises(ValueError, match=f"--save {adapters} holds LoRA adapter checkpoints"):
+        config(save=str(adapters))
+    # --load still restores the rollout state; the adapter comes from --lora-adapter-path
+    resumed = config(load=str(adapters), save=str(adapters), lora_adapter_path=str(adapter))
+    assert resumed.initial_load_path is None
     base = config(load=str(tmp_path / "empty"), save=str(tmp_path / "save"))
     assert (base.initial_load_path, base.initial_load_model_only, base.initial_load_in_hf) == (None, True, True)
 
