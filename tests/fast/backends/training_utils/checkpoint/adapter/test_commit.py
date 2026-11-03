@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from miles.backends.training_utils.checkpoint.adapter import commit as commit_module
 from miles.backends.training_utils.checkpoint.adapter.commit import (
     TENANT_FILENAME,
     OwnershipError,
@@ -131,6 +132,25 @@ def test_a_failed_adoption_keeps_the_checkpoint_saved_before_commits(tmp_path, m
         _save(tmp_path, "w", "new")
     delete_unreferenced_adapter_dirs(tmp_path, "w")
     assert (resolve_adapter_dir(tmp_path, "w", tenant=None).path / "payload").read_text() == "legacy"
+
+
+@pytest.mark.parametrize("overwrite", [True, False])
+def test_a_retried_commit_of_the_same_write_keeps_it(tmp_path, monkeypatch, overwrite):
+    first = _save(tmp_path, "w", "1")
+    with write_adapter_dir(tmp_path, "w") as written:
+        (written.path / "payload").write_text("2")
+    real_fsync = commit_module._fsync
+
+    def fail_once(path):
+        monkeypatch.setattr(commit_module, "_fsync", real_fsync)
+        raise OSError("fsync failed after the link swap")
+
+    monkeypatch.setattr(commit_module, "_fsync", fail_once)
+    with pytest.raises(OSError, match="after the link swap"):
+        commit_adapter_dir(tmp_path, "w", written, overwrite=True)
+    assert commit_adapter_dir(tmp_path, "w", written, overwrite=overwrite).path == written.path
+    assert (resolve_adapter_dir(tmp_path, "w", tenant=None).path / "payload").read_text() == "2"
+    assert not first.path.exists()
 
 
 def test_the_written_files_and_dir_are_synced_before_the_link_swap(tmp_path, monkeypatch):

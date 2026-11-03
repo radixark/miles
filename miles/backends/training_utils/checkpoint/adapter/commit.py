@@ -118,7 +118,11 @@ def commit_adapter_dir(
     """Atomically point ``<name>`` at ``written``; the replaced commit is removed afterwards."""
     root, link = Path(root), Path(root) / name
     assert written.path == _physical_dir(root, name, written.commit_id), f"{written.path} was not written for {name!r}"
+    assert written.path.is_dir(), f"{written.path} does not exist"
     delete_unreferenced_adapter_dirs(root, name, keep=written.path.name)
+    if _link_target(link) == written.path:
+        # a retry after the link swap; the commit already stands
+        return CommittedAdapterDir(written.path, written.commit_id)
     if not overwrite and (link.is_dir() or link.is_symlink()):
         _rmtree(written.path)
         raise FileExistsError(f"adapter {name!r} already exists")
