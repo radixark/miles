@@ -360,11 +360,12 @@ def find_load_mismatch(
                     "load it on a gateway with the layout it was saved with"
                 )
         elif kind in (AdapterSourceKind.ADAPTER_DIR, AdapterSourceKind.PEFT, AdapterSourceKind.EXTERNAL_WEIGHTS):
-            reader = {
-                AdapterSourceKind.ADAPTER_DIR: lambda: MilesAdapterDirReader(path, targets),
-                AdapterSourceKind.PEFT: lambda: PeftAdapterReader(path, run, targets),
-                AdapterSourceKind.EXTERNAL_WEIGHTS: lambda: ExternalWeightsReader(path, run, targets),
-            }[kind]()
+            if kind == AdapterSourceKind.ADAPTER_DIR:
+                reader = MilesAdapterDirReader(path, targets)
+            elif kind == AdapterSourceKind.PEFT:
+                reader = PeftAdapterReader(path, run, targets)
+            else:
+                reader = ExternalWeightsReader(path, run, targets)
             source = reader.source
             steps = plan_parametrization_conversion(source.parametrization, run, source_dtype=source.weight_dtype)
             assert_parametrization_matches_run(
