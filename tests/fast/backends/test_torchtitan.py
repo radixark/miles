@@ -189,18 +189,18 @@ def test_a_static_shape_platform_compiles_static_graphs_for_every_pass_and_bucke
     pytest.importorskip("torchtitan")
     from miles.backends.torchtitan_utils.trainer import configure_fixed_shape_compile
 
-    monkeypatch.setattr(torch._dynamo.config, "recompile_limit", 1)
-    monkeypatch.setattr(torch._dynamo.config, "automatic_dynamic_shapes", True)
-    configure_fixed_shape_compile(seq_len=8192, num_passes=3)
-    assert torch._dynamo.config.recompile_limit == 1, "a dynamic-shape platform compiles one graph per pass"
-    assert torch._dynamo.config.automatic_dynamic_shapes
+    # dynamo's own patch: monkeypatch's undo deletes a config key, which hides it from every later compile
+    with torch._dynamo.config.patch(recompile_limit=1, automatic_dynamic_shapes=True):
+        configure_fixed_shape_compile(seq_len=8192, num_passes=3)
+        assert torch._dynamo.config.recompile_limit == 1, "a dynamic-shape platform compiles one graph per pass"
+        assert torch._dynamo.config.automatic_dynamic_shapes
 
-    monkeypatch.setattr(platforms.current_platform, "dynamic_shapes", False)
-    configure_fixed_shape_compile(seq_len=8192, num_passes=2)
-    assert torch._dynamo.config.recompile_limit == 2 * 4  # buckets 1024, 2048, 4096, 8192
-    assert not torch._dynamo.config.automatic_dynamic_shapes
-    configure_fixed_shape_compile(seq_len=8192, num_passes=3)
-    assert torch._dynamo.config.recompile_limit == 3 * 4
+        monkeypatch.setattr(platforms.current_platform, "dynamic_shapes", False)
+        configure_fixed_shape_compile(seq_len=8192, num_passes=2)
+        assert torch._dynamo.config.recompile_limit == 2 * 4  # buckets 1024, 2048, 4096, 8192
+        assert not torch._dynamo.config.automatic_dynamic_shapes
+        configure_fixed_shape_compile(seq_len=8192, num_passes=3)
+        assert torch._dynamo.config.recompile_limit == 3 * 4
 
 
 def test_context_parallelism_is_rejected_for_qwen3_5(monkeypatch):
