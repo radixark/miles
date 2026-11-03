@@ -1,16 +1,20 @@
 """Pure-torch port of the Qwen3.5 vision tower, computed the way SGLang's ``Qwen3VLMoeVisionModel`` computes it.
 
-The tower is frozen and inference-only. Each step follows SGLang's serving path on CUDA (Hopper), so the trainer
-merges the vision features the rollout engines saw:
+The tower is frozen and inference-only. Each step follows SGLang's serving path on CUDA, so the trainer merges the
+vision features the rollout engines saw:
 
 - the patch embedding is ``Conv3dLayer``'s unfold + one GEMM, not cuDNN's Conv3d;
 - the position-embedding table is interpolated with SGLang's bilinear weights, scaled and summed in the table dtype;
 - the rotary cos/sin table is computed in fp32 on the GPU, as ``RotaryEmbedding`` builds its cache;
-- attention applies SGLang's ``apply_rotary_pos_emb`` and runs on SGLang's FA3 varlen kernel.
+- attention applies SGLang's ``apply_rotary_pos_emb`` and runs on the flash-attention package of the device's
+  generation (FA3 on Hopper, FA4 on Blackwell), the kernels SGLang's ``VisionAttention`` picks on the same device.
+  SGLang's FA3 is the same build as the package; its FA4 is a vendored copy that differs from the package at bf16
+  ULP level, so on Blackwell launch the engines with ``SGLANG_INKLING_FA4_USE_PIP=1`` to keep the rows bitwise.
 
 Parameter names are the HF ones under ``model.visual.``, so the checkpoint loads unchanged.
 """
 
+import functools
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -80,9 +84,10 @@ class _Attention(nn.Module):
     def forward(
         self, x: torch.Tensor, cu_seqlens: torch.Tensor, max_seqlen: int, cos: torch.Tensor, sin: torch.Tensor
     ) -> torch.Tensor:
-        # Deferred: SGLang's kernels are only importable where SGLang is installed.
-        from sglang.kernels.ops.attention.flash_attention import flash_attn_varlen_func
+        # Deferred: SGLang is only importable where it is installed.
         from sglang.srt.layers.rotary_embedding import apply_rotary_pos_emb
+
+        flash_attn_varlen_func = _flash_attn_varlen_func()
 
         q, k, v = self.qkv(x).split(self.num_heads * self.head_dim, dim=-1)
         q = q.reshape(-1, self.num_heads, self.head_dim)
@@ -97,10 +102,26 @@ class _Attention(nn.Module):
             cu_seqlens_k=cu_seqlens,
             max_seqlen_q=max_seqlen,
             max_seqlen_k=max_seqlen,
-            softmax_scale=None,
-            window_size=(-1, -1),
         )
         return self.proj(out.reshape(x.shape[0], -1))
+
+
+@functools.cache
+def _flash_attn_varlen_func():
+    """The varlen flash-attention of the device's generation: FA3 on Hopper, FA4 on Blackwell.
+
+    SGLang's prebuilt FA3 and vendored FA4 have no backward; the pip packages compute the same forward
+    (bitwise on the tower) and keep the tower trainable.
+    """
+    major, _ = torch.cuda.get_device_capability()
+    if major == 9:
+        from flash_attn_interface import flash_attn_varlen_func
+    elif major == 10:
+        from flash_attn.cute.interface import flash_attn_varlen_func
+    else:
+        raise RuntimeError(f"the Qwen3.5 vision tower needs FA3 (SM90) or FA4 (SM100); got SM{major}x")
+    # Both packages return (out, lse).
+    return lambda *args, **kwargs: flash_attn_varlen_func(*args, **kwargs)[0]
 
 
 class _MLP(nn.Module):
