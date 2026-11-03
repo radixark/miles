@@ -3,7 +3,9 @@ from tests.ci.ci_register import register_cpu_ci
 register_cpu_ci(est_time=60, suite="stage-b-cpu", labels=["replay"])
 
 import torch
+from torch._dynamo.testing import CompileCounter
 
+from miles.backends.torchtitan_utils import routing_replay
 from miles.utils import replay_base
 from miles.utils.replay_base import BaseReplayManager, RoutingReplayManager
 
@@ -103,3 +105,35 @@ def test_without_dynamic_shapes_rollout_ids_stay_on_the_host_until_popped(monkey
 
     assert replay.top_indices_list[0].device.type == "cpu"
     assert replay.pop_forward().device.type == "meta"
+
+
+def test_staged_ids_compile_once_across_microbatches(monkeypatch):
+    """A compiled block that pops its own ids guards on forward_index and recompiles every microbatch."""
+    monkeypatch.setattr(replay_base.current_platform, "dynamic_shapes", False)
+    monkeypatch.setattr(replay_base.current_platform, "current_device", lambda: torch.device("cpu"))
+    manager = RoutingReplayManager()
+    manager.enabled = True
+    manager.stage = "replay_forward"
+    topk_fn = manager.get_topk_fn(_topk, return_probs=False)
+
+    class _Router(torch.nn.Module):
+        def forward(self, scores):
+            return topk_fn(scores, 2)
+
+    routers = [_Router() for _ in range(3)]
+    replays = [manager.register_to_module(router, "routing_replay", stream_idx=i) for i, router in enumerate(routers)]
+    ids = torch.randint(0, 5, (4, 3, 8, 2), dtype=torch.int32)  # [microbatch, layer, token, topk]
+    for microbatch_ids in ids:
+        for replay, layer_ids in zip(replays, microbatch_ids, strict=True):
+            replay.record(layer_ids)
+
+    torch._dynamo.reset()
+    counter = CompileCounter()
+    compiled = [torch.compile(router, backend=counter, fullgraph=True, dynamic=False) for router in routers]
+    scores = torch.rand(8, 5)
+    for microbatch_ids in ids:
+        with routing_replay._stage_forward_ids(replays):
+            for router, layer_ids in zip(compiled, microbatch_ids, strict=True):
+                torch.testing.assert_close(router(scores), layer_ids)
+
+    assert counter.frame_count == 1, f"{counter.frame_count} compiles for {len(ids)} microbatches"
