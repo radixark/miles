@@ -121,6 +121,20 @@ def test_weights_only_from_the_same_parametrization_reads_only_local_pieces(monk
     assert torch.equal(members.imported.weights[1], FULL["lora_B"])
 
 
+def test_a_same_parametrization_load_reads_fp32_under_a_bf16_default_dtype():
+    root = tempfile.mkdtemp()
+    run_multiprocess(partial(_save, root=root))
+    committed = resolve_adapter_dir(Path(root), "w", tenant="alice")
+    members = FakeMembers()
+    default_dtype = torch.get_default_dtype()
+    torch.set_default_dtype(torch.bfloat16)
+    try:
+        load_adapter_dir(committed.path, members, 0, RUN, TARGETS, load_optimizer=True)
+    finally:
+        torch.set_default_dtype(default_dtype)
+    assert torch.equal(members.imported.exp_avgs[1], FULL["lora_B"] * 2)
+
+
 def _rank0_cannot_create(rank, world_size, port, *, root):
     init_gloo(rank, world_size, port=port)
     init_gloo_group()
