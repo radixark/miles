@@ -11,7 +11,9 @@ from miles.backends.training_utils.checkpoint.adapter.readers import AdapterSour
 @pytest.fixture
 def legacy_source(monkeypatch):
     init_gloo(0, 1, port=find_free_port())
-    monkeypatch.setattr(checkpoint, "classify_adapter_source", lambda *_, **__: AdapterSourceKind.LEGACY_TINKER_CHECKPOINT)
+    monkeypatch.setattr(
+        checkpoint, "classify_adapter_source", lambda *_, **__: AdapterSourceKind.LEGACY_TINKER_CHECKPOINT
+    )
     monkeypatch.setattr(checkpoint, "_read_legacy_meta", lambda *_: {})
     metadata = SimpleNamespace(state_dict_metadata={"layer.adapter.w": None})
     monkeypatch.setattr(checkpoint.dcp, "FileSystemReader", lambda _: SimpleNamespace(read_metadata=lambda: metadata))
