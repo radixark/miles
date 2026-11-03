@@ -1,12 +1,13 @@
 """`quantize_params_compressed_tensors` re-quantizes exactly the weights the checkpoint stores packed."""
 
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 # The quantizer hardcodes `device="cuda"` throughout, so it runs on a GPU worker.
 register_cuda_ci(
     est_time=60, suite="stage-b-2-gpu-h200", labels=["precision"], hardware=["hopper", "blackwell"], num_gpus=1
 )
 
+register_rocm_ci(est_time=40, suite="nightly-stage-c-2-gpu-mi350", labels=["precision"])
 
 import torch
 
