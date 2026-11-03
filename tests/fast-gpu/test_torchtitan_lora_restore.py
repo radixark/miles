@@ -23,6 +23,7 @@ from miles.backends.torchtitan_utils.lora_checkpoint import (
     TorchtitanLoraCheckpoint,
     TorchtitanOptimizerMembers,
 )
+from miles.utils.distributed_utils import init_gloo_group
 
 _LORA_A, _LORA_B = "layers.0.attention.wq.lora_a.weight", "layers.0.attention.wq.lora_b.weight"
 
@@ -33,6 +34,7 @@ def single_rank_gloo():
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
     dist.init_process_group("gloo", init_method=f"tcp://127.0.0.1:{port}", rank=0, world_size=1)
+    init_gloo_group()
     try:
         yield
     finally:
@@ -80,6 +82,7 @@ def test_a_full_dcp_loads_its_training_state(tmp_path, single_rank_gloo):
 
 def _base_check_worker(rank: int, world_size: int, port: int, path) -> None:
     init_gloo(rank, world_size, port=port)
+    init_gloo_group()
     params = {key: torch.nn.Parameter(torch.zeros(2, 2)) for key in (_LORA_A, _LORA_B)}
     members = SimpleNamespace(adam_states=lambda: [{"step": torch.tensor(0.0)} for _ in params])
     sd_adapter = SimpleNamespace(to_hf=lambda tensors: {})

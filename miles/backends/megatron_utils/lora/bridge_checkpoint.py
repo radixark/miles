@@ -148,6 +148,9 @@ def probe_bridge_row_mapping(
                     decode(name, tensor)
                 except Exception as exc:
                     error = exc
+    except Exception as exc:
+        # the export's own failure goes through the rank agreement too, so the other ranks fail instead of waiting
+        error = exc
     finally:
         for param, data in zip(params, saved, strict=True):
             param.data = data
@@ -164,9 +167,17 @@ def probe_bridge_row_mapping(
                 for key, by_expert in per_expert.items()
                 for piece in _stack_experts(key, by_expert, num_experts[key])
             ]
-            # the library stores a shared A once, under the group's first member
-            shared_copies = {f"{member}.lora_A" for group in groups for member in group[1:]}
-            pieces = [p for p in pieces if p.key not in shared_copies]
+            # a group's A pieces are copies of one parameter; the library stores it once, under the group's first
+            # member, which a fused module's A need not have been decoded under
+            for group in groups:
+                a_keys = {f"{member}.lora_A" for member in group}
+                held = [p.key for p in pieces if p.key in a_keys]
+                assert held, f"{group}: this rank holds no piece of the shared A"
+                pieces = [
+                    replace(p, key=f"{group[0]}.lora_A") if p.key == held[0] else p
+                    for p in pieces
+                    if p.key not in a_keys or p.key == held[0]
+                ]
             covered = torch.zeros(total, dtype=torch.bool)
             for piece in pieces:
                 covered[piece.local_elements.flatten()] = True
@@ -252,7 +263,8 @@ def assert_bridge_run_config_matches(
     peft = config["peft"]
     lora_type = _BRIDGE_LORA_TYPES.get(peft["_target_"])
     assert lora_type is not None, f"Megatron-Bridge PEFT {peft['_target_']} is neither LoRA nor CanonicalLoRA"
-    # fields a Bridge version may predate default to its behaviour before them
+    # .get: a field newer than the Bridge that wrote the config is absent and takes the dataclass default, which is
+    # Bridge's behaviour before the field (experts_shared_outer_loras, share_expert_adapters, normalize_moe_lora)
     source = {
         "lora_type": lora_type,
         "lora_rank": peft["dim"],
@@ -262,10 +274,10 @@ def assert_bridge_run_config_matches(
     for field, value in source.items():
         assert value == run_fields[field], f"the source has {field}={value!r}; this run has {run_fields[field]!r}"
     assert peft["dropout"] == 0, f"LoRA dropout {peft['dropout']} is not supported"
-    assert not peft.get("exclude_modules"), f"exclude_modules {peft['exclude_modules']} is not supported"
+    assert not peft["exclude_modules"], f"exclude_modules {peft['exclude_modules']} is not supported"
     assert not peft.get("normalize_moe_lora", False), "normalize_moe_lora makes expert ranks depend on the saving ETP"
-    assert not peft.get("a2a_experimental", False), "a2a_experimental LoRA is not supported"
-    assert _yaml_dtype(peft.get("lora_dtype")) in (
+    assert not peft["a2a_experimental"], "a2a_experimental LoRA is not supported"
+    assert _yaml_dtype(peft["lora_dtype"]) in (
         None,
         str(params_dtype),
     ), f"lora_dtype {_yaml_dtype(peft['lora_dtype'])} differs from the model's {params_dtype}"
@@ -280,14 +292,10 @@ def assert_bridge_run_config_matches(
         assert optimizer[
             "use_distributed_optimizer"
         ], "the source did not use the DistributedOptimizer; pass --no-load-optim"
-        assert not optimizer.get(
-            "use_precision_aware_optimizer", False
-        ), "precision-aware optimizer state is not supported"
+        assert not optimizer["use_precision_aware_optimizer"], "precision-aware optimizer state is not supported"
         for field in ("main_params_dtype", "exp_avg_dtype", "exp_avg_sq_dtype"):
-            assert _yaml_dtype(optimizer.get(field)) in (None, "torch.float32"), f"{field} must be fp32"
-        assert config["checkpoint"].get(
-            "save_optim", True
-        ), "the source saved no optimizer state; pass --no-load-optim"
+            assert _yaml_dtype(optimizer[field]) in (None, "torch.float32"), f"{field} must be fp32"
+        assert config["checkpoint"]["save_optim"], "the source saved no optimizer state; pass --no-load-optim"
 
 
 def bridge_base_model_candidates(config: dict) -> tuple[str | None, ...]:
@@ -295,10 +303,12 @@ def bridge_base_model_candidates(config: dict) -> tuple[str | None, ...]:
     machine's path), the HF template it was converted from stands in, in Bridge's _resolve_hf_source order; that
     stand-in misses a base fine-tuned in Megatron."""
     checkpoint = config["checkpoint"]
+    # hf_source_path and hf_model_id are newer than some Bridge configs
     return (
-        checkpoint.get("pretrained_checkpoint"),
+        checkpoint["pretrained_checkpoint"],
         checkpoint.get("hf_source_path"),
         config["model"].get("hf_model_id"),
+        config["tokenizer"]["tokenizer_model"],
     )
 
 
@@ -323,12 +333,11 @@ class MegatronBridgeCheckpointLoader:
                 config, self._run, params_dtype=chunks[0].config.params_dtype, load_optimizer=self._load_optimizer
             )
             assert_same_base_model(str(path), bridge_base_model_candidates(config), self._run.base_model)
-            # the master check after loading reads the DistributedOptimizer's masters, weights-only too
-            assert all(
-                isinstance(sub, DistributedOptimizer) for sub in self._optimizer.chained_optimizers
-            ), "a Megatron-Bridge source loads only into the DistributedOptimizer: this run must use --optimizer adam"
             metadata = dict(dist_checkpointing.load_content_metadata(str(path)) or {})
             if self._load_optimizer:
+                assert all(
+                    isinstance(sub, DistributedOptimizer) for sub in self._optimizer.chained_optimizers
+                ), "a Megatron-Bridge source's Adam state loads only into the DistributedOptimizer; pass --no-load-optim"
                 sharding = metadata.get("distrib_optim_sharding_type")
                 assert sharding is not None, (
                     f"{path} records no optimizer sharding type (written by an older Megatron), so its Adam state "
@@ -381,7 +390,14 @@ class MegatronBridgeCheckpointLoader:
                 run_hyperparameters = [
                     {k: v for k, v in g.items() if k not in ("params", "step")} for g in self._optimizer.param_groups
                 ]
-                self._optimizer.load_state_dict(loaded["optimizer"])
+                try:
+                    self._optimizer.load_state_dict(loaded["optimizer"])
+                except KeyError as exc:
+                    # the DistributedOptimizer matches param groups by (wd_mult, lr_mult, is_expert_parallel,
+                    # is_decoupled_lr) and raises a bare KeyError of the missing key
+                    raise ValueError(
+                        f"{path} has no optimizer param group {exc} of this run's; pass --no-load-optim"
+                    ) from exc
                 for group, hyperparameters in zip(self._optimizer.param_groups, run_hyperparameters, strict=True):
                     group.update(hyperparameters)
             else:

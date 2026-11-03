@@ -1,11 +1,12 @@
 """Whether a source adapter was trained on this run's base model, judged from both sides' HF files.
 
-The fingerprint hashes every norm weight and the first layer's attention projections: every family has both, they
+The fingerprint hashes every norm weight and the first layer's attention weights: every family has both, they
 are small, and a full fine-tune changes the norms while a merged LoRA changes the projections. Weights are read from
 the HF files, never from a loaded (possibly quantized) model.
 """
 
 import json
+import re
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -15,9 +16,16 @@ from huggingface_hub.errors import HFValidationError, LocalEntryNotFoundError
 from safetensors import safe_open
 
 
+# HF names put layers at the root (DeepSeek-V4.1: layers.0.attn.wq_a) or under a prefix (Qwen: model.layers.0.self_attn)
+_FIRST_LAYER_ATTENTION_WEIGHT = re.compile(r"(^|\.)layers\.0\.(.+\.)?[^.]*attn[^.]*\.(.+\.)?weight$")
+
+
 def is_fingerprint_tensor(name: str) -> bool:
-    is_first_attention_projection = ".layers.0." in name and "attn." in name and name.endswith("proj.weight")
-    return name.endswith("norm.weight") or is_first_attention_projection
+    return name.endswith("norm.weight") or _FIRST_LAYER_ATTENTION_WEIGHT.search(name) is not None
+
+
+# safetensors dtype names; FP8 and the integer containers of MXFP4 / int quantization are left out
+_UNQUANTIZED_DTYPES = {"F16", "BF16", "F32", "F64"}
 
 
 def hf_fingerprint_tensors(hf_dir: Path) -> dict[str, torch.Tensor]:
@@ -31,9 +39,8 @@ def hf_fingerprint_tensors(hf_dir: Path) -> dict[str, torch.Tensor]:
     for file in files:
         with safe_open(str(hf_dir / file), "pt") as f:
             for name in f.keys():
-                if is_fingerprint_tensor(name) and (tensor := f.get_tensor(name)).is_floating_point():
-                    if tensor.element_size() > 1:
-                        tensors[name] = tensor
+                if is_fingerprint_tensor(name) and f.get_slice(name).get_dtype() in _UNQUANTIZED_DTYPES:
+                    tensors[name] = f.get_tensor(name)
     return tensors
 
 
@@ -76,6 +83,8 @@ def assert_same_base_model(source: str, candidates: Iterable[str], run_hf_checkp
     )
     run_dir = resolve_hf_dir(run_hf_checkpoint)
     assert run_dir is not None, f"--hf-checkpoint {run_hf_checkpoint} has no local HF weights to compare with"
+    if hf_dir.resolve() == run_dir.resolve():
+        return
     assert_same_base_tensors(
         source, hf_fingerprint_tensors(hf_dir), hf_fingerprint_tensors(run_dir), run_hf_checkpoint
     )

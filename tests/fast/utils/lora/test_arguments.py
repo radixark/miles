@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import sys
 from argparse import Namespace
@@ -16,6 +17,7 @@ from miles.utils.lora.arguments import (
     _validate_adapter_state_args,
     _validate_rollout_only_adapter,
     validate_lora_args,
+    validate_lora_args_after_megatron,
     validate_multi_lora_args,
 )
 
@@ -66,16 +68,30 @@ def test_lora_arguments_import_no_megatron_to_hf():
     assert subprocess.run([sys.executable, "-c", code]).returncode == 0
 
 
-_NO_SNAPSHOTS = dict(save_hf=None, eval_hf_dir=None, save=None, lora_adapter_path=None, debug_rollout_only=False)
+_NO_SNAPSHOTS = dict(
+    save_hf=None,
+    eval_hf_dir=None,
+    eval_uses_snapshots=False,
+    save=None,
+    lora_rank=8,
+    lora_adapter_path=None,
+    debug_rollout_only=False,
+)
 
 
 @pytest.mark.parametrize(
-    "flag, value",
-    [("save", "/ckpt"), ("save_hf", "/hf/{rollout_id}"), ("eval_hf_dir", "/eval"), ("lora_adapter_path", "/adapter")],
+    "overrides",
+    [
+        {"save": "/ckpt"},
+        {"save_hf": "/hf/{rollout_id}"},
+        {"eval_hf_dir": "/eval", "eval_uses_snapshots": True},
+        {"lora_adapter_path": "/adapter"},
+    ],
+    ids=["save", "save_hf", "eval_snapshots", "lora_adapter_path"],
 )
-def test_adapter_slots_need_the_families_hf_lora_layout(flag, value) -> None:
+def test_adapter_slots_need_the_families_hf_lora_layout(overrides) -> None:
     """Native trains glm4, which has no HF LoRA layout; saving or loading its adapter would crash building the slots."""
-    args = Namespace(**(_NO_SNAPSHOTS | {flag: value}))
+    args = Namespace(**(_NO_SNAPSHOTS | overrides))
     with pytest.raises(AssertionError, match="model_type='glm4', which miles does not define"):
         _assert_adapter_layout_defined(args, AutoConfig.for_model("glm4"))
     _assert_adapter_layout_defined(args, AutoConfig.for_model("qwen3"))
@@ -83,6 +99,12 @@ def test_adapter_slots_need_the_families_hf_lora_layout(flag, value) -> None:
 
 def test_a_rollout_only_run_builds_no_slots_for_any_family() -> None:
     args = Namespace(**(_NO_SNAPSHOTS | {"lora_adapter_path": "/adapter", "debug_rollout_only": True}))
+    _assert_adapter_layout_defined(args, AutoConfig.for_model("glm4"))
+
+
+def test_an_eval_dir_without_eval_snapshots_builds_no_slots() -> None:
+    """The actor publishes eval snapshots only under eval_uses_snapshots; validation must not refuse the run."""
+    args = Namespace(**(_NO_SNAPSHOTS | {"eval_hf_dir": "/eval"}))
     _assert_adapter_layout_defined(args, AutoConfig.for_model("glm4"))
 
 
@@ -103,7 +125,7 @@ def _adapter_state_args(**overrides) -> Namespace:
             "exp_avg_dtype": torch.float32,
             "exp_avg_sq_dtype": torch.float32,
             "main_params_dtype": torch.float32,
-            "use_distributed_optimizer": True,
+            "use_distributed_optimizer": False,
             "use_gloo_process_groups": True,
             "use_precision_aware_optimizer": False,
             "optimizer_cpu_offload": False,
@@ -173,6 +195,25 @@ def test_convert_save_is_refused_under_rollout_only(tmp_path):
         validate_lora_args(args)
 
 
+def test_a_relative_convert_save_is_made_absolute_on_the_driver(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    args = Namespace(
+        lora_type="lora",
+        multi_lora_n_adapters=0,
+        lora_rank=8,
+        lora_alpha=16.0,
+        lora_adapter_path=str(tmp_path),
+        lora_adapter_convert_save="converted",
+        train_backend="megatron",
+        megatron_to_hf_mode="bridge",
+        debug_rollout_only=True,
+    )
+    # rollout-only stops validation right after the path is resolved
+    with pytest.raises(AssertionError, match="--debug-rollout-only"):
+        validate_lora_args(args)
+    assert args.lora_adapter_convert_save == os.path.join(os.getcwd(), "converted")
+
+
 def test_multi_lora_refuses_an_adapter_path():
     with pytest.raises(AssertionError, match="--lora-adapter-path is single LoRA only"):
         validate_multi_lora_args(Namespace(multi_lora_n_adapters=2, lora_rank=8, lora_adapter_path="/adapter"))
@@ -183,6 +224,19 @@ def test_a_disabled_optimizer_cannot_save_or_load_the_adapter_checkpoint(save, l
     args = Namespace(save=save, lora_adapter_path=lora_adapter_path, debug_disable_optimizer=True)
     with pytest.raises(AssertionError, match="--debug-disable-optimizer"):
         _validate_adapter_state_args(args)
+
+
+def test_rollout_only_skips_the_adapter_checkpoint_checks():
+    args = Namespace(
+        lora_rank=8,
+        lora_adapter_path="/adapter",
+        save=None,
+        multi_lora=False,
+        megatron_to_hf_mode="bridge",
+        debug_rollout_only=True,
+        debug_disable_optimizer=True,
+    )
+    validate_lora_args_after_megatron(args)
 
 
 def test_the_adapter_checkpoint_requires_fp32_masters():

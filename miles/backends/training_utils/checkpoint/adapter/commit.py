@@ -91,8 +91,12 @@ def write_adapter_dir(root: Path, name: str, *, tenant_digest: str | None = None
     if not dist.is_initialized() or dist.get_rank() == 0:
         try:
             path.mkdir(parents=True)
-            if tenant_digest is not None:
-                (path / TENANT_FILENAME).write_text(json.dumps({"tenant_digest": tenant_digest}))
+            try:
+                if tenant_digest is not None:
+                    (path / TENANT_FILENAME).write_text(json.dumps({"tenant_digest": tenant_digest}))
+            except Exception:
+                _rmtree(path)
+                raise
         except Exception as exc:
             prepare_error = exc
     raise_if_any_rank_failed(prepare_error)
@@ -128,13 +132,20 @@ def commit_adapter_dir(
     """
     root, link = Path(root), Path(root) / name
     assert written.path == _physical_dir(root, name, written.commit_id), f"{written.path} was not written for {name!r}"
+    assert written.path.is_dir(), f"{written.path} does not exist"
     delete_unreferenced_adapter_dirs(root, name, keep=written.path.name)
+    if _link_target(link) == written.path:
+        # a retry after the link swap; the commit already stands
+        return CommittedAdapterDir(written.path, written.commit_id)
     if not overwrite and (link.is_dir() or link.is_symlink()):
         _rmtree(written.path)
         raise FileExistsError(f"adapter {name!r} already exists")
     if link.is_dir() and not link.is_symlink():
         _adopt_pre_commit_dir(root, name)
     previous = _link_target(link)
+    if previous is not None and not _is_library_dir(root, name, previous):
+        _rmtree(written.path)
+        raise _foreign_link_error(link, previous)
     staging_link = root / f".{name}.{written.commit_id}{_STAGING_SUFFIX}"
     staging_link.symlink_to(written.path.name)
     os.replace(staging_link, link)
@@ -171,7 +182,20 @@ def resolve_adapter_dir(root: Path, name: str, *, tenant: str | None) -> Committ
     return CommittedAdapterDir(target, target.name.rsplit(".", 1)[1])
 
 
+def _is_library_dir(root: Path, name: str, path: Path) -> bool:
+    internal = _INTERNAL_ENTRY.match(path.name)
+    return path.parent == root and internal is not None and internal["name"] == name and internal["suffix"] is None
+
+
+def _foreign_link_error(link: Path, target: Path) -> ValueError:
+    # e.g. a user's symlink to a shared adapter; replacing it must never retire the shared dir
+    return ValueError(f"{link} points to {target}, which this library did not write; refusing to replace or delete it")
+
+
 def delete_adapter_dir(root: Path, name: str, *, tenant: str | None) -> None:
+    target = _link_target(Path(root) / name)
+    if target is not None and not _is_library_dir(Path(root), name, target):
+        raise _foreign_link_error(Path(root) / name, target)
     committed = resolve_adapter_dir(root, name, tenant=tenant)
     if committed is None:
         raise FileNotFoundError(f"adapter {name!r} does not exist")

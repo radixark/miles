@@ -65,7 +65,7 @@ def _local_codes(param: torch.Tensor, start: int) -> torch.Tensor:
     return codes
 
 
-def probe_torchtitan_row_mapping(params: Mapping[str, torch.Tensor], sd_adapter, targets: HfLoraTargets) -> RowMapping:
+def probe_torchtitan_row_mapping(params: Mapping[str, torch.Tensor], sd_adapter) -> RowMapping:
     """Collective. ``params``: the adapter parameters by titan key, in the order their local shards are
     concatenated."""
     error = None
@@ -90,8 +90,11 @@ def _probe_local(
 ) -> tuple[list[HfPiece], list[tuple[str, ...]], set[str]]:
     starts, start = {}, 0
     for key, param in params.items():
+        shape = _local_box(param)[0]
+        # pieces index the to_local() shards, so the computed box must be exactly that shard
+        assert not isinstance(param, DTensor) or shape == tuple(param.to_local().shape), (key, shape)
         starts[key] = start
-        start += int(torch.Size(_local_box(param)[0]).numel())
+        start += int(torch.Size(shape).numel())
     pieces, groups, modules = [], [], set()
     for key in params:
         projection, factor = split_adapter_key(key)
@@ -129,13 +132,13 @@ class TorchtitanAdapterSlots(ProbedAdapterSlots):
     bf16_adapter_key_style = "peft"
 
     def __init__(self, model_parts, iterator, sd_adapter, targets: HfLoraTargets):
-        """Collective: probes the row mapping now, while nothing else touches the parameters."""
+        """Collective: probes the row mapping."""
         self._iterator, self.targets = iterator, targets
         self._specs = {}
         self._params = {
             key: param for part in model_parts for key, param in part.named_parameters() if is_adapter_key(key)
         }
-        self.row_mapping = probe_torchtitan_row_mapping(self._params, sd_adapter, targets)
+        self.row_mapping = probe_torchtitan_row_mapping(self._params, sd_adapter)
 
     @property
     def parameters(self) -> dict[str, torch.nn.Parameter]:

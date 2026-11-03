@@ -122,9 +122,11 @@ def read_source_lora_alpha(path: Path) -> float | None:
     """The alpha a source records, read without the model; None for a source that records none (torchtitan)."""
     if (path / PARAMETRIZATION_FILENAME).is_file():
         return read_parametrization(path).lora_alpha
-    # a Megatron-Bridge checkpoint by classify_adapter_source's rule; a PEFT dir may hold a stray run_config.yaml
+    # a DCP dir with a run_config.yaml is Megatron-Bridge's; a PEFT dir may hold a stray run_config.yaml
     if (path / ".metadata").is_file() and (path / "run_config.yaml").is_file():
-        return float(yaml.safe_load((path / "run_config.yaml").read_text())["peft"]["alpha"])
+        peft = yaml.safe_load((path / "run_config.yaml").read_text())["peft"]
+        assert peft is not None, f"{path} is a Megatron-Bridge checkpoint without PEFT (a full fine-tune), not a LoRA"
+        return float(peft["alpha"])
     for name in ("META.json", "adapter_config.json"):
         if (path / name).is_file():
             return json.loads((path / name).read_text())["lora_alpha"]
@@ -136,15 +138,10 @@ def _collapse_shared_lora_a(
 ) -> dict:
     """Undo a written expansion: keep the first member's A, after checking every copy matches it.
 
-    A re-fused HF module was read back as components holding A under the first one only.
+    A re-fused HF module was read back as components holding A under the sorted first one only.
     """
-    read_without_a = {member for fused in fused_groups for member in fused[1:]}
+    read_without_a = {member for fused in fused_groups for member in fused if member != min(fused)}
     for group in parametrization.shared_lora_a_groups:
-        if group[0] in read_without_a:
-            # the re-fused A came back under the fused module's first component, not the group's first member
-            holder = next(f for fused in fused_groups if group[0] in fused for f in fused[:1])
-            weights[f"{group[0]}.lora_A"] = weights.pop(f"{holder}.lora_A")
-            read_without_a = (read_without_a - {group[0]}) | {holder}
         first = weights[f"{group[0]}.lora_A"]
         for member in group[1:]:
             if member in read_without_a:
@@ -236,8 +233,6 @@ class PeftAdapterReader:
             has_optimizer_state=False,
             weight_dtype=next(iter(self._weights.values())).dtype,
         )
-        # a fused module's A was read under its first component, which need not be the group's first member
-        self._weights = _collapse_shared_lora_a(self._weights, self.source.parametrization, self._fused_groups)
 
     def _map_name(self, name: str) -> HfKey:
         return map_sampler_keys_to_hf_keys(name, self.targets)
