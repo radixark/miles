@@ -1,10 +1,12 @@
 """Commits are atomic link swaps, ownership is enforced, and recovery removes only unreferenced entries."""
 
 import os
+from pathlib import Path
 
 import pytest
 
 from miles.backends.training_utils.checkpoint.adapter.commit import (
+    TENANT_FILENAME,
     OwnershipError,
     commit_adapter_dir,
     delete_adapter_dir,
@@ -128,3 +130,32 @@ def test_a_failed_adoption_keeps_the_checkpoint_saved_before_commits(tmp_path, m
         _save(tmp_path, "w", "new")
     delete_unreferenced_adapter_dirs(tmp_path, "w")
     assert (resolve_adapter_dir(tmp_path, "w", tenant=None).path / "payload").read_text() == "legacy"
+
+
+def test_the_written_files_and_dir_are_synced_before_the_link_swap(tmp_path, monkeypatch):
+    events, path_by_fd = [], {}
+    real_open, real_fsync, real_replace = os.open, os.fsync, os.replace
+
+    def recording_open(path, *args, **kwargs):
+        fd = real_open(path, *args, **kwargs)
+        path_by_fd[fd] = Path(path)
+        return fd
+
+    def recording_fsync(fd):
+        events.append(("fsync", path_by_fd[fd]))
+        real_fsync(fd)
+
+    def recording_replace(src, dst):
+        events.append(("replace", Path(dst)))
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os, "open", recording_open)
+    monkeypatch.setattr(os, "fsync", recording_fsync)
+    monkeypatch.setattr(os, "replace", recording_replace)
+    metadata = (TENANT_FILENAME, "adapter_parametrization.json", "training_state.json")
+    with write_adapter_dir(tmp_path, "w", tenant_digest=tenant_digest("alice")) as written:
+        for filename in metadata[1:]:
+            (written.path / filename).write_text("{}")
+    commit_adapter_dir(tmp_path, "w", written, overwrite=False)
+    synced = {path for op, path in events[: events.index(("replace", tmp_path / "w"))] if op == "fsync"}
+    assert {written.path, *(written.path / f for f in metadata)} <= synced

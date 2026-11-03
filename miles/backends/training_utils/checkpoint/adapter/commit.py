@@ -92,6 +92,10 @@ def write_adapter_dir(root: Path, name: str, *, tenant_digest: str | None = None
     error = None
     try:
         yield UncommittedAdapterDir(path, commit_id)
+        if not dist.is_initialized() or dist.get_rank() == 0:
+            # the commit must follow a durable write; DCP syncs only its own files
+            for entry in (*path.iterdir(), path):
+                _fsync(entry)
     except Exception as exc:
         error = exc
     try:
@@ -125,7 +129,7 @@ def commit_adapter_dir(
     staging_link = root / f".{name}.{written.commit_id}{_STAGING_SUFFIX}"
     staging_link.symlink_to(written.path.name)
     os.replace(staging_link, link)
-    _fsync_dir(root)
+    _fsync(root)
     if previous is not None and previous.exists():
         _retire(previous)
     return CommittedAdapterDir(written.path, written.commit_id)
@@ -140,7 +144,7 @@ def _adopt_pre_commit_dir(root: Path, name: str) -> None:
     staging_link.symlink_to(physical.name)
     os.rename(root / name, physical)
     os.replace(staging_link, root / name)
-    _fsync_dir(root)
+    _fsync(root)
 
 
 def resolve_adapter_dir(root: Path, name: str, *, tenant: str | None) -> CommittedAdapterDir | None:
@@ -224,7 +228,7 @@ def _rmtree(path: Path) -> None:
         logger.exception(f"failed to remove {path}")
 
 
-def _fsync_dir(path: Path) -> None:
+def _fsync(path: Path) -> None:
     fd = os.open(path, os.O_RDONLY)
     try:
         os.fsync(fd)
