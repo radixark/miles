@@ -207,6 +207,20 @@ def test_an_encrypted_external_export_decrypts_to_the_plain_one(tmp_path, key_ty
         assert decrypted == (tmp_path / "plain" / name).read_bytes()
 
 
+def test_an_encrypted_external_export_never_writes_plaintext(tmp_path, monkeypatch):
+    identity = pyrage.x25519.Identity.generate()
+    real_encrypt = pyrage.encrypt
+
+    def encrypt(data, recipients):
+        assert not [p.name for p in (tmp_path / "age").glob("*") if p.suffix != ".age"], "plaintext on disk"
+        return real_encrypt(data, recipients)
+
+    monkeypatch.setattr(pyrage, "encrypt", encrypt)
+    write_external_adapter(
+        tmp_path / "age", _weights(False), _run(), QWEN35, age_recipients=[str(identity.to_public())]
+    )
+
+
 def test_tinker_names_classify_as_external(tmp_path):
     save_file(
         {"base_model.model.model.unembed_tokens.lora_A.weight": torch.zeros(2, 2)},

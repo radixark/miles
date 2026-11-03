@@ -1,9 +1,11 @@
 """PEFT, sampler and external (official Tinker) exports, written from whole HF-keyed tensors on one process."""
 
+import json
 from collections.abc import Sequence
 from pathlib import Path
 
 import pyrage
+import safetensors.torch
 import torch
 
 from miles.backends.training_utils.checkpoint.adapter.key_mapping import (
@@ -135,9 +137,18 @@ def write_external_adapter(
     hf_names = [map_hf_keys_to_peft_keys(f"{module}.lora_A") for module in parametrization.target_modules]
     # as the official export writes it: the training run, not the file, names the base
     config = _adapter_config(parametrization, hf_names) | {"base_model_name_or_path": None}
-    save_adapter_to_disk(directory, config, tensors)
-    if age_recipients:
-        _age_encrypt_in_place(Path(directory), age_recipients)
+    if not age_recipients:
+        save_adapter_to_disk(directory, config, tensors)
+        return
+    recipients = [parse_age_recipient(r) for r in age_recipients]
+    # encrypted in memory: no plaintext reaches the disk, where a crash, snapshot or backup could keep it
+    plaintexts = {
+        "adapter_config.json": json.dumps(config, indent=2).encode(),
+        "adapter_model.safetensors": safetensors.torch.save(tensors),
+    }
+    Path(directory).mkdir(parents=True, exist_ok=True)
+    for name, data in plaintexts.items():
+        (Path(directory) / f"{name}.age").write_bytes(pyrage.encrypt(data, recipients))
 
 
 def parse_age_recipient(recipient: str) -> pyrage.x25519.Recipient | pyrage.ssh.Recipient:
@@ -145,12 +156,3 @@ def parse_age_recipient(recipient: str) -> pyrage.x25519.Recipient | pyrage.ssh.
     if recipient.startswith("ssh-"):
         return pyrage.ssh.Recipient.from_str(recipient)
     return pyrage.x25519.Recipient.from_str(recipient)
-
-
-def _age_encrypt_in_place(directory: Path, recipients: Sequence[str]) -> None:
-    parsed = [parse_age_recipient(r) for r in recipients]
-    # not the whole directory: it also holds the gateway's tenant.json, which must stay readable to resolve the owner
-    for name in ("adapter_config.json", "adapter_model.safetensors"):
-        path = directory / name
-        path.with_name(path.name + ".age").write_bytes(pyrage.encrypt(path.read_bytes(), parsed))
-        path.unlink()
