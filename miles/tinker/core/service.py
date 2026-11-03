@@ -585,7 +585,9 @@ class TinkerService:
         # a source that records no base (official Tinker exports write null) is taken as trained on this one
         if source["base_model"] is not None and not _is_same_base_model(source["base_model"], self.config.base_model):
             raise UserInputError(
-                f"{uri} was trained on {source['base_model']!r}; this gateway serves {self.config.base_model!r}"
+                f"{uri} was trained on {source['base_model']!r}; this gateway serves {self.config.base_model!r} "
+                "(a hub id and a local path never match: start the gateway with --tinker-base-model naming the base "
+                "as its adapters record it)"
             )
         return path, source
 
