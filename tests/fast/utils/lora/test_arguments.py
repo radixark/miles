@@ -15,6 +15,7 @@ from miles.utils.lora.arguments import (
     _validate_adapter_state_args,
     _validate_rollout_only_adapter,
     validate_lora_args,
+    validate_lora_args_after_megatron,
     validate_multi_lora_args,
 )
 
@@ -126,6 +127,19 @@ def test_a_disabled_optimizer_cannot_save_or_load_the_adapter_checkpoint(save, l
     args = Namespace(save=save, lora_adapter_path=lora_adapter_path, debug_disable_optimizer=True)
     with pytest.raises(AssertionError, match="--debug-disable-optimizer"):
         _validate_adapter_state_args(args)
+
+
+def test_rollout_only_skips_the_adapter_checkpoint_checks():
+    args = Namespace(
+        lora_rank=8,
+        lora_adapter_path="/adapter",
+        save=None,
+        multi_lora=False,
+        megatron_to_hf_mode="bridge",
+        debug_rollout_only=True,
+        debug_disable_optimizer=True,
+    )
+    validate_lora_args_after_megatron(args)
 
 
 def test_the_adapter_checkpoint_requires_the_distributed_optimizer():
