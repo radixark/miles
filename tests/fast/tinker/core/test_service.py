@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import time
 from contextlib import suppress
 from pathlib import Path
@@ -1098,6 +1099,35 @@ async def test_ttl_is_set_removed_and_swept(service, monkeypatch):
     assert resolve_adapter_dir(root, "ck", tenant=None) is None and service.expiry.expires_at(path) is None
     with pytest.raises(NotFoundError):
         await service.delete_checkpoint("tenant", model_id, "weights/ck")
+
+
+@pytest.mark.parametrize(
+    "filename,content",
+    [
+        ("adapter_config.json", "{not json"),
+        ("adapter_config.json", json.dumps({"lora_alpha": 32})),
+        ("adapter_parametrization.json", json.dumps({"lora_rank": 8})),
+    ],
+    ids=["bad_json", "no_rank", "bad_parametrization"],
+)
+async def test_a_malformed_import_is_a_user_error_and_the_gateway_keeps_serving(tmp_path, filename, content):
+    adapter = tmp_path / "imports" / "adapter"
+    adapter.mkdir(parents=True)
+    (adapter / filename).write_text(content)
+    service = make_service(tmp_path / "root", import_root=str(tmp_path / "imports"))
+    run_task = asyncio.create_task(service.run())
+    try:
+        with pytest.raises(UserInputError, match=re.escape(str(adapter.resolve()))):
+            service.weights_info("tenant", f"file://{adapter}")
+        model_id = await created_model(service)
+        payload = {"model_id": model_id, "seq_id": 1, "path": f"file://{adapter}", "optimizer": False}
+        loaded = await await_settled(service, "tenant", service.submit("tenant", "load_state", payload))
+        assert loaded.state == FAILED and str(adapter.resolve()) in loaded.error
+        assert not run_task.done(), "the dispatcher survived"
+    finally:
+        run_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await run_task
 
 
 async def test_file_imports_stay_under_the_import_root_and_load_weights_only(tmp_path):

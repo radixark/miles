@@ -118,14 +118,18 @@ def delete_adapter(root: str, name: str, tenant: str | None) -> None:
 
 def read_imported_adapter(path: str) -> dict:
     """Rank and alpha of an adapter outside the checkpoint root; alpha None when the source records none."""
-    if (Path(path) / PARAMETRIZATION_FILENAME).is_file():
-        parametrization = read_parametrization(Path(path))
-        return {"lora_rank": parametrization.lora_rank, "lora_alpha": parametrization.lora_alpha}
     config_file = Path(path) / "adapter_config.json"
-    if not config_file.is_file():
-        raise UserInputError(f"{path} holds no adapter ({PARAMETRIZATION_FILENAME} or adapter_config.json)")
-    config = json.loads(config_file.read_text())
-    return {"lora_rank": config["r"], "lora_alpha": config.get("lora_alpha")}
+    # the source is the client's file: a malformed one is a user error, not a gateway failure
+    try:
+        if (Path(path) / PARAMETRIZATION_FILENAME).is_file():
+            parametrization = read_parametrization(Path(path))
+            return {"lora_rank": parametrization.lora_rank, "lora_alpha": parametrization.lora_alpha}
+        if config_file.is_file():
+            config = json.loads(config_file.read_text())
+            return {"lora_rank": config["r"], "lora_alpha": config.get("lora_alpha")}
+    except (OSError, ValueError, KeyError, TypeError, AssertionError) as error:
+        raise UserInputError(f"{path} is not a readable adapter: {type(error).__name__}: {error}") from error
+    raise UserInputError(f"{path} holds no adapter ({PARAMETRIZATION_FILENAME} or adapter_config.json)")
 
 
 class MilesBackend:
