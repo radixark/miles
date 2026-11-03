@@ -625,3 +625,18 @@ class TestWhatAReloadRefuses:
 
         with pytest.raises(AssertionError, match="no checkpoint holds it"):
             _reload(actor)
+
+
+@pytest.mark.parametrize("megatron_to_hf_mode", ["raw", "bridge"])
+def test_lora_save_alone_builds_adapter_slots(actor_module, tmp_path, megatron_to_hf_mode):
+    """A LoRA --save without --save-hf writes through the adapter slots in either mode."""
+    actor = _actor(
+        actor_module,
+        role="actor",
+        args=_args(tmp_path, lora_rank=8, megatron_to_hf_mode=megatron_to_hf_mode, save_hf=None, eval_hf_dir=None),
+    )
+    actor._init_weight_updater_and_publisher = Mock()
+
+    actor._init_training_state()
+
+    assert actor._init_weight_updater_and_publisher.call_args.kwargs["publish_snapshots"] is True

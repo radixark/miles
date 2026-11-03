@@ -301,7 +301,7 @@ class MegatronTrainRayActor(TrainRayActor):
             publish_snapshots=(
                 args.save_hf is not None
                 or (args.eval_uses_snapshots and args.eval_hf_dir is not None)
-                or (is_lora_enabled(args) and args.backend.save is not None and args.megatron_to_hf_mode != "raw")
+                or (is_lora_enabled(args) and args.backend.save is not None)
             ),
         )
 
