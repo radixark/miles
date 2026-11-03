@@ -135,6 +135,9 @@ def probe_bridge_row_mapping(
                     decode(name, tensor)
                 except Exception as exc:
                     error = exc
+    except Exception as exc:
+        # the export's own failure goes through the rank agreement too, so the other ranks fail instead of waiting
+        error = exc
     finally:
         for param, data in zip(params, saved, strict=True):
             param.data = data

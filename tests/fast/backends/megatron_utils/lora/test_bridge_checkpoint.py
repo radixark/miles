@@ -1,5 +1,6 @@
 """The row-mapping probe recovers each rank's HF pieces, primaries and shared A from an export alone."""
 
+import pytest
 import torch
 import torch.distributed as dist
 from tests.fast.dist_utils import init_gloo, run_multiprocess
@@ -133,3 +134,22 @@ def _probe_gdn(rank, world_size, port):
 
 def test_probe_stores_a_fused_gdn_modules_shared_a_under_the_sorted_first_member():
     run_multiprocess(_probe_gdn)
+
+
+def _export_fails_on_rank_1(params):
+    yield f"{Q}.lora_A.weight", params[0].data.clone()
+    if dist.get_rank() == 1:
+        raise ValueError("rank 1 cannot export")
+
+
+def _probe_export_fails(rank, world_size, port):
+    init_gloo(rank, world_size, port=port)
+    init_gloo_group()
+    params = [torch.nn.Parameter(torch.randn(3, 5))]
+    with pytest.raises(RuntimeError, match="adapter checkpoint failed: rank 1: ValueError: rank 1 cannot export"):
+        probe_bridge_row_mapping(params, lambda: _export_fails_on_rank_1(params), TARGETS)
+    dist.destroy_process_group()
+
+
+def test_an_export_failure_on_one_rank_fails_every_rank():
+    run_multiprocess(_probe_export_fails)
