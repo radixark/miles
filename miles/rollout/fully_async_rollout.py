@@ -53,6 +53,7 @@ from miles.rollout.inference_rollout.inference_rollout_eval import run_eval_data
 from miles.rollout.submission_scheduler import make_submission_scheduler
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
 from miles.utils.function_registry import load_function
+from miles.utils.output_store.dropped import record_dropped_samples
 from miles.utils.simple_checkpointer import load_simple_checkpoint, save_simple_checkpoint
 from miles.utils.types import Sample
 
@@ -246,6 +247,8 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         before_filter = SampleOwnershipRecorder.flatten_samples(data)
         if self._sample_filter is not None:
             self._sample_filter(args, data)
+        kept = {id(sample) for sample in SampleOwnershipRecorder.flatten_samples(data)}
+        record_dropped_samples(sample for sample in before_filter if id(sample) not in kept)
         SampleOwnershipRecorder.log_dropped_groups(
             args=args, before=before_filter, after=data, reason="rollout_sample_filter"
         )

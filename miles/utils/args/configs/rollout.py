@@ -116,6 +116,29 @@ class RolloutRelatedConfig(BaseConfig):
         int,
         Arg(help="Number of Mooncake memory replicas for each stored object."),
     ] = 1
+    use_output_store: A[
+        bool,
+        Arg(
+            help=(
+                "Have SGLang put the routed experts, indexer top-k and sampling mask of training responses in the "
+                "run's Mooncake and return a ref instead of the arrays; the trainer reads them back, and the "
+                "objects are deleted once nothing can read them. Requires --object-store-backend mooncake."
+            )
+        ),
+    ] = False
+    # Fits a 32k-token DeepSeek-V3.2 response with indexer top-k (about 15.3 GiB).
+    output_store_local_buffer_size: A[
+        str,
+        Arg(
+            help=(
+                "Local buffer of every SGLang engine writing the output store, in bytes or as a string such as "
+                "'16gb'. An engine puts all stored arrays of a response through it at once, so it must hold one "
+                "response's routed experts, indexer top-k and sampling mask together. With RDMA, each engine pins "
+                "the whole buffer in host memory when it starts. Train workers read straight into their own arrays "
+                "and register none."
+            )
+        ),
+    ] = "16gb"
 
     # partial rollout
     async_unused_samples_handler: A[
@@ -309,6 +332,18 @@ class RolloutRelatedConfig(BaseConfig):
         float,
         Arg(help="Seconds the trainer controller waits for one trainer cell's update_weights before giving it up."),
     ] = 600.0
+    p2p_transport: A[
+        str,
+        Arg(
+            type_parser=None,
+            choices=["mooncake", "nixl"],
+            help=(
+                "What a P2P weight update writes over. The rollout engines must publish their weights for it: "
+                "--sglang-remote-instance-weight-loader-start-seed-via-transfer-engine for mooncake, "
+                "--sglang-remote-instance-weight-loader-start-seed-via-nixl for nixl."
+            ),
+        ),
+    ] = "mooncake"
 
 
 class RolloutRelatedRolloutOnlyConfig(BaseConfig):
@@ -379,8 +414,14 @@ class RolloutRelatedRolloutOnlyConfig(BaseConfig):
     ] = None
     rollout_shuffle: A[
         bool,
-        Arg(help="Whether to shuffle the prompts during rollout."),
-    ] = False
+        Arg(
+            action=argparse.BooleanOptionalAction,
+            help=(
+                "Whether to shuffle the prompts once per epoch during rollout (seeded by --rollout-seed). "
+                "Pass --no-rollout-shuffle to read the prompts in file order."
+            ),
+        ),
+    ] = True
     rollout_seed: A[
         int,
         Arg(

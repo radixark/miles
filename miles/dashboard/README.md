@@ -119,3 +119,52 @@ producers (Timer sinks / rollout hooks / NVML samplers / sglang scraper)
 dump .pt + dashboard_columns/*.parquet + trajectory/*.jsonl   [written by training]
     -> serve.py: MetricStore + DumpReader -> FastAPI -> static SPA
 ```
+
+## Read bounds
+
+Live streams are hourly JSONL partitions; the server keeps the newest
+`MetricStore.PARTITION_CACHE_BLOCKS` (24) parsed per stream and tails the open
+one. Every request is sized by its window, never by the run's length:
+
+- Timeline windows are at most `MAX_WINDOW_S` (4 h). Phases read the window's
+  partitions plus `MAX_WINDOW_S` past its end (a phase lands in its end hour);
+  intervals still open come from an index built once and advanced on new bytes.
+- Run-long engine series (the Metrics `sglang` category) come from a view
+  thinned to at most `2 * SCRAPES_PER_ENGINE` scrapes per engine, built from
+  appended bytes only. Metric names come from `engine_catalog.json`, written by
+  the collector as it sees new names.
+- The engine overlay fetches only the engines on the selected lanes.
+- Advisories judge the trailing `MAX_WINDOW_S` before the newest engine scrape;
+  the abort alarm reads run totals only once it fires. The timeline renders
+  without waiting for them and, in follow mode, refreshes them every 30 s.
+- The Rollouts table builds 200 rows at a time.
+
+What still scales with history or step size: the first Metrics `sglang` query
+(it folds the whole run once), step summaries (one `torch.load` of the step's
+train dumps), and the lifecycle heatmap and trajectory reads, which parse
+trajectory rows as objects.
+
+## Simulating a large run
+
+`tests/manual/dashboard_simulator/` replays a real `--dump-details` run widened to N
+GPUs: every calibration GPU, engine and train rank becomes N/calibration copies,
+each rollout step carries that many times the samples, and the actor's DP size
+grows with it. All bytes are written by miles' own code (sinks, collector,
+`save_debug_rollout_data`, the train-data DP split and dump functions) on a
+virtual clock, so a 26 h run generates in minutes to hours; only per-token
+training values are synthetic. A x1 replay matches its calibration row for row.
+
+```bash
+python -m tests.manual.dashboard_simulator generate --gpus 256 --hours 26 --out <dir> \
+    --calibration <real dump> --actor-tp-size 2 --actor-pp-size 4 --actor-cp-size 4 --max-tokens-per-gpu 8192
+python -m tests.manual.dashboard_simulator bench-static --dump-details <dir>      # every endpoint, cold / warm
+python -m tests.manual.dashboard_simulator bench-follow --dump-details <copy>     # serve --follow + live appends
+python -m tests.manual.dashboard_simulator bench-collector --metrics-page <page> --engines 128
+python tests/manual/dashboard_simulator/browser.py --url http://127.0.0.1:7788 --dump-details <dir>
+```
+
+`bench-follow` appends new hour partitions, so run it on a hardlink copy
+(`cp -al`). The actor flags are the calibration launcher's: a dashboard dump
+does not record them. `--rollout-dumps-last-hours` / `--train-dumps-last-hours`
+keep only recent steps' dumps; the reader opens one step at a time, so older
+steps cost disk, not request time.

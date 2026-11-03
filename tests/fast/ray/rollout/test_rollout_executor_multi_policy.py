@@ -69,6 +69,7 @@ def _make_executor() -> RolloutExecutor:
     executor._train_parallel_configs_of_model_id = {}
     executor._rollouts_since_publish_of_model_id = defaultdict(int)
     executor.last_get_rollout_id_of_model_id = {}
+    executor._unreleased_store_refs = {}
     executor._eval_lock = asyncio.Lock()
     executor._eval_fleet = None
     executor._metric_checker = None

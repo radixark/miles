@@ -64,7 +64,7 @@ The rest follows from that split:
 | Activation recompute | `--recompute-granularity / method / num-layers` | `--gradient-checkpointing` | `--gradient-checkpointing` |
 | Optimizer on CPU | `--optimizer-cpu-offload` | `--optimizer-cpu-offload` | `--optimizer-cpu-offload` |
 | Offload beyond host RAM | `--offload-train-target disk`, `--stream-optimizer-state-to-disk` | Not supported | `--stream-optimizer-state-to-disk` (Adam moments) |
-| LoRA | Supported | Not supported | Not supported |
+| LoRA | Supported | Not supported | Linear projections, single adapter |
 
 ---
 
@@ -380,6 +380,10 @@ targets are Megatron-only: both `--offload-train-target disk` and
   you do not need that guarantee.
 - `--attn-implementation` picks the `transformers` attention backend: `flash_attention_2` by
   default, with `flash_attention_3`, `sdpa` and `eager` passed straight through.
+  `flash_attention_4` uses the FlashAttention-4 that SGLang installs, so it trains without a
+  `flash-attn` build. It needs the packed-document boundaries from the architecture's adapter:
+  Qwen3, Qwen3-MoE, Qwen3-VL, GLM-4.7-Flash, Qwen3.5, Qwen3.5-MoE and Qwen3-Next pass them; other
+  architectures (no adapter, or remote code) do not and cannot use it yet.
 - An architecture with fussier numerics can register its own policy, see
   [when an HF model needs help](#going-deeper-when-an-hf-model-needs-help).
 
@@ -482,7 +486,7 @@ Attention needs none of this. `--attn-implementation` is passed straight to `fro
 
 **No TP / PP / CP / EP.** The model must fit under `dp_replicate` × `dp_shard`.
 
-**No LoRA.** [LoRA](/advanced/lora) is Megatron-only.
+**No LoRA.** [LoRA](/advanced/lora) needs Megatron-LM or torchtitan.
 
 </Warning>
 
@@ -627,7 +631,7 @@ because that check compares the engine against the original HF checkpoint.
 `miles/backends/torchtitan_utils/models/`.** There is no per-architecture spec to write; a
 new model is a Python package that assembles torchtitan's own blocks.
 
-**No LoRA, no Muon (`--optimizer adam` only), no on-policy distillation, and
+**No Muon (`--optimizer adam` only), no on-policy distillation, and
 `--ref-update-interval` is rejected** rather than silently ignored.
 
 **Host offload is FSDP2's, validated on `glm5_next` only.** `--optimizer-cpu-offload` keeps the
@@ -635,6 +639,13 @@ weights, gradients and Adam state on the host and steps Adam on the CPU, and
 `--stream-optimizer-state-to-disk` then moves the Adam moments into files; other models pass the
 same policy through torchtitan's parallelize functions but have not been run that way.
 `--offload-train-target=disk` (the rollout-window backup) remains Megatron-only.
+
+**[LoRA](/advanced/lora) covers the Linear projections of `qwen3` models only.** torchtitan's converter adapts a
+projection by name in every layer at once, so MoE routed experts and per-layer target sets
+are refused at launch; use `--target-modules attn` on MoE models (not yet run end to end). Expert LoRA
+([pytorch/torchtitan#4877](https://github.com/pytorch/torchtitan/pull/4877)) and per-module
+targeting ([pytorch/torchtitan#5095](https://github.com/pytorch/torchtitan/pull/5095)) are on
+upstream torchtitan main; both need a torchtitan version bump in miles.
 
 </Warning>
 
