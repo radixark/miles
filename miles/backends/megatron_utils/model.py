@@ -105,6 +105,9 @@ def get_optimizer_param_scheduler(args: TrainerConfig, optimizer: MegatronOptimi
         args.backend.train_iters = (
             args.num_rollout * args.rollout_batch_size * args.n_samples_per_prompt // args.backend.global_batch_size
         )
+        # a run that trains no step (--num-rollout 0) has no schedule, and a loaded one passes through untouched
+        if args.backend.train_iters == 0:
+            return None
         if args.backend.lr_decay_iters is None:
             args.backend.lr_decay_iters = args.backend.train_iters
     lr_decay_steps = args.backend.lr_decay_iters * args.backend.global_batch_size
