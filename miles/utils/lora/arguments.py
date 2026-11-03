@@ -141,9 +141,9 @@ def _validate_rollout_only_adapter(args) -> None:
         f"{path} uses official Tinker tensor names, which need a conversion that rollout-only does not do; "
         "convert it first with --lora-adapter-convert-save"
     )
-    assert (path / "adapter_model.safetensors").is_file(), (
-        f"{path} has no PEFT export for the engines to load; write one first with --lora-adapter-convert-save"
-    )
+    assert (
+        path / "adapter_model.safetensors"
+    ).is_file(), f"{path} has no PEFT export for the engines to load; write one first with --lora-adapter-convert-save"
 
 
 def _default_lora_type(args) -> str:
@@ -161,7 +161,12 @@ def validate_lora_args_after_megatron(args):
     """Checks that read Megatron's resolved args; for native (raw-mode) LoRA also the targets its spec serves
     (e.g. the expert TP size it defaults from TP)."""
     # rollout-only builds no optimizer and saves nothing
-    if is_lora_enabled(args) and not args.multi_lora and args.megatron_to_hf_mode == "bridge" and not args.debug_rollout_only:
+    if (
+        is_lora_enabled(args)
+        and not args.multi_lora
+        and args.megatron_to_hf_mode == "bridge"
+        and not args.debug_rollout_only
+    ):
         _validate_adapter_state_args(args)
     if not (is_lora_enabled(args) and args.megatron_to_hf_mode == "raw"):
         return
