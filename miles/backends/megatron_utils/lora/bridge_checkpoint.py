@@ -295,7 +295,11 @@ def bridge_base_model_candidates(config: dict) -> tuple[str | None, ...]:
     machine's path), the HF template it was converted from stands in, in Bridge's _resolve_hf_source order; that
     stand-in misses a base fine-tuned in Megatron."""
     checkpoint = config["checkpoint"]
-    return checkpoint.get("pretrained_checkpoint"), checkpoint.get("hf_source_path"), config["model"].get("hf_model_id")
+    return (
+        checkpoint.get("pretrained_checkpoint"),
+        checkpoint.get("hf_source_path"),
+        config["model"].get("hf_model_id"),
+    )
 
 
 class MegatronBridgeCheckpointLoader:
