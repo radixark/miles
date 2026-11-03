@@ -6,7 +6,7 @@ from torchtitan.config.transform.apply import transform_model_config_
 from torchtitan.models.base import BaseModel
 from torchtitan.models.common.linear import Linear
 
-from miles.backends.torchtitan_utils.lora_checkpoint import hf_export_names
+from miles.backends.torchtitan_utils.lora_names import hf_export_names
 from miles.utils.lora.utils import matches_lora_target
 
 

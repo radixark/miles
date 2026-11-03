@@ -27,12 +27,6 @@ from miles.utils.lora.hf_lora_targets import HfLoraTargets
 _PEFT_FACTOR = {"lora_a": "lora_A", "lora_b": "lora_B"}
 
 
-def hf_export_names(sd_adapter, projection: str, weight_shape: tuple[int, ...]) -> list[str]:
-    """The HF modules a titan projection's weight exports as; several for a fused projection."""
-    probe = torch.empty(weight_shape, device="meta")
-    return [name.removesuffix(".weight") for name in sd_adapter.to_hf({f"{projection}.weight": probe})]
-
-
 def _local_box(param: torch.Tensor) -> tuple[tuple[int, ...], tuple[int, ...]]:
     if isinstance(param, DTensor):
         shape, offset = compute_local_shape_and_global_offset(param.shape, param.device_mesh, param.placements)
