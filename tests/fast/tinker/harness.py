@@ -171,7 +171,13 @@ class FakeBackend:
             return failure
         parametrization = _parametrization(parametrization_fields)
         with write_adapter_dir(Path(root), name, tenant_digest=tenant_digest) as written:
-            write_external_adapter(written.path, _weights(parametrization.lora_rank), parametrization, _TARGETS)
+            write_external_adapter(
+                written.path,
+                _weights(parametrization.lora_rank),
+                parametrization,
+                _TARGETS,
+                age_recipients=age_recipients,
+            )
         return written
 
     async def export_slot(self, slot, root, name, tenant_digest, parametrization_fields):

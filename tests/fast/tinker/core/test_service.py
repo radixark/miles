@@ -8,6 +8,7 @@ import time
 from contextlib import suppress
 from pathlib import Path
 
+import pyrage
 import pytest
 from tests.fast.tinker.harness import (
     ADAM,
@@ -1030,6 +1031,21 @@ async def test_an_external_save_is_downloadable_by_its_tenant_only(service):
     with pytest.raises(NotFoundError, match="deleted"):
         service.download_path(token, "adapter_config.json")
     assert service.expiry.expires_at(result["path"]) is None
+
+
+async def test_an_encrypted_external_save_keeps_its_owner(service):
+    """Only the export's files are encrypted; tenant.json stays readable, so the owner can list and delete it."""
+    model_id = await created_model(service)
+    recipient = str(pyrage.x25519.Identity.generate().to_public())
+    save = service.submit(
+        "tenant", "save_weights_external", _external_payload(model_id, 1, "export", age_recipients=[recipient])
+    )
+    assert (await await_settled(service, "tenant", save)).state == DONE
+    urls = service.external_weights_urls("tenant", model_id, "external_weights/export", "http://gateway/")
+    assert sorted(urls["urls"]) == ["adapter_config.json.age", "adapter_model.safetensors.age"]
+    with pytest.raises(OwnershipError):
+        service.external_weights_urls("mallory", model_id, "external_weights/export", "http://gateway/")
+    await service.delete_checkpoint("tenant", model_id, "external_weights/export")
 
 
 async def test_an_external_save_refuses_an_existing_name_and_non_age_recipients(service):

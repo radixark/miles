@@ -122,7 +122,7 @@ def write_external_adapter(
 ) -> None:
     """The official Tinker export: F32 under Tinker names, experts stacked 3D as the parametrization has them
     (``[1, ...]`` on a shared-outer side), and every module its own copy of a shared A (no re-fusing: Tinker trains
-    the components apart). With ``age_recipients`` every file is age-encrypted to them and named ``<file>.age``."""
+    the components apart). With ``age_recipients`` both files are age-encrypted to them and named ``<file>.age``."""
     tensors = {}
     shared_copies = {member: group[0] for group in parametrization.shared_lora_a_groups for member in group[1:]}
     for module in parametrization.target_modules:
@@ -142,6 +142,8 @@ def _age_encrypt_in_place(directory: Path, recipients: Sequence[str]) -> None:
     import pyrage
 
     parsed = [pyrage.x25519.Recipient.from_str(r) for r in recipients]
-    for path in sorted(directory.iterdir()):
+    # not the whole directory: it also holds the gateway's tenant.json, which must stay readable to resolve the owner
+    for name in ("adapter_config.json", "adapter_model.safetensors"):
+        path = directory / name
         path.with_name(path.name + ".age").write_bytes(pyrage.encrypt(path.read_bytes(), parsed))
         path.unlink()
