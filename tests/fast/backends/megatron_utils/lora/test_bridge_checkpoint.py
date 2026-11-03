@@ -1,5 +1,6 @@
 """The row-mapping probe recovers each rank's HF pieces, primaries and shared A from an export alone."""
 
+import pytest
 import torch
 import torch.distributed as dist
 from tests.fast.dist_utils import init_gloo, run_multiprocess
@@ -87,3 +88,38 @@ def _probe_experts(rank, world_size, port):
 
 def test_probe_stacks_ep_split_experts_and_stores_a_shared_expert_a_once():
     run_multiprocess(_probe_experts)
+
+
+HEAD = "lm_head"
+
+
+def _trimmed_head_export(params, served_rows):
+    """Native-like: B gathered over the vocab split, then trimmed to the served vocab."""
+    a, b = params
+    parts = [torch.empty_like(b) for _ in range(dist.get_world_size())]
+    dist.all_gather(parts, b.data)
+    yield f"{HEAD}.lora_A.weight", a.data.clone()
+    yield f"{HEAD}.lora_B.weight", torch.cat(parts)[:served_rows]
+
+
+def _probe_trimmed_head(rank, world_size, port):
+    init_gloo(rank, world_size, port=port)
+    # vocab 7 padded to 8: rank 1's last row of B is padding
+    params = [torch.nn.Parameter(torch.randn(2, 5)), torch.nn.Parameter(torch.randn(4, 2))]
+    padding = torch.arange(10 + 3 * 2, 10 + 4 * 2) if rank == 1 else torch.empty(0, dtype=torch.long)
+    with pytest.raises(RuntimeError, match="rank 1: AssertionError: .*does not reach 2 of this rank's elements"):
+        probe_bridge_row_mapping(params, lambda: _trimmed_head_export(params, 7), TARGETS)
+
+    mapping = probe_bridge_row_mapping(params, lambda: _trimmed_head_export(params, 7), TARGETS, unexported=padding)
+
+    head_b = next(p for p in mapping.pieces if p.key == f"{HEAD}.lora_B")
+    assert head_b.global_shape == (7, 2) and head_b.offsets == (4 * rank, 0)
+    flat = torch.cat([p.data.reshape(-1) for p in params])
+    assert torch.equal(flat[head_b.local_elements], params[1].data[: 4 - rank])
+    with pytest.raises(RuntimeError, match="the export reaches elements declared unexported"):
+        probe_bridge_row_mapping(params, lambda: _trimmed_head_export(params, 8), TARGETS, unexported=padding)
+    dist.destroy_process_group()
+
+
+def test_probe_exempts_only_the_declared_unexported_elements_from_coverage():
+    run_multiprocess(_probe_trimmed_head)

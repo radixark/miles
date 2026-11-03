@@ -217,13 +217,12 @@ class DistributedOptimizerMembers:
     def import_adapter_state(self, slot: int, state: AdapterState) -> None:
         holds = self._holds()
         params = self._slots.slot_parameters(0)
-        # whole tensors of the parameters this rank leads; DP rank 0 holds every element of them
-        whole = {i: {k: torch.zeros(params[i].shape) for k in _STATE_KEYS} for i in holds}
+        # the pieces of each parameter this rank leads; elements no piece holds (vocab padding) keep their state
+        pieces_by_param = {i: [] for i in holds}
         for (index, offsets), *pieces in zip(
             self._slots.piece_parameter(0, holds), state.weights, state.exp_avgs, state.exp_avg_sqs, strict=True
         ):
-            for key, piece in zip(_STATE_KEYS, pieces, strict=True):
-                whole[index][key].view(-1)[offsets.flatten()] = piece.flatten().cpu()
+            pieces_by_param[index].append((offsets.flatten(), pieces))
         index_of = {id(p): i for i, p in enumerate(params)}
         for sub in self._distributed_optimizers():
             if sub.init_state_fn is not None:
@@ -233,8 +232,9 @@ class DistributedOptimizerMembers:
                 for buffer_index, buffer in enumerate(sub.buffers):
                     for param in buffer.param_index_map:
                         world, start, end = _world_slice(gathered, buffer_index, buffer, param)
-                        for key in _STATE_KEYS:
-                            world[key][start:end] = whole[index_of[id(param)]][key].flatten()
+                        for offsets, pieces in pieces_by_param[index_of[id(param)]]:
+                            for key, piece in zip(_STATE_KEYS, pieces, strict=True):
+                                world[key][start:end][offsets] = piece.flatten().cpu()
                 del gathered["buckets_coalesced"]
             sub.load_parameter_state_from_dp_zero(gathered)
             _set_distributed_optimizer_step(sub, state.step)

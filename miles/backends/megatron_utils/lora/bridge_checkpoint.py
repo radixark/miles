@@ -89,9 +89,13 @@ def probe_bridge_row_mapping(
     export_adapter: Callable[[], Iterable[tuple[str, torch.Tensor]]],
     targets: HfLoraTargets,
     map_name: Callable[[str], HfKey] = map_peft_keys_to_hf_keys,
+    unexported: torch.Tensor | None = None,
 ) -> BridgeRowMapping:
     """Collective: run ``export_adapter`` (a backend's HF-named export, names mapped by ``map_name``) on
-    index-valued ``params``."""
+    index-valued ``params``.
+
+    ``unexported``: offsets of the elements the export leaves out by construction; no checkpoint holds them.
+    """
     rank = dist.get_rank()
     total = sum(p.numel() for p in params)
     assert total < _RANK_STRIDE and dist.get_world_size() < 2**53 // _RANK_STRIDE, "the probe encoding overflows"
@@ -158,6 +162,9 @@ def probe_bridge_row_mapping(
             covered = torch.zeros(total, dtype=torch.bool)
             for piece in pieces:
                 covered[piece.local_elements.flatten()] = True
+            if unexported is not None:
+                assert not covered[unexported].any(), "the export reaches elements declared unexported"
+                covered[unexported] = True
             assert covered.all(), f"Bridge's export does not reach {int((~covered).sum())} of this rank's elements"
         except Exception as exc:
             error = exc
@@ -197,11 +204,15 @@ class BridgeAdapterSlots:
         self._specs: dict[int, list[LocalShardSpec]] = {}
         # every slot has the same layout
         self.row_mapping = probe_bridge_row_mapping(
-            self.slot_parameters(0), self._export_probe, targets, self._map_name
+            self.slot_parameters(0), self._export_probe, targets, self._map_name, self._unexported_elements()
         )
 
     def _map_name(self, name: str) -> HfKey:
         return map_peft_keys_to_hf_keys(name)
+
+    def _unexported_elements(self) -> torch.Tensor | None:
+        # Bridge exports every adapter element
+        return None
 
     def slot_parameters(self, slot: int) -> list[torch.nn.Parameter]:
         if self._multi_lora:
