@@ -1,50 +1,49 @@
 """A source's base model is matched to the run's by the HF files' norms and first attention projections, whatever
-their dtype."""
+their dtype, on the tensors both hold unquantized."""
 
 import pytest
 import torch
 from safetensors.torch import save_file
 
-from miles.backends.training_utils.checkpoint.adapter.base_model import (
-    assert_same_base_model,
-    fingerprint_named_tensors,
-    hf_base_fingerprint,
-)
+from miles.backends.training_utils.checkpoint.adapter.base_model import assert_same_base_model, hf_fingerprint_tensors
+
+NORM, O_PROJ = "model.norm.weight", "model.layers.0.self_attn.o_proj.weight"
 
 
-def _hf_dir(path, norm: torch.Tensor):
+def _hf_dir(path, **tensors):
     path.mkdir()
-    save_file(
-        {"model.norm.weight": norm, "model.layers.0.mlp.down_proj.weight": torch.randn(4, 4)},
-        path / "model.safetensors",
-    )
-    return path
+    save_file(tensors, path / "model.safetensors")
+    return str(path)
 
 
-def test_a_merged_lora_changes_the_fingerprint(tmp_path):
-    base = _hf_dir(tmp_path / "base", torch.ones(4))
-    merged = tmp_path / "merged"
-    merged.mkdir()
-    tensors = {"model.norm.weight": torch.ones(4), "model.layers.0.self_attn.o_proj.weight": torch.ones(4, 4)}
-    save_file(tensors, merged / "model.safetensors")
-    save_file(tensors | {"model.layers.0.self_attn.o_proj.weight": torch.ones(4, 4) * 2}, base / "model.safetensors")
-    assert hf_base_fingerprint(base) != hf_base_fingerprint(merged)
-    shared = ["model.norm.weight"]
-    assert hf_base_fingerprint(base, shared) == hf_base_fingerprint(merged, shared), "names restrict the hash"
+def test_a_merged_lora_is_another_base(tmp_path):
+    base = _hf_dir(tmp_path / "base", **{NORM: torch.ones(4), O_PROJ: torch.ones(4, 4)})
+    merged = _hf_dir(tmp_path / "merged", **{NORM: torch.ones(4), O_PROJ: torch.ones(4, 4) * 2})
+    with pytest.raises(AssertionError, match="another base model"):
+        assert_same_base_model("src", [base], merged)
 
 
-def test_the_fingerprint_ignores_other_layers_linear_weights(tmp_path):
+def test_other_layers_linear_weights_and_the_base_dtype_do_not_count(tmp_path):
     norm = torch.randn(4).bfloat16()
-    a, b = _hf_dir(tmp_path / "a", norm), _hf_dir(tmp_path / "b", norm)
-    assert hf_base_fingerprint(a) == hf_base_fingerprint(b), "other tensors differ, the norms do not"
-    assert hf_base_fingerprint(a) == fingerprint_named_tensors([("model.norm.weight", norm.float())])
-    assert_same_base_model("src", [str(a)], str(b))
+    a = _hf_dir(tmp_path / "a", **{NORM: norm, "model.layers.0.mlp.down_proj.weight": torch.randn(4, 4)})
+    b = _hf_dir(tmp_path / "b", **{NORM: norm.float(), "model.layers.0.mlp.down_proj.weight": torch.randn(4, 4)})
+    assert hf_fingerprint_tensors(tmp_path / "a").keys() == {NORM}
+    assert_same_base_model("src", [a], b)
+
+
+def test_a_quantized_copy_of_the_base_compares_by_its_unquantized_tensors(tmp_path):
+    base = _hf_dir(tmp_path / "bf16", **{NORM: torch.ones(4), O_PROJ: torch.ones(4, 4)})
+    fp8 = _hf_dir(tmp_path / "fp8", **{NORM: torch.ones(4), O_PROJ: torch.ones(4, 4).to(torch.float8_e4m3fn)})
+    assert hf_fingerprint_tensors(tmp_path / "fp8").keys() == {NORM}
+    assert_same_base_model("src", [base], fp8)
 
 
 def test_another_base_or_an_unresolvable_one_is_refused(tmp_path):
-    a = _hf_dir(tmp_path / "a", torch.ones(4))
-    b = _hf_dir(tmp_path / "b", torch.ones(4) * 2)
-    with pytest.raises(AssertionError, match="whose weights differ"):
-        assert_same_base_model("src", [str(a)], str(b))
+    a = _hf_dir(tmp_path / "a", **{NORM: torch.ones(4)})
+    b = _hf_dir(tmp_path / "b", **{NORM: torch.ones(4) * 2})
+    with pytest.raises(AssertionError, match="another base model"):
+        assert_same_base_model("src", [a], b)
     with pytest.raises(AssertionError, match="has no local HF files"):
-        assert_same_base_model("src", [None, str(tmp_path / "missing")], str(b))
+        assert_same_base_model("src", [None, str(tmp_path / "missing")], b)
+    with pytest.raises(AssertionError, match="--hf-checkpoint org/model has no local HF weights"):
+        assert_same_base_model("src", [a], "org/model")

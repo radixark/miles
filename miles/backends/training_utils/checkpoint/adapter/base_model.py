@@ -5,7 +5,6 @@ are small, and a full fine-tune changes the norms while a merged LoRA changes th
 the HF files, never from a loaded (possibly quantized) model.
 """
 
-import hashlib
 import json
 from collections.abc import Iterable
 from pathlib import Path
@@ -21,35 +20,36 @@ def is_fingerprint_tensor(name: str) -> bool:
     return name.endswith("norm.weight") or is_first_attention_projection
 
 
-def fingerprint_named_tensors(named: Iterable[tuple[str, torch.Tensor]]) -> str:
-    digest = hashlib.sha256()
-    names = []
-    for name, tensor in sorted(named, key=lambda item: item[0]):
-        names.append(name)
-        digest.update(name.encode())
-        # fp32 is exact for every base dtype, so a trainer's fp32 copy of a bf16 base hashes the same
-        digest.update(tensor.float().contiguous().numpy().tobytes())
-    assert names, "no tensors to fingerprint"
-    return digest.hexdigest()
-
-
-def hf_base_fingerprint(hf_dir: Path, names: Iterable[str] | None = None) -> str:
-    """``names``: hash exactly these tensors (a source that holds fewer layers, e.g. no MTP); default: all."""
-    names = None if names is None else set(names)
+def hf_fingerprint_tensors(hf_dir: Path) -> dict[str, torch.Tensor]:
+    """The fingerprint tensors an HF dir holds unquantized: a quantized copy of the base (FP8, MXFP4) compares by
+    the tensors quantization leaves alone."""
     index = hf_dir / "model.safetensors.index.json"
     files = sorted(set(json.loads(index.read_text())["weight_map"].values())) if index.is_file() else []
     files = files or sorted(p.name for p in hf_dir.glob("*.safetensors"))
     assert files, f"{hf_dir} has no safetensors weights"
-    named = []
+    tensors = {}
     for file in files:
         with safe_open(str(hf_dir / file), "pt") as f:
-            named += [
-                (name, f.get_tensor(name))
-                for name in f.keys()
-                if (is_fingerprint_tensor(name) if names is None else name in names)
-            ]
-    assert names is None or len(named) == len(names), f"{hf_dir} lacks {sorted(names - {n for n, _ in named})[:3]}"
-    return fingerprint_named_tensors(named)
+            for name in f.keys():
+                if is_fingerprint_tensor(name) and (tensor := f.get_tensor(name)).is_floating_point():
+                    if tensor.element_size() > 1:
+                        tensors[name] = tensor
+    return tensors
+
+
+def assert_same_base_tensors(
+    source: str, source_tensors: dict[str, torch.Tensor], run_tensors: dict[str, torch.Tensor], run_base: str
+) -> None:
+    """Compared on the names both sides hold (a source may lack layers, e.g. MTP, or hold some quantized)."""
+    common = sorted(source_tensors.keys() & run_tensors.keys())
+    assert any(
+        name.endswith("norm.weight") for name in common
+    ), f"{source} and --hf-checkpoint {run_base} share no norm weights to compare their base models by"
+    # fp32 is exact for every base dtype, so a trainer's fp32 copy of a bf16 base compares equal
+    differing = [name for name in common if not torch.equal(source_tensors[name].float(), run_tensors[name].float())]
+    assert (
+        not differing
+    ), f"{source} was trained on another base model than --hf-checkpoint {run_base}: e.g. {differing[:3]} differ"
 
 
 def resolve_hf_dir(name_or_path: str) -> Path | None:
@@ -66,14 +66,16 @@ def resolve_hf_dir(name_or_path: str) -> Path | None:
     return hf_dir if any(hf_dir.glob("*.safetensors")) else None
 
 
-def assert_same_base_model(source: str, candidates: Iterable[str], run_hf_dir: str) -> None:
+def assert_same_base_model(source: str, candidates: Iterable[str], run_hf_checkpoint: str) -> None:
     """``candidates``: what the source records as its base, best first; the first resolvable one is compared."""
     candidates = [c for c in candidates if c]
     hf_dir = next((d for c in candidates if (d := resolve_hf_dir(c)) is not None), None)
     assert hf_dir is not None, (
         f"{source}'s base model ({candidates or 'not recorded'}) has no local HF files to compare with "
-        f"--hf-checkpoint {run_hf_dir}"
+        f"--hf-checkpoint {run_hf_checkpoint}"
     )
-    assert hf_base_fingerprint(hf_dir) == hf_base_fingerprint(
-        Path(run_hf_dir)
-    ), f"{source} was trained on {hf_dir}, whose weights differ from --hf-checkpoint {run_hf_dir}"
+    run_dir = resolve_hf_dir(run_hf_checkpoint)
+    assert run_dir is not None, f"--hf-checkpoint {run_hf_checkpoint} has no local HF weights to compare with"
+    assert_same_base_tensors(
+        source, hf_fingerprint_tensors(hf_dir), hf_fingerprint_tensors(run_dir), run_hf_checkpoint
+    )
