@@ -292,11 +292,12 @@ class MegatronBridgeCheckpointLoader:
                 (config["model"].get("hf_model_id"), config["checkpoint"].get("hf_source_path")),
                 self._run.base_model,
             )
+            # the master check after loading reads the DistributedOptimizer's masters, weights-only too
+            assert all(
+                isinstance(sub, DistributedOptimizer) for sub in self._optimizer.chained_optimizers
+            ), "a Megatron-Bridge source loads only into the DistributedOptimizer: this run must use --optimizer adam"
             metadata = dict(dist_checkpointing.load_content_metadata(str(path)) or {})
             if self._load_optimizer:
-                assert all(
-                    isinstance(sub, DistributedOptimizer) for sub in self._optimizer.chained_optimizers
-                ), "loading a Megatron-Bridge source's Adam state needs --use-distributed-optimizer"
                 sharding = metadata.get("distrib_optim_sharding_type")
                 assert sharding is not None, (
                     f"{path} records no optimizer sharding type (written by an older Megatron), so its Adam state "
