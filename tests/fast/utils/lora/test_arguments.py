@@ -76,6 +76,7 @@ _NO_SNAPSHOTS = dict(
     lora_rank=8,
     lora_adapter_path=None,
     debug_rollout_only=False,
+    multi_lora=False,
 )
 
 
@@ -131,6 +132,7 @@ def _adapter_state_args(**overrides) -> Namespace:
             "use_precision_aware_optimizer": False,
             "optimizer_cpu_offload": False,
             "overlap_param_gather": False,
+            "num_distributed_optimizer_instances": 1,
         }
         | overrides
     )
@@ -179,6 +181,7 @@ def test_convert_save_is_refused_outside_megatron_single_lora(tmp_path, train_ba
         lora_adapter_convert_save=str(tmp_path / "converted"),
         train_backend=train_backend,
         megatron_to_hf_mode=megatron_to_hf_mode,
+        debug_rollout_only=False,
     )
     with pytest.raises(AssertionError, match="--lora-adapter-convert-save is implemented only"):
         validate_lora_args(args)
@@ -197,6 +200,7 @@ def test_convert_save_refuses_an_existing_destination(tmp_path):
         train_backend="megatron",
         megatron_to_hf_mode="bridge",
         indep_dp=False,
+        debug_rollout_only=False,
     )
     with pytest.raises(AssertionError, match="already exists"):
         validate_lora_args(args)
@@ -225,6 +229,7 @@ def test_convert_save_is_refused_under_indep_dp(tmp_path):
         train_backend="megatron",
         megatron_to_hf_mode="bridge",
         indep_dp=True,
+        debug_rollout_only=False,
     )
     with pytest.raises(AssertionError, match="does not support --indep-dp"):
         validate_lora_args(args)
@@ -267,6 +272,29 @@ def test_a_relative_convert_save_is_made_absolute_on_the_driver(tmp_path, monkey
     assert args.lora_adapter_convert_save == os.path.join(os.getcwd(), "converted")
 
 
+def test_a_relative_adapter_path_is_made_absolute_before_alpha_is_resolved(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "source").mkdir()
+    (tmp_path / "source" / "adapter_config.json").write_text(json.dumps({"r": 8, "lora_alpha": 32}))
+    args = Namespace(
+        lora_type="lora",
+        multi_lora_n_adapters=0,
+        lora_rank=8,
+        lora_alpha=None,
+        lora_adapter_path="source",
+        lora_adapter_convert_save=str(tmp_path / "converted"),
+        train_backend="megatron",
+        megatron_to_hf_mode="bridge",
+        indep_dp=True,
+        debug_rollout_only=False,
+    )
+    # --indep-dp stops validation right after alpha is resolved
+    with pytest.raises(AssertionError, match="does not support --indep-dp"):
+        validate_lora_args(args)
+    assert args.lora_adapter_path == os.path.join(os.getcwd(), "source")
+    assert args.lora_alpha == 32
+
+
 def test_multi_lora_refuses_an_adapter_path():
     with pytest.raises(AssertionError, match="--lora-adapter-path is single LoRA only"):
         validate_multi_lora_args(Namespace(multi_lora_n_adapters=2, lora_rank=8, lora_adapter_path="/adapter"))
@@ -295,6 +323,14 @@ def test_rollout_only_skips_the_adapter_checkpoint_checks():
 def test_the_adapter_checkpoint_requires_fp32_masters():
     with pytest.raises(AssertionError, match="fp32 masters"):
         _validate_adapter_state_args(_adapter_state_args(no_save_optim=True, main_params_dtype=torch.float16))
+
+
+def test_loading_the_adapter_checkpoint_refuses_several_distributed_optimizer_instances():
+    args = _adapter_state_args(
+        save=None, lora_adapter_path="/adapter", no_load_optim=True, num_distributed_optimizer_instances=2
+    )
+    with pytest.raises(AssertionError, match="--num-distributed-optimizer-instances"):
+        _validate_adapter_state_args(args)
 
 
 class TestRolloutOnlyAdapter:
@@ -328,3 +364,20 @@ class TestRolloutOnlyAdapter:
         torch.save({}, tmp_path / "adapter_megatron_rank0.pt")
         with pytest.raises(AssertionError, match="only a trainer can read"):
             self._validate(tmp_path)
+
+
+def test_multi_lora_bridge_refuses_a_model_without_hf_lora_layout():
+    """Multi-LoRA always builds the adapter slots, which need the layout, even without --save-hf / --save."""
+    args = Namespace(
+        debug_rollout_only=False,
+        multi_lora=True,
+        lora_rank=8,
+        lora_adapter_path=None,
+        save_hf=None,
+        eval_uses_snapshots=False,
+        eval_hf_dir=None,
+        save=None,
+    )
+    hf_config = SimpleNamespace(model_type="gpt2", to_dict=lambda: {"model_type": "gpt2"})
+    with pytest.raises(AssertionError, match="HF LoRA target layout"):
+        _assert_adapter_layout_defined(args, hf_config)

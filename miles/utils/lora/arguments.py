@@ -48,6 +48,10 @@ def validate_lora_args(args):
     ), "--lora-adapter-convert-save converts --lora-adapter-path"
     if not is_lora_enabled(args):
         return
+    # the trainer actors load it from their own working directory, which need not be the driver's that resolves
+    # alpha; only engines alone may be given a hub id
+    if args.lora_adapter_path is not None and not args.debug_rollout_only:
+        args.lora_adapter_path = os.path.abspath(args.lora_adapter_path)
     args.lora_alpha = _resolve_lora_alpha(args)
     if args.lora_adapter_convert_save is not None:
         assert (
@@ -104,10 +108,11 @@ def validate_lora_args(args):
 
 def _assert_adapter_layout_defined(args, hf_config) -> None:
     """Megatron builds the adapter slots, which need the family's HF LoRA target layout, to publish snapshots
-    (--save-hf, eval snapshots, --save) and to restore --lora-adapter-path; runs without them train any family."""
+    (--save-hf, eval snapshots, --save), to restore --lora-adapter-path, and always under multi-LoRA; runs without
+    them train any family."""
     # a rollout-only run has no trainer; SGLang reads its adapter
     builds_slots = not args.debug_rollout_only and (
-        publishes_snapshots(args, args.save) or args.lora_adapter_path is not None
+        publishes_snapshots(args, args.save) or args.lora_adapter_path is not None or args.multi_lora
     )
     assert not builds_slots or has_hf_lora_targets(hf_config.to_dict()), (
         f"LoRA --save, --save-hf, eval snapshots and --lora-adapter-path need the HF LoRA target layout of "
@@ -229,6 +234,10 @@ def _validate_adapter_state_args(args) -> None:
     if args.lora_adapter_path is not None:
         # loading writes masters and re-casts them, which an overlapped param all-gather would race
         assert not args.overlap_param_gather, "--lora-adapter-path cannot be combined with --overlap-param-gather"
+        # the load picks each DP group's leader on the full DP ranks, but the optimizer scatters per instance
+        assert (
+            args.num_distributed_optimizer_instances == 1
+        ), "--lora-adapter-path cannot be combined with --num-distributed-optimizer-instances > 1"
 
 
 def _native_serving_targets(args, hf_config, hf_targets: list[str], hf_modules: list[str]) -> list[str] | str:
