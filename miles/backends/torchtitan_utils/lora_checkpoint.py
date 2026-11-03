@@ -151,7 +151,7 @@ class TorchtitanOptimizerMembers:
     def get_local_shard_specs(self, slot: int):
         return self._slots.get_local_shard_specs(slot)
 
-    def _states(self) -> list[dict]:
+    def adam_states(self) -> list[dict]:
         """Each adapter parameter's AdamW state, created (zero, step 0) where no step has run yet."""
         state_of = {}
         for optimizer in self._optimizers:
@@ -160,7 +160,7 @@ class TorchtitanOptimizerMembers:
         return [state_of[id(p)] for p in self._slots.parameters.values()]
 
     def export_adapter_state(self, slot: int) -> AdapterState:
-        states = self._states()
+        states = self.adam_states()
         steps = {int(state["step"]) for state in states}
         assert len(steps) == 1, f"the adapter parameters disagree on the AdamW step: {steps}"
         specs = self._slots.get_local_shard_specs(slot)
@@ -181,7 +181,7 @@ class TorchtitanOptimizerMembers:
 
     def import_adapter_state(self, slot: int, state: AdapterState) -> None:
         """In place: the moments may be file-backed (--stream-optimizer-state-to-disk)."""
-        states = self._states()
+        states = self.adam_states()
         params = self._slots.slot_parameters(slot)
         with torch.no_grad():
             for (index, offsets), *pieces in zip(
@@ -286,7 +286,7 @@ class TorchtitanCheckpointLoader:
             hf_dir, names=hf_names
         ), f"{path} was trained on another base model than --hf-checkpoint {self._run.base_model}"
 
-        states = self._members._states()
+        states = self._members.adam_states()
         loaded = dict(params)
         if self._load_optimizer:
             for key, state in zip(params, states, strict=True):
