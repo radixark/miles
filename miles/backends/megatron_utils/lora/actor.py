@@ -92,7 +92,7 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
 
     @with_logs
     def save_slot(
-        self, slot: int, root: str, name: str, tenant: str, parametrization_fields: dict
+        self, slot: int, root: str, name: str, tenant_digest: str, parametrization_fields: dict
     ) -> UncommittedAdapterDir:
         """Write the slot's adapter state under ``root``, uncommitted; the gateway commits it."""
         return lora_checkpoint.save_slot(
@@ -100,7 +100,7 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
             slot,
             root,
             name,
-            tenant,
+            tenant_digest,
             self.adapter_slots.parametrization(**parametrization_fields),
         )
 
@@ -109,7 +109,7 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
 
     @with_logs
     def export_slot(
-        self, slot: int, root: str, name: str, tenant: str, parametrization_fields: dict
+        self, slot: int, root: str, name: str, tenant_digest: str, parametrization_fields: dict
     ) -> UncommittedAdapterDir:
         """Write the slot's sampler export under ``root``, uncommitted; the gateway commits it."""
         self._heartbeat.bump()
@@ -118,7 +118,13 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
             slot
         ), "the gateway and the slot disagree on rank"
         return write_sampler_export(
-            Path(root), name, self.adapter_slots, slot, parametrization, self.adapter_slots.targets, tenant=tenant
+            Path(root),
+            name,
+            self.adapter_slots,
+            slot,
+            parametrization,
+            self.adapter_slots.targets,
+            tenant_digest=tenant_digest,
         )
 
     @with_logs
