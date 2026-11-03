@@ -25,6 +25,8 @@ from megatron.core.transformer.spec_utils import ModuleSpec, build_module
 from megatron.core.transformer.transformer_block import get_num_layers_to_build
 from megatron.core.transformer.transformer_config import MLATransformerConfig
 from miles.kernels.attention.dsa import causal_ranges, get_dsa_topk_fn, indexer_logits, sparse_attention
+from miles.kernels.attention.dsa.indexer import CAKE_INDEXER_CONFIG
+from miles.kernels.attention.dsa.sparse_attention import CAKE_SPARSE_ATTENTION_CONFIG
 from miles.utils.hf_utils.config import load_hf_config
 from miles.utils.replay_base import indexer_replay_manager
 from miles_plugins.models.normalization import rms_norm
@@ -87,6 +89,7 @@ class DSAMultiLatentAttention(Attention):
         attn_mask_type: AttnMaskType,
         attention_type: str,
         topk_backend: str = "torch",
+        kernel_backend: str = "auto",
         is_mtp_layer: bool = False,
         cp_comm_type: str | None = None,
         model_comm_pgs=None,
@@ -162,6 +165,12 @@ class DSAMultiLatentAttention(Attention):
 
         self.index_topk = 2048
         self.topk_backend = topk_backend
+        # --miles-dsa-kernel-backend: "auto" keeps the measured per-arch kernel dispatch (config None);
+        # "cake" pins the indexer scores and the sparse attention to the deterministic cake kernels.
+        if kernel_backend not in ("auto", "cake"):
+            raise ValueError(f"Unsupported miles DSA kernel backend: {kernel_backend}")
+        self.indexer_config = CAKE_INDEXER_CONFIG if kernel_backend == "cake" else None
+        self.attention_config = CAKE_SPARSE_ATTENTION_CONFIG if kernel_backend == "cake" else None
         indexer_replay_manager.register_to_module(self, "indexer_replay", stream_idx=self.layer_number - 1)
 
         # Cross-layer index sharing (optional). When the HF config provides
@@ -251,6 +260,7 @@ class DSAMultiLatentAttention(Attention):
                     starts_block,
                     ends_block,
                     clean_logits=self.topk_backend != "canonical",
+                    config=self.indexer_config,
                 )
                 topk_indices.append(topk_fn(logits, self.index_topk, starts_block, ends_block))
             return torch.cat(topk_indices, dim=0).unsqueeze(1)
@@ -303,6 +313,7 @@ class DSAMultiLatentAttention(Attention):
             topk_indices.unsqueeze(0),
             self.softmax_scale,
             d_v=self.config.kv_lora_rank,
+            config=self.attention_config,
         ).squeeze(0)
         core_attn_out = torch.einsum("thm,hdm->thd", core_attn_out, wv)
 
@@ -334,6 +345,7 @@ class DSAMLASelfAttention(DSAMultiLatentAttention):
         layer_number: int,
         attn_mask_type=AttnMaskType.padding,
         topk_backend: str = "torch",
+        kernel_backend: str = "auto",
         is_mtp_layer: bool = False,
         cp_comm_type: str | None = None,
         model_comm_pgs=None,
@@ -347,6 +359,7 @@ class DSAMLASelfAttention(DSAMultiLatentAttention):
             attn_mask_type=attn_mask_type,
             attention_type="self",
             topk_backend=topk_backend,
+            kernel_backend=kernel_backend,
             is_mtp_layer=is_mtp_layer,
             cp_comm_type=cp_comm_type,
             model_comm_pgs=model_comm_pgs,
@@ -804,6 +817,7 @@ def get_glm5_spec(args, config, vp_stage):
         params={
             "attn_mask_type": AttnMaskType.causal,
             "topk_backend": args.miles_dsa_topk_backend,
+            "kernel_backend": args.miles_dsa_kernel_backend,
         },
         submodules=DSASelfAttentionSubmodules(
             linear_q_down_proj=backend.linear(),

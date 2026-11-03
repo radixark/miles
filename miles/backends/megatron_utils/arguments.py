@@ -5,8 +5,8 @@ from megatron.core.tokenizers.utils.build_tokenizer import vocab_size_with_paddi
 from megatron.training.arguments import parse_args, validate_args
 
 from miles.utils.hf_utils.config import load_hf_config
-from miles_plugins.models.deepseek_v4.arguments import is_dsv4_model, normalize_dsv4_args
-from miles_plugins.models.glm5.arguments import normalize_dsa_args
+from miles_plugins.models.deepseek_v4.arguments import DSV4_SPEC_MODULE, is_dsv4_model, normalize_dsv4_args
+from miles_plugins.models.glm5.arguments import MILES_DSA_SPEC, normalize_dsa_args
 
 __all__ = ["validate_args", "parse_args", "set_default_megatron_args"]
 
@@ -54,6 +54,8 @@ def set_default_megatron_args(args):
 
     args.trust_remote_code = True
 
+    _validate_miles_dsa_kernel_backend(args)
+
     if is_dsv4_model(args):
         normalize_dsv4_args(args)
 
@@ -63,3 +65,25 @@ def set_default_megatron_args(args):
         args.cp_comm_type = ["p2p"]
 
     return args
+
+
+def _validate_miles_dsa_kernel_backend(args) -> None:
+    """--miles-dsa-kernel-backend cake only reaches the kernels through the miles plugin specs; fail early
+    where it would otherwise be ignored (bridge-built models, native Megatron DSA / DeepSeek-V4, other specs)."""
+    if args.miles_dsa_kernel_backend != "cake":
+        return
+    if args.megatron_to_hf_mode != "raw" or args.multi_lora_n_adapters > 0:
+        raise ValueError(
+            "--miles-dsa-kernel-backend cake requires --megatron-to-hf-mode raw without multi-LoRA: those runs "
+            "build the model from the Megatron-Bridge provider, which does not use the miles DSA plugin kernels."
+        )
+    spec_module = (args.spec or [None])[0]
+    if spec_module == MILES_DSA_SPEC[0] and args.dsa_impl == "miles":
+        return
+    if spec_module == DSV4_SPEC_MODULE and args.dsv4_impl == "miles":
+        return
+    raise ValueError(
+        "--miles-dsa-kernel-backend cake is only wired into the miles DSA plugin specs: "
+        f"--spec {' '.join(MILES_DSA_SPEC)} with --dsa-impl miles, or --spec {DSV4_SPEC_MODULE} get_dsv4_spec "
+        f"with --dsv4-impl miles; got --spec {args.spec}, --dsa-impl {args.dsa_impl}."
+    )

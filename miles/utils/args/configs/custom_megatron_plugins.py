@@ -54,6 +54,21 @@ class DsaMegatronPluginsConfig(BaseConfig):
             ),
         ),
     ] = "canonical"
+    miles_dsa_kernel_backend: A[
+        str,
+        Arg(
+            choices=["auto", "cake"],
+            help=(
+                "DSA indexer + sparse-attention kernels of the miles plugin specs (GLM-5 / DeepSeek-V3.2 with "
+                "--dsa-impl miles, DeepSeek-V4 with --dsv4-impl miles). 'auto' keeps the measured per-arch "
+                "dispatch (FlashMLA / TileLang forward, cuDNN / TileLang backward, Triton / TileLang indexer "
+                "scores). 'cake' runs the generated deterministic kernels in miles/kernels/attention/dsa/cake "
+                "(Blackwell SM100a / SM103a): bit-identical forward and backward across calls, no floating-point "
+                "atomics. Separate from --dsa-attention-backend (the bridge-mode megatron / tilelang choice) and "
+                "from Megatron's --dsa-kernel-backend (native DSA)."
+            ),
+        ),
+    ] = "auto"
 
     @classmethod
     def add_arguments(cls, parser: ArgumentParser) -> None:
