@@ -370,18 +370,19 @@ class LoRASplitAdapter(NativeLoRAAdapter):
 
     def _packed_weight_delta(self, reference: torch.Tensor) -> torch.Tensor:
         """The scaled delta of the whole fused output, rows laid out like the fused host's local shard."""
-        slots = [
-            (
-                getattr(self, f"{name}_B").float()
-                @ getattr(
-                    self, f"{name}_A"
-                ).float()  # config-access-exempt: the registered projection name selects its A and B parameters
-                if name in self._active
-                else reference.new_zeros(rows, reference.shape[1], dtype=torch.float32)
-            )
-            for name, rows in self._rows_by_param_prefix.items()
-        ]
+        slots = [self._slot_weight_delta(name, reference) for name in self._rows_by_param_prefix]
         return self.context.lora.scale * self._pack_rows(torch.cat(slots, dim=0))
+
+    def _slot_weight_delta(self, name: str, reference: torch.Tensor) -> torch.Tensor:
+        """One slot's unscaled fp32 ``B @ A``, zeros when its projection is not selected."""
+        if name not in self._active:
+            return reference.new_zeros(self._rows_by_param_prefix[name], reference.shape[1], dtype=torch.float32)
+        return (
+            getattr(self, f"{name}_B").float()
+            @ getattr(
+                self, f"{name}_A"
+            ).float()  # config-access-exempt: the registered projection name selects its A and B parameters
+        )
 
     def weight_deltas(self):
         (host,) = self._hosts

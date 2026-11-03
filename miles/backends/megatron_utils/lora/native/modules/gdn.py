@@ -61,11 +61,25 @@ class LoRAGDNInProj(LoRASplitAdapter):
 
     def weight_deltas(self):
         (gdn,) = self._hosts
-        hosts = (gdn.in_proj_qkv, gdn.in_proj_z, gdn.in_proj_b, gdn.in_proj_a)
-        for index, host in enumerate(hosts):
-            yield host.weight, lambda index=index: self._packed_weight_delta(gdn.in_proj_qkv.weight).split(
-                gdn.in_proj_widths
-            )[index]
+        reference = gdn.in_proj_qkv.weight
+        group_major_qkv = self.out_perm[: gdn.local.qkv_dim]
+        slots_by_host = (
+            (gdn.in_proj_qkv, ("q", "k", "v"), group_major_qkv),
+            (gdn.in_proj_z, ("z",), None),
+            (gdn.in_proj_b, ("b",), None),
+            (gdn.in_proj_a, ("a",), None),
+        )
+        for host, names, rows in slots_by_host:
+            yield host.weight, lambda names=names, rows=rows: self._host_weight_delta(names, rows, reference)
+
+    def _host_weight_delta(
+        self, names: tuple[str, ...], rows: torch.Tensor | None, reference: torch.Tensor
+    ) -> torch.Tensor:
+        """One host's slice of ``_packed_weight_delta``, without the other hosts' ``B @ A``."""
+        delta = torch.cat([self._slot_weight_delta(name, reference) for name in names], dim=0)
+        if rows is not None:
+            delta = delta.index_select(0, rows)
+        return self.context.lora.scale * delta
 
 
 def attach_projection_delta(gdn: nn.Module, adapter: LoRAGDNInProj, scale: float) -> None:
