@@ -115,12 +115,12 @@ def _validate_rollout_only_adapter(args) -> None:
     recognizes must carry an HF-named PEFT pair; anything else (a hub id, a PEFT dir with adapter_model.bin)
     is SGLang's to read."""
     path = Path(args.lora_adapter_path)
-    if not path.is_dir():
+    hf_config = load_hf_config(args.hf_checkpoint).to_dict()
+    # without the family's layout the library reads no source; SGLang gets it as before
+    if not path.is_dir() or not has_hf_lora_targets(hf_config):
         return
     try:
-        kind = classify_adapter_source(
-            path, get_hf_lora_targets(load_hf_config(args.hf_checkpoint).to_dict()), load_optimizer=False
-        )
+        kind = classify_adapter_source(path, get_hf_lora_targets(hf_config), load_optimizer=False)
     except ValueError:
         # not a source the library reads
         return
@@ -255,9 +255,9 @@ def validate_multi_lora_args(args: Any) -> None:
         return
 
     assert args.lora_rank > 0, "--lora-rank must be set when --multi-lora-n-adapters > 0"
-    assert args.lora_adapter_path is None, (
-        "Multi-LoRA loads adapters into its slots through the Tinker gateway; --lora-adapter-path is single LoRA only"
-    )
+    assert (
+        args.lora_adapter_path is None
+    ), "Multi-LoRA loads adapters into its slots through the Tinker gateway; --lora-adapter-path is single LoRA only"
     assert args.train_backend == "megatron", "Multi-LoRA currently requires --train-backend megatron"
     assert (
         not args.allgather_cp
