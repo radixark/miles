@@ -20,6 +20,7 @@ from megatron.core.optimizer import DistributedOptimizer
 from megatron.core.utils import unwrap_model
 
 from miles.backends.megatron_utils.lora.utils import adapter_named_parameters
+from miles.backends.training_utils.checkpoint.adapter.adapter_dir import AdapterCheckpointMembers
 from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
     LocalShardSpec,
     gloo_group,
@@ -37,7 +38,7 @@ from miles.backends.training_utils.checkpoint.adapter.probed_slots import (
     HfPiece,
     ProbedAdapterSlots,
     RowMapping,
-    rectangle,
+    rectangles,
 )
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.lora.hf_lora_targets import HfLoraTargets
@@ -55,28 +56,37 @@ _BRIDGE_LORA_TYPES = {
 _RANK_STRIDE = 2**40
 
 
-def _piece(key: str, codes: torch.Tensor, rank: int) -> HfPiece | None:
+def _pieces_of(key: str, codes: torch.Tensor, rank: int) -> list[HfPiece]:
     mine = codes // _RANK_STRIDE == rank
     if not mine.any():
-        return None
-    box = rectangle(key, mine)
-    return HfPiece(key, tuple(codes.shape), tuple(s.start for s in box), (codes[box] % _RANK_STRIDE).cpu())
+        return []
+    return [
+        HfPiece(key, tuple(codes.shape), tuple(s.start for s in box), (codes[box] % _RANK_STRIDE).cpu())
+        for box in rectangles(key, mine)
+    ]
 
 
-def _stack_experts(key: str, pieces_by_expert: dict[int, HfPiece], num_experts: int) -> HfPiece:
+def _stack_experts(key: str, pieces_by_expert: dict[int, list[HfPiece]], num_experts: int) -> list[HfPiece]:
     experts = sorted(pieces_by_expert)
     assert experts == list(range(experts[0], experts[-1] + 1)), f"{key}: this rank's experts are not contiguous"
     first = pieces_by_expert[experts[0]]
     assert all(
-        p.offsets == first.offsets and p.local_elements.shape == first.local_elements.shape
-        for p in pieces_by_expert.values()
+        len(pieces) == len(first)
+        and all(
+            p.offsets == f.offsets and p.local_elements.shape == f.local_elements.shape
+            for p, f in zip(pieces, first, strict=True)
+        )
+        for pieces in pieces_by_expert.values()
     ), f"{key}: this rank holds different rectangles of different experts"
-    return HfPiece(
-        key,
-        (num_experts, *first.global_shape),
-        (experts[0], *first.offsets),
-        torch.stack([pieces_by_expert[e].local_elements for e in experts]),
-    )
+    return [
+        HfPiece(
+            key,
+            (num_experts, *piece.global_shape),
+            (experts[0], *piece.offsets),
+            torch.stack([pieces_by_expert[e][j].local_elements for e in experts]),
+        )
+        for j, piece in enumerate(first)
+    ]
 
 
 def probe_bridge_row_mapping(
@@ -84,15 +94,19 @@ def probe_bridge_row_mapping(
     export_adapter: Callable[[], Iterable[tuple[str, torch.Tensor]]],
     targets: HfLoraTargets,
     map_name: Callable[[str], HfKey] = map_peft_keys_to_hf_keys,
+    unexported: torch.Tensor | None = None,
 ) -> RowMapping:
     """Collective: run ``export_adapter`` (a backend's HF-named export, names mapped by ``map_name``) on
-    index-valued ``params``."""
+    index-valued ``params``.
+
+    ``unexported``: offsets of the elements the export leaves out by construction; no checkpoint holds them.
+    """
     rank = dist.get_rank()
     total = sum(p.numel() for p in params)
     assert total < _RANK_STRIDE and dist.get_world_size() < 2**53 // _RANK_STRIDE, "the probe encoding overflows"
     saved = [p.data for p in params]
     pieces, a_sources, modules = [], {}, set()
-    per_expert: dict[str, dict[int, HfPiece]] = {}
+    per_expert: dict[str, dict[int, list[HfPiece]]] = {}
     num_experts: dict[str, int] = {}
 
     def decode(name: str, tensor: torch.Tensor) -> None:
@@ -107,18 +121,18 @@ def probe_bridge_row_mapping(
             a_sources.setdefault(source, []).append(module if components is None else components)
         if hf_key.expert_index is not None:
             num_experts[hf_key.key] = max(num_experts.get(hf_key.key, 0), hf_key.expert_index + 1)
-            if (piece := _piece(hf_key.key, codes, rank)) is not None:
-                per_expert.setdefault(hf_key.key, {})[hf_key.expert_index] = piece
+            if expert_pieces := _pieces_of(hf_key.key, codes, rank):
+                per_expert.setdefault(hf_key.key, {})[hf_key.expert_index] = expert_pieces
             modules.add(module)
         elif components is None:
-            pieces.append(_piece(hf_key.key, codes, rank))
+            pieces.extend(_pieces_of(hf_key.key, codes, rank))
             modules.add(module)
         elif factor == "lora_A":
-            pieces.append(_piece(f"{components[0]}.lora_A", codes, rank))
+            pieces.extend(_pieces_of(f"{components[0]}.lora_A", codes, rank))
             modules.update(components)
         else:
             for component, part in zip(components, split_fused_lora_b(module, codes, targets), strict=True):
-                pieces.append(_piece(f"{component}.lora_B", part, rank))
+                pieces.extend(_pieces_of(f"{component}.lora_B", part, rank))
 
     error = None
     try:
@@ -145,15 +159,21 @@ def probe_bridge_row_mapping(
                 flat = [m for member in members for m in ((member,) if isinstance(member, str) else member)]
                 if len(flat) > 1:
                     groups.append(tuple(flat))
-            pieces = [p for p in pieces if p is not None]
-            pieces += [_stack_experts(key, by_expert, num_experts[key]) for key, by_expert in per_expert.items()]
+            pieces += [
+                piece
+                for key, by_expert in per_expert.items()
+                for piece in _stack_experts(key, by_expert, num_experts[key])
+            ]
             # the library stores a shared A once, under the group's first member
             shared_copies = {f"{member}.lora_A" for group in groups for member in group[1:]}
             pieces = [p for p in pieces if p.key not in shared_copies]
             covered = torch.zeros(total, dtype=torch.bool)
             for piece in pieces:
                 covered[piece.local_elements.flatten()] = True
-            assert covered.all(), f"Bridge's export does not reach {int((~covered).sum())} of this rank's elements"
+            if unexported is not None:
+                assert not covered[unexported].any(), "the export reaches elements declared unexported"
+                covered[unexported] = True
+            assert covered.all(), f"the export does not reach {int((~covered).sum())} of this rank's elements"
         except Exception as exc:
             error = exc
     raise_if_any_rank_failed(error)
@@ -179,14 +199,18 @@ class BridgeAdapterSlots(ProbedAdapterSlots):
     def __init__(self, model, iterator, targets: HfLoraTargets, *, multi_lora: bool):
         """Collective: probes the row mapping now, while nothing else touches the parameters."""
         self._model, self._iterator, self.targets, self._multi_lora = model, iterator, targets, multi_lora
-        self._specs: dict[int, list[LocalShardSpec]] = {}
+        self._specs: dict[tuple[int, int | None, frozenset[int] | None], list[LocalShardSpec]] = {}
         # every slot has the same layout
         self.row_mapping = probe_bridge_row_mapping(
-            self.slot_parameters(0), self._export_probe, targets, self._map_name
+            self.slot_parameters(0), self._export_probe, targets, self._map_name, self._unexported_elements()
         )
 
     def _map_name(self, name: str) -> HfKey:
         return map_peft_keys_to_hf_keys(name)
+
+    def _unexported_elements(self) -> torch.Tensor | None:
+        # Bridge exports every adapter element
+        return None
 
     def slot_parameters(self, slot: int) -> list[torch.nn.Parameter]:
         if self._multi_lora:
@@ -221,7 +245,7 @@ def _yaml_dtype(value) -> str | None:
     return None if value is None else value["_target_"]
 
 
-def check_bridge_run_config(
+def assert_bridge_run_config_matches(
     config: dict, run: AdapterParametrization, *, params_dtype: torch.dtype, load_optimizer: bool
 ) -> None:
     """A Megatron-Bridge run_config.yaml must describe the LoRA this run trains, and resumable Adam state."""
@@ -271,20 +295,19 @@ class MegatronBridgeCheckpointLoader:
     under any TP / PP / EP / DP layout. The source's iteration, scheduler and RNG are not resumed."""
 
     def __init__(
-        self, model, optimizer, verify_masters: Callable[[], object], run: AdapterParametrization, load_optimizer: bool
+        self, model, optimizer, members: AdapterCheckpointMembers, run: AdapterParametrization, load_optimizer: bool
     ):
-        """``verify_masters``: collective; asserts every bf16 adapter parameter is its fp32 master."""
-        self._model, self._optimizer, self._verify_masters = model, optimizer, verify_masters
+        self._model, self._optimizer, self._members = model, optimizer, members
         self._run, self._load_optimizer = run, load_optimizer
 
     def __call__(self, path: Path) -> AdapterParametrization:
         chunks = unwrap_model(self._model)
         names = ["model"] if len(chunks) == 1 else [f"model{i}" for i in range(len(chunks))]
-        config, full, adapter, error = None, None, None, None
+        config, model_state_dicts, adapter, error = None, None, None, None
         try:
             config = yaml.safe_load((path / "run_config.yaml").read_text())
             assert config["checkpoint"]["ckpt_format"] == "torch_dist", f"{path} is not a torch_dist checkpoint"
-            check_bridge_run_config(
+            assert_bridge_run_config_matches(
                 config, self._run, params_dtype=chunks[0].config.params_dtype, load_optimizer=self._load_optimizer
             )
             assert_same_base_model(
@@ -292,19 +315,27 @@ class MegatronBridgeCheckpointLoader:
                 (config["model"].get("hf_model_id"), config["checkpoint"].get("hf_source_path")),
                 self._run.base_model,
             )
+            # the master check after loading reads the DistributedOptimizer's masters, weights-only too
+            assert all(
+                isinstance(sub, DistributedOptimizer) for sub in self._optimizer.chained_optimizers
+            ), "a Megatron-Bridge source loads only into the DistributedOptimizer: this run must use --optimizer adam"
             metadata = dict(dist_checkpointing.load_content_metadata(str(path)) or {})
             if self._load_optimizer:
-                assert all(
-                    isinstance(sub, DistributedOptimizer) for sub in self._optimizer.chained_optimizers
-                ), "loading a Megatron-Bridge source's Adam state needs --use-distributed-optimizer"
                 sharding = metadata.get("distrib_optim_sharding_type")
+                assert sharding is not None, (
+                    f"{path} records no optimizer sharding type (written by an older Megatron), so its Adam state "
+                    "cannot be resharded; pass --no-load-optim"
+                )
                 assert sharding in DistributedOptimizer.checkpoint_fully_reshardable_formats, (
                     f"{path}'s optimizer state is {sharding}, which only loads under its saving layout; re-save it "
                     "from Megatron-Bridge with dist_ckpt_optim_fully_reshardable=True, or pass --no-load-optim"
                 )
             metadata["dp_cp_group"] = get_parallel_state().intra_dp_cp.group
-            full = [chunk.sharded_state_dict(metadata=metadata) for chunk in chunks]
-            adapter = [{k: v for k, v in sd.items() if ".adapter." in k and "_extra_state" not in k} for sd in full]
+            model_state_dicts = [chunk.sharded_state_dict(metadata=metadata) for chunk in chunks]
+            adapter = [
+                {k: v for k, v in sd.items() if ".adapter." in k and "_extra_state" not in k}
+                for sd in model_state_dicts
+            ]
         except Exception as exc:
             error = exc
         raise_if_any_rank_failed(error)
@@ -322,28 +353,29 @@ class MegatronBridgeCheckpointLoader:
             expected == saved
         ), f"{path} holds other adapters than this run's model, e.g. {sorted(expected ^ saved)[:3]}"
 
-        shells = dict(zip(names, adapter, strict=True))
+        requested = dict(zip(names, adapter, strict=True))
         if self._load_optimizer:
-            shells["optimizer"] = self._optimizer.sharded_state_dict(
-                dict(zip(names, full, strict=True)), is_loading=True, metadata=metadata
+            requested["optimizer"] = self._optimizer.sharded_state_dict(
+                dict(zip(names, model_state_dicts, strict=True)), is_loading=True, metadata=metadata
             )
-        loaded = dist_checkpointing.load(shells, str(path))
+        loaded = dist_checkpointing.load(requested, str(path))
         try:
             for name, chunk in zip(names, chunks, strict=True):
                 result = chunk.load_state_dict(loaded[name], strict=False)
                 assert not result.unexpected_keys, f"unexpected adapter keys {result.unexpected_keys[:3]}"
             if self._load_optimizer:
                 # the run owns the schedule: only state and step come from the source, not its lr or weight decay
-                own = [
+                run_hyperparameters = [
                     {k: v for k, v in g.items() if k not in ("params", "step")} for g in self._optimizer.param_groups
                 ]
                 self._optimizer.load_state_dict(loaded["optimizer"])
-                for group, hyperparameters in zip(self._optimizer.param_groups, own, strict=True):
+                for group, hyperparameters in zip(self._optimizer.param_groups, run_hyperparameters, strict=True):
                     group.update(hyperparameters)
             else:
                 self._optimizer.reload_model_params()
         except Exception as exc:
             error = exc
         raise_if_any_rank_failed(error)
-        self._verify_masters()
+        # collective; asserts each bf16 adapter parameter is its fp32 master
+        self._members.export_adapter_state(0)
         return replace(self._run, lora_alpha=float(config["peft"]["alpha"]))

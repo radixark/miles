@@ -87,5 +87,11 @@ class LoRAOutputHead(NativeLoRAAdapter):
             (self.head_B, head_b[lo : lo + vocab_local]),
         ]
 
+    def padded_local_rows(self) -> slice:
+        """This rank's head_B rows past the served vocab: Megatron's vocab padding, which the export trims."""
+        vocab_local = self.head_B.shape[0]
+        served = self._served_rows(vocab_local * self.context.tp_size)
+        return slice(min(max(served - self.tp_rank * vocab_local, 0), vocab_local), vocab_local)
+
     def _served_rows(self, padded_rows: int) -> int:
         return min(self.unpadded_vocab_size or padded_rows, padded_rows)

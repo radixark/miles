@@ -3,7 +3,8 @@ torchtitan's own DCP checkpoints.
 
 The layout comes from the model's own state-dict adapter: ``sd_adapter.to_hf`` runs on index-valued tensors of each
 adapter's global shape, so fused projections (wqkv, w13) split exactly as their base weights do; each rank keeps the
-HF positions its DTensor shard holds. Needs no collective except agreeing who writes replicated pieces.
+HF positions its DTensor shard holds. Collective: ranks agree on a probe failure, then gather every pipeline stage's
+targets and shared-A groups.
 
 The fp32 parameters are their own masters; AdamW keeps ``exp_avg`` / ``exp_avg_sq`` as DTensors shaped like them and
 one ``step`` per parameter.
@@ -38,24 +39,15 @@ from miles.backends.training_utils.checkpoint.adapter.base_model import (
     is_fingerprint_tensor,
     resolve_hf_dir,
 )
-from miles.backends.training_utils.checkpoint.adapter.key_mapping import map_peft_keys_to_hf_keys
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
 from miles.backends.training_utils.checkpoint.adapter.probed_slots import (
     HfPiece,
     ProbedAdapterSlots,
     RowMapping,
-    rectangle,
+    rectangles,
 )
 from miles.backends.training_utils.checkpoint.adapter.readers import AdapterSourceKind
 from miles.utils.lora.hf_lora_targets import HfLoraTargets
-
-_PEFT_FACTOR = {"lora_a": "lora_A", "lora_b": "lora_B"}
-
-
-def hf_export_names(sd_adapter, projection: str, weight_shape: tuple[int, ...]) -> list[str]:
-    """The HF modules a titan projection's weight exports as; several for a fused projection."""
-    probe = torch.empty(weight_shape, device="meta")
-    return [name.removesuffix(".weight") for name in sd_adapter.to_hf({f"{projection}.weight": probe})]
 
 
 def _local_box(param: torch.Tensor) -> tuple[tuple[int, ...], tuple[int, ...]]:
@@ -75,7 +67,28 @@ def _local_codes(param: torch.Tensor, start: int) -> torch.Tensor:
 
 
 def probe_torchtitan_row_mapping(params: Mapping[str, torch.Tensor], sd_adapter, targets: HfLoraTargets) -> RowMapping:
-    """``params``: the adapter parameters by titan key, in the order their local shards are concatenated."""
+    """Collective. ``params``: the adapter parameters by titan key, in the order their local shards are
+    concatenated."""
+    error = None
+    try:
+        pieces, groups, modules = _probe_local(params, sd_adapter)
+    except Exception as exc:
+        error = exc
+    raise_if_any_rank_failed(error)
+
+    # pipeline stages hold different layers; every rank needs the whole parametrization
+    gathered = [None] * dist.get_world_size()
+    dist.all_gather_object(gathered, (sorted(groups), sorted(modules)), group=gloo_group())
+    return RowMapping(
+        pieces,
+        tuple(sorted({g for rank_groups, _ in gathered for g in rank_groups})),
+        tuple(sorted({m for _, rank_modules in gathered for m in rank_modules})),
+    )
+
+
+def _probe_local(
+    params: Mapping[str, torch.Tensor], sd_adapter
+) -> tuple[list[HfPiece], list[tuple[str, ...]], set[str]]:
     starts, start = {}, 0
     for key, param in params.items():
         starts[key] = start
@@ -87,9 +100,9 @@ def probe_torchtitan_row_mapping(params: Mapping[str, torch.Tensor], sd_adapter,
             continue
         lora_a_key = f"{projection}.lora_a.weight"
         lora_b = sd_adapter.to_hf({f"{projection}.weight": _local_codes(params[key], starts[key])})
+        assert lora_b, f"{projection}: to_hf exports nothing"
         lora_a = _local_codes(params[lora_a_key], starts[lora_a_key])
-        hf_modules = [map_peft_keys_to_hf_keys(f"{name.removesuffix('.weight')}.lora_A.weight").key for name in lora_b]
-        hf_modules = [k.removesuffix(".lora_A") for k in hf_modules]
+        hf_modules = [name.removesuffix(".weight") for name in lora_b]
         modules.update(hf_modules)
         if len(hf_modules) > 1:
             # one titan lora_a serves every HF projection of a fused weight; it is stored once, under the first
@@ -98,13 +111,15 @@ def probe_torchtitan_row_mapping(params: Mapping[str, torch.Tensor], sd_adapter,
         named += [(f"{module}.lora_B", part) for module, part in zip(hf_modules, lora_b.values(), strict=True)]
         for hf_key, codes in named:
             if (mine := codes >= 0).any():
-                box = rectangle(hf_key, mine)
-                pieces.append(HfPiece(hf_key, tuple(codes.shape), tuple(s.start for s in box), codes[box]))
+                pieces += [
+                    HfPiece(hf_key, tuple(codes.shape), tuple(s.start for s in box), codes[box].clone())
+                    for box in rectangles(hf_key, mine)
+                ]
     covered = torch.zeros(start, dtype=torch.bool)
     for piece in pieces:
         covered[piece.local_elements.flatten()] = True
     assert covered.all(), f"to_hf does not reach {int((~covered).sum())} of this rank's adapter elements"
-    return RowMapping(pieces, tuple(sorted(groups)), tuple(sorted(modules)))
+    return pieces, groups, modules
 
 
 class TorchtitanAdapterSlots(ProbedAdapterSlots):
@@ -116,10 +131,7 @@ class TorchtitanAdapterSlots(ProbedAdapterSlots):
         self._iterator, self.targets = iterator, targets
         self._specs = {}
         self._params = {
-            key: param
-            for part in model_parts
-            for key, param in part.named_parameters()
-            if split_adapter_key(key) is not None
+            key: param for part in model_parts for key, param in part.named_parameters() if is_adapter_key(key)
         }
         self.row_mapping = probe_torchtitan_row_mapping(self._params, sd_adapter, targets)
 
@@ -239,7 +251,8 @@ class TorchtitanCheckpointLoader:
         gathered = [None] * dist.get_world_size()
         dist.all_gather_object(gathered, fqns, group=gloo_group())
         tensors = {
-            fqn: torch.empty(metadata[fqn].size, dtype=metadata[fqn].properties.dtype) for fqn in set().union(*gathered)
+            fqn: torch.empty(metadata[fqn].size, dtype=metadata[fqn].properties.dtype)
+            for fqn in set().union(*gathered)
         }
         dcp.load(tensors, checkpoint_id=path, no_dist=True)
         named = {name: t for name, t in self._sd_adapter.to_hf(tensors).items() if is_fingerprint_tensor(name)}
@@ -281,7 +294,9 @@ class TorchtitanCheckpointLoader:
         raise_if_any_rank_failed(error)
         fingerprint, hf_names = self._base_fingerprint(path, metadata)
         hf_dir = resolve_hf_dir(self._run.base_model)
-        assert hf_dir is not None, f"--hf-checkpoint {self._run.base_model} has no local HF weights to compare {path} with"
+        assert (
+            hf_dir is not None
+        ), f"--hf-checkpoint {self._run.base_model} has no local HF weights to compare {path} with"
         assert fingerprint == hf_base_fingerprint(
             hf_dir, names=hf_names
         ), f"{path} was trained on another base model than --hf-checkpoint {self._run.base_model}"

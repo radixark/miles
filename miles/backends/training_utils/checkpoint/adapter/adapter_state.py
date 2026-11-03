@@ -93,47 +93,72 @@ def _agree_on_step(step: int | None) -> int:
     return known.pop() if known else 0
 
 
-def _complement_boxes(global_shape, offsets, local_shape):
-    """Boxes that, with the local box, tile the global tensor without overlap."""
+def _subtract_box(lo, hi, cut_lo, cut_hi):
+    """Boxes (lo, hi) that, with the cut, tile the box [lo, hi) without overlap."""
+    cut_lo = [max(a, b) for a, b in zip(lo, cut_lo, strict=True)]
+    cut_hi = [min(a, b) for a, b in zip(hi, cut_hi, strict=True)]
+    if any(a >= b for a, b in zip(cut_lo, cut_hi, strict=True)):
+        return [(lo, hi)]
     boxes = []
-    lo, hi = list(offsets), [o + n for o, n in zip(offsets, local_shape, strict=True)]
-    remaining_lo, remaining_hi = [0] * len(global_shape), list(global_shape)
-    for dim in range(len(global_shape)):
-        for start, stop in ((remaining_lo[dim], lo[dim]), (hi[dim], remaining_hi[dim])):
+    remaining_lo, remaining_hi = list(lo), list(hi)
+    for dim in range(len(lo)):
+        for start, stop in ((remaining_lo[dim], cut_lo[dim]), (cut_hi[dim], remaining_hi[dim])):
             if stop > start:
                 box_lo, box_hi = list(remaining_lo), list(remaining_hi)
                 box_lo[dim], box_hi[dim] = start, stop
-                boxes.append((box_lo, [b - a for a, b in zip(box_lo, box_hi, strict=True)]))
-        remaining_lo[dim], remaining_hi[dim] = lo[dim], hi[dim]
+                boxes.append((box_lo, box_hi))
+        remaining_lo[dim], remaining_hi[dim] = cut_lo[dim], cut_hi[dim]
     return boxes
 
 
-def _sharded(spec: LocalShardSpec, tensor: torch.Tensor) -> ShardedTensor:
+def _complement_boxes(global_shape, local_boxes):
+    """(offsets, shape) boxes that, with the disjoint local boxes, tile the global tensor without overlap."""
+    free = [([0] * len(global_shape), list(global_shape))]
+    for offsets, shape in local_boxes:
+        cut_hi = [o + n for o, n in zip(offsets, shape, strict=True)]
+        free = [box for lo, hi in free for box in _subtract_box(lo, hi, offsets, cut_hi)]
+    return [(lo, [b - a for a, b in zip(lo, hi, strict=True)]) for lo, hi in free]
+
+
+def _sharded(specs: list[LocalShardSpec], tensors: list[torch.Tensor]) -> ShardedTensor:
+    """One key's local pieces (several when the rank holds several rectangles of it) as one ShardedTensor."""
     # DCP plans reads and writes from local shards only; the rest of the tensor is described by placeholder
     # boxes on another rank so the metadata covers it, and those boxes are never read or written here
     rank, world_size = dist.get_rank(), dist.get_world_size()
-    local = ShardMetadata(list(spec.offsets), list(spec.local_shape), f"rank:{rank}/{tensor.device}")
+    local = [
+        ShardMetadata(list(spec.offsets), list(spec.local_shape), f"rank:{rank}/{tensor.device}")
+        for spec, tensor in zip(specs, tensors, strict=True)
+    ]
     other = f"rank:{(rank + 1) % world_size}/cpu"
+    global_shape = specs[0].global_shape
     placeholders = [
-        ShardMetadata(o, n, other) for o, n in _complement_boxes(spec.global_shape, spec.offsets, spec.local_shape)
+        ShardMetadata(o, n, other)
+        for o, n in _complement_boxes(global_shape, [(spec.offsets, spec.local_shape) for spec in specs])
     ]
     metadata = ShardedTensorMetadata(
-        [local, *placeholders], torch.Size(spec.global_shape), TensorProperties(dtype=tensor.dtype)
+        [*local, *placeholders], torch.Size(global_shape), TensorProperties(dtype=tensors[0].dtype)
     )
-    return ShardedTensor._init_from_local_shards_and_global_metadata([Shard(tensor, local)], metadata)
+    return ShardedTensor._init_from_local_shards_and_global_metadata(
+        [Shard(tensor, shard) for tensor, shard in zip(tensors, local, strict=True)], metadata
+    )
 
 
 def _state_dict(state: AdapterState, *, for_save: bool) -> dict:
     distributed = dist.is_initialized()
     state_dict = {}
     for suffix, tensors in state.tensors_by_suffix().items():
+        pieces_by_name: dict[str, list[tuple[LocalShardSpec, torch.Tensor]]] = {}
         for spec, tensor in zip(state.shard_specs, tensors, strict=True):
             name = f"{spec.key}.{suffix}"
             if not distributed:
                 assert spec.is_full(), f"{name}: a non-distributed run must hold whole tensors"
                 state_dict[name] = tensor
             elif spec.is_primary or not for_save:
-                state_dict[name] = _sharded(spec, tensor.cpu().contiguous() if for_save else tensor)
+                pieces_by_name.setdefault(name, []).append((spec, tensor.cpu().contiguous() if for_save else tensor))
+        for name, pieces in pieces_by_name.items():
+            specs, local_tensors = zip(*pieces, strict=True)
+            assert len({spec.global_shape for spec in specs}) == 1, f"{name}: pieces disagree on the global shape"
+            state_dict[name] = _sharded(list(specs), list(local_tensors))
     return state_dict
 
 
