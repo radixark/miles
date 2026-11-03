@@ -11,6 +11,7 @@ from tests.fast.fixtures.args_fixtures import make_trainer_config
 
 from miles.backends.megatron_utils.lora.native.config import LoRAConfig
 from miles.backends.megatron_utils.lora.native.merge import merge_lora_into_weights
+from miles.backends.megatron_utils.lora.native.modules.lm_head import LoRAOutputHead
 from miles.backends.megatron_utils.lora.native.naming import ConverterNaming
 from miles.backends.megatron_utils.lora.native.registry import MODEL_SPECS, resolve_adapter_targets
 from miles.backends.megatron_utils.lora.native.spec.base import AttachContext
@@ -107,6 +108,19 @@ def test_export_trims_megatrons_vocab_padding():
 
     assert exported["lm_head.lora_A.weight"] is adapter.head_A
     torch.testing.assert_close(exported["lm_head.lora_B.weight"](), adapter.head_B[:VOCAB])
+
+
+@pytest.mark.parametrize("tp_rank, padded", [(0, slice(6, 6)), (1, slice(4, 6))])
+def test_padded_local_rows_are_the_rows_the_export_trims(tp_rank, padded):
+    context = dataclasses.replace(_context(("lm_head",)), tp_size=2, tp_rank=tp_rank)
+    head = LoRAOutputHead(
+        hf_prefix="lm_head.",
+        reference=torch.empty(PADDED_VOCAB // 2, HIDDEN),
+        context=context,
+        vocab_local=PADDED_VOCAB // 2,
+        unpadded_vocab_size=VOCAB,
+    )
+    assert head.padded_local_rows() == padded
 
 
 def test_a_converter_naming_the_head_otherwise_fails():

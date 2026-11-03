@@ -71,7 +71,8 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --target-modules "all-linear"
   --no-gradient-accumulation-fusion
   --lora-base-cpu-backup
-  --experts-shared-outer-loras 
+  --experts-shared-outer-loras
+  --no-save-optim 
   --prompt-data /root/datasets/gsm8k/train.parquet
   --input-key messages
   --label-key label

@@ -5,6 +5,7 @@ fp32 master (a Float16 child's ``fp32_from_float16_groups``) and its Adam state;
 """
 
 import json
+import os
 import re
 from collections.abc import Iterable, Sequence
 from dataclasses import asdict, replace
@@ -18,10 +19,17 @@ from megatron.core.dist_checkpointing.dict_utils import nested_values
 from megatron.core.distributed import DistributedDataParallel as DDP
 from megatron.core.optimizer import DistributedOptimizer
 from megatron.core.optimizer.cpu_offloading.hybrid_optimizer import HybridDeviceOptimizer
-from megatron.core.utils import unwrap_model
+from megatron.core.process_groups_config import ProcessGroupCollection
+from megatron.core.utils import get_pg_size, unwrap_model
 
 from miles.backends.megatron_utils.lora.bridge_checkpoint import BridgeAdapterSlots
 from miles.backends.megatron_utils.lora.optimizer import SlotOptimizer
+from miles.backends.megatron_utils.lora.utils import (
+    _distributed_optimizers,
+    _load_native_adapter_shard,
+    _load_training_state,
+    _native_adapter_shard,
+)
 from miles.backends.megatron_utils.rematerialize_utils import _build_cast_main_to_params_fn
 from miles.backends.training_utils.checkpoint.adapter.adapter_dir import (
     load_adapter_dir,
@@ -132,13 +140,11 @@ class LayerWiseSlotMembers:
 
 
 class DistributedOptimizerMembers:
-    """Checkpoint members of Bridge single LoRA (slot 0) trained by Megatron's DistributedOptimizer.
+    """Checkpoint members of single LoRA (slot 0, Bridge or native) trained by Megatron's DistributedOptimizer.
 
     Each DP group's rank 0 gathers whole parameters' fp32 masters and moments over Gloo and writes them; on import
     it scatters them back, and every rank re-casts its bf16 shard and all-gathers the parameters.
     """
-
-    bf16_adapter_key_style = "peft"
 
     def __init__(
         self,
@@ -151,12 +157,17 @@ class DistributedOptimizerMembers:
     ):
         self._slots, self._optimizer, self._model = adapter_slots, optimizer, model
         self._precision_aware, self._save_moments = precision_aware, save_moments
+        # the export is the slots'; native's names its experts like sglang
+        self.bf16_adapter_key_style = adapter_slots.bf16_adapter_key_style
 
     def export_bf16_adapter(self, slot: int) -> Iterable[tuple[str, torch.Tensor]]:
         return self._slots.export_bf16_adapter(slot)
 
     def _holds(self) -> frozenset[int]:
         """Parameters whose DP group this rank leads: expert parameters reduce over expert DP."""
+        if not self._distributed_optimizers():
+            # a plain optimizer keeps every master on every rank; the lowest replica writes each piece
+            return frozenset(range(len(self._slots.slot_parameters(0))))
         parallel = get_parallel_state()
         # the DistributedOptimizer gathers dense parameters over intra-DP x CP and expert ones over expert DP
         dense_lead, expert_lead = parallel.intra_dp_cp.rank == 0, parallel.edp.rank == 0
@@ -169,7 +180,27 @@ class DistributedOptimizerMembers:
         return self._slots.local_shard_specs(0, self._holds())
 
     def _distributed_optimizers(self) -> list:
-        return [sub for sub in self._optimizer.chained_optimizers if isinstance(sub, DistributedOptimizer)]
+        subs = self._optimizer.chained_optimizers
+        # another optimizer's state would be silently left out of the checkpoint
+        assert all(
+            isinstance(sub, DistributedOptimizer) for sub in subs
+        ), f"the adapter checkpoint needs --use-distributed-optimizer; got {[type(sub).__name__ for sub in subs]}"
+        return subs
+
+    def _replicated_masters(self) -> dict[int, torch.Tensor]:
+        """Index in ``slot_parameters(0)`` -> fp32 master, of the parameters a plain Float16 optimizer steps: miles
+        runs a non-Adam optimizer (SGD) without the DistributedOptimizer, and it keeps no moments."""
+        index_of = {id(p): i for i, p in enumerate(self._slots.slot_parameters(0))}
+        masters = {}
+        for child in self._optimizer.chained_optimizers:
+            if isinstance(child, DistributedOptimizer):
+                continue
+            for g in range(len(child.optimizer.param_groups)):
+                for param, master in zip(child.float16_groups[g], child.fp32_from_float16_groups[g], strict=True):
+                    masters[index_of[id(param)]] = master
+                for param in child.fp32_from_fp32_groups[g]:
+                    masters[index_of[id(param)]] = param
+        return masters
 
     def _whole_state(self) -> tuple[dict[int, dict[str, torch.Tensor]], int | None]:
         """Collective: on each DP group's rank 0, its parameters' whole fp32 master and moments; and the step."""
@@ -179,6 +210,8 @@ class DistributedOptimizerMembers:
             # a never-stepped optimizer has no Adam state yet (zero moments); this fills only empty states
             if sub.init_state_fn is not None:
                 sub.init_state_fn(sub.optimizer, sub.config)
+            elif isinstance(sub.optimizer, HybridDeviceOptimizer) and not sub.optimizer.state:
+                _init_zero_hdo_state(sub.optimizer)
             gathered = sub.get_parameter_state_dp_zero(use_gloo_comm=True)
             if (step := _distributed_optimizer_step(sub)) is not None:
                 steps.add(step)
@@ -189,15 +222,22 @@ class DistributedOptimizerMembers:
                     world, start, end = _world_slice(gathered, buffer_index, buffer, param)
                     whole[index_of[id(param)]] = {k: world[k][start:end].view(param.shape) for k in _STATE_KEYS}
         assert len(steps) <= 1, f"the DistributedOptimizers disagree on the Adam step: {steps}"
+        whole |= {index: {"param": master.detach().cpu()} for index, master in self._replicated_masters().items()}
         return whole, steps.pop() if steps else None
 
     def export_adapter_state(self, slot: int) -> AdapterState:
+        assert not (
+            self._save_moments and self._replicated_masters()
+        ), "a non-Adam optimizer keeps no moments; save its adapter with --no-save-optim"
         whole, step = self._whole_state()
         holds = self._holds()
         params = self._slots.slot_parameters(0)
         specs = self._slots.local_shard_specs(0, holds)
 
         def pieces(key: str) -> list[torch.Tensor]:
+            if not holds:
+                # no piece is cut here; the aligned copies would only pad the index space
+                return []
             aligned = [whole[i][key] if i in whole else p.detach().float().cpu() for i, p in enumerate(params)]
             return [
                 piece.reshape(spec.local_shape)
@@ -217,30 +257,35 @@ class DistributedOptimizerMembers:
     def import_adapter_state(self, slot: int, state: AdapterState) -> None:
         holds = self._holds()
         params = self._slots.slot_parameters(0)
-        # whole tensors of the parameters this rank leads; DP rank 0 holds every element of them
-        whole = {i: {k: torch.zeros(params[i].shape) for k in _STATE_KEYS} for i in holds}
+        # the pieces of each parameter this rank leads; elements no piece holds (vocab padding) keep their state
+        pieces_by_param = {i: [] for i in holds}
         for (index, offsets), *pieces in zip(
             self._slots.piece_parameter(0, holds), state.weights, state.exp_avgs, state.exp_avg_sqs, strict=True
         ):
-            for key, piece in zip(_STATE_KEYS, pieces, strict=True):
-                whole[index][key].view(-1)[offsets.flatten()] = piece.flatten().cpu()
+            pieces_by_param[index].append((offsets.flatten(), pieces))
+        for index, master in self._replicated_masters().items():
+            for offsets, (weight, *_moments) in pieces_by_param[index]:
+                master.view(-1)[offsets.to(master.device)] = weight.flatten().to(master)
         index_of = {id(p): i for i, p in enumerate(params)}
         for sub in self._distributed_optimizers():
             if sub.init_state_fn is not None:
                 sub.init_state_fn(sub.optimizer, sub.config)
-            gathered = sub.get_parameter_state_dp_zero(use_gloo_comm=True)
+            # every element is overwritten below, so nothing is gathered
+            gathered = sub.get_parameter_state_dp_zero(use_gloo_comm=True, empty_data=True)
             if gathered is not None:
                 for buffer_index, buffer in enumerate(sub.buffers):
                     for param in buffer.param_index_map:
                         world, start, end = _world_slice(gathered, buffer_index, buffer, param)
-                        for key in _STATE_KEYS:
-                            world[key][start:end] = whole[index_of[id(param)]][key].flatten()
+                        for offsets, pieces in pieces_by_param[index_of[id(param)]]:
+                            for key, piece in zip(_STATE_KEYS, pieces, strict=True):
+                                world[key][start:end][offsets] = piece.flatten().cpu()
                 del gathered["buckets_coalesced"]
             sub.load_parameter_state_from_dp_zero(gathered)
             _set_distributed_optimizer_step(sub, state.step)
         _build_cast_main_to_params_fn(self._optimizer, precision_aware=self._precision_aware)()
-        for chunk in self._model:
-            chunk.start_param_sync(force_sync=True)
+        if self._distributed_optimizers():
+            for chunk in self._model:
+                chunk.start_param_sync(force_sync=True)
 
 
 _STATE_KEYS = ("param", "exp_avg", "exp_avg_sq")
@@ -267,6 +312,22 @@ def _distributed_optimizer_step(sub) -> int | None:
         return steps.pop() if steps else (0 if sub.optimizer.state else None)
     groups = [group for group in sub.optimizer.param_groups if group["params"]]
     return groups[0].get("step", 0) if groups else None
+
+
+def _init_zero_hdo_state(hdo: HybridDeviceOptimizer) -> None:
+    """The state a never-stepped HDO is equivalent to: its fp32 master, zero moments, step 0.
+
+    Megatron's own dummy_step would take a real Adam step on random gradients.
+    """
+    for group in hdo.param_groups:
+        for param in group["params"]:
+            master = hdo.param_to_inner_param[param]
+            hdo.state[param] = {
+                "step": torch.tensor(0.0),
+                "exp_avg": torch.zeros_like(master),
+                "exp_avg_sq": torch.zeros_like(master),
+                "master_param": master,
+            }
 
 
 def _set_distributed_optimizer_step(sub, step: int) -> None:
@@ -337,6 +398,15 @@ def find_load_mismatch(
         kind = classify_adapter_source(path, targets, load_optimizer=load_optimizer)
         if kind == AdapterSourceKind.LEGACY_TINKER_CHECKPOINT:
             _read_legacy_meta(path, run)
+            if load_optimizer:
+                # SlotOptimizer's LayerWise shards state over these groups, owner per param differing by slot;
+                # META.json does not record the slot that saved it
+                groups = ProcessGroupCollection.use_mpu_process_groups(required_pgs=["dp_cp", "expt_dp"])
+                if max(get_pg_size(groups.dp_cp), get_pg_size(groups.expt_dp)) > 1:
+                    raise ValueError(
+                        "a checkpoint saved before adapter checkpoints cannot restore optimizer state under data "
+                        "parallelism; load it with optimizer=False (weights only)"
+                    )
             # TE's _extra_state objects are stored per shard (<key>/shard_i_j); the tensors decide the layout
             saved = {
                 k
@@ -449,8 +519,13 @@ def build_adapter_slots(args, model, iterator, targets) -> BridgeAdapterSlots:
 
 
 def single_lora_parametrization(adapter_slots: BridgeAdapterSlots, args) -> AdapterParametrization:
+    base_model = args.hf_checkpoint
+    # one local model under another path string (a trailing slash, a symlinked mount) is the same base; a hub id
+    # is no local path
+    if os.path.exists(base_model):
+        base_model = os.path.realpath(base_model)
     return adapter_slots.parametrization(
-        base_model=args.hf_checkpoint,
+        base_model=base_model,
         lora_rank=args.lora_rank,
         lora_alpha=args.lora_alpha,
         lora_type=args.lora_type,
@@ -499,11 +574,16 @@ def restore_single_lora(model, args, *, optimizer, opt_param_scheduler) -> int |
     )
     targets = get_hf_lora_targets(load_hf_config(args.hf_checkpoint).to_dict())
     slots = build_adapter_slots(args, model, iterator, targets)
+    load_optimizer = not args.backend.no_load_optim
+    # a convert-save writes moments only when they were loaded
     members = DistributedOptimizerMembers(
-        slots, optimizer, model, precision_aware=args.backend.use_precision_aware_optimizer
+        slots,
+        optimizer,
+        model,
+        precision_aware=args.backend.use_precision_aware_optimizer,
+        save_moments=load_optimizer and not args.backend.no_save_optim,
     )
     run = single_lora_parametrization(slots, args)
-    load_optimizer = not args.backend.no_load_optim
     path = Path(args.lora_adapter_path)
     legacy = LegacyRankShardLoader(model, optimizer, run, load_optimizer)
     load_adapter_dir(
@@ -515,7 +595,8 @@ def restore_single_lora(model, args, *, optimizer, opt_param_scheduler) -> int |
         load_optimizer=load_optimizer,
         in_model_loaders_by_kind={AdapterSourceKind.LEGACY_RANK_SHARD: legacy},
     )
-    training_state = legacy.training_state if legacy.training_state is not None else read_training_state(path)
+    # an old-format save holds its training state beside the rank shards, whichever reader loaded the weights
+    training_state = read_training_state(path) or _read_legacy_training_state(path)
     if args.lora_adapter_convert_save is not None:
         destination = Path(args.lora_adapter_convert_save)
         save_and_commit_adapter_dir(
@@ -525,7 +606,7 @@ def restore_single_lora(model, args, *, optimizer, opt_param_scheduler) -> int |
             0,
             run,
             targets,
-            training_state=training_state or {"iteration": None, "opt_param_scheduler": None},
+            training_state=training_state,
         )
     if training_state is None:
         return None
@@ -540,21 +621,13 @@ class LegacyRankShardLoader:
 
     def __init__(self, model, optimizer, run: AdapterParametrization, load_optimizer: bool):
         self._model, self._optimizer, self._run, self._load_optimizer = model, optimizer, run, load_optimizer
-        self.training_state: dict | None = None
 
     def __call__(self, path: Path) -> AdapterParametrization:
-        from miles.backends.megatron_utils.lora.utils import (
-            _distributed_optimizers,
-            _load_native_adapter_shard,
-            _load_training_state,
-            _native_adapter_shard,
-        )
-
         shard = _native_adapter_shard(path)
         assert shard is not None, f"{path} has no adapter shard for this rank"
         _load_native_adapter_shard(self._model, shard)
-        state = _load_training_state(path)
         if self._load_optimizer:
+            state = _load_training_state(path)
             assert (
                 state is not None and state["optimizer"] is not None and "parameter_state" in state
             ), f"{path} has no optimizer state to resume; pass --no-load-optim"
@@ -566,11 +639,13 @@ class LegacyRankShardLoader:
         else:
             # the fp32 masters were built before the adapter load
             self._optimizer.reload_model_params()
-        if state is not None:
-            self.training_state = {
-                "iteration": state["iteration"],
-                "opt_param_scheduler": state["opt_param_scheduler"],
-            }
-        config_file = path / "adapter_config.json"
-        alpha = json.loads(config_file.read_text())["lora_alpha"] if config_file.is_file() else self._run.lora_alpha
-        return replace(self._run, lora_alpha=alpha)
+        # _resolve_lora_alpha already made the run's alpha the source's
+        return self._run
+
+
+def _read_legacy_training_state(path: Path) -> dict | None:
+    """The iteration and scheduler state of an old-format save (``training_state_rank*.pt``), if it has them."""
+    state = _load_training_state(path)
+    if state is None:
+        return None
+    return {"iteration": state["iteration"], "opt_param_scheduler": state["opt_param_scheduler"]}

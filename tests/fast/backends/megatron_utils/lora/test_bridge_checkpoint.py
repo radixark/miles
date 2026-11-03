@@ -1,10 +1,14 @@
 """The row-mapping probe recovers each rank's HF pieces, primaries and shared A from an export alone."""
 
+from datetime import timedelta
+
+import pytest
 import torch
 import torch.distributed as dist
 from tests.fast.dist_utils import init_gloo, run_multiprocess
 
-from miles.backends.megatron_utils.lora.bridge_checkpoint import probe_bridge_row_mapping
+from miles.backends.megatron_utils.lora.bridge_checkpoint import BridgeAdapterSlots, probe_bridge_row_mapping
+from miles.backends.training_utils.checkpoint.adapter.probed_slots import RowMapping
 from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
 
 Q, K = "model.layers.0.self_attn.q_proj", "model.layers.0.self_attn.k_proj"
@@ -87,3 +91,92 @@ def _probe_experts(rank, world_size, port):
 
 def test_probe_stacks_ep_split_experts_and_stores_a_shared_expert_a_once():
     run_multiprocess(_probe_experts)
+
+
+HEAD = "lm_head"
+
+
+def _trimmed_head_export(params, served_rows):
+    """Native-like: B gathered over the vocab split, then trimmed to the served vocab."""
+    a, b = params
+    parts = [torch.empty_like(b) for _ in range(dist.get_world_size())]
+    dist.all_gather(parts, b.data)
+    yield f"{HEAD}.lora_A.weight", a.data.clone()
+    yield f"{HEAD}.lora_B.weight", torch.cat(parts)[:served_rows]
+
+
+def _probe_trimmed_head(rank, world_size, port):
+    init_gloo(rank, world_size, port=port)
+    # vocab 7 padded to 8: rank 1's last row of B is padding
+    params = [torch.nn.Parameter(torch.randn(2, 5)), torch.nn.Parameter(torch.randn(4, 2))]
+    padding = torch.arange(10 + 3 * 2, 10 + 4 * 2) if rank == 1 else torch.empty(0, dtype=torch.long)
+    with pytest.raises(RuntimeError, match="rank 1: AssertionError: .*does not reach 2 of this rank's elements"):
+        probe_bridge_row_mapping(params, lambda: _trimmed_head_export(params, 7), TARGETS)
+
+    mapping = probe_bridge_row_mapping(params, lambda: _trimmed_head_export(params, 7), TARGETS, unexported=padding)
+
+    head_b = next(p for p in mapping.pieces if p.key == f"{HEAD}.lora_B")
+    assert head_b.global_shape == (7, 2) and head_b.offsets == (4 * rank, 0)
+    flat = torch.cat([p.data.reshape(-1) for p in params])
+    assert torch.equal(flat[head_b.local_elements], params[1].data[: 4 - rank])
+    with pytest.raises(RuntimeError, match="the export reaches elements declared unexported"):
+        probe_bridge_row_mapping(params, lambda: _trimmed_head_export(params, 8), TARGETS, unexported=padding)
+    dist.destroy_process_group()
+
+
+def test_probe_exempts_only_the_declared_unexported_elements_from_coverage():
+    run_multiprocess(_probe_trimmed_head)
+
+
+GATE_UP = "model.layers.0.mlp.gate_up_proj"
+
+
+def _fused_gate_up_export(params):
+    """Native's fused gate_up at TP: gate and up gathered separately, then concatenated."""
+    (b,) = params
+
+    def gathered(local):
+        parts = [torch.empty_like(local) for _ in range(dist.get_world_size())]
+        dist.all_gather(parts, local.contiguous())
+        return torch.cat(parts)
+
+    half = b.shape[0] // 2
+    yield f"{GATE_UP}.lora_B.weight", torch.cat([gathered(b.data[:half]), gathered(b.data[half:])])
+
+
+def _probe_fused_gate_up(rank, world_size, port):
+    init_gloo(rank, world_size, port=port)
+    params = [torch.nn.Parameter(torch.randn(4, 3))]
+    mapping = probe_bridge_row_mapping(params, lambda: _fused_gate_up_export(params), TARGETS)
+
+    assert [(p.key, p.global_shape, p.offsets) for p in mapping.pieces] == [
+        (f"{GATE_UP}.lora_B", (8, 3), (2 * rank, 0)),
+        (f"{GATE_UP}.lora_B", (8, 3), (4 + 2 * rank, 0)),
+    ]
+    flat = params[0].data.reshape(-1)
+    assert torch.equal(torch.cat([flat[p.local_elements] for p in mapping.pieces]), params[0].data)
+    dist.destroy_process_group()
+
+
+def test_probe_splits_a_ranks_bands_of_one_key_into_rectangles():
+    run_multiprocess(_probe_fused_gate_up)
+
+
+# process -> slot -> parameter indices it holds; process 0 holds the same in both slots, its peers do not
+_HOLDS = [{0: {0}, 1: {0}}, {0: {1}, 1: {2}}, {0: {2}, 1: {1}}]
+
+
+def _specs_of_two_slots(rank, world_size, port):
+    dist.init_process_group(
+        "gloo", init_method=f"tcp://localhost:{port}", rank=rank, world_size=world_size, timeout=timedelta(seconds=10)
+    )
+    slots = BridgeAdapterSlots.__new__(BridgeAdapterSlots)
+    slots._specs, slots._multi_lora, slots.slot_parameters = {}, False, lambda slot: []
+    slots.row_mapping = RowMapping(pieces=[], shared_lora_a_groups=(), target_modules=())
+    for slot in (0, 1):
+        assert slots.local_shard_specs(slot, frozenset(_HOLDS[rank][slot])) == []
+    dist.destroy_process_group()
+
+
+def test_every_process_gathers_shard_specs_for_each_slot():
+    run_multiprocess(_specs_of_two_slots, world_size=3)

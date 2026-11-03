@@ -19,7 +19,7 @@ from miles.backends.training_utils.checkpoint.adapter.probed_slots import (
     HfPiece,
     ProbedAdapterSlots,
     RowMapping,
-    rectangle,
+    rectangles,
 )
 from miles.utils.lora.hf_lora_targets import HfLoraTargets
 
@@ -85,8 +85,10 @@ def _probe_local(
         named += [(f"{module}.lora_B", part) for module, part in zip(hf_modules, lora_b.values(), strict=True)]
         for hf_key, codes in named:
             if (mine := codes >= 0).any():
-                box = rectangle(hf_key, mine)
-                pieces.append(HfPiece(hf_key, tuple(codes.shape), tuple(s.start for s in box), codes[box].clone()))
+                pieces += [
+                    HfPiece(hf_key, tuple(codes.shape), tuple(s.start for s in box), codes[box].clone())
+                    for box in rectangles(hf_key, mine)
+                ]
     covered = torch.zeros(start, dtype=torch.bool)
     for piece in pieces:
         covered[piece.local_elements.flatten()] = True
