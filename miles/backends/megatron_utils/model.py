@@ -1085,8 +1085,15 @@ def load_model_state(
 
     if opt_param_scheduler is not None and not scheduler_restored:
         if adapter_iteration is not None:
-            # the scheduler counts samples, and an adapter's iteration is its last completed rollout
-            increment = (adapter_iteration + 1) * args.rollout_batch_size * args.n_samples_per_prompt
+            # the scheduler counts trained samples: a rollout trains whole global batches and trims the rest
+            rollout_samples = args.rollout_batch_size * args.n_samples_per_prompt
+            if args.use_dynamic_global_batch_size:
+                # one step on the rollout rounded down to the DP size
+                batch_size = get_parallel_state().effective_dp.size
+            else:
+                batch_size = args.backend.global_batch_size
+            # an adapter's iteration is its last completed rollout
+            increment = (adapter_iteration + 1) * (rollout_samples // batch_size * batch_size)
         else:
             increment = iteration * args.backend.global_batch_size
         opt_param_scheduler.step(increment=increment)
