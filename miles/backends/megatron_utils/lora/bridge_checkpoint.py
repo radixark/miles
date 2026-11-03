@@ -380,7 +380,14 @@ class MegatronBridgeCheckpointLoader:
                 run_hyperparameters = [
                     {k: v for k, v in g.items() if k not in ("params", "step")} for g in self._optimizer.param_groups
                 ]
-                self._optimizer.load_state_dict(loaded["optimizer"])
+                try:
+                    self._optimizer.load_state_dict(loaded["optimizer"])
+                except KeyError as exc:
+                    # the DistributedOptimizer matches param groups by (wd_mult, lr_mult, is_expert_parallel,
+                    # is_decoupled_lr) and raises a bare KeyError of the missing key
+                    raise ValueError(
+                        f"{path} has no optimizer param group {exc} of this run's; pass --no-load-optim"
+                    ) from exc
                 for group, hyperparameters in zip(self._optimizer.param_groups, run_hyperparameters, strict=True):
                     group.update(hyperparameters)
             else:
