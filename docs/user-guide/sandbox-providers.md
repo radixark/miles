@@ -61,13 +61,11 @@ has the details:
 
 ```bash
 python -m nemo_gym.sandbox.providers.e2b.build --images-file images.txt \
-    --cpu-count 2 --memory-mb 4096 --output template_map.yaml
+    --cpu-count 2 --memory-mb 8192 --output template_map.yaml
 ```
 
-4096 MB graded the five SWE-bench Verified rows in NeMo Gym's
-`mini_swe_agent_2/data/example.jsonl`; the agent's own
-`sandbox_spec.resources` ask for 8192 MiB, which memory-heavy test suites
-may need.
+2 vCPUs and 8192 MB match the agent's own `sandbox_spec.resources` and fit
+E2B's Hobby tier.
 
 Put that `template_map` under `sandbox.e2b.create` in a config file, and pass
 it after `nemo_gym/sandbox/providers/e2b/configs/e2b.yaml`, which replaces the
