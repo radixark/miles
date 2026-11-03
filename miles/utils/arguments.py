@@ -62,7 +62,7 @@ from miles.utils.workers.worker_provider.static import parse_host_and_port
 
 logger = logging.getLogger(__name__)
 
-LINEAR_ATTENTION_BACKENDS = ("fla", "flashqla")
+LINEAR_ATTENTION_BACKENDS = ("fla", "flashqla", "cake")
 LINEAR_ATTENTION_INPUT_NORMS = ("te", "hf")
 
 FULLY_ASYNC_ROLLOUT_PATH = "miles.rollout.fully_async_rollout.FullyAsyncRolloutFn"
