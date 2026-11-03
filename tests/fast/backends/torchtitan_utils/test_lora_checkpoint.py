@@ -231,6 +231,12 @@ def test_a_megatron_adapter_dir_resumes_the_schedule_after_its_rollout(tmp_path)
     assert restored.lr_states == [{"last_epoch": 3 * _STEPS_PER_ROLLOUT}]
 
 
+def test_a_convert_save_of_a_model_only_source_writes_no_training_state(tmp_path):
+    """As Megatron's convert-save: a step and schedule the source never had would resume as if real."""
+    restored = _restore(tmp_path, lora_adapter_convert_save=str(tmp_path / "out"))
+    assert restored.save.call_args.kwargs["training_state"] is None
+
+
 def test_a_convert_save_of_a_dcp_records_its_rollout(tmp_path):
     restored = _restore(tmp_path, dcp_step=2 * _STEPS_PER_ROLLOUT, lora_adapter_convert_save=str(tmp_path / "out"))
     assert restored.save.call_args.kwargs["training_state"]["iteration"] == 1

@@ -470,6 +470,6 @@ class TorchtitanLoraCheckpoint:
                 0,
                 self.run,
                 self.slots.targets,
-                training_state=training_state or self._training_state(None),
+                training_state=training_state,
             )
         return None if training_state is None else training_state["iteration"]
