@@ -17,6 +17,8 @@ class HfLoraTargets:
     mlp: tuple[str, ...]
     unembed: tuple[str, ...]
     default_train_unembed: bool = False
+    # attention targets added when the backend shares one lora_A across a fused projection (--lora-type lora)
+    whole_fused_attention: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -26,6 +28,7 @@ class _HfLoraModelSpec:
     unembed: str = "lm_head"
     unwrap_text_config: bool = False
     default_train_unembed: bool = False
+    build_whole_fused_attention: Callable[[dict], tuple[str, ...]] = lambda config: ()
 
 
 def _prefix_paths(prefix, *paths):
@@ -41,6 +44,8 @@ _PACKED_EXPERTS = _prefix_paths("mlp.experts", "gate_up_proj", "down_proj")
 _GDN_NEXT = _prefix_paths("linear_attn", "in_proj_qkvz", "in_proj_ba", "out_proj")
 # official Tinker adapts no in_proj_b / in_proj_a; they stay targetable by name
 _GDN_35 = _prefix_paths("linear_attn", "in_proj_qkv", "in_proj_z", "out_proj")
+# a fused adapter takes the GDN in_proj whole, so it adapts in_proj_b / in_proj_a with in_proj_qkv / in_proj_z
+_GDN_35_WHOLE_FUSED = _prefix_paths("linear_attn", "in_proj_b", "in_proj_a")
 # GDN in_proj HF module -> the components a canonical adapter exports; official Tinker trains q / k / v / z apart
 GDN_IN_PROJ_COMPONENTS_BY_MODULE = {
     "in_proj_qkv": ("in_proj_q", "in_proj_k", "in_proj_v"),
@@ -201,6 +206,10 @@ def _qwen3_5_targets(config):
     return _hybrid_attention_targets(config, _GDN_35), _DENSE_MLP
 
 
+def _qwen3_5_whole_fused_attention(config):
+    return _GDN_35_WHOLE_FUSED if "linear_attention" in config["layer_types"] else ()
+
+
 def _qwen3_5_moe_targets(config):
     mlp = _PACKED_EXPERTS
     if config["shared_expert_intermediate_size"]:
@@ -242,13 +251,21 @@ _HF_LORA_MODELS = {
     "qwen3": _HfLoraModelSpec(_dense_targets),
     "qwen3_moe": _HfLoraModelSpec(_qwen3_moe_targets),
     "qwen3_next": _HfLoraModelSpec(_qwen3_next_targets),
-    "qwen3_5_text": _HfLoraModelSpec(_qwen3_5_targets),
-    "qwen3_5_moe_text": _HfLoraModelSpec(_qwen3_5_moe_targets),
+    "qwen3_5_text": _HfLoraModelSpec(_qwen3_5_targets, build_whole_fused_attention=_qwen3_5_whole_fused_attention),
+    "qwen3_5_moe_text": _HfLoraModelSpec(
+        _qwen3_5_moe_targets, build_whole_fused_attention=_qwen3_5_whole_fused_attention
+    ),
     "qwen3_5": _HfLoraModelSpec(
-        _qwen3_5_targets, layer_prefix="model.language_model.layers.*", unwrap_text_config=True
+        _qwen3_5_targets,
+        layer_prefix="model.language_model.layers.*",
+        unwrap_text_config=True,
+        build_whole_fused_attention=_qwen3_5_whole_fused_attention,
     ),
     "qwen3_5_moe": _HfLoraModelSpec(
-        _qwen3_5_moe_targets, layer_prefix="model.language_model.layers.*", unwrap_text_config=True
+        _qwen3_5_moe_targets,
+        layer_prefix="model.language_model.layers.*",
+        unwrap_text_config=True,
+        build_whole_fused_attention=_qwen3_5_whole_fused_attention,
     ),
     "gpt_oss": _HfLoraModelSpec(_gpt_oss_targets),
     "deepseek_v2": _HfLoraModelSpec(_deepseek_targets),
@@ -296,6 +313,7 @@ def get_hf_lora_targets(hf_config: dict) -> HfLoraTargets:
         mlp=_prefix_paths(spec.layer_prefix, *mlp),
         unembed=(spec.unembed,),
         default_train_unembed=spec.default_train_unembed,
+        whole_fused_attention=_prefix_paths(spec.layer_prefix, *spec.build_whole_fused_attention(text_config)),
     )
 
 
@@ -312,14 +330,7 @@ def resolve_hf_lora_targets(
         return list(target_modules)
 
     layout = get_hf_lora_targets(hf_config)
-    attention = layout.attention
-    if whole_fused:
-        attention += tuple(
-            target.removesuffix("in_proj_z") + leaf
-            for target in attention
-            if target.endswith("linear_attn.in_proj_z")
-            for leaf in ("in_proj_b", "in_proj_a")
-        )
+    attention = layout.attention + (layout.whole_fused_attention if whole_fused else ())
     groups = dict(zip(LORA_TARGET_GROUPS, (attention, layout.mlp, layout.unembed), strict=True))
     targets = [module for target in target_modules for module in groups.get(target, (target,))]
     assert targets, "At least one trainable LoRA module group is required"
