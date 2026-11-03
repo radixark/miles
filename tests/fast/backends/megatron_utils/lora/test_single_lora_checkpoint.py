@@ -4,9 +4,14 @@ import os
 from types import SimpleNamespace
 from unittest.mock import DEFAULT, MagicMock, patch
 
+import pytest
 import torch
 
-from miles.backends.megatron_utils.lora.checkpoint import restore_single_lora, single_lora_parametrization
+from miles.backends.megatron_utils.lora.checkpoint import (
+    DistributedOptimizerMembers,
+    restore_single_lora,
+    single_lora_parametrization,
+)
 
 _MODULE = "miles.backends.megatron_utils.lora.checkpoint"
 
@@ -82,3 +87,10 @@ def test_a_weights_only_convert_save_writes_neither_moments_nor_a_placeholder_tr
     _, _, mocks = _restore(tmp_path / "source", convert_save=str(tmp_path / "converted"))
     assert mocks["DistributedOptimizerMembers"].call_args.kwargs["save_moments"] is False
     assert mocks["save_and_commit_adapter_dir"].call_args.kwargs["training_state"] is None
+
+
+def test_an_optimizer_other_than_megatrons_distributed_one_is_refused():
+    optimizer = SimpleNamespace(chained_optimizers=[MagicMock()])
+    members = DistributedOptimizerMembers(MagicMock(), optimizer, [], precision_aware=False)
+    with pytest.raises(AssertionError, match="--use-distributed-optimizer"):
+        members._distributed_optimizers()

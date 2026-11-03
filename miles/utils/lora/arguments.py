@@ -41,6 +41,10 @@ def validate_lora_args(args):
     args.lora_alpha = _resolve_lora_alpha(args)
     if args.lora_adapter_convert_save is not None:
         assert args.lora_adapter_path is not None, "--lora-adapter-convert-save converts --lora-adapter-path"
+        assert args.train_backend == "megatron" and args.megatron_to_hf_mode == "bridge" and not args.multi_lora, (
+            "--lora-adapter-convert-save is implemented only for single LoRA on --train-backend megatron "
+            "--megatron-to-hf-mode bridge"
+        )
     if engine_loads_adapter_from_disk(args):
         _validate_rollout_only_adapter(args)
     assert args.train_backend in (
@@ -142,6 +146,10 @@ def _validate_adapter_state_args(args) -> None:
     """adapter_state/ holds Adam's fp32 master, fp32 moments and step, gathered whole per DP group over Gloo."""
     if args.save is None and args.lora_adapter_path is None:
         return
+    assert not args.debug_disable_optimizer, (
+        "--save / --lora-adapter-path store and load the adapter's fp32 optimizer masters, which "
+        "--debug-disable-optimizer does not build; drop one of them"
+    )
     assert args.optimizer == "adam", f"--save / --lora-adapter-path store Adam state; got --optimizer {args.optimizer}"
     assert args.exp_avg_dtype == args.exp_avg_sq_dtype == torch.float32, "the adapter checkpoint stores fp32 moments"
     if args.use_distributed_optimizer:
@@ -230,6 +238,9 @@ def validate_multi_lora_args(args: Any) -> None:
         return
 
     assert args.lora_rank > 0, "--lora-rank must be set when --multi-lora-n-adapters > 0"
+    assert args.lora_adapter_path is None, (
+        "Multi-LoRA loads adapters into its slots through the Tinker gateway; --lora-adapter-path is single LoRA only"
+    )
     assert args.train_backend == "megatron", "Multi-LoRA currently requires --train-backend megatron"
     assert (
         not args.allgather_cp

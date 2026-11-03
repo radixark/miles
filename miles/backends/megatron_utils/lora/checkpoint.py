@@ -176,7 +176,12 @@ class DistributedOptimizerMembers:
         return self._slots.local_shard_specs(0, self._holds())
 
     def _distributed_optimizers(self) -> list:
-        return [sub for sub in self._optimizer.chained_optimizers if isinstance(sub, DistributedOptimizer)]
+        subs = self._optimizer.chained_optimizers
+        # another optimizer's state would be silently left out of the checkpoint
+        assert all(
+            isinstance(sub, DistributedOptimizer) for sub in subs
+        ), f"the adapter checkpoint needs --use-distributed-optimizer; got {[type(sub).__name__ for sub in subs]}"
+        return subs
 
     def _whole_state(self) -> tuple[dict[int, dict[str, torch.Tensor]], int | None]:
         """Collective: on each DP group's rank 0, its parameters' whole fp32 master and moments; and the step."""
