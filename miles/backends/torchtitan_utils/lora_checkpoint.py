@@ -197,8 +197,8 @@ class TorchtitanCheckpointLoader:
     """A torchtitan DCP checkpoint (``step-N/`` of torchtitan v0.4.0, or of miles before the adapter format), read
     straight into this run's adapter parameters and AdamW state under any parallel layout.
 
-    Only lora_a / lora_b and their ``optimizer.state.<fqn>.*`` are read; the base must match the run's HF files. The
-    DCP records no alpha: the run's (``--lora-alpha``) is used.
+    Only lora_a / lora_b, their ``optimizer.state.<fqn>.*``, ``train_state`` and ``lr_scheduler`` are read; the base
+    must match the run's HF files. The DCP records no alpha: the run's (``--lora-alpha``) is used.
     """
 
     def __init__(
@@ -217,6 +217,8 @@ class TorchtitanCheckpointLoader:
             sd_adapter,
         )
         self._run, self._load_optimizer = run, load_optimizer
+        self.train_state: dict | None = None
+        self.lr_scheduler_state: dict | None = None
 
     def _base_fingerprint(self, path: Path, metadata) -> str:
         names = {}
@@ -273,8 +275,12 @@ class TorchtitanCheckpointLoader:
         if self._load_optimizer:
             for key, state in zip(params, states, strict=True):
                 loaded |= {f"optimizer.state.{key}.{name}": state[name] for name in ("exp_avg", "exp_avg_sq", "step")}
+        # non-tensor entries: DCP replaces these placeholders with the saved values
+        loaded |= {"train_state.step": 0, "train_state.ntokens_seen": 0, "lr_scheduler.last_epoch": 0}
         with torch.no_grad():
             dcp.load(loaded, checkpoint_id=path)
+        self.train_state = {"step": loaded["train_state.step"], "ntokens_seen": loaded["train_state.ntokens_seen"]}
+        self.lr_scheduler_state = {"last_epoch": loaded["lr_scheduler.last_epoch"]}
         steps = [None] * dist.get_world_size()
         dist.all_gather_object(steps, {int(state["step"]) for state in states}, group=gloo_group())
         steps = set().union(*steps)
@@ -311,8 +317,8 @@ def _torchtitan_adapter_slots(trainer, args) -> TorchtitanAdapterSlots:
 class TorchtitanLoraCheckpoint:
     """Single-LoRA RL checkpoints of the torchtitan backend: ``{save}/iter_N/adapter`` and ``--lora-adapter-path``."""
 
-    def __init__(self, trainer, args):
-        self._trainer, self._args = trainer, args
+    def __init__(self, trainer, args, steps_per_rollout: int):
+        self._trainer, self._args, self._steps_per_rollout = trainer, args, steps_per_rollout
         self.slots = _torchtitan_adapter_slots(trainer, args)
         self.members = TorchtitanOptimizerMembers(self.slots, trainer.optimizers.optimizers)
         self.run = self.slots.parametrization(
@@ -366,7 +372,13 @@ class TorchtitanLoraCheckpoint:
             in_model_loaders_by_kind={AdapterSourceKind.TORCHTITAN_CHECKPOINT: loader},
         )
         training_state = read_training_state(path)
-        if training_state is not None and "lr_scheduler" in training_state:
+        if loader.train_state is not None:
+            self._trainer.engine.load_state_dict(loader.train_state)
+            load_lr_schedulers(self._trainer.engine.optim.lr_schedulers, loader.lr_scheduler_state)
+            # a torchtitan DCP records steps, not the rollout; miles saved it after a whole rollout's steps
+            completed_rollouts = self._trainer.step // self._steps_per_rollout
+            training_state = self._training_state(completed_rollouts - 1 if completed_rollouts else None)
+        elif training_state is not None and "lr_scheduler" in training_state:
             # written by a torchtitan run; a Megatron run's scheduler state does not apply here
             load_lr_schedulers(self._trainer.engine.optim.lr_schedulers, training_state["lr_scheduler"])
             self._trainer.engine.num_completed_steps = training_state["step"]

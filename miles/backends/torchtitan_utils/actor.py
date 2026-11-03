@@ -101,12 +101,14 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
             init_tracking(args, primary=False)
 
         self.trainer.engine.load_checkpoint()
-        start_rollout_id = self.trainer.step // _steps_per_rollout(args)
+        iteration = None
         if is_lora_enabled(args):
-            self._lora_checkpoint = TorchtitanLoraCheckpoint(self.trainer, args)
+            self._lora_checkpoint = TorchtitanLoraCheckpoint(self.trainer, args, _steps_per_rollout(args))
             # before the moments move to disk: the restore writes them in place
-            if args.lora_adapter_path is not None and (iteration := self._lora_checkpoint.restore()) is not None:
-                start_rollout_id = iteration + 1
+            if args.lora_adapter_path is not None:
+                iteration = self._lora_checkpoint.restore()
+        # after the restore, which may set the step
+        start_rollout_id = self.trainer.step // _steps_per_rollout(args) if iteration is None else iteration + 1
         if args.stream_optimizer_state_to_disk:
             setup_adam_state_on_disk(self.optimizers, state_dir_root=optimizer_state_dir_root(args))
 
