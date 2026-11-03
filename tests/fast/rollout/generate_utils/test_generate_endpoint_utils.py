@@ -4,7 +4,7 @@ import pytest
 from tests.fast.fixtures.args_fixtures import sglang_router_args
 
 from miles.rollout.generate_utils import generate_endpoint_utils
-from miles.rollout.generate_utils.generate_endpoint_utils import compute_request_payload, stamp_group_routing_key
+from miles.rollout.generate_utils.generate_endpoint_utils import compute_request_payload, stamp_prompt_routing_key
 from miles.utils.output_store.plan import OUTPUT_STORE_REQUEST_KEY, StorePlanError
 from miles.utils.types import Sample
 
@@ -76,29 +76,40 @@ class TestComputeRequestPayloadOutputStore:
             )
 
 
-def _make_router_args(policy: str) -> SimpleNamespace:
+def _make_router_args(policy: str, assignment_mode: str = "random") -> SimpleNamespace:
+    router_args = sglang_router_args(policy)
+    router_args["router_args"]["assignment_mode"] = assignment_mode
     return SimpleNamespace(
-        **sglang_router_args(policy), sglang=SimpleNamespace(models=[SimpleNamespace(has_pd_disaggregation=False)])
+        **router_args, sglang=SimpleNamespace(models=[SimpleNamespace(has_pd_disaggregation=False)])
     )
 
 
-class TestStampGroupRoutingKey:
-    def test_a_key_routed_group_shares_one_key(self):
-        """The samples of one prompt land on one engine, so the prompt is prefilled once for the group."""
-        group = [Sample(prompt="p") for _ in range(3)]
+class TestStampPromptRoutingKey:
+    def test_a_load_placing_router_keys_a_prompts_samples_together(self):
+        """`manual min_load` lands the new key on the least-loaded engine, so sharing it prefills the prompt once."""
+        samples = [Sample(prompt="p") for _ in range(3)]
 
-        stamp_group_routing_key(_make_router_args("manual"), group)
+        stamp_prompt_routing_key(_make_router_args("manual", "min_load"), samples)
 
-        keys = {sample.routing_key for sample in group}
+        keys = {sample.routing_key for sample in samples}
         assert len(keys) == 1 and None not in keys
 
-    def test_each_group_gets_its_own_key(self):
+    def test_a_hashing_router_keys_every_sample_on_its_own(self):
+        """A shared key under consistent hashing would pin a prompt's samples to one rank and idle the rest."""
+        samples = [Sample(prompt="p") for _ in range(3)]
+
+        stamp_prompt_routing_key(_make_router_args("consistent_hashing"), samples)
+
+        keys = {sample.routing_key for sample in samples}
+        assert len(keys) == 3 and None not in keys
+
+    def test_each_prompt_gets_its_own_key(self):
         """Different prompts stay free to spread across engines."""
         first, second = [Sample(prompt="p")], [Sample(prompt="q")]
-        args = _make_router_args("consistent_hashing")
+        args = _make_router_args("manual", "min_load")
 
-        stamp_group_routing_key(args, first)
-        stamp_group_routing_key(args, second)
+        stamp_prompt_routing_key(args, first)
+        stamp_prompt_routing_key(args, second)
 
         assert first[0].routing_key != second[0].routing_key
 
@@ -106,15 +117,15 @@ class TestStampGroupRoutingKey:
         """A re-sampled or derived sample keeps the engine it is bound to; only keyless siblings join the new key."""
         kept, fresh = Sample(prompt="p", routing_key="bound"), Sample(prompt="p")
 
-        stamp_group_routing_key(_make_router_args("manual"), [kept, fresh])
+        stamp_prompt_routing_key(_make_router_args("manual", "min_load"), [kept, fresh])
 
         assert kept.routing_key == "bound"
         assert fresh.routing_key not in (None, "bound")
 
     def test_a_router_that_ignores_keys_leaves_the_samples_unkeyed(self):
         """Under a load or cache policy no request carries a routing header."""
-        group = [Sample(prompt="p") for _ in range(2)]
+        samples = [Sample(prompt="p") for _ in range(2)]
 
-        stamp_group_routing_key(_make_router_args("round_robin"), group)
+        stamp_prompt_routing_key(_make_router_args("round_robin"), samples)
 
-        assert [sample.routing_key for sample in group] == [None, None]
+        assert [sample.routing_key for sample in samples] == [None, None]

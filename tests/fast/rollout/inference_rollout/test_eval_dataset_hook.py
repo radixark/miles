@@ -56,12 +56,12 @@ class TestEvalDatasetHook:
         assert next(iter(cache.values())).samples[0].generate_function_path is None
 
 
-class TestEvalGroupRoutingKey:
+class TestEvalPromptRoutingKey:
     @pytest.mark.parametrize("legacy", [False, True])
     async def test_the_samples_of_an_eval_prompt_share_one_routing_key(
         self, monkeypatch: pytest.MonkeyPatch, legacy: bool
     ) -> None:
-        """Both evaluation engines key the n samples of a prompt together, so a key-routed fleet prefills it once."""
+        """Both evaluation engines key the n samples of a prompt together when the router places keys by load."""
         captured: list[Sample] = []
 
         async def generate(input: GenerateFnInput) -> GenerateFnOutput:
@@ -73,6 +73,7 @@ class TestEvalGroupRoutingKey:
 
         args = _make_generate_args()
         vars(args).update(make_eval_args() | sglang_router_args("manual"))
+        args.router_args["assignment_mode"] = "min_load"
         args.sglang.base_args["dp_size"] = 1
         args.inference_runtime_mut_state = InferenceRuntimeMutState(engine_count=1, gpu_count=1)
         [dataset] = args.eval_datasets

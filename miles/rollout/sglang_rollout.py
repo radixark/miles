@@ -42,7 +42,7 @@ from .generate_utils.generate_endpoint_utils import (
     apply_sample_max_response_len,
     compute_routing_headers,
     get_indexer_topk_from_response,
-    stamp_group_routing_key,
+    stamp_prompt_routing_key,
 )
 from .generate_utils.prefill_logprobs import recompute_samples_rollout_logprobs_via_prefill
 from .generate_utils.sample_utils import reward_log_summary, sample_text_preview
@@ -397,7 +397,7 @@ async def generate_and_rm_group(
     if state.aborted:
         return group
 
-    stamp_group_routing_key(args, group)
+    stamp_prompt_routing_key(args, group)
 
     tasks = []
     for idx, sample in enumerate(group):
@@ -652,9 +652,9 @@ async def eval_rollout_single_dataset(
     sample_index = 0
     for prompt_sample in dataset.samples:
         # use the same prompt for multiple samples
-        group = [copy.deepcopy(prompt_sample) for _ in range(dataset_cfg.n_samples_per_eval_prompt)]
-        stamp_group_routing_key(args, group)
-        for j, sample in enumerate(group):
+        prompt_samples = [copy.deepcopy(prompt_sample) for _ in range(dataset_cfg.n_samples_per_eval_prompt)]
+        stamp_prompt_routing_key(args, prompt_samples)
+        for j, sample in enumerate(prompt_samples):
             sample.index = sample_index
             sample_index += 1
             sample.metadata = dataset_cfg.inject_metadata(sample.metadata)

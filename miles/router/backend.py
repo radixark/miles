@@ -30,6 +30,13 @@ class RouterKind(str, enum.Enum):
     MILES = "miles"
 
 
+class RoutingKeyScope(str, enum.Enum):
+    # every sample carries its own key
+    SAMPLE = "sample"
+    # the samples of one prompt share a key, so the prompt is prefilled once and cached for its siblings
+    PROMPT = "prompt"
+
+
 @dataclass(frozen=True)
 class RouterFeatures:
     pd_disaggregation: bool
@@ -76,6 +83,20 @@ class RouterBackend(ABC):
     @abstractmethod
     def _router_routes_by_key(self, model_cfg: "ModelConfig | None") -> bool: ...
 
+    def routing_key_scope(self, model_cfgs: "Sequence[ModelConfig]") -> RoutingKeyScope:
+        """How many samples share one routing key.
+
+        A prompt's samples share a key only when every router that reads keys places a new key by
+        load; a router that hashes keys needs one per sample, or a few keys pin most of its ranks idle.
+        """
+        keyed = [model_cfg for model_cfg in model_cfgs or [None] if self._router_routes_by_key(model_cfg)]
+        if keyed and all(self._router_places_new_keys_by_load(model_cfg) for model_cfg in keyed):
+            return RoutingKeyScope.PROMPT
+        return RoutingKeyScope.SAMPLE
+
+    @abstractmethod
+    def _router_places_new_keys_by_load(self, model_cfg: "ModelConfig | None") -> bool: ...
+
     def routing_headers(self, routing_key: str | None, model_cfgs: "Sequence[ModelConfig]") -> dict[str, str]:
         if not self.routes_by_key(model_cfgs):
             return {}
@@ -89,6 +110,8 @@ class SGLangRouterBackend(RouterBackend):
     features = RouterFeatures(pd_disaggregation=True, routing_key_header="X-SMG-Routing-Key")
     # sgl-router answers 400 missing_routing_key under these without the header
     _KEY_POLICIES = frozenset({"consistent_hashing", "manual"})
+    # manual assignment modes that pick a new key's worker by load rather than at random
+    _LOAD_AWARE_ASSIGNMENT_MODES = frozenset({"min_load", "min_group"})
 
     def __init__(self, args: Namespace) -> None:
         super().__init__(args)
@@ -109,13 +132,21 @@ class SGLangRouterBackend(RouterBackend):
         return [*interpreter_prefix, "-m", "sglang_router.launch_router", *router_args_to_argv(router_args)]
 
     def _router_routes_by_key(self, model_cfg: "ModelConfig | None") -> bool:
+        return bool(self._key_policies_in_effect(model_cfg))
+
+    def _router_places_new_keys_by_load(self, model_cfg: "ModelConfig | None") -> bool:
+        return self._key_policies_in_effect(model_cfg) == {"manual"} and (
+            self.args.router_args["assignment_mode"] in self._LOAD_AWARE_ASSIGNMENT_MODES
+        )
+
+    def _key_policies_in_effect(self, model_cfg: "ModelConfig | None") -> set[str]:
         main = self._policies["policy"]
         if self._needs_pd_disaggregation(model_cfg):
             # each PD pool runs its own policy, falling back to the main one
             in_effect = {self._policies["prefill_policy"] or main, self._policies["decode_policy"] or main}
         else:
             in_effect = {main}
-        return not self._KEY_POLICIES.isdisjoint(in_effect)
+        return in_effect & self._KEY_POLICIES
 
 
 class MilesRouterBackend(RouterBackend):
@@ -130,6 +161,9 @@ class MilesRouterBackend(RouterBackend):
         return [*interpreter_prefix, "-m", "miles.router.router", *config_to_argv(router_config)]
 
     def _router_routes_by_key(self, model_cfg: "ModelConfig | None") -> bool:
+        return False
+
+    def _router_places_new_keys_by_load(self, model_cfg: "ModelConfig | None") -> bool:
         return False
 
 

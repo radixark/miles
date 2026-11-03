@@ -6,7 +6,7 @@ from typing import Any
 from tqdm import tqdm
 
 from miles.rollout.base_types import stamp_kv_cache_namespace
-from miles.rollout.generate_utils.generate_endpoint_utils import stamp_group_routing_key
+from miles.rollout.generate_utils.generate_endpoint_utils import stamp_prompt_routing_key
 from miles.rollout.inference_rollout.inference_rollout_common import (
     GenerateState,
     compute_sampling_params,
@@ -85,9 +85,9 @@ async def eval_rollout_single_dataset(
     sample_index = 0
     for prompt_sample in dataset.samples:
         # use the same prompt for multiple samples
-        group = [copy.deepcopy(prompt_sample) for _ in range(dataset_cfg.n_samples_per_eval_prompt)]
-        stamp_group_routing_key(args, group)
-        for j, sample in enumerate(group):
+        prompt_samples = [copy.deepcopy(prompt_sample) for _ in range(dataset_cfg.n_samples_per_eval_prompt)]
+        stamp_prompt_routing_key(args, prompt_samples)
+        for j, sample in enumerate(prompt_samples):
             sample.index = sample_index
             sample_index += 1
             sample.metadata = dataset_cfg.inject_metadata(sample.metadata)
