@@ -11,12 +11,13 @@ from miles.backends.training_utils.checkpoint.adapter.commit import (
     delete_retired_adapter_dirs,
     delete_unreferenced_adapter_dirs,
     resolve_adapter_dir,
+    tenant_digest,
     write_adapter_dir,
 )
 
 
 def _save(root, name, payload, *, tenant="alice", overwrite=True):
-    with write_adapter_dir(root, name, tenant=tenant) as written:
+    with write_adapter_dir(root, name, tenant_digest=None if tenant is None else tenant_digest(tenant)) as written:
         (written.path / "payload").write_text(payload)
     return commit_adapter_dir(root, name, written, overwrite=overwrite)
 
@@ -58,14 +59,13 @@ def test_another_tenant_cannot_resolve_or_delete(tmp_path):
     assert resolve_adapter_dir(tmp_path, "w", tenant=None) is None
 
 
-def test_a_failed_write_is_never_visible(tmp_path):
+def test_a_failed_write_is_never_visible_and_leaves_nothing(tmp_path):
     with pytest.raises(RuntimeError, match="adapter checkpoint failed"):
         with write_adapter_dir(tmp_path, "w") as written:
             (written.path / "partial").write_text("x")
             raise OSError("disk full")
     assert resolve_adapter_dir(tmp_path, "w", tenant=None) is None
-    delete_unreferenced_adapter_dirs(tmp_path)
-    assert list(tmp_path.iterdir()) == []
+    assert list(tmp_path.iterdir()) == [], "a retry under a new name must not leave the failed write behind"
 
 
 def test_recovery_of_one_name_does_not_touch_a_dotted_neighbour(tmp_path):
@@ -112,3 +112,15 @@ def test_an_adapter_without_a_tenant_belongs_to_no_tenant(tmp_path):
 def test_resolve_refuses_a_path_as_a_name(tmp_path):
     with pytest.raises(AssertionError, match="one path component"):
         resolve_adapter_dir(tmp_path, "x/../w", tenant=None)
+
+
+def test_an_overwrite_replaces_a_checkpoint_saved_before_commits(tmp_path):
+    (tmp_path / "w").mkdir()
+    (tmp_path / "w" / "payload").write_text("legacy")
+    with pytest.raises(FileExistsError):
+        _save(tmp_path, "w", "new", overwrite=False)
+    assert (tmp_path / "w" / "payload").read_text() == "legacy", "a refused save leaves the old checkpoint"
+    _save(tmp_path, "w", "new", overwrite=True)
+    assert (resolve_adapter_dir(tmp_path, "w", tenant="alice").path / "payload").read_text() == "new"
+    delete_unreferenced_adapter_dirs(tmp_path)
+    assert len(list(tmp_path.iterdir())) == 2, "the name and its one commit; the adopted old dir is gone"
