@@ -1227,11 +1227,11 @@ class TestParserBinding:
         "tito_model, expected_reasoning, expected_tool_call",
         [
             (TITOTokenizerType.QWEN3, "qwen3", "qwen25"),
-            (TITOTokenizerType.QWEN35, "qwen3", "qwen3_coder"),
-            (TITOTokenizerType.QWEN36, "qwen3", "qwen3_coder"),
-            (TITOTokenizerType.QWEN38_SMALL, "qwen3", "qwen3_coder"),
-            (TITOTokenizerType.QWEN4_EXP, "qwen3", "qwen3_coder"),
-            (TITOTokenizerType.QWENNEXT, "qwen3", "qwen25"),
+            (TITOTokenizerType.QWEN35, "qwen3-thinking", "qwen3_coder"),
+            (TITOTokenizerType.QWEN36, "qwen3-thinking", "qwen3_coder"),
+            (TITOTokenizerType.QWEN38_SMALL, "qwen3-thinking", "qwen3_coder"),
+            (TITOTokenizerType.QWEN4_EXP, "qwen3-thinking", "qwen3_coder"),
+            (TITOTokenizerType.QWENNEXT, "qwen3-thinking", "qwen25"),
             (TITOTokenizerType.GLM47, "glm45", "glm47"),
             (TITOTokenizerType.NEMOTRON3, "nemotron_3", "qwen3_coder"),
             (TITOTokenizerType.KIMI25, None, None),
@@ -1253,10 +1253,13 @@ class TestParserBinding:
         from miles.utils.chat_template_utils import resolve_reasoning_and_tool_call_parser
 
         assert resolve_reasoning_and_tool_call_parser(TITOTokenizerType.QWEN3) == ("qwen3", "qwen25")
-        assert resolve_reasoning_and_tool_call_parser(TITOTokenizerType.QWEN35) == ("qwen3", "qwen3_coder")
-        assert resolve_reasoning_and_tool_call_parser(TITOTokenizerType.QWEN36) == ("qwen3", "qwen3_coder")
-        assert resolve_reasoning_and_tool_call_parser(TITOTokenizerType.QWEN38_SMALL) == ("qwen3", "qwen3_coder")
-        assert resolve_reasoning_and_tool_call_parser(TITOTokenizerType.QWEN4_EXP) == ("qwen3", "qwen3_coder")
+        assert resolve_reasoning_and_tool_call_parser(TITOTokenizerType.QWEN35) == ("qwen3-thinking", "qwen3_coder")
+        assert resolve_reasoning_and_tool_call_parser(TITOTokenizerType.QWEN36) == ("qwen3-thinking", "qwen3_coder")
+        assert resolve_reasoning_and_tool_call_parser(TITOTokenizerType.QWEN38_SMALL) == (
+            "qwen3-thinking",
+            "qwen3_coder",
+        )
+        assert resolve_reasoning_and_tool_call_parser(TITOTokenizerType.QWEN4_EXP) == ("qwen3-thinking", "qwen3_coder")
         assert resolve_reasoning_and_tool_call_parser(TITOTokenizerType.GLM47) == ("glm45", "glm47")
         assert resolve_reasoning_and_tool_call_parser(TITOTokenizerType.GLM53) == ("glm45", "glm47")
         assert resolve_reasoning_and_tool_call_parser(TITOTokenizerType.DEEPSEEKV4) == ("deepseek-v4", "deepseekv4")
@@ -1267,8 +1270,8 @@ class TestParserBinding:
         from miles.utils.chat_template_utils import resolve_reasoning_and_tool_call_parser
 
         assert resolve_reasoning_and_tool_call_parser("qwen3", "qwen3", "qwen25") == ("qwen3", "qwen25")
-        assert resolve_reasoning_and_tool_call_parser(TITOTokenizerType.QWEN35, "qwen3", "qwen3_coder") == (
-            "qwen3",
+        assert resolve_reasoning_and_tool_call_parser(TITOTokenizerType.QWEN35, "qwen3-thinking", "qwen3_coder") == (
+            "qwen3-thinking",
             "qwen3_coder",
         )
 
@@ -1307,4 +1310,50 @@ class TestParserBinding:
         assert resolve_reasoning_and_tool_call_parser(TITOTokenizerType.GLM47, user_tool_call_parser="glm47") == (
             "glm45",
             "glm47",
+        )
+
+
+class TestForcedThinkingParserMatchesTheTemplate:
+    """A fixed template that ends the generation prompt with ``<think>\\n``
+    leaves no ``<think>`` in the output; sglang's plain ``qwen3`` detector
+    then never enters reasoning mode and returns the thinking, ``</think>``
+    and the tool-call text as ``content`` (reasoning_content None), which the
+    template re-renders under an empty think block. Such a family must bind
+    ``qwen3-thinking`` (the same detector with force_reasoning=True); a
+    template that lets the model open the block itself keeps ``qwen3``."""
+
+    QWEN_FAMILIES = [
+        TITOTokenizerType.QWEN3,
+        TITOTokenizerType.QWEN35,
+        TITOTokenizerType.QWEN36,
+        TITOTokenizerType.QWEN38_SMALL,
+        TITOTokenizerType.QWEN4_EXP,
+        TITOTokenizerType.QWENNEXT,
+    ]
+
+    @staticmethod
+    def _generation_prompt(cls) -> str:
+        import jinja2
+
+        from miles.utils.chat_template_utils import resolve_fixed_chat_template
+
+        path, extra = resolve_fixed_chat_template(cls)
+        assert path is not None
+        env = jinja2.Environment(loader=jinja2.BaseLoader(), trim_blocks=True, lstrip_blocks=True)
+        env.globals["raise_exception"] = lambda message: (_ for _ in ()).throw(ValueError(message))
+        template = env.from_string(open(path).read())
+        return template.render(
+            messages=[{"role": "user", "content": "hi"}],
+            tools=None,
+            add_generation_prompt=True,
+            **(extra or {}),
+        )
+
+    @pytest.mark.parametrize("tito_model", QWEN_FAMILIES)
+    def test_the_binding_follows_the_generation_prompt(self, tito_model):
+        cls = TITOTokenizerType.get_tokenizer_class(tito_model)
+        forced = self._generation_prompt(tito_model).endswith("<think>\n")
+        assert cls.reasoning_parser == ("qwen3-thinking" if forced else "qwen3"), (
+            f"{tito_model.value}: generation prompt forces thinking={forced}, "
+            f"reasoning_parser={cls.reasoning_parser!r}"
         )
