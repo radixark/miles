@@ -41,11 +41,14 @@ def validate_lora_args(args):
     if args.lora_type is None:
         args.lora_type = _default_lora_type(args)
     validate_multi_lora_args(args)
+    # checked before the early return: without LoRA nothing would write the destination
+    assert (
+        args.lora_adapter_convert_save is None or args.lora_adapter_path is not None
+    ), "--lora-adapter-convert-save converts --lora-adapter-path"
     if not is_lora_enabled(args):
         return
     args.lora_alpha = _resolve_lora_alpha(args)
     if args.lora_adapter_convert_save is not None:
-        assert args.lora_adapter_path is not None, "--lora-adapter-convert-save converts --lora-adapter-path"
         assert args.train_backend == "megatron" and args.megatron_to_hf_mode == "bridge" and not args.multi_lora, (
             "--lora-adapter-convert-save is implemented only for single LoRA on --train-backend megatron "
             "--megatron-to-hf-mode bridge"

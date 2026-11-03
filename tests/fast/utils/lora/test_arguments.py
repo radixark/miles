@@ -103,6 +103,18 @@ def test_convert_save_refuses_an_existing_destination(tmp_path):
         validate_lora_args(args)
 
 
+def test_convert_save_without_lora_is_refused(tmp_path):
+    args = Namespace(
+        lora_type="lora",
+        multi_lora_n_adapters=0,
+        lora_rank=0,
+        lora_adapter_path=None,
+        lora_adapter_convert_save=str(tmp_path / "converted"),
+    )
+    with pytest.raises(AssertionError, match="converts --lora-adapter-path"):
+        validate_lora_args(args)
+
+
 def test_convert_save_is_refused_under_indep_dp(tmp_path):
     args = Namespace(
         lora_type="lora",
