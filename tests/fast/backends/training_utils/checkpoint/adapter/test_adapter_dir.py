@@ -201,6 +201,11 @@ def test_a_backend_state_that_does_not_match_the_parametrization_is_refused_at_s
     assert resolve_adapter_dir(tmp_path, "w", tenant=None) is None
 
 
+def test_a_backend_state_that_does_not_match_the_parametrization_is_refused_at_external_export(tmp_path):
+    with pytest.raises(RuntimeError, match="unexpected .*k_proj"):
+        write_external_export(tmp_path, "w", ExtraKeyMembers(), 0, RUN, TARGETS, tenant_digest=None)
+
+
 def _one_rank_cannot_read(rank, world_size, port, *, root):
     init_gloo(rank, world_size, port=port)
     path = Path(root) if rank == 0 else Path(root, "missing")

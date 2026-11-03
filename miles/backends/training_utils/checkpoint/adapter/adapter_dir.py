@@ -237,6 +237,11 @@ def write_external_export(
         raise_if_any_rank_failed(error)
         weights = _gather_whole_weights(state)
         if _is_writer():
+            keys, expected = set(weights), parametrization.adapter_state_keys()
+            assert keys == expected, (
+                f"the backend's adapter state does not match the parametrization: "
+                f"missing {sorted(expected - keys)[:8]}, unexpected {sorted(keys - expected)[:8]}"
+            )
             write_external_adapter(written.path, weights, parametrization, targets, age_recipients=age_recipients)
     return written
 
