@@ -172,7 +172,9 @@ def save_and_commit_adapter_dir(
 
     A failed PEFT export fails every rank but keeps the committed checkpoint; its view can be rebuilt offline.
     """
-    written = save_adapter_dir(root, name, members, slot, parametrization, tenant=None, training_state=training_state)
+    written = save_adapter_dir(
+        root, name, members, slot, parametrization, tenant_digest=None, training_state=training_state
+    )
     error = None
     if _is_writer():
         try:
