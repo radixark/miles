@@ -68,6 +68,9 @@ class ModelConfig:
     # tool_calls.  Default "rollback" is universal (pop assistant + retry);
     # see ToolCallFailureMode for "append_tool" / "append_user" variants.
     tool_call_failure_mode: str = "rollback"
+    # Inject one tool-call parse failure via tool_choice "none" (needs "user").
+    # Turn off where that does not reproduce the family's real parse failure.
+    parse_failure_step: bool = True
 
 
 def run_one(
@@ -113,6 +116,7 @@ def run_one(
         n_samples_per_prompt=cfg.n_samples_per_prompt,
         session_verify_cycles=cfg.cycles,
         tool_call_failure_mode=cfg.tool_call_failure_mode,
+        session_verify_parse_failure=cfg.parse_failure_step,
         assistant_text_threshold=assistant_text_threshold,
         ci_tito_special_token_count_threshold=cfg.special_token_count_threshold,
         anthropic_intermediate_system_expectation=(

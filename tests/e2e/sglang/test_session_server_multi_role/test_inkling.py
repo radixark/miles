@@ -24,6 +24,10 @@ CONFIG = ModelConfig(
     cycles=2,
     n_samples_per_prompt=1,
     tool_call_failure_mode="append_tool",
+    # Miles parses Inkling completions itself and ignores tool_choice, and a call is
+    # a control-token block with no in-content form.  Real parse failures are
+    # covered by tests/fast/utils/chat_template_utils/test_inkling_response.py.
+    parse_failure_step=False,
     anthropic_intermediate_system_expectation="required",
 )
 
