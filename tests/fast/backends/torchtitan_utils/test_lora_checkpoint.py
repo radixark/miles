@@ -218,6 +218,12 @@ def test_a_torchtitan_adapter_dir_restores_its_own_schedule(tmp_path):
     assert (restored.iteration, restored.step, restored.lr_states) == (2, 12, [schedule])
 
 
+def test_a_torchtitan_adapter_dir_off_this_runs_rollout_grid_is_refused(tmp_path):
+    """Saved at 2 steps per rollout: its iteration-9 schedule would sit at rollout 5 of this run's 4."""
+    with pytest.raises(AssertionError, match="at step 20 after iteration 9, but this run takes 4 steps per rollout"):
+        _restore(tmp_path, training_state={"iteration": 9, "step": 20, "lr_scheduler": {"last_epoch": 20}})
+
+
 def test_a_megatron_adapter_dir_resumes_the_schedule_after_its_rollout(tmp_path):
     """Megatron's scheduler state does not apply here; rollouts 0..2 are done."""
     restored = _restore(tmp_path, training_state={"iteration": 2, "opt_param_scheduler": {"num_steps": 96}})
