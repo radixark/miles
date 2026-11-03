@@ -403,6 +403,9 @@ def find_load_mismatch(
                     f"(differing keys e.g. {sorted(expected ^ saved)[:3]}); "
                     "load it on a gateway with the layout it was saved with"
                 )
+        elif kind.is_read_into_model():
+            # load_adapter_dir refuses it only after the slot reset
+            mismatch = f"{path} is a {kind.value} source, which this backend cannot load"
     # any failure to read the user's source is theirs; raised after the slot reset, it kills the trainer cell
     except Exception as error:
         mismatch = f"{path} cannot load into this model: {error}"
