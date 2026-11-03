@@ -469,9 +469,22 @@ class TorchtitanLoraCheckpoint:
             load_lr_schedulers(self._trainer.engine.optim.lr_schedulers, training_state["lr_scheduler"])
             self._trainer.engine.num_completed_steps = training_state["step"]
         elif training_state is not None and training_state["iteration"] is not None:
-            # written by a Megatron run, whose scheduler state does not apply here: resume the schedule at its rollout
-            self._first_rollout = 0
-            step = (training_state["iteration"] + 1) * self._steps_per_rollout
+            # written by a Megatron run, whose scheduler state does not apply here: resume the schedule at the
+            # samples it counted, which start at that run's first rollout, not rollout 0
+            assert not self._args.use_dynamic_global_batch_size, (
+                f"{path} was written by Megatron, whose schedule counts samples; a dynamic global batch trains a "
+                "data-dependent number of them per rollout, so its rollouts cannot be recovered from the count"
+            )
+            iteration = training_state["iteration"]
+            num_samples = training_state["opt_param_scheduler"]["num_steps"]
+            rollout_samples = self._steps_per_rollout * self._args.global_batch_size
+            trained_rollouts, remainder = divmod(num_samples, rollout_samples)
+            assert remainder == 0 and trained_rollouts <= iteration + 1, (
+                f"{path} counted {num_samples} samples by iteration {iteration}, not whole rollouts of this run's "
+                f"{rollout_samples}: keep its rollout and batch sizes"
+            )
+            self._first_rollout = iteration + 1 - trained_rollouts
+            step = trained_rollouts * self._steps_per_rollout
             load_lr_schedulers(self._trainer.engine.optim.lr_schedulers, {"last_epoch": step})
             self._trainer.engine.num_completed_steps = step
         if self._args.lora_adapter_convert_save is not None:

@@ -146,6 +146,8 @@ def _restore(tmp_path, *, dcp_step=None, training_state=None, **flags):
         lora_adapter_convert_save=None,
         num_rollout=10,
         start_rollout_id=None,
+        global_batch_size=8,
+        use_dynamic_global_batch_size=False,
         hf_checkpoint=str(tmp_path),
         lora_rank=8,
         lora_alpha=16,
@@ -295,6 +297,20 @@ def test_a_megatron_adapter_dir_resumes_the_schedule_after_its_rollout(tmp_path)
     restored = _restore(tmp_path, training_state={"iteration": 2, "opt_param_scheduler": {"num_steps": 96}})
     assert (restored.iteration, restored.step) == (2, 3 * _STEPS_PER_ROLLOUT)
     assert restored.lr_states == [{"last_epoch": 3 * _STEPS_PER_ROLLOUT}]
+
+
+def test_a_megatron_adapter_dir_from_a_later_rollout_resumes_the_samples_its_scheduler_counted(tmp_path):
+    """A Megatron run from --start-rollout-id 5 counted 2 rollouts of 32 samples by iteration 6."""
+    restored = _restore(tmp_path, training_state={"iteration": 6, "opt_param_scheduler": {"num_steps": 64}})
+    assert (restored.iteration, restored.step) == (6, 2 * _STEPS_PER_ROLLOUT)
+    assert restored.lr_states == [{"last_epoch": 2 * _STEPS_PER_ROLLOUT}]
+    # the resumed run's own saves count their steps from the same rollout
+    assert restored.checkpoint._training_state(7)["first_rollout"] == 5
+
+
+def test_a_megatron_adapter_dir_off_this_runs_rollout_grid_is_refused(tmp_path):
+    with pytest.raises(AssertionError, match="counted 40 samples by iteration 2, not whole rollouts of this run's 32"):
+        _restore(tmp_path, training_state={"iteration": 2, "opt_param_scheduler": {"num_steps": 40}})
 
 
 def test_a_convert_save_of_a_model_only_source_writes_no_training_state(tmp_path):
