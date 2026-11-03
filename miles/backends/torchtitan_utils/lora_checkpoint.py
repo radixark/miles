@@ -65,8 +65,11 @@ def _probe_local(
 ) -> tuple[list[HfPiece], list[tuple[str, ...]], set[str]]:
     starts, start = {}, 0
     for key, param in params.items():
+        shape = _local_box(param)[0]
+        # pieces index the to_local() shards, so the computed box must be exactly that shard
+        assert not isinstance(param, DTensor) or shape == tuple(param.to_local().shape), (key, shape)
         starts[key] = start
-        start += int(torch.Size(_local_box(param)[0]).numel())
+        start += int(torch.Size(shape).numel())
     pieces, groups, modules = [], [], set()
     for key in params:
         projection, factor = split_adapter_key(key)
