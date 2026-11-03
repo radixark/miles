@@ -13,6 +13,7 @@ def _args(**overrides):
         lora_base_cpu_backup=False,
         check_weight_update_equal=False,
         lora_train_only=False,
+        lora_merge_for_rollout=False,
     )
     return SimpleNamespace(**(args | overrides))
 

@@ -29,6 +29,15 @@ def validate_lora_args(args):
         "torchtitan",
     ), f"LoRA injection is not implemented for --train-backend {args.train_backend}; use megatron or torchtitan"
     assert args.lora_rank > 0, "LoRA requires a positive --lora-rank, including when loading an adapter"
+    if args.lora_merge_for_rollout:
+        assert (
+            args.train_backend == "torchtitan"
+        ), "--lora-merge-for-rollout is implemented for --train-backend torchtitan"
+        assert not args.multi_lora, "--lora-merge-for-rollout merges one adapter; it does not support multi-LoRA"
+        assert not args.lora_train_only, "--lora-train-only keeps the engines on the frozen base; pass only one"
+        assert (
+            not args.check_lora_weight_equal
+        ), "--lora-merge-for-rollout syncs no adapter; check the merged weights with --check-weight-update-equal"
     hf_config = load_hf_config(args.hf_checkpoint)
     args.hf_lora_targets = _resolve_lora_targets(args, hf_config)
     args.lora_adapter_targets = list(args.hf_lora_targets)

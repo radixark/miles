@@ -21,6 +21,7 @@ def colocated_protocol(monkeypatch: pytest.MonkeyPatch) -> Callable[..., UpdateW
             lora_adapter_path=None,
             lora_base_cpu_backup=backup,
             lora_train_only=False,
+            lora_merge_for_rollout=False,
             colocate=True,
             offload_rollout=offload,
             check_weight_update_equal=checker,

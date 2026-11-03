@@ -37,6 +37,7 @@ _ARGS = SimpleNamespace(
     lora_rank=0,
     lora_adapter_path=None,
     lora_train_only=False,
+    lora_merge_for_rollout=False,
     session_server_instance_id=uuid.uuid4().hex,
     save_debug_trajectory_data=None,
     session_sample_picker_path="miles.rollout.session.v2.picker_hub.drop_rolled_back_leaves",
