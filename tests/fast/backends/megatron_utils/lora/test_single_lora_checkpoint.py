@@ -7,6 +7,8 @@ from unittest.mock import DEFAULT, MagicMock, patch
 import pytest
 import torch
 
+from megatron.core.optimizer import DistributedOptimizer
+
 from miles.backends.megatron_utils.lora.checkpoint import (
     DistributedOptimizerMembers,
     restore_single_lora,
@@ -91,8 +93,16 @@ def test_a_weights_only_convert_save_writes_neither_moments_nor_a_placeholder_tr
     assert mocks["save_and_commit_adapter_dir"].call_args.kwargs["training_state"] is None
 
 
-def test_an_optimizer_other_than_megatrons_distributed_one_is_refused():
-    optimizer = SimpleNamespace(chained_optimizers=[MagicMock()])
+def test_a_mix_of_distributed_and_plain_optimizers_is_refused():
+    distributed = DistributedOptimizer.__new__(DistributedOptimizer)
+    optimizer = SimpleNamespace(chained_optimizers=[distributed, MagicMock()])
     members = DistributedOptimizerMembers(MagicMock(), optimizer, [], precision_aware=False)
-    with pytest.raises(AssertionError, match="--use-distributed-optimizer"):
+    with pytest.raises(AssertionError, match="one kind of optimizer"):
         members._distributed_optimizers()
+
+
+def test_a_plain_optimizer_is_checkpointed_by_its_replicated_masters():
+    """miles runs SGD without the DistributedOptimizer; its masters are on every rank."""
+    members = DistributedOptimizerMembers.__new__(DistributedOptimizerMembers)
+    members._optimizer = SimpleNamespace(chained_optimizers=[object(), object()])
+    assert members._distributed_optimizers() == []
