@@ -48,7 +48,7 @@ def _manager(replays, *, if_sp_region=True, indexer=False, kept_in_train_dump=Fa
 def _attach(manager, **kwargs):
     """`attach_replay_data`, waited for: the manager's worker records the entries."""
     attach_replay_data(manager, **kwargs)
-    manager.fill_through(sum(kwargs["num_microbatches"]) - 1)
+    manager.wait_filled(sum(kwargs["num_microbatches"]) - 1)
 
 
 def test_register_replay_list_sequential_falls_back_to_enum_when_no_stream_idx():
