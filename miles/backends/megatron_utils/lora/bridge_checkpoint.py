@@ -288,8 +288,9 @@ def assert_bridge_run_config_matches(
 
 
 def bridge_base_model_candidates(config: dict) -> tuple[str | None, ...]:
-    """Bridge PEFT loads its base from pretrained_checkpoint. Only when that is not on this machine does the HF
-    template it was converted from stand in, in Bridge's _resolve_hf_source order."""
+    """Bridge PEFT loads its base from pretrained_checkpoint. When that is no HF dir here (torch_dist, or another
+    machine's path), the HF template it was converted from stands in, in Bridge's _resolve_hf_source order; that
+    stand-in misses a base fine-tuned in Megatron."""
     checkpoint = config["checkpoint"]
     # hf_source_path and hf_model_id are newer than some Bridge configs
     return (

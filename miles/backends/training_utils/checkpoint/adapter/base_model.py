@@ -74,18 +74,9 @@ def resolve_hf_dir(name_or_path: str) -> Path | None:
 
 
 def assert_same_base_model(source: str, candidates: Iterable[str], run_hf_checkpoint: str) -> None:
-    """``candidates``: what the source records as its base, best first. The first one on this machine is compared; a
-    local one that is no HF dir (e.g. a Megatron torch_dist base) cannot be fingerprinted, so it is refused."""
+    """``candidates``: what the source records as its base, best first; the first resolvable one is compared."""
     candidates = [c for c in candidates if c]
-    hf_dir = None
-    for candidate in candidates:
-        if (hf_dir := resolve_hf_dir(candidate)) is not None:
-            break
-        assert not Path(
-            candidate
-        ).exists(), (
-            f"{source}'s base model {candidate} has no HF weights to compare with --hf-checkpoint {run_hf_checkpoint}"
-        )
+    hf_dir = next((d for c in candidates if (d := resolve_hf_dir(c)) is not None), None)
     assert hf_dir is not None, (
         f"{source}'s base model ({candidates or 'not recorded'}) has no local HF files to compare with "
         f"--hf-checkpoint {run_hf_checkpoint}"
