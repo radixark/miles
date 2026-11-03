@@ -50,11 +50,19 @@ class Replay:
                 f"len(top_indices_list)={len(self.top_indices_list)}, shapes={shapes}"
             )
         top_indices = self.top_indices_list[self.forward_index]
+        if top_indices is None:
+            raise IndexError(f"pop_forward: entry {self.forward_index} was already released by its backward pop")
         self.forward_index += 1
         return top_indices.to(current_platform.current_device())
 
     def pop_backward(self) -> torch.Tensor:
+        # The train pass is the step's last pass that pops, and its backward (recompute) pop is the
+        # entry's last use: release the pinned entry here, so the step's host memory shrinks as the
+        # pass advances. Without recompute nothing pops backward and `clear` releases them.
         top_indices = self.top_indices_list[self.backward_index]
+        if top_indices is None:
+            raise IndexError(f"pop_backward: entry {self.backward_index} was already released by its backward pop")
+        self.top_indices_list[self.backward_index] = None
         self.backward_index += 1
         return top_indices.to(current_platform.current_device())
 
@@ -114,11 +122,11 @@ class BaseReplayManager:
         return self.current
 
     def attach(self, fill: Callable[[int], None], total: int, finish: Callable[[], None] | None = None) -> None:
-        """Take this step's source, dropping the previous step's entries.
+        """Take this step's source, dropping the previous step's entries; returns without waiting.
 
         `fill(i)` for i < `total` records micro batch i's entry in every replay; they run in order
-        on this manager's worker thread, starting now. `finish` runs on the main thread after the
-        last of them has been waited for.
+        on this manager's worker thread, starting now, as far ahead of the pops as the reads allow.
+        `finish` runs on the main thread after the last of them has been waited for.
         """
         self.clear_all()
         if self._worker is None:
@@ -141,8 +149,8 @@ class BaseReplayManager:
             raise
         self._fill_seconds += time.perf_counter() - start
 
-    def fill_through(self, cursor: int) -> None:
-        """Wait until micro batches up to and including `cursor` are filled.
+    def wait_filled(self, cursor: int) -> None:
+        """Block until micro batches up to and including `cursor` are filled; the only wait a pop does.
 
         A fill's failure is raised here, at the first pop that needs it.
         """
@@ -159,7 +167,10 @@ class BaseReplayManager:
             finish()
 
     def clear_all(self):
-        # Drain the worker before clearing the queues: the fill still running appends to them.
+        """Drop this step's entries; blocks until the worker has stopped filling.
+
+        The fill still running appends to the queues, so it is joined before they are cleared.
+        """
         self._stopped = True
         for future in self._fills:
             future.cancel()
@@ -221,11 +232,11 @@ class BaseReplayManager:
                 return result
 
             elif stage == "replay_forward":
-                manager.fill_through(replay.forward_index)
+                manager.wait_filled(replay.forward_index)
                 return _get_replay_result(replay.pop_forward(), scores, topk, *args, **kwargs)
 
             elif stage == "replay_backward":
-                manager.fill_through(replay.backward_index)
+                manager.wait_filled(replay.backward_index)
                 return _get_replay_result(replay.pop_backward(), scores, topk, *args, **kwargs)
 
             else:

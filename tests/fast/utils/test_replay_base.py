@@ -7,7 +7,7 @@ import threading
 import pytest
 import torch
 
-from miles.utils.replay_base import BaseReplayManager
+from miles.utils.replay_base import BaseReplayManager, Replay
 
 
 class _FakeReplay:
@@ -70,7 +70,7 @@ class _QueueReplay:
         return top_indices
 
 
-def test_fills_run_in_order_on_the_worker_and_fill_through_waits_up_to_the_cursor():
+def test_fills_run_in_order_on_the_worker_and_wait_filled_waits_up_to_the_cursor():
     manager = BaseReplayManager()
     filled, release = [], threading.Event()
 
@@ -80,11 +80,11 @@ def test_fills_run_in_order_on_the_worker_and_fill_through_waits_up_to_the_curso
         filled.append((index, threading.current_thread().name))
 
     manager.attach(fill, 3)
-    manager.fill_through(0)
+    manager.wait_filled(0)
     assert [index for index, _ in filled] == [0]
     release.set()
-    manager.fill_through(2)
-    manager.fill_through(1)
+    manager.wait_filled(2)
+    manager.wait_filled(1)
 
     assert [index for index, _ in filled] == [0, 1, 2]
     assert {name.startswith("replay-") for _, name in filled} == {True}
@@ -95,10 +95,10 @@ def test_finish_runs_once_on_the_waiting_thread_after_the_last_fill():
     finished = []
     manager.attach(lambda index: None, 2, lambda: finished.append(threading.current_thread()))
 
-    manager.fill_through(0)
+    manager.wait_filled(0)
     assert finished == []
-    manager.fill_through(1)
-    manager.fill_through(1)
+    manager.wait_filled(1)
+    manager.wait_filled(1)
 
     assert finished == [threading.current_thread()]
 
@@ -113,11 +113,11 @@ def test_a_failed_fill_raises_at_its_pop_and_the_later_fills_are_skipped():
         filled.append(index)
 
     manager.attach(fill, 3)
-    manager.fill_through(0)
+    manager.wait_filled(0)
     with pytest.raises(RuntimeError, match="store read failed"):
-        manager.fill_through(2)
+        manager.wait_filled(2)
     with pytest.raises(RuntimeError, match="store read failed"):
-        manager.fill_through(1)
+        manager.wait_filled(1)
     manager.clear_all()
 
     assert filled == [0]
@@ -139,7 +139,7 @@ def test_clear_all_drains_the_running_fill_and_drops_the_queued_ones_and_the_ent
 
     assert filled == [0]
     assert replay.top_indices_list == []
-    manager.fill_through(5)
+    manager.wait_filled(5)
 
 
 def test_attach_drops_the_previous_step_before_filling_the_next():
@@ -150,9 +150,9 @@ def test_attach_drops_the_previous_step_before_filling_the_next():
 
     manager.attach(first.append, 1)
     assert replay.top_indices_list == []
-    manager.fill_through(0)
+    manager.wait_filled(0)
     manager.attach(second.append, 2)
-    manager.fill_through(1)
+    manager.wait_filled(1)
 
     assert first == [0]
     assert second == [0, 1]
@@ -177,3 +177,47 @@ def test_replay_forward_pops_only_after_its_micro_batch_is_filled():
     topk_fn = manager.get_topk_fn(_topk, return_probs=False)
 
     torch.testing.assert_close(topk_fn(torch.tensor([[0.1, 0.9]]), 2), expected)
+
+
+@pytest.fixture
+def cpu_device(monkeypatch):
+    import miles.utils.replay_base as replay_base
+
+    monkeypatch.setattr(replay_base.current_platform, "current_device", lambda: torch.device("cpu"))
+
+
+def test_pop_backward_releases_its_entry_and_pop_forward_keeps_it(cpu_device):
+    replay = Replay()
+    first, second = torch.tensor([[0]], dtype=torch.int32), torch.tensor([[1]], dtype=torch.int32)
+    replay.top_indices_list = [first, second]
+
+    torch.testing.assert_close(replay.pop_forward(), first)
+    torch.testing.assert_close(replay.pop_backward(), first)
+    assert replay.top_indices_list == [None, second]
+    torch.testing.assert_close(replay.pop_forward(), second)
+    torch.testing.assert_close(replay.pop_backward(), second)
+
+    assert replay.top_indices_list == [None, None]
+    replay.forward_index = replay.backward_index = 0
+    with pytest.raises(IndexError, match="pop_forward: entry 0 was already released"):
+        replay.pop_forward()
+    with pytest.raises(IndexError, match="pop_backward: entry 0 was already released"):
+        replay.pop_backward()
+
+
+def test_entries_without_a_backward_pop_live_until_clear_all(cpu_device):
+    manager = BaseReplayManager()
+    replay = manager.create_replay()
+    entries = [torch.tensor([[0]], dtype=torch.int32), torch.tensor([[1]], dtype=torch.int32)]
+    replay.top_indices_list = list(entries)
+
+    replay.pop_forward()
+    replay.pop_forward()
+    manager.clear_all_forward()
+    replay.pop_forward()
+    assert replay.top_indices_list == entries
+
+    manager.clear_all()
+
+    assert replay.top_indices_list == []
+    assert (replay.forward_index, replay.backward_index) == (0, 0)
