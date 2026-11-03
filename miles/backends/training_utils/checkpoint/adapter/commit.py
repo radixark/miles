@@ -121,8 +121,11 @@ def commit_adapter_dir(
     root, link = Path(root), Path(root) / name
     assert written.path == _physical_dir(root, name, written.commit_id), f"{written.path} was not written for {name!r}"
     delete_unreferenced_adapter_dirs(root, name, keep=written.path.name)
+    if link.is_dir() and not link.is_symlink():
+        if not overwrite:
+            raise FileExistsError(f"adapter {name!r} already exists")
+        _adopt_pre_commit_dir(root, name)
     previous = _link_target(link)
-    assert not link.exists() or link.is_symlink(), f"{link} exists and is not an adapter link"
     if previous is not None and not overwrite:
         raise FileExistsError(f"adapter {name!r} already exists")
     staging_link = root / f".{name}.{written.commit_id}{_STAGING_SUFFIX}"
@@ -132,6 +135,17 @@ def commit_adapter_dir(
     if previous is not None and previous.exists():
         _retire(previous)
     return CommittedAdapterDir(written.path, written.commit_id)
+
+
+def _adopt_pre_commit_dir(root: Path, name: str) -> None:
+    """Give a checkpoint saved before commits (a plain ``<name>/`` dir) the committed layout, so an overwrite
+    replaces and retires it like any commit."""
+    physical = _physical_dir(root, name, secrets.token_hex(_COMMIT_ID_NBYTES))
+    os.rename(root / name, physical)
+    staging_link = root / f"{physical.name}{_STAGING_SUFFIX}"
+    staging_link.symlink_to(physical.name)
+    os.replace(staging_link, root / name)
+    _fsync_dir(root)
 
 
 def resolve_adapter_dir(root: Path, name: str, *, tenant: str | None) -> CommittedAdapterDir | None:
