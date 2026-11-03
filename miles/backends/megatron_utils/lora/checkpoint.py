@@ -183,12 +183,14 @@ class DistributedOptimizerMembers:
         return self._slots.local_shard_specs(0, self._holds())
 
     def _distributed_optimizers(self) -> list:
+        """The DistributedOptimizers, or [] for a plain (replicated-master) optimizer; never a mix of the two."""
         subs = self._optimizer.chained_optimizers
-        # another optimizer's state would be silently left out of the checkpoint
-        assert all(
-            isinstance(sub, DistributedOptimizer) for sub in subs
-        ), f"the adapter checkpoint needs --use-distributed-optimizer; got {[type(sub).__name__ for sub in subs]}"
-        return subs
+        distributed = [sub for sub in subs if isinstance(sub, DistributedOptimizer)]
+        # a mix would leave the plain ones' state out of the checkpoint
+        assert not distributed or len(distributed) == len(
+            subs
+        ), f"the adapter checkpoint needs one kind of optimizer; got {[type(sub).__name__ for sub in subs]}"
+        return distributed
 
     def _replicated_masters(self) -> dict[int, torch.Tensor]:
         """Index in ``slot_parameters(0)`` -> fp32 master, of the parameters a plain Float16 optimizer steps: miles
@@ -660,8 +662,13 @@ class LegacyRankShardLoader:
 
 
 def _read_legacy_training_state(path: Path) -> dict | None:
-    """The iteration and scheduler state of an old-format save (``training_state_rank*.pt``), if it has them."""
-    state = _load_training_state(path)
-    if state is None:
+    """The iteration and scheduler state of an old-format save (``training_state_rank*.pt``), if it has them.
+
+    Every rank reads rank 0's copy: a run on more ranks than saved has no file of its own, yet must agree.
+    """
+    state_file = path / "training_state_rank0.pt"
+    if not state_file.exists():
         return None
+    # optimizer state dicts hold non-tensor objects (step counts, param group metadata)
+    state = torch.load(state_file, map_location="cpu", weights_only=False)
     return {"iteration": state["iteration"], "opt_param_scheduler": state["opt_param_scheduler"]}

@@ -34,8 +34,8 @@ from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
     raise_if_any_rank_failed,
 )
 from miles.backends.training_utils.checkpoint.adapter.base_model import (
-    fingerprint_named_tensors,
-    hf_base_fingerprint,
+    assert_same_base_tensors,
+    hf_fingerprint_tensors,
     is_fingerprint_tensor,
     resolve_hf_dir,
 )
@@ -233,8 +233,8 @@ class TorchtitanCheckpointLoader:
         self.train_state: dict | None = None
         self.lr_scheduler_state: dict | None = None
 
-    def _base_fingerprint(self, path: Path, metadata) -> tuple[str, list[str]]:
-        """The DCP's base fingerprint, and the HF names it hashes (only what the titan model holds, e.g. no MTP)."""
+    def _base_fingerprint_tensors(self, path: Path, metadata) -> dict[str, torch.Tensor]:
+        """The DCP's fingerprint tensors under their HF names (only what the titan model holds, e.g. no MTP)."""
         fqns, error = set(), None
         try:
             for part in self._model_parts:
@@ -255,8 +255,7 @@ class TorchtitanCheckpointLoader:
             for fqn in set().union(*gathered)
         }
         dcp.load(tensors, checkpoint_id=path, no_dist=True)
-        named = {name: t for name, t in self._sd_adapter.to_hf(tensors).items() if is_fingerprint_tensor(name)}
-        return fingerprint_named_tensors(named.items()), list(named)
+        return {name: t for name, t in self._sd_adapter.to_hf(tensors).items() if is_fingerprint_tensor(name)}
 
     def __call__(self, path: Path) -> AdapterParametrization:
         metadata, error = None, None
@@ -292,14 +291,12 @@ class TorchtitanCheckpointLoader:
         except Exception as exc:
             error = exc
         raise_if_any_rank_failed(error)
-        fingerprint, hf_names = self._base_fingerprint(path, metadata)
+        source_tensors = self._base_fingerprint_tensors(path, metadata)
         hf_dir = resolve_hf_dir(self._run.base_model)
         assert (
             hf_dir is not None
         ), f"--hf-checkpoint {self._run.base_model} has no local HF weights to compare {path} with"
-        assert fingerprint == hf_base_fingerprint(
-            hf_dir, names=hf_names
-        ), f"{path} was trained on another base model than --hf-checkpoint {self._run.base_model}"
+        assert_same_base_tensors(str(path), source_tensors, hf_fingerprint_tensors(hf_dir), self._run.base_model)
 
         states = self._members.adam_states()
         loaded = dict(params)
