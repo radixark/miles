@@ -233,7 +233,7 @@ class BridgeAdapterSlots(ProbedAdapterSlots):
         assert slot == 0, "single LoRA has only slot 0"
         return [param for params in adapter_named_parameters(self._model) for param in params.values()]
 
-    def _slot_spec(self, slot: int) -> AdapterSpec | None:
+    def slot_spec(self, slot: int) -> AdapterSpec | None:
         if not self._multi_lora:
             return None
         from megatron.bridge.peft.multi_lora_layers import MultiLoRALinear
@@ -285,8 +285,10 @@ def assert_bridge_run_config_matches(
             None,
             str(params_dtype),
         ), f"lora_dtype {_yaml_dtype(peft['lora_dtype'])} differs from the model's {params_dtype}"
-    if any(".experts." in module for module in run.target_modules) and not run.experts_shared_outer_loras:
-        # Bridge's default shares one adapter across all experts; miles trains one per expert
+    expert_targets = any(".experts." in module for module in run.target_modules)
+    if expert_targets and config["model"]["moe_grouped_gemm"] and not run.experts_shared_outer_loras:
+        # Bridge shares one adapter across grouped experts by default; sequential experts always get one each,
+        # and a grouping that differs from this run's fails the adapter key check
         assert not peft.get("share_expert_adapters", True), "share_expert_adapters=True is not supported"
     if load_optimizer:
         optimizer = config["optimizer"]

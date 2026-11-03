@@ -535,6 +535,8 @@ def build_adapter_slots(args, model, iterator, targets) -> BridgeAdapterSlots:
 
 
 def single_lora_parametrization(adapter_slots: BridgeAdapterSlots, args) -> AdapterParametrization:
+    """The run's parametrization; under multi-LoRA, slot 0's rank and alpha, which its exported tensors carry."""
+    spec = adapter_slots.slot_spec(0)
     base_model = args.hf_checkpoint
     # one local model under another path string (a trailing slash, a symlinked mount) is the same base; a hub id
     # is no local path
@@ -542,8 +544,8 @@ def single_lora_parametrization(adapter_slots: BridgeAdapterSlots, args) -> Adap
         base_model = os.path.realpath(base_model)
     return adapter_slots.parametrization(
         base_model=base_model,
-        lora_rank=args.lora_rank,
-        lora_alpha=args.lora_alpha,
+        lora_rank=args.lora_rank if spec is None else spec.rank,
+        lora_alpha=args.lora_alpha if spec is None else spec.alpha,
         lora_type=args.lora_type,
         experts_shared_outer_loras=args.experts_shared_outer_loras,
     )

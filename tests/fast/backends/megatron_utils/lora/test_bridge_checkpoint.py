@@ -230,6 +230,7 @@ def _bridge_config(peft_class: str = "lora", **peft) -> dict:
         }
         | {field: FP32 for field in ("main_params_dtype", "exp_avg_dtype", "exp_avg_sq_dtype")},
         "checkpoint": {"save_optim": True},
+        "model": {"moe_grouped_gemm": True},
     }
 
 
@@ -290,6 +291,13 @@ def test_share_expert_adapters_defaults_to_bridge_behaviour_and_matters_only_for
         assert_bridge_run_config_matches(config, _run(), params_dtype=torch.bfloat16, load_optimizer=False)
     dense = _run(target_modules=("model.layers.0.self_attn.q_proj",))
     assert_bridge_run_config_matches(config, dense, params_dtype=torch.bfloat16, load_optimizer=False)
+
+
+def test_share_expert_adapters_is_accepted_for_sequential_experts():
+    # Bridge gives each SequentialMLP local expert its own adapter whatever share_expert_adapters says
+    config = _bridge_config(share_expert_adapters=True)
+    config["model"]["moe_grouped_gemm"] = False
+    assert_bridge_run_config_matches(config, _run(), params_dtype=torch.bfloat16, load_optimizer=False)
 
 
 def test_adam_state_needs_a_distributed_fp32_adam_source():
