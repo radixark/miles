@@ -62,7 +62,6 @@ _UNSUPPORTED_FEATURES: dict[str, Callable[[Namespace], bool]] = {
     "--log-probs-backend fused": lambda args: args.log_probs_backend == "fused",
     "--allgather-cp": lambda args: args.allgather_cp,
     "--use-sampling-support-replay": lambda args: args.use_sampling_support_replay,
-    "--use-rollout-routing-replay": lambda args: args.use_rollout_routing_replay,
     "--use-opsm": lambda args: args.use_opsm,
     "--use-tis": lambda args: args.use_tis,
     "--get-mismatch-metrics": lambda args: args.get_mismatch_metrics,

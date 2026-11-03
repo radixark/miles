@@ -8,6 +8,7 @@ import torch
 from tests.ci.ci_register import register_cpu_ci
 
 from miles import platforms
+from miles.backends.torchtitan_utils import arguments
 from miles.backends.torchtitan_utils import parallel as tp
 from miles.backends.torchtitan_utils.args_namespace import TorchtitanArgsNamespace
 from miles.backends.torchtitan_utils.arguments import build_torchtitan_parser, validate_torchtitan_args
@@ -32,6 +33,8 @@ def _args(**overrides) -> Namespace:
         rollout_max_response_len=4096,
         ref_update_interval=None,
         save_debug_train_data=None,
+        ci_test=False,
+        use_routing_replay=False,
         optimizer_cpu_offload=False,
         stream_optimizer_state_to_disk=False,
         stream_optimizer_state_moment_dtype="fp32",
@@ -145,6 +148,17 @@ def test_unsupported_flags_are_rejected_rather_than_ignored(monkeypatch):
     for cuda_only in (dict(update_weight_transfer_mode="broadcast"), dict(colocate=True)):
         with pytest.raises(ValueError, match="disk or shm"):
             validate_torchtitan_args(_args(log_probs_backend="torch", use_dynamic_batch_size=False, **cuda_only))
+
+
+def test_the_replay_checker_is_refused_where_blocks_compile_fullgraph(monkeypatch):
+    """The checker syncs to the host from inside a block; a static-shape platform compiles blocks fullgraph."""
+    monkeypatch.setattr(torch, "__version__", "2.14.0")
+    monkeypatch.setattr(arguments.current_platform, "dynamic_shapes", False)
+    validate_torchtitan_args(_args(use_routing_replay=True))
+    with pytest.raises(ValueError, match="ci-test"):
+        validate_torchtitan_args(_args(ci_test=True, use_routing_replay=True))
+    monkeypatch.setattr(arguments.current_platform, "dynamic_shapes", True)
+    validate_torchtitan_args(_args(ci_test=True, use_routing_replay=True))
 
 
 def test_lora_flags_torchtitan_cannot_honor_are_rejected(monkeypatch):

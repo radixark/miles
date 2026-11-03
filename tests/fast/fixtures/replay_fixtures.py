@@ -16,6 +16,7 @@ class CpuReplay:
         self.recorded = []
         self.forward_index = 0
         self.backward_index = 0
+        self.staged_forward = None
 
     def record(self, top_indices):
         self.recorded.append(top_indices.detach().clone())

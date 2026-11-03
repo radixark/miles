@@ -9,7 +9,7 @@ import torch.nn.functional as F
 from torch.distributed.tensor import DTensor
 
 from miles.backends.training_utils.replay.routing_replay import FALLTHROUGH, REPLAY_BACKWARD, REPLAY_FORWARD, stage
-from miles.utils.replay_base import routing_replay_manager
+from miles.utils.replay_base import Replay, routing_replay_manager
 
 logger = logging.getLogger(__name__)
 
@@ -71,44 +71,47 @@ _INSTALLED_ATTR = "_miles_replay_installed"
 _initializing: dict | None = None
 
 
+def _part_routers(part: nn.Module) -> list[tuple[int, nn.Module]]:
+    from torchtitan.models.common.moe import TokenChoiceTopKRouter
+
+    routers: list[tuple[int, nn.Module]] = []
+    for name, module in part.named_modules():
+        if not isinstance(module, TokenChoiceTopKRouter):
+            continue
+        layer_key = next((p for p in name.split(".") if p.isdigit()), None)
+        if layer_key is None:
+            raise ValueError(f"cannot derive a decoder-layer index from router path {name!r}")
+        routers.append((int(layer_key), module))
+    return sorted(routers, key=lambda pair: pair[0])
+
+
 def install(model_parts: list[nn.Module]) -> int:
     if not routing_replay_manager.enabled:
         return 0
 
-    from torchtitan.models.common.moe import TokenChoiceTopKRouter
-
-    routers: list[tuple[int, nn.Module]] = []
-    for part in model_parts:
-        for name, module in part.named_modules():
-            if not isinstance(module, TokenChoiceTopKRouter):
-                continue
-            layer_key = next((p for p in name.split(".") if p.isdigit()), None)
-            if layer_key is None:
-                raise ValueError(f"cannot derive a decoder-layer index from router path {name!r}")
-            routers.append((int(layer_key), module))
-
-    if not routers:
+    part_routers = [_part_routers(part) for part in model_parts]
+    if not any(part_routers):
         raise ValueError(
             "routing replay is enabled but this model has no torchtitan TokenChoiceTopKRouter; "
             "R3 applies to MoE models only"
         )
 
-    for part in model_parts:
-        _bracket_real_forward(part)
+    for part, routers in zip(model_parts, part_routers, strict=True):
+        replays = []
+        for layer_idx, router in routers:
+            router._miles_replay_topk = routing_replay_manager.get_topk_fn(
+                lambda scores, k: torch.topk(scores, k, dim=-1, sorted=False)[1], return_probs=False
+            )
+            router.forward = types.MethodType(_token_router_forward, router)
+            replays.append(routing_replay_manager.register_to_module(router, "routing_replay", stream_idx=layer_idx))
+        _bracket_real_forward(part, replays)
         setattr(part, _INSTALLED_ATTR, True)
 
-    for layer_idx, router in sorted(routers, key=lambda pair: pair[0]):
-        router._miles_replay_topk = routing_replay_manager.get_topk_fn(
-            lambda scores, k: torch.topk(scores, k, dim=-1, sorted=False)[1], return_probs=False
-        )
-        router.forward = types.MethodType(_token_router_forward, router)
-        routing_replay_manager.register_to_module(router, "routing_replay", stream_idx=layer_idx)
-
-    indices = sorted(idx for idx, _ in routers)
+    indices = [layer_idx for routers in part_routers for layer_idx, _ in routers]
     logger.info(
-        f"[titan routing_replay] registered {len(routers)} MoE layers " f"(global indices {indices[0]}..{indices[-1]})"
+        f"[titan routing_replay] registered {len(indices)} MoE layers (global indices {min(indices)}..{max(indices)})"
     )
-    return len(routers)
+    return len(indices)
 
 
 def _is_installed(model_parts: list[nn.Module]) -> bool:
@@ -164,7 +167,21 @@ def consumption_guard(model_parts: list[nn.Module], expected: int):
             )
 
 
-def _bracket_real_forward(part: nn.Module) -> None:
+@contextlib.contextmanager
+def _staged_forward_ids(replays: list[Replay]):
+    """Pop a part's ids for this microbatch before its blocks run, so a compiled block does not pop inside the graph."""
+    for replay in replays:
+        replay.staged_forward = replay.pop_forward()
+    try:
+        yield
+    finally:
+        # a forward without staging pops its own
+        for replay in replays:
+            replay.staged_forward = None
+
+
+def _bracket_real_forward(part: nn.Module, replays: list[Replay]) -> None:
+    """Wrap the part's forward: the train pass replays as a forward, with the microbatch's ids staged."""
     inner = part.forward
 
     @functools.wraps(inner)
@@ -175,7 +192,10 @@ def _bracket_real_forward(part: nn.Module) -> None:
                 return inner(*args, **kwargs)
             _end_initialization()
         if routing_replay_manager.stage == REPLAY_BACKWARD:
-            with stage(REPLAY_FORWARD):
+            with stage(REPLAY_FORWARD), _staged_forward_ids(replays):
+                return inner(*args, **kwargs)
+        if routing_replay_manager.stage == REPLAY_FORWARD:
+            with _staged_forward_ids(replays):
                 return inner(*args, **kwargs)
         return inner(*args, **kwargs)
 
