@@ -239,14 +239,19 @@ def test_a_model_only_dcp_starts_a_fresh_schedule(tmp_path):
 
 def test_a_torchtitan_adapter_dir_restores_its_own_schedule(tmp_path):
     schedule = {"last_epoch": 12, "_step_count": 13}
-    restored = _restore(tmp_path, training_state={"iteration": 2, "step": 12, "first_rollout": 0, "lr_scheduler": schedule})
+    restored = _restore(
+        tmp_path, training_state={"iteration": 2, "step": 12, "first_rollout": 0, "lr_scheduler": schedule}
+    )
     assert (restored.iteration, restored.step, restored.lr_states) == (2, 12, [schedule])
 
 
 def test_a_torchtitan_adapter_dir_off_this_runs_rollout_grid_is_refused(tmp_path):
     """Saved at 2 steps per rollout: its iteration-9 schedule would sit at rollout 5 of this run's 4."""
     with pytest.raises(AssertionError, match="at step 20 after iteration 9, but this run takes 4 steps per rollout"):
-        _restore(tmp_path, training_state={"iteration": 9, "step": 20, "first_rollout": 0, "lr_scheduler": {"last_epoch": 20}})
+        _restore(
+            tmp_path,
+            training_state={"iteration": 9, "step": 20, "first_rollout": 0, "lr_scheduler": {"last_epoch": 20}},
+        )
 
 
 def test_a_dir_records_the_base_its_path_resolves_to_at_save(tmp_path):
