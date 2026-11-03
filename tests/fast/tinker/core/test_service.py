@@ -1232,8 +1232,9 @@ async def test_ttl_is_set_removed_and_swept(service, monkeypatch):
         ("adapter_config.json", "{not json"),
         ("adapter_config.json", json.dumps({"lora_alpha": 32})),
         ("adapter_parametrization.json", json.dumps({"lora_rank": 8})),
+        ("adapter_config.json", json.dumps({"r": 8, "lora_alpha": "32"})),
     ],
-    ids=["bad_json", "no_rank", "bad_parametrization"],
+    ids=["bad_json", "no_rank", "bad_parametrization", "string_alpha"],
 )
 async def test_a_malformed_import_is_a_user_error_and_the_gateway_keeps_serving(tmp_path, filename, content):
     adapter = tmp_path / "imports" / "adapter"

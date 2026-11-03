@@ -141,6 +141,11 @@ def read_imported_adapter(path: str) -> dict:
         assert source["base_model"] is None or isinstance(
             source["base_model"], str
         ), f"base model {source['base_model']!r} is not a name"
+        assert type(source["lora_rank"]) is int, f"rank {source['lora_rank']!r} is not an integer"
+        assert source["lora_alpha"] is None or type(source["lora_alpha"]) in (
+            int,
+            float,
+        ), f"alpha {source['lora_alpha']!r} is not a number"
     except (OSError, ValueError, KeyError, TypeError, AssertionError) as error:
         raise UserInputError(f"{path} is not a readable adapter: {type(error).__name__}: {error}") from error
     return source
