@@ -402,7 +402,11 @@ class TinkerService:
         if isinstance(written, dict):
             return written
         # the commit's recovery walk and fsyncs hit shared storage; keep the event loop serving
-        await asyncio.to_thread(self.backend.commit_adapter, root, version, written)
+        try:
+            await asyncio.to_thread(self.backend.commit_adapter, root, version, written)
+        except OSError as error:
+            # a storage failure loses only this export; the trainer and other tenants are unaffected
+            return {"error": f"cannot commit sampler weights {version!r}: {error}", "error_category": "server"}
         result = {
             "op": "save_weights_for_sampler",
             "path": f"tinker://{record.model_id}/sampler_weights/{version}",

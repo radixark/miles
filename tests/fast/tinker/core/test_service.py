@@ -567,6 +567,24 @@ async def test_the_sampler_commit_runs_off_the_event_loop(service, monkeypatch):
     assert commit_threads and commit_threads[0] is not threading.current_thread()
 
 
+async def test_a_failed_sampler_commit_fails_only_that_request(service, monkeypatch):
+    model_id = await created_model(service)
+    commit = service.backend.commit_adapter
+
+    def failing_commit(root, name, written):
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr(service.backend, "commit_adapter", failing_commit)
+    failed = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
+    future = await await_settled(service, "tenant", failed)
+    assert (future.state, future.error_category) == (FAILED, "server")
+    assert "No space left on device" in future.error
+
+    monkeypatch.setattr(service.backend, "commit_adapter", commit)
+    retried = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 2})
+    assert (await await_settled(service, "tenant", retried)).state == DONE
+
+
 async def test_an_unnamed_sampler_save_returns_a_sampling_session(service):
     model_id = await created_model(service)
     unnamed = service.submit(
