@@ -477,7 +477,11 @@ class TinkerService:
 
     async def _delete_retired(self, root: str) -> None:
         async with self._cleanup_lock:
-            await asyncio.to_thread(self.backend.delete_retired_adapters, root)
+            try:
+                await asyncio.to_thread(self.backend.delete_retired_adapters, root)
+            except OSError:
+                # best effort after a committed save: the .deleting dirs go on the next pass or at startup
+                logger.exception(f"could not delete retired adapter dirs under {root}")
 
     async def _load_state(self, record: ModelRecord, payload: dict) -> dict:
         if payload["path"].startswith("file://"):
