@@ -6,9 +6,8 @@ from unittest.mock import DEFAULT, MagicMock, patch
 
 import pytest
 import torch
-from megatron.core.optimizer.cpu_offloading.hybrid_optimizer import HybridDeviceOptimizer
-
 from megatron.core.optimizer import DistributedOptimizer
+from megatron.core.optimizer.cpu_offloading.hybrid_optimizer import HybridDeviceOptimizer
 
 from miles.backends.megatron_utils.lora.checkpoint import (
     DistributedOptimizerMembers,
