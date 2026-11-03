@@ -2,7 +2,8 @@
 
 The layout comes from the model's own state-dict adapter: ``sd_adapter.to_hf`` runs on index-valued tensors of each
 adapter's global shape, so fused projections (wqkv, w13) split exactly as their base weights do; each rank keeps the
-HF positions its DTensor shard holds. Collective only to gather the pipeline stages' targets and shared-A groups.
+HF positions its DTensor shard holds. Collective: ranks agree on a probe failure, then gather every pipeline stage's
+targets and shared-A groups.
 """
 
 from collections.abc import Mapping
@@ -19,7 +20,7 @@ from miles.backends.training_utils.checkpoint.adapter.probed_slots import (
     rectangle,
 )
 from miles.backends.torchtitan_utils.lora_names import split_adapter_key
-from miles.backends.training_utils.checkpoint.adapter.adapter_state import gloo_group
+from miles.backends.training_utils.checkpoint.adapter.adapter_state import gloo_group, raise_if_any_rank_failed
 from miles.backends.training_utils.checkpoint.adapter.key_mapping import map_peft_keys_to_hf_keys
 from miles.utils.lora.hf_lora_targets import HfLoraTargets
 
@@ -53,6 +54,26 @@ def probe_torchtitan_row_mapping(
 ) -> RowMapping:
     """Collective. ``params``: the adapter parameters by titan key, in the order their local shards are
     concatenated."""
+    error = None
+    try:
+        pieces, groups, modules = _probe_local(params, sd_adapter)
+    except Exception as exc:
+        error = exc
+    raise_if_any_rank_failed(error)
+
+    # pipeline stages hold different layers; every rank needs the whole parametrization
+    gathered = [None] * dist.get_world_size()
+    dist.all_gather_object(gathered, (sorted(groups), sorted(modules)), group=gloo_group())
+    return RowMapping(
+        pieces,
+        tuple(sorted({g for rank_groups, _ in gathered for g in rank_groups})),
+        tuple(sorted({m for _, rank_modules in gathered for m in rank_modules})),
+    )
+
+
+def _probe_local(
+    params: Mapping[str, torch.Tensor], sd_adapter
+) -> tuple[list[HfPiece], list[tuple[str, ...]], set[str]]:
     starts, start = {}, 0
     for key, param in params.items():
         starts[key] = start
@@ -64,6 +85,7 @@ def probe_torchtitan_row_mapping(
             continue
         lora_a_key = f"{projection}.lora_a.weight"
         lora_b = sd_adapter.to_hf({f"{projection}.weight": _local_codes(params[key], starts[key])})
+        assert lora_b, f"{projection}: to_hf exports nothing"
         lora_a = _local_codes(params[lora_a_key], starts[lora_a_key])
         hf_modules = [map_peft_keys_to_hf_keys(f"{name.removesuffix('.weight')}.lora_A.weight").key for name in lora_b]
         hf_modules = [k.removesuffix(".lora_A") for k in hf_modules]
@@ -81,15 +103,7 @@ def probe_torchtitan_row_mapping(
     for piece in pieces:
         covered[piece.local_elements.flatten()] = True
     assert covered.all(), f"to_hf does not reach {int((~covered).sum())} of this rank's adapter elements"
-
-    # pipeline stages hold different layers; every rank needs the whole parametrization
-    gathered = [None] * dist.get_world_size()
-    dist.all_gather_object(gathered, (sorted(groups), sorted(modules)), group=gloo_group())
-    return RowMapping(
-        pieces,
-        tuple(sorted({g for rank_groups, _ in gathered for g in rank_groups})),
-        tuple(sorted({m for _, rank_modules in gathered for m in rank_modules})),
-    )
+    return pieces, groups, modules
 
 
 class TorchtitanAdapterSlots(ProbedAdapterSlots):
