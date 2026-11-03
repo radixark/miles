@@ -196,7 +196,7 @@ def probe_bridge_row_mapping(
             if unexported is not None:
                 assert not covered[unexported].any(), "the export reaches elements declared unexported"
                 covered[unexported] = True
-            assert covered.all(), f"Bridge's export does not reach {int((~covered).sum())} of this rank's elements"
+            assert covered.all(), f"the export does not reach {int((~covered).sum())} of this rank's elements"
         except Exception as exc:
             error = exc
     raise_if_any_rank_failed(error)
