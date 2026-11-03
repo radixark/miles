@@ -1088,6 +1088,8 @@ async def test_a_download_url_expires_with_its_checkpoint(service, monkeypatch):
     monkeypatch.setattr(time, "time", lambda: real_time() + 3601)
     with pytest.raises(NotFoundError, match="expired"):
         service.download_path(token, "adapter_config.json")
+    with pytest.raises(NotFoundError, match="has expired"):
+        service.external_weights_urls("tenant", model_id, "external_weights/export", "http://gateway/")
 
 
 async def test_an_overwrite_that_crashes_before_its_ttl_does_not_inherit_the_old_expiry(service, monkeypatch):

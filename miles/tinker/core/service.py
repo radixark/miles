@@ -575,6 +575,9 @@ class TinkerService:
         now = time.time()
         expires_at = now + _DOWNLOAD_URL_TTL_S
         if (checkpoint_expires_at := self.expiry.expires_at(tinker_path)) is not None:
+            # expired, and only not yet swept
+            if checkpoint_expires_at <= now:
+                raise NotFoundError(f"checkpoint {tinker_path} has expired")
             expires_at = min(expires_at, checkpoint_expires_at)
         self._downloads = {t: d for t, d in self._downloads.items() if d.expires_at > now}
         token = secrets.token_urlsafe(32)
