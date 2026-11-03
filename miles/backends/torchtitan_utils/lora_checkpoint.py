@@ -20,7 +20,6 @@ import torch.distributed.checkpoint as dcp
 from torch.distributed.tensor import DTensor
 from torch.distributed.tensor._utils import compute_local_shape_and_global_offset
 from torch.optim.lr_scheduler import _update_param_group_val
-from torchtitan.components.optim.utils import init_optim_state
 
 from miles.backends.torchtitan_utils.lora_names import is_adapter_key, split_adapter_key
 from miles.backends.training_utils.checkpoint.adapter.adapter_dir import (
@@ -170,6 +169,9 @@ class TorchtitanOptimizerMembers:
 
     def adam_states(self) -> list[dict]:
         """Each adapter parameter's AdamW state, created (zero, step 0) where no step has run yet."""
+        # lazy: actor.py imports this module, and its CPU tests run without torchtitan
+        from torchtitan.components.optim.utils import init_optim_state
+
         state_of = {}
         for optimizer in self._optimizers:
             init_optim_state(optimizer)
