@@ -48,4 +48,3 @@ def test_another_base_or_an_unresolvable_one_is_refused(tmp_path):
         assert_same_base_model("src", [str(a)], str(b))
     with pytest.raises(AssertionError, match="has no local HF files"):
         assert_same_base_model("src", [None, str(tmp_path / "missing")], str(b))
-

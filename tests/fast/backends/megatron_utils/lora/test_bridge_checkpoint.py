@@ -5,7 +5,10 @@ import torch
 import torch.distributed as dist
 from tests.fast.dist_utils import init_gloo, run_multiprocess
 
-from miles.backends.megatron_utils.lora.bridge_checkpoint import assert_bridge_run_config_matches, probe_bridge_row_mapping
+from miles.backends.megatron_utils.lora.bridge_checkpoint import (
+    assert_bridge_run_config_matches,
+    probe_bridge_row_mapping,
+)
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
 from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
 

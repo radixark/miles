@@ -310,7 +310,8 @@ class MegatronBridgeCheckpointLoader:
             metadata["dp_cp_group"] = get_parallel_state().intra_dp_cp.group
             model_state_dicts = [chunk.sharded_state_dict(metadata=metadata) for chunk in chunks]
             adapter = [
-                {k: v for k, v in sd.items() if ".adapter." in k and "_extra_state" not in k} for sd in model_state_dicts
+                {k: v for k, v in sd.items() if ".adapter." in k and "_extra_state" not in k}
+                for sd in model_state_dicts
             ]
         except Exception as exc:
             error = exc
