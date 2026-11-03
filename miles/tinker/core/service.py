@@ -12,7 +12,6 @@ from datetime import UTC, datetime
 from typing import NamedTuple
 
 from miles.tinker.core.checkpoint_expiry import CheckpointExpiry
-
 from miles.tinker.core.future import RequestFuture, RequestFutureStore
 from miles.tinker.core.input_validation import (
     validate_batch_payload,
