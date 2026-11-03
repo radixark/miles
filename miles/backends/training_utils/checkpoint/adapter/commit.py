@@ -132,7 +132,9 @@ def commit_adapter_dir(
     """
     root, link = Path(root), Path(root) / name
     assert written.path == _physical_dir(root, name, written.commit_id), f"{written.path} was not written for {name!r}"
-    assert written.path.is_dir(), f"{written.path} does not exist"
+    if not written.path.is_dir():
+        # a storage condition, not an invariant: another node's write may not be visible yet over NFS
+        raise FileNotFoundError(f"{written.path} does not exist")
     delete_unreferenced_adapter_dirs(root, name, keep=written.path.name)
     if _link_target(link) == written.path:
         # a retry after the link swap; the commit already stands
