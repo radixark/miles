@@ -64,12 +64,16 @@ def test_a_source_the_weight_conversion_refuses_is_a_mismatch(gloo, tmp_path):
     weights |= {f"{m}.lora_B": torch.zeros(4, 2) for m in (Q, K)}
     write_peft_adapter(tmp_path, weights, UNSHARED, TARGETS)
     shared = replace(UNSHARED, shared_lora_a_groups=((Q, K),))
-    mismatch = checkpoint.find_load_mismatch(None, 0, str(tmp_path), shared, TARGETS, load_optimizer=False, run_shapes={})
+    mismatch = checkpoint.find_load_mismatch(
+        None, 0, str(tmp_path), shared, TARGETS, load_optimizer=False, run_shapes={}
+    )
     assert mismatch is not None and "cannot share A" in mismatch
 
 
 def test_an_unreadable_source_is_a_mismatch(gloo, tmp_path):
     (tmp_path / "adapter_config.json").write_text("{}")
     (tmp_path / "adapter_model.safetensors").write_bytes(b"not safetensors")
-    mismatch = checkpoint.find_load_mismatch(None, 0, str(tmp_path), UNSHARED, TARGETS, load_optimizer=False, run_shapes={})
+    mismatch = checkpoint.find_load_mismatch(
+        None, 0, str(tmp_path), UNSHARED, TARGETS, load_optimizer=False, run_shapes={}
+    )
     assert mismatch is not None and "cannot load into this model" in mismatch
