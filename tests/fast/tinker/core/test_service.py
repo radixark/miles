@@ -1054,6 +1054,19 @@ async def test_an_encrypted_external_save_keeps_its_owner(service):
     await service.delete_checkpoint("tenant", model_id, "external_weights/export")
 
 
+async def test_a_download_url_does_not_serve_a_resave_under_the_same_name(service):
+    model_id = await created_model(service)
+    save = service.submit("tenant", "save_weights_external", _external_payload(model_id, 1, "export"))
+    assert (await await_settled(service, "tenant", save)).state == DONE
+    urls = service.external_weights_urls("tenant", model_id, "external_weights/export", "http://gateway/")
+    token = urls["urls"]["adapter_config.json"].split("/")[-2]
+    await service.delete_checkpoint("tenant", model_id, "external_weights/export")
+    save = service.submit("tenant", "save_weights_external", _external_payload(model_id, 2, "export"))
+    assert (await await_settled(service, "tenant", save)).state == DONE
+    with pytest.raises(NotFoundError, match="saved again"):
+        service.download_path(token, "adapter_config.json")
+
+
 async def test_an_external_save_refuses_an_existing_name_and_non_age_recipients(service):
     model_id = await created_model(service)
     first = service.submit("tenant", "save_weights_external", _external_payload(model_id, 1, "export"))

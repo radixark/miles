@@ -97,8 +97,8 @@ def resolve_adapter(root: str, name: str, tenant: str, model_id: str) -> dict | 
 
 
 def resolve_checkpoint_files(root: str, name: str, tenant: str | None) -> dict | None:
-    """A committed checkpoint's physical dir and the files a client may download (not the gateway-private
-    tenant.json); None when it does not exist. ``tenant`` None skips the ownership check."""
+    """A committed checkpoint's physical dir, commit id and the files a client may download (not the
+    gateway-private tenant.json); None when it does not exist. ``tenant`` None skips the ownership check."""
     try:
         committed = resolve_adapter_dir(Path(root), name, tenant=tenant)
     except AdapterOwnershipError as error:
@@ -106,7 +106,7 @@ def resolve_checkpoint_files(root: str, name: str, tenant: str | None) -> dict |
     if committed is None:
         return None
     files = sorted(p.name for p in committed.path.iterdir() if p.is_file() and p.name != TENANT_FILENAME)
-    return {"path": str(committed.path), "files": files}
+    return {"path": str(committed.path), "commit_id": committed.commit_id, "files": files}
 
 
 def delete_adapter(root: str, name: str, tenant: str | None) -> None:

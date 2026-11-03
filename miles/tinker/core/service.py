@@ -59,6 +59,8 @@ class _EndedSession(NamedTuple):
 class _Download(NamedTuple):
     tenant: str
     tinker_path: str
+    # a re-save under the same name after a delete is another checkpoint, which this URL must not serve
+    commit_id: str
     expires_at: float
 
 
@@ -578,7 +580,7 @@ class TinkerService:
             expires_at = min(expires_at, checkpoint_expires_at)
         self._downloads = {t: d for t, d in self._downloads.items() if d.expires_at > now}
         token = secrets.token_urlsafe(32)
-        self._downloads[token] = _Download(tenant, tinker_path, expires_at)
+        self._downloads[token] = _Download(tenant, tinker_path, files["commit_id"], expires_at)
         return {
             "urls": {f: f"{base_url}api/v1/external_weights/{token}/{f}" for f in files["files"]},
             "expires": datetime.fromtimestamp(expires_at, UTC).isoformat(),
@@ -594,6 +596,8 @@ class TinkerService:
             _, _, _, files = self._owned_checkpoint(download.tenant, model_id, f"{kind}/{name}")
         except NotFoundError:
             raise NotFoundError(f"{download.tinker_path} was deleted") from None
+        if files["commit_id"] != download.commit_id:
+            raise NotFoundError(f"{download.tinker_path} was deleted and saved again; sign a new URL")
         if filename not in files["files"]:
             raise NotFoundError(f"{download.tinker_path} has no file {filename!r}")
         return os.path.join(files["path"], filename)
