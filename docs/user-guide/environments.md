@@ -27,6 +27,7 @@ where the environment itself comes from:
 | [Strands Agents](https://strandsagents.com/) | generate function | [example](https://github.com/radixark/miles/tree/main/examples/experimental/strands_sglang) |
 | [Verifiers (Prime Intellect)](https://github.com/PrimeIntellect-ai/verifiers) | rollout function | [guide](/user-guide/verifiers) |
 | [τ-bench](https://github.com/sierra-research/tau-bench) | generate function | [example](https://github.com/radixark/miles/tree/main/examples/experimental/tau-bench) |
+| [τ²-bench](https://github.com/sierra-research/tau2-bench) | agent function | [example](https://github.com/radixark/miles/tree/main/examples/experimental/tau2-bench) |
 
 Sandbox providers are a different axis: they provision the task containers
 *inside* a connector rather than occupying a rollout layer. Which providers work
@@ -57,7 +58,7 @@ everything an inner one would. A connector replaces exactly one layer.
 ¹ Typically by speaking SGLang's native `/generate` (token IDs in and out)
 rather than the session-server chat endpoint Miles' own recording uses.
 
-² The environment may grade an episode itself (Harbor and τ-bench do); the
+² The environment may grade an episode itself (Harbor, τ-bench and τ²-bench do); the
 score still enters training through Miles' `Sample.reward` / RM hooks, and
 group-level reward handling stays in Miles.
 

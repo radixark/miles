@@ -55,4 +55,5 @@ Not fully verified — for experimental and development use.
 - **[strands_sglang](https://github.com/radixark/miles/tree/main/examples/experimental/strands_sglang)**: Integration example with the Strands-Agents scaffolding framework.
 - **[swe-agent-harbor-daytona](https://github.com/radixark/miles/tree/main/examples/experimental/swe-agent-harbor-daytona)**: The `swe-agent-harbor-docker` pipeline with task sandboxes hosted on Daytona instead of local Docker.
 - **[tau-bench](https://github.com/radixark/miles/tree/main/examples/experimental/tau-bench)**: Training in an agentic multi-turn tool use environment (Tau-bench).
+- **[tau2-bench](https://github.com/radixark/miles/tree/main/examples/experimental/tau2-bench)**: τ²-bench customer-service tasks through the session server, with tau2's own user simulator and evaluator.
 - **[verifiers](https://github.com/radixark/miles/tree/main/examples/experimental/verifiers)**: Training on a Prime Intellect Verifiers environment instead of a Miles prompt dataset.

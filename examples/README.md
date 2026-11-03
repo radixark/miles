@@ -51,6 +51,7 @@ Not fully verified — for experimental and development use.
 - **[strands_sglang](./experimental/strands_sglang)**: Integration example with the Strands-Agents scaffolding framework.
 - **[swe-agent-harbor-daytona](./experimental/swe-agent-harbor-daytona)**: The `swe-agent-harbor-docker` pipeline with task sandboxes hosted on Daytona instead of local Docker.
 - **[tau-bench](./experimental/tau-bench)**: Training in an agentic multi-turn tool use environment (Tau-bench).
+- **[tau2-bench](./experimental/tau2-bench)**: τ²-bench customer-service tasks through the session server, with tau2's own user simulator and evaluator.
 - **[verifiers](./experimental/verifiers)**: Training on a Prime Intellect Verifiers environment instead of a Miles prompt dataset.
 
 <!-- docs:exclude:start -->
