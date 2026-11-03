@@ -19,8 +19,7 @@ from megatron.core.dist_checkpointing.dict_utils import nested_values
 from megatron.core.distributed import DistributedDataParallel as DDP
 from megatron.core.optimizer import DistributedOptimizer
 from megatron.core.optimizer.cpu_offloading.hybrid_optimizer import HybridDeviceOptimizer
-from megatron.core.process_groups_config import ProcessGroupCollection
-from megatron.core.utils import get_pg_size, unwrap_model
+from megatron.core.utils import unwrap_model
 
 from miles.backends.megatron_utils.lora.bridge_checkpoint import BridgeAdapterSlots
 from miles.backends.megatron_utils.lora.optimizer import SlotOptimizer
@@ -385,15 +384,6 @@ def find_load_mismatch(
         kind = check_adapter_source(path, run, targets, load_optimizer=load_optimizer)
         if kind == AdapterSourceKind.LEGACY_TINKER_CHECKPOINT:
             _read_legacy_meta(path, run)
-            # SlotOptimizer's LayerWise shards state over these groups, owner per param differing by slot, and
-            # META.json does not record the slot that saved it. Weights only need those masters too: main's layout
-            # leaves grouped-expert adapter weights unloaded in the model.
-            groups = ProcessGroupCollection.use_mpu_process_groups(required_pgs=["dp_cp", "expt_dp"])
-            if max(get_pg_size(groups.dp_cp), get_pg_size(groups.expt_dp)) > 1:
-                raise ValueError(
-                    "a checkpoint saved before adapter checkpoints cannot load under data parallelism; load it on "
-                    "a gateway without data parallelism and save_state it there to convert it"
-                )
             # TE's _extra_state objects are stored per shard (<key>/shard_i_j); the tensors decide the layout
             saved = {
                 k
@@ -436,8 +426,17 @@ class LegacyTinkerCheckpointLoader:
         return replace(self._run, lora_alpha=meta["lora_alpha"])
 
 
+# a gateway-wide layout setting -> the launch flag that restores a checkpoint saved under `value`
+_GATEWAY_LAYOUT_FLAGS = {
+    "lora_type": lambda value: f"--lora-type {value}",
+    "experts_shared_outer_loras": lambda value: (
+        "--experts-shared-outer-loras" if value else "no --experts-shared-outer-loras"
+    ),
+}
+
+
 def _read_legacy_meta(path: Path, run: AdapterParametrization) -> dict:
-    """META.json, asserted to agree with ``run`` on what fixes the slot's tensor shapes."""
+    """META.json, checked to agree with ``run`` on what fixes the slot's tensor shapes."""
     # checkpoints written before the layout was recorded are all fused, per-expert
     meta = {
         "lora_type": "lora",
@@ -446,7 +445,14 @@ def _read_legacy_meta(path: Path, run: AdapterParametrization) -> dict:
     }
     run = asdict(run)
     for field in ("base_model", "lora_rank", "lora_type", "experts_shared_outer_loras"):
-        assert meta[field] == run[field], f"{path} was saved with {field}={meta[field]!r}; this run has {run[field]!r}"
+        if meta[field] != run[field]:
+            message = f"{path} was saved with {field}={meta[field]!r}; this run has {run[field]!r}"
+            if field in _GATEWAY_LAYOUT_FLAGS:
+                message += (
+                    f". The adapter layout is set per gateway: restore it on one launched with "
+                    f"{_GATEWAY_LAYOUT_FLAGS[field](meta[field])}"
+                )
+            raise ValueError(message)
     return meta
 
 

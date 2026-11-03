@@ -19,6 +19,8 @@ def main() -> None:
     parser.add_argument("dst", type=Path)
     parser.add_argument("--hf-config", type=Path, required=True, help="the base model's config.json")
     args = parser.parse_args()
+    # in place, the PEFT tensors would replace the ones sglang serves from src
+    assert not args.dst.exists(), f"{args.dst} exists; pass a new directory"
     targets = get_hf_lora_targets(json.loads(args.hf_config.read_text()))
     kind = classify_adapter_source(args.src, targets, load_optimizer=False)
     assert (
