@@ -408,8 +408,9 @@ def test_lora_resumes_only_through_the_adapter_path(tmp_path):
     adapters = tmp_path / "adapters"
     adapter = adapters / "iter_0000003" / "adapter"
     adapter.mkdir(parents=True)
-    with pytest.raises(ValueError, match=f"--save {adapters} holds LoRA adapter checkpoints"):
-        config(save=str(adapters))
+    for flag in ("load", "save"):
+        with pytest.raises(ValueError, match=f"--{flag} {adapters} holds LoRA adapter checkpoints"):
+            config(**{flag: str(adapters)})
     # --load still restores the rollout state; the adapter comes from --lora-adapter-path
     resumed = config(load=str(adapters), save=str(adapters), lora_adapter_path=str(adapter))
     assert resumed.initial_load_path is None
