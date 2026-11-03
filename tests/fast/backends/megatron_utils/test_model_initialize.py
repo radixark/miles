@@ -392,24 +392,30 @@ class TestALoraAdapterThatCarriesItsOwnIteration:
         """An HF adapter or shards saved without training state carry no iteration to continue from."""
         assert self._start(tmp_path, adapter_iteration=None).start_rollout_id == 0
 
+    @pytest.mark.parametrize("dynamic", [False, True])
     def test_an_adapter_without_megatron_scheduler_state_steps_the_scheduler_past_its_rollout(
-        self, tmp_path: Path
+        self, tmp_path: Path, dynamic: bool
     ) -> None:
         """A torchtitan-written adapter dir has an iteration but no Megatron scheduler state; the scheduler counts
-        samples, and rollouts 0..100 are done."""
+        trained samples, and rollouts 0..100 each trained 16 of their 20 (global batch 8, or dynamic on DP 8)."""
         scheduler = MagicMock()
-        _load_model_state_with(
-            tmp_path=tmp_path,
-            finetune=True,
-            iteration=0,
-            adapter_iteration=100,
-            adapter_scheduler_restored=False,
-            opt_param_scheduler=scheduler,
-            lora_adapter_path=str(tmp_path / "adapter"),
-            resume_from_ckpt=False,
-            rollout_batch_size=4,
-            n_samples_per_prompt=4,
-        )
+        with patch(
+            "miles.backends.megatron_utils.model.get_parallel_state",
+            return_value=types.SimpleNamespace(effective_dp=types.SimpleNamespace(size=8)),
+        ):
+            _load_model_state_with(
+                tmp_path=tmp_path,
+                finetune=True,
+                iteration=0,
+                adapter_iteration=100,
+                adapter_scheduler_restored=False,
+                opt_param_scheduler=scheduler,
+                lora_adapter_path=str(tmp_path / "adapter"),
+                resume_from_ckpt=False,
+                rollout_batch_size=5,
+                n_samples_per_prompt=4,
+                use_dynamic_global_batch_size=dynamic,
+            )
         scheduler.step.assert_called_once_with(increment=101 * 16)
 
 

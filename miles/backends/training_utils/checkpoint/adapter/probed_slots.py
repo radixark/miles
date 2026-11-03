@@ -81,13 +81,13 @@ class ProbedAdapterSlots:
     def slot_parameters(self, slot: int) -> list[torch.Tensor]:
         raise NotImplementedError
 
-    def _slot_spec(self, slot: int):
+    def slot_spec(self, slot: int):
         """The adapter the iterator exports for ``slot``; None for a single LoRA."""
         return None
 
     def lora_rank(self, slot: int) -> int | None:
         """None for single LoRA, whose tensors are never padded."""
-        spec = self._slot_spec(slot)
+        spec = self.slot_spec(slot)
         return None if spec is None else spec.rank
 
     def _pieces(self, slot: int, holds: frozenset[int] | None = None) -> list[tuple[HfPiece, tuple[slice, ...]]]:
@@ -175,7 +175,7 @@ class ProbedAdapterSlots:
 
     def export_bf16_adapter(self, slot: int) -> Iterable[tuple[str, torch.Tensor]]:
         is_writer = dist.get_rank() == 0
-        return self._iterator.materialize_adapter(self._slot_spec(slot), materialize=is_writer).items()
+        return self._iterator.materialize_adapter(self.slot_spec(slot), materialize=is_writer).items()
 
     def parametrization(
         self,
