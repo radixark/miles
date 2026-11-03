@@ -4,7 +4,7 @@ import logging
 import os
 import random
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -13,6 +13,7 @@ from miles.ray.rollout.train_data_conversion import split_train_data_by_dp
 from miles.utils import object_store
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
 from miles.utils.dp_schedule import TrainParallelConfig
+from miles.utils.output_store.trainer_columns import materialize_store_columns
 from miles.utils.pydantic_utils import StrictBaseModel
 
 from .audit_utils.witness.allocator import WitnessInfo
@@ -299,6 +300,8 @@ def process_rollout_data(
     dp_rank: int,
     train_parallel_config: TrainParallelConfig,
     witness_info: WitnessInfo | None,
+    *,
+    output_store_read: Callable | None = None,
 ) -> tuple[dict, object_store.ObjectStoreGetResult]:
     from miles.ray.rollout.train_data_conversion import process_rollout_data_shard
 
@@ -324,7 +327,14 @@ def process_rollout_data(
         get_result = store.get(rollout_data_ref[dp_rank])
         rollout_data = dict(get_result.value)
 
-    return process_rollout_data_shard(args, rollout_data), get_result
+    try:
+        # In place on this shard's own dict: get_result.value stays as stored.
+        materialize_store_columns(args, rollout_data, read=output_store_read)
+        return process_rollout_data_shard(args, rollout_data), get_result
+    except BaseException as e:
+        # The caller releases get_result only once it is returned: an FT retry would leak a buffer per attempt.
+        get_result.__exit__(type(e), e, e.__traceback__)
+        raise
 
 
 def _assert_witness_rows(*, total_rows: int, shards: list[dict[str, Any]]) -> None:

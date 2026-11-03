@@ -441,6 +441,16 @@ class TestWeightUpdateOutputMerge:
         assert WeightUpdateOutput.merge(outputs) == WeightUpdateOutput(weight_version=None, failed_cell_ids=())
 
 
+def test_fwd_tflops_warns_and_reports_no_mfu_for_an_unknown_layer_structure(caplog):
+    actor = object.__new__(TrainRayActor)
+    actor.hf_config = SimpleNamespace(
+        model_type="mystery", hidden_size=8, vocab_size=8, num_hidden_layers=1, layer_types=["chunked_attention"]
+    )
+
+    assert actor._fwd_tflops is None
+    assert "no FLOPs definition" in caplog.text
+
+
 class TestBackendProcessGroupSdk:
     @pytest.mark.parametrize(
         ("backend", "offload", "cpu_backend", "expected"),

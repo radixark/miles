@@ -208,6 +208,8 @@
        },
        "models/gpt-oss/gpt-oss",
        "models/mimo/mimo-v2-6-flash",
+       "models/minimax/minimax-m3",
+       "models/minimax/minimax-m3-1-flash",
        "models/stepfun/step5",
        "models/muse-spark/muse-spark-open",
        "models/reflection/beam"
@@ -227,6 +229,7 @@
        "advanced/speculative-decoding",
        "advanced/sampling-support-replay",
        "advanced/lora",
+       "advanced/multi-lora",
        "advanced/on-policy-distillation"
       ]
      },
@@ -251,6 +254,14 @@
       "group": "Cluster & Deployment",
       "pages": [
        "advanced/cluster-backend"
+      ]
+     },
+     {
+      "group": "Algorithm",
+      "pages": [
+       "examples/infra-features/score-centering",
+       "examples/infra-features/train-infer-mismatch-helper",
+       "advanced/algorithms/length-penalties"
       ]
      }
     ]

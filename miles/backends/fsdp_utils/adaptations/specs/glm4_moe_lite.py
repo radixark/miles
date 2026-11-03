@@ -10,6 +10,7 @@ from miles.backends.fsdp_utils.models.replay_routers import install_glm4_moe_lit
 class Glm4MoeLiteAdapter(ArchAdapter):
     model_types = frozenset({"glm4_moe_lite"})
     verified = True
+    passes_attention_packing_kwargs = True
     routing_replay = RoutingReplayAdapter(
         name="glm4_moe_lite", module_cls_name="Glm4MoeLiteMoE", install=install_glm4_moe_lite_router_replay
     )

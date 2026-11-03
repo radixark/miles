@@ -3,7 +3,6 @@ import logging
 import os
 import shutil
 from contextlib import ExitStack, nullcontext
-from functools import partial
 
 import torch
 import torch.distributed as dist
@@ -118,6 +117,11 @@ def _setup_disk_offload_reclaim(disk_dir: str) -> None:
 
 
 class MegatronTrainRayActor(TrainRayActor):
+    @property
+    def _trains_indexers(self) -> bool:
+        # Megatron leaves --dsa-indexer-loss-coeff None unless set, which like 0 means no indexer loss
+        return (self.args.backend.dsa_indexer_loss_coeff or 0) > 0
+
     @with_logs
     @with_defer(lambda: Timer().start("train_wait"))
     def init(
@@ -255,7 +259,7 @@ class MegatronTrainRayActor(TrainRayActor):
             main_cast_ctx = build_main_cast_context(args, model=self.model, optimizer=self.optimizer)
 
         self.weights_backuper = TensorBackuper.create(
-            source_getter=partial(self._named_actor_weights, include_model_companion=True),
+            source_getter=self._actor_weights_to_back_up,
             main_cast_ctx=main_cast_ctx,
         )
         self._active_model_tag: str | None = "actor"
@@ -548,7 +552,34 @@ class MegatronTrainRayActor(TrainRayActor):
             self.args.colocate
             and is_lora_enabled(self.args)
             and self.args.offload_train_target == "cpu"
-            and not (self.with_ref or self.with_opd_teacher or self.args.keep_old_actor)
+            and not self._switches_models
+        )
+
+    @property
+    def _switches_models(self) -> bool:
+        """Restoring another model's weights needs a full host backup of every model."""
+        return self.with_ref or self.with_opd_teacher or self.args.keep_old_actor
+
+    @property
+    def _host_backup_skips_frozen_params(self) -> bool:
+        """Colocated LoRA whose sync never sends the frozen base (the engines keep it) and that
+        switches no models: a host copy of frozen params is never read, and costs the whole
+        base per rank, which is what an --offload-train-target=disk run cannot afford."""
+        return (
+            self.args.colocate
+            and is_lora_enabled(self.args)
+            and not self.args.lora_sync_sends_base
+            and not self._switches_models
+        )
+
+    def _actor_weights_to_back_up(self):
+        weights = self._named_actor_weights(include_model_companion=True)
+        if not self._host_backup_skips_frozen_params:
+            return weights
+        return (
+            (name, tensor)
+            for name, tensor in weights
+            if tensor.requires_grad or ModelCompanionInstallationUtils.is_companion_parameter(name)
         )
 
     @property
@@ -622,6 +653,7 @@ class MegatronTrainRayActor(TrainRayActor):
                 rollout_data, store_get_result = get_rollout_data(
                     args=self.args,
                     rollout_data_ref=rollout_data_ref,
+                    output_store_read=self.output_store_read,
                     witness_info=witness_info,
                     train_parallel_config=get_parallel_state().train_parallel_config(
                         supports_precomputed_schedule=True
@@ -727,6 +759,7 @@ class MegatronTrainRayActor(TrainRayActor):
                     if_sp_region=m.if_sp_region,
                     indices_are_token_positions=m.replay_indices_are_token_positions,
                     sequence_first=m is routing_replay_manager,
+                    kept_in_train_dump=m.kept_in_train_dump,
                 )
 
         with inverse_timer("train_wait"), timer("train"):
@@ -848,6 +881,8 @@ class MegatronTrainRayActor(TrainRayActor):
         log_perf_data(
             rollout_id,
             self.args,
+            compute_total_fwd_flops=self._fwd_tflops,
+            compute_total_train_flops=self._train_tflops,
             extra_metrics=self.weight_updater.pop_metrics() if self.weight_updater is not None else {},
         )
 

@@ -40,6 +40,7 @@ from miles.rollout.base_types import (
 from miles.rollout.filter_hub.base_types import MetricGatherer
 from miles.rollout.filter_hub.common_filters import apply_preput_filters
 from miles.rollout.generate_utils.prefill_logprobs import recompute_samples_rollout_logprobs_via_prefill
+from miles.router.backend import make_router_backend
 from miles.utils.args.custom_view import ImmutableNamespace
 from miles.utils.lora.utils import LORA_ADAPTER_NAME, is_lora_enabled
 from miles.utils.types import Sample
@@ -255,14 +256,8 @@ async def _sglang_worker_urls(args: Namespace) -> list[str]:
     from miles.utils.http_utils import get
 
     router_url = _generate_url(args).removesuffix("/generate")
-    if not args.use_miles_router:
-        try:
-            response = await get(f"{router_url}/workers")
-            return [worker["url"] for worker in response["workers"]]
-        except Exception:
-            logger.debug("SGLang /workers lookup failed; trying Miles /list_workers.", exc_info=True)
-    response = await get(f"{router_url}/list_workers")
-    return list(response["urls"])
+    response = await get(f"{router_url}/workers")
+    return [worker["url"] for worker in response["workers"]]
 
 
 def _finish_reason(output: dict[str, Any]) -> str:
@@ -362,9 +357,11 @@ class MilesSGLangTransport:
         if body.get("cache_salt") is not None:
             payload["extra_key"] = body["cache_salt"]
 
-        request_headers = None
-        if self.args.sglang_router_policy in ("consistent_hashing", "manual") and session_id:
-            request_headers = {"X-SMG-Routing-Key": session_id}
+        request_headers = (
+            (make_router_backend(self.args).routing_headers(session_id, self.args.sglang.models) or None)
+            if session_id
+            else None
+        )
 
         from miles.utils.http_utils import post
 

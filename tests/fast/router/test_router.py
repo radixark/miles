@@ -5,8 +5,11 @@ from urllib.parse import urlencode
 import httpx
 import pytest
 import requests
+import sglang_router
 from fastapi import Request
 
+from miles.backends.sglang_utils.sglang_api_client import WorkerType
+from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient
 from miles.router import router as router_module
 from miles.router.config import MilesRouterConfig
 from miles.router.router import MilesRouter
@@ -219,6 +222,57 @@ class TestWorkerManagement:
         r = requests.get(f"{router_env.url}/list_workers", timeout=5.0)
         r.raise_for_status()
         assert r.json()["urls"] == [kept]
+
+
+class TestWorkersApi:
+    """The Miles router serves sgl-router's /workers API, so one client registers engines with either router."""
+
+    def test_a_worker_added_through_workers_is_listed_with_an_id(self, router_env: RouterEnv):
+        worker_url = "http://127.0.0.1:30021"
+        requests.post(f"{router_env.url}/workers", json={"url": worker_url}, timeout=5.0).raise_for_status()
+
+        r = requests.get(f"{router_env.url}/workers", timeout=5.0)
+        r.raise_for_status()
+
+        assert r.json()["workers"] == [{"id": "http%3A%2F%2F127.0.0.1%3A30021", "url": worker_url}]
+
+    def test_a_pd_worker_is_refused_and_not_registered(self, router_env: RouterEnv):
+        """The Miles router cannot route PD traffic, so accepting a prefill worker would misroute every request."""
+        r = requests.post(
+            f"{router_env.url}/workers", json={"url": "http://127.0.0.1:30022", "worker_type": "prefill"}, timeout=5.0
+        )
+
+        assert r.status_code == 400
+        assert router_env.router.worker_request_counts == {}
+
+    def test_adding_without_a_url_is_rejected(self, router_env: RouterEnv):
+        r = requests.post(f"{router_env.url}/workers", json={"worker_type": "regular"}, timeout=5.0)
+
+        assert r.status_code == 400
+
+    def test_deleting_an_unknown_worker_succeeds(self, router_env: RouterEnv):
+        """Teardown can race a health-check eviction, and a second removal must not error."""
+        r = requests.delete(f"{router_env.url}/workers/http%3A%2F%2F127.0.0.1%3A30023", timeout=5.0)
+
+        assert r.status_code == 200
+
+    @pytest.mark.parametrize("sglang_router_version", ["0.2.5", "0.3.1"])
+    def test_the_sglang_router_client_registers_and_removes_workers(
+        self, router_env: RouterEnv, monkeypatch: pytest.MonkeyPatch, sglang_router_version: str
+    ):
+        """Both remove paths of the shared client (by url before 0.3.0, by looked-up id after) must reach the entry."""
+        monkeypatch.setattr(sglang_router, "__version__", sglang_router_version)
+        client = SGLangRouterApiClient(router_url=router_env.url)
+        worker_url = "http://127.0.0.1:30024"
+
+        async def _register_then_remove() -> list[str]:
+            await client.add_worker(worker_url=worker_url, worker_type=WorkerType.REGULAR)
+            registered = list(router_env.router.worker_request_counts)
+            await client.remove_worker(worker_url=worker_url)
+            return registered
+
+        assert asyncio.run(_register_then_remove()) == [worker_url]
+        assert router_env.router.worker_request_counts == {}
 
 
 class TestLoadBalancing:

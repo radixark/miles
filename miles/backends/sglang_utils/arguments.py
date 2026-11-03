@@ -4,6 +4,7 @@ from sglang.srt.server_args import ServerArgs
 
 from miles.utils.args.utils import config_values
 from miles.utils.http_utils import wrap_ipv6
+from miles.utils.output_store.config import SGLANG_OUTPUT_STORE_FIELDS
 
 
 _SKIPPED_SERVER_ARGS = [
@@ -27,6 +28,7 @@ _SKIPPED_SERVER_ARGS = [
     "skip_server_warmup",
     "enable_return_routed_experts",
     "enable_return_indexer_topk",
+    *SGLANG_OUTPUT_STORE_FIELDS,
 ]
 
 # tp_size comes from --eval-num-gpus-per-engine, which also places the engines.

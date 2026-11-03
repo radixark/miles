@@ -15,7 +15,7 @@ from miles.backends.megatron_utils.lora.native.lora import _attach_layer
 from miles.backends.megatron_utils.lora.native.merge import merge_lora_into_weights
 from miles.backends.megatron_utils.lora.native.registry import MODEL_SPECS
 from miles.backends.megatron_utils.lora.native.spec.base import AttachContext
-from miles.utils.lora.arguments import _resolve_lora_targets
+from miles.utils.lora.arguments import _native_serving_targets, _resolve_lora_targets
 from miles.utils.lora.utils import get_adapter_target_modules
 
 HIDDEN, RANK = 8, 2
@@ -128,8 +128,9 @@ def _launcher_targets(monkeypatch) -> list[str]:
     (train_command,) = train_commands
     launch_args, _ = parser.parse_known_args(shlex.split(train_command))
     launch_args.multi_lora, launch_args.lora_type, launch_args.experts_shared_outer_loras = False, "lora", False
-    hf_targets, served_targets = _resolve_lora_targets(launch_args, _hf_config())
-    assert served_targets == hf_targets
+    hf_config = _hf_config()
+    hf_targets = _resolve_lora_targets(launch_args, hf_config)
+    assert _native_serving_targets(launch_args, hf_config, hf_targets) == hf_targets
     return hf_targets
 
 
@@ -204,5 +205,6 @@ def test_kv_b_proj_is_rejected_since_the_absorbed_dsa_never_calls_it():
         lora_type="lora",
         experts_shared_outer_loras=False,
     )
+    hf_config = _hf_config()
     with pytest.raises(AssertionError, match=r"does not implement adapters for .*kv_b_proj"):
-        _resolve_lora_targets(launch_args, _hf_config())
+        _native_serving_targets(launch_args, hf_config, _resolve_lora_targets(launch_args, hf_config))
