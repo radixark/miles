@@ -658,6 +658,10 @@ class TinkerService:
         download = self._downloads.get(token)
         if download is None or download.expires_at <= time.time():
             raise NotFoundError("unknown or expired download URL")
+        # a TTL shortened after signing, or run out, ends the URL before the sweep deletes the checkpoint
+        checkpoint_expires_at = self.expiry.expires_at(download.tinker_path)
+        if checkpoint_expires_at is not None and checkpoint_expires_at <= time.time():
+            raise NotFoundError(f"{download.tinker_path} has expired")
         model_id, kind, name = parse_tinker_path(download.tinker_path)
         try:
             _, _, _, files = self._owned_checkpoint(download.tenant, model_id, f"{kind}/{name}")
