@@ -291,7 +291,6 @@ def _startup_args(**overrides) -> Namespace:
         log_probs_backend="torch",
         allgather_cp=False,
         use_sampling_support_replay=False,
-        use_rollout_routing_replay=False,
         use_opsm=False,
         use_tis=False,
         get_mismatch_metrics=False,
