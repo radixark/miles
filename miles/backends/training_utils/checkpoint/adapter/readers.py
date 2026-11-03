@@ -118,7 +118,8 @@ def read_source_lora_alpha(path: Path) -> float | None:
     """The alpha a source records, read without the model; None for a source that records none (torchtitan)."""
     if (path / PARAMETRIZATION_FILENAME).is_file():
         return read_parametrization(path).lora_alpha
-    if (path / "run_config.yaml").is_file():
+    # a Megatron-Bridge checkpoint by classify_adapter_source's rule; a PEFT dir may hold a stray run_config.yaml
+    if (path / ".metadata").is_file() and (path / "run_config.yaml").is_file():
         return float(yaml.safe_load((path / "run_config.yaml").read_text())["peft"]["alpha"])
     for name in ("META.json", "adapter_config.json"):
         if (path / name).is_file():

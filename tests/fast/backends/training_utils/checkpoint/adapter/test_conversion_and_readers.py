@@ -20,6 +20,7 @@ from miles.backends.training_utils.checkpoint.adapter.readers import (
     MilesAdapterDirReader,
     PeftAdapterReader,
     classify_adapter_source,
+    read_source_lora_alpha,
 )
 from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
 
@@ -354,3 +355,15 @@ def test_gpt_oss_down_proj_alone_stays_one_packed_3d_tensor(tmp_path):
         tensors = load_file(str(tmp_path / export / "adapter_model.safetensors"))
         assert set(tensors) == {f"{down}.lora_A.weight", f"{down}.lora_B.weight"}, export
         assert tensors[f"{down}.lora_A.weight"].shape == (3, 2, 4)
+
+
+def test_a_megatron_bridge_source_records_its_alpha_in_run_config(tmp_path):
+    (tmp_path / ".metadata").touch()
+    (tmp_path / "run_config.yaml").write_text("peft:\n  alpha: 32\n")
+    assert read_source_lora_alpha(tmp_path) == 32.0
+
+
+def test_a_peft_dir_takes_its_alpha_from_adapter_config_despite_a_run_config(tmp_path):
+    (tmp_path / "adapter_config.json").write_text(json.dumps({"lora_alpha": 4}))
+    (tmp_path / "run_config.yaml").write_text("peft:\n  alpha: 32\n")
+    assert read_source_lora_alpha(tmp_path) == 4
