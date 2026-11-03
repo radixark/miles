@@ -5,6 +5,7 @@ mistake)."""
 
 import json
 import os
+from pathlib import Path
 
 from miles.tinker.core.input_validation import validate_ttl_seconds
 from miles.tinker.core.utils import parse_tinker_path
@@ -17,7 +18,7 @@ class CheckpointExpiry:
         self._path = os.path.join(checkpoint_root, EXPIRY_FILENAME)
         self._expires_at: dict[str, float] = {}
         if os.path.exists(self._path):
-            for tinker_path, expires_at in json.loads(open(self._path).read()).items():
+            for tinker_path, expires_at in json.loads(Path(self._path).read_text()).items():
                 # an entry that does not parse is an error, never a deletion
                 parse_tinker_path(tinker_path)
                 assert isinstance(expires_at, int | float), f"{self._path}: {tinker_path} expires at {expires_at!r}"
