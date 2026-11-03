@@ -156,18 +156,22 @@ def test_qwen3_next_in_proj_stays_one_fused_adapter():
     assert _resolve(targets, [mapping], _GDN_PARAMETER, canonical=True) == ["decoder.layers.*.self_attention.in_proj"]
 
 
-def _normalize(monkeypatch, targets, *, canonical):
-    from miles.backends.megatron_utils.lora.target_modules import normalize_lora_targets_to_hf
-
-    registry = SimpleNamespace(get_all_mappings=lambda: [_QWEN3_5_IN_PROJ])
+def _fake_bridge(monkeypatch, mappings, hf_modules):
+    registry = SimpleNamespace(get_all_mappings=lambda: list(mappings))
     bridge = SimpleNamespace(
         hf_pretrained=SimpleNamespace(config=None), _model_bridge=SimpleNamespace(mapping_registry=lambda: registry)
     )
     monkeypatch.setattr("miles.utils.megatron_bridge_utils.load_auto_bridge", lambda checkpoint: bridge)
     monkeypatch.setattr(
         "miles.backends.megatron_utils.lora.target_modules.HfWeightMapping.from_config",
-        lambda config: HfWeightMapping(frozenset()),
+        lambda config: HfWeightMapping(frozenset(hf_modules)),
     )
+
+
+def _normalize(monkeypatch, targets, *, canonical):
+    from miles.backends.megatron_utils.lora.target_modules import normalize_lora_targets_to_hf
+
+    _fake_bridge(monkeypatch, [_QWEN3_5_IN_PROJ], ())
     return normalize_lora_targets_to_hf("/ckpt", targets, canonical=canonical, exclude_modules=[])
 
 
@@ -181,3 +185,47 @@ def test_a_gdn_component_selector_cannot_widen_to_its_whole_hf_module(monkeypatc
         "model.layers.*.linear_attn.in_proj_qkv",
         "model.layers.*.linear_attn.in_proj_z",
     ]
+
+
+def _check_fused(monkeypatch, targets, *, canonical, mappings=(_QWEN3_5_IN_PROJ,), layers=2):
+    from miles.backends.megatron_utils.lora.target_modules import check_fused_lora_selection
+
+    leaves = ("in_proj_qkv", "in_proj_z", "in_proj_b", "in_proj_a", "in_proj_qkvz", "in_proj_ba")
+    _fake_bridge(
+        monkeypatch,
+        mappings,
+        {f"model.layers.{layer}.linear_attn.{leaf}.weight" for layer in range(layers) for leaf in leaves},
+    )
+    check_fused_lora_selection("/ckpt", targets, canonical=canonical)
+
+
+_OFFICIAL_GDN = ["model.layers.*.linear_attn.in_proj_qkv", "model.layers.*.linear_attn.in_proj_z"]
+
+
+def test_shared_a_lora_refuses_part_of_a_fused_module_at_argument_time(monkeypatch):
+    missing = r"\['in_proj_a', 'in_proj_b'\]"
+    with pytest.raises(AssertionError, match=rf"add {missing} to --target-modules or pass --lora-type canonical_lora"):
+        _check_fused(monkeypatch, _OFFICIAL_GDN, canonical=False)
+
+
+def test_canonical_lora_adapts_part_of_a_splittable_fused_module(monkeypatch):
+    _check_fused(monkeypatch, _OFFICIAL_GDN, canonical=True)
+
+
+def test_a_fused_module_targeted_whole_or_not_at_all_passes(monkeypatch):
+    _check_fused(monkeypatch, [*_OFFICIAL_GDN, "in_proj_b", "in_proj_a"], canonical=False)
+    _check_fused(monkeypatch, ["model.layers.*.linear_attn.out_proj"], canonical=False)
+
+
+def test_a_layer_scoped_selection_is_checked_per_layer(monkeypatch):
+    targets = [f"model.layers.0.linear_attn.{leaf}" for leaf in ("in_proj_qkv", "in_proj_z", "in_proj_b", "in_proj_a")]
+    _check_fused(monkeypatch, targets, canonical=False)
+    with pytest.raises(AssertionError, match=r"cannot adapt only \['model.layers.1.linear_attn.in_proj_b'\]"):
+        _check_fused(monkeypatch, [*targets, "model.layers.1.linear_attn.in_proj_b"], canonical=False)
+
+
+def test_canonical_lora_still_refuses_part_of_a_fused_module_it_cannot_split(monkeypatch):
+    """Qwen3-Next's in_proj_qkvz / in_proj_ba stay one adapter under canonical_lora too."""
+    mapping = _gdn_in_proj("in_proj_qkvz", "in_proj_ba")
+    with pytest.raises(AssertionError, match=r"add \['in_proj_ba'\] to --target-modules$"):
+        _check_fused(monkeypatch, ["in_proj_qkvz"], canonical=True, mappings=(mapping,))

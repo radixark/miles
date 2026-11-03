@@ -81,15 +81,33 @@ def load_lora_adapter_hf(model_chunks, adapter_path: str) -> int:
     )
     with safe_open(path, framework="pt") as adapter_file:
         keys = {re.sub(r"^base_model\.model\.", "", key): key for key in adapter_file.keys()}
+        taken: set[str] = set()
 
         def take(name: str) -> torch.Tensor:
             if name not in keys:
                 raise KeyError(f"[lora-native] adapter tensor missing: {name}")
+            taken.add(name)
             return adapter_file.get_tensor(keys[name])
 
         load_plan: list[tuple[torch.Tensor, torch.Tensor]] = []
-        for adapter in iter_adapters(model_chunks):
-            load_plan.extend(_load_adapter(adapter, take))
+        failure = None
+        try:
+            for adapter in iter_adapters(model_chunks):
+                load_plan.extend(_load_adapter(adapter, take))
+        except (KeyError, ValueError, AssertionError) as error:
+            # a stage that fails here still joins the pipeline gather, or the other stages hang in it
+            failure = f"{type(error).__name__}: {error}"
+
+    taken_across_pipeline, failures = _gather_across_pipeline(taken, failure)
+    assert not failures, f"[lora-native] loading {adapter_path} failed on a pipeline stage: {failures[0]}"
+    # a tensor no attached adapter takes would silently leave the restored model unlike the saved one
+    untaken = sorted(set(keys) - taken_across_pipeline)
+    lora_pairs_only = all(name.endswith((".lora_A.weight", ".lora_B.weight")) for name in untaken)
+    assert not untaken, (
+        f"[lora-native] {adapter_path} holds adapter tensors no selected module takes: {untaken[:8]}"
+        f"{' ...' if len(untaken) > 8 else ''}; "
+        + ("add their modules to --target-modules" if lora_pairs_only else "native LoRA loads only lora_A / lora_B")
+    )
 
     with torch.no_grad():
         for parameter, tensor in load_plan:
@@ -97,6 +115,19 @@ def load_lora_adapter_hf(model_chunks, adapter_path: str) -> int:
     loaded = len(load_plan)
     logger.info("[lora-native] loaded %d adapter tensors from %s", loaded, adapter_path)
     return loaded
+
+
+def _gather_across_pipeline(taken: set[str], failure: str | None) -> tuple[set[str], list[str]]:
+    """Each pipeline stage takes only the tensors of the layers it holds, and any stage may fail its load plan."""
+    if not dist.is_initialized():
+        return taken, [failure] if failure is not None else []
+    from megatron.core import parallel_state as ps
+
+    stages: list[tuple[set[str], str | None] | None] = [None] * ps.get_pipeline_model_parallel_world_size()
+    dist.all_gather_object(stages, (taken, failure), group=ps.get_pipeline_model_parallel_group())
+    return set().union(*(stage_taken for stage_taken, _ in stages)), [
+        stage_failure for _, stage_failure in stages if stage_failure is not None
+    ]
 
 
 def _load_adapter(adapter: NativeLoRAAdapter, take) -> list[tuple[torch.Tensor, torch.Tensor]]:

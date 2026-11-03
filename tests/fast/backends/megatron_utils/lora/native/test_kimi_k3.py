@@ -197,6 +197,80 @@ def test_hf_import_round_trips_the_export(tmp_path):
             torch.testing.assert_close(parameter, exported_value, msg=name)
 
 
+def test_hf_import_refuses_tensors_no_selected_module_takes(tmp_path):
+    """An adapter saved with modules the current targets leave out would otherwise restore without them."""
+    exported = dict(export_lora_hf_named(iter_adapters([_model()])))
+    stray = "model.layers.0.linear_attn.in_proj_b.lora_A.weight"
+    save_file({**exported, stray: torch.zeros(RANK, 4)}, str(tmp_path / "adapter_model.safetensors"))
+
+    with pytest.raises(AssertionError, match=rf"no selected module takes: \['{stray}'\]"):
+        load_lora_adapter_hf([_model()], str(tmp_path))
+
+
+def test_hf_import_counts_the_tensors_other_pipeline_stages_take(tmp_path, monkeypatch):
+    """Under PP every stage holds some layers; a tensor another stage takes is not left over."""
+    from megatron.core import parallel_state
+
+    from miles.backends.megatron_utils.lora.native import hf_adapter
+
+    exported = dict(export_lora_hf_named(iter_adapters([_model()])))
+    other_stage = "model.layers.9.self_attn.o_proj.lora_A.weight"
+    save_file({**exported, other_stage: torch.zeros(RANK, 12)}, str(tmp_path / "adapter_model.safetensors"))
+
+    def all_gather_object(stages, payload, group):
+        stages[:] = [payload, ({other_stage}, None)]
+
+    monkeypatch.setattr(hf_adapter.dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(hf_adapter.dist, "all_gather_object", all_gather_object)
+    monkeypatch.setattr(parallel_state, "get_pipeline_model_parallel_world_size", lambda: 2)
+    monkeypatch.setattr(parallel_state, "get_pipeline_model_parallel_group", lambda: None)
+
+    load_lora_adapter_hf([_model()], str(tmp_path))
+
+
+@pytest.mark.parametrize("failing_stage", ["local", "local_shape", "other"])
+def test_hf_import_fails_every_pipeline_stage_together(tmp_path, monkeypatch, failing_stage):
+    """A stage missing a tensor or holding a wrong-shaped one still joins the pipeline gather, and every
+    stage raises its failure."""
+    from megatron.core import parallel_state
+
+    from miles.backends.megatron_utils.lora.native import hf_adapter
+
+    exported = dict(export_lora_hf_named(iter_adapters([_model()])))
+    if failing_stage == "local":
+        exported.pop(next(iter(exported)))
+    elif failing_stage == "local_shape":
+        # a wrong --lora-rank: the generic projection load raises ValueError on the global shape
+        name = f"{PREFIX}4.self_attn.o_proj.lora_A.weight"
+        exported[name] = torch.zeros(RANK + 1, exported[name].shape[1])
+    save_file(exported, str(tmp_path / "adapter_model.safetensors"))
+    gathered = []
+
+    def all_gather_object(stages, payload, group):
+        gathered.append(payload)
+        other = (set(), None) if failing_stage != "other" else (set(), "KeyError: missing on stage 1")
+        stages[:] = [payload, other]
+
+    monkeypatch.setattr(hf_adapter.dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(hf_adapter.dist, "all_gather_object", all_gather_object)
+    monkeypatch.setattr(parallel_state, "get_pipeline_model_parallel_world_size", lambda: 2)
+    monkeypatch.setattr(parallel_state, "get_pipeline_model_parallel_group", lambda: None)
+
+    error = "ValueError" if failing_stage == "local_shape" else "KeyError"
+    with pytest.raises(AssertionError, match=f"failed on a pipeline stage: {error}"):
+        load_lora_adapter_hf([_model()], str(tmp_path))
+    assert len(gathered) == 1
+
+
+def test_hf_import_refuses_peft_tensors_it_cannot_load(tmp_path):
+    exported = dict(export_lora_hf_named(iter_adapters([_model()])))
+    dora = "model.layers.0.self_attn.o_proj.lora_magnitude_vector"
+    save_file({**exported, dora: torch.zeros(12)}, str(tmp_path / "adapter_model.safetensors"))
+
+    with pytest.raises(AssertionError, match="native LoRA loads only lora_A / lora_B"):
+        load_lora_adapter_hf([_model()], str(tmp_path))
+
+
 def test_merged_weights_reproduce_the_adapter_forward():
     model = _model()
     weights = {name: parameter for name, parameter in model.named_parameters() if "lora" not in name}
