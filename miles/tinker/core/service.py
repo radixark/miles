@@ -361,7 +361,8 @@ class TinkerService:
         )
         if isinstance(written, dict):
             return written
-        self.backend.commit_adapter(root, name, written, payload["overwrite"])
+        # the commit's recovery walk and fsyncs hit shared storage; keep the event loop serving
+        await asyncio.to_thread(self.backend.commit_adapter, root, name, written, payload["overwrite"])
         self._delete_retired_outside_the_lock(root)
         return {"op": "save_state", "path": f"tinker://{record.model_id}/weights/{name}"}
 
@@ -429,7 +430,8 @@ class TinkerService:
         )
         if isinstance(written, dict):
             return written
-        self.backend.commit_adapter(root, version, written, overwrite=False)
+        # the commit's recovery walk and fsyncs hit shared storage; keep the event loop serving
+        await asyncio.to_thread(self.backend.commit_adapter, root, version, written, False)
         result = {
             "op": "save_weights_for_sampler",
             "path": f"tinker://{record.model_id}/sampler_weights/{version}",
