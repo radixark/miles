@@ -386,9 +386,12 @@ class TinkerService:
         )
         if isinstance(written, dict):
             return written
+        tinker_path = f"tinker://{record.model_id}/weights/{name}"
+        if payload["overwrite"]:
+            # a crash between the commit and the new TTL must not leave the new commit the old one's expiry
+            self.expiry.drop(tinker_path)
         self.backend.commit_adapter(root, name, written, payload["overwrite"])
         self._delete_retired_outside_the_lock(root)
-        tinker_path = f"tinker://{record.model_id}/weights/{name}"
         self.expiry.set(tinker_path, payload.get("ttl_seconds"), time.time())
         return {"op": "save_state", "path": tinker_path}
 

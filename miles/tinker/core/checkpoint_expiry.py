@@ -50,3 +50,9 @@ class CheckpointExpiry:
             f.flush()
             os.fsync(f.fileno())
         os.replace(temporary, self._path)
+        # the rename itself is durable only once the directory is
+        directory = os.open(os.path.dirname(self._path), os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)

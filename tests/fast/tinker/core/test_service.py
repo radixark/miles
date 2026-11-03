@@ -23,6 +23,7 @@ from tests.fast.tinker.harness import (
 )
 
 from miles.backends.training_utils.checkpoint.adapter.commit import resolve_adapter_dir
+from miles.tinker.core.checkpoint_expiry import CheckpointExpiry
 from miles.tinker.core.future import DONE, FAILED
 from miles.tinker.core.types import NotFoundError, OwnershipError, UserInputError
 from miles.tinker.core.utils import resolve_checkpoint_dir, resolve_sampler_checkpoint
@@ -1074,6 +1075,29 @@ async def test_a_download_url_expires_with_its_checkpoint(service, monkeypatch):
     monkeypatch.setattr(time, "time", lambda: real_time() + 3601)
     with pytest.raises(NotFoundError, match="expired"):
         service.download_path(token, "adapter_config.json")
+
+
+async def test_an_overwrite_that_crashes_before_its_ttl_does_not_inherit_the_old_expiry(service, monkeypatch):
+    model_id = await created_model(service)
+    save = service.submit(
+        "tenant",
+        "save_state",
+        {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False, "ttl_seconds": 3600},
+    )
+    path = (await await_settled(service, "tenant", save)).result["path"]
+    root = Path(resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "weights", "ck")).parent
+    old_commit = resolve_adapter_dir(root, "ck", tenant=None).commit_id
+
+    def crash(*args):
+        raise RuntimeError("crashed after the commit")
+
+    monkeypatch.setattr(service.expiry, "set", crash)
+    with pytest.raises(RuntimeError, match="crashed after the commit"):
+        await service._save_state(
+            service.models[model_id], {"seq_id": 2, "name": "ck", "overwrite": True, "ttl_seconds": None}
+        )
+    assert resolve_adapter_dir(root, "ck", tenant=None).commit_id != old_commit, "the overwrite committed"
+    assert CheckpointExpiry(service.config.checkpoint_root).expires_at(path) is None
 
 
 async def test_ttl_is_set_removed_and_swept(service, monkeypatch):
