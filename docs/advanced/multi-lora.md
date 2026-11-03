@@ -137,10 +137,11 @@ cookbook only requires `tinker>=0.35`, so install the SDK pin explicitly. It sup
 
 - Checkpoints: `ttl_seconds` on every save, `set_checkpoint_ttl`, and
   `delete_checkpoint`. Expired checkpoints are deleted by the gateway.
-- Download: `save_weights_external` (the official Tinker format, F32, optionally
-  age-encrypted to `age1...` recipients) and `get_external_weights_urls`, whose
-  URLs carry no credential, last at most an hour, and stop working once the
-  checkpoint is deleted or the gateway restarts (sign them again).
+- Download: `save_weights_external` (the official Tinker format, F32 from the
+  trainer's fp32 masters, optionally age-encrypted to `age1...` or `ssh-...`
+  recipients) and `get_external_weights_urls`, whose URLs carry no credential,
+  last at most an hour, and stop working once the checkpoint is deleted or the
+  gateway restarts (sign them again).
 - Import: `load_state` and `create_training_client_from_state` accept
   `file://` adapters (PEFT, official Tinker exports, miles adapter dirs) from
   under `--tinker-import-root`, weights only; the source must record its LoRA
