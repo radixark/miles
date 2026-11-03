@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import sys
 from argparse import Namespace
@@ -115,6 +116,25 @@ def test_convert_save_is_refused_under_rollout_only(tmp_path):
     )
     with pytest.raises(AssertionError, match="--debug-rollout-only"):
         validate_lora_args(args)
+
+
+def test_a_relative_convert_save_is_made_absolute_on_the_driver(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    args = Namespace(
+        lora_type="lora",
+        multi_lora_n_adapters=0,
+        lora_rank=8,
+        lora_alpha=16.0,
+        lora_adapter_path=str(tmp_path),
+        lora_adapter_convert_save="converted",
+        train_backend="megatron",
+        megatron_to_hf_mode="bridge",
+        debug_rollout_only=True,
+    )
+    # rollout-only stops validation right after the path is resolved
+    with pytest.raises(AssertionError, match="--debug-rollout-only"):
+        validate_lora_args(args)
+    assert args.lora_adapter_convert_save == os.path.join(os.getcwd(), "converted")
 
 
 def test_multi_lora_refuses_an_adapter_path():

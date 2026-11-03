@@ -50,6 +50,8 @@ def validate_lora_args(args):
             "--lora-adapter-convert-save is implemented only for single LoRA on --train-backend megatron "
             "--megatron-to-hf-mode bridge"
         )
+        # the trainer actors write it from their own working directory, which need not be the driver's
+        args.lora_adapter_convert_save = os.path.abspath(args.lora_adapter_convert_save)
         # the commit would retire and delete whatever sits there, including the source when converting in place
         assert not os.path.lexists(
             args.lora_adapter_convert_save
