@@ -112,3 +112,19 @@ def test_an_overwrite_replaces_a_checkpoint_saved_before_commits(tmp_path):
     assert (resolve_adapter_dir(tmp_path, "w", tenant="alice").path / "payload").read_text() == "new"
     delete_unreferenced_adapter_dirs(tmp_path)
     assert len(list(tmp_path.iterdir())) == 2, "the name and its one commit; the adopted old dir is gone"
+
+
+def test_a_failed_adoption_keeps_the_checkpoint_saved_before_commits(tmp_path, monkeypatch):
+    (tmp_path / "w").mkdir()
+    (tmp_path / "w" / "payload").write_text("legacy")
+    real_replace = os.replace
+
+    def fail_once(src, dst):
+        monkeypatch.setattr(os, "replace", real_replace)
+        raise OSError("link swap failed")
+
+    monkeypatch.setattr(os, "replace", fail_once)
+    with pytest.raises(OSError, match="link swap failed"):
+        _save(tmp_path, "w", "new")
+    delete_unreferenced_adapter_dirs(tmp_path, "w")
+    assert (resolve_adapter_dir(tmp_path, "w", tenant=None).path / "payload").read_text() == "legacy"
