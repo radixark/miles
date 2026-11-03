@@ -1612,6 +1612,23 @@ async def test_a_malformed_import_is_a_user_error_and_the_gateway_keeps_serving(
             await run_task
 
 
+@pytest.mark.parametrize("bad", ["a\x00b", "a\ud800b"], ids=["nul", "lone_surrogate"])
+async def test_an_unencodable_import_path_is_a_user_error_and_the_gateway_keeps_serving(tmp_path, bad):
+    (tmp_path / "imports").mkdir()
+    service = make_service(tmp_path / "root", import_root=str(tmp_path / "imports"))
+    run_task = asyncio.create_task(service.run())
+    try:
+        model_id = await created_model(service)
+        payload = {"model_id": model_id, "seq_id": 1, "path": f"file://{tmp_path}/imports/{bad}", "optimizer": False}
+        loaded = await await_settled(service, "tenant", service.submit("tenant", "load_state", payload))
+        assert loaded.state == FAILED and "cannot read" in loaded.error
+        assert not run_task.done(), "the dispatcher survived"
+    finally:
+        run_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await run_task
+
+
 def test_an_import_with_a_string_alpha_is_a_user_error_under_python_O(tmp_path):
     """python -O strips asserts; the client's types must be checked without them."""
     (tmp_path / "adapter_config.json").write_text(json.dumps({"r": 8, "lora_alpha": "32"}))

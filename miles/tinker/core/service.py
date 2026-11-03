@@ -651,11 +651,12 @@ class TinkerService:
     def _imported_path(self, uri: str) -> str:
         if self.config.import_root is None:
             raise UserInputError("this gateway imports no file:// adapters; start it with --tinker-import-root")
-        root = os.path.realpath(self.config.import_root)
-        path = os.path.realpath(uri.removeprefix("file://"))
-        if not path.startswith(root + os.sep):
-            raise UserInputError(f"{uri} is outside the import root {self.config.import_root}")
         try:
+            # realpath raises ValueError on a NUL byte or a lone surrogate in the tenant's path
+            root = os.path.realpath(self.config.import_root)
+            path = os.path.realpath(uri.removeprefix("file://"))
+            if not path.startswith(root + os.sep):
+                raise UserInputError(f"{uri} is outside the import root {self.config.import_root}")
             _check_import_tree(uri, path, root, self.config.checkpoint_root)
         except (OSError, ValueError, RecursionError) as error:
             # a tenant's unreadable import must not stop the gateway
