@@ -2,12 +2,13 @@
 
 The layout comes from the model's own state-dict adapter: ``sd_adapter.to_hf`` runs on index-valued tensors of each
 adapter's global shape, so fused projections (wqkv, w13) split exactly as their base weights do; each rank keeps the
-HF positions its DTensor shard holds. Needs no collective except agreeing who writes replicated pieces.
+HF positions its DTensor shard holds. Collective only to gather the pipeline stages' targets and shared-A groups.
 """
 
 from collections.abc import Mapping
 
 import torch
+import torch.distributed as dist
 from torch.distributed.tensor import DTensor
 from torch.distributed.tensor._utils import compute_local_shape_and_global_offset
 
@@ -18,6 +19,7 @@ from miles.backends.training_utils.checkpoint.adapter.probed_slots import (
     rectangle,
 )
 from miles.backends.torchtitan_utils.lora_names import split_adapter_key
+from miles.backends.training_utils.checkpoint.adapter.adapter_state import gloo_group
 from miles.backends.training_utils.checkpoint.adapter.key_mapping import map_peft_keys_to_hf_keys
 from miles.utils.lora.hf_lora_targets import HfLoraTargets
 
@@ -49,7 +51,8 @@ def _local_codes(param: torch.Tensor, start: int) -> torch.Tensor:
 def probe_torchtitan_row_mapping(
     params: Mapping[str, torch.Tensor], sd_adapter, targets: HfLoraTargets
 ) -> RowMapping:
-    """``params``: the adapter parameters by titan key, in the order their local shards are concatenated."""
+    """Collective. ``params``: the adapter parameters by titan key, in the order their local shards are
+    concatenated."""
     starts, start = {}, 0
     for key, param in params.items():
         starts[key] = start
@@ -78,7 +81,15 @@ def probe_torchtitan_row_mapping(
     for piece in pieces:
         covered[piece.local_elements.flatten()] = True
     assert covered.all(), f"to_hf does not reach {int((~covered).sum())} of this rank's adapter elements"
-    return RowMapping(pieces, tuple(sorted(groups)), tuple(sorted(modules)))
+
+    # pipeline stages hold different layers; every rank needs the whole parametrization
+    gathered = [None] * dist.get_world_size()
+    dist.all_gather_object(gathered, (sorted(groups), sorted(modules)), group=gloo_group())
+    return RowMapping(
+        pieces,
+        tuple(sorted({g for rank_groups, _ in gathered for g in rank_groups})),
+        tuple(sorted({m for _, rank_modules in gathered for m in rank_modules})),
+    )
 
 
 class TorchtitanAdapterSlots(ProbedAdapterSlots):

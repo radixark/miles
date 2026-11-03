@@ -56,13 +56,19 @@ def _check(mapping, params_local: list[torch.Tensor], expected: dict[str, torch.
         assert torch.equal(flat[piece.local_elements], expected[piece.key][box]), piece.key
 
 
-def test_whole_tensors_map_through_the_models_own_split():
+def _whole(rank, world_size, port):
+    init_gloo(rank, world_size, port=port)
     sd_adapter, params = _adapter()
     mapping = probe_torchtitan_row_mapping(params, sd_adapter, _TARGETS)
     q = "model.layers.3.self_attn.q_proj"
     assert mapping.shared_lora_a_groups == ((q, q.replace("q_proj", "k_proj"), q.replace("q_proj", "v_proj")),)
     assert {p.key for p in mapping.pieces} >= {f"{q}.lora_A", f"{q}.lora_B"}, "the shared lora_A is stored once"
     _check(mapping, list(params.values()), _expected(sd_adapter, params))
+    dist.destroy_process_group()
+
+
+def test_whole_tensors_map_through_the_models_own_split():
+    run_multiprocess(_whole, world_size=1)
 
 
 def _sharded(rank, world_size, port):
