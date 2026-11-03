@@ -32,6 +32,7 @@ class _FakeEngine:
     """Models SGLang's LoRA registry: a held name rejects a plain load; upsert replaces it only if supported."""
 
     def __init__(self, url: str = "http://e:1", supports_upsert: bool = True, held: dict | None = None) -> None:
+        # supports_upsert=False models a stock SGLang, which ignores the field and rejects a held name.
         self.server_url = url
         self.supports_upsert = supports_upsert
         self.served: dict[str, object] = dict(held or {})
@@ -50,12 +51,6 @@ class _FakeEngine:
             raise _http_error(400, f"LoRA with name {lora_name} already exists. Loaded LoRAs: [{lora_name}]")
         self.served[lora_name] = payload
         return {"success": True}
-
-    async def unload_lora_adapter(self, lora_name, timeout=None):
-        self.calls.append("unload")
-        if lora_name not in self.served:
-            raise _http_error(400, f"LoRA with name {lora_name} does not exist. Loaded LoRAs: []")
-        del self.served[lora_name]
 
     async def pause_generation(self, mode="retract"):
         self.calls.append("pause")
@@ -131,11 +126,12 @@ def _served_path(engine: _FakeEngine) -> str:
     return os.path.basename(engine.served[LORA_ADAPTER_NAME])
 
 
-def test_upsert_engine_replaces_in_place_under_a_pause(tmp_path):
-    engine = _FakeEngine(supports_upsert=True)
+def test_every_sync_upserts_in_place_under_a_pause(tmp_path):
+    engine = _FakeEngine()
     protocol = _connect(_make_args(tmp_path), [engine])
 
     _sync(protocol, 1)
+    assert engine.calls == ["pause", "flush", "load+upsert", "version=1", "resume"]
     engine.calls.clear()
     _sync(protocol, 2)
 
@@ -143,67 +139,32 @@ def test_upsert_engine_replaces_in_place_under_a_pause(tmp_path):
     assert engine.calls == ["pause", "flush", "load+upsert", "version=2", "resume"]
 
 
-def test_stock_engine_unloads_and_reloads_unpaused_after_the_first_sync(tmp_path):
-    engine = _FakeEngine(supports_upsert=False)
-    protocol = _connect(_make_args(tmp_path), [engine])
-
-    _sync(protocol, 1)
-    assert engine.calls == ["pause", "flush", "load", "load+upsert", "version=1", "resume"]
-    engine.calls.clear()
-    _sync(protocol, 2)
-
-    assert _served_path(engine).endswith("_v2")
-    assert engine.calls == ["unload", "load", "version=2"]
-
-
-def test_stock_engine_holding_an_adapter_from_an_earlier_run_serves_the_new_one(tmp_path):
-    engine = _FakeEngine(supports_upsert=False, held={LORA_ADAPTER_NAME: "/old/run/v30"})
+def test_an_adapter_left_by_an_earlier_run_is_replaced_in_place(tmp_path):
+    engine = _FakeEngine(held={LORA_ADAPTER_NAME: "/old/run/v30"})
     protocol = _connect(_make_args(tmp_path), [engine])
 
     _sync(protocol, 1)
 
     assert _served_path(engine).endswith("_v1")
+    assert engine.calls == ["pause", "flush", "load+upsert", "version=1", "resume"]
 
 
-def test_fully_async_refuses_a_stock_engine_and_resumes_the_fleet(tmp_path):
-    engine = _FakeEngine(supports_upsert=False)
-    protocol = _connect(_make_args(tmp_path, fully_async=True), [engine])
+def test_an_engine_without_upsert_fails_the_sync_and_resumes_the_fleet(tmp_path):
+    engine = _FakeEngine(supports_upsert=False, held={LORA_ADAPTER_NAME: "/old/run/v30"})
+    protocol = _connect(_make_args(tmp_path), [engine])
 
-    with pytest.raises(RuntimeError, match="fully-async"):
+    with pytest.raises(httpx.HTTPStatusError, match="already exists"):
         _sync(protocol, 1)
     assert engine.calls[-1] == "resume"
 
 
-def test_fully_async_refuses_to_unload_a_stale_adapter(tmp_path):
-    engine = _FakeEngine(supports_upsert=False, held={LORA_ADAPTER_NAME: "/old/run/v30"})
-    protocol = _connect(_make_args(tmp_path, fully_async=True), [engine])
-
-    with pytest.raises(RuntimeError, match="earlier run"):
-        _sync(protocol, 1)
-    assert "unload" not in engine.calls
-
-
-def test_a_mixed_fleet_falls_back_to_unload_on_every_engine(tmp_path):
-    upsert_engine = _FakeEngine("http://a:1", supports_upsert=True)
-    stock_engine = _FakeEngine("http://b:1", supports_upsert=False)
-    protocol = _connect(_make_args(tmp_path), [upsert_engine, stock_engine])
-
-    _sync(protocol, 1)
-    _sync(protocol, 2)
-
-    for engine in (upsert_engine, stock_engine):
-        assert _served_path(engine).endswith("_v2")
-        assert "pause" not in engine.calls[engine.calls.index("version=1") :]
-
-
-def test_an_unrelated_load_failure_raises_without_unloading_and_resumes(tmp_path):
+def test_a_load_failure_raises_and_resumes(tmp_path):
     engine = _FakeEngine()
     engine.load_error = _http_error(400, "rank 64 exceeds --max-lora-rank")
     protocol = _connect(_make_args(tmp_path), [engine])
 
     with pytest.raises(httpx.HTTPStatusError, match="max-lora-rank"):
         _sync(protocol, 1)
-    assert "unload" not in engine.calls
     assert engine.calls[-1] == "resume"
 
 
@@ -247,16 +208,17 @@ def _stream_args(tmp_path) -> Namespace:
     return _make_args(tmp_path, http_lora_ship="tensors", update_weight_disk_dir=None)
 
 
-def test_stream_mode_posts_one_copy_per_engine_gpu_and_writes_nothing(tmp_path):
+def test_stream_mode_posts_one_copy_per_engine_whatever_its_gpu_count_and_writes_nothing(tmp_path):
     engines = [_FakeSessionEngine("http://a:1"), _FakeSessionEngine("http://b:1")]
-    protocol = _connect(_stream_args(tmp_path), engines, gpu_counts=[2, 4], protocol_cls=UpdateWeightHttpLoraStream)
+    protocol = _connect(_stream_args(tmp_path), engines, gpu_counts=[2, 8], protocol_cls=UpdateWeightHttpLoraStream)
 
     name = f"{LORA_ADAPTER_NAME}:{_HF_KEY}"
     protocol.send_bucket([(name, torch.full((16, 8), 5.0))])
     protocol.finalize(1)
 
-    for engine, gpu_count in zip(engines, [2, 4], strict=True):
-        assert len(engine.posted) == 1 and len(engine.posted[0]) == gpu_count
+    for engine in engines:
+        # The engine shares the single payload across its TP ranks.
+        assert len(engine.posted) == 1 and len(engine.posted[0]) == 1
         named = pickle.loads(base64.b64decode(engine.posted[0][0]))
         assert [n for n, _ in named] == [name]
         assert torch.equal(named[0][1], torch.full((16, 8), 5.0))

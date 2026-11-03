@@ -271,17 +271,18 @@ class RolloutRelatedConfig(BaseConfig):
             type_parser=None,
             choices=["path", "tensors"],
             help=(
-                "How http-lora hands the adapter to the engines. 'path': write a versioned PEFT "
-                "directory under --update-weight-disk-dir and POST its path to load_lora_adapter; "
-                "the directory must be visible to the engine hosts, or "
-                "--custom-update-weight-post-write-path copies it there. 'tensors': stream the "
+                "How http-lora hands the adapter to the engines. 'tensors' (default): stream the "
                 "adapter through the engine's weight-update session (register_lora_adapter, "
-                "update_weights_from_tensor, end_weight_update), so the engines need nothing but "
-                "an HTTP port and each version is installed in place; --update-weight-disk-dir "
-                "is not used."
+                "update_weights_from_tensor, end_weight_update), one copy per engine that the "
+                "engine shares across its TP ranks, so the engines need nothing but an HTTP port "
+                "and each version is installed in place; --update-weight-disk-dir is not used. "
+                "'path': write a versioned PEFT directory under --update-weight-disk-dir and POST "
+                "its path to load_lora_adapter with upsert (sglang-miles); the directory must be "
+                "visible to the engine hosts, or --custom-update-weight-post-write-path copies it "
+                "there. --check-lora-weight-equal needs 'tensors'."
             ),
         ),
-    ] = "path"
+    ] = "tensors"
     update_weight_disk_dir: A[
         str | None,
         Arg(

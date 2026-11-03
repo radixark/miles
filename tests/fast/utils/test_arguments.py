@@ -3934,6 +3934,21 @@ class TestMilesValidateArgsHttpLora:
         with pytest.raises(AssertionError, match="requires --update-weight-disk-dir"):
             miles_validate_args(self._parse(tmp_path, ["--http-lora-ship", "path"]))
 
+    def test_tensors_is_the_default_ship(self, tmp_path):
+        args = self._parse(tmp_path, [])
+
+        miles_validate_args(args)
+
+        assert args.http_lora_ship == "tensors"
+
+    def test_path_mode_refuses_check_lora_weight_equal(self, tmp_path):
+        extra = ["--http-lora-ship", "path", "--update-weight-disk-dir", str(tmp_path / "stage")]
+        with pytest.raises(AssertionError, match="check-lora-weight-equal"):
+            miles_validate_args(self._parse(tmp_path, extra + ["--check-lora-weight-equal"]))
+
+    def test_tensors_mode_accepts_check_lora_weight_equal(self, tmp_path):
+        miles_validate_args(self._parse(tmp_path, ["--check-lora-weight-equal"]))
+
 
 class TestWeightUpdateDeadlines:
     def _parse(self, extra: list[str]) -> argparse.Namespace:

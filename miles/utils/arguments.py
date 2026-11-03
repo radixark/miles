@@ -1485,6 +1485,10 @@ def miles_validate_args(args):
             "--http-lora-ship path requires --update-weight-disk-dir as the staging directory (shared with "
             "the engines, or replicated by --custom-update-weight-post-write-path)."
         )
+        assert args.http_lora_ship == "tensors" or not args.check_lora_weight_equal, (
+            "--check-lora-weight-equal verifies the adapter in the weight-update session's end_weight_update, "
+            "which only --http-lora-ship tensors uses; path mode has no checksum to compare against."
+        )
 
     if args.colocate:
         if args.offload_train is None:
