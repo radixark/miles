@@ -45,9 +45,7 @@ def _load_dcp(tmp_path, saved: dict) -> TorchtitanCheckpointLoader:
     slots = SimpleNamespace(parameters=params)
     members = SimpleNamespace(adam_states=lambda: [{"step": torch.tensor(0.0)} for _ in params])
     sd_adapter = SimpleNamespace(to_hf=lambda tensors: {})
-    loader = TorchtitanCheckpointLoader(
-        slots, members, [], sd_adapter, _Run(str(tmp_path), 16), load_optimizer=False
-    )
+    loader = TorchtitanCheckpointLoader(slots, members, [], sd_adapter, _Run(str(tmp_path), 16), load_optimizer=False)
     with (
         patch.object(lora_checkpoint, "resolve_hf_dir", return_value=tmp_path),
         patch.object(lora_checkpoint, "hf_fingerprint_tensors", return_value={}),
