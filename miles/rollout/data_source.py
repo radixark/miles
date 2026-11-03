@@ -331,13 +331,19 @@ class MixedRolloutDataSource(DataSource):
 
     def load(self, directory: Path) -> None:
         state_dict = load_simple_checkpoint(directory=directory)
+        if "offsets" not in state_dict:
+            raise RolloutDataResumeMismatch(
+                f"the checkpoint holds a single-dataset (--prompt-data) data source, not a "
+                f"--rollout-data-yaml-config mix{_RESET_HINT}"
+            )
         if set(state_dict["offsets"]) != set(self.datasets):
             raise RolloutDataResumeMismatch(
                 f"the checkpoint mixed datasets {sorted(state_dict['offsets'])}, but --rollout-data-yaml-config now "
                 f"lists {sorted(self.datasets)}{_RESET_HINT}"
             )
         # groups drawn before the save carry the settings stamped then, so resuming under changed ones would mix both
-        for config in self.dataset_configs:
+        # a checkpoint saved before the settings were recorded has none to compare
+        for config in self.dataset_configs if "settings" in state_dict else []:
             saved, now = state_dict["settings"][config.name], _resumed_settings(config)
             if changed := sorted(key for key in saved.keys() | now.keys() if saved.get(key) != now.get(key)):
                 raise RolloutDataResumeMismatch(
@@ -365,7 +371,10 @@ class MixedRolloutDataSource(DataSource):
         self._shuffle_datasets()
 
     def load_sample_ids(self, directory: Path) -> None:
-        """Instead of ``load``, for a reset: every dataset starts over, but sample ids keep counting past the run's."""
+        """Instead of ``load``, for a reset: every dataset starts over, but sample ids keep counting past the run's.
+
+        Also reads a single-dataset (--prompt-data) checkpoint, which saves the same two counters.
+        """
         state_dict = load_simple_checkpoint(directory=directory)
         self.sample_group_index = state_dict["sample_group_index"]
         self.sample_index = state_dict["sample_index"]
