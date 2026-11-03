@@ -475,17 +475,23 @@ class TinkerService:
             return written
         tinker_path = f"tinker://{record.model_id}/weights/{name}"
         old_expires_at = self.expiry.expires_at(tinker_path) if payload["overwrite"] else None
-        if old_expires_at is not None:
-            old_commit_id = self._live_commit_id(root, name)
-            # a crash between the commit and the new TTL must not leave the new commit the old one's expiry
-            self.expiry.drop(tinker_path)
         try:
+            if old_expires_at is not None:
+                old_commit_id = self._live_commit_id(root, name)
+                # a crash between the commit and the new TTL must not leave the new commit the old one's expiry
+                self.expiry.drop(tinker_path)
             # the commit's recovery walk and fsyncs hit shared storage; keep the event loop serving
             await asyncio.to_thread(self.backend.commit_adapter, root, name, written, overwrite=payload["overwrite"])
         except Exception as error:
-            # the commit can fail before or after its link swap; only the old commit keeps the old expiry
-            if old_expires_at is not None and self._live_commit_id(root, name) == old_commit_id:
-                self.expiry.restore(tinker_path, old_expires_at)
+            # the commit can fail before or after its link swap; only the old commit keeps the old expiry. Still
+            # recorded: the failure came before the drop took effect
+            if old_expires_at is not None and self.expiry.expires_at(tinker_path) is None:
+                try:
+                    if self._live_commit_id(root, name) == old_commit_id:
+                        self.expiry.restore(tinker_path, old_expires_at)
+                except (OSError, ValueError):
+                    # the save fails either way; the old commit then only no longer expires
+                    logger.exception(f"could not restore the expiry of {tinker_path}")
             if isinstance(error, ValueError):
                 # the commit refuses to replace a link it did not write (e.g. an operator's link to a shared adapter)
                 raise UserInputError(f"cannot commit checkpoint {name!r}: {error}") from None
@@ -494,8 +500,15 @@ class TinkerService:
             # a storage failure loses only this save; the trainer and other tenants are unaffected
             return {"error": f"cannot commit checkpoint {name!r}: {error}", "error_category": "server"}
         self._delete_retired_outside_the_lock(root)
-        self.expiry.set(tinker_path, payload["ttl_seconds"], time.time())
+        self._set_expiry_after_commit(tinker_path, payload["ttl_seconds"])
         return {"op": "save_state", "path": tinker_path}
+
+    def _set_expiry_after_commit(self, tinker_path: str, ttl_seconds: int | None) -> None:
+        try:
+            self.expiry.set(tinker_path, ttl_seconds, time.time())
+        except OSError:
+            # failing the request would hide a committed save; without its entry it only does not expire
+            logger.exception(f"could not record the expiry of {tinker_path}; it does not expire")
 
     def _live_commit_id(self, root: str, name: str) -> str | None:
         files = self.backend.resolve_checkpoint_files(root, name, None)
@@ -589,7 +602,7 @@ class TinkerService:
             "op": "save_weights_for_sampler",
             "path": f"tinker://{record.model_id}/sampler_weights/{version}",
         }
-        self.expiry.set(result["path"], payload["ttl_seconds"], time.time())
+        self._set_expiry_after_commit(result["path"], payload["ttl_seconds"])
         if payload.get("sampler_path") is None:
             # unnamed saves return a sampling session bound to the new version
             result["sampling_session_id"] = self._new_sampling_session(
@@ -677,9 +690,14 @@ class TinkerService:
             # e.g. a full disk: the trainer is healthy, so only this save fails
             return {"error": f"could not commit external weights {name!r}: {error}", "error_category": "server"}
         tinker_path = f"tinker://{record.model_id}/external_weights/{name}"
-        self.expiry.set(tinker_path, payload["ttl_seconds"], time.time())
-        files = self.backend.resolve_checkpoint_files(root, name, record.tenant)
-        size = sum(os.path.getsize(os.path.join(files["path"], f)) for f in files["files"])
+        self._set_expiry_after_commit(tinker_path, payload["ttl_seconds"])
+        try:
+            files = self.backend.resolve_checkpoint_files(root, name, record.tenant)
+            size = sum(os.path.getsize(os.path.join(files["path"], f)) for f in files["files"])
+        except OSError:
+            # the export is committed; the SDK takes an unknown size
+            logger.exception(f"could not size {tinker_path}")
+            size = None
         return {"op": "save_weights_external", "path": tinker_path, "size_bytes": size}
 
     def _owned_checkpoint(self, tenant: str, model_id: str, checkpoint_id: str) -> tuple[str, str, str, dict]:

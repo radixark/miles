@@ -1444,6 +1444,64 @@ async def test_a_failed_overwrite_commit_keeps_the_old_expiry_only_on_the_old_co
     assert CheckpointExpiry(service.config.checkpoint_root).expires_at(path) == expected
 
 
+def _full_disk(*args, **kwargs):
+    raise OSError(28, "No space left on device")
+
+
+@pytest.mark.parametrize("op", ["save_state", "save_weights_for_sampler", "save_weights_external"])
+async def test_a_failed_expiry_write_after_a_commit_keeps_the_save_and_the_gateway(service, monkeypatch, op):
+    model_id = await created_model(service)
+    payloads = {
+        "save_state": lambda seq_id: {
+            "model_id": model_id,
+            "seq_id": seq_id,
+            "name": f"ck{seq_id}",
+            "overwrite": False,
+            "ttl_seconds": 3600,
+        },
+        "save_weights_for_sampler": lambda seq_id: {"model_id": model_id, "seq_id": seq_id, "ttl_seconds": 3600},
+        "save_weights_external": lambda seq_id: _external_payload(model_id, seq_id, f"e{seq_id}", ttl_seconds=3600),
+    }
+    monkeypatch.setattr(service.expiry, "_write", _full_disk)
+    if op == "save_weights_external":
+        # the commit is done; sizing it is a read after it
+        monkeypatch.setattr(service.backend, "resolve_checkpoint_files", _full_disk)
+    for seq_id in (1, 2):
+        saved = await await_settled(service, "tenant", service.submit("tenant", op, payloads[op](seq_id)))
+        assert saved.state == DONE, saved.error
+        # recorded nowhere, so it never expires, in this process or after a restart
+        assert service.expiry.expires_at(saved.result["path"]) is None
+    if op == "save_weights_external":
+        assert saved.result["size_bytes"] is None
+
+
+@pytest.mark.parametrize("fails", ["live_commit_id", "drop"])
+async def test_a_failure_before_an_overwrite_commit_fails_only_that_request(service, monkeypatch, fails):
+    model_id = await created_model(service)
+
+    def save(seq_id):
+        payload = {"model_id": model_id, "seq_id": seq_id, "name": "ck", "overwrite": True, "ttl_seconds": 3600}
+        return await_settled(service, "tenant", service.submit("tenant", "save_state", payload))
+
+    path = (await save(1)).result["path"]
+    old_expires_at = service.expiry.expires_at(path)
+    if fails == "live_commit_id":
+
+        def foreign_link(root, name):
+            raise ValueError("ck is a link this library did not write")
+
+        monkeypatch.setattr(service, "_live_commit_id", foreign_link)
+    else:
+        monkeypatch.setattr(service.expiry, "_write", _full_disk)
+    failed = await save(2)
+    assert failed.state == FAILED
+    assert failed.error_category == ("user" if fails == "live_commit_id" else "server")
+    assert service.expiry.expires_at(path) == old_expires_at
+    assert CheckpointExpiry(service.config.checkpoint_root).expires_at(path) == old_expires_at
+    monkeypatch.undo()
+    assert (await save(3)).state == DONE, "the gateway keeps serving"
+
+
 async def test_a_sweep_with_nothing_expired_does_not_wait_for_the_trainer(service):
     async with service._trainer_lock:
         await asyncio.wait_for(service._expire_checkpoints(), timeout=1.0)

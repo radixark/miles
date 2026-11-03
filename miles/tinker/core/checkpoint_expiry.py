@@ -31,31 +31,30 @@ class CheckpointExpiry:
         """``ttl_seconds`` None: the checkpoint no longer expires."""
         validate_ttl_seconds(ttl_seconds)
         if ttl_seconds is None:
-            if self._expires_at.pop(tinker_path, None) is None:
-                return
+            self.drop(tinker_path)
         else:
-            self._expires_at[tinker_path] = now + ttl_seconds
-        self._write()
+            self._write(self._expires_at | {tinker_path: now + ttl_seconds})
 
     def restore(self, tinker_path: str, expires_at: float) -> None:
         """Put back an expiry ``drop`` removed; it was validated when it was set."""
-        self._expires_at[tinker_path] = expires_at
-        self._write()
+        self._write(self._expires_at | {tinker_path: expires_at})
 
     def expired(self, now: float) -> list[str]:
         return sorted(path for path, expires_at in self._expires_at.items() if expires_at <= now)
 
     def drop(self, tinker_path: str) -> None:
-        if self._expires_at.pop(tinker_path, None) is not None:
-            self._write()
+        if tinker_path in self._expires_at:
+            self._write({path: at for path, at in self._expires_at.items() if path != tinker_path})
 
-    def _write(self) -> None:
+    def _write(self, expires_at: dict[str, float]) -> None:
         temporary = f"{self._path}.tmp"
         with open(temporary, "w") as f:
-            json.dump(self._expires_at, f, indent=1, sort_keys=True)
+            json.dump(expires_at, f, indent=1, sort_keys=True)
             f.flush()
             os.fsync(f.fileno())
         os.replace(temporary, self._path)
+        # only now: a failed write leaves the expiries as the file holds them, so the sweep never acts on one it lost
+        self._expires_at = expires_at
         # the rename itself is durable only once the directory is
         directory = os.open(os.path.dirname(self._path), os.O_RDONLY)
         try:
