@@ -347,7 +347,9 @@ def test_peft_export_of_a_fused_gdn_group_writes_one_a_per_exported_module(tmp_p
     from safetensors.torch import load_file
 
     members = GdnBridgeMembers(modules)
-    components = [c for m in modules for c in (("in_proj_q", "in_proj_k", "in_proj_v") if m == "in_proj_qkv" else (m,))]
+    components = [
+        c for m in modules for c in (("in_proj_q", "in_proj_k", "in_proj_v") if m == "in_proj_qkv" else (m,))
+    ]
     group = tuple(sorted(f"{GDN}.{c}" for c in components))
     run = AdapterParametrization("m", 4, 8.0, "lora", group, False, shared_lora_a_groups=(group,))
     write_peft_export(tmp_path, members, 0, run, GDN_TARGETS)
