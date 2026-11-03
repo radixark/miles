@@ -45,7 +45,7 @@ class _HfPiece:
 @dataclass(frozen=True)
 class BridgeRowMapping:
     pieces: list[_HfPiece]
-    # HF modules whose lora_A is one Megatron parameter, in export order
+    # HF modules whose lora_A is one Megatron parameter; groups and their members sorted
     shared_lora_a_groups: tuple[tuple[str, ...], ...]
     target_modules: tuple[str, ...]
 
