@@ -1226,6 +1226,31 @@ async def test_ttl_is_set_removed_and_swept(service, monkeypatch):
         await service.delete_checkpoint("tenant", model_id, "weights/ck")
 
 
+async def test_a_failed_expiry_delete_is_retried_and_the_rest_are_swept(service, monkeypatch):
+    model_id = await created_model(service)
+    paths = {}
+    for seq_id, name in enumerate(("stuck", "ok"), start=1):
+        payload = {"model_id": model_id, "seq_id": seq_id, "name": name, "overwrite": False, "ttl_seconds": 3600}
+        paths[name] = (await await_settled(service, "tenant", service.submit("tenant", "save_state", payload))).result[
+            "path"
+        ]
+    real_delete = service.backend.delete_adapter
+
+    def delete_adapter(root, name, tenant):
+        if name == "stuck":
+            raise PermissionError(13, "Permission denied")
+        real_delete(root, name, tenant)
+
+    monkeypatch.setattr(service.backend, "delete_adapter", delete_adapter)
+    real_time = time.time
+    monkeypatch.setattr(time, "time", lambda: real_time() + 3601)
+    await service._expire_checkpoints()
+    root = Path(resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "weights", "ok")).parent
+    assert resolve_adapter_dir(root, "ok", tenant=None) is None and service.expiry.expires_at(paths["ok"]) is None
+    assert resolve_adapter_dir(root, "stuck", tenant=None) is not None
+    assert service.expiry.expires_at(paths["stuck"]) is not None, "kept for the next sweep"
+
+
 @pytest.mark.parametrize(
     "filename,content",
     [
