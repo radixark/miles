@@ -67,11 +67,11 @@ def _whole(rank, world_size, port):
     attn, mlp = "model.layers.3.self_attn", "model.layers.3.mlp"
     assert mapping.shared_lora_a_groups == (
         (f"{mlp}.gate_proj", f"{mlp}.up_proj"),
-        (f"{attn}.q_proj", f"{attn}.k_proj", f"{attn}.v_proj"),
+        (f"{attn}.k_proj", f"{attn}.q_proj", f"{attn}.v_proj"),
     )
-    # each shared lora_A is stored once, under its group's first member
+    # each shared lora_A is stored once, under its sorted group's first member
     assert sorted(p.key for p in mapping.pieces) == sorted(
-        [f"{attn}.q_proj.lora_A", f"{attn}.o_proj.lora_A", f"{mlp}.gate_proj.lora_A"]
+        [f"{attn}.k_proj.lora_A", f"{attn}.o_proj.lora_A", f"{mlp}.gate_proj.lora_A"]
         + [f"{attn}.{m}_proj.lora_B" for m in "qkvo"]
         + [f"{mlp}.{m}_proj.lora_B" for m in ("gate", "up")]
     )

@@ -78,10 +78,12 @@ def _probe_local(
         lora_a = _local_codes(params[lora_a_key], starts[lora_a_key])
         hf_modules = [name.removesuffix(".weight") for name in lora_b]
         modules.update(hf_modules)
-        if len(hf_modules) > 1:
-            # one titan lora_a serves every HF projection of a fused weight; it is stored once, under the first
-            groups.append(tuple(hf_modules))
-        named = [(f"{hf_modules[0]}.lora_A", lora_a)]
+        group = tuple(sorted(hf_modules))
+        if len(group) > 1:
+            # one titan lora_a serves every HF projection of a fused weight; it is stored once, under the group's
+            # first member
+            groups.append(group)
+        named = [(f"{group[0]}.lora_A", lora_a)]
         named += [(f"{module}.lora_B", part) for module, part in zip(hf_modules, lora_b.values(), strict=True)]
         for hf_key, codes in named:
             if (mine := codes >= 0).any():
