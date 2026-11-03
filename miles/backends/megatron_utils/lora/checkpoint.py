@@ -588,8 +588,14 @@ def restore_single_lora(model, args, *, optimizer, opt_param_scheduler) -> int |
     )
     run = single_lora_parametrization(slots, args)
     path = Path(args.lora_adapter_path)
-    legacy = LegacyRankShardLoader(model, optimizer, run, load_optimizer)
-    bridge = MegatronBridgeCheckpointLoader(model, optimizer, members, run, load_optimizer)
+    in_model_loaders_by_kind = {
+        AdapterSourceKind.LEGACY_RANK_SHARD: LegacyRankShardLoader(model, optimizer, run, load_optimizer)
+    }
+    # a Bridge checkpoint's sharded keys exist only in a Bridge model
+    if args.megatron_to_hf_mode == "bridge":
+        in_model_loaders_by_kind[AdapterSourceKind.MEGATRON_BRIDGE_CHECKPOINT] = MegatronBridgeCheckpointLoader(
+            model, optimizer, members, run, load_optimizer
+        )
     load_adapter_dir(
         path,
         members,
@@ -597,10 +603,7 @@ def restore_single_lora(model, args, *, optimizer, opt_param_scheduler) -> int |
         run,
         targets,
         load_optimizer=load_optimizer,
-        in_model_loaders_by_kind={
-            AdapterSourceKind.LEGACY_RANK_SHARD: legacy,
-            AdapterSourceKind.MEGATRON_BRIDGE_CHECKPOINT: bridge,
-        },
+        in_model_loaders_by_kind=in_model_loaders_by_kind,
     )
     # an old-format save holds its training state beside the rank shards, whichever reader loaded the weights
     training_state = read_training_state(path) or _read_legacy_training_state(path)

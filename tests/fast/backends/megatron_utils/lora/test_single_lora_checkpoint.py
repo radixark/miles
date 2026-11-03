@@ -14,6 +14,7 @@ from miles.backends.megatron_utils.lora.checkpoint import (
     restore_single_lora,
     single_lora_parametrization,
 )
+from miles.backends.training_utils.checkpoint.adapter.readers import AdapterSourceKind
 
 _MODULE = "miles.backends.megatron_utils.lora.checkpoint"
 
@@ -39,7 +40,7 @@ def test_a_hub_id_is_kept():
     assert _base_model("Qwen/Qwen3-8B") == "Qwen/Qwen3-8B"
 
 
-def _restore(path, *, convert_save=None):
+def _restore(path, *, convert_save=None, megatron_to_hf_mode="bridge"):
     """``restore_single_lora`` with the model-facing pieces mocked; returns (iteration, scheduler, mocks)."""
     args = SimpleNamespace(
         hf_checkpoint="/hf",
@@ -49,13 +50,14 @@ def _restore(path, *, convert_save=None):
         lora_alpha=16.0,
         lora_type="lora",
         experts_shared_outer_loras=False,
-        megatron_to_hf_mode="bridge",
+        megatron_to_hf_mode=megatron_to_hf_mode,
         multi_lora=False,
         backend=SimpleNamespace(no_load_optim=True, no_save_optim=False, use_precision_aware_optimizer=False),
     )
     scheduler = MagicMock()
     with (
         patch("miles.backends.megatron_utils.update_weight.hf_weight_iterator.get_hf_weight_iterator"),
+        patch("miles.backends.megatron_utils.lora.native.checkpoint.NativeAdapterSlots"),
         patch.multiple(
             _MODULE,
             get_hf_lora_targets=DEFAULT,
@@ -91,6 +93,13 @@ def test_a_weights_only_convert_save_writes_neither_moments_nor_a_placeholder_tr
     _, _, mocks = _restore(tmp_path / "source", convert_save=str(tmp_path / "converted"))
     assert mocks["DistributedOptimizerMembers"].call_args.kwargs["save_moments"] is False
     assert mocks["save_and_commit_adapter_dir"].call_args.kwargs["training_state"] is None
+
+
+@pytest.mark.parametrize("megatron_to_hf_mode, loads_bridge", [("bridge", True), ("raw", False)])
+def test_only_the_bridge_backend_loads_a_megatron_bridge_checkpoint(tmp_path, megatron_to_hf_mode, loads_bridge):
+    _, _, mocks = _restore(tmp_path, megatron_to_hf_mode=megatron_to_hf_mode)
+    loaders = mocks["load_adapter_dir"].call_args.kwargs["in_model_loaders_by_kind"]
+    assert (AdapterSourceKind.MEGATRON_BRIDGE_CHECKPOINT in loaders) is loads_bridge
 
 
 def test_a_mix_of_distributed_and_plain_optimizers_is_refused():
