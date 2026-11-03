@@ -214,6 +214,17 @@ def test_the_export_writes_no_log_line(caplog):
     assert not caplog.records
 
 
+def test_the_raw_iterator_export_logs_without_a_process_group(caplog):
+    from miles.backends.megatron_utils.update_weight.hf_weight_iterator_direct import HfWeightIteratorDirect
+
+    iterator = object.__new__(HfWeightIteratorDirect)
+    iterator.model = [_model()]
+    with caplog.at_level(logging.INFO):
+        exported = iterator._export_pp_local_lora(adapter=None)
+    (record,) = caplog.records
+    assert record.getMessage().startswith(f"[lora-native] exported {len(exported)} adapter tensors")
+
+
 def test_hf_import_round_trips_the_export(tmp_path):
     source, target = _model(), _model()
     with torch.no_grad():
