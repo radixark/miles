@@ -159,7 +159,8 @@ def build_app(service: TinkerService) -> FastAPI:
     @app.post("/api/v1/weights_info")
     async def weights_info(request: Request):
         payload = await request.json()
-        return service.weights_info(_tenant(request), payload["tinker_path"])
+        # a file:// path walks the import, which must not block the event loop
+        return await asyncio.to_thread(service.weights_info, _tenant(request), payload["tinker_path"])
 
     # checkpoint_id is "<kind>/<name>"
     @app.get("/api/v1/training_runs/{model_id}/checkpoints/{checkpoint_id:path}/external_weights_urls")

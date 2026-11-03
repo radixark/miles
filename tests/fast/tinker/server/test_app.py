@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import threading
 
 import httpx
 import pytest
@@ -183,6 +184,16 @@ async def test_weights_info_answers_the_sdk_resume_probe(client):
     path = (await _poll(client, saved["request_id"]))["path"]
     info = (await client.post("/api/v1/weights_info", json={"tinker_path": path}, headers=_headers())).json()
     assert (info["base_model"], info["is_lora"], info["lora_rank"]) == ("base", True, 8)
+
+
+async def test_weights_info_runs_off_the_event_loop(client, monkeypatch):
+    """A file:// path walks the import tree; on the loop it would stall every request, heartbeats included."""
+    threads = []
+    monkeypatch.setattr(
+        client.service, "weights_info", lambda tenant, path: threads.append(threading.current_thread()) or {}
+    )
+    await client.post("/api/v1/weights_info", json={"tinker_path": "file:///x"}, headers=_headers())
+    assert threads and threads[0] is not threading.main_thread()
 
 
 async def test_retrieve_long_polls_until_settlement(client):
