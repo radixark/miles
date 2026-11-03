@@ -380,3 +380,15 @@ def test_gpt_oss_sampler_export_keeps_packed_hf_names(tmp_path):
     write_sampler_adapter(tmp_path, weights, run, GPT_OSS)
     names = set(load_file(str(tmp_path / "adapter_model.safetensors")))
     assert names == {f"{L}.mlp.experts.{p}.lora_{f}.weight" for p in ("gate_up_proj", "down_proj") for f in "AB"}
+
+
+def test_gpt_oss_down_proj_alone_stays_one_packed_3d_tensor(tmp_path):
+    """HF gpt-oss has no per-expert down_proj; adapting only it must not split it into experts.N.down_proj."""
+    down = f"{L}.mlp.experts.down_proj"
+    weights = {f"{down}.lora_A": torch.ones(3, 2, 4), f"{down}.lora_B": torch.ones(3, 8, 2)}
+    write_peft_adapter(tmp_path / "peft", weights, _run(target_modules=(down,)), GPT_OSS)
+    write_sampler_adapter(tmp_path / "sampler", weights, _run(target_modules=(down,)), GPT_OSS)
+    for export in ("peft", "sampler"):
+        tensors = load_file(str(tmp_path / export / "adapter_model.safetensors"))
+        assert set(tensors) == {f"{down}.lora_A.weight", f"{down}.lora_B.weight"}, export
+        assert tensors[f"{down}.lora_A.weight"].shape == (3, 2, 4)

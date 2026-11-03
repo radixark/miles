@@ -51,6 +51,12 @@ def _packed_experts(expanded: dict[str, torch.Tensor]) -> set[str]:
     }
 
 
+def _stays_stacked(key: str, packed: set[str], targets: HfLoraTargets) -> bool:
+    # a packed family's HF down_proj is one 3D tensor whether or not gate_up_proj is adapted
+    is_packed_down = targets.packed_expert_gate_up_layout is not None and ".experts.down_proj." in f"{key}."
+    return _experts_module(key) in packed or is_packed_down
+
+
 def _experts_module(key: str) -> str:
     return key.rsplit(".", 2)[0]
 
@@ -78,7 +84,7 @@ def write_peft_adapter(
     packed = _packed_experts(expanded)
     for key, value in expanded.items():
         value = value.to(torch.bfloat16).contiguous()
-        if ".experts." in key and value.dim() == 3 and value.shape[0] > 1 and _experts_module(key) not in packed:
+        if ".experts." in key and value.dim() == 3 and value.shape[0] > 1 and not _stays_stacked(key, packed, targets):
             for expert_index in range(value.shape[0]):
                 tensors[map_hf_keys_to_peft_keys(key, expert_index)] = value[expert_index].clone()
         else:
@@ -96,7 +102,7 @@ def write_sampler_adapter(
     for key, value in expanded.items():
         name = map_hf_keys_to_peft_keys(key)
         # packed experts keep their HF names, as main's export serves them
-        if _experts_module(key) not in packed:
+        if not _stays_stacked(key, packed, targets):
             for hf_fragment, sglang_fragment in SAMPLER_EXPERT_NAMES_BY_HF.items():
                 name = name.replace(hf_fragment, sglang_fragment)
         tensors[name] = value.to(torch.bfloat16).contiguous()

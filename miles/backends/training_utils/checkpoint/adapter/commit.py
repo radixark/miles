@@ -74,8 +74,12 @@ def _assert_user_name(name: str) -> None:
 
 
 @contextmanager
-def write_adapter_dir(root: Path, name: str, *, tenant: str | None = None):
-    """All ranks write into the yielded physical directory; the result is not visible until committed."""
+def write_adapter_dir(root: Path, name: str, *, tenant_digest: str | None = None):
+    """All ranks write into the yielded physical directory; the result is not visible until committed, and a failed
+    write leaves nothing behind.
+
+    ``tenant_digest``: the committer digests the tenant's key, so the key itself never reaches the writing ranks.
+    """
     _assert_user_name(name)
     commit_id = _broadcast_from_rank0(secrets.token_hex(_COMMIT_ID_NBYTES))
     path = _physical_dir(Path(root), name, commit_id)
@@ -83,8 +87,8 @@ def write_adapter_dir(root: Path, name: str, *, tenant: str | None = None):
     if not dist.is_initialized() or dist.get_rank() == 0:
         try:
             path.mkdir(parents=True)
-            if tenant is not None:
-                (path / TENANT_FILENAME).write_text(json.dumps({"tenant_digest": tenant_digest(tenant)}))
+            if tenant_digest is not None:
+                (path / TENANT_FILENAME).write_text(json.dumps({"tenant_digest": tenant_digest}))
         except Exception as exc:
             prepare_error = exc
     raise_if_any_rank_failed(prepare_error)
@@ -93,7 +97,12 @@ def write_adapter_dir(root: Path, name: str, *, tenant: str | None = None):
         yield UncommittedAdapterDir(path, commit_id)
     except Exception as exc:
         error = exc
-    raise_if_any_rank_failed(error)
+    try:
+        raise_if_any_rank_failed(error)
+    except RuntimeError:
+        if not dist.is_initialized() or dist.get_rank() == 0:
+            _rmtree(path)
+        raise
 
 
 def _link_target(link: Path) -> Path | None:
@@ -112,8 +121,11 @@ def commit_adapter_dir(
     root, link = Path(root), Path(root) / name
     assert written.path == _physical_dir(root, name, written.commit_id), f"{written.path} was not written for {name!r}"
     delete_unreferenced_adapter_dirs(root, name, keep=written.path.name)
+    if link.is_dir() and not link.is_symlink():
+        if not overwrite:
+            raise FileExistsError(f"adapter {name!r} already exists")
+        _adopt_pre_commit_dir(root, name)
     previous = _link_target(link)
-    assert not link.exists() or link.is_symlink(), f"{link} exists and is not an adapter link"
     if previous is not None and not overwrite:
         raise FileExistsError(f"adapter {name!r} already exists")
     staging_link = root / f".{name}.{written.commit_id}{_STAGING_SUFFIX}"
@@ -123,6 +135,17 @@ def commit_adapter_dir(
     if previous is not None and previous.exists():
         _retire(previous)
     return CommittedAdapterDir(written.path, written.commit_id)
+
+
+def _adopt_pre_commit_dir(root: Path, name: str) -> None:
+    """Give a checkpoint saved before commits (a plain ``<name>/`` dir) the committed layout, so an overwrite
+    replaces and retires it like any commit."""
+    physical = _physical_dir(root, name, secrets.token_hex(_COMMIT_ID_NBYTES))
+    os.rename(root / name, physical)
+    staging_link = root / f"{physical.name}{_STAGING_SUFFIX}"
+    staging_link.symlink_to(physical.name)
+    os.replace(staging_link, root / name)
+    _fsync_dir(root)
 
 
 def resolve_adapter_dir(root: Path, name: str, *, tenant: str | None) -> CommittedAdapterDir | None:

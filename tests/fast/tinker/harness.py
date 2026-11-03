@@ -135,18 +135,18 @@ class FakeBackend:
             return {slot: failure for slot in adam_params_by_slot}
         return {slot: self.optim_outcomes.get(slot, {"grad_norm": 0.5 + slot}) for slot in adam_params_by_slot}
 
-    async def save_slot(self, slot, root, name, tenant, parametrization_fields):
+    async def save_slot(self, slot, root, name, tenant_digest, parametrization_fields):
         failure = self._record(
             "save_slot",
             slot=slot,
             root=root,
             adapter_name=name,
-            tenant=tenant,
+            tenant_digest=tenant_digest,
             parametrization_fields=parametrization_fields,
         )
         if failure is not None:
             return failure
-        with write_adapter_dir(Path(root), name, tenant=tenant) as written:
+        with write_adapter_dir(Path(root), name, tenant_digest=tenant_digest) as written:
             write_parametrization(written.path, _parametrization(parametrization_fields))
         return written
 
@@ -157,36 +157,36 @@ class FakeBackend:
     delete_adapter = staticmethod(delete_adapter)
     read_imported_adapter = staticmethod(read_imported_adapter)
 
-    async def export_external(self, slot, root, name, tenant, parametrization_fields, age_recipients):
+    async def export_external(self, slot, root, name, tenant_digest, parametrization_fields, age_recipients):
         failure = self._record(
             "export_external",
             slot=slot,
             root=root,
             adapter_name=name,
-            tenant=tenant,
+            tenant_digest=tenant_digest,
             parametrization_fields=parametrization_fields,
             age_recipients=age_recipients,
         )
         if failure is not None:
             return failure
         parametrization = _parametrization(parametrization_fields)
-        with write_adapter_dir(Path(root), name, tenant=tenant) as written:
+        with write_adapter_dir(Path(root), name, tenant_digest=tenant_digest) as written:
             write_external_adapter(written.path, _weights(parametrization.lora_rank), parametrization, _TARGETS)
         return written
 
-    async def export_slot(self, slot, root, name, tenant, parametrization_fields):
+    async def export_slot(self, slot, root, name, tenant_digest, parametrization_fields):
         failure = self._record(
             "export_slot",
             slot=slot,
             root=root,
             adapter_name=name,
-            tenant=tenant,
+            tenant_digest=tenant_digest,
             parametrization_fields=parametrization_fields,
         )
         if failure is not None:
             return failure
         parametrization = _parametrization(parametrization_fields)
-        with write_adapter_dir(Path(root), name, tenant=tenant) as written:
+        with write_adapter_dir(Path(root), name, tenant_digest=tenant_digest) as written:
             write_sampler_adapter(written.path, _weights(parametrization.lora_rank), parametrization, _TARGETS)
         return written
 
