@@ -97,7 +97,8 @@ def attach_replay_data(
                 manager.read_slots.close()
             manager.read_slots = ReadSlots(output_store, count=1)
     # A train-data dump, written after training, replaces the column with each sample's local rows
-    # (after CP padding, before packing), what replay consumed on this rank.
+    # (after CP padding, before packing), what replay consumed on this rank; None for a sample
+    # no micro batch holds, which a fixed schedule leaves when the batch does not divide evenly.
     keep_column = manager.kept_in_train_dump and args.save_debug_train_data is not None
     kept_rows = {}
 
@@ -181,7 +182,7 @@ def attach_replay_data(
         manager.register_replay_list_func(manager.replays, replay_data, models=models)
         if index == len(order) - 1:
             if keep_column:
-                rollout_data[data_key] = [kept_rows[j] for j in range(len(column))]
+                rollout_data[data_key] = [kept_rows.get(j) for j in range(len(column))]
             else:
                 del rollout_data[data_key]
 
