@@ -1,4 +1,5 @@
-"""A source's base model is matched to the run's by the HF files' norm weights, whatever their dtype."""
+"""A source's base model is matched to the run's by the HF files' norms and first attention projections, whatever
+their dtype."""
 
 import pytest
 import torch
@@ -21,7 +22,19 @@ def _hf_dir(path, norm: torch.Tensor):
     return path
 
 
-def test_the_fingerprint_reads_only_norm_weights(tmp_path):
+def test_a_merged_lora_changes_the_fingerprint(tmp_path):
+    base = _hf_dir(tmp_path / "base", torch.ones(4))
+    merged = tmp_path / "merged"
+    merged.mkdir()
+    tensors = {"model.norm.weight": torch.ones(4), "model.layers.0.self_attn.o_proj.weight": torch.ones(4, 4)}
+    save_file(tensors, merged / "model.safetensors")
+    save_file(tensors | {"model.layers.0.self_attn.o_proj.weight": torch.ones(4, 4) * 2}, base / "model.safetensors")
+    assert hf_base_fingerprint(base) != hf_base_fingerprint(merged)
+    shared = ["model.norm.weight"]
+    assert hf_base_fingerprint(base, shared) == hf_base_fingerprint(merged, shared), "names restrict the hash"
+
+
+def test_the_fingerprint_ignores_other_layers_linear_weights(tmp_path):
     norm = torch.randn(4).bfloat16()
     a, b = _hf_dir(tmp_path / "a", norm), _hf_dir(tmp_path / "b", norm)
     assert hf_base_fingerprint(a) == hf_base_fingerprint(b), "other tensors differ, the norms do not"

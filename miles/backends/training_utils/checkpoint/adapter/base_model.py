@@ -1,7 +1,8 @@
 """Whether a source adapter was trained on this run's base model, judged from both sides' HF files.
 
-The fingerprint hashes every ``*norm.weight`` tensor: every family has them, they are small, and any full fine-tune
-of the base changes them. Weights are read from the HF files, never from a loaded (possibly quantized) model.
+The fingerprint hashes every norm weight and the first layer's attention projections: every family has both, they
+are small, and a full fine-tune changes the norms while a merged LoRA changes the projections. Weights are read from
+the HF files, never from a loaded (possibly quantized) model.
 """
 
 import hashlib
@@ -16,7 +17,8 @@ from safetensors import safe_open
 
 
 def is_fingerprint_tensor(name: str) -> bool:
-    return name.endswith("norm.weight")
+    is_first_attention_projection = ".layers.0." in name and "attn." in name and name.endswith("proj.weight")
+    return name.endswith("norm.weight") or is_first_attention_projection
 
 
 def fingerprint_named_tensors(named: Iterable[tuple[str, torch.Tensor]]) -> str:
@@ -27,11 +29,13 @@ def fingerprint_named_tensors(named: Iterable[tuple[str, torch.Tensor]]) -> str:
         digest.update(name.encode())
         # fp32 is exact for every base dtype, so a trainer's fp32 copy of a bf16 base hashes the same
         digest.update(tensor.float().contiguous().numpy().tobytes())
-    assert names, "no *norm.weight tensors to fingerprint"
+    assert names, "no tensors to fingerprint"
     return digest.hexdigest()
 
 
-def hf_base_fingerprint(hf_dir: Path) -> str:
+def hf_base_fingerprint(hf_dir: Path, names: Iterable[str] | None = None) -> str:
+    """``names``: hash exactly these tensors (a source that holds fewer layers, e.g. no MTP); default: all."""
+    names = None if names is None else set(names)
     index = hf_dir / "model.safetensors.index.json"
     files = sorted(set(json.loads(index.read_text())["weight_map"].values())) if index.is_file() else []
     files = files or sorted(p.name for p in hf_dir.glob("*.safetensors"))
@@ -39,18 +43,27 @@ def hf_base_fingerprint(hf_dir: Path) -> str:
     named = []
     for file in files:
         with safe_open(str(hf_dir / file), "pt") as f:
-            named += [(name, f.get_tensor(name)) for name in f.keys() if is_fingerprint_tensor(name)]
+            named += [
+                (name, f.get_tensor(name))
+                for name in f.keys()
+                if (is_fingerprint_tensor(name) if names is None else name in names)
+            ]
+    assert names is None or len(named) == len(names), f"{hf_dir} lacks {sorted(names - {n for n, _ in named})[:3]}"
     return fingerprint_named_tensors(named)
 
 
 def resolve_hf_dir(name_or_path: str) -> Path | None:
-    """A local directory, or a hub id already in the local cache; None when neither (nothing is downloaded)."""
+    """A local directory with weights, or a hub id whose weights are in the local cache; None when neither
+    (nothing is downloaded)."""
     if Path(name_or_path).is_dir():
-        return Path(name_or_path)
-    try:
-        return Path(snapshot_download(name_or_path, local_files_only=True))
-    except (LocalEntryNotFoundError, HFValidationError):
-        return None
+        hf_dir = Path(name_or_path)
+    else:
+        try:
+            hf_dir = Path(snapshot_download(name_or_path, local_files_only=True))
+        except (LocalEntryNotFoundError, HFValidationError):
+            return None
+    # a cache that holds only a config or tokenizer cannot fingerprint the base
+    return hf_dir if any(hf_dir.glob("*.safetensors")) else None
 
 
 def assert_same_base_model(source: str, candidates: Iterable[str], run_hf_dir: str) -> None:
