@@ -51,7 +51,7 @@ def _decode_payload(*, num_gpus: int = 1) -> dict[str, Any]:
 
 
 def _install_payloads(monkeypatch, payloads: dict[str, dict[str, Any]]) -> None:
-    async def _fetch(url: str, *, api_key: str | None) -> dict[str, Any]:
+    async def _fetch(url: str, *, api_key: str | None, timeout_seconds: float) -> dict[str, Any]:
         return payloads[url]
 
     monkeypatch.setattr(external_engine_provider_module, "_fetch_server_info_with_retry", _fetch)
@@ -234,7 +234,7 @@ class TestStaticInferenceEngineWorkerProvider:
         on ranks the missing engine was supposed to claim."""
         args = _make_args(["host1:8000", "host2:8000"])
 
-        async def _fetch(url: str, *, api_key: str | None) -> dict[str, Any]:
+        async def _fetch(url: str, *, api_key: str | None, timeout_seconds: float) -> dict[str, Any]:
             if url == "http://host2:8000":
                 raise TimeoutError(f"External engine {url} did not answer /server_info")
             return _regular_payload()

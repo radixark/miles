@@ -114,6 +114,8 @@ class TrainRayActor(NodeProbeMixin):
         # os.environ.pop("CUDA_VISIBLE_DEVICES", None)
         # os.environ["LOCAL_RANK"] = str(ray.get_gpu_ids()[0])
         os.environ["LOCAL_RANK"] = str(get_local_gpu_id())
+        # not in init(), which runs after engine discovery: the engine starts only once the trainer joins
+        current_platform.join_shared_slice(job_rank=self._rank, job_size=self._world_size)
 
         configure_logger(
             args,

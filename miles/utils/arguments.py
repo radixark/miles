@@ -24,6 +24,8 @@ from miles.backends.sglang_utils.sglang_config import SglangConfig
 from miles.backends.sglang_utils.sglang_scaling_config import SglangScalingConfig
 from miles.backends.torchtitan_utils.args_namespace import TorchtitanArgsNamespace
 from miles.dashboard.args import validate_dashboard_args
+from miles.platforms import current_platform
+from miles.platforms.tpu_shared_slice import SHARED_SLICE_ENV, SharedSliceSpec
 from miles.ray.specs.train import external_trainer_controller_addrs
 from miles.rollout.checkpoint_eval import is_checkpoint_eval_fn
 from miles.rollout.reward_shaping import validate_length_penalty_args
@@ -1030,7 +1032,7 @@ def miles_validate_args(args):
 
     validate_length_penalty_args(args)
     mode = args.update_weight_transfer_mode
-    if mode not in ("broadcast", "broadcast_packed", "p2p", "disk-delta"):
+    if mode not in ("broadcast", "broadcast_packed", "p2p", "disk-delta", "ici"):
         raise ValueError(f"Unknown --update-weight-transfer-mode {mode!r}")
     if mode == "broadcast_packed" and (args.train_backend != "megatron" or args.colocate):
         raise ValueError("broadcast_packed requires Megatron non-colocated weight transfer")
@@ -1448,6 +1450,32 @@ def miles_validate_args(args):
         )
         assert args.prefill_num_servers is None, "P2P weight transfer mode has not been tested when PD is enabled."
         assert args.lora_rank <= 0, "LoRA weight sync is not supported for p2p (RDMA) weight transfer."
+
+    if args.update_weight_transfer_mode == "ici":
+        assert current_platform.device_type == "tpu", (
+            "ICI weight transfer links TPU chips; it needs a TPU trainer (MILES_ACCELERATOR=tpu), "
+            f"got {current_platform.device_type}"
+        )
+        assert not args.colocate, "ICI weight transfer is for engines on their own devices; colocate is not supported."
+        assert args.prefill_num_servers is None, "PD is not supported for ICI weight transfer."
+        assert args.lora_rank <= 0, "LoRA weight sync is not supported for ICI weight transfer."
+        # a trainer without it never joins the slice, and its engine then waits forever
+        slice_spec = SharedSliceSpec.from_env()
+        assert (
+            slice_spec is not None
+        ), f"ICI weight transfer needs {SHARED_SLICE_ENV}: the trainer and its engine share one TPU slice"
+        # the engine's TP rank i receives from slice rank i; checked here, not after the engine compiles
+        trainer_size = args.actor_num_nodes * args.actor_num_gpus_per_node
+        assert (
+            args.rollout_num_gpus == args.rollout_num_gpus_per_engine == trainer_size
+            and slice_spec.rank_offset == 0
+            and slice_spec.size == 2 * trainer_size
+        ), (
+            "ICI weight transfer pairs trainer rank i with TP rank i of one engine, the trainer first in the shared "
+            f"slice and the engine filling the rest: trainer ranks {trainer_size}, rollout GPUs "
+            f"{args.rollout_num_gpus} with {args.rollout_num_gpus_per_engine} per engine, {SHARED_SLICE_ENV} offset "
+            f"{slice_spec.rank_offset} and size {slice_spec.size}"
+        )
 
     if args.update_weight_transfer_mode == "disk-delta":
         assert not args.colocate, (

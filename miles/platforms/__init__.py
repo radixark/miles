@@ -5,8 +5,12 @@ Everything `torch.accelerator` covers (synchronize, empty_cache, memory stats, t
 
 import functools
 import os
+from typing import TYPE_CHECKING
 
 import torch
+
+if TYPE_CHECKING:
+    from miles.platforms.tpu_shared_slice import SharedSlice
 
 
 class Platform:
@@ -19,6 +23,11 @@ class Platform:
     nvml_numa_affinity = True
     # the rollout engines' KV cache dtype when --sglang-kv-cache-dtype is left at "auto"; None keeps the engine's choice
     rollout_kv_cache_dtype: str | None = None
+    # the TPU slice this process shares with its rollout engine (--update-weight-transfer-mode ici)
+    shared_slice: "SharedSlice | None" = None
+
+    def join_shared_slice(self, *, job_rank: int, job_size: int) -> None:
+        """Join a slice shared with the rollout engine, before the first device op; CUDA has none."""
 
     def bind_device_before_process_group(self, local_rank: int) -> None:
         torch.cuda.set_device(f"cuda:{local_rank}")

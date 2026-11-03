@@ -3769,6 +3769,34 @@ class TestWeightTransferModeSelection:
         with pytest.raises(ValueError, match=error):
             miles_validate_args(args)
 
+    @pytest.mark.parametrize(
+        "gpus_per_engine,shared_slice,pairable",
+        [("8", "0,16,localhost:1", True), ("4", "0,16,localhost:1", False), ("8", "0,24,localhost:1", False)],
+        ids=["one_engine_filling_the_slice", "two_engines", "slice_larger_than_both"],
+    )
+    def test_ici_rejects_a_layout_the_engine_cannot_pair(self, monkeypatch, gpus_per_engine, shared_slice, pairable):
+        """The engine pairs TP rank i with slice rank i only; caught here, not after the engine compiles."""
+        monkeypatch.setattr("miles.utils.arguments.current_platform", SimpleNamespace(device_type="tpu"))
+        monkeypatch.setenv("MILES_TPU_SHARED_SLICE", shared_slice)
+        args = self._parse(
+            [
+                "--update-weight-transfer-mode",
+                "ici",
+                "--actor-num-gpus-per-node",
+                "8",
+                "--rollout-num-gpus",
+                "8",
+                "--rollout-num-gpus-per-engine",
+                gpus_per_engine,
+            ]
+        )
+        _set_megatron_parallel_sizes(args)
+        if pairable:
+            miles_validate_args(args)
+        else:
+            with pytest.raises(AssertionError, match="pairs trainer rank i with TP rank i"):
+                miles_validate_args(args)
+
 
 def test_fully_async_warns_that_over_sampling_batch_size_is_ignored(caplog):
     """Fully-async never reads --over-sampling-batch-size; passing it silently does nothing."""

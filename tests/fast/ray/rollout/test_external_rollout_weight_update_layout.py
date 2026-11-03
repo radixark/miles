@@ -40,7 +40,7 @@ async def _discovered_server(
     urls: list[str],
     rollout_num_gpus_per_engine: int,
 ) -> RolloutServer:
-    async def _fetch(url: str, *, api_key: str | None) -> dict[str, Any]:
+    async def _fetch(url: str, *, api_key: str | None, timeout_seconds: float) -> dict[str, Any]:
         return payloads[url]
 
     monkeypatch.setattr(external_engine_provider_module, "_fetch_server_info_with_retry", _fetch)
@@ -123,7 +123,7 @@ class TestExternalPdFleetWeightUpdateLayout:
         }
         answered: list[str] = []
 
-        async def _fetch(url: str, *, api_key: str | None) -> dict[str, Any]:
+        async def _fetch(url: str, *, api_key: str | None, timeout_seconds: float) -> dict[str, Any]:
             while url == "http://slow:8000" and not answered:
                 await asyncio.sleep(0)
             answered.append(url)
