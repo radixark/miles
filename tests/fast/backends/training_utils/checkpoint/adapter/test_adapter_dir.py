@@ -21,6 +21,7 @@ from miles.backends.training_utils.checkpoint.adapter.commit import (
 )
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
 from miles.backends.training_utils.checkpoint.adapter.readers import AdapterSourceKind
+from miles.utils.distributed_utils import init_gloo_group
 from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
 
 MODULE = "model.layers.0.self_attn.q_proj"
@@ -62,6 +63,7 @@ class FakeMembers:
 
 def _save(rank, world_size, port, *, root):
     init_gloo(rank, world_size, port=port)
+    init_gloo_group()
     written = save_adapter_dir(
         Path(root), "w", FakeMembers(), 0, RUN, tenant_digest=tenant_digest("alice"), training_state={"iteration": 3}
     )
@@ -121,6 +123,7 @@ def test_weights_only_from_the_same_parametrization_reads_only_local_pieces(monk
 
 def _rank0_cannot_create(rank, world_size, port, *, root):
     init_gloo(rank, world_size, port=port)
+    init_gloo_group()
     if rank == 0:
         Path(root, "blocker").write_text("")
         # a file where the root directory should be makes rank 0's mkdir fail
@@ -199,6 +202,7 @@ def test_a_backend_state_that_does_not_match_the_parametrization_is_refused_at_s
 
 def _one_rank_cannot_read(rank, world_size, port, *, root):
     init_gloo(rank, world_size, port=port)
+    init_gloo_group()
     path = Path(root) if rank == 0 else Path(root, "missing")
     with pytest.raises(RuntimeError, match="adapter checkpoint failed: rank 1"):
         load_adapter_dir(path, FakeMembers(), 0, RUN, TARGETS, load_optimizer=False)
@@ -246,6 +250,7 @@ class NoPrimaryAMembers(FakeMembers):
 
 def _save_without_a_primary(rank, world_size, port, *, root):
     init_gloo(rank, world_size, port=port)
+    init_gloo_group()
     with pytest.raises(RuntimeError, match="missing .*lora_A"):
         save_adapter_dir(Path(root), "w", NoPrimaryAMembers(), 0, RUN, tenant_digest=None)
     dist.destroy_process_group()
@@ -263,6 +268,7 @@ class SpecsFailOnRank1(FakeMembers):
 
 def _specs_fail_on_one_rank(rank, world_size, port, *, root):
     init_gloo(rank, world_size, port=port)
+    init_gloo_group()
     with pytest.raises(RuntimeError, match="rank 1 cannot describe"):
         load_adapter_dir(Path(root), SpecsFailOnRank1(), 0, RUN, TARGETS, load_optimizer=False)
     dist.destroy_process_group()

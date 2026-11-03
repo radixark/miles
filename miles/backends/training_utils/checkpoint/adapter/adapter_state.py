@@ -62,10 +62,10 @@ class AdapterState:
 
 
 def gloo_group():
-    """miles' Gloo group for object collectives; plain single-group runs (tests, tools) use the default group."""
-    from miles.utils import distributed_utils
+    """miles' Gloo group for object collectives and DCP; None in single-process tools, which run without a group."""
+    from miles.utils.distributed_utils import get_gloo_group
 
-    return distributed_utils.GLOO_GROUP
+    return get_gloo_group() if dist.is_initialized() else None
 
 
 def raise_if_any_rank_failed(error: BaseException | None) -> None:

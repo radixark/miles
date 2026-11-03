@@ -155,7 +155,7 @@ def _weights_only_state(weights: dict[str, torch.Tensor], specs: list[LocalShard
 def _with_run_alpha_if_unknown(source: AdapterParametrization, run: AdapterParametrization) -> AdapterParametrization:
     if source.lora_alpha is not None:
         return source
-    # the run's --lora-alpha was required for such a source (resolved in miles_validate_args)
+    # a source that records no alpha is taken to use the run's
     return replace(source, lora_alpha=run.lora_alpha)
 
 
