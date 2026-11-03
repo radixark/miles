@@ -1581,6 +1581,8 @@ async def test_a_hard_link_on_another_filesystem_is_importable(tmp_path):
         ),
         (lambda adapter, tmp_path: (adapter / "META.json").write_text("{"), "cannot read"),
         (lambda adapter, tmp_path: (adapter / "META.json").write_text(json.dumps({"lora_rank": 8})), None),
+        # opening a FIFO blocks until a writer appears
+        (lambda adapter, tmp_path: os.mkfifo(adapter / "META.json"), "not a regular file"),
     ],
 )
 async def test_a_file_import_stays_under_the_import_root_and_holds_no_checkpoint(tmp_path, plant, error):

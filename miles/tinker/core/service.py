@@ -103,6 +103,9 @@ def _check_import_tree(uri: str, path: str, import_root: str, checkpoint_root: s
             raise UserInputError(f"{uri} links outside the import root")
         if stat.S_ISDIR(entry.st_mode):
             pending += [os.path.join(real, name) for name in os.listdir(real)]
+        elif not stat.S_ISREG(entry.st_mode):
+            # a FIFO or device would block the open, and holds no adapter
+            raise UserInputError(f"{uri} holds {real}, which is not a regular file")
         elif _is_checkpoint_marker(real):
             raise reaches
         elif root_stat is not None and entry.st_nlink > 1 and entry.st_dev == root_stat.st_dev:
