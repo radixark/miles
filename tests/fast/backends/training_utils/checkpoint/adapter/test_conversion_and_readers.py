@@ -157,15 +157,14 @@ def test_peft_features_that_change_tensor_meaning_are_refused(tmp_path):
 
 @pytest.mark.parametrize("shared_qkv", [False, True], ids=["canonical", "fused_gdn"])
 def test_external_export_reads_back_through_the_external_reader(tmp_path, shared_qkv):
-    run = _run(shared_lora_a_groups=(QKV,) if shared_qkv else ())
-    weights = _weights(shared_qkv)
+    # experts' Tinker names are sglang's too; Tinker's head name is what marks the export as Tinker's
+    run = _run(target_modules=(*QKV, *EXPERTS, "lm_head"), shared_lora_a_groups=(QKV,) if shared_qkv else ())
+    weights = _weights(shared_qkv) | {"lm_head.lora_A": torch.randn(2, 8), "lm_head.lora_B": torch.randn(16, 2)}
     write_external_adapter(tmp_path, weights, run, QWEN35)
     tensors = load_file(str(tmp_path / "adapter_model.safetensors"))
     assert all(t.dtype == torch.float32 for t in tensors.values())
     assert any(".experts.w1." in name for name in tensors), "gated experts take Tinker's names"
-    # experts' Tinker names are sglang's too; without Tinker's head the layout reads either way
-    kind = classify_adapter_source(tmp_path, QWEN35, load_optimizer=False)
-    assert kind in (AdapterSourceKind.PEFT, AdapterSourceKind.EXTERNAL_WEIGHTS)
+    assert classify_adapter_source(tmp_path, QWEN35, load_optimizer=False) == AdapterSourceKind.EXTERNAL_WEIGHTS
     config = json.loads((tmp_path / "adapter_config.json").read_text())
     assert "base_model_name_or_path" in config and config["base_model_name_or_path"] is None, "as the official export"
     read = ExternalWeightsReader(tmp_path, run, QWEN35).read_weights()
