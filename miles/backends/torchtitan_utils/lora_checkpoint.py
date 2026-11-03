@@ -18,6 +18,7 @@ import torch.distributed as dist
 import torch.distributed.checkpoint as dcp
 from torch.distributed.tensor import DTensor
 from torch.distributed.tensor._utils import compute_local_shape_and_global_offset
+from torch.optim.lr_scheduler import _update_param_group_val
 from torchtitan.components.optim.utils import init_optim_state
 
 from miles.backends.torchtitan_utils.lora_names import is_adapter_key, split_adapter_key
@@ -281,6 +282,14 @@ class TorchtitanCheckpointLoader:
         return replace(self._run, lora_alpha=None)
 
 
+def load_lr_schedulers(lr_schedulers, state: dict) -> None:
+    lr_schedulers.load_state_dict(state)
+    # load_state_dict sets only the schedulers' own lr; the optimizers would take their next step at the fresh one
+    for scheduler in lr_schedulers:
+        for group, lr in zip(scheduler.optimizer.param_groups, scheduler.get_last_lr(), strict=True):
+            _update_param_group_val(group, "lr", lr)
+
+
 def _torchtitan_adapter_slots(trainer, args) -> TorchtitanAdapterSlots:
     """Collective: probes the adapter's HF layout."""
     from miles.backends.torchtitan_utils.hf_weight_iterator import TitanHfWeightIterator
@@ -359,7 +368,7 @@ class TorchtitanLoraCheckpoint:
         training_state = read_training_state(path)
         if training_state is not None and "lr_scheduler" in training_state:
             # written by a torchtitan run; a Megatron run's scheduler state does not apply here
-            self._trainer.engine.optim.lr_schedulers.load_state_dict(training_state["lr_scheduler"])
+            load_lr_schedulers(self._trainer.engine.optim.lr_schedulers, training_state["lr_scheduler"])
             self._trainer.engine.num_completed_steps = training_state["step"]
         if self._args.lora_adapter_convert_save is not None:
             destination = Path(self._args.lora_adapter_convert_save)

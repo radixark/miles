@@ -375,6 +375,19 @@ def test_resume_reads_from_load_and_writes_to_save(tmp_path, single_gpu_dims):
     assert (fresh.checkpointer.initial_load_model_only, fresh.checkpointer.initial_load_in_hf) == (True, True)
 
 
+def test_restored_lr_schedule_reaches_the_optimizers():
+    """The first resumed step must train at the restored schedule's lr, not the fresh run's."""
+    pytest.importorskip("torchtitan")
+    from torchtitan.components.optim.lr_scheduler import LRSchedulersContainer
+
+    from miles.backends.torchtitan_utils.lora_checkpoint import load_lr_schedulers
+
+    optimizers = [torch.optim.AdamW([torch.nn.Parameter(torch.zeros(2))], lr=1.0) for _ in range(2)]
+    schedulers = LRSchedulersContainer(optimizers, lambda step: 1 / (step + 1))
+    load_lr_schedulers(schedulers, {"last_epoch": 3})
+    assert [group["lr"] for optimizer in optimizers for group in optimizer.param_groups] == [0.25, 0.25]
+
+
 def test_lora_resumes_only_through_the_adapter_path(tmp_path):
     """A step dir under --load or --save would resume the adapters through torchtitan's checkpointer."""
     pytest.importorskip("torchtitan")
