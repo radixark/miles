@@ -149,7 +149,7 @@ def write_peft_export(
     error = None
     try:
         # the gathered adapter leaves the GPU before rank 0 splits and copies it
-        named_tensors = [(name, tensor.cpu()) for name, tensor in members.export_bf16_adapter(slot)]
+        named_tensors = [(key, tensor.cpu()) for key, tensor in members.export_bf16_adapter(slot)]
         if _is_writer():
             weights = _hf_keyed_bf16_adapter(named_tensors, members, targets)
             write_peft_adapter(directory, weights, parametrization, targets)
@@ -200,7 +200,8 @@ def write_sampler_export(
 ) -> UncommittedAdapterDir:
     """All ranks call; rank 0 writes ``slot``'s bf16 sampler export. The caller's committer then commits it."""
     with write_adapter_dir(root, name, tenant_digest=tenant_digest) as written:
-        named_tensors = list(members.export_bf16_adapter(slot))
+        # the gathered adapter leaves the GPU before rank 0 splits and copies it
+        named_tensors = [(key, tensor.cpu()) for key, tensor in members.export_bf16_adapter(slot)]
         if _is_writer():
             weights = _hf_keyed_bf16_adapter(named_tensors, members, targets)
             write_sampler_adapter(written.path, weights, parametrization, targets)
