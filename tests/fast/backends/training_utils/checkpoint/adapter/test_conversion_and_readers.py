@@ -152,6 +152,8 @@ def test_external_export_reads_back_through_the_external_reader(tmp_path, shared
     assert all(t.dtype == torch.float32 for t in tensors.values())
     assert any(".experts.w1." in name for name in tensors), "gated experts take Tinker's names"
     assert classify_adapter_source(tmp_path, QWEN35, load_optimizer=False) == AdapterSourceKind.EXTERNAL_WEIGHTS
+    config = json.loads((tmp_path / "adapter_config.json").read_text())
+    assert "base_model_name_or_path" in config and config["base_model_name_or_path"] is None, "as the official export"
     read = ExternalWeightsReader(tmp_path, run, QWEN35).read_weights()
     for module in run.target_modules:
         # each member carries its own copy of a shared A

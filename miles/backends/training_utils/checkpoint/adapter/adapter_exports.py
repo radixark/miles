@@ -132,7 +132,9 @@ def write_external_adapter(
                 torch.float32, copy=True
             )
     hf_names = [map_hf_keys_to_peft_keys(f"{module}.lora_A") for module in parametrization.target_modules]
-    save_adapter_to_disk(directory, _adapter_config(parametrization, hf_names), tensors)
+    # as the official export writes it: the training run, not the file, names the base
+    config = _adapter_config(parametrization, hf_names) | {"base_model_name_or_path": None}
+    save_adapter_to_disk(directory, config, tensors)
     if age_recipients:
         _age_encrypt_in_place(Path(directory), age_recipients)
 
