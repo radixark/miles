@@ -204,6 +204,20 @@ def test_policy_loss_matches(monkeypatch, overrides):
     _assert_both_layouts_match(monkeypatch, policy_loss_function, args, _inputs(args), batch_of)
 
 
+def test_unbiased_kl_keeps_tokens_outside_the_loss_mask_out_of_the_gradient():
+    """A token outside the loss mask may carry any old log-prob; where exp(log_probs - old_log_probs) overflows
+    there, the masked-out KL must not turn the logits' gradient into 0 * inf = NaN."""
+    args = _args(use_kl_loss=True, kl_loss_coef=0.05, use_unbiased_kl=True)
+    inputs = _inputs(args)
+    inputs["log_probs"][0][::3] = -1e4  # the tokens _inputs masks out
+    logits = inputs["policy_logits"].clone().requires_grad_(True)
+    batch = make_batch(inputs, "policy_loss")
+    loss, _ = policy_loss_function(args, batch, logits, _reducer(args, batch))
+    loss.backward()
+    assert torch.isfinite(loss)
+    assert torch.isfinite(logits.grad).all()
+
+
 def _score_centering_args(**overrides):
     defaults = dict(
         loss_type="score_centering",
