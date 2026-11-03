@@ -298,6 +298,10 @@ class MegatronBridgeCheckpointLoader:
                     isinstance(sub, DistributedOptimizer) for sub in self._optimizer.chained_optimizers
                 ), "loading a Megatron-Bridge source's Adam state needs --use-distributed-optimizer"
                 sharding = metadata.get("distrib_optim_sharding_type")
+                assert sharding is not None, (
+                    f"{path} records no optimizer sharding type (written by an older Megatron), so its Adam state "
+                    "cannot be resharded; pass --no-load-optim"
+                )
                 assert sharding in DistributedOptimizer.checkpoint_fully_reshardable_formats, (
                     f"{path}'s optimizer state is {sharding}, which only loads under its saving layout; re-save it "
                     "from Megatron-Bridge with dist_ckpt_optim_fully_reshardable=True, or pass --no-load-optim"
