@@ -191,7 +191,7 @@ class DistributedOptimizerMembers:
 
     def _replicated_masters(self) -> dict[int, torch.Tensor]:
         """Index in ``slot_parameters(0)`` -> fp32 master, of the parameters a plain Float16 optimizer steps: miles
-        runs a non-Adam optimizer (SGD) without the DistributedOptimizer, and it keeps no moments."""
+        runs SGD without the DistributedOptimizer, and SGD without momentum keeps no other state."""
         index_of = {id(p): i for i, p in enumerate(self._slots.slot_parameters(0))}
         masters = {}
         for child in self._optimizer.chained_optimizers:
@@ -230,7 +230,7 @@ class DistributedOptimizerMembers:
     def export_adapter_state(self, slot: int) -> AdapterState:
         assert not (
             self._save_moments and self._replicated_masters()
-        ), "a non-Adam optimizer keeps no moments; save its adapter with --no-save-optim"
+        ), "SGD without momentum keeps no moments; save its adapter with --no-save-optim"
         whole, step = self._whole_state()
         holds = self._holds()
         params = self._slots.slot_parameters(0)

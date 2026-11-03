@@ -99,6 +99,7 @@ def _adapter_state_args(**overrides) -> Namespace:
             "no_save_optim": False,
             "no_load_optim": False,
             "optimizer": "sgd",
+            "sgd_momentum": 0.0,
             "exp_avg_dtype": torch.float32,
             "exp_avg_sq_dtype": torch.float32,
             "use_distributed_optimizer": True,
@@ -124,6 +125,12 @@ def test_a_non_adam_optimizer_cannot_store_adapter_optimizer_state(overrides) ->
 @pytest.mark.parametrize("overrides", [{}, {"lora_adapter_path": "/adapter", "no_load_optim": True}])
 def test_a_non_adam_optimizer_saves_and_loads_the_masters_alone(overrides) -> None:
     _validate_adapter_state_args(_adapter_state_args(no_save_optim=True, **overrides))
+
+
+def test_sgd_with_momentum_cannot_save_the_adapter() -> None:
+    # the masters-only checkpoint would drop the momentum buffer
+    with pytest.raises(AssertionError, match="need --sgd-momentum 0; got 0.9"):
+        _validate_adapter_state_args(_adapter_state_args(no_save_optim=True, sgd_momentum=0.9))
 
 
 @pytest.mark.parametrize("optimizer", ["muon", "dist_muon", "lion"])

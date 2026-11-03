@@ -173,7 +173,7 @@ def validate_lora_args_after_megatron(args):
 
 def _validate_adapter_state_args(args) -> None:
     """adapter_state/ holds Adam's fp32 master, fp32 moments and step, gathered whole per DP group over Gloo; without
-    optimizer state, SGD's fp32 masters."""
+    optimizer state, the fp32 masters of SGD without momentum."""
     if args.save is None and args.lora_adapter_path is None:
         return
     assert not args.debug_disable_optimizer, (
@@ -194,6 +194,10 @@ def _validate_adapter_state_args(args) -> None:
         assert (
             args.exp_avg_dtype == args.exp_avg_sq_dtype == torch.float32
         ), "the adapter checkpoint stores fp32 moments"
+    # SGD's checkpoint holds the masters alone, which would drop a momentum buffer
+    assert args.optimizer != "sgd" or args.sgd_momentum == 0, (
+        f"--save / --lora-adapter-path with --optimizer sgd need --sgd-momentum 0; got {args.sgd_momentum}"
+    )
     if args.use_distributed_optimizer:
         assert args.use_gloo_process_groups, "the adapter checkpoint gathers optimizer state over Gloo"
         # TE FusedAdam keeps the master as an int16 remainder unless the optimizer runs on the host
