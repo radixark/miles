@@ -1404,6 +1404,8 @@ async def test_a_legacy_checkpoint_cannot_be_deleted_through_the_api(service):
     )
     with pytest.raises(UserInputError, match="saved before checkpoints could expire"):
         await service.delete_checkpoint("tenant", model_id, "weights/old")
+    with pytest.raises(UserInputError, match="not an external_weights"):
+        service.external_weights_urls("tenant", model_id, "weights/old", "http://gateway/")
 
 
 async def test_a_file_import_cannot_reach_into_the_checkpoint_root(tmp_path):

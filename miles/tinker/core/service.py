@@ -635,9 +635,9 @@ class TinkerService:
 
     def external_weights_urls(self, tenant: str, model_id: str, checkpoint_id: str, base_url: str) -> dict:
         """Download URLs that carry no credential, bound to this tenant, the checkpoint and an expiry."""
-        tinker_path, _, _, files = self._owned_checkpoint(tenant, model_id, checkpoint_id)
         if not checkpoint_id.startswith("external_weights/"):
-            raise UserInputError(f"{tinker_path} is not an external_weights checkpoint")
+            raise UserInputError(f"tinker://{model_id}/{checkpoint_id} is not an external_weights checkpoint")
+        tinker_path, _, _, files = self._owned_checkpoint(tenant, model_id, checkpoint_id)
         now = time.time()
         expires_at = now + _DOWNLOAD_URL_TTL_S
         if (checkpoint_expires_at := self.expiry.expires_at(tinker_path)) is not None:
