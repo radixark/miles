@@ -1115,6 +1115,11 @@ async def test_an_overwrite_that_crashes_before_its_ttl_does_not_inherit_the_old
     assert CheckpointExpiry(service.config.checkpoint_root).expires_at(path) is None
 
 
+async def test_a_sweep_with_nothing_expired_does_not_wait_for_the_trainer(service):
+    async with service._trainer_lock:
+        await asyncio.wait_for(service._expire_checkpoints(), timeout=1.0)
+
+
 async def test_ttl_is_set_removed_and_swept(service, monkeypatch):
     model_id = await created_model(service)
     save = service.submit(

@@ -624,6 +624,9 @@ class TinkerService:
             await self._expire_checkpoints()
 
     async def _expire_checkpoints(self) -> None:
+        # the trainer lock waits for a whole training call; take it only when there is something to delete
+        if not self.expiry.expired(time.time()):
+            return
         async with self._trainer_lock:
             for tinker_path in self.expiry.expired(time.time()):
                 model_id, kind, name = parse_tinker_path(tinker_path)
