@@ -204,7 +204,7 @@ def decode_sample_request(payload: dict) -> dict:
         "seq_id": request.seq_id,
         "num_samples": request.num_samples,
         "prompt_tokens": model_input_tokens(payload["prompt"]),
-        "sampling_params": payload.get("sampling_params") or {},
+        "sampling_params": request.sampling_params.model_dump(),
         "prompt_logprobs": bool(request.prompt_logprobs),
         "topk_prompt_logprobs": request.topk_prompt_logprobs,
     }

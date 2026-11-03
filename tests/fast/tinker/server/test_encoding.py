@@ -121,6 +121,9 @@ def test_lax_wire_values_are_read_as_the_sdk_parses_them():
     assert loaded["optimizer"] is False
     sample = {"prompt": {"chunks": [{"type": "encoded_text", "tokens": [1, 2]}]}, "sampling_params": {"max_tokens": 1}}
     assert decode_sample_request(sample | {"prompt_logprobs": "false"})["prompt_logprobs"] is False
+    lax_params = {"max_tokens": 1, "temperature": "0.5", "top_k": "5", "bogus": 1}
+    params = decode_sample_request(sample | {"sampling_params": lax_params})["sampling_params"]
+    assert (params["temperature"], params["top_k"], "bogus" in params) == (0.5, 5, False)
 
 
 def test_an_off_model_key_is_rejected():
