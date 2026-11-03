@@ -25,23 +25,14 @@ def test_candidate_collection_retains_full_vocabulary_kl_scores(monkeypatch: pyt
     )
     parallel = SimpleNamespace(tp=SimpleNamespace(size=1, group=None), cp=SimpleNamespace(size=1))
     monkeypatch.setattr(loss_module, "get_parallel_state", lambda: parallel)
-    monkeypatch.setattr(
-        loss_module,
-        "_iter_response_chunks",
-        lambda *unused, **kwargs: iter([(logits, torch.tensor([2]), [0])]),
-    )
-    batch = {
-        "rollout_topk_token_ids": [torch.tensor([[2, 3, -1]])],
-        "unconcat_tokens": [],
-        "total_lengths": [],
-        "response_lengths": [],
-    }
-    probabilities = loss_module._candidate_log_probs(args, batch, logits)
+    # the sampled token 2, then the rollout's candidates [2, 3] and one padding slot
+    ids = torch.tensor([[2, 2, 3, -1]])
+    probabilities = loss_module.score_candidates(args, logits, ids, chunk_size=args.log_probs_chunk_size)
     full = (logits[:, :4] / 0.7).log_softmax(-1)[:, 2]
     support = (logits[:, [2, 3]] / 0.7).log_softmax(-1)[:, 0]
-    torch.testing.assert_close(probabilities["kl_log_probs"][0], full)
-    torch.testing.assert_close(probabilities["selected"][0][:, 0], support)
-    actual = torch.autograd.grad(probabilities["kl_log_probs"][0].sum(), logits, retain_graph=True)[0]
+    torch.testing.assert_close(probabilities["kl_log_probs"], full)
+    torch.testing.assert_close(probabilities["selected"][:, 0], support)
+    actual = torch.autograd.grad(probabilities["kl_log_probs"].sum(), logits, retain_graph=True)[0]
     torch.testing.assert_close(actual, torch.autograd.grad(full.sum(), logits)[0])
 
 
@@ -55,7 +46,14 @@ def test_reference_kl_matches_full_vocabulary_gradient(kind: str, unbiased: bool
     reference = torch.tensor([-1.3])
     args = Namespace(use_kl_loss=True, use_unbiased_kl=unbiased, kl_loss_type=kind, kl_loss_coef=0.1)
     loss, _ = _regularization(
-        args, {"ref_log_probs": [reference]}, None, support, rollout, torch.tensor([True]), torch.mean, full
+        args,
+        None,
+        support,
+        rollout,
+        torch.tensor([True]),
+        torch.mean,
+        kl_log_probs=full,
+        ref_log_probs=reference,
     )
     difference = full - reference
     if kind == "k1":
@@ -83,12 +81,13 @@ def test_extreme_reference_kl_has_finite_loss_and_gradients(coefficient: float, 
     args = Namespace(use_kl_loss=True, use_unbiased_kl=unbiased, kl_loss_type="k3", kl_loss_coef=coefficient)
     loss, metrics = _regularization(
         args,
-        {"ref_log_probs": [reference]},
         None,
         log_probs,
         rollout,
         torch.tensor([True, True, False, True]),
         torch.mean,
+        kl_log_probs=None,
+        ref_log_probs=reference,
     )
     assert torch.isfinite(loss)
     assert torch.isfinite(metrics["kl_loss"])
@@ -108,13 +107,13 @@ def test_identical_full_vocabulary_policies_have_zero_kl_under_replay() -> None:
     args = Namespace(use_kl_loss=True, use_unbiased_kl=False, kl_loss_type="k2", kl_loss_coef=0.1)
     loss, metrics = _regularization(
         args,
-        {"ref_log_probs": [full.detach()]},
         None,
         support,
         support.detach(),
         torch.tensor([True]),
         torch.mean,
-        full,
+        kl_log_probs=full,
+        ref_log_probs=full.detach(),
     )
     assert metrics["kl_loss"] == 0
     loss.backward()

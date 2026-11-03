@@ -1,3 +1,4 @@
+import functools
 import logging
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import AbstractContextManager, nullcontext
@@ -9,13 +10,13 @@ import torch.distributed as dist
 from tqdm import tqdm
 from transformers import PretrainedConfig, PreTrainedTokenizerBase
 
+from miles import platforms
 from miles.backends.training_utils.data.rollout import DataIterator, get_batch, get_data_iterator, get_rollout_data
-from miles.backends.training_utils.data.sampling_mask import get_rollout_sampling_masks
 from miles.backends.training_utils.loss.hub.logit_processors import get_rollout_topk_mismatch
+from miles.backends.training_utils.loss.hub.response_layout import PackedSlices, response_layout_type
 from miles.backends.training_utils.loss.objective import (
     compute_advantages_and_returns,
     count_loss_tokens,
-    get_log_probs_and_entropy,
     loss_function,
 )
 from miles.backends.training_utils.metrics import perf
@@ -114,6 +115,13 @@ class TorchNativeTrainRayActor(TrainRayActor):
             ),
         )
 
+    @functools.cached_property
+    def _response_layout_type(self):
+        layout_type = response_layout_type(self.args)
+        if not platforms.current_platform.dynamic_shapes and layout_type is PackedSlices:
+            logger.warning("this loss configuration takes the per-sample path, which recompiles per response length")
+        return layout_type
+
     def save_model(self, rollout_id: int, force_sync: bool = False) -> None:
         if self.args.debug_rollout_only or self.args.backend.save is None:
             return
@@ -165,6 +173,7 @@ class TorchNativeTrainRayActor(TrainRayActor):
                 output_store_read=self.output_store_read,
                 witness_info=None,
                 train_parallel_config=self.train_parallel_config,
+                sample_device=self._response_layout_type.sample_device,
             )
             with store_get_result:
                 if self.args.debug_rollout_only:
@@ -228,16 +237,11 @@ class TorchNativeTrainRayActor(TrainRayActor):
         if check_rollout_topk:
             keys = keys + ROLLOUT_TOPK_KEYS
 
+        layout_type = self._response_layout_type
+
         def compute(logits: torch.Tensor, batch: dict) -> dict:
-            result = get_log_probs_and_entropy(
-                logits=logits,
-                args=args,
-                unconcat_tokens=batch["unconcat_tokens"],
-                total_lengths=batch["total_lengths"],
-                response_lengths=batch["response_lengths"],
-                with_entropy=(store_prefix == ""),
-                max_seq_lens=batch.get("max_seq_lens"),
-                rollout_sampling_mask=get_rollout_sampling_masks(batch) if use_rollout_sampling_mask else None,
+            result = layout_type.build(args, batch, logits).forward_log_probs(
+                logits, with_entropy=(store_prefix == ""), use_sampling_mask=use_rollout_sampling_mask
             )
             entry = {f"{store_prefix}log_probs": result["log_probs"]}
             if "entropy" in result:
@@ -251,6 +255,8 @@ class TorchNativeTrainRayActor(TrainRayActor):
                 progress = tqdm(range(microbatches), desc=f"{store_prefix}log_probs", disable=dist.get_rank() != 0)
                 batches = self._fetch_batches(self.prof.iterate_train_log_probs(progress), data_iterator, keys)
                 forward_store.extend(runner.forward_only_step(batches, compute))
+            # PaddedRows only started each microbatch's device-to-host copies; it waits for all of them once
+            forward_store = layout_type.finish_forward_pass(forward_store)
 
         return aggregate_forward_results(forward_store, data_iterator, args, store_prefix)
 
@@ -335,7 +341,8 @@ def _count_step_loss_tokens(data_iterator: DataIterator, num_microbatches: list[
         for _ in range(microbatches):
             step_loss_masks.extend(data_iterator.get_next(["loss_masks"])["loss_masks"])
         local_counts.append(count_loss_tokens(step_loss_masks))
-    counts = torch.stack(local_counts)
+    # the fixed-shape loss keeps loss masks on the host, and the DP group reduces device tensors
+    counts = torch.stack(local_counts).to(platforms.current_platform.current_device())
     dist.all_reduce(counts, group=get_parallel_state().intra_dp.group)
     return counts
 
