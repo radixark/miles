@@ -1,9 +1,12 @@
 import subprocess
 import sys
 from argparse import Namespace
+from types import SimpleNamespace
 
+import pytest
 from transformers import LlamaConfig
 
+from miles.utils.lora import arguments as lora_arguments
 from miles.utils.lora.arguments import _resolve_lora_targets
 
 
@@ -51,3 +54,28 @@ def test_lora_arguments_import_no_megatron_to_hf():
     """megatron_to_hf loads every converter and SGLang's quantization kernels, which probe the GPU on ROCm (#4201)."""
     code = "import sys, miles.utils.lora.arguments; sys.exit('miles.backends.megatron_utils.megatron_to_hf' in sys.modules)"
     assert subprocess.run([sys.executable, "-c", code]).returncode == 0
+
+
+def test_multi_lora_bridge_refuses_a_model_without_hf_lora_layout(monkeypatch):
+    """Multi-LoRA always builds the adapter slots, which need the layout, even without --save-hf / --save."""
+    hf_config = SimpleNamespace(model_type="gpt2", to_dict=lambda: {"model_type": "gpt2"})
+    monkeypatch.setattr(lora_arguments, "load_hf_config", lambda path: hf_config)
+    monkeypatch.setattr(lora_arguments, "validate_multi_lora_args", lambda args: setattr(args, "multi_lora", True))
+    monkeypatch.setattr(lora_arguments, "_resolve_lora_targets", lambda args, config: ["h.0.attn.c_attn"])
+    monkeypatch.setattr(
+        "miles.backends.megatron_utils.lora.target_modules.check_fused_lora_selection", lambda *a, **k: None
+    )
+    args = Namespace(
+        train_backend="megatron",
+        megatron_to_hf_mode="bridge",
+        hf_checkpoint="/hf",
+        lora_rank=8,
+        lora_adapter_path=None,
+        lora_type="lora",
+        experts_shared_outer_loras=False,
+        save_hf=None,
+        eval_hf_dir=None,
+        save=None,
+    )
+    with pytest.raises(AssertionError, match="HF LoRA target layout"):
+        lora_arguments.validate_lora_args(args)

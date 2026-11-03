@@ -216,7 +216,7 @@ class BridgeAdapterSlots:
         assert slot == 0, "single LoRA has only slot 0"
         return [param for params in adapter_named_parameters(self._model) for param in params.values()]
 
-    def _slot_spec(self, slot: int) -> AdapterSpec | None:
+    def slot_spec(self, slot: int) -> AdapterSpec | None:
         if not self._multi_lora:
             return None
         from megatron.bridge.peft.multi_lora_layers import MultiLoRALinear
@@ -237,7 +237,7 @@ class BridgeAdapterSlots:
 
     def lora_rank(self, slot: int) -> int | None:
         """None for single LoRA, whose tensors are never padded."""
-        spec = self._slot_spec(slot)
+        spec = self.slot_spec(slot)
         return None if spec is None else spec.rank
 
     def _pieces(self, slot: int, holds: frozenset[int] | None = None) -> list[tuple[_HfPiece, tuple[slice, ...]]]:
@@ -315,7 +315,7 @@ class BridgeAdapterSlots:
 
     def export_bf16_adapter(self, slot: int) -> Iterable[tuple[str, torch.Tensor]]:
         is_writer = dist.get_rank() == 0
-        return self._iterator.materialize_adapter(self._slot_spec(slot), materialize=is_writer).items()
+        return self._iterator.materialize_adapter(self.slot_spec(slot), materialize=is_writer).items()
 
     def parametrization(
         self,
