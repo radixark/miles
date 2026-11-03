@@ -37,9 +37,11 @@ def validate_against_sdk(request_type, payload: dict):
 
 
 def assert_installed_sdk_version() -> None:
-    assert (
-        tinker.__version__ == TINKER_SDK_VERSION
-    ), f"the gateway validates requests with tinker=={TINKER_SDK_VERSION}, found {tinker.__version__}"
+    if tinker.__version__ != TINKER_SDK_VERSION:
+        raise RuntimeError(
+            f"the gateway validates requests with tinker=={TINKER_SDK_VERSION}, found {tinker.__version__}; "
+            f"pip install tinker=={TINKER_SDK_VERSION}"
+        )
 
 
 def validate_sdk_version(payload) -> None:
