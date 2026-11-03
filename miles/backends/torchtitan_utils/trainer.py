@@ -29,11 +29,7 @@ def fixed_shape_length_buckets(seq_len: int) -> set[int]:
 
 
 def configure_fixed_shape_compile(*, seq_len: int, num_passes: int) -> None:
-    """Without dynamic shapes, every graph is static and each pass with its own guards compiles once per bucket.
-
-    Fullgraph blocks fail past dynamo's recompile limit instead of falling back to eager, so the limit must cover
-    every pass and bucket.
-    """
+    """Each pass compiles once per length bucket; fullgraph blocks fail past dynamo's recompile limit."""
     if platforms.current_platform.dynamic_shapes:
         return
     # a second length would otherwise make dynamo mark the dimension dynamic, which the backend rejects

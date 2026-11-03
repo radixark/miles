@@ -582,8 +582,7 @@ def get_data_iterator(
 def _num_microbatches_within_cap(lengths: list[int], max_tokens: int) -> int:
     """The fewest microbatches whose seqlen-balanced partition keeps each one within `max_tokens`.
 
-    First-fit only bounds the count from below: the balanced partition that forms the microbatches ignores the
-    cap and can exceed it. A sample longer than the cap still gets a microbatch of its own.
+    First-fit only bounds the count from below: the balanced partition ignores the cap.
     """
     cap = max(max_tokens, max(lengths))
     num = get_minimum_num_micro_batch_size(lengths, max_tokens)

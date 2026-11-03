@@ -10,7 +10,7 @@ import torch
 import torch.nn.functional as F
 from torchtitan.models.common.attention import InnerAttention
 
-_Q_BLOCK = 1024  # measured on v7x: ties 2048 at L=8192, 512 is ~13% slower
+_Q_BLOCK = 1024  # fastest on v7x
 
 
 def document_causal_attention(
@@ -46,9 +46,8 @@ def document_causal_attention(
 def document_ids(positions: torch.Tensor) -> torch.Tensor:
     """Each token's document, as the index of the document's first token: `arange(L) - positions`.
 
-    Every packed document and the padding tail restart positions at 0 and count up by 1, so this names the
-    same documents as `(positions == 0).cumsum(-1)` without a cumulative op: libtpu's associative-scan
-    emitter (>= 0.0.44) miscompiles cumsum for lengths that are not a multiple of 1024.
+    Positions restart at 0 in every document and the padding tail, so this needs no cumsum, which libtpu
+    (>= 0.0.44) miscompiles for lengths not a multiple of 1024.
     """
     token_index = torch.arange(positions.shape[-1], device=positions.device, dtype=torch.int32)
     return token_index - positions.to(torch.int32)
