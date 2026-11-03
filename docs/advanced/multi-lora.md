@@ -118,8 +118,9 @@ The trainer rejects a multi-LoRA launch that breaks any of these constraints:
 ## Tinker compatibility
 
 The gateway implements the `tinker==0.36.0` wire schema and rejects clients on
-any other SDK version when they connect; pin that version on the client, with
-`tinker-cookbook==0.5.9` for the cookbook. It supports:
+any other SDK version when they connect, patch releases included; pin that
+version on the client, with `tinker-cookbook==0.5.9` for the cookbook. The
+cookbook only requires `tinker>=0.35`, so install the SDK pin explicitly. It supports:
 
 - Training: `forward`, `forward_backward`, `optim_step`, `save_state`,
   `load_state`, and `save_weights_for_sampler`, with the Adam optimizer only.
