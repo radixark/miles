@@ -528,6 +528,10 @@ class TinkerService:
         path = os.path.realpath(uri.removeprefix("file://"))
         if not path.startswith(root + os.sep):
             raise UserInputError(f"{uri} is outside the import root {self.config.import_root}")
+        # a tinker:// checkpoint's owner is checked; reaching it by file:// would skip that
+        checkpoint_root = os.path.realpath(self.config.checkpoint_root)
+        if path == checkpoint_root or path.startswith(checkpoint_root + os.sep):
+            raise UserInputError(f"{uri} is a tinker:// checkpoint; load it by its tinker:// path")
         return path
 
     async def _save_weights_external(self, record: ModelRecord, payload: dict) -> dict:
@@ -562,6 +566,10 @@ class TinkerService:
         root = os.path.dirname(resolve_checkpoint_dir(self.config.checkpoint_root, model_id, kind, name))
         files = self.backend.resolve_checkpoint_files(root, name, tenant)
         if files is None:
+            if os.path.isdir(os.path.join(root, name)):
+                raise UserInputError(
+                    f"checkpoint {tinker_path} was saved before checkpoints could expire or be deleted through the API"
+                )
             raise NotFoundError(f"checkpoint {tinker_path} does not exist")
         return tinker_path, root, name, files
 

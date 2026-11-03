@@ -1346,3 +1346,20 @@ async def test_trainer_ranks_get_only_the_tenant_digest(service):
     assert (await await_settled(service, "tenant", save)).state == DONE
     (export,) = service.backend.named("export_slot")
     assert export["tenant_digest"] == hashlib.sha256(b"tenant").hexdigest()
+
+
+async def test_a_legacy_checkpoint_cannot_be_deleted_through_the_api(service):
+    model_id = await created_model(service)
+    write_legacy_checkpoint(
+        resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "weights", "old"),
+        service.models[model_id],
+        service.config,
+    )
+    with pytest.raises(UserInputError, match="saved before checkpoints could expire"):
+        await service.delete_checkpoint("tenant", model_id, "weights/old")
+
+
+async def test_a_file_import_cannot_reach_into_the_checkpoint_root(tmp_path):
+    service = make_service(tmp_path / "root", import_root=str(tmp_path))
+    with pytest.raises(UserInputError, match="load it by its tinker:// path"):
+        service.weights_info("tenant", f"file://{tmp_path / 'root' / 'model' / 'weights' / 'ck'}")
