@@ -434,6 +434,9 @@ def find_load_mismatch(
                     f"(differing keys e.g. {sorted(expected ^ saved)[:3]}); "
                     "load it on a gateway with the layout it was saved with"
                 )
+        elif kind.is_read_into_model():
+            # load_adapter_dir refuses it only after the slot reset
+            mismatch = f"{path} is a {kind.value} source, which this backend cannot load"
     # any failure to read the user's source is theirs; raised after the slot reset, it kills the trainer cell
     except Exception as error:
         mismatch = f"{path} cannot load into this model: {error}"
@@ -600,13 +603,24 @@ def restore_single_lora(model, args, *, optimizer, opt_param_scheduler) -> tuple
     run = single_lora_parametrization(slots, args)
     path = Path(args.lora_adapter_path)
     in_model_loaders_by_kind = {
-        AdapterSourceKind.LEGACY_RANK_SHARD: LegacyRankShardLoader(model, optimizer, run, load_optimizer)
+        AdapterSourceKind.LEGACY_RANK_SHARD: LegacyRankShardLoader(
+            model, optimizer, run, load_optimizer, precision_aware=args.backend.use_precision_aware_optimizer
+        )
     }
     # a Bridge checkpoint's sharded keys exist only in a Bridge model
     if args.megatron_to_hf_mode == "bridge":
         in_model_loaders_by_kind[AdapterSourceKind.MEGATRON_BRIDGE_CHECKPOINT] = MegatronBridgeCheckpointLoader(
             model, optimizer, members, run, load_optimizer
         )
+    else:
+
+        def refuse_bridge_checkpoint(path: Path) -> AdapterParametrization:
+            raise AssertionError(
+                f"{path} is a Megatron-Bridge checkpoint, which only --megatron-to-hf-mode bridge loads; "
+                "convert it there first with --lora-adapter-convert-save"
+            )
+
+        in_model_loaders_by_kind[AdapterSourceKind.MEGATRON_BRIDGE_CHECKPOINT] = refuse_bridge_checkpoint
     load_adapter_dir(
         path,
         members,
@@ -642,8 +656,9 @@ class LegacyRankShardLoader:
     """A single-LoRA ``--save`` written before the adapter format (``adapter_megatron_rank*.pt``), read into the
     model under the parallel layout it was saved with."""
 
-    def __init__(self, model, optimizer, run: AdapterParametrization, load_optimizer: bool):
+    def __init__(self, model, optimizer, run: AdapterParametrization, load_optimizer: bool, *, precision_aware: bool):
         self._model, self._optimizer, self._run, self._load_optimizer = model, optimizer, run, load_optimizer
+        self._precision_aware = precision_aware
 
     def __call__(self, path: Path) -> AdapterParametrization:
         shard = _native_adapter_shard(path)
@@ -654,11 +669,21 @@ class LegacyRankShardLoader:
             assert (
                 state is not None and state["optimizer"] is not None and "parameter_state" in state
             ), f"{path} has no optimizer state to resume; pass --no-load-optim"
+            subs = _distributed_optimizers(self._optimizer)
+            for sub in subs:
+                # on an empty HDO state Megatron's load_state_dict would run dummy_step, a real Adam step
+                if isinstance(sub.optimizer, HybridDeviceOptimizer) and not sub.optimizer.state:
+                    _init_zero_hdo_state(sub.optimizer)
             self._optimizer.load_state_dict(state["optimizer"])
-            for sub, parameter_state in zip(
-                _distributed_optimizers(self._optimizer), state["parameter_state"], strict=True
-            ):
+            for sub, parameter_state in zip(subs, state["parameter_state"], strict=True):
                 sub.load_parameter_state_from_dp_reshardable(parameter_state)
+                if isinstance(sub.optimizer, HybridDeviceOptimizer):
+                    # unlike Megatron's other parameter-state loaders, this one leaves the sub-optimizers'
+                    # fp32 params and state devices stale
+                    sub.optimizer._sync_hdo_state_to_sub_optimizers()
+            _build_cast_main_to_params_fn(self._optimizer, precision_aware=self._precision_aware)()
+            for chunk in self._model:
+                chunk.start_param_sync(force_sync=True)
         else:
             # the fp32 masters were built before the adapter load
             self._optimizer.reload_model_params()

@@ -211,18 +211,17 @@ def _run(**overrides) -> AdapterParametrization:
 FP32 = {"_target_": "torch.float32", "_call_": False}
 
 
-def _bridge_config(**peft) -> dict:
+# the peft fields each Bridge class writes: CanonicalLoRA has no lora_dtype or a2a_experimental
+_BRIDGE_PEFT_BY_CLASS = {
+    "lora": {"_target_": "megatron.bridge.peft.lora.LoRA", "lora_dtype": None, "a2a_experimental": False},
+    "canonical_lora": {"_target_": "megatron.bridge.peft.canonical_lora.CanonicalLoRA"},
+}
+
+
+def _bridge_config(peft_class: str = "lora", **peft) -> dict:
     return {
-        "peft": {
-            "_target_": "megatron.bridge.peft.lora.LoRA",
-            "dim": 8,
-            "alpha": 32,
-            "dropout": 0.0,
-            "exclude_modules": [],
-            "lora_dtype": None,
-            "share_expert_adapters": False,
-            "a2a_experimental": False,
-        }
+        "peft": {"dim": 8, "alpha": 32, "dropout": 0.0, "exclude_modules": [], "share_expert_adapters": False}
+        | _BRIDGE_PEFT_BY_CLASS[peft_class]
         | peft,
         "optimizer": {
             "optimizer": "adam",
@@ -234,15 +233,24 @@ def _bridge_config(**peft) -> dict:
     }
 
 
-def test_a_bridge_run_config_of_the_same_lora_is_accepted():
-    assert_bridge_run_config_matches(_bridge_config(), _run(), params_dtype=torch.bfloat16, load_optimizer=True)
+@pytest.mark.parametrize("lora_type", ["lora", "canonical_lora"])
+def test_a_bridge_run_config_of_the_same_lora_is_accepted(lora_type):
+    assert_bridge_run_config_matches(
+        _bridge_config(lora_type), _run(lora_type=lora_type), params_dtype=torch.bfloat16, load_optimizer=True
+    )
+
+
+def test_a_canonical_lora_source_is_refused_by_a_lora_run():
+    with pytest.raises(AssertionError, match="lora_type='canonical_lora'"):
+        assert_bridge_run_config_matches(
+            _bridge_config("canonical_lora"), _run(), params_dtype=torch.bfloat16, load_optimizer=True
+        )
 
 
 @pytest.mark.parametrize(
     "section, fields, match",
     [
         ("peft", {"_target_": "megatron.bridge.peft.dora.DoRA"}, "neither LoRA nor CanonicalLoRA"),
-        ("peft", {"_target_": "megatron.bridge.peft.canonical_lora.CanonicalLoRA"}, "lora_type='canonical_lora'"),
         ("peft", {"dim": 16}, "lora_rank=16"),
         ("peft", {"dropout": 0.1}, "dropout"),
         ("peft", {"share_expert_adapters": True}, "share_expert_adapters"),
@@ -256,7 +264,6 @@ def test_a_bridge_run_config_of_the_same_lora_is_accepted():
     ],
     ids=[
         "dora",
-        "canonical_lora",
         "rank",
         "dropout",
         "shared_expert_adapters",
@@ -379,4 +386,5 @@ def _probe_export_fails(rank, world_size, port):
 
 
 def test_an_export_failure_on_one_rank_fails_every_rank():
+    """The fake export has no collectives; a rank failing inside one of Bridge's still hangs the others."""
     run_multiprocess(_probe_export_fails)
