@@ -3,9 +3,14 @@ import sys
 from argparse import Namespace
 
 import pytest
+import torch
 from transformers import AutoConfig, LlamaConfig
 
-from miles.utils.lora.arguments import _assert_adapter_layout_defined, _resolve_lora_targets
+from miles.utils.lora.arguments import (
+    _assert_adapter_layout_defined,
+    _resolve_lora_targets,
+    _validate_adapter_state_args,
+)
 
 
 class TestLoraTargetOrdering:
@@ -71,3 +76,38 @@ def test_adapter_slots_need_the_families_hf_lora_layout(flag, value) -> None:
 
 def test_a_run_without_adapter_snapshots_trains_any_family() -> None:
     _assert_adapter_layout_defined(Namespace(**_NO_SNAPSHOTS), AutoConfig.for_model("glm4"))
+
+
+def _adapter_state_args(**overrides) -> Namespace:
+    return Namespace(
+        **{
+            "save": "/ckpt",
+            "lora_adapter_path": None,
+            "no_save_optim": False,
+            "no_load_optim": False,
+            "optimizer": "sgd",
+            "exp_avg_dtype": torch.float32,
+            "exp_avg_sq_dtype": torch.float32,
+            "use_distributed_optimizer": True,
+            "use_gloo_process_groups": True,
+            "use_precision_aware_optimizer": False,
+            "optimizer_cpu_offload": False,
+            "overlap_param_gather": False,
+        }
+        | overrides
+    )
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [{}, {"no_save_optim": True, "lora_adapter_path": "/adapter"}],
+    ids=["saves_optimizer", "loads_optimizer"],
+)
+def test_a_non_adam_optimizer_cannot_store_adapter_optimizer_state(overrides) -> None:
+    with pytest.raises(AssertionError, match="store Adam state; got --optimizer sgd"):
+        _validate_adapter_state_args(_adapter_state_args(**overrides))
+
+
+@pytest.mark.parametrize("overrides", [{}, {"lora_adapter_path": "/adapter", "no_load_optim": True}])
+def test_a_non_adam_optimizer_saves_and_loads_the_masters_alone(overrides) -> None:
+    _validate_adapter_state_args(_adapter_state_args(no_save_optim=True, **overrides))

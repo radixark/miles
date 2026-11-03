@@ -157,6 +157,9 @@ class DistributedOptimizerMembers:
 
     def _holds(self) -> frozenset[int]:
         """Parameters whose DP group this rank leads: expert parameters reduce over expert DP."""
+        if not self._distributed_optimizers():
+            # a plain optimizer keeps every master on every rank; the lowest replica writes each piece
+            return frozenset(range(len(self._slots.slot_parameters(0))))
         parallel = get_parallel_state()
         # the DistributedOptimizer gathers dense parameters over intra-DP x CP and expert ones over expert DP
         dense_lead, expert_lead = parallel.intra_dp_cp.rank == 0, parallel.edp.rank == 0
@@ -170,6 +173,21 @@ class DistributedOptimizerMembers:
 
     def _distributed_optimizers(self) -> list:
         return [sub for sub in self._optimizer.chained_optimizers if isinstance(sub, DistributedOptimizer)]
+
+    def _replicated_masters(self) -> dict[int, torch.Tensor]:
+        """Index in ``slot_parameters(0)`` -> fp32 master, of the parameters a plain Float16 optimizer steps: miles
+        runs a non-Adam optimizer (SGD) without the DistributedOptimizer, and it keeps no moments."""
+        index_of = {id(p): i for i, p in enumerate(self._slots.slot_parameters(0))}
+        masters = {}
+        for child in self._optimizer.chained_optimizers:
+            if isinstance(child, DistributedOptimizer):
+                continue
+            for g in range(len(child.optimizer.param_groups)):
+                for param, master in zip(child.float16_groups[g], child.fp32_from_float16_groups[g], strict=True):
+                    masters[index_of[id(param)]] = master
+                for param in child.fp32_from_fp32_groups[g]:
+                    masters[index_of[id(param)]] = param
+        return masters
 
     def _whole_state(self) -> tuple[dict[int, dict[str, torch.Tensor]], int | None]:
         """Collective: on each DP group's rank 0, its parameters' whole fp32 master and moments; and the step."""
@@ -189,9 +207,13 @@ class DistributedOptimizerMembers:
                     world, start, end = _world_slice(gathered, buffer_index, buffer, param)
                     whole[index_of[id(param)]] = {k: world[k][start:end].view(param.shape) for k in _STATE_KEYS}
         assert len(steps) <= 1, f"the DistributedOptimizers disagree on the Adam step: {steps}"
+        whole |= {index: {"param": master.detach().cpu()} for index, master in self._replicated_masters().items()}
         return whole, steps.pop() if steps else None
 
     def export_adapter_state(self, slot: int) -> AdapterState:
+        assert not (
+            self._save_moments and self._replicated_masters()
+        ), "a non-Adam optimizer keeps no moments; save its adapter with --no-save-optim"
         whole, step = self._whole_state()
         holds = self._holds()
         params = self._slots.slot_parameters(0)
@@ -223,6 +245,9 @@ class DistributedOptimizerMembers:
             self._slots.piece_parameter(0, holds), state.weights, state.exp_avgs, state.exp_avg_sqs, strict=True
         ):
             pieces_by_param[index].append((offsets.flatten(), pieces))
+        for index, master in self._replicated_masters().items():
+            for offsets, (weight, *_moments) in pieces_by_param[index]:
+                master.view(-1)[offsets.to(master.device)] = weight.flatten().to(master)
         index_of = {id(p): i for i, p in enumerate(params)}
         for sub in self._distributed_optimizers():
             if sub.init_state_fn is not None:
@@ -239,8 +264,9 @@ class DistributedOptimizerMembers:
             sub.load_parameter_state_from_dp_zero(gathered)
             _set_distributed_optimizer_step(sub, state.step)
         _build_cast_main_to_params_fn(self._optimizer, precision_aware=self._precision_aware)()
-        for chunk in self._model:
-            chunk.start_param_sync(force_sync=True)
+        if self._distributed_optimizers():
+            for chunk in self._model:
+                chunk.start_param_sync(force_sync=True)
 
 
 _STATE_KEYS = ("param", "exp_avg", "exp_avg_sq")
