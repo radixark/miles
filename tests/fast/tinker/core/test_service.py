@@ -1240,6 +1240,22 @@ async def test_an_external_save_is_refused_for_a_family_without_checked_tinker_n
     assert not service.backend.named("export_external")
 
 
+async def test_a_failed_external_commit_fails_the_request_not_the_gateway(service, monkeypatch):
+    model_id = await created_model(service)
+    commit = service.backend.commit_adapter
+
+    def full_disk(*args):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(service.backend, "commit_adapter", full_disk)
+    save = service.submit("tenant", "save_weights_external", _external_payload(model_id, 1, "export"))
+    settled = await await_settled(service, "tenant", save)
+    assert settled.state == FAILED and "No space left" in settled.error
+    monkeypatch.setattr(service.backend, "commit_adapter", commit)
+    save = service.submit("tenant", "save_weights_external", _external_payload(model_id, 2, "export"))
+    assert (await await_settled(service, "tenant", save)).state == DONE, "the gateway keeps serving"
+
+
 async def test_a_download_url_does_not_serve_a_resave_under_the_same_name(service):
     model_id = await created_model(service)
     save = service.submit("tenant", "save_weights_external", _external_payload(model_id, 1, "export"))

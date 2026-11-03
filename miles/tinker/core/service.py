@@ -652,7 +652,11 @@ class TinkerService:
         )
         if isinstance(written, dict):
             return written
-        await asyncio.to_thread(self.backend.commit_adapter, root, name, written, False)
+        try:
+            await asyncio.to_thread(self.backend.commit_adapter, root, name, written, False)
+        except OSError as error:
+            # e.g. a full disk: the trainer is healthy, so only this save fails
+            return {"error": f"could not commit external weights {name!r}: {error}", "error_category": "server"}
         tinker_path = f"tinker://{record.model_id}/external_weights/{name}"
         self.expiry.set(tinker_path, payload["ttl_seconds"], time.time())
         files = self.backend.resolve_checkpoint_files(root, name, record.tenant)
