@@ -721,15 +721,16 @@ class TinkerService:
         async with self._trainer_lock:
             for tinker_path in self.expiry.expired(time.time()):
                 model_id, kind, name = parse_tinker_path(tinker_path)
-                root = os.path.dirname(resolve_checkpoint_dir(self.config.checkpoint_root, model_id, kind, name))
                 try:
+                    root = os.path.dirname(resolve_checkpoint_dir(self.config.checkpoint_root, model_id, kind, name))
                     if self.backend.resolve_checkpoint_files(root, name, None) is None:
                         # deleted by hand, or never committed: nothing to remove
                         self.expiry.drop(tinker_path)
                     else:
                         self._delete_checkpoint(tinker_path, root, name, None)
-                except OSError:
-                    # one undeletable checkpoint must not cut off every tenant; its entry stays for the next sweep
+                except (OSError, ValueError, AssertionError):
+                    # one undeletable checkpoint (unwritable, or its name relinked out of the root or to a dir the
+                    # library did not write) must not cut off every tenant or every restart; its entry stays
                     logger.exception(f"could not delete expired checkpoint {tinker_path}; retrying next sweep")
 
     def weights_info(self, tenant: str, tinker_path: str) -> dict:

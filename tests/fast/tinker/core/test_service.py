@@ -1353,6 +1353,31 @@ async def test_a_failed_expiry_delete_is_retried_and_the_rest_are_swept(service,
     assert service.expiry.expires_at(paths["stuck"]) is not None, "kept for the next sweep"
 
 
+async def test_an_expiring_name_relinked_by_an_operator_is_kept_and_the_rest_are_swept(service, tmp_path_factory):
+    """The sweep also runs before the dispatcher starts, so an entry it cannot delete must not stop it."""
+    model_id = await created_model(service)
+    paths = {}
+    for seq_id, name in enumerate(("outside", "foreign", "ok"), start=1):
+        payload = {"model_id": model_id, "seq_id": seq_id, "name": name, "overwrite": False, "ttl_seconds": 3600}
+        settled = await await_settled(service, "tenant", service.submit("tenant", "save_state", payload))
+        paths[name] = settled.result["path"]
+    root = Path(resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "weights", "ok")).parent
+    # e.g. a shared adapter: out of the checkpoint root, or in it but not written by the library
+    shared = tmp_path_factory.mktemp("shared")
+    (root / "shared.adapter").mkdir()
+    for name, target in (("outside", shared), ("foreign", root / "shared.adapter")):
+        (root / name).unlink()
+        (root / name).symlink_to(target)
+    real_time = time.time
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(time, "time", lambda: real_time() + 3601)
+        await service._expire_checkpoints()
+    assert resolve_adapter_dir(root, "ok", tenant=None) is None and service.expiry.expires_at(paths["ok"]) is None
+    assert shared.is_dir() and (root / "shared.adapter").is_dir()
+    assert service.expiry.expires_at(paths["outside"]) is not None
+    assert service.expiry.expires_at(paths["foreign"]) is not None
+
+
 @pytest.mark.parametrize(
     "filename,content",
     [
