@@ -122,6 +122,7 @@ def _adapter_state_args(**overrides) -> Namespace:
             "no_load_optim": False,
             "optimizer": "sgd",
             "sgd_momentum": 0.0,
+            "megatron_to_hf_mode": "raw",
             "exp_avg_dtype": torch.float32,
             "exp_avg_sq_dtype": torch.float32,
             "main_params_dtype": torch.float32,
@@ -154,6 +155,11 @@ def test_sgd_with_momentum_cannot_save_the_adapter() -> None:
     # the masters-only checkpoint would drop the momentum buffer
     with pytest.raises(AssertionError, match="need --sgd-momentum 0; got 0.9"):
         _validate_adapter_state_args(_adapter_state_args(no_save_optim=True, sgd_momentum=0.9))
+
+
+def test_sgd_cannot_save_the_adapter_in_bridge_mode() -> None:
+    with pytest.raises(AssertionError, match="need --megatron-to-hf-mode raw; got bridge"):
+        _validate_adapter_state_args(_adapter_state_args(no_save_optim=True, megatron_to_hf_mode="bridge"))
 
 
 @pytest.mark.parametrize("optimizer", ["muon", "dist_muon", "lion"])

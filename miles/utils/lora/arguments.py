@@ -216,6 +216,10 @@ def _validate_adapter_state_args(args) -> None:
     assert (
         args.optimizer != "sgd" or args.sgd_momentum == 0
     ), f"--save / --lora-adapter-path with --optimizer sgd need --sgd-momentum 0; got {args.sgd_momentum}"
+    # Bridge's DDP reduce-scatters grads for a distributed optimizer, but SGD's plain optimizer steps the whole grad
+    assert (
+        args.optimizer != "sgd" or args.megatron_to_hf_mode == "raw"
+    ), f"--save / --lora-adapter-path with --optimizer sgd need --megatron-to-hf-mode raw; got {args.megatron_to_hf_mode}"
     if args.use_distributed_optimizer:
         assert args.use_gloo_process_groups, "the adapter checkpoint gathers optimizer state over Gloo"
         # TE FusedAdam keeps the master as an int16 remainder unless the optimizer runs on the host
