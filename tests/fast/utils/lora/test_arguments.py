@@ -103,7 +103,7 @@ def _adapter_state_args(**overrides) -> Namespace:
             "exp_avg_dtype": torch.float32,
             "exp_avg_sq_dtype": torch.float32,
             "main_params_dtype": torch.float32,
-            "use_distributed_optimizer": True,
+            "use_distributed_optimizer": False,
             "use_gloo_process_groups": True,
             "use_precision_aware_optimizer": False,
             "optimizer_cpu_offload": False,
