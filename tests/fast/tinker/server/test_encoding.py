@@ -215,6 +215,11 @@ def test_bad_age_recipients_are_refused_at_decode(recipients, error):
 
 
 def test_x25519_and_ssh_age_recipients_are_accepted():
-    payload = {"model_id": "m", "seq_id": 1, "path": "export", "age_encryption_recipients": [_RECIPIENT, _SSH_RECIPIENT]}
+    payload = {
+        "model_id": "m",
+        "seq_id": 1,
+        "path": "export",
+        "age_encryption_recipients": [_RECIPIENT, _SSH_RECIPIENT],
+    }
     _, decoded = decode_command("save_weights_external", payload)
     assert "validation_error" not in decoded and decoded["age_recipients"] == [_RECIPIENT, _SSH_RECIPIENT]

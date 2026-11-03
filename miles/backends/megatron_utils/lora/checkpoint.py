@@ -464,7 +464,9 @@ def find_load_mismatch(
 def _assert_weights_fit(weights: dict[str, torch.Tensor], run_shapes: dict[str, tuple[int, ...]]) -> None:
     missing = sorted(run_shapes.keys() - weights.keys())
     assert not missing, f"the source lacks tensors this model trains, e.g. {missing[:3]}"
-    differing = [f"{k}: {tuple(weights[k].shape)} != {s}" for k, s in run_shapes.items() if tuple(weights[k].shape) != s]
+    differing = [
+        f"{k}: {tuple(weights[k].shape)} != {s}" for k, s in run_shapes.items() if tuple(weights[k].shape) != s
+    ]
     assert not differing, f"tensor shapes differ from this model's, e.g. {differing[:3]}"
 
 
