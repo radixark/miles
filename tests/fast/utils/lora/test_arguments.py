@@ -302,3 +302,31 @@ class TestRolloutOnlyAdapter:
         torch.save({}, tmp_path / "adapter_megatron_rank0.pt")
         with pytest.raises(AssertionError, match="only a trainer can read"):
             self._validate(tmp_path)
+
+
+def test_multi_lora_bridge_refuses_a_model_without_hf_lora_layout(monkeypatch):
+    """Multi-LoRA always builds the adapter slots, which need the layout, even without --save-hf / --save."""
+    hf_config = SimpleNamespace(model_type="gpt2", to_dict=lambda: {"model_type": "gpt2"})
+    monkeypatch.setattr(lora_arguments, "load_hf_config", lambda path: hf_config)
+    monkeypatch.setattr(lora_arguments, "validate_multi_lora_args", lambda args: setattr(args, "multi_lora", True))
+    monkeypatch.setattr(lora_arguments, "_resolve_lora_targets", lambda args, config: ["h.0.attn.c_attn"])
+    monkeypatch.setattr(
+        "miles.backends.megatron_utils.lora.target_modules.check_fused_lora_selection", lambda *a, **k: None
+    )
+    args = Namespace(
+        train_backend="megatron",
+        megatron_to_hf_mode="bridge",
+        hf_checkpoint="/hf",
+        lora_rank=8,
+        lora_alpha=16.0,
+        lora_adapter_path=None,
+        lora_type="lora",
+        experts_shared_outer_loras=False,
+        lora_adapter_convert_save=None,
+        debug_rollout_only=False,
+        save_hf=None,
+        eval_hf_dir=None,
+        save=None,
+    )
+    with pytest.raises(AssertionError, match="HF LoRA target layout"):
+        lora_arguments.validate_lora_args(args)
