@@ -271,14 +271,31 @@ def _world_slice(gathered: dict, buffer_index: int, buffer, param) -> tuple[dict
     return gathered[buffer_index][(buffer.param_dtype, buffer.grad_dtype)], offset, offset + (end - start)
 
 
+def _adam_optimizers(sub) -> list[torch.optim.Optimizer]:
+    """The optimizers that step: an offloaded optimizer runs torch Adam on the host and TE FusedAdam on the GPU."""
+    if isinstance(sub.optimizer, HybridDeviceOptimizer):
+        return sub.optimizer.sub_optimizers
+    return [sub.optimizer]
+
+
+def _steps_per_parameter(optimizer: torch.optim.Optimizer) -> bool:
+    # torch Adam keeps the step in each parameter's state; TE FusedAdam keeps it in each param group
+    return isinstance(optimizer, torch.optim.Adam | torch.optim.AdamW)
+
+
 def _distributed_optimizer_step(sub) -> int | None:
     """None when this rank's shard of the optimizer holds no parameters (its groups are never stepped)."""
-    if isinstance(sub.optimizer, HybridDeviceOptimizer):
-        steps = {int(state["step"]) for state in sub.optimizer.state.values() if "step" in state}
-        assert len(steps) <= 1, f"offloaded Adam states disagree on the step: {steps}"
-        return steps.pop() if steps else (0 if sub.optimizer.state else None)
-    groups = [group for group in sub.optimizer.param_groups if group["params"]]
-    return groups[0].get("step", 0) if groups else None
+    steps = set()
+    for optimizer in _adam_optimizers(sub):
+        if not any(group["params"] for group in optimizer.param_groups):
+            continue
+        if _steps_per_parameter(optimizer):
+            # a never-stepped torch Adam has no state yet
+            steps |= {int(state["step"]) for state in optimizer.state.values()} or {0}
+        else:
+            steps |= {int(group.get("step", 0)) for group in optimizer.param_groups if group["params"]}
+    assert len(steps) <= 1, f"the Adam optimizers of one DistributedOptimizer disagree on the step: {steps}"
+    return steps.pop() if steps else None
 
 
 def _init_zero_hdo_state(hdo: HybridDeviceOptimizer) -> None:
@@ -299,13 +316,16 @@ def _init_zero_hdo_state(hdo: HybridDeviceOptimizer) -> None:
 
 def _set_distributed_optimizer_step(sub, step: int) -> None:
     if isinstance(sub.optimizer, HybridDeviceOptimizer):
-        for shard in sub.optimizer.state:
-            sub.optimizer.state[shard]["step"] = torch.tensor(float(step))
+        # the sub-optimizers' states become the HDO's state dicts, so the step written below reaches both
         sub.optimizer._sync_hdo_state_to_sub_optimizers()
-        return
-    for group in sub.optimizer.param_groups:
-        if group["params"]:
-            group["step"] = step
+    for optimizer in _adam_optimizers(sub):
+        if _steps_per_parameter(optimizer):
+            for state in optimizer.state.values():
+                state["step"] = torch.tensor(float(step))
+            continue
+        for group in optimizer.param_groups:
+            if group["params"]:
+                group["step"] = step
 
 
 def _moment(state: dict, master: torch.Tensor, key: str) -> torch.Tensor:
