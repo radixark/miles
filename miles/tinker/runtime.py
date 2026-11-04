@@ -255,7 +255,7 @@ def read_imported_adapter(path: str, shown_path: str) -> dict:
         # alpha scales the slot: NaN, infinite, zero or negative would train NaN or zero updates
         if source["lora_alpha"] is not None and not (math.isfinite(source["lora_alpha"]) and source["lora_alpha"] > 0):
             raise ValueError(f"alpha {source['lora_alpha']!r} is not a positive finite number")
-    except (OSError, ValueError, KeyError, TypeError, AssertionError, RecursionError) as error:
+    except (OSError, ValueError, KeyError, TypeError, AssertionError, RecursionError, OverflowError) as error:
         raise UserInputError(f"{shown_path} is not a readable adapter: {type(error).__name__}: {error}") from error
     return source
 

@@ -1722,6 +1722,8 @@ async def test_an_expiring_name_relinked_by_an_operator_is_kept_and_the_rest_are
         ("adapter_config.json", '{"r": 8, "lora_alpha": Infinity}'),
         ("adapter_config.json", json.dumps({"r": 8, "lora_alpha": 0})),
         ("adapter_config.json", json.dumps({"r": 8, "lora_alpha": -16})),
+        # json.loads reads it as an int, which no float holds
+        ("adapter_config.json", '{"r": 8, "lora_alpha": 1' + "0" * 400 + "}"),
     ],
     ids=[
         "bad_json",
@@ -1732,6 +1734,7 @@ async def test_an_expiring_name_relinked_by_an_operator_is_kept_and_the_rest_are
         "inf_alpha",
         "zero_alpha",
         "negative_alpha",
+        "huge_int_alpha",
     ],
 )
 async def test_a_malformed_import_is_a_user_error_and_the_gateway_keeps_serving(tmp_path, filename, content):
