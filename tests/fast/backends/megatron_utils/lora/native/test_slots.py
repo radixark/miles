@@ -9,6 +9,7 @@ import torch.nn as nn
 from miles.backends.megatron_utils.lora.native import checkpoint as native_checkpoint
 from miles.backends.megatron_utils.lora.native.config import LoRAConfig
 from miles.backends.megatron_utils.lora.native.hf_adapter import export_lora_hf_named
+from miles.backends.megatron_utils.lora.native.modules import linear as linear_module
 from miles.backends.megatron_utils.lora.native.modules.linear import (
     LoRALinear,
     LoRASplitFC1,
@@ -264,6 +265,41 @@ def test_a_multi_lora_model_is_read_per_slot():
     assert list(iter_slot_adapters([multi], 2)) == [multi.adapter.slots[2]]
     with pytest.raises(AssertionError, match="iter_slot_adapters"):
         list(iter_adapters([multi]))
+
+
+def test_a_sequence_parallel_row_adapter_reduces_once_and_scales_each_slots_window(monkeypatch):
+    """TP rank 1 of 2: A runs on every routed token, one reduce-scatter, then B and the scale on its own window."""
+    collectives = []
+
+    def reduce_scatter(partial, context):
+        collectives.append(partial.shape)
+        # the peer's partial sums equal this rank's: the reduced shard is twice this rank's window
+        rows = partial.shape[0] // context.tp_size
+        return 2 * partial[context.tp_rank * rows : (context.tp_rank + 1) * rows]
+
+    monkeypatch.setattr(linear_module, "reduce_row_parallel", reduce_scatter)
+    context = _context(rank=MAX_RANK, num_slots=NUM_SLOTS, tp_size=2, tp_rank=1)
+    adapter = build_adapter(lambda: _row(_Host(_base_weight()), context), context)
+    alphas = (8.0, 2.0, 3.0)
+    for slot, alpha in enumerate(alphas):
+        adapter.init_slot(slot, MAX_RANK, alpha)
+        with torch.no_grad():
+            adapter.slots[slot].down_B.normal_()
+    adapter.token_counts_by_slot = (3, 2, 3)
+    x, out = _tokens(8), torch.zeros(4, 1, OUT)
+
+    summed = adapter.add_delta(out, adapter(x, nn.Linear(1, 1)))
+
+    assert len(collectives) == 1
+    # this rank's window is tokens 4..7: one of slot 1's, three of slot 2's
+    rows = x.detach()[4:].reshape(4, HIDDEN)
+    expected = torch.cat(
+        [
+            alphas[slot] / MAX_RANK * (2 * part @ adapter.slots[slot].down_A.t()) @ adapter.slots[slot].down_B.t()
+            for slot, part in ((1, rows[:1]), (2, rows[1:]))
+        ]
+    )
+    torch.testing.assert_close(summed.reshape(4, OUT), expected)
 
 
 def _routed(num_slots=NUM_SLOTS):
