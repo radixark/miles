@@ -5,9 +5,7 @@ import torch
 from miles.backends.megatron_utils.lora.bridge_checkpoint import BridgeAdapterSlots
 from miles.backends.megatron_utils.lora.native.hf_adapter import export_lora_hf_named
 from miles.backends.megatron_utils.lora.native.modules.linear import (
-    adapters_hidden_context as hide_native_adapters_context,
-)
-from miles.backends.megatron_utils.lora.native.modules.linear import (
+    adapters_hidden_context,
     iter_adapters,
     iter_multi_lora_adapters,
     iter_slot_adapters,
@@ -79,7 +77,7 @@ class NativeAdapterSlots(BridgeAdapterSlots):
         return next((len(multi_adapter.adapters) for multi_adapter in iter_multi_lora_adapters(self._model)), 0)
 
     def adapters_hidden_context(self):
-        return hide_native_adapters_context(self._model)
+        return adapters_hidden_context(self._model)
 
     def _unexported_elements(self) -> torch.Tensor:
         """head_B's padded vocab rows: the export trims them, so no checkpoint holds them and a load leaves them."""

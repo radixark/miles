@@ -279,7 +279,6 @@ class KimiK3AttentionSpec(AttentionSpecBase):
 
     def attach(self, block: nn.Module, layer: nn.Module, context: AttachContext) -> int:
         if block.is_kda:
-            L.assert_no_slots_under_cp_relayout(context)
             return attach_layout(block.linear_attn, self.kda_layout, layer, context)
         return attach_layout(block, self.layout, layer, context)
 

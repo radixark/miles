@@ -165,7 +165,7 @@ class ModuleLayout:
 
 
 def assert_no_slots_under_cp_relayout(context: AttachContext) -> None:
-    """Linear attention moves its CP shard to packed order before these projections; routing counts this
+    """Linear attention moves its CP shard to packed order before its input projections; routing counts this
     rank's zigzag tokens."""
     assert (
         context.lora.num_slots is None or context.transformer_config.context_parallel_size == 1
