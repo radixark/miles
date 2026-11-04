@@ -394,6 +394,7 @@ def find_load_mismatch(
     targets,
     load_optimizer: bool,
     run_shapes: dict[str, tuple[int, ...]],
+    head_rows: HeadRows | None = None,
 ) -> str | None:
     """Collective: why ``path`` cannot load into ``slot`` (every rank gets the same answer), or None.
 
@@ -405,7 +406,9 @@ def find_load_mismatch(
     mismatch, saved = None, None
     # any failure to read the user's source is theirs; raised after the slot reset, it kills the trainer cell
     try:
-        kind = check_adapter_source(path, run, targets, load_optimizer=load_optimizer, run_shapes=run_shapes)
+        kind = check_adapter_source(
+            path, run, targets, load_optimizer=load_optimizer, run_shapes=run_shapes, head_rows=head_rows
+        )
         if kind == AdapterSourceKind.LEGACY_TINKER_CHECKPOINT:
             _read_legacy_meta(path, run)
             # TE's _extra_state objects are stored per shard (<key>/shard_i_j); the tensors decide the layout

@@ -357,11 +357,14 @@ def _weights_only_state(
 def _served_rows(full: torch.Tensor, spec: LocalShardSpec, head_rows: HeadRows | None) -> torch.Tensor:
     if head_rows is None or spec.key != head_rows.key:
         return full
-    rows, served = full.shape[0], spec.global_shape[0]
+    _assert_head_rows(spec.key, full.shape[0], spec.global_shape[0], head_rows)
+    return full[: spec.global_shape[0]]
+
+
+def _assert_head_rows(key: str, rows: int, served: int, head_rows: HeadRows) -> None:
     assert (
         served <= rows <= head_rows.max_source_rows
-    ), f"{spec.key}: the source has {rows} rows; this run serves {served} and reads up to {head_rows.max_source_rows}"
-    return full[:served]
+    ), f"{key}: the source has {rows} rows; this run serves {served} and reads up to {head_rows.max_source_rows}"
 
 
 def _with_run_alpha_if_unknown(source: AdapterParametrization, run: AdapterParametrization) -> AdapterParametrization:
@@ -400,11 +403,13 @@ def check_adapter_source(
     *,
     load_optimizer: bool,
     run_shapes: dict[str, tuple[int, ...]] | None = None,
+    head_rows: HeadRows | None = None,
 ) -> AdapterSourceKind:
     """Rank-local dry run of every check ``load_adapter_dir`` makes on the files of a source it reads itself.
 
     Raises what that load would; an in-model source is returned unchecked, its loader's checks are the backend's.
-    ``run_shapes``: the whole shape of each HF-keyed tensor this rank loads, checked on a source read as weights.
+    ``run_shapes``: the whole shape of each HF-keyed tensor this rank loads, checked on a source read as weights;
+    ``head_rows``: the members' head, whose source may hold more rows than the run serves, as the load reads it.
     """
     kind = classify_adapter_source(path, targets, load_optimizer=load_optimizer)
     if kind.is_read_into_model():
@@ -416,6 +421,10 @@ def check_adapter_source(
         weights = apply_parametrization_conversion(reader.read_weights(), steps)
         _assert_has_keys(weights, run.adapter_state_keys())
         if run_shapes is not None:
+            if head_rows is not None and head_rows.key in run_shapes:
+                source, run_shape = tuple(weights[head_rows.key].shape), run_shapes[head_rows.key]
+                _assert_head_rows(head_rows.key, source[0], run_shape[0], head_rows)
+                run_shapes = {**run_shapes, head_rows.key: (source[0], *run_shape[1:])}
             differing = [
                 f"{k}: {tuple(weights[k].shape)} != {s}" for k, s in run_shapes.items() if tuple(weights[k].shape) != s
             ]

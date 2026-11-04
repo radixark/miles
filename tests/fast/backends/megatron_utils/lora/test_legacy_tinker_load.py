@@ -7,6 +7,7 @@ import torch.distributed as dist
 from tests.fast.dist_utils import find_free_port, init_gloo
 
 from miles.backends.megatron_utils.lora import checkpoint
+from miles.backends.training_utils.checkpoint.adapter.adapter_dir import HeadRows
 from miles.backends.training_utils.checkpoint.adapter.adapter_exports import write_peft_adapter
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
 from miles.backends.training_utils.checkpoint.adapter.readers import AdapterSourceKind
@@ -73,6 +74,39 @@ def test_a_source_the_weight_conversion_refuses_is_a_mismatch(gloo, tmp_path):
         None, 0, str(tmp_path), shared, TARGETS, load_optimizer=False, run_shapes={}
     )
     assert mismatch is not None and "cannot share A" in mismatch
+
+
+def test_a_head_over_the_served_vocab_is_no_mismatch(gloo, tmp_path):
+    """Official Tinker and HF PEFT exports carry the HF vocab's head rows; the load keeps the served ones."""
+    head = replace(UNSHARED, target_modules=("lm_head",))
+    write_peft_adapter(
+        tmp_path, {"lm_head.lora_A": torch.zeros(2, 6), "lm_head.lora_B": torch.zeros(8, 2)}, head, TARGETS
+    )
+    run_shapes = {"lm_head.lora_A": (2, 6), "lm_head.lora_B": (6, 2)}
+    assert (
+        checkpoint.find_load_mismatch(
+            None,
+            0,
+            str(tmp_path),
+            head,
+            TARGETS,
+            load_optimizer=False,
+            run_shapes=run_shapes,
+            head_rows=HeadRows("lm_head.lora_B", max_source_rows=8),
+        )
+        is None
+    )
+    too_many = checkpoint.find_load_mismatch(
+        None,
+        0,
+        str(tmp_path),
+        head,
+        TARGETS,
+        load_optimizer=False,
+        run_shapes=run_shapes,
+        head_rows=HeadRows("lm_head.lora_B", max_source_rows=7),
+    )
+    assert too_many is not None and "the source has 8 rows" in too_many
 
 
 def test_an_unreadable_source_is_a_mismatch(gloo, tmp_path):
