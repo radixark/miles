@@ -536,7 +536,6 @@ def test_the_external_export_is_the_fp32_masters_gathered_across_ranks():
         assert torch.equal(exported[f"{MODULE}.{factor}"], master)
 
 
-
 class DataParallelMembers(FakeMembers):
     """Two data-parallel replicas of a two-way row split: ranks 2 and 3 hold non-primary copies of ranks 0 and 1."""
 
@@ -564,6 +563,7 @@ def test_the_external_export_takes_each_piece_from_its_primary_rank_only():
     exported = ExternalWeightsReader(committed.path, RUN, TARGETS).read_weights()
     for factor, full in FULL.items():
         assert torch.equal(exported[f"{MODULE}.{factor}"], full)
+
 
 GDN = "model.layers.0.linear_attn"
 GDN_TARGETS = get_hf_lora_targets(
