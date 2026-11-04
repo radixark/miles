@@ -432,8 +432,12 @@ def test_a_torch_dist_base_fine_tuned_after_its_hf_conversion_is_refused(single_
 
 def test_a_torch_dist_base_with_a_merged_lora_is_refused(single_rank_gloo, tmp_path):
     norm = torch.randn(4)
-    with pytest.raises(RuntimeError, match="trained on another base model .* differs in e.g. \\['decoder.layers.0.self"):
-        assert_same_base_as_torch_dist("src", [_Chunk(norm.clone())], _torch_dist_base(tmp_path / "merged", norm, qkv=torch.ones(2, 2) + 1))
+    with pytest.raises(
+        RuntimeError, match="trained on another base model .* differs in e.g. \\['decoder.layers.0.self"
+    ):
+        assert_same_base_as_torch_dist(
+            "src", [_Chunk(norm.clone())], _torch_dist_base(tmp_path / "merged", norm, qkv=torch.ones(2, 2) + 1)
+        )
 
 
 def test_a_pretrained_checkpoint_resolves_to_its_tracked_torch_dist_iteration(single_rank_gloo, tmp_path):
