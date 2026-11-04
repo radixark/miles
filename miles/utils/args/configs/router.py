@@ -3,8 +3,8 @@ from typing import Any, ClassVar
 
 from sglang_router.launch_router import RouterArgs
 
-from miles.backends.dynamo_utils.config import DynamoConfig
 from miles.router.backend import RouterKind
+from miles.router.dynamo.config import DynamoConfig
 from miles.utils.args.schema import A, Arg, BaseConfig
 
 _ROUTER_DEST_PREFIX = "router_"

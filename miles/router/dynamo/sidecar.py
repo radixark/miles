@@ -2,7 +2,8 @@ import json
 import os
 import shlex
 from sglang.srt.server_args import ServerArgs
-from miles.backends.dynamo_utils.config import Address, launch_args, runtime_env
+from miles.router.dynamo.config import Address
+from miles.router.dynamo.frontend import launch_args, runtime_env
 from miles.utils.workers.argv_utils import _record_field_names
 from miles.utils.workers.worker_spec import PortInfo
 
