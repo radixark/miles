@@ -17,11 +17,15 @@ class TrainConfig(BaseConfig):
     linear_attention_backend: A[
         str,
         Arg(
-            choices=["fla", "flashqla"],
+            choices=["fla", "flashqla", "cake"],
             help=(
                 "Backend for Qwen GDN linear-attention layers. "
                 "'fla' (flash-linear-attention) is portable and runs on any supported GPU. "
-                "'flashqla' (FlashQLA) requires NVIDIA SM90 (Hopper) or newer, CUDA 12.8+, and PyTorch 2.8+."
+                "'flashqla' (FlashQLA) requires NVIDIA SM90 (Hopper) or newer, CUDA 12.8+, and PyTorch 2.8+. "
+                "'cake' is the Cake chunked forward/backward from the miles-ext-kernels submodule: "
+                "--cake-gdn-variant det (bit-deterministic, the only variant with context parallelism) or fast (the "
+                "Cake non-deterministic package, fixed-order; the default outside --deterministic-mode). It requires "
+                "--use-miles-ext-kernels, NVIDIA SM100a/SM103a (Blackwell) and K = V = 128."
             ),
         ),
     ] = "fla"

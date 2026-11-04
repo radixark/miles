@@ -71,7 +71,7 @@ from miles.utils.workers.worker_provider.static import parse_host_and_port
 
 logger = logging.getLogger(__name__)
 
-LINEAR_ATTENTION_BACKENDS = ("fla", "flashqla")
+LINEAR_ATTENTION_BACKENDS = ("fla", "flashqla", "cake")
 # Backend arguments whose 'cake' choice runs a kernel from the miles-ext-kernels submodule.
 CAKE_BACKEND_ARGS = ("linear_attention_backend", "dsa_attention_backend", "miles_dsa_topk_backend")
 LINEAR_ATTENTION_INPUT_NORMS = ("te", "hf")

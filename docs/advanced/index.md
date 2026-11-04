@@ -18,6 +18,13 @@ speculative decoding, sampling-support replay, and LoRA training and serving.
 
   </Card>
 
+  <Card title="Cake Training Kernels" icon="microchip" href="/advanced/cake-kernels">
+
+    Opt-in Blackwell training kernels from the miles-ext-kernels submodule, in
+    deterministic and fast variants.
+
+  </Card>
+
   <Card title="INT4 QAT" icon="microchip" href="/advanced/int4-qat">
 
     W4A16 quantization-aware training for fitting large models on a single

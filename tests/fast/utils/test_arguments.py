@@ -59,6 +59,10 @@ from miles.utils.workers.naming import DEPLOY_INSTANCE_ID_MAX_LENGTH
 
 PATH_ARGS = ["--rollout-function-path", "--custom-generate-function-path", "--custom-inference-engine-provider-path"]
 REQUIRED_ARGS = ["--rollout-batch-size", "64"]
+# The default of every backend argument with a 'cake' choice: adding the choice leaves each default unchanged.
+CAKE_CHOICE_DEFAULTS = {
+    "linear_attention_backend": "fla",
+}
 _P2P_ARGS = ["--update-weight-transfer-mode", "p2p"]
 DYNAMIC_BATCH_ARGS = ["--use-dynamic-batch-size", "--max-tokens-per-gpu", "1024"]
 
@@ -4064,6 +4068,14 @@ class TestMilesExtKernels:
             parser = argparse.ArgumentParser()
             get_miles_extra_args_provider()(parser)
             return parser.parse_args()
+
+    def test_every_cake_choice_is_a_cake_backend_argument(self) -> None:
+        assert CAKE_CHOICE_DEFAULTS.keys() <= set(CAKE_BACKEND_ARGS)
+
+    @pytest.mark.parametrize("name", CAKE_CHOICE_DEFAULTS)
+    def test_a_cake_choice_keeps_the_default_and_parses(self, name: str) -> None:
+        assert vars(self._parse([]))[name] == CAKE_CHOICE_DEFAULTS[name]
+        assert vars(self._parse([f"--{name.replace('_', '-')}", "cake"]))[name] == "cake"
 
     @pytest.mark.parametrize("name", CAKE_BACKEND_ARGS)
     def test_a_cake_backend_requires_the_flag(self, name: str) -> None:
