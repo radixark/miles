@@ -215,6 +215,7 @@ def write_sampler_export(
     targets: HfLoraTargets,
     *,
     tenant_digest: str | None,
+    lora_dropout: float,
 ) -> UncommittedAdapterDir:
     """All ranks call; rank 0 writes ``slot``'s bf16 sampler export. The caller's committer then commits it."""
     with write_adapter_dir(root, name, tenant_digest=tenant_digest) as written:
@@ -222,7 +223,7 @@ def write_sampler_export(
         named_tensors = [(key, tensor.cpu()) for key, tensor in members.export_bf16_adapter(slot)]
         if _is_writer():
             weights = _hf_keyed_bf16_adapter(named_tensors, members, parametrization, targets)
-            write_sampler_adapter(written.path, weights, parametrization, targets)
+            write_sampler_adapter(written.path, weights, parametrization, targets, lora_dropout=lora_dropout)
     return written
 
 

@@ -44,6 +44,7 @@ def test_export_slot_writes_the_slots_sampler_export_under_the_gateways_parametr
     calls = []
     actor = _actor_with_sampler_export(monkeypatch, lambda **kwargs: calls.append(kwargs) or "written")
     actor.adapter_slots = _Slots()
+    actor.args = SimpleNamespace(lora_dropout=0.1)
 
     assert actor.export_slot(3, "/root", "v1", "digest", {"lora_rank": 8, "base_model": "m"}) == "written"
 
@@ -56,6 +57,7 @@ def test_export_slot_writes_the_slots_sampler_export_under_the_gateways_parametr
         parametrization=SimpleNamespace(lora_rank=8, base_model="m"),
         targets=_Slots.targets,
         tenant_digest="digest",
+        lora_dropout=0.1,
     )
     with pytest.raises(AssertionError, match="disagree on rank"):
         actor.export_slot(3, "/root", "v2", "digest", {"lora_rank": 4, "base_model": "m"})

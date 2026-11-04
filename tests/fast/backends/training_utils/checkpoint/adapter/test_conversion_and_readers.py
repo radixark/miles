@@ -163,7 +163,9 @@ def test_sampler_export_reads_back_through_the_adapter_dir_reader(tmp_path):
 
 
 def test_sampler_export_target_modules_name_hf_modules_not_sglang_tensors(tmp_path):
-    write_sampler_adapter(tmp_path, {k: v.to(torch.bfloat16) for k, v in _weights(False).items()}, _run(), QWEN35)
+    write_sampler_adapter(
+        tmp_path, {k: v.to(torch.bfloat16) for k, v in _weights(False).items()}, _run(), QWEN35, lora_dropout=0.0
+    )
     names = set(load_file(str(tmp_path / "adapter_model.safetensors")))
     assert any(".experts.w1." in n for n in names) and not any(".experts.gate_proj." in n for n in names)
     config = json.loads((tmp_path / "adapter_config.json").read_text())
@@ -525,7 +527,7 @@ def test_a_sampler_export_is_written_uncommitted_with_its_tenant_and_parametriza
     run = _run(target_modules=(down,))
     export = _PerExpertDownExport()
 
-    written = write_sampler_export(tmp_path, "v1", export, 0, run, QWEN3, tenant_digest="digest")
+    written = write_sampler_export(tmp_path, "v1", export, 0, run, QWEN3, tenant_digest="digest", lora_dropout=0.0)
 
     assert written.path.parent == tmp_path and not (tmp_path / "v1").exists(), "the committer links it"
     tensors = load_file(str(written.path / "adapter_model.safetensors"))
