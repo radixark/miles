@@ -119,6 +119,7 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
             parametrization=parametrization,
             targets=self.adapter_slots.targets,
             tenant_digest=tenant_digest,
+            lora_dropout=self.args.lora_dropout,
         )
 
     @with_logs

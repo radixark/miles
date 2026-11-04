@@ -671,6 +671,7 @@ def save_single_lora(
         single_lora_parametrization(adapter_slots, args),
         adapter_slots.targets,
         training_state=training_state,
+        lora_dropout=args.lora_dropout,
     )
 
 
@@ -746,6 +747,7 @@ def restore_single_lora(
             run,
             targets,
             training_state=training_state,
+            lora_dropout=args.lora_dropout,
         )
     if training_state is None:
         return AdapterRestore(None, False, 0)
