@@ -4093,6 +4093,32 @@ class TestMilesExtKernels:
         add_arguments.assert_not_called()
         assert args.use_miles_ext_kernels is False
 
+    def test_a_missing_submodule_names_the_command_that_checks_it_out(self, monkeypatch) -> None:
+        monkeypatch.setitem(sys.modules, "miles_ext_kernels", None)
+
+        with pytest.raises(ModuleNotFoundError, match="git submodule update --init 3rdparty/miles-ext-kernels"):
+            self._parse(["--use-miles-ext-kernels"])
+
+    def test_without_the_flag_the_typed_config_holds_no_ext_arguments(self) -> None:
+        config = parse_megatron_test_config()
+
+        assert config.use_miles_ext_kernels is False
+        assert config.miles_ext_kernels_args is None
+
+    def test_the_full_parse_moves_the_ext_arguments_into_their_typed_owner(self) -> None:
+        """parse_args() itself, with the real submodule: every argument the submodule registers ends up in one typed
+        field, which survives the JSON transport of the configuration."""
+        import miles_ext_kernels
+
+        registered = argparse.ArgumentParser(add_help=False)
+        miles_ext_kernels.add_arguments(registered)
+        config = parse_megatron_test_config("--use-miles-ext-kernels")
+
+        assert config.use_miles_ext_kernels is True
+        assert config.miles_ext_kernels_args.keys() == {action.dest for action in registered._actions}
+        transported = type(config).model_validate_json(config.model_dump_json())
+        assert transported.miles_ext_kernels_args == config.miles_ext_kernels_args
+
 
 @pytest.mark.parametrize("backend", ["megatron", "fsdp", "torchtitan"])
 def test_dumper_retention_override_is_only_added_for_megatron(backend: str) -> None:
