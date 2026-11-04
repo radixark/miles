@@ -73,7 +73,12 @@ logger = logging.getLogger(__name__)
 
 LINEAR_ATTENTION_BACKENDS = ("fla", "flashqla", "cake")
 # Backend arguments whose 'cake' choice runs a kernel from the miles-ext-kernels submodule.
-CAKE_BACKEND_ARGS = ("linear_attention_backend", "dsa_attention_backend", "miles_dsa_topk_backend")
+CAKE_BACKEND_ARGS = (
+    "linear_attention_backend",
+    "dsa_attention_backend",
+    "miles_dsa_topk_backend",
+    "kda_backend",
+)
 LINEAR_ATTENTION_INPUT_NORMS = ("te", "hf")
 
 FULLY_ASYNC_ROLLOUT_PATH = "miles.rollout.fully_async_rollout.FullyAsyncRolloutFn"
@@ -942,6 +947,11 @@ def validate_miles_ext_kernels_args(args) -> None:
         backend = getattr(args, name)  # config-access-exempt: backend flags named in CAKE_BACKEND_ARGS
         if backend == "cake" and not args.use_miles_ext_kernels:
             raise ValueError(f"--{name.replace('_', '-')} cake requires --use-miles-ext-kernels")
+    if args.kda_backend == "cake" and args.train_backend != "megatron":
+        raise ValueError(
+            f"--kda-backend cake runs in the Megatron KDA layers; --train-backend {args.train_backend} would silently "
+            "run fla: use --train-backend megatron or --kda-backend fla"
+        )
     if args.use_miles_ext_kernels:
         import_miles_ext_kernels().validate_args(args)
 

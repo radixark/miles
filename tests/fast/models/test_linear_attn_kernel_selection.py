@@ -114,6 +114,50 @@ def test_kda_uses_the_triton_backward_on_blackwell_unless_set(monkeypatch, capab
     assert os.environ.get("FLA_TILELANG") == expected
 
 
+def test_cake_kda_backend_routes_to_the_kernel_package(monkeypatch):
+    linear_attn.kda_kernel.cache_clear()
+    cake = types.ModuleType("miles_ext_kernels.kda")
+    cake.chunk_kda = "cake-kda"
+    monkeypatch.setitem(sys.modules, "miles_ext_kernels", types.ModuleType("miles_ext_kernels"))
+    monkeypatch.setitem(sys.modules, "miles_ext_kernels.kda", cake)
+    try:
+        assert linear_attn.kda_kernel("cake") == "cake-kda"
+    finally:
+        linear_attn.kda_kernel.cache_clear()
+
+
+def test_unknown_kda_backend_raises_value_error():
+    with pytest.raises(ValueError, match="Unsupported KDA backend"):
+        linear_attn.kda_kernel.__wrapped__("nope")
+
+
+def test_cake_kda_backend_without_the_submodule_names_the_flag(monkeypatch):
+    monkeypatch.setitem(sys.modules, "miles_ext_kernels", None)
+    monkeypatch.setitem(sys.modules, "miles_ext_kernels.kda", None)
+
+    with pytest.raises(ImportError, match="--use-miles-ext-kernels") as excinfo:
+        linear_attn.kda_kernel.__wrapped__("cake")
+    assert "git submodule update --init 3rdparty/miles-ext-kernels" in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    "extra, message",
+    [
+        (["--context-parallel-size", "2"], "--kda-backend cake does not support context parallelism"),
+        (["--qkv-format", "bshd"], "--kda-backend cake needs --qkv-format thd"),
+    ],
+)
+def test_the_cake_kda_backend_rejects_what_its_kernels_do_not_run(extra, message):
+    with pytest.raises(ValueError, match=message):
+        parse_megatron_test_config("--use-miles-ext-kernels", "--kda-backend", "cake", *extra)
+
+
+def test_the_cake_kda_backend_parses_with_its_supported_layout():
+    config = parse_megatron_test_config("--use-miles-ext-kernels", "--kda-backend", "cake")
+
+    assert config.kda_backend == "cake"
+
+
 def test_short_conv_backend_respects_fla_conv_backend(monkeypatch):
     monkeypatch.setenv("FLA_CONV_BACKEND", "cuda")
     assert linear_attn.short_conv_backend.__wrapped__() == "cuda"

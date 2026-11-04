@@ -92,9 +92,22 @@ def gdn_kernel(backend: str, args=None):
 
 
 @functools.cache
-def kda_kernel():
-    """fla's chunk_kda. On Blackwell its backward runs the Triton dqkg kernel (FLA_TILELANG=0), which
-    beats fla's TileLang one there at every tiling; an explicit FLA_TILELANG wins."""
+def kda_kernel(backend: str = "fla"):
+    """The ``chunk_kda`` of ``backend``. 'fla': on Blackwell its backward runs the Triton dqkg kernel
+    (FLA_TILELANG=0), which beats fla's TileLang one there at every tiling; an explicit FLA_TILELANG wins. 'cake': the
+    deterministic Cake kernels of ``miles_ext_kernels.kda`` (from the miles-ext-kernels submodule)."""
+    if backend == "cake":
+        try:
+            from miles_ext_kernels.kda import chunk_kda
+        except ImportError as exc:
+            raise ImportError(
+                "KDA backend 'cake' runs miles_ext_kernels.kda from the miles-ext-kernels submodule: pass "
+                "--use-miles-ext-kernels and check the submodule out with "
+                "'git submodule update --init 3rdparty/miles-ext-kernels'."
+            ) from exc
+        return chunk_kda
+    if backend != "fla":
+        raise ValueError(f"Unsupported KDA backend: {backend}")
     try:
         from fla.ops.kda import chunk_kda
     except ImportError as exc:
@@ -141,11 +154,31 @@ def gdn_recurrence(
     return out
 
 
-def kda_recurrence(q, k, v, beta_logits, decay, A_log, dt_bias, *, gate_lower_bound, cu_seqlens, cp_context):
+def kda_recurrence(
+    q, k, v, beta_logits, decay, A_log, dt_bias, *, gate_lower_bound, cu_seqlens, cp_context, backend="fla"
+):
     """q/k ``[b, s, H, hk]``, v ``[b, s, H, hv]``, decay ``[b, s, H * hv]`` (the low-rank forget gate,
-    gated inside the kernel) -> ``[b, s, H, hv]``."""
+    gated inside the kernel) -> ``[b, s, H, hv]``. The ``cake`` kernels take the raw forget gate and a BF16 beta,
+    one packed sequence and no context parallelism (both also rejected at startup)."""
+    if backend == "cake":
+        if cp_context is not None:
+            raise NotImplementedError("--kda-backend cake does not support context parallelism yet.")
+        assert q.shape[0] == 1, f"--kda-backend cake takes one packed sequence (thd), got batch {q.shape[0]}"
+        return kda_kernel("cake")(
+            q,
+            k,
+            v,
+            g=decay.reshape(v.shape),
+            beta=beta_logits.float().sigmoid().to(torch.bfloat16),
+            A_log=A_log,
+            dt_bias=dt_bias,
+            lower_bound=gate_lower_bound,
+            cu_seqlens=cu_seqlens,
+            use_gate_in_kernel=True,
+            use_qk_l2norm_in_kernel=True,
+        )
     boundaries = {"cp_context": cp_context} if cp_context is not None else {"cu_seqlens": cu_seqlens}
-    out, _ = kda_kernel()(
+    out, _ = kda_kernel("fla")(
         q=q,
         k=k,
         v=v,
@@ -183,9 +216,10 @@ def short_conv_backend() -> str:
 
 @functools.cache
 def cake_conv_backend() -> str:
-    """Short conv backend under the ``cake`` GDN backend: fla's Triton kernels, whose backward reproduces the weight
-    gradient bit for bit, instead of :func:`short_conv_backend`'s ``mix`` (causal-conv1d's CUDA backward accumulates
-    ``dweight`` with atomics, so repeated passes differ in the last bits). An explicit ``FLA_CONV_BACKEND`` wins."""
+    """Short conv backend under the ``cake`` GDN and KDA backends: fla's Triton kernels, whose backward reproduces the
+    weight gradient bit for bit, instead of :func:`short_conv_backend`'s ``mix`` (causal-conv1d's CUDA backward
+    accumulates ``dweight`` with atomics, so repeated passes differ in the last bits). An explicit ``FLA_CONV_BACKEND``
+    wins."""
     backend = os.environ.get("FLA_CONV_BACKEND", "triton")
     logger.info(f"Linear-attention short conv backend under cake: {backend}")
     return backend
@@ -535,14 +569,30 @@ class KimiDeltaAttention(LinearAttention):
     gated inside fla's kernel. One key head per value head, so the convs see contiguous per-head q / k / v
     and need no group-major permutation. ``f_a_proj`` is replicated and feeds head-sharded ``f_b_proj``,
     so its weight passes the TP copy op like the norm. The conv weights train in fp32, as Kimi's
-    checkpoints store them."""
+    checkpoints store them. ``kda_backend`` 'cake' runs the recurrence on the deterministic Cake kernels of
+    ``miles_ext_kernels.kda`` (1 to 64 heads per rank, SM100a / SM103a), whose kernels for this rank's head count are
+    built when the layer is; its short convs then run on :func:`cake_conv_backend` and its gated output norm on
+    :func:`reproducible_rms_norm_gated`, so the layer's gradients are reproducible."""
 
     dt_bias_per_channel = True
     dt_bias_dtype = torch.float32
 
-    def __init__(self, config, heads, conv_kernel_size, norm_eps, tp_group, gate_lower_bound: float):
-        super().__init__(config, heads, conv_kernel_size, norm_eps, tp_group, norm_activation="sigmoid")
+    def __init__(
+        self, config, heads, conv_kernel_size, norm_eps, tp_group, gate_lower_bound: float, kda_backend: str = "fla"
+    ):
+        conv_backend = cake_conv_backend() if kda_backend == "cake" else None
+        super().__init__(
+            config, heads, conv_kernel_size, norm_eps, tp_group, norm_activation="sigmoid", conv_backend=conv_backend
+        )
         self.gate_lower_bound = gate_lower_bound
+        self.kda_backend = kda_backend
+        self.reproducible_norm = kda_backend == "cake"
+        if kda_backend == "cake":
+            kda_kernel("cake")  # the clear ImportError without the submodule
+            from miles_ext_kernels.kda import prepare
+
+            # More than 64 heads per rank raises here (Kimi-K3's 96 at TP1), as does a GPU other than SM100a / SM103a
+            prepare(self.local.num_v_heads)
 
     def _build_projections(self):
         hidden, local = self.config.hidden_size, self.local
@@ -603,6 +653,7 @@ class KimiDeltaAttention(LinearAttention):
             gate_lower_bound=self.gate_lower_bound,
             cu_seqlens=cu_seqlens,
             cp_context=cp_context,
+            backend=self.kda_backend,
         )
 
 

@@ -45,6 +45,7 @@ through file locks.
 | Family | Backend argument | Package arguments | Models | Limits |
 |---|---|---|---|---|
 | GDN chunked gated delta rule | `--linear-attention-backend cake` | `--cake-gdn-variant {det,fast}`, `--cake-gdn-recompute-state` | Qwen3.5 / Qwen3.6, Qwen3-Next, Qwen3.8-Next | K = V = 128. `fast` is fixed-order (bit-identical run to run, allowed under `--deterministic-mode`); context parallelism runs `det`. See [Qwen3.5](/models/qwen/qwen3-5). |
+| KDA chunked delta attention | `--kda-backend cake` | none (`det` only) | Kimi-K3, GLM-5.3-Flash | Megatron backend, `--qkv-format thd`, no context parallelism, 1 to 64 KDA heads per rank (Kimi-K3's 96 heads need tensor parallelism of at least 2; GLM-5.3-Flash's KDA layer is not head-sharded). The kernels take a BF16 beta, so numerics differ slightly from fla's FP32 beta. |
 
 ## Tests
 

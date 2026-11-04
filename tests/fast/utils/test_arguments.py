@@ -62,6 +62,7 @@ REQUIRED_ARGS = ["--rollout-batch-size", "64"]
 # The default of every backend argument with a 'cake' choice: adding the choice leaves each default unchanged.
 CAKE_CHOICE_DEFAULTS = {
     "linear_attention_backend": "fla",
+    "kda_backend": "fla",
 }
 _P2P_ARGS = ["--update-weight-transfer-mode", "p2p"]
 DYNAMIC_BATCH_ARGS = ["--use-dynamic-batch-size", "--max-tokens-per-gpu", "1024"]
@@ -4104,6 +4105,13 @@ class TestMilesExtKernels:
             args = self._parse([])
         add_arguments.assert_not_called()
         assert args.use_miles_ext_kernels is False
+
+    @pytest.mark.parametrize("train_backend", ["fsdp", "torchtitan"])
+    def test_the_cake_kda_backend_needs_the_megatron_backend(self, train_backend: str) -> None:
+        args = self._parse(["--use-miles-ext-kernels", "--kda-backend", "cake", "--train-backend", train_backend])
+
+        with pytest.raises(ValueError, match="--kda-backend cake runs in the Megatron KDA layers"):
+            validate_miles_ext_kernels_args(args)
 
     def test_a_missing_submodule_names_the_command_that_checks_it_out(self, monkeypatch) -> None:
         monkeypatch.setitem(sys.modules, "miles_ext_kernels", None)

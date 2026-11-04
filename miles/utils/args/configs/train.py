@@ -40,6 +40,19 @@ class TrainConfig(BaseConfig):
             ),
         ),
     ] = "te"
+    kda_backend: A[
+        str,
+        Arg(
+            choices=("fla", "cake"),
+            help=(
+                "Backend for the KDA (Kimi Delta Attention) linear-attention layers of Kimi-K3 and GLM-5.3-Flash. "
+                "'fla' (flash-linear-attention) is portable. 'cake' is the deterministic Cake chunked "
+                "forward/backward from the miles-ext-kernels submodule (raw forget gate and q/k L2 norm in the "
+                "kernels, BF16 beta, 1 to 64 heads per rank); it requires --use-miles-ext-kernels, --train-backend "
+                "megatron, --qkv-format thd, no context parallelism and NVIDIA SM100a/SM103a (Blackwell)."
+            ),
+        ),
+    ] = "fla"
     true_on_policy_mode: A[bool, Arg(help="Whether to enable true-on-policy mode.")] = False
     train_env_vars: A[
         Any,
