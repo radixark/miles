@@ -23,6 +23,7 @@ from miles.utils.external_utils.command_utils.ray_backend.command import (
 )
 from miles.utils.external_utils.model_args_utils import shell_safe_model_args
 from miles.utils.external_utils.ray_job import run_ray_job
+from miles.utils.port_range import ray_worker_port_args
 
 
 class RayCommandBackend(BaseCommandBackend):
@@ -46,6 +47,7 @@ class RayCommandBackend(BaseCommandBackend):
                 # will prevent ray from buffering stdout/stderr
                 f"export PYTHONUNBUFFERED=1 && "
                 f"ray start --head --node-ip-address {master_addr} --num-gpus {request.num_gpus_per_node} --disable-usage-stats"
+                f"{ray_worker_port_args()}"
             )
 
         if mooncake_master_port is not None:
