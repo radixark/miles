@@ -375,9 +375,10 @@ NORM_KEY, QKV_KEY = "decoder.final_layernorm.weight", "decoder.layers.self_atten
 class _Chunk(torch.nn.Module):
     """A model chunk: one norm, one projection and one adapter weight, keyed as Megatron shards them."""
 
-    def __init__(self, norm: torch.Tensor):
+    def __init__(self, norm: torch.Tensor, qkv: torch.Tensor | None = None):
         super().__init__()
-        self.norm, self.qkv, self.lora = (torch.nn.Parameter(t) for t in (norm, torch.ones(2, 2), torch.ones(2)))
+        qkv = torch.ones(2, 2) if qkv is None else qkv
+        self.norm, self.qkv, self.lora = (torch.nn.Parameter(t) for t in (norm, qkv, torch.ones(2)))
 
     def sharded_state_dict(self, metadata=None) -> dict:
         lora_key = "decoder.layers.self_attention.linear_qkv.adapter.linear_in.weight"
@@ -407,9 +408,9 @@ def single_rank_gloo(tmp_path, monkeypatch):
         dist.destroy_process_group()
 
 
-def _torch_dist_base(path, norm: torch.Tensor, *, with_norm: bool = True):
+def _torch_dist_base(path, norm: torch.Tensor, *, with_norm: bool = True, qkv: torch.Tensor | None = None):
     path.mkdir()
-    state = _Chunk(norm).sharded_state_dict()
+    state = _Chunk(norm, qkv).sharded_state_dict()
     if not with_norm:
         del state[NORM_KEY]
     dist_checkpointing.save({"model": state}, str(path))
@@ -427,6 +428,12 @@ def test_a_torch_dist_base_fine_tuned_after_its_hf_conversion_is_refused(single_
         assert_same_base_as_torch_dist("src", [chunk], _torch_dist_base(tmp_path / "sft", base + 1))
     with pytest.raises(RuntimeError, match="cannot be compared with this run's model: it lacks"):
         assert_same_base_as_torch_dist("src", [chunk], _torch_dist_base(tmp_path / "bare", base, with_norm=False))
+
+
+def test_a_torch_dist_base_with_a_merged_lora_is_refused(single_rank_gloo, tmp_path):
+    norm = torch.randn(4)
+    with pytest.raises(RuntimeError, match="trained on another base model .* differs in e.g. \\['decoder.layers.0.self"):
+        assert_same_base_as_torch_dist("src", [_Chunk(norm.clone())], _torch_dist_base(tmp_path / "merged", norm, qkv=torch.ones(2, 2) + 1))
 
 
 def test_a_pretrained_checkpoint_resolves_to_its_tracked_torch_dist_iteration(single_rank_gloo, tmp_path):

@@ -1,5 +1,6 @@
 """The reader of Megatron-Bridge PEFT ``iter_N/`` checkpoints (torch_dist), loaded straight into a single-LoRA run."""
 
+import re
 from dataclasses import asdict, replace
 from pathlib import Path
 
@@ -10,6 +11,7 @@ import yaml
 from megatron.core import dist_checkpointing
 from megatron.core.dist_checkpointing.dict_utils import nested_values
 from megatron.core.dist_checkpointing.mapping import ShardedTensor
+from megatron.core.fp8_utils import is_float8tensor
 from megatron.core.optimizer import DistributedOptimizer
 from megatron.core.utils import unwrap_model
 
@@ -114,23 +116,33 @@ def torch_dist_base_dir(pretrained_checkpoint: str | None) -> Path | None:
     return root if dist_checkpointing.check_is_distributed_checkpoint(str(root)) else None
 
 
+def _is_base_fingerprint(key: str, tensor) -> bool:
+    # a full fine-tune changes the norms, a merged LoRA the projections; a chunk's layer 0 is its first local layer
+    return (
+        isinstance(tensor, ShardedTensor)
+        and ".adapter." not in key
+        and not is_float8tensor(tensor.data)
+        and ("norm" in key or re.search(r"(^|\.)layers\.0\.self_attention\.", key) is not None)
+    )
+
+
 def assert_same_base_as_torch_dist(source: str, chunks, base_dir: Path) -> None:
-    """Collective: every norm weight this rank's model holds equals the torch_dist base checkpoint's, bitwise. The
-    in-memory model is the run's base, so a base fine-tuned in Megatron after its HF conversion is caught."""
+    """Collective: every norm weight and layer-0 attention weight this rank's model holds unquantized equals the
+    torch_dist base checkpoint's, bitwise. The in-memory model is the run's base, so a base fine-tuned in Megatron
+    after its HF conversion is caught. Not detected: a LoRA merged only into MLP or expert weights, or only into
+    layers past each chunk's first."""
     held, requested, error = {}, {}, None
     try:
         metadata = dict(dist_checkpointing.load_content_metadata(str(base_dir)) or {})
         metadata["dp_cp_group"] = get_parallel_state().intra_dp_cp.group
         for index, chunk in enumerate(chunks):
-            norms = {
-                k: t
-                for k, t in chunk.sharded_state_dict(metadata=metadata).items()
-                if isinstance(t, ShardedTensor) and "norm" in k and ".adapter." not in k
+            compared = {
+                k: t for k, t in chunk.sharded_state_dict(metadata=metadata).items() if _is_base_fingerprint(k, t)
             }
-            held |= {(index, k): t.data for k, t in norms.items()}
+            held |= {(index, k): t.data for k, t in compared.items()}
             # loading writes into the requested tensors: empty copies, never the model's own parameters
-            requested[f"model{index}"] = {k: replace(t, data=torch.empty_like(t.data)) for k, t in norms.items()}
-        assert held, "this run's model holds no norm weights to compare its base by"
+            requested[f"model{index}"] = {k: replace(t, data=torch.empty_like(t.data)) for k, t in compared.items()}
+        assert any("norm" in k for _, k in held), "this run's model holds no norm weights to compare its base by"
         saved = dcp.FileSystemReader(base_dir).read_metadata().state_dict_metadata
         missing = sorted({t.key for sd in requested.values() for t in sd.values()} - saved.keys())
         assert not missing, (
