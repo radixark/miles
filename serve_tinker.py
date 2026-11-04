@@ -90,7 +90,7 @@ async def serve(args, *, disposer: Disposer):
         ),
         public_url=args.tinker_public_url,
         vocab_size=hf_config.vocab_size,
-        exports_tinker_names=bool(get_hf_lora_targets(full_hf_config.to_dict()).tinker_name_renames),
+        exports_tinker_names=bool(lora_layout.tinker_name_renames),
         max_tokens_per_datum=max_tokens_per_datum,
         max_tokens_per_sample=max_tokens_per_sample,
         lora_alpha=args.lora_alpha,
