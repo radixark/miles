@@ -5,6 +5,9 @@ register_cuda_ci(
     est_time=30, suite="stage-b-2-gpu-h200", labels=["torchtitan", "lora"], hardware=["hopper"], num_gpus=2
 )
 
+from functools import partial
+
+import pytest
 import torch
 import torch.distributed as dist
 from tests.fast.dist_utils import init_gloo, run_multiprocess
@@ -14,7 +17,8 @@ import miles.backends.torchtitan_utils  # noqa: F401
 
 # isort: split
 from torch.distributed.device_mesh import init_device_mesh
-from torch.distributed.tensor import Shard, distribute_tensor
+from torch.distributed.tensor import Replicate, Shard, distribute_tensor
+from torch.distributed.tensor.placement_types import _StridedShard
 from torchtitan.config.parallelism import ParallelismConfig
 from torchtitan.models.qwen3 import build_model_config
 
@@ -139,6 +143,32 @@ def _two_dim_mesh(rank, world_size, port):
 
 def test_a_two_dim_mesh_with_column_shards_maps_to_rectangles():
     run_multiprocess(_two_dim_mesh, world_size=4)
+
+
+def _strided_mesh(rank, world_size, port, placements):
+    init_gloo(rank, world_size, port=port)
+    init_gloo_group()
+    mesh = init_device_mesh("cpu", (2, 2))
+    sd_adapter, params = _adapter()
+    expected = _expected(sd_adapter, params)
+    # a strided shard holds rows that are not one contiguous box of the global tensor
+    # distribute_tensor cannot shard straight into a strided placement; redistributing a replicated tensor can
+    replicated = [Replicate(), Replicate()]
+    sharded = {
+        key: distribute_tensor(value, mesh, replicated).redistribute(mesh, placements) for key, value in params.items()
+    }
+    mapping = probe_torchtitan_row_mapping(sharded, sd_adapter)
+    _check(mapping, [p.to_local() for p in sharded.values()], expected)
+    dist.destroy_process_group()
+
+
+@pytest.mark.parametrize(
+    "placements",
+    [[Shard(0), _StridedShard(0, split_factor=2)], [_StridedShard(0, split_factor=2), Shard(0)]],
+    ids=["shard_then_strided", "strided_then_shard"],
+)
+def test_a_strided_shard_maps_each_local_row_to_its_global_row(placements):
+    run_multiprocess(partial(_strided_mesh, placements=placements), world_size=4)
 
 
 def _pipeline_stages(rank, world_size, port):

@@ -9,8 +9,8 @@ targets and shared-A groups.
 from collections.abc import Mapping
 
 import torch
+import torch.distributed as dist
 from torch.distributed.tensor import DTensor
-from torch.distributed.tensor._utils import compute_local_shape_and_global_offset
 
 from miles.backends.torchtitan_utils.lora_names import is_adapter_key, split_adapter_key
 from miles.backends.training_utils.checkpoint.adapter.probed_slots import (
@@ -24,20 +24,22 @@ from miles.backends.training_utils.checkpoint.adapter.probed_slots import (
 from miles.utils.lora.hf_lora_targets import HfLoraTargets
 
 
-def _local_box(param: torch.Tensor) -> tuple[tuple[int, ...], tuple[int, ...]]:
-    if isinstance(param, DTensor):
-        shape, offset = compute_local_shape_and_global_offset(param.shape, param.device_mesh, param.placements)
-        return tuple(shape), tuple(offset)
-    return tuple(param.shape), (0,) * param.dim()
+# a placed code is rank * _RANK_STRIDE + the element's offset in the rank's concatenated local shards
+_RANK_STRIDE = 2**40
 
 
 def _local_codes(param: torch.Tensor, start: int) -> torch.Tensor:
-    """A global-shaped tensor: this rank's elements numbered from ``start`` in local row-major order, others -1."""
-    shape, offset = _local_box(param)
-    codes = torch.full(tuple(param.shape), -1, dtype=torch.long)
-    box = tuple(slice(o, o + n) for o, n in zip(offset, shape, strict=True))
-    codes[box] = torch.arange(start, start + int(torch.Size(shape).numel())).view(shape)
-    return codes
+    """Collective for a DTensor. A global-shaped tensor: this rank's elements numbered from ``start`` in local
+    row-major order, others -1."""
+    if not isinstance(param, DTensor):
+        return torch.arange(start, start + param.numel()).view(param.shape)
+    local = param.to_local()
+    rank = dist.get_rank()
+    codes = torch.arange(start, start + local.numel(), device=local.device).view(local.shape) + rank * _RANK_STRIDE
+    # DTensor places every rank's shard, so any placement (strided, uneven, multi-dim) lands on its global rows
+    placed = DTensor.from_local(codes, param.device_mesh, param.placements, shape=param.shape, stride=param.stride())
+    placed = placed.full_tensor().cpu()
+    return torch.where(placed // _RANK_STRIDE == rank, placed % _RANK_STRIDE, -1)
 
 
 def probe_torchtitan_row_mapping(params: Mapping[str, torch.Tensor], sd_adapter) -> RowMapping:
@@ -56,11 +58,8 @@ def _probe_local(
 ) -> tuple[list[HfPiece], list[tuple[str, ...]], set[str]]:
     starts, start = {}, 0
     for key, param in params.items():
-        shape = _local_box(param)[0]
-        # pieces index the to_local() shards, so the computed box must be exactly that shard
-        assert not isinstance(param, DTensor) or shape == tuple(param.to_local().shape), (key, shape)
         starts[key] = start
-        start += int(torch.Size(shape).numel())
+        start += (param.to_local() if isinstance(param, DTensor) else param).numel()
     pieces, groups, modules = [], [], set()
     for key in params:
         projection, factor = split_adapter_key(key)
