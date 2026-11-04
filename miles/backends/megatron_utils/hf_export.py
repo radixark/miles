@@ -90,6 +90,7 @@ def save_hf_model(
                     base_model_fingerprint=None,
                 ),
                 adapter_slots.targets,
+                lora_dropout=args.lora_dropout,
             )
 
     if should_log:

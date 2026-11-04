@@ -104,7 +104,7 @@ def test_round_trip_with_optimizer_under_a_different_world_size():
 
 
 def test_weights_only_from_peft_upcasts_and_zeroes_moments(tmp_path):
-    write_peft_adapter(tmp_path, {f"{MODULE}.{k}": v for k, v in FULL.items()}, RUN, TARGETS)
+    write_peft_adapter(tmp_path, {f"{MODULE}.{k}": v for k, v in FULL.items()}, RUN, TARGETS, lora_dropout=0.0)
     members = FakeMembers()
     load_adapter_dir(tmp_path, members, 0, RUN, TARGETS, load_optimizer=False)
     state = members.imported
@@ -114,7 +114,7 @@ def test_weights_only_from_peft_upcasts_and_zeroes_moments(tmp_path):
 
 
 def test_a_different_source_alpha_is_returned_for_the_caller_to_adopt(tmp_path):
-    write_peft_adapter(tmp_path, {f"{MODULE}.{k}": v for k, v in FULL.items()}, RUN, TARGETS)
+    write_peft_adapter(tmp_path, {f"{MODULE}.{k}": v for k, v in FULL.items()}, RUN, TARGETS, lora_dropout=0.0)
     run = replace(RUN, lora_alpha=16.0)  # a Tinker session adopts the source's alpha after loading
     assert load_adapter_dir(tmp_path, FakeMembers(), 0, run, TARGETS, load_optimizer=False).lora_alpha == 4.0
 
@@ -292,7 +292,7 @@ def _one_rank_cannot_read(rank, world_size, port, *, root):
 
 
 def test_a_load_failure_on_one_rank_fails_every_rank_instead_of_hanging(tmp_path):
-    write_peft_adapter(tmp_path, {f"{MODULE}.{k}": v for k, v in FULL.items()}, RUN, TARGETS)
+    write_peft_adapter(tmp_path, {f"{MODULE}.{k}": v for k, v in FULL.items()}, RUN, TARGETS, lora_dropout=0.0)
     process = (
         __import__("multiprocessing")
         .get_context("spawn")
@@ -328,7 +328,7 @@ def _one_rank_cannot_import(rank, world_size, port, *, root):
 
 
 def test_a_rank_local_import_failure_fails_every_rank_before_the_import_collectives(tmp_path):
-    write_peft_adapter(tmp_path, {f"{MODULE}.{k}": v for k, v in FULL.items()}, RUN, TARGETS)
+    write_peft_adapter(tmp_path, {f"{MODULE}.{k}": v for k, v in FULL.items()}, RUN, TARGETS, lora_dropout=0.0)
     process = (
         __import__("multiprocessing")
         .get_context("spawn")
@@ -342,7 +342,7 @@ def test_a_rank_local_import_failure_fails_every_rank_before_the_import_collecti
 
 
 def test_an_import_is_finished_after_its_pieces_are_written(tmp_path):
-    write_peft_adapter(tmp_path, {f"{MODULE}.{k}": v for k, v in FULL.items()}, RUN, TARGETS)
+    write_peft_adapter(tmp_path, {f"{MODULE}.{k}": v for k, v in FULL.items()}, RUN, TARGETS, lora_dropout=0.0)
     members = FakeMembers()
     load_adapter_dir(tmp_path, members, 0, RUN, TARGETS, load_optimizer=False)
     assert members.imported is not None and members.finished
@@ -517,7 +517,7 @@ def _specs_fail_on_one_rank(rank, world_size, port, *, root):
 
 
 def test_a_shard_spec_failure_on_one_rank_fails_every_rank(tmp_path):
-    write_peft_adapter(tmp_path, {f"{MODULE}.{k}": v for k, v in FULL.items()}, RUN, TARGETS)
+    write_peft_adapter(tmp_path, {f"{MODULE}.{k}": v for k, v in FULL.items()}, RUN, TARGETS, lora_dropout=0.0)
     process = (
         __import__("multiprocessing")
         .get_context("spawn")
@@ -590,7 +590,7 @@ def test_peft_export_of_a_fused_gdn_group_writes_one_a_per_exported_module(tmp_p
     ]
     group = tuple(sorted(f"{GDN}.{c}" for c in components))
     run = AdapterParametrization("m", 4, 8.0, "lora", group, False, shared_lora_a_groups=(group,))
-    write_peft_export(tmp_path, members, 0, run, GDN_TARGETS)
+    write_peft_export(tmp_path, members, 0, run, GDN_TARGETS, lora_dropout=0.0)
     tensors = load_file(str(tmp_path / "adapter_model.safetensors"))
     assert set(tensors) == {f"base_model.model.{GDN}.{m}.lora_{f}.weight" for m in modules for f in "AB"}
     for module, b in members.b.items():
@@ -614,7 +614,7 @@ def test_peft_export_refuses_canonical_gdn_components(tmp_path):
     components = tuple(f"{GDN}.in_proj_{c}" for c in "kqv")
     run = AdapterParametrization("m", 4, 8.0, "canonical_lora", components, False)
     with pytest.raises(RuntimeError, match="has no plain-PEFT form; the adapter dir is the checkpoint"):
-        write_peft_export(tmp_path, CanonicalGdnMembers(), 0, run, GDN_TARGETS)
+        write_peft_export(tmp_path, CanonicalGdnMembers(), 0, run, GDN_TARGETS, lora_dropout=0.0)
     assert not (tmp_path / "adapter_model.safetensors").exists()
 
 
@@ -636,7 +636,9 @@ class HeadMembers(FakeMembers):
 @pytest.mark.parametrize("rows", [6, 8])
 def test_a_head_source_over_the_served_vocab_loads_the_served_rows(tmp_path, rows):
     head_b = torch.arange(rows * 2, dtype=torch.float32).reshape(rows, 2)
-    write_peft_adapter(tmp_path, {"lm_head.lora_A": FULL["lora_A"], "lm_head.lora_B": head_b}, HEAD_RUN, TARGETS)
+    write_peft_adapter(
+        tmp_path, {"lm_head.lora_A": FULL["lora_A"], "lm_head.lora_B": head_b}, HEAD_RUN, TARGETS, lora_dropout=0.0
+    )
     members = HeadMembers()
     load_adapter_dir(tmp_path, members, 0, HEAD_RUN, TARGETS, load_optimizer=False)
     assert torch.equal(members.imported.weights[1], head_b[:6].to(torch.bfloat16).float())
@@ -645,6 +647,8 @@ def test_a_head_source_over_the_served_vocab_loads_the_served_rows(tmp_path, row
 @pytest.mark.parametrize("rows", [5, 9])
 def test_a_head_source_outside_the_declared_rows_is_refused(tmp_path, rows):
     head_b = torch.zeros(rows, 2)
-    write_peft_adapter(tmp_path, {"lm_head.lora_A": FULL["lora_A"], "lm_head.lora_B": head_b}, HEAD_RUN, TARGETS)
+    write_peft_adapter(
+        tmp_path, {"lm_head.lora_A": FULL["lora_A"], "lm_head.lora_B": head_b}, HEAD_RUN, TARGETS, lora_dropout=0.0
+    )
     with pytest.raises(RuntimeError, match=f"lm_head.lora_B: the source has {rows} rows; this run serves 6"):
         load_adapter_dir(tmp_path, HeadMembers(), 0, HEAD_RUN, TARGETS, load_optimizer=False)

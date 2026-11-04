@@ -149,7 +149,7 @@ class FakeBackend:
             "model.layers.0.self_attn.q_proj.lora_B": torch.zeros(4, parametrization.lora_rank),
         }
         with write_adapter_dir(Path(root), name, tenant_digest=tenant_digest) as written:
-            write_sampler_adapter(written.path, weights, parametrization, _TARGETS)
+            write_sampler_adapter(written.path, weights, parametrization, _TARGETS, lora_dropout=0.0)
         return written
 
     async def sample(self, payload, lora_name, lora_path=None):
