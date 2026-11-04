@@ -564,24 +564,8 @@ class TrainerController:
     async def forward_only(self, batch_id: int, data_ref: object_store.StoreObjectRef) -> list:
         return await self._execute_slots("forward_only", batch_id=batch_id, rollout_data_ref=data_ref)
 
-    async def load_slot(
-        self,
-        slot: int,
-        rank: int,
-        alpha: float,
-        ckpt_path: str | None = None,
-        load_optimizer: bool = True,
-        parametrization_fields: dict | None = None,
-    ) -> list:
-        return await self._execute_slots(
-            "load_slot",
-            slot=slot,
-            rank=rank,
-            alpha=alpha,
-            ckpt_path=ckpt_path,
-            load_optimizer=load_optimizer,
-            parametrization_fields=parametrization_fields,
-        )
+    async def load_slot(self, slot: int, rank: int, alpha: float, source: dict | None = None) -> list:
+        return await self._execute_slots("load_slot", slot=slot, rank=rank, alpha=alpha, source=source)
 
     async def save_slot(
         self, slot: int, root: str, name: str, tenant_digest: str, parametrization_fields: dict

@@ -102,7 +102,7 @@ def test_only_the_bridge_backend_loads_a_megatron_bridge_checkpoint(tmp_path):
     _, _, mocks = _restore(tmp_path, megatron_to_hf_mode="raw")
     loaders = mocks["load_adapter_dir"].call_args.kwargs["in_model_loaders_by_kind"]
     with pytest.raises(AssertionError, match="convert it there first with --lora-adapter-convert-save"):
-        loaders[AdapterSourceKind.MEGATRON_BRIDGE_CHECKPOINT](tmp_path)
+        loaders[AdapterSourceKind.MEGATRON_BRIDGE_CHECKPOINT].parametrization(tmp_path)
 
 
 def test_a_source_trained_with_another_alpha_is_refused_on_the_trainer(tmp_path):
@@ -117,8 +117,12 @@ def test_an_old_format_save_reports_the_alpha_its_peft_pair_records(tmp_path):
     with patch.multiple(
         _MODULE, _native_adapter_shard=DEFAULT, _load_native_adapter_shard=DEFAULT, replace=DEFAULT
     ) as m:
-        LegacyRankShardLoader([], MagicMock(), run, load_optimizer=False, precision_aware=False)(tmp_path)
+        LegacyRankShardLoader([], MagicMock(), run, load_optimizer=False, precision_aware=False).parametrization(
+            tmp_path
+        )
     assert m["replace"].call_args.kwargs["lora_alpha"] == 32.0
+    # reading the parametrization leaves the model alone: a refused source loads nothing
+    m["_load_native_adapter_shard"].assert_not_called()
 
 
 def test_an_optimizer_other_than_megatrons_distributed_one_is_refused():
@@ -173,6 +177,22 @@ def test_a_restore_keeps_the_state_of_elements_no_checkpoint_holds(leaves_out_el
     assert world["param"].tolist() == [5.0, 5.0, 5.0, kept[0]]
     assert world["exp_avg"].tolist() == [6.0, 6.0, 6.0, kept[1]]
     assert world["exp_avg_sq"].tolist() == [7.0, 7.0, 7.0, kept[2]]
+
+
+def test_a_legacy_optimizer_load_refuses_an_optimizer_other_than_megatrons_distributed_one(tmp_path):
+    run = AdapterParametrization.__new__(AdapterParametrization)
+    optimizer = SimpleNamespace(chained_optimizers=[MagicMock()])
+    state = {"optimizer": {}, "parameter_state": [{}]}
+    with patch.multiple(
+        _MODULE,
+        _native_adapter_shard=DEFAULT,
+        _load_native_adapter_shard=DEFAULT,
+        _load_training_state=MagicMock(return_value=state),
+        replace=DEFAULT,
+    ):
+        loader = LegacyRankShardLoader([], optimizer, run, load_optimizer=True, precision_aware=False)
+        with pytest.raises(AssertionError, match="--use-distributed-optimizer"):
+            loader.load(tmp_path)
 
 
 def _offloaded_optimizer(*, offloaded: bool) -> tuple[HybridDeviceOptimizer, torch.nn.Parameter, torch.nn.Parameter]:

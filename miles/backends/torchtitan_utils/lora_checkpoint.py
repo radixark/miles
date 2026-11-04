@@ -47,6 +47,8 @@ from miles.backends.training_utils.checkpoint.adapter.probed_slots import (
     HfPiece,
     ProbedAdapterSlots,
     RowMapping,
+    agreed_row_mapping,
+    finish_local_pieces,
     rectangles,
 )
 from miles.backends.training_utils.checkpoint.adapter.readers import AdapterSourceKind
@@ -72,21 +74,12 @@ def _local_codes(param: torch.Tensor, start: int) -> torch.Tensor:
 def probe_torchtitan_row_mapping(params: Mapping[str, torch.Tensor], sd_adapter) -> RowMapping:
     """Collective. ``params``: the adapter parameters by titan key, in the order their local shards are
     concatenated."""
-    error = None
+    error, pieces, groups, modules = None, [], [], set()
     try:
         pieces, groups, modules = _probe_local(params, sd_adapter)
     except Exception as exc:
         error = exc
-    raise_if_any_rank_failed(error)
-
-    # pipeline stages hold different layers; every rank needs the whole parametrization
-    gathered = [None] * dist.get_world_size()
-    dist.all_gather_object(gathered, (sorted(groups), sorted(modules)), group=gloo_group())
-    return RowMapping(
-        pieces,
-        tuple(sorted({g for rank_groups, _ in gathered for g in rank_groups})),
-        tuple(sorted({m for _, rank_modules in gathered for m in rank_modules})),
-    )
+    return agreed_row_mapping(error, pieces, groups, modules)
 
 
 def _probe_local(
@@ -123,11 +116,7 @@ def _probe_local(
                     HfPiece(hf_key, tuple(codes.shape), tuple(s.start for s in box), codes[box].clone())
                     for box in rectangles(hf_key, mine)
                 ]
-    covered = torch.zeros(start, dtype=torch.bool)
-    for piece in pieces:
-        covered[piece.local_elements.flatten()] = True
-    assert covered.all(), f"to_hf does not reach {int((~covered).sum())} of this rank's adapter elements"
-    return pieces, groups, modules
+    return finish_local_pieces(pieces, start), groups, modules
 
 
 class TorchtitanAdapterSlots(ProbedAdapterSlots):
@@ -137,13 +126,10 @@ class TorchtitanAdapterSlots(ProbedAdapterSlots):
 
     def __init__(self, model_parts, iterator, sd_adapter, targets: HfLoraTargets):
         """Collective: probes the row mapping."""
-        self._iterator, self.targets = iterator, targets
-        self._specs = {}
         self._params = {
             key: param for part in model_parts for key, param in part.named_parameters() if is_adapter_key(key)
         }
-        self.row_mapping = probe_torchtitan_row_mapping(self._params, sd_adapter)
-        self.head_rows = self._head_rows()
+        super().__init__(probe_torchtitan_row_mapping(self._params, sd_adapter), targets, iterator)
 
     @property
     def parameters(self) -> dict[str, torch.nn.Parameter]:

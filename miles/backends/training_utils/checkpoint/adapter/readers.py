@@ -92,14 +92,7 @@ def classify_adapter_source(path: Path, targets: HfLoraTargets, *, load_optimize
     if (path / PARAMETRIZATION_FILENAME).is_file():
         return AdapterSourceKind.ADAPTER_DIR
     if (path / ".metadata").is_file():
-        if (path / "META.json").is_file():
-            return AdapterSourceKind.LEGACY_TINKER_CHECKPOINT
-        keys = list(dcp.FileSystemReader(path).read_metadata().state_dict_metadata)
-        if (path / "run_config.yaml").is_file() and any(".adapter." in k for k in keys):
-            return AdapterSourceKind.MEGATRON_BRIDGE_CHECKPOINT
-        if any(".lora_a." in k or ".lora_b." in k for k in keys):
-            return AdapterSourceKind.TORCHTITAN_CHECKPOINT
-        raise ValueError(f"{path} is a DCP checkpoint with neither Megatron-Bridge nor torchtitan LoRA keys")
+        return _dcp_source_kind(path)
     if any(path.glob("adapter_megatron_rank*.pt")) or any(path.glob("adapter_megatron_tp*_pp*.pt")):
         if not load_optimizer and _has_peft_files(path):
             return AdapterSourceKind.PEFT
@@ -124,22 +117,39 @@ def classify_adapter_source(path: Path, targets: HfLoraTargets, *, load_optimize
     raise ValueError(f"{path} is not a recognized LoRA adapter source")
 
 
+def _dcp_source_kind(path: Path) -> AdapterSourceKind:
+    if (path / "META.json").is_file():
+        return AdapterSourceKind.LEGACY_TINKER_CHECKPOINT
+    keys = list(dcp.FileSystemReader(path).read_metadata().state_dict_metadata)
+    if (path / "run_config.yaml").is_file() and any(".adapter." in k for k in keys):
+        return AdapterSourceKind.MEGATRON_BRIDGE_CHECKPOINT
+    if any(".lora_a." in k or ".lora_b." in k for k in keys):
+        return AdapterSourceKind.TORCHTITAN_CHECKPOINT
+    raise ValueError(f"{path} is a DCP checkpoint with neither Megatron-Bridge nor torchtitan LoRA keys")
+
+
 def read_source_lora_alpha(path: Path) -> float | None:
     """The alpha a source records, read without the model; None for a source that records none (torchtitan)."""
     if (path / PARAMETRIZATION_FILENAME).is_file():
         return read_parametrization(path).lora_alpha
-    # a DCP dir with a run_config.yaml is Megatron-Bridge's; a PEFT dir may hold a stray run_config.yaml
-    if (path / ".metadata").is_file() and (path / "run_config.yaml").is_file():
-        peft = yaml.safe_load((path / "run_config.yaml").read_text())["peft"]
-        assert peft is not None, f"{path} is a Megatron-Bridge checkpoint without PEFT (a full fine-tune), not a LoRA"
-        return float(peft["alpha"])
+    # the alpha's file is the one of the kind the source classifies as: a PEFT dir may hold a stray run_config.yaml
+    if (path / ".metadata").is_file():
+        kind = _dcp_source_kind(path)
+        if kind is AdapterSourceKind.MEGATRON_BRIDGE_CHECKPOINT:
+            peft = yaml.safe_load((path / "run_config.yaml").read_text())["peft"]
+            assert (
+                peft is not None
+            ), f"{path} is a Megatron-Bridge checkpoint without PEFT (a full fine-tune), not a LoRA"
+            return float(peft["alpha"])
+        if kind is AdapterSourceKind.TORCHTITAN_CHECKPOINT:
+            return None
     for name in ("META.json", "adapter_config.json"):
         if (path / name).is_file():
             return json.loads((path / name).read_text())["lora_alpha"]
     return None
 
 
-def _collapse_shared_lora_a(
+def collapse_shared_lora_a(
     weights: dict, parametrization: AdapterParametrization, fused_groups: list[tuple[str, ...]]
 ) -> dict:
     """Undo a written expansion: keep the first member's A, after checking every copy matches it.
@@ -199,7 +209,7 @@ class MilesAdapterDirReader:
         weights, fused_groups = _read_peft_tensors(
             self.path, lambda name: map_sampler_keys_to_hf_keys(name, self.targets), self.targets
         )
-        return _collapse_shared_lora_a(weights, self.source.parametrization, fused_groups)
+        return collapse_shared_lora_a(weights, self.source.parametrization, fused_groups)
 
 
 def _check_peft_config(config: dict, path: Path) -> None:
