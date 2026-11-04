@@ -114,6 +114,7 @@ class TorchtitanAdapterSlots(ProbedAdapterSlots):
             key: param for part in model_parts for key, param in part.named_parameters() if is_adapter_key(key)
         }
         self.row_mapping = probe_torchtitan_row_mapping(self._params, sd_adapter)
+        self.head_rows = self._head_rows()
 
     def slot_parameters(self, slot: int) -> list[torch.Tensor]:
         assert slot == 0, "the torchtitan backend trains a single LoRA adapter"

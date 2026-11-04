@@ -5,7 +5,6 @@ fp32 master (a Float16 child's ``fp32_from_float16_groups``) and its Adam state;
 """
 
 import json
-import os
 from collections.abc import Iterable, Sequence
 from dataclasses import asdict, replace
 from pathlib import Path
@@ -35,17 +34,26 @@ from miles.backends.megatron_utils.lora.utils import (
 )
 from miles.backends.megatron_utils.rematerialize_utils import _build_cast_main_to_params_fn
 from miles.backends.training_utils.checkpoint.adapter.adapter_dir import (
+    HeadRows,
     check_adapter_source,
     load_adapter_dir,
     read_training_state,
     save_adapter_dir,
     save_and_commit_adapter_dir,
 )
-from miles.backends.training_utils.checkpoint.adapter.adapter_state import AdapterState, gloo_group
+from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
+    AdapterState,
+    gloo_group,
+    raise_if_any_rank_failed,
+)
 from miles.backends.training_utils.checkpoint.adapter.commit import UncommittedAdapterDir
-from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
+from miles.backends.training_utils.checkpoint.adapter.parametrization import (
+    AdapterParametrization,
+    base_model_fingerprint,
+)
 from miles.backends.training_utils.checkpoint.adapter.readers import AdapterSourceKind, read_source_lora_alpha
 from miles.backends.training_utils.parallel import get_parallel_state
+from miles.utils.hf_utils.config import load_hf_config
 
 _WEIGHTS_KEY = "adapter_weights"
 _OPTIM_KEY = "adapter_optimizer"
@@ -58,6 +66,10 @@ class LayerWiseSlotMembers:
 
     def __init__(self, adapter_slots: BridgeAdapterSlots, slot_optimizers: dict[int, SlotOptimizer]):
         self._slots, self._optimizers = adapter_slots, slot_optimizers
+
+    @property
+    def head_rows(self) -> HeadRows | None:
+        return self._slots.head_rows
 
     def export_bf16_adapter(self, slot: int) -> Iterable[tuple[str, torch.Tensor]]:
         return self._slots.export_bf16_adapter(slot)
@@ -153,6 +165,10 @@ class DistributedOptimizerMembers:
         # the export is the slots'; native's names its experts like sglang
         self.bf16_adapter_key_style = adapter_slots.bf16_adapter_key_style
 
+    @property
+    def head_rows(self) -> HeadRows | None:
+        return self._slots.head_rows
+
     def export_bf16_adapter(self, slot: int) -> Iterable[tuple[str, torch.Tensor]]:
         return self._slots.export_bf16_adapter(slot)
 
@@ -240,8 +256,10 @@ class DistributedOptimizerMembers:
                 sub.init_state_fn(sub.optimizer, sub.config)
             elif isinstance(sub.optimizer, HybridDeviceOptimizer) and not sub.optimizer.state:
                 _init_zero_hdo_state(sub.optimizer)
-            # gathered, not empty: elements no piece holds (vocab padding) must keep their master and moments
-            gathered = sub.get_parameter_state_dp_zero(use_gloo_comm=True)
+            # elements no piece holds (vocab padding) must keep their master and moments, so they are gathered
+            gathered = sub.get_parameter_state_dp_zero(
+                use_gloo_comm=True, empty_data=self._slots.load_overwrites_every_element
+            )
             if gathered is not None:
                 for buffer_index, buffer in enumerate(sub.buffers):
                     for param in buffer.param_index_map:
@@ -382,7 +400,8 @@ def find_load_mismatch(
     e.g. one fused GDN in_proj adapter saved before the canonical in_proj_q/k/v/z split.
     """
     path = Path(path)
-    mismatch = None
+    mismatch, saved = None, None
+    # any failure to read the user's source is theirs; raised after the slot reset, it kills the trainer cell
     try:
         kind = check_adapter_source(path, run, targets, load_optimizer=load_optimizer)
         if kind == AdapterSourceKind.LEGACY_TINKER_CHECKPOINT:
@@ -393,36 +412,48 @@ def find_load_mismatch(
                 for k, metadata in dcp.FileSystemReader(path).read_metadata().state_dict_metadata.items()
                 if ".adapter." in k and "_extra_state" not in k and not OPTIMIZER_KEY.match(k)
             }
-            slot_state = _canonicalize_slot_keys(_slot_weights_sharded_state_dict(model, slot), slot)
-            # shared grouped-expert adapters are factories; built, they carry the global expert axis
-            apply_factories(slot_state)
-            expected = {
-                sharded.key: tuple(sharded.global_shape)
-                for sharded in nested_values(slot_state)
-                if "_extra_state" not in sharded.key
-            }
-            if expected.keys() != saved.keys():
-                mismatch = (
-                    f"{path} was saved with another adapter layout than this gateway trains "
-                    f"(differing keys e.g. {sorted(expected.keys() ^ saved.keys())[:3]}); "
-                    "load it on a gateway with the layout it was saved with"
-                )
-            elif expected != saved:
-                key = next(k for k in sorted(expected) if expected[k] != saved[k])
-                mismatch = (
-                    f"{path} was saved with other tensor shapes than this gateway's slots ({key}: saved "
-                    f"{saved[key]}, slot {expected[key]}); legacy tensors are padded to the gateway's --lora-rank, "
-                    "so load it on a gateway launched with the one it was saved with"
-                )
         elif kind.is_read_into_model():
             # load_adapter_dir refuses it only after the slot reset
             mismatch = f"{path} is a {kind.value} source, which this backend cannot load"
-    # any failure to read the user's source is theirs; raised after the slot reset, it kills the trainer cell
     except Exception as error:
         mismatch = f"{path} cannot load into this model: {error}"
+    # the slot's own layout is this gateway's: a failure computing it is a server error on every rank
+    expected, model_error = None, None
+    if saved is not None:
+        try:
+            expected = _legacy_slot_layout(model, slot)
+        except Exception as error:
+            model_error = error
+    raise_if_any_rank_failed(model_error)
+    if expected is not None:
+        if expected.keys() != saved.keys():
+            mismatch = (
+                f"{path} was saved with another adapter layout than this gateway trains "
+                f"(differing keys e.g. {sorted(expected.keys() ^ saved.keys())[:3]}); "
+                "load it on a gateway with the layout it was saved with"
+            )
+        elif expected != saved:
+            key = next(k for k in sorted(expected) if expected[k] != saved[k])
+            mismatch = (
+                f"{path} was saved with other tensor shapes than this gateway's slots ({key}: saved "
+                f"{saved[key]}, slot {expected[key]}); legacy tensors are padded to the gateway's --lora-rank, "
+                "so load it on a gateway launched with the one it was saved with"
+            )
     gathered = [None] * dist.get_world_size()
     dist.all_gather_object(gathered, mismatch, group=gloo_group())
     return next((m for m in gathered if m is not None), None)
+
+
+def _legacy_slot_layout(model, slot: int) -> dict[str, tuple[int, ...]]:
+    """The slot's legacy torch_dist keys and global shapes."""
+    slot_state = _canonicalize_slot_keys(_slot_weights_sharded_state_dict(model, slot), slot)
+    # shared grouped-expert adapters are factories; built, they carry the global expert axis
+    apply_factories(slot_state)
+    return {
+        sharded.key: tuple(sharded.global_shape)
+        for sharded in nested_values(slot_state)
+        if "_extra_state" not in sharded.key
+    }
 
 
 class LegacyTinkerCheckpointLoader:
@@ -517,17 +548,13 @@ def build_adapter_slots(args, model, iterator, targets) -> BridgeAdapterSlots:
 def single_lora_parametrization(adapter_slots: BridgeAdapterSlots, args) -> AdapterParametrization:
     """The run's parametrization; under multi-LoRA, slot 0's rank and alpha, which its exported tensors carry."""
     spec = adapter_slots.slot_spec(0)
-    base_model = args.hf_checkpoint
-    # one local model under another path string (a trailing slash, a symlinked mount) is the same base; a hub id
-    # is no local path
-    if os.path.exists(base_model):
-        base_model = os.path.realpath(base_model)
     return adapter_slots.parametrization(
-        base_model=base_model,
+        base_model=args.hf_checkpoint,
         lora_rank=args.lora_rank if spec is None else spec.rank,
         lora_alpha=args.lora_alpha if spec is None else spec.alpha,
         lora_type=args.lora_type,
         experts_shared_outer_loras=args.experts_shared_outer_loras,
+        base_model_fingerprint=base_model_fingerprint(load_hf_config(args.hf_checkpoint).to_dict()),
     )
 
 
@@ -653,8 +680,7 @@ class LegacyRankShardLoader:
             for sub, parameter_state in zip(subs, state["parameter_state"], strict=True):
                 sub.load_parameter_state_from_dp_reshardable(parameter_state)
                 if isinstance(sub.optimizer, HybridDeviceOptimizer):
-                    # unlike Megatron's other parameter-state loaders, this one leaves the sub-optimizers'
-                    # fp32 params and state devices stale
+                    # load_parameter_state_from_dp_reshardable does not sync the HDO sub-optimizers' fp32 params and state
                     sub.optimizer._sync_hdo_state_to_sub_optimizers()
             _build_cast_main_to_params_fn(self._optimizer, precision_aware=self._precision_aware)()
             for chunk in self._model:

@@ -31,7 +31,9 @@ _NATIVE_MODELS = (
     "gpt_oss",
     "deepseek_v2",
     "deepseek_v3",
+    "glm4",
     "glm4_moe",
+    "glm4_moe_lite",
     "glm_moe_dsa",
     "glm5_next",
 )
@@ -65,7 +67,7 @@ def _small_config(model_type, overrides):
         )
     if model_type == "gpt_oss":
         text.update(num_local_experts=2, num_experts_per_tok=1)
-    if model_type in {"deepseek_v2", "deepseek_v3", "glm4_moe", "glm_moe_dsa", "glm5_next"}:
+    if model_type in {"deepseek_v2", "deepseek_v3", "glm4_moe", "glm4_moe_lite", "glm_moe_dsa", "glm5_next"}:
         text.update(
             first_k_dense_replace=1,
             n_routed_experts=2,
@@ -75,8 +77,12 @@ def _small_config(model_type, overrides):
             n_group=1,
             topk_group=1,
         )
-    if model_type in {"deepseek_v2", "deepseek_v3", "glm_moe_dsa", "glm5_next"}:
+    if model_type in {"deepseek_v2", "deepseek_v3", "glm4_moe_lite", "glm_moe_dsa", "glm5_next"}:
         text.update(q_lora_rank=8, kv_lora_rank=8, qk_nope_head_dim=4, qk_rope_head_dim=4, v_head_dim=8)
+    if model_type == "glm4":
+        text.update(pad_token_id=0)
+    if model_type == "glm4_moe_lite":
+        text.update(mlp_layer_types=["dense", "sparse"])
     if model_type in {"glm_moe_dsa", "glm5_next"}:
         text.update(mlp_layer_types=["dense", "sparse"], index_n_heads=2, index_head_dim=8, index_topk=4)
     if model_type == "glm5_next":
@@ -130,7 +136,7 @@ def test_native_model_coverage():
     [pytest.param(name, {}, id=name) for name in _NATIVE_MODELS]
     + [
         pytest.param(name, {"q_lora_rank": None}, id=f"{name}-uncompressed-query")
-        for name in ("deepseek_v2", "deepseek_v3")
+        for name in ("deepseek_v2", "deepseek_v3", "glm4_moe_lite")
     ]
     + [
         pytest.param(name, {"first_k_dense_replace": count}, id=f"{name}-{kind}")
@@ -148,7 +154,8 @@ def test_native_model_coverage():
         for kind in ("full_attention", "linear_attention")
     ]
     + [
-        pytest.param("glm_moe_dsa", {"mlp_layer_types": [kind, kind]}, id=f"glm-dsa-{kind}")
+        pytest.param(name, {"mlp_layer_types": [kind, kind]}, id=f"{name}-{kind}")
+        for name in ("glm_moe_dsa", "glm4_moe_lite")
         for kind in ("dense", "sparse")
     ]
     + [
@@ -278,3 +285,17 @@ def test_qwen3_5_dense_default_groups_match_the_official_export():
     targets = resolve_hf_lora_targets(config, target_modules=["attn", "mlp", "unembed"])
     served = gdn_in_proj_served_targets(targets, targets)
     assert {target.split(".layers.*.")[-1] for target in served} == _TINKER_QWEN3_5_4B
+
+
+@pytest.mark.parametrize(
+    "model_type,group,overrides",
+    [("glm4", "mlp", {}), ("glm4_moe_lite", "attention", {"mlp_layer_types": ["dense", "dense"]})],
+)
+def test_layouts_name_the_native_specs_projections(model_type, group, overrides):
+    """The adapter checkpoint keys native's export by these HF modules; a name native does not adapt has no data."""
+    from miles.backends.megatron_utils.lora.native.registry import MODEL_SPECS
+
+    layout = get_hf_lora_targets(_small_config(model_type, overrides).to_dict())
+    native_spec = getattr(MODEL_SPECS[model_type], group)
+    native_leaves = {binding.projection.hf_leaf for binding in native_spec.layout.singles}
+    assert {target.rsplit(".", 1)[1] for target in getattr(layout, group)} == native_leaves

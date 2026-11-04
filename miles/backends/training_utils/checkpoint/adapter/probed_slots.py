@@ -12,6 +12,7 @@ from itertools import groupby
 import torch
 import torch.distributed as dist
 
+from miles.backends.training_utils.checkpoint.adapter.adapter_dir import HeadRows
 from miles.backends.training_utils.checkpoint.adapter.adapter_state import LocalShardSpec, gloo_group
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
 from miles.utils.lora.hf_lora_targets import HfLoraTargets
@@ -84,6 +85,17 @@ class ProbedAdapterSlots:
     def slot_spec(self, slot: int):
         """The adapter the iterator exports for ``slot``; None for a single LoRA."""
         return None
+
+    def _head_key(self) -> str | None:
+        return f"{self.targets.unembed[0]}.lora_B"
+
+    def _head_rows(self) -> HeadRows | None:
+        head_b = self._head_key()
+        if head_b is None or not any(piece.key == head_b for piece in self.row_mapping.pieces):
+            return None
+        served = next(piece.global_shape[0] for piece in self.row_mapping.pieces if piece.key == head_b)
+        assert self.targets.vocab_size is not None, "a trained head needs the HF vocab size"
+        return HeadRows(head_b, max(self.targets.vocab_size, served))
 
     def lora_rank(self, slot: int) -> int | None:
         """None for single LoRA, whose tensors are never padded."""
@@ -175,11 +187,13 @@ class ProbedAdapterSlots:
         lora_alpha: float,
         lora_type: str,
         experts_shared_outer_loras: bool,
+        base_model_fingerprint: str | None,
     ) -> AdapterParametrization:
         """Targets and shared-A groups are the model's (same for every slot); the rest is the caller's."""
         mapping = self.row_mapping
         return AdapterParametrization(
             base_model=base_model,
+            base_model_fingerprint=base_model_fingerprint,
             lora_rank=lora_rank,
             lora_alpha=lora_alpha,
             lora_type=lora_type,

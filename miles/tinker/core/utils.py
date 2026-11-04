@@ -35,6 +35,7 @@ def build_parametrization_fields(record: ModelRecord, config: GatewayConfig) -> 
         "lora_alpha": record.lora_alpha,
         "lora_type": config.lora_type,
         "experts_shared_outer_loras": config.experts_shared_outer_loras,
+        "base_model_fingerprint": config.base_model_fingerprint,
     }
 
 
