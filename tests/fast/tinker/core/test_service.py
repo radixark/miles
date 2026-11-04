@@ -2105,6 +2105,17 @@ async def test_a_file_import_load_copies_only_the_files_a_reader_opens(tmp_path,
             await run_task
 
 
+def test_an_import_json_larger_than_any_adapter_config_is_refused_before_it_is_parsed(tmp_path):
+    adapter = tmp_path / "imports" / "adapter"
+    adapter.mkdir(parents=True)
+    # within the whole import's budget, but parsed whole by the gateway and every trainer rank
+    (adapter / "adapter_config.json").write_text(json.dumps({"r": 8, "lora_alpha": 32, "pad": "x" * (2 << 20)}))
+    service = make_service(tmp_path / "root", import_root=str(tmp_path / "imports"), import_max_bytes=1 << 30)
+
+    with pytest.raises(UserInputError, match="adapter_config.json is larger than"):
+        service.weights_info("tenant", f"file://{adapter}")
+
+
 class _WritesMarker:
     def __init__(self, marker: Path):
         self.marker = marker

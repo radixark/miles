@@ -30,7 +30,7 @@ from miles.backends.training_utils.checkpoint.adapter.parametrization import (
 )
 from miles.backends.training_utils.checkpoint.adapter.readers import PEFT_FILES
 from miles.ray.rollout.train_data_conversion import ROLLOUT_DATA_VALUE_SPEC
-from miles.tinker.core.service import IMPORT_COPIES_DIRNAME
+from miles.tinker.core.service import IMPORT_COPIES_DIRNAME, IMPORT_JSON_MAX_BYTES
 from miles.tinker.core.types import OwnershipError, UserInputError
 from miles.utils import object_store
 from miles.utils.http_utils import post
@@ -163,7 +163,7 @@ def max_adapter_bytes(hf_checkpoint: str, max_lora_rank: int) -> int:
                     *lead, out_features, in_features = shape
                     elements += math.prod(lead) * max_lora_rank * (out_features + in_features)
     assert files, f"{hf_dir} holds no .safetensors weights"
-    return 4 * elements + (1 << 20) * (files + 8)
+    return 4 * elements + IMPORT_JSON_MAX_BYTES * (files + 8)
 
 
 def read_imported_adapter(path: str, shown_path: str) -> dict:

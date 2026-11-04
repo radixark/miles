@@ -55,6 +55,9 @@ _SDK_FINISH_RETRY_S = 300.0
 
 # gateway-owned copies of file:// imports, under the checkpoint root so every trainer rank can read them
 IMPORT_COPIES_DIRNAME = ".imports"
+# a JSON a reader parses whole, on the gateway and every trainer rank; also each file's header allowance in the
+# import budget
+IMPORT_JSON_MAX_BYTES = 1 << 20
 _COPY_CHUNK_BYTES = 1 << 24
 
 
@@ -91,6 +94,8 @@ def _copy_adapter_files(source_fd: int, copy_dir: str, wanted: Callable[[str], b
             # sized before reading: a sparse file would otherwise fill the checkpoint disk every tenant shares
             if os.fstat(fd).st_size > budget:
                 raise UserInputError(f"{name} would bring the import past {max_bytes} bytes, more than any adapter")
+            if name.endswith(".json") and os.fstat(fd).st_size > IMPORT_JSON_MAX_BYTES:
+                raise UserInputError(f"{name} is larger than {IMPORT_JSON_MAX_BYTES} bytes, more than any adapter's")
             source = open(fd, "rb", closefd=False)
             with source, open(os.path.join(copy_dir, name), "wb") as copy:
                 # a file growing while it is copied is still held to the budget
