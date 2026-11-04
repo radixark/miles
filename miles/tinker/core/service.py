@@ -103,14 +103,16 @@ def _copy_adapter_files(
                 raise UserInputError(f"{name} would bring the import past {max_bytes} bytes, more than any adapter")
             if name.endswith(".json") and os.fstat(fd).st_size > IMPORT_JSON_MAX_BYTES:
                 raise UserInputError(f"{name} is larger than {IMPORT_JSON_MAX_BYTES} bytes, more than any adapter's")
+            # a file growing while it is copied is still held to its cap
+            limit = min(budget, IMPORT_JSON_MAX_BYTES) if name.endswith(".json") else budget
             source = open(fd, "rb", closefd=False)
             with source, open(os.path.join(copy_dir, name), "wb") as copy:
-                # a file growing while it is copied is still held to the budget
-                while chunk := source.read(min(_COPY_CHUNK_BYTES, budget + 1)):
-                    if len(chunk) > budget:
-                        raise UserInputError(f"{name} grew past the import's {max_bytes} bytes while it was copied")
+                while chunk := source.read(min(_COPY_CHUNK_BYTES, limit + 1)):
+                    if len(chunk) > limit:
+                        raise UserInputError(f"{name} grew past {limit} bytes while it was copied")
                     copy.write(chunk)
                     budget -= len(chunk)
+                    limit -= len(chunk)
         finally:
             os.close(fd)
 

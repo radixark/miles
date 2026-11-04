@@ -2119,6 +2119,26 @@ def test_an_import_json_larger_than_any_adapter_config_is_refused_before_it_is_p
         service.weights_info("tenant", f"file://{adapter}")
 
 
+def test_an_import_json_that_grows_while_it_is_copied_is_still_held_to_the_json_cap(tmp_path, monkeypatch):
+    """The size checked at open time is not the size copied: a tenant can keep appending meanwhile."""
+    adapter = tmp_path / "imports" / "adapter"
+    adapter.mkdir(parents=True)
+    (adapter / "adapter_config.json").write_text(json.dumps({"r": 8, "lora_alpha": 32, "pad": "x" * (2 << 20)}))
+    real_fstat = os.fstat
+
+    def fstat_before_the_growth(fd):
+        result = real_fstat(fd)
+        fields = list(result)
+        fields[6] = min(result.st_size, 100)  # st_size as it was when the file was opened
+        return os.stat_result(fields)
+
+    monkeypatch.setattr(service_module.os, "fstat", fstat_before_the_growth)
+    service = make_service(tmp_path / "root", import_root=str(tmp_path / "imports"), import_max_bytes=1 << 30)
+
+    with pytest.raises(UserInputError, match="adapter_config.json grew past"):
+        service.weights_info("tenant", f"file://{adapter}")
+
+
 def test_a_committed_checkpoint_dir_cannot_be_imported(tmp_path):
     """A checkpoint store mounted under the import root would otherwise hand any tenant another tenant's adapter."""
     adapter = tmp_path / "imports" / "mounted"
