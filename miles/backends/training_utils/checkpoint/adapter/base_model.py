@@ -3,6 +3,10 @@
 The check compares every norm weight and the first layer's attention weights that both sides hold unquantized:
 every family has both, they are small, and a full fine-tune changes the norms while a merged LoRA changes the
 projections. Weights are read from the HF files, never from a loaded (possibly quantized) model.
+
+Not detected: a LoRA merged only into MLP or expert weights, or only into layers past the first; against an FP8 or
+MXFP4 copy of the base, only the norms are left to compare. Layer 0's MLP is left out because every rank reads the
+fingerprint, and a dense model's MLP (or a packed-experts tensor) is gigabytes.
 """
 
 import json
