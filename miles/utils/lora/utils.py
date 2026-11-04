@@ -29,8 +29,7 @@ def exports_hf_snapshots(args: Namespace) -> bool:
 
 
 def reads_adapter_slots(args: Namespace, save: str | None) -> bool:
-    """Something reads the adapter slots: HF exports, multi-LoRA's sampler exports, and single LoRA's adapter dir
-    (``save``, which the trainer config holds under ``backend``, and --lora-adapter-path)."""
+    """HF exports, multi-LoRA sampler exports or a single-LoRA adapter dir (save, --lora-adapter-path) read slots."""
     return (
         exports_hf_snapshots(args)
         or is_multi_lora_enabled(args)
