@@ -1,6 +1,7 @@
 """Steps from a source parametrization to the run's; weights convert exactly, optimizer state does not convert."""
 
 import enum
+import os
 from dataclasses import dataclass
 
 import torch
@@ -61,8 +62,8 @@ def assert_parametrization_matches_run(
         )
     else:
         # a side without a fingerprint recorded only where its base was read from
-        assert (
-            source.base_model == target.base_model
+        assert _canonical_base(source.base_model) == _canonical_base(
+            target.base_model
         ), f"adapter base {source.base_model!r} != run base {target.base_model!r}"
     assert source.lora_rank == target.lora_rank, f"adapter rank {source.lora_rank} != run rank {target.lora_rank}"
     missing, extra = set(target.target_modules) - set(source.target_modules), set(source.target_modules) - set(
@@ -114,3 +115,9 @@ def apply_parametrization_conversion(
                     assert bool((value == value[:1]).all()), f"{key}: experts differ; cannot share the outer factor"
                     weights[key] = value[:1].clone()
     return weights
+
+
+def _canonical_base(base_model: str) -> str:
+    """One local model under another path string (a trailing slash, a symlinked mount) is the same base; a hub id
+    is no local path."""
+    return os.path.realpath(base_model) if os.path.exists(base_model) else base_model

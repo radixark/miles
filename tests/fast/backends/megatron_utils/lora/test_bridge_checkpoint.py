@@ -1,8 +1,6 @@
 from dataclasses import replace
 from types import SimpleNamespace
 
-"""The row-mapping probe recovers each rank's HF pieces, primaries and shared A from an export alone."""
-
 import pytest
 import torch
 import torch.distributed as dist

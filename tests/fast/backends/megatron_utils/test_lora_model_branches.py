@@ -8,6 +8,8 @@ import json
 from argparse import Namespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from tests.fast.fixtures.args_fixtures import make_trainer_args, make_trainer_config
 
 # ---------------------------------------------------------------------------
@@ -271,14 +273,31 @@ class TestSaveHfModelBridgeLoRA:
     @patch(f"{_HF_EXPORT_MODULE}.is_lora_model", return_value=True)
     @patch(f"{_HF_EXPORT_MODULE}.write_checkpoint_dir", side_effect=lambda path, write, **_kwargs: write(path))
     @patch(f"{_HF_EXPORT_MODULE}.get_parallel_state")
-    def test_bridge_lora_writes_the_adapter_through_the_peft_export(
-        self, _parallel_state, _write_dir, _is_lora, get_bridge, _patch_model, torch_mod, _gloo, peft_export, tmp_path
+    @pytest.mark.parametrize(
+        "slot_spec,rank,alpha", [(None, 8, 16.0), ("spec", 4, 12.0)], ids=["single_lora", "multi_lora_slot_0"]
+    )
+    def test_bridge_lora_writes_slot_0_through_the_peft_export(
+        self,
+        _parallel_state,
+        _write_dir,
+        _is_lora,
+        _get_bridge,
+        _patch_model,
+        torch_mod,
+        _gloo,
+        peft_export,
+        tmp_path,
+        slot_spec,
+        rank,
+        alpha,
     ):
+        """Multi-LoRA describes slot 0 by its own rank and alpha, single LoRA by the run's."""
         from miles.backends.megatron_utils.hf_export import save_hf_model
+        from miles.utils.lora.utils import AdapterSpec
 
         torch_mod.distributed.get_rank.return_value = 1
-        publisher, slots, model = MagicMock(), MagicMock(), [MagicMock()]
-        slots.slot_spec.return_value = None
+        publisher, slots = MagicMock(), MagicMock()
+        slots.slot_spec.return_value = AdapterSpec(slot=0, rank=4, alpha=12.0) if slot_spec else None
         args = Namespace(
             megatron_to_hf_mode="bridge",
             hf_checkpoint=_hf_dir(tmp_path),
@@ -289,58 +308,20 @@ class TestSaveHfModelBridgeLoRA:
             experts_shared_outer_loras=False,
         )
 
-        save_hf_model(args, 0, model, publisher=publisher, adapter_slots=slots, path=tmp_path, raise_on_error=True)
+        save_hf_model(
+            args, 0, [MagicMock()], publisher=publisher, adapter_slots=slots, path=tmp_path, raise_on_error=True
+        )
 
         publisher.write_adapter.assert_not_called()
+        slots.slot_spec.assert_called_once_with(0)
         slots.parametrization.assert_called_once_with(
             base_model=args.hf_checkpoint,
-            lora_rank=8,
-            lora_alpha=16.0,
+            lora_rank=rank,
+            lora_alpha=alpha,
             lora_type="lora",
             experts_shared_outer_loras=False,
             base_model_fingerprint=_fingerprint(args.hf_checkpoint),
         )
         peft_export.assert_called_once_with(
             tmp_path / "adapter", slots, 0, slots.parametrization.return_value, slots.targets
-        )
-
-    @patch(f"{_HF_EXPORT_MODULE}.write_peft_export")
-    @patch(f"{_HF_EXPORT_MODULE}.get_gloo_group")
-    @patch(f"{_HF_EXPORT_MODULE}.torch")
-    @patch(f"{_HF_EXPORT_MODULE}.patch_megatron_model")
-    @patch(f"{_HF_EXPORT_MODULE}._get_hf_bridge")
-    @patch(f"{_HF_EXPORT_MODULE}.is_lora_model", return_value=True)
-    @patch(f"{_HF_EXPORT_MODULE}.write_checkpoint_dir", side_effect=lambda path, write, **_kwargs: write(path))
-    @patch(f"{_HF_EXPORT_MODULE}.get_parallel_state")
-    def test_multi_lora_export_describes_slot_0_not_the_run_args(
-        self, _parallel_state, _write_dir, _is_lora, _get_bridge, _patch_model, torch_mod, _gloo, peft_export, tmp_path
-    ):
-        from miles.backends.megatron_utils.hf_export import save_hf_model
-        from miles.utils.lora.utils import AdapterSpec
-
-        torch_mod.distributed.get_rank.return_value = 1
-        slots = MagicMock()
-        slots.slot_spec.return_value = AdapterSpec(slot=0, rank=4, alpha=12.0)
-        args = Namespace(
-            megatron_to_hf_mode="bridge",
-            hf_checkpoint=_hf_dir(tmp_path),
-            save_hf=None,
-            lora_rank=32,
-            lora_alpha=64.0,
-            lora_type="lora",
-            experts_shared_outer_loras=False,
-        )
-
-        save_hf_model(
-            args, 0, [MagicMock()], publisher=MagicMock(), adapter_slots=slots, path=tmp_path, raise_on_error=True
-        )
-
-        slots.slot_spec.assert_called_once_with(0)
-        slots.parametrization.assert_called_once_with(
-            base_model=args.hf_checkpoint,
-            lora_rank=4,
-            lora_alpha=12.0,
-            lora_type="lora",
-            experts_shared_outer_loras=False,
-            base_model_fingerprint=_fingerprint(args.hf_checkpoint),
         )
