@@ -267,6 +267,7 @@ def test_loading_the_adapter_checkpoint_refuses_several_distributed_optimizer_in
         main_params_dtype=torch.float32,
         use_distributed_optimizer=True,
         use_gloo_process_groups=True,
+        stream_optimizer_state_to_disk=False,
         use_precision_aware_optimizer=False,
         overlap_param_gather=False,
         num_distributed_optimizer_instances=2,
@@ -287,6 +288,25 @@ def test_without_an_optimizer_nothing_that_stores_fp32_masters_is_accepted(saved
         debug_disable_optimizer=True,
     )
     with pytest.raises(AssertionError, match="--debug-disable-optimizer does not build"):
+        _validate_adapter_state_args(args)
+
+
+def test_the_adapter_checkpoint_refuses_optimizer_state_streamed_to_disk():
+    args = Namespace(
+        save="/save",
+        lora_adapter_path=None,
+        lora_adapter_convert_save=None,
+        debug_disable_optimizer=False,
+        optimizer="adam",
+        exp_avg_dtype=torch.float32,
+        exp_avg_sq_dtype=torch.float32,
+        main_params_dtype=torch.float32,
+        use_distributed_optimizer=True,
+        use_gloo_process_groups=True,
+        stream_optimizer_state_to_disk=True,
+        use_precision_aware_optimizer=False,
+    )
+    with pytest.raises(AssertionError, match="--stream-optimizer-state-to-disk keeps the moments"):
         _validate_adapter_state_args(args)
 
 

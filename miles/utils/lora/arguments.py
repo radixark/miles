@@ -218,6 +218,10 @@ def _validate_adapter_state_args(args) -> None:
         args.use_distributed_optimizer
     ), "the adapter checkpoint gathers optimizer state from the distributed optimizer"
     assert args.use_gloo_process_groups, "the adapter checkpoint gathers optimizer state over Gloo"
+    assert not args.stream_optimizer_state_to_disk, (
+        "--save / --lora-adapter-path gather the fp32 masters and moments from the distributed optimizer, but "
+        "--stream-optimizer-state-to-disk keeps the moments in its own store and defers the masters"
+    )
     # TE FusedAdam keeps the master as an int16 remainder unless the optimizer runs on the host
     assert (
         not args.use_precision_aware_optimizer or args.optimizer_cpu_offload
