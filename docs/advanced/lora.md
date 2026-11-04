@@ -308,7 +308,11 @@ alternative aligned-expert path.
   `adapter_model.safetensors` plus `adapter_config.json` export. A failed PEFT
   export fails the save; the committed checkpoint is kept. `{save}/iter_N/adapter`
   is a symlink to the hidden dir `{save}/iter_N/.adapter.<commit_id>/`, so copy it
-  with symlinks followed (e.g. `cp -rL`, `rsync -L`). Raw mode saves native
+  with symlinks followed (e.g. `cp -rL`, `rsync -L`). Saving or loading one needs
+  `--optimizer adam` with fp32 masters and moments, the distributed optimizer with
+  Gloo process groups, and neither train fault tolerance (`--indep-dp` / in-memory
+  checkpoints) nor `--stream-optimizer-state-to-disk`; other settings are refused at
+  launch. Raw mode saves native
   per-rank shards, optimizer/scheduler state and a rank-sharded adapter config
   without HF export; exact resume expects the same TP/PP topology. `--save-hf`
   exports a merged model and an HF adapter without native training shards; native
