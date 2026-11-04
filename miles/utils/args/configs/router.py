@@ -4,8 +4,8 @@ from typing import Any, ClassVar
 from sglang_router.launch_router import RouterArgs
 
 from miles.router.backend import RouterKind
+from miles.router.dynamo.config import DynamoConfig
 from miles.utils.args.schema import A, Arg, BaseConfig
-
 
 _ROUTER_DEST_PREFIX = "router_"
 
@@ -30,12 +30,17 @@ class RouterConfig(BaseConfig):
 
     router_args: dict[str, Any]
 
+    dynamo_config: A[
+        DynamoConfig | None,
+        Arg(type_parser=str, help="Dynamo router/sidecar JSON configuration."),
+    ] = None
+
     router: A[
         RouterKind,
         Arg(
             choices=list(RouterKind),
             type_parser=RouterKind,
-            help="The router in front of each model's inference engines: sgl-router or the Miles router.",
+            help="The router in front of each model's inference engines: sgl-router or Miles.",
         ),
     ] = RouterKind.SGLANG
     miles_router_timeout: A[float | None, Arg(help="Timeout for MilesRouter HTTP requests in seconds.")] = None
