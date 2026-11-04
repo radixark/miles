@@ -258,6 +258,7 @@ class DistributedOptimizerMembers:
         return AdapterState(specs, weights, pieces("exp_avg"), pieces("exp_avg_sq"), step=step)
 
     def import_adapter_state(self, slot: int, state: AdapterState) -> None:
+        """Rank-local: assembles the whole tensors of the parameters this rank leads; the scatter waits for finish."""
         holds = self._holds()
         params = self._slots.slot_parameters(0)
         # whole tensors of the parameters this rank leads; DP rank 0 holds every element of them
@@ -267,7 +268,13 @@ class DistributedOptimizerMembers:
         ):
             for key, piece in zip(_STATE_KEYS, pieces, strict=True):
                 whole[index][key].view(-1)[offsets.flatten()] = piece.flatten().cpu()
-        index_of = {id(p): i for i, p in enumerate(params)}
+        self._imported = whole, state.step
+
+    def finish_import_adapter_state(self, slot: int) -> None:
+        """Every rank scatters the leaders' whole tensors over DP, then re-casts and syncs the bf16 parameters."""
+        whole, step = self._imported
+        del self._imported
+        index_of = {id(p): i for i, p in enumerate(self._slots.slot_parameters(0))}
         for sub in self._distributed_optimizers():
             if sub.init_state_fn is not None:
                 sub.init_state_fn(sub.optimizer, sub.config)
@@ -281,7 +288,7 @@ class DistributedOptimizerMembers:
                             world[key][start:end] = whole[index_of[id(param)]][key].flatten()
                 del gathered["buckets_coalesced"]
             sub.load_parameter_state_from_dp_zero(gathered)
-            _set_distributed_optimizer_step(sub, state.step)
+            _set_distributed_optimizer_step(sub, step)
         _build_cast_main_to_params_fn(self._optimizer, precision_aware=self._precision_aware)()
         for chunk in self._model:
             chunk.start_param_sync(force_sync=True)

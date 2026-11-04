@@ -6,7 +6,8 @@ import torch
 import torch.distributed as dist
 from tests.fast.dist_utils import init_gloo, run_multiprocess
 
-from miles.backends.megatron_utils.lora.checkpoint import LayerWiseSlotMembers
+from miles.backends.megatron_utils.lora import checkpoint as lora_checkpoint
+from miles.backends.megatron_utils.lora.checkpoint import DistributedOptimizerMembers, LayerWiseSlotMembers
 from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
     AdapterState,
     LocalShardSpec,
@@ -113,6 +114,47 @@ def test_an_import_without_a_step_drops_the_groups_step():
     members = _importing_members(master, adam, group, torch.arange(4), calls)
     members.import_adapter_state(0, _state(None, torch.ones(4), torch.zeros(4), torch.zeros(4)))
     assert "step" not in group, "a source saved before any step restarts Adam's bias correction"
+
+
+def test_a_distributed_optimizer_import_scatters_only_in_finish(monkeypatch):
+    param = torch.zeros(2, dtype=torch.bfloat16)
+    slots = SimpleNamespace(
+        slot_parameters=lambda slot: [param], piece_parameter=lambda slot, holds: [(0, torch.arange(2))]
+    )
+    calls = []
+    world = {key: torch.zeros(2) for key in ("param", "exp_avg", "exp_avg_sq")}
+    sub = SimpleNamespace(
+        init_state_fn=None,
+        buffers=[SimpleNamespace(param_index_map={param: None})],
+        get_parameter_state_dp_zero=lambda **kwargs: calls.append("gather") or {0: world, "buckets_coalesced": None},
+        load_parameter_state_from_dp_zero=lambda gathered: calls.append("scatter"),
+    )
+    monkeypatch.setattr(
+        lora_checkpoint,
+        "get_parallel_state",
+        lambda: SimpleNamespace(intra_dp_cp=SimpleNamespace(rank=0), edp=SimpleNamespace(rank=0)),
+    )
+    monkeypatch.setattr(lora_checkpoint, "_distributed_optimizers", lambda optimizer: [sub])
+    monkeypatch.setattr(lora_checkpoint, "_world_slice", lambda gathered, i, buffer, p: (gathered[0], 0, 2))
+    monkeypatch.setattr(
+        lora_checkpoint, "_set_distributed_optimizer_step", lambda sub, step: calls.append(("step", step))
+    )
+    monkeypatch.setattr(
+        lora_checkpoint,
+        "_build_cast_main_to_params_fn",
+        lambda optimizer, precision_aware: lambda: calls.append("cast"),
+    )
+    model = [SimpleNamespace(start_param_sync=lambda force_sync: calls.append("sync"))]
+    members = DistributedOptimizerMembers(slots, None, model, precision_aware=False)
+
+    members.import_adapter_state(
+        0, _state(5, torch.tensor([1.0, 2.0]), torch.tensor([3.0, 4.0]), torch.tensor([5.0, 6.0]))
+    )
+    assert calls == [], "the import assembles this rank's pieces without any collective"
+    members.finish_import_adapter_state(0)
+    assert calls == ["gather", "scatter", ("step", 5), "cast", "sync"]
+    assert torch.equal(world["param"], torch.tensor([1.0, 2.0]))
+    assert torch.equal(world["exp_avg_sq"], torch.tensor([5.0, 6.0]))
 
 
 def _one_rank_cannot_import(rank, world_size, port):
