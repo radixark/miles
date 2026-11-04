@@ -350,6 +350,18 @@ def test_a_torchtitan_adapter_dir_off_this_runs_rollout_grid_is_refused(tmp_path
         )
 
 
+def test_a_torchtitan_adapter_dir_off_this_runs_rollout_grid_loads_its_weights_and_starts_fresh(tmp_path):
+    restored = _restore(
+        tmp_path,
+        training_state={"iteration": 9, "step": 20, "first_rollout": 0, "lr_scheduler": {"last_epoch": 20}},
+        no_load_optim=True,
+        lora_adapter_convert_save=str(tmp_path / "out"),
+    )
+    assert (restored.iteration, restored.step, restored.lr_states) == (9, 0, [])
+    converted = restored.save.call_args.kwargs["training_state"]
+    assert (converted["iteration"], converted["step"], converted["first_rollout"]) == (9, 0, 10)
+
+
 def test_a_dir_records_the_base_its_path_resolves_to_at_save(tmp_path):
     """A --hf-checkpoint symlink repointed at another base after the save must not let the adapter load onto it."""
     (tmp_path / "v1").mkdir()

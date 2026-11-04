@@ -462,12 +462,18 @@ class TorchtitanLoraCheckpoint:
             self._first_rollout = training_state["first_rollout"]
             # the schedule is restored by step: on another --global-batch-size grid it would not match the rollout
             grid_step = 0 if iteration is None else (iteration + 1 - self._first_rollout) * self._steps_per_rollout
-            assert training_state["step"] == grid_step, (
+            assert training_state["step"] == grid_step or not load_optimizer, (
                 f"{path} is at step {training_state['step']} after iteration {iteration}, but this run takes "
-                f"{self._steps_per_rollout} steps per rollout (step {grid_step}): keep its rollout and batch sizes"
+                f"{self._steps_per_rollout} steps per rollout (step {grid_step}): keep its rollout and batch sizes, "
+                "or pass --no-load-optim to load its weights and start the schedule fresh"
             )
-            load_lr_schedulers(self._trainer.engine.optim.lr_schedulers, training_state["lr_scheduler"])
-            self._trainer.engine.num_completed_steps = training_state["step"]
+            if training_state["step"] == grid_step:
+                load_lr_schedulers(self._trainer.engine.optim.lr_schedulers, training_state["lr_scheduler"])
+                self._trainer.engine.num_completed_steps = training_state["step"]
+            else:
+                # weights only: a fresh schedule after the source's rollout, as for a Megatron dir off the grid
+                self._first_rollout = 0 if iteration is None else iteration + 1
+                training_state = self._training_state(iteration)
         elif training_state is not None and training_state["iteration"] is not None:
             # written by a Megatron run, whose scheduler state does not apply here: resume the schedule at the
             # samples it counted, which start at that run's first rollout, not rollout 0
