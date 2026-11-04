@@ -181,6 +181,9 @@ def _lora_matrices(hf_checkpoint: str, targets: HfLoraTargets) -> Iterator[tuple
                 if len(shape := weights.get_slice(key).get_shape()) >= 2:
                     module = key.removesuffix(".weight")
                     components = fused_components(module, targets)
+                    if components is None and module.endswith(".experts.gate_up_proj"):
+                        # packed experts export gate and up apart (w1 / w3) even with no declared gate/up layout
+                        components = ("gate", "up")
                     yield module, tuple(shape), 1 if components is None else len(components)
 
 

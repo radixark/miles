@@ -341,6 +341,24 @@ def test_the_import_bound_counts_one_a_per_component_of_a_fused_matrix(tmp_path)
     assert max_adapter_bytes(str(tmp_path), rank, targets) >= exported
 
 
+def test_the_import_bound_counts_an_a_for_each_half_of_a_packed_gate_up(tmp_path):
+    """A base storing experts packed (``experts.gate_up_proj [E, 2f, h]``) with no declared gate/up layout still exports
+    gate and up apart (official Tinker's w1 / w3), each with its own A."""
+    from safetensors.torch import save_file
+
+    # large enough that the missing A outweighs the bound's per-file JSON allowance, as on a real base
+    experts, ffn, hidden, rank = 64, 4, 1 << 12, 64
+    save_file(
+        {"model.layers.0.mlp.experts.gate_up_proj": torch.zeros(experts, 2 * ffn, hidden)}, tmp_path / "w.safetensors"
+    )
+    targets = get_hf_lora_targets({"model_type": "qwen3", "num_hidden_layers": 1})
+    assert targets.packed_expert_gate_up_layout is None
+
+    # fp32, per expert: w1 and w3 each an A [rank, hidden] and a B [ffn, rank]
+    exported = 4 * experts * 2 * (rank * hidden + ffn * rank)
+    assert max_adapter_bytes(str(tmp_path), rank, targets) >= exported
+
+
 @pytest.mark.parametrize("tenant", ["tenant-a", "", "ключ/with spaces"])
 def test_the_gateway_digests_a_tenant_as_the_library_checks_it(tenant):
     """Core (stdlib-only) writes the digest the library's ownership check recomputes; the two must agree."""
