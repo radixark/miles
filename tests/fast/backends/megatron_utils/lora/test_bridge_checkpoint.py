@@ -1,3 +1,4 @@
+import inspect
 from dataclasses import replace
 from datetime import timedelta
 from types import SimpleNamespace
@@ -11,6 +12,7 @@ from tests.fast.dist_utils import init_gloo, run_multiprocess
 from miles.backends.megatron_utils.lora.bridge_checkpoint import BridgeAdapterSlots, probe_bridge_row_mapping
 from miles.backends.training_utils.checkpoint.adapter.adapter_dir import HeadRows
 from miles.backends.training_utils.checkpoint.adapter.probed_slots import HfPiece, RowMapping
+from miles.tinker.core.utils import build_parametrization_fields
 from miles.utils.distributed_utils import init_gloo_group
 from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
 
@@ -332,3 +334,15 @@ def test_a_trained_head_declares_its_served_rows_and_the_hf_vocab_a_source_may_h
     head_b = f"{TARGETS.unembed[0]}.lora_B"
     assert _slots_with_pieces([(head_b, 6)], vocab_size=8)._head_rows() == HeadRows(head_b, max_source_rows=8)
     assert _slots_with_pieces([(f"{K}.lora_B", 4)], vocab_size=8)._head_rows() is None
+
+
+def test_the_gateways_parametrization_fields_are_the_slots_keyword_arguments():
+    """The stdlib gateway builds these fields; the trainer spreads them into the slots across Ray."""
+    record = SimpleNamespace(base_model="m", lora_rank=8, lora_alpha=16.0)
+    config = SimpleNamespace(lora_type="lora", experts_shared_outer_loras=False, base_model_fingerprint="f")
+    keyword_only = {
+        name
+        for name, parameter in inspect.signature(BridgeAdapterSlots.parametrization).parameters.items()
+        if parameter.kind is inspect.Parameter.KEYWORD_ONLY
+    }
+    assert set(build_parametrization_fields(record, config)) == keyword_only

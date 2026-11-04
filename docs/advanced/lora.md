@@ -144,7 +144,7 @@ Ordinary LoRA also accepts specific HF targets mixed with group names, such as
 | `--lora-type` | per backend | `lora` shares one `lora_A` across each fused projection; `canonical_lora` gives Q/K/V, gate/up and the Qwen3.5 / 3.6 GDN `in_proj` components their own. Native gives every projection its spec declares its own `lora_A`, so it defaults to and accepts only `canonical_lora`; `serve_tinker.py` defaults to `canonical_lora`; Bridge otherwise defaults to `lora`; torchtitan fuses q/k/v and gate/up, so it defaults to and accepts only `lora`. The gpt-oss MoE LoRA CI test trains both expert layouts with `canonical_lora`. |
 | `--target-modules` | none | Uses HF model defaults when omitted. Accepts `all-linear`, `attn/mlp/unembed` groups, HF leaf names or scoped HF paths; Bridge also accepts Megatron selectors. |
 | `--exclude-modules` | none | Comma-separated HF leaf names or scoped HF paths removed after selection; Bridge also accepts Megatron selectors. |
-| `--lora-adapter-path` | none | Warm-start/resume path. Also provide the matching positive rank and target modules. Single LoRA (Bridge or native) reads an adapter dir (any parallel layout; with optimizer state unless `--no-load-optim`), an HF PEFT pair, including main's native export with sglang expert names (weights only, needs `--no-load-optim`), or miles' older per-rank shards (same parallel layout). |
+| `--lora-adapter-path` | none | Warm-start/resume path. Also provide the matching positive rank and target modules. Single LoRA (Bridge or native) reads an adapter dir (any parallel layout; with optimizer state unless `--no-load-optim`), an HF PEFT pair, including miles' older native `--save-hf` export (sglang expert names) (weights only, needs `--no-load-optim`), or miles' older per-rank shards (same parallel layout). |
 | `--lora-adapter-convert-save` | none | Single LoRA (Bridge or native) only: commit `--lora-adapter-path`, as loaded, to this path as an adapter dir. With `--num-rollout 0` it converts a source rollout-only cannot serve (older per-rank shards, official Tinker-named weights). |
 | `--lora-base-cpu-backup` | off | Colocated mode only: keep a CPU mirror of the frozen SGLang base and avoid re-sending base weights. This trades host RAM for faster and more reliable pause/resume. |
 | `--lora-train-only` | off | Train the adapter while keeping ordinary rollout engines on the frozen base policy. |
@@ -440,6 +440,10 @@ SGLang currently rejects combining this layout with fused shared experts.
 `save_state` saves adapter parameters and optimizer state, including FP32 masters.
 It waits for preceding commands but neither steps nor saves pending gradients;
 call it after `optim_step` to save the effect of the accumulated training work.
+A save commits a new adapter directory and then points the name at it, so an
+overwrite that fails keeps the previous checkpoint; one gateway holds a checkpoint
+root at a time. `load_state` adopts the checkpoint's alpha, and a checkpoint saved
+under another adapter layout loads its weights only.
 Sampler saves commit an immutable adapter directory on shared storage, without
 contacting inference engines. Engines load the same frozen base at startup and
 load adapter snapshots from disk on demand. A failed engine load fails sampling

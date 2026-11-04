@@ -15,7 +15,7 @@ from miles.utils.args.component_rollout import InferenceRuntimeImmutState, Infer
 
 
 @pytest.fixture
-async def tinker_startup(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[SimpleNamespace]:
+async def tinker_startup(monkeypatch: pytest.MonkeyPatch, tmp_path) -> AsyncIterator[SimpleNamespace]:
     controller = _InferenceController()
     trainer = _Trainer()
     requests: list[httpx.Request] = []
@@ -32,7 +32,7 @@ async def tinker_startup(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[Simpl
         multi_lora=True,
         load=None,
         hf_checkpoint="base-model",
-        tinker_checkpoint_root="checkpoints",
+        tinker_checkpoint_root=str(tmp_path / "checkpoints"),
         save=None,
         save_hf=None,
         max_tokens_per_gpu=None,

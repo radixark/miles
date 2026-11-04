@@ -6,6 +6,7 @@ ipython==9.15.0
 msgspec==0.21.1
 openai==2.6.1
 partial_json_parser==0.2.1.1.post7
+peft==0.21.2  # HF PEFT loads the adapter export (test_hf_peft_loads_the_peft_export)
 pybind11
 pyzmq==27.1.0
 sentencepiece==0.2.1
