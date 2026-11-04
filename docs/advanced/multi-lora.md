@@ -87,8 +87,11 @@ documents failure handling.
 ## Supported models
 
 Multi-LoRA runs on models with [Megatron-Bridge LoRA](/advanced/lora#lora-training-implementations)
-support that SGLang can serve LoRA for, within the constraints below. Models with only
-[native LoRA](/advanced/lora#native-lora) support train a single adapter today.
+support that SGLang can serve LoRA for, within the constraints below. On
+[native LoRA](/advanced/lora#native-lora) (`--megatron-to-hf-mode raw`) the slots cover dense
+projections and lm_head: grouped expert adapters are refused at startup, and so are GDN `in_proj`
+and GLM-5.3 KDA slots under context parallelism. The gateway has not yet been run end to end on
+native.
 
 | Model | Launcher / CI |
 |---|---|
