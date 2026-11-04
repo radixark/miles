@@ -5,10 +5,13 @@ from dataclasses import replace
 
 import pytest
 import torch
-from safetensors.torch import save_file
+from safetensors.torch import load_file, save_file
 
 from miles.backends.training_utils.checkpoint.adapter.adapter_exports import write_peft_adapter, write_sampler_adapter
-from miles.backends.training_utils.checkpoint.adapter.key_mapping import map_peft_keys_to_hf_keys
+from miles.backends.training_utils.checkpoint.adapter.key_mapping import (
+    map_hf_keys_to_peft_export_keys,
+    map_peft_keys_to_hf_keys,
+)
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
 from miles.backends.training_utils.checkpoint.adapter.parametrization_conversion import (
     ConversionOp,
@@ -232,15 +235,43 @@ def test_dcp_sources_are_classified_by_their_keys(tmp_path, key, run_config, kin
 
 def test_shared_outer_is_detected_on_experts_without_a_gate(tmp_path):
     up, down = f"{L}.mlp.experts.up_proj", f"{L}.mlp.experts.down_proj"
+    tensors = {
+        map_hf_keys_to_peft_export_keys(f"{up}.lora_A"): torch.ones(1, 2, 8),
+        map_hf_keys_to_peft_export_keys(f"{down}.lora_B"): torch.ones(1, 8, 2),
+    }
+    for e in range(3):
+        tensors[map_hf_keys_to_peft_export_keys(f"{up}.lora_B", e)] = torch.ones(8, 2)
+        tensors[map_hf_keys_to_peft_export_keys(f"{down}.lora_A", e)] = torch.ones(2, 8)
+    save_file(tensors, tmp_path / "adapter_model.safetensors")
+    (tmp_path / "adapter_config.json").write_text(json.dumps({"peft_type": "LORA", "r": 2, "lora_alpha": 4.0}))
+    assert PeftAdapterReader(tmp_path, _run(), QWEN3).source.parametrization.experts_shared_outer_loras
+
+
+def test_a_shared_outer_peft_export_has_every_experts_copy_and_reads_back_into_a_shared_outer_run(tmp_path):
+    up, down = f"{L}.mlp.experts.up_proj", f"{L}.mlp.experts.down_proj"
     run = _run(target_modules=(up, down), experts_shared_outer_loras=True)
+    g = torch.Generator().manual_seed(0)
     weights = {
-        f"{up}.lora_A": torch.ones(1, 2, 8),
-        f"{up}.lora_B": torch.ones(3, 8, 2),
-        f"{down}.lora_A": torch.ones(3, 2, 8),
-        f"{down}.lora_B": torch.ones(1, 8, 2),
+        f"{up}.lora_A": torch.randn(1, 2, 8, generator=g),
+        f"{up}.lora_B": torch.randn(3, 8, 2, generator=g),
+        f"{down}.lora_A": torch.randn(3, 2, 8, generator=g),
+        f"{down}.lora_B": torch.randn(1, 8, 2, generator=g),
     }
     write_peft_adapter(tmp_path, weights, run)
-    assert PeftAdapterReader(tmp_path, _run(), QWEN3).source.parametrization.experts_shared_outer_loras
+
+    names = set(load_file(tmp_path / "adapter_model.safetensors"))
+    assert names == {
+        map_hf_keys_to_peft_export_keys(f"{module}.lora_{factor}", e)
+        for module in (up, down)
+        for factor in "AB"
+        for e in range(3)
+    }, "HF PEFT matches only per-expert names"
+    reader = PeftAdapterReader(tmp_path, run, QWEN3)
+    steps = plan_parametrization_conversion(reader.source.parametrization, run, source_dtype=torch.bfloat16)
+    assert ConversionOp.COLLAPSE_SHARED_EXPERT_SIDE in {s.op for s in steps}
+    read = apply_parametrization_conversion(reader.read_weights(), steps)
+    for key, value in weights.items():
+        assert torch.equal(read[key], value.bfloat16().float()), key
 
 
 def test_fan_in_fan_out_is_refused(tmp_path):

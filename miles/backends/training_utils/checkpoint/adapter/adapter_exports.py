@@ -1,5 +1,6 @@
 """PEFT and sampler exports, written from whole HF-keyed tensors on one process."""
 
+from dataclasses import replace
 from pathlib import Path
 
 import torch
@@ -12,6 +13,10 @@ from miles.backends.training_utils.checkpoint.adapter.key_mapping import (
 from miles.backends.training_utils.checkpoint.adapter.parametrization import (
     AdapterParametrization,
     write_parametrization,
+)
+from miles.backends.training_utils.checkpoint.adapter.parametrization_conversion import (
+    apply_parametrization_conversion,
+    plan_parametrization_conversion,
 )
 from miles.utils.lora.hf_lora_targets import GDN_IN_PROJ_COMPONENTS_BY_MODULE
 from miles.utils.lora.utils import get_adapter_target_modules, save_adapter_to_disk
@@ -56,11 +61,15 @@ def _adapter_config(parametrization: AdapterParametrization, tensor_names) -> di
 def write_peft_adapter(
     directory: Path, weights: dict[str, torch.Tensor], parametrization: AdapterParametrization
 ) -> None:
-    """bf16 PEFT with per-expert 2D tensors; a shared-outer side stays ``[1, ...]`` under the unindexed name."""
+    """bf16 PEFT with per-expert 2D tensors."""
+    # HF PEFT has no shared-outer form: every expert gets its own copy of the shared side
+    per_expert = replace(parametrization, experts_shared_outer_loras=False)
+    steps = plan_parametrization_conversion(parametrization, per_expert, source_dtype=torch.float32)
+    weights = apply_parametrization_conversion(weights, steps)
     tensors = {}
-    for key, value in _expand_shared_lora_a(weights, parametrization).items():
+    for key, value in _expand_shared_lora_a(weights, per_expert).items():
         value = value.to(torch.bfloat16).contiguous()
-        if ".experts." in key and value.dim() == 3 and value.shape[0] > 1:
+        if ".experts." in key and value.dim() == 3:
             for expert_index in range(value.shape[0]):
                 tensors[map_hf_keys_to_peft_export_keys(key, expert_index)] = value[expert_index].clone()
         else:
