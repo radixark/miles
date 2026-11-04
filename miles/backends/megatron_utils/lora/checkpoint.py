@@ -474,7 +474,11 @@ def _slot_weights_sharded_state_dict(model: Sequence[DDP], slot: int) -> dict:
         sharded |= chunk.sharded_state_dict()
     marker = f".adapters.{slot}."
     slot_sharded = {key: value for key, value in sharded.items() if marker in key}
-    assert slot_sharded, f"slot {slot} exposed no adapter tensors"
+    # native adapters hold no sharded state; legacy Tinker checkpoints are Bridge adapter shards
+    assert slot_sharded, (
+        f"slot {slot} holds no Bridge adapter shards; a legacy Tinker checkpoint loads on a "
+        "--megatron-to-hf-mode bridge gateway"
+    )
     return slot_sharded
 
 

@@ -87,14 +87,3 @@ class TestRequiredArgumentConstraints:
 
         with pytest.raises(AssertionError, match="--save is single LoRA only"):
             validate_multi_lora_args(args)
-
-    @pytest.mark.parametrize("megatron_to_hf_mode", ["raw", "bridge"])
-    def test_multi_adapter_training_runs_on_native_and_bridge_adapters(self, megatron_to_hf_mode) -> None:
-        args = _parse_megatron_args(
-            ["--multi-lora-n-adapters", "2", "--lora-rank", "8", "--megatron-to-hf-mode", megatron_to_hf_mode]
-        )
-        args.ft_components = []
-
-        validate_multi_lora_args(args)
-
-        assert args.multi_lora

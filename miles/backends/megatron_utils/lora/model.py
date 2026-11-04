@@ -66,7 +66,7 @@ def optim_step(
 def load_slot(
     args: Namespace, model: Sequence[DDP], adapter_slots: BridgeAdapterSlots, slot: int, rank: int, alpha: float
 ) -> SlotOptimizer:
-    # the gateway takes no per-adapter seed: the slot keeps the weights its last clear (or the build) drew
+    # the gateway takes no per-adapter seed
     adapter_slots.init(slot, rank, alpha, seed=None)
     slot_optimizer = SlotOptimizer(args, model, slot, adapter_slots.slot_parameters(slot))
     slot_optimizer.zero_grads()
