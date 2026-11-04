@@ -164,15 +164,28 @@ def test_pipeline_stages_share_the_runs_groups_and_modules():
     run_multiprocess(_pipeline_stages)
 
 
-def test_torchtitan_slots_declare_a_trained_heads_rows():
+def _trained_head(rank, world_size, port):
     from dataclasses import replace
-    from types import SimpleNamespace
 
     from miles.backends.torchtitan_utils.lora_checkpoint import TorchtitanAdapterSlots
     from miles.backends.training_utils.checkpoint.adapter.adapter_dir import HeadRows
 
-    slots = TorchtitanAdapterSlots.__new__(TorchtitanAdapterSlots)
-    slots.targets = replace(get_hf_lora_targets({"model_type": "qwen3", "num_hidden_layers": 1}), vocab_size=12)
-    head_b = f"{slots.targets.unembed[0]}.lora_B"
-    slots.row_mapping = SimpleNamespace(pieces=[SimpleNamespace(key=head_b, global_shape=(10, 2))])
-    assert slots._head_rows() == HeadRows(head_b, max_source_rows=12)
+    init_gloo(rank, world_size, port=port)
+    init_gloo_group()
+    # an untied flavor: a tied one's state dict adapter maps lm_head to nothing
+    model = build_model_config("8B", parallelism=ParallelismConfig(), seq_len=4096, attn_backend="flex")
+    sd_adapter = model._owner.state_dict_adapter_cls(model, None)
+    part = torch.nn.Module()
+    part.lm_head = torch.nn.Module()
+    part.lm_head.lora_a = torch.nn.Linear(model.dim, 4, bias=False)
+    part.lm_head.lora_b = torch.nn.Linear(4, model.vocab_size, bias=False)
+    targets = replace(_TARGETS, vocab_size=model.vocab_size + 2)
+
+    slots = TorchtitanAdapterSlots([part], None, sd_adapter, targets)
+
+    assert slots.head_rows == HeadRows("lm_head.lora_B", max_source_rows=model.vocab_size + 2)
+    dist.destroy_process_group()
+
+
+def test_torchtitan_slots_declare_a_trained_heads_rows():
+    run_multiprocess(_trained_head, world_size=1)
