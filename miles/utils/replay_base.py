@@ -1,10 +1,13 @@
 import logging
 import os
+import time
+from collections.abc import Callable
 
 import torch
 import torch.distributed as dist
 
 from miles.platforms import current_platform
+from miles.utils.timer import Timer
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +58,10 @@ class Replay:
 class BaseReplayManager:
     name: str = ""
     filename: str = ""
+    # Defined by each subclass: the rollout column to replay, and whether sequence parallelism
+    # splits its rows across tensor-parallel ranks.
+    data_key: str
+    if_sp_region: bool
     replay_check_min_overlap_ratio = 0.0  # 0.0 = mismatch only on zero overlap
     # True when replayed indices are token/KV positions (indexer): rebase the
     # per-sample 0-based rollout indices onto the packed training sequence.
@@ -69,6 +76,9 @@ class BaseReplayManager:
         self.enabled = False
         self.stage = "fallthrough"
         self.register_replay_list_func = None
+        # This step's source: `fill(i)` records micro batch i's entry in every replay.
+        self._fill: Callable[[int], None] | None = None
+        self._filled = 0
 
     def create_replay(self, stream_idx: int | None = None) -> Replay:
         replay = Replay(stream_idx=stream_idx)
@@ -81,9 +91,24 @@ class BaseReplayManager:
     def get_current(self) -> Replay | None:
         return self.current
 
+    def attach(self, fill: Callable[[int], None]) -> None:
+        """Take this step's source, dropping the previous step's entries."""
+        self.clear_all()
+        self._fill = fill
+
+    def fill_through(self, cursor: int) -> None:
+        """Fill micro batches up to and including `cursor` that are not filled yet."""
+        while self._fill is not None and self._filled <= cursor:
+            start = time.perf_counter()
+            self._fill(self._filled)
+            Timer().add("replay_fill", time.perf_counter() - start)
+            self._filled += 1
+
     def clear_all(self):
         for replay in self.replays:
             replay.clear()
+        self._fill = None
+        self._filled = 0
 
     def clear_all_forward(self):
         for replay in self.replays:
