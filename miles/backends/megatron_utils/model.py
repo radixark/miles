@@ -449,10 +449,7 @@ def run_forward_backward_pass(
     forward_only=False,
     adapter_slots: BridgeAdapterSlots | None = None,
 ):
-    """One pipeline forward/backward pass over the microbatches; no optimizer interaction.
-
-    ``adapter_slots`` routes multi-LoRA micro-batches to their slots.
-    """
+    """One pipeline forward/backward pass over the microbatches; no optimizer interaction."""
 
     sampling_mask_keys = (
         ("rollout_sampling_mask_ids", "rollout_sampling_mask_offsets")
@@ -1042,6 +1039,7 @@ def load_model_state(
     if is_multi_lora_enabled(args) and args.megatron_to_hf_mode == "bridge":
         # Hide adapter params so the bridge's conversion-task walk doesn't see them
         # while loading the base checkpoint; native adapters hold no checkpoint state.
+        # A mode check, not AdapterSlots.adapters_hidden_context: the slots are built after this load.
         from megatron.bridge.peft.multi_lora_layers import hide_adapters
 
         load_ctx = hide_adapters(model)
