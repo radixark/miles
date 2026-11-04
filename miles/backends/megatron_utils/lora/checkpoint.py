@@ -164,6 +164,10 @@ class DistributedOptimizerMembers:
         self._slots, self._optimizer, self._model = adapter_slots, optimizer, model
         self._precision_aware, self._save_moments = precision_aware, save_moments
 
+    @property
+    def head_rows(self) -> HeadRows | None:
+        return self._slots.head_rows
+
     def export_bf16_adapter(self, slot: int) -> Iterable[tuple[str, torch.Tensor]]:
         return self._slots.export_bf16_adapter(slot)
 

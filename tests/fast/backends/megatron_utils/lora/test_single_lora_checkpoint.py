@@ -17,6 +17,7 @@ from miles.backends.megatron_utils.lora.checkpoint import (
     _world_slice,
     restore_single_lora,
 )
+from miles.backends.training_utils.checkpoint.adapter.adapter_dir import HeadRows
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
 from miles.backends.training_utils.checkpoint.adapter.parametrization_conversion import (
     assert_parametrization_matches_run,
@@ -169,3 +170,9 @@ def test_an_adapter_saved_under_one_mount_loads_under_another(monkeypatch):
     other = _recorded_parametrization(monkeypatch, "/root/models/Qwen3-4B", hidden_size=4096)
     with pytest.raises(AssertionError, match="is another model than run base"):
         assert_parametrization_matches_run(saved, other, [], load_optimizer=False, has_optimizer_state=False)
+
+
+def test_the_members_declare_their_slots_head_rows():
+    head_rows = HeadRows("lm_head.lora_B", max_source_rows=8)
+    members = DistributedOptimizerMembers(SimpleNamespace(head_rows=head_rows), MagicMock(), [], precision_aware=False)
+    assert members.head_rows is head_rows
