@@ -12,6 +12,7 @@ from transformers import LlamaConfig
 
 from miles.utils.lora import arguments as lora_arguments
 from miles.utils.lora.arguments import (
+    _resolve_lora_alpha,
     _resolve_lora_targets,
     _validate_adapter_state_args,
     _validate_rollout_only_adapter,
@@ -359,3 +360,32 @@ def test_multi_lora_bridge_refuses_a_model_without_hf_lora_layout(monkeypatch):
     """Multi-LoRA builds the adapter slots its sampler exports read, even without --save-hf / --save."""
     with pytest.raises(AssertionError, match="HF LoRA target layout"):
         _validate(_bridge_args_without_layout(monkeypatch, multi_lora=True))
+
+
+# --lora-alpha is the source adapter's when there is one; the flag may only repeat it
+def _alpha_args(path, alpha):
+    return SimpleNamespace(lora_adapter_path=None if path is None else str(path), lora_alpha=alpha)
+
+
+def test_without_a_source_the_default_is_16():
+    assert _resolve_lora_alpha(_alpha_args(None, None)) == 16.0
+    assert _resolve_lora_alpha(_alpha_args(None, 8.0)) == 8.0
+
+
+def test_a_source_alpha_is_adopted_and_a_different_flag_refused(tmp_path):
+    (tmp_path / "adapter_config.json").write_text(json.dumps({"lora_alpha": 32}))
+    assert _resolve_lora_alpha(_alpha_args(tmp_path, None)) == 32
+    assert _resolve_lora_alpha(_alpha_args(tmp_path, 32.0)) == 32
+    with pytest.raises(AssertionError, match="differs"):
+        _resolve_lora_alpha(_alpha_args(tmp_path, 16.0))
+
+
+def test_a_source_without_alpha_needs_the_flag(tmp_path):
+    with pytest.raises(AssertionError, match="pass --lora-alpha"):
+        _resolve_lora_alpha(_alpha_args(tmp_path, None))
+    assert _resolve_lora_alpha(_alpha_args(tmp_path, 4.0)) == 4.0
+
+
+def test_a_hub_id_takes_the_flag_or_the_default():
+    assert _resolve_lora_alpha(_alpha_args("org/adapter", None)) == 16.0
+    assert _resolve_lora_alpha(_alpha_args("org/adapter", 8.0)) == 8.0
