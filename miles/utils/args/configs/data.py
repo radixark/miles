@@ -120,6 +120,16 @@ class DataConfig(BaseConfig):
             help="SGLang expands media placeholders and the trainer builds the processor inputs (models with an SGLang token-space strategy)."
         ),
     ] = False
+    trainer_mm_processor_worker_num: A[
+        int,
+        Arg(
+            help="Workers each trainer rank processes multimodal inputs with: threads building token-space inputs, and the SGLang processor's media workers."
+        ),
+    ] = 1
+    trainer_mm_io_worker_num: A[
+        int,
+        Arg(help="Media I/O threads (decoding) of each trainer rank's SGLang processor; 0 lets SGLang choose."),
+    ] = 0
     shared_media_dir: A[
         str | None,
         Arg(help="Directory shared with every SGLang engine; media that is not a file path yet is written here."),

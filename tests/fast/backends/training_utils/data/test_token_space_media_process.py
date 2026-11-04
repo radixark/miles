@@ -43,14 +43,14 @@ def _rebuild(monkeypatch, multimodal_inputs, tokens, *, with_sglang_placement=Tr
     monkeypatch.setattr(
         token_space_media_process,
         "_trainer_processor",
-        lambda rollout_engine_args, device: token_space_media_process._TrainerProcessor(
-            core=processor, image_device="cuda:3"
-        ),
+        lambda *_: token_space_media_process._TrainerProcessor(core=processor, image_device="cuda:3"),
     )
     pending = token_space_media_process.compute_multimodal_train_inputs(
         object(),
         multimodal_inputs,
         tokens,
+        mm_processor_worker_num=1,
+        mm_io_worker_num=0,
         with_sglang_placement=with_sglang_placement,
         device=torch.device("cpu"),
     )
@@ -100,15 +100,15 @@ def test_rebuild_runs_in_the_background(monkeypatch):
     monkeypatch.setattr(
         token_space_media_process,
         "_trainer_processor",
-        lambda rollout_engine_args, device: token_space_media_process._TrainerProcessor(
-            core=processor, image_device=None
-        ),
+        lambda *_: token_space_media_process._TrainerProcessor(core=processor, image_device=None),
     )
 
     pending = token_space_media_process.compute_multimodal_train_inputs(
         object(),
         [{"images": ["/shared/a.png", "/shared/b.png"]}],
         [torch.tensor([1, 9, 9, 9, 9, 2, 5])],
+        mm_processor_worker_num=1,
+        mm_io_worker_num=0,
         with_sglang_placement=True,
         device=torch.device("cpu"),
     )

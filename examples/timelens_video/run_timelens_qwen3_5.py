@@ -98,6 +98,7 @@ def execute(args: ScriptArgs):
     multimodal_args = (
         """--multimodal-keys '{"video": "videos"}' """
         "--multimodal-token-space-processing "
+        "--trainer-mm-processor-worker-num 16 --trainer-mm-io-worker-num 16 "
         "--sglang-enable-token-space-processor "
         f"--sglang-mm-process-config '{json.dumps(_MM_PROCESS_CONFIG)}' "
     )
