@@ -2,10 +2,11 @@
 
 import torch
 
-from miles.backends.megatron_utils.lora.bridge_checkpoint import BridgeAdapterSlots
+from miles.backends.megatron_utils.lora.bridge_checkpoint import BridgeAdapterSlots, _HfPiece
 from miles.backends.megatron_utils.lora.native.hf_adapter import export_lora_hf_named
 from miles.backends.megatron_utils.lora.native.modules.linear import iter_adapters
 from miles.backends.megatron_utils.lora.native.modules.lm_head import LoRAOutputHead
+from miles.backends.training_utils.checkpoint.adapter.adapter_state import VOCAB_PADDING_SUFFIX
 from miles.backends.training_utils.checkpoint.adapter.key_mapping import HfKey, map_sampler_keys_to_hf_keys
 
 
@@ -26,20 +27,28 @@ class NativeAdapterSlots(BridgeAdapterSlots):
         assert len(heads) <= 1, "a model has one output head"
         return self._map_name(f"{heads[0].hf_prefix}lora_B.weight").key if heads else None
 
-    def _unexported_elements(self) -> torch.Tensor:
-        """head_B's padded vocab rows: the export trims them, so no checkpoint holds them and a load leaves them."""
-        padded_rows = {
-            id(adapter.head_B): adapter.padded_local_rows()
-            for adapter in iter_adapters(self._model)
-            if isinstance(adapter, LoRAOutputHead)
-        }
-        offsets, start = [torch.empty(0, dtype=torch.long)], 0
+    def _vocab_padding_pieces(self) -> list[_HfPiece]:
+        """head_B's rows past the served vocab, which the export trims: adapter_state keeps them, so that the rows
+        training moves resume exactly."""
+        heads = {id(a.head_B): a for a in iter_adapters(self._model) if isinstance(a, LoRAOutputHead)}
+        pieces, start = [], 0
         for param in self.slot_parameters(0):
-            if id(param) in padded_rows:
-                rows, row_numel = padded_rows[id(param)], param.shape[1]
-                offsets.append(torch.arange(start + rows.start * row_numel, start + rows.stop * row_numel))
+            head = heads.get(id(param))
+            rows = head.padded_local_rows() if head is not None else None
+            if rows is not None and rows.start < rows.stop:
+                total, first = head.padding_rows()
+                row_numel = param.shape[1]
+                elements = torch.arange(start + rows.start * row_numel, start + rows.stop * row_numel)
+                pieces.append(
+                    _HfPiece(
+                        self._head_key() + VOCAB_PADDING_SUFFIX,
+                        (total, row_numel),
+                        (first, 0),
+                        elements.view(rows.stop - rows.start, row_numel),
+                    )
+                )
             start += param.numel()
-        return torch.cat(offsets)
+        return pieces
 
     def _export_probe(self):
         # one adapter at a time: a float64 export gathers every expert factor over EP onto every rank

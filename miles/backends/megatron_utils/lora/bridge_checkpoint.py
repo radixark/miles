@@ -125,7 +125,7 @@ def probe_bridge_row_mapping(
     """Collective: run ``export_adapter`` (a backend's HF-named export, names mapped by ``map_name``) with
     index-valued stand-ins registered in ``model`` in place of ``params``.
 
-    ``unexported``: offsets of the elements the export leaves out by construction; no checkpoint holds them.
+    ``unexported``: offsets of the elements the export leaves out by construction, which the caller stores itself.
     """
     rank = dist.get_rank()
     total = sum(p.numel() for p in params)
@@ -278,15 +278,18 @@ class BridgeAdapterSlots:
         """Collective: probes the row mapping now, while nothing else touches the parameters."""
         self._model, self._iterator, self.targets, self._multi_lora = model, iterator, targets, multi_lora
         self._specs: dict[int, list[LocalShardSpec]] = {}
-        unexported = self._unexported_elements()
+        padding = self._vocab_padding_pieces()
         # every slot has the same layout
-        self.row_mapping = probe_bridge_row_mapping(
-            model, self.slot_parameters(0), self._export_probe, targets, self._map_name, unexported
+        row_mapping = probe_bridge_row_mapping(
+            model,
+            self.slot_parameters(0),
+            self._export_probe,
+            targets,
+            self._map_name,
+            torch.cat([piece.local_elements.flatten() for piece in padding]) if padding else None,
         )
-        # agreed by every rank: a dp-zero gather that skips the data also skips its collective
-        leaves_out = torch.tensor([int(unexported is not None and unexported.numel() > 0)])
-        dist.all_reduce(leaves_out, op=dist.ReduceOp.MAX, group=gloo_group())
-        self.load_overwrites_every_element = not leaves_out.item()
+        # the export trims the vocab padding; adapter_state keeps it, under its own key
+        self.row_mapping = replace(row_mapping, pieces=[*row_mapping.pieces, *padding])
         self.head_rows = self._head_rows()
 
     def _head_key(self) -> str | None:
@@ -303,9 +306,9 @@ class BridgeAdapterSlots:
     def _map_name(self, name: str) -> HfKey:
         return map_peft_keys_to_hf_keys(name)
 
-    def _unexported_elements(self) -> torch.Tensor | None:
+    def _vocab_padding_pieces(self) -> list[_HfPiece]:
         # Bridge exports every adapter element
-        return None
+        return []
 
     def slot_parameters(self, slot: int) -> list[torch.nn.Parameter]:
         if self._multi_lora:

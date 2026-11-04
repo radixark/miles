@@ -280,10 +280,8 @@ class DistributedOptimizerMembers:
                 sub.init_state_fn(sub.optimizer, sub.config)
             elif isinstance(sub.optimizer, HybridDeviceOptimizer) and not sub.optimizer.state:
                 _init_zero_hdo_state(sub.optimizer)
-            # elements no piece holds (vocab padding) must keep their master and moments, so they are gathered
-            gathered = sub.get_parameter_state_dp_zero(
-                use_gloo_comm=True, empty_data=self._slots.load_overwrites_every_element
-            )
+            # every element is in a piece, so the gather skips the data it would overwrite
+            gathered = sub.get_parameter_state_dp_zero(use_gloo_comm=True, empty_data=True)
             if gathered is not None:
                 for buffer_index, buffer in enumerate(sub.buffers):
                     for param in buffer.param_index_map:
