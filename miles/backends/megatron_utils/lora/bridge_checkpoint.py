@@ -271,10 +271,15 @@ class BridgeAdapterSlots:
         """Collective: probes the row mapping now, while nothing else touches the parameters."""
         self._model, self._iterator, self.targets, self._multi_lora = model, iterator, targets, multi_lora
         self._specs: dict[int, list[LocalShardSpec]] = {}
+        unexported = self._unexported_elements()
         # every slot has the same layout
         self.row_mapping = probe_bridge_row_mapping(
-            model, self.slot_parameters(0), self._export_probe, targets, self._map_name, self._unexported_elements()
+            model, self.slot_parameters(0), self._export_probe, targets, self._map_name, unexported
         )
+        # agreed by every rank: a dp-zero gather that skips the data also skips its collective
+        leaves_out = torch.tensor([int(unexported is not None and unexported.numel() > 0)])
+        dist.all_reduce(leaves_out, op=dist.ReduceOp.MAX, group=gloo_group())
+        self.load_overwrites_every_element = not leaves_out.item()
 
     def _map_name(self, name: str) -> HfKey:
         return map_peft_keys_to_hf_keys(name)

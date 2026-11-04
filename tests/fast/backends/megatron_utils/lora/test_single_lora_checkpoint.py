@@ -121,16 +121,19 @@ def test_an_optimizer_other_than_megatrons_distributed_one_is_refused():
         members._distributed_optimizers()
 
 
-def test_a_restore_keeps_the_state_of_elements_no_checkpoint_holds():
-    """Native head_B's vocab-padding rows are left out of every checkpoint; a restore must not zero them."""
+@pytest.mark.parametrize("leaves_out_elements", [True, False])
+def test_a_restore_keeps_the_state_of_elements_no_checkpoint_holds(leaves_out_elements):
+    """Native head_B's vocab-padding rows are left out of every checkpoint; a restore must not zero them. Without
+    such elements every element is overwritten, so the world state is not gathered."""
     param = torch.zeros(4)
     current = {key: torch.full((4,), value) for key, value in (("param", 1.0), ("exp_avg", 2.0), ("exp_avg_sq", 3.0))}
     buffer = SimpleNamespace(
         param_index_map={param: (0, 4, 0)}, bucket_indices=[(0, 4)], param_dtype="p", grad_dtype="g"
     )
-    loaded = {}
+    loaded, gathered_data = {}, []
 
     def get_parameter_state_dp_zero(use_gloo_comm, empty_data=False):
+        gathered_data.append(not empty_data)
         # Megatron's world tensors start from zeros and are filled only without empty_data
         world = {key: torch.zeros(4) if empty_data else tensor.clone() for key, tensor in current.items()}
         return {0: {("p", "g"): world}, "buckets_coalesced": True}
@@ -141,22 +144,28 @@ def test_a_restore_keeps_the_state_of_elements_no_checkpoint_holds():
     sub.buffers = [buffer]
     sub.get_parameter_state_dp_zero = get_parameter_state_dp_zero
     sub.load_parameter_state_from_dp_zero = loaded.update
-    slots = MagicMock()
+    slots = MagicMock(load_overwrites_every_element=not leaves_out_elements)
     slots.slot_parameters.return_value = [param]
     # element 3 is vocab padding: no piece holds it
-    slots.piece_parameter.return_value = [(0, torch.tensor([0, 1, 2]))]
+    held = torch.tensor([0, 1, 2]) if leaves_out_elements else torch.arange(4)
+    slots.piece_parameter.return_value = [(0, held)]
     members = DistributedOptimizerMembers(slots, SimpleNamespace(chained_optimizers=[sub]), [], precision_aware=False)
-    spec = LocalShardSpec("model.lm_head.lora_B", (4,), (0,), (3,))
-    state = AdapterState([spec], [torch.full((3,), 5.0)], [torch.full((3,), 6.0)], [torch.full((3,), 7.0)], step=9)
+    rows = len(held)
+    spec = LocalShardSpec("model.lm_head.lora_B", (4,), (0,), (rows,))
+    state = AdapterState(
+        [spec], [torch.full((rows,), 5.0)], [torch.full((rows,), 6.0)], [torch.full((rows,), 7.0)], step=9
+    )
     parallel = SimpleNamespace(intra_dp_cp=SimpleNamespace(rank=0), edp=SimpleNamespace(rank=0))
 
     with patch.multiple(_MODULE, get_parallel_state=lambda: parallel, _build_cast_main_to_params_fn=MagicMock()):
         members.import_adapter_state(0, state)
 
+    assert gathered_data == [leaves_out_elements]
     world = loaded[0][("p", "g")]
-    assert world["param"].tolist() == [5.0, 5.0, 5.0, 1.0]
-    assert world["exp_avg"].tolist() == [6.0, 6.0, 6.0, 2.0]
-    assert world["exp_avg_sq"].tolist() == [7.0, 7.0, 7.0, 3.0]
+    kept = [1.0, 2.0, 3.0] if leaves_out_elements else [5.0, 6.0, 7.0]
+    assert world["param"].tolist() == [5.0, 5.0, 5.0, kept[0]]
+    assert world["exp_avg"].tolist() == [6.0, 6.0, 6.0, kept[1]]
+    assert world["exp_avg_sq"].tolist() == [7.0, 7.0, 7.0, kept[2]]
 
 
 def _offloaded_optimizer(*, offloaded: bool) -> tuple[HybridDeviceOptimizer, torch.nn.Parameter, torch.nn.Parameter]:
