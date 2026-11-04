@@ -22,6 +22,7 @@ End-to-end training workflows — the place to start.
 - **[ppo](/examples/ppo)**: Actor-critic PPO with GAE advantages, where the critic shares the actor's train GPUs.
 - **[retool_v2](/examples/retool-v2)**: Tool-enabled language model generation with sandboxed Python code execution interleaved with thinking.
 - **[swe-agent-harbor-docker](/examples/swe-agent-harbor-docker)**: Trains coding and terminal agents with Harbor-managed local Docker sandboxes and verifier rewards.
+- **[text_to_sql](/examples/text-to-sql)**: Multi-turn text-to-SQL RL on BIRD-Platinum with a read-only SQLite tool, following River's recipe on Qwen3.6-35B-A3B.
 
 ## [Infra Features](/examples/infra-features)
 
