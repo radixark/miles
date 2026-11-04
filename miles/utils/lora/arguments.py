@@ -6,6 +6,7 @@ from miles.backends.sglang_utils.arguments import sglang_attention_dp_enabled
 from miles.utils.hf_utils.config import load_hf_config
 from miles.utils.hf_utils.weight_mapping import HfWeightMapping
 from miles.utils.lora.hf_lora_targets import (
+    GDN_IN_PROJ_COMPONENTS_BY_MODULE,
     LORA_TARGET_GROUPS,
     exclude_hf_lora_targets,
     expand_hf_lora_targets,
@@ -16,7 +17,13 @@ from miles.utils.lora.hf_lora_targets import (
     parse_lora_targets,
     resolve_hf_lora_targets,
 )
-from miles.utils.lora.utils import is_lora_enabled, matches_lora_target, reads_adapter_slots, targets_expert_leaves
+from miles.utils.lora.utils import (
+    exports_hf_snapshots,
+    is_lora_enabled,
+    matches_lora_target,
+    reads_adapter_slots,
+    targets_expert_leaves,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +95,9 @@ def validate_lora_args_after_megatron(args):
     validate_native_lora_args(args, hf_modules)
 
 
+_GDN_QKV_COMPONENTS = GDN_IN_PROJ_COMPONENTS_BY_MODULE["in_proj_qkv"]
+
+
 def _assert_adapter_layout_defined(args) -> None:
     # the actor builds the adapter slots, which need the layout, for whatever reads them; eval_uses_snapshots is
     # resolved only after validate_lora_args
@@ -97,6 +107,18 @@ def _assert_adapter_layout_defined(args) -> None:
             f"Bridge LoRA snapshots and checkpoints need the HF LoRA target layout of model_type="
             f"{hf_config.model_type!r}, which miles does not define"
         )
+    if exports_hf_snapshots(args):
+        _assert_hf_exports_have_peft_form(args)
+
+
+def _assert_hf_exports_have_peft_form(args) -> None:
+    # canonical adapters give each GDN in_proj_qkv component its own lora_A; HF has no module per component
+    components = sorted({target.rpartition(".")[2] for target in args.lora_adapter_targets} & set(_GDN_QKV_COMPONENTS))
+    assert not components, (
+        f"--save-hf and eval snapshots write a PEFT adapter, but canonical_lora's GDN {components} have their own "
+        "lora_A, which no PEFT adapter can name: use --lora-type lora (one shared lora_A per in_proj_qkv), or drop "
+        "--save-hf and eval snapshots"
+    )
 
 
 def _native_serving_targets(args, hf_config, hf_targets: list[str], hf_modules: list[str]) -> list[str] | str:
