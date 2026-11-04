@@ -6,7 +6,7 @@ GDN in_proj, per-expert names) comes from Bridge's own export, run once on index
 
 import bisect
 from collections.abc import Callable, Iterable, Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, replace
 from itertools import groupby
 from typing import Literal
@@ -258,7 +258,7 @@ def _rank_axis(key: str, ndim: int) -> int:
 
 
 class BridgeAdapterSlots:
-    """Checkpoint members of Bridge LoRA; single LoRA is slot 0 of one, multi-LoRA slots are its MultiLoRALinears'.
+    """Bridge LoRA's adapter slots; single LoRA is slot 0 of one, multi-LoRA slots are its MultiLoRALinears'.
 
     Multi-LoRA slots are padded to ``max_rank``; a slot's HF tensors have its real rank.
     """
@@ -281,6 +281,43 @@ class BridgeAdapterSlots:
     def _unexported_elements(self) -> torch.Tensor | None:
         # Bridge exports every adapter element
         return None
+
+    def init(self, slot: int, lora_rank: int, lora_alpha: float, seed: int) -> None:
+        """Claim ``slot``: re-draw its weights through the RNG tracker from ``seed``, then mask past ``lora_rank``."""
+        assert self._multi_lora, "single LoRA's adapter is built with the model"
+        from megatron.bridge.peft.multi_lora_layers import init_adapter_slot
+
+        init_adapter_slot(self._model, slot, rank=lora_rank, alpha=lora_alpha, seed=seed)
+
+    def clear(self, slot: int) -> None:
+        assert self._multi_lora, "single LoRA's adapter is built with the model"
+        from megatron.bridge.peft.multi_lora_layers import clear_adapter_slot
+
+        clear_adapter_slot(self._model, slot)
+
+    @contextmanager
+    def routed_tokens_context(self, token_counts_by_slot: Sequence[int] | torch.Tensor) -> Iterator[None]:
+        """Route the forward's tokens, sorted by slot, to their slots; the routing ends with the context."""
+        assert self._multi_lora, "single LoRA routes no tokens"
+        from megatron.bridge.peft.multi_lora_layers import MultiLoRALinear, set_tokens_per_adapter_slot
+
+        set_tokens_per_adapter_slot(self._model, torch.as_tensor(token_counts_by_slot))
+        try:
+            yield
+        finally:
+            for module in (m for chunk in self._model for m in chunk.modules() if isinstance(m, MultiLoRALinear)):
+                module.tokens_per_adapter = None
+                module.tokens_per_adapter_splits = None
+                module.tokens_per_adapter_total = None
+
+    def adapters_hidden_context(self):
+        """Hides the adapters from the Bridge walk that loads the base checkpoint."""
+        if not self._multi_lora:
+            # Bridge's single-LoRA base load skips the adapter parameters itself
+            return nullcontext()
+        from megatron.bridge.peft.multi_lora_layers import hide_adapters
+
+        return hide_adapters(self._model)
 
     def slot_parameters(self, slot: int) -> list[torch.nn.Parameter]:
         if self._multi_lora:
