@@ -79,8 +79,8 @@ def _default_lora_type(args) -> str:
 
 
 def validate_lora_args_after_megatron(args):
-    """Megatron's native (raw-mode) LoRA: the targets its spec serves, and the run checks that read
-    Megatron's resolved args (e.g. the expert TP size it defaults from TP)."""
+    """Checks that need Megatron's resolved args or the resolved eval-snapshot setting: Bridge LoRA's HF-export
+    layout, and the targets native (raw-mode) LoRA's spec serves."""
     if is_lora_enabled(args) and args.megatron_to_hf_mode == "bridge":
         _assert_adapter_layout_defined(args)
     if not (is_lora_enabled(args) and args.megatron_to_hf_mode == "raw"):
