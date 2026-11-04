@@ -75,7 +75,9 @@ def _optimizer(calls):
 
 def _load(path, chunks, calls, *, load_optimizer):
     loader = LegacyRankShardLoader(chunks, _optimizer(calls), RUN, load_optimizer, precision_aware=False)
-    return loader(path)
+    parametrization = loader.parametrization(path)
+    loader.load(path)
+    return parametrization
 
 
 def test_virtual_pipeline_chunks_restore_their_own_adapters_bitwise(tmp_path):

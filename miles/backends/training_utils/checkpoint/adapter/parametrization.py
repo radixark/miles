@@ -6,6 +6,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 PARAMETRIZATION_FILENAME = "adapter_parametrization.json"
+# bumped when a field's meaning changes or a field without a default is added; files from before it are 1
+PARAMETRIZATION_FORMAT_VERSION = 1
 
 # the HF config fields that fix every adapted module's name and shape
 _BASE_IDENTITY_FIELDS = (
@@ -74,11 +76,18 @@ class AdapterParametrization:
 
 def write_parametrization(directory: Path, parametrization: AdapterParametrization) -> None:
     assert parametrization.lora_alpha is not None, "lora_alpha must be resolved before it is written"
-    (directory / PARAMETRIZATION_FILENAME).write_text(json.dumps(asdict(parametrization), indent=2))
+    fields = {"format_version": PARAMETRIZATION_FORMAT_VERSION, **asdict(parametrization)}
+    (directory / PARAMETRIZATION_FILENAME).write_text(json.dumps(fields, indent=2))
 
 
 def read_parametrization(directory: Path) -> AdapterParametrization:
     fields = json.loads((directory / PARAMETRIZATION_FILENAME).read_text())
+    version = fields.pop("format_version", 1)
+    if version != PARAMETRIZATION_FORMAT_VERSION:
+        raise ValueError(
+            f"{directory / PARAMETRIZATION_FILENAME} has format version {version}; this miles reads version "
+            f"{PARAMETRIZATION_FORMAT_VERSION}: load it with the miles version that wrote it"
+        )
     fields["target_modules"] = tuple(fields["target_modules"])
     fields["shared_lora_a_groups"] = tuple(tuple(group) for group in fields["shared_lora_a_groups"])
     return AdapterParametrization(**fields)

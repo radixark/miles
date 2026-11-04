@@ -1,9 +1,7 @@
 from dataclasses import replace
+from datetime import timedelta
 from types import SimpleNamespace
 
-"""The row-mapping probe recovers each rank's HF pieces, primaries and shared A from an export alone."""
-
-from datetime import timedelta
 
 import pytest
 import torch
