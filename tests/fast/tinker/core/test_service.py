@@ -1980,6 +1980,30 @@ async def test_a_file_import_load_reads_the_import_off_the_event_loop(service, m
     assert len(threads) == 2 and threading.main_thread() not in threads
 
 
+async def test_a_file_import_copy_does_not_hold_the_trainer_lock(service, monkeypatch):
+    """A copy can take seconds per GB; it runs before the load reaches the trainer, so other tenants keep training."""
+    importer = await created_model(service, tenant="importer")
+    trainer = await created_model(service, tenant="trainer")
+    copying, release = threading.Event(), threading.Event()
+
+    def slow_copy(uri, wanted):
+        copying.set()
+        release.wait(timeout=10)
+        return tempfile.mkdtemp()
+
+    monkeypatch.setattr(service, "_copy_import", slow_copy)
+    monkeypatch.setattr(service, "_read_import_copy", lambda uri, copy_dir: {"lora_rank": 8, "lora_alpha": 32})
+    payload = {"model_id": importer, "seq_id": 1, "path": "file:///imports/adapter", "optimizer": False}
+    load = service.submit("importer", "load_state", payload)
+    assert await asyncio.to_thread(copying.wait, 5)
+    try:
+        step = service.submit("trainer", "forward_backward", fb_payload(trainer, 1, [datum()]))
+        assert (await await_settled(service, "trainer", step)).state == DONE
+    finally:
+        release.set()
+    assert (await await_settled(service, "importer", load)).state == DONE
+
+
 async def test_weights_info_rejects_a_sampler_link_whose_target_is_gone(service):
     model_id = await created_model(service)
     save = service.submit(

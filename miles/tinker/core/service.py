@@ -292,18 +292,24 @@ class TinkerService:
                 validate_batch_payload(op, payload, self.config)
             except UserInputError as error:
                 validation_error = str(error)
-        model_queue.submit(
-            Command(
-                model_id=model_id,
-                seq_id=seq_id,
-                op=op,
-                payload={key: value for key, value in payload.items() if key != "validation_error"},
-                request_id=future.request_id,
-                arrival=self._arrival_counter,
-                validation_error=validation_error,
-            )
+        command = Command(
+            model_id=model_id,
+            seq_id=seq_id,
+            op=op,
+            payload={key: value for key, value in payload.items() if key != "validation_error"},
+            request_id=future.request_id,
+            arrival=self._arrival_counter,
+            validation_error=validation_error,
         )
-        self._wake.set()
+        if op == CommandOp.LOAD_STATE and validation_error is None and payload["path"].startswith("file://"):
+            # the copy takes seconds per GB; the model's later commands wait for it in seq order
+            task = asyncio.create_task(self._stage_import_then_submit(record, model_queue, command))
+            self._create_tasks.add(task)
+            task.add_done_callback(self._create_tasks.discard)
+            task.add_done_callback(self._observe_background_task)
+        else:
+            model_queue.submit(command)
+            self._wake.set()
         return future.request_id
 
     def retrieve_future(self, tenant: str, request_id: str) -> RequestFuture | None:
@@ -557,7 +563,22 @@ class TinkerService:
             )
         return result
 
-    async def _load_imported_adapter(self, record: ModelRecord, payload: dict) -> dict:
+    async def _stage_import_then_submit(self, record: ModelRecord, model_queue, command: Command) -> None:
+        """Copy and check a file:// import without the trainer lock, then queue its load; a failure is the
+        request's own and never reaches the trainer."""
+        try:
+            command.payload["staged_import"] = await self._stage_import(record, command.payload)
+        except UserInputError as error:
+            command.validation_error = str(error)
+        if self.models.get(record.model_id) is not record:
+            # closed while copying; its future already failed
+            if "copy_dir" in command.payload.get("staged_import", {}):
+                self._remove_import_copy(command.payload["staged_import"]["copy_dir"])
+            return
+        model_queue.submit(command)
+        self._wake.set()
+
+    async def _stage_import(self, record: ModelRecord, payload: dict) -> dict:
         """An adapter from under --tinker-import-root; it has no Adam state this gateway could resume."""
         if payload["optimizer"]:
             raise UserInputError(f"{payload['path']} loads weights only; load it without optimizer state")
@@ -568,7 +589,9 @@ class TinkerService:
             )
         except OSError as error:
             # e.g. a full checkpoint disk: only this load fails, the gateway keeps serving
-            return {"error": f"cannot copy {payload['path']} to load it: {error}", "error_category": "server"}
+            return {
+                "failure": {"error": f"cannot copy {payload['path']} to load it: {error}", "error_category": "server"}
+            }
         try:
             source = await asyncio.to_thread(self._read_import_copy, payload["path"], copy_dir)
             if source["lora_alpha"] is None:
@@ -577,19 +600,39 @@ class TinkerService:
                 raise UserInputError(
                     f"{payload['path']} has lora_rank={source['lora_rank']}; this model has {record.lora_rank}"
                 )
-            fields = build_parametrization_fields(record, self.config) | {"lora_alpha": source["lora_alpha"]}
-            failure = await self.backend.load_slot(
-                record.slot,
-                record.lora_rank,
-                source["lora_alpha"],
-                source={"path": copy_dir, "load_optimizer": False, "parametrization_fields": fields},
-            )
-        finally:
+        except BaseException:
+            self._remove_import_copy(copy_dir)
+            raise
+        return {"copy_dir": copy_dir, "source": source}
+
+    def _remove_import_copy(self, copy_dir: str) -> None:
+        async def remove() -> None:
             try:
                 await asyncio.to_thread(shutil.rmtree, copy_dir)
             except OSError:
                 # the load stands; the next gateway start removes the copy
                 logger.exception(f"could not remove {copy_dir}")
+
+        task = asyncio.create_task(remove())
+        self._cleanup_tasks.add(task)
+        task.add_done_callback(self._cleanup_tasks.discard)
+
+    async def _load_imported_adapter(self, record: ModelRecord, payload: dict) -> dict:
+        """Load a file:// import staged before the trainer lock was taken."""
+        staged = payload["staged_import"]
+        if "failure" in staged:
+            return staged["failure"]
+        source = staged["source"]
+        try:
+            fields = build_parametrization_fields(record, self.config) | {"lora_alpha": source["lora_alpha"]}
+            failure = await self.backend.load_slot(
+                record.slot,
+                record.lora_rank,
+                source["lora_alpha"],
+                source={"path": staged["copy_dir"], "load_optimizer": False, "parametrization_fields": fields},
+            )
+        finally:
+            self._remove_import_copy(staged["copy_dir"])
         if failure is not None:
             return failure
         record.lora_alpha = source["lora_alpha"]
