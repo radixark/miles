@@ -77,16 +77,8 @@ class FakeBackend:
     async def trainer_dead(self):
         return self.dead
 
-    async def load_slot(self, slot, rank, alpha, ckpt_path=None, load_optimizer=True, parametrization_fields=None):
-        return self._record(
-            "load_slot",
-            slot=slot,
-            rank=rank,
-            alpha=alpha,
-            ckpt_path=ckpt_path,
-            load_optimizer=load_optimizer,
-            parametrization_fields=parametrization_fields,
-        )
+    async def load_slot(self, slot, rank, alpha, source=None):
+        return self._record("load_slot", slot=slot, rank=rank, alpha=alpha, source=source)
 
     async def unload_slot(self, slot):
         return self._record("unload_slot", slot=slot)

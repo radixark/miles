@@ -136,10 +136,10 @@ async def test_save_then_load_roundtrip_paths(service):
     )
     assert (await await_settled(service, "tenant", load)).state == DONE
     weights_only = service.backend.named("load_slot")[-1]
-    assert weights_only["load_optimizer"] is False
+    assert weights_only["source"]["load_optimizer"] is False
     checkpoint = Path(service.config.checkpoint_root) / model_id / "weights" / "ckpt"
     # the trainer reads the commit the name pointed at when the load was scheduled
-    assert weights_only["ckpt_path"] == str(checkpoint.resolve()) and checkpoint.is_symlink()
+    assert weights_only["source"]["path"] == str(checkpoint.resolve()) and checkpoint.is_symlink()
 
 
 async def test_sampler_save_publishes_successive_versions(service):
@@ -824,7 +824,7 @@ async def test_a_loaded_adapter_keeps_its_own_alpha(service):
     )
     assert (await await_settled(service, "tenant", loaded)).state == DONE
     load = service.backend.named("load_slot")[-1]
-    assert load["alpha"] == load["parametrization_fields"]["lora_alpha"] == 99.0
+    assert load["alpha"] == load["source"]["parametrization_fields"]["lora_alpha"] == 99.0
     assert service.models[model_id].lora_alpha == 99.0, "the tenant record adopts the source's alpha"
 
 
@@ -839,7 +839,7 @@ async def test_a_checkpoint_saved_before_commits_loads_through_the_legacy_path(s
         {"model_id": model_id, "seq_id": 1, "path": f"tinker://{model_id}/weights/old", "optimizer": True},
     )
     assert (await await_settled(service, "tenant", loaded)).state == DONE
-    assert service.backend.named("load_slot")[-1]["ckpt_path"] == str(Path(legacy).resolve())
+    assert service.backend.named("load_slot")[-1]["source"]["path"] == str(Path(legacy).resolve())
 
 
 async def test_an_overwrite_interrupted_after_adopting_a_legacy_dir_keeps_it_loadable(service):
@@ -856,7 +856,7 @@ async def test_an_overwrite_interrupted_after_adopting_a_legacy_dir_keeps_it_loa
         "tenant", "load_state", {"model_id": model_id, "seq_id": 1, "path": path, "optimizer": True}
     )
     assert (await await_settled(service, "tenant", loaded)).state == DONE
-    assert service.backend.named("load_slot")[-1]["ckpt_path"] == str(Path(legacy).resolve())
+    assert service.backend.named("load_slot")[-1]["source"]["path"] == str(Path(legacy).resolve())
 
 
 async def test_an_overwritten_checkpoint_leaves_no_old_commit(service):
