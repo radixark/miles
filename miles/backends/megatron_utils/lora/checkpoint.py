@@ -157,11 +157,8 @@ def _distributed_optimizers(optimizer) -> list:
 
 
 class DistributedOptimizerMembers:
-    """Checkpoint members of Bridge single LoRA (slot 0) trained by Megatron's DistributedOptimizer.
-
-    Each DP group's rank 0 gathers whole parameters' fp32 masters and moments over Gloo and writes them; on import
-    it scatters them back, and every rank re-casts its bf16 shard and all-gathers the parameters.
-    """
+    """Bridge single LoRA's checkpoint members: each DP group's rank 0 gathers / scatters whole fp32 masters and
+    moments over Gloo."""
 
     bf16_adapter_key_style = "peft"
 
