@@ -38,7 +38,7 @@ from miles.backends.training_utils.checkpoint.adapter.parametrization import (
 )
 from miles.tinker.core.checkpoint_expiry import CheckpointExpiry
 from miles.tinker.core.future import DONE, FAILED
-from miles.tinker.core.service import IMPORT_COPIES_DIRNAME
+from miles.tinker.core.imports import IMPORT_COPIES_DIRNAME
 from miles.tinker.core.types import NotFoundError, OwnershipError, UserInputError
 from miles.tinker.core.utils import resolve_checkpoint_dir, resolve_sampler_checkpoint
 

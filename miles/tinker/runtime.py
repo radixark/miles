@@ -3,7 +3,6 @@
 import asyncio
 import json
 import math
-import shutil
 from collections.abc import Iterator
 from dataclasses import asdict
 from pathlib import Path
@@ -33,7 +32,7 @@ from miles.backends.training_utils.checkpoint.adapter.parametrization import (
 )
 from miles.backends.training_utils.checkpoint.adapter.readers import PEFT_FILES
 from miles.ray.rollout.train_data_conversion import ROLLOUT_DATA_VALUE_SPEC
-from miles.tinker.core.service import IMPORT_COPIES_DIRNAME
+from miles.tinker.core.imports import clear_import_copies
 from miles.tinker.core.types import OwnershipError, UserInputError
 from miles.tinker.core.utils import PRE_COMMIT_META_FILENAME
 from miles.utils import object_store
@@ -87,9 +86,8 @@ def delete_retired_adapters(root: str) -> None:
 def take_checkpoint_root(checkpoint_root: str) -> TextIO:
     """Lock the root for this gateway, then recover every adapter root under it (``<model_id>/<kind>``)."""
     lock = lock_checkpoint_root(Path(checkpoint_root))
-    # copies of file:// imports a crash left behind; the lock means no load reads them
-    if (Path(checkpoint_root) / IMPORT_COPIES_DIRNAME).exists():
-        shutil.rmtree(Path(checkpoint_root) / IMPORT_COPIES_DIRNAME)
+    # the lock means no load reads them
+    clear_import_copies(checkpoint_root)
     for adapter_root in Path(checkpoint_root).glob("*/*"):
         if adapter_root.is_dir():
             delete_unreferenced_adapter_dirs(adapter_root)
