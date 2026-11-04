@@ -255,7 +255,7 @@ class TestSaveHfModelRawLoRA:
         slots = MagicMock(bf16_adapter_key_style="sampler")
         args = Namespace(
             megatron_to_hf_mode="raw",
-            hf_checkpoint="/hf",
+            hf_checkpoint=_hf_dir(tmp_path),
             save_hf=None,
             lora_rank=8,
             lora_alpha=16.0,
@@ -266,7 +266,9 @@ class TestSaveHfModelRawLoRA:
         save_hf_model(args, 0, model, publisher=publisher, adapter_slots=slots, path=tmp_path, raise_on_error=True)
 
         merge.assert_called_once_with(model, dict(named_weights.return_value))
-        publisher.write_model.assert_called_once_with(tmp_path, weights=merge.return_value, hf_checkpoint="/hf")
+        publisher.write_model.assert_called_once_with(
+            tmp_path, weights=merge.return_value, hf_checkpoint=args.hf_checkpoint
+        )
         sampler_view.assert_called_once_with(
             tmp_path / "adapter", slots, 0, slots.parametrization.return_value, slots.targets
         )
@@ -310,7 +312,7 @@ def test_native_shared_outer_save_hf_writes_the_stacked_adapter_sglang_serves(
 
     args = Namespace(
         megatron_to_hf_mode="raw",
-        hf_checkpoint="/hf",
+        hf_checkpoint=_hf_dir(tmp_path),
         save_hf=None,
         lora_rank=2,
         lora_alpha=4.0,
