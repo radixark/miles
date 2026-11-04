@@ -42,9 +42,19 @@ class _RecordingApiClient:
         return method
 
 
-def _connect(monkeypatch, *, rank: int, failed_on_another_rank: bool = False, engine_receives: bool = True):
-    def all_reduce(tensor, group):
-        if failed_on_another_rank:
+def _connect(
+    monkeypatch,
+    *,
+    rank: int,
+    failed_on_another_rank: bool = False,
+    engine_receives: bool = True,
+    other_layout_on_another_rank: bool = False,
+):
+    def all_reduce(tensor, op=None, group=None):
+        if op == ici.dist.ReduceOp.MAX:  # the layout check: [checksum, -checksum]
+            if other_layout_on_another_rank:
+                tensor[0] += 1
+        elif failed_on_another_rank:
             tensor.fill_(1)
 
     monkeypatch.setattr(ici.dist, "get_rank", lambda: rank)
@@ -146,3 +156,14 @@ def test_a_send_the_engine_never_receives_times_out(monkeypatch):
         protocol.send_bucket([("a", torch.zeros(2))])
 
     assert len(buffer_holder) == 1, "the posted send's buffer must stay alive"
+
+
+def test_every_rank_raises_before_sending_when_another_rank_packs_another_layout(monkeypatch):
+    """The engine reads every rank's buffer with rank 0's dtypes and shapes; a rank holding other tensors must not send."""
+    protocol, shared_slice, calls = _connect(monkeypatch, rank=0, other_layout_on_another_rank=True)
+    calls.clear()
+
+    with pytest.raises(RuntimeError, match="different dtypes or shapes"):
+        protocol.send_bucket([("a", torch.zeros(2, 3, dtype=torch.bfloat16))])
+
+    assert calls == [] and shared_slice.backend.sends == [] and shared_slice.store.values == {}

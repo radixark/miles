@@ -7,6 +7,7 @@ miles.platforms.tpu_shared_slice.
 
 import json
 import time
+import zlib
 from argparse import Namespace
 from collections.abc import Sequence
 
@@ -81,6 +82,9 @@ class UpdateWeightFromIci(WeightTransferProtocol):
 
     def send_bucket(self, bucket: list[tuple[str, torch.Tensor]]) -> None:
         names = [name for name, _ in bucket]
+        dtypes = [tensor.dtype for _, tensor in bucket]
+        shapes = [tensor.shape for _, tensor in bucket]
+        _check_same_layout_on_every_rank(dtypes, shapes)
         buffer = pack_bucket([tensor for _, tensor in bucket])
         self._tag += 1
         futures = []
@@ -90,8 +94,8 @@ class UpdateWeightFromIci(WeightTransferProtocol):
                 updater.submit_client_call(
                     "update_weights_from_distributed",
                     names=names,
-                    dtypes=[tensor.dtype for _, tensor in bucket],
-                    shapes=[tensor.shape for _, tensor in bucket],
+                    dtypes=dtypes,
+                    shapes=shapes,
                     group_name=self.group_name,
                     selector=self._selector,
                 )
@@ -131,6 +135,23 @@ class UpdateWeightFromIci(WeightTransferProtocol):
                 )
             time.sleep(0.001)
         send.wait()  # raises the transport error of a failed send
+
+
+def _check_same_layout_on_every_rank(dtypes: list[torch.dtype], shapes: list[torch.Size]) -> None:
+    """Every engine rank reads its paired rank's buffer with the dtypes and shapes of rank 0's request, and only the
+    names come per rank (from the store). A rank packing another layout, such as its own experts, would load another
+    tensor's bytes; every rank raises before anything is sent."""
+    layout = zlib.crc32(
+        repr([(str(dtype), tuple(shape)) for dtype, shape in zip(dtypes, shapes, strict=True)]).encode()
+    )
+    # one MAX reduce gives both the largest and the smallest checksum
+    bounds = torch.tensor([layout, -layout], dtype=torch.int64)
+    dist.all_reduce(bounds, op=dist.ReduceOp.MAX, group=get_gloo_group())
+    if bounds[0].item() != -bounds[1].item():
+        raise RuntimeError(
+            "ICI weight sync: trainer ranks packed this bucket with different dtypes or shapes, but every engine rank "
+            "reads it with rank 0's"
+        )
 
 
 def bucket_names_key(src_slice_rank: int, dst_slice_rank: int, tag: int) -> str:
