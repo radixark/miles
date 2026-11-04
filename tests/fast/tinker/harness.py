@@ -197,7 +197,9 @@ class FakeBackend:
         assert failure is None, "a trainer's export_slot raises; it never returns a failure"
         parametrization = _parametrization(parametrization_fields)
         with write_adapter_dir(Path(root), name, tenant_digest=tenant_digest) as written:
-            write_sampler_adapter(written.path, _weights(parametrization.lora_rank), parametrization, _TARGETS, lora_dropout=0.0)
+            write_sampler_adapter(
+                written.path, _weights(parametrization.lora_rank), parametrization, _TARGETS, lora_dropout=0.0
+            )
         return written
 
     async def sample(self, payload, lora_name, lora_path=None):
