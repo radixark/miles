@@ -34,6 +34,19 @@ def _export(params):
     yield f"{K}.lora_B.weight", gathered(b_k)
 
 
+def _model(params):
+    """The probe swaps parameters where modules register them."""
+    holder = torch.nn.Module()
+    for index, param in enumerate(params):
+        holder.register_parameter(f"p{index}", param)
+    return [holder]
+
+
+def _registered(model):
+    """What an export reads: the probe's stand-ins while it runs."""
+    return list(model[0].parameters())
+
+
 def _probe(rank, world_size, port):
     init_gloo(rank, world_size, port=port)
     init_gloo_group()
@@ -42,8 +55,15 @@ def _probe(rank, world_size, port):
         torch.nn.Parameter(torch.randn(2, 3)),
         torch.nn.Parameter(torch.randn(2, 3)),
     ]
+    model = _model(params)
     before = [p.data.clone() for p in params]
-    mapping = probe_bridge_row_mapping(params, lambda: _export(params), TARGETS)
+    # Megatron DDP fills main_grad from a hook on each parameter's grad accumulator, which it keeps alive
+    hooked, accumulators = [], [param.expand_as(param).grad_fn.next_functions[0][0] for param in params]
+    for accumulator in accumulators:
+        accumulator.register_hook(lambda *_: hooked.append(1))
+    mapping = probe_bridge_row_mapping(model, params, lambda: _export(_registered(model)), TARGETS)
+    sum(p.sum() for p in params).backward()
+    assert len(hooked) == len(params), "the probe keeps each parameter's grad accumulator"
 
     assert mapping.shared_lora_a_groups == ((K, Q),)
     assert all(torch.equal(p.data, b) for p, b in zip(params, before, strict=True)), "the probe restores the params"
@@ -84,7 +104,8 @@ def _probe_experts(rank, world_size, port):
     init_gloo(rank, world_size, port=port)
     init_gloo_group()
     params = [torch.nn.Parameter(torch.randn(2, 4, 5)), torch.nn.Parameter(torch.randn(2, 6, 4))]
-    mapping = probe_bridge_row_mapping(params, lambda: _expert_export(params), TARGETS)
+    model = _model(params)
+    mapping = probe_bridge_row_mapping(model, params, lambda: _expert_export(_registered(model)), TARGETS)
     gate, up = GATE.format("x").replace(".x.", "."), UP.format("x").replace(".x.", ".")
     assert mapping.shared_lora_a_groups == ((gate, up),)
     pieces = {p.key: p for p in mapping.pieces}
@@ -116,18 +137,19 @@ def _probe_trimmed_head(rank, world_size, port):
     init_gloo_group()
     # vocab 7 padded to 8: rank 1's last row of B is padding
     params = [torch.nn.Parameter(torch.randn(2, 5)), torch.nn.Parameter(torch.randn(4, 2))]
+    model = _model(params)
     padding = torch.arange(10 + 3 * 2, 10 + 4 * 2) if rank == 1 else torch.empty(0, dtype=torch.long)
     with pytest.raises(RuntimeError, match="rank 1: AssertionError: .*does not reach 2 of this rank's elements"):
-        probe_bridge_row_mapping(params, lambda: _trimmed_head_export(params, 7), TARGETS)
+        probe_bridge_row_mapping(model, params, lambda: _trimmed_head_export(_registered(model), 7), TARGETS)
 
-    mapping = probe_bridge_row_mapping(params, lambda: _trimmed_head_export(params, 7), TARGETS, unexported=padding)
+    mapping = probe_bridge_row_mapping(model, params, lambda: _trimmed_head_export(_registered(model), 7), TARGETS, unexported=padding)
 
     head_b = next(p for p in mapping.pieces if p.key == f"{HEAD}.lora_B")
     assert head_b.global_shape == (7, 2) and head_b.offsets == (4 * rank, 0)
     flat = torch.cat([p.data.reshape(-1) for p in params])
     assert torch.equal(flat[head_b.local_elements], params[1].data[: 4 - rank])
     with pytest.raises(RuntimeError, match="the export reaches elements declared unexported"):
-        probe_bridge_row_mapping(params, lambda: _trimmed_head_export(params, 8), TARGETS, unexported=padding)
+        probe_bridge_row_mapping(model, params, lambda: _trimmed_head_export(_registered(model), 8), TARGETS, unexported=padding)
     dist.destroy_process_group()
 
 
@@ -155,7 +177,8 @@ def _probe_fused_gate_up(rank, world_size, port):
     init_gloo(rank, world_size, port=port)
     init_gloo_group()
     params = [torch.nn.Parameter(torch.randn(4, 3))]
-    mapping = probe_bridge_row_mapping(params, lambda: _fused_gate_up_export(params), TARGETS)
+    model = _model(params)
+    mapping = probe_bridge_row_mapping(model, params, lambda: _fused_gate_up_export(_registered(model)), TARGETS)
 
     assert [(p.key, p.global_shape, p.offsets) for p in mapping.pieces] == [
         (f"{GATE_UP}.lora_B", (8, 3), (2 * rank, 0)),
@@ -219,7 +242,8 @@ def _probe_gdn(rank, world_size, port):
     init_gloo_group()
     params = [torch.nn.Parameter(torch.randn(4, 6)), torch.nn.Parameter(torch.randn(7, 4))]
     params.append(torch.nn.Parameter(torch.randn(3, 4)))
-    mapping = probe_bridge_row_mapping(params, lambda: _gdn_export(params), GDN_TARGETS)
+    model = _model(params)
+    mapping = probe_bridge_row_mapping(model, params, lambda: _gdn_export(_registered(model)), GDN_TARGETS)
     group = tuple(f"{GDN}.in_proj_{m}" for m in "kqvz")
     assert mapping.shared_lora_a_groups == (group,)
     pieces = {p.key: p for p in mapping.pieces}
@@ -244,8 +268,9 @@ def _probe_export_fails(rank, world_size, port):
     init_gloo(rank, world_size, port=port)
     init_gloo_group()
     params = [torch.nn.Parameter(torch.randn(3, 5))]
+    model = _model(params)
     with pytest.raises(RuntimeError, match="adapter checkpoint failed: rank 1: ValueError: rank 1 cannot export"):
-        probe_bridge_row_mapping(params, lambda: _export_fails_on_rank_1(params), TARGETS)
+        probe_bridge_row_mapping(model, params, lambda: _export_fails_on_rank_1(_registered(model)), TARGETS)
     dist.destroy_process_group()
 
 
