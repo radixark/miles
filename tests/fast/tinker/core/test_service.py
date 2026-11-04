@@ -195,6 +195,15 @@ async def test_an_exhausted_context_never_reaches_the_engine(service, prompt_len
     assert service.backend.named("sample") == []
 
 
+async def test_a_sample_without_max_tokens_never_reaches_the_engine(service):
+    """The SDK defaults max_tokens to None; core is the one place that rejects it."""
+    with pytest.raises(UserInputError, match="max_tokens must be a nonnegative integer"):
+        service.submit_sample(
+            "tenant", {"num_samples": 1, "prompt_tokens": [1], "sampling_params": {"max_tokens": None}}
+        )
+    assert service.backend.named("sample") == []
+
+
 @pytest.mark.parametrize("scoring", [{"prompt_logprobs": True}, {"topk_prompt_logprobs": 2}])
 async def test_a_sequence_sampled_to_the_window_can_be_scored(service, scoring):
     service.config.max_tokens_per_sample = 8

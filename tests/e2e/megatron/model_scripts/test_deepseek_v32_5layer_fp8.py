@@ -13,7 +13,7 @@ from scripts.run_deepseek_v32 import (
     _prepare_download,
     _prepare_megatron_ckpt,
 )
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from tests.ci.metric_history import register_ci_gate
 
 from miles.utils.external_utils import command_utils
@@ -21,6 +21,8 @@ from miles.utils.external_utils import command_utils
 register_cuda_ci(
     est_time=1300, suite="stage-c-4-gpu-h200", labels=["megatron", "model-scripts"], hardware=["hopper"], num_gpus=4
 )
+
+register_rocm_ci(est_time=800, suite="nightly-stage-c-4-gpu-mi350", labels=["megatron", "model-scripts"])
 
 register_ci_gate(metric_key="train/grad_norm")
 register_ci_gate(metric_key="train/ppo_kl")
@@ -31,7 +33,7 @@ register_ci_gate(metric_key="perf/actor_train_mfu")
 
 
 def _args() -> ScriptArgs:
-    return ScriptArgs.from_env(
+    args = ScriptArgs.from_env(
         model_org="Pinaster",
         model_name="DeepSeek-V3.2-5layer",
         megatron_model_type="deepseek-v32-5layer",
@@ -54,6 +56,10 @@ def _args() -> ScriptArgs:
             "--max-tokens-per-gpu 16384 "
         ),
     )
+
+    if os.getenv("MILES_HARDWARE_PLATFORM") == "rocm":
+        args.extra_args += "--sglang-dsa-decode-backend triton --sglang-dsa-prefill-backend triton "
+    return args
 
 
 def prepare(args: ScriptArgs):
