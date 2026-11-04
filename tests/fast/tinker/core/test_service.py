@@ -1507,6 +1507,22 @@ async def test_a_download_url_expires_with_its_checkpoint(service, monkeypatch):
         await service.external_weights_urls("tenant", model_id, "external_weights/export", "http://gateway/")
 
 
+async def test_repeated_url_requests_reuse_one_token_near_the_checkpoints_expiry(service, monkeypatch):
+    model_id = await created_model(service)
+    save = service.submit(
+        "tenant", "save_weights_external", _external_payload(model_id, 1, "export", ttl_seconds=3600)
+    )
+    await await_settled(service, "tenant", save)
+    real_time = time.time
+    # a quarter hour of the checkpoint left caps every token below half a URL's hour
+    monkeypatch.setattr(time, "time", lambda: real_time() + 2700)
+    tokens = set()
+    for _ in range(3):
+        urls = await service.external_weights_urls("tenant", model_id, "external_weights/export", "http://gateway/")
+        tokens.add(urls["urls"]["adapter_config.json"].split("/")[-2])
+    assert len(tokens) == 1 and len(service._downloads) == 1, "a client polling for URLs does not grow the table"
+
+
 async def test_an_overwrite_that_crashes_before_its_ttl_does_not_inherit_the_old_expiry(service, monkeypatch):
     model_id = await created_model(service)
     save = service.submit(

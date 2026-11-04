@@ -113,7 +113,7 @@ class TinkerService:
         self._expiry_lock = asyncio.Lock()
         # issued download tokens; unguessable, held only in memory, so a restart invalidates every URL
         self._downloads: dict[str, _Download] = {}
-        # one live URL token per checkpoint commit, so repeated requests do not grow the table
+        # the token handed out per checkpoint commit, so repeated requests reuse it; a replaced one lives to its expiry
         self._download_tokens: dict[tuple[str, str, str], str] = {}
 
     async def run(self) -> None:
@@ -701,9 +701,10 @@ class TinkerService:
                 raise NotFoundError(f"checkpoint {tinker_path} has expired")
             expires_at = min(expires_at, checkpoint_expires_at)
         key = (tenant, tinker_path, files["commit_id"])
-        # a token keeps the expiry it was issued with; reuse it only while it has half its life left
+        # a token keeps the expiry it was issued with; reuse it while it has half the life a new one would get, so a
+        # token capped by its checkpoint's expiry is reused too
         live = self._downloads.get(self._download_tokens.get(key))
-        if live is not None and live.expires_at - now >= _DOWNLOAD_URL_TTL_S / 2:
+        if live is not None and live.expires_at - now >= (expires_at - now) / 2:
             token, expires_at = self._download_tokens[key], live.expires_at
         else:
             token = self._download_tokens[key] = secrets.token_urlsafe(32)
