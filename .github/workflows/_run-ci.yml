@@ -220,7 +220,8 @@ jobs:
           MEGATRON_PR: ${{ steps.resolve-refs.outputs.ci_megatron_pr }}
           SGLANG_PR: ${{ steps.resolve-refs.outputs.ci_sglang_pr }}
         run: |
-          cd /sgl-workspace/sglang && git reset --hard HEAD && git clean -fd && git fetch origin "$SGLANG_PR" && git checkout -f FETCH_HEAD && git log --oneline -1
+          cd /sgl-workspace/sglang && git reset --hard HEAD && git clean -fd && git fetch origin "$SGLANG_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && \
+            pip install -e radix_transfer_plugins --no-deps --break-system-packages
           cd /root/Megatron-LM && git reset --hard HEAD && git clean -fd && git fetch origin "$MEGATRON_PR" && git checkout -f FETCH_HEAD && git log --oneline -1
 
       - name: Install Megatron Bridge override

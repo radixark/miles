@@ -20,6 +20,7 @@ def _args(**overrides):
         daytona_api_key_file="",
         e2b_api_key_file="",
         modal_config_file="",
+        novita_api_key_file="",
     )
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
@@ -28,7 +29,7 @@ def _args(**overrides):
 @pytest.fixture(autouse=True)
 def fake_harbor_and_sdk(monkeypatch):
     """harbor and the provider SDKs only need to be importable for the preflight."""
-    for name in ("harbor", "e2b", "daytona", "modal"):
+    for name in ("harbor", "e2b", "daytona", "modal", "novita_sandbox"):
         monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
 
 
