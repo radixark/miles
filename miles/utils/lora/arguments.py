@@ -128,7 +128,7 @@ def _resolve_lora_alpha(args) -> float:
 def _validate_megatron_bridge_source(args) -> None:
     """A Megatron-Bridge checkpoint's sharded keys exist only in a Bridge model: refused before the model is built."""
     path = Path(args.lora_adapter_path)
-    # only a DCP source can be one; the alpha resolution above already classified it
+    # only a DCP source can be one
     if not (path / ".metadata").is_file():
         return
     kind = classify_adapter_source(path, args.hf_lora_targets, load_optimizer=False)
