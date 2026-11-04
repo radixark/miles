@@ -1080,6 +1080,11 @@ def _check_multimodal_token_space_processing_args(args, *, sglang: SglangConfig)
         )
     if args.trainer_mm_io_worker_num < 0:
         raise ValueError(f"--trainer-mm-io-worker-num must be at least 0, got {args.trainer_mm_io_worker_num}")
+    if args.use_session_server and not args.use_miles_router:
+        raise ValueError(
+            "--multimodal-token-space-processing with --use-session-server needs --use-miles-router: the SGLang "
+            "router's chat route drops mm_token_expansion_start_len, which every turn after the first needs."
+        )
     for name in ("rl_on_policy_target", "true_on_policy_contract", "decrypted_config_file"):
         if sglang.actor_value(name) is not None:
             raise ValueError(

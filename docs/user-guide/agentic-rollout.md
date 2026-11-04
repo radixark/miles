@@ -16,7 +16,7 @@ stateless `/generate` interface.
 
 <Warning>
 
-**Media need `--multimodal-token-space-processing`.** With it, a chat request may carry images, audio or video
+**Media need `--multimodal-token-space-processing` and `--use-miles-router`.** With them, a chat request may carry images, audio or video
 parts (data URLs or shared paths). The server writes each item once under the run's directory in
 `--shared-media-dir`, which is removed when the run ends, named by content, and stores the path in the session.
 TITO renders one placeholder per item. Each turn sends the stored turns as the
