@@ -341,6 +341,27 @@ class TestRolloutOnlyAdapter:
         assert "--lora-adapter-convert-save" not in str(raised.value)
 
 
+    def test_a_sampler_export_of_an_adapter_with_no_plain_peft_form_goes_to_sglang(self, tmp_path):
+        gdn = "model.layers.0.linear_attn"
+        components = tuple(f"{gdn}.{leaf}" for leaf in ("in_proj_q", "in_proj_k", "in_proj_v"))
+        parametrization = AdapterParametrization(
+            base_model="/hf",
+            lora_rank=2,
+            lora_alpha=4.0,
+            lora_type="canonical_lora",
+            target_modules=components,
+            experts_shared_outer_loras=False,
+        )
+        # what write_sampler_adapter commits: sglang-named tensors and the parametrization
+        save_file(
+            {f"base_model.model.{gdn}.in_proj_q.lora_A.weight": torch.zeros(2, 4)},
+            str(tmp_path / "adapter_model.safetensors"),
+        )
+        (tmp_path / "adapter_config.json").write_text(json.dumps({"r": 2, "lora_alpha": 4.0}))
+        write_parametrization(tmp_path, parametrization)
+        self._validate(tmp_path)
+
+
 def _bridge_args_without_layout(monkeypatch, *, multi_lora=False, **overrides):
     hf_config = SimpleNamespace(model_type="gpt2", to_dict=lambda: {"model_type": "gpt2"})
     monkeypatch.setattr(lora_arguments, "load_hf_config", lambda path: hf_config)

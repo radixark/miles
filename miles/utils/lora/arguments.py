@@ -150,14 +150,14 @@ def _validate_rollout_only_adapter(args) -> None:
         f"{path} uses official Tinker tensor names, which need a conversion that rollout-only does not do; "
         "convert it first with --lora-adapter-convert-save"
     )
-    # such an adapter dir never holds a PEFT export, converted or not
-    assert kind != AdapterSourceKind.ADAPTER_DIR or has_plain_peft_form(read_parametrization(path), targets), (
+    # a sampler export holds the engines' own form whatever the parametrization
+    has_export = (path / "adapter_model.safetensors").is_file()
+    # any other such adapter dir never gets a PEFT export, converted or not
+    assert has_export or kind != AdapterSourceKind.ADAPTER_DIR or has_plain_peft_form(read_parametrization(path), targets), (
         f"{path} has no plain-PEFT form (fused-module components with their own lora_A), so rollout-only cannot "
         "serve it to the engines"
     )
-    assert (
-        path / "adapter_model.safetensors"
-    ).is_file(), f"{path} has no PEFT export for the engines to load; write one first with --lora-adapter-convert-save"
+    assert has_export, f"{path} has no PEFT export for the engines to load; write one first with --lora-adapter-convert-save"
 
 
 def _default_lora_type(args) -> str:
