@@ -11,10 +11,11 @@ TITO family, chat-template settings, sequence budgets -- come from its entry in
 
 Requires tau2-bench in the training environment (see README.md), and the API
 keys of the user simulator -- and, for retail and airline, of tau2's reward
-judges -- exported in the launcher's environment. The launcher checks them
-before the model download and any GPU work, and forwards them, with the
-``TAU2_*`` variables, to the ray workers by value. Self-hosted models served
-behind an OpenAI-compatible endpoint need no key (see README.md).
+judges -- where the ray workers read them: in the file ``TAU2_KEY_FILE`` names,
+or in the environment the workers were started from. The launcher forwards the
+``TAU2_*`` variables, the key file's path but never a key, and checks the keys
+before the model download and any GPU work. Self-hosted models served behind an
+OpenAI-compatible endpoint need no key (see README.md).
 
 Args:
   --model-name: policy model, a key of POLICY_MODELS in policy_models.py (default: Qwen3.8-27B).
@@ -26,12 +27,12 @@ Args:
   --enable-eval / --save: evaluate on the test split / write checkpoints (default: on).
 
 Env vars forwarded to the agent: TAU2_USER_LLM, TAU2_USER_LLM_ARGS,
-TAU2_JUDGE_LLM, TAU2_JUDGE_LLM_ARGS (see tau2_agent_function.py), and
-TAU2_DATA_DIR when tau2-bench is not installed from its source checkout.
+TAU2_JUDGE_LLM, TAU2_JUDGE_LLM_ARGS, TAU2_KEY_FILE (see tau2_agent_function.py),
+and TAU2_DATA_DIR when tau2-bench is not installed from its source checkout.
 
 Usage:
-    OPENAI_API_KEY=... MILES_SCRIPT_EXTERNAL_RAY=1 python run.py
-    OPENAI_API_KEY=... MILES_SCRIPT_EXTERNAL_RAY=1 python run.py --domain telecom --mode debug_rollout_only
+    TAU2_KEY_FILE=/shared/tau2-keys MILES_SCRIPT_EXTERNAL_RAY=1 python run.py
+    TAU2_KEY_FILE=/shared/tau2-keys MILES_SCRIPT_EXTERNAL_RAY=1 python run.py --domain telecom --mode debug_rollout_only
 """
 
 import json
@@ -54,6 +55,7 @@ _FORWARDED_ENV_VARS = (
     "TAU2_USER_LLM_ARGS",
     "TAU2_JUDGE_LLM",
     "TAU2_JUDGE_LLM_ARGS",
+    "TAU2_KEY_FILE",
     "TAU2_DATA_DIR",
 )
 
@@ -121,51 +123,56 @@ def _write_task_file(domain: str, split: str, path: str) -> None:
     print(f"Wrote {len(rows)} tau2 {domain}/{split} tasks to {path}")
 
 
-def _episode_api_keys(domain: str) -> dict[str, str]:
-    """The provider keys the domain's episodes call their user simulator and judges with, from this environment.
+def _preflight_api_keys(args: ScriptArgs) -> None:
+    """Fail before claiming GPUs when an episode could not reach its user simulator or judges.
 
-    Ray workers do not see the launcher's environment (on an already-joined cluster they keep their own), so
-    ``execute`` forwards these by value. Fails when a key a model needs is unset: every episode would then fail
-    outside the policy, and training would only drop groups and refill them. The judges are the ones the domain's
-    reward bases use.
+    Every episode would then fail the same way outside the policy, and training would only drop groups and
+    refill them. The judges are the ones the domain's reward bases use. The check reads the ``TAU2_*``
+    configuration the workers get, ``--extra-env-vars`` included, and finds each key a model needs in
+    ``TAU2_KEY_FILE``, in ``--extra-env-vars``, or in this environment, which reaches the workers only when
+    they were started from it.
     """
     import litellm  # noqa: PLC0415 - tau2's dependency; the launcher needs it only for this check
     from tau2.runner.helpers import get_tasks  # noqa: PLC0415 - tau2 is needed only where episodes are checked
-    from tau2_agent_function import episode_llms  # noqa: PLC0415 - imports tau2 too
+    from tau2_agent_function import episode_llms, read_key_file  # noqa: PLC0415 - imports tau2 too
 
-    bases = {
-        basis
-        for task in get_tasks(domain)
-        if task.evaluation_criteria is not None
-        for basis in task.evaluation_criteria.reward_basis
-    }
-    llms = episode_llms(bases)
-    keys, missing = {}, set()
-    for model, model_args in llms:
-        if model_args.get("api_key"):
-            continue  # it reaches the workers inside TAU2_*_LLM_ARGS
-        api_base = model_args.get("api_base")
-        # litellm reads keys from os.environ only; with it empty, it names every key the model requires.
-        with mock.patch.dict(os.environ, clear=True):
-            required = litellm.validate_environment(model=model, api_base=api_base)["missing_keys"]
-        # litellm also reads a provider's optional key, such as HOSTED_VLLM_API_KEY for an endpoint that checks one.
-        provider = litellm.get_llm_provider(model=model, api_base=api_base)[1]
-        for name in {*required, f"{provider.upper()}_API_KEY"}:
-            if name in os.environ:
-                keys[name] = os.environ[name]
-            elif name in required:
-                missing.add(name)
+    extra_env_vars = command_utils.resolve_extra_env_vars({}, args)
+    with mock.patch.dict(os.environ, extra_env_vars):
+        key_file = os.environ.get("TAU2_KEY_FILE")
+        worker_keys = {**(read_key_file(key_file) if key_file else {}), **extra_env_vars}
+        bases = {
+            basis
+            for task in get_tasks(args.domain)
+            if task.evaluation_criteria is not None
+            for basis in task.evaluation_criteria.reward_basis
+        }
+        llms = episode_llms(bases)
+        launcher_only, missing = set(), set()
+        for model, model_args in llms:
+            if model_args.get("api_key"):
+                continue  # it reaches the workers inside TAU2_*_LLM_ARGS
+            # litellm reads keys from os.environ only; with it empty, it names every key the model requires.
+            with mock.patch.dict(os.environ, clear=True):
+                required = litellm.validate_environment(model=model, api_base=model_args.get("api_base"))
+            for name in required["missing_keys"]:
+                if name not in worker_keys:
+                    (launcher_only if name in os.environ else missing).add(name)
     if missing:
         raise RuntimeError(
-            f"tau2 {domain} episodes call {sorted({model for model, _ in llms})}, which need {sorted(missing)} set. "
-            "Export them before launching, or point TAU2_USER_LLM / TAU2_JUDGE_LLM at your own endpoint."
+            f"tau2 {args.domain} episodes call {sorted({model for model, _ in llms})}, which need "
+            f"{sorted(missing)}. Put them in the file TAU2_KEY_FILE names, or point TAU2_USER_LLM / "
+            "TAU2_JUDGE_LLM at your own endpoint."
         )
-    return keys
+    if launcher_only:
+        print(
+            f"tau2: {sorted(launcher_only)} are set only in the launcher's environment; ray workers have them only "
+            "if they were started from it. On an already-joined cluster, put them in TAU2_KEY_FILE."
+        )
 
 
 def execute(args: ScriptArgs):
     model = args.model
-    api_keys = _episode_api_keys(args.domain)
+    _preflight_api_keys(args)
     U = args.create_backend()
 
     ckpt_args = (
@@ -285,7 +292,6 @@ def execute(args: ScriptArgs):
     extra_env_vars = {
         "PYTHONPATH": f"{args.megatron_path}:{SCRIPT_DIR}:{command_utils.repo_base_dir}",
         **{name: os.environ[name] for name in _FORWARDED_ENV_VARS if name in os.environ},
-        **api_keys,
     }
 
     U.execute_train(
@@ -300,7 +306,7 @@ def execute(args: ScriptArgs):
 @command_utils.dataclass_cli
 def main(args: ScriptArgs):
     if not args.skip_prepare:
-        _episode_api_keys(args.domain)  # fail on a missing key before the download and conversion
+        _preflight_api_keys(args)  # fail on a missing key before the download and conversion
         prepare(args)
     execute(args)
 

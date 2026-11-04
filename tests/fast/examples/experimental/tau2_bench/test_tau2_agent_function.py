@@ -12,10 +12,12 @@ LLM call tau2 makes for it.
 import asyncio
 import importlib.util
 import json
+import os
 import shlex
 from collections.abc import Iterator
 from contextlib import contextmanager
 from types import SimpleNamespace
+from unittest import mock
 
 import pytest
 
@@ -200,19 +202,34 @@ def test_task_file_names_each_task_of_the_split(tmp_path):
         pytest.param("telecom", None, id="telecom_no_judge"),
     ],
 )
-def test_preflight_requires_the_keys_of_the_domain_judges(monkeypatch, domain, missing):
+def test_preflight_requires_the_keys_of_the_domain_judges(monkeypatch, tmp_path, domain, missing):
     launcher = _load_launcher()
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.delenv("HOSTED_VLLM_API_KEY", raising=False)
+    monkeypatch.delenv("TAU2_KEY_FILE", raising=False)
     monkeypatch.setenv("TAU2_USER_LLM", "hosted_vllm/user-simulator")
+    args = launcher.ScriptArgs(domain=domain)
 
     if missing is None:
-        assert launcher._episode_api_keys(domain) == {}
+        launcher._preflight_api_keys(args)
     else:
         with pytest.raises(RuntimeError, match=missing):
-            launcher._episode_api_keys(domain)
-        monkeypatch.setenv(missing, "key")
-        assert launcher._episode_api_keys(domain) == {missing: "key"}
+            launcher._preflight_api_keys(args)
+        key_file = tmp_path / "keys"
+        key_file.write_text(f"# provider keys\n{missing}=key\n")
+        monkeypatch.setenv("TAU2_KEY_FILE", str(key_file))
+        launcher._preflight_api_keys(args)
+
+
+def test_preflight_judges_the_configuration_the_workers_get(monkeypatch):
+    # --extra-env-vars overrides what the launcher forwards, here swapping in a user simulator that needs a key.
+    launcher = _load_launcher()
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("TAU2_KEY_FILE", raising=False)
+    monkeypatch.setenv("TAU2_USER_LLM", "hosted_vllm/user-simulator")
+    args = launcher.ScriptArgs(domain="telecom", extra_env_vars="TAU2_USER_LLM=gpt-4.1-2025-04-14")
+
+    with pytest.raises(RuntimeError, match="OPENAI_API_KEY"):
+        launcher._preflight_api_keys(args)
 
 
 _JUDGE = "hosted_vllm/judge"
@@ -264,29 +281,50 @@ def test_own_endpoints_need_no_openai_key(monkeypatch, domain):
     monkeypatch.setenv("TAU2_USER_LLM", "hosted_vllm/user-simulator")
     monkeypatch.setenv("TAU2_JUDGE_LLM", _JUDGE)
     monkeypatch.setenv("TAU2_JUDGE_LLM_ARGS", json.dumps(_JUDGE_ARGS))
+    monkeypatch.delenv("TAU2_KEY_FILE", raising=False)
+
     launcher = _load_launcher()
-
-    monkeypatch.delenv("HOSTED_VLLM_API_KEY", raising=False)
-    assert launcher._episode_api_keys(domain) == {}
-    # An endpoint that checks a key reads the provider's optional one, which the workers need too.
-    monkeypatch.setenv("HOSTED_VLLM_API_KEY", "endpoint-key")
-    assert launcher._episode_api_keys(domain) == {"HOSTED_VLLM_API_KEY": "endpoint-key"}
+    launcher._preflight_api_keys(launcher.ScriptArgs(domain=domain))
 
 
-def test_execute_forwards_the_keys_to_the_ray_workers(monkeypatch):
-    # The workers of an already-joined ray cluster see only the job's runtime env, not the launcher's environment.
+def test_execute_forwards_the_key_file_path_but_no_key(monkeypatch, tmp_path):
+    # The runtime env lands in plaintext in the launcher's log of the ray job submit command.
     launcher = _load_launcher()
     monkeypatch.delenv("WANDB_API_KEY", raising=False)
-    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
-    monkeypatch.setenv("TAU2_USER_LLM", "hosted_vllm/user-simulator")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    key_file = tmp_path / "keys"
+    key_file.write_text("OPENAI_API_KEY=openai-key\n")
+    monkeypatch.setenv("TAU2_KEY_FILE", str(key_file))
     submitted = {}
     args = launcher.ScriptArgs(domain="retail", num_nodes=1)
     args.create_backend = lambda: SimpleNamespace(execute_train=lambda **kwargs: submitted.update(kwargs))
 
     launcher.execute(args)
 
-    assert submitted["extra_env_vars"]["OPENAI_API_KEY"] == "openai-key"  # retail's NL-assertion judge
-    assert submitted["extra_env_vars"]["TAU2_USER_LLM"] == "hosted_vllm/user-simulator"
+    assert submitted["extra_env_vars"]["TAU2_KEY_FILE"] == str(key_file)
+    assert "openai-key" not in json.dumps(submitted)
     argv = shlex.split(submitted["train_args"])
     assert argv[argv.index("--actor-num-nodes") + 1] == "1"
     assert launcher.ScriptArgs().num_nodes == launcher.POLICY_MODELS["Qwen3.8-27B"].num_nodes
+
+
+def test_each_episode_loads_the_key_file_under_the_workers_own_environment(monkeypatch, tmp_path):
+    key_file = tmp_path / "keys"
+    key_file.write_text("# provider keys\n\nOPENAI_API_KEY = from-file\nHOSTED_VLLM_API_KEY=from-file\n")
+    monkeypatch.setenv("TAU2_KEY_FILE", str(key_file))
+    monkeypatch.setenv("HOSTED_VLLM_API_KEY", "from-env")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    with mock.patch.dict(os.environ):
+        taf._load_key_file()
+        assert os.environ["OPENAI_API_KEY"] == "from-file"
+        assert os.environ["HOSTED_VLLM_API_KEY"] == "from-env"
+
+
+def test_a_malformed_key_file_line_is_reported_without_its_text(tmp_path):
+    key_file = tmp_path / "keys"
+    key_file.write_text("OPENAI_API_KEY=x\nsk-bare-key\n")
+
+    with pytest.raises(ValueError, match="keys:2: expected NAME=value") as error:
+        taf.read_key_file(str(key_file))
+    assert "sk-bare-key" not in str(error.value)

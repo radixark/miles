@@ -37,6 +37,9 @@ Env vars (read by every episode):
                        NL-assertion judge and the semantic communicate judge
                        (default: tau2's own judge for each).
   TAU2_JUDGE_LLM_ARGS  JSON object of litellm kwargs for it (default: none).
+  TAU2_KEY_FILE        path of a file of ``NAME=value`` lines with the provider keys
+                       these models use (e.g. ``OPENAI_API_KEY``), on a filesystem
+                       every node reads. A variable already in the environment wins.
 """
 
 import asyncio
@@ -44,6 +47,7 @@ import json
 import logging
 import os
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from openai import OpenAI
@@ -152,6 +156,32 @@ def _to_tau2_reply(message: ChatCompletionMessage) -> AssistantMessage:
     return reply
 
 
+def read_key_file(path: str) -> dict[str, str]:
+    """The ``NAME=value`` lines of a ``TAU2_KEY_FILE``; blank lines and ``#`` comments are skipped."""
+    keys = {}
+    for number, line in enumerate(Path(path).expanduser().read_text().splitlines(), start=1):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        name, sep, value = line.partition("=")
+        if not sep:
+            # The line itself may be a bare key, so it stays out of the message.
+            raise ValueError(f"{path}:{number}: expected NAME=value")
+        keys[name.strip()] = value.strip()
+    return keys
+
+
+def _load_key_file() -> None:
+    """Put the keys of ``TAU2_KEY_FILE`` in this process's environment, where litellm reads them.
+
+    The launcher forwards only the file's path: a key value in Ray's runtime env would land in plaintext in the
+    launcher's log of the submit command.
+    """
+    if path := os.environ.get("TAU2_KEY_FILE"):
+        for name, value in read_key_file(path).items():
+            os.environ.setdefault(name, value)
+
+
 def _user_llm() -> tuple[str, dict[str, Any]]:
     """The user simulator's litellm model and kwargs: ``TAU2_USER_LLM*``, else tau2's defaults."""
     if "TAU2_USER_LLM_ARGS" in os.environ:
@@ -202,6 +232,7 @@ def _play_task(
     session_url: str, domain: str, task_id: str, request_kwargs: dict[str, Any], max_seq_len: int | None
 ) -> dict[str, Any]:
     """Play one tau2 task against the policy at ``session_url``; blocking."""
+    _load_key_file()
     (task,) = get_tasks(domain, task_ids=[task_id])
     environment = build_environment(domain)
     user_llm, user_llm_args = _user_llm()

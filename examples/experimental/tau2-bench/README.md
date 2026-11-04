@@ -63,13 +63,15 @@ export TAU2_JUDGE_LLM_ARGS='{"api_base": "http://<host>:<port>/v1", "temperature
 stays out of the reply. A different judge also means rewards are no longer
 scored exactly as tau2 reports them.
 
-Export keys in the launcher's environment, in the provider's own variable (for
-example `HOSTED_VLLM_API_KEY` for an endpoint that checks one). Ray workers do
-not see that environment, so the launcher forwards the keys the episode's models
-use, with the `TAU2_*` variables, by value: they show in the Ray job's runtime
-environment and in the launcher's log of the submit command. The launcher
-refuses to start, before downloading anything, when a model it would call is
-missing a key.
+Put the keys in a file of `NAME=value` lines under the provider's own variable
+names (`OPENAI_API_KEY`, or `HOSTED_VLLM_API_KEY` for an endpoint that checks
+one), on a filesystem every node reads, readable only by you (`chmod 600`), and
+point `TAU2_KEY_FILE` at it. Each episode loads the file; a variable already in
+the worker's environment wins. The launcher forwards the `TAU2_*` variables to
+the ray workers by value, which puts them in plaintext in its log of the submit
+command, so it forwards only the file's path: keep keys out of the `*_ARGS`
+JSON too. The launcher refuses to start, before downloading anything, when a
+model it would call has no key.
 
 ## Run
 
