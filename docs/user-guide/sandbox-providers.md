@@ -50,8 +50,10 @@ layers need root fails to build there. Terminal-Bench-2 tasks ship prebuilt
 images and are unaffected.
 
 For the [NeMo Gym](https://github.com/radixark/miles/tree/main/examples/experimental/nemo-gym)
-recipe (NeMo Gym `main` at or after TODO-GYM-COMMIT, which accepts the agent's
-scheduling hints on E2B), each task image needs an E2B template before the run, because E2B
+recipe (NeMo Gym with
+[NVIDIA-NeMo/Gym#5597](https://github.com/NVIDIA-NeMo/Gym/pull/5597), which
+accepts the agent's scheduling hints on E2B), each task image needs an E2B
+template before the run, because E2B
 starts sandboxes from templates rather than from image references. NeMo Gym's
 builder makes them from the task images (named as in the
 [`mini_swe_agent_2` README](https://github.com/NVIDIA-NeMo/Gym/tree/main/responses_api_agents/mini_swe_agent_2#dataset-information))
