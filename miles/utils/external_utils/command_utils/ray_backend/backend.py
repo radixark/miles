@@ -26,6 +26,10 @@ from miles.utils.external_utils.ray_job import run_ray_job
 from miles.utils.port_range import ray_worker_port_args
 
 
+# SIGTERM, then SIGKILL only after the grace period; ray's default waits 16 s
+_GRACEFUL_RAY_STOP = "ray stop --grace-period 60"
+
+
 class RayCommandBackend(BaseCommandBackend):
     def _execute_train_inner(
         self, *, request: ExecuteTrainRequest, config: ExecuteTrainConfig, guard: LaunchGuard | None
@@ -40,11 +44,10 @@ class RayCommandBackend(BaseCommandBackend):
             None if config.external_mooncake else self._resolve_mooncake_master_port(request.train_args)
         )
 
-        # an external engine may share this host (scripts/tpu); it is not this run's to kill
-        external_engines = ArgvManipulator.is_defined(
-            shlex.split(request.train_args), "--rollout-external-engine-addrs"
-        )
-        self._clean_up_previous_run(external_ray=external_ray, kill_sglang=not external_engines)
+        # an external engine may share this host (scripts/tpu): it is not this run's to kill, and a SIGKILL of a
+        # process holding a TPU can take the host's TPU session, engine included, down with it
+        shares_host = ArgvManipulator.is_defined(shlex.split(request.train_args), "--rollout-external-engine-addrs")
+        self._clean_up_previous_run(external_ray=external_ray, graceful=shares_host)
 
         if not external_ray:
             self.exec_command_cpu(
@@ -79,7 +82,7 @@ class RayCommandBackend(BaseCommandBackend):
                 )
             finally:
                 if request.job_lifetime == "launcher" and not external_ray:
-                    self.exec_command_cpu("ray stop --force")
+                    self.exec_command_cpu(_GRACEFUL_RAY_STOP if shares_host else "ray stop --force")
 
     def _resolve_mooncake_master_port(self, train_args: str) -> int | None:
         train_argv = shlex.split(train_args)
@@ -102,9 +105,13 @@ class RayCommandBackend(BaseCommandBackend):
     ) -> list[str | None]:
         return exec_command_all_ray_nodes(cmd, capture_output=capture_output, num_nodes=num_nodes)
 
-    def _clean_up_previous_run(self, external_ray: bool, kill_sglang: bool) -> None:
+    def _clean_up_previous_run(self, external_ray: bool, graceful: bool) -> None:
+        if graceful:
+            if not external_ray:
+                self.exec_command_cpu(_GRACEFUL_RAY_STOP)
+            return
         self.exec_command_cpu(
-            f"{'pkill -9 sglang; ' if kill_sglang else ''}"
+            "pkill -9 sglang; "
             "sleep 3; "
             f"{'' if external_ray else 'ray stop --force; '}"
             f"{'' if external_ray else 'pkill -9 ray; '}"

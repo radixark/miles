@@ -16,8 +16,8 @@ hf download
   --local-dir /root/datasets/aime-2024
 
 ### 4
-sleep 3; ray stop
-  --force; pkill -9 ray; pkill -9 miles; sleep 3; pkill -9 ray; pkill -9 miles; pkill -9 redis; true; 
+ray stop
+  --grace-period 60
 
 ### 5
 export PYTHONUNBUFFERED=1 && ray start

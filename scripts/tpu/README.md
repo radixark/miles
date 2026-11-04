@@ -79,7 +79,7 @@ wandb is on when `WANDB_API_KEY` is set.
 - **Stop a training run gracefully while sglang is running.** The host's TPU network session is
   shared, and a `kill -9`'d TPU process can take the other half down with it. Stop a run with
   `ray stop` (without `--force`) and wait for its devices to be released before starting the next:
-  `train` force-stops any ray processes still left from an earlier run (it leaves sglang alone).
+  `train` does the same to any ray processes left from an earlier run, and leaves sglang alone.
 - **Do not mask chips with `TPU_VISIBLE_CHIPS`**: it hangs libtpu's session setup. Both jobs
   address the slice through `TORCH_TPU_TOPOLOGY` and the shared-slice specs; the launcher sets them.
 - **Keep crash dumps off small disks** (`ulimit -c 0`): core files from crashed TPU processes
