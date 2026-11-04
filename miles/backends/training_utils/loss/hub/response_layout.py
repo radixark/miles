@@ -371,7 +371,7 @@ class PaddedRows:
 
     @classmethod
     def build(cls, args, batch, logits, sum_of_sample_mean=None) -> "PaddedRows":
-        del sum_of_sample_mean  # it reduces concatenated responses; rows reduce with `mean_denominators`
+        del sum_of_sample_mean  # the dispatcher's lazy packed-row reducer; rows reduce with `_mean_denominators`
         assert logits.dim() == 3 and logits.size(0) == 1, f"thd logits are [1, T, V], got {logits.shape}"
         response_lengths = batch["response_lengths"]
         num_rows = logits.size(1)
