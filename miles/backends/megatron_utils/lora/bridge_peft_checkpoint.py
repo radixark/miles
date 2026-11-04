@@ -21,7 +21,7 @@ from miles.backends.training_utils.checkpoint.adapter.base_model import assert_s
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
 from miles.backends.training_utils.parallel import get_parallel_state
 
-# a ChainedOptimizer prefixes each child's keys with chained_<i>. in the formats that are not fully reshardable
+# a ChainedOptimizer may prefix each child's keys with chained_<i>.
 OPTIMIZER_KEY = re.compile(r"(chained_\d+\.)?optimizer\.")
 _BRIDGE_LORA_TYPES = {
     "megatron.bridge.peft.lora.LoRA": "lora",
