@@ -1,16 +1,46 @@
 """What an adapter is, independent of where and how it was trained."""
 
+import hashlib
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 PARAMETRIZATION_FILENAME = "adapter_parametrization.json"
 
+# the HF config fields that fix every adapted module's name and shape
+_BASE_IDENTITY_FIELDS = (
+    "model_type",
+    "vocab_size",
+    "hidden_size",
+    "intermediate_size",
+    "moe_intermediate_size",
+    "num_hidden_layers",
+    "num_attention_heads",
+    "num_key_value_heads",
+    "head_dim",
+    "num_experts",
+    "num_local_experts",
+    "n_routed_experts",
+    "tie_word_embeddings",
+)
+
+
+def base_model_fingerprint(hf_config: dict) -> str:
+    """The base's identity for adapter compatibility, from its HF ``config.json`` (a VL model's ``text_config``).
+
+    It identifies the architecture and its shapes, not the weights: two fine-tunes of one architecture share it.
+    """
+    # a VL wrapper keeps the language model's fields under text_config; a text-only config has no such key
+    text_config = hf_config.get("text_config") or hf_config
+    fields = {field: text_config[field] for field in _BASE_IDENTITY_FIELDS if field in text_config}
+    return hashlib.sha256(json.dumps(fields, sort_keys=True).encode()).hexdigest()[:16]
+
 
 @dataclass(frozen=True)
 class AdapterParametrization:
     """Keys are HF module paths; a fused HF module's components carry a suffix (``in_proj_qkv`` -> ``in_proj_q``)."""
 
+    # where the base was read from: a local path or a hub id, recorded for people; base_model_fingerprint identifies it
     base_model: str
     lora_rank: int
     # None only in a Reader's output for sources that do not record it (torchtitan)
@@ -20,6 +50,8 @@ class AdapterParametrization:
     experts_shared_outer_loras: bool
     # members of each group share one lora_A; adapter_state/ stores it under the first member
     shared_lora_a_groups: tuple[tuple[str, ...], ...] = ()
+    # None when written before the fingerprint, or by a writer that does not record it
+    base_model_fingerprint: str | None = None
 
     def __post_init__(self):
         assert self.lora_rank > 0, f"lora_rank must be positive, got {self.lora_rank}"

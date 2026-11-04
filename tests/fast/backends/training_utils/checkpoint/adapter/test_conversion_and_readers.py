@@ -12,7 +12,12 @@ from miles.backends.training_utils.checkpoint.adapter.key_mapping import (
     map_hf_keys_to_peft_export_keys,
     map_peft_keys_to_hf_keys,
 )
-from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
+from miles.backends.training_utils.checkpoint.adapter.parametrization import (
+    PARAMETRIZATION_FILENAME,
+    AdapterParametrization,
+    base_model_fingerprint,
+    read_parametrization,
+)
 from miles.backends.training_utils.checkpoint.adapter.parametrization_conversion import (
     ConversionOp,
     apply_parametrization_conversion,
@@ -412,3 +417,53 @@ def test_mains_native_export_with_sglang_expert_names_reads_back(tmp_path, targe
     expected = {hf_key(name): value for name, value in tensors.items()}
     assert weights.keys() == expected.keys()
     assert all(torch.equal(weights[k], v) for k, v in expected.items())
+
+
+_QWEN3_4B = {"model_type": "qwen3", "hidden_size": 2560, "num_hidden_layers": 36, "vocab_size": 151936}
+
+
+def _check_bases(source, target):
+    assert_parametrization_matches_run(source, target, [], load_optimizer=False, has_optimizer_state=False)
+
+
+def test_a_base_read_from_another_mount_matches_by_its_fingerprint():
+    fingerprint = base_model_fingerprint(_QWEN3_4B | {"_name_or_path": "/root/models/Qwen3-4B"})
+    saved = _run(base_model="/root/models/Qwen3-4B", base_model_fingerprint=fingerprint)
+    _check_bases(saved, _run(base_model="/lustre/models/Qwen3-4B", base_model_fingerprint=fingerprint))
+    _check_bases(saved, _run(base_model="Qwen/Qwen3-4B", base_model_fingerprint=fingerprint))
+
+
+def test_a_base_of_another_architecture_is_refused_whatever_its_name():
+    saved = _run(base_model="Qwen/Qwen3-4B", base_model_fingerprint=base_model_fingerprint(_QWEN3_4B))
+    other = _run(
+        base_model="Qwen/Qwen3-4B", base_model_fingerprint=base_model_fingerprint(_QWEN3_4B | {"hidden_size": 4096})
+    )
+    with pytest.raises(AssertionError, match="is another model than run base"):
+        _check_bases(saved, other)
+
+
+def test_a_side_without_a_fingerprint_compares_where_the_base_was_read_from():
+    run = _run(base_model="/root/models/Qwen3-4B", base_model_fingerprint=base_model_fingerprint(_QWEN3_4B))
+    _check_bases(_run(base_model="/root/models/Qwen3-4B"), run)
+    with pytest.raises(AssertionError, match="adapter base '/lustre/models/Qwen3-4B' != run base"):
+        _check_bases(_run(base_model="/lustre/models/Qwen3-4B"), run)
+
+
+def test_a_parametrization_written_before_the_fingerprint_reads_back_without_one(tmp_path):
+    fields = {
+        "base_model": "m",
+        "lora_rank": 2,
+        "lora_alpha": 4.0,
+        "lora_type": "lora",
+        "target_modules": [QKV[0]],
+        "experts_shared_outer_loras": False,
+        "shared_lora_a_groups": [],
+    }
+    (tmp_path / PARAMETRIZATION_FILENAME).write_text(json.dumps(fields))
+    assert read_parametrization(tmp_path).base_model_fingerprint is None
+
+
+def test_a_vl_wrapper_has_its_language_models_fingerprint():
+    assert base_model_fingerprint({"model_type": "qwen3_vl", "text_config": _QWEN3_4B}) == base_model_fingerprint(
+        _QWEN3_4B
+    )
