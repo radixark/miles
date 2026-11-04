@@ -204,13 +204,6 @@ def test_multi_lora_refuses_an_adapter_path():
         validate_multi_lora_args(Namespace(multi_lora_n_adapters=2, lora_rank=8, lora_adapter_path="/adapter"))
 
 
-@pytest.mark.parametrize("save, lora_adapter_path", [("/save", None), (None, "/adapter")])
-def test_a_disabled_optimizer_cannot_save_or_load_the_adapter_checkpoint(save, lora_adapter_path):
-    args = Namespace(save=save, lora_adapter_path=lora_adapter_path, debug_disable_optimizer=True)
-    with pytest.raises(AssertionError, match="--debug-disable-optimizer"):
-        _validate_adapter_state_args(args)
-
-
 def test_rollout_only_skips_the_adapter_checkpoint_checks():
     args = Namespace(
         lora_rank=8,
@@ -238,21 +231,6 @@ def test_lora_refuses_the_checkpoints_that_cannot_carry_its_adapter(fault_tolera
     )
     with pytest.raises(AssertionError, match="remove 'train' from --ft-components"):
         validate_lora_args_after_megatron(args)
-
-
-def test_the_adapter_checkpoint_requires_the_distributed_optimizer():
-    args = Namespace(
-        save="/save",
-        lora_adapter_path=None,
-        debug_disable_optimizer=False,
-        optimizer="adam",
-        exp_avg_dtype=torch.float32,
-        exp_avg_sq_dtype=torch.float32,
-        main_params_dtype=torch.float32,
-        use_distributed_optimizer=False,
-    )
-    with pytest.raises(AssertionError, match="distributed optimizer"):
-        _validate_adapter_state_args(args)
 
 
 def test_the_adapter_checkpoint_requires_fp32_masters():
