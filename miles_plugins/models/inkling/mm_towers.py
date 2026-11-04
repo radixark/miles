@@ -84,6 +84,22 @@ def build_mm_towers(
     return visual, audio
 
 
+# Token-space field -> the field name the Inkling towers read. SGLang's Inkling strategy names the
+# features as its processors do and places every modality's rows as mm_<modality>_positions.
+_TOKEN_SPACE_MEDIA_FIELDS = {
+    "vision_patches_bthwc": "mm_vision_patches",
+    "mm_image_positions": "mm_vision_positions",
+    "dmel_bins": "mm_audio_dmel",
+}
+
+
+def _tower_media_kwargs(kwargs: dict) -> dict:
+    """Pop the token-space media fields of ``kwargs`` and return them under the towers' names."""
+    return {
+        tower_name: kwargs.pop(field) for field, tower_name in _TOKEN_SPACE_MEDIA_FIELDS.items() if field in kwargs
+    }
+
+
 def wire_mm_towers(model, hf_checkpoint: str, train: bool = False) -> None:
     """Wrap an InklingGPTModel's forward for multimodal training (pre_process builds+merges;
     later stages pass through). train=True trains the towers instead of freezing them
@@ -106,6 +122,7 @@ def wire_mm_towers(model, hf_checkpoint: str, train: bool = False) -> None:
             mm_audio_num_tokens=None,
             **kw,
         ):
+            _tower_media_kwargs(kw)
             return _orig_forward(*a, **kw)
 
         model.forward = _mm_passthrough
@@ -135,6 +152,10 @@ def wire_mm_towers(model, hf_checkpoint: str, train: bool = False) -> None:
         mm_audio_num_tokens=None,
         **kw,
     ):
+        token_space = _tower_media_kwargs(kw)
+        mm_vision_patches = token_space.get("mm_vision_patches", mm_vision_patches)
+        mm_vision_positions = token_space.get("mm_vision_positions", mm_vision_positions)
+        mm_audio_dmel = token_space.get("mm_audio_dmel", mm_audio_dmel)
         input_ids = kw.get("input_ids", a[0] if a else None)
         position_ids = kw.get("position_ids")
         if mm_vision_patches is not None:
