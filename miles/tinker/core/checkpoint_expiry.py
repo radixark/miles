@@ -1,5 +1,5 @@
 """When saved checkpoints expire: the gateway-private ``checkpoint_root/checkpoint_expiry.json`` (tinker path ->
-expires_at, unix seconds). Only the gateway, under its trainer lock, reads and rewrites it; a checkpoint never
+expires_at, unix seconds). Only the gateway, under its expiry lock, reads and rewrites it; a checkpoint never
 carries its own expiry, so one that crashed between commit and this write never expires (it is never deleted by
 mistake)."""
 
