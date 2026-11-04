@@ -119,15 +119,11 @@ def _adapter_state_args(**overrides) -> Namespace:
             "save": "/ckpt",
             "lora_adapter_path": None,
             "debug_disable_optimizer": False,
-            "no_save_optim": False,
-            "no_load_optim": False,
-            "optimizer": "sgd",
-            "sgd_momentum": 0.0,
-            "megatron_to_hf_mode": "raw",
+            "optimizer": "adam",
             "exp_avg_dtype": torch.float32,
             "exp_avg_sq_dtype": torch.float32,
             "main_params_dtype": torch.float32,
-            "use_distributed_optimizer": False,
+            "use_distributed_optimizer": True,
             "use_gloo_process_groups": True,
             "use_precision_aware_optimizer": False,
             "optimizer_cpu_offload": False,
@@ -138,36 +134,15 @@ def _adapter_state_args(**overrides) -> Namespace:
     )
 
 
-@pytest.mark.parametrize(
-    "overrides",
-    [{}, {"no_save_optim": True, "lora_adapter_path": "/adapter"}],
-    ids=["saves_optimizer", "loads_optimizer"],
-)
-def test_a_non_adam_optimizer_cannot_store_adapter_optimizer_state(overrides) -> None:
-    with pytest.raises(AssertionError, match="store Adam state; got --optimizer sgd"):
-        _validate_adapter_state_args(_adapter_state_args(**overrides))
+@pytest.mark.parametrize("optimizer", ["sgd", "muon", "dist_muon", "lion"])
+def test_an_optimizer_other_than_adam_cannot_save_the_adapter(optimizer) -> None:
+    with pytest.raises(AssertionError, match=f"store Adam state; got --optimizer {optimizer}"):
+        _validate_adapter_state_args(_adapter_state_args(optimizer=optimizer))
 
 
-@pytest.mark.parametrize("overrides", [{}, {"lora_adapter_path": "/adapter", "no_load_optim": True}])
-def test_a_non_adam_optimizer_saves_and_loads_the_masters_alone(overrides) -> None:
-    _validate_adapter_state_args(_adapter_state_args(no_save_optim=True, **overrides))
-
-
-def test_sgd_with_momentum_cannot_save_the_adapter() -> None:
-    # the masters-only checkpoint would drop the momentum buffer
-    with pytest.raises(AssertionError, match="need --sgd-momentum 0; got 0.9"):
-        _validate_adapter_state_args(_adapter_state_args(no_save_optim=True, sgd_momentum=0.9))
-
-
-def test_sgd_cannot_save_the_adapter_in_bridge_mode() -> None:
-    with pytest.raises(AssertionError, match="need --megatron-to-hf-mode raw; got bridge"):
-        _validate_adapter_state_args(_adapter_state_args(no_save_optim=True, megatron_to_hf_mode="bridge"))
-
-
-@pytest.mark.parametrize("optimizer", ["muon", "dist_muon", "lion"])
-def test_an_optimizer_other_than_adam_or_sgd_cannot_save_the_adapter(optimizer) -> None:
-    with pytest.raises(AssertionError, match=f"adam or sgd; got --optimizer {optimizer}"):
-        _validate_adapter_state_args(_adapter_state_args(optimizer=optimizer, no_save_optim=True))
+def test_the_adapter_checkpoint_requires_the_distributed_optimizer():
+    with pytest.raises(AssertionError, match="distributed optimizer"):
+        _validate_adapter_state_args(_adapter_state_args(use_distributed_optimizer=False))
 
 
 @pytest.mark.parametrize("train_backend, megatron_to_hf_mode", [("torchtitan", "bridge")], ids=["torchtitan"])
@@ -337,13 +312,11 @@ def test_lora_refuses_indep_dp(megatron_to_hf_mode):
 
 def test_the_adapter_checkpoint_requires_fp32_masters():
     with pytest.raises(AssertionError, match="fp32 masters"):
-        _validate_adapter_state_args(_adapter_state_args(no_save_optim=True, main_params_dtype=torch.float16))
+        _validate_adapter_state_args(_adapter_state_args(main_params_dtype=torch.float16))
 
 
 def test_loading_the_adapter_checkpoint_refuses_several_distributed_optimizer_instances():
-    args = _adapter_state_args(
-        save=None, lora_adapter_path="/adapter", no_load_optim=True, num_distributed_optimizer_instances=2
-    )
+    args = _adapter_state_args(save=None, lora_adapter_path="/adapter", num_distributed_optimizer_instances=2)
     with pytest.raises(AssertionError, match="--num-distributed-optimizer-instances"):
         _validate_adapter_state_args(args)
 
