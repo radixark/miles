@@ -11,12 +11,14 @@ TITO family, chat-template settings, sequence budgets -- come from its entry in
 
 Requires tau2-bench in the training environment (see README.md), and the API
 keys of the user simulator -- and, for retail and airline, of tau2's reward
-judges -- exported in the launcher's environment, which ray workers inherit.
-Self-hosted models served behind an OpenAI-compatible endpoint need no key (see
-README.md). ``execute`` checks the keys before claiming any GPU.
+judges -- exported in the launcher's environment. The launcher checks them
+before the model download and any GPU work, and forwards them, with the
+``TAU2_*`` variables, to the ray workers by value. Self-hosted models served
+behind an OpenAI-compatible endpoint need no key (see README.md).
 
 Args:
   --model-name: policy model, a key of POLICY_MODELS in policy_models.py (default: Qwen3.8-27B).
+  --num-nodes: nodes to train on (default: the node count of the model's entry).
   --domain: tau2 domain to train on: airline, retail or telecom (default: retail).
   --mode: normal, or debug_rollout_only to skip training.
   --skip-prepare: skip the model download, checkpoint conversion and task files.
@@ -38,9 +40,10 @@ import shlex
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
+from unittest import mock
 
 import typer
-from policy_models import POLICY_MODELS, PolicyModel
+from policy_models import POLICY_MODELS, PolicyModel, PolicyModelName
 
 from miles.utils.external_utils import command_utils
 
@@ -59,7 +62,8 @@ _FORWARDED_ENV_VARS = (
 class ScriptArgs(command_utils.ExecuteTrainConfig):
     mode: Literal["normal", "debug_rollout_only"] = "normal"
     domain: Literal["airline", "retail", "telecom"] = "retail"
-    model_name: str = "Qwen3.8-27B"
+    model_name: PolicyModelName = "Qwen3.8-27B"
+    num_nodes: int | None = None
     skip_prepare: bool = False
     model_dir: str = "/root/models"
     data_dir: str = "/root/datasets"
@@ -73,10 +77,12 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     save: bool = True
     save_interval: int = 20
 
+    def __post_init__(self):
+        if self.num_nodes is None:
+            self.num_nodes = self.model.num_nodes
+
     @property
     def model(self) -> PolicyModel:
-        if self.model_name not in POLICY_MODELS:
-            raise ValueError(f"--model-name {self.model_name!r} is not in policy_models.py: {sorted(POLICY_MODELS)}")
         return POLICY_MODELS[self.model_name]
 
     def task_file(self, split: str) -> str:
@@ -115,11 +121,13 @@ def _write_task_file(domain: str, split: str, path: str) -> None:
     print(f"Wrote {len(rows)} tau2 {domain}/{split} tasks to {path}")
 
 
-def _preflight_api_keys(domain: str) -> None:
-    """Fail before claiming GPUs when an episode could not reach its user simulator or judges.
+def _episode_api_keys(domain: str) -> dict[str, str]:
+    """The provider keys the domain's episodes call their user simulator and judges with, from this environment.
 
-    Every episode would then fail the same way outside the policy, and training would only drop
-    groups and refill them. The judges are the ones the domain's reward bases use.
+    Ray workers do not see the launcher's environment (on an already-joined cluster they keep their own), so
+    ``execute`` forwards these by value. Fails when a key a model needs is unset: every episode would then fail
+    outside the policy, and training would only drop groups and refill them. The judges are the ones the domain's
+    reward bases use.
     """
     import litellm  # noqa: PLC0415 - tau2's dependency; the launcher needs it only for this check
     from tau2.runner.helpers import get_tasks  # noqa: PLC0415 - tau2 is needed only where episodes are checked
@@ -132,57 +140,32 @@ def _preflight_api_keys(domain: str) -> None:
         for basis in task.evaluation_criteria.reward_basis
     }
     llms = episode_llms(bases)
-    missing = {
-        key
-        for model, model_args in llms
-        for key in litellm.validate_environment(
-            model=model, api_key=model_args.get("api_key"), api_base=model_args.get("api_base")
-        )["missing_keys"]
-    }
+    keys, missing = {}, set()
+    for model, model_args in llms:
+        if model_args.get("api_key"):
+            continue  # it reaches the workers inside TAU2_*_LLM_ARGS
+        api_base = model_args.get("api_base")
+        # litellm reads keys from os.environ only; with it empty, it names every key the model requires.
+        with mock.patch.dict(os.environ, clear=True):
+            required = litellm.validate_environment(model=model, api_base=api_base)["missing_keys"]
+        # litellm also reads a provider's optional key, such as HOSTED_VLLM_API_KEY for an endpoint that checks one.
+        provider = litellm.get_llm_provider(model=model, api_base=api_base)[1]
+        for name in {*required, f"{provider.upper()}_API_KEY"}:
+            if name in os.environ:
+                keys[name] = os.environ[name]
+            elif name in required:
+                missing.add(name)
     if missing:
         raise RuntimeError(
             f"tau2 {domain} episodes call {sorted({model for model, _ in llms})}, which need {sorted(missing)} set. "
-            "Export them before launching (ray workers inherit the launcher's environment), or point "
-            "TAU2_USER_LLM / TAU2_JUDGE_LLM at your own endpoint."
+            "Export them before launching, or point TAU2_USER_LLM / TAU2_JUDGE_LLM at your own endpoint."
         )
-
-
-def _model_args(model: PolicyModel) -> str:
-    """How the policy runs: parallelism, optimizer placement, its SGLang engine and its chat template."""
-    args = (
-        f"--tensor-model-parallel-size {model.tensor_parallel_size} "
-        "--sequence-parallel "
-        "--pipeline-model-parallel-size 1 "
-        f"--context-parallel-size {model.context_parallel_size} "
-        "--expert-model-parallel-size 1 "
-        "--expert-tensor-parallel-size 1 "
-        "--recompute-granularity full "
-        "--recompute-method uniform "
-        "--recompute-num-layers 1 "
-        "--use-dynamic-batch-size "
-        f"--max-tokens-per-gpu {model.max_seq_len // model.context_parallel_size} "
-        f"--rollout-max-response-len {model.rollout_max_response_len} "
-        f"--max-seq-len {model.max_seq_len} "
-        f"--rollout-num-gpus-per-engine {model.rollout_num_gpus_per_engine} "
-        f"--sglang-mem-fraction-static {model.sglang_mem_fraction_static} "
-        f"--sglang-tool-call-parser {model.sglang_tool_call_parser} "
-        f"--tito-model {model.tito_model} "
-        f"--actor-num-nodes {model.num_nodes} "
-        f"--actor-num-gpus-per-node {model.num_gpus_per_node} "
-        f"--num-gpus-per-node {model.num_gpus_per_node} "
-    )
-    if model.sglang_reasoning_parser is not None:
-        args += f"--sglang-reasoning-parser {model.sglang_reasoning_parser} "
-    if model.chat_template_kwargs:
-        args += f"--apply-chat-template-kwargs {shlex.quote(json.dumps(model.chat_template_kwargs))} "
-    if model.optimizer_cpu_offload:
-        args += "--optimizer-cpu-offload --overlap-cpu-optimizer-d2h-h2d --use-precision-aware-optimizer "
-    return args
+    return keys
 
 
 def execute(args: ScriptArgs):
     model = args.model
-    _preflight_api_keys(args.domain)
+    api_keys = _episode_api_keys(args.domain)
     U = args.create_backend()
 
     ckpt_args = (
@@ -202,6 +185,8 @@ def execute(args: ScriptArgs):
         f"--rollout-batch-size {args.rollout_batch_size} "
         f"--n-samples-per-prompt {args.n_samples_per_prompt} "
         "--rollout-temperature 1 "
+        f"--rollout-max-response-len {model.rollout_max_response_len} "
+        f"--max-seq-len {model.max_seq_len} "
         f"--global-batch-size {args.rollout_batch_size * args.n_samples_per_prompt} "
         "--balance-data "
         "--dynamic-sampling-filter-path miles.rollout.filter_hub.common_filters.apply_reward_nonzero_std_filter "
@@ -215,6 +200,20 @@ def execute(args: ScriptArgs):
             "--n-samples-per-eval-prompt 4 "
             f"--eval-max-response-len {model.rollout_max_response_len} "
         )
+
+    perf_args = (
+        f"--tensor-model-parallel-size {model.tensor_parallel_size} "
+        "--sequence-parallel "
+        "--pipeline-model-parallel-size 1 "
+        f"--context-parallel-size {model.context_parallel_size} "
+        "--expert-model-parallel-size 1 "
+        "--expert-tensor-parallel-size 1 "
+        "--recompute-granularity full "
+        "--recompute-method uniform "
+        "--recompute-num-layers 1 "
+        "--use-dynamic-batch-size "
+        f"--max-tokens-per-gpu {model.max_seq_len // model.context_parallel_size} "
+    )
 
     grpo_args = (
         "--advantage-estimator grpo "
@@ -234,12 +233,23 @@ def execute(args: ScriptArgs):
         "--adam-beta1 0.9 "
         "--adam-beta2 0.98 "
     )
+    if model.optimizer_cpu_offload:
+        optimizer_args += "--optimizer-cpu-offload --overlap-cpu-optimizer-d2h-h2d --use-precision-aware-optimizer "
+
+    sglang_args = (
+        f"--rollout-num-gpus-per-engine {model.rollout_num_gpus_per_engine} "
+        f"--sglang-mem-fraction-static {model.sglang_mem_fraction_static} "
+        f"--sglang-reasoning-parser {model.sglang_reasoning_parser} "
+        f"--sglang-tool-call-parser {model.sglang_tool_call_parser} "
+    )
 
     agent_args = (
         "--custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate "
         "--custom-agent-function-path tau2_agent_function.run "
         "--custom-rm-path tau2_agent_function.reward_func "
         "--use-session-server "
+        f"--tito-model {model.tito_model} "
+        f"--apply-chat-template-kwargs {shlex.quote(json.dumps(model.chat_template_kwargs))} "
     )
 
     misc_args = (
@@ -251,6 +261,9 @@ def execute(args: ScriptArgs):
         "--attention-softmax-in-fp32 "
         "--attention-backend flash "
         "--colocate "
+        f"--actor-num-nodes {args.num_nodes} "
+        f"--actor-num-gpus-per-node {model.num_gpus_per_node} "
+        f"--num-gpus-per-node {model.num_gpus_per_node} "
     )
 
     debug_args = "--debug-rollout-only " if args.mode == "debug_rollout_only" else ""
@@ -259,9 +272,10 @@ def execute(args: ScriptArgs):
         f"{ckpt_args}"
         f"{rollout_args}"
         f"{eval_args}"
-        f"{_model_args(model)}"
+        f"{perf_args}"
         f"{grpo_args}"
         f"{optimizer_args}"
+        f"{sglang_args}"
         f"{agent_args}"
         f"{misc_args}"
         f"{command_utils.get_default_wandb_args(__file__, run_id=args.run_id)} "
@@ -271,6 +285,7 @@ def execute(args: ScriptArgs):
     extra_env_vars = {
         "PYTHONPATH": f"{args.megatron_path}:{SCRIPT_DIR}:{command_utils.repo_base_dir}",
         **{name: os.environ[name] for name in _FORWARDED_ENV_VARS if name in os.environ},
+        **api_keys,
     }
 
     U.execute_train(
@@ -285,6 +300,7 @@ def execute(args: ScriptArgs):
 @command_utils.dataclass_cli
 def main(args: ScriptArgs):
     if not args.skip_prepare:
+        _episode_api_keys(args.domain)  # fail on a missing key before the download and conversion
         prepare(args)
     execute(args)
 

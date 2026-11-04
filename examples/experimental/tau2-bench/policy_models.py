@@ -7,12 +7,14 @@ settings and sequence budgets. To train another model, add an entry.
 """
 
 from dataclasses import dataclass
+from typing import Literal
 
 
 @dataclass(frozen=True)
 class PolicyModel:
     hf_repo: str
     megatron_model_type: str
+    # The node count the entry was validated on; --num-nodes overrides it.
     num_nodes: int
     num_gpus_per_node: int
     # Training is data-parallel over what TP x CP leaves; each sample is one whole
@@ -25,7 +27,7 @@ class PolicyModel:
     sglang_mem_fraction_static: float
     # Both parsers are load-bearing: without the tool-call parser the policy's tool calls
     # stay plain text, and without the reasoning parser its thinking reaches tau2 as replies.
-    sglang_reasoning_parser: str | None
+    sglang_reasoning_parser: str
     sglang_tool_call_parser: str
     tito_model: str
     chat_template_kwargs: dict[str, str]
@@ -56,3 +58,6 @@ POLICY_MODELS: dict[str, PolicyModel] = {
         max_seq_len=32768,
     ),
 }
+
+# The --model-name choices, read from the table so the two cannot drift.
+PolicyModelName = Literal[tuple(POLICY_MODELS)]

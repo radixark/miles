@@ -63,11 +63,13 @@ export TAU2_JUDGE_LLM_ARGS='{"api_base": "http://<host>:<port>/v1", "temperature
 stays out of the reply. A different judge also means rewards are no longer
 scored exactly as tau2 reports them.
 
-Keys go in the provider's own environment variable (for example
-`HOSTED_VLLM_API_KEY` for an endpoint that checks one), not in the `*_ARGS`
-JSON: the launcher forwards the `TAU2_*` variables to ray workers by value,
-while workers inherit the launcher's environment for everything else. The
-launcher refuses to start when a model it would call is missing a key.
+Export keys in the launcher's environment, in the provider's own variable (for
+example `HOSTED_VLLM_API_KEY` for an endpoint that checks one). Ray workers do
+not see that environment, so the launcher forwards the keys the episode's models
+use, with the `TAU2_*` variables, by value: they show in the Ray job's runtime
+environment and in the launcher's log of the submit command. The launcher
+refuses to start, before downloading anything, when a model it would call is
+missing a key.
 
 ## Run
 
@@ -83,9 +85,10 @@ python run.py --domain telecom --mode debug_rollout_only
 GPUs and parallelism, SGLang parsers, TITO family, chat-template settings,
 sequence budgets) come from its entry in [`policy_models.py`](policy_models.py),
 selected with `--model-name` (default `Qwen3.8-27B`); to train another model, add
-an entry. Qwen3.8-27B thinks before every reply and its template keeps each turn's
-thinking in the history, so its entry asks for the template's low reasoning effort;
-higher efforts need a longer `max_seq_len`.
+an entry. `--num-nodes` overrides the entry's node count. Qwen3.8-27B thinks
+before every reply and its template keeps each turn's thinking in the history, so
+its entry asks for the template's low reasoning effort; higher efforts need a
+longer `max_seq_len`.
 
 `prepare` downloads the policy model, converts it to `torch_dist`, and writes
 the domain's tau2 `train` and `test` splits to
@@ -106,10 +109,10 @@ non-generation time; `reward_func` reads `reward` back.
 
 - **The simulation finishes:** tau2's reward. tau2 already scores every
   termination other than an agent or user stop (max steps, too many tool errors) 0.
-- **The policy ends the episode early:** 0. That covers a reply cut at
-  `--rollout-max-response-len` (`length`), a conversation reaching `--max-seq-len`
-  (`context_window_exceeded`), and an empty reply or a tool call whose arguments
-  are not a JSON object (`agent_error`).
+- **The policy ends the episode early:** 0. That covers a reply cut at the
+  entry's `rollout_max_response_len` (`length`), a conversation reaching its
+  `max_seq_len` (`context_window_exceeded`), and an empty reply or a tool call
+  whose arguments are not a JSON object (`agent_error`).
 - **Anything else fails** (user simulator or judge API, session server): no reward
   (`infrastructure_error`). Training drops the group instead of learning a false 0;
   evaluation reports the share as `eval/<name>-none_reward_ratio`.

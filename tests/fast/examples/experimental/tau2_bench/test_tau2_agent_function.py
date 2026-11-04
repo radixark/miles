@@ -12,6 +12,7 @@ LLM call tau2 makes for it.
 import asyncio
 import importlib.util
 import json
+import shlex
 from collections.abc import Iterator
 from contextlib import contextmanager
 from types import SimpleNamespace
@@ -77,23 +78,25 @@ def _session_env(*policy_replies: ProcessResult, max_seq_len: int = 32768) -> It
     """A v1 session server over a mock SGLang server answering with ``policy_replies``, one per turn."""
     script = iter(policy_replies)
     SingletonMeta.clear_all_instances()
-    with with_mock_server(model_name=_MODEL_NAME, process_fn=lambda prompt: next(script)) as mock_server:
-        port = find_available_port(31000)
-        args = make_args(
-            variant="agentic_tool_call",
-            router_port=port,
-            extra_argv=[
-                "--custom-agent-function-path",
-                "tau2_agent_function.run",
-                "--use-session-server",
-                "v1",
-                "--max-seq-len",
-                str(max_seq_len),
-            ],
-        )
-        with with_session_server(mock_server.url, args, port=port):
-            yield GenerateEnv(args=compute_generate_args(args), mock_server=mock_server)
-    SingletonMeta.clear_all_instances()
+    try:
+        with with_mock_server(model_name=_MODEL_NAME, process_fn=lambda prompt: next(script)) as mock_server:
+            port = find_available_port(31000)
+            args = make_args(
+                variant="agentic_tool_call",
+                router_port=port,
+                extra_argv=[
+                    "--custom-agent-function-path",
+                    "tau2_agent_function.run",
+                    "--use-session-server",
+                    "v1",
+                    "--max-seq-len",
+                    str(max_seq_len),
+                ],
+            )
+            with with_session_server(mock_server.url, args, port=port):
+                yield GenerateEnv(args=compute_generate_args(args), mock_server=mock_server)
+    finally:
+        SingletonMeta.clear_all_instances()
 
 
 def _play(env: GenerateEnv) -> tuple[Sample, list[dict]]:
@@ -200,15 +203,16 @@ def test_task_file_names_each_task_of_the_split(tmp_path):
 def test_preflight_requires_the_keys_of_the_domain_judges(monkeypatch, domain, missing):
     launcher = _load_launcher()
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("HOSTED_VLLM_API_KEY", raising=False)
     monkeypatch.setenv("TAU2_USER_LLM", "hosted_vllm/user-simulator")
 
     if missing is None:
-        launcher._preflight_api_keys(domain)
+        assert launcher._episode_api_keys(domain) == {}
     else:
         with pytest.raises(RuntimeError, match=missing):
-            launcher._preflight_api_keys(domain)
+            launcher._episode_api_keys(domain)
         monkeypatch.setenv(missing, "key")
-        launcher._preflight_api_keys(domain)
+        assert launcher._episode_api_keys(domain) == {missing: "key"}
 
 
 _JUDGE = "hosted_vllm/judge"
@@ -260,5 +264,29 @@ def test_own_endpoints_need_no_openai_key(monkeypatch, domain):
     monkeypatch.setenv("TAU2_USER_LLM", "hosted_vllm/user-simulator")
     monkeypatch.setenv("TAU2_JUDGE_LLM", _JUDGE)
     monkeypatch.setenv("TAU2_JUDGE_LLM_ARGS", json.dumps(_JUDGE_ARGS))
+    launcher = _load_launcher()
 
-    _load_launcher()._preflight_api_keys(domain)
+    monkeypatch.delenv("HOSTED_VLLM_API_KEY", raising=False)
+    assert launcher._episode_api_keys(domain) == {}
+    # An endpoint that checks a key reads the provider's optional one, which the workers need too.
+    monkeypatch.setenv("HOSTED_VLLM_API_KEY", "endpoint-key")
+    assert launcher._episode_api_keys(domain) == {"HOSTED_VLLM_API_KEY": "endpoint-key"}
+
+
+def test_execute_forwards_the_keys_to_the_ray_workers(monkeypatch):
+    # The workers of an already-joined ray cluster see only the job's runtime env, not the launcher's environment.
+    launcher = _load_launcher()
+    monkeypatch.delenv("WANDB_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+    monkeypatch.setenv("TAU2_USER_LLM", "hosted_vllm/user-simulator")
+    submitted = {}
+    args = launcher.ScriptArgs(domain="retail", num_nodes=1)
+    args.create_backend = lambda: SimpleNamespace(execute_train=lambda **kwargs: submitted.update(kwargs))
+
+    launcher.execute(args)
+
+    assert submitted["extra_env_vars"]["OPENAI_API_KEY"] == "openai-key"  # retail's NL-assertion judge
+    assert submitted["extra_env_vars"]["TAU2_USER_LLM"] == "hosted_vllm/user-simulator"
+    argv = shlex.split(submitted["train_args"])
+    assert argv[argv.index("--actor-num-nodes") + 1] == "1"
+    assert launcher.ScriptArgs().num_nodes == launcher.POLICY_MODELS["Qwen3.8-27B"].num_nodes

@@ -208,7 +208,9 @@ def _play_task(
     user = build_user(DEFAULT_USER_IMPLEMENTATION, environment, task, llm=user_llm, llm_args=user_llm_args)
     communicate_scoring = _configure_judges()
     started = time.monotonic()
-    with OpenAI(base_url=session_url, api_key="EMPTY") as client:
+    # No retries: the session answers a turn SGLang aborted (the rollout has enough groups) with 503, and a
+    # retry would play the surplus episode on; failing ends it here with no reward, like any infrastructure error.
+    with OpenAI(base_url=session_url, api_key="EMPTY", max_retries=0) as client:
         agent = SessionAgent(
             tools=environment.get_tools(),
             domain_policy=agent_domain_policy(environment),
