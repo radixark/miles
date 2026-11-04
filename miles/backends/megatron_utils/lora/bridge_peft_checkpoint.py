@@ -88,10 +88,8 @@ _BRIDGE_BASE_REMEDY = (
 
 
 def bridge_base_model_candidates(config: dict) -> tuple[str | None, str | None]:
-    """Bridge PEFT loads its base from pretrained_checkpoint. When that is no HF dir here, the HF template it was
-    converted from stands in, as Bridge's _resolve_hf_source picks it; a local torch_dist pretrained_checkpoint is
-    compared directly instead (``assert_same_base_as_torch_dist``), so the stand-in is used only for another machine's
-    path, where it misses a base fine-tuned in Megatron."""
+    """The source's base candidates, best first: pretrained_checkpoint, then the HF template Bridge's
+    _resolve_hf_source picks."""
     checkpoint = config["checkpoint"]
     # hf_source_path and hf_model_id are newer than some Bridge configs; Bridge takes the first non-empty one even
     # when it is no HF dir here, so a later one would compare a model Bridge never used
