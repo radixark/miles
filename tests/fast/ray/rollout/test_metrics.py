@@ -5,6 +5,7 @@ import pytest
 from tests.fast.ray.rollout.conftest import make_args, make_sample, make_samples_grouped
 
 from miles.ray.rollout.metrics import (
+    _compute_dataset_metrics,
     _compute_episode_response_length_metrics,
     _compute_metrics_from_samples,
     _compute_passrate_from_samples,
@@ -793,3 +794,60 @@ class TestObservedGpuThroughput:
         else:
             assert "tokens_per_gpu_per_sec" not in metrics
             assert "effective_tokens_per_gpu_per_sec" not in metrics
+
+
+class TestDatasetMetrics:
+    def test_each_mixed_dataset_gets_its_own_reward_length_and_truncation(self):
+        samples = [
+            make_sample(index=0, reward=1.0, response_length=4, metadata={"dataset_name": "math"}),
+            make_sample(index=1, reward=0.0, response_length=8, metadata={"dataset_name": "math"}),
+            make_sample(
+                index=2,
+                reward=0.5,
+                response_length=6,
+                status=Sample.Status.TRUNCATED,
+                metadata={"dataset_name": "agentic"},
+            ),
+        ]
+
+        out = _compute_dataset_metrics(make_args(rollout_data_yaml_config="mix.yaml"), samples)
+
+        assert out["dataset/math/episode_raw_reward"] == pytest.approx(0.5)
+        assert out["dataset/math/response_len/mean"] == pytest.approx(6.0)
+        assert out["dataset/math/truncated_ratio"] == 0.0
+        assert out["dataset/agentic/episode_raw_reward"] == pytest.approx(0.5)
+        assert out["dataset/agentic/truncated_ratio"] == 1.0
+        assert out["dataset/agentic/num_training_samples"] == 1
+
+    @pytest.mark.parametrize("row_dataset_name", [None, "from_the_jsonl", ["unhashable"]])
+    def test_a_single_dataset_run_logs_no_dataset_metrics(self, row_dataset_name):
+        """A row's own dataset_name field must not create metric keys or crash grouping outside a mixed run."""
+        metadata = {} if row_dataset_name is None else {"dataset_name": row_dataset_name}
+        out = _compute_dataset_metrics(make_args(), [make_sample(index=0, metadata=metadata)])
+
+        assert not any(key.startswith("dataset/") for key in out)
+
+    def test_the_training_log_carries_the_dataset_metrics(self, monkeypatch):
+        args = make_args(
+            rollout_data_yaml_config="mix.yaml", advantage_estimator="ppo", ci_test=False, log_passrate=False
+        )
+        samples = make_samples_grouped(1, 2)
+        for sample in samples:
+            sample.metadata = {"dataset_name": "math"}
+        logged = {}
+        monkeypatch.setattr(
+            "miles.ray.rollout.metrics.tracking.log",
+            lambda _args, metrics, **_kwargs: logged.update(metrics),
+        )
+
+        log_rollout_data(0, args, samples, None, 1.0)
+
+        assert logged["rollout/dataset/math/num_training_samples"] == 2
+
+    @pytest.mark.parametrize("row_dataset_name", ["from_the_jsonl", ["unhashable"]])
+    def test_eval_samples_in_a_mixed_run_log_no_dataset_metrics(self, row_dataset_name):
+        """Eval shares the per-sample metrics, but an eval row's dataset_name is its own field, not the mixer's tag."""
+        args = make_args(rollout_data_yaml_config="mix.yaml")
+        out = _compute_metrics_from_samples(args, [make_sample(index=0, metadata={"dataset_name": row_dataset_name})])
+
+        assert not any(key.startswith("dataset/") for key in out)
