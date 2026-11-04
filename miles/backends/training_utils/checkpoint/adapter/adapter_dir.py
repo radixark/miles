@@ -33,6 +33,7 @@ from miles.backends.training_utils.checkpoint.adapter.readers import (
     PeftAdapterReader,
     classify_adapter_source,
 )
+from miles.backends.training_utils.checkpoint.adapter.source_error import AdapterSourceError
 from miles.utils.lora.hf_lora_targets import HfLoraTargets
 
 TRAINING_STATE_FILENAME = "training_state.json"
@@ -142,7 +143,8 @@ def _assert_real_rank(specs: list[LocalShardSpec], lora_rank: int) -> None:
 
 
 def _slice(full: torch.Tensor, spec: LocalShardSpec) -> torch.Tensor:
-    assert tuple(full.shape) == spec.global_shape, f"{spec.key}: source {tuple(full.shape)} != run {spec.global_shape}"
+    if tuple(full.shape) != spec.global_shape:
+        raise AdapterSourceError(f"{spec.key}: source {tuple(full.shape)} != run {spec.global_shape}")
     return full[tuple(slice(o, o + n) for o, n in zip(spec.offsets, spec.local_shape, strict=True))].clone()
 
 
@@ -156,7 +158,8 @@ def _weights_only_state(
     weights: dict[str, torch.Tensor], specs: list[LocalShardSpec], head_rows: HeadRows | None
 ) -> AdapterState:
     missing = {s.key for s in specs} - set(weights)
-    assert not missing, f"the source lacks tensors the run trains: {sorted(missing)}"
+    if missing:
+        raise AdapterSourceError(f"the source lacks tensors the run trains: {sorted(missing)}")
     return _with_zero_moments(specs, [_slice(_served_rows(weights[s.key], s, head_rows), s).float() for s in specs])
 
 
@@ -164,9 +167,11 @@ def _served_rows(full: torch.Tensor, spec: LocalShardSpec, head_rows: HeadRows |
     if head_rows is None or spec.key != head_rows.key:
         return full
     rows, served = full.shape[0], spec.global_shape[0]
-    assert (
-        served <= rows <= head_rows.max_source_rows
-    ), f"{spec.key}: the source has {rows} rows; this run serves {served} and reads up to {head_rows.max_source_rows}"
+    if not served <= rows <= head_rows.max_source_rows:
+        raise AdapterSourceError(
+            f"{spec.key}: the source has {rows} rows; this run serves {served} and reads up to "
+            f"{head_rows.max_source_rows}"
+        )
     return full[:served]
 
 
@@ -200,9 +205,8 @@ def load_adapter_dir(
     kind, error = None, None
     try:
         kind = classify_adapter_source(path, targets, load_optimizer=load_optimizer)
-        assert not kind.is_read_into_model() or (
-            in_model_loaders_by_kind is not None and kind in in_model_loaders_by_kind
-        ), f"{path} is a {kind.value} source, which this backend cannot load"
+        if kind.is_read_into_model() and (in_model_loaders_by_kind is None or kind not in in_model_loaders_by_kind):
+            raise AdapterSourceError(f"{path} is a {kind.value} source, which this backend cannot load")
     except Exception as exc:
         error = exc
     raise_if_any_rank_failed(error)
@@ -213,7 +217,8 @@ def load_adapter_dir(
             source = _with_run_alpha_if_unknown(source, run)
             steps = plan_parametrization_conversion(source, run, source_dtype=torch.float32)
             # an in-model loader reads straight into the run's parametrization; it cannot convert
-            assert not steps, f"{path} needs {steps} to match the run, which an in-model loader cannot do"
+            if steps:
+                raise AdapterSourceError(f"{path} needs {steps} to match the run, which an in-model loader cannot do")
             assert_parametrization_matches_run(
                 source, run, steps, load_optimizer=load_optimizer, has_optimizer_state=has_optimizer_state
             )

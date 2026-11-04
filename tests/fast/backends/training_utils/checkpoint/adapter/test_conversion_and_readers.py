@@ -37,6 +37,7 @@ from miles.backends.training_utils.checkpoint.adapter.readers import (
     _read_peft_tensors,
     classify_adapter_source,
 )
+from miles.backends.training_utils.checkpoint.adapter.source_error import AdapterSourceError
 from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
 
 L = "model.layers.0"
@@ -159,7 +160,7 @@ def test_splitting_a_shared_a_is_weights_only():
     steps = plan_parametrization_conversion(source, target, source_dtype=torch.float32)
     assert [s.op for s in steps] == [ConversionOp.SPLIT_SHARED_LORA_A]
     assert_parametrization_matches_run(source, target, steps, load_optimizer=False, has_optimizer_state=True)
-    with pytest.raises(AssertionError, match="needs the source's own parametrization"):
+    with pytest.raises(AdapterSourceError, match="needs the source's own parametrization"):
         assert_parametrization_matches_run(source, target, steps, load_optimizer=True, has_optimizer_state=True)
     split = apply_parametrization_conversion(_weights(True), steps)
     assert torch.equal(split[f"{QKV[1]}.lora_A"], split[f"{QKV[0]}.lora_A"])
@@ -174,7 +175,7 @@ def test_the_same_shared_a_groups_in_another_order_need_no_conversion():
 
 def test_merging_requires_equal_copies():
     steps = plan_parametrization_conversion(_run(), _run(shared_lora_a_groups=(QKV,)), source_dtype=torch.float32)
-    with pytest.raises(AssertionError, match="cannot share A"):
+    with pytest.raises(AdapterSourceError, match="cannot share A"):
         apply_parametrization_conversion(_weights(False), steps)
 
 
@@ -187,13 +188,13 @@ def test_shared_outer_broadcasts_for_weights_and_collapses_only_if_equal():
     out = apply_parametrization_conversion(w, steps)
     assert out[f"{EXPERTS[0]}.lora_A"].shape[0] == 3
     back = plan_parametrization_conversion(target, source, source_dtype=torch.float32)
-    with pytest.raises(AssertionError, match="experts differ"):
+    with pytest.raises(AdapterSourceError, match="experts differ"):
         apply_parametrization_conversion(_weights(False), back)
 
 
 @pytest.mark.parametrize("field, value", [("base_model", "other"), ("lora_rank", 4)])
 def test_mismatches_are_refused(field, value):
-    with pytest.raises(AssertionError):
+    with pytest.raises(AdapterSourceError):
         assert_parametrization_matches_run(
             _run(**{field: value}), _run(), [], load_optimizer=False, has_optimizer_state=False
         )
@@ -205,7 +206,7 @@ def test_peft_features_that_change_tensor_meaning_are_refused(tmp_path):
         str(tmp_path / "adapter_model.safetensors"),
     )
     (tmp_path / "adapter_config.json").write_text(json.dumps({"r": 2, "lora_alpha": 4, "use_dora": True}))
-    with pytest.raises(AssertionError, match="use_dora"):
+    with pytest.raises(AdapterSourceError, match="use_dora"):
         PeftAdapterReader(tmp_path, _run(), QWEN3)
 
 
@@ -256,7 +257,7 @@ def test_dcp_sources_are_classified_by_their_keys(tmp_path, key, run_config, kin
     if run_config:
         (tmp_path / "run_config.yaml").write_text("{}")
     if kind is None:
-        with pytest.raises(ValueError, match="neither"):
+        with pytest.raises(AdapterSourceError, match="neither"):
             classify_adapter_source(tmp_path, QWEN3, load_optimizer=True)
     else:
         assert classify_adapter_source(tmp_path, QWEN3, load_optimizer=True).value == kind
@@ -311,7 +312,7 @@ def test_fan_in_fan_out_is_refused(tmp_path):
     )
     config = json.loads((tmp_path / "adapter_config.json").read_text()) | {"fan_in_fan_out": True}
     (tmp_path / "adapter_config.json").write_text(json.dumps(config))
-    with pytest.raises(AssertionError, match="fan_in_fan_out"):
+    with pytest.raises(AdapterSourceError, match="fan_in_fan_out"):
         PeftAdapterReader(tmp_path, _run(), QWEN3)
 
 
@@ -367,7 +368,7 @@ def test_base_rewriting_and_activated_lora_are_refused(tmp_path, field, value):
     )
     config = json.loads((tmp_path / "adapter_config.json").read_text()) | {field: value}
     (tmp_path / "adapter_config.json").write_text(json.dumps(config))
-    with pytest.raises(AssertionError, match=field):
+    with pytest.raises(AdapterSourceError, match=field):
         PeftAdapterReader(tmp_path, _run(), QWEN3)
 
 
@@ -380,7 +381,7 @@ def test_mixed_tinker_and_hf_names_are_refused(tmp_path):
         str(tmp_path / "adapter_model.safetensors"),
     )
     (tmp_path / "adapter_config.json").write_text("{}")
-    with pytest.raises(AssertionError, match="mixes"):
+    with pytest.raises(AdapterSourceError, match="mixes"):
         classify_adapter_source(tmp_path, QWEN3, load_optimizer=False)
 
 
@@ -388,7 +389,7 @@ def test_an_edited_sampler_config_is_refused(tmp_path):
     write_sampler_adapter(tmp_path, {k: v.to(torch.bfloat16) for k, v in _weights(False).items()}, _run())
     config = json.loads((tmp_path / "adapter_config.json").read_text()) | {"lora_alpha": 99}
     (tmp_path / "adapter_config.json").write_text(json.dumps(config))
-    with pytest.raises(AssertionError, match="disagrees"):
+    with pytest.raises(AdapterSourceError, match="disagrees"):
         MilesAdapterDirReader(tmp_path, QWEN35)
 
 
@@ -462,14 +463,14 @@ def test_a_base_of_another_architecture_is_refused_whatever_its_name():
     other = _run(
         base_model="Qwen/Qwen3-4B", base_model_fingerprint=base_model_fingerprint(_QWEN3_4B | {"hidden_size": 4096})
     )
-    with pytest.raises(AssertionError, match="is another model than run base"):
+    with pytest.raises(AdapterSourceError, match="is another model than run base"):
         _check_bases(saved, other)
 
 
 def test_a_side_without_a_fingerprint_compares_where_the_base_was_read_from():
     run = _run(base_model="/root/models/Qwen3-4B", base_model_fingerprint=base_model_fingerprint(_QWEN3_4B))
     _check_bases(_run(base_model="/root/models/Qwen3-4B"), run)
-    with pytest.raises(AssertionError, match="adapter base '/lustre/models/Qwen3-4B' != run base"):
+    with pytest.raises(AdapterSourceError, match="adapter base '/lustre/models/Qwen3-4B' != run base"):
         _check_bases(_run(base_model="/lustre/models/Qwen3-4B"), run)
 
 
@@ -494,7 +495,7 @@ def test_the_parametrization_file_records_its_format_version_and_refuses_another
     assert fields["format_version"] == 1
     assert read_parametrization(tmp_path) == run
     (tmp_path / PARAMETRIZATION_FILENAME).write_text(json.dumps(fields | {"format_version": 2}))
-    with pytest.raises(ValueError, match="format version 2; this miles reads version 1"):
+    with pytest.raises(AdapterSourceError, match="format version 2; this miles reads version 1"):
         read_parametrization(tmp_path)
 
 
@@ -502,7 +503,7 @@ def test_a_parametrization_with_a_field_this_miles_does_not_know_is_refused(tmp_
     write_parametrization(tmp_path, _run(target_modules=QKV[:1]))
     fields = json.loads((tmp_path / PARAMETRIZATION_FILENAME).read_text())
     (tmp_path / PARAMETRIZATION_FILENAME).write_text(json.dumps(fields | {"lora_dropout": 0.1}))
-    with pytest.raises(ValueError, match=r"unknown fields \['lora_dropout'\].*load it with the miles version that wrote it"):
+    with pytest.raises(AdapterSourceError, match=r"unknown fields \['lora_dropout'\].*load it with the miles version that wrote it"):
         read_parametrization(tmp_path)
 
 

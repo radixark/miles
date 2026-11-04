@@ -25,6 +25,7 @@ from miles.backends.training_utils.checkpoint.adapter.commit import (
 )
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
 from miles.backends.training_utils.checkpoint.adapter.readers import AdapterSourceKind
+from miles.backends.training_utils.checkpoint.adapter.source_error import AdapterSourceError
 from miles.utils.distributed_utils import init_gloo_group
 from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
 
@@ -466,6 +467,16 @@ def test_an_in_model_source_without_optimizer_state_is_refused_when_loading_it(t
         in_model_loaders_by_kind={AdapterSourceKind.TORCHTITAN_CHECKPOINT: loader},
     )
     assert loader.loaded == [tmp_path]
+
+
+def test_a_refused_source_is_reported_as_a_source_error(tmp_path):
+    written = save_adapter_dir(tmp_path, "w", FakeMembers(), 0, RUN, tenant_digest=None)
+    with pytest.raises(RuntimeError, match="adapter rank 2 != run rank 4") as refused:
+        load_adapter_dir(written.path, FakeMembers(), 0, replace(RUN, lora_rank=4), TARGETS, load_optimizer=False)
+    assert isinstance(refused.value.__cause__, AdapterSourceError)
+    with pytest.raises(RuntimeError) as unrecognized:
+        load_adapter_dir(tmp_path, FakeMembers(), 0, RUN, TARGETS, load_optimizer=False)
+    assert isinstance(unrecognized.value.__cause__, AdapterSourceError)
 
 
 class NoPrimaryAMembers(FakeMembers):

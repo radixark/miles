@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass
 
 from miles.utils.lora.hf_lora_targets import HfLoraTargets
+from miles.backends.training_utils.checkpoint.adapter.source_error import AdapterSourceError
 
 _PEFT_PREFIX = "base_model.model."
 _TINKER_LAYER_PREFIX = "model.layers."
@@ -21,9 +22,11 @@ class HfKey:
 
 def _split_weight_name(name: str) -> tuple[str, str]:
     # HF PEFT prefixes the model path; main's exports and sampler exports use the bare HF path
-    assert name.endswith(".weight"), f"not a PEFT LoRA tensor name: {name!r}"
+    if not name.endswith(".weight"):
+        raise AdapterSourceError(f"not a PEFT LoRA tensor name: {name!r}")
     module, factor = name.removeprefix(_PEFT_PREFIX).removesuffix(".weight").rsplit(".", 1)
-    assert factor in ("lora_A", "lora_B"), f"not a LoRA factor: {name!r}"
+    if factor not in ("lora_A", "lora_B"):
+        raise AdapterSourceError(f"not a LoRA factor: {name!r}")
     return module, factor
 
 
@@ -79,7 +82,8 @@ def map_tinker_keys_to_hf_keys(name: str, targets: HfLoraTargets) -> HfKey:
     module, factor = _split_weight_name(name)
     if module == _TINKER_UNEMBED:
         return HfKey(f"{targets.unembed[0]}.{factor}")
-    assert module.startswith(_TINKER_LAYER_PREFIX), f"unexpected Tinker tensor name: {name!r}"
+    if not module.startswith(_TINKER_LAYER_PREFIX):
+        raise AdapterSourceError(f"unexpected Tinker tensor name: {name!r}")
     module = _hf_layer_prefix(targets) + module[len(_TINKER_LAYER_PREFIX) :]
     for tinker_fragment, hf_fragment in targets.tinker_name_renames:
         module = module.replace(tinker_fragment, hf_fragment)
