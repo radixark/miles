@@ -47,6 +47,7 @@ def _restore(path, *, convert_save=None, megatron_to_hf_mode="bridge", source_al
         lora_rank=8,
         lora_alpha=16.0,
         lora_type="lora",
+        lora_dropout=0.05,
         experts_shared_outer_loras=False,
         megatron_to_hf_mode=megatron_to_hf_mode,
         multi_lora=False,
@@ -91,6 +92,7 @@ def test_a_weights_only_convert_save_writes_neither_moments_nor_a_placeholder_tr
     _, _, mocks = _restore(tmp_path / "source", convert_save=str(tmp_path / "converted"))
     assert mocks["DistributedOptimizerMembers"].call_args.kwargs["save_moments"] is False
     assert mocks["save_and_commit_adapter_dir"].call_args.kwargs["training_state"] is None
+    assert mocks["save_and_commit_adapter_dir"].call_args.kwargs["lora_dropout"] == 0.05
 
 
 def test_only_the_bridge_backend_loads_a_megatron_bridge_checkpoint(tmp_path):
