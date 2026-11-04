@@ -242,7 +242,9 @@ def _play_task(
     started = time.monotonic()
     # No retries: the session answers a turn SGLang aborted (the rollout has enough groups) with 503, and a
     # retry would play the surplus episode on; failing ends it here with no reward, like any infrastructure error.
-    with OpenAI(base_url=session_url, api_key="EMPTY", max_retries=0) as client:
+    # No wall-clock limit either: max_tokens already bounds a turn, and at a large batch a long-thinking turn decodes
+    # for longer than the SDK's 600 s default, which would end a healthy episode as an infrastructure error.
+    with OpenAI(base_url=session_url, api_key="EMPTY", max_retries=0, timeout=None) as client:
         agent = SessionAgent(
             tools=environment.get_tools(),
             domain_policy=agent_domain_policy(environment),
