@@ -26,7 +26,11 @@ from miles.backends.training_utils.checkpoint.adapter.adapter_dir import (
     load_adapter_dir,
     save_adapter_dir,
 )
-from miles.backends.training_utils.checkpoint.adapter.adapter_state import AdapterState, gloo_group
+from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
+    AdapterState,
+    gloo_group,
+    raise_if_any_rank_failed,
+)
 from miles.backends.training_utils.checkpoint.adapter.commit import UncommittedAdapterDir
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
 from miles.backends.training_utils.checkpoint.adapter.readers import AdapterSourceKind
@@ -170,7 +174,8 @@ def find_load_mismatch(
     e.g. one fused GDN in_proj adapter saved before the canonical in_proj_q/k/v/z split.
     """
     path = Path(path)
-    mismatch = None
+    mismatch, saved = None, None
+    # any failure to read the user's source is theirs; raised after the slot reset, it kills the trainer cell
     try:
         kind = check_adapter_source(path, run, targets, load_optimizer=load_optimizer)
         if kind == AdapterSourceKind.LEGACY_TINKER_CHECKPOINT:
@@ -181,36 +186,48 @@ def find_load_mismatch(
                 for k, metadata in dcp.FileSystemReader(path).read_metadata().state_dict_metadata.items()
                 if ".adapter." in k and "_extra_state" not in k and not _LEGACY_OPTIMIZER_KEY.match(k)
             }
-            slot_state = _canonicalize_slot_keys(_slot_weights_sharded_state_dict(model, slot), slot)
-            # shared grouped-expert adapters are factories; built, they carry the global expert axis
-            apply_factories(slot_state)
-            expected = {
-                sharded.key: tuple(sharded.global_shape)
-                for sharded in nested_values(slot_state)
-                if "_extra_state" not in sharded.key
-            }
-            if expected.keys() != saved.keys():
-                mismatch = (
-                    f"{path} was saved with another adapter layout than this gateway trains "
-                    f"(differing keys e.g. {sorted(expected.keys() ^ saved.keys())[:3]}); "
-                    "load it on a gateway with the layout it was saved with"
-                )
-            elif expected != saved:
-                key = next(k for k in sorted(expected) if expected[k] != saved[k])
-                mismatch = (
-                    f"{path} was saved with other tensor shapes than this gateway's slots ({key}: saved "
-                    f"{saved[key]}, slot {expected[key]}); legacy tensors are padded to the gateway's --lora-rank, "
-                    "so load it on a gateway launched with the one it was saved with"
-                )
         elif kind.is_read_into_model():
             # load_adapter_dir refuses it only after the slot reset
             mismatch = f"{path} is a {kind.value} source, which this backend cannot load"
-    # any failure to read the user's source is theirs; raised after the slot reset, it kills the trainer cell
     except Exception as error:
         mismatch = f"{path} cannot load into this model: {error}"
+    # the slot's own layout is this gateway's: a failure computing it is a server error on every rank
+    expected, model_error = None, None
+    if saved is not None:
+        try:
+            expected = _legacy_slot_layout(model, slot)
+        except Exception as error:
+            model_error = error
+    raise_if_any_rank_failed(model_error)
+    if expected is not None:
+        if expected.keys() != saved.keys():
+            mismatch = (
+                f"{path} was saved with another adapter layout than this gateway trains "
+                f"(differing keys e.g. {sorted(expected.keys() ^ saved.keys())[:3]}); "
+                "load it on a gateway with the layout it was saved with"
+            )
+        elif expected != saved:
+            key = next(k for k in sorted(expected) if expected[k] != saved[k])
+            mismatch = (
+                f"{path} was saved with other tensor shapes than this gateway's slots ({key}: saved "
+                f"{saved[key]}, slot {expected[key]}); legacy tensors are padded to the gateway's --lora-rank, "
+                "so load it on a gateway launched with the one it was saved with"
+            )
     gathered = [None] * dist.get_world_size()
     dist.all_gather_object(gathered, mismatch, group=gloo_group())
     return next((m for m in gathered if m is not None), None)
+
+
+def _legacy_slot_layout(model, slot: int) -> dict[str, tuple[int, ...]]:
+    """The slot's legacy torch_dist keys and global shapes."""
+    slot_state = _canonicalize_slot_keys(_slot_weights_sharded_state_dict(model, slot), slot)
+    # shared grouped-expert adapters are factories; built, they carry the global expert axis
+    apply_factories(slot_state)
+    return {
+        sharded.key: tuple(sharded.global_shape)
+        for sharded in nested_values(slot_state)
+        if "_extra_state" not in sharded.key
+    }
 
 
 class LegacyTinkerCheckpointLoader:
