@@ -195,13 +195,9 @@ class TestStartupValidation:
         args = _parse("--rollout-data-yaml-config", _inline(_with_dataset(max_prompt_len=8192, sha256=_SHA)))
         assert args.data_source_path.path == "miles.rollout.data_source.MixedRolloutDataSource"
 
-    @pytest.mark.parametrize(
-        "fields",
-        [{"max_response_len": 64}, {"agent": {"max_turns": 50}}],
-    )
-    def test_settings_the_mixer_does_not_pass_on_yet_fail_at_startup(self, fields):
-        with pytest.raises(NotImplementedError, match=f"{next(iter(fields))} not supported yet"):
-            _parse("--rollout-data-yaml-config", _inline(_with_dataset(**fields)))
+    def test_a_per_dataset_response_budget_fails_at_startup_until_samples_carry_it(self):
+        with pytest.raises(NotImplementedError, match="max_response_len not supported yet"):
+            _parse("--rollout-data-yaml-config", _inline(_with_dataset(max_response_len=64)))
 
     def test_it_needs_num_rollout(self):
         i = _BASE_ARGV.index("--num-rollout")
@@ -236,6 +232,23 @@ class TestStartupValidation:
         too_long = _with_dataset(max_prompt_len=8192)
         with pytest.raises(ValueError, match="exceeds --rollout-max-prompt-len 8191"):
             _parse("--rollout-data-yaml-config", _inline(too_long), "--rollout-max-context-len", "8192")
+
+    @pytest.mark.parametrize("custom_generate_function_path", [None, "miles.rollout.generate_hub.multi_turn.generate"])
+    def test_an_agent_block_no_generate_function_reads_is_rejected(self, custom_generate_function_path):
+        """Under single_turn or multi_turn the agent block would silently do nothing."""
+        fields = {"agent": {"max_turns": 50}}
+        if custom_generate_function_path is not None:
+            fields["custom_generate_function_path"] = custom_generate_function_path
+        with pytest.raises(ValueError, match="never reads it"):
+            _parse("--rollout-data-yaml-config", _inline(_with_dataset(**fields)))
+
+    def test_an_agent_block_is_accepted_for_an_agentic_generate_function(self):
+        fields = {
+            "agent": {"max_turns": 50},
+            "custom_generate_function_path": "miles.rollout.generate_hub.agentic_tool_call.generate",
+        }
+        args = _parse("--rollout-data-yaml-config", _inline(_with_dataset(**fields)))
+        assert args.data_source_path.path == "miles.rollout.data_source.MixedRolloutDataSource"
 
     @pytest.mark.parametrize("reward", [{"rm_type": "gpqa"}, {"custom_rm_path": "json.loads"}])
     def test_a_dataset_reward_under_a_batched_group_rm_fails_at_startup(self, reward):

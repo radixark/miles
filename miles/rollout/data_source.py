@@ -378,6 +378,8 @@ class MixedRolloutDataSource(DataSource):
             sample.index = self.sample_index
             self.sample_index += 1
             sample.metadata["dataset_name"] = config.name
+            if config.agent is not None:
+                sample.metadata["agent_config"] = copy.deepcopy(config.agent)
             sample.generate_function_path = config.custom_generate_function_path
             if config.custom_rm_path is not None or config.rm_type is not None:
                 sample.reward_spec = RewardSpec(rm_type=config.rm_type, custom_rm_path=config.custom_rm_path)
