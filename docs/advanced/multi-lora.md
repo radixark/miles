@@ -149,7 +149,7 @@ cookbook only requires `tinker>=0.35`, so install the SDK pin explicitly. It sup
   under `--tinker-import-root`, weights only; the source must record its LoRA
   alpha. The gateway copies only the files a reader opens
   (`adapter_parametrization.json`, `adapter_config.json`,
-  `adapter_model.safetensors`, each JSON at most 1 MiB) into the checkpoint root
+  `adapter_model.safetensors`, each JSON capped at 1 MiB plus one entry per module path a PEFT export of the base can name) into the checkpoint root
   and the trainer loads that copy, so other files (`README.md`, `.cache/`, a
   pickled DCP `.metadata` or `.pt`) are never read. A symlink on the path or
   among those files is refused (an HF cache snapshot links them; download with
