@@ -36,7 +36,7 @@ from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
 from miles.backends.training_utils.checkpoint.adapter.commit import UncommittedAdapterDir
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
 from miles.backends.training_utils.checkpoint.adapter.readers import AdapterSourceKind
-from miles.backends.training_utils.checkpoint.adapter.source_error import AdapterSourceError
+from miles.backends.training_utils.checkpoint.adapter.source_error import AdapterSourceError, require_fields
 
 _WEIGHTS_KEY = "adapter_weights"
 _OPTIM_KEY = "adapter_optimizer"
@@ -252,15 +252,15 @@ def find_load_mismatch(
     return next((m for m in gathered if m is not None), None)
 
 
-# what the source checks raise for a source the user named: absent, unreadable, malformed or refused
+# what the source checks raise for a source the user named: absent, unreadable, malformed or refused; any other
+# AssertionError or ValueError is a bug
 _SOURCE_ERRORS = (
+    AdapterSourceError,
     FileNotFoundError,
     NotADirectoryError,
     IsADirectoryError,
     PermissionError,
-    ValueError,
-    KeyError,
-    AssertionError,
+    json.JSONDecodeError,
     SafetensorError,
 )
 
@@ -331,6 +331,7 @@ def _read_legacy_meta(path: Path, run: AdapterParametrization) -> dict:
         "experts_shared_outer_loras": False,
         **json.loads((path / "META.json").read_text()),
     }
+    require_fields(meta, ("base_model", "lora_rank", "lora_alpha"), path / "META.json")
     run = asdict(run)
     for field in ("base_model", "lora_rank", "lora_type", "experts_shared_outer_loras"):
         if meta[field] != run[field]:
@@ -340,7 +341,7 @@ def _read_legacy_meta(path: Path, run: AdapterParametrization) -> dict:
                     f". The adapter layout is set per gateway: restore it on one launched with "
                     f"{_GATEWAY_LAYOUT_FLAGS[field](meta[field])}"
                 )
-            raise ValueError(message)
+            raise AdapterSourceError(message)
     return meta
 
 

@@ -73,7 +73,14 @@ def test_a_model_side_failure_is_a_server_error_not_a_mismatch(gloo, monkeypatch
 
 
 @pytest.mark.parametrize(
-    "error", [OSError(errno.EIO, "Input/output error"), TypeError("library bug")], ids=["storage_fault", "bug"]
+    "error",
+    [
+        OSError(errno.EIO, "Input/output error"),
+        TypeError("library bug"),
+        AssertionError("backend invariant"),
+        ValueError("backend value bug"),
+    ],
+    ids=["storage_fault", "bug", "assertion", "value_error"],
 )
 def test_a_failure_that_is_not_the_sources_fault_is_a_server_error(gloo, monkeypatch, error):
     def failing(*_, **__):
@@ -125,8 +132,17 @@ def test_an_in_model_source_without_a_loader_is_a_mismatch(gloo, tmp_path):
 def test_a_legacy_layout_mismatch_names_the_gateway_flag(tmp_path):
     # META.json from before the layout was recorded: fused, per-expert
     (tmp_path / "META.json").write_text('{"base_model": "m", "lora_rank": 2, "lora_alpha": 4.0}')
-    with pytest.raises(ValueError, match="launched with --lora-type lora"):
+    with pytest.raises(AdapterSourceError, match="launched with --lora-type lora"):
         checkpoint._read_legacy_meta(tmp_path, UNSHARED)
+
+
+def test_a_legacy_meta_without_a_required_field_is_the_users_mismatch(gloo, tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        checkpoint, "check_adapter_source", lambda *_, **__: AdapterSourceKind.LEGACY_TINKER_CHECKPOINT
+    )
+    (tmp_path / "META.json").write_text('{"base_model": "m", "lora_alpha": 4.0}')
+    mismatch = checkpoint.find_load_mismatch(None, 0, str(tmp_path), UNSHARED, TARGETS, load_optimizer=False)
+    assert mismatch is not None and "lacks ['lora_rank']" in mismatch
 
 
 def test_a_legacy_checkpoint_is_read_before_anything_is_loaded_into_the_slot(tmp_path, monkeypatch):
