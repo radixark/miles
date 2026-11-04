@@ -460,13 +460,14 @@ def test_hidden_adapters_leave_only_base_parameters(num_slots):
     assert list(chunk.state_dict()) == before
 
 
-def test_the_weight_iterator_exports_a_slot_as_single_lora_at_its_rank():
+@pytest.mark.parametrize("build", ADAPTER_BUILDS.values(), ids=ADAPTER_BUILDS)
+def test_the_weight_iterator_exports_a_slot_as_single_lora_at_its_rank(build):
     """The sampler export of a native slot: its adapters, gathered, cut to the slot's rank."""
     from miles.backends.megatron_utils.update_weight.hf_weight_iterator_direct import HfWeightIteratorDirect
 
     base_weight = _base_weight()
-    single = _single(_split_fc1, rank=2, alpha=4.0, base_weight=base_weight, seed=3)
-    multi = _attached(_split_fc1, _context(rank=MAX_RANK, num_slots=NUM_SLOTS), base_weight)
+    single = _single(build, rank=2, alpha=4.0, base_weight=base_weight, seed=3)
+    multi = _attached(build, _context(rank=MAX_RANK, num_slots=NUM_SLOTS), base_weight)
     _load_slot(multi.adapter, 1, single.adapter, rank=2, alpha=4.0)
 
     exported = HfWeightIteratorDirect._export_pp_local_lora(
