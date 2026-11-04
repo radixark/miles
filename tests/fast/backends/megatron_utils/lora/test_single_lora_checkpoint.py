@@ -1,12 +1,15 @@
 """Bridge single LoRA's --save / --lora-adapter-path glue around the adapter library."""
 
 import json
+from functools import partial
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import DEFAULT, MagicMock, patch
 
 import pytest
 import torch
 from megatron.core.optimizer.cpu_offloading.hybrid_optimizer import HybridDeviceOptimizer
+from tests.fast.dist_utils import run_multiprocess
 
 import miles.backends.megatron_utils.lora.checkpoint as lora_checkpoint
 from miles.backends.megatron_utils.lora.checkpoint import (
@@ -87,14 +90,45 @@ def test_an_old_format_save_reports_the_alpha_its_peft_pair_records(tmp_path):
     (tmp_path / "adapter_config.json").write_text(json.dumps({"lora_alpha": 32.0}))
     run = AdapterParametrization.__new__(AdapterParametrization)
     with patch.multiple(
-        _MODULE, _native_adapter_shard=DEFAULT, _load_native_adapter_shard=DEFAULT, replace=DEFAULT
+        _MODULE, _native_adapter_shard=DEFAULT, _read_native_adapter_shard=DEFAULT, replace=DEFAULT
     ) as m:
         LegacyRankShardLoader([], MagicMock(), run, load_optimizer=False, precision_aware=False).parametrization(
             tmp_path
         )
     assert m["replace"].call_args.kwargs["lora_alpha"] == 32.0
     # reading the parametrization leaves the model alone: a refused source loads nothing
-    m["_load_native_adapter_shard"].assert_not_called()
+    m["_read_native_adapter_shard"].assert_not_called()
+
+
+def _prepare_with_one_rank_missing_its_shard(rank, world_size, port, root):
+    import torch.distributed as dist
+    from tests.fast.dist_utils import init_gloo
+
+    from miles.backends.training_utils.checkpoint.adapter.adapter_state import raise_if_any_rank_failed
+    from miles.utils.distributed_utils import init_gloo_group
+
+    init_gloo(rank, world_size, port=port)
+    init_gloo_group()
+    lora_checkpoint._read_native_adapter_shard = lambda model, shard: []
+    applied = []
+    # applying runs a collective, which a rank that failed alone would never join
+    optimizer = SimpleNamespace(reload_model_params=lambda: (applied.append(rank), dist.barrier()))
+    loader = LegacyRankShardLoader([], optimizer, None, load_optimizer=False, precision_aware=False)
+    error = None
+    try:
+        loader.prepare(Path(root))
+    except Exception as exc:
+        error = exc
+    with pytest.raises(RuntimeError, match="none for global rank 1"):
+        raise_if_any_rank_failed(error)
+    assert applied == []
+    dist.destroy_process_group()
+
+
+def test_a_rank_missing_its_old_format_shard_fails_every_rank_before_the_collectives(tmp_path):
+    # saved by one rank, loaded by two: rank 1 has no shard
+    torch.save({}, tmp_path / "adapter_megatron_rank0.pt")
+    run_multiprocess(partial(_prepare_with_one_rank_missing_its_shard, root=str(tmp_path)))
 
 
 def test_an_optimizer_other_than_megatrons_distributed_one_is_refused():

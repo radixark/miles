@@ -25,9 +25,9 @@ from safetensors import SafetensorError
 from miles.backends.megatron_utils.lora.bridge_checkpoint import BridgeAdapterSlots
 from miles.backends.megatron_utils.lora.optimizer import SlotOptimizer
 from miles.backends.megatron_utils.lora.utils import (
-    _load_native_adapter_shard,
     _load_training_state,
     _native_adapter_shard,
+    _read_native_adapter_shard,
 )
 from miles.backends.megatron_utils.rematerialize_utils import _build_cast_main_to_params_fn
 from miles.backends.training_utils.checkpoint.adapter.adapter_dir import (
@@ -665,15 +665,27 @@ class LegacyRankShardLoader:
         # an old save records alpha in its PEFT pair; load_adapter_dir takes the run's when it records none
         return replace(self._run, lora_alpha=read_source_lora_alpha(path))
 
-    def load(self, path: Path) -> None:
+    def prepare(self, path: Path) -> tuple[list, dict | None]:
+        # every rank-local read and check, so a rank missing its shard fails before any rank enters a collective
         shard = _native_adapter_shard(path)
         assert shard is not None, f"{path} has no adapter shard for this rank"
-        _load_native_adapter_shard(self._model, shard)
+        tensors = _read_native_adapter_shard(self._model, shard)
+        state = None
         if self._load_optimizer:
             state = _load_training_state(path)
             assert (
                 state is not None and state["optimizer"] is not None and "parameter_state" in state
             ), f"{path} has no optimizer state to resume; pass --no-load-optim"
+            assert len(state["parameter_state"]) == len(
+                _distributed_optimizers(self._optimizer)
+            ), f"{path} holds parameter state for another number of distributed optimizers"
+        return tensors, state
+
+    def apply(self, prepared: tuple[list, dict | None]) -> None:
+        tensors, state = prepared
+        for param, tensor in tensors:
+            param.data.copy_(tensor.to(device=param.device))
+        if state is not None:
             subs = _distributed_optimizers(self._optimizer)
             for sub in subs:
                 # on an empty HDO state Megatron's load_state_dict would run dummy_step, a real Adam step
