@@ -20,3 +20,10 @@ class TinkerConfig(BaseConfig):
             help="load_state reads file:// adapters from under this directory only (weights only); unset refuses them"
         ),
     ] = None
+    tinker_public_url: A[
+        str | None,
+        Arg(
+            help="URL clients reach the gateway at, e.g. https://gw.example.com/tinker/ behind a TLS or path-prefix "
+            "ingress; download URLs are built from it (default: the URL each request arrived at)"
+        ),
+    ] = None

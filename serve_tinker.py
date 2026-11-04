@@ -81,6 +81,7 @@ async def serve(args, *, disposer: Disposer):
         n_slots=args.multi_lora_n_adapters,
         checkpoint_root=args.tinker_checkpoint_root,
         import_root=args.tinker_import_root,
+        public_url=args.tinker_public_url,
         vocab_size=hf_config.vocab_size,
         exports_tinker_names=bool(get_hf_lora_targets(hf_config_with_vision.to_dict()).tinker_name_renames),
         max_tokens_per_datum=max_tokens_per_datum,

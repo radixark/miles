@@ -141,7 +141,9 @@ cookbook only requires `tinker>=0.35`, so install the SDK pin explicitly. It sup
   trainer's fp32 masters, optionally age-encrypted to `age1...` or `ssh-...`
   recipients) and `get_external_weights_urls`, whose URLs carry no credential,
   last at most an hour, and stop working once the checkpoint is deleted or the
-  gateway restarts (sign them again).
+  gateway restarts (sign them again). Behind a TLS or path-prefix ingress, set
+  `--tinker-public-url` to the URL clients reach; by default URLs use the one
+  each request arrived at.
 - Import: `load_state` and `create_training_client_from_state` accept
   `file://` adapters (PEFT, official Tinker exports, miles adapter dirs) from
   under `--tinker-import-root`, weights only; the source must record its LoRA

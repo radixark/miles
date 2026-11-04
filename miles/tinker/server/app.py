@@ -170,7 +170,9 @@ def build_app(service: TinkerService) -> FastAPI:
     # checkpoint_id is "<kind>/<name>"
     @app.get("/api/v1/training_runs/{model_id}/checkpoints/{checkpoint_id:path}/external_weights_urls")
     async def external_weights_urls(model_id: str, checkpoint_id: str, request: Request):
-        return await service.external_weights_urls(_tenant(request), model_id, checkpoint_id, str(request.base_url))
+        public_url = service.config.public_url
+        base_url = public_url.rstrip("/") + "/" if public_url is not None else str(request.base_url)
+        return await service.external_weights_urls(_tenant(request), model_id, checkpoint_id, base_url)
 
     @app.put("/api/v1/training_runs/{model_id}/checkpoints/{checkpoint_id:path}/ttl")
     async def set_checkpoint_ttl(model_id: str, checkpoint_id: str, request: Request):

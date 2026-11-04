@@ -342,6 +342,30 @@ async def test_external_weights_download_ttl_and_delete_over_http(client):
     assert (await client.delete(checkpoint, headers=_headers())).status_code == 404
 
 
+@pytest.mark.parametrize("public_url", ["https://gw.example.com/tinker", "https://gw.example.com/tinker/"])
+async def test_download_urls_use_the_operator_set_public_url(client, public_url):
+    """Behind a TLS or path-prefix ingress, the URL a request arrived at is not the one clients reach."""
+    client.service.config.public_url = public_url
+    created = (
+        await client.post(
+            "/api/v1/create_model", json=await _model_body(client, lora_config={"rank": 8}), headers=_headers()
+        )
+    ).json()
+    await _poll(client, created["request_id"])
+    model_id = created["model_id"]
+    saved = (
+        await client.post(
+            "/api/v1/save_weights_external",
+            json={"model_id": model_id, "seq_id": 1, "path": "export", "ttl_seconds": None},
+            headers=_headers(),
+        )
+    ).json()
+    await _poll(client, saved["request_id"])
+    checkpoint = f"/api/v1/training_runs/{model_id}/checkpoints/external_weights/export"
+    urls = (await client.get(f"{checkpoint}/external_weights_urls", headers=_headers())).json()["urls"]
+    assert all(url.startswith("https://gw.example.com/tinker/api/v1/external_weights/") for url in urls.values())
+
+
 async def test_a_file_deleted_between_resolve_and_open_is_a_404(client, service, monkeypatch, tmp_path):
     async def download_path(token, filename):
         return str(tmp_path / "deleted")
