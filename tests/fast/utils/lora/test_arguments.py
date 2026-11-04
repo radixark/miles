@@ -238,6 +238,23 @@ def test_lora_refuses_the_checkpoints_that_cannot_carry_its_adapter(fault_tolera
         validate_lora_args_after_megatron(args)
 
 
+def test_lora_refuses_a_load_holding_adapter_checkpoints_without_an_adapter_path(tmp_path):
+    """Megatron finds no checkpoint there and would start from the base model, overwriting those adapters."""
+    (tmp_path / "iter_0000003" / "adapter").mkdir(parents=True)
+    args = Namespace(
+        lora_rank=8,
+        multi_lora=False,
+        megatron_to_hf_mode="raw",
+        debug_rollout_only=False,
+        indep_dp=False,
+        non_persistent_ckpt_type=None,
+        load=str(tmp_path),
+        lora_adapter_path=None,
+    )
+    with pytest.raises(AssertionError, match=r"holds LoRA adapter checkpoints \(iter_\*/adapter\)"):
+        validate_lora_args_after_megatron(args)
+
+
 def test_the_adapter_checkpoint_requires_fp32_masters():
     args = Namespace(
         save="/save",
@@ -407,6 +424,7 @@ def _bridge_args_without_layout(monkeypatch, *, multi_lora=False, **overrides):
         eval_hf_dir=None,
         eval_uses_snapshots=False,
         save=None,
+        load=None,
         indep_dp=False,
         non_persistent_ckpt_type=None,
     )

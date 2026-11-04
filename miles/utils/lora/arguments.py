@@ -181,6 +181,11 @@ def validate_lora_args_after_megatron(args):
             "cell would lose the adapter; remove 'train' from --ft-components and resume from a saved iter_N/adapter "
             "with --lora-adapter-path"
         )
+        # without --lora-adapter-path the run would start from the base model and overwrite those adapters
+        assert args.lora_adapter_path is not None or not (args.load and any(Path(args.load).glob("iter_*/adapter"))), (
+            f"--load {args.load} holds LoRA adapter checkpoints (iter_*/adapter): resume one with "
+            "--lora-adapter-path, or point --load elsewhere"
+        )
     # rollout-only builds no optimizer and saves nothing
     if (
         is_lora_enabled(args)
