@@ -16,7 +16,7 @@ from miles.utils.lora.hf_lora_targets import (
     parse_lora_targets,
     resolve_hf_lora_targets,
 )
-from miles.utils.lora.utils import is_lora_enabled, matches_lora_target, publishes_snapshots, targets_expert_leaves
+from miles.utils.lora.utils import exports_hf_snapshots, is_lora_enabled, matches_lora_target, targets_expert_leaves
 
 logger = logging.getLogger(__name__)
 
@@ -89,9 +89,9 @@ def validate_lora_args_after_megatron(args):
 
 
 def _assert_adapter_layout_defined(args) -> None:
-    # the actor builds the adapter slots, which need the layout, whenever it publishes snapshots and always under
-    # multi-LoRA; eval_uses_snapshots is resolved only after validate_lora_args
-    if publishes_snapshots(args, args.save) or args.multi_lora:
+    # the actor builds the adapter slots, which need the layout, for HF exports; eval_uses_snapshots is resolved
+    # only after validate_lora_args
+    if exports_hf_snapshots(args):
         hf_config = load_hf_config(args.hf_checkpoint)
         assert has_hf_lora_targets(hf_config.to_dict()), (
             f"Bridge LoRA snapshots and checkpoints need the HF LoRA target layout of model_type="
