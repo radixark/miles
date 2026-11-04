@@ -193,6 +193,7 @@ def build_layer(ref, config, allgather_cp: bool = True, backend: str = "fla", ar
             gate_lower_bound=KDA_LOWER_BOUND,
             kda_backend=backend,
             conv_backend=conv_backend,
+            norm_backend=args.linear_attention_output_norm_backend if args is not None else "fla",
         )
     else:
         core_cls = Qwen3_5GatedDeltaNet if ref.family == "qwen3_5" else Qwen3NextGatedDeltaNet

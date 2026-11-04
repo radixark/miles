@@ -59,6 +59,7 @@ def config():
     config.kimi_kda_gate_lower_bound = -5.0
     config.kimi_kda_backend = "fla"
     config.kimi_linear_conv_backend = None
+    config.kimi_linear_norm_backend = "fla"
     yield config
     parallel_state.destroy_model_parallel()
     dist.destroy_process_group()

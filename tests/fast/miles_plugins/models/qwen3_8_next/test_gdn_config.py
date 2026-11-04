@@ -22,6 +22,13 @@ class _PassThroughNorm(_CpuSdkModule):
         return x
 
 
+class _WeightedNorm(_PassThroughNorm):
+    def __init__(self, hidden_size: int, *args: Any, **kwargs: Any) -> None:
+        super().__init__()
+        self.weight = torch.nn.Parameter(torch.ones(hidden_size))
+        self.bias = None
+
+
 def _config() -> SimpleNamespace:
     return SimpleNamespace(
         hidden_size=4,
@@ -79,6 +86,7 @@ class TestGdnConfig:
             else SimpleNamespace(
                 linear_attention_backend=backend,
                 linear_attention_conv_backend="fla",
+                linear_attention_output_norm_backend="fla",
                 miles_ext_kernels_args={"cake_gdn_recompute_state": True},
             )
         )
@@ -125,7 +133,10 @@ class TestGdnConfig:
         cp_context = SimpleNamespace(cu_seqlens=torch.tensor([0, 3], dtype=torch.int32))
         monkeypatch.setattr(gdn, "build_gdn_cp_context", lambda module, cu_seqlens, device: cp_context)
         args = SimpleNamespace(
-            linear_attention_backend=backend, linear_attention_conv_backend="fla", miles_ext_kernels_args=None
+            linear_attention_backend=backend,
+            linear_attention_conv_backend="fla",
+            linear_attention_output_norm_backend="fla",
+            miles_ext_kernels_args=None,
         )
         layer = gdn.ReplicatedGatedDeltaNet(config=_config(), layer_idx=0, args=args)
         hidden_states = torch.randn(1, 3, 4)
@@ -143,3 +154,45 @@ class TestGdnConfig:
         assert len(calls) == 1
         assert calls[0]["cp_context"] is cp_context
         assert calls[0]["cu_seqlens"] is cp_context.cu_seqlens
+
+    def test_a_cake_output_norm_is_checked_built_and_run(
+        self, monkeypatch: pytest.MonkeyPatch, gdn: ModuleType
+    ) -> None:
+        """--linear-attention-output-norm-backend cake: the kernel package is configured with the run's values, checks
+        the norm (the real package refuses this config's sigmoid gate), builds its kernels and runs the norm."""
+        calls: list[tuple] = []
+        norm_ext = ModuleType("miles_ext_kernels.gated_rmsnorm")
+        norm_ext.configure = lambda namespace: calls.append(("configure", namespace))
+        norm_ext.check_supported = lambda *args, **kwargs: calls.append(("check", args, kwargs))
+        norm_ext.prebuild = lambda: calls.append(("prebuild",))
+
+        def rmsnorm_silu_gate(x: torch.Tensor, z: torch.Tensor, weight: torch.Tensor, eps: float) -> torch.Tensor:
+            calls.append(("run", tuple(x.shape), tuple(z.shape), eps))
+            return x
+
+        norm_ext.rmsnorm_silu_gate = rmsnorm_silu_gate
+        fla = ModuleType("fla.ops.gated_delta_rule")
+        fla.chunk_gated_delta_rule = lambda query, key, value, **kwargs: (value, None)
+        monkeypatch.setitem(sys.modules, "fla.ops.gated_delta_rule", fla)
+        monkeypatch.setitem(sys.modules, "miles_ext_kernels", ModuleType("miles_ext_kernels"))
+        monkeypatch.setitem(sys.modules, "miles_ext_kernels.gated_rmsnorm", norm_ext)
+        monkeypatch.setattr(gdn, "ShortConvolution", _PassThroughConv, raising=False)
+        monkeypatch.setattr(gdn, "FusedRMSNormGated", _WeightedNorm, raising=False)
+        monkeypatch.setattr(torch.cuda, "current_device", lambda: "cpu")
+        args = SimpleNamespace(
+            linear_attention_backend="fla",
+            linear_attention_conv_backend="fla",
+            linear_attention_output_norm_backend="cake",
+            miles_ext_kernels_args={"cake_gated_rmsnorm_variant": "det"},
+        )
+
+        layer = gdn.ReplicatedGatedDeltaNet(config=_config(), layer_idx=0, args=args)
+        output = layer(torch.randn(1, 3, 4), cu_seqlens=torch.tensor([0, 3], dtype=torch.int32))
+
+        assert calls == [
+            ("configure", argparse.Namespace(cake_gated_rmsnorm_variant="det")),
+            ("check", (2, "sigmoid", torch.float32), {"has_bias": False}),
+            ("prebuild",),
+            ("run", (3, 2), (3, 2), 1e-5),
+        ]
+        assert output.shape == (1, 3, 4)

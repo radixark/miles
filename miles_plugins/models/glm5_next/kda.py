@@ -35,6 +35,7 @@ class Glm5NextKDA(nn.Module):
         rms_norm_eps: float,
         kda_backend: str = "fla",
         conv_backend: str = "fla",
+        output_norm_backend: str = "fla",
     ):
         super().__init__()
         if ShortConvolution is None or chunk_kda is None:
@@ -68,6 +69,9 @@ class Glm5NextKDA(nn.Module):
         self.o_proj = nn.Linear(self.projection_size, hidden_size, bias=False)
         self.kda_backend = kda_backend
         self.conv_backend = conv_backend
+        if output_norm_backend == "cake":
+            # raises: the Cake gated RMSNorm runs a SiLU gate, and this output norm's gate is a sigmoid
+            miles_ext("gated_rmsnorm").check_supported(head_dim, "sigmoid", torch.bfloat16)
         if conv_backend == "cake":
             conv = miles_ext("conv1d")
             conv.check_supported(3 * self.projection_size, conv_kernel_size, "silu")
@@ -199,6 +203,7 @@ class Glm5NextKDAAttention(HuggingfaceAttention):
             rms_norm_eps=text_config.rms_norm_eps,
             kda_backend=args.kda_backend,
             conv_backend=args.linear_attention_conv_backend,
+            output_norm_backend=args.linear_attention_output_norm_backend,
         )
 
     def hf_forward(self, hidden_states, packed_seq_params):

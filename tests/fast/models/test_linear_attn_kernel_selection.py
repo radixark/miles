@@ -221,6 +221,17 @@ def test_the_cake_short_conv_resolves_its_arguments():
     assert config.miles_ext_kernels_args["cake_conv1d_silu_grad_preactivation"] == "bf16"
 
 
+def test_the_cake_output_norm_resolves_its_variant():
+    config = parse_megatron_test_config("--use-miles-ext-kernels", "--linear-attention-output-norm-backend", "cake")
+
+    assert config.miles_ext_kernels_args["cake_gated_rmsnorm_variant"] == "fast"
+
+
+def test_the_output_norm_variant_needs_the_cake_output_norm():
+    with pytest.raises(ValueError, match="--cake-gated-rmsnorm-variant requires"):
+        parse_megatron_test_config("--use-miles-ext-kernels", "--cake-gated-rmsnorm-variant", "det")
+
+
 def test_short_conv_backend_respects_fla_conv_backend(monkeypatch):
     monkeypatch.setenv("FLA_CONV_BACKEND", "cuda")
     assert linear_attn.short_conv_backend.__wrapped__() == "cuda"

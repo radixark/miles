@@ -391,6 +391,8 @@ class LinearAttention(MegatronModule, ABC):
     value per value head, or per value channel when the family sets ``dt_bias_per_channel``.
     ``conv_backend`` pins the short conv's fla backend (``None``: :func:`short_conv_backend`), or selects the Cake
     short-conv kernels ('cake'), whose libraries for this layer's conv weight dtypes are built with the layer.
+    ``norm_backend`` 'cake' runs the gated output norm on the Cake SiLU-gated RMSNorm kernels (SiLU gate, head
+    dimension 128, BF16 weight), checked and built with the layer.
     ``reproducible_norm`` runs the gated output norm on :func:`reproducible_rms_norm_gated` instead of fla's
     fused kernels; the backends that promise reproducible gradients set it."""
 
@@ -407,6 +409,7 @@ class LinearAttention(MegatronModule, ABC):
         tp_group,
         norm_activation: str,
         conv_backend: str | None = None,
+        norm_backend: str = "fla",
     ):
         super().__init__(config=config)
         self.tp_group = tp_group
@@ -450,6 +453,14 @@ class LinearAttention(MegatronModule, ABC):
         self.norm = FusedRMSNormGated(
             heads.head_v_dim, eps=norm_eps, activation=norm_activation, device=device, dtype=dtype
         )
+        self.norm_backend = norm_backend
+        if norm_backend == "cake":
+            # refuses a sigmoid gate (KDA), rows other than 128, a bias or a non-BF16 weight, then builds the kernels
+            norm = miles_ext("gated_rmsnorm")
+            norm.check_supported(
+                heads.head_v_dim, norm_activation, self.norm.weight.dtype, has_bias=self.norm.bias is not None
+            )
+            norm.prebuild()
         self.out_proj = nn.Linear(self.local.value_dim, config.hidden_size, bias=False, device=device, dtype=dtype)
         with get_cuda_rng_tracker().fork():
             config.output_layer_init_method(self.out_proj.weight)
@@ -534,15 +545,22 @@ class LinearAttention(MegatronModule, ABC):
         q, k, v = self.convolve(qkv, cu_seqlens, cp_context)
         core = self.recurrence(q, k, v, beta_logits, decay, cu_seqlens, cp_context, cu_seqlens_host=cu_seqlens_host)
         weight = copy_to_tensor_model_parallel_region(self.norm.weight, group=self.tp_group)
-        norm = reproducible_rms_norm_gated if self.reproducible_norm else rms_norm_gated
-        core = norm(
-            core.reshape(-1, self.heads.head_v_dim),
-            gate.reshape(-1, self.heads.head_v_dim),
-            weight,
-            self.norm.bias,
-            self.norm_activation,
-            eps=self.norm_eps,
-        )
+        if self.norm_backend == "cake":
+            # [T, Hl, hv] views: the gate is a column slice of the fused projection, which this view keeps a view
+            rows = (-1, self.local.num_v_heads, self.heads.head_v_dim)
+            core = miles_ext("gated_rmsnorm").rmsnorm_silu_gate(
+                core.reshape(rows), gate.reshape(rows), weight, self.norm_eps
+            )
+        else:
+            norm = reproducible_rms_norm_gated if self.reproducible_norm else rms_norm_gated
+            core = norm(
+                core.reshape(-1, self.heads.head_v_dim),
+                gate.reshape(-1, self.heads.head_v_dim),
+                weight,
+                self.norm.bias,
+                self.norm_activation,
+                eps=self.norm_eps,
+            )
         return core.reshape(batch, seq_len, -1)
 
 
@@ -554,10 +572,10 @@ class GatedDeltaNet(LinearAttention):
     :func:`reproducible_rms_norm_gated`, so the whole layer's gradients are reproducible). ``args``, the parsed miles
     arguments, configure the ``cake`` kernels (see :func:`gdn_kernel`); a
     layer built without them runs det. ``args.linear_attention_conv_backend`` 'cake' runs the short conv on the Cake
-    kernels, with any GDN backend. Models subclass it with their
-    projections and :meth:`in_proj_sections`; all four projections run as one GEMM whose width is zero-padded
-    to a multiple of 8, the row-stride alignment causal-conv1d's channel-last backward requires of the q/k/v
-    view."""
+    kernels, with any GDN backend, and ``args.linear_attention_output_norm_backend`` 'cake' the gated output norm.
+    Models subclass it with their projections and :meth:`in_proj_sections`; all four projections run as one GEMM
+    whose width is zero-padded to a multiple of 8, the row-stride alignment causal-conv1d's channel-last backward
+    requires of the q/k/v view."""
 
     def __init__(
         self, config, heads, conv_kernel_size, norm_eps, tp_group, backend="fla", norm_activation="silu", args=None
@@ -568,8 +586,19 @@ class GatedDeltaNet(LinearAttention):
             conv_backend = "cake"
         else:
             conv_backend = cake_conv_backend() if backend == "cake" else None
+        norm_backend = "fla"
+        if args is not None and args.linear_attention_output_norm_backend == "cake":
+            miles_ext("gated_rmsnorm", args)
+            norm_backend = "cake"
         super().__init__(
-            config, heads, conv_kernel_size, norm_eps, tp_group, norm_activation, conv_backend=conv_backend
+            config,
+            heads,
+            conv_kernel_size,
+            norm_eps,
+            tp_group,
+            norm_activation,
+            conv_backend=conv_backend,
+            norm_backend=norm_backend,
         )
         self.backend = backend
         self.reproducible_norm = backend == "cake"
@@ -632,11 +661,20 @@ class KimiDeltaAttention(LinearAttention):
         gate_lower_bound: float,
         kda_backend: str = "fla",
         conv_backend: str | None = None,
+        norm_backend: str = "fla",
     ):
         if conv_backend is None and kda_backend == "cake":
             conv_backend = cake_conv_backend()
+        # norm_backend 'cake' is refused when the layer is built: the KDA output norm has a sigmoid gate
         super().__init__(
-            config, heads, conv_kernel_size, norm_eps, tp_group, norm_activation="sigmoid", conv_backend=conv_backend
+            config,
+            heads,
+            conv_kernel_size,
+            norm_eps,
+            tp_group,
+            norm_activation="sigmoid",
+            conv_backend=conv_backend,
+            norm_backend=norm_backend,
         )
         self.gate_lower_bound = gate_lower_bound
         self.kda_backend = kda_backend

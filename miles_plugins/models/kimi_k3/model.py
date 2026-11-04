@@ -29,6 +29,7 @@ def configure_kimi_k3(config) -> None:
     config.kimi_kda_gate_lower_bound = -5.0
     config.kimi_kda_backend = "fla"
     config.kimi_linear_conv_backend = None
+    config.kimi_linear_norm_backend = "fla"
     config.kimi_attn_res_block_size = 12
     config.gated_activation_func = situ_and_mul
     config.moe_latent_use_norm = True
@@ -72,4 +73,6 @@ def get_kimi_k3_spec(args, config, vp_stage):
     if args.linear_attention_conv_backend == "cake":
         miles_ext("conv1d", args)
         config.kimi_linear_conv_backend = "cake"
+    # the KDA layers refuse a cake output norm when they are built (its gate is a sigmoid)
+    config.kimi_linear_norm_backend = args.linear_attention_output_norm_backend
     return build_kimi_k3_spec(config, vp_stage=vp_stage)

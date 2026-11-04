@@ -79,6 +79,7 @@ CAKE_BACKEND_ARGS = (
     "miles_dsa_topk_backend",
     "kda_backend",
     "linear_attention_conv_backend",
+    "linear_attention_output_norm_backend",
 )
 LINEAR_ATTENTION_INPUT_NORMS = ("te", "hf")
 

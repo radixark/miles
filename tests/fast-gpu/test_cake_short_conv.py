@@ -41,7 +41,7 @@ TOLERANCE = 2e-2
 
 def _layer_args(variant: str = "det", **backends) -> SimpleNamespace:
     """The miles configuration fields the linear-attention layers read, with the given cake choices."""
-    values = {"linear_attention_conv_backend": "fla"} | backends
+    values = {"linear_attention_conv_backend": "fla", "linear_attention_output_norm_backend": "fla"} | backends
     ext = {"cake_conv1d_variant": variant, "cake_conv1d_silu_grad_preactivation": "bf16"}
     return SimpleNamespace(**values, miles_ext_kernels_args=ext)
 

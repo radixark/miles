@@ -278,6 +278,7 @@ class KimiK3KDAAttention(LinearAttentionLayer):
             gate_lower_bound=config.kimi_kda_gate_lower_bound,
             kda_backend=config.kimi_kda_backend,
             conv_backend=config.kimi_linear_conv_backend,
+            norm_backend=config.kimi_linear_norm_backend,
         )
         super().__init__(config, core, nn.Identity(), pg_collection, allgather_cp=False)
 

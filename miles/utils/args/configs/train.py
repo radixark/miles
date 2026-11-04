@@ -66,6 +66,19 @@ class TrainConfig(BaseConfig):
             ),
         ),
     ] = "fla"
+    linear_attention_output_norm_backend: A[
+        str,
+        Arg(
+            choices=("fla", "cake"),
+            help=(
+                "Backend for the SiLU-gated output RMSNorm (RMSNorm(x) * w * SiLU(z), head dimension 128) of the GDN "
+                "linear-attention layers. 'fla' is flash-linear-attention's kernel. 'cake' is the Cake kernel from "
+                "the miles-ext-kernels submodule (--cake-gated-rmsnorm-variant det or fast); it requires "
+                "--use-miles-ext-kernels and NVIDIA SM100a/SM103a (Blackwell). Layers whose output norm has a "
+                "sigmoid gate (KDA, a sigmoid-gated Qwen3.8-Next config) refuse it when they are built."
+            ),
+        ),
+    ] = "fla"
     true_on_policy_mode: A[bool, Arg(help="Whether to enable true-on-policy mode.")] = False
     train_env_vars: A[
         Any,

@@ -90,6 +90,14 @@ class ReplicatedGatedDeltaNet(nn.Module):
             dtype=config.dtype if config.dtype is not None else torch.get_current_dtype(),
         )
 
+        self.norm_backend = args.linear_attention_output_norm_backend if args is not None else "fla"
+        if self.norm_backend == "cake":
+            # the Cake kernels run a SiLU gate: a sigmoid output gate (output_gate_type) is refused here
+            norm = miles_ext("gated_rmsnorm", args)
+            activation, has_bias = self.output_gate_activation, self.norm.bias is not None
+            norm.check_supported(self.head_v_dim, activation, self.norm.weight.dtype, has_bias=has_bias)
+            norm.prebuild()
+
         self.out_proj = nn.Linear(self.value_dim, self.hidden_size, bias=False)
 
     def forward(
@@ -176,7 +184,12 @@ class ReplicatedGatedDeltaNet(nn.Module):
         # reshape input data into 2D tensor
         core_attn_out = core_attn_out.reshape(-1, core_attn_out.shape[-1])
         z = z.reshape(-1, z.shape[-1])
-        core_attn_out = self.norm(core_attn_out, z)
+        if self.norm_backend == "cake":
+            core_attn_out = miles_ext("gated_rmsnorm").rmsnorm_silu_gate(
+                core_attn_out, z, self.norm.weight, self.layer_norm_epsilon
+            )
+        else:
+            core_attn_out = self.norm(core_attn_out, z)
         core_attn_out = core_attn_out.reshape(z_shape_og)
         core_attn_out = core_attn_out.reshape(batch_size, seq_len, -1)
 
