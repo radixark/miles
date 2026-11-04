@@ -1,9 +1,9 @@
 import ipaddress
 import re
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Self
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
@@ -90,13 +90,19 @@ class DynamoConfig(FrozenStrictBaseModel):
     namespace: Name
     discovery: Annotated[EtcdDiscovery | FileDiscovery, Field(discriminator="backend")]
     pins: SourcePins
-    nats_server: Annotated[str, Field(min_length=1)] = "nats://127.0.0.1:4222"
+    nats_server: Annotated[str, Field(min_length=1)] | None = None
     request_plane: Literal["tcp", "nats"] = "tcp"
     response_plane: Literal["tcp", "quic"] = "tcp"
     event_plane: Literal["zmq", "nats"] = "zmq"
     env: dict[str, str] = Field(default_factory=dict)
     frontend: FrontendConfig = Field(default_factory=FrontendConfig)
     sidecar: SidecarConfig = Field(default_factory=SidecarConfig)
+
+    @model_validator(mode="after")
+    def _require_nats_server(self) -> Self:
+        if (self.request_plane == "nats" or self.event_plane == "nats") and self.nats_server is None:
+            raise ValueError("nats_server is required when request_plane or event_plane is nats")
+        return self
 
     @field_validator("namespace")
     @classmethod
