@@ -73,9 +73,17 @@ def test_an_old_format_save_resumes_its_iteration_whichever_reader_loads_the_wei
         {"iteration": 7, "optimizer": None, "parameter_state": None, "opt_param_scheduler": {"num_steps": 56}},
         tmp_path / "training_state_rank0.pt",
     )
-    (iteration, _, _), scheduler, _ = _restore(tmp_path)
-    assert iteration == 7
+    restored, scheduler, mocks = _restore(tmp_path, convert_save=str(tmp_path / "converted"))
+    # it predates first_rollout: its schedule is taken to count from rollout 0, and a convert-save records that
+    assert restored == (7, True, 0)
+    assert mocks["save_and_commit_adapter_dir"].call_args.kwargs["training_state"]["first_rollout"] == 0
     scheduler.load_state_dict.assert_called_once_with({"num_steps": 56})
+
+
+def test_an_adapter_dir_without_first_rollout_is_refused(tmp_path):
+    with patch(f"{_MODULE}.read_training_state", return_value={"iteration": 6, "opt_param_scheduler": None}):
+        with pytest.raises(KeyError, match="first_rollout"):
+            _restore(tmp_path)
 
 
 def test_a_torchtitan_dir_reports_the_rollout_its_schedule_started_at(tmp_path):

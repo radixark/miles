@@ -530,6 +530,11 @@ def test_a_megatron_adapter_dir_resumes_from_the_rollout_its_schedule_counts_fro
     assert restored.checkpoint._training_state(7)["first_rollout"] == 5
 
 
+def test_a_megatron_adapter_dir_without_first_rollout_is_refused(tmp_path):
+    with pytest.raises(KeyError, match="first_rollout"):
+        _restore(tmp_path, training_state={"iteration": 2, "opt_param_scheduler": {"num_steps": 96}})
+
+
 @pytest.mark.parametrize(
     "num_steps, flags",
     [

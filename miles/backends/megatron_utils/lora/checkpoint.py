@@ -693,9 +693,7 @@ def restore_single_lora(
     scheduler_state = training_state.get("opt_param_scheduler")
     if opt_param_scheduler is not None and scheduler_state is not None:
         opt_param_scheduler.load_state_dict(scheduler_state)
-    # an old-format save records none; its schedule counted from rollout 0
-    first_rollout = training_state.get("first_rollout", 0)
-    return AdapterRestore(training_state["iteration"], scheduler_state is not None, first_rollout)
+    return AdapterRestore(training_state["iteration"], scheduler_state is not None, training_state["first_rollout"])
 
 
 class LegacyRankShardLoader:
@@ -758,4 +756,5 @@ def _read_legacy_training_state(path: Path) -> dict | None:
         return None
     # optimizer state dicts hold non-tensor objects (step counts, param group metadata)
     state = torch.load(state_file, map_location="cpu", weights_only=False)
-    return {"iteration": state["iteration"], "opt_param_scheduler": state["opt_param_scheduler"]}
+    # it predates first_rollout: its schedule is taken to count from rollout 0
+    return {"iteration": state["iteration"], "first_rollout": 0, "opt_param_scheduler": state["opt_param_scheduler"]}
