@@ -100,7 +100,10 @@ def _actor_with_sampler_export(monkeypatch, write_sampler_export):
         "miles.backends.megatron_utils.actor": {"MegatronTrainRayActor": object},
         "miles.backends.megatron_utils.lora": {"checkpoint": None, "model": None},
         "miles.backends.megatron_utils.lora.optimizer": {"SlotOptimizer": object},
-        "miles.backends.training_utils.checkpoint.adapter.adapter_dir": {"write_sampler_export": write_sampler_export},
+        "miles.backends.training_utils.checkpoint.adapter.adapter_dir": {
+            "write_external_export": None,
+            "write_sampler_export": write_sampler_export,
+        },
         "miles.backends.training_utils.checkpoint.adapter.commit": {"UncommittedAdapterDir": object},
         "miles.backends.training_utils.data.rollout": {"get_rollout_data": None},
         "miles.backends.training_utils.parallel": {"get_parallel_state": None},
