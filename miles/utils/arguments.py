@@ -28,9 +28,14 @@ from miles.ray.specs.train import external_trainer_controller_addrs
 from miles.rollout.checkpoint_eval import is_checkpoint_eval_fn
 from miles.rollout.reward_shaping import validate_length_penalty_args
 from miles.router.backend import RouterKind
+from miles.utils.args.configs.data import DataConfig
 from miles.utils.args.configs.fault_tolerance import _DEFAULT_FT_API_SERVER_PORT
 from miles.utils.args.configs.router import RouterConfig
-from miles.utils.args.custom_function import add_user_provided_function_arguments, resolve_custom_function_configs
+from miles.utils.args.custom_function import (
+    _compute_config_class,
+    add_user_provided_function_arguments,
+    resolve_custom_function_configs,
+)
 from miles.utils.args.runtime import AllConfig
 from miles.utils.args.schema import reset_arg
 from miles.utils.audit_utils.config_snapshot.enabled import SNAPSHOT_TESTING_ENABLED
@@ -40,6 +45,7 @@ from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
 from miles.utils.environ import use_legacy_rollout_v1
 from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
 from miles.utils.file_arg_utils import resolve_file_arg
+from miles.utils.function_registry import load_function
 from miles.utils.hf_utils.config import is_dsa, load_hf_config
 from miles.utils.logging_utils import configure_logger_raw
 from miles.utils.lora.arguments import validate_lora_args, validate_lora_args_after_megatron
@@ -52,6 +58,7 @@ from miles.utils.object_store_config import (
     compute_mooncake_init_kwargs_vanilla,
 )
 from miles.utils.output_store.config import check_output_store_args
+from miles.utils.rollout_data_config import RolloutDatasetConfig, check_dataset_length_limits, load_rollout_data_config
 from miles.utils.rollout_topk_logprobs import validate_rollout_topk_logprobs_args
 from miles.utils.run_uuid import generate_run_uuid, validate_run_uuid
 from miles.utils.score_centering import validate_score_centering_args
@@ -240,9 +247,6 @@ def parse_args_and_get_parser(
         nonlocal parser
         training_backend_arg_names.update(action.dest for action in value._actions)
         parser = add_miles_arguments(value)
-        if entry == "serve":
-            # Tinker adapters default to the PEFT / Tinker cookbook layout
-            parser.set_defaults(lora_type="canonical_lora")
         return parser
 
     backend = parse_args_train_backend()
@@ -473,6 +477,130 @@ def _resolve_eval_datasets(args) -> list[EvalDatasetConfig]:
         args.eval_prompt_data = None
 
     return eval_datasets
+
+
+_DEFAULT_GENERATE_FUNCTION_PATH = "miles.rollout.generate_hub.single_turn.generate"
+# built-in generate functions that never read a sample's metadata["agent_config"]
+_GENERATE_FUNCTIONS_WITHOUT_AGENT_CONFIG = frozenset(
+    {
+        _DEFAULT_GENERATE_FUNCTION_PATH,
+        "miles.rollout.generate_hub.multi_turn.generate",
+        "miles.rollout.sglang_rollout.generate",
+    }
+)
+_DEFAULT_DATA_SOURCE_PATH = DataConfig.model_fields["data_source_path"].default.path
+_DATASET_AGENT_FIELDS = ("agent", "custom_agent_function_path", "max_seq_len")
+
+
+def _dataset_fields_read_by(generate_path: str) -> frozenset[str]:
+    """The per-dataset agent fields a generate function reads.
+
+    The free-form ``agent`` block is open to any non-built-in; ``custom_agent_function_path`` and ``max_seq_len``
+    arrive as Sample fields that only a function marked ``reads_sample_agent_fields`` (agentic_tool_call, or a
+    wrapper) reads.
+    """
+    if generate_path in _GENERATE_FUNCTIONS_WITHOUT_AGENT_CONFIG:
+        return frozenset()
+    generate = load_function(generate_path)
+    if getattr(generate, "reads_sample_agent_fields", False):  # config-access-exempt: generate hook protocol discovery
+        return frozenset(_DATASET_AGENT_FIELDS)
+    return frozenset({"agent"})
+
+
+def _check_dataset_rewards(args, datasets: list[RolloutDatasetConfig]) -> None:
+    """A dataset's custom_rm_path / rm_type become its samples' reward_spec; reject what that spec cannot do."""
+    run_rm_path = getattr(  # config-access-exempt: still a path string before custom hooks resolve
+        args.custom_rm_path, "path", args.custom_rm_path
+    )
+    for dataset in datasets:
+        other_rm_path = dataset.custom_rm_path not in (None, run_rm_path)
+        if args.group_rm and run_rm_path is not None and (other_rm_path or dataset.rm_type is not None):
+            raise ValueError(
+                f"--rollout-data-yaml-config dataset {dataset.name!r} sets its own reward, but --group-rm scores "
+                f"every group with the batched --custom-rm-path {run_rm_path}; drop the dataset's reward fields"
+            )
+        # a custom reward function outranks any rm_type, so the dataset's rm_type would never run
+        if run_rm_path is not None and dataset.rm_type is not None and dataset.custom_rm_path is None:
+            raise ValueError(
+                f"--rollout-data-yaml-config dataset {dataset.name!r} sets rm_type {dataset.rm_type}, but "
+                f"--custom-rm-path {run_rm_path} scores every sample without a custom_rm_path of its own; set the "
+                "dataset's custom_rm_path or drop --custom-rm-path"
+            )
+        if other_rm_path and _compute_config_class(load_function(dataset.custom_rm_path), path=dataset.custom_rm_path):
+            raise ValueError(
+                f"--rollout-data-yaml-config dataset {dataset.name!r}: custom_rm_path {dataset.custom_rm_path} "
+                "declares its own config, which a per-sample reward_spec cannot carry; set it as --custom-rm-path"
+            )
+
+
+def _validate_rollout_data_yaml_config(args) -> None:
+    if args.rollout_data_yaml_config is None:
+        return
+    if args.prompt_data is not None:
+        raise ValueError("--rollout-data-yaml-config replaces --prompt-data; set only one of them")
+    if not args.rollout_global_dataset:
+        raise ValueError("--rollout-data-yaml-config cannot be combined with --disable-rollout-global-dataset")
+    datasets = load_rollout_data_config(args.rollout_data_yaml_config)
+    check_dataset_length_limits(
+        datasets,
+        rollout_max_prompt_len=args.rollout_max_prompt_len,
+        rollout_max_response_len=args.rollout_max_response_len,
+        max_seq_len=getattr(
+            args, "max_seq_len", None
+        ),  # config-access-exempt: optional length limit registered by custom agent hooks
+    )
+    _check_dataset_rewards(args, datasets)
+    for dataset in datasets:
+        # TODO(#3947): pass these settings on to the dataset's samples
+        set_fields = dataset.model_dump(exclude_none=True)
+        if unsupported := [name for name in ("max_response_len",) if name in set_fields]:
+            raise NotImplementedError(
+                f"--rollout-data-yaml-config dataset {dataset.name!r}: {', '.join(unsupported)} not supported yet"
+            )
+    default_generate = getattr(  # config-access-exempt: still a path string before custom hooks resolve
+        args.custom_generate_function_path, "path", args.custom_generate_function_path
+    )
+    default_agent = getattr(  # config-access-exempt: still a path string before custom hooks resolve
+        args.custom_agent_function_path, "path", args.custom_agent_function_path
+    )
+    for dataset in datasets:
+        generate_path = dataset.custom_generate_function_path or default_generate or _DEFAULT_GENERATE_FUNCTION_PATH
+        read = _dataset_fields_read_by(generate_path)
+        set_fields = dataset.model_dump(exclude_none=True)
+        if unread := [f for f in _DATASET_AGENT_FIELDS if f in set_fields and f not in read]:
+            raise ValueError(
+                f"--rollout-data-yaml-config dataset {dataset.name!r} sets {', '.join(unread)}, but its generate "
+                f"function {generate_path} never reads it; use an agentic generate function or drop the field"
+            )
+        if (
+            "custom_agent_function_path" in read
+            and dataset.custom_agent_function_path is None
+            and default_agent is None
+        ):
+            raise ValueError(
+                f"--rollout-data-yaml-config dataset {dataset.name!r} runs {generate_path}, which needs an agent; "
+                "set custom_agent_function_path on the dataset or --custom-agent-function-path"
+            )
+    for eval_dataset in args.eval_datasets or []:
+        # eval samples do not come from the mixer, so no dataset agent reaches them
+        eval_generate = eval_dataset.custom_generate_function_path
+        generate_path = (eval_generate.path if eval_generate is not None else None) or default_generate
+        generate_path = generate_path or _DEFAULT_GENERATE_FUNCTION_PATH
+        if "custom_agent_function_path" in _dataset_fields_read_by(generate_path) and default_agent is None:
+            raise ValueError(
+                f"eval dataset {eval_dataset.name!r} runs {generate_path}, which needs an agent, but only "
+                "--rollout-data-yaml-config datasets carry their own; set --custom-agent-function-path"
+            )
+    if args.num_rollout is None:
+        # an epoch has no single length across independently wrapping datasets
+        raise ValueError("--rollout-data-yaml-config needs --num-rollout; --num-epoch is not supported with it")
+    if args.partial_rollout:
+        raise ValueError("--rollout-data-yaml-config does not support --partial-rollout yet")
+    if args.data_source_path != _DEFAULT_DATA_SOURCE_PATH:
+        raise ValueError(
+            f"--rollout-data-yaml-config selects its own data source; drop --data-source-path {args.data_source_path}"
+        )
+    args.data_source_path = "miles.rollout.data_source.MixedRolloutDataSource"
 
 
 def _compute_init_expected_num_cells(
@@ -1658,6 +1786,8 @@ def miles_validate_args(args):
             args.rollout_max_prompt_len <= args.rollout_max_context_len - 1
         ), f"args.rollout_max_prompt_len ({args.rollout_max_prompt_len}) must be smaller than args.rollout_max_context_len ({args.rollout_max_context_len}) so that there is at least one generated token to compute loss."
 
+    _validate_rollout_data_yaml_config(args)
+
     assert not (
         args.prefill_num_servers is not None and args.rollout_external
     ), "prefill_num_servers cannot be set with external rollout engines; use --rollout-external-router-pd."
@@ -1902,6 +2032,6 @@ def hf_validate_args(args, hf_config):
 
 
 def _resolve_data_source_path(args: argparse.Namespace) -> None:
-    if args.partial_rollout and args.data_source_path == "miles.rollout.data_source.RolloutDataSource":
+    if args.partial_rollout and args.data_source_path == _DEFAULT_DATA_SOURCE_PATH:
         args.data_source_path = "miles.rollout.data_source.LegacyRolloutDataSourceWithBuffer"
         logger.info("Partial rollout uses the legacy buffered data source by default")
