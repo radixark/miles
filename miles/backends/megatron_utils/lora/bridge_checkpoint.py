@@ -199,7 +199,7 @@ class BridgeAdapterSlots(ProbedAdapterSlots):
 
     def __init__(self, model, iterator, targets: HfLoraTargets, *, multi_lora: bool):
         """Collective: probes the row mapping now, while nothing else touches the parameters."""
-        # the probe's export reads these before the base is set up
+        # _export_probe and slot_parameters read these during the probe, before super().__init__
         self._model, self._iterator, self.targets, self._multi_lora = model, iterator, targets, multi_lora
         # every slot has the same layout
         row_mapping = probe_bridge_row_mapping(model, self.slot_parameters(0), self._export_probe, targets)
