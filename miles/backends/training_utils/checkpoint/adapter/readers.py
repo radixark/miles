@@ -29,7 +29,7 @@ from miles.backends.training_utils.checkpoint.adapter.parametrization import (
     AdapterParametrization,
     read_parametrization,
 )
-from miles.backends.training_utils.checkpoint.adapter.source_error import AdapterSourceError
+from miles.backends.training_utils.checkpoint.adapter.source_error import AdapterSourceError, require_fields
 from miles.utils.lora.hf_lora_targets import HfLoraTargets
 
 _PEFT_FILES = ("adapter_config.json", "adapter_model.safetensors")
@@ -154,6 +154,7 @@ class MilesAdapterDirReader:
         parametrization = read_parametrization(self.path)
         if not has_state:
             config = json.loads((self.path / "adapter_config.json").read_text())
+            require_fields(config, ("r", "lora_alpha"), self.path / "adapter_config.json")
             # adapter_config.json is derived from the parametrization; a mismatch means the export was edited
             if (config["r"], config["lora_alpha"]) != (parametrization.lora_rank, parametrization.lora_alpha):
                 raise AdapterSourceError(f"{self.path}: adapter_config.json disagrees with {PARAMETRIZATION_FILENAME}")
@@ -201,6 +202,7 @@ class PeftAdapterReader:
         config = json.loads((self.path / "adapter_config.json").read_text())
         if config.get("peft_type", "LORA") != "LORA":
             raise AdapterSourceError(f"{self.path}: {config['peft_type']} is not LoRA")
+        require_fields(config, ("r", "lora_alpha"), self.path / "adapter_config.json")
         _check_peft_config(config, self.path)
         self._weights, self._fused_groups = _read_peft_tensors(self.path, self._map_name, targets)
         modules = sorted({k.rsplit(".", 1)[0] for k in self._weights if k.endswith(".lora_B")})
