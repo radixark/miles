@@ -1,8 +1,8 @@
 """tau2-bench GRPO full-parameter launcher for Qwen3.6-35B-A3B (native Megatron, 8xH200).
 
 Trains on the train splits of airline / retail / telecom and evaluates every
-domain's test split (``eval/<domain>`` in the logs is that domain's pass rate,
-pass^1). The model / parallel / optimizer layout follows
+domain's test split (``eval/<domain>`` in the logs is that domain's pass^1,
+averaged over ``--n-samples-per-eval-prompt`` samples per task). The model / parallel / optimizer layout follows
 ``scripts/run_qwen3_6_35b_a3b_mtp.py`` without MTP training or speculative
 decoding: TP1 + SP, EP8, CPU-offloaded precision-aware Adam, one 8-GPU sglang
 engine, colocated, with rollout routing replay (R3).
@@ -21,7 +21,10 @@ Args:
   --mode               normal | debug_rollout_only (eval + rollouts, no training)
   --num-rollout        RL steps
   --eval-interval      eval every N steps (eval also runs before step 0)
+  --n-samples-per-eval-prompt  eval samples per task (temperature 1.0)
   --use-r3             rollout routing replay
+
+wandb engages when `WANDB_API_KEY` is set; pass `--wandb-team` / `--wandb-host` through `--extra-args`.
 
 Usage:
   python run_qwen3_6_35b_a3b_tau2.py prepare
@@ -65,18 +68,15 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
 
     num_rollout: int = 3
     rollout_batch_size: int = 8
-    n_samples_per_prompt: int = 4
-    global_batch_size: int = 32
-    rollout_max_response_len: int = 8192
+    n_samples_per_prompt: int = 8
+    global_batch_size: int = 64
+    # thinking exhausts 8192 tokens in ~10% of turns, leaving an empty reply tau2 rejects
+    rollout_max_response_len: int = 16384
+    # 49152 OOMs the logits on 8xH200
     max_seq_len: int = 32768
+    n_samples_per_eval_prompt: int = 4
     eval_interval: int = 2
     use_r3: bool = True
-
-    # the API key is read from ~/.netrc, never passed on the command line
-    enable_wandb: bool = True
-    wandb_team: str = "radixarkai"
-    wandb_project: str = "miles-tau2"
-    wandb_host: str = "https://forge.coreweave.com/api/wandb"
     extra_args: str = ""
 
     @property
@@ -129,9 +129,9 @@ def _train(args: ScriptArgs):
         f"--eval-interval {args.eval_interval} "
         "--eval-prompt-data "
         + " ".join(f"{domain} {args.data_dir}/{domain}_test.jsonl" for domain in ("airline", "retail", "telecom"))
-        + " --n-samples-per-eval-prompt 1 "
+        + f" --n-samples-per-eval-prompt {args.n_samples_per_eval_prompt} "
         f"--eval-max-response-len {args.rollout_max_response_len} "
-        "--eval-temperature 0.0 "
+        "--eval-temperature 1.0 "
     )
 
     grpo_args = (
@@ -142,7 +142,7 @@ def _train(args: ScriptArgs):
         grpo_args += "--use-rollout-routing-replay "
 
     optimizer_args = (
-        "--optimizer adam --lr 1e-6 --lr-decay-style constant --weight-decay 0.1 --adam-beta1 0.9 --adam-beta2 0.98 "
+        "--optimizer adam --lr 2e-6 --lr-decay-style constant --weight-decay 0.1 --adam-beta1 0.9 --adam-beta2 0.98 "
         "--optimizer-cpu-offload --overlap-cpu-optimizer-d2h-h2d --use-precision-aware-optimizer "
     )
 
@@ -181,13 +181,7 @@ def _train(args: ScriptArgs):
     if args.mode == "debug_rollout_only":
         misc_args += "--debug-rollout-only "
 
-    wandb_args = (
-        f"--use-wandb --wandb-team {args.wandb_team} --wandb-project {args.wandb_project} "
-        f"--wandb-host {args.wandb_host} --wandb-group tau2-{args.model_name}-{args.run_id} "
-        "--disable-wandb-random-suffix "
-        if args.enable_wandb
-        else ""
-    )
+    wandb_args = command_utils.get_default_wandb_args(__file__, run_id=args.run_id)
 
     train_args = (
         f"{ckpt_args} {rollout_args} {eval_args} {grpo_args} {optimizer_args} "
@@ -202,7 +196,6 @@ def _train(args: ScriptArgs):
         extra_env_vars={
             "PYTHONPATH": f"{args.megatron_path}:{SCRIPT_DIR}:{command_utils.repo_base_dir}",
             **{key: os.environ[key] for key in _FORWARDED_ENV if key in os.environ},
-            **({"WANDB_BASE_URL": args.wandb_host} if args.enable_wandb else {}),
         },
     )
 
