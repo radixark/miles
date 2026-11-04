@@ -499,7 +499,9 @@ class TorchtitanLoraCheckpoint:
                 load_lr_schedulers(self._trainer.engine.optim.lr_schedulers, {"last_epoch": step})
                 self._trainer.engine.num_completed_steps = step
             else:
-                training_state = None
+                # only the schedule is dropped: the run still continues after the source's rollout
+                self._first_rollout = iteration + 1
+                training_state = self._training_state(iteration)
         if self._args.start_rollout_id is not None:
             # the actor starts at --start-rollout-id, not after the source's rollout: count later saves' steps from it
             self._first_rollout = self._args.start_rollout_id - self._trainer.step // self._steps_per_rollout

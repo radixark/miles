@@ -444,8 +444,10 @@ def test_a_megatron_adapter_dir_whose_schedule_does_not_map_loads_its_weights_an
         lora_adapter_convert_save=str(tmp_path / "out"),
         **flags,
     )
-    assert (restored.iteration, restored.step, restored.lr_states) == (None, 0, [])
-    assert restored.save.call_args.kwargs["training_state"] is None
+    # the source's rollouts stay done: the fresh schedule starts at the next one
+    assert (restored.iteration, restored.step, restored.lr_states) == (2, 0, [])
+    converted = restored.save.call_args.kwargs["training_state"]
+    assert (converted["iteration"], converted["step"], converted["first_rollout"]) == (2, 0, 3)
 
 
 def test_a_convert_save_of_a_model_only_source_writes_no_training_state(tmp_path):
