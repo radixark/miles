@@ -154,7 +154,8 @@ cookbook only requires `tinker>=0.35`, so install the SDK pin explicitly. It sup
   pickled DCP `.metadata` or `.pt`) are never read. A symlink on the path or
   among those files is refused (an HF cache snapshot links them; download with
   `hf download --local-dir`). A dir holding `tenant.json`, i.e. a committed
-  checkpoint (checkpoint storage mounted under the import root), is refused:
+  checkpoint (checkpoint storage mounted under the import root), or `META.json` (a
+  checkpoint saved before commits) is refused:
   `file://` skips the owner check that `tinker://` paths get. A training adapter
   dir (one holding `adapter_state/`, e.g. an RL `--save`) is refused too: the copy
   would carry only its bf16 PEFT view, not the fp32 masters; import its sampler or
