@@ -11,6 +11,7 @@ from .llama import convert_llama_to_hf
 from .mimo import convert_mimo_to_hf
 from .minimax_m3 import convert_minimax_m3_to_hf
 from .processors import quantize_params, remove_padding
+from .processors.quantizer_dsv41 import quantize_params_dsv41
 from .qwen2 import convert_qwen2_to_hf
 from .qwen3_5 import convert_qwen3_5_to_hf
 from .qwen3_8_next import convert_qwen3_8_next_to_hf
@@ -31,6 +32,8 @@ def convert_to_hf(args, model_name, name, param, quantization_config=None, packe
 
     converted_named_tensors = _convert_to_hf_core(args, model_name, name, param)
 
+    if "deepseekv41" in model_name.lower():
+        return quantize_params_dsv41(converted_named_tensors, quantization_config)
     return quantize_params(args, name, converted_named_tensors, quantization_config, packed_weight_basenames)
 
 
