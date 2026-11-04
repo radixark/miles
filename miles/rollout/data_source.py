@@ -256,6 +256,9 @@ class MixedRolloutDataSource(DataSource):
         self.args = args
         self.dataset_configs = load_rollout_data_config(args.rollout_data_yaml_config)
         self.dataset_sha256 = {config.name: _check_dataset_sha256(config) for config in self.dataset_configs}
+        for config in self.dataset_configs:
+            if config.custom_generate_function_path is not None:
+                load_function(config.custom_generate_function_path)
 
         tokenizer, processor = _load_prompt_tokenizer_and_processor(args)
         self.datasets = {}
@@ -375,6 +378,7 @@ class MixedRolloutDataSource(DataSource):
             sample.index = self.sample_index
             self.sample_index += 1
             sample.metadata["dataset_name"] = config.name
+            sample.generate_function_path = config.custom_generate_function_path
             if config.custom_rm_path is not None or config.rm_type is not None:
                 sample.reward_spec = RewardSpec(rm_type=config.rm_type, custom_rm_path=config.custom_rm_path)
             group.append(sample)

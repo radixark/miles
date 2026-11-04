@@ -16,6 +16,7 @@ datasets:
     path: /data/science.jsonl
     samples_per_step: 5
     max_prompt_len: 8192
+    custom_generate_function_path: my_pkg.science_generate
 ```
 
 The flag also accepts an inline `base64:<payload>`, like `--eval-config`.
@@ -28,10 +29,17 @@ The flag also accepts an inline `base64:<payload>`, like `--eval-config`.
 | `samples_per_step` | yes | Weight of this dataset in every request for prompts. |
 | `sha256` | no | First 8 hex characters of the file's SHA-256. A mismatch stops the run at startup; when unset, the value to pin is logged. |
 | `max_prompt_len` | no | Drop this dataset's longer prompts. At most `--rollout-max-prompt-len`. |
+| `custom_generate_function_path` | no | Generate function for this dataset's samples. Unset: `--custom-generate-function-path`, or Miles' default `miles.rollout.generate_hub.single_turn.generate` when that is unset too. |
 | `custom_rm_path` | no | Reward function for this dataset's samples, instead of `--custom-rm-path`. |
 | `rm_type` | no | Built-in reward for this dataset's samples, instead of `--rm-type`. |
 
-Unknown fields are rejected, so a typo fails at startup instead of being ignored.
+Unknown fields are rejected, so a typo fails at startup instead of being ignored. A `custom_generate_function_path` that
+declares its own options (`config_class` or `add_arguments`) gets them registered as flags, just like one
+passed through `--custom-generate-function-path`. These flags live in one run-wide namespace: two hooks that
+declare the same flag identically share it, so every dataset using those hooks sees the same value. A hook that
+re-declares only some of another hook's flags, or declares one differently, is rejected at startup. To give two
+datasets different values for an option, give their hooks distinct flags (or put the value in the dataset's `agent`
+block).
 
 `custom_rm_path` and `rm_type` become the samples' `reward_spec`, so they follow the per-sample reward rules in
 [Customization](customization.md), checked at startup: a function with its own config must be the

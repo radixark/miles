@@ -347,6 +347,8 @@ class RolloutRelatedConfig(BaseConfig):
 
 
 class RolloutRelatedRolloutOnlyConfig(BaseConfig):
+    # hooks named by --rollout-data-yaml-config datasets, resolved at startup and keyed by path; not a flag
+    rollout_dataset_functions: dict[str, CustomFunctionConfig] = {}
     namespaced_radix_cache: A[
         bool | None,
         Arg(

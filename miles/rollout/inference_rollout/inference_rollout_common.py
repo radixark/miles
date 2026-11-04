@@ -52,8 +52,17 @@ class GenerateState:
         )
 
         self.generate_function = load_generate_function(args.custom_generate_function_path) or generate
+        self.sample_generate_functions: dict[str, Any] = {}
 
         self.reset()
+
+    def generate_function_for(self, path: str | None):
+        """The generate function a sample names, built once per path like the flag's; else the run-wide one."""
+        if path is None:
+            return self.generate_function
+        if path not in self.sample_generate_functions:
+            self.sample_generate_functions[path] = load_generate_function(path) or self.generate_function
+        return self.sample_generate_functions[path]
 
     def reset(self) -> None:
         self.aborted = False
@@ -99,7 +108,7 @@ async def generate_and_rm(
             if sink is not None:
                 sink.gen_start(sample)
             # per-sample override, e.g. an eval dataset naming its own generate function
-            generate_fn = load_generate_function(sample.generate_function_path) or state.generate_function
+            generate_fn = state.generate_function_for(sample.generate_function_path)
             output = await generate_fn(
                 GenerateFnInput(
                     state=state,
