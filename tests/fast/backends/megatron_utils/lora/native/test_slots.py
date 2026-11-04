@@ -360,21 +360,34 @@ def test_a_sequence_parallel_replicated_adapter_runs_on_its_shard():
     torch.testing.assert_close(summed.reshape(4, OUT), expected)
 
 
-def _routed(num_slots=NUM_SLOTS):
-    multi = _attached(_column, _context(rank=MAX_RANK, num_slots=num_slots), _base_weight())
+def _routed(monkeypatch):
+    """``NativeAdapterSlots`` without its collective probe; its slot draw needs the CUDA RNG tracker."""
+    multi = _attached(_column, _context(rank=MAX_RANK, num_slots=NUM_SLOTS), _base_weight())
     slots = native_checkpoint.NativeAdapterSlots.__new__(native_checkpoint.NativeAdapterSlots)
-    slots._model, slots._multi_lora, slots.num_slots, slots._claimed_slots = [multi], True, num_slots, set()
+    slots._model, slots._multi_lora = [multi], True
+    slots.num_slots, slots._claimed_slots = slots._local_num_slots(), set()
+    monkeypatch.setattr(
+        native_checkpoint.NativeAdapterSlots,
+        "_init_slot",
+        lambda self, slot, lora_rank, lora_alpha, seed: multi.adapter.init_slot(slot, lora_rank, lora_alpha),
+    )
     return multi, slots
 
 
-def test_routing_takes_integer_counts_one_per_slot():
-    multi, slots = _routed()
-    slots._claimed_slots = set(range(NUM_SLOTS))
+def test_routing_takes_integer_counts_one_per_slot(monkeypatch):
+    multi, slots = _routed(monkeypatch)
+    for slot in range(NUM_SLOTS):
+        slots.init(slot, MAX_RANK, 4.0, seed=slot)
 
     slots.route_tokens(torch.tensor([2, 0, 3]))
 
     assert multi.adapter.token_counts_by_slot == (2, 0, 3)
-    for malformed in (torch.tensor([2.0, 0.0, 3.0]), torch.tensor([True, False, True]), torch.tensor([[2], [0], [3]])):
+    for malformed in (
+        torch.tensor([2.0, 0.0, 3.0]),
+        torch.tensor([2, 0, 3], dtype=torch.complex64),
+        torch.tensor([True, False, True]),
+        torch.tensor([[2], [0], [3]]),
+    ):
         with pytest.raises(AssertionError, match="1-D integer"):
             slots.route_tokens(malformed)
     with pytest.raises(AssertionError, match="2 token counts for 3 slots"):
@@ -383,21 +396,25 @@ def test_routing_takes_integer_counts_one_per_slot():
         slots.route_tokens([2, -1, 3])
 
 
-def test_routing_tokens_to_an_unclaimed_slot_fails_before_routing():
+def test_routing_tokens_to_an_unclaimed_slot_fails_before_routing(monkeypatch):
     """An unclaimed slot adds nothing: its tenant would silently train against the base model."""
-    multi, slots = _routed()
-    slots._claimed_slots = {0}
+    multi, slots = _routed(monkeypatch)
+    slots.init(0, MAX_RANK, 4.0, seed=0)
+    slots.init(1, MAX_RANK, 4.0, seed=1)
+    slots.route_tokens([2, 3, 0])
+    slots.clear(1)
 
-    slots.route_tokens([5, 0, 0])
     with pytest.raises(AssertionError, match=r"unclaimed slots \[1\]"):
         slots.route_tokens([2, 3, 0])
-    assert multi.adapter.token_counts_by_slot == (5, 0, 0)
+    assert multi.adapter.token_counts_by_slot == (2, 3, 0)
+    with pytest.raises(AssertionError, match=r"unclaimed slots \[2\]"):
+        slots.route_tokens([2, 0, 3])
 
 
-def test_a_slot_outside_the_table_fails():
-    multi, _ = _routed()
+def test_a_slot_outside_the_table_fails(monkeypatch):
+    multi, slots = _routed(monkeypatch)
     with pytest.raises(AssertionError, match=r"slot -1 is not in \[0, 3\)"):
-        multi.adapter.init_slot(-1, MAX_RANK, 4.0)
+        slots.init(-1, MAX_RANK, 4.0, seed=0)
     with pytest.raises(AssertionError, match=r"slot 3 is not in \[0, 3\)"):
         list(iter_slot_adapters([multi], 3))
 

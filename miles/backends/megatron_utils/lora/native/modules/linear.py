@@ -105,28 +105,8 @@ class NativeLoRAAdapter(nn.Module):
                 self, f"{projection.param_prefix}_B"
             ), f"native LoRA projection {projection.hf_leaf!r} has no complete A/B parameter pair"
 
-    def forward(self, x: torch.Tensor, base_module: nn.Module, *_host_args) -> torch.Tensor:
-        down = self.project_down(self.prepare_input(x, base_module))
-        return self.project_up(self.reduce_down(down))
-
     def add_delta(self, out: torch.Tensor, delta: torch.Tensor) -> torch.Tensor:
         return torch.add(out, delta, alpha=self.context.lora.scale)
-
-    # The delta in phases, so multi-LoRA slots share the input mapping and the one TP collective after A
-    # (``NativeMultiLoRAAdapter``). An adapter whose delta does not split this way overrides ``forward``.
-    def prepare_input(self, x: torch.Tensor, base_module: nn.Module) -> torch.Tensor:
-        """The input A reads: dropout and any TP / SP input mapping."""
-        raise NotImplementedError(f"{type(self).__name__} has no per-phase forward")
-
-    def project_down(self, x: torch.Tensor) -> torch.Tensor:
-        raise NotImplementedError(f"{type(self).__name__} has no per-phase forward")
-
-    def reduce_down(self, down: torch.Tensor) -> torch.Tensor:
-        """The TP collective between A and B, if the layout has one."""
-        return down
-
-    def project_up(self, down: torch.Tensor) -> torch.Tensor:
-        raise NotImplementedError(f"{type(self).__name__} has no per-phase forward")
 
     def exports(self) -> Iterator[ProjectionExport]:
         """Yield one public descriptor per logical projection; adapters owning an ``export_plan`` have none."""
@@ -180,7 +160,30 @@ class NativeLoRAAdapter(nn.Module):
         return {}
 
 
-class LoRALinear(NativeLoRAAdapter):
+class PhasedLoRAAdapter(NativeLoRAAdapter):
+    """A delta in phases, so multi-LoRA slots (``NativeMultiLoRAAdapter``) share the input mapping and the one
+    TP collective after A."""
+
+    def forward(self, x: torch.Tensor, base_module: nn.Module, *_host_args) -> torch.Tensor:
+        down = self.project_down(self.prepare_input(x, base_module))
+        return self.project_up(self.reduce_down(down))
+
+    def prepare_input(self, x: torch.Tensor, base_module: nn.Module) -> torch.Tensor:
+        """The input A reads: dropout and any TP / SP input mapping."""
+        raise NotImplementedError
+
+    def project_down(self, x: torch.Tensor) -> torch.Tensor:
+        raise NotImplementedError
+
+    def reduce_down(self, down: torch.Tensor) -> torch.Tensor:
+        """The TP collective between A and B, if the layout has one."""
+        return down
+
+    def project_up(self, down: torch.Tensor) -> torch.Tensor:
+        raise NotImplementedError
+
+
+class LoRALinear(PhasedLoRAAdapter):
     """One logical column-parallel, row-parallel, or replicated LoRA projection."""
 
     def __init__(
@@ -324,7 +327,7 @@ class LoRAGroupedColumnLinear(LoRALinear):
         yield weight, lambda: self.context.lora.scale * (b.float() @ a.float())
 
 
-class LoRASplitAdapter(NativeLoRAAdapter):
+class LoRASplitAdapter(PhasedLoRAAdapter):
     """Independent per-projection adapters whose deltas pack into one fused output.
 
     Shared machinery for every fused physical linear: parameter layout, the
@@ -542,8 +545,8 @@ def attach_adapter_forward(module: nn.Module, adapter: NativeLoRAAdapter | Nativ
 
 
 def build_adapter(
-    build: Callable[[], NativeLoRAAdapter], context: AttachContext
-) -> NativeLoRAAdapter | NativeMultiLoRAAdapter:
+    build: Callable[[], PhasedLoRAAdapter], context: AttachContext
+) -> PhasedLoRAAdapter | NativeMultiLoRAAdapter:
     """One adapter for single LoRA; for multi-LoRA, ``context.lora.num_slots`` of them behind token routing."""
     if context.lora.num_slots is None:
         return build()
@@ -553,21 +556,22 @@ def build_adapter(
 class NativeMultiLoRAAdapter(nn.Module):
     """The multi-LoRA slots of one host: one adapter per slot, each running on its slot's token range.
 
-    Tokens arrive sorted by slot (``token_counts_by_slot``, identical across the TP group), so the input
-    mapping and the TP collective after A run once for all slots. Every slot is allocated at the max rank
-    before DDP wraps the model; a slot claimed at a lower rank keeps A's rows and B's columns past its rank
-    at zero, which keeps their gradients zero too.
+    Tokens arrive sorted by slot, identical across the TP group. A slot claimed below the max rank keeps A's
+    rows and B's columns past its rank at zero, and with them their gradients.
     """
 
-    def __init__(self, adapters: Sequence[NativeLoRAAdapter], context: AttachContext):
+    def __init__(self, adapters: Sequence[PhasedLoRAAdapter], context: AttachContext):
         super().__init__()
+        assert all(
+            isinstance(adapter, PhasedLoRAAdapter) for adapter in adapters
+        ), f"{type(adapters[0]).__name__} has no per-phase forward to route slots through"
         self.adapters = nn.ModuleList(adapters)
         self.context = context
         self.host_returns_bias = adapters[0].host_returns_bias
         self.max_lora_rank = context.lora.rank
-        self.lora_ranks = [self.max_lora_rank] * len(adapters)
+        self.lora_ranks_by_slot = [self.max_lora_rank] * len(adapters)
         # a free slot adds nothing to its tokens
-        self.lora_alphas = [0.0] * len(adapters)
+        self.lora_alphas_by_slot = [0.0] * len(adapters)
         self.token_counts_by_slot: tuple[int, ...] | None = None
 
     def bind_host(self, host: nn.Module) -> None:
@@ -576,7 +580,7 @@ class NativeMultiLoRAAdapter(nn.Module):
 
     def forward(self, x: torch.Tensor, base_module: nn.Module, *_host_args) -> torch.Tensor:
         """The unscaled delta, one row per token; ``add_delta`` applies each slot's scale."""
-        rows = _token_rows(self.adapters[0].prepare_input(x, base_module))
+        rows = _as_token_rows(self.adapters[0].prepare_input(x, base_module))
         down = torch.cat(
             [
                 adapter.project_down(slot_rows)
@@ -596,12 +600,16 @@ class NativeMultiLoRAAdapter(nn.Module):
         )
 
     def add_delta(self, out: torch.Tensor, delta: torch.Tensor) -> torch.Tensor:
-        out_rows = _token_rows(out)
+        out_rows = _as_token_rows(out)
         counts = self._local_token_counts(len(out_rows))
         summed = [
             torch.add(slot_out, slot_delta, alpha=alpha / rank)
             for slot_out, slot_delta, alpha, rank in zip(
-                out_rows.split(counts), delta.split(counts), self.lora_alphas, self.lora_ranks, strict=True
+                out_rows.split(counts),
+                delta.split(counts),
+                self.lora_alphas_by_slot,
+                self.lora_ranks_by_slot,
+                strict=True,
             )
         ]
         return torch.cat(summed).view(out.shape)
@@ -627,7 +635,7 @@ class NativeMultiLoRAAdapter(nn.Module):
     @torch.no_grad()
     def init_slot(self, slot: int, lora_rank: int, lora_alpha: float) -> None:
         """Draw A within ``lora_rank`` and zero the rest; the caller holds the RNG stream."""
-        self._assert_slot(slot)
+        self.assert_slot(slot)
         assert 0 < lora_rank <= self.max_lora_rank, f"LoRA rank {lora_rank} is not in (0, {self.max_lora_rank}]"
         # alpha 0 marks a free slot
         assert lora_alpha > 0, f"LoRA alpha {lora_alpha} must be positive"
@@ -637,16 +645,16 @@ class NativeMultiLoRAAdapter(nn.Module):
                 _LORA_A_INITS[self.context.lora.a_init_method](param[:lora_rank])
             else:
                 assert name.endswith("_B"), f"{name} is neither a LoRA A nor a LoRA B"
-        self.lora_ranks[slot], self.lora_alphas[slot] = lora_rank, float(lora_alpha)
+        self.lora_ranks_by_slot[slot], self.lora_alphas_by_slot[slot] = lora_rank, float(lora_alpha)
 
     @torch.no_grad()
     def clear_slot(self, slot: int) -> None:
-        self._assert_slot(slot)
+        self.assert_slot(slot)
         for param in self.adapters[slot].parameters():
             param.zero_()
-        self.lora_ranks[slot], self.lora_alphas[slot] = self.max_lora_rank, 0.0
+        self.lora_ranks_by_slot[slot], self.lora_alphas_by_slot[slot] = self.max_lora_rank, 0.0
 
-    def _assert_slot(self, slot: int) -> None:
+    def assert_slot(self, slot: int) -> None:
         assert 0 <= slot < len(self.adapters), f"slot {slot} is not in [0, {len(self.adapters)})"
 
     def sharded_state_dict(self, prefix="", sharded_offsets=(), metadata=None):
@@ -655,7 +663,7 @@ class NativeMultiLoRAAdapter(nn.Module):
         return {}
 
 
-def _token_rows(tensor: torch.Tensor) -> torch.Tensor:
+def _as_token_rows(tensor: torch.Tensor) -> torch.Tensor:
     """A ``[s, 1, h]`` / ``[1, s, h]`` activation as ``[s, h]`` rows in token order."""
     assert tensor.shape[:-1].numel() == max(
         tensor.shape[:-1], default=1
@@ -706,7 +714,7 @@ def iter_adapters(model_chunks: Sequence[nn.Module]) -> Iterator[NativeLoRAAdapt
 
 def iter_slot_adapters(model_chunks: Sequence[nn.Module], slot: int) -> Iterator[NativeLoRAAdapter]:
     for multi_adapter in iter_multi_lora_adapters(model_chunks):
-        multi_adapter._assert_slot(slot)
+        multi_adapter.assert_slot(slot)
         yield multi_adapter.adapters[slot]
 
 

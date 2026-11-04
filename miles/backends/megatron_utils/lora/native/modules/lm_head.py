@@ -7,11 +7,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from miles.backends.megatron_utils.lora.native.distributed import branch_input
-from miles.backends.megatron_utils.lora.native.modules.linear import NativeLoRAAdapter, new_lora_parameter
+from miles.backends.megatron_utils.lora.native.modules.linear import PhasedLoRAAdapter, new_lora_parameter
 from miles.backends.megatron_utils.lora.native.spec.base import AttachContext
 
 
-class LoRAOutputHead(NativeLoRAAdapter):
+class LoRAOutputHead(PhasedLoRAAdapter):
     """The lm_head projection, with optional muP input scaling and vocab-pad trim."""
 
     def __init__(
