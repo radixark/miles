@@ -1,6 +1,6 @@
 import json
 from sglang.srt.server_args import ServerArgs
-from miles.backends.dynamo_utils.config import Address, launch_args
+from miles.router.dynamo.config import Address, launch_args
 from miles.utils.workers.argv_utils import _record_field_names
 
 

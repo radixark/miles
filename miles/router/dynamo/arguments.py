@@ -1,16 +1,16 @@
 import logging
 from pathlib import Path
 
-from miles.backends.dynamo_utils.config import load_dynamo_config
 from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.backends.sglang_utils.sglang_config import SglangConfig
 from miles.router.backend import RouterKind
+from miles.router.dynamo.config import load_dynamo_config
 from miles.utils.environ import use_legacy_rollout_v1
 
 logger = logging.getLogger(__name__)
 
 
-def configure_dynamo(args, *, sglang: SglangConfig) -> None:
+def validate_dynamo_args(args, *, sglang: SglangConfig) -> None:
     if not args.dynamo_config:
         if args.router == RouterKind.DYNAMO:
             raise ValueError("--router dynamo requires --dynamo-config")

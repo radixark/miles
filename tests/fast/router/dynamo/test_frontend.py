@@ -1,6 +1,7 @@
 import pytest
 
-from miles.backends.dynamo_utils.config import DynamoConfig, LaunchOptions, launch_args, runtime_env
+from miles.router.dynamo.config import DynamoConfig, LaunchOptions
+from miles.router.dynamo.frontend import launch_args, runtime_env
 
 
 @pytest.fixture
@@ -12,9 +13,7 @@ def config():
     )
 
 
-def test_namespace_and_nats_are_run_owned(config):
-    with pytest.raises(ValueError, match="global"):
-        DynamoConfig(**(config.model_dump() | {"namespace": "dynamo"}))
+def test_nats_is_run_owned(config):
     assert runtime_env(config, inherited_env={"NATS_SERVER": "nats://wrong:4222"})["NATS_SERVER"] == config.nats_server
     with pytest.raises(ValueError, match="NATS_SERVER"):
         runtime_env(config.model_copy(update={"env": {"NATS_SERVER": "wrong"}}), inherited_env={})

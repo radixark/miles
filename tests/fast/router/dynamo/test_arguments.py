@@ -2,8 +2,8 @@ import pytest
 from tests.fast.fixtures.args_fixtures import parse_fsdp_test_config
 from tests.fast.ray.rollout.conftest import make_args
 
-from miles.backends.dynamo_utils.arguments import configure_dynamo
-from miles.backends.dynamo_utils.config import DynamoConfig
+from miles.router.dynamo.arguments import validate_dynamo_args
+from miles.router.dynamo.config import DynamoConfig
 from miles.utils.args.runtime import InferenceControllerConfig
 
 
@@ -16,14 +16,14 @@ def configured_args(tmp_path, monkeypatch):
     )
     path = tmp_path / "dynamo.json"
     path.write_text(config.model_dump_json())
-    monkeypatch.setattr("miles.backends.dynamo_utils.arguments.use_legacy_rollout_v1", lambda: False)
+    monkeypatch.setattr("miles.router.dynamo.arguments.use_legacy_rollout_v1", lambda: False)
     return make_args(router="dynamo", dynamo_config=str(path))
 
 
 def test_fault_tolerance_and_api_key_are_accepted(configured_args):
     configured_args.ft_components = ["rollout"]
     configured_args.sglang_api_key = "test-key"
-    configure_dynamo(configured_args, sglang=configured_args.sglang)
+    validate_dynamo_args(configured_args, sglang=configured_args.sglang)
     assert configured_args.dynamo_config.namespace == "test-run"
     assert configured_args.sglang_api_key == "test-key"
 
@@ -44,7 +44,7 @@ def test_dynamo_configuration_survives_controller_config_transport(configured_ar
 def test_dynamo_router_requires_configuration(configured_args):
     configured_args.dynamo_config = None
     with pytest.raises(ValueError, match="requires --dynamo-config"):
-        configure_dynamo(configured_args, sglang=configured_args.sglang)
+        validate_dynamo_args(configured_args, sglang=configured_args.sglang)
 
 
 @pytest.mark.parametrize(
@@ -63,4 +63,4 @@ def test_dynamo_router_requires_configuration(configured_args):
 def test_incompatible_options_fail_at_startup(configured_args, name, value):
     setattr(configured_args, name, value)
     with pytest.raises(ValueError):
-        configure_dynamo(configured_args, sglang=configured_args.sglang)
+        validate_dynamo_args(configured_args, sglang=configured_args.sglang)
