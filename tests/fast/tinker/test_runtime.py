@@ -14,6 +14,7 @@ from miles.tinker.runtime import (
     _to_sequence,
     _topk_prompt_logprobs,
     classify_lora_groups,
+    max_adapter_bytes,
 )
 from miles.tinker.server.proto_codec import encode_sample_response
 from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
@@ -246,3 +247,16 @@ def test_a_fused_modules_components_count_as_its_group():
     )
     flags = classify_lora_groups(("model.layers.0.linear_attn.in_proj_q",), gdn)
     assert flags == {"train_attn": True, "train_mlp": False, "train_unembed": False}
+
+
+def test_the_import_bound_is_every_base_weight_targeted_at_the_slot_rank(tmp_path):
+    from safetensors.torch import save_file
+
+    save_file(
+        {"q.weight": torch.zeros(6, 4), "experts.w": torch.zeros(3, 5, 2), "norm.weight": torch.zeros(4)},
+        tmp_path / "model.safetensors",
+    )
+
+    # rank 8 on q (6 + 4) and on each of the 3 experts (5 + 2); the norm is no LoRA target
+    elements = 8 * (6 + 4) + 3 * 8 * (5 + 2)
+    assert max_adapter_bytes(str(tmp_path), 8) == 4 * elements + (1 << 20) * 9

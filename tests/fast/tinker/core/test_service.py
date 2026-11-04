@@ -1963,7 +1963,7 @@ async def test_a_file_import_reads_only_its_own_adapter_files(tmp_path, plant, e
             await run_task
 
 
-@pytest.mark.parametrize("name", ["adapter_config.json", "x.json"])
+@pytest.mark.parametrize("name", ["adapter_config.json", "adapter_parametrization.json"])
 def test_a_directory_named_like_an_adapter_file_is_refused_without_leaking_its_fd(tmp_path, name):
     adapter = tmp_path / "imports" / "adapter"
     adapter.mkdir(parents=True)
@@ -1975,6 +1975,38 @@ def test_a_directory_named_like_an_adapter_file_is_refused_without_leaking_its_f
         with pytest.raises(UserInputError, match="not a regular file"):
             service.weights_info("tenant", f"file://{adapter}")
     assert len(os.listdir("/dev/fd")) == open_fds
+
+
+async def test_an_import_larger_than_any_adapter_is_refused_before_it_is_copied(tmp_path):
+    adapter = tmp_path / "imports" / "adapter"
+    adapter.mkdir(parents=True)
+    (adapter / "adapter_config.json").write_text(json.dumps({"r": 8, "lora_alpha": 32}))
+    # sparse: costs no disk here, but a copy would write every byte onto the shared checkpoint disk
+    with open(adapter / "adapter_model.safetensors", "wb") as weights:
+        weights.truncate(1 << 40)
+    service = make_service(tmp_path / "root", import_root=str(tmp_path / "imports"), import_max_bytes=1 << 20)
+    run_task = asyncio.create_task(service.run())
+    try:
+        model_id = await created_model(service)
+        payload = {"model_id": model_id, "seq_id": 1, "path": f"file://{adapter}", "optimizer": False}
+        loaded = await await_settled(service, "tenant", service.submit("tenant", "load_state", payload))
+        assert loaded.state == FAILED and "more than any adapter" in loaded.error
+        assert not any((tmp_path / "root" / IMPORT_COPIES_DIRNAME).iterdir()), "nothing was left on the disk"
+    finally:
+        run_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await run_task
+
+
+def test_weights_info_copies_only_the_files_it_reads(tmp_path):
+    adapter = tmp_path / "imports" / "adapter"
+    adapter.mkdir(parents=True)
+    (adapter / "adapter_config.json").write_text(json.dumps({"r": 8, "lora_alpha": 32}))
+    with open(adapter / "tokenizer.json", "wb") as other:
+        other.truncate(1 << 40)
+    service = make_service(tmp_path / "root", import_root=str(tmp_path / "imports"), import_max_bytes=1 << 20)
+
+    assert service.weights_info("tenant", f"file://{adapter}")["lora_rank"] == 8
 
 
 class _WritesMarker:

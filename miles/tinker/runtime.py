@@ -2,13 +2,16 @@
 
 import asyncio
 import json
+import math
 import shutil
 from dataclasses import asdict
 from pathlib import Path
 from typing import TextIO
 
 import httpx
+from safetensors import safe_open
 
+from miles.backends.training_utils.checkpoint.adapter.base_model import resolve_hf_dir
 from miles.backends.training_utils.checkpoint.adapter.commit import TENANT_FILENAME
 from miles.backends.training_utils.checkpoint.adapter.commit import OwnershipError as AdapterOwnershipError
 from miles.backends.training_utils.checkpoint.adapter.commit import (
@@ -138,6 +141,28 @@ def delete_adapter(root: str, name: str, tenant: str | None) -> None:
         raise OwnershipError(f"checkpoint {name!r} does not belong to this tenant") from error
 
 
+# the files read_imported_adapter reads; weights_info copies only these from a file:// import
+IMPORTED_ADAPTER_FILES = (PARAMETRIZATION_FILENAME, "adapter_config.json")
+
+
+def max_adapter_bytes(hf_checkpoint: str, max_lora_rank: int) -> int:
+    """The largest fp32 adapter any parametrization of this base can have: every weight ``[..., out, in]`` targeted at
+    ``max_lora_rank``, i.e. ``rank * (in + out)`` elements per matrix, plus a MiB for each file's header and JSON."""
+    hf_dir = resolve_hf_dir(hf_checkpoint)
+    assert hf_dir is not None, f"--hf-checkpoint {hf_checkpoint} has no local weights to bound file:// imports by"
+    elements, files = 0, 0
+    for file in sorted(hf_dir.glob("*.safetensors")):
+        files += 1
+        with safe_open(file, framework="pt") as weights:
+            for key in weights.keys():
+                # a norm or bias is no LoRA target
+                if len(shape := weights.get_slice(key).get_shape()) >= 2:
+                    *lead, out_features, in_features = shape
+                    elements += math.prod(lead) * max_lora_rank * (out_features + in_features)
+    assert files, f"{hf_dir} holds no .safetensors weights"
+    return 4 * elements + (1 << 20) * (files + 8)
+
+
 def read_imported_adapter(path: str, shown_path: str) -> dict:
     """Rank, alpha and base model of an adapter copied in from outside the checkpoint root; alpha and base model None
     when the source records none. Errors name ``shown_path``, the tenant's path."""
@@ -202,6 +227,8 @@ class MilesBackend:
         self.router_url = router_url
         self.lora_layout = lora_layout
         self.dp_size = dp_size
+
+    imported_adapter_files = IMPORTED_ADAPTER_FILES
 
     def lora_groups(self, target_modules) -> dict[str, bool]:
         return classify_lora_groups(target_modules, self.lora_layout)

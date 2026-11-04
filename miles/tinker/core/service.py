@@ -11,6 +11,7 @@ import shutil
 import stat
 import time
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import NamedTuple
 
@@ -54,6 +55,7 @@ _SDK_FINISH_RETRY_S = 300.0
 
 # gateway-owned copies of file:// imports, under the checkpoint root so every trainer rank can read them
 IMPORT_COPIES_DIRNAME = ".imports"
+_COPY_CHUNK_BYTES = 1 << 24
 
 
 def _open_dir_beneath(root: str, relative: str) -> int:
@@ -73,10 +75,12 @@ def _open_dir_beneath(root: str, relative: str) -> int:
     return fd
 
 
-def _copy_adapter_files(source_fd: int, copy_dir: str, suffixes: tuple[str, ...]) -> None:
-    """Copy the files a reader opens; anything else (README.md, .cache/, a pickled DCP or .pt) stays behind."""
+def _copy_adapter_files(source_fd: int, copy_dir: str, wanted: Callable[[str], bool], max_bytes: int) -> None:
+    """Copy the files a reader opens, ``max_bytes`` in total; anything else (README.md, .cache/, a pickled DCP or
+    .pt) stays behind."""
+    budget = max_bytes
     for name in os.listdir(source_fd):
-        if not name.endswith(suffixes):
+        if not wanted(name):
             continue
         # O_NONBLOCK: opening a FIFO would otherwise wait for a writer
         fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=source_fd)
@@ -84,9 +88,17 @@ def _copy_adapter_files(source_fd: int, copy_dir: str, suffixes: tuple[str, ...]
             # checked on the raw fd: wrapping a directory's fd raises without closing it
             if not stat.S_ISREG(os.fstat(fd).st_mode):
                 raise UserInputError(f"{name} is not a regular file")
+            # sized before reading: a sparse file would otherwise fill the checkpoint disk every tenant shares
+            if os.fstat(fd).st_size > budget:
+                raise UserInputError(f"{name} would bring the import past {max_bytes} bytes, more than any adapter")
             source = open(fd, "rb", closefd=False)
             with source, open(os.path.join(copy_dir, name), "wb") as copy:
-                shutil.copyfileobj(source, copy)
+                # a file growing while it is copied is still held to the budget
+                while chunk := source.read(min(_COPY_CHUNK_BYTES, budget + 1)):
+                    if len(chunk) > budget:
+                        raise UserInputError(f"{name} grew past the import's {max_bytes} bytes while it was copied")
+                    copy.write(chunk)
+                    budget -= len(chunk)
         finally:
             os.close(fd)
 
@@ -599,7 +611,9 @@ class TinkerService:
             raise UserInputError(f"{payload['path']} loads weights only; load it without optimizer state")
         # the trainer reads only this copy, so the tenant cannot change what it loads after the checks
         try:
-            copy_dir = await asyncio.to_thread(self._copy_import, payload["path"], (".json", ".safetensors"))
+            copy_dir = await asyncio.to_thread(
+                self._copy_import, payload["path"], lambda name: name.endswith((".json", ".safetensors"))
+            )
         except OSError as error:
             # e.g. a full checkpoint disk: only this load fails, the gateway keeps serving
             return {"error": f"cannot copy {payload['path']} to load it: {error}", "error_category": "server"}
@@ -632,7 +646,7 @@ class TinkerService:
         return {"op": "load_state"}
 
     def _read_imported_adapter(self, uri: str) -> dict:
-        copy_dir = self._copy_import(uri, (".json",))
+        copy_dir = self._copy_import(uri, self.backend.imported_adapter_files.__contains__)
         try:
             return self._read_import_copy(uri, copy_dir)
         finally:
@@ -649,7 +663,7 @@ class TinkerService:
             )
         return source
 
-    def _copy_import(self, uri: str, suffixes: tuple[str, ...]) -> str:
+    def _copy_import(self, uri: str, wanted: Callable[[str], bool]) -> str:
         """Copy the adapter files of a file:// import into a new gateway-owned dir under the checkpoint root.
 
         Each file is opened once, through components opened without following a symlink, and checked on its fd:
@@ -667,7 +681,7 @@ class TinkerService:
                 raise UserInputError(f"{uri} is outside the import root {self.config.import_root}")
             source_fd = _open_dir_beneath(root, os.path.relpath(path, root))
             try:
-                _copy_adapter_files(source_fd, copy_dir, suffixes)
+                _copy_adapter_files(source_fd, copy_dir, wanted, self.config.import_max_bytes)
             finally:
                 os.close(source_fd)
         except BaseException as error:

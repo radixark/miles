@@ -76,6 +76,8 @@ class GatewayConfig:
     trains_unembed: bool = False
     # load_state reads file:// adapters only from under here (weights only); None refuses file://
     import_root: str | None = None
+    # bytes a file:// import may copy onto the checkpoint disk; set whenever import_root is
+    import_max_bytes: int | None = None
     # download URLs are built from it; None: from the URL each request arrived at, wrong behind an ingress
     public_url: str | None = None
     lease_timeout_s: float = 300.0  # sessions stale beyond this lose their sampling, models, and slots
