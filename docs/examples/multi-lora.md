@@ -138,7 +138,9 @@ matching PEFT and the Tinker cookbook; it is the default for `serve_tinker.py`.
 It can be combined with `--experts-shared-outer-loras`: expert gate and up then each
 have their own A matrix shared across experts; their B matrices remain per expert.
 These settings are fixed for the gateway. A training checkpoint saved under another layout loads its
-weights only, converted to this gateway's layout; its optimizer state needs the same layout.
+weights only, converted to this gateway's layout where that is exact: a shared factor splits, but
+per-component or per-expert factors become shared only when they are equal. Its optimizer state, and
+a checkpoint saved before commits, need the same layout.
 Canonical Q/K/V needs every TP rank to hold whole KV heads (`num_query_groups >= tensor_model_parallel_size`),
 and canonical gate/up needs separate HF gate and up tensors in dense MLPs; a model or layout outside that fails at
 startup, so launch it with `--lora-type lora`.
