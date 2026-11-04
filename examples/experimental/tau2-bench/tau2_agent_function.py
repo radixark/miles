@@ -32,6 +32,12 @@ import os
 import uuid
 from typing import Any
 
+from tau2.data_model.semantic_communication import CommunicateScorer, CommunicateScoring
+from tau2.data_model.simulation import SimulationRun, TextRunConfig
+from tau2.evaluator import evaluator_nl_assertions
+from tau2.evaluator.evaluator import EvaluationType
+from tau2.run import get_tasks, run_single_task
+
 from miles.rollout.agentic.session import openai_session_url
 
 logger = logging.getLogger(__name__)
@@ -59,13 +65,7 @@ def _side_llm(
 
 def _run_simulation(
     domain: str, task_split: str, task_id: str, agent_llm_args: dict, user: tuple, judge: tuple
-) -> Any:
-    from tau2.data_model.semantic_communication import CommunicateScorer, CommunicateScoring
-    from tau2.data_model.simulation import TextRunConfig
-    from tau2.evaluator import evaluator_nl_assertions
-    from tau2.evaluator.evaluator import EvaluationType
-    from tau2.run import get_tasks, run_single_task
-
+) -> SimulationRun:
     # one episode per process (subproc mode), so rebinding tau2's judge constants is local to it
     evaluator_nl_assertions.DEFAULT_LLM_NL_ASSERTIONS, evaluator_nl_assertions.DEFAULT_LLM_NL_ASSERTIONS_ARGS = judge
 
@@ -94,7 +94,6 @@ async def run(
     metadata: dict[str, Any] | None = None,
     **kwargs,
 ) -> dict[str, Any]:
-    metadata = metadata or {}
     domain, task_split, task_id = metadata["domain"], metadata["task_split"], metadata["task_id"]
     agent_llm_args = {
         **(request_kwargs or {}),
