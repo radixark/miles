@@ -226,7 +226,8 @@ def _assert_adapter_layout_defined(args) -> None:
             f"model_type={hf_config.model_type!r}, which miles does not define (miles/utils/lora/hf_lora_targets.py); "
             "run without them or define the layout"
         )
-    if exports_hf_snapshots(args):
+    # only Bridge's --save-hf writes PEFT; native writes sglang's sampler view, which names each component
+    if exports_hf_snapshots(args) and args.megatron_to_hf_mode == "bridge":
         _assert_hf_exports_have_peft_form(args)
 
 

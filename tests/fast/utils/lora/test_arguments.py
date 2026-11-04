@@ -69,6 +69,7 @@ def test_lora_arguments_import_no_megatron_to_hf():
 
 
 _NO_SNAPSHOTS = dict(
+    megatron_to_hf_mode="raw",
     save_hf=None,
     eval_hf_dir=None,
     eval_uses_snapshots=False,
@@ -457,6 +458,7 @@ def _canonical_gdn_args(monkeypatch, **overrides):
     monkeypatch.setattr(lora_arguments, "has_hf_lora_targets", lambda config: True)
     fields = dict(
         hf_checkpoint="/hf",
+        megatron_to_hf_mode="bridge",
         lora_type="canonical_lora",
         lora_adapter_targets=[f"model.layers.0.linear_attn.in_proj_{c}" for c in "qkvz"],
         save_hf=None,
@@ -482,3 +484,10 @@ def test_canonical_gdn_components_refuse_hf_exports_at_launch(monkeypatch):
         lora_arguments._assert_adapter_layout_defined(
             _canonical_gdn_args(monkeypatch, eval_hf_dir="/eval", eval_uses_snapshots=True)
         )
+
+
+def test_native_canonical_gdn_hf_exports_pass_launch(monkeypatch):
+    """Native --save-hf writes sglang's sampler view, which names each component; only Bridge writes PEFT."""
+    lora_arguments._assert_adapter_layout_defined(
+        _canonical_gdn_args(monkeypatch, megatron_to_hf_mode="raw", save_hf="/hf_out")
+    )
