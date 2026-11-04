@@ -1,3 +1,4 @@
+import inspect
 from dataclasses import replace
 from datetime import timedelta
 from types import SimpleNamespace
@@ -23,6 +24,7 @@ from miles.backends.training_utils.checkpoint.adapter.adapter_dir import HeadRow
 from miles.backends.training_utils.checkpoint.adapter.base_model import assert_same_base_model
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
 from miles.backends.training_utils.checkpoint.adapter.probed_slots import HfPiece, RowMapping
+from miles.tinker.core.utils import build_parametrization_fields
 from miles.utils import distributed_utils
 from miles.utils.distributed_utils import init_gloo_group
 from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
@@ -614,3 +616,15 @@ def test_an_offloaded_optimizer_is_never_dummy_stepped_from_parametrization_to_l
 
     assert not stepped, "the empty HDO state must be zero-initialized, not dummy-stepped"
     assert torch.equal(hdo.state[param]["master_param"], torch.ones(2)) and int(hdo.state[param]["step"]) == 0
+
+
+def test_the_gateways_parametrization_fields_are_the_slots_keyword_arguments():
+    """The stdlib gateway builds these fields; the trainer spreads them into the slots across Ray."""
+    record = SimpleNamespace(base_model="m", lora_rank=8, lora_alpha=16.0)
+    config = SimpleNamespace(lora_type="lora", experts_shared_outer_loras=False, base_model_fingerprint="f")
+    keyword_only = {
+        name
+        for name, parameter in inspect.signature(BridgeAdapterSlots.parametrization).parameters.items()
+        if parameter.kind is inspect.Parameter.KEYWORD_ONLY
+    }
+    assert set(build_parametrization_fields(record, config)) == keyword_only

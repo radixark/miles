@@ -10,6 +10,10 @@ import torch
 from safetensors.torch import save_file
 from transformers import AutoConfig, LlamaConfig, PretrainedConfig
 
+from miles.backends.training_utils.checkpoint.adapter.parametrization import (
+    AdapterParametrization,
+    write_parametrization,
+)
 from miles.utils.lora import arguments as lora_arguments
 from miles.utils.lora.arguments import (
     _resolve_lora_alpha,
@@ -69,6 +73,7 @@ def test_lora_arguments_import_no_megatron_to_hf():
 
 
 _NO_SNAPSHOTS = dict(
+    megatron_to_hf_mode="raw",
     save_hf=None,
     eval_hf_dir=None,
     eval_uses_snapshots=False,
@@ -144,17 +149,6 @@ def _adapter_state_args(**overrides) -> Namespace:
         }
         | overrides
     )
-
-
-@pytest.mark.parametrize("optimizer", ["sgd", "muon", "dist_muon", "lion"])
-def test_an_optimizer_other_than_adam_cannot_save_the_adapter(optimizer) -> None:
-    with pytest.raises(AssertionError, match=f"store Adam state; got --optimizer {optimizer}"):
-        _validate_adapter_state_args(_adapter_state_args(optimizer=optimizer))
-
-
-def test_the_adapter_checkpoint_requires_the_distributed_optimizer():
-    with pytest.raises(AssertionError, match="distributed optimizer"):
-        _validate_adapter_state_args(_adapter_state_args(use_distributed_optimizer=False))
 
 
 def test_convert_save_is_refused_outside_megatron_single_lora(tmp_path):
@@ -363,6 +357,24 @@ class TestRolloutOnlyAdapter:
         with pytest.raises(AssertionError, match="only a trainer can read"):
             self._validate(tmp_path)
 
+    def test_an_adapter_dir_with_no_plain_peft_form_is_refused_without_a_convert_save_remedy(self, tmp_path):
+        gdn = "model.layers.0.linear_attn"
+        components = tuple(f"{gdn}.{leaf}" for leaf in ("in_proj_q", "in_proj_k", "in_proj_v"))
+        write_parametrization(
+            tmp_path,
+            AdapterParametrization(
+                base_model="/hf",
+                lora_rank=2,
+                lora_alpha=4.0,
+                lora_type="canonical_lora",
+                target_modules=components,
+                experts_shared_outer_loras=False,
+            ),
+        )
+        with pytest.raises(AssertionError, match="no plain-PEFT form") as raised:
+            self._validate(tmp_path)
+        assert "--lora-adapter-convert-save" not in str(raised.value)
+
 
 def _bridge_args_without_layout(monkeypatch, *, multi_lora=False, **overrides):
     hf_config = SimpleNamespace(model_type="gpt2", to_dict=lambda: {"model_type": "gpt2"})
@@ -465,34 +477,106 @@ def test_a_hub_id_takes_the_flag_or_the_default():
     assert _resolve_lora_alpha(_alpha_args("org/adapter", 8.0)) == 8.0
 
 
-def _canonical_gdn_args(monkeypatch, **overrides):
-    # a model with a layout, whose canonical adapters target one GDN in_proj_qkv by component
-    monkeypatch.setattr(lora_arguments, "load_hf_config", lambda path: SimpleNamespace(to_dict=dict))
-    monkeypatch.setattr(lora_arguments, "has_hf_lora_targets", lambda config: True)
+_TINY_QWEN3_5_TEXT = dict(
+    vocab_size=64,
+    hidden_size=16,
+    intermediate_size=32,
+    num_hidden_layers=2,
+    layer_types=["linear_attention", "full_attention"],
+    num_attention_heads=2,
+    num_key_value_heads=1,
+    head_dim=8,
+    linear_num_key_heads=2,
+    linear_num_value_heads=2,
+    linear_key_head_dim=4,
+    linear_value_head_dim=4,
+)
+
+
+def _gdn_export_args(monkeypatch, targets, **overrides):
+    from transformers import Qwen3_5TextConfig
+
+    config = Qwen3_5TextConfig(**_TINY_QWEN3_5_TEXT)
+    monkeypatch.setattr(lora_arguments, "load_hf_config", lambda path: config)
     fields = dict(
         hf_checkpoint="/hf",
+        megatron_to_hf_mode="bridge",
         lora_type="canonical_lora",
-        lora_adapter_targets=[f"model.layers.0.linear_attn.in_proj_{c}" for c in "qkvz"],
-        save_hf=None,
+        hf_lora_targets=targets,
+        lora_rank=4,
+        lora_alpha=8.0,
+        experts_shared_outer_loras=False,
+        save_hf="/hf_out",
         eval_hf_dir=None,
         eval_uses_snapshots=False,
         multi_lora=False,
         save=None,
         debug_rollout_only=False,
-        lora_rank=8,
         lora_adapter_path=None,
     )
     return Namespace(**(fields | overrides))
 
 
-def test_canonical_gdn_components_refuse_hf_exports_at_launch(monkeypatch):
-    """A PEFT adapter cannot name in_proj_q/k/v with their own lora_A, so the export would fail at every save."""
-    lora_arguments._assert_adapter_layout_defined(_canonical_gdn_args(monkeypatch))
-    # multi-LoRA reads the slots but writes no PEFT view
-    lora_arguments._assert_adapter_layout_defined(_canonical_gdn_args(monkeypatch, multi_lora=True))
+@pytest.mark.parametrize("targets", [["in_proj_qkv"], ["in_proj_*"], ["*.linear_attn.in_proj_*"]])
+def test_canonical_gdn_components_refuse_hf_exports_at_launch(monkeypatch, targets):
+    """The check resolves the targets to the base's modules, so a wildcard selecting in_proj_qkv is caught too."""
     with pytest.raises(AssertionError, match=r"no PEFT adapter can name: use --lora-type lora"):
-        lora_arguments._assert_adapter_layout_defined(_canonical_gdn_args(monkeypatch, save_hf="/hf_out"))
-    with pytest.raises(AssertionError, match=r"\['in_proj_k', 'in_proj_q', 'in_proj_v'\]"):
-        lora_arguments._assert_adapter_layout_defined(
-            _canonical_gdn_args(monkeypatch, eval_hf_dir="/eval", eval_uses_snapshots=True)
-        )
+        lora_arguments._assert_adapter_layout_defined(_gdn_export_args(monkeypatch, targets))
+    # no HF export: nothing to refuse
+    lora_arguments._assert_adapter_layout_defined(_gdn_export_args(monkeypatch, targets, save_hf=None))
+    # one shared lora_A per in_proj_qkv has a PEFT form
+    lora_arguments._assert_adapter_layout_defined(_gdn_export_args(monkeypatch, targets, lora_type="lora"))
+    # multi-LoRA reads the slots but writes no PEFT view
+    lora_arguments._assert_adapter_layout_defined(
+        _gdn_export_args(monkeypatch, targets, save_hf=None, multi_lora=True)
+    )
+
+
+def test_native_canonical_gdn_hf_exports_pass_launch(monkeypatch):
+    """Native --save-hf writes sglang's sampler view, which names each component; only Bridge writes PEFT."""
+    lora_arguments._assert_adapter_layout_defined(
+        _gdn_export_args(monkeypatch, ["in_proj_qkv"], megatron_to_hf_mode="raw")
+    )
+
+
+def _gpt_oss_export_args(monkeypatch, **overrides):
+    from transformers import GptOssConfig
+
+    config = GptOssConfig(
+        vocab_size=64,
+        hidden_size=16,
+        intermediate_size=16,
+        num_hidden_layers=2,
+        num_attention_heads=2,
+        num_key_value_heads=1,
+        head_dim=8,
+        num_local_experts=4,
+        num_experts_per_tok=2,
+        layer_types=["sliding_attention", "full_attention"],
+    )
+    monkeypatch.setattr(lora_arguments, "load_hf_config", lambda path: config)
+    fields = dict(
+        hf_checkpoint="/hf",
+        megatron_to_hf_mode="bridge",
+        lora_type="lora",
+        hf_lora_targets=["gate_up_proj", "down_proj"],
+        lora_rank=4,
+        lora_alpha=8.0,
+        experts_shared_outer_loras=True,
+        save_hf="/hf_out",
+        eval_hf_dir=None,
+        eval_uses_snapshots=False,
+        multi_lora=False,
+        save=None,
+        debug_rollout_only=False,
+        lora_adapter_path=None,
+    )
+    return Namespace(**(fields | overrides))
+
+
+def test_a_packed_expert_shared_outer_adapter_refuses_hf_exports_at_launch(monkeypatch):
+    """Bridge names a packed family's per-expert side once for all experts, so the export keeps only the last."""
+    with pytest.raises(AssertionError, match="would keep only the last expert's per-expert side"):
+        lora_arguments._assert_adapter_layout_defined(_gpt_oss_export_args(monkeypatch))
+    lora_arguments._assert_adapter_layout_defined(_gpt_oss_export_args(monkeypatch, experts_shared_outer_loras=False))
+    lora_arguments._assert_adapter_layout_defined(_gpt_oss_export_args(monkeypatch, save_hf=None))

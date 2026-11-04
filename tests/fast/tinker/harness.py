@@ -143,8 +143,7 @@ class FakeBackend:
             tenant_digest=tenant_digest,
             parametrization_fields=parametrization_fields,
         )
-        if failure is not None:
-            return failure
+        assert failure is None, "a trainer's export_slot raises; it never returns a failure"
         parametrization = _parametrization(parametrization_fields)
         weights = {
             "model.layers.0.self_attn.q_proj.lora_A": torch.zeros(parametrization.lora_rank, 4),

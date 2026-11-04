@@ -63,7 +63,7 @@ from .ci_utils import (
     save_model_hashes,
 )
 from .initialize import is_first_replica_megatron_main_rank
-from .lora.bridge_checkpoint import BridgeAdapterSlots
+from miles.backends.training_utils.checkpoint.adapter.probed_slots import ProbedAdapterSlots
 from .lora.checkpoint import restore_single_lora, save_single_lora
 from .lora.utils import is_lora_enabled, is_lora_model, patch_param_grad_buffer_for_colocate_mode_lora
 from .model_provider import get_model_provider_func
@@ -933,7 +933,7 @@ def save(
     checkpointing_context: dict | None = None,
     non_persistent_ckpt: bool = False,
     *,
-    adapter_slots: BridgeAdapterSlots | None = None,
+    adapter_slots: ProbedAdapterSlots | None = None,
 ) -> None:
     """Persist a training checkpoint safely with forward hooks disabled.
 
@@ -1031,7 +1031,7 @@ def load_model_state(
     role: str,
     checkpointing_context: dict | None,
     resume_from_ckpt: bool,
-    adapter_slots: BridgeAdapterSlots | None = None,
+    adapter_slots: ProbedAdapterSlots | None = None,
 ) -> LoadCheckpointOutput:
     if is_multi_lora_enabled(args):
         # Hide adapter params so the bridge's conversion-task walk doesn't see them

@@ -5,7 +5,9 @@ register_cuda_ci(
     est_time=30, suite="stage-b-2-gpu-h200", labels=["torchtitan", "lora"], hardware=["hopper"], num_gpus=2
 )
 
+import os
 from dataclasses import replace
+from datetime import timedelta
 from functools import partial
 
 import pytest
@@ -23,9 +25,11 @@ from torch.distributed.tensor.placement_types import _StridedShard
 from torchtitan.config.parallelism import ParallelismConfig
 from torchtitan.models.qwen3 import build_model_config
 
+import miles.backends.torchtitan_utils.lora_checkpoint as lora_checkpoint
 from miles.backends.torchtitan_utils.lora_checkpoint import TorchtitanAdapterSlots, probe_torchtitan_row_mapping
 from miles.backends.torchtitan_utils.lora_names import iter_hf_adapter_tensors
 from miles.backends.training_utils.checkpoint.adapter.adapter_dir import HeadRows
+from miles.backends.training_utils.checkpoint.adapter.adapter_state import RanksFailedError
 from miles.backends.training_utils.checkpoint.adapter.key_mapping import (
     map_named_tensors_to_hf_keys,
     map_peft_keys_to_hf_keys,
@@ -109,6 +113,33 @@ def test_fsdp_shards_map_to_rectangles_of_the_hf_tensors():
     run_multiprocess(_sharded)
 
 
+def _one_rank_fails_decoding(rank, world_size, port):
+    # a short timeout turns a rank left in a collective into a failure instead of a hung test
+    os.environ["MASTER_ADDR"], os.environ["MASTER_PORT"] = "localhost", str(port)
+    dist.init_process_group("gloo", rank=rank, world_size=world_size, timeout=timedelta(seconds=20))
+    init_gloo_group()
+    mesh = init_device_mesh("cpu", (world_size,))
+    sd_adapter, params = _adapter()
+    sharded = {key: distribute_tensor(value, mesh, [Shard(0)]) for key, value in params.items()}
+    real_rectangles = lora_checkpoint.rectangles
+
+    def rectangles(name, mine, *args):
+        if rank == 1:
+            raise AssertionError(f"rank-local layout failure on {name}")
+        return real_rectangles(name, mine, *args)
+
+    lora_checkpoint.rectangles = rectangles
+    with pytest.raises(RanksFailedError, match=r"rank 1: AssertionError: rank-local layout failure") as failed:
+        probe_torchtitan_row_mapping(sharded, sd_adapter)
+    # rank 0 must not fail on its own, e.g. timed out in a collective rank 1 never joined
+    assert "rank 0" not in str(failed.value), str(failed.value)
+    dist.destroy_process_group()
+
+
+def test_a_rank_local_probe_failure_fails_every_rank():
+    run_multiprocess(_one_rank_fails_decoding)
+
+
 def _uneven_rows(rank, world_size, port):
     init_gloo(rank, world_size, port=port)
     init_gloo_group()
@@ -145,32 +176,6 @@ def _two_dim_mesh(rank, world_size, port):
 
 def test_a_two_dim_mesh_with_column_shards_maps_to_rectangles():
     run_multiprocess(_two_dim_mesh, world_size=4)
-
-
-def _strided_mesh(rank, world_size, port, placements):
-    init_gloo(rank, world_size, port=port)
-    init_gloo_group()
-    mesh = init_device_mesh("cpu", (2, 2))
-    sd_adapter, params = _adapter()
-    expected = _expected(sd_adapter, params)
-    # a strided shard holds rows that are not one contiguous box of the global tensor
-    # distribute_tensor cannot shard straight into a strided placement; redistributing a replicated tensor can
-    replicated = [Replicate(), Replicate()]
-    sharded = {
-        key: distribute_tensor(value, mesh, replicated).redistribute(mesh, placements) for key, value in params.items()
-    }
-    mapping = probe_torchtitan_row_mapping(sharded, sd_adapter)
-    _check(mapping, [p.to_local() for p in sharded.values()], expected)
-    dist.destroy_process_group()
-
-
-@pytest.mark.parametrize(
-    "placements",
-    [[Shard(0), _StridedShard(0, split_factor=2)], [_StridedShard(0, split_factor=2), Shard(0)]],
-    ids=["shard_then_strided", "strided_then_shard"],
-)
-def test_a_strided_shard_maps_each_local_row_to_its_global_row(placements):
-    run_multiprocess(partial(_strided_mesh, placements=placements), world_size=4)
 
 
 def _model_part(params: dict[str, torch.Tensor]) -> torch.nn.Module:

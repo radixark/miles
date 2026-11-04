@@ -5,6 +5,7 @@ from dataclasses import replace
 
 import pytest
 import torch
+import transformers
 from safetensors.torch import load_file, save_file
 
 from miles.backends.training_utils.checkpoint.adapter.adapter_dir import write_peft_export, write_sampler_export
@@ -104,11 +105,11 @@ def test_gdn_components_with_their_own_a_are_refused_by_the_peft_export(tmp_path
 
 
 def test_only_fused_components_sharing_one_a_have_a_plain_peft_form():
-    assert not has_plain_peft_form(_run())
-    assert has_plain_peft_form(_run(shared_lora_a_groups=(tuple(sorted(QKV)),)))
+    assert not has_plain_peft_form(_run(), QWEN35)
+    assert has_plain_peft_form(_run(shared_lora_a_groups=(tuple(sorted(QKV)),)), QWEN35)
     # a lone component of a fused module has no HF module either
-    assert not has_plain_peft_form(_run(target_modules=(QKV[0],)))
-    assert has_plain_peft_form(_run(target_modules=EXPERTS))
+    assert not has_plain_peft_form(_run(target_modules=(QKV[0],)), QWEN35)
+    assert has_plain_peft_form(_run(target_modules=EXPERTS), QWEN35)
 
 
 def test_hf_peft_loads_the_peft_export(tmp_path):
@@ -430,7 +431,8 @@ def test_an_edited_sampler_config_is_refused(tmp_path):
         MilesAdapterDirReader(tmp_path, QWEN35)
 
 
-def test_gpt_oss_experts_without_a_shared_a_stay_per_expert(tmp_path):
+def test_gpt_oss_gate_and_up_with_their_own_a_have_no_plain_peft_form(tmp_path):
+    # HF gpt-oss has one packed experts.gate_up_proj; canonical gate / up with their own A have no module there
     gate, up, down = (f"{L}.mlp.experts.{p}" for p in ("gate_proj", "up_proj", "down_proj"))
     run = _run(target_modules=(gate, up, down))
     weights = {
@@ -438,11 +440,10 @@ def test_gpt_oss_experts_without_a_shared_a_stay_per_expert(tmp_path):
         for m in (gate, up, down)
         for f in "AB"
     }
-    write_peft_adapter(tmp_path, weights, run, GPT_OSS)
-    names = set(load_file(str(tmp_path / "adapter_model.safetensors")))
-    assert f"base_model.model.{L}.mlp.experts.2.up_proj.lora_A.weight" in names and not any(
-        "gate_up_proj" in n for n in names
-    )
+    assert not has_plain_peft_form(run, GPT_OSS)
+    assert has_plain_peft_form(_run(target_modules=(gate, up, down), shared_lora_a_groups=((gate, up),)), GPT_OSS)
+    with pytest.raises(AssertionError, match="has no plain-PEFT form"):
+        write_peft_adapter(tmp_path, weights, run, GPT_OSS)
 
 
 def test_gpt_oss_sampler_export_keeps_packed_hf_names(tmp_path):
@@ -692,6 +693,61 @@ def test_the_parametrization_file_records_its_format_version_and_refuses_another
     (tmp_path / PARAMETRIZATION_FILENAME).write_text(json.dumps(fields | {"format_version": 2}))
     with pytest.raises(ValueError, match="format version 2; this miles reads version 1"):
         read_parametrization(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        # config.json names the expert count num_experts; Qwen3MoeConfig.to_dict() names it num_local_experts
+        dict(
+            model_type="qwen3_moe",
+            vocab_size=151936,
+            hidden_size=2048,
+            intermediate_size=6144,
+            moe_intermediate_size=768,
+            num_hidden_layers=48,
+            num_attention_heads=32,
+            num_key_value_heads=4,
+            head_dim=128,
+            num_experts=128,
+            tie_word_embeddings=False,
+        ),
+        # config.json leaves head_dim out; to_dict() derives it (for MLA not from hidden_size / heads)
+        dict(
+            model_type="llama",
+            vocab_size=128256,
+            hidden_size=4096,
+            intermediate_size=14336,
+            num_hidden_layers=32,
+            num_attention_heads=32,
+            num_key_value_heads=8,
+            tie_word_embeddings=False,
+        ),
+        dict(
+            model_type="deepseek_v3",
+            vocab_size=129280,
+            hidden_size=7168,
+            intermediate_size=18432,
+            moe_intermediate_size=2048,
+            num_hidden_layers=61,
+            num_attention_heads=128,
+            num_key_value_heads=128,
+            n_routed_experts=256,
+            tie_word_embeddings=False,
+        ),
+    ],
+    ids=lambda raw: raw["model_type"],
+)
+def test_config_json_and_its_to_dict_have_one_fingerprint(raw):
+    resolved = transformers.AutoConfig.for_model(**raw).to_dict()
+    assert base_model_fingerprint(raw) == base_model_fingerprint(resolved)
+
+
+def test_a_remote_code_config_resolves_its_expert_count_aliases():
+    common = {"model_type": "not_in_transformers", "hidden_size": 8}
+    assert base_model_fingerprint(common | {"n_routed_experts": 4}) == base_model_fingerprint(
+        common | {"num_local_experts": 4}
+    )
 
 
 def test_a_vl_wrapper_has_its_language_models_fingerprint():
