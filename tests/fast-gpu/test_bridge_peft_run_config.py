@@ -1,5 +1,6 @@
 """Megatron-Bridge's own LoRA / CanonicalLoRA, dumped as Bridge writes run_config.yaml, pass the PEFT checkpoint
-reader's checks: a Bridge bump that renames or drops a field the reader reads fails here."""
+reader's checks: a Bridge bump that renames or drops a field the checks require (not one read with a default) fails
+here."""
 
 from tests.ci.ci_register import register_cuda_ci
 
