@@ -25,6 +25,7 @@ from megatron.core.transformer.utils import make_sharded_tensors_for_checkpoint
 
 from miles.kernels.attention.dsa import cake, sparse_attention
 from miles.kernels.attention.dsa.sparse_attention import CAKE_SPARSE_ATTENTION_CONFIG
+from miles_plugins.models.cake_hyper_connection import apply_mhc_backend
 from miles_plugins.models.deepseek_v4.ops.compressor import DeepSeekV4Compressor
 from miles_plugins.models.deepseek_v4.ops.cp_utils import (
     all_gather_cp,
@@ -466,7 +467,8 @@ def get_dsv4_spec(args, config, vp_stage):
     Usage: --spec miles_plugins.models.deepseek_v4.deepseek_v4 get_dsv4_spec
     """
     if args.dsv4_impl == "megatron":
-        return get_transformer_block_with_experimental_attention_variant_spec(config, vp_stage=vp_stage)
+        block_spec = get_transformer_block_with_experimental_attention_variant_spec(config, vp_stage=vp_stage)
+        return apply_mhc_backend(block_spec, args, config)
 
     config.miles_dsa_topk_backend = args.miles_dsa_topk_backend
     config.miles_dsa_attention_backend = args.dsa_attention_backend
@@ -481,6 +483,8 @@ def get_dsv4_spec(args, config, vp_stage):
 
     _eav_specs.get_experimental_attention_variant_module_spec = _patched_get_spec
     try:
-        return get_transformer_block_with_experimental_attention_variant_spec(config, vp_stage=vp_stage)
+        block_spec = get_transformer_block_with_experimental_attention_variant_spec(config, vp_stage=vp_stage)
     finally:
         _eav_specs.get_experimental_attention_variant_module_spec = _orig_get_spec
+    # --mhc-backend cake: the Cake hyper connections (DeepSeek-V4 keeps its own head)
+    return apply_mhc_backend(block_spec, args, config)

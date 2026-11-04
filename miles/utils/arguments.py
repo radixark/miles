@@ -81,6 +81,7 @@ CAKE_BACKEND_ARGS = (
     "linear_attention_conv_backend",
     "linear_attention_output_norm_backend",
     "linear_attention_input_norm",
+    "mhc_backend",
 )
 LINEAR_ATTENTION_INPUT_NORMS = ("te", "hf", "cake")
 
@@ -962,6 +963,11 @@ def validate_miles_ext_kernels_args(args) -> None:
         )
     if args.use_miles_ext_kernels:
         import_miles_ext_kernels().validate_args(args)
+    if args.mhc_backend == "cake":
+        # local import: the module imports Megatron, and only --mhc-backend cake reaches it
+        from miles_plugins.models.cake_hyper_connection import validate_mhc_backend
+
+        validate_mhc_backend(args)
 
 
 def validate_log_probs_backend_args(args) -> None:

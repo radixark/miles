@@ -14,6 +14,7 @@ from megatron.core.transformer.transformer_layer import get_transformer_layer_of
 
 from miles.kernels.attention.dsa import cake
 from miles.utils.hf_utils.config import load_hf_config
+from miles_plugins.models.cake_hyper_connection import apply_mhc_backend
 from miles_plugins.models.glm5.glm5 import DSASelfAttentionSubmodules
 from miles_plugins.models.glm5_next.dsa import Glm5NextDSAAttention
 from miles_plugins.models.glm5_next.kda import Glm5NextKDAAttention, _get_text_config
@@ -145,4 +146,5 @@ def get_glm5_next_spec(args, config, vp_stage=None):
             )
         transformer_layer_spec.layer_specs[layer_id] = layer_spec
 
-    return transformer_layer_spec
+    # --mhc-backend cake: the Cake hyper connections and the Cake stream-mean head (GLM-5.3's is the plain mean)
+    return apply_mhc_backend(transformer_layer_spec, args, config, mean_head=True)

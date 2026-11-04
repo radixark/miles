@@ -126,3 +126,4 @@ Pro selects `--model-name DeepSeek-V4-Pro-FP8`, which flips `optimizer_offload=T
 - [Low Precision RL](/advanced/low-precision)
 - [Architecture Support](/advanced/architecture-support)
 - [DeepSeek V4 Flash](/models/deepseek/deepseek-v4-flash) — sibling recipe; shares the V4-family architecture.
+- [Cake Training Kernels](/advanced/cake-kernels) — `--use-miles-ext-kernels --mhc-backend cake` runs the hyper connections on the Blackwell Cake kernels.

@@ -67,6 +67,7 @@ CAKE_CHOICE_DEFAULTS = {
     "linear_attention_output_norm_backend": "fla",
     "linear_attention_input_norm": "te",
     "dsa_attention_backend": "tilelang",
+    "mhc_backend": "megatron",
 }
 _P2P_ARGS = ["--update-weight-transfer-mode", "p2p"]
 DYNAMIC_BATCH_ARGS = ["--use-dynamic-batch-size", "--max-tokens-per-gpu", "1024"]
@@ -4147,6 +4148,12 @@ class TestMilesExtKernels:
         )
 
         with pytest.raises(ValueError, match="--dsa-attention-backend cake runs in the miles DSA plugin layers"):
+            validate_miles_ext_kernels_args(args)
+
+    def test_the_cake_mhc_backend_runs_its_startup_checks(self) -> None:
+        args = self._parse(["--use-miles-ext-kernels", "--mhc-backend", "cake", "--train-backend", "fsdp"])
+
+        with pytest.raises(ValueError, match="--mhc-backend cake replaces Megatron's hyper-connection module"):
             validate_miles_ext_kernels_args(args)
 
     def test_a_missing_submodule_names_the_command_that_checks_it_out(self, monkeypatch) -> None:
