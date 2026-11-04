@@ -151,13 +151,39 @@ def write_peft_export(
     targets: HfLoraTargets,
 ) -> None:
     """All ranks call; rank 0 writes ``slot``'s bf16 PEFT export into ``directory``."""
+    _write_bf16_export(directory, members, slot, parametrization, targets, write_peft_adapter)
+
+
+def write_sampler_view(
+    directory: Path,
+    members: AdapterCheckpointMembers,
+    slot: int,
+    parametrization: AdapterParametrization,
+    targets: HfLoraTargets,
+) -> None:
+    """All ranks call; rank 0 writes ``slot``'s bf16 sampler export into ``directory``, outside any commit."""
+    _write_bf16_export(directory, members, slot, parametrization, targets, write_sampler_adapter)
+
+
+def _write_bf16_export(
+    directory: Path,
+    members: AdapterCheckpointMembers,
+    slot: int,
+    parametrization: AdapterParametrization,
+    targets: HfLoraTargets,
+    write: Callable[[Path, dict[str, torch.Tensor], AdapterParametrization, HfLoraTargets], None],
+) -> None:
     error = None
     try:
         # the gathered adapter leaves the GPU before rank 0 splits and copies it
         named_tensors = [(key, tensor.cpu()) for key, tensor in members.export_bf16_adapter(slot)]
         if _is_writer():
-            weights = _hf_keyed_bf16_adapter(named_tensors, members, parametrization, targets)
-            write_peft_adapter(directory, weights, parametrization, targets)
+            write(
+                directory,
+                _hf_keyed_bf16_adapter(named_tensors, members, parametrization, targets),
+                parametrization,
+                targets,
+            )
     except Exception as exc:
         error = exc
     raise_if_any_rank_failed(error)
