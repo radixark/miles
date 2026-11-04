@@ -305,11 +305,10 @@ class LoRAGroupedColumnLinear(LoRALinear):
         # the host weight lives on the attention block; a list keeps it out of this adapter's parameters
         self._host_weight = [kwargs["reference"]]
 
-    def forward(self, x: torch.Tensor, base_module: nn.Module, *_host_args) -> torch.Tensor:
-        x = apply_lora_dropout(x, self.context, base_module.training)
-        down = F.linear(
-            x, getattr(self, f"{self.param_prefix}_A")
-        )  # config-access-exempt: the projection prefix selects its registered A parameter
+    def prepare_input(self, x: torch.Tensor, base_module: nn.Module) -> torch.Tensor:
+        return apply_lora_dropout(x, self.context, base_module.training)
+
+    def project_up(self, down: torch.Tensor) -> torch.Tensor:
         return grouped_matmul(
             down, getattr(self, f"{self.param_prefix}_B")
         )  # config-access-exempt: the projection prefix selects its registered B parameter
@@ -560,35 +559,39 @@ class NativeMultiLoRAAdapter(nn.Module):
     at zero, which keeps their gradients zero too.
     """
 
-    def __init__(self, slots: Sequence[NativeLoRAAdapter], context: AttachContext):
+    def __init__(self, adapters: Sequence[NativeLoRAAdapter], context: AttachContext):
         super().__init__()
-        self.slots = nn.ModuleList(slots)
+        self.adapters = nn.ModuleList(adapters)
         self.context = context
-        self.host_returns_bias = slots[0].host_returns_bias
+        self.host_returns_bias = adapters[0].host_returns_bias
         self.max_lora_rank = context.lora.rank
+        self.lora_ranks = [self.max_lora_rank] * len(adapters)
         # a free slot adds nothing to its tokens
-        self.lora_ranks = [self.max_lora_rank] * len(slots)
-        self.lora_alphas = [0.0] * len(slots)
+        self.lora_alphas = [0.0] * len(adapters)
         self.token_counts_by_slot: tuple[int, ...] | None = None
 
     def bind_host(self, host: nn.Module) -> None:
-        for adapter in self.slots:
+        for adapter in self.adapters:
             adapter.bind_host(host)
 
     def forward(self, x: torch.Tensor, base_module: nn.Module, *_host_args) -> torch.Tensor:
         """The unscaled delta, one row per token; ``add_delta`` applies each slot's scale."""
-        rows = _token_rows(self.slots[0].prepare_input(x, base_module))
+        rows = _token_rows(self.adapters[0].prepare_input(x, base_module))
         down = torch.cat(
             [
                 adapter.project_down(slot_rows)
-                for adapter, slot_rows in zip(self.slots, rows.split(self._local_token_counts(len(rows))), strict=True)
+                for adapter, slot_rows in zip(
+                    self.adapters, rows.split(self._local_token_counts(len(rows))), strict=True
+                )
             ]
         )
-        down = self.slots[0].reduce_down(down)
+        down = self.adapters[0].reduce_down(down)
         return torch.cat(
             [
                 adapter.project_up(slot_down)
-                for adapter, slot_down in zip(self.slots, down.split(self._local_token_counts(len(down))), strict=True)
+                for adapter, slot_down in zip(
+                    self.adapters, down.split(self._local_token_counts(len(down))), strict=True
+                )
             ]
         )
 
@@ -610,7 +613,7 @@ class NativeMultiLoRAAdapter(nn.Module):
         total = sum(counts)
         if num_rows == total:
             return list(counts)
-        assert num_rows * self.context.tp_size == total, (
+        assert self.context.sequence_parallel and num_rows * self.context.tp_size == total, (
             f"{num_rows} rows are neither the {total} routed tokens nor a 1/{self.context.tp_size} "
             "sequence-parallel shard of them"
         )
@@ -624,10 +627,11 @@ class NativeMultiLoRAAdapter(nn.Module):
     @torch.no_grad()
     def init_slot(self, slot: int, lora_rank: int, lora_alpha: float) -> None:
         """Draw A within ``lora_rank`` and zero the rest; the caller holds the RNG stream."""
+        self._assert_slot(slot)
         assert 0 < lora_rank <= self.max_lora_rank, f"LoRA rank {lora_rank} is not in (0, {self.max_lora_rank}]"
         # alpha 0 marks a free slot
         assert lora_alpha > 0, f"LoRA alpha {lora_alpha} must be positive"
-        for name, param in self.slots[slot].named_parameters():
+        for name, param in self.adapters[slot].named_parameters():
             param.zero_()
             if name.endswith("_A"):
                 _LORA_A_INITS[self.context.lora.a_init_method](param[:lora_rank])
@@ -637,9 +641,13 @@ class NativeMultiLoRAAdapter(nn.Module):
 
     @torch.no_grad()
     def clear_slot(self, slot: int) -> None:
-        for param in self.slots[slot].parameters():
+        self._assert_slot(slot)
+        for param in self.adapters[slot].parameters():
             param.zero_()
         self.lora_ranks[slot], self.lora_alphas[slot] = self.max_lora_rank, 0.0
+
+    def _assert_slot(self, slot: int) -> None:
+        assert 0 <= slot < len(self.adapters), f"slot {slot} is not in [0, {len(self.adapters)})"
 
     def sharded_state_dict(self, prefix="", sharded_offsets=(), metadata=None):
         """Invisible to Megatron dist-checkpointing, like each slot's adapter."""
@@ -697,8 +705,9 @@ def iter_adapters(model_chunks: Sequence[nn.Module]) -> Iterator[NativeLoRAAdapt
 
 
 def iter_slot_adapters(model_chunks: Sequence[nn.Module], slot: int) -> Iterator[NativeLoRAAdapter]:
-    for slot_adapters in iter_multi_lora_adapters(model_chunks):
-        yield slot_adapters.slots[slot]
+    for multi_adapter in iter_multi_lora_adapters(model_chunks):
+        multi_adapter._assert_slot(slot)
+        yield multi_adapter.adapters[slot]
 
 
 def iter_multi_lora_adapters(model_chunks: Sequence[nn.Module]) -> Iterator[NativeMultiLoRAAdapter]:
@@ -710,7 +719,7 @@ def iter_multi_lora_adapters(model_chunks: Sequence[nn.Module]) -> Iterator[Nati
 def assert_every_adapter_slotted(model_chunks: Sequence[nn.Module]) -> None:
     """Under multi-LoRA an adapter outside the slots would add one tenant-blind delta to every tenant's tokens."""
     slotted = {
-        id(adapter) for slot_adapters in iter_multi_lora_adapters(model_chunks) for adapter in slot_adapters.slots
+        id(adapter) for multi_adapter in iter_multi_lora_adapters(model_chunks) for adapter in multi_adapter.adapters
     }
     unslotted = [
         child.hf_prefix
@@ -719,15 +728,15 @@ def assert_every_adapter_slotted(model_chunks: Sequence[nn.Module]) -> None:
     ]
     assert (
         not unslotted
-    ), f"multi-LoRA slots cover dense projections and lm_head; these adapters have none: {unslotted[:4]}"
+    ), f"multi-LoRA slots cover dense projections and lm_head; these adapters sit outside the slots: {unslotted[:4]}"
 
 
 @contextmanager
-def adapters_hidden(model_chunks: Sequence[nn.Module]) -> Iterator[None]:
+def adapters_hidden_context(model_chunks: Sequence[nn.Module]) -> Iterator[None]:
     """Detaches every adapter from the model: a base load that maps each parameter to a checkpoint tensor finds none
     for them."""
     slotted = {
-        id(adapter) for slot_adapters in iter_multi_lora_adapters(model_chunks) for adapter in slot_adapters.slots
+        id(adapter) for multi_adapter in iter_multi_lora_adapters(model_chunks) for adapter in multi_adapter.adapters
     }
     adapters = [
         (parent, name, child)

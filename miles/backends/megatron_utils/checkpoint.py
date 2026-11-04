@@ -255,7 +255,7 @@ def _load_hf_weights_with_mbridge(ddp_model, args, load_path: str) -> None:
     import miles_plugins.mbridge  # noqa: F401
     from mbridge import AutoBridge
 
-    from miles.backends.megatron_utils.lora.native.modules.linear import adapters_hidden
+    from miles.backends.megatron_utils.lora.native.modules.linear import adapters_hidden_context
 
     if args.offload_train:
         from torch_memory_saver import torch_memory_saver
@@ -273,7 +273,7 @@ def _load_hf_weights_with_mbridge(ddp_model, args, load_path: str) -> None:
     with (
         ModelCompanionInstallationUtils.hide(ddp_model),
         _hide_critic_value_head_from_hf_load(ddp_model),
-        adapters_hidden(ddp_model),
+        adapters_hidden_context(ddp_model),
         bypass,
     ):
         bridge = AutoBridge.from_pretrained(load_path, trust_remote_code=True)

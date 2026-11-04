@@ -1,13 +1,11 @@
 """Native LoRA's adapter slots: the same probe-built HF layout as Bridge, over native's own export."""
 
-from collections.abc import Sequence
-
 import torch
 
 from miles.backends.megatron_utils.lora.bridge_checkpoint import BridgeAdapterSlots
 from miles.backends.megatron_utils.lora.native.hf_adapter import export_lora_hf_named
 from miles.backends.megatron_utils.lora.native.modules.linear import (
-    adapters_hidden,
+    adapters_hidden_context,
     iter_adapters,
     iter_multi_lora_adapters,
     iter_slot_adapters,
@@ -43,13 +41,12 @@ class NativeAdapterSlots(BridgeAdapterSlots):
         assert not self._multi_lora, "native multi-LoRA slots have no checkpoint members yet"
         return None
 
-    def init(self, slot: int, lora_rank: int, lora_alpha: float, seed: int) -> None:
-        """Claim ``slot``: A drawn within ``lora_rank`` from ``seed`` through the RNG tracker, B and the rest zero.
+    def _init_slot(self, slot: int, lora_rank: int, lora_alpha: float, seed: int) -> None:
+        """A drawn within ``lora_rank`` from ``seed`` through the RNG tracker, B and the rest zero.
 
         The draw comes from the data-parallel stream, equal on every rank, so DP replicas and the TP ranks of an
         A that TP replicates agree, as the model's own construction does.
         """
-        assert self._multi_lora, "single LoRA's adapter is built with the model"
         from megatron.core import parallel_state
         from megatron.core.tensor_parallel.random import (
             get_cuda_rng_tracker,
@@ -63,38 +60,25 @@ class NativeAdapterSlots(BridgeAdapterSlots):
             # pipeline stages hold different layers; offset them as Megatron's own seeding does
             model_parallel_cuda_manual_seed(seed + 100 * parallel_state.get_pipeline_model_parallel_rank())
             with tracker.fork(get_data_parallel_rng_tracker_name()):
-                for slot_adapters in iter_multi_lora_adapters(self._model):
-                    slot_adapters.init_slot(slot, lora_rank, lora_alpha)
+                for multi_adapter in iter_multi_lora_adapters(self._model):
+                    multi_adapter.init_slot(slot, lora_rank, lora_alpha)
         finally:
             tracker.set_states(saved_tracker_states)
             torch.cuda.set_rng_state(saved_cuda_rng_state)
 
-    def clear(self, slot: int) -> None:
-        assert self._multi_lora, "single LoRA's adapter is built with the model"
-        for slot_adapters in iter_multi_lora_adapters(self._model):
-            slot_adapters.clear_slot(slot)
+    def _clear_slot(self, slot: int) -> None:
+        for multi_adapter in iter_multi_lora_adapters(self._model):
+            multi_adapter.clear_slot(slot)
 
-    def route_tokens(self, token_counts_by_slot: Sequence[int] | torch.Tensor) -> None:
-        """Route the next forward's tokens, sorted by slot, to their slots, until the next call.
+    def _install_routing(self, counts: tuple[int, ...]) -> None:
+        for multi_adapter in iter_multi_lora_adapters(self._model):
+            multi_adapter.token_counts_by_slot = counts
 
-        Recomputation reruns the forward inside the backward, after the forward step has returned.
-        """
-        assert self._multi_lora, "single LoRA routes no tokens"
-        all_slot_adapters = list(iter_multi_lora_adapters(self._model))
-        counts_tensor = torch.as_tensor(token_counts_by_slot)
-        assert not counts_tensor.is_floating_point(), f"token counts must be integers, got {counts_tensor.dtype}"
-        # one host sync per forward
-        counts = tuple(counts_tensor.tolist())
-        num_slots = len(all_slot_adapters[0].slots)
-        assert len(counts) == num_slots, f"{len(counts)} token counts for {num_slots} slots"
-        assert min(counts) >= 0, f"negative token counts {counts}"
-        free = [slot for slot, alpha in enumerate(all_slot_adapters[0].lora_alphas) if alpha == 0 and counts[slot]]
-        assert not free, f"tokens routed to free slots {free}"
-        for slot_adapters in all_slot_adapters:
-            slot_adapters.token_counts_by_slot = counts
+    def _local_num_slots(self) -> int:
+        return next((len(multi_adapter.adapters) for multi_adapter in iter_multi_lora_adapters(self._model)), 0)
 
     def adapters_hidden_context(self):
-        return adapters_hidden(self._model)
+        return adapters_hidden_context(self._model)
 
     def _unexported_elements(self) -> torch.Tensor:
         """head_B's padded vocab rows: the export trims them, so no checkpoint holds them and a load leaves them."""

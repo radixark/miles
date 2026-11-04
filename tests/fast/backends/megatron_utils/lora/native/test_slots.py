@@ -1,5 +1,6 @@
 """Native multi-LoRA slots against single LoRA on the same weights — no GPU."""
 
+import dataclasses
 from types import SimpleNamespace
 
 import pytest
@@ -14,7 +15,7 @@ from miles.backends.megatron_utils.lora.native.modules.linear import (
     LoRALinear,
     LoRASplitFC1,
     NativeMultiLoRAAdapter,
-    adapters_hidden,
+    adapters_hidden_context,
     assert_every_adapter_slotted,
     attach_adapter_forward,
     build_adapter,
@@ -42,7 +43,7 @@ class _Host(nn.Module):
 def _context(*, rank, alpha=8.0, num_slots=None, tp_size=1, tp_rank=0):
     return AttachContext(
         lora=LoRAConfig(rank=rank, alpha=alpha, dropout=0.0, target_modules=None, num_slots=num_slots),
-        transformer_config=SimpleNamespace(hidden_size=HIDDEN, sequence_parallel=False),
+        transformer_config=SimpleNamespace(hidden_size=HIDDEN, sequence_parallel=tp_size > 1),
         tp_size=tp_size,
         tp_rank=tp_rank,
         naming=None,
@@ -84,13 +85,30 @@ def _split_fc1(host, context):
     )
 
 
+def _replicated(host, context):
+    return LoRALinear(
+        hf_prefix="model.layers.0.self_attn.",
+        projection=ProjectionSpec("kv_a_proj_with_mqa", "kv_a", ShardLayout.REPLICATED),
+        reference=host.weight,
+        context=context,
+        in_features=HIDDEN,
+        out_features=OUT,
+    )
+
+
 def _lm_head(host, context):
     return LoRAOutputHead(
         hf_prefix="lm_head.", reference=host.weight, context=context, vocab_local=OUT, unpadded_vocab_size=OUT - 2
     )
 
 
-ADAPTER_BUILDS = {"column": _column, "row": _row, "split_fc1": _split_fc1, "lm_head": _lm_head}
+ADAPTER_BUILDS = {
+    "column": _column,
+    "row": _row,
+    "replicated": _replicated,
+    "split_fc1": _split_fc1,
+    "lm_head": _lm_head,
+}
 
 
 class _Chunk(nn.Module):
@@ -122,7 +140,7 @@ def _load_slot(
     slot_adapters.init_slot(slot, rank, alpha)
     with torch.no_grad():
         for (name, slot_param), single_param in zip(
-            slot_adapters.slots[slot].named_parameters(), single.parameters(), strict=True
+            slot_adapters.adapters[slot].named_parameters(), single.parameters(), strict=True
         ):
             if name.endswith("_A"):
                 slot_param[:rank].copy_(single_param)
@@ -162,12 +180,12 @@ def test_one_routed_slot_equals_single_lora_bitwise(build, slot, rank):
     assert torch.equal(out_multi, out_single)
     assert torch.equal(x_multi.grad, x_single.grad)
     for (name, slot_param), single_param in zip(
-        multi.adapter.slots[slot].named_parameters(), single.adapter.parameters(), strict=True
+        multi.adapter.adapters[slot].named_parameters(), single.adapter.parameters(), strict=True
     ):
         within = slot_param.grad[:rank] if name.endswith("_A") else slot_param.grad[:, :rank]
         assert torch.equal(within, single_param.grad), name
     for other in set(range(NUM_SLOTS)) - {slot}:
-        assert all(torch.count_nonzero(p.grad) == 0 for p in multi.adapter.slots[other].parameters())
+        assert all(torch.count_nonzero(p.grad) == 0 for p in multi.adapter.adapters[other].parameters())
 
 
 @pytest.mark.parametrize("build", ADAPTER_BUILDS.values(), ids=ADAPTER_BUILDS)
@@ -216,13 +234,13 @@ def test_a_slot_claimed_below_max_rank_keeps_its_padding_out_of_training():
     multi = _attached(_column, _context(rank=MAX_RANK, num_slots=NUM_SLOTS), _base_weight())
     multi.adapter.init_slot(0, 2, 4.0)
     with torch.no_grad():
-        multi.adapter.slots[0].up_B[:, :2].normal_()
+        multi.adapter.adapters[0].up_B[:, :2].normal_()
     multi.adapter.token_counts_by_slot = (5, 0, 0)
 
     out, _ = multi.host(_tokens(5))
     out.square().sum().backward()
 
-    adapter = multi.adapter.slots[0]
+    adapter = multi.adapter.adapters[0]
     assert torch.count_nonzero(adapter.up_A[2:]) == 0 and torch.count_nonzero(adapter.up_B[:, 2:]) == 0
     assert torch.count_nonzero(adapter.up_A.grad[2:]) == 0 and torch.count_nonzero(adapter.up_B.grad[:, 2:]) == 0
     assert torch.count_nonzero(adapter.up_A.grad[:2]) > 0
@@ -233,7 +251,7 @@ def test_a_cleared_slot_adds_nothing():
     multi = _attached(_column, _context(rank=MAX_RANK, num_slots=NUM_SLOTS), base_weight)
     multi.adapter.init_slot(1, MAX_RANK, 8.0)
     with torch.no_grad():
-        multi.adapter.slots[1].up_B.normal_()
+        multi.adapter.adapters[1].up_B.normal_()
     multi.adapter.clear_slot(1)
     multi.adapter.token_counts_by_slot = (0, 5, 0)
     x = _tokens(5)
@@ -259,10 +277,23 @@ def test_a_sequence_parallel_shard_takes_its_window_of_each_slots_tokens():
         multi.adapter._local_token_counts(5)
 
 
+def test_half_the_tokens_without_sequence_parallel_fail():
+    """CP == TP with global counts gives every TP rank half the tokens, which must not pass for an SP shard."""
+    context = dataclasses.replace(
+        _context(rank=MAX_RANK, num_slots=NUM_SLOTS, tp_size=2, tp_rank=1),
+        transformer_config=SimpleNamespace(hidden_size=HIDDEN, sequence_parallel=False),
+    )
+    multi = _attached(_column, context, _base_weight())
+    multi.adapter.token_counts_by_slot = (3, 2, 3)
+
+    with pytest.raises(AssertionError, match="sequence-parallel shard"):
+        multi.adapter._local_token_counts(4)
+
+
 def test_a_multi_lora_model_is_read_per_slot():
     multi = _attached(_column, _context(rank=MAX_RANK, num_slots=NUM_SLOTS), _base_weight())
 
-    assert list(iter_slot_adapters([multi], 2)) == [multi.adapter.slots[2]]
+    assert list(iter_slot_adapters([multi], 2)) == [multi.adapter.adapters[2]]
     with pytest.raises(AssertionError, match="iter_slot_adapters"):
         list(iter_adapters([multi]))
 
@@ -284,7 +315,7 @@ def test_a_sequence_parallel_row_adapter_reduces_once_and_scales_each_slots_wind
     for slot, alpha in enumerate(alphas):
         adapter.init_slot(slot, MAX_RANK, alpha)
         with torch.no_grad():
-            adapter.slots[slot].down_B.normal_()
+            adapter.adapters[slot].down_B.normal_()
     adapter.token_counts_by_slot = (3, 2, 3)
     x, out = _tokens(8), torch.zeros(4, 1, OUT)
 
@@ -295,7 +326,34 @@ def test_a_sequence_parallel_row_adapter_reduces_once_and_scales_each_slots_wind
     rows = x.detach()[4:].reshape(4, HIDDEN)
     expected = torch.cat(
         [
-            alphas[slot] / MAX_RANK * (2 * part @ adapter.slots[slot].down_A.t()) @ adapter.slots[slot].down_B.t()
+            alphas[slot]
+            / MAX_RANK
+            * (2 * part @ adapter.adapters[slot].down_A.t())
+            @ adapter.adapters[slot].down_B.t()
+            for slot, part in ((1, rows[:1]), (2, rows[1:]))
+        ]
+    )
+    torch.testing.assert_close(summed.reshape(4, OUT), expected)
+
+
+def test_a_sequence_parallel_replicated_adapter_runs_on_its_shard():
+    """Input and host output are both TP rank 1's half of the routed tokens; no collective."""
+    context = _context(rank=MAX_RANK, num_slots=NUM_SLOTS, tp_size=2, tp_rank=1)
+    adapter = build_adapter(lambda: _replicated(_Host(_base_weight()), context), context)
+    alphas = (8.0, 2.0, 3.0)
+    for slot, alpha in enumerate(alphas):
+        adapter.init_slot(slot, MAX_RANK, alpha)
+        with torch.no_grad():
+            adapter.adapters[slot].kv_a_B.normal_()
+    adapter.token_counts_by_slot = (3, 2, 3)
+    shard = _tokens(4)
+
+    summed = adapter.add_delta(torch.zeros(4, 1, OUT), adapter(shard, nn.Linear(1, 1)))
+
+    rows = shard.detach().reshape(4, HIDDEN)
+    expected = torch.cat(
+        [
+            alphas[slot] / MAX_RANK * part @ adapter.adapters[slot].kv_a_A.t() @ adapter.adapters[slot].kv_a_B.t()
             for slot, part in ((1, rows[:1]), (2, rows[1:]))
         ]
     )
@@ -305,34 +363,43 @@ def test_a_sequence_parallel_row_adapter_reduces_once_and_scales_each_slots_wind
 def _routed(num_slots=NUM_SLOTS):
     multi = _attached(_column, _context(rank=MAX_RANK, num_slots=num_slots), _base_weight())
     slots = native_checkpoint.NativeAdapterSlots.__new__(native_checkpoint.NativeAdapterSlots)
-    slots._model, slots._multi_lora = [multi], True
+    slots._model, slots._multi_lora, slots.num_slots, slots._claimed_slots = [multi], True, num_slots, set()
     return multi, slots
 
 
 def test_routing_takes_integer_counts_one_per_slot():
     multi, slots = _routed()
-    for slot in range(NUM_SLOTS):
-        multi.adapter.init_slot(slot, MAX_RANK, 4.0)
+    slots._claimed_slots = set(range(NUM_SLOTS))
 
     slots.route_tokens(torch.tensor([2, 0, 3]))
 
     assert multi.adapter.token_counts_by_slot == (2, 0, 3)
-    with pytest.raises(AssertionError, match="integers"):
-        slots.route_tokens(torch.tensor([2.0, 0.0, 3.0]))
+    for malformed in (torch.tensor([2.0, 0.0, 3.0]), torch.tensor([True, False, True]), torch.tensor([[2], [0], [3]])):
+        with pytest.raises(AssertionError, match="1-D integer"):
+            slots.route_tokens(malformed)
     with pytest.raises(AssertionError, match="2 token counts for 3 slots"):
         slots.route_tokens([2, 3])
     with pytest.raises(AssertionError, match="negative"):
         slots.route_tokens([2, -1, 3])
 
 
-def test_routing_tokens_to_a_free_slot_fails():
-    """A free slot's alpha is 0: its tenant would silently train against the base model."""
+def test_routing_tokens_to_an_unclaimed_slot_fails_before_routing():
+    """An unclaimed slot adds nothing: its tenant would silently train against the base model."""
     multi, slots = _routed()
-    multi.adapter.init_slot(0, MAX_RANK, 4.0)
+    slots._claimed_slots = {0}
 
     slots.route_tokens([5, 0, 0])
-    with pytest.raises(AssertionError, match=r"free slots \[1\]"):
+    with pytest.raises(AssertionError, match=r"unclaimed slots \[1\]"):
         slots.route_tokens([2, 3, 0])
+    assert multi.adapter.token_counts_by_slot == (5, 0, 0)
+
+
+def test_a_slot_outside_the_table_fails():
+    multi, _ = _routed()
+    with pytest.raises(AssertionError, match=r"slot -1 is not in \[0, 3\)"):
+        multi.adapter.init_slot(-1, MAX_RANK, 4.0)
+    with pytest.raises(AssertionError, match=r"slot 3 is not in \[0, 3\)"):
+        list(iter_slot_adapters([multi], 3))
 
 
 def test_an_adapter_outside_the_slots_fails_a_multi_lora_attach():
@@ -340,7 +407,7 @@ def test_an_adapter_outside_the_slots_fails_a_multi_lora_attach():
     assert_every_adapter_slotted([multi])
     multi.stray = _column(_Host(_base_weight()), _context(rank=MAX_RANK))
 
-    with pytest.raises(AssertionError, match="have none"):
+    with pytest.raises(AssertionError, match="sit outside the slots"):
         assert_every_adapter_slotted([multi])
 
 
@@ -349,7 +416,7 @@ def test_hidden_adapters_leave_only_base_parameters(num_slots):
     chunk = _attached(_column, _context(rank=MAX_RANK, num_slots=num_slots), _base_weight())
     before = list(chunk.state_dict())
 
-    with adapters_hidden([chunk]):
+    with adapters_hidden_context([chunk]):
         assert list(chunk.state_dict()) == ["host.weight"]
 
     assert list(chunk.state_dict()) == before

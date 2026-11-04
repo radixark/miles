@@ -165,7 +165,7 @@ def probe_bridge_row_mapping(
         start += param.numel()
     error = None
     try:
-        with _registered_in_place_of(model, params, stand_ins):
+        with _stand_ins_registered_context(model, params, stand_ins):
             # the export is collective: keep consuming it after a rank-local error so no rank is left inside it
             for name, tensor in export_adapter():
                 if error is None:
@@ -224,7 +224,7 @@ def probe_bridge_row_mapping(
 
 
 @contextmanager
-def _registered_in_place_of(
+def _stand_ins_registered_context(
     model: Sequence[torch.nn.Module], params: Sequence[torch.nn.Parameter], stand_ins: Sequence[torch.nn.Parameter]
 ) -> Iterator[None]:
     """Setting a parameter's ``.data`` to another dtype replaces its grad accumulator, and with it the DDP hook
@@ -275,6 +275,10 @@ class BridgeAdapterSlots:
         self.row_mapping = probe_bridge_row_mapping(
             model, self.slot_parameters(0), self._export_probe, targets, self._map_name, self._unexported_elements()
         )
+        if multi_lora:
+            self.num_slots = self._agree_on_num_slots()
+            # a slot is claimed from init to clear
+            self._claimed_slots: set[int] = set()
 
     def _map_name(self, name: str) -> HfKey:
         return map_peft_keys_to_hf_keys(name)
@@ -285,36 +289,65 @@ class BridgeAdapterSlots:
 
     def init(self, slot: int, lora_rank: int, lora_alpha: float, seed: int) -> None:
         """Claim ``slot``: re-draw its weights through the RNG tracker from ``seed``, then mask past ``lora_rank``."""
-        assert self._multi_lora, "single LoRA's adapter is built with the model"
-        from megatron.bridge.peft.multi_lora_layers import init_adapter_slot
-
-        init_adapter_slot(self._model, slot, rank=lora_rank, alpha=lora_alpha, seed=seed)
+        self._assert_slot(slot)
+        self._init_slot(slot, lora_rank, lora_alpha, seed)
+        self._claimed_slots.add(slot)
 
     def clear(self, slot: int) -> None:
-        assert self._multi_lora, "single LoRA's adapter is built with the model"
-        from megatron.bridge.peft.multi_lora_layers import clear_adapter_slot
-
-        clear_adapter_slot(self._model, slot)
+        self._assert_slot(slot)
+        self._clear_slot(slot)
+        self._claimed_slots.discard(slot)
 
     def route_tokens(self, token_counts_by_slot: Sequence[int] | torch.Tensor) -> None:
-        """Route the next forward's tokens, sorted by slot, to their slots, until the next call.
+        """Route the next forward's tokens on this rank (after any CP split), sorted by slot, until the next call.
 
         Recomputation reruns the forward inside the backward, after the forward step has returned.
         """
         assert self._multi_lora, "single LoRA routes no tokens"
-        from megatron.bridge.peft.multi_lora_layers import MultiLoRALinear, set_tokens_per_adapter_slot
+        counts_tensor = torch.as_tensor(token_counts_by_slot)
+        assert counts_tensor.dim() == 1 and not (
+            counts_tensor.is_floating_point() or counts_tensor.dtype == torch.bool
+        ), f"token counts must be a 1-D integer sequence, got {counts_tensor.dtype} of shape {tuple(counts_tensor.shape)}"
+        # one host sync per forward
+        counts = tuple(counts_tensor.tolist())
+        assert len(counts) == self.num_slots, f"{len(counts)} token counts for {self.num_slots} slots"
+        assert min(counts) >= 0, f"negative token counts {counts}"
+        unclaimed = [slot for slot, count in enumerate(counts) if count and slot not in self._claimed_slots]
+        assert not unclaimed, f"tokens routed to unclaimed slots {unclaimed}"
+        self._install_routing(counts)
 
-        set_tokens_per_adapter_slot(self._model, torch.as_tensor(token_counts_by_slot))
-        module = next(m for chunk in self._model for m in chunk.modules() if isinstance(m, MultiLoRALinear))
-        # clear_adapter_slot zeroes a free slot's alpha
-        free = [
-            slot
-            for slot, (alpha, count) in enumerate(
-                zip(module.alpha_values.tolist(), module.tokens_per_adapter_splits, strict=True)
-            )
-            if alpha == 0 and count
-        ]
-        assert not free, f"tokens routed to free slots {free}"
+    def _assert_slot(self, slot: int) -> None:
+        assert self._multi_lora, "single LoRA's adapter is built with the model"
+        assert 0 <= slot < self.num_slots, f"slot {slot} is not in [0, {self.num_slots})"
+
+    def _agree_on_num_slots(self) -> int:
+        """Collective: a pipeline stage holding no slot adapter validates routing like the others."""
+        gathered = [None] * dist.get_world_size()
+        dist.all_gather_object(gathered, self._local_num_slots(), group=gloo_group())
+        nums = {num for num in gathered if num}
+        assert len(nums) == 1, f"ranks disagree on the slot count: {gathered}"
+        return nums.pop()
+
+    def _local_num_slots(self) -> int:
+        from megatron.bridge.peft.multi_lora_layers import MultiLoRALinear
+
+        modules = (m for chunk in self._model for m in chunk.modules() if isinstance(m, MultiLoRALinear))
+        return next((module.n_adapters for module in modules), 0)
+
+    def _init_slot(self, slot: int, lora_rank: int, lora_alpha: float, seed: int) -> None:
+        from megatron.bridge.peft.multi_lora_layers import init_adapter_slot
+
+        init_adapter_slot(self._model, slot, rank=lora_rank, alpha=lora_alpha, seed=seed)
+
+    def _clear_slot(self, slot: int) -> None:
+        from megatron.bridge.peft.multi_lora_layers import clear_adapter_slot
+
+        clear_adapter_slot(self._model, slot)
+
+    def _install_routing(self, counts: tuple[int, ...]) -> None:
+        from megatron.bridge.peft.multi_lora_layers import set_tokens_per_adapter_slot
+
+        set_tokens_per_adapter_slot(self._model, torch.tensor(counts))
 
     def adapters_hidden_context(self):
         """Hides the adapters from the Bridge walk that loads the base checkpoint."""
