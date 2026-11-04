@@ -10,6 +10,7 @@ from .inkling import InklingBridge
 from .joyai_llm_flash import JoyAILLMFlashBridge
 from .kimi_k3 import KimiK3Bridge
 from .kimi_k25 import KimiK25Bridge
+from .kimi_k31 import KimiK31Bridge
 from .mimo import MimoBridge
 from .minimax_m3 import MiniMaxM3Bridge
 from .qwen3_5 import Qwen3_5Bridge
@@ -32,5 +33,6 @@ __all__ = [
     "JoyAILLMFlashBridge",
     "InklingBridge",
     "KimiK3Bridge",
+    "KimiK31Bridge",
     "KimiK25Bridge",
 ]

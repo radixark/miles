@@ -219,6 +219,7 @@ but treat it as best-effort until it passes the checks below.
 | GLM-5.3 / GLM-5.3-Flash (text sessions) | `glm53` |
 | NVIDIA Nemotron 3 Nano / Super / Ultra | `nemotron3` |
 | Kimi K2.5 / K2.6 | `kimi25` / `kimi26` |
+| Kimi K3 / K3.1 | `kimi_k3` |
 | MiniMax M2.5 / M2.7 | `minimax_m25` / `minimax_m27` |
 | DeepSeek-V3.2 / V4 | `deepseekv32` / `deepseekv4` |
 | Inkling / Inkling-Small | `inkling` |

@@ -41,6 +41,7 @@ _EXPECTED_FIXED_TEMPLATES = {
     TITOTokenizerType.NEMOTRON3: (None, {"truncate_history_thinking": False}),
     TITOTokenizerType.KIMI25: ("kimi_k25_fixed.jinja", {"preserve_thinking": True}),
     TITOTokenizerType.KIMI26: (None, {"preserve_thinking": True}),
+    TITOTokenizerType.KIMI_K3: (None, {}),
     TITOTokenizerType.MINIMAX_M25: ("minimax_m25_fixed.jinja", {"clear_thinking": False}),
     TITOTokenizerType.MINIMAX_M27: ("minimax_m27_fixed.jinja", {"clear_thinking": False}),
     TITOTokenizerType.DEEPSEEKV32: (None, {"drop_thinking": False}),

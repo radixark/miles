@@ -54,14 +54,14 @@ def build_gdn_cp_context(module: nn.Module, cu_seqlens: torch.Tensor, device: to
     return build_fla_cp_context(cu_seqlens, cp_group, module.conv_kernel_size, device)
 
 
-def _relayout_indices(cu_seqlens, cp_rank, cp_size, total):
+def _zigzag_maps(cu_seqlens, cp_size, total):
     """Index maps between the two layouts of a ``total``-token packed stream, built on device.
 
     Rank ``r``'s zigzag shard holds, per sequence, chunks ``r`` and ``2 * cp_size - 1 - r`` of
     ``2 * cp_size`` equal chunks, or its contiguous ``1 / cp_size`` when the length is not a multiple of
-    ``2 * cp_size`` (the final padding). Returns ``(to_packed, to_zigzag)``: ``to_packed`` selects this
-    rank's contiguous shard from the rank-concatenated zigzag shards, ``to_zigzag`` selects this rank's
-    zigzag shard from the rank-concatenated contiguous shards (the packed stream itself)."""
+    ``2 * cp_size`` (the final padding). Returns ``(zigzag_position, packed_position)``:
+    ``zigzag_position[p]`` is the row of packed position ``p`` in the rank-concatenated zigzag shards,
+    and ``packed_position`` is its inverse."""
     cu = cu_seqlens.to(torch.int64)
     lengths = cu[1:] - cu[:-1]
     torch._assert_async(cu[-1] == total)
@@ -80,8 +80,24 @@ def _relayout_indices(cu_seqlens, cp_rank, cp_size, total):
     zigzag_position = owner * shard + start // cp_size + offset % chunk + mirrored * chunk
     packed_position = torch.empty_like(zigzag_position)
     packed_position[zigzag_position] = position
-    rows = slice(cp_rank * shard, (cp_rank + 1) * shard)
+    return zigzag_position, packed_position
+
+
+def _relayout_indices(cu_seqlens, cp_rank, cp_size, total):
+    """``(to_packed, to_zigzag)``: ``to_packed`` selects this rank's contiguous shard from the
+    rank-concatenated zigzag shards, ``to_zigzag`` selects this rank's zigzag shard from the
+    rank-concatenated contiguous shards (the packed stream itself)."""
+    zigzag_position, packed_position = _zigzag_maps(cu_seqlens, cp_size, total)
+    rows = slice(cp_rank * (total // cp_size), (cp_rank + 1) * (total // cp_size))
     return zigzag_position[rows], packed_position[rows]
+
+
+def zigzag_gather_layout(cu_seqlens, cp_rank, cp_size, local_len):
+    """For attention over the whole packed stream from a rank's zigzag shard of ``local_len`` rows:
+    ``(gather_order, positions)``. ``gather_order`` puts the rank-concatenated zigzag shards (a CP
+    all-gather) in packed order; ``positions`` are this rank's rows' packed positions."""
+    zigzag_position, packed_position = _zigzag_maps(cu_seqlens, cp_size, local_len * cp_size)
+    return zigzag_position, packed_position[cp_rank * local_len : (cp_rank + 1) * local_len]
 
 
 def _gather_select(x, index, cp_group):

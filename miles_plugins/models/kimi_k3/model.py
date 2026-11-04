@@ -32,7 +32,7 @@ def configure_kimi_k3(config) -> None:
     config.use_te_activation_func = False
 
 
-def build_kimi_k3_spec(config, vp_stage=None):
+def build_kimi_k3_spec(config, vp_stage=None, mla_attention=KimiK3Attention):
     assert config.virtual_pipeline_model_parallel_size is None, "Kimi K3 does not support VPP yet"
 
     block_spec = get_gpt_decoder_block_spec(
@@ -47,7 +47,7 @@ def build_kimi_k3_spec(config, vp_stage=None):
         layer_spec = copy.deepcopy(layer_spec)
         layer_spec.module = KimiK3TransformerLayer
         layer_number = layer_offset + len(layer_specs) + 1
-        attention = KimiK3KDAAttention if layer_number in config.kimi_kda_layers else KimiK3Attention
+        attention = KimiK3KDAAttention if layer_number in config.kimi_kda_layers else mla_attention
         layer_spec.submodules.self_attention = ModuleSpec(module=attention)
         layer_spec.submodules.input_layernorm = TENorm
         layer_spec.submodules.pre_mlp_layernorm = TENorm
@@ -62,7 +62,12 @@ def build_kimi_k3_spec(config, vp_stage=None):
     return block_spec
 
 
-def get_kimi_k3_spec(args, config, vp_stage):
-    del args
+def _check_cp_layout(args) -> None:
+    # the KDA and DSA layers read zigzag CP shards; --allgather-cp would hand them contiguous ones
+    assert args.context_parallel_size == 1 or not args.allgather_cp, "Kimi K3 runs zigzag CP; drop --allgather-cp"
+
+
+def get_kimi_k3_spec(args, config, vp_stage, mla_attention=KimiK3Attention):
+    _check_cp_layout(args)
     configure_kimi_k3(config)
-    return build_kimi_k3_spec(config, vp_stage=vp_stage)
+    return build_kimi_k3_spec(config, vp_stage=vp_stage, mla_attention=mla_attention)

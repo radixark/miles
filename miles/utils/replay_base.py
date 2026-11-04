@@ -14,8 +14,10 @@ def _get_rank():
 
 
 class Replay:
-    def __init__(self, stream_idx: int | None = None):
+    def __init__(self, stream_idx: int | None = None, supports_zigzag_cp: bool = False):
         self.stream_idx = stream_idx
+        # the owning module reads token-position indices in the global packed stream under zigzag CP
+        self.supports_zigzag_cp = supports_zigzag_cp
         self.forward_index = 0
         self.backward_index = 0
         self.top_indices_list: list[torch.Tensor] = []
@@ -57,7 +59,8 @@ class BaseReplayManager:
     filename: str = ""
     replay_check_min_overlap_ratio = 0.0  # 0.0 = mismatch only on zero overlap
     # True when replayed indices are token/KV positions (indexer): rebase the
-    # per-sample 0-based rollout indices onto the packed training sequence.
+    # per-sample 0-based rollout indices onto the global packed training sequence
+    # (zigzag CP ranks each hold their own rows of it).
     replay_indices_are_token_positions = False
     # True when a train-data dump keeps the rollout column replay consumed. Only R3 is
     # kept: indexer top-k takes about 0.5 MB per token on DeepSeek-V3.2.
@@ -70,8 +73,8 @@ class BaseReplayManager:
         self.stage = "fallthrough"
         self.register_replay_list_func = None
 
-    def create_replay(self, stream_idx: int | None = None) -> Replay:
-        replay = Replay(stream_idx=stream_idx)
+    def create_replay(self, stream_idx: int | None = None, supports_zigzag_cp: bool = False) -> Replay:
+        replay = Replay(stream_idx=stream_idx, supports_zigzag_cp=supports_zigzag_cp)
         self.replays.append(replay)
         return replay
 
@@ -148,10 +151,12 @@ class BaseReplayManager:
 
         return new_topk_fn
 
-    def register_to_module(self, module, attr_name: str, stream_idx: int | None = None):
+    def register_to_module(
+        self, module, attr_name: str, stream_idx: int | None = None, supports_zigzag_cp: bool = False
+    ):
         if not self.enabled:
             return
-        replay = self.create_replay(stream_idx=stream_idx)
+        replay = self.create_replay(stream_idx=stream_idx, supports_zigzag_cp=supports_zigzag_cp)
         setattr(module, attr_name, replay)
         manager = self
 

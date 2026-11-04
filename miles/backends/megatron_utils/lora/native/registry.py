@@ -147,6 +147,8 @@ def _build_model_specs() -> dict[str, LoRAArchSpec]:
         "kimi_k25": mla,
         "joyai_llm_flash": mla,
         "kimi_k3": _kimi_k3_arch_spec(),
+        # K3.1 adds a frozen DSA indexer; the adapted projections are K3's
+        "kimi_k31": _kimi_k3_arch_spec(),
         "inkling_text": inkling,
         "inkling_model": inkling,
         "inkling_mm_model": inkling,

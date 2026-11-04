@@ -116,11 +116,15 @@ def fill_replay_data(
             else:
                 replay_data = [slice_with_cp(r, pad_func, qkv_format) for r in replay_data]
                 if indices_are_token_positions:
-                    # map indices to thd format
+                    assert cp_size == 1 or all(
+                        r.supports_zigzag_cp for r in replay_list
+                    ), f"{data_key} replay under zigzag CP is not supported by this model"
+                    # rebase onto the global packed stream (packed_seq_params.cu_seqlens_q): each sample
+                    # spans cp_size times its local rows, every CP rank holding its own zigzag share
                     offset = 0
                     for i, r in enumerate(replay_data):
                         replay_data[i] = torch.where(r != -1, r + offset, r)
-                        offset += r.shape[0]
+                        offset += r.shape[0] * cp_size
                 replay_data = torch.cat(replay_data, dim=0)
                 pad = (pad_size - replay_data.size(0) % pad_size) % pad_size
                 if pad != 0:

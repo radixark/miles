@@ -42,6 +42,12 @@ _LAYER_NAMES = {
     "self_attention.kv_a_proj_with_mqa.weight": "self_attn.kv_a_proj_with_mqa.weight",
     "self_attention.kv_a_layernorm.weight": "self_attn.kv_a_layernorm.weight",
     "self_attention.kv_b_proj.weight": "self_attn.kv_b_proj.weight",
+    # Kimi-K3.1 DSA indexer
+    "self_attention.indexer.wq_b.weight": "self_attn.indexer.wq_b.weight",
+    "self_attention.indexer.wk.weight": "self_attn.indexer.wk.weight",
+    "self_attention.indexer.k_norm.weight": "self_attn.indexer.k_norm.weight",
+    "self_attention.indexer.k_norm.bias": "self_attn.indexer.k_norm.bias",
+    "self_attention.indexer.weights_proj.weight": "self_attn.indexer.weights_proj.weight",
     "mlp.linear_fc2.weight": "mlp.down_proj.weight",
     "mlp.router.weight": "block_sparse_moe.gate.weight",
     "mlp.router.expert_bias": "block_sparse_moe.gate.e_score_correction_bias",

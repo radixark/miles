@@ -2632,6 +2632,20 @@ class TestTitoFixedTemplateConfiguration:
         miles_validate_args(args)
         assert args.apply_chat_template_kwargs == {"clear_thinking": False, "enable_thinking": True}
 
+    def test_kimi_k3_uses_native_encoder_and_keeps_launch_kwargs(self):
+        args = self._parse(
+            [
+                "--use-session-server",
+                "--tito-model",
+                "kimi_k3",
+                "--apply-chat-template-kwargs",
+                '{"thinking_effort": "max"}',
+            ]
+        )
+        miles_validate_args(args)
+        assert args.chat_template_path is None
+        assert args.apply_chat_template_kwargs == {"thinking_effort": "max"}
+
     def test_named_family_rejects_custom_template(self):
         args = self._parse(
             [

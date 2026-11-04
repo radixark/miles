@@ -12,8 +12,9 @@ from miles.backends.training_utils.replay.data import fill_replay_data, register
 
 
 class _Replay:
-    def __init__(self, stream_idx=None):
+    def __init__(self, stream_idx=None, supports_zigzag_cp=False):
         self.stream_idx = stream_idx
+        self.supports_zigzag_cp = supports_zigzag_cp
         self.recorded = []
 
     def record(self, value):
@@ -212,3 +213,62 @@ class TestNativeReplayOwnership:
 
         assert len(replay.recorded) == 1
         torch.testing.assert_close(replay.recorded[0], torch.tensor([[11], [12], [-1], [-1]]))
+
+
+def _fill_token_positions(rollout_data, replay):
+    fill_replay_data(
+        args=SimpleNamespace(
+            qkv_format="thd",
+            allgather_cp=False,
+            data_pad_size_multiplier=1,
+            train_backend="megatron",
+            backend=SimpleNamespace(sequence_parallel=False),
+            save_debug_train_data=None,
+        ),
+        models=None,
+        data_iterator=[SimpleNamespace(reset=lambda: None, get_next=lambda keys: rollout_data)],
+        num_microbatches=[1],
+        rollout_data=rollout_data,
+        data_key="topk",
+        replay_list=[replay],
+        register_replay_list_func=register_replay_list_sequential,
+        sequence_first=False,
+        indices_are_token_positions=True,
+    )
+
+
+@pytest.mark.parametrize("cp_size", [2, 4])
+def test_fill_replay_thd_zigzag_cp_rebases_onto_the_global_stream(monkeypatch, cp_size):
+    """Token-position rows land on global packed positions: a sample starts at cp_size times its local offset."""
+    lengths = [7, 5]
+    halves = [-(-n // (2 * cp_size)) for n in lengths]  # each rank holds two zigzag chunks of a sample
+    starts = [2 * cp_size * sum(halves[:i]) for i in range(len(lengths))]
+    for cp_rank in range(cp_size):
+        state = SimpleNamespace(cp=SimpleNamespace(size=cp_size, rank=cp_rank), tp=SimpleNamespace(size=1, rank=0))
+        monkeypatch.setattr(parallel, "_parallel_state", state)
+        # row q of every sample attends its own position q
+        rollout_data = {
+            "topk": [torch.arange(n - 1).reshape(n - 1, 1, 1) for n in lengths],
+            "tokens": [torch.arange(n) for n in lengths],
+            "max_seq_lens": None,
+        }
+        replay = _Replay(supports_zigzag_cp=True)
+        _fill_token_positions(rollout_data, replay)
+        expected = []
+        for n, half, start in zip(lengths, halves, starts, strict=True):
+            back = 2 * cp_size - 1 - cp_rank
+            for q in [*range(cp_rank * half, (cp_rank + 1) * half), *range(back * half, (back + 1) * half)]:
+                expected.append(start + q if q < n - 1 else -1)
+        torch.testing.assert_close(replay.recorded[0][:, 0], torch.tensor(expected))
+
+
+def test_fill_replay_thd_zigzag_cp_rejects_models_without_global_positions(monkeypatch):
+    state = SimpleNamespace(cp=SimpleNamespace(size=2, rank=0), tp=SimpleNamespace(size=1, rank=0))
+    monkeypatch.setattr(parallel, "_parallel_state", state)
+    rollout_data = {
+        "topk": [torch.zeros(7, 1, 1, dtype=torch.long)],
+        "tokens": [torch.arange(8)],
+        "max_seq_lens": None,
+    }
+    with pytest.raises(AssertionError, match="zigzag CP"):
+        _fill_token_positions(rollout_data, _Replay())
