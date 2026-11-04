@@ -42,8 +42,12 @@ def build_parametrization_fields(record: ModelRecord, config: GatewayConfig) -> 
     }
 
 
+# a checkpoint saved before commits: its owner and settings, written last
+PRE_COMMIT_META_FILENAME = "META.json"
+
+
 def read_checkpoint_metadata(checkpoint_dir: str, tenant: str, shown_path: str) -> dict:
-    meta_file = Path(checkpoint_dir) / "META.json"
+    meta_file = Path(checkpoint_dir) / PRE_COMMIT_META_FILENAME
     if not meta_file.exists():
         raise UserInputError(f"unknown checkpoint {shown_path!r}")
     try:

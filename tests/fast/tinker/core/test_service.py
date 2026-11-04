@@ -2131,6 +2131,18 @@ def test_a_committed_checkpoint_dir_cannot_be_imported(tmp_path):
         service.weights_info("tenant", f"file://{adapter}")
 
 
+def test_a_checkpoint_saved_before_commits_cannot_be_imported(tmp_path):
+    """Pre-commit dirs record their owner only in META.json; a mounted checkpoint store must not leak them."""
+    adapter = tmp_path / "imports" / "mounted-sampler"
+    adapter.mkdir(parents=True)
+    (adapter / "adapter_config.json").write_text(json.dumps({"r": 8, "lora_alpha": 32}))
+    (adapter / "META.json").write_text(json.dumps({"tenant_digest": "someone"}))
+    service = make_service(tmp_path / "root", import_root=str(tmp_path / "imports"))
+
+    with pytest.raises(UserInputError, match="is a checkpoint saved before commits"):
+        service.weights_info("tenant", f"file://{adapter}")
+
+
 def test_a_training_adapter_dir_cannot_be_imported(tmp_path):
     """The copy keeps only its bf16 PEFT view: importing it would silently round the fp32 masters a tenant expects."""
     adapter = tmp_path / "imports" / "rl-save"

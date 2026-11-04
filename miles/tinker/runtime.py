@@ -34,6 +34,7 @@ from miles.backends.training_utils.checkpoint.adapter.readers import PEFT_FILES
 from miles.ray.rollout.train_data_conversion import ROLLOUT_DATA_VALUE_SPEC
 from miles.tinker.core.service import IMPORT_COPIES_DIRNAME, IMPORT_JSON_MAX_BYTES
 from miles.tinker.core.types import OwnershipError, UserInputError
+from miles.tinker.core.utils import PRE_COMMIT_META_FILENAME
 from miles.utils import object_store
 from miles.utils.http_utils import post
 from miles.utils.lora.hf_lora_targets import GDN_IN_PROJ_COMPONENTS_BY_MODULE, HfLoraTargets
@@ -97,7 +98,9 @@ def take_checkpoint_root(checkpoint_root: str) -> TextIO:
 def _is_pre_commit_dir(root: str, name: str) -> bool:
     checkpoint_dir = Path(root) / name
     # by content, not by link: an overwrite interrupted after adopting a pre-commit dir leaves <name> linked to it
-    return (checkpoint_dir / "META.json").is_file() and not (checkpoint_dir / PARAMETRIZATION_FILENAME).is_file()
+    return (checkpoint_dir / PRE_COMMIT_META_FILENAME).is_file() and not (
+        checkpoint_dir / PARAMETRIZATION_FILENAME
+    ).is_file()
 
 
 def resolve_adapter(root: str, name: str, tenant: str, model_id: str) -> dict | None:
@@ -151,6 +154,8 @@ LOADED_ADAPTER_FILES = (PARAMETRIZATION_FILENAME, *PEFT_FILES)
 # entries that make a file:// source something no tenant may import: its name -> why
 REFUSED_IMPORT_ENTRIES = {
     TENANT_FILENAME: "is a committed checkpoint; import an export of it",
+    # it records its owner only here, so a mounted checkpoint store would otherwise leak it
+    PRE_COMMIT_META_FILENAME: "is a checkpoint saved before commits; import an export of it",
     # the copy keeps only the bf16 PEFT view, so the fp32 masters a tenant expects would be silently rounded
     ADAPTER_STATE_DIRNAME: "is a training adapter dir; import its sampler or PEFT export",
 }
