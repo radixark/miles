@@ -2077,6 +2077,34 @@ def test_weights_info_copies_only_the_files_it_reads(tmp_path):
     assert service.weights_info("tenant", f"file://{adapter}")["lora_rank"] == 8
 
 
+async def test_a_file_import_load_copies_only_the_files_a_reader_opens(tmp_path, monkeypatch):
+    """Thousands of tiny .json files cost a copy each under the trainer lock and an inode each; none is read."""
+    adapter = tmp_path / "imports" / "adapter"
+    adapter.mkdir(parents=True)
+    (adapter / "adapter_config.json").write_text(json.dumps({"r": 8, "lora_alpha": 32}))
+    for index in range(50):
+        (adapter / f"pad{index}.json").write_text("")
+    service = make_service(tmp_path / "root", import_root=str(tmp_path / "imports"))
+    load_slot, copied = service.backend.load_slot, []
+
+    async def trainer_load_slot(slot, rank, alpha, ckpt_path=None, **kwargs):
+        if ckpt_path is not None:
+            copied.append(sorted(p.name for p in Path(ckpt_path).iterdir()))
+        return await load_slot(slot, rank, alpha, ckpt_path=ckpt_path, **kwargs)
+
+    monkeypatch.setattr(service.backend, "load_slot", trainer_load_slot)
+    run_task = asyncio.create_task(service.run())
+    try:
+        model_id = await created_model(service)
+        payload = {"model_id": model_id, "seq_id": 1, "path": f"file://{adapter}", "optimizer": False}
+        await await_settled(service, "tenant", service.submit("tenant", "load_state", payload))
+        assert copied == [["adapter_config.json"]]
+    finally:
+        run_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await run_task
+
+
 class _WritesMarker:
     def __init__(self, marker: Path):
         self.marker = marker

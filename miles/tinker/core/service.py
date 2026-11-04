@@ -614,7 +614,7 @@ class TinkerService:
         # the trainer reads only this copy, so the tenant cannot change what it loads after the checks
         try:
             copy_dir = await asyncio.to_thread(
-                self._copy_import, payload["path"], lambda name: name.endswith((".json", ".safetensors"))
+                self._copy_import, payload["path"], self.backend.loaded_adapter_files.__contains__
             )
         except OSError as error:
             # e.g. a full checkpoint disk: only this load fails, the gateway keeps serving

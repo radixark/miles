@@ -22,6 +22,7 @@ from miles.tinker.core.service import TinkerService
 from miles.tinker.core.types import Command, CommandOp, GatewayConfig
 from miles.tinker.runtime import (
     IMPORTED_ADAPTER_FILES,
+    LOADED_ADAPTER_FILES,
     classify_lora_groups,
     commit_adapter,
     delete_adapter,
@@ -161,6 +162,7 @@ class FakeBackend:
     delete_adapter = staticmethod(delete_adapter)
     read_imported_adapter = staticmethod(read_imported_adapter)
     imported_adapter_files = IMPORTED_ADAPTER_FILES
+    loaded_adapter_files = LOADED_ADAPTER_FILES
 
     async def export_external(self, slot, root, name, tenant_digest, parametrization_fields, age_recipients):
         failure = self._record(

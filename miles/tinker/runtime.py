@@ -28,6 +28,7 @@ from miles.backends.training_utils.checkpoint.adapter.parametrization import (
     PARAMETRIZATION_FILENAME,
     read_parametrization,
 )
+from miles.backends.training_utils.checkpoint.adapter.readers import PEFT_FILES
 from miles.ray.rollout.train_data_conversion import ROLLOUT_DATA_VALUE_SPEC
 from miles.tinker.core.service import IMPORT_COPIES_DIRNAME
 from miles.tinker.core.types import OwnershipError, UserInputError
@@ -143,6 +144,8 @@ def delete_adapter(root: str, name: str, tenant: str | None) -> None:
 
 # the files read_imported_adapter reads; weights_info copies only these from a file:// import
 IMPORTED_ADAPTER_FILES = (PARAMETRIZATION_FILENAME, "adapter_config.json")
+# every file a reader opens for a weights-only source; load_state copies only these
+LOADED_ADAPTER_FILES = (PARAMETRIZATION_FILENAME, *PEFT_FILES)
 
 
 def max_adapter_bytes(hf_checkpoint: str, max_lora_rank: int) -> int:
@@ -235,6 +238,7 @@ class MilesBackend:
         self.dp_size = dp_size
 
     imported_adapter_files = IMPORTED_ADAPTER_FILES
+    loaded_adapter_files = LOADED_ADAPTER_FILES
 
     def lora_groups(self, target_modules) -> dict[str, bool]:
         return classify_lora_groups(target_modules, self.lora_layout)
