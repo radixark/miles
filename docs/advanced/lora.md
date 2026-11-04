@@ -437,6 +437,7 @@ saving weights for sampling publishes an immutable adapter version.
 `--experts-shared-outer-loras` also works with multi-LoRA: routed experts share
 the hidden-side factor within each adapter, while tenants remain independent.
 The flag applies to the whole server and preserves the single-LoRA export format.
+Its `save_state` / `load_state` checkpoints have not been verified on GPU yet.
 SGLang currently rejects combining this layout with fused shared experts.
 
 `save_state` saves adapter parameters and optimizer state, including FP32 masters.
@@ -444,7 +445,8 @@ It waits for preceding commands but neither steps nor saves pending gradients;
 call it after `optim_step` to save the effect of the accumulated training work.
 A save commits a new adapter directory and then points the name at it, so an
 overwrite that fails keeps the previous checkpoint; one gateway holds a checkpoint
-root at a time. `load_state` adopts the checkpoint's alpha, and a checkpoint saved
+root at a time, through an `flock` that the root's filesystem must enforce across hosts (NFS
+mounted `nolock` and Lustre with `localflock` do not). `load_state` adopts the checkpoint's alpha, and a checkpoint saved
 under another adapter layout loads its weights only, where the conversion is exact
 (factors become shared only when they are equal).
 Sampler saves commit an immutable adapter directory on shared storage, without

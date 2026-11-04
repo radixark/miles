@@ -49,6 +49,7 @@ from miles.backends.training_utils.checkpoint.adapter.parametrization import (
     base_model_fingerprint,
 )
 from miles.backends.training_utils.checkpoint.adapter.readers import AdapterSourceKind, read_source_lora_alpha
+from miles.backends.training_utils.checkpoint.adapter.source_error import AdapterSourceError, require_fields
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.hf_utils.config import load_hf_config
 
@@ -86,20 +87,24 @@ class LayerWiseSlotMembers:
                     owned[index_of[id(param)]] = (master, child.optimizer.state[master], group)
         return owned
 
-    def get_local_shard_specs(self, slot: int):
-        return self._slots.local_shard_specs(slot, frozenset(self._owned(slot)))
-
-    def export_adapter_state(self, slot: int) -> AdapterState:
+    def _holds(self, slot: int) -> tuple[dict[int, tuple[torch.Tensor, dict, dict]], list]:
+        """``_owned(slot)`` and this rank's shard specs, agreed by every rank first."""
         error, owned = None, {}
         try:
             owned = self._owned(slot)
         except Exception as exc:
             error = exc
-        # the specs below gather over Gloo: a rank that cannot list its ownership must not leave the others there
+        # the specs gather over Gloo: a rank that cannot list its ownership must not leave the others there
         raise_if_any_rank_failed(error)
+        return owned, self._slots.local_shard_specs(slot, frozenset(owned))
+
+    def get_local_shard_specs(self, slot: int):
+        return self._holds(slot)[1]
+
+    def export_adapter_state(self, slot: int) -> AdapterState:
+        owned, specs = self._holds(slot)
         holds = frozenset(owned)
         params = self._slots.slot_parameters(slot)
-        specs = self._slots.local_shard_specs(slot, holds)
         # each piece is cut from the one held parameter it comes from; parameters held elsewhere are never read
         sources = self._slots.piece_parameter(slot, holds)
 
@@ -458,10 +463,12 @@ def find_load_mismatch(
         kind = check_adapter_source(path, run, targets, load_optimizer=load_optimizer)
         if kind == AdapterSourceKind.LEGACY_TINKER_CHECKPOINT:
             _read_legacy_meta(path, run)
+            state_dict_metadata = dcp.FileSystemReader(path).read_metadata().state_dict_metadata
+            _assert_has_legacy_optimizer_state(path, state_dict_metadata)
             # TE's _extra_state objects are stored per shard (<key>/shard_i_j); the tensors decide the layout
             saved = {
                 k: tuple(metadata.size)
-                for k, metadata in dcp.FileSystemReader(path).read_metadata().state_dict_metadata.items()
+                for k, metadata in state_dict_metadata.items()
                 if ".adapter." in k and "_extra_state" not in k and not _LEGACY_OPTIMIZER_KEY.match(k)
             }
         elif kind.is_read_into_model():
@@ -499,15 +506,15 @@ def find_load_mismatch(
     return next((m for m in gathered if m is not None), None)
 
 
-# what the source checks raise for a source the user named: absent, unreadable, malformed or refused
+# what the source checks raise for a source the user named: absent, unreadable, malformed or refused; any other
+# AssertionError or ValueError is a bug
 _SOURCE_ERRORS = (
+    AdapterSourceError,
     FileNotFoundError,
     NotADirectoryError,
     IsADirectoryError,
     PermissionError,
-    ValueError,
-    KeyError,
-    AssertionError,
+    json.JSONDecodeError,
     SafetensorError,
 )
 
@@ -533,8 +540,10 @@ class LegacyTinkerCheckpointLoader:
     def __init__(self, model, slot_optimizer: SlotOptimizer, run: AdapterParametrization, load_optimizer: bool):
         self._model, self._optimizer, self._run, self._load_optimizer = model, slot_optimizer, run, load_optimizer
 
-    def parametrization(self, path: Path) -> AdapterParametrization:
-        return replace(self._run, lora_alpha=_read_legacy_meta(path, self._run)["lora_alpha"])
+    def parametrization(self, path: Path) -> tuple[AdapterParametrization, bool]:
+        alpha = _read_legacy_meta(path, self._run)["lora_alpha"]
+        _assert_has_legacy_optimizer_state(path, dcp.FileSystemReader(path).read_metadata().state_dict_metadata)
+        return replace(self._run, lora_alpha=alpha), True
 
     def prepare(self, path: Path) -> tuple[Path, dict]:
         error, weights = None, None
@@ -551,6 +560,12 @@ class LegacyTinkerCheckpointLoader:
     def apply(self, prepared: tuple[Path, dict]) -> None:
         path, shells = prepared
         _load_legacy_slot(shells, self._optimizer, str(path), self._load_optimizer)
+
+
+def _assert_has_legacy_optimizer_state(path: Path, state_dict_metadata: Iterable[str]) -> None:
+    # main always saved it; a weights-only load reads the saved masters too (see _load_legacy_slot)
+    if not any(_LEGACY_OPTIMIZER_KEY.match(k) for k in state_dict_metadata):
+        raise AdapterSourceError(f"{path} holds no optimizer state, which every legacy slot load reads")
 
 
 # a gateway-wide layout setting -> the launch flag that restores a checkpoint saved under `value`
@@ -570,6 +585,7 @@ def _read_legacy_meta(path: Path, run: AdapterParametrization) -> dict:
         "experts_shared_outer_loras": False,
         **json.loads((path / "META.json").read_text()),
     }
+    require_fields(meta, ("base_model", "lora_rank", "lora_alpha"), path / "META.json")
     run = asdict(run)
     for field in ("base_model", "lora_rank", "lora_type", "experts_shared_outer_loras"):
         if meta[field] != run[field]:
@@ -579,7 +595,7 @@ def _read_legacy_meta(path: Path, run: AdapterParametrization) -> dict:
                     f". The adapter layout is set per gateway: restore it on one launched with "
                     f"{_GATEWAY_LAYOUT_FLAGS[field](meta[field])}"
                 )
-            raise ValueError(message)
+            raise AdapterSourceError(message)
     return meta
 
 
@@ -609,8 +625,8 @@ def _load_legacy_slot(shells: dict, slot_optimizer: SlotOptimizer, path: str, lo
         slot_optimizer.load_sharded_state(loaded[_OPTIM_KEY])
         if not load_optimizer:
             slot_optimizer.reset_adam_state()
-        # dist_checkpointing.load leaves factory-built (grouped-expert) adapter weights unwritten (root cause open); the
-        # loaded masters are authoritative
+        # factory-built (grouped-expert) adapter weights come back unwritten (likely: dist_checkpointing.load writes
+        # them only into the returned dict); the loaded masters are authoritative
         for child in slot_optimizer.chained_optimizers:
             child._copy_main_params_to_model_params()
     except Exception as exc:
