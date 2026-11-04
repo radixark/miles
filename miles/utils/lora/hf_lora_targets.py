@@ -289,6 +289,13 @@ def get_hf_lora_targets(hf_config: dict) -> HfLoraTargets:
     )
 
 
+def unembed_lora_targets(targets: list[str], hf_config: dict) -> list[str]:
+    """The resolved HF targets that adapt the output layer."""
+    spec = _HF_LORA_MODELS.get(hf_config["model_type"])
+    unembed = spec.unembed if spec is not None else _HfLoraModelSpec.unembed
+    return [target for target in targets if matches_lora_target(unembed, target)]
+
+
 def resolve_hf_lora_targets(hf_config: dict, *, target_modules: list[str] | None = None) -> list[str]:
     if target_modules is None or target_modules == ["all-linear"]:
         layout = get_hf_lora_targets(hf_config)

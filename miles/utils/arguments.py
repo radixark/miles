@@ -43,6 +43,7 @@ from miles.utils.file_arg_utils import resolve_file_arg
 from miles.utils.hf_utils.config import is_dsa, load_hf_config
 from miles.utils.logging_utils import configure_logger_raw
 from miles.utils.lora.arguments import validate_lora_args, validate_lora_args_after_megatron
+from miles.utils.lora.hf_lora_targets import unembed_lora_targets
 from miles.utils.lora.utils import is_lora_enabled, lora_sync_sends_base
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
 from miles.utils.object_store_config import (
@@ -803,11 +804,29 @@ def _validate_fused_lm_head_args(args) -> None:
     # the raw flag: args.multi_lora is derived from it later, in validate_lora_args
     if args.multi_lora_n_adapters > 0:
         raise ValueError("--log-probs-backend fused_lm_head does not support multi-LoRA (--multi-lora-n-adapters)")
+    # Megatron runs the combined 1F1B schedule only with this overlap, and that schedule takes no output_processor
+    if args.overlap_moe_expert_parallel_comm:
+        raise ValueError(
+            "--log-probs-backend fused_lm_head does not support --overlap-moe-expert-parallel-comm (combined 1F1B)"
+        )
     # Megatron computes the MTP loss inside GPTModel's postprocess, before the output_processor runs
     if args.enable_mtp_training:
         logger.warning(
             "--log-probs-backend fused_lm_head does not cover the MTP heads: with --enable-mtp-training each MTP "
             "layer's loss still materializes its fp32 logits, [tokens x vocab/TP] per layer"
+        )
+
+
+def _validate_fused_lm_head_lora_targets(args) -> None:
+    """Bridge wraps a LoRA-adapted output layer in LoRALinear, which has none of the Megatron layer's attributes
+    fused_lm_head reads."""
+    if args.log_probs_backend != "fused_lm_head" or not is_lora_enabled(args):
+        return
+    adapted = unembed_lora_targets(args.hf_lora_targets, load_hf_config(args.hf_checkpoint).to_dict())
+    if adapted:
+        raise ValueError(
+            f"--log-probs-backend fused_lm_head does not support LoRA on the output layer ({adapted}); "
+            "leave it out of --target-modules, e.g. --target-modules attn,mlp"
         )
 
 
@@ -1161,6 +1180,7 @@ def miles_validate_args(args):
         assert args.save is not None, "'--save' is required when custom_megatron_post_save_hook_path is set."
 
     validate_lora_args(args)
+    _validate_fused_lm_head_lora_targets(args)
     _resolve_data_source_path(args)
 
     assert not (args.kl_coef != 0 and args.kl_loss_coef != 0), "Only one of kl_coef and kl_loss_coef can be set"
