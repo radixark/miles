@@ -320,16 +320,17 @@ class TestRolloutOnlyAdapter:
             self._validate(tmp_path)
 
 
-def test_multi_lora_bridge_refuses_a_model_without_hf_lora_layout(monkeypatch):
-    """Multi-LoRA always builds the adapter slots, which need the layout, even without --save-hf / --save."""
+def _bridge_args_without_layout(monkeypatch, *, multi_lora=False, **overrides):
     hf_config = SimpleNamespace(model_type="gpt2", to_dict=lambda: {"model_type": "gpt2"})
     monkeypatch.setattr(lora_arguments, "load_hf_config", lambda path: hf_config)
-    monkeypatch.setattr(lora_arguments, "validate_multi_lora_args", lambda args: setattr(args, "multi_lora", True))
+    monkeypatch.setattr(
+        lora_arguments, "validate_multi_lora_args", lambda args: setattr(args, "multi_lora", multi_lora)
+    )
     monkeypatch.setattr(lora_arguments, "_resolve_lora_targets", lambda args, config: ["h.0.attn.c_attn"])
     monkeypatch.setattr(
         "miles.backends.megatron_utils.lora.target_modules.check_fused_lora_selection", lambda *a, **k: None
     )
-    args = Namespace(
+    fields = dict(
         train_backend="megatron",
         megatron_to_hf_mode="bridge",
         hf_checkpoint="/hf",
@@ -342,7 +343,36 @@ def test_multi_lora_bridge_refuses_a_model_without_hf_lora_layout(monkeypatch):
         debug_rollout_only=False,
         save_hf=None,
         eval_hf_dir=None,
+        eval_uses_snapshots=False,
         save=None,
+        indep_dp=False,
+        non_persistent_ckpt_type=None,
     )
+    return Namespace(**(fields | overrides))
+
+
+def _validate(args):
+    lora_arguments.validate_lora_args(args)
+    lora_arguments.validate_lora_args_after_megatron(args)
+
+
+def test_only_runs_that_read_the_adapter_slots_need_the_hf_lora_layout(monkeypatch):
+    """The adapter slots, which need the layout, are built for HF snapshot exports and the --save adapter dir."""
+    monkeypatch.setattr(lora_arguments, "_validate_adapter_state_args", lambda args: None)
+    _validate(_bridge_args_without_layout(monkeypatch))
+    for reader in (dict(save_hf="/hf_out"), dict(save="/save")):
+        with pytest.raises(AssertionError, match="HF LoRA target layout"):
+            _validate(_bridge_args_without_layout(monkeypatch, **reader))
+
+
+def test_an_eval_hf_dir_without_eval_snapshots_needs_no_layout(monkeypatch):
+    """Only eval snapshots export to --eval-hf-dir; the actor publishes nothing for it otherwise."""
+    _validate(_bridge_args_without_layout(monkeypatch, eval_hf_dir="/eval"))
     with pytest.raises(AssertionError, match="HF LoRA target layout"):
-        lora_arguments.validate_lora_args(args)
+        _validate(_bridge_args_without_layout(monkeypatch, eval_hf_dir="/eval", eval_uses_snapshots=True))
+
+
+def test_multi_lora_bridge_refuses_a_model_without_hf_lora_layout(monkeypatch):
+    """Multi-LoRA builds the adapter slots its sampler exports read, even without --save-hf / --save."""
+    with pytest.raises(AssertionError, match="HF LoRA target layout"):
+        _validate(_bridge_args_without_layout(monkeypatch, multi_lora=True))

@@ -2,7 +2,7 @@
 
 import json
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal, Protocol
 
@@ -50,11 +50,23 @@ from miles.utils.lora.hf_lora_targets import HfLoraTargets
 TRAINING_STATE_FILENAME = "training_state.json"
 
 
+@dataclass(frozen=True)
+class HeadRows:
+    """The head's lora_B, whose rows follow a vocabulary: a source may hold more rows than the run trains (an HF
+    export over ``vocab_size``, a backend's padding), and the run keeps its first ones, as its exports trim the rest.
+    """
+
+    key: str  # the HF key adapter_state/ holds it under, e.g. "lm_head.lora_B"
+    max_source_rows: int
+
+
 class AdapterCheckpointMembers(Protocol):
     """The checkpoint members every backend's AdapterSlots implements; they never touch files."""
 
-    # the names export_bf16_adapter yields: HF module paths
+    # naming of export_bf16_adapter's names; picks the mapper to HF keys
     bf16_adapter_key_style: Literal["peft"]
+    # the trained head's lora_B, or None when the adapter has no head
+    head_rows: HeadRows | None
 
     def export_bf16_adapter(self, slot: int) -> Iterable[tuple[str, torch.Tensor]]:
         """Collective; whole bf16 tensors on rank 0, nothing elsewhere."""
@@ -122,16 +134,29 @@ def _assert_real_rank(specs: list[LocalShardSpec], lora_rank: int) -> None:
         ), f"{spec.key}: rank {spec.global_shape[rank_axis]} != {lora_rank}"
 
 
+def _hf_key_mapper(members: AdapterCheckpointMembers):
+    return {"peft": map_peft_keys_to_hf_keys}[members.bf16_adapter_key_style]
+
+
 def _hf_keyed_bf16_adapter(
     named_tensors: list[tuple[str, torch.Tensor]],
     members: AdapterCheckpointMembers,
     parametrization: AdapterParametrization,
     targets: HfLoraTargets,
 ) -> dict[str, torch.Tensor]:
-    map_name = {"peft": map_peft_keys_to_hf_keys}[members.bf16_adapter_key_style]
-    weights, fused_groups = map_named_tensors_to_hf_keys(named_tensors, map_name, targets)
+    weights, fused_groups = map_named_tensors_to_hf_keys(named_tensors, _hf_key_mapper(members), targets)
     # the export names a shared A once per module; the writers expect it once per group
     return _collapse_shared_lora_a(weights, parametrization, fused_groups)
+
+
+def _stacked_expert_keys(named_tensors: list[tuple[str, torch.Tensor]], map_name) -> frozenset[str]:
+    """The HF keys the export names as one stacked experts tensor: the base checkpoint's packed form."""
+    keys = set()
+    for name, tensor in named_tensors:
+        hf_key = map_name(name)
+        if hf_key.expert_index is None and ".experts." in hf_key.key and tensor.dim() == 3:
+            keys.add(hf_key.key)
+    return frozenset(keys)
 
 
 def _is_writer() -> bool:
@@ -152,7 +177,8 @@ def write_peft_export(
         named_tensors = [(key, tensor.cpu()) for key, tensor in members.export_bf16_adapter(slot)]
         if _is_writer():
             weights = _hf_keyed_bf16_adapter(named_tensors, members, parametrization, targets)
-            write_peft_adapter(directory, weights, parametrization, targets)
+            stacked_keys = _stacked_expert_keys(named_tensors, _hf_key_mapper(members))
+            write_peft_adapter(directory, weights, parametrization, targets, stacked_keys=stacked_keys)
     except Exception as exc:
         error = exc
     raise_if_any_rank_failed(error)
@@ -224,9 +250,21 @@ def _assert_has_keys(weights: dict[str, torch.Tensor], keys: set[str]) -> None:
     assert not missing, f"the source lacks tensors the run trains: {sorted(missing)}"
 
 
-def _weights_only_state(weights: dict[str, torch.Tensor], specs: list[LocalShardSpec]) -> AdapterState:
+def _weights_only_state(
+    weights: dict[str, torch.Tensor], specs: list[LocalShardSpec], head_rows: HeadRows | None
+) -> AdapterState:
     _assert_has_keys(weights, {s.key for s in specs})
-    return _with_zero_moments(specs, [_slice(weights[s.key], s).float() for s in specs])
+    return _with_zero_moments(specs, [_slice(_served_rows(weights[s.key], s, head_rows), s).float() for s in specs])
+
+
+def _served_rows(full: torch.Tensor, spec: LocalShardSpec, head_rows: HeadRows | None) -> torch.Tensor:
+    if head_rows is None or spec.key != head_rows.key:
+        return full
+    rows, served = full.shape[0], spec.global_shape[0]
+    assert (
+        served <= rows <= head_rows.max_source_rows
+    ), f"{spec.key}: the source has {rows} rows; this run serves {served} and reads up to {head_rows.max_source_rows}"
+    return full[:served]
 
 
 def _with_run_alpha_if_unknown(source: AdapterParametrization, run: AdapterParametrization) -> AdapterParametrization:
@@ -290,6 +328,10 @@ def load_adapter_dir(
 
     All ranks call. A failure on one rank fails every rank before the next collective.
     Alpha is not checked here: the caller owns it (Tinker adopts the source's, RL compares it to ``--lora-alpha``).
+
+    A source that needs conversion (PEFT, external weights, another parametrization) is read whole on every rank:
+    about 6 bytes of host memory per source element for a bf16 file (its tensors and their fp32 upcast), e.g.
+    ~41 GB per rank and ~330 GB per 8-rank node for a rank-16 adapter on every DeepSeek-V3 expert.
     """
     kind, error = None, None
     try:
@@ -344,7 +386,8 @@ def load_adapter_dir(
     else:
         state = None
         try:
-            state = _weights_only_state(apply_parametrization_conversion(reader.read_weights(), steps), specs)
+            weights = apply_parametrization_conversion(reader.read_weights(), steps)
+            state = _weights_only_state(weights, specs, members.head_rows)
         except Exception as exc:
             error = exc
         raise_if_any_rank_failed(error)
