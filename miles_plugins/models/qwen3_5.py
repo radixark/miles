@@ -13,7 +13,7 @@ from transformers.models.qwen3_next.modeling_qwen3_next import Qwen3NextRMSNorm
 
 from miles.backends.megatron_utils.megatron_to_hf.linear_attn_layout import gdn_heads
 from miles.utils.hf_utils.config import load_hf_config
-from miles_plugins.models.linear_attn import GatedDeltaNet, LinearAttentionLayer
+from miles_plugins.models.linear_attn import GatedDeltaNet, LinearAttentionLayer, miles_ext
 
 
 def _get_text_config(hf_config):
@@ -30,11 +30,14 @@ class _TEZeroCenteredRMSNorm(te.RMSNorm):
     set_extra_state = nn.Module.set_extra_state
 
 
-def gdn_input_layernorm(kind: str, hidden_size: int, eps: float, params_dtype: torch.dtype) -> nn.Module:
-    """``weight`` holds w of the ``(1 + w)`` scale under either kernel, so checkpoints and conversion see the same
-    parameter."""
+def gdn_input_layernorm(kind: str, hidden_size: int, eps: float, params_dtype: torch.dtype, args=None) -> nn.Module:
+    """``weight`` holds w of the ``(1 + w)`` scale under every kernel, so checkpoints and conversion see the same
+    parameter. ``kind`` 'cake' runs the Cake kernels of the miles-ext-kernels submodule, configured by ``args`` (the
+    parsed miles arguments); the norm refuses a hidden size they do not serve and compiles them when it is built."""
     if kind == "hf":
         return Qwen3NextRMSNorm(hidden_size, eps=eps)
+    if kind == "cake":
+        return miles_ext("rmsnorm", args).ZeroCenteredRMSNorm(hidden_size, eps, params_dtype=params_dtype)
     return _TEZeroCenteredRMSNorm(hidden_size, eps=eps, zero_centered_gamma=True, params_dtype=params_dtype)
 
 
@@ -72,7 +75,11 @@ class Attention(LinearAttentionLayer):
             args=args,
         )
         input_layernorm = gdn_input_layernorm(
-            args.linear_attention_input_norm, text_config.hidden_size, text_config.rms_norm_eps, config.params_dtype
+            args.linear_attention_input_norm,
+            text_config.hidden_size,
+            text_config.rms_norm_eps,
+            config.params_dtype,
+            args=args,
         )
         super().__init__(config, linear_attn, input_layernorm, pg_collection, allgather_cp=args.allgather_cp)
 

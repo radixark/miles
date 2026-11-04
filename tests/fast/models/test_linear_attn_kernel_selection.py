@@ -232,6 +232,18 @@ def test_the_output_norm_variant_needs_the_cake_output_norm():
         parse_megatron_test_config("--use-miles-ext-kernels", "--cake-gated-rmsnorm-variant", "det")
 
 
+def test_the_cake_input_norm_resolves_its_variant():
+    config = parse_megatron_test_config("--use-miles-ext-kernels", "--linear-attention-input-norm", "cake")
+
+    assert config.linear_attention_input_norm == "cake"
+    assert config.miles_ext_kernels_args["cake_rmsnorm_variant"] == "fast"
+
+
+def test_the_input_norm_variant_needs_the_cake_input_norm():
+    with pytest.raises(ValueError, match="--cake-rmsnorm-variant requires"):
+        parse_megatron_test_config("--use-miles-ext-kernels", "--cake-rmsnorm-variant", "det")
+
+
 def test_short_conv_backend_respects_fla_conv_backend(monkeypatch):
     monkeypatch.setenv("FLA_CONV_BACKEND", "cuda")
     assert linear_attn.short_conv_backend.__wrapped__() == "cuda"

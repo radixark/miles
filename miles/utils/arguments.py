@@ -80,8 +80,9 @@ CAKE_BACKEND_ARGS = (
     "kda_backend",
     "linear_attention_conv_backend",
     "linear_attention_output_norm_backend",
+    "linear_attention_input_norm",
 )
-LINEAR_ATTENTION_INPUT_NORMS = ("te", "hf")
+LINEAR_ATTENTION_INPUT_NORMS = ("te", "hf", "cake")
 
 FULLY_ASYNC_ROLLOUT_PATH = "miles.rollout.fully_async_rollout.FullyAsyncRolloutFn"
 

@@ -1,8 +1,11 @@
+import argparse
 import importlib
+import sys
 from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
+import torch
 from tests.fast.fixtures.args_fixtures import make_trainer_config
 from tests.fast.miles_plugins.models.qwen3_8_next.conftest import gdn
 
@@ -105,3 +108,32 @@ class TestBackendOwnedSpecs:
             module.Qwen38NextLinearAttention if family.startswith("qwen3_8") else module.Attention
         )
         assert args.model_dump() == original
+
+
+def test_a_cake_gdn_input_norm_is_the_kernel_package_norm(monkeypatch: pytest.MonkeyPatch, gdn: ModuleType) -> None:
+    """--linear-attention-input-norm cake: the Qwen3.5 / Qwen3-Next GDN input norm is the package's zero-centred
+    RMSNorm, configured with the run's values, holding the single weight parameter of the te and hf norms."""
+    qwen3_5 = importlib.import_module("miles_plugins.models.qwen3_5")
+    calls: list[tuple] = []
+
+    class ZeroCenteredRMSNorm(torch.nn.Module):
+        def __init__(self, hidden_size: int, eps: float, *, params_dtype: torch.dtype) -> None:
+            super().__init__()
+            calls.append(("build", hidden_size, eps, params_dtype))
+            self.weight = torch.nn.Parameter(torch.zeros(hidden_size, dtype=params_dtype))
+
+    package = ModuleType("miles_ext_kernels.rmsnorm")
+    package.configure = lambda namespace: calls.append(("configure", namespace))
+    package.ZeroCenteredRMSNorm = ZeroCenteredRMSNorm
+    monkeypatch.setitem(sys.modules, "miles_ext_kernels", ModuleType("miles_ext_kernels"))
+    monkeypatch.setitem(sys.modules, "miles_ext_kernels.rmsnorm", package)
+    args = SimpleNamespace(miles_ext_kernels_args={"cake_rmsnorm_variant": "det"})
+
+    norm = qwen3_5.gdn_input_layernorm("cake", 4096, 1e-6, torch.bfloat16, args=args)
+
+    assert isinstance(norm, ZeroCenteredRMSNorm)
+    assert list(norm.state_dict()) == ["weight"]
+    assert calls == [
+        ("configure", argparse.Namespace(cake_rmsnorm_variant="det")),
+        ("build", 4096, 1e-6, torch.bfloat16),
+    ]

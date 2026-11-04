@@ -65,6 +65,7 @@ CAKE_CHOICE_DEFAULTS = {
     "kda_backend": "fla",
     "linear_attention_conv_backend": "fla",
     "linear_attention_output_norm_backend": "fla",
+    "linear_attention_input_norm": "te",
 }
 _P2P_ARGS = ["--update-weight-transfer-mode", "p2p"]
 DYNAMIC_BATCH_ARGS = ["--use-dynamic-batch-size", "--max-tokens-per-gpu", "1024"]

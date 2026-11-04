@@ -32,11 +32,14 @@ class TrainConfig(BaseConfig):
     linear_attention_input_norm: A[
         str,
         Arg(
-            choices=("te", "hf"),
+            choices=("te", "hf", "cake"),
             help=(
                 "Input RMSNorm of the Qwen3.5 / Qwen3-Next GDN layers, zero-centred ((1 + w) scale, fp32 math) "
                 "either way. 'te' is Transformer Engine's fused kernel; 'hf' is the eager HF Qwen3NextRMSNorm "
-                "these layers used before, kept to reproduce its numerics (same math, slower)."
+                "these layers used before, kept to reproduce its numerics (same math, slower). 'cake' is the Cake "
+                "fused RMSNorm from the miles-ext-kernels submodule (--cake-rmsnorm-variant det or fast); it "
+                "requires --use-miles-ext-kernels, NVIDIA SM100a/SM103a (Blackwell) and a hidden size the kernels "
+                "serve; the layer refuses others when it is built (for example Qwen3.5-4B's 2560)."
             ),
         ),
     ] = "te"

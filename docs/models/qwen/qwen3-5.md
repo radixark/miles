@@ -127,6 +127,7 @@ Other parts of the layer run on Cake kernels too, each with its own flag:
 
 - the short conv: `--linear-attention-conv-backend cake`.
 - the SiLU-gated output norm: `--linear-attention-output-norm-backend cake`.
+- the input norm: `--linear-attention-input-norm cake` (Qwen3.5-35B-A3B, 9B and 27B widths; the kernels do not serve Qwen3.5-4B's 2560 or 0.8B's 1024).
 
 `cake` is the backend for true-on-policy runs that need reproducible gradients. `tests/fast-gpu/kernels/test_miles_ext_kernels.py` runs the submodule's GDN kernel tests (both variants), `tests/e2e/precision/test_qwen_gdn_tp_cp_parity.py` checks the `det` layer against `fla` under TP=2, CP=2 and TP=2 × CP=2 for both HF projection layouts, and `tests/e2e/megatron/test_qwen3_5_4B_gdn_cake.py` runs Qwen3.5-4B GRPO on it (`MILES_GDN_CAKE_VARIANT=det|fast`).
 
