@@ -53,6 +53,16 @@ class OwnershipError(Exception):
     """model/checkpoint does not belong to the caller's tenant."""
 
 
+@dataclass(frozen=True)
+class ImportConfig:
+    # load_state reads file:// adapters only from under here (weights only)
+    root: str
+    # bytes a file:// import may copy onto the checkpoint disk
+    max_bytes: int
+    # bytes of one imported JSON, which the gateway and every trainer rank parse whole
+    json_max_bytes: int
+
+
 @dataclass
 class GatewayConfig:
     base_model: str
@@ -76,12 +86,8 @@ class GatewayConfig:
     trains_attn: bool = True
     trains_mlp: bool = True
     trains_unembed: bool = False
-    # load_state reads file:// adapters only from under here (weights only); None refuses file://
-    import_root: str | None = None
-    # bytes a file:// import may copy onto the checkpoint disk; set whenever import_root is
-    import_max_bytes: int | None = None
-    # bytes of one imported JSON, which the gateway and every trainer rank parse whole; set whenever import_root is
-    import_json_max_bytes: int | None = None
+    # None refuses file:// adapters
+    imports: ImportConfig | None = None
     # download URLs are built from it; None: from the URL each request arrived at, wrong behind an ingress
     public_url: str | None = None
     lease_timeout_s: float = 300.0  # sessions stale beyond this lose their sampling, models, and slots

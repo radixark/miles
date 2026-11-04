@@ -19,7 +19,7 @@ from miles.backends.training_utils.checkpoint.adapter.parametrization import (
 from miles.backends.training_utils.checkpoint.io import write_checkpoint_dir
 from miles.tinker.core.future import DONE, PENDING, RequestFuture
 from miles.tinker.core.service import TinkerService
-from miles.tinker.core.types import Command, CommandOp, GatewayConfig
+from miles.tinker.core.types import Command, CommandOp, GatewayConfig, ImportConfig
 from miles.tinker.runtime import (
     IMPORTED_ADAPTER_FILES,
     LOADED_ADAPTER_FILES,
@@ -219,9 +219,13 @@ def make_config(checkpoint_root, **overrides) -> GatewayConfig:
         checkpoint_root=str(checkpoint_root),
         vocab_size=128000,
         exports_tinker_names=True,
-        import_max_bytes=1 << 20,
-        import_json_max_bytes=1 << 20,
     )
+    # tests name the import root and caps flat; the config holds them together
+    import_root = overrides.pop("import_root", None)
+    max_bytes = overrides.pop("import_max_bytes", 1 << 20)
+    json_max_bytes = overrides.pop("import_json_max_bytes", 1 << 20)
+    if import_root is not None:
+        overrides["imports"] = ImportConfig(root=import_root, max_bytes=max_bytes, json_max_bytes=json_max_bytes)
     return GatewayConfig(**{**defaults, **overrides})
 
 

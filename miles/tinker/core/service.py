@@ -617,15 +617,16 @@ class TinkerService:
     def _copy_import(self, uri: str, wanted: Callable[[str], bool]) -> str:
         """Copy a file:// import's adapter files, opened beneath the import root without following symlinks, into a
         gateway-owned dir."""
-        if self.config.import_root is None:
+        imports = self.config.imports
+        if imports is None:
             raise UserInputError("this gateway imports no file:// adapters; start it with --tinker-import-root")
         return copy_import(
             uri,
-            self.config.import_root,
+            imports.root,
             self.config.checkpoint_root,
             wanted,
-            max_bytes=self.config.import_max_bytes,
-            json_max_bytes=self.config.import_json_max_bytes,
+            max_bytes=imports.max_bytes,
+            json_max_bytes=imports.json_max_bytes,
             refused_entries=self.backend.refused_import_entries,
         )
 

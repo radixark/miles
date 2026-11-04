@@ -39,7 +39,7 @@ from miles.backends.training_utils.checkpoint.adapter.parametrization import (
 from miles.tinker.core.checkpoint_expiry import CheckpointExpiry
 from miles.tinker.core.future import DONE, FAILED
 from miles.tinker.core.imports import IMPORT_COPIES_DIRNAME
-from miles.tinker.core.types import NotFoundError, OwnershipError, UserInputError
+from miles.tinker.core.types import GatewayConfig, ImportConfig, NotFoundError, OwnershipError, UserInputError
 from miles.tinker.core.utils import resolve_checkpoint_dir, resolve_sampler_checkpoint
 
 
@@ -2285,3 +2285,18 @@ async def test_a_checkpoint_name_linked_outside_the_library_is_a_user_error_on_e
         with pytest.raises(UserInputError, match="this library did not write"):
             await call
     assert shared.is_dir(), "the foreign dir is never touched"
+
+
+def test_an_import_root_cannot_be_configured_without_its_caps(tmp_path):
+    """A root without caps once reached the copy as None and raised a TypeError that stopped the dispatcher."""
+    with pytest.raises(TypeError):
+        GatewayConfig(
+            base_model="base",
+            n_slots=1,
+            checkpoint_root=str(tmp_path),
+            vocab_size=8,
+            exports_tinker_names=True,
+            import_root=str(tmp_path / "imports"),
+        )
+    with pytest.raises(TypeError):
+        ImportConfig(root=str(tmp_path / "imports"), max_bytes=1 << 20)
