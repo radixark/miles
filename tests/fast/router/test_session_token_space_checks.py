@@ -276,6 +276,20 @@ class TestEngineExpansionCheck:
             assert b"--enable-token-space-processor" in response.content
 
 
+class TestScreenshotFolding:
+    def test_a_history_with_an_old_screenshot_dropped_branches_at_a_new_root(self, vlm, tmp_path):
+        with session_server(vlm, tmp_path) as env:
+            session_id = _create_session(env.url)
+            first = chat(env, session_id, [user_turn(SHOT1, "one")]).json()["choices"][0]["message"]
+            history = [user_turn(SHOT1, "one"), first, user_turn(SHOT2, "two")]
+            second = chat(env, session_id, history).json()["choices"][0]["message"]
+            folded = [user_turn(None, "one"), first, user_turn(None, "two"), second, user_turn(SHOT1_TWIN, "three")]
+            response = chat(env, session_id, folded)
+            assert response.status_code == 200, response.content
+            assert env.backend.calls[-1]["mm_token_expansion_start_len"] == 0
+            assert len(collect(env, session_id)) == 2
+
+
 class TestRetryPicker:
     def test_a_same_size_sibling_with_another_screenshot_is_not_a_retry(self, vlm, tmp_path):
         with session_server(vlm, tmp_path) as env:
