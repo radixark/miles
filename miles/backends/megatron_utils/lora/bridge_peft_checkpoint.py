@@ -260,7 +260,8 @@ class MegatronBridgeCheckpointLoader:
         """Collective: the DistributedOptimizer's sharded state to load into, built once its offloaded state exists."""
         state, error = None, None
         try:
-            # building it runs Megatron's load_state_dict
+            # sharded_state_dict(is_loading=True) runs Megatron's load_state_dict, which would dummy-step an empty
+            # HDO state
             _zero_init_empty_hdo_states(_distributed_optimizers(self._optimizer))
             state = self._optimizer.sharded_state_dict(
                 dict(zip(names, model_state_dicts, strict=True)), is_loading=True, metadata=metadata
