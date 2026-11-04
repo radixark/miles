@@ -236,20 +236,22 @@ class DistributedOptimizerMembers:
         holds = self._holds()
         params = self._slots.slot_parameters(0)
         specs = self._slots.local_shard_specs(0, holds)
+        # each piece is cut from the one led parameter it comes from; parameters led elsewhere are never read
+        sources = self._slots.piece_parameter(0, holds)
+
+        def cut(tensor: torch.Tensor, offsets: torch.Tensor) -> torch.Tensor:
+            return tensor.detach().reshape(-1)[offsets.flatten().to(tensor.device)]
 
         def pieces(key: str) -> list[torch.Tensor]:
-            if not holds:
-                # a rank that leads no DP group writes no pieces
-                return []
-            aligned = [whole[i][key] if i in whole else p.detach().float().cpu() for i, p in enumerate(params)]
             return [
-                piece.reshape(spec.local_shape)
-                for piece, spec in zip(self._slots.local_pieces(0, aligned, holds), specs, strict=True)
+                cut(whole[index][key], offsets).reshape(spec.local_shape)
+                for (index, offsets), spec in zip(sources, specs, strict=True)
             ]
 
         assert holds <= whole.keys(), "a led adapter parameter is outside every DistributedOptimizer"
         weights = pieces("param")
-        for weight, bf16 in zip(weights, self._slots.local_pieces(0, params, holds), strict=True):
+        for weight, (index, offsets) in zip(weights, sources, strict=True):
+            bf16 = cut(params[index], offsets)
             assert torch.equal(
                 weight.to(bf16), bf16.reshape(weight.shape)
             ), "a bf16 adapter parameter is not its master"

@@ -267,7 +267,6 @@ def _expert_dp_round_trip(rank, world_size, port):
     slots = SimpleNamespace(
         slot_parameters=lambda slot: params,
         local_shard_specs=lambda slot, holds: [SimpleNamespace(local_shape=params[i].shape) for i in sorted(holds)],
-        local_pieces=lambda slot, tensors, holds: [tensors[i] for i in sorted(holds)],
         piece_parameter=lambda slot, holds: [(i, torch.arange(params[i].numel())) for i in sorted(holds)],
     )
 
@@ -301,3 +300,38 @@ def test_each_distributed_optimizers_gloo_leader_exports_and_imports_its_paramet
     hung = process.is_alive()
     process.kill()
     assert not hung and process.exitcode == 0
+
+
+class _LedElsewhere(torch.Tensor):
+    """A parameter another rank leads: exporting this rank's pieces must never read or copy it."""
+
+    def detach(self):
+        raise AssertionError("a parameter this rank does not lead was read")
+
+    def float(self):
+        raise AssertionError("a parameter this rank does not lead was copied")
+
+
+def test_an_export_reads_only_the_parameters_this_rank_leads(monkeypatch):
+    master = torch.tensor([[1.0, 2.0]])
+    led, elsewhere = torch.nn.Parameter(master.bfloat16()), torch.zeros(3, 4).as_subclass(_LedElsewhere)
+    elsewhere.allreduce = False
+    # this rank leads its dense DP group but not its expert DP group
+    monkeypatch.setattr(
+        lora_checkpoint,
+        "get_parallel_state",
+        lambda: SimpleNamespace(intra_dp_cp=SimpleNamespace(rank=0), edp=SimpleNamespace(rank=1)),
+    )
+    dense = _DpZeroOptimizer(led, master, SimpleNamespace(rank=lambda: 0))
+    expert = _DpZeroOptimizer(elsewhere, torch.zeros(3, 4), SimpleNamespace(rank=lambda: 1))
+    params = [led, elsewhere]
+    slots = SimpleNamespace(
+        slot_parameters=lambda slot: params,
+        local_shard_specs=lambda slot, holds: [SimpleNamespace(local_shape=led.shape)],
+        piece_parameter=lambda slot, holds: [(0, torch.arange(2))],
+    )
+    members = lora_checkpoint.DistributedOptimizerMembers(
+        slots, SimpleNamespace(chained_optimizers=[dense, expert]), [], precision_aware=False
+    )
+    state = members.export_adapter_state(0)
+    assert torch.equal(state.weights[0], master) and torch.equal(state.exp_avgs[0], master + 1)
