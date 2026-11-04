@@ -18,7 +18,7 @@ import pybase64
 import pytest
 import torch
 from tests.fast.fixtures.sglang_config_fixtures import make_sglang_config
-from tests.fast.utils.output_store.test_plan import Ref, Spec, fake_store_refs
+from tests.fast.utils.output_store.test_plan import Ref, Spec, fake_store_refs, read_rows
 
 from miles.rollout.generate_utils import tool_call_utils
 from miles.rollout.generate_utils.generate_endpoint_utils import update_sample_from_response
@@ -199,8 +199,10 @@ def test_store_sample_equals_inline_sample(seed):
         assert store_column.dtype == inline_column.dtype == dtype
         assert torch.equal(store_column, inline_column), (store_column.tolist(), inline_column.tolist())
     if R3 in plan.fields:
-        assert columns["rollout_routed_experts"].dtype == inline.rollout_routed_experts.dtype == np.int32
-        np.testing.assert_array_equal(columns["rollout_routed_experts"], inline.rollout_routed_experts)
+        # The column is the segments; replay reads their rows.
+        rows = read_rows(columns["rollout_routed_experts"], objects)
+        assert rows.dtype == inline.rollout_routed_experts.dtype == np.int32
+        np.testing.assert_array_equal(rows, inline.rollout_routed_experts)
     if mode == "selected":
         assert set(columns).isdisjoint(TOPK_COLUMNS) and inline.rollout_topk_token_ids is None
         return

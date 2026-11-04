@@ -13,9 +13,7 @@ of the run, ``sweep_output_store`` removes what is left under the run's key pref
 from __future__ import annotations
 
 import argparse
-import functools
 import json
-from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from sglang.srt.server_args import ServerArgs
@@ -74,6 +72,12 @@ def check_output_store_args(args: argparse.Namespace, *, sglang: SglangConfig, m
                 "the installed SGLang has no output store "
                 f"(ServerArgs lacks {' or '.join(SGLANG_OUTPUT_STORE_FIELDS)}), "
                 "and Miles drops server args SGLang does not know",
+            ),
+            (
+                not _output_store_reads_ranges(),
+                "the installed radix_transfer_plugins cannot read byte ranges into a ReadBuffer "
+                "(OutputStore.read_buffer, sgl-project/sglang#47320), which trainer ranks need to read only "
+                "their own replay rows; rebuild the image",
             ),
             (
                 use_legacy_rollout_v1(),
@@ -201,14 +205,11 @@ def connect_output_store(config: dict[str, Any]) -> OutputStore:
     return OutputStore(backend=create_backend(_BACKEND, json.dumps(config)))
 
 
-def output_store_reader(args: argparse.Namespace) -> Callable | None:
-    """This train worker's ``read`` for ``materialize_store_columns``, or None without the switch."""
+def trainer_output_store(args: argparse.Namespace) -> OutputStore | None:
+    """This train worker's client of the run's output store, or None without the switch."""
     if not args.use_output_store:
         return None
-    from radix_transfer_plugins.stashes.token_output import TokenOutputStash
-
-    store = connect_output_store(output_store_backend_config(args))
-    return functools.partial(store.read_many, stash_type=TokenOutputStash)
+    return connect_output_store(output_store_backend_config(args))
 
 
 def _max_indexer_topk_bytes(args: argparse.Namespace) -> int | None:
@@ -240,3 +241,11 @@ def _run_key_prefix(args: argparse.Namespace) -> str:
 
 def _sglang_has_output_store() -> bool:
     return set(SGLANG_OUTPUT_STORE_FIELDS) <= set(_record_field_names(ServerArgs))
+
+
+def _output_store_reads_ranges() -> bool:
+    try:
+        from radix_transfer_plugins import OutputStore
+    except ImportError:
+        return False
+    return hasattr(OutputStore, "read_buffer")  # config-access-exempt: probes the plugin version an image ships
