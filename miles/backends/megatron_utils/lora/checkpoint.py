@@ -94,17 +94,21 @@ class LayerWiseSlotMembers:
         holds = frozenset(owned)
         params = self._slots.slot_parameters(slot)
         specs = self._slots.local_shard_specs(slot, holds)
+        # each piece is cut from the one held parameter it comes from; parameters held elsewhere are never read
+        sources = self._slots.piece_parameter(slot, holds)
+
+        def cut(tensor: torch.Tensor, offsets: torch.Tensor) -> torch.Tensor:
+            return tensor.detach().reshape(-1)[offsets.flatten().to(tensor.device)]
 
         def pieces(pick) -> list[torch.Tensor]:
-            # parameters held elsewhere only pad the index space; none of their pieces is taken
-            aligned = [pick(*owned[i]) if i in owned else p.detach().float() for i, p in enumerate(params)]
             return [
-                piece.reshape(spec.local_shape)
-                for piece, spec in zip(self._slots.local_pieces(slot, aligned, holds), specs, strict=True)
+                cut(pick(*owned[index]), offsets).reshape(spec.local_shape)
+                for (index, offsets), spec in zip(sources, specs, strict=True)
             ]
 
         weights = pieces(lambda master, adam, group: master)
-        for weight, bf16 in zip(weights, self._slots.local_pieces(slot, params, holds), strict=True):
+        for weight, (index, offsets) in zip(weights, sources, strict=True):
+            bf16 = cut(params[index], offsets)
             # NaN-safe: a slot that diverged still saves what it holds
             assert torch.allclose(
                 weight.to(bf16.dtype), bf16.reshape(weight.shape), rtol=0, atol=0, equal_nan=True
@@ -483,8 +487,13 @@ class LegacyTinkerCheckpointLoader:
     def parametrization(self, path: Path) -> AdapterParametrization:
         return replace(self._run, lora_alpha=_read_legacy_meta(path, self._run)["lora_alpha"])
 
-    def load(self, path: Path) -> None:
-        _load_legacy_slot(self._model, self._optimizer, str(path), self._load_optimizer)
+    def prepare(self, path: Path) -> tuple[Path, dict]:
+        # a rank that exposes no slot tensors fails here, before any rank enters the collective load
+        return path, _slot_weights_sharded_state_dict(self._model, self._optimizer.slot)
+
+    def apply(self, prepared: tuple[Path, dict]) -> None:
+        path, weights = prepared
+        _load_legacy_slot(weights, self._optimizer, str(path), self._load_optimizer)
 
 
 # a gateway-wide layout setting -> the launch flag that restores a checkpoint saved under `value`
@@ -536,8 +545,7 @@ def _canonicalize_slot_keys(tree: dict, slot: int) -> dict:
     return tree
 
 
-def _load_legacy_slot(model: Sequence[DDP], slot_optimizer: SlotOptimizer, path: str, load_optimizer: bool) -> None:
-    weights = _slot_weights_sharded_state_dict(model, slot_optimizer.slot)
+def _load_legacy_slot(weights: dict, slot_optimizer: SlotOptimizer, path: str, load_optimizer: bool) -> None:
     shells = {_WEIGHTS_KEY: weights, _OPTIM_KEY: slot_optimizer.sharded_state(weights, is_loading=True)}
     _canonicalize_slot_keys(shells, slot_optimizer.slot)
 
@@ -545,8 +553,8 @@ def _load_legacy_slot(model: Sequence[DDP], slot_optimizer: SlotOptimizer, path:
     slot_optimizer.load_sharded_state(loaded[_OPTIM_KEY])
     if not load_optimizer:
         slot_optimizer.reset_adam_state()
-    # the masters are authoritative, also for weights only: main's layout leaves grouped-expert adapter weights
-    # unloaded in the model
+    # main's torch_dist load leaves factory-built (grouped-expert) adapter weights unwritten; masters are
+    # authoritative until that is fixed in main
     for child in slot_optimizer.chained_optimizers:
         child._copy_main_params_to_model_params()
     slot_optimizer.allgather_params()
