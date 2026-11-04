@@ -38,7 +38,6 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --xla_tpu_use_associative_scan_emitter=false", "TORCH_TPU_TIER2_COMPILATION_CACHE": "disabled", "TORCHINDUCTOR_FX_GRAPH_CACHE": "0", "TORCHINDUCTOR_AUTOGRAD_CACHE": "0", "TPU_STDERR_LOG_LEVEL": "1", "TPU_MIN_LOG_LEVEL": "1", "TF_CPP_MIN_LOG_LEVEL": "1", "MILES_ACCELERATOR": "tpu", "MILES_TPU_SHARED_SLICE": "0,8,localhost:30108", "WANDB_X_DISABLE_STATS": "true", "PYTHONPATH": "<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath"}}'
   -- python3 <REPO_ROOT>/train.py 
   --hf-checkpoint /root/models/Qwen3-30B-A3B
-  --ref-load /root/models/Qwen3-30B-A3B 
   --prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl
   --input-key prompt
   --label-key label
@@ -57,10 +56,6 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --eval-max-response-len 7168
   --eval-top-p 1 
   --advantage-estimator grpo
-  --use-kl-loss
-  --kl-loss-coef 0.00
-  --kl-loss-type low_var_kl
-  --kl-coef 0.00
   --entropy-coef 0.00
   --eps-clip 0.2
   --eps-clip-high 0.28 

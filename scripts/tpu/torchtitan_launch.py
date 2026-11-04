@@ -165,7 +165,7 @@ def execute_train(args: ScriptArgs, model: TitanTpuModel, *, launcher_file: str)
     os.environ.setdefault("NCCL_NVLS_ENABLE", "0")
 
     model_path = f"{args.model_dir}/{model.name}"
-    ckpt_args = f"--hf-checkpoint {model_path} --ref-load {model_path} "
+    ckpt_args = f"--hf-checkpoint {model_path}"
 
     rollout_args = (
         f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl "
@@ -192,16 +192,8 @@ def execute_train(args: ScriptArgs, model: TitanTpuModel, *, launcher_file: str)
             "--eval-top-p 1 "
         )
 
-    grpo_args = (
-        "--advantage-estimator grpo "
-        "--use-kl-loss "
-        "--kl-loss-coef 0.00 "
-        "--kl-loss-type low_var_kl "
-        "--kl-coef 0.00 "
-        "--entropy-coef 0.00 "
-        "--eps-clip 0.2 "
-        "--eps-clip-high 0.28 "
-    )
+    # no KL term: its reference model would cost a third compiled pass (~15 min in step 0) for a zero coefficient
+    grpo_args = "--advantage-estimator grpo --entropy-coef 0.00 --eps-clip 0.2 --eps-clip-high 0.28 "
 
     optimizer_args = (
         "--optimizer adam "
