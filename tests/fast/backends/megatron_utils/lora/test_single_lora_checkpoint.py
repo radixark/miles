@@ -47,6 +47,7 @@ def _restore(path, *, convert_save=None, megatron_to_hf_mode="bridge", source_al
         lora_rank=8,
         lora_alpha=16.0,
         lora_type="lora",
+        lora_dropout=0.05,
         experts_shared_outer_loras=False,
         megatron_to_hf_mode=megatron_to_hf_mode,
         multi_lora=False,
@@ -108,6 +109,7 @@ def test_a_weights_only_convert_save_writes_neither_moments_nor_a_placeholder_tr
     _, _, mocks = _restore(tmp_path / "source", convert_save=str(tmp_path / "converted"))
     assert mocks["DistributedOptimizerMembers"].call_args.kwargs["save_moments"] is False
     assert mocks["save_and_commit_adapter_dir"].call_args.kwargs["training_state"] is None
+    assert mocks["save_and_commit_adapter_dir"].call_args.kwargs["lora_dropout"] == 0.05
 
 
 def test_only_the_bridge_backend_loads_a_megatron_bridge_checkpoint(tmp_path):
@@ -491,7 +493,8 @@ class TestLegacyRankShardLoader:
 def test_a_save_records_the_rollout_its_schedule_started_at():
     """Another backend resumes the schedule from the rollout it counts from."""
     args = SimpleNamespace(
-        backend=SimpleNamespace(save="/save", use_precision_aware_optimizer=False, no_save_optim=False)
+        lora_dropout=0.05,
+        backend=SimpleNamespace(save="/save", use_precision_aware_optimizer=False, no_save_optim=False),
     )
     slots = SimpleNamespace(targets=None)
     with patch.multiple(
@@ -502,6 +505,7 @@ def test_a_save_records_the_rollout_its_schedule_started_at():
     ) as mocks:
         lora_checkpoint.save_single_lora([], MagicMock(), None, slots, args, iteration=4, first_rollout=3)
     assert mocks["save_and_commit_adapter_dir"].call_args.kwargs["training_state"]["first_rollout"] == 3
+    assert mocks["save_and_commit_adapter_dir"].call_args.kwargs["lora_dropout"] == 0.05
 
 
 class _DpZeroOptimizer(DistributedOptimizer):

@@ -212,6 +212,8 @@ def write_peft_export(
     slot: int,
     parametrization: AdapterParametrization,
     targets: HfLoraTargets,
+    *,
+    lora_dropout: float,
 ) -> None:
     """All ranks call; rank 0 writes ``slot``'s bf16 PEFT export into ``directory``."""
     _write_bf16_export(
@@ -220,7 +222,7 @@ def write_peft_export(
         slot,
         parametrization,
         targets,
-        lambda *view, stacked_keys: write_peft_adapter(*view, stacked_keys=stacked_keys),
+        lambda *view, stacked_keys: write_peft_adapter(*view, stacked_keys=stacked_keys, lora_dropout=lora_dropout),
     )
 
 
@@ -230,11 +232,18 @@ def write_sampler_view(
     slot: int,
     parametrization: AdapterParametrization,
     targets: HfLoraTargets,
+    *,
+    lora_dropout: float,
 ) -> None:
     """All ranks call; rank 0 writes ``slot``'s bf16 sampler export into ``directory``, outside any commit."""
     # the sampler layout keeps every expert stacked
     _write_bf16_export(
-        directory, members, slot, parametrization, targets, lambda *view, stacked_keys: write_sampler_adapter(*view)
+        directory,
+        members,
+        slot,
+        parametrization,
+        targets,
+        lambda *view, stacked_keys: write_sampler_adapter(*view, lora_dropout=lora_dropout),
     )
 
 
@@ -273,6 +282,7 @@ def save_and_commit_adapter_dir(
     targets: HfLoraTargets,
     *,
     training_state: dict | None = None,
+    lora_dropout: float,
 ) -> CommittedAdapterDir:
     """RL's ``--save``: all ranks write, rank 0 commits over any earlier save of ``name``, then the PEFT export.
 
@@ -290,7 +300,7 @@ def save_and_commit_adapter_dir(
             error = exc
     raise_if_any_rank_failed(error)
     if has_plain_peft_form(parametrization, targets):
-        write_peft_export(written.path, members, slot, parametrization, targets)
+        write_peft_export(written.path, members, slot, parametrization, targets, lora_dropout=lora_dropout)
     elif _is_writer():
         logger.info(f"{written.path}: no PEFT view, as this parametrization has no plain-PEFT form")
     if _is_writer():
@@ -307,6 +317,7 @@ def write_sampler_export(
     targets: HfLoraTargets,
     *,
     tenant_digest: str | None,
+    lora_dropout: float,
 ) -> UncommittedAdapterDir:
     """All ranks call; rank 0 writes ``slot``'s bf16 sampler export. The caller's committer then commits it."""
     with write_adapter_dir(root, name, tenant_digest=tenant_digest) as written:
@@ -314,7 +325,7 @@ def write_sampler_export(
         named_tensors = [(key, tensor.cpu()) for key, tensor in members.export_bf16_adapter(slot)]
         if _is_writer():
             weights = _hf_keyed_bf16_adapter(named_tensors, members, parametrization, targets)
-            write_sampler_adapter(written.path, weights, parametrization, targets)
+            write_sampler_adapter(written.path, weights, parametrization, targets, lora_dropout=lora_dropout)
     return written
 
 
