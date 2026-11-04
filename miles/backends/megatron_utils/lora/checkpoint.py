@@ -610,7 +610,8 @@ def restore_single_lora(
             model, optimizer, run, load_optimizer, precision_aware=args.backend.use_precision_aware_optimizer
         )
     }
-    # a Bridge checkpoint's sharded keys exist only in a Bridge model; argument validation refuses it elsewhere
+    # a Bridge checkpoint's sharded keys exist only in a Bridge model; elsewhere load_adapter_dir refuses it as a kind
+    # this backend cannot load
     if args.megatron_to_hf_mode == "bridge":
         in_model_loaders_by_kind[AdapterSourceKind.MEGATRON_BRIDGE_CHECKPOINT] = MegatronBridgeCheckpointLoader(
             model, optimizer, members, run, load_optimizer
