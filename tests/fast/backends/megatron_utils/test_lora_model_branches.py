@@ -4,7 +4,6 @@ Validates that setup_model_and_optimizer, save, and save_hf_model correctly
 route to LoRA-specific code paths depending on configuration — without GPU.
 """
 
-import json
 from argparse import Namespace
 from unittest.mock import MagicMock, patch
 
@@ -248,22 +247,6 @@ class TestSaveHfModelRawLoRA:
         get_bridge.assert_not_called()
 
 
-def _hf_dir(tmp_path) -> str:
-    """A base whose config.json --save-hf reads for the adapter's base fingerprint."""
-    hf = tmp_path / "hf"
-    hf.mkdir()
-    config = {"model_type": "qwen3", "hidden_size": 8, "num_hidden_layers": 1, "vocab_size": 16}
-    (hf / "config.json").write_text(json.dumps(config | {"num_attention_heads": 2, "num_key_value_heads": 1}))
-    return str(hf)
-
-
-def _fingerprint(hf: str) -> str:
-    from miles.backends.training_utils.checkpoint.adapter.parametrization import base_model_fingerprint
-    from miles.utils.hf_utils.config import load_hf_config
-
-    return base_model_fingerprint(load_hf_config(hf).to_dict())
-
-
 class TestSaveHfModelBridgeLoRA:
     @patch(f"{_HF_EXPORT_MODULE}.write_peft_export")
     @patch(f"{_HF_EXPORT_MODULE}.get_gloo_group")
@@ -300,7 +283,7 @@ class TestSaveHfModelBridgeLoRA:
         slots.slot_spec.return_value = AdapterSpec(slot=0, rank=4, alpha=12.0) if slot_spec else None
         args = Namespace(
             megatron_to_hf_mode="bridge",
-            hf_checkpoint=_hf_dir(tmp_path),
+            hf_checkpoint="/hf",
             save_hf=None,
             lora_rank=8,
             lora_alpha=16.0,
@@ -320,7 +303,7 @@ class TestSaveHfModelBridgeLoRA:
             lora_alpha=alpha,
             lora_type="lora",
             experts_shared_outer_loras=False,
-            base_model_fingerprint=_fingerprint(args.hf_checkpoint),
+            base_model_fingerprint=None,
         )
         peft_export.assert_called_once_with(
             tmp_path / "adapter", slots, 0, slots.parametrization.return_value, slots.targets
