@@ -1,5 +1,3 @@
-"""Bridge row-mapping probe and the run_config.yaml match."""
-
 from dataclasses import replace
 from datetime import timedelta
 from types import SimpleNamespace
