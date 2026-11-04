@@ -78,6 +78,16 @@ class TestRequiredArgumentConstraints:
         with pytest.raises(AssertionError, match=message):
             validate_multi_lora_args(args)
 
+    def test_multi_adapter_training_refuses_save_under_train(self) -> None:
+        """train.py's save() writes single LoRA's adapter dir, which would crash at the first multi-LoRA save."""
+        args = _parse_megatron_args(
+            ["--multi-lora-n-adapters", "2", "--lora-rank", "8", "--megatron-to-hf-mode", "bridge", "--save", "/save"]
+        )
+        args.ft_components = []
+
+        with pytest.raises(AssertionError, match="--save is single LoRA only"):
+            validate_multi_lora_args(args)
+
     def test_multi_adapter_training_requires_bridge_weight_conversion(self) -> None:
         """Multi-LoRA slots exist only on Bridge adapters, so a raw-mode request is refused."""
         args = _parse_megatron_args(

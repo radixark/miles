@@ -17,7 +17,7 @@ from miles.backends.training_utils.checkpoint.io import write_checkpoint_dir
 from miles.tinker.core.future import DONE, PENDING, RequestFuture
 from miles.tinker.core.service import TinkerService
 from miles.tinker.core.types import Command, CommandOp, GatewayConfig
-from miles.tinker.runtime import commit_adapter, delete_retired_adapters, resolve_adapter
+from miles.tinker.runtime import classify_lora_groups, commit_adapter, delete_retired_adapters, resolve_adapter
 from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
 
 _TARGETS = get_hf_lora_targets({"model_type": "qwen3", "num_hidden_layers": 1})
@@ -31,9 +31,9 @@ ADAM = {
 }
 
 
-def _parametrization(fields: dict) -> AdapterParametrization:
-    # one tiny module stands in for the model's targets
-    return AdapterParametrization(**fields, target_modules=("model.layers.0.self_attn.q_proj",))
+def _parametrization(fields: dict, target_modules=("model.layers.0.self_attn.q_proj",)) -> AdapterParametrization:
+    # tiny modules stand in for the model's targets
+    return AdapterParametrization(**fields, target_modules=target_modules)
 
 
 def write_legacy_checkpoint(path: str, record, config: GatewayConfig) -> None:
@@ -130,12 +130,17 @@ class FakeBackend:
         if failure is not None:
             return failure
         with write_adapter_dir(Path(root), name, tenant_digest=tenant_digest) as written:
-            write_parametrization(written.path, _parametrization(parametrization_fields))
+            # the default gateway layout trains attn and mlp
+            targets = ("model.layers.0.self_attn.q_proj", "model.layers.0.mlp.gate_proj")
+            write_parametrization(written.path, _parametrization(parametrization_fields, targets))
         return written
 
     commit_adapter = staticmethod(commit_adapter)
     delete_retired_adapters = staticmethod(delete_retired_adapters)
     resolve_adapter = staticmethod(resolve_adapter)
+
+    def lora_groups(self, target_modules):
+        return classify_lora_groups(target_modules, _TARGETS)
 
     async def export_slot(self, slot, root, name, tenant_digest, parametrization_fields):
         failure = self._record(

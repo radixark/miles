@@ -321,9 +321,6 @@ def _train(args: ScriptArgs) -> None:
             lora_args += "--experts-shared-outer-loras "
         if args.check_lora_weight_equal:
             lora_args += "--check-lora-weight-equal "
-        if is_debug:
-            # SGD keeps no Adam state for the adapter checkpoint to store
-            lora_args += "--no-save-optim "
 
     reward_model = args.reward_model or (
         "math" if args.task == "gsm8k" else ("deterministic_random" if is_debug else "deepscaler")
@@ -485,7 +482,8 @@ def _train(args: ScriptArgs) -> None:
     misc_args += "--check-weight-update-skip-list vision_tower. mm_projector. --check-weight-update-allow-quant-error "
     if args.check_weight_update_equal:
         misc_args += "--check-weight-update-equal "
-    if not args.skip_saving:
+    # the adapter checkpoint stores Adam state, and debug_minimal trains with SGD
+    if not args.skip_saving and not (is_debug and is_lora):
         misc_args += f"--save {args.save_dir}/{args.run_id} --save-interval 50 "
 
     if args.enable_wandb:
