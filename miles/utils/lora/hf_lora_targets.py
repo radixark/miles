@@ -279,6 +279,8 @@ def _mimo_v2_targets(config):
 _HF_LORA_MODELS = {
     "llama": _HfLoraModelSpec(_dense_targets),
     "qwen2": _HfLoraModelSpec(_dense_targets),
+    # MiMo-7B: a Qwen2 body; its MTP layers sit under model.mtp_layers
+    "mimo": _HfLoraModelSpec(_dense_targets),
     "qwen3": _HfLoraModelSpec(_dense_targets, tinker_name_renames=_TINKER_RENAMES),
     "qwen3_moe": _HfLoraModelSpec(_qwen3_moe_targets, tinker_name_renames=_TINKER_RENAMES),
     "qwen3_next": _HfLoraModelSpec(_qwen3_next_targets),
@@ -318,6 +320,8 @@ _HF_LORA_MODELS = {
     "deepseek_v32": _HfLoraModelSpec(_deepseek_targets),
     "deepseek_v41": _HfLoraModelSpec(_deepseek_v41_targets, layer_prefix="layers.*", unembed="head"),
     "kimi_k2": _HfLoraModelSpec(_kimi_targets),
+    # JoyAI-LLM-Flash ships the remote DeepSeek-V3 code Kimi K2 does: per-expert modules, a leading dense layer
+    "joyai_llm_flash": _HfLoraModelSpec(_kimi_targets),
     "kimi_k25": _HfLoraModelSpec(
         _kimi_targets,
         layer_prefix="language_model.model.layers.*",
