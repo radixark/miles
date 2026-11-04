@@ -123,11 +123,12 @@ def _assert_real_rank(specs: list[LocalShardSpec], lora_rank: int) -> None:
 
 
 def _stacked_expert_keys(named_tensors: list[tuple[str, torch.Tensor]], map_name) -> frozenset[str]:
-    """The HF keys the export names as one stacked experts tensor: the base checkpoint's packed form."""
+    """The HF keys the export names as one stacked experts tensor: the base checkpoint's packed form. A shared-outer
+    side also comes unindexed, as ``[1, ...]``; it is one tensor for every expert, not a stack, so it is left out."""
     keys = set()
     for name, tensor in named_tensors:
         hf_key = map_name(name)
-        if hf_key.expert_index is None and ".experts." in hf_key.key and tensor.dim() == 3:
+        if hf_key.expert_index is None and ".experts." in hf_key.key and tensor.dim() == 3 and tensor.shape[0] > 1:
             keys.add(hf_key.key)
     return frozenset(keys)
 

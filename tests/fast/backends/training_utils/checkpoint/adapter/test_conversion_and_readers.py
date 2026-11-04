@@ -463,6 +463,37 @@ def test_an_expert_module_the_export_stacks_stays_stacked(tmp_path):
     assert torch.equal(written[f"base_model.model.{down}.lora_B.weight"], export.b.to(torch.bfloat16))
 
 
+class _BridgeSharedOuterExport:
+    """Bridge's shared-outer export (peft_bridge.py, expand_shared_outer=False): one unindexed ``[1, r, in]`` A for
+    every expert, and a 2D B per expert."""
+
+    bf16_adapter_key_style = "peft"
+
+    def __init__(self, num_experts):
+        self.a = torch.randn(1, 2, 4)
+        self.b = [torch.randn(8, 2) for _ in range(num_experts)]
+
+    def export_bf16_adapter(self, slot):
+        gate = f"{L}.mlp.experts.gate_proj"
+        yield f"{gate}.lora_A.weight", self.a.clone()
+        for expert, b in enumerate(self.b):
+            yield f"{L}.mlp.experts.{expert}.gate_proj.lora_B.weight", b.clone()
+
+
+def test_a_bridge_shared_outer_side_is_written_per_expert_like_its_pair(tmp_path):
+    """A shared [1, ...] side is not a packed checkpoint's stacked tensor: HF PEFT needs it under every expert."""
+    gate = f"{L}.mlp.experts.gate_proj"
+    export = _BridgeSharedOuterExport(num_experts=3)
+    write_peft_export(tmp_path, export, 0, _run(target_modules=(gate,), experts_shared_outer_loras=True), QWEN3)
+
+    written = load_file(str(tmp_path / "adapter_model.safetensors"))
+    expert = f"base_model.model.{L}.mlp.experts.{{}}.gate_proj"
+    assert set(written) == {f"{expert.format(e)}.lora_{f}.weight" for e in range(3) for f in "AB"}
+    for e in range(3):
+        assert torch.equal(written[f"{expert.format(e)}.lora_A.weight"], export.a[0].to(torch.bfloat16))
+        assert torch.equal(written[f"{expert.format(e)}.lora_B.weight"], export.b[e].to(torch.bfloat16))
+
+
 _GLM5 = get_hf_lora_targets(
     {"model_type": "glm_moe_dsa", "mlp_layer_types": ["sparse"], "n_shared_experts": 0, "q_lora_rank": 4}
 )
