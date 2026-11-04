@@ -85,14 +85,14 @@ def _experts_module(key: str) -> str:
     return key.rsplit(".", 2)[0]
 
 
-def _adapter_config(parametrization: AdapterParametrization, tensor_names) -> dict:
+def _adapter_config(parametrization: AdapterParametrization, tensor_names, lora_dropout: float) -> dict:
     assert parametrization.lora_alpha is not None, "lora_alpha must be resolved before an export is written"
     return {
         "peft_type": "LORA",
         "r": parametrization.lora_rank,
         "lora_alpha": parametrization.lora_alpha,
         "target_modules": get_adapter_target_modules(tensor_names),
-        "lora_dropout": 0.0,
+        "lora_dropout": lora_dropout,
         "bias": "none",
         "task_type": "CAUSAL_LM",
     }
@@ -104,6 +104,8 @@ def write_peft_adapter(
     parametrization: AdapterParametrization,
     targets: HfLoraTargets,
     stacked_keys: frozenset[str] | None = None,
+    *,
+    lora_dropout: float,
 ) -> None:
     """bf16 PEFT with per-expert 2D tensors (experts re-packed into ``gate_up_proj`` stay stacked).
 
@@ -130,11 +132,16 @@ def write_peft_adapter(
                 tensors[map_hf_keys_to_peft_export_keys(key, expert_index)] = value[expert_index].clone()
         else:
             tensors[map_hf_keys_to_peft_export_keys(key)] = value
-    save_adapter_to_disk(directory, _adapter_config(parametrization, tensors), tensors)
+    save_adapter_to_disk(directory, _adapter_config(parametrization, tensors, lora_dropout), tensors)
 
 
 def write_sampler_adapter(
-    directory: Path, weights: dict[str, torch.Tensor], parametrization: AdapterParametrization, targets: HfLoraTargets
+    directory: Path,
+    weights: dict[str, torch.Tensor],
+    parametrization: AdapterParametrization,
+    targets: HfLoraTargets,
+    *,
+    lora_dropout: float,
 ) -> None:
     """bf16 adapter sglang loads from disk; experts stay stacked 3D. Carries its parametrization, so it reads back."""
     tensors = {}
@@ -149,5 +156,5 @@ def write_sampler_adapter(
         tensors[name] = value.to(torch.bfloat16).contiguous()
     # target_modules name the HF modules the adapter applies to, not sglang's tensor names for them
     hf_names = [map_hf_keys_to_peft_keys(key) for key in expanded]
-    save_adapter_to_disk(directory, _adapter_config(parametrization, hf_names), tensors)
+    save_adapter_to_disk(directory, _adapter_config(parametrization, hf_names, lora_dropout), tensors)
     write_parametrization(Path(directory), parametrization)
