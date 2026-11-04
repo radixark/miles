@@ -117,7 +117,7 @@ def fused_lm_head_log_probs_and_entropy(
     temperature: float = 1.0,
     with_entropy: bool = False,
     entropy_requires_grad: bool = True,
-    tile_rows: int = 4096,
+    tile_rows: int,
 ) -> tuple[Tensor, Tensor | None]:
     """``fused_log_probs_and_entropy`` of ``project(hidden)`` at ``rows``, without building all the logits.
 

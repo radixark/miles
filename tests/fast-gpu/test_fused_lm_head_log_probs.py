@@ -117,7 +117,7 @@ def test_no_rows_still_gives_zero_gradients():
     empty = torch.empty(0, dtype=torch.long, device="cuda")
     h = hidden.clone().requires_grad_(True)
     w = weight.clone().requires_grad_(True)
-    log_probs, entropy = _lm_head(h, w, empty, empty, tp_group=None, with_entropy=True)
+    log_probs, entropy = _lm_head(h, w, empty, empty, tp_group=None, with_entropy=True, tile_rows=64)
     assert log_probs.numel() == 0 and entropy.numel() == 0
     (log_probs.sum() + entropy.sum()).backward()
     assert h.grad is not None and (h.grad == 0).all()
@@ -127,7 +127,7 @@ def test_no_rows_still_gives_zero_gradients():
 def test_frozen_weight_gets_no_gradient():
     hidden, weight, rows, targets, upstream = _inputs(128, 128, 2_000, torch.bfloat16)
     h = hidden.clone().requires_grad_(True)
-    log_probs, _ = _lm_head(h, weight, rows, targets, tp_group=None)
+    log_probs, _ = _lm_head(h, weight, rows, targets, tp_group=None, tile_rows=64)
     (log_probs * upstream[0]).sum().backward()
     assert h.grad is not None and weight.grad is None
 
