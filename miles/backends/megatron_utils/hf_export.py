@@ -13,11 +13,12 @@ from miles.backends.megatron_utils.lora.native.merge import merge_lora_into_weig
 from miles.backends.megatron_utils.lora.utils import is_lora_model
 from miles.backends.megatron_utils.named_weights import named_params_and_buffers
 from miles.backends.training_utils.checkpoint.adapter.adapter_dir import write_peft_export
+from miles.backends.training_utils.checkpoint.adapter.parametrization import base_model_fingerprint
 from miles.backends.training_utils.checkpoint.io import write_checkpoint_dir
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.backends.training_utils.weight_update.snapshot_publisher import SnapshotPublisher
 from miles.utils.distributed_utils import get_gloo_group
-from miles.utils.hf_utils.config import HF_EXPORT_COMPLETE_MARKER
+from miles.utils.hf_utils.config import HF_EXPORT_COMPLETE_MARKER, load_hf_config
 from miles.utils.megatron_bridge_utils import load_auto_bridge, patch_megatron_model
 
 logger = logging.getLogger(__name__)
@@ -86,6 +87,7 @@ def save_hf_model(
                     lora_alpha=args.lora_alpha if spec is None else spec.alpha,
                     lora_type=args.lora_type,
                     experts_shared_outer_loras=args.experts_shared_outer_loras,
+                    base_model_fingerprint=base_model_fingerprint(load_hf_config(args.hf_checkpoint).to_dict()),
                 ),
                 adapter_slots.targets,
             )

@@ -4,6 +4,7 @@ from contextlib import suppress
 
 import uvicorn
 
+from miles.backends.training_utils.checkpoint.adapter.parametrization import base_model_fingerprint
 from miles.ray.placement_group import create_trainer_handles
 from miles.ray.rollout.router_manager import resolve_router_addrs
 from miles.ray.specs.inference import compute_router_providers, create_inference_controller_handle
@@ -81,6 +82,7 @@ async def serve(args, *, disposer: Disposer):
         lora_alpha=args.lora_alpha,
         lora_type=args.lora_type,
         experts_shared_outer_loras=args.experts_shared_outer_loras,
+        base_model_fingerprint=base_model_fingerprint(hf_config.to_dict()),
         max_lora_rank=args.lora_rank,
         trains_attn="attn" in args.tinker_lora_groups,
         trains_mlp="mlp" in args.tinker_lora_groups,
