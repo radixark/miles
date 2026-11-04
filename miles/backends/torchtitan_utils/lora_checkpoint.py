@@ -441,91 +441,104 @@ class TorchtitanLoraCheckpoint:
             in_model_loaders_by_kind={AdapterSourceKind.TORCHTITAN_CHECKPOINT: loader},
         )
         training_state = read_training_state(path)
-        on_grid = False
-        if loader.train_state is not None:
-            # a torchtitan DCP records steps, not the rollout; only one miles saved on this run's rollout grid maps
-            completed_rollouts, remainder = divmod(loader.train_state["step"], self._steps_per_rollout)
-            on_grid = remainder == 0
-            # weights only need no step: a DCP off the grid (e.g. a standalone torchtitan run's) starts fresh
-            assert on_grid or not load_optimizer, (
-                f"{path} is at step {loader.train_state['step']}, not a whole rollout of this run's "
-                f"{self._steps_per_rollout} steps; pass --no-load-optim to load its weights and start the schedule "
-                "fresh"
-            )
-        if on_grid:
-            self._first_rollout = 0
-            self._trainer.engine.load_state_dict(loader.train_state)
-            load_lr_schedulers(self._trainer.engine.optim.lr_schedulers, loader.lr_scheduler_state)
-            training_state = self._training_state(completed_rollouts - 1 if completed_rollouts else None)
+        if loader.train_state is not None and self._dcp_on_rollout_grid(path, loader.train_state, load_optimizer):
+            training_state = self._adopt_dcp_schedule(loader)
         elif training_state is not None and "lr_scheduler" in training_state:
-            iteration = training_state["iteration"]
-            self._first_rollout = training_state["first_rollout"]
-            # the schedule is restored by step: on another --global-batch-size grid it would not match the rollout
-            grid_step = 0 if iteration is None else (iteration + 1 - self._first_rollout) * self._steps_per_rollout
-            assert training_state["step"] == grid_step or not load_optimizer, (
-                f"{path} is at step {training_state['step']} after iteration {iteration}, but this run takes "
-                f"{self._steps_per_rollout} steps per rollout (step {grid_step}): keep its rollout and batch sizes, "
-                "or pass --no-load-optim to load its weights and start the schedule fresh"
-            )
-            if training_state["step"] == grid_step:
-                load_lr_schedulers(self._trainer.engine.optim.lr_schedulers, training_state["lr_scheduler"])
-                self._trainer.engine.num_completed_steps = training_state["step"]
-            else:
-                # weights only: a fresh schedule after the source's rollout, as for a Megatron dir off the grid
-                self._first_rollout = 0 if iteration is None else iteration + 1
-                training_state = self._training_state(iteration)
+            training_state = self._adopt_torchtitan_dir_schedule(path, training_state, load_optimizer)
         elif training_state is not None and training_state["iteration"] is not None:
-            # written by a Megatron run, whose scheduler state does not apply here: resume the schedule at the
-            # samples it counted, which start at that run's first rollout, not rollout 0
-            iteration = training_state["iteration"]
-            num_samples = training_state["opt_param_scheduler"]["num_steps"]
-            rollout_samples = self._steps_per_rollout * self._args.global_batch_size
-            trained_rollouts, remainder = divmod(num_samples, rollout_samples)
-            if self._args.use_dynamic_global_batch_size:
-                unmapped = (
-                    "Megatron's schedule counts samples, and a dynamic global batch trains a data-dependent number "
-                    "of them per rollout"
-                )
-            elif remainder or trained_rollouts > iteration + 1:
-                # a step skipped for an inf/nan grad does not advance Megatron's scheduler
-                unmapped = (
-                    f"it counted {num_samples} samples by iteration {iteration}, not whole rollouts of this run's "
-                    f"{rollout_samples}"
-                )
-            else:
-                unmapped = None
-            # weights only need no schedule: start it fresh, as for a DCP off the rollout grid
-            assert unmapped is None or not load_optimizer, (
-                f"{path} cannot resume this run's schedule: {unmapped}. Keep its rollout and batch sizes, or pass "
-                "--no-load-optim to load its weights and start the schedule fresh"
-            )
-            if unmapped is None:
-                self._first_rollout = iteration + 1 - trained_rollouts
-                step = trained_rollouts * self._steps_per_rollout
-                load_lr_schedulers(self._trainer.engine.optim.lr_schedulers, {"last_epoch": step})
-                self._trainer.engine.num_completed_steps = step
-            else:
-                # only the schedule is dropped: the run still continues after the source's rollout
-                self._first_rollout = iteration + 1
-                training_state = self._training_state(iteration)
+            training_state = self._adopt_megatron_dir_schedule(path, training_state, load_optimizer)
         if self._args.start_rollout_id is not None:
             # the actor starts at --start-rollout-id, not after the source's rollout: count later saves' steps from it
             self._first_rollout = self._args.start_rollout_id - self._trainer.step // self._steps_per_rollout
         if self._args.lora_adapter_convert_save is not None:
-            destination = Path(self._args.lora_adapter_convert_save)
-            # a convert-save writes moments only when they were loaded
-            convert_members = TorchtitanOptimizerMembers(
-                self.slots,
-                self._trainer.optimizers.optimizers,
-                save_moments=load_optimizer and not self._args.backend.no_save_optim,
-            )
-            save_and_commit_adapter_dir(
-                destination.parent,
-                destination.name,
-                convert_members,
-                0,
-                self.run,
-                self.slots.targets,
-                training_state=training_state,
-            )
+            self._convert_save(training_state, load_optimizer)
         return None if training_state is None else training_state["iteration"]
+
+    def _dcp_on_rollout_grid(self, path: Path, train_state: dict, load_optimizer: bool) -> bool:
+        # a torchtitan DCP records steps, not the rollout; only one miles saved on this run's rollout grid maps
+        on_grid = train_state["step"] % self._steps_per_rollout == 0
+        # weights only need no step: a DCP off the grid (e.g. a standalone torchtitan run's) starts fresh
+        assert on_grid or not load_optimizer, (
+            f"{path} is at step {train_state['step']}, not a whole rollout of this run's "
+            f"{self._steps_per_rollout} steps; pass --no-load-optim to load its weights and start the schedule "
+            "fresh"
+        )
+        return on_grid
+
+    def _adopt_dcp_schedule(self, loader: TorchtitanCheckpointLoader) -> dict:
+        completed_rollouts = loader.train_state["step"] // self._steps_per_rollout
+        self._first_rollout = 0
+        self._trainer.engine.load_state_dict(loader.train_state)
+        load_lr_schedulers(self._trainer.engine.optim.lr_schedulers, loader.lr_scheduler_state)
+        return self._training_state(completed_rollouts - 1 if completed_rollouts else None)
+
+    def _adopt_torchtitan_dir_schedule(self, path: Path, training_state: dict, load_optimizer: bool) -> dict:
+        iteration = training_state["iteration"]
+        self._first_rollout = training_state["first_rollout"]
+        # the schedule is restored by step: on another --global-batch-size grid it would not match the rollout
+        grid_step = 0 if iteration is None else (iteration + 1 - self._first_rollout) * self._steps_per_rollout
+        assert training_state["step"] == grid_step or not load_optimizer, (
+            f"{path} is at step {training_state['step']} after iteration {iteration}, but this run takes "
+            f"{self._steps_per_rollout} steps per rollout (step {grid_step}): keep its rollout and batch sizes, "
+            "or pass --no-load-optim to load its weights and start the schedule fresh"
+        )
+        if training_state["step"] != grid_step:
+            # weights only: a fresh schedule after the source's rollout, as for a Megatron dir off the grid
+            self._first_rollout = 0 if iteration is None else iteration + 1
+            return self._training_state(iteration)
+        load_lr_schedulers(self._trainer.engine.optim.lr_schedulers, training_state["lr_scheduler"])
+        self._trainer.engine.num_completed_steps = training_state["step"]
+        return training_state
+
+    def _adopt_megatron_dir_schedule(self, path: Path, training_state: dict, load_optimizer: bool) -> dict:
+        """Megatron's scheduler state does not apply here: resume the schedule at the samples it counted, which
+        start at that run's first rollout, not rollout 0."""
+        iteration = training_state["iteration"]
+        num_samples = training_state["opt_param_scheduler"]["num_steps"]
+        rollout_samples = self._steps_per_rollout * self._args.global_batch_size
+        trained_rollouts, remainder = divmod(num_samples, rollout_samples)
+        if self._args.use_dynamic_global_batch_size:
+            unmapped = (
+                "Megatron's schedule counts samples, and a dynamic global batch trains a data-dependent number "
+                "of them per rollout"
+            )
+        elif remainder or trained_rollouts > iteration + 1:
+            # a step skipped for an inf/nan grad does not advance Megatron's scheduler
+            unmapped = (
+                f"it counted {num_samples} samples by iteration {iteration}, not whole rollouts of this run's "
+                f"{rollout_samples}"
+            )
+        else:
+            unmapped = None
+        # weights only need no schedule: start it fresh, as for a DCP off the rollout grid
+        assert unmapped is None or not load_optimizer, (
+            f"{path} cannot resume this run's schedule: {unmapped}. Keep its rollout and batch sizes, or pass "
+            "--no-load-optim to load its weights and start the schedule fresh"
+        )
+        if unmapped is not None:
+            # only the schedule is dropped: the run still continues after the source's rollout
+            self._first_rollout = iteration + 1
+            return self._training_state(iteration)
+        self._first_rollout = iteration + 1 - trained_rollouts
+        step = trained_rollouts * self._steps_per_rollout
+        load_lr_schedulers(self._trainer.engine.optim.lr_schedulers, {"last_epoch": step})
+        self._trainer.engine.num_completed_steps = step
+        return training_state
+
+    def _convert_save(self, training_state: dict | None, load_optimizer: bool) -> None:
+        destination = Path(self._args.lora_adapter_convert_save)
+        # a convert-save writes moments only when they were loaded
+        convert_members = TorchtitanOptimizerMembers(
+            self.slots,
+            self._trainer.optimizers.optimizers,
+            save_moments=load_optimizer and not self._args.backend.no_save_optim,
+        )
+        save_and_commit_adapter_dir(
+            destination.parent,
+            destination.name,
+            convert_members,
+            0,
+            self.run,
+            self.slots.targets,
+            training_state=training_state,
+        )
