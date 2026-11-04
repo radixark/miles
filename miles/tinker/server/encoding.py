@@ -6,7 +6,6 @@ so each output scores logprob(t[i] | x[0..i])."""
 import math
 
 import pydantic
-import pyrage
 
 import tinker
 from miles.tinker.core.input_validation import validate_save_options, validate_ttl_seconds
@@ -73,6 +72,9 @@ def validate_age_recipients(recipients: list[str]) -> None:
     """Refuse a bad recipient before the export, not after the trainer wrote it."""
     if len(recipients) > MAX_AGE_RECIPIENTS:
         raise UserInputError(f"at most {MAX_AGE_RECIPIENTS} age recipients, got {len(recipients)}")
+    # only an encrypted external save needs it; every request imports this module
+    import pyrage
+
     for recipient in recipients:
         try:
             # the trainer's export parses it the same way (adapter_exports.parse_age_recipient)
