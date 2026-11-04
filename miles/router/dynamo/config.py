@@ -1,6 +1,5 @@
 import ipaddress
 import re
-from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -109,63 +108,3 @@ class DynamoConfig(FrozenStrictBaseModel):
 
 def load_dynamo_config(path: Path) -> DynamoConfig:
     return DynamoConfig.model_validate_json(path.read_text())
-
-
-def runtime_env(
-    config: DynamoConfig,
-    *,
-    inherited_env: Mapping[str, str],
-    options: LaunchOptions | None = None,
-    managed_env: Mapping[str, str | None] | None = None,
-) -> dict[str, str]:
-    managed = dict(
-        DYN_NAMESPACE=config.namespace,
-        DYN_DISCOVERY_BACKEND=config.discovery.backend,
-        DYN_REQUEST_PLANE=config.request_plane,
-        DYN_RESPONSE_PLANE=config.response_plane,
-        DYN_EVENT_PLANE=config.event_plane,
-        NATS_SERVER=config.nats_server,
-        DYN_NAMESPACE_PREFIX=None,
-        DYN_NAMESPACE_WORKER_SUFFIX=None,
-        ETCD_ENDPOINTS=None,
-        DYN_FILE_KV=None,
-    )
-    match config.discovery:
-        case EtcdDiscovery(endpoints=endpoints):
-            managed["ETCD_ENDPOINTS"] = ",".join(address.url for address in endpoints)
-        case FileDiscovery(root=root):
-            managed["DYN_FILE_KV"] = str(root)
-    managed.update(managed_env or {})
-    explicit = {**config.env, **(options.env if options is not None else {})}
-    for key, value in explicit.items():
-        if key in managed and value != managed[key]:
-            raise ValueError(f"{key} conflicts with the resolved Dynamo launch configuration")
-    env = {**inherited_env, **explicit}
-    # Run-owned identity/protocol values replace inherited shell settings. All other
-    # env survives; explicitly conflicting config values above are errors, not ignored.
-    for key, value in managed.items():
-        if value is None:
-            env.pop(key, None)
-        else:
-            env[key] = value
-    return env
-
-
-def launch_args(
-    options: LaunchOptions, *, managed: Mapping[str, str | None], reserved: Sequence[str] = ()
-) -> list[str]:
-    """Keep native flags extensible without allowing a second source for owned settings."""
-    protected = {*managed, *reserved, "--help", "--version"}
-    for token in options.extra_args:
-        flag = token.partition("=")[0]
-        canonical = "--" + flag[5:] if flag.startswith("--no-") else flag
-        if flag in ("--", "-h", "-i") or (
-            flag.startswith("--") and any(name.startswith(canonical) for name in protected)
-        ):
-            raise ValueError(f"{flag} is managed by Miles; use its configuration field instead")
-    argv = []
-    for flag, value in managed.items():
-        argv.append(flag)
-        if value is not None:
-            argv.append(value)
-    return [*argv, *options.extra_args]
