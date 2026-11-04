@@ -289,7 +289,7 @@ class _Chunk(torch.nn.Module):
 
 
 def _save_old_format(path, chunks, **training_state):
-    """What main's save_lora_checkpoint wrote on rank 0."""
+    """The old-format files a rank wrote: its adapter shard and, optionally, its training state."""
     torch.save(
         {name: param.detach().cpu() for name, param in _adapter_shard_params(chunks).items()},
         path / "adapter_megatron_rank0.pt",
