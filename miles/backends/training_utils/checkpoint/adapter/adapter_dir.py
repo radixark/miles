@@ -2,7 +2,7 @@
 
 import json
 import logging
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal, Protocol
@@ -20,7 +20,9 @@ from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
     _save_adapter_state,
     assert_adapter_state_keys,
     gloo_group,
+    is_vocab_padding,
     raise_if_any_rank_failed,
+    read_adapter_state_shapes,
 )
 from miles.backends.training_utils.checkpoint.adapter.commit import (
     CommittedAdapterDir,
@@ -135,7 +137,7 @@ def save_adapter_dir(
         # agree before any collective, so one rank's failure cannot leave the others waiting in it
         raise_if_any_rank_failed(error)
         # DCP writes primary pieces only; replicas cannot stand in for a missing primary
-        keys = _all_ranks_keys([s for s in state.shard_specs if s.is_primary])
+        keys = _all_ranks_keys([s for s in state.shard_specs if s.is_primary and not is_vocab_padding(s.key)])
         try:
             _assert_real_rank(state.shard_specs, parametrization.lora_rank)
             expected = parametrization.adapter_state_keys()
@@ -210,15 +212,57 @@ def write_peft_export(
     lora_dropout: float,
 ) -> None:
     """All ranks call; rank 0 writes ``slot``'s bf16 PEFT export into ``directory``."""
+    _write_bf16_export(
+        directory,
+        members,
+        slot,
+        parametrization,
+        targets,
+        lambda *view, stacked_keys: write_peft_adapter(*view, stacked_keys=stacked_keys, lora_dropout=lora_dropout),
+    )
+
+
+def write_sampler_view(
+    directory: Path,
+    members: AdapterCheckpointMembers,
+    slot: int,
+    parametrization: AdapterParametrization,
+    targets: HfLoraTargets,
+    *,
+    lora_dropout: float,
+) -> None:
+    """All ranks call; rank 0 writes ``slot``'s bf16 sampler export into ``directory``, outside any commit."""
+    # the sampler layout keeps every expert stacked
+    _write_bf16_export(
+        directory,
+        members,
+        slot,
+        parametrization,
+        targets,
+        lambda *view, stacked_keys: write_sampler_adapter(*view, lora_dropout=lora_dropout),
+    )
+
+
+def _write_bf16_export(
+    directory: Path,
+    members: AdapterCheckpointMembers,
+    slot: int,
+    parametrization: AdapterParametrization,
+    targets: HfLoraTargets,
+    write: Callable[..., None],
+) -> None:
     error = None
     try:
         # the gathered adapter leaves the GPU before rank 0 splits and copies it
         named_tensors = [(key, tensor.cpu()) for key, tensor in members.export_bf16_adapter(slot)]
         if _is_writer():
             weights = _hf_keyed_bf16_adapter(named_tensors, members, parametrization, targets)
-            stacked_keys = _stacked_expert_keys(named_tensors, _hf_key_mapper(members))
-            write_peft_adapter(
-                directory, weights, parametrization, targets, stacked_keys=stacked_keys, lora_dropout=lora_dropout
+            write(
+                directory,
+                weights,
+                parametrization,
+                targets,
+                stacked_keys=_stacked_expert_keys(named_tensors, _hf_key_mapper(members)),
             )
     except Exception as exc:
         error = exc
@@ -299,11 +343,36 @@ def _assert_has_keys(weights: dict[str, torch.Tensor], keys: set[str]) -> None:
         raise AdapterSourceError(f"the source lacks tensors the run trains: {sorted(missing)}")
 
 
+def _zero_filled(specs: list[LocalShardSpec], loaded: AdapterState) -> AdapterState:
+    """``loaded`` (pieces of ``specs``) with zeros for the pieces it left unread, and zero moments if it read none."""
+    index = {id(s): i for i, s in enumerate(loaded.shard_specs)}
+
+    def aligned(tensors: list[torch.Tensor]) -> list[torch.Tensor]:
+        return [tensors[index[id(s)]] if id(s) in index else torch.zeros(s.local_shape) for s in specs]
+
+    if not loaded.has_optimizer_state:
+        return _with_zero_moments(specs, aligned(loaded.weights))
+    return AdapterState(
+        specs, aligned(loaded.weights), aligned(loaded.exp_avgs), aligned(loaded.exp_avg_sqs), step=loaded.step
+    )
+
+
 def _weights_only_state(
     weights: dict[str, torch.Tensor], specs: list[LocalShardSpec], head_rows: HeadRows | None
 ) -> AdapterState:
-    _assert_has_keys(weights, {s.key for s in specs})
-    return _with_zero_moments(specs, [_slice(_served_rows(weights[s.key], s, head_rows), s).float() for s in specs])
+    _assert_has_keys(weights, {s.key for s in specs if not is_vocab_padding(s.key)})
+    # no export or conversion carries vocab padding: it stays zero, as at init
+    return _with_zero_moments(
+        specs,
+        [
+            (
+                torch.zeros(s.local_shape)
+                if is_vocab_padding(s.key)
+                else _slice(_served_rows(weights[s.key], s, head_rows), s).float()
+            )
+            for s in specs
+        ],
+    )
 
 
 def _served_rows(full: torch.Tensor, spec: LocalShardSpec, head_rows: HeadRows | None) -> torch.Tensor:
@@ -437,16 +506,18 @@ def load_adapter_dir(
             error = exc
         raise_if_any_rank_failed(error)
         # same parametrization: every rank reads only its own pieces, and moments only when it loads them
-        weights = [torch.empty(s.local_shape, dtype=torch.float32) for s in specs]
+        stored_shapes = read_adapter_state_shapes(path)
+        # vocab padding of another size, or none in the source, stays zero, as at init
+        read = [s for s in specs if not is_vocab_padding(s.key) or stored_shapes.get(s.key) == s.global_shape]
+        weights = [torch.empty(s.local_shape, dtype=torch.float32) for s in read]
         moments = (
-            [[torch.empty(s.local_shape, dtype=torch.float32) for s in specs] for _ in range(2)]
+            [[torch.empty(s.local_shape, dtype=torch.float32) for s in read] for _ in range(2)]
             if load_optimizer
             else [[], []]
         )
-        state = AdapterState(specs, weights, *moments, step=None, has_optimizer_state=load_optimizer)
-        state.step = reader.load_state(state)
-        if not load_optimizer:
-            state = _with_zero_moments(specs, state.weights)
+        loaded = AdapterState(read, weights, *moments, step=None, has_optimizer_state=load_optimizer)
+        loaded.step = reader.load_state(loaded)
+        state = _zero_filled(specs, loaded)
     else:
         state = None
         try:

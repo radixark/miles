@@ -265,6 +265,8 @@ def _fingerprint(hf: str) -> str:
 
 
 class TestSaveHfModelBridgeLoRA:
+    @patch(f"{_HF_EXPORT_MODULE}.has_plain_peft_form", return_value=True)
+    @patch(f"{_HF_EXPORT_MODULE}.write_sampler_view")
     @patch(f"{_HF_EXPORT_MODULE}.write_peft_export")
     @patch(f"{_HF_EXPORT_MODULE}.get_gloo_group")
     @patch(f"{_HF_EXPORT_MODULE}.torch")
@@ -286,6 +288,8 @@ class TestSaveHfModelBridgeLoRA:
         torch_mod,
         _gloo,
         peft_export,
+        sampler_view,
+        plain_peft,
         tmp_path,
         slot_spec,
         rank,
@@ -324,5 +328,17 @@ class TestSaveHfModelBridgeLoRA:
             base_model_fingerprint=_fingerprint(args.hf_checkpoint),
         )
         peft_export.assert_called_once_with(
+            tmp_path / "adapter", slots, 0, slots.parametrization.return_value, slots.targets, lora_dropout=0.05
+        )
+        sampler_view.assert_not_called()
+
+        # canonical_lora's own A per fused component has no PEFT name: sglang's names, as main wrote
+        plain_peft.return_value = False
+        peft_export.reset_mock()
+        save_hf_model(
+            args, 0, [MagicMock()], publisher=publisher, adapter_slots=slots, path=tmp_path, raise_on_error=True
+        )
+        peft_export.assert_not_called()
+        sampler_view.assert_called_once_with(
             tmp_path / "adapter", slots, 0, slots.parametrization.return_value, slots.targets, lora_dropout=0.05
         )

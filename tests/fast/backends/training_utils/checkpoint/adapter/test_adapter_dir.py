@@ -244,6 +244,43 @@ class ExtraKeyMembers(FakeMembers):
         )
 
 
+class VocabPaddingMembers(FakeMembers):
+    """Stores the rows past the vocabulary its head's B is padded to, as native Megatron does."""
+
+    def __init__(self, padding_rows: int = 2):
+        super().__init__()
+        self.padding = LocalShardSpec(f"{MODULE}.lora_B.vocab_padding", (padding_rows, 2), (0, 0), (padding_rows, 2))
+
+    def get_local_shard_specs(self, slot):
+        return [*super().get_local_shard_specs(slot), self.padding]
+
+    def export_adapter_state(self, slot):
+        state = FakeMembers().export_adapter_state(slot)
+        rows = torch.full(self.padding.local_shape, 7.0)
+        return AdapterState(
+            [*state.shard_specs, self.padding],
+            [*state.weights, rows],
+            [*state.exp_avgs, rows * 2],
+            [*state.exp_avg_sqs, rows * 3],
+            step=5,
+        )
+
+
+def test_vocab_padding_resumes_exactly_and_is_zero_for_any_other_run(tmp_path):
+    written = save_adapter_dir(tmp_path, "w", VocabPaddingMembers(), 0, RUN, tenant_digest=None)
+    resumed = VocabPaddingMembers()
+    load_adapter_dir(written.path, resumed, 0, RUN, TARGETS, load_optimizer=True)
+    assert torch.equal(resumed.imported.weights[-1], torch.full((2, 2), 7.0))
+    assert torch.equal(resumed.imported.exp_avgs[-1], torch.full((2, 2), 14.0))
+    # a run padding to another size starts its padding at zero; one without padding ignores the source's
+    repadded = VocabPaddingMembers(padding_rows=3)
+    load_adapter_dir(written.path, repadded, 0, RUN, TARGETS, load_optimizer=True)
+    assert not repadded.imported.weights[-1].any() and not repadded.imported.exp_avgs[-1].any()
+    unpadded = FakeMembers()
+    load_adapter_dir(written.path, unpadded, 0, RUN, TARGETS, load_optimizer=True)
+    assert len(unpadded.imported.weights) == 2
+
+
 def test_a_backend_state_that_does_not_match_the_parametrization_is_refused_at_save(tmp_path):
     with pytest.raises(RuntimeError, match="unexpected .*k_proj"):
         save_adapter_dir(tmp_path, "w", ExtraKeyMembers(), 0, RUN, tenant_digest=None)
