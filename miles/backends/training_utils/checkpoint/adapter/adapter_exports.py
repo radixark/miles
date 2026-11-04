@@ -3,8 +3,8 @@
 import json
 from collections.abc import Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-import pyrage
 import safetensors.torch
 import torch
 
@@ -22,6 +22,9 @@ from miles.backends.training_utils.checkpoint.adapter.parametrization import (
 )
 from miles.utils.lora.hf_lora_targets import HfLoraTargets
 from miles.utils.lora.utils import get_adapter_target_modules, save_adapter_to_disk
+
+if TYPE_CHECKING:
+    import pyrage
 
 
 def _expand_shared_lora_a(
@@ -148,6 +151,8 @@ def write_external_adapter(
     if not age_recipients:
         save_adapter_to_disk(directory, config, tensors)
         return
+    import pyrage  # only Tinker's encrypted downloads use it; every training actor imports this module
+
     recipients = [parse_age_recipient(r) for r in age_recipients]
     # encrypted in memory: no plaintext reaches the disk, where a crash, snapshot or backup could keep it; one file at
     # a time, so the adapter's plaintext and ciphertext are the only extra copies alive
@@ -159,8 +164,10 @@ def write_external_adapter(
         (Path(directory) / f"{name}.age").write_bytes(pyrage.encrypt(plaintext(), recipients))
 
 
-def parse_age_recipient(recipient: str) -> pyrage.x25519.Recipient | pyrage.ssh.Recipient:
+def parse_age_recipient(recipient: str) -> "pyrage.x25519.Recipient | pyrage.ssh.Recipient":
     """The SDK documents both native age (age1...) and SSH (ssh-...) public keys."""
+    import pyrage  # only Tinker's encrypted downloads use it; every training actor imports this module
+
     if recipient.startswith("ssh-"):
         return pyrage.ssh.Recipient.from_str(recipient)
     return pyrage.x25519.Recipient.from_str(recipient)
