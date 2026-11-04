@@ -73,17 +73,21 @@ launcher refuses to start when a model it would call is missing a key.
 
 ```bash
 cd examples/experimental/tau2-bench
-python run.py                     # retail, one node of 8 GPUs
+export MILES_SCRIPT_EXTERNAL_RAY=1   # Qwen3.8-27B runs on 2 x 8 GPUs: start from a joined ray cluster
+python run.py                        # retail
 python run.py --domain airline
 python run.py --domain telecom --mode debug_rollout_only
-MILES_SCRIPT_EXTERNAL_RAY=1 python run.py --num-nodes 2   # an already-joined ray cluster
 ```
 
-The policy is Qwen3.8-27B. It thinks before every reply and its template keeps each
-turn's thinking in the history, so the recipe asks for the template's low reasoning
-effort (`--reasoning-effort`); higher efforts need a longer `--max-seq-len`.
+`run.py` holds only the tau2 workload. The policy and how it runs (checkpoint,
+GPUs and parallelism, SGLang parsers, TITO family, chat-template settings,
+sequence budgets) come from its entry in [`policy_models.py`](policy_models.py),
+selected with `--model-name` (default `Qwen3.8-27B`); to train another model, add
+an entry. Qwen3.8-27B thinks before every reply and its template keeps each turn's
+thinking in the history, so its entry asks for the template's low reasoning effort;
+higher efforts need a longer `max_seq_len`.
 
-`prepare` downloads Qwen3.8-27B, converts it to `torch_dist`, and writes
+`prepare` downloads the policy model, converts it to `torch_dist`, and writes
 the domain's tau2 `train` and `test` splits to
 `<data-dir>/tau2-bench/<domain>_{train,test}.jsonl`, one row per task:
 
@@ -110,7 +114,7 @@ non-generation time; `reward_func` reads `reward` back.
   (`infrastructure_error`). Training drops the group instead of learning a false 0;
   evaluation reports the share as `eval/<name>-none_reward_ratio`.
 
-The policy needs the SGLang parsers of its family (`qwen3` reasoning, `qwen3_coder`
-tool calls for Qwen3.8). Without the tool-call parser, tool calls stay text and every
-task ends in replies to the user; without the reasoning parser, thinking reaches tau2
-as part of the reply.
+Each model entry names the SGLang parsers of its family (`qwen3` reasoning,
+`qwen3_coder` tool calls for Qwen3.8). Without the tool-call parser, tool calls stay
+text and every task ends in replies to the user; without the reasoning parser,
+thinking reaches tau2 as part of the reply.

@@ -1,9 +1,13 @@
-"""τ²-bench GRPO launcher (Qwen3.8-27B): tau2 tasks through the TITO session server.
+"""τ²-bench GRPO launcher: tau2 tasks through the TITO session server.
 
 Trains on one tau2 domain's ``train`` split and evaluates on its ``test`` split.
 Each sample is one tau2 task, played by ``tau2_agent_function.run``: tau2's own
 orchestrator drives the user simulator, environment and evaluator, and the policy
 answers through the session server's OpenAI-compatible endpoint.
+
+The policy and how it runs -- checkpoint, GPUs and parallelism, SGLang parsers,
+TITO family, chat-template settings, sequence budgets -- come from its entry in
+``policy_models.py``; this file holds only the tau2 workload.
 
 Requires tau2-bench in the training environment (see README.md), and the API
 keys of the user simulator -- and, for retail and airline, of tau2's reward
@@ -11,18 +15,12 @@ judges -- exported in the launcher's environment, which ray workers inherit.
 Self-hosted models served behind an OpenAI-compatible endpoint need no key (see
 README.md). ``execute`` checks the keys before claiming any GPU.
 
-Qwen3.8-27B thinks before every reply, and its template keeps each turn's
-thinking in the history, so the recipe asks for the template's low reasoning
-effort. Training runs TP4 x CP2 per 8 GPUs and data-parallel across nodes; it
-was validated on 2 x 8 H200 (--num-nodes 2, with an external ray cluster).
-
 Args:
+  --model-name: policy model, a key of POLICY_MODELS in policy_models.py (default: Qwen3.8-27B).
   --domain: tau2 domain to train on: airline, retail or telecom (default: retail).
   --mode: normal, or debug_rollout_only to skip training.
   --skip-prepare: skip the model download, checkpoint conversion and task files.
   --model-dir / --data-dir: model and dataset directories.
-  --num-gpus-per-node: GPUs per node (default: 8); --num-nodes: nodes (default: 1).
-  --reasoning-effort: Qwen3.8 template reasoning effort (default: low).
   --enable-eval / --save: evaluate on the test split / write checkpoints (default: on).
 
 Env vars forwarded to the agent: TAU2_USER_LLM, TAU2_USER_LLM_ARGS,
@@ -30,9 +28,8 @@ TAU2_JUDGE_LLM, TAU2_JUDGE_LLM_ARGS (see tau2_agent_function.py), and
 TAU2_DATA_DIR when tau2-bench is not installed from its source checkout.
 
 Usage:
-    OPENAI_API_KEY=... python run.py
-    OPENAI_API_KEY=... python run.py --domain telecom --mode debug_rollout_only
-    MILES_SCRIPT_EXTERNAL_RAY=1 python run.py --num-nodes 2
+    OPENAI_API_KEY=... MILES_SCRIPT_EXTERNAL_RAY=1 python run.py
+    OPENAI_API_KEY=... MILES_SCRIPT_EXTERNAL_RAY=1 python run.py --domain telecom --mode debug_rollout_only
 """
 
 import json
@@ -43,13 +40,11 @@ from pathlib import Path
 from typing import Literal
 
 import typer
+from policy_models import POLICY_MODELS, PolicyModel
 
 from miles.utils.external_utils import command_utils
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-
-# Each sample is one whole conversation, split over the context-parallel ranks.
-_CONTEXT_PARALLEL_SIZE = 2
 
 _FORWARDED_ENV_VARS = (
     "TAU2_USER_LLM",
@@ -65,8 +60,6 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     mode: Literal["normal", "debug_rollout_only"] = "normal"
     domain: Literal["airline", "retail", "telecom"] = "retail"
     model_name: str = "Qwen3.8-27B"
-    megatron_model_type: str = "qwen3.8-27B"
-    num_gpus_per_node: int = 8
     skip_prepare: bool = False
     model_dir: str = "/root/models"
     data_dir: str = "/root/datasets"
@@ -75,27 +68,30 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     num_rollout: int = 200
     rollout_batch_size: int = 16
     n_samples_per_prompt: int = 8
-    # Per policy turn, thinking included; --max-seq-len caps the whole conversation.
-    rollout_max_response_len: int = 8192
-    max_seq_len: int = 32768
-    reasoning_effort: Literal["low", "medium", "xhigh"] = "low"
     enable_eval: bool = True
     eval_interval: int = 10
     save: bool = True
     save_interval: int = 20
+
+    @property
+    def model(self) -> PolicyModel:
+        if self.model_name not in POLICY_MODELS:
+            raise ValueError(f"--model-name {self.model_name!r} is not in policy_models.py: {sorted(POLICY_MODELS)}")
+        return POLICY_MODELS[self.model_name]
 
     def task_file(self, split: str) -> str:
         return f"{self.data_dir}/tau2-bench/{self.domain}_{split}.jsonl"
 
 
 def prepare(args: ScriptArgs):
+    model = args.model
     U = args.create_backend()
     U.exec_command_cpu(f"mkdir -p {args.model_dir} {args.data_dir}/tau2-bench")
-    U.exec_command_cpu(f"hf download Qwen/{args.model_name} --local-dir {args.model_dir}/{args.model_name}")
+    U.exec_command_cpu(f"hf download {model.hf_repo} --local-dir {args.model_dir}/{args.model_name}")
     U.convert_checkpoint(
         model_name=args.model_name,
-        megatron_model_type=args.megatron_model_type,
-        num_gpus_per_node=args.num_gpus_per_node,
+        megatron_model_type=model.megatron_model_type,
+        num_gpus_per_node=model.num_gpus_per_node,
         dir_dst=args.model_dir,
         hf_checkpoint=f"{args.model_dir}/{args.model_name}",
         megatron_path=args.megatron_path,
@@ -151,7 +147,41 @@ def _preflight_api_keys(domain: str) -> None:
         )
 
 
+def _model_args(model: PolicyModel) -> str:
+    """How the policy runs: parallelism, optimizer placement, its SGLang engine and its chat template."""
+    args = (
+        f"--tensor-model-parallel-size {model.tensor_parallel_size} "
+        "--sequence-parallel "
+        "--pipeline-model-parallel-size 1 "
+        f"--context-parallel-size {model.context_parallel_size} "
+        "--expert-model-parallel-size 1 "
+        "--expert-tensor-parallel-size 1 "
+        "--recompute-granularity full "
+        "--recompute-method uniform "
+        "--recompute-num-layers 1 "
+        "--use-dynamic-batch-size "
+        f"--max-tokens-per-gpu {model.max_seq_len // model.context_parallel_size} "
+        f"--rollout-max-response-len {model.rollout_max_response_len} "
+        f"--max-seq-len {model.max_seq_len} "
+        f"--rollout-num-gpus-per-engine {model.rollout_num_gpus_per_engine} "
+        f"--sglang-mem-fraction-static {model.sglang_mem_fraction_static} "
+        f"--sglang-tool-call-parser {model.sglang_tool_call_parser} "
+        f"--tito-model {model.tito_model} "
+        f"--actor-num-nodes {model.num_nodes} "
+        f"--actor-num-gpus-per-node {model.num_gpus_per_node} "
+        f"--num-gpus-per-node {model.num_gpus_per_node} "
+    )
+    if model.sglang_reasoning_parser is not None:
+        args += f"--sglang-reasoning-parser {model.sglang_reasoning_parser} "
+    if model.chat_template_kwargs:
+        args += f"--apply-chat-template-kwargs {shlex.quote(json.dumps(model.chat_template_kwargs))} "
+    if model.optimizer_cpu_offload:
+        args += "--optimizer-cpu-offload --overlap-cpu-optimizer-d2h-h2d --use-precision-aware-optimizer "
+    return args
+
+
 def execute(args: ScriptArgs):
+    model = args.model
     _preflight_api_keys(args.domain)
     U = args.create_backend()
 
@@ -161,7 +191,7 @@ def execute(args: ScriptArgs):
         f"--load {args.output_dir}/checkpoints "
     )
     if args.save:
-        ckpt_args += f"--save {args.output_dir}/checkpoints " f"--save-interval {args.save_interval} "
+        ckpt_args += f"--save {args.output_dir}/checkpoints --save-interval {args.save_interval} "
 
     rollout_args = (
         f"--prompt-data {args.task_file('train')} "
@@ -172,8 +202,6 @@ def execute(args: ScriptArgs):
         f"--rollout-batch-size {args.rollout_batch_size} "
         f"--n-samples-per-prompt {args.n_samples_per_prompt} "
         "--rollout-temperature 1 "
-        f"--rollout-max-response-len {args.rollout_max_response_len} "
-        f"--max-seq-len {args.max_seq_len} "
         f"--global-batch-size {args.rollout_batch_size * args.n_samples_per_prompt} "
         "--balance-data "
         "--dynamic-sampling-filter-path miles.rollout.filter_hub.common_filters.apply_reward_nonzero_std_filter "
@@ -185,22 +213,8 @@ def execute(args: ScriptArgs):
             f"--eval-interval {args.eval_interval} "
             f"--eval-prompt-data {args.domain}-test {args.task_file('test')} "
             "--n-samples-per-eval-prompt 4 "
-            f"--eval-max-response-len {args.rollout_max_response_len} "
+            f"--eval-max-response-len {model.rollout_max_response_len} "
         )
-
-    perf_args = (
-        "--tensor-model-parallel-size 4 "
-        "--sequence-parallel "
-        "--pipeline-model-parallel-size 1 "
-        f"--context-parallel-size {_CONTEXT_PARALLEL_SIZE} "
-        "--expert-model-parallel-size 1 "
-        "--expert-tensor-parallel-size 1 "
-        "--recompute-granularity full "
-        "--recompute-method uniform "
-        "--recompute-num-layers 1 "
-        "--use-dynamic-batch-size "
-        f"--max-tokens-per-gpu {args.max_seq_len // _CONTEXT_PARALLEL_SIZE} "
-    )
 
     grpo_args = (
         "--advantage-estimator grpo "
@@ -219,19 +233,6 @@ def execute(args: ScriptArgs):
         "--weight-decay 0.1 "
         "--adam-beta1 0.9 "
         "--adam-beta2 0.98 "
-        # The 27B Adam state goes to host memory, as in scripts/run_qwen3_dense.py.
-        "--optimizer-cpu-offload "
-        "--overlap-cpu-optimizer-d2h-h2d "
-        "--use-precision-aware-optimizer "
-    )
-
-    # Both parsers are load-bearing: without the tool-call parser the policy's tool calls
-    # stay plain text, and without the reasoning parser its thinking reaches tau2 as replies.
-    sglang_args = (
-        "--rollout-num-gpus-per-engine 1 "
-        "--sglang-mem-fraction-static 0.8 "
-        "--sglang-reasoning-parser qwen3 "
-        "--sglang-tool-call-parser qwen3_coder "
     )
 
     agent_args = (
@@ -239,8 +240,6 @@ def execute(args: ScriptArgs):
         "--custom-agent-function-path tau2_agent_function.run "
         "--custom-rm-path tau2_agent_function.reward_func "
         "--use-session-server "
-        "--tito-model qwen38small "
-        f"--apply-chat-template-kwargs {shlex.quote(json.dumps({'reasoning_effort': args.reasoning_effort}))} "
     )
 
     misc_args = (
@@ -252,9 +251,6 @@ def execute(args: ScriptArgs):
         "--attention-softmax-in-fp32 "
         "--attention-backend flash "
         "--colocate "
-        f"--actor-num-nodes {args.num_nodes} "
-        f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
-        f"--num-gpus-per-node {args.num_gpus_per_node} "
     )
 
     debug_args = "--debug-rollout-only " if args.mode == "debug_rollout_only" else ""
@@ -263,10 +259,9 @@ def execute(args: ScriptArgs):
         f"{ckpt_args}"
         f"{rollout_args}"
         f"{eval_args}"
-        f"{perf_args}"
+        f"{_model_args(model)}"
         f"{grpo_args}"
         f"{optimizer_args}"
-        f"{sglang_args}"
         f"{agent_args}"
         f"{misc_args}"
         f"{command_utils.get_default_wandb_args(__file__, run_id=args.run_id)} "
@@ -280,8 +275,8 @@ def execute(args: ScriptArgs):
 
     U.execute_train(
         train_args=train_args,
-        num_gpus_per_node=args.num_gpus_per_node,
-        megatron_model_type=args.megatron_model_type,
+        num_gpus_per_node=model.num_gpus_per_node,
+        megatron_model_type=model.megatron_model_type,
         megatron_path=args.megatron_path,
         extra_env_vars=extra_env_vars,
     )
