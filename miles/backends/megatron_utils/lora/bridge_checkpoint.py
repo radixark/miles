@@ -13,7 +13,6 @@ import torch
 import torch.distributed as dist
 
 from miles.backends.megatron_utils.lora.utils import adapter_named_parameters
-from miles.backends.training_utils.checkpoint.adapter.adapter_state import gloo_group
 from miles.backends.training_utils.checkpoint.adapter.key_mapping import (
     HfKey,
     fused_components,
@@ -188,14 +187,6 @@ def _registered_in_place_of(
     finally:
         for module, name, param in registrations:
             module._parameters[name] = param
-
-
-def agreed_load_overwrites_every_element(unexported: torch.Tensor | None) -> bool:
-    """Collective: whether a load writes every adapter element on every rank; a dp-zero gather that skips the data
-    also skips its collective, so all ranks must agree."""
-    leaves_out = torch.tensor([int(unexported is not None and unexported.numel() > 0)])
-    dist.all_reduce(leaves_out, op=dist.ReduceOp.MAX, group=gloo_group())
-    return not leaves_out.item()
 
 
 class BridgeAdapterSlots(ProbedAdapterSlots):

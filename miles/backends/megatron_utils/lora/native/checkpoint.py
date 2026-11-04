@@ -1,17 +1,24 @@
 """Native LoRA (N = 1) checkpoint members: the same probe-built HF layout as Bridge, over native's own export."""
 
 import torch
+import torch.distributed as dist
 
-from miles.backends.megatron_utils.lora.bridge_checkpoint import (
-    agreed_load_overwrites_every_element,
-    probe_bridge_row_mapping,
-)
+from miles.backends.megatron_utils.lora.bridge_checkpoint import probe_bridge_row_mapping
 from miles.backends.megatron_utils.lora.native.hf_adapter import export_lora_hf_named
 from miles.backends.megatron_utils.lora.native.modules.linear import iter_adapters
 from miles.backends.megatron_utils.lora.native.modules.lm_head import LoRAOutputHead
 from miles.backends.megatron_utils.lora.utils import adapter_named_parameters
+from miles.backends.training_utils.checkpoint.adapter.adapter_state import gloo_group
 from miles.backends.training_utils.checkpoint.adapter.key_mapping import HfKey, map_sampler_keys_to_hf_keys
 from miles.backends.training_utils.checkpoint.adapter.probed_slots import ProbedAdapterSlots
+
+
+def agreed_load_overwrites_every_element(unexported: torch.Tensor | None) -> bool:
+    """Collective: whether a load writes every adapter element on every rank; a dp-zero gather that skips the data
+    also skips its collective, so all ranks must agree."""
+    leaves_out = torch.tensor([int(unexported is not None and unexported.numel() > 0)])
+    dist.all_reduce(leaves_out, op=dist.ReduceOp.MAX, group=gloo_group())
+    return not leaves_out.item()
 
 
 class NativeAdapterSlots(ProbedAdapterSlots):
