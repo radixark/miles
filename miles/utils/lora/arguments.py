@@ -355,3 +355,7 @@ def validate_multi_lora_args(args: Any) -> None:
         "Multi-LoRA runs on Megatron-Bridge adapters; pass --megatron-to-hf-mode bridge "
         f"(got {args.megatron_to_hf_mode!r})"
     )
+    # train.py's save() writes single LoRA's adapter dir; multi-LoRA slots are saved through the Tinker gateway
+    assert (
+        args.entry != "train" or args.save is None
+    ), "Multi-LoRA saves its adapters through the Tinker gateway; --save is single LoRA only"
