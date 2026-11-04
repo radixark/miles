@@ -738,9 +738,10 @@ def assert_every_adapter_slotted(model_chunks: Sequence[nn.Module]) -> None:
         for child in _iter_modules(model_chunks)
         if isinstance(child, NativeLoRAAdapter) and id(child) not in slotted
     ]
-    assert (
-        not unslotted
-    ), f"multi-LoRA slots cover dense projections and lm_head; these adapters sit outside the slots: {unslotted[:4]}"
+    assert not unslotted, (
+        f"multi-LoRA slots cover dense projections and lm_head; these adapters sit outside the slots: {unslotted[:4]}. "
+        "Drop their targets, or use --megatron-to-hf-mode bridge"
+    )
 
 
 @contextmanager

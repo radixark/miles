@@ -55,6 +55,7 @@ class InklingLMHeadSpec:
             return 0
         output_layer = model.output_layer
         mup = model.config.inkling.logits_mup_width_multiplier
+        unpadded_vocab_size = _read_unpadded_vocab_size(args.hf_checkpoint)
         adapter = build_adapter(
             lambda: LoRAOutputHead(
                 hf_prefix="language_model.lm_head.",
@@ -62,7 +63,7 @@ class InklingLMHeadSpec:
                 context=context,
                 vocab_local=output_layer.weight.shape[0],
                 mup_width_multiplier=float(mup) if mup else None,
-                unpadded_vocab_size=_read_unpadded_vocab_size(args.hf_checkpoint),
+                unpadded_vocab_size=unpadded_vocab_size,
             ),
             context,
         )

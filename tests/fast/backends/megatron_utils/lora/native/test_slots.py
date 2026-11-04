@@ -7,6 +7,7 @@ import pytest
 import torch
 import torch.nn as nn
 
+from miles.backends.megatron_utils.lora import bridge_checkpoint
 from miles.backends.megatron_utils.lora.native import checkpoint as native_checkpoint
 from miles.backends.megatron_utils.lora.native.config import LoRAConfig
 from miles.backends.megatron_utils.lora.native.hf_adapter import export_lora_hf_named
@@ -363,15 +364,13 @@ def test_a_sequence_parallel_replicated_adapter_runs_on_its_shard():
 def _routed(monkeypatch):
     """``NativeAdapterSlots`` without its collective probe; its slot draw needs the CUDA RNG tracker."""
     multi = _attached(_column, _context(rank=MAX_RANK, num_slots=NUM_SLOTS), _base_weight())
-    slots = native_checkpoint.NativeAdapterSlots.__new__(native_checkpoint.NativeAdapterSlots)
-    slots._model, slots._multi_lora = [multi], True
-    slots.num_slots, slots._claimed_slots = slots._local_num_slots(), set()
+    monkeypatch.setattr(bridge_checkpoint, "probe_bridge_row_mapping", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         native_checkpoint.NativeAdapterSlots,
         "_init_slot",
         lambda self, slot, lora_rank, lora_alpha, seed: multi.adapter.init_slot(slot, lora_rank, lora_alpha),
     )
-    return multi, slots
+    return multi, native_checkpoint.NativeAdapterSlots([multi], None, None, multi_lora=True)
 
 
 def test_routing_takes_integer_counts_one_per_slot(monkeypatch):
