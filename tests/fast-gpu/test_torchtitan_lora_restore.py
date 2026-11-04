@@ -313,6 +313,31 @@ def test_a_megatron_adapter_dir_off_this_runs_rollout_grid_is_refused(tmp_path):
         _restore(tmp_path, training_state={"iteration": 2, "opt_param_scheduler": {"num_steps": 40}})
 
 
+@pytest.mark.parametrize(
+    "num_steps, flags",
+    [
+        # one 8-sample step of three rollouts skipped for an inf/nan grad: Megatron's scheduler did not count it
+        (88, {}),
+        (96, {"use_dynamic_global_batch_size": True}),
+    ],
+)
+def test_a_megatron_adapter_dir_whose_schedule_does_not_map_loads_its_weights_and_starts_fresh(
+    tmp_path, num_steps, flags
+):
+    training_state = {"iteration": 2, "opt_param_scheduler": {"num_steps": num_steps}}
+    with pytest.raises(AssertionError, match="pass --no-load-optim"):
+        _restore(tmp_path, training_state=training_state, **flags)
+    restored = _restore(
+        tmp_path,
+        training_state=training_state,
+        no_load_optim=True,
+        lora_adapter_convert_save=str(tmp_path / "out"),
+        **flags,
+    )
+    assert (restored.iteration, restored.step, restored.lr_states) == (None, 0, [])
+    assert restored.save.call_args.kwargs["training_state"] is None
+
+
 def test_a_convert_save_of_a_model_only_source_writes_no_training_state(tmp_path):
     """As Megatron's convert-save: a step and schedule the source never had would resume as if real."""
     restored = _restore(tmp_path, lora_adapter_convert_save=str(tmp_path / "out"))
