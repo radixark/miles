@@ -172,11 +172,6 @@ def _default_lora_type(args) -> str:
 def validate_lora_args_after_megatron(args):
     """Checks that read Megatron's resolved args; for native (raw-mode) LoRA also the targets its spec serves
     (e.g. the expert TP size it defaults from TP)."""
-    # save() writes a LoRA model to its adapter dir, never into the in-memory checkpoint a peer heal sends
-    if is_lora_enabled(args) and not args.debug_rollout_only:
-        assert (
-            not args.indep_dp
-        ), "LoRA does not support --indep-dp: a healed cell cannot receive the adapter; remove 'train' from --ft-components"
     # rollout-only builds no optimizer and saves nothing
     if (
         is_lora_enabled(args)

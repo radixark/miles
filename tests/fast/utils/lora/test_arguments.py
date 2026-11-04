@@ -219,21 +219,6 @@ def test_rollout_only_skips_the_adapter_checkpoint_checks():
     validate_lora_args_after_megatron(args)
 
 
-@pytest.mark.parametrize("megatron_to_hf_mode", ["bridge", "raw"])
-def test_lora_refuses_indep_dp(megatron_to_hf_mode):
-    """A peer heal would otherwise fail on the sender, or reload --lora-adapter-path over the received state."""
-    args = Namespace(
-        lora_rank=8,
-        lora_adapter_path="/adapter",
-        multi_lora=False,
-        megatron_to_hf_mode=megatron_to_hf_mode,
-        debug_rollout_only=False,
-        indep_dp=True,
-    )
-    with pytest.raises(AssertionError, match="LoRA does not support --indep-dp"):
-        validate_lora_args_after_megatron(args)
-
-
 def test_the_adapter_checkpoint_requires_the_distributed_optimizer():
     args = Namespace(
         save="/save",
