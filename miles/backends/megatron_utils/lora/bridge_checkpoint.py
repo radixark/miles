@@ -160,7 +160,10 @@ def probe_bridge_row_mapping(
             for group in groups:
                 a_keys = {f"{member}.lora_A" for member in group}
                 held = [p.key for p in pieces if p.key in a_keys]
-                assert held, f"{group}: this rank holds no piece of the shared A"
+                # Bridge broadcasts every pipeline stage's adapters to all stages; another stage's group has no
+                # piece here, and the coverage check below still catches a group of this rank's that has none
+                if not held:
+                    continue
                 pieces = [
                     replace(p, key=f"{group[0]}.lora_A") if p.key == held[0] else p
                     for p in pieces
@@ -177,7 +180,7 @@ def probe_bridge_row_mapping(
             error = exc
     raise_if_any_rank_failed(error)
 
-    # pipeline stages export different layers; every rank needs the whole parametrization
+    # Bridge already exports every stage's adapters to every rank; the union keeps all ranks on one parametrization
     gathered = [None] * dist.get_world_size()
     dist.all_gather_object(gathered, (sorted(groups), sorted(modules)), group=gloo_group())
     return BridgeRowMapping(

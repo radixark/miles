@@ -39,6 +39,7 @@ from miles.backends.training_utils.checkpoint.adapter.readers import (
     classify_adapter_source,
     collapse_shared_lora_a,
 )
+from miles.backends.training_utils.checkpoint.adapter.source_error import AdapterSourceError
 from miles.utils.lora.hf_lora_targets import HfLoraTargets
 
 TRAINING_STATE_FILENAME = "training_state.json"
@@ -62,8 +63,9 @@ class InModelLoader(Protocol):
     the others wait inside it.
     """
 
-    # reads and checks the source without changing the model, so a refused source leaves the model as it was
-    def parametrization(self, path: Path) -> AdapterParametrization: ...
+    # reads and checks the source without changing the model, so a refused source leaves the model as it was;
+    # returns the source's parametrization and whether it holds optimizer state
+    def parametrization(self, path: Path) -> tuple[AdapterParametrization, bool]: ...
 
     # every read and check left before the model is written; returns what apply needs
     def prepare(self, path: Path) -> Any: ...
@@ -73,7 +75,12 @@ class InModelLoader(Protocol):
 
 
 class AdapterCheckpointMembers(Protocol):
-    """The checkpoint members every backend's AdapterSlots implements; they never touch files."""
+    """The checkpoint members every backend's AdapterSlots implements; they never touch files.
+
+    The library agrees across ranks after each member it calls. A member that enters a collective agrees its own
+    rank-local failures before it (``raise_if_any_rank_failed``), so one rank never fails alone while the others wait
+    inside it.
+    """
 
     # naming of export_bf16_adapter's names; picks the mapper to HF keys
     bf16_adapter_key_style: Literal["peft"]
@@ -216,7 +223,8 @@ def write_sampler_export(
 
 
 def _slice(full: torch.Tensor, spec: LocalShardSpec) -> torch.Tensor:
-    assert tuple(full.shape) == spec.global_shape, f"{spec.key}: source {tuple(full.shape)} != run {spec.global_shape}"
+    if tuple(full.shape) != spec.global_shape:
+        raise AdapterSourceError(f"{spec.key}: source {tuple(full.shape)} != run {spec.global_shape}")
     return full[tuple(slice(o, o + n) for o, n in zip(spec.offsets, spec.local_shape, strict=True))].clone()
 
 
@@ -228,7 +236,8 @@ def _with_zero_moments(specs: list[LocalShardSpec], pieces: list[torch.Tensor]) 
 
 def _assert_has_keys(weights: dict[str, torch.Tensor], keys: set[str]) -> None:
     missing = keys - set(weights)
-    assert not missing, f"the source lacks tensors the run trains: {sorted(missing)}"
+    if missing:
+        raise AdapterSourceError(f"the source lacks tensors the run trains: {sorted(missing)}")
 
 
 def _weights_only_state(
@@ -242,9 +251,11 @@ def _served_rows(full: torch.Tensor, spec: LocalShardSpec, head_rows: HeadRows |
     if head_rows is None or spec.key != head_rows.key:
         return full
     rows, served = full.shape[0], spec.global_shape[0]
-    assert (
-        served <= rows <= head_rows.max_source_rows
-    ), f"{spec.key}: the source has {rows} rows; this run serves {served} and reads up to {head_rows.max_source_rows}"
+    if not served <= rows <= head_rows.max_source_rows:
+        raise AdapterSourceError(
+            f"{spec.key}: the source has {rows} rows; this run serves {served} and reads up to "
+            f"{head_rows.max_source_rows}"
+        )
     return full[:served]
 
 
@@ -318,21 +329,22 @@ def load_adapter_dir(
     kind, error = None, None
     try:
         kind = classify_adapter_source(path, targets, load_optimizer=load_optimizer)
-        assert not kind.is_read_into_model() or (
-            in_model_loaders_by_kind is not None and kind in in_model_loaders_by_kind
-        ), f"{path} is a {kind.value} source, which this backend cannot load"
+        if kind.is_read_into_model() and (in_model_loaders_by_kind is None or kind not in in_model_loaders_by_kind):
+            raise AdapterSourceError(f"{path} is a {kind.value} source, which this backend cannot load")
     except Exception as exc:
         error = exc
     raise_if_any_rank_failed(error)
     if kind.is_read_into_model():
         loader, source = in_model_loaders_by_kind[kind], None
         try:
-            source = _with_run_alpha_if_unknown(loader.parametrization(path), run)
+            source, has_optimizer_state = loader.parametrization(path)
+            source = _with_run_alpha_if_unknown(source, run)
             steps = plan_parametrization_conversion(source, run, source_dtype=torch.float32)
             # an in-model loader reads straight into the run's parametrization; it cannot convert
-            assert not steps, f"{path} needs {steps} to match the run, which an in-model loader cannot do"
+            if steps:
+                raise AdapterSourceError(f"{path} needs {steps} to match the run, which an in-model loader cannot do")
             assert_parametrization_matches_run(
-                source, run, steps, load_optimizer=load_optimizer, has_optimizer_state=True
+                source, run, steps, load_optimizer=load_optimizer, has_optimizer_state=has_optimizer_state
             )
         except Exception as exc:
             error = exc
