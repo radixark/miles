@@ -237,7 +237,9 @@ def _registered_in_place_of(
         for name, param in module._parameters.items()
         if param is not None and id(param) in stand_in_by_param_id
     ]
-    assert {id(param) for _, _, param in registrations} == stand_in_by_param_id.keys(), "a probed parameter is unregistered"
+    assert {
+        id(param) for _, _, param in registrations
+    } == stand_in_by_param_id.keys(), "a probed parameter is unregistered"
     for module, name, param in registrations:
         module._parameters[name] = stand_in_by_param_id[id(param)]
     try:
@@ -271,8 +273,7 @@ class BridgeAdapterSlots:
         self._specs: dict[int, list[LocalShardSpec]] = {}
         # every slot has the same layout
         self.row_mapping = probe_bridge_row_mapping(
-            model,
-            self.slot_parameters(0), self._export_probe, targets, self._map_name, self._unexported_elements()
+            model, self.slot_parameters(0), self._export_probe, targets, self._map_name, self._unexported_elements()
         )
 
     def _map_name(self, name: str) -> HfKey:

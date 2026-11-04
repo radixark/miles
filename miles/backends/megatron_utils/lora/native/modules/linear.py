@@ -654,9 +654,9 @@ class NativeSlotAdapters(nn.Module):
 
 def _token_rows(tensor: torch.Tensor) -> torch.Tensor:
     """A ``[s, 1, h]`` / ``[1, s, h]`` activation as ``[s, h]`` rows in token order."""
-    assert tensor.shape[:-1].numel() == max(tensor.shape[:-1], default=1), (
-        f"multi-LoRA slots route packed (thd) tokens; got an activation of shape {tuple(tensor.shape)}"
-    )
+    assert tensor.shape[:-1].numel() == max(
+        tensor.shape[:-1], default=1
+    ), f"multi-LoRA slots route packed (thd) tokens; got an activation of shape {tuple(tensor.shape)}"
     return tensor.reshape(-1, tensor.shape[-1])
 
 

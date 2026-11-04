@@ -142,14 +142,18 @@ def _probe_trimmed_head(rank, world_size, port):
     with pytest.raises(RuntimeError, match="rank 1: AssertionError: .*does not reach 2 of this rank's elements"):
         probe_bridge_row_mapping(model, params, lambda: _trimmed_head_export(_registered(model), 7), TARGETS)
 
-    mapping = probe_bridge_row_mapping(model, params, lambda: _trimmed_head_export(_registered(model), 7), TARGETS, unexported=padding)
+    mapping = probe_bridge_row_mapping(
+        model, params, lambda: _trimmed_head_export(_registered(model), 7), TARGETS, unexported=padding
+    )
 
     head_b = next(p for p in mapping.pieces if p.key == f"{HEAD}.lora_B")
     assert head_b.global_shape == (7, 2) and head_b.offsets == (4 * rank, 0)
     flat = torch.cat([p.data.reshape(-1) for p in params])
     assert torch.equal(flat[head_b.local_elements], params[1].data[: 4 - rank])
     with pytest.raises(RuntimeError, match="the export reaches elements declared unexported"):
-        probe_bridge_row_mapping(model, params, lambda: _trimmed_head_export(_registered(model), 8), TARGETS, unexported=padding)
+        probe_bridge_row_mapping(
+            model, params, lambda: _trimmed_head_export(_registered(model), 8), TARGETS, unexported=padding
+        )
     dist.destroy_process_group()
 
 
