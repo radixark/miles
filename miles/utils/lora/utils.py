@@ -37,12 +37,6 @@ def reads_adapter_slots(args: Namespace, save: str | None) -> bool:
     )
 
 
-def publishes_snapshots(args: Namespace, save: str | None) -> bool:
-    """The trainer publishes HF snapshots: HF exports and a LoRA --save (``save``, which the trainer config holds under
-    ``backend``)."""
-    return exports_hf_snapshots(args) or (is_lora_enabled(args) and save is not None)
-
-
 def lora_rollout_enabled(args: Namespace) -> bool:
     """LoRA enabled AND the rollout side participates; false under --lora-train-only.
 

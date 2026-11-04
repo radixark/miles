@@ -26,9 +26,9 @@ from miles.backends.megatron_utils.lora.optimizer import SlotOptimizer
 from miles.backends.megatron_utils.lora.utils import (
     _distributed_optimizers,
     _init_zero_hdo_state,
-    _load_native_adapter_shard,
     _load_training_state,
     _native_adapter_shard,
+    _read_native_adapter_shard,
 )
 from miles.backends.megatron_utils.rematerialize_utils import _build_cast_main_to_params_fn
 from miles.backends.training_utils.checkpoint.adapter.adapter_dir import (
@@ -95,17 +95,21 @@ class LayerWiseSlotMembers:
         holds = frozenset(owned)
         params = self._slots.slot_parameters(slot)
         specs = self._slots.local_shard_specs(slot, holds)
+        # each piece is cut from the one held parameter it comes from; parameters held elsewhere are never read
+        sources = self._slots.piece_parameter(slot, holds)
+
+        def cut(tensor: torch.Tensor, offsets: torch.Tensor) -> torch.Tensor:
+            return tensor.detach().reshape(-1)[offsets.flatten().to(tensor.device)]
 
         def pieces(pick) -> list[torch.Tensor]:
-            # parameters held elsewhere only pad the index space; none of their pieces is taken
-            aligned = [pick(*owned[i]) if i in owned else p.detach().float() for i, p in enumerate(params)]
             return [
-                piece.reshape(spec.local_shape)
-                for piece, spec in zip(self._slots.local_pieces(slot, aligned, holds), specs, strict=True)
+                cut(pick(*owned[index]), offsets).reshape(spec.local_shape)
+                for (index, offsets), spec in zip(sources, specs, strict=True)
             ]
 
         weights = pieces(lambda master, adam, group: master)
-        for weight, bf16 in zip(weights, self._slots.local_pieces(slot, params, holds), strict=True):
+        for weight, (index, offsets) in zip(weights, sources, strict=True):
+            bf16 = cut(params[index], offsets)
             # NaN-safe: a slot that diverged still saves what it holds
             assert torch.allclose(
                 weight.to(bf16.dtype), bf16.reshape(weight.shape), rtol=0, atol=0, equal_nan=True
@@ -173,7 +177,6 @@ class DistributedOptimizerMembers:
         return self._slots.export_bf16_adapter(slot)
 
     def _holds(self) -> frozenset[int]:
-        """Parameters whose DP group this rank leads: expert parameters reduce over expert DP."""
         parallel = get_parallel_state()
         # the DistributedOptimizer gathers dense parameters over intra-DP x CP and expert ones over expert DP
         dense_lead, expert_lead = parallel.intra_dp_cp.rank == 0, parallel.edp.rank == 0
@@ -218,7 +221,7 @@ class DistributedOptimizerMembers:
 
         def pieces(key: str) -> list[torch.Tensor]:
             if not holds:
-                # no piece is cut here; the aligned copies would only pad the index space
+                # a rank that leads no DP group writes no pieces
                 return []
             aligned = [whole[i][key] if i in whole else p.detach().float().cpu() for i, p in enumerate(params)]
             return [
@@ -464,8 +467,13 @@ class LegacyTinkerCheckpointLoader:
     def parametrization(self, path: Path) -> AdapterParametrization:
         return replace(self._run, lora_alpha=_read_legacy_meta(path, self._run)["lora_alpha"])
 
-    def load(self, path: Path) -> None:
-        _load_legacy_slot(self._model, self._optimizer, str(path), self._load_optimizer)
+    def prepare(self, path: Path) -> tuple[Path, dict]:
+        # a rank that exposes no slot tensors fails here, before any rank enters the collective load
+        return path, _slot_weights_sharded_state_dict(self._model, self._optimizer.slot)
+
+    def apply(self, prepared: tuple[Path, dict]) -> None:
+        path, weights = prepared
+        _load_legacy_slot(weights, self._optimizer, str(path), self._load_optimizer)
 
 
 # a gateway-wide layout setting -> the launch flag that restores a checkpoint saved under `value`
@@ -517,8 +525,7 @@ def _canonicalize_slot_keys(tree: dict, slot: int) -> dict:
     return tree
 
 
-def _load_legacy_slot(model: Sequence[DDP], slot_optimizer: SlotOptimizer, path: str, load_optimizer: bool) -> None:
-    weights = _slot_weights_sharded_state_dict(model, slot_optimizer.slot)
+def _load_legacy_slot(weights: dict, slot_optimizer: SlotOptimizer, path: str, load_optimizer: bool) -> None:
     shells = {_WEIGHTS_KEY: weights, _OPTIM_KEY: slot_optimizer.sharded_state(weights, is_loading=True)}
     _canonicalize_slot_keys(shells, slot_optimizer.slot)
 
@@ -526,8 +533,8 @@ def _load_legacy_slot(model: Sequence[DDP], slot_optimizer: SlotOptimizer, path:
     slot_optimizer.load_sharded_state(loaded[_OPTIM_KEY])
     if not load_optimizer:
         slot_optimizer.reset_adam_state()
-    # the masters are authoritative, also for weights only: main's layout leaves grouped-expert adapter weights
-    # unloaded in the model
+    # main's torch_dist load leaves factory-built (grouped-expert) adapter weights unwritten; masters are
+    # authoritative until that is fixed in main
     for child in slot_optimizer.chained_optimizers:
         child._copy_main_params_to_model_params()
     slot_optimizer.allgather_params()
@@ -647,15 +654,27 @@ class LegacyRankShardLoader:
         # an old save records alpha in its PEFT pair; load_adapter_dir takes the run's when it records none
         return replace(self._run, lora_alpha=read_source_lora_alpha(path))
 
-    def load(self, path: Path) -> None:
+    def prepare(self, path: Path) -> tuple[list, dict | None]:
+        # every rank-local read and check, so a rank missing its shard fails before any rank enters a collective
         shard = _native_adapter_shard(path)
         assert shard is not None, f"{path} has no adapter shard for this rank"
-        _load_native_adapter_shard(self._model, shard)
+        tensors = _read_native_adapter_shard(self._model, shard)
+        state = None
         if self._load_optimizer:
             state = _load_training_state(path)
             assert (
                 state is not None and state["optimizer"] is not None and "parameter_state" in state
             ), f"{path} has no optimizer state to resume; pass --no-load-optim"
+            assert len(state["parameter_state"]) == len(
+                _distributed_optimizers(self._optimizer)
+            ), f"{path} holds parameter state for another number of distributed optimizers"
+        return tensors, state
+
+    def apply(self, prepared: tuple[list, dict | None]) -> None:
+        tensors, state = prepared
+        for param, tensor in tensors:
+            param.data.copy_(tensor.to(device=param.device))
+        if state is not None:
             subs = _distributed_optimizers(self._optimizer)
             for sub in subs:
                 # on an empty HDO state Megatron's load_state_dict would run dummy_step, a real Adam step
