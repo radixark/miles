@@ -28,7 +28,7 @@ class NativeAdapterSlots(ProbedAdapterSlots):
 
     def __init__(self, model, iterator, targets):
         """Collective: probes the row mapping now, while nothing else touches the parameters."""
-        # the probe's name mapping and export read these before the base is set up
+        # _unexported_elements, slot_parameters, _map_name and _export_probe read these before super().__init__
         self._model, self._iterator, self.targets = model, iterator, targets
         unexported = self._unexported_elements()
         row_mapping = probe_bridge_row_mapping(
