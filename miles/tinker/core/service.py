@@ -78,11 +78,17 @@ def _open_dir_beneath(root: str, relative: str) -> int:
     return fd
 
 
-def _copy_adapter_files(source_fd: int, copy_dir: str, wanted: Callable[[str], bool], max_bytes: int) -> None:
+def _copy_adapter_files(
+    source_fd: int, copy_dir: str, wanted: Callable[[str], bool], max_bytes: int, committed_marker: str
+) -> None:
     """Copy the files a reader opens, ``max_bytes`` in total; anything else (README.md, .cache/, a pickled DCP or
     .pt) stays behind."""
+    names = os.listdir(source_fd)
+    # a checkpoint store mounted under the import root: realpath checks cannot see the alias
+    if committed_marker in names:
+        raise UserInputError(f"the import is a committed checkpoint ({committed_marker}); import an export of it")
     budget = max_bytes
-    for name in os.listdir(source_fd):
+    for name in names:
         if not wanted(name):
             continue
         # O_NONBLOCK: opening a FIFO would otherwise wait for a writer
@@ -688,7 +694,9 @@ class TinkerService:
                 raise UserInputError(f"{uri} is outside the import root {self.config.import_root}")
             source_fd = _open_dir_beneath(root, os.path.relpath(path, root))
             try:
-                _copy_adapter_files(source_fd, copy_dir, wanted, self.config.import_max_bytes)
+                _copy_adapter_files(
+                    source_fd, copy_dir, wanted, self.config.import_max_bytes, self.backend.committed_checkpoint_file
+                )
             finally:
                 os.close(source_fd)
         except BaseException as error:

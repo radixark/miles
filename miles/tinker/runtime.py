@@ -239,6 +239,8 @@ class MilesBackend:
 
     imported_adapter_files = IMPORTED_ADAPTER_FILES
     loaded_adapter_files = LOADED_ADAPTER_FILES
+    # every committed checkpoint dir holds it; an import never does
+    committed_checkpoint_file = TENANT_FILENAME
 
     def lora_groups(self, target_modules) -> dict[str, bool]:
         return classify_lora_groups(target_modules, self.lora_layout)

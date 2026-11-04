@@ -2116,6 +2116,18 @@ def test_an_import_json_larger_than_any_adapter_config_is_refused_before_it_is_p
         service.weights_info("tenant", f"file://{adapter}")
 
 
+def test_a_committed_checkpoint_dir_cannot_be_imported(tmp_path):
+    """A checkpoint store mounted under the import root would otherwise hand any tenant another tenant's adapter."""
+    adapter = tmp_path / "imports" / "mounted"
+    adapter.mkdir(parents=True)
+    (adapter / "adapter_config.json").write_text(json.dumps({"r": 8, "lora_alpha": 32}))
+    (adapter / "tenant.json").write_text(json.dumps({"tenant_digest": "someone"}))
+    service = make_service(tmp_path / "root", import_root=str(tmp_path / "imports"))
+
+    with pytest.raises(UserInputError, match="is a committed checkpoint"):
+        service.weights_info("tenant", f"file://{adapter}")
+
+
 class _WritesMarker:
     def __init__(self, marker: Path):
         self.marker = marker

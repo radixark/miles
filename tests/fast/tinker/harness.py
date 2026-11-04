@@ -11,7 +11,7 @@ from miles.backends.training_utils.checkpoint.adapter.adapter_exports import (
     write_external_adapter,
     write_sampler_adapter,
 )
-from miles.backends.training_utils.checkpoint.adapter.commit import write_adapter_dir
+from miles.backends.training_utils.checkpoint.adapter.commit import TENANT_FILENAME, write_adapter_dir
 from miles.backends.training_utils.checkpoint.adapter.parametrization import (
     AdapterParametrization,
     write_parametrization,
@@ -163,6 +163,7 @@ class FakeBackend:
     read_imported_adapter = staticmethod(read_imported_adapter)
     imported_adapter_files = IMPORTED_ADAPTER_FILES
     loaded_adapter_files = LOADED_ADAPTER_FILES
+    committed_checkpoint_file = TENANT_FILENAME
 
     async def export_external(self, slot, root, name, tenant_digest, parametrization_fields, age_recipients):
         failure = self._record(
