@@ -42,6 +42,7 @@ from miles.utils.arguments import (
     get_miles_extra_args_provider,
     miles_validate_args,
     parse_args_and_get_parser,
+    parse_args_train_backend,
     resolve_rollout_function_paths,
     supports_partial_target_weight_update,
     validate_async_off_policy_correction,
@@ -71,6 +72,7 @@ CAKE_CHOICE_DEFAULTS = {
     "full_attention_backend": "megatron",
     "batched_projection_gemm_backend": "torch",
     "moe_router_gemm_backend": "megatron",
+    "moe_grouped_gemm_backend": "torch",
 }
 _P2P_ARGS = ["--update-weight-transfer-mode", "p2p"]
 DYNAMIC_BATCH_ARGS = ["--use-dynamic-batch-size", "--max-tokens-per-gpu", "1024"]
@@ -4159,6 +4161,31 @@ class TestMilesExtKernels:
 
         with pytest.raises(ValueError, match=f"{flag} cake runs in the Megatron backend's layers"):
             validate_miles_ext_kernels_args(args)
+
+    @pytest.mark.parametrize("train_backend", ["megatron", "fsdp"])
+    def test_the_cake_moe_grouped_gemm_needs_the_torchtitan_backend(self, train_backend: str) -> None:
+        args = self._parse(
+            ["--use-miles-ext-kernels", "--moe-grouped-gemm-backend", "cake", "--train-backend", train_backend]
+        )
+
+        with pytest.raises(ValueError, match="--moe-grouped-gemm-backend cake runs in the routed experts"):
+            validate_miles_ext_kernels_args(args)
+
+    def test_the_backend_preparse_leaves_megatron_flags_that_prefix_a_miles_flag(self) -> None:
+        # The pre-parse holds only the miles flags: Megatron's --moe-grouped-gemm (a prefix of
+        # --moe-grouped-gemm-backend) must stay an unknown flag there, not an abbreviation of the miles flag.
+        miles_parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(miles_parser)
+        miles_flags = set(miles_parser._option_string_actions)
+        megatron_flags = set(get_megatron_arg_parser()._option_string_actions) - miles_flags
+        prefixes = sorted(
+            flag for flag in megatron_flags if flag.startswith("--") and any(m.startswith(flag) for m in miles_flags)
+        )
+        assert "--moe-grouped-gemm" in prefixes
+
+        for flag in prefixes:
+            with patch.object(sys, "argv", ["train.py", flag, "--train-backend", "megatron", *REQUIRED_ARGS]):
+                assert parse_args_train_backend() == "megatron", flag
 
     def test_the_cake_mhc_backend_runs_its_startup_checks(self) -> None:
         args = self._parse(["--use-miles-ext-kernels", "--mhc-backend", "cake", "--train-backend", "fsdp"])

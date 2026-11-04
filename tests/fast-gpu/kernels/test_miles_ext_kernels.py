@@ -8,7 +8,7 @@ hide the kernel coverage this file exists for.
 
 from tests.ci.ci_register import register_cuda_ci
 
-register_cuda_ci(est_time=2250, suite="stage-c-4-gpu-b200", labels=["precision"], hardware=["blackwell"], num_gpus=1)
+register_cuda_ci(est_time=2400, suite="stage-c-4-gpu-b200", labels=["precision"], hardware=["blackwell"], num_gpus=1)
 
 import os
 import re
@@ -22,7 +22,7 @@ import pytest
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _SUBMODULE = _REPO_ROOT / "3rdparty" / "miles-ext-kernels"
 # The kernel packages whose tests/<package> directory runs here, in the submodule's package order.
-_PACKAGES = ["gdn", "kda", "dsa", "mhc", "gqa", "conv1d", "gated_rmsnorm", "rmsnorm", "dense_gemm"]
+_PACKAGES = ["gdn", "kda", "dsa", "mhc", "gqa", "conv1d", "gated_rmsnorm", "rmsnorm", "dense_gemm", "moe_grouped_gemm"]
 _OUTCOME = re.compile(r"(\d+) (passed|failed|errors?|skipped|xfailed|xpassed)\b")
 
 

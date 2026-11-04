@@ -228,7 +228,11 @@ def _config_args(**overrides: object) -> Namespace:
         save=None,
         load=None,
     )
-    return Namespace(backend=TorchtitanArgsNamespace(**{**base, **overrides}))
+    return Namespace(
+        backend=TorchtitanArgsNamespace(**{**base, **overrides}),
+        moe_grouped_gemm_backend="torch",
+        miles_ext_kernels_args=None,
+    )
 
 
 def _checkpoint_dir(tmp_path, **config) -> str:

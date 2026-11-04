@@ -140,6 +140,19 @@ class TrainConfig(BaseConfig):
             ),
         ),
     ] = "megatron"
+    moe_grouped_gemm_backend: A[
+        str,
+        Arg(
+            choices=("torch", "cake"),
+            help=(
+                "Backend for the routed-expert grouped GEMMs (the fused gate / up and the down projections) of "
+                "--train-backend torchtitan. 'torch' is torch._grouped_mm. 'cake' is the Cake grouped GEMM from the "
+                "miles-ext-kernels submodule (--cake-moe-grouped-gemm-variant det or fast); it requires "
+                "--use-miles-ext-kernels, NVIDIA SM100a/SM103a (Blackwell), the torchtitan backend and expert widths "
+                "that are multiples of 256."
+            ),
+        ),
+    ] = "torch"
     true_on_policy_mode: A[bool, Arg(help="Whether to enable true-on-policy mode.")] = False
     train_env_vars: A[
         Any,

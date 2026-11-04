@@ -85,6 +85,7 @@ CAKE_BACKEND_ARGS = (
     "full_attention_backend",
     "batched_projection_gemm_backend",
     "moe_router_gemm_backend",
+    "moe_grouped_gemm_backend",
 )
 LINEAR_ATTENTION_INPUT_NORMS = ("te", "hf", "cake")
 
@@ -494,7 +495,10 @@ def parse_args_train_backend():
     if os.environ.get("MILES_BACKEND") is not None:
         raise Exception("`MILES_BACKEND` is deprecated, please use --train-backend directly.")
 
-    parser = argparse.ArgumentParser()
+    # This parser holds only the miles flags, so an abbreviation match would take a backend flag that prefixes one of
+    # them (Megatron's --moe-grouped-gemm, a prefix of --moe-grouped-gemm-backend) as that miles flag; Megatron's own
+    # parser does not abbreviate either.
+    parser = argparse.ArgumentParser(allow_abbrev=False)
     get_miles_extra_args_provider()(parser)
     args_partial, _ = parser.parse_known_args()
     return args_partial.train_backend
@@ -976,6 +980,11 @@ def validate_miles_ext_kernels_args(args) -> None:
                 f"{flag} cake runs in the Megatron backend's layers; --train-backend {args.train_backend} would "
                 "silently ignore it: use --train-backend megatron"
             )
+    if args.moe_grouped_gemm_backend == "cake" and args.train_backend != "torchtitan":
+        raise ValueError(
+            "--moe-grouped-gemm-backend cake runs in the routed experts of the torchtitan backend; --train-backend "
+            f"{args.train_backend} would silently ignore it: use --train-backend torchtitan"
+        )
     if args.kda_backend == "cake" and args.train_backend != "megatron":
         raise ValueError(
             f"--kda-backend cake runs in the Megatron KDA layers; --train-backend {args.train_backend} would silently "

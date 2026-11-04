@@ -5,7 +5,7 @@ import torch
 import torch.distributed as dist
 
 from miles.backends.megatron_utils.checkpoint_request import MegatronCkptLoadConfig
-from miles.backends.torchtitan_utils import compat
+from miles.backends.torchtitan_utils import cake_grouped_linear, compat
 from miles.backends.torchtitan_utils.args_namespace import TorchtitanArgsNamespace
 from miles.backends.torchtitan_utils.config import build_trainer_config
 from miles.backends.torchtitan_utils.hf_weight_iterator import TitanHfWeightIterator
@@ -85,6 +85,7 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
         self.load_hf_assets()
 
         self.trainer = TitanTrainer(config)
+        cake_grouped_linear.prebuild(backend=args.moe_grouped_gemm_backend)
         self.model_parts = self.trainer.model_parts
         self.optimizers = self.trainer.optimizers.optimizers
         self.align_token_side_channel = self.trainer.align_token_side_channel

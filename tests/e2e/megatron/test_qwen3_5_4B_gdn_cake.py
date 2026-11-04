@@ -68,7 +68,9 @@ def prepare():
     )
 
 
-def execute():
+def execute(cake_args: str = "", test_file: str = __file__, run_name: str = "gdn"):
+    """Train the recipe; ``cake_args`` adds Cake backends of other kernel families to a cake run (used by
+    ``test_qwen3_5_4B_cake_kernels.py``), ``test_file`` and ``run_name`` name its wandb run."""
     U = command_utils.default_config().create_backend()
     ckpt_args = f"--hf-checkpoint {MODEL_DIR}/{MODEL_NAME}/ " f"--ref-load {CKPT_DIR}/{MODEL_NAME}_torch_dist "
 
@@ -148,7 +150,7 @@ def execute():
         f"--linear-attention-backend {BACKEND} "
     )
     if BACKEND == "cake":
-        misc_args += f"--use-miles-ext-kernels --cake-gdn-variant {VARIANT} "
+        misc_args += f"--use-miles-ext-kernels --cake-gdn-variant {VARIANT} {cake_args}"
     if MODE == "record":
         os.makedirs(DEBUG_DIR, exist_ok=True)
         misc_args += f"--save-debug-rollout-data {DEBUG_DIR}/rollout_{{rollout_id}}.pt "
@@ -170,7 +172,7 @@ def execute():
         f"{rollout_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
-        f"{command_utils.get_default_wandb_args(__file__, run_name_prefix=f'gdn-{RUN_TAG}-{MODE}')} "
+        f"{command_utils.get_default_wandb_args(test_file, run_name_prefix=f'{run_name}-{RUN_TAG}-{MODE}')} "
         f"{perf_args} "
         f"{eval_args} "
         f"{sglang_args} "
