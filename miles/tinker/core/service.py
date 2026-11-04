@@ -80,11 +80,15 @@ def _copy_adapter_files(source_fd: int, copy_dir: str, suffixes: tuple[str, ...]
             continue
         # O_NONBLOCK: opening a FIFO would otherwise wait for a writer
         fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=source_fd)
-        with open(fd, "rb") as source:
+        try:
+            # checked on the raw fd: wrapping a directory's fd raises without closing it
             if not stat.S_ISREG(os.fstat(fd).st_mode):
                 raise UserInputError(f"{name} is not a regular file")
-            with open(os.path.join(copy_dir, name), "wb") as copy:
+            source = open(fd, "rb", closefd=False)
+            with source, open(os.path.join(copy_dir, name), "wb") as copy:
                 shutil.copyfileobj(source, copy)
+        finally:
+            os.close(fd)
 
 
 class _EndedSession(NamedTuple):

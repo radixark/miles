@@ -1963,6 +1963,20 @@ async def test_a_file_import_reads_only_its_own_adapter_files(tmp_path, plant, e
             await run_task
 
 
+@pytest.mark.parametrize("name", ["adapter_config.json", "x.json"])
+def test_a_directory_named_like_an_adapter_file_is_refused_without_leaking_its_fd(tmp_path, name):
+    adapter = tmp_path / "imports" / "adapter"
+    adapter.mkdir(parents=True)
+    (adapter / name).mkdir()
+    service = make_service(tmp_path / "root", import_root=str(tmp_path / "imports"))
+    # a tenant repeating this would otherwise run every tenant's gateway out of file descriptors
+    open_fds = len(os.listdir("/dev/fd"))
+    for _ in range(3):
+        with pytest.raises(UserInputError, match="not a regular file"):
+            service.weights_info("tenant", f"file://{adapter}")
+    assert len(os.listdir("/dev/fd")) == open_fds
+
+
 class _WritesMarker:
     def __init__(self, marker: Path):
         self.marker = marker
