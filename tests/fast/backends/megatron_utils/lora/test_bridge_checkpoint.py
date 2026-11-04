@@ -561,3 +561,38 @@ def test_a_trained_head_declares_its_served_rows_and_the_hf_vocab_a_source_may_h
     head_b = f"{TARGETS.unembed[0]}.lora_B"
     assert _slots_with_pieces([(head_b, 6)], vocab_size=8)._head_rows() == HeadRows(head_b, max_source_rows=8)
     assert _slots_with_pieces([(f"{K}.lora_B", 4)], vocab_size=8)._head_rows() is None
+
+
+def test_a_bridge_optimizer_load_never_steps_an_empty_offloaded_optimizer(tmp_path):
+    """Megatron's load_state_dict runs dummy_step on an empty HybridDeviceOptimizer state: a real Adam step on random
+    gradients, before any source state lands."""
+    from megatron.core.optimizer import ChainedOptimizer, DistributedOptimizer
+    from megatron.core.optimizer.cpu_offloading.hybrid_optimizer import HybridDeviceOptimizer
+
+    from miles.backends.megatron_utils.lora.bridge_peft_checkpoint import MegatronBridgeCheckpointLoader
+
+    param = torch.nn.Parameter(torch.zeros(2))
+    hdo = HybridDeviceOptimizer.__new__(HybridDeviceOptimizer)
+    hdo.state, hdo.param_groups, hdo.param_to_inner_param = {}, [{"params": [param]}], {param: torch.ones(2)}
+    stepped = []
+    hdo.dummy_step = lambda: stepped.append(True)
+    sub = DistributedOptimizer.__new__(DistributedOptimizer)
+    sub.optimizer = sub_optimizer = hdo
+
+    class Chained(ChainedOptimizer):
+        param_groups = []
+
+        def load_state_dict(self, state):
+            # what DistributedOptimizer.load_state_dict does before reading the state
+            if len(sub_optimizer.state) == 0 and isinstance(sub_optimizer, HybridDeviceOptimizer):
+                sub_optimizer.dummy_step()
+
+    chained = Chained.__new__(Chained)
+    chained.chained_optimizers = [sub]
+    loader = MegatronBridgeCheckpointLoader.__new__(MegatronBridgeCheckpointLoader)
+    loader._optimizer = chained
+
+    loader._load_optimizer_state(tmp_path, {})
+
+    assert not stepped, "the empty HDO state must be zero-initialized, not dummy-stepped"
+    assert torch.equal(hdo.state[param]["master_param"], torch.ones(2)) and int(hdo.state[param]["step"]) == 0
