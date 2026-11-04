@@ -1,4 +1,4 @@
-"""The multi-LoRA actor's slot RPCs in the order the Tinker gateway issues them — no GPU."""
+"""The multi-LoRA actor's slot RPCs in the order the Tinker gateway issues them -- no GPU."""
 
 from types import SimpleNamespace
 
@@ -56,7 +56,7 @@ def test_load_state_into_a_created_model_claims_its_slot_again_at_the_sources_al
     assert events == [("init", 1, 16.0), ("clear", 1), ("init", 1, 32.0), ("load", "/ckpt")]
 
     actor.unload_slot(1)
-    assert actor.adapter_slots._claimed_slots == set() and actor.slot_optimizers == {}
+    assert actor.load_slot(1, 8, 16.0) is None, "another tenant creates a model on the freed slot"
 
 
 def test_a_refused_source_leaves_the_live_slot_and_its_optimizer_alone(actor_and_events, monkeypatch):

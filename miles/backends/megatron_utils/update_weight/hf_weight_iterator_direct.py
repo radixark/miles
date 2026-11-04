@@ -12,6 +12,7 @@ from tqdm import tqdm
 
 from miles.backends.megatron_utils.lora.native import export_lora_hf_named
 from miles.backends.megatron_utils.lora.native.modules.linear import iter_adapters, iter_slot_adapters
+from miles.backends.megatron_utils.lora.slots import slice_lora_to_rank
 from miles.backends.megatron_utils.megatron_to_hf import convert_to_hf
 from miles.backends.megatron_utils.named_weights import named_params_and_buffers
 from miles.backends.megatron_utils.sglang import monkey_patch_torch_reductions
@@ -137,8 +138,6 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
         if adapter is None:
             exported = export_lora_hf_named(iter_adapters(self.model))
         else:
-            from ..lora.slots import slice_lora_to_rank
-
             exported = [
                 (name, slice_lora_to_rank(name, tensor, adapter.rank))
                 for name, tensor in export_lora_hf_named(iter_slot_adapters(self.model, adapter.slot))

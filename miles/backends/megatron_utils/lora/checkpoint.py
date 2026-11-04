@@ -384,6 +384,8 @@ def find_load_mismatch(
     try:
         kind = check_adapter_source(path, run, targets, load_optimizer=load_optimizer)
         if kind == AdapterSourceKind.LEGACY_TINKER_CHECKPOINT:
+            # first: a backend that holds no adapter shards refuses whatever META.json records
+            slot_state = _canonicalize_slot_keys(_slot_weights_sharded_state_dict(model, slot), slot)
             _read_legacy_meta(path, run)
             # TE's _extra_state objects are stored per shard (<key>/shard_i_j); the tensors decide the layout
             saved = {
@@ -391,7 +393,6 @@ def find_load_mismatch(
                 for k, metadata in dcp.FileSystemReader(path).read_metadata().state_dict_metadata.items()
                 if ".adapter." in k and "_extra_state" not in k and not _LEGACY_OPTIMIZER_KEY.match(k)
             }
-            slot_state = _canonicalize_slot_keys(_slot_weights_sharded_state_dict(model, slot), slot)
             # shared grouped-expert adapters are factories; built, they carry the global expert axis
             apply_factories(slot_state)
             expected = {
