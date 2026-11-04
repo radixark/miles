@@ -214,7 +214,11 @@ class _DpZeroOptimizer(lora_checkpoint.DistributedOptimizer):
 
     def __init__(self, param, master, group):
         self.group, self.init_state_fn, self.optimizer = group, None, torch.optim.Adam([torch.zeros(1)])
-        self.world = {"param": master.flatten().clone(), "exp_avg": master.flatten() + 1, "exp_avg_sq": master.flatten() + 2}
+        self.world = {
+            "param": master.flatten().clone(),
+            "exp_avg": master.flatten() + 1,
+            "exp_avg_sq": master.flatten() + 2,
+        }
         n = param.numel()
         self.buffers = [
             SimpleNamespace(
@@ -341,11 +345,23 @@ def test_an_export_reads_only_the_parameters_this_rank_leads(monkeypatch):
 def test_without_an_optimizer_an_adapter_path_loads_the_weights_and_starts_over(tmp_path, monkeypatch):
     param = torch.nn.Parameter(torch.zeros(2, 2, dtype=torch.bfloat16))
     slots = SimpleNamespace(
-        targets=None, slot_parameters=lambda slot: [param], piece_parameter=lambda slot, holds: [(0, torch.tensor([3, 0]))]
+        targets=None,
+        slot_parameters=lambda slot: [param],
+        piece_parameter=lambda slot, holds: [(0, torch.tensor([3, 0]))],
     )
 
     def load_adapter_dir(path, members, slot, run, targets, **_):
-        members.import_adapter_state(0, AdapterState([SimpleNamespace(local_shape=(2,))], [torch.tensor([5.0, 7.0])], [], [], step=None, has_optimizer_state=False))
+        members.import_adapter_state(
+            0,
+            AdapterState(
+                [SimpleNamespace(local_shape=(2,))],
+                [torch.tensor([5.0, 7.0])],
+                [],
+                [],
+                step=None,
+                has_optimizer_state=False,
+            ),
+        )
         members.finish_import_adapter_state(0)
         return SimpleNamespace(lora_alpha=16.0)
 

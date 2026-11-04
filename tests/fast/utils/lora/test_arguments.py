@@ -294,7 +294,9 @@ def test_loading_the_adapter_checkpoint_refuses_several_distributed_optimizer_in
 
 
 def test_without_an_optimizer_an_adapter_path_loads_weights_only():
-    args = Namespace(save=None, lora_adapter_path="/adapter", lora_adapter_convert_save=None, debug_disable_optimizer=True)
+    args = Namespace(
+        save=None, lora_adapter_path="/adapter", lora_adapter_convert_save=None, debug_disable_optimizer=True
+    )
     _validate_adapter_state_args(args)
 
 
@@ -376,7 +378,6 @@ class TestRolloutOnlyAdapter:
         with pytest.raises(AssertionError, match="no plain-PEFT form") as raised:
             self._validate(tmp_path)
         assert "--lora-adapter-convert-save" not in str(raised.value)
-
 
     def test_a_sampler_export_of_an_adapter_with_no_plain_peft_form_goes_to_sglang(self, tmp_path):
         gdn = "model.layers.0.linear_attn"
