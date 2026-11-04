@@ -164,6 +164,9 @@ def probe_bridge_row_mapping(
                     for p in pieces
                     if p.key not in a_keys or p.key == held[0]
                 ]
+            # one index per local element stays resident for the run
+            if total < 2**31:
+                pieces = [replace(p, local_elements=p.local_elements.int()) for p in pieces]
             covered = torch.zeros(total, dtype=torch.bool)
             for piece in pieces:
                 covered[piece.local_elements.flatten()] = True

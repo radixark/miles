@@ -47,7 +47,7 @@ TRAINING_STATE_FILENAME = "training_state.json"
 class AdapterCheckpointMembers(Protocol):
     """The checkpoint members every backend's AdapterSlots implements; they never touch files."""
 
-    # the names export_bf16_adapter yields: HF module paths
+    # naming of export_bf16_adapter's names; picks the mapper to HF keys
     bf16_adapter_key_style: Literal["peft"]
 
     def export_bf16_adapter(self, slot: int) -> Iterable[tuple[str, torch.Tensor]]:
@@ -110,16 +110,29 @@ def _assert_real_rank(specs: list[LocalShardSpec], lora_rank: int) -> None:
         ), f"{spec.key}: rank {spec.global_shape[rank_axis]} != {lora_rank}"
 
 
+def _hf_key_mapper(members: AdapterCheckpointMembers):
+    return {"peft": map_peft_keys_to_hf_keys}[members.bf16_adapter_key_style]
+
+
 def _hf_keyed_bf16_adapter(
     named_tensors: list[tuple[str, torch.Tensor]],
     members: AdapterCheckpointMembers,
     parametrization: AdapterParametrization,
     targets: HfLoraTargets,
 ) -> dict[str, torch.Tensor]:
-    map_name = {"peft": map_peft_keys_to_hf_keys}[members.bf16_adapter_key_style]
-    weights, fused_groups = map_named_tensors_to_hf_keys(named_tensors, map_name, targets)
+    weights, fused_groups = map_named_tensors_to_hf_keys(named_tensors, _hf_key_mapper(members), targets)
     # the export names a shared A once per module; the writers expect it once per group
     return _collapse_shared_lora_a(weights, parametrization, fused_groups)
+
+
+def _stacked_expert_keys(named_tensors: list[tuple[str, torch.Tensor]], map_name) -> frozenset[str]:
+    """The HF keys the export names as one stacked experts tensor: the base checkpoint's packed form."""
+    keys = set()
+    for name, tensor in named_tensors:
+        hf_key = map_name(name)
+        if hf_key.expert_index is None and ".experts." in hf_key.key and tensor.dim() == 3:
+            keys.add(hf_key.key)
+    return frozenset(keys)
 
 
 def _is_writer() -> bool:
@@ -140,7 +153,8 @@ def write_peft_export(
         named_tensors = [(key, tensor.cpu()) for key, tensor in members.export_bf16_adapter(slot)]
         if _is_writer():
             weights = _hf_keyed_bf16_adapter(named_tensors, members, parametrization, targets)
-            write_peft_adapter(directory, weights, parametrization, targets)
+            stacked_keys = _stacked_expert_keys(named_tensors, _hf_key_mapper(members))
+            write_peft_adapter(directory, weights, parametrization, targets, stacked_keys=stacked_keys)
     except Exception as exc:
         error = exc
     raise_if_any_rank_failed(error)

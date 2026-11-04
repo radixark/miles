@@ -7,6 +7,7 @@ import pytest
 import torch
 from safetensors.torch import load_file, save_file
 
+from miles.backends.training_utils.checkpoint.adapter.adapter_dir import write_peft_export
 from miles.backends.training_utils.checkpoint.adapter.adapter_exports import write_peft_adapter, write_sampler_adapter
 from miles.backends.training_utils.checkpoint.adapter.key_mapping import map_peft_keys_to_hf_keys
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
@@ -407,3 +408,28 @@ def test_gpt_oss_down_proj_alone_stays_one_packed_3d_tensor(tmp_path):
         tensors = load_file(str(tmp_path / export / "adapter_model.safetensors"))
         assert set(tensors) == {f"{prefix}{down}.lora_A.weight", f"{prefix}{down}.lora_B.weight"}, export
         assert tensors[f"{prefix}{down}.lora_A.weight"].shape == (3, 2, 4)
+
+
+class _StackedDownExport:
+    """Bridge's export of a packed checkpoint: experts.down_proj comes as one 3D tensor, not one per expert."""
+
+    bf16_adapter_key_style = "peft"
+
+    def __init__(self):
+        self.a, self.b = torch.randn(3, 2, 4), torch.randn(3, 4, 2)
+
+    def export_bf16_adapter(self, slot):
+        down = f"{L}.mlp.experts.down_proj"
+        yield f"{down}.lora_A.weight", self.a.clone()
+        yield f"{down}.lora_B.weight", self.b.clone()
+
+
+def test_an_expert_module_the_export_stacks_stays_stacked(tmp_path):
+    """The written form follows Bridge's export, not the model family: a packed base has no per-expert names."""
+    down = f"{L}.mlp.experts.down_proj"
+    export = _StackedDownExport()
+    write_peft_export(tmp_path, export, 0, _run(target_modules=(down,)), QWEN3)
+
+    written = load_file(str(tmp_path / "adapter_model.safetensors"))
+    assert set(written) == {f"base_model.model.{down}.lora_A.weight", f"base_model.model.{down}.lora_B.weight"}
+    assert torch.equal(written[f"base_model.model.{down}.lora_B.weight"], export.b.to(torch.bfloat16))

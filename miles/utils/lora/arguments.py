@@ -16,7 +16,7 @@ from miles.utils.lora.hf_lora_targets import (
     parse_lora_targets,
     resolve_hf_lora_targets,
 )
-from miles.utils.lora.utils import is_lora_enabled, matches_lora_target, targets_expert_leaves
+from miles.utils.lora.utils import exports_hf_snapshots, is_lora_enabled, matches_lora_target, targets_expert_leaves
 
 logger = logging.getLogger(__name__)
 
@@ -38,15 +38,6 @@ def validate_lora_args(args):
     if args.train_backend == "megatron" and args.megatron_to_hf_mode == "bridge":
         from miles.backends.megatron_utils.lora.target_modules import check_fused_lora_selection
 
-        # the actor builds the adapter slots whenever it publishes snapshots (--save-hf, eval snapshots, --save,
-        # and always under multi-LoRA)
-        publishes_snapshots = (
-            args.save_hf is not None or args.eval_hf_dir is not None or args.save is not None or args.multi_lora
-        )
-        assert not publishes_snapshots or has_hf_lora_targets(hf_config.to_dict()), (
-            f"Bridge LoRA snapshots and checkpoints need the HF LoRA target layout of model_type="
-            f"{hf_config.model_type!r}, which miles does not define"
-        )
         canonical = args.lora_type == "canonical_lora"
         check_fused_lora_selection(args.hf_checkpoint, args.hf_lora_targets, canonical=canonical)
         if canonical:
@@ -87,12 +78,25 @@ def _default_lora_type(args) -> str:
 def validate_lora_args_after_megatron(args):
     """Megatron's native (raw-mode) LoRA: the targets its spec serves, and the run checks that read
     Megatron's resolved args (e.g. the expert TP size it defaults from TP)."""
+    if is_lora_enabled(args) and args.megatron_to_hf_mode == "bridge":
+        _assert_adapter_layout_defined(args)
     if not (is_lora_enabled(args) and args.megatron_to_hf_mode == "raw"):
         return
     hf_config = load_hf_config(args.hf_checkpoint)
     hf_modules = _hf_modules(hf_config)
     args.lora_adapter_targets = _native_serving_targets(args, hf_config, args.hf_lora_targets, hf_modules)
     validate_native_lora_args(args, hf_modules)
+
+
+def _assert_adapter_layout_defined(args) -> None:
+    # the actor builds the adapter slots, which need the layout, for HF exports; eval_uses_snapshots is resolved
+    # only after validate_lora_args
+    if exports_hf_snapshots(args):
+        hf_config = load_hf_config(args.hf_checkpoint)
+        assert has_hf_lora_targets(hf_config.to_dict()), (
+            f"Bridge LoRA snapshots and checkpoints need the HF LoRA target layout of model_type="
+            f"{hf_config.model_type!r}, which miles does not define"
+        )
 
 
 def _native_serving_targets(args, hf_config, hf_targets: list[str], hf_modules: list[str]) -> list[str] | str:
