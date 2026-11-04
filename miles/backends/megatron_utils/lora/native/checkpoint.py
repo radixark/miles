@@ -4,7 +4,9 @@ import torch
 
 from miles.backends.megatron_utils.lora.bridge_checkpoint import BridgeAdapterSlots
 from miles.backends.megatron_utils.lora.native.hf_adapter import export_lora_hf_named
-from miles.backends.megatron_utils.lora.native.modules import linear as native_linear
+from miles.backends.megatron_utils.lora.native.modules.linear import (
+    adapters_hidden_context as hide_native_adapters_context,
+)
 from miles.backends.megatron_utils.lora.native.modules.linear import (
     iter_adapters,
     iter_multi_lora_adapters,
@@ -47,7 +49,6 @@ class NativeAdapterSlots(BridgeAdapterSlots):
         The draw comes from the data-parallel stream, equal on every rank, so DP replicas and the TP ranks of an
         A that TP replicates agree, as the model's own construction does.
         """
-        from megatron.core import parallel_state
         from megatron.core.tensor_parallel.random import (
             get_cuda_rng_tracker,
             get_data_parallel_rng_tracker_name,
@@ -58,8 +59,7 @@ class NativeAdapterSlots(BridgeAdapterSlots):
         saved_tracker_states, saved_cuda_rng_state = tracker.get_states(), torch.cuda.get_rng_state()
         # the reseed and restore of Bridge's init_adapter_slot
         try:
-            # pipeline stages hold different layers; offset them as Megatron's own seeding does
-            model_parallel_cuda_manual_seed(seed + 100 * parallel_state.get_pipeline_model_parallel_rank())
+            model_parallel_cuda_manual_seed(seed)
             with tracker.fork(get_data_parallel_rng_tracker_name()):
                 for multi_adapter in iter_multi_lora_adapters(self._model):
                     multi_adapter.init_slot(slot, lora_rank, lora_alpha)
@@ -79,7 +79,7 @@ class NativeAdapterSlots(BridgeAdapterSlots):
         return next((len(multi_adapter.adapters) for multi_adapter in iter_multi_lora_adapters(self._model)), 0)
 
     def adapters_hidden_context(self):
-        return native_linear.adapters_hidden_context(self._model)
+        return hide_native_adapters_context(self._model)
 
     def _unexported_elements(self) -> torch.Tensor:
         """head_B's padded vocab rows: the export trims them, so no checkpoint holds them and a load leaves them."""

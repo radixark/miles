@@ -665,8 +665,8 @@ class NativeMultiLoRAAdapter(nn.Module):
 
 def _as_token_rows(tensor: torch.Tensor) -> torch.Tensor:
     """A ``[s, 1, h]`` / ``[1, s, h]`` activation as ``[s, h]`` rows in token order."""
-    assert tensor.shape[:-1].numel() == max(
-        tensor.shape[:-1], default=1
+    assert (
+        sum(dim != 1 for dim in tensor.shape[:-1]) <= 1
     ), f"multi-LoRA slots route packed (thd) tokens; got an activation of shape {tuple(tensor.shape)}"
     return tensor.reshape(-1, tensor.shape[-1])
 

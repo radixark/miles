@@ -49,6 +49,7 @@ class Qwen35GDNSpec:
     def attach(self, block: nn.Module, layer: nn.Module, context: AttachContext) -> int:
         if not hasattr(block, "linear_attn"):  # config-access-exempt: only GDN mixer layers carry linear_attn
             return 0
+        L.assert_no_slots_under_cp_relayout(context)
         gdn = block.linear_attn
         hosts = (gdn.in_proj_qkv, gdn.in_proj_z, gdn.in_proj_b, gdn.in_proj_a)
         assert all(

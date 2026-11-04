@@ -164,6 +164,14 @@ class ModuleLayout:
         return frozenset(projection.hf_leaf for group in self.fused for projection in group.projections)
 
 
+def assert_no_slots_under_cp_relayout(context: AttachContext) -> None:
+    """Linear attention moves its CP shard to packed order before these projections; routing counts this
+    rank's zigzag tokens."""
+    assert (
+        context.lora.num_slots is None or context.transformer_config.context_parallel_size == 1
+    ), "multi-LoRA slots on linear-attention projections need context parallel size 1"
+
+
 def layout_applies_to(block: nn.Module, layout: ModuleLayout) -> bool:
     return layout.present_when_attr is None or hasattr(
         block, layout.present_when_attr
