@@ -37,6 +37,7 @@ from miles.tinker.core.utils import (
     read_checkpoint_metadata,
     resolve_checkpoint_dir,
     resolve_sampler_checkpoint,
+    resolve_sampler_export,
     tenant_digest,
 )
 
@@ -422,11 +423,12 @@ class TinkerService:
         """What the SDK needs to rebuild a training client from a checkpoint."""
         model_id, kind, name = parse_tinker_path(tinker_path)
         checkpoint_dir = resolve_checkpoint_dir(self.config.checkpoint_root, model_id, kind, name)
-        if kind == "sampler_weights" and os.path.islink(checkpoint_dir):
-            committed = self.backend.resolve_adapter(os.path.dirname(checkpoint_dir), name, tenant, model_id)
-            if committed is None:
-                # the link outlived its target
-                raise UserInputError(f"unknown checkpoint {tinker_path!r}")
+        committed = None
+        if kind == "sampler_weights":
+            committed = resolve_sampler_export(
+                checkpoint_dir, tenant, model_id, tinker_path, self.backend.resolve_adapter
+            )
+        if committed is not None:
             parametrization = committed["parametrization"]
             # an export records targets, not group flags; another gateway may have written it
             return {
