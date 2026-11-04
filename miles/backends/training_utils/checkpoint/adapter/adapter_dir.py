@@ -67,7 +67,12 @@ class InModelLoader(Protocol):
 
 
 class AdapterCheckpointMembers(Protocol):
-    """The checkpoint members every backend's AdapterSlots implements; they never touch files."""
+    """The checkpoint members every backend's AdapterSlots implements; they never touch files.
+
+    The library agrees across ranks after each member it calls. A member that enters a collective agrees its own
+    rank-local failures before it (``raise_if_any_rank_failed``), so one rank never fails alone while the others wait
+    inside it.
+    """
 
     # the trained head's lora_B, or None when the adapter has no head
     head_rows: HeadRows | None
