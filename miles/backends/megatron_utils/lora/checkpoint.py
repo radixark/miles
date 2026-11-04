@@ -75,7 +75,13 @@ class LayerWiseSlotMembers:
         return self._slots.local_shard_specs(slot, frozenset(self._owned(slot)))
 
     def export_adapter_state(self, slot: int) -> AdapterState:
-        owned = self._owned(slot)
+        error, owned = None, {}
+        try:
+            owned = self._owned(slot)
+        except Exception as exc:
+            error = exc
+        # the specs below gather over Gloo: a rank that cannot list its ownership must not leave the others there
+        raise_if_any_rank_failed(error)
         holds = frozenset(owned)
         params = self._slots.slot_parameters(slot)
         specs = self._slots.local_shard_specs(slot, holds)
@@ -110,25 +116,35 @@ class LayerWiseSlotMembers:
 
     def import_adapter_state(self, slot: int, state: AdapterState) -> None:
         """Owners write masters and moments; then every rank refreshes its bf16 parameters from them."""
-        owned = self._owned(slot)
-        targets = self._slots.piece_parameter(slot, frozenset(owned))
-        for (index, offsets), weight, exp_avg, exp_avg_sq in zip(
-            targets, state.weights, state.exp_avgs, state.exp_avg_sqs, strict=True
-        ):
-            master, adam, _ = owned[index]
-            if not adam:
-                adam["exp_avg"], adam["exp_avg_sq"] = torch.zeros_like(master), torch.zeros_like(master)
-            for destination, piece in ((master, weight), (adam["exp_avg"], exp_avg), (adam["exp_avg_sq"], exp_avg_sq)):
-                destination.view(-1)[offsets.flatten().to(destination.device)] = piece.flatten().to(destination)
         optimizer = self._optimizers[slot]
-        for child in optimizer.chained_optimizers:
-            for group in child.optimizer.param_groups:
-                if state.step:
-                    group["step"] = state.step
-                else:
-                    group.pop("step", None)
-        for child in optimizer.chained_optimizers:
-            child._copy_main_params_to_model_params()
+        error = None
+        try:
+            owned = self._owned(slot)
+            targets = self._slots.piece_parameter(slot, frozenset(owned))
+            for (index, offsets), weight, exp_avg, exp_avg_sq in zip(
+                targets, state.weights, state.exp_avgs, state.exp_avg_sqs, strict=True
+            ):
+                master, adam, _ = owned[index]
+                if not adam:
+                    adam["exp_avg"], adam["exp_avg_sq"] = torch.zeros_like(master), torch.zeros_like(master)
+                for destination, piece in (
+                    (master, weight),
+                    (adam["exp_avg"], exp_avg),
+                    (adam["exp_avg_sq"], exp_avg_sq),
+                ):
+                    destination.view(-1)[offsets.flatten().to(destination.device)] = piece.flatten().to(destination)
+            for child in optimizer.chained_optimizers:
+                for group in child.optimizer.param_groups:
+                    if state.step:
+                        group["step"] = state.step
+                    else:
+                        group.pop("step", None)
+            for child in optimizer.chained_optimizers:
+                child._copy_main_params_to_model_params()
+        except Exception as exc:
+            error = exc
+        # allgather_params is collective: a rank whose writes failed must not leave the others inside it
+        raise_if_any_rank_failed(error)
         optimizer.allgather_params()
 
 
@@ -270,12 +286,20 @@ class LegacyTinkerCheckpointLoader:
         return replace(self._run, lora_alpha=_read_legacy_meta(path, self._run)["lora_alpha"])
 
     def prepare(self, path: Path) -> tuple[Path, dict]:
-        # a rank that exposes no slot tensors fails here, before any rank enters the collective load
-        return path, _slot_weights_sharded_state_dict(self._model, self._optimizer.slot)
+        error, weights = None, None
+        try:
+            weights = _slot_weights_sharded_state_dict(self._model, self._optimizer.slot)
+        except Exception as exc:
+            error = exc
+        # the optimizer shells gather over the default group: a rank without slot tensors must not leave the others there
+        raise_if_any_rank_failed(error)
+        shells = {_WEIGHTS_KEY: weights, _OPTIM_KEY: self._optimizer.sharded_state(weights, is_loading=True)}
+        _canonicalize_slot_keys(shells, self._optimizer.slot)
+        return path, shells
 
     def apply(self, prepared: tuple[Path, dict]) -> None:
-        path, weights = prepared
-        _load_legacy_slot(weights, self._optimizer, str(path), self._load_optimizer)
+        path, shells = prepared
+        _load_legacy_slot(shells, self._optimizer, str(path), self._load_optimizer)
 
 
 # a gateway-wide layout setting -> the launch flag that restores a checkpoint saved under `value`
@@ -327,16 +351,18 @@ def _canonicalize_slot_keys(tree: dict, slot: int) -> dict:
     return tree
 
 
-def _load_legacy_slot(weights: dict, slot_optimizer: SlotOptimizer, path: str, load_optimizer: bool) -> None:
-    shells = {_WEIGHTS_KEY: weights, _OPTIM_KEY: slot_optimizer.sharded_state(weights, is_loading=True)}
-    _canonicalize_slot_keys(shells, slot_optimizer.slot)
-
+def _load_legacy_slot(shells: dict, slot_optimizer: SlotOptimizer, path: str, load_optimizer: bool) -> None:
     loaded = dist_checkpointing.load(shells, path)
-    slot_optimizer.load_sharded_state(loaded[_OPTIM_KEY])
-    if not load_optimizer:
-        slot_optimizer.reset_adam_state()
-    # main's torch_dist load leaves factory-built (grouped-expert) adapter weights unwritten; masters are
-    # authoritative until that is fixed in main
-    for child in slot_optimizer.chained_optimizers:
-        child._copy_main_params_to_model_params()
+    error = None
+    try:
+        slot_optimizer.load_sharded_state(loaded[_OPTIM_KEY])
+        if not load_optimizer:
+            slot_optimizer.reset_adam_state()
+        # main's torch_dist load leaves factory-built (grouped-expert) adapter weights unwritten; masters are
+        # authoritative until that is fixed in main
+        for child in slot_optimizer.chained_optimizers:
+            child._copy_main_params_to_model_params()
+    except Exception as exc:
+        error = exc
+    raise_if_any_rank_failed(error)
     slot_optimizer.allgather_params()

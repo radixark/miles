@@ -1,10 +1,18 @@
+import multiprocessing
 from types import SimpleNamespace
 
 import pytest
 import torch
+import torch.distributed as dist
+from tests.fast.dist_utils import init_gloo, run_multiprocess
 
 from miles.backends.megatron_utils.lora.checkpoint import LayerWiseSlotMembers
-from miles.backends.training_utils.checkpoint.adapter.adapter_state import AdapterState, LocalShardSpec
+from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
+    AdapterState,
+    LocalShardSpec,
+    raise_if_any_rank_failed,
+)
+from miles.utils.distributed_utils import init_gloo_group
 
 
 def _members(param: torch.Tensor, master: torch.Tensor) -> LayerWiseSlotMembers:
@@ -104,3 +112,37 @@ def test_an_import_without_a_step_drops_the_groups_step():
     members = _importing_members(master, adam, group, torch.arange(4), calls)
     members.import_adapter_state(0, _state(None, torch.ones(4), torch.zeros(4), torch.zeros(4)))
     assert "step" not in group, "a source saved before any step restarts Adam's bias correction"
+
+
+def _one_rank_cannot_import(rank, world_size, port):
+    init_gloo(rank, world_size, port=port)
+    init_gloo_group()
+    master, calls = torch.zeros(2), []
+    members = _importing_members(master, {}, {}, torch.arange(2), calls)
+    # allgather_params is collective: here a barrier on the default group
+    members._optimizers[0].allgather_params = dist.barrier
+    pieces = [torch.ones(2), torch.zeros(2), torch.zeros(2)]
+    state = _state(1, *pieces)
+    if rank == 1:
+        # one piece more than this rank holds: its write fails before the collective
+        state = AdapterState(
+            state.shard_specs * 2, state.weights * 2, state.exp_avgs * 2, state.exp_avg_sqs * 2, step=1
+        )
+    error = None
+    try:
+        members.import_adapter_state(0, state)
+    except Exception as exc:
+        error = exc
+    # what load_adapter_dir does after import_adapter_state
+    with pytest.raises(RuntimeError, match="rank 1: ValueError"):
+        raise_if_any_rank_failed(error)
+    dist.destroy_process_group()
+
+
+def test_a_rank_whose_import_fails_fails_every_rank_before_the_parameter_gather():
+    process = multiprocessing.get_context("spawn").Process(target=run_multiprocess, args=(_one_rank_cannot_import,))
+    process.start()
+    process.join(timeout=60)
+    hung = process.is_alive()
+    process.kill()
+    assert not hung and process.exitcode == 0
