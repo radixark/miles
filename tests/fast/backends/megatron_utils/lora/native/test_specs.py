@@ -155,6 +155,37 @@ class TestInklingSpec:
         assert spec.experts is not None and spec.lm_head is not None
 
 
+class TestInkling2Spec:
+    _CONFIG = dict(model_type="inkling2_mm_model", text_config=dict(model_type="inkling2_text", n_shared_experts=0))
+
+    def test_serves_tmls_inkling_schema(self):
+        """TML's schema: attention without the sink, shared-outer routed experts, the unembed.
+        SGLang resolves "all-linear" to embed too, so the targets are explicit."""
+        served = resolve_adapter_targets(self._CONFIG, resolve_hf_lora_targets(self._CONFIG), hf_modules=[])
+        assert sorted(served) == sorted(
+            [
+                *(
+                    f"model.llm.layers.*.attn.{leaf}"
+                    for leaf in ("wq_du", "wk_dv", "wv_dv", "wr_du", "gate_attn", "wo_ud")
+                ),
+                "model.llm.layers.*.mlp.experts.gate_up_proj",
+                "model.llm.layers.*.mlp.experts.down_proj",
+                "lm_head",
+            ]
+        )
+        with pytest.raises(AssertionError, match="verified adapter layout"):
+            resolve_adapter_targets(
+                self._CONFIG, resolve_hf_lora_targets(self._CONFIG, target_modules=["attn", "mlp"]), hf_modules=[]
+            )
+
+    def test_spec_attaches_the_schema(self):
+        spec = MODEL_SPECS["inkling2_mm_model"]
+        assert spec.fixed_targets.select_all
+        assert spec.attention.supported_targets == {"wq_du", "wk_dv", "wv_dv", "wr_du", "gate_attn", "wo_ud"}
+        assert spec.experts is not None
+        assert spec.adapts_head("model.llm.unembed")
+
+
 class TestLoRAConfigSelection:
     def test_scoped_and_leaf_selectors(self):
         config = LoRAConfig(rank=2, alpha=4, dropout=0.0, target_modules=("model.layers.0.self_attn.o_proj", "q_proj"))
