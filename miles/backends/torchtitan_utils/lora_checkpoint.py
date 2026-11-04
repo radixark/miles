@@ -462,7 +462,7 @@ class TorchtitanLoraCheckpoint:
     def _dcp_on_rollout_grid(self, path: Path, train_state: dict, load_optimizer: bool) -> bool:
         # a torchtitan DCP records steps, not the rollout; only one miles saved on this run's rollout grid maps
         on_grid = train_state["step"] % self._steps_per_rollout == 0
-        # weights only need no step: a DCP off the grid (e.g. a standalone torchtitan run's) starts fresh
+        # loading weights alone needs no schedule: a DCP off the grid (e.g. a standalone torchtitan run's) starts fresh
         assert on_grid or not load_optimizer, (
             f"{path} is at step {train_state['step']}, not a whole rollout of this run's "
             f"{self._steps_per_rollout} steps; pass --no-load-optim to load its weights and start the schedule "
@@ -519,7 +519,7 @@ class TorchtitanLoraCheckpoint:
             )
         else:
             unmapped = None
-        # weights only need no schedule: load them and start the schedule fresh
+        # loading weights alone needs no schedule: the schedule starts fresh
         assert unmapped is None or not load_optimizer, (
             f"{path} cannot resume this run's schedule: {unmapped}. Keep its rollout and batch sizes, or pass "
             "--no-load-optim to load its weights and start the schedule fresh"
