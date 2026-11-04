@@ -38,6 +38,11 @@ COMMAND_ROUTES = {
 _DOWNLOAD_CHUNK_BYTES = 1 << 20
 
 
+def _open_with_size(path: str):
+    handle = open(path, "rb")
+    return handle, os.fstat(handle.fileno()).st_size
+
+
 def _tenant(request: Request) -> str:
     """Require X-API-Key or a bearer token to establish the tenant identity."""
     key = (
@@ -165,7 +170,7 @@ def build_app(service: TinkerService) -> FastAPI:
     # checkpoint_id is "<kind>/<name>"
     @app.get("/api/v1/training_runs/{model_id}/checkpoints/{checkpoint_id:path}/external_weights_urls")
     async def external_weights_urls(model_id: str, checkpoint_id: str, request: Request):
-        return service.external_weights_urls(_tenant(request), model_id, checkpoint_id, str(request.base_url))
+        return await service.external_weights_urls(_tenant(request), model_id, checkpoint_id, str(request.base_url))
 
     @app.put("/api/v1/training_runs/{model_id}/checkpoints/{checkpoint_id:path}/ttl")
     async def set_checkpoint_ttl(model_id: str, checkpoint_id: str, request: Request):
@@ -182,12 +187,12 @@ def build_app(service: TinkerService) -> FastAPI:
     async def download_external_weights(token: str, filename: str):
         """The URL is the credential (the SDK downloads without one). The file is opened before the headers go
         out, so a concurrent delete yields the complete file or a 404, never a truncated one."""
-        path = service.download_path(token, filename)
+        path = await service.download_path(token, filename)
         try:
-            handle = open(path, "rb")
+            # shared storage: keep the event loop serving
+            handle, size = await asyncio.to_thread(_open_with_size, path)
         except FileNotFoundError:
             raise NotFoundError(f"{filename} was deleted") from None
-        size = os.fstat(handle.fileno()).st_size
 
         def chunks():
             with handle:

@@ -343,5 +343,8 @@ async def test_external_weights_download_ttl_and_delete_over_http(client):
 
 
 async def test_a_file_deleted_between_resolve_and_open_is_a_404(client, service, monkeypatch, tmp_path):
-    monkeypatch.setattr(service, "download_path", lambda token, filename: str(tmp_path / "deleted"))
+    async def download_path(token, filename):
+        return str(tmp_path / "deleted")
+
+    monkeypatch.setattr(service, "download_path", download_path)
     assert (await client.get("/api/v1/external_weights/token/adapter_config.json")).status_code == 404

@@ -1293,16 +1293,16 @@ async def test_an_external_save_is_downloadable_by_its_tenant_only(service):
     assert result["path"] == f"tinker://{model_id}/external_weights/export" and result["size_bytes"] > 0
     assert service.expiry.expires_at(result["path"]) is not None
 
-    urls = service.external_weights_urls("tenant", model_id, "external_weights/export", "http://gateway/")
+    urls = await service.external_weights_urls("tenant", model_id, "external_weights/export", "http://gateway/")
     assert sorted(urls["urls"]) == ["adapter_config.json", "adapter_model.safetensors"], "tenant.json stays private"
     token = urls["urls"]["adapter_config.json"].split("/")[-2]
-    assert json.loads(Path(service.download_path(token, "adapter_config.json")).read_text())["r"] == 8
+    assert json.loads(Path(await service.download_path(token, "adapter_config.json")).read_text())["r"] == 8
     with pytest.raises(NotFoundError):
-        service.download_path(token, "tenant.json")
+        await service.download_path(token, "tenant.json")
     with pytest.raises(NotFoundError):
-        service.download_path("forged", "adapter_config.json")
+        await service.download_path("forged", "adapter_config.json")
     with pytest.raises(OwnershipError):
-        service.external_weights_urls("mallory", model_id, "external_weights/export", "http://gateway/")
+        await service.external_weights_urls("mallory", model_id, "external_weights/export", "http://gateway/")
     save = service.submit(
         "tenant",
         "save_state",
@@ -1310,11 +1310,11 @@ async def test_an_external_save_is_downloadable_by_its_tenant_only(service):
     )
     await await_settled(service, "tenant", save)
     with pytest.raises(UserInputError, match="not an external_weights"):
-        service.external_weights_urls("tenant", model_id, "weights/ck", "http://gateway/")
+        await service.external_weights_urls("tenant", model_id, "weights/ck", "http://gateway/")
 
     await service.delete_checkpoint("tenant", model_id, "external_weights/export")
     with pytest.raises(NotFoundError, match="deleted"):
-        service.download_path(token, "adapter_config.json")
+        await service.download_path(token, "adapter_config.json")
     assert service.expiry.expires_at(result["path"]) is None
 
 
@@ -1326,10 +1326,10 @@ async def test_an_encrypted_external_save_keeps_its_owner(service):
         "tenant", "save_weights_external", _external_payload(model_id, 1, "export", age_recipients=[recipient])
     )
     assert (await await_settled(service, "tenant", save)).state == DONE
-    urls = service.external_weights_urls("tenant", model_id, "external_weights/export", "http://gateway/")
+    urls = await service.external_weights_urls("tenant", model_id, "external_weights/export", "http://gateway/")
     assert sorted(urls["urls"]) == ["adapter_config.json.age", "adapter_model.safetensors.age"]
     with pytest.raises(OwnershipError):
-        service.external_weights_urls("mallory", model_id, "external_weights/export", "http://gateway/")
+        await service.external_weights_urls("mallory", model_id, "external_weights/export", "http://gateway/")
     await service.delete_checkpoint("tenant", model_id, "external_weights/export")
 
 
@@ -1361,13 +1361,13 @@ async def test_a_download_url_does_not_serve_a_resave_under_the_same_name(servic
     model_id = await created_model(service)
     save = service.submit("tenant", "save_weights_external", _external_payload(model_id, 1, "export"))
     assert (await await_settled(service, "tenant", save)).state == DONE
-    urls = service.external_weights_urls("tenant", model_id, "external_weights/export", "http://gateway/")
+    urls = await service.external_weights_urls("tenant", model_id, "external_weights/export", "http://gateway/")
     token = urls["urls"]["adapter_config.json"].split("/")[-2]
     await service.delete_checkpoint("tenant", model_id, "external_weights/export")
     save = service.submit("tenant", "save_weights_external", _external_payload(model_id, 2, "export"))
     assert (await await_settled(service, "tenant", save)).state == DONE
     with pytest.raises(NotFoundError, match="saved again"):
-        service.download_path(token, "adapter_config.json")
+        await service.download_path(token, "adapter_config.json")
 
 
 async def test_an_external_save_refuses_an_existing_name(service):
@@ -1387,13 +1387,13 @@ async def test_a_download_url_expires_with_its_checkpoint(service, monkeypatch):
     real_time = time.time
     # signed with half an hour of the checkpoint left, less than a URL's hour
     monkeypatch.setattr(time, "time", lambda: real_time() + 1800)
-    urls = service.external_weights_urls("tenant", model_id, "external_weights/export", "http://gateway/")
+    urls = await service.external_weights_urls("tenant", model_id, "external_weights/export", "http://gateway/")
     token = urls["urls"]["adapter_config.json"].split("/")[-2]
     monkeypatch.setattr(time, "time", lambda: real_time() + 3601)
     with pytest.raises(NotFoundError, match="expired"):
-        service.download_path(token, "adapter_config.json")
+        await service.download_path(token, "adapter_config.json")
     with pytest.raises(NotFoundError, match="has expired"):
-        service.external_weights_urls("tenant", model_id, "external_weights/export", "http://gateway/")
+        await service.external_weights_urls("tenant", model_id, "external_weights/export", "http://gateway/")
 
 
 async def test_an_overwrite_that_crashes_before_its_ttl_does_not_inherit_the_old_expiry(service, monkeypatch):
@@ -1836,6 +1836,21 @@ async def test_trainer_ranks_get_only_the_tenant_digest(service):
     assert export["tenant_digest"] == hashlib.sha256(b"tenant").hexdigest()
 
 
+async def test_a_ttl_change_does_not_wait_for_a_training_call(service):
+    """The TTL is serialized with deletes, which the design requires, not with the trainer."""
+    model_id = await created_model(service)
+    save = service.submit(
+        "tenant",
+        "save_state",
+        {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False, "ttl_seconds": None},
+    )
+    assert (await await_settled(service, "tenant", save)).state == DONE
+    # a training call in progress
+    async with service._trainer_lock:
+        await asyncio.wait_for(service.set_checkpoint_ttl("tenant", model_id, "weights/ck", 7200), timeout=1.0)
+    assert service.expiry.expires_at(f"tinker://{model_id}/weights/ck") is not None
+
+
 async def test_a_legacy_checkpoint_cannot_be_deleted_through_the_api(service):
     model_id = await created_model(service)
     write_legacy_checkpoint(
@@ -1846,7 +1861,7 @@ async def test_a_legacy_checkpoint_cannot_be_deleted_through_the_api(service):
     with pytest.raises(UserInputError, match="saved before checkpoints could expire"):
         await service.delete_checkpoint("tenant", model_id, "weights/old")
     with pytest.raises(UserInputError, match="not an external_weights"):
-        service.external_weights_urls("tenant", model_id, "weights/old", "http://gateway/")
+        await service.external_weights_urls("tenant", model_id, "weights/old", "http://gateway/")
 
 
 async def test_an_unreadable_import_is_a_user_error(tmp_path):
