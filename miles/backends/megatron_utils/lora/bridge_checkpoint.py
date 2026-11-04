@@ -18,6 +18,7 @@ import torch.distributed.checkpoint as dcp
 import yaml
 from megatron.core import dist_checkpointing
 from megatron.core.dist_checkpointing.dict_utils import nested_values
+from megatron.core.dist_checkpointing.mapping import ShardedTensor
 from megatron.core.optimizer import DistributedOptimizer
 from megatron.core.utils import unwrap_model
 
@@ -337,9 +338,10 @@ _BRIDGE_BASE_REMEDY = (
 
 
 def bridge_base_model_candidates(config: dict) -> tuple[str | None, str | None]:
-    """Bridge PEFT loads its base from pretrained_checkpoint. When that is no HF dir here (torch_dist, or another
-    machine's path), the HF template it was converted from stands in, as Bridge's _resolve_hf_source picks it; that
-    stand-in misses a base fine-tuned in Megatron."""
+    """Bridge PEFT loads its base from pretrained_checkpoint. When that is no HF dir here, the HF template it was
+    converted from stands in, as Bridge's _resolve_hf_source picks it; a local torch_dist pretrained_checkpoint is
+    compared directly instead (``assert_same_base_as_torch_dist``), so the stand-in is used only for another machine's
+    path, where it misses a base fine-tuned in Megatron."""
     checkpoint = config["checkpoint"]
     # hf_source_path and hf_model_id are newer than some Bridge configs; Bridge takes the first non-empty one even
     # when it is no HF dir here, so a later one would compare a model Bridge never used
@@ -349,6 +351,57 @@ def bridge_base_model_candidates(config: dict) -> tuple[str | None, str | None]:
         or config["tokenizer"]["tokenizer_model"]
     )
     return checkpoint["pretrained_checkpoint"], template
+
+
+def torch_dist_base_dir(pretrained_checkpoint: str | None) -> Path | None:
+    """The torch_dist checkpoint at ``pretrained_checkpoint``, or at the iteration its Megatron tracker names; None
+    when it is no torch_dist on this machine."""
+    if not pretrained_checkpoint or not Path(pretrained_checkpoint).is_dir():
+        return None
+    root = Path(pretrained_checkpoint)
+    tracker = root / "latest_checkpointed_iteration.txt"
+    if tracker.is_file():
+        iteration = tracker.read_text().strip()
+        root = root / ("release" if iteration == "release" else f"iter_{int(iteration):07d}")
+    return root if dist_checkpointing.check_is_distributed_checkpoint(str(root)) else None
+
+
+def assert_same_base_as_torch_dist(source: str, chunks, base_dir: Path) -> None:
+    """Collective: every norm weight this rank's model holds equals the torch_dist base checkpoint's, bitwise. The
+    in-memory model is the run's base, so a base fine-tuned in Megatron after its HF conversion is caught."""
+    held, requested, error = {}, {}, None
+    try:
+        metadata = dict(dist_checkpointing.load_content_metadata(str(base_dir)) or {})
+        metadata["dp_cp_group"] = get_parallel_state().intra_dp_cp.group
+        for index, chunk in enumerate(chunks):
+            norms = {
+                k: t
+                for k, t in chunk.sharded_state_dict(metadata=metadata).items()
+                if isinstance(t, ShardedTensor) and "norm" in k and ".adapter." not in k
+            }
+            held |= {(index, k): t.data for k, t in norms.items()}
+            # loading writes into the requested tensors: empty copies, never the model's own parameters
+            requested[f"model{index}"] = {k: replace(t, data=torch.empty_like(t.data)) for k, t in norms.items()}
+        assert held, "this run's model holds no norm weights to compare its base by"
+        saved = dcp.FileSystemReader(base_dir).read_metadata().state_dict_metadata
+        missing = sorted({t.key for sd in requested.values() for t in sd.values()} - saved.keys())
+        assert not missing, (
+            f"{source}'s base checkpoint {base_dir} cannot be compared with this run's model: it lacks e.g. "
+            f"{missing[:3]}"
+        )
+    except Exception as exc:
+        error = exc
+    raise_if_any_rank_failed(error)
+    try:
+        loaded = dist_checkpointing.load(requested, str(base_dir))
+        differing = [k for (index, k), data in held.items() if not torch.equal(loaded[f"model{index}"][k], data)]
+        assert not differing, (
+            f"{source} was trained on another base model than this run's --hf-checkpoint: its base checkpoint "
+            f"{base_dir} differs in e.g. {differing[:3]}"
+        )
+    except Exception as exc:
+        error = exc
+    raise_if_any_rank_failed(error)
 
 
 class MegatronBridgeCheckpointLoader:
@@ -364,16 +417,18 @@ class MegatronBridgeCheckpointLoader:
     def __call__(self, path: Path) -> AdapterParametrization:
         chunks = unwrap_model(self._model)
         names = ["model"] if len(chunks) == 1 else [f"model{i}" for i in range(len(chunks))]
-        config, model_state_dicts, adapter, error = None, None, None, None
+        config, model_state_dicts, adapter, base_dir, error = None, None, None, None, None
         try:
             config = yaml.safe_load((path / "run_config.yaml").read_text())
             assert config["checkpoint"]["ckpt_format"] == "torch_dist", f"{path} is not a torch_dist checkpoint"
             assert_bridge_run_config_matches(
                 config, self._run, params_dtype=chunks[0].config.params_dtype, load_optimizer=self._load_optimizer
             )
-            assert_same_base_model(
-                str(path), bridge_base_model_candidates(config), self._run.base_model, remedy=_BRIDGE_BASE_REMEDY
-            )
+            base_dir = torch_dist_base_dir(config["checkpoint"]["pretrained_checkpoint"])
+            if base_dir is None:
+                assert_same_base_model(
+                    str(path), bridge_base_model_candidates(config), self._run.base_model, remedy=_BRIDGE_BASE_REMEDY
+                )
             metadata = dict(dist_checkpointing.load_content_metadata(str(path)) or {})
             if self._load_optimizer:
                 sharding = metadata.get("distrib_optim_sharding_type")
@@ -394,6 +449,12 @@ class MegatronBridgeCheckpointLoader:
         except Exception as exc:
             error = exc
         raise_if_any_rank_failed(error)
+        # a base visible on some nodes only would leave the others outside the collective load
+        base_dirs = [None] * dist.get_world_size()
+        dist.all_gather_object(base_dirs, base_dir, group=gloo_group())
+        assert len(set(base_dirs)) == 1, f"ranks resolve {path}'s pretrained_checkpoint differently: {set(base_dirs)}"
+        if base_dir is not None:
+            assert_same_base_as_torch_dist(str(path), chunks, base_dir)
 
         # pipeline stages hold different layers; the checkpoint holds them all
         expected = [None] * dist.get_world_size()
