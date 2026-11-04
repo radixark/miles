@@ -743,9 +743,11 @@ class LegacyRankShardLoader:
         self._model, self._optimizer, self._run, self._load_optimizer = model, optimizer, run, load_optimizer
         self._precision_aware = precision_aware
 
-    def parametrization(self, path: Path) -> AdapterParametrization:
+    def parametrization(self, path: Path) -> tuple[AdapterParametrization, bool]:
+        state = _load_training_state(path)
+        has_optimizer_state = state is not None and state["optimizer"] is not None and "parameter_state" in state
         # an old save records alpha in its PEFT pair; load_adapter_dir takes the run's when it records none
-        return replace(self._run, lora_alpha=read_source_lora_alpha(path))
+        return replace(self._run, lora_alpha=read_source_lora_alpha(path)), has_optimizer_state
 
     def prepare(self, path: Path) -> tuple[list, dict | None]:
         # every rank-local read and check, so a rank missing its shard fails before any rank enters a collective
@@ -755,9 +757,6 @@ class LegacyRankShardLoader:
         state = None
         if self._load_optimizer:
             state = _load_training_state(path)
-            assert (
-                state is not None and state["optimizer"] is not None and "parameter_state" in state
-            ), f"{path} has no optimizer state to resume; pass --no-load-optim"
             assert len(state["parameter_state"]) == len(
                 _distributed_optimizers(self._optimizer)
             ), f"{path} holds parameter state for another number of distributed optimizers"

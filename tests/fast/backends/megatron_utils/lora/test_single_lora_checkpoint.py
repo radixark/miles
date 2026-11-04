@@ -99,12 +99,31 @@ def test_an_old_format_save_reports_the_alpha_its_peft_pair_records(tmp_path):
         experts_shared_outer_loras=False,
     )
     with patch.multiple(_MODULE, _native_adapter_shard=DEFAULT, _read_native_adapter_shard=DEFAULT) as m:
-        loaded = LegacyRankShardLoader(
+        loaded, has_optimizer_state = LegacyRankShardLoader(
             [], MagicMock(), run, load_optimizer=False, precision_aware=False
         ).parametrization(tmp_path)
-    assert loaded.lora_alpha == 32.0
+    assert loaded.lora_alpha == 32.0 and not has_optimizer_state
     # reading the parametrization leaves the model alone: a refused source loads nothing
     m["_read_native_adapter_shard"].assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "training_state, has_optimizer_state",
+    [
+        ({"optimizer": {"step": 7}, "parameter_state": []}, True),
+        ({"optimizer": None, "parameter_state": None}, False),
+        ({"optimizer": {"step": 7}}, False),
+    ],
+    ids=["full", "saved-with-no-save-optim", "pre-parameter-state-format"],
+)
+def test_an_old_format_save_reports_whether_it_holds_optimizer_state(tmp_path, training_state, has_optimizer_state):
+    """load_adapter_dir refuses a source without it unless --no-load-optim."""
+    (tmp_path / "adapter_config.json").write_text(json.dumps({"lora_alpha": 32.0}))
+    state = {"iteration": 5, "opt_param_scheduler": None} | training_state
+    torch.save(state, tmp_path / "training_state_rank0.pt")
+    run = AdapterParametrization("/hf", 2, 16.0, "lora", ("model.layers.0.self_attn.q_proj",), False)
+    loader = LegacyRankShardLoader([], MagicMock(), run, load_optimizer=True, precision_aware=False)
+    assert loader.parametrization(tmp_path)[1] == has_optimizer_state
 
 
 def _prepare_with_one_rank_missing_its_shard(rank, world_size, port, root):
