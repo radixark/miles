@@ -4,6 +4,7 @@ Validates that setup_model_and_optimizer, save, and save_hf_model correctly
 route to LoRA-specific code paths depending on configuration — without GPU.
 """
 
+import json
 from argparse import Namespace
 from unittest.mock import MagicMock, patch
 
@@ -254,7 +255,7 @@ class TestSaveHfModelRawLoRA:
         slots = MagicMock(bf16_adapter_key_style="sampler")
         args = Namespace(
             megatron_to_hf_mode="raw",
-            hf_checkpoint="/hf",
+            hf_checkpoint=_hf_dir(tmp_path),
             save_hf=None,
             lora_rank=8,
             lora_alpha=16.0,
@@ -265,7 +266,9 @@ class TestSaveHfModelRawLoRA:
         save_hf_model(args, 0, model, publisher=publisher, adapter_slots=slots, path=tmp_path, raise_on_error=True)
 
         merge.assert_called_once_with(model, dict(named_weights.return_value))
-        publisher.write_model.assert_called_once_with(tmp_path, weights=merge.return_value, hf_checkpoint="/hf")
+        publisher.write_model.assert_called_once_with(
+            tmp_path, weights=merge.return_value, hf_checkpoint=args.hf_checkpoint
+        )
         sampler_view.assert_called_once_with(
             tmp_path / "adapter", slots, 0, slots.parametrization.return_value, slots.targets
         )
@@ -309,7 +312,7 @@ def test_native_shared_outer_save_hf_writes_the_stacked_adapter_sglang_serves(
 
     args = Namespace(
         megatron_to_hf_mode="raw",
-        hf_checkpoint="/hf",
+        hf_checkpoint=_hf_dir(tmp_path),
         save_hf=None,
         lora_rank=2,
         lora_alpha=4.0,
@@ -339,6 +342,22 @@ def test_native_shared_outer_save_hf_writes_the_stacked_adapter_sglang_serves(
     }
 
 
+def _hf_dir(tmp_path) -> str:
+    """A base whose config.json --save-hf reads for the adapter's base fingerprint."""
+    hf = tmp_path / "hf"
+    hf.mkdir()
+    config = {"model_type": "qwen3", "hidden_size": 8, "num_hidden_layers": 1, "vocab_size": 16}
+    (hf / "config.json").write_text(json.dumps(config | {"num_attention_heads": 2, "num_key_value_heads": 1}))
+    return str(hf)
+
+
+def _fingerprint(hf: str) -> str:
+    from miles.backends.training_utils.checkpoint.adapter.parametrization import base_model_fingerprint
+    from miles.utils.hf_utils.config import load_hf_config
+
+    return base_model_fingerprint(load_hf_config(hf).to_dict())
+
+
 class TestSaveHfModelBridgeLoRA:
     @patch(f"{_HF_EXPORT_MODULE}.write_peft_export")
     @patch(f"{_HF_EXPORT_MODULE}.get_gloo_group")
@@ -358,7 +377,7 @@ class TestSaveHfModelBridgeLoRA:
         slots.slot_spec.return_value = None
         args = Namespace(
             megatron_to_hf_mode="bridge",
-            hf_checkpoint="/hf",
+            hf_checkpoint=_hf_dir(tmp_path),
             save_hf=None,
             lora_rank=8,
             lora_alpha=16.0,
@@ -369,7 +388,12 @@ class TestSaveHfModelBridgeLoRA:
         save_hf_model(args, 0, model, publisher=publisher, adapter_slots=slots, path=tmp_path, raise_on_error=True)
 
         slots.parametrization.assert_called_once_with(
-            base_model="/hf", lora_rank=8, lora_alpha=16.0, lora_type="lora", experts_shared_outer_loras=False
+            base_model=args.hf_checkpoint,
+            lora_rank=8,
+            lora_alpha=16.0,
+            lora_type="lora",
+            experts_shared_outer_loras=False,
+            base_model_fingerprint=_fingerprint(args.hf_checkpoint),
         )
         peft_export.assert_called_once_with(
             tmp_path / "adapter", slots, 0, slots.parametrization.return_value, slots.targets
@@ -394,7 +418,7 @@ class TestSaveHfModelBridgeLoRA:
         slots.slot_spec.return_value = AdapterSpec(slot=0, rank=4, alpha=12.0)
         args = Namespace(
             megatron_to_hf_mode="bridge",
-            hf_checkpoint="/hf",
+            hf_checkpoint=_hf_dir(tmp_path),
             save_hf=None,
             lora_rank=32,
             lora_alpha=64.0,
@@ -408,5 +432,10 @@ class TestSaveHfModelBridgeLoRA:
 
         slots.slot_spec.assert_called_once_with(0)
         slots.parametrization.assert_called_once_with(
-            base_model="/hf", lora_rank=4, lora_alpha=12.0, lora_type="lora", experts_shared_outer_loras=False
+            base_model=args.hf_checkpoint,
+            lora_rank=4,
+            lora_alpha=12.0,
+            lora_type="lora",
+            experts_shared_outer_loras=False,
+            base_model_fingerprint=_fingerprint(args.hf_checkpoint),
         )
