@@ -308,7 +308,7 @@ def _restore(tmp_path, *, dcp_step=None, training_state=None, source_alpha=None,
     trainer = _Trainer()
     slots = MagicMock()
     with (
-        patch("miles.utils.hf_utils.config.load_hf_config", return_value=_QWEN3_CONFIG),
+        patch.object(lora_checkpoint, "load_hf_config", return_value=_QWEN3_CONFIG),
         patch.object(lora_checkpoint, "_torchtitan_adapter_slots", return_value=slots),
         patch.object(lora_checkpoint, "load_adapter_dir", side_effect=load_adapter_dir),
         patch.object(lora_checkpoint, "read_training_state", return_value=training_state),
@@ -454,7 +454,7 @@ def test_a_dir_saved_by_a_run_from_start_rollout_id_resumes(tmp_path):
         backend=SimpleNamespace(no_save_optim=False, save=str(tmp_path)),
     )
     with (
-        patch("miles.utils.hf_utils.config.load_hf_config", return_value=_QWEN3_CONFIG),
+        patch.object(lora_checkpoint, "load_hf_config", return_value=_QWEN3_CONFIG),
         patch.object(lora_checkpoint, "_torchtitan_adapter_slots", return_value=MagicMock()),
         patch.object(lora_checkpoint, "save_and_commit_adapter_dir") as save,
     ):
@@ -842,7 +842,7 @@ def test_a_torchtitan_run_records_its_bases_fingerprint_and_path_as_given(tmp_pa
     )
     slots = MagicMock()
     with (
-        patch("miles.utils.hf_utils.config.load_hf_config", return_value=_QWEN3_CONFIG),
+        patch.object(lora_checkpoint, "load_hf_config", return_value=_QWEN3_CONFIG),
         patch.object(lora_checkpoint, "_torchtitan_adapter_slots", return_value=slots),
     ):
         lora_checkpoint.TorchtitanLoraCheckpoint(SimpleNamespace(optimizers=SimpleNamespace(optimizers=[])), args, 1)

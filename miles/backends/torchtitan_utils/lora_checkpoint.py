@@ -20,6 +20,7 @@ import torch.distributed.checkpoint as dcp
 from torch.distributed.tensor import DTensor
 from torch.optim.lr_scheduler import _update_param_group_val
 
+from miles.backends.torchtitan_utils.hf_weight_iterator import TitanHfWeightIterator
 from miles.backends.torchtitan_utils.lora_names import is_adapter_key, split_adapter_key
 from miles.backends.training_utils.checkpoint.adapter.adapter_dir import (
     HeadRows,
@@ -51,7 +52,9 @@ from miles.backends.training_utils.checkpoint.adapter.probed_slots import (
     rectangles,
 )
 from miles.backends.training_utils.checkpoint.adapter.readers import AdapterSourceKind
-from miles.utils.lora.hf_lora_targets import HfLoraTargets
+from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
+from miles.utils.hf_utils.config import load_hf_config
+from miles.utils.lora.hf_lora_targets import HfLoraTargets, get_hf_lora_targets
 
 
 # a placed code is rank * _RANK_STRIDE + the element's offset in the rank's concatenated local shards
@@ -360,11 +363,6 @@ def load_lr_schedulers(lr_schedulers, state: dict) -> None:
 
 def _torchtitan_adapter_slots(trainer, args) -> TorchtitanAdapterSlots:
     """Collective: probes the adapter's HF layout."""
-    from miles.backends.torchtitan_utils.hf_weight_iterator import TitanHfWeightIterator
-    from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
-    from miles.utils.hf_utils.config import load_hf_config
-    from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
-
     iterator = TitanHfWeightIterator.build(
         args,
         trainer,
@@ -380,8 +378,6 @@ class TorchtitanLoraCheckpoint:
     """Single-LoRA RL checkpoints of the torchtitan backend: ``{save}/iter_N/adapter`` and ``--lora-adapter-path``."""
 
     def __init__(self, trainer, args, steps_per_rollout: int):
-        from miles.utils.hf_utils.config import load_hf_config
-
         self._trainer, self._args, self._steps_per_rollout = trainer, args, steps_per_rollout
         # the rollout at this schedule's step 0: --start-rollout-id starts the steps there, not at rollout 0
         self._first_rollout = 0 if args.start_rollout_id is None else args.start_rollout_id
