@@ -214,7 +214,12 @@ def _write_bf16_export(
         named_tensors = [(key, tensor.cpu()) for key, tensor in members.export_bf16_adapter(slot)]
         if _is_writer():
             weights = _hf_keyed_bf16_adapter(named_tensors, members, parametrization, targets)
-            stacked_keys = _stacked_expert_keys(named_tensors, _hf_key_mapper(members, targets))
+            # Bridge names experts as its checkpoint stores them; native always stacks them, so the family decides
+            stacked_keys = (
+                _stacked_expert_keys(named_tensors, _hf_key_mapper(members, targets))
+                if members.bf16_adapter_key_style == "peft"
+                else None
+            )
             write(directory, weights, parametrization, targets, stacked_keys=stacked_keys)
     except Exception as exc:
         error = exc
