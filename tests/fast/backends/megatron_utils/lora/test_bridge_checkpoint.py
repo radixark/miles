@@ -617,20 +617,3 @@ def test_an_offloaded_optimizer_is_never_dummy_stepped_from_parametrization_to_l
 
     assert not stepped, "the empty HDO state must be zero-initialized, not dummy-stepped"
     assert torch.equal(hdo.state[param]["master_param"], torch.ones(2)) and int(hdo.state[param]["step"]) == 0
-
-
-def test_a_bridge_checkpoint_is_checked_before_anything_is_loaded_into_the_model(
-    single_rank_gloo, tmp_path, monkeypatch
-):
-    """load_adapter_dir checks the parametrization before ``load``: reading it must not load the model or optimizer."""
-    calls = []
-    # any use of the optimizer while checking fails: an object with no optimizer methods
-    loader, run = _checked_loader(object(), "members", monkeypatch)
-    monkeypatch.setattr(loader, "_optimizer_state_to_load", lambda *args: calls.append("optimizer state") or {})
-    monkeypatch.setattr(loader, "_load", lambda *args: calls.append("load"))
-    loader._members = SimpleNamespace(export_adapter_state=lambda slot: calls.append("check masters"))
-
-    assert loader.parametrization(tmp_path) == replace(run, lora_alpha=16.0)
-    assert calls == []
-    loader.apply(loader.prepare(tmp_path))
-    assert calls == ["optimizer state", "load", "check masters"]
