@@ -682,7 +682,8 @@ def restore_single_lora(
     """
     assert adapter_slots is not None, "the actor builds the adapter slots before restoring --lora-adapter-path"
     slots, targets = adapter_slots, adapter_slots.targets
-    load_optimizer = not args.backend.no_load_optim
+    # without an optimizer (--debug-disable-optimizer) only the weights load, as on main
+    load_optimizer = optimizer is not None and not args.backend.no_load_optim
     # a convert-save writes moments only when they were loaded
     members = (
         ModelWeightMembers(slots)
