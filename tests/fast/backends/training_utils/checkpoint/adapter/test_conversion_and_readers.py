@@ -447,16 +447,22 @@ def test_gpt_oss_down_proj_alone_stays_one_packed_3d_tensor(tmp_path):
         assert tensors[f"{prefix}{down}.lora_A.weight"].shape == (3, 2, 4)
 
 
+def _dcp_with(path, key):
+    import torch.distributed.checkpoint as dcp
+
+    dcp.save({key: torch.zeros(2)}, checkpoint_id=path, no_dist=True)
+
+
 def test_a_megatron_bridge_source_records_its_alpha_in_run_config(tmp_path):
-    (tmp_path / ".metadata").touch()
+    _dcp_with(tmp_path, "decoder.layers.0.self_attention.linear_qkv.adapter.linear_in.weight")
     (tmp_path / "run_config.yaml").write_text("peft:\n  alpha: 32\n")
     assert read_source_lora_alpha(tmp_path) == 32.0
 
 
 def test_a_megatron_bridge_full_fine_tune_is_no_lora_source(tmp_path):
-    (tmp_path / ".metadata").touch()
+    _dcp_with(tmp_path, "decoder.layers.0.self_attention.linear_qkv.weight")
     (tmp_path / "run_config.yaml").write_text("peft: null\n")
-    with pytest.raises(AssertionError, match="without PEFT"):
+    with pytest.raises(ValueError, match="neither Megatron-Bridge nor torchtitan LoRA keys"):
         read_source_lora_alpha(tmp_path)
 
 
@@ -627,3 +633,12 @@ def test_a_vl_wrapper_has_its_language_models_fingerprint():
     assert base_model_fingerprint({"model_type": "qwen3_vl", "text_config": _QWEN3_4B}) == base_model_fingerprint(
         _QWEN3_4B
     )
+
+
+def test_a_source_s_alpha_is_read_from_the_kind_it_classifies_as(tmp_path):
+    """A legacy Tinker checkpoint holding a stray run_config.yaml is legacy Tinker, so its alpha is META.json's."""
+    (tmp_path / ".metadata").write_bytes(b"")
+    (tmp_path / "META.json").write_text(json.dumps({"lora_alpha": 32}))
+    (tmp_path / "run_config.yaml").write_text("peft:\n  alpha: 16\n")
+
+    assert read_source_lora_alpha(tmp_path) == 32
