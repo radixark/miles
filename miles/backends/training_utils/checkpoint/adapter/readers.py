@@ -20,7 +20,6 @@ from miles.backends.training_utils.checkpoint.adapter.key_mapping import (
     is_hf_only_name,
     is_tinker_only_name,
     map_named_tensors_to_hf_keys,
-    map_peft_keys_to_hf_keys,
     map_sampler_keys_to_hf_keys,
     map_tinker_keys_to_hf_keys,
     rename_sampler_experts_to_hf,
