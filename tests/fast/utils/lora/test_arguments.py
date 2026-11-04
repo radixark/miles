@@ -90,7 +90,6 @@ def _validate(args):
 def test_only_runs_exporting_hf_snapshots_need_the_hf_lora_layout(monkeypatch):
     """The adapter slots, which need the layout, are built only for the HF snapshot exports that read them."""
     _validate(_bridge_args_without_layout(monkeypatch, save="/save"))
-    _validate(_bridge_args_without_layout(monkeypatch, multi_lora=True))
     with pytest.raises(AssertionError, match="HF LoRA target layout"):
         _validate(_bridge_args_without_layout(monkeypatch, save_hf="/hf_out"))
 
@@ -100,3 +99,9 @@ def test_an_eval_hf_dir_without_eval_snapshots_needs_no_layout(monkeypatch):
     _validate(_bridge_args_without_layout(monkeypatch, eval_hf_dir="/eval"))
     with pytest.raises(AssertionError, match="HF LoRA target layout"):
         _validate(_bridge_args_without_layout(monkeypatch, eval_hf_dir="/eval", eval_uses_snapshots=True))
+
+
+def test_multi_lora_bridge_refuses_a_model_without_hf_lora_layout(monkeypatch):
+    """Multi-LoRA builds the adapter slots its sampler exports read, even without --save-hf / --save."""
+    with pytest.raises(AssertionError, match="HF LoRA target layout"):
+        _validate(_bridge_args_without_layout(monkeypatch, multi_lora=True))
