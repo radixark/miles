@@ -247,7 +247,12 @@ class TestStartupValidation:
             "agent": {"max_turns": 50},
             "custom_generate_function_path": "miles.rollout.generate_hub.agentic_tool_call.generate",
         }
-        args = _parse("--rollout-data-yaml-config", _inline(_with_dataset(**fields)))
+        args = _parse(
+            "--rollout-data-yaml-config",
+            _inline(_with_dataset(**fields)),
+            "--custom-agent-function-path",
+            "json.loads",
+        )
         assert args.data_source_path.path == "miles.rollout.data_source.MixedRolloutDataSource"
 
     @pytest.mark.parametrize("reward", [{"rm_type": "gpqa"}, {"custom_rm_path": "json.loads"}])
@@ -311,6 +316,65 @@ class TestDatasetHookSettings:
 
         assert args.rollout_dataset_functions["test3947.typed_generate"].config.typed_marker == 7
         assert view.typed_marker == 7
+
+    def test_a_dataset_max_seq_len_above_the_agentic_limit_fails_at_startup(self):
+        """--max-seq-len is registered by the dataset's agentic generate function itself, then bounds the dataset."""
+        document = _with_dataset(
+            custom_generate_function_path="miles.rollout.generate_hub.agentic_tool_call.generate", max_seq_len=70000
+        )
+        with pytest.raises(ValueError, match="exceeds --max-seq-len 65536"):
+            _parse("--rollout-data-yaml-config", _inline(document), "--max-seq-len", "65536")
+
+    @pytest.mark.parametrize("field", [{"custom_agent_function_path": "json.loads"}, {"max_seq_len": 4096}])
+    @pytest.mark.parametrize("custom_generate_function_path", [None, "json.dumps"])
+    def test_agentic_only_fields_need_the_agentic_generate_function(self, field, custom_generate_function_path):
+        """custom_agent_function_path and max_seq_len were silently ignored by every other generate function."""
+        fields = dict(field)
+        if custom_generate_function_path is not None:
+            fields["custom_generate_function_path"] = custom_generate_function_path
+        with pytest.raises(ValueError, match="never reads it"):
+            _parse("--rollout-data-yaml-config", _inline(_with_dataset(**fields)))
+
+    def test_a_wrapper_marked_as_reading_the_agent_fields_is_accepted(self):
+        """A wrapper around agentic_tool_call.generate opts in with the same marker, not by its path."""
+
+        async def wrapper(input):
+            pass
+
+        wrapper.reads_sample_agent_fields = True
+        fields = {
+            "custom_generate_function_path": "test4561.wrapper",
+            "custom_agent_function_path": "json.loads",
+            "max_seq_len": 4096,
+        }
+        with function_registry.temporary("test4561.wrapper", wrapper):
+            args = _parse("--rollout-data-yaml-config", _inline(_with_dataset(**fields)))
+        assert args.data_source_path.path == "miles.rollout.data_source.MixedRolloutDataSource"
+
+    @pytest.mark.parametrize("agent_flag", [[], ["--custom-agent-function-path", "json.loads"]])
+    def test_agentic_eval_needs_the_run_wide_agent(self, agent_flag):
+        """Eval samples do not come from the mixer, so a dataset's own agent never reaches them."""
+        argv = [
+            "--rollout-data-yaml-config",
+            _inline(_with_dataset(custom_agent_function_path="json.loads")),
+            "--custom-generate-function-path",
+            "miles.rollout.generate_hub.agentic_tool_call.generate",
+            "--eval-prompt-data",
+            "aime",
+            "/data/aime.jsonl",
+            *agent_flag,
+        ]
+        if agent_flag:
+            assert _parse(*argv).data_source_path.path == "miles.rollout.data_source.MixedRolloutDataSource"
+        else:
+            with pytest.raises(ValueError, match="eval dataset 'aime'.*needs an agent"):
+                _parse(*argv)
+
+    def test_an_agentic_dataset_with_no_agent_fails_at_startup(self):
+        """With neither custom_agent_function_path nor --custom-agent-function-path, the rollout died mid-run on an assert."""
+        fields = {"custom_generate_function_path": "miles.rollout.generate_hub.agentic_tool_call.generate"}
+        with pytest.raises(ValueError, match="needs an agent"):
+            _parse("--rollout-data-yaml-config", _inline(_with_dataset(**fields)))
 
     def test_a_run_without_yaml_hooks_has_none(self):
         assert _parse("--prompt-data", "/dev/null").rollout_dataset_functions == {}

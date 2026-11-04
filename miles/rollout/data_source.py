@@ -9,7 +9,7 @@ from pathlib import Path
 from miles.utils.data import Dataset, _parse_generalized_path
 from miles.utils.function_registry import load_function
 from miles.utils.processing_utils import load_processor, load_tokenizer
-from miles.utils.rollout_data_config import RolloutDatasetConfig, load_rollout_data_config
+from miles.utils.rollout_data_config import RolloutDatasetConfig, load_rollout_data_config, lower_limit
 from miles.utils.simple_checkpointer import load_simple_checkpoint, save_simple_checkpoint
 from miles.utils.types import RewardSpec, Sample
 
@@ -257,8 +257,9 @@ class MixedRolloutDataSource(DataSource):
         self.dataset_configs = load_rollout_data_config(args.rollout_data_yaml_config)
         self.dataset_sha256 = {config.name: _check_dataset_sha256(config) for config in self.dataset_configs}
         for config in self.dataset_configs:
-            if config.custom_generate_function_path is not None:
-                load_function(config.custom_generate_function_path)
+            for function_path in (config.custom_generate_function_path, config.custom_agent_function_path):
+                if function_path is not None:
+                    load_function(function_path)
 
         tokenizer, processor = _load_prompt_tokenizer_and_processor(args)
         self.datasets = {}
@@ -268,7 +269,7 @@ class MixedRolloutDataSource(DataSource):
                 config.path,
                 tokenizer=tokenizer,
                 processor=processor,
-                max_length=_lower_limit(config.max_prompt_len, args.rollout_max_prompt_len),
+                max_length=lower_limit(config.max_prompt_len, args.rollout_max_prompt_len),
             )
             if len(dataset) == 0:
                 raise ValueError(f"rollout dataset {config.name!r} ({config.path}) has no prompts after filtering")
@@ -380,17 +381,14 @@ class MixedRolloutDataSource(DataSource):
             sample.metadata["dataset_name"] = config.name
             if config.agent is not None:
                 sample.metadata["agent_config"] = copy.deepcopy(config.agent)
+            sample.agent_function_path = config.custom_agent_function_path
+            sample.max_seq_len = config.max_seq_len
             sample.generate_function_path = config.custom_generate_function_path
             if config.custom_rm_path is not None or config.rm_type is not None:
                 sample.reward_spec = RewardSpec(rm_type=config.rm_type, custom_rm_path=config.custom_rm_path)
             group.append(sample)
         self.sample_group_index += 1
         return group
-
-
-def _lower_limit(*limits: int | None) -> int | None:
-    known = [limit for limit in limits if limit is not None]
-    return min(known) if known else None
 
 
 def _hash_file(path: str) -> str:
