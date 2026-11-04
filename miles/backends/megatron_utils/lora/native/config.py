@@ -12,7 +12,8 @@ class LoRAConfig:
     """User-selected LoRA behavior, independent of model architecture and parallelism.
 
     ``target_modules`` holds the resolved HF module selectors (``args.hf_lora_targets``);
-    ``None`` selects every projection the architecture spec implements.
+    ``None`` selects every projection the architecture spec implements. ``num_slots`` is None for
+    single LoRA; multi-LoRA builds that many routed slots at ``rank``, the max rank.
     """
 
     rank: int
@@ -20,6 +21,7 @@ class LoRAConfig:
     dropout: float
     target_modules: tuple[str, ...] | None
     a_init_method: str = "xavier"
+    num_slots: int | None = None
 
     @property
     def scale(self) -> float:
@@ -38,4 +40,5 @@ class LoRAConfig:
             dropout=args.lora_dropout,
             target_modules=None if select_all else tuple(args.hf_lora_targets),
             a_init_method=args.lora_A_init_method,
+            num_slots=args.multi_lora_n_adapters if args.multi_lora else None,
         )

@@ -7,7 +7,7 @@ import os
 
 import torch.nn as nn
 
-from miles.backends.megatron_utils.lora.native.modules.linear import attach_adapter_forward
+from miles.backends.megatron_utils.lora.native.modules.linear import attach_adapter_forward, build_adapter
 from miles.backends.megatron_utils.lora.native.modules.lm_head import LoRAOutputHead
 from miles.backends.megatron_utils.lora.native.spec.base import AttachContext
 
@@ -29,13 +29,16 @@ class LMHeadSpec:
         assert hf_module.rpartition(".")[2] == self.hf_leaf, f"the converter names the output head {hf_module!r}"
         if not context.lora.selects(hf_module):
             return 0
-        adapter = LoRAOutputHead(
-            hf_prefix=f"{hf_module}.",
-            reference=weight,
-            context=context,
-            vocab_local=weight.shape[0],
-            unpadded_vocab_size=args.backend.vocab_size,
-            tied=tied,
+        adapter = build_adapter(
+            lambda: LoRAOutputHead(
+                hf_prefix=f"{hf_module}.",
+                reference=weight,
+                context=context,
+                vocab_local=weight.shape[0],
+                unpadded_vocab_size=args.backend.vocab_size,
+                tied=tied,
+            ),
+            context,
         )
         model.lora_lm_head_adapter = adapter
         attach_adapter_forward(output_layer, adapter, context.lora.scale)
@@ -52,13 +55,16 @@ class InklingLMHeadSpec:
             return 0
         output_layer = model.output_layer
         mup = model.config.inkling.logits_mup_width_multiplier
-        adapter = LoRAOutputHead(
-            hf_prefix="language_model.lm_head.",
-            reference=output_layer.weight,
-            context=context,
-            vocab_local=output_layer.weight.shape[0],
-            mup_width_multiplier=float(mup) if mup else None,
-            unpadded_vocab_size=_read_unpadded_vocab_size(args.hf_checkpoint),
+        adapter = build_adapter(
+            lambda: LoRAOutputHead(
+                hf_prefix="language_model.lm_head.",
+                reference=output_layer.weight,
+                context=context,
+                vocab_local=output_layer.weight.shape[0],
+                mup_width_multiplier=float(mup) if mup else None,
+                unpadded_vocab_size=_read_unpadded_vocab_size(args.hf_checkpoint),
+            ),
+            context,
         )
         model.lora_lm_head_adapter = adapter
         attach_adapter_forward(output_layer, adapter, context.lora.scale)

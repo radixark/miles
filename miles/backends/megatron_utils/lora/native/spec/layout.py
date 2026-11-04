@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import functools
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -12,6 +13,7 @@ from miles.backends.megatron_utils.lora.native.modules.linear import (
     LoRALinear,
     NativeLoRAAdapter,
     attach_adapter_forward,
+    build_adapter,
 )
 from miles.backends.megatron_utils.lora.native.spec.base import AttachContext, AttentionFamily, ProjectionSpec
 
@@ -188,7 +190,7 @@ def attach_layout(block: nn.Module, layout: ModuleLayout, layer: nn.Module, cont
         )
         if not active:
             continue
-        adapter = group.build(block, hf_prefix, context, active)
+        adapter = build_adapter(functools.partial(group.build, block, hf_prefix, context, active), context)
         setattr(block, group.adapter_attr, adapter)
         attach_adapter_forward(host, adapter, context.lora.scale)
         count += 1
@@ -203,13 +205,17 @@ def attach_layout(block: nn.Module, layout: ModuleLayout, layer: nn.Module, cont
         out_features = binding.out_dim(block, context)
         if binding.guard is not None:
             binding.guard(host, context, binding.projection, out_features)
-        adapter = binding.adapter_class(
-            hf_prefix=hf_prefix,
-            projection=binding.projection,
-            reference=host.weight,
-            context=context,
-            in_features=binding.in_dim(block, context),
-            out_features=out_features,
+        adapter = build_adapter(
+            functools.partial(
+                binding.adapter_class,
+                hf_prefix=hf_prefix,
+                projection=binding.projection,
+                reference=host.weight,
+                context=context,
+                in_features=binding.in_dim(block, context),
+                out_features=out_features,
+            ),
+            context,
         )
         setattr(block, binding.adapter_attr, adapter)
         attach_adapter_forward(host, adapter, context.lora.scale)

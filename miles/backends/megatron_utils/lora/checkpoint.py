@@ -509,7 +509,7 @@ def build_adapter_slots(args, model, iterator, targets) -> BridgeAdapterSlots:
     if args.megatron_to_hf_mode == "raw":
         from miles.backends.megatron_utils.lora.native.checkpoint import NativeAdapterSlots
 
-        return NativeAdapterSlots(model, iterator, targets)
+        return NativeAdapterSlots(model, iterator, targets, multi_lora=args.multi_lora)
     return BridgeAdapterSlots(model, iterator, targets, multi_lora=args.multi_lora)
 
 

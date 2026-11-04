@@ -189,6 +189,7 @@ def test_the_checkpoint_probe_exports_one_adapter_at_a_time(monkeypatch):
     model = _model()
     slots = object.__new__(checkpoint.NativeAdapterSlots)
     slots._model = [model]
+    slots._multi_lora = False
     batch_sizes = []
 
     def export(adapters, dtype):

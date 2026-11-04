@@ -7,7 +7,7 @@ import dataclasses
 import torch.nn as nn
 
 from miles.backends.megatron_utils.lora.native.modules.gdn import LoRAGDNInProj, attach_projection_delta
-from miles.backends.megatron_utils.lora.native.modules.linear import LoRAUnreducedRowLinear
+from miles.backends.megatron_utils.lora.native.modules.linear import LoRAUnreducedRowLinear, build_adapter
 from miles.backends.megatron_utils.lora.native.spec import layout as L
 from miles.backends.megatron_utils.lora.native.spec.base import AttachContext, ProjectionSpec, ShardLayout
 from miles.backends.megatron_utils.lora.native.spec.layout import ModuleLayout, ProjectionBinding, attach_layout
@@ -63,7 +63,9 @@ class Qwen35GDNSpec:
         )
         count = 0
         if active:
-            adapter = LoRAGDNInProj(hf_prefix=hf_prefix, gdn=gdn, context=context, projections=active)
+            adapter = build_adapter(
+                lambda: LoRAGDNInProj(hf_prefix=hf_prefix, gdn=gdn, context=context, projections=active), context
+            )
             gdn.lora_in_proj_adapter = adapter
             attach_projection_delta(gdn, adapter, context.lora.scale)
             count += 1

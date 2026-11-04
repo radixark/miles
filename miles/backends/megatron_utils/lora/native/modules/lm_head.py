@@ -49,10 +49,15 @@ class LoRAOutputHead(NativeLoRAAdapter):
                 lambda grad: grad.index_fill(0, torch.arange(padded.start, padded.stop, device=grad.device), 0)
             )
 
-    def forward(self, x: torch.Tensor, base_module: nn.Module, *_host_args) -> torch.Tensor:
+    def prepare_input(self, x: torch.Tensor, base_module: nn.Module) -> torch.Tensor:
         scaled = x / self.mup if self.mup else x
-        scaled = branch_input(scaled, base_module, self.context)
-        return F.linear(F.linear(scaled, self.head_A), self.head_B)
+        return branch_input(scaled, base_module, self.context)
+
+    def project_down(self, x: torch.Tensor) -> torch.Tensor:
+        return F.linear(x, self.head_A)
+
+    def project_up(self, down: torch.Tensor) -> torch.Tensor:
+        return F.linear(down, self.head_B)
 
     def weight_deltas(self):
         """The host divides its input by muP too, so the merged head carries the full delta."""

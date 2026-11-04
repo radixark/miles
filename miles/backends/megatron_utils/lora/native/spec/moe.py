@@ -44,6 +44,7 @@ class GroupedExpertsSpec:
         fc1_prefix = context.naming.block_prefix(layer, fc1.weight0, ["w1", "w3"])
         # selectors address one expert ("experts.*.w1"); shared-outer adapters cover them all
         if context.lora.selects(f"{fc1_prefix}0.w1") or context.lora.selects(f"{fc1_prefix}0.w3"):
+            _assert_single_lora(context)
             experts.lora_fc1_adapter = LoRAGroupedFC1(
                 hf_prefix=fc1_prefix, reference=fc1.weight0, width=fc1.weight0.shape[1], **common
             )
@@ -51,6 +52,7 @@ class GroupedExpertsSpec:
             count += 1
         fc2_prefix = context.naming.block_prefix(layer, fc2.weight0, ["w2"])
         if context.lora.selects(f"{fc2_prefix}0.w2"):
+            _assert_single_lora(context)
             experts.lora_fc2_adapter = LoRAGroupedFC2(
                 hf_prefix=fc2_prefix, reference=fc2.weight0, width=fc2.weight0.shape[0], **common
             )
@@ -68,6 +70,7 @@ class GroupedExpertsSpec:
 
     @staticmethod
     def _attach_shared(shared: nn.Module, layer: nn.Module, context: AttachContext) -> int:
+        _assert_single_lora(context)
         subs = list(shared.experts)
         local_intermediate = shared.experts[0].linear_fc1.weight.shape[0] // 2
         adapter = LoRASharedExpertsAdapter(
@@ -85,9 +88,19 @@ class GroupedExpertsSpec:
                 host = getattr(
                     sub, host_attr
                 )  # config-access-exempt: the expert architecture selects the host projection attribute
-                attach_delta_forward(host, functools.partial(_sub_expert_delta, delta, index), context.lora.scale)
+                attach_delta_forward(
+                    host,
+                    functools.partial(_sub_expert_delta, delta, index),
+                    functools.partial(torch.add, alpha=context.lora.scale),
+                )
                 adapter.bind_host(host)
         return 1
+
+
+def _assert_single_lora(context: AttachContext) -> None:
+    assert (
+        context.lora.num_slots is None
+    ), "multi-LoRA slots adapt dense projections and lm_head; grouped expert adapters have no slots"
 
 
 def _sub_expert_delta(delta, index: int, x: torch.Tensor, host: nn.Module, *_host_args) -> torch.Tensor:

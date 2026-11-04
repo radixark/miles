@@ -104,6 +104,26 @@ class NativeLoRAAdapter(nn.Module):
                 self, f"{projection.param_prefix}_B"
             ), f"native LoRA projection {projection.hf_leaf!r} has no complete A/B parameter pair"
 
+    def forward(self, x: torch.Tensor, base_module: nn.Module, *_host_args) -> torch.Tensor:
+        down = self.project_down(self.prepare_input(x, base_module))
+        return self.project_up(self.reduce_down(down))
+
+    # The delta in phases, so multi-LoRA slots share the input mapping and the one TP collective after A
+    # (``NativeSlotAdapters``). An adapter whose delta does not split this way overrides ``forward``.
+    def prepare_input(self, x: torch.Tensor, base_module: nn.Module) -> torch.Tensor:
+        """The input A reads: dropout and any TP / SP input mapping."""
+        raise NotImplementedError(f"{type(self).__name__} has no per-phase forward")
+
+    def project_down(self, x: torch.Tensor) -> torch.Tensor:
+        raise NotImplementedError(f"{type(self).__name__} has no per-phase forward")
+
+    def reduce_down(self, down: torch.Tensor) -> torch.Tensor:
+        """The TP collective between A and B, if the layout has one."""
+        return down
+
+    def project_up(self, down: torch.Tensor) -> torch.Tensor:
+        raise NotImplementedError(f"{type(self).__name__} has no per-phase forward")
+
     def exports(self) -> Iterator[ProjectionExport]:
         """Yield one public descriptor per logical projection; adapters owning an ``export_plan`` have none."""
         return iter(())
@@ -202,23 +222,24 @@ class LoRALinear(NativeLoRAAdapter):
         )
         self._validate_projection_parameters()
 
-    def forward(self, x: torch.Tensor, base_module: nn.Module, *_host_args) -> torch.Tensor:
-        a = getattr(
-            self, f"{self.param_prefix}_A"
-        )  # config-access-exempt: the projection prefix selects its registered A parameter
-        b = getattr(
-            self, f"{self.param_prefix}_B"
-        )  # config-access-exempt: the projection prefix selects its registered B parameter
+    def prepare_input(self, x: torch.Tensor, base_module: nn.Module) -> torch.Tensor:
         if self.layout == ShardLayout.COLUMN:
-            x = branch_input(x, base_module, self.context)
-            return F.linear(F.linear(x, a), b)
-        if self.layout == ShardLayout.ROW:
-            x = apply_lora_dropout(x, self.context, base_module.training)
-            partial = F.linear(x, a)
-            return F.linear(reduce_row_parallel(partial, self.context), b)
-        assert self.layout == ShardLayout.REPLICATED, f"unknown LoRA linear layout {self.layout}"
-        x = apply_lora_dropout(x, self.context, base_module.training)
-        return F.linear(F.linear(x, a), b)
+            return branch_input(x, base_module, self.context)
+        assert self.layout in (ShardLayout.ROW, ShardLayout.REPLICATED), f"unknown LoRA linear layout {self.layout}"
+        return apply_lora_dropout(x, self.context, base_module.training)
+
+    def project_down(self, x: torch.Tensor) -> torch.Tensor:
+        return F.linear(
+            x, getattr(self, f"{self.param_prefix}_A")
+        )  # config-access-exempt: the projection prefix selects its registered A parameter
+
+    def reduce_down(self, down: torch.Tensor) -> torch.Tensor:
+        return reduce_row_parallel(down, self.context) if self.layout == ShardLayout.ROW else down
+
+    def project_up(self, down: torch.Tensor) -> torch.Tensor:
+        return F.linear(
+            down, getattr(self, f"{self.param_prefix}_B")
+        )  # config-access-exempt: the projection prefix selects its registered B parameter
 
     def exports(self) -> Iterator[ProjectionExport]:
         yield from self._export_projections()
@@ -250,11 +271,8 @@ class LoRAUnreducedRowLinear(LoRALinear):
             "tp"  # config-access-exempt: the projection prefix selects its registered B parameter
         )
 
-    def forward(self, x: torch.Tensor, base_module: nn.Module, *_host_args) -> torch.Tensor:
-        x = apply_lora_dropout(x, self.context, base_module.training)
-        return F.linear(
-            F.linear(x, getattr(self, f"{self.param_prefix}_A")), getattr(self, f"{self.param_prefix}_B")
-        )  # config-access-exempt: the projection prefix selects its registered A and B parameters
+    def reduce_down(self, down: torch.Tensor) -> torch.Tensor:
+        return down
 
 
 class LoRAReplicatedPlainLinear(LoRALinear):
@@ -391,12 +409,16 @@ class LoRASplitAdapter(NativeLoRAAdapter):
     def _branch_input(self, x: torch.Tensor, base_module: nn.Module) -> torch.Tensor:
         return branch_input(x, base_module, self.context)
 
-    def forward(self, x: torch.Tensor, base_module: nn.Module, *_host_args) -> torch.Tensor:
-        x = self._branch_input(x, base_module)
-        rank = self.context.lora.rank
-        down = F.linear(
+    def prepare_input(self, x: torch.Tensor, base_module: nn.Module) -> torch.Tensor:
+        return self._branch_input(x, base_module)
+
+    def project_down(self, x: torch.Tensor) -> torch.Tensor:
+        return F.linear(
             x, torch.cat([getattr(self, f"{name}_A") for name in self._active], dim=0)
         )  # config-access-exempt: the registered projection name selects its A parameter
+
+    def project_up(self, down: torch.Tensor) -> torch.Tensor:
+        rank = self.context.lora.rank
         active_delta = {
             name: F.linear(
                 down[..., index * rank : (index + 1) * rank], getattr(self, f"{name}_B")
@@ -404,7 +426,7 @@ class LoRASplitAdapter(NativeLoRAAdapter):
             for index, name in enumerate(self._active)
         }
         full_delta = [
-            active_delta[name] if name in active_delta else x.new_zeros(*x.shape[:-1], rows)
+            active_delta[name] if name in active_delta else down.new_zeros(*down.shape[:-1], rows)
             for name, rows in self._rows_by_param_prefix.items()
         ]
         return self._pack(torch.cat(full_delta, dim=-1))
@@ -468,9 +490,13 @@ class LoRASplitFC1(LoRASplitAdapter):
 
 
 def attach_delta_forward(
-    module: nn.Module, delta: Callable[..., torch.Tensor], scale: float, *, host_returns_bias: bool = True
+    module: nn.Module,
+    delta: Callable[..., torch.Tensor],
+    add_delta: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
+    *,
+    host_returns_bias: bool = True,
 ) -> None:
-    """Add ``scale * delta(x, module, *host_args)`` to a host linear while preserving ``(out, bias)``.
+    """Add ``delta(x, module, *host_args)`` to a host linear by ``add_delta(out, delta)``, preserving ``(out, bias)``.
 
     Extra host-forward positionals (e.g. grouped GEMM's ``tokens_per_expert``)
     are forwarded to the delta, which may ignore them. A TE ``LayerNormLinear`` host
@@ -490,26 +516,148 @@ def attach_delta_forward(
                 out, bias, normed = original(x, *args, **kwargs)
             else:
                 (out, normed), bias = original(x, *args, **kwargs)
-            return torch.add(out, delta(normed, module, *args), alpha=scale), bias
+            return add_delta(out, delta(normed, module, *args)), bias
 
     elif host_returns_bias:
 
         def forward(x, *args, **kwargs):
             out, bias = original(x, *args, **kwargs)
-            return torch.add(out, delta(x, module, *args), alpha=scale), bias
+            return add_delta(out, delta(x, module, *args)), bias
 
     else:
 
         def forward(x, *args, **kwargs):
-            return torch.add(original(x, *args, **kwargs), delta(x, module, *args), alpha=scale)
+            return add_delta(original(x, *args, **kwargs), delta(x, module, *args))
 
     module.forward = forward
 
 
-def attach_adapter_forward(module: nn.Module, adapter: NativeLoRAAdapter, scale: float) -> None:
+def attach_adapter_forward(module: nn.Module, adapter: NativeLoRAAdapter | NativeSlotAdapters, scale: float) -> None:
     """Make a single-host adapter's forward the delta of ``module``."""
-    attach_delta_forward(module, adapter, scale, host_returns_bias=adapter.host_returns_bias)
+    attach_delta_forward(
+        module, adapter, resolve_delta_add(adapter, scale), host_returns_bias=adapter.host_returns_bias
+    )
     adapter.bind_host(module)
+
+
+def resolve_delta_add(
+    adapter: NativeLoRAAdapter | NativeSlotAdapters, scale: float
+) -> Callable[[torch.Tensor, torch.Tensor], torch.Tensor]:
+    """How the adapter's delta joins its host's output: scaled per routed token range for multi-LoRA slots."""
+    if isinstance(adapter, NativeSlotAdapters):
+        return adapter.add_scaled_delta
+    return functools.partial(torch.add, alpha=scale)
+
+
+def build_adapter(
+    build: Callable[[], NativeLoRAAdapter], context: AttachContext
+) -> NativeLoRAAdapter | NativeSlotAdapters:
+    """One adapter for single LoRA; for multi-LoRA, ``context.lora.num_slots`` of them behind token routing."""
+    if context.lora.num_slots is None:
+        return build()
+    return NativeSlotAdapters([build() for _ in range(context.lora.num_slots)], context)
+
+
+class NativeSlotAdapters(nn.Module):
+    """The multi-LoRA slots of one host: one adapter per slot, each running on its slot's token range.
+
+    Tokens arrive sorted by slot (``token_counts_by_slot``, identical across the TP group), so the input
+    mapping and the TP collective after A run once for all slots. Every slot is allocated at the max rank
+    before DDP wraps the model; a slot claimed at a lower rank keeps A's rows and B's columns past its rank
+    at zero, which keeps their gradients zero too.
+    """
+
+    def __init__(self, slots: Sequence[NativeLoRAAdapter], context: AttachContext):
+        super().__init__()
+        self.slots = nn.ModuleList(slots)
+        self.context = context
+        self.host_returns_bias = slots[0].host_returns_bias
+        self.max_lora_rank = context.lora.rank
+        # a free slot adds nothing to its tokens
+        self.lora_ranks = [self.max_lora_rank] * len(slots)
+        self.lora_alphas = [0.0] * len(slots)
+        self.token_counts_by_slot: tuple[int, ...] | None = None
+
+    def bind_host(self, host: nn.Module) -> None:
+        for adapter in self.slots:
+            adapter.bind_host(host)
+
+    def forward(self, x: torch.Tensor, base_module: nn.Module, *_host_args) -> torch.Tensor:
+        """The unscaled delta, one row per token; ``add_scaled_delta`` applies each slot's scale."""
+        rows = _token_rows(self.slots[0].prepare_input(x, base_module))
+        down = torch.cat(
+            [
+                adapter.project_down(slot_rows)
+                for adapter, slot_rows in zip(self.slots, rows.split(self._local_token_counts(len(rows))), strict=True)
+            ]
+        )
+        down = self.slots[0].reduce_down(down)
+        return torch.cat(
+            [
+                adapter.project_up(slot_down)
+                for adapter, slot_down in zip(self.slots, down.split(self._local_token_counts(len(down))), strict=True)
+            ]
+        )
+
+    def add_scaled_delta(self, out: torch.Tensor, delta: torch.Tensor) -> torch.Tensor:
+        out_rows = _token_rows(out)
+        counts = self._local_token_counts(len(out_rows))
+        summed = [
+            torch.add(slot_out, slot_delta, alpha=alpha / rank)
+            for slot_out, slot_delta, alpha, rank in zip(
+                out_rows.split(counts), delta.split(counts), self.lora_alphas, self.lora_ranks, strict=True
+            )
+        ]
+        return torch.cat(summed).view(out.shape)
+
+    def _local_token_counts(self, num_rows: int) -> list[int]:
+        """Each slot's rows among ``num_rows``: all routed tokens, or this rank's sequence-parallel shard of them."""
+        counts = self.token_counts_by_slot
+        assert counts is not None, "multi-LoRA slots run only inside AdapterSlots.routed_tokens_context"
+        total = sum(counts)
+        if num_rows == total:
+            return list(counts)
+        assert num_rows * self.context.tp_size == total, (
+            f"{num_rows} rows are neither the {total} routed tokens nor a 1/{self.context.tp_size} "
+            "sequence-parallel shard of them"
+        )
+        start, stop = self.context.tp_rank * num_rows, (self.context.tp_rank + 1) * num_rows
+        local_counts, offset = [], 0
+        for count in counts:
+            local_counts.append(max(0, min(offset + count, stop) - max(offset, start)))
+            offset += count
+        return local_counts
+
+    @torch.no_grad()
+    def init_slot(self, slot: int, lora_rank: int, lora_alpha: float) -> None:
+        """Draw A within ``lora_rank`` and zero the rest; the caller holds the RNG stream."""
+        assert 0 < lora_rank <= self.max_lora_rank, f"LoRA rank {lora_rank} is not in (0, {self.max_lora_rank}]"
+        for name, param in self.slots[slot].named_parameters():
+            param.zero_()
+            if name.endswith("_A"):
+                _LORA_A_INITS[self.context.lora.a_init_method](param[:lora_rank])
+            else:
+                assert name.endswith("_B"), f"{name} is neither a LoRA A nor a LoRA B"
+        self.lora_ranks[slot], self.lora_alphas[slot] = lora_rank, float(lora_alpha)
+
+    @torch.no_grad()
+    def clear_slot(self, slot: int) -> None:
+        for param in self.slots[slot].parameters():
+            param.zero_()
+        self.lora_ranks[slot], self.lora_alphas[slot] = self.max_lora_rank, 0.0
+
+    def sharded_state_dict(self, prefix="", sharded_offsets=(), metadata=None):
+        """Invisible to Megatron dist-checkpointing, like each slot's adapter."""
+        del prefix, sharded_offsets, metadata
+        return {}
+
+
+def _token_rows(tensor: torch.Tensor) -> torch.Tensor:
+    """A ``[s, 1, h]`` / ``[1, s, h]`` activation as ``[s, h]`` rows in token order."""
+    assert tensor.shape[:-1].numel() == max(tensor.shape[:-1], default=1), (
+        f"multi-LoRA slots route packed (thd) tokens; got an activation of shape {tuple(tensor.shape)}"
+    )
+    return tensor.reshape(-1, tensor.shape[-1])
 
 
 def build_qkv_permutation(
@@ -535,11 +683,28 @@ def build_qkv_permutation(
     return torch.tensor(index, dtype=torch.long, device=device)
 
 
-def iter_adapters(model_chunks: Sequence[nn.Module]):
+def _iter_modules(model_chunks: Sequence[nn.Module]) -> Iterator[nn.Module]:
     for chunk in model_chunks:
         module = chunk
         while hasattr(module, "module"):  # config-access-exempt: wrapper modules may expose an inner module
             module = module.module
-        for child in module.modules():
-            if isinstance(child, NativeLoRAAdapter):
-                yield child
+        yield from module.modules()
+
+
+def iter_adapters(model_chunks: Sequence[nn.Module]) -> Iterator[NativeLoRAAdapter]:
+    """Single LoRA's adapters."""
+    for child in _iter_modules(model_chunks):
+        assert not isinstance(child, NativeSlotAdapters), "a multi-LoRA model is read per slot (iter_slot_adapters)"
+        if isinstance(child, NativeLoRAAdapter):
+            yield child
+
+
+def iter_slot_adapters(model_chunks: Sequence[nn.Module], slot: int) -> Iterator[NativeLoRAAdapter]:
+    for slot_adapters in iter_native_slot_adapters(model_chunks):
+        yield slot_adapters.slots[slot]
+
+
+def iter_native_slot_adapters(model_chunks: Sequence[nn.Module]) -> Iterator[NativeSlotAdapters]:
+    for child in _iter_modules(model_chunks):
+        if isinstance(child, NativeSlotAdapters):
+            yield child
