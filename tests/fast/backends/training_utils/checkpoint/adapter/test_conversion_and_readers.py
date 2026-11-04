@@ -8,7 +8,11 @@ import torch
 from safetensors.torch import load_file, save_file
 
 from miles.backends.training_utils.checkpoint.adapter.adapter_dir import write_peft_export
-from miles.backends.training_utils.checkpoint.adapter.adapter_exports import write_peft_adapter, write_sampler_adapter
+from miles.backends.training_utils.checkpoint.adapter.adapter_exports import (
+    has_plain_peft_form,
+    write_peft_adapter,
+    write_sampler_adapter,
+)
 from miles.backends.training_utils.checkpoint.adapter.key_mapping import (
     map_hf_keys_to_peft_export_keys,
     map_peft_keys_to_hf_keys,
@@ -93,9 +97,17 @@ def test_peft_export_reads_back_bitwise(tmp_path):
 
 
 def test_gdn_components_with_their_own_a_are_refused_by_the_peft_export(tmp_path):
-    with pytest.raises(AssertionError, match="components of an HF-fused module with their own lora_A"):
+    with pytest.raises(AssertionError, match="has no plain-PEFT form; the adapter dir is the checkpoint"):
         write_peft_adapter(tmp_path, _weights(False), _run(), QWEN35)
     assert not (tmp_path / "adapter_model.safetensors").exists()
+
+
+def test_only_fused_components_sharing_one_a_have_a_plain_peft_form():
+    assert not has_plain_peft_form(_run())
+    assert has_plain_peft_form(_run(shared_lora_a_groups=(tuple(sorted(QKV)),)))
+    # a lone component of a fused module has no HF module either
+    assert not has_plain_peft_form(_run(target_modules=(QKV[0],)))
+    assert has_plain_peft_form(_run(target_modules=EXPERTS))
 
 
 def test_hf_peft_loads_the_peft_export(tmp_path):
