@@ -265,3 +265,15 @@ def test_committing_a_dir_this_process_cannot_see_is_a_storage_error(tmp_path):
     written = UncommittedAdapterDir(tmp_path / ".w.0123456789abcdef", "0123456789abcdef")
     with pytest.raises(FileNotFoundError, match="does not exist"):
         commit_adapter_dir(tmp_path, "w", written, overwrite=False)
+
+
+def test_one_committer_per_root_a_commit_removes_another_in_flight_write_of_the_name(tmp_path):
+    """Only the root's single committer writes and commits; a second writer of the same name in flight is
+    unreferenced to recovery, so the commit removes it and that write fails instead of committing."""
+    with pytest.raises(RuntimeError, match="No such file or directory"):
+        with write_adapter_dir(tmp_path, "w") as in_flight:
+            (in_flight.path / "payload").write_text("in flight")
+            committed = _save(tmp_path, "w", "committed")
+            assert not in_flight.path.exists()
+    assert sorted(p.name for p in tmp_path.iterdir()) == sorted(["w", committed.path.name])
+    assert (resolve_adapter_dir(tmp_path, "w", tenant="alice").path / "payload").read_text() == "committed"

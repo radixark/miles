@@ -213,6 +213,14 @@ def _load_native_adapter_shard(model: Sequence[torch.nn.Module], shard: Path) ->
             f"Adapter checkpoint {shard} does not match the model's adapter parameters: "
             f"missing={sorted(missing)}, unexpected={sorted(unexpected)}"
         )
+    mismatched = [
+        f"{name}: saved {tuple(state_dict[name].shape)} != parameter {tuple(param.shape)}"
+        for name, param in adapter_params.items()
+        if state_dict[name].shape != param.shape
+    ]
+    # copy_ would broadcast a [1, ...] tensor into an [E, ...] parameter
+    if mismatched:
+        raise RuntimeError(f"Adapter checkpoint {shard} does not match the model's adapter shapes: {mismatched}")
     for name, param in adapter_params.items():
         param.data.copy_(state_dict[name].to(device=param.device))
     logger.info(f"Loaded {len(adapter_params)} adapter tensors from Megatron-native checkpoint: {shard}")
