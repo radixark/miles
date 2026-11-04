@@ -432,7 +432,7 @@ class TorchtitanLoraCheckpoint:
             self.run,
             load_optimizer,
         )
-        load_adapter_dir(
+        source = load_adapter_dir(
             path,
             self.members,
             0,
@@ -441,6 +441,10 @@ class TorchtitanLoraCheckpoint:
             load_optimizer=load_optimizer,
             in_model_loaders_by_kind={AdapterSourceKind.TORCHTITAN_CHECKPOINT: loader},
         )
+        # the driver resolved --lora-alpha from its own view of the path, which a trainer may see differently
+        assert (
+            source.lora_alpha == self.run.lora_alpha
+        ), f"{path} was trained with lora_alpha={source.lora_alpha}; this run uses {self.run.lora_alpha}"
         training_state = read_training_state(path)
         if loader.train_state is not None and self._dcp_on_rollout_grid(path, loader.train_state, load_optimizer):
             training_state = self._adopt_dcp_schedule(loader)
