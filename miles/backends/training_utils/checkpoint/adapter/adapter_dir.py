@@ -1,14 +1,14 @@
 """The save / load flow, written once; backends only provide their checkpoint members."""
 
 import json
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
 import torch
 
-from miles.backends.training_utils.checkpoint.adapter.adapter_exports import write_peft_adapter
+from miles.backends.training_utils.checkpoint.adapter.adapter_exports import write_peft_adapter, write_sampler_adapter
 from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
     AdapterState,
     LocalShardSpec,
@@ -172,6 +172,45 @@ def write_peft_export(
     lora_dropout: float,
 ) -> None:
     """All ranks call; rank 0 writes ``slot``'s bf16 PEFT export into ``directory``."""
+    _write_bf16_export(
+        directory,
+        members,
+        slot,
+        parametrization,
+        targets,
+        lambda *view, stacked_keys: write_peft_adapter(*view, stacked_keys=stacked_keys, lora_dropout=lora_dropout),
+    )
+
+
+def write_sampler_view(
+    directory: Path,
+    members: AdapterCheckpointMembers,
+    slot: int,
+    parametrization: AdapterParametrization,
+    targets: HfLoraTargets,
+    *,
+    lora_dropout: float,
+) -> None:
+    """All ranks call; rank 0 writes ``slot``'s bf16 sampler export into ``directory``, outside any commit."""
+    # the sampler layout keeps every expert stacked
+    _write_bf16_export(
+        directory,
+        members,
+        slot,
+        parametrization,
+        targets,
+        lambda *view, stacked_keys: write_sampler_adapter(*view, lora_dropout=lora_dropout),
+    )
+
+
+def _write_bf16_export(
+    directory: Path,
+    members: AdapterCheckpointMembers,
+    slot: int,
+    parametrization: AdapterParametrization,
+    targets: HfLoraTargets,
+    write: Callable[..., None],
+) -> None:
     error = None
     try:
         # the gathered adapter leaves the GPU before rank 0 splits and copies it
@@ -179,15 +218,14 @@ def write_peft_export(
         if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
             map_name = {"peft": map_peft_keys_to_hf_keys}[members.bf16_adapter_key_style]
             weights, fused_groups = map_named_tensors_to_hf_keys(named_tensors, map_name, targets)
-            # the export names a shared A once per module; the writer expects it once per group
+            # the export names a shared A once per module; the writers expect it once per group
             weights = collapse_shared_lora_a(weights, parametrization, fused_groups)
-            write_peft_adapter(
+            write(
                 directory,
                 weights,
                 parametrization,
                 targets,
                 stacked_keys=_stacked_expert_keys(named_tensors, map_name),
-                lora_dropout=lora_dropout,
             )
     except Exception as exc:
         error = exc

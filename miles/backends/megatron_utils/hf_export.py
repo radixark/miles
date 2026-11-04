@@ -12,7 +12,8 @@ from miles.backends.megatron_utils.lora.bridge_checkpoint import BridgeAdapterSl
 from miles.backends.megatron_utils.lora.native.merge import merge_lora_into_weights
 from miles.backends.megatron_utils.lora.utils import is_lora_model
 from miles.backends.megatron_utils.named_weights import named_params_and_buffers
-from miles.backends.training_utils.checkpoint.adapter.adapter_dir import write_peft_export
+from miles.backends.training_utils.checkpoint.adapter.adapter_dir import write_peft_export, write_sampler_view
+from miles.backends.training_utils.checkpoint.adapter.adapter_exports import has_plain_peft_form
 from miles.backends.training_utils.checkpoint.io import write_checkpoint_dir
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.backends.training_utils.weight_update.snapshot_publisher import SnapshotPublisher
@@ -76,17 +77,24 @@ def save_hf_model(
             assert adapter_slots is not None, "a Bridge LoRA export needs the model's adapter slots"
             # multi-LoRA exports slot 0 at its own rank and alpha, not the run's
             spec = adapter_slots.slot_spec(0)
-            write_peft_export(
+            parametrization = adapter_slots.parametrization(
+                base_model=args.hf_checkpoint,
+                lora_rank=args.lora_rank if spec is None else spec.rank,
+                lora_alpha=args.lora_alpha if spec is None else spec.alpha,
+                lora_type=args.lora_type,
+                experts_shared_outer_loras=args.experts_shared_outer_loras,
+            )
+            # a fused module whose components have their own A has no PEFT name; sglang's names, as main wrote, do
+            write = (
+                write_peft_export
+                if has_plain_peft_form(parametrization, adapter_slots.targets)
+                else write_sampler_view
+            )
+            write(
                 checkpoint_dir / "adapter",
                 adapter_slots,
                 0,
-                adapter_slots.parametrization(
-                    base_model=args.hf_checkpoint,
-                    lora_rank=args.lora_rank if spec is None else spec.rank,
-                    lora_alpha=args.lora_alpha if spec is None else spec.alpha,
-                    lora_type=args.lora_type,
-                    experts_shared_outer_loras=args.experts_shared_outer_loras,
-                ),
+                parametrization,
                 adapter_slots.targets,
                 lora_dropout=args.lora_dropout,
             )
