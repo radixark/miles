@@ -71,20 +71,24 @@ class LayerWiseSlotMembers:
                     owned[index_of[id(param)]] = (master, child.optimizer.state[master], group)
         return owned
 
-    def get_local_shard_specs(self, slot: int):
-        return self._slots.local_shard_specs(slot, frozenset(self._owned(slot)))
-
-    def export_adapter_state(self, slot: int) -> AdapterState:
+    def _holds(self, slot: int) -> tuple[dict[int, tuple[torch.Tensor, dict, dict]], list]:
+        """``_owned(slot)`` and this rank's shard specs, agreed by every rank first."""
         error, owned = None, {}
         try:
             owned = self._owned(slot)
         except Exception as exc:
             error = exc
-        # the specs below gather over Gloo: a rank that cannot list its ownership must not leave the others there
+        # the specs gather over Gloo: a rank that cannot list its ownership must not leave the others there
         raise_if_any_rank_failed(error)
+        return owned, self._slots.local_shard_specs(slot, frozenset(owned))
+
+    def get_local_shard_specs(self, slot: int):
+        return self._holds(slot)[1]
+
+    def export_adapter_state(self, slot: int) -> AdapterState:
+        owned, specs = self._holds(slot)
         holds = frozenset(owned)
         params = self._slots.slot_parameters(slot)
-        specs = self._slots.local_shard_specs(slot, holds)
         # each piece is cut from the one held parameter it comes from; parameters held elsewhere are never read
         sources = self._slots.piece_parameter(slot, holds)
 

@@ -147,3 +147,39 @@ def test_a_rank_whose_import_fails_fails_every_rank_before_the_parameter_gather(
     hung = process.is_alive()
     process.kill()
     assert not hung and process.exitcode == 0
+
+
+def _one_rank_cannot_list_its_ownership(rank, world_size, port):
+    init_gloo(rank, world_size, port=port)
+    init_gloo_group()
+    master = torch.zeros(2)
+    members = _members(master.to(torch.bfloat16), master)
+
+    def gathered_specs(slot, holds):
+        # the real specs gather every rank's pieces over Gloo
+        dist.all_gather_object([None] * world_size, sorted(holds), group=dist.group.WORLD)
+        return []
+
+    members._slots.local_shard_specs = gathered_specs
+    if rank == 1:
+        members._slots.slot_parameters = lambda slot: []
+    error = None
+    try:
+        members.get_local_shard_specs(0)
+    except Exception as exc:
+        error = exc
+    # what load_adapter_dir does after get_local_shard_specs
+    with pytest.raises(RuntimeError, match="rank 1: KeyError"):
+        raise_if_any_rank_failed(error)
+    dist.destroy_process_group()
+
+
+def test_a_rank_that_cannot_list_its_ownership_fails_every_rank_before_the_spec_gather():
+    process = multiprocessing.get_context("spawn").Process(
+        target=run_multiprocess, args=(_one_rank_cannot_list_its_ownership,)
+    )
+    process.start()
+    process.join(timeout=60)
+    hung = process.is_alive()
+    process.kill()
+    assert not hung and process.exitcode == 0
