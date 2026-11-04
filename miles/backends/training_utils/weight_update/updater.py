@@ -145,6 +145,7 @@ class WeightUpdater:
 
         sync_base = not self.is_lora or protocol.needs_base_resync_for_lora
         adapters = self._get_updated_adapters()
+        verify_lora_checksums = self.is_lora and self.args.check_lora_weight_equal
 
         driver = dist.get_rank() == 0
         cell_updaters = list(protocol.cell_updaters_of_cell_id.values())
@@ -158,11 +159,12 @@ class WeightUpdater:
                     enable_mtp_training=self.args.enable_mtp_training,
                 ),
                 sync_base=sync_base,
+                verify_lora_checksums=verify_lora_checksums,
             )
         _mark_cells_errored_on_any_rank(cell_updaters)
         dist.barrier(group=get_gloo_group())
 
-        checksums = {name: {} for name, _ in adapters} if self.is_lora and self.args.check_lora_weight_equal else None
+        checksums = {name: {} for name, _ in adapters} if verify_lora_checksums else None
         # a full gather gives rank 0 the whole adapter; a PP-local sync splits it across senders
         records_checksums = protocol.is_sender and (driver or not self._hf_weight_iterator.placement.gather_pp)
         with timer("update_weights_implementation"):

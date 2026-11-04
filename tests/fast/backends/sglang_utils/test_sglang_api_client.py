@@ -816,7 +816,7 @@ class TestWeightControlPayloads:
         """The session must open on the same submodel the update will write to."""
         await client.begin_weight_update(selector="draft")
 
-        assert recorder.calls[0][2]["json"] == {"selector": "draft", "sync_base": True}
+        assert recorder.calls[0][2]["json"] == {"selector": "draft", "sync_base": True, "verify_lora_checksums": False}
 
     async def test_end_weight_update_posts_an_empty_payload(self, client, recorder):
         """Closing the session takes no selector: post-processing covers the full model."""

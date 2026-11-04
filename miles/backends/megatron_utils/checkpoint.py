@@ -321,6 +321,8 @@ def _load_hf_weights_with_mbridge(ddp_model, args, load_path: str) -> None:
     else:
         bypass = nullcontext()
     logger.info(f"Load checkpoint from HuggingFace model into Megatron via mbridge (path={load_path})")
+    slots = _plain_tensor_slots(ddp_model)
+    addresses = [tensor.data_ptr() for _, _, tensor in slots]
     with (
         ModelCompanionInstallationUtils.hide(ddp_model),
         _hide_critic_value_head_from_hf_load(ddp_model),
@@ -329,7 +331,24 @@ def _load_hf_weights_with_mbridge(ddp_model, args, load_path: str) -> None:
     ):
         bridge = AutoBridge.from_pretrained(load_path, trust_remote_code=True)
         bridge.load_weights(ddp_model, load_path, memory_efficient=True)
+    # a tensor reallocated during the load (the MoE router rebuilds its FP32 expert bias whenever mbridge calls
+    # state_dict) lives in the bypass pool, outside the memory saver: it is never paused and has no host backup,
+    # and the colocated LoRA weight sync reads that backup, so copy it back under the memory saver
+    for (_, _, tensor), address in zip(slots, addresses, strict=True):
+        if tensor.data_ptr() != address:
+            tensor.data = tensor.data.clone()
     torch.cuda.synchronize()
+
+
+def _plain_tensor_slots(ddp_model) -> list[tuple[torch.nn.Module, str, torch.Tensor]]:
+    """Every parameter and buffer backed by a plain tensor; quantized ones are refilled in place by the load."""
+    return [
+        (module, name, tensor)
+        for chunk in unwrap_model(ddp_model)
+        for module in chunk.modules()
+        for name, tensor in (*module._parameters.items(), *module._buffers.items())
+        if tensor is not None and type(tensor.data) is torch.Tensor and tensor.is_cuda
+    ]
 
 
 def _load_checkpoint_hf(ddp_model, optimizer, args, load_path: str):

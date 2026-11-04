@@ -7,7 +7,7 @@ import math
 import os
 from abc import abstractmethod
 from argparse import Namespace
-from collections.abc import Sequence
+from collections.abc import Iterable, Iterator, Sequence
 
 import torch
 import torch.distributed as dist
@@ -41,11 +41,18 @@ class MegatronHfWeightIteratorBase(HfWeightIteratorBase):
     def _iter_hf_adapter_units(self, adapter, *, materialize):
         """Both megatron exporters are PP-local after gathering TP/EP; the PP
         gather runs only where the resolved placement asks for it."""
-        named_tensors = self._export_pp_local_lora(adapter)
+        chunks = self._iter_pp_local_lora(adapter)
         if self.placement.gather_pp:
-            named_tensors = _gather_pp_full_adapter(named_tensors)
+            chunks = _stream_pp_full_adapter(chunks)
+        num_tensors = num_lora_weights = 0
+        # every rank drains the chunks: exporting and gathering them are collectives
+        for chunk in chunks:
+            num_tensors += len(chunk)
+            num_lora_weights += sum(is_lora_weight_name(name) for name, _ in chunk)
+            if materialize:
+                yield from ([(hf_name, tensor)] for hf_name, tensor in chunk)
         num_tensors, num_lora_weights = _count_full_adapter_tensors(
-            named_tensors, is_pp_local=not self.placement.gather_pp
+            num_tensors, num_lora_weights, is_pp_local=not self.placement.gather_pp
         )
         if not materialize:
             return
@@ -53,13 +60,10 @@ class MegatronHfWeightIteratorBase(HfWeightIteratorBase):
             raise RuntimeError("LoRA weight sync failed: the adapter export produced zero tensors")
         if num_lora_weights == 0:
             raise RuntimeError("LoRA weight sync failed: the adapter export contains no lora_A/lora_B names.")
-        while named_tensors:
-            hf_name, tensor = named_tensors.pop(0)
-            yield [(hf_name, tensor)]
 
     @abstractmethod
-    def _export_pp_local_lora(self, adapter) -> list[tuple[str, torch.Tensor]]:
-        """Backend hook: the adapter's HF-named tensors, TP/EP gathered, PP-local."""
+    def _iter_pp_local_lora(self, adapter) -> Iterable[list[tuple[str, torch.Tensor]]]:
+        """Backend hook: the adapter's HF-named tensors in chunks, TP/EP gathered, PP-local."""
 
 
 def get_hf_weight_iterator(
@@ -96,12 +100,10 @@ def get_packed_weight_basenames(hf_checkpoint: str) -> set[str]:
     return {n.removesuffix(".weight_packed") for n in names if n.endswith(".weight_packed")}
 
 
-def _count_full_adapter_tensors(
-    named_tensors: Sequence[tuple[str, torch.Tensor]], *, is_pp_local: bool
-) -> tuple[int, int]:
+def _count_full_adapter_tensors(num_tensors: int, num_lora_weights: int, *, is_pp_local: bool) -> tuple[int, int]:
     """(tensors, lora_A/lora_B weights) in the whole adapter; a PP-local export is
     summed over PP since a stage may hold no adapted layer."""
-    counts = [len(named_tensors), sum(is_lora_weight_name(name) for name, _ in named_tensors)]
+    counts = [num_tensors, num_lora_weights]
     pp = get_parallel_state().pp
     if is_pp_local and pp.size > 1:
         counts_tensor = torch.tensor(counts, device=torch.cuda.current_device())
@@ -110,43 +112,46 @@ def _count_full_adapter_tensors(
     return counts[0], counts[1]
 
 
-def _gather_pp_full_adapter(
-    hf_named_tensors: Sequence[tuple[str, torch.Tensor]],
-) -> list[tuple[str, torch.Tensor]]:
-    """Gather the complete adapter onto every PP rank: exchange metadata, then
-    one flat broadcast per (owner, dtype)."""
+def _stream_pp_full_adapter(
+    local_chunks: Iterable[list[tuple[str, torch.Tensor]]],
+) -> Iterator[list[tuple[str, torch.Tensor]]]:
+    """Stream the complete adapter onto every PP rank, one PP stage after another and one chunk at
+    a time: the owner broadcasts each chunk's metadata, then one flat buffer per dtype."""
     pp = get_parallel_state().pp
     if pp.size == 1:
-        return list(hf_named_tensors)
+        yield from local_chunks
+        return
     global_ranks = dist.get_process_group_ranks(pp.group)
     device = torch.cuda.current_device()
+    # only the owning stage advances its exporter; the others wait in the broadcasts
+    local_iter = iter(local_chunks)
+    for src in range(pp.size):
+        while True:
+            local = next(local_iter, None) if src == pp.rank else None
+            meta = [None if local is None else [(n, tuple(t.shape), t.dtype) for n, t in local]]
+            dist.broadcast_object_list(meta, src=global_ranks[src], group=pp.group)
+            if meta[0] is None:
+                break
+            yield _broadcast_chunk(meta[0], local, src_rank=global_ranks[src], group=pp.group, device=device)
 
-    local_meta = [(n, tuple(t.shape), t.dtype) for n, t in hf_named_tensors]
-    all_meta: list = [None] * pp.size
-    dist.all_gather_object(all_meta, local_meta, group=pp.group)
 
-    local_by_name = {n: t for n, t in hf_named_tensors}
-    merged: dict[str, torch.Tensor] = {}
-    for src, meta in enumerate(all_meta):
-        by_dtype: dict = {}
-        for n, shape, dtype in meta:
-            by_dtype.setdefault(dtype, []).append((n, shape))
-        for dtype, entries in by_dtype.items():
-            numel = sum(math.prod(shape) for _, shape in entries)
-            flat = torch.empty(numel, dtype=dtype, device=device)
-            if src == pp.rank:
-                off = 0
-                for n, shape in entries:
-                    k = math.prod(shape)
-                    flat[off : off + k].copy_(local_by_name[n].reshape(-1))
-                    off += k
-            dist.broadcast(flat, src=global_ranks[src], group=pp.group)
-            off = 0
-            for n, shape in entries:
-                k = math.prod(shape)
-                merged[n] = flat[off : off + k].view(shape)
-                off += k
-    return sorted(merged.items())
+def _broadcast_chunk(meta, local, *, src_rank: int, group, device) -> list[tuple[str, torch.Tensor]]:
+    local_by_name = dict(local) if local is not None else {}
+    by_dtype: dict = {}
+    for n, shape, dtype in meta:
+        by_dtype.setdefault(dtype, []).append((n, shape))
+    received: dict[str, torch.Tensor] = {}
+    for dtype, entries in by_dtype.items():
+        flat = torch.empty(sum(math.prod(shape) for _, shape in entries), dtype=dtype, device=device)
+        if local is not None:
+            torch.cat([local_by_name[n].reshape(-1) for n, _ in entries], out=flat)
+        dist.broadcast(flat, src=src_rank, group=group)
+        off = 0
+        for n, shape in entries:
+            k = math.prod(shape)
+            received[n] = flat[off : off + k].view(shape)
+            off += k
+    return [(n, received[n]) for n, _, _ in meta]
 
 
 def _iter_mm_tower_units(args, *, materialize):

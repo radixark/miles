@@ -85,7 +85,9 @@ class TestWeightUpdateSessionFanOut:
         begin_weight_update(_make_updaters(clients), "draft", sync_base=False)
 
         for client in clients:
-            assert client.calls == [("begin_weight_update", {"selector": "draft", "sync_base": False})]
+            assert client.calls == [
+                ("begin_weight_update", {"selector": "draft", "sync_base": False, "verify_lora_checksums": False})
+            ]
 
     def test_the_lora_checksum_manifest_reaches_every_cell(self) -> None:
         """An unverified engine could serve an adapter that never finished streaming."""

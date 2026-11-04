@@ -302,7 +302,7 @@ def _rejected_variants() -> dict[str, tuple[tuple[str, ...], type[Exception], st
             AssertionError,
             "must be smaller",
         ),
-        "oversampling": (("--over-sampling-batch-size", "1"), AssertionError, "should be greater than or equal"),
+        "oversampling": (("--over-sampling-batch-size", "0"), AssertionError, "must be positive"),
         "async_concurrency": (
             ("--n-samples-per-prompt", "2", "--async-max-concurrent-samples", "1"),
             AssertionError,

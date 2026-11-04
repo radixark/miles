@@ -29,6 +29,11 @@ def test_dp_attention_turns_on_router_dp_aware():
     assert _args(["--sglang-enable-dp-attention", "--sglang-dp-size", "4"]).router_dp_aware is True
 
 
+def test_attn_dp_size_leaves_the_dp_groups_to_the_engine():
+    """An --attn-dp-size engine reports dp_size 1, so a dp-aware router would send every request to DP rank 0."""
+    assert _args(["--sglang-attn-dp-size", "4"]).router_dp_aware is False
+
+
 def test_router_dp_aware_untouched_without_dp_attention():
     assert _args([]).router_dp_aware is False
 

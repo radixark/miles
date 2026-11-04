@@ -155,11 +155,9 @@ def validate_args(args):
     if args.sglang_dp_size > 1:
         assert args.sglang_enable_dp_attention
 
-    if sglang_attention_dp_enabled(
-        attn_dp_size=args.sglang_attn_dp_size,
-        enable_dp_attention=args.sglang_enable_dp_attention,
-        dp_size=args.sglang_dp_size,
-    ):
+    # A dp-aware router builds one worker per dp_size rank, which an --attn-dp-size engine reports as 1,
+    # so it would send every request to DP rank 0; such an engine spreads them with --sglang-load-balance-method.
+    if args.sglang_enable_dp_attention and args.sglang_dp_size > 1:
         args.router_dp_aware = True
 
     if args.sglang_router_policy is None and args.use_session_server:

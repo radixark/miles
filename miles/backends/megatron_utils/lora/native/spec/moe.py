@@ -41,18 +41,20 @@ class GroupedExpertsSpec:
             is_ep=parallel_state.get_expert_model_parallel_world_size() > 1,
         )
         count = 0
+        # the adapters take the hosts' compute dtype and logical widths: an MXFP4 host's weight0 is its packed bytes
+        reference = torch.empty((), dtype=fc1.params_dtype, device=fc1.weight0.device)
         fc1_prefix = context.naming.block_prefix(layer, fc1.weight0, ["w1", "w3"])
         # selectors address one expert ("experts.*.w1"); shared-outer adapters cover them all
         if context.lora.selects(f"{fc1_prefix}0.w1") or context.lora.selects(f"{fc1_prefix}0.w3"):
             experts.lora_fc1_adapter = LoRAGroupedFC1(
-                hf_prefix=fc1_prefix, reference=fc1.weight0, width=fc1.weight0.shape[1], **common
+                hf_prefix=fc1_prefix, reference=reference, width=fc1.in_features, **common
             )
             attach_adapter_forward(fc1, experts.lora_fc1_adapter, context.lora.scale)
             count += 1
         fc2_prefix = context.naming.block_prefix(layer, fc2.weight0, ["w2"])
         if context.lora.selects(f"{fc2_prefix}0.w2"):
             experts.lora_fc2_adapter = LoRAGroupedFC2(
-                hf_prefix=fc2_prefix, reference=fc2.weight0, width=fc2.weight0.shape[0], **common
+                hf_prefix=fc2_prefix, reference=reference, width=fc2.out_features, **common
             )
             attach_adapter_forward(fc2, experts.lora_fc2_adapter, context.lora.scale)
             count += 1

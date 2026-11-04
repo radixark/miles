@@ -5,7 +5,7 @@ import re
 import torch
 import torch.nn as nn
 
-from miles.utils.mxfp4 import quantize_mxfp4
+from miles.utils.mxfp4 import quantize_mxfp4, split_mxfp4_rows
 
 try:
     import fake_int4_quant_cuda
@@ -286,7 +286,11 @@ def quantize_params_compressed_tensors(converted_named_params, quantization_conf
         qweight_name = name.replace(".weight", ".weight_packed")
         scale_name = name.replace(".weight", ".weight_scale")
         if is_mxfp4:
-            qw, s = quantize_mxfp4(param, group_size)
+            if param.dtype == torch.uint8:
+                # the trainer keeps this weight as the checkpoint's packed codes and scales: hand them on as they are
+                qw, s = split_mxfp4_rows(param, group_size)
+            else:
+                qw, s = quantize_mxfp4(param, group_size)
             results.append((qweight_name, qw))
             results.append((scale_name, s))
         else:

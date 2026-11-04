@@ -90,9 +90,9 @@ class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
             param.data = original_data
         yield from _iter_mm_tower_units(self.args, materialize=materialize)
 
-    def _export_pp_local_lora(self, adapter):
+    def _iter_pp_local_lora(self, adapter):
         if adapter is None:
-            return self._export_current_adapter()
+            return [self._export_current_adapter()]
 
         from megatron.bridge.peft.multi_lora_layers import expose_adapter_slot
 
@@ -100,7 +100,7 @@ class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
 
         with expose_adapter_slot(self.model, adapter.slot):
             named_tensors = self._export_current_adapter()
-        return [(h, slice_lora_to_rank(h, w, adapter.rank)) for h, w in named_tensors]
+        return [[(h, slice_lora_to_rank(h, w, adapter.rank)) for h, w in named_tensors]]
 
     def _export_current_adapter(self) -> list:
         with megatron_bridge_utils.patch_megatron_model(self.model):
