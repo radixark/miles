@@ -19,9 +19,9 @@ from miles.backends.training_utils.checkpoint.adapter.key_mapping import (
     HfKey,
     is_hf_only_name,
     is_tinker_only_name,
-    map_peft_keys_to_hf_keys,
     map_sampler_keys_to_hf_keys,
     map_tinker_keys_to_hf_keys,
+    rename_sampler_experts_to_hf,
 )
 from miles.backends.training_utils.checkpoint.adapter.parametrization import (
     PARAMETRIZATION_FILENAME,
@@ -104,7 +104,11 @@ def classify_adapter_source(path: Path, targets: HfLoraTargets, *, load_optimize
         return AdapterSourceKind.LEGACY_RANK_SHARD
     if _has_peft_files(path):
         names = _safetensors_names(path)
-        if targets.tinker_name_renames and any(is_tinker_only_name(n, targets) for n in names):
+        # official Tinker shares sglang's stacked expert names (experts.w1 / w3 / w2) with main's native export;
+        # only its head and dropped VL level tell it apart
+        if targets.tinker_name_renames and any(
+            is_tinker_only_name(rename_sampler_experts_to_hf(n, targets), targets) for n in names
+        ):
             hf_only = [n for n in names if is_hf_only_name(n, targets)]
             assert not hf_only, f"{path} mixes official Tinker and HF names, e.g. {hf_only[:3]}"
             return AdapterSourceKind.EXTERNAL_WEIGHTS
@@ -215,7 +219,8 @@ def _fused_components(module: str) -> tuple[str, ...] | None:
 
 
 class PeftAdapterReader:
-    """HF-named PEFT (main's exports, HF Hub); per-expert 2D tensors are stacked to 3D."""
+    """HF-named PEFT (HF Hub, Bridge's exports), or main's native export, which stacks experts under sglang's names
+    (experts.w1 / w3 / w2); per-expert 2D tensors are stacked to 3D."""
 
     kind = AdapterSourceKind.PEFT
 
@@ -244,7 +249,7 @@ class PeftAdapterReader:
         )
 
     def _map_name(self, name: str) -> HfKey:
-        return map_peft_keys_to_hf_keys(name)
+        return map_sampler_keys_to_hf_keys(name, self.targets)
 
     def read_weights(self) -> dict[str, torch.Tensor]:
         return dict(self._weights)
