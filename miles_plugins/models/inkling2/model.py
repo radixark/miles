@@ -3,7 +3,7 @@ plus provider that miles' custom-model-provider path loads."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import partial
 from typing import TYPE_CHECKING
 
@@ -18,12 +18,17 @@ from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.transformer.transformer_block import TransformerBlockSubmodules
 from megatron.core.transformer.transformer_config import TransformerConfig
 
-from miles.backends.megatron_utils.megatron_to_hf.inkling2 import load_inkling2_text_config
+from miles.backends.megatron_utils.megatron_to_hf.inkling2 import (
+    inkling2_quantization_config,
+    load_inkling2_text_config,
+)
 from miles_plugins.models.inkling2.layers import (
     Inkling2Attention,
+    Inkling2ColumnParallelGroupedLinear,
     Inkling2GroupedMLP,
     Inkling2RMSNorm,
     Inkling2Router,
+    Inkling2RowParallelGroupedLinear,
     Inkling2TransformerLayer,
 )
 from miles_plugins.models.inkling2.ops import softcap_logits
@@ -60,14 +65,26 @@ class Inkling2Config:
     mlp_up_softcap: float
     final_logit_softcapping: float
     unpadded_vocab_size: int
+    # Per layer, the format the trainer fake-quantizes trained expert weights to; empty keeps bf16.
+    expert_fake_quant: tuple[str, ...] = ()
 
     @classmethod
     def from_text_config(cls, text_cfg: dict) -> Inkling2Config:
         assert text_cfg["n_shared_experts"] == 0, "Inkling2 shared experts are not implemented"
         assert not text_cfg["pre_norm_pre_affine"] and not text_cfg["final_norm_pre_affine"]
         assert text_cfg["use_gate_bias"]
-        names = cls.__dataclass_fields__.keys() - {"local_layer_ids"}
+        names = cls.__dataclass_fields__.keys() - {"local_layer_ids", "expert_fake_quant"}
         return cls(local_layer_ids=frozenset(text_cfg["local_layer_ids"]), **{n: text_cfg[n] for n in names})
+
+
+def _expert_formats(hf_checkpoint: str, text_cfg: dict) -> tuple[str, ...]:
+    formats = inkling2_quantization_config(hf_checkpoint)["expert_formats"]
+    per_layer = []
+    for layer in range(text_cfg["num_hidden_layers"]):
+        w13, w2 = (formats[f"model.llm.layers.{layer}.mlp.experts.{leaf}"] for leaf in ("w13_weight", "w2_weight"))
+        assert w13 == w2, f"layer {layer}: w13 {w13} and w2 {w2} differ"
+        per_layer.append(w13)
+    return tuple(per_layer)
 
 
 def build_inkling2_config(text_cfg: dict, args) -> TransformerConfig:
@@ -124,7 +141,10 @@ def get_inkling2_block_spec(config: TransformerConfig) -> TransformerBlockSubmod
     moe = spec.submodules.mlp
     moe_submodules = moe.keywords["submodules"]
     moe_submodules.router = Inkling2Router
-    moe_submodules.experts = partial(Inkling2GroupedMLP, submodules=moe_submodules.experts.keywords["submodules"])
+    expert_submodules = moe_submodules.experts.keywords["submodules"]
+    expert_submodules.linear_fc1 = Inkling2ColumnParallelGroupedLinear
+    expert_submodules.linear_fc2 = Inkling2RowParallelGroupedLinear
+    moe_submodules.experts = partial(Inkling2GroupedMLP, submodules=expert_submodules)
     moe_submodules.shared_experts = None
     spec.module = Inkling2TransformerLayer
     spec.submodules.input_layernorm = IdentityOp
@@ -176,6 +196,7 @@ class Inkling2GPTModel(GPTModel):
 def inkling2_model_provider(pre_process=True, post_process=True, vp_stage=None, *, args: TrainerConfig):
     text_cfg = load_inkling2_text_config(args.hf_checkpoint)
     config = build_inkling2_config(text_cfg, args.backend)
+    config.inkling2 = replace(config.inkling2, expert_fake_quant=_expert_formats(args.hf_checkpoint, text_cfg))
     return Inkling2GPTModel(
         config=config,
         transformer_layer_spec=get_inkling2_block_spec(config),

@@ -8,7 +8,12 @@ Parameters keep the HF checkpoint layouts so weight conversion is a rename.
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from megatron.core.extensions.transformer_engine import TEColumnParallelLinear, TERowParallelLinear
+from megatron.core.extensions.transformer_engine import (
+    TEColumnParallelGroupedLinear,
+    TEColumnParallelLinear,
+    TERowParallelGroupedLinear,
+    TERowParallelLinear,
+)
 from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.transformer.module import MegatronModule, mark_keep_in_fp32
 from megatron.core.transformer.moe.experts import TEGroupedMLP
@@ -20,6 +25,7 @@ from miles_plugins.models.inkling2.ops import (
     attn_res_mix,
     attn_res_partial,
     capped_swiglu,
+    fake_quantize_expert_weight,
     l2_clip,
     log_scaling_tau,
     positions_in_sequence,
@@ -185,6 +191,31 @@ class Inkling2Router(TopKRouter):
         return probs, routing_map
 
 
+class _ExpertWeightFakeQuant:
+    """Trained expert weights as the engine serves them after a sync (``expert_format``, per layer):
+    requantizing drops updates below the NVFP4 / MXFP8 step. Frozen weights (a LoRA base) are left as
+    loaded."""
+
+    expert_format = "bfloat16"
+
+    def _get_weight_tensors(self):
+        weights = super()._get_weight_tensors()
+        if self.expert_format == "bfloat16":
+            return weights
+        return [
+            fake_quantize_expert_weight(weight, self.expert_format) if weight.requires_grad else weight
+            for weight in weights
+        ]
+
+
+class Inkling2ColumnParallelGroupedLinear(_ExpertWeightFakeQuant, TEColumnParallelGroupedLinear):
+    pass
+
+
+class Inkling2RowParallelGroupedLinear(_ExpertWeightFakeQuant, TERowParallelGroupedLinear):
+    pass
+
+
 class Inkling2GroupedMLP(TEGroupedMLP):
     """Routed experts with the routing weight applied inside the soft-capped SwiGLU (one
     rounding before fc2), returning fp32 so the top-k combine sums in fp32."""
@@ -223,6 +254,9 @@ class Inkling2TransformerLayer(TransformerLayer):
             shape = (hidden,) if self.is_local else (3, hidden)
             self.attn_query = nn.Parameter(torch.zeros(shape, dtype=torch.float32))
             mark_keep_in_fp32(self.attn_query)
+        if inkling2.expert_fake_quant:
+            for linear in (self.mlp.experts.linear_fc1, self.mlp.experts.linear_fc2):
+                linear.expert_format = inkling2.expert_fake_quant[self.layer_idx]
         self.mlp_query = nn.Parameter(torch.zeros(hidden, dtype=torch.float32))
         mark_keep_in_fp32(self.mlp_query)
         if self.layer_number == self.config.num_layers:

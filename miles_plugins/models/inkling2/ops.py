@@ -8,6 +8,9 @@ import torch
 import torch.nn.functional as F
 from torch.nn.attention.flex_attention import AuxRequest, create_block_mask
 
+from miles.utils.mxfp8 import mxfp8_quantize
+from miles.utils.nvfp4 import FP4_E2M1_MAX, nvfp4_quantize_1d, nvfp4_weight_e4m3_max
+from miles_plugins.mbridge.inkling2 import dequantize_mxfp8, dequantize_nvfp4
 from miles_plugins.models.inkling.ops import flex_compiled
 
 
@@ -125,6 +128,20 @@ def capped_swiglu(fc1_out: torch.Tensor, probs: torch.Tensor, gate_cap: float, u
     if up_cap > 0:
         up = up_cap * torch.tanh(up / up_cap)
     return (gate * sigmoid * up * probs.float()).to(fc1_out.dtype)
+
+
+def fake_quantize_expert_weight(weight: torch.Tensor, fmt: str) -> torch.Tensor:
+    """One expert weight as the engine serves it after a weight sync, with a straight-through
+    gradient: encoded by the sync's quantizers (TE NVFP4 / MXFP8), then dequantized."""
+    with torch.no_grad():
+        if fmt == "nvfp4":
+            packed, scales, decode = nvfp4_quantize_1d(weight)
+            denominator = torch.tensor(float(nvfp4_weight_e4m3_max()) * FP4_E2M1_MAX, device=weight.device)
+            served = dequantize_nvfp4(packed, scales, decode * denominator, denominator)
+        else:
+            assert fmt == "mxfp8", fmt
+            served = dequantize_mxfp8(*mxfp8_quantize(weight))
+    return weight + (served.to(weight.dtype) - weight).detach()
 
 
 def softcap_logits(logits: torch.Tensor, cap: float) -> torch.Tensor:
