@@ -436,3 +436,27 @@ def test_a_head_adapter_with_fewer_rows_than_the_served_vocab_is_refused(tmp_pat
     write_peft_adapter(tmp_path, {"lm_head.lora_A": FULL["lora_A"], "lm_head.lora_B": head_b}, HEAD_RUN, TARGETS)
     with pytest.raises(RuntimeError, match=r"lm_head.lora_B: source \(5, 2\) != run \(6, 2\)"):
         load_adapter_dir(tmp_path, HeadMembers(), 0, HEAD_RUN, TARGETS, load_optimizer=False)
+
+
+INKLING = get_hf_lora_targets({"model_type": "inkling_text", "num_hidden_layers": 1, "mlp_layer_types": ["dense"]})
+
+
+def _write_inkling_head_adapter(path):
+    weights = {"lm_head.lora_A": torch.full((2, 6), 3.0), "lm_head.lora_B": torch.full((8, 2), 7.0)}
+    write_peft_adapter(path, weights, HEAD_RUN, INKLING)
+
+
+def test_a_native_warm_start_loads_an_inkling_head_peft_dir(tmp_path):
+    _write_inkling_head_adapter(tmp_path)
+    members = HeadMembers()
+    load_adapter_dir(tmp_path, members, 0, HEAD_RUN, INKLING, load_optimizer=False)
+    assert torch.equal(members.imported.weights[0], torch.full((2, 6), 3.0))
+    assert torch.equal(members.imported.weights[1], torch.full((6, 2), 7.0))
+
+
+def test_a_peft_dir_without_adapter_config_is_refused_with_a_remedy(tmp_path):
+    # main's native loader read such a dir under the run's parametrization; the config is what the load checks
+    _write_inkling_head_adapter(tmp_path)
+    (tmp_path / "adapter_config.json").unlink()
+    with pytest.raises(RuntimeError, match="no adapter_config.json.*save_pretrained"):
+        load_adapter_dir(tmp_path, HeadMembers(), 0, HEAD_RUN, INKLING, load_optimizer=False)

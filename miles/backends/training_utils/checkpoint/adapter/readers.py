@@ -114,6 +114,12 @@ def classify_adapter_source(path: Path, targets: HfLoraTargets, *, load_optimize
             assert not hf_only, f"{path} mixes official Tinker and HF names, e.g. {hf_only[:3]}"
             return AdapterSourceKind.EXTERNAL_WEIGHTS
         return AdapterSourceKind.PEFT
+    if (path / "adapter_model.safetensors").is_file():
+        raise ValueError(
+            f"{path} has adapter_model.safetensors but no adapter_config.json, which the load needs to check the "
+            "adapter's rank, alpha, target modules and PEFT features against the run; write it next to the weights "
+            "(PEFT's save_pretrained writes both)"
+        )
     raise ValueError(f"{path} is not a recognized LoRA adapter source")
 
 
