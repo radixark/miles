@@ -1,6 +1,7 @@
 """The save / load flow, written once; backends only provide their checkpoint members."""
 
 import json
+import logging
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -8,7 +9,11 @@ from typing import Any, Literal, Protocol
 
 import torch
 
-from miles.backends.training_utils.checkpoint.adapter.adapter_exports import write_peft_adapter, write_sampler_adapter
+from miles.backends.training_utils.checkpoint.adapter.adapter_exports import (
+    has_plain_peft_form,
+    write_peft_adapter,
+    write_sampler_adapter,
+)
 from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
     AdapterState,
     LocalShardSpec,
@@ -48,6 +53,8 @@ from miles.backends.training_utils.checkpoint.adapter.readers import (
 from miles.utils.lora.hf_lora_targets import HfLoraTargets
 
 TRAINING_STATE_FILENAME = "training_state.json"
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -216,7 +223,8 @@ def save_and_commit_adapter_dir(
 ) -> CommittedAdapterDir:
     """RL's ``--save``: all ranks write, rank 0 commits over any earlier save of ``name``, then the PEFT export.
 
-    A failed PEFT export fails every rank but keeps the committed checkpoint; its view can be rebuilt offline.
+    A failed PEFT export fails every rank but keeps the committed checkpoint; its view can be rebuilt offline. A
+    parametrization with no plain-PEFT form gets no PEFT view: the adapter dir is the checkpoint.
     """
     written = save_adapter_dir(
         root, name, members, slot, parametrization, tenant_digest=None, training_state=training_state
@@ -228,7 +236,10 @@ def save_and_commit_adapter_dir(
         except Exception as exc:
             error = exc
     raise_if_any_rank_failed(error)
-    write_peft_export(written.path, members, slot, parametrization, targets)
+    if has_plain_peft_form(parametrization):
+        write_peft_export(written.path, members, slot, parametrization, targets)
+    elif _is_writer():
+        logger.info(f"{written.path}: no PEFT view, as this parametrization has no plain-PEFT form")
     if _is_writer():
         delete_retired_adapter_dirs(root)
     return CommittedAdapterDir(written.path, written.commit_id)
