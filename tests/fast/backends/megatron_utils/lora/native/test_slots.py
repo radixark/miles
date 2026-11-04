@@ -262,6 +262,22 @@ def test_a_cleared_slot_adds_nothing():
     assert torch.equal(out, x @ base_weight.t())
 
 
+def test_a_cleared_slot_is_a_newly_built_adapter_for_the_next_claim():
+    """``init`` without a seed keeps the weights, so ``clear`` must leave a trainable A (B zero, A drawn)."""
+    multi = _attached(_column, _context(rank=MAX_RANK, num_slots=NUM_SLOTS), _base_weight())
+    multi.adapter.init_slot(1, MAX_RANK, 8.0)
+    with torch.no_grad():
+        multi.adapter.adapters[1].up_A.zero_()
+        multi.adapter.adapters[1].up_B.normal_()
+
+    multi.adapter.clear_slot(1)
+    multi.adapter.init_slot(1, 2, 4.0)
+
+    adapter = multi.adapter.adapters[1]
+    assert torch.count_nonzero(adapter.up_A[:2]) == adapter.up_A[:2].numel()
+    assert torch.count_nonzero(adapter.up_A[2:]) == 0 and torch.count_nonzero(adapter.up_B) == 0
+
+
 def test_a_slot_forward_outside_the_routing_fails():
     multi = _attached(_column, _context(rank=MAX_RANK, num_slots=NUM_SLOTS), _base_weight())
     with pytest.raises(AssertionError, match="route_tokens"):
@@ -362,13 +378,16 @@ def test_a_sequence_parallel_replicated_adapter_runs_on_its_shard():
 
 
 def _routed(monkeypatch):
-    """``NativeAdapterSlots`` without its collective probe; its slot draw needs the CUDA RNG tracker."""
+    """``NativeAdapterSlots`` without its collective probe; its slot draws need the CUDA RNG tracker."""
     multi = _attached(_column, _context(rank=MAX_RANK, num_slots=NUM_SLOTS), _base_weight())
     monkeypatch.setattr(bridge_checkpoint, "probe_bridge_row_mapping", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         native_checkpoint.NativeAdapterSlots,
         "_init_slot",
         lambda self, slot, lora_rank, lora_alpha, seed: multi.adapter.init_slot(slot, lora_rank, lora_alpha),
+    )
+    monkeypatch.setattr(
+        native_checkpoint.NativeAdapterSlots, "_clear_slot", lambda self, slot: multi.adapter.clear_slot(slot)
     )
     return multi, native_checkpoint.NativeAdapterSlots([multi], None, None, multi_lora=True)
 

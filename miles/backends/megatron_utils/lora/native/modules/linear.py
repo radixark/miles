@@ -634,24 +634,33 @@ class NativeMultiLoRAAdapter(nn.Module):
 
     @torch.no_grad()
     def init_slot(self, slot: int, lora_rank: int, lora_alpha: float) -> None:
-        """Draw A within ``lora_rank`` and zero the rest; the caller holds the RNG stream."""
+        """Bind ``lora_rank`` / ``lora_alpha`` and zero A's rows and B's columns past ``lora_rank``."""
         self.assert_slot(slot)
         assert 0 < lora_rank <= self.max_lora_rank, f"LoRA rank {lora_rank} is not in (0, {self.max_lora_rank}]"
         # alpha 0 marks a free slot
         assert lora_alpha > 0, f"LoRA alpha {lora_alpha} must be positive"
         for name, param in self.adapters[slot].named_parameters():
-            param.zero_()
             if name.endswith("_A"):
-                _LORA_A_INITS[self.context.lora.a_init_method](param[:lora_rank])
+                param[lora_rank:].zero_()
             else:
                 assert name.endswith("_B"), f"{name} is neither a LoRA A nor a LoRA B"
+                param[:, lora_rank:].zero_()
         self.lora_ranks_by_slot[slot], self.lora_alphas_by_slot[slot] = lora_rank, float(lora_alpha)
 
     @torch.no_grad()
-    def clear_slot(self, slot: int) -> None:
+    def redraw_slot(self, slot: int) -> None:
+        """A drawn at the max rank like a newly built adapter, B zero; the caller holds the RNG stream."""
         self.assert_slot(slot)
-        for param in self.adapters[slot].parameters():
-            param.zero_()
+        for name, param in self.adapters[slot].named_parameters():
+            if name.endswith("_A"):
+                _LORA_A_INITS[self.context.lora.a_init_method](param)
+            else:
+                assert name.endswith("_B"), f"{name} is neither a LoRA A nor a LoRA B"
+                param.zero_()
+
+    def clear_slot(self, slot: int) -> None:
+        """Free ``slot``; the redraw makes it a newly built adapter for the next claim."""
+        self.redraw_slot(slot)
         self.lora_ranks_by_slot[slot], self.lora_alphas_by_slot[slot] = self.max_lora_rank, 0.0
 
     def assert_slot(self, slot: int) -> None:

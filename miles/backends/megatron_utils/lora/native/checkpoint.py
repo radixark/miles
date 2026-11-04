@@ -1,5 +1,8 @@
 """Native LoRA's adapter slots: the same probe-built HF layout as Bridge, over native's own export."""
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+
 import torch
 
 from miles.backends.megatron_utils.lora.bridge_checkpoint import BridgeAdapterSlots
@@ -41,33 +44,20 @@ class NativeAdapterSlots(BridgeAdapterSlots):
         assert not self._multi_lora, "native multi-LoRA slots have no checkpoint members yet"
         return None
 
-    def _init_slot(self, slot: int, lora_rank: int, lora_alpha: float, seed: int) -> None:
-        """A drawn within ``lora_rank`` from ``seed`` through the RNG tracker, B and the rest zero.
-
-        The draw comes from the data-parallel stream, equal on every rank, so DP replicas and the TP ranks of an
-        A that TP replicates agree, as the model's own construction does.
-        """
-        from megatron.core.tensor_parallel.random import (
-            get_cuda_rng_tracker,
-            get_data_parallel_rng_tracker_name,
-            model_parallel_cuda_manual_seed,
-        )
-
-        tracker = get_cuda_rng_tracker()
-        saved_tracker_states, saved_cuda_rng_state = tracker.get_states(), torch.cuda.get_rng_state()
-        # the tracker snapshot / restore of Bridge's init_adapter_slot
-        try:
-            model_parallel_cuda_manual_seed(seed)
-            with tracker.fork(get_data_parallel_rng_tracker_name()):
+    def _init_slot(self, slot: int, lora_rank: int, lora_alpha: float, seed: int | None) -> None:
+        if seed is not None:
+            with _reseeded_data_parallel_stream(seed):
                 for multi_adapter in iter_multi_lora_adapters(self._model):
-                    multi_adapter.init_slot(slot, lora_rank, lora_alpha)
-        finally:
-            tracker.set_states(saved_tracker_states)
-            torch.cuda.set_rng_state(saved_cuda_rng_state)
+                    multi_adapter.redraw_slot(slot)
+        for multi_adapter in iter_multi_lora_adapters(self._model):
+            multi_adapter.init_slot(slot, lora_rank, lora_alpha)
 
     def _clear_slot(self, slot: int) -> None:
-        for multi_adapter in iter_multi_lora_adapters(self._model):
-            multi_adapter.clear_slot(slot)
+        from megatron.core.tensor_parallel.random import get_cuda_rng_tracker, get_data_parallel_rng_tracker_name
+
+        with get_cuda_rng_tracker().fork(get_data_parallel_rng_tracker_name()):
+            for multi_adapter in iter_multi_lora_adapters(self._model):
+                multi_adapter.clear_slot(slot)
 
     def _install_routing(self, counts: tuple[int, ...]) -> None:
         for multi_adapter in iter_multi_lora_adapters(self._model):
@@ -98,3 +88,28 @@ class NativeAdapterSlots(BridgeAdapterSlots):
         # one adapter at a time: a float64 export gathers every expert factor over EP onto every rank
         for adapter in self._slot_adapters(0):
             yield from export_lora_hf_named([adapter], dtype=torch.float64)
+
+
+@contextmanager
+def _reseeded_data_parallel_stream(seed: int) -> Iterator[None]:
+    """The RNG tracker's data-parallel stream reseeded from ``seed``, every stream restored after.
+
+    That stream is equal on every rank, so DP replicas and the TP ranks of an A that TP replicates draw alike,
+    as the model's own construction does.
+    """
+    from megatron.core.tensor_parallel.random import (
+        get_cuda_rng_tracker,
+        get_data_parallel_rng_tracker_name,
+        model_parallel_cuda_manual_seed,
+    )
+
+    tracker = get_cuda_rng_tracker()
+    saved_tracker_states, saved_cuda_rng_state = tracker.get_states(), torch.cuda.get_rng_state()
+    # the tracker snapshot / restore of Bridge's init_adapter_slot
+    try:
+        model_parallel_cuda_manual_seed(seed)
+        with tracker.fork(get_data_parallel_rng_tracker_name()):
+            yield
+    finally:
+        tracker.set_states(saved_tracker_states)
+        torch.cuda.set_rng_state(saved_cuda_rng_state)

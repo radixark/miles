@@ -292,8 +292,12 @@ class BridgeAdapterSlots:
         # Bridge exports every adapter element
         return None
 
-    def init(self, slot: int, lora_rank: int, lora_alpha: float, seed: int) -> None:
-        """Claim ``slot``: re-draw its weights through the RNG tracker from ``seed``, then mask past ``lora_rank``."""
+    def init(self, slot: int, lora_rank: int, lora_alpha: float, seed: int | None) -> None:
+        """Claim ``slot``, masking its weights past ``lora_rank``.
+
+        With ``seed`` the weights are first re-drawn through the RNG tracker from it; without, they stay as the
+        model built them or the last ``clear`` re-drew them.
+        """
         self._assert_slot(slot)
         # a re-draw would wipe the tenant's adapter
         assert slot not in self._claimed_slots, f"slot {slot} is already claimed"
@@ -301,6 +305,7 @@ class BridgeAdapterSlots:
         self._claimed_slots.add(slot)
 
     def clear(self, slot: int) -> None:
+        """Free ``slot``; its weights are re-drawn through the RNG tracker for the next claim."""
         self._assert_slot(slot)
         self._clear_slot(slot)
         self._claimed_slots.discard(slot)
@@ -334,7 +339,7 @@ class BridgeAdapterSlots:
         modules = (m for chunk in self._model for m in chunk.modules() if isinstance(m, MultiLoRALinear))
         return next((module.n_adapters for module in modules), 0)
 
-    def _init_slot(self, slot: int, lora_rank: int, lora_alpha: float, seed: int) -> None:
+    def _init_slot(self, slot: int, lora_rank: int, lora_alpha: float, seed: int | None) -> None:
         from megatron.bridge.peft.multi_lora_layers import init_adapter_slot
 
         init_adapter_slot(self._model, slot, rank=lora_rank, alpha=lora_alpha, seed=seed)
