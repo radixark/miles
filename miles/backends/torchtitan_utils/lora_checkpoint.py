@@ -417,7 +417,7 @@ class TorchtitanLoraCheckpoint:
         )
 
     def restore(self) -> int | None:
-        """``--lora-adapter-path``; returns the saved iteration when the source has one.
+        """``--lora-adapter-path``; returns the last completed rollout the source maps to, or None.
 
         ``--lora-adapter-convert-save`` then commits the loaded state there in the adapter format.
         """

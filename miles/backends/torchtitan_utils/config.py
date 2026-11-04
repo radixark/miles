@@ -160,7 +160,7 @@ def _refuse_lora_resume_through_checkpointer(args: TrainerConfig, dump_subdir: s
     if save_step:
         raise ValueError(
             f"--save holds the torchtitan checkpoint {save_step}, which torchtitan's checkpointer would resume from "
-            f"on its own: resume it with --lora-adapter-path {save_step}, and move it out of --save"
+            f"on its own: move {save_step} out of --save and pass its new path as --lora-adapter-path"
         )
     if args.lora_adapter_path is not None:
         return
