@@ -45,30 +45,32 @@ def _local_codes(param: torch.Tensor, start: int) -> torch.Tensor:
 def probe_torchtitan_row_mapping(params: Mapping[str, torch.Tensor], sd_adapter) -> RowMapping:
     """Collective. ``params``: the adapter parameters by titan key, in the order their local shards are
     concatenated."""
+    # placing the codes is collective, so every rank does it for every parameter before any rank-local step can fail
+    codes, start = {}, 0
+    for key, param in params.items():
+        codes[key] = _local_codes(param, start)
+        start += (param.to_local() if isinstance(param, DTensor) else param).numel()
     error, pieces, groups, modules = None, [], [], set()
     try:
-        pieces, groups, modules = _probe_local(params, sd_adapter)
+        pieces, groups, modules = _probe_local(codes, start, sd_adapter)
     except Exception as exc:
         error = exc
     return agreed_row_mapping(error, pieces, groups, modules)
 
 
 def _probe_local(
-    params: Mapping[str, torch.Tensor], sd_adapter
+    codes_by_key: Mapping[str, torch.Tensor], total: int, sd_adapter
 ) -> tuple[list[HfPiece], list[tuple[str, ...]], set[str]]:
-    starts, start = {}, 0
-    for key, param in params.items():
-        starts[key] = start
-        start += (param.to_local() if isinstance(param, DTensor) else param).numel()
+    """Rank-local: the pieces of this rank's placed codes."""
     pieces, groups, modules = [], [], set()
-    for key in params:
+    for key in codes_by_key:
         projection, factor = split_adapter_key(key)
         if factor != "lora_b":
             continue
         lora_a_key = f"{projection}.lora_a.weight"
-        lora_b = sd_adapter.to_hf({f"{projection}.weight": _local_codes(params[key], starts[key])})
+        lora_b = sd_adapter.to_hf({f"{projection}.weight": codes_by_key[key]})
         assert lora_b, f"{projection}: to_hf exports nothing"
-        lora_a = _local_codes(params[lora_a_key], starts[lora_a_key])
+        lora_a = codes_by_key[lora_a_key]
         hf_modules = [name.removesuffix(".weight") for name in lora_b]
         modules.update(hf_modules)
         group = tuple(sorted(hf_modules))
@@ -84,7 +86,7 @@ def _probe_local(
                     HfPiece(hf_key, tuple(codes.shape), tuple(s.start for s in box), codes[box].clone())
                     for box in rectangles(hf_key, mine)
                 ]
-    return finish_local_pieces(pieces, start), groups, modules
+    return finish_local_pieces(pieces, total), groups, modules
 
 
 class TorchtitanAdapterSlots(ProbedAdapterSlots):
