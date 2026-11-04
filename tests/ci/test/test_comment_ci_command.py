@@ -595,6 +595,7 @@ def test_checked_in_policy_exposes_exact_labels_and_access_groups():
                 258897383,
                 109944218,
                 214322989,
+                13900043,
             }
         ),
         "author_associations": frozenset(),
