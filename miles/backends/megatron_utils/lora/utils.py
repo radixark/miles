@@ -1,6 +1,7 @@
 """LoRA utilities for Megatron backend using Megatron-Bridge PEFT integration."""
 
 import logging
+import re
 from argparse import Namespace
 from collections.abc import Sequence
 from pathlib import Path
@@ -21,6 +22,9 @@ if TYPE_CHECKING:
     from megatron.core.optimizer.cpu_offloading.hybrid_optimizer import HybridDeviceOptimizer
 
 logger = logging.getLogger(__name__)
+
+# a Megatron dist-checkpoint's optimizer keys; a ChainedOptimizer may prefix each child's keys with chained_<i>.
+OPTIMIZER_KEY = re.compile(r"(chained_\d+\.)?optimizer\.")
 
 _marked_lora_grad_params_cache: dict[int, list] = {}
 

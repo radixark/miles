@@ -1,6 +1,5 @@
 """The reader of Megatron-Bridge PEFT ``iter_N/`` checkpoints (torch_dist), loaded straight into a single-LoRA run."""
 
-import re
 from dataclasses import asdict, replace
 from pathlib import Path
 
@@ -14,15 +13,17 @@ from megatron.core.dist_checkpointing.mapping import ShardedTensor
 from megatron.core.optimizer import DistributedOptimizer
 from megatron.core.utils import unwrap_model
 
-from miles.backends.megatron_utils.lora.utils import _distributed_optimizers, _zero_init_empty_hdo_states
+from miles.backends.megatron_utils.lora.utils import (
+    OPTIMIZER_KEY,
+    _distributed_optimizers,
+    _zero_init_empty_hdo_states,
+)
 from miles.backends.training_utils.checkpoint.adapter.adapter_dir import AdapterCheckpointMembers
 from miles.backends.training_utils.checkpoint.adapter.adapter_state import gloo_group, raise_if_any_rank_failed
 from miles.backends.training_utils.checkpoint.adapter.base_model import assert_same_base_model
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
 from miles.backends.training_utils.parallel import get_parallel_state
 
-# a ChainedOptimizer may prefix each child's keys with chained_<i>.
-OPTIMIZER_KEY = re.compile(r"(chained_\d+\.)?optimizer\.")
 _BRIDGE_LORA_TYPES = {
     "megatron.bridge.peft.lora.LoRA": "lora",
     "megatron.bridge.peft.canonical_lora.CanonicalLoRA": "canonical_lora",

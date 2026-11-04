@@ -21,9 +21,10 @@ from megatron.core.utils import unwrap_model
 from safetensors import SafetensorError
 
 from miles.backends.megatron_utils.lora.bridge_checkpoint import BridgeAdapterSlots
-from miles.backends.megatron_utils.lora.bridge_peft_checkpoint import OPTIMIZER_KEY, MegatronBridgeCheckpointLoader
+from miles.backends.megatron_utils.lora.bridge_peft_checkpoint import MegatronBridgeCheckpointLoader
 from miles.backends.megatron_utils.lora.optimizer import SlotOptimizer
 from miles.backends.megatron_utils.lora.utils import (
+    OPTIMIZER_KEY,
     _distributed_optimizers,
     _load_training_state,
     _native_adapter_shard,
