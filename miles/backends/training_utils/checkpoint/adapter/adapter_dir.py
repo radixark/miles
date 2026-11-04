@@ -231,9 +231,20 @@ def _assert_has_keys(weights: dict[str, torch.Tensor], keys: set[str]) -> None:
     assert not missing, f"the source lacks tensors the run trains: {sorted(missing)}"
 
 
-def _weights_only_state(weights: dict[str, torch.Tensor], specs: list[LocalShardSpec]) -> AdapterState:
+def _weights_only_state(
+    weights: dict[str, torch.Tensor], specs: list[LocalShardSpec], targets: HfLoraTargets
+) -> AdapterState:
     _assert_has_keys(weights, {s.key for s in specs})
-    return _with_zero_moments(specs, [_slice(weights[s.key], s).float() for s in specs])
+    head_b = f"{targets.unembed[0]}.lora_B"
+    return _with_zero_moments(
+        specs,
+        [_slice(_served_rows(weights[s.key], s) if s.key == head_b else weights[s.key], s).float() for s in specs],
+    )
+
+
+def _served_rows(head_b: torch.Tensor, spec: LocalShardSpec) -> torch.Tensor:
+    # the run holds the served vocab; rows past it (HF vocab_size, Megatron padding) stay at init, as exports trim them
+    return head_b[: spec.global_shape[0]]
 
 
 def _with_run_alpha_if_unknown(source: AdapterParametrization, run: AdapterParametrization) -> AdapterParametrization:
@@ -351,7 +362,7 @@ def load_adapter_dir(
     else:
         state = None
         try:
-            state = _weights_only_state(apply_parametrization_conversion(reader.read_weights(), steps), specs)
+            state = _weights_only_state(apply_parametrization_conversion(reader.read_weights(), steps), specs, targets)
         except Exception as exc:
             error = exc
         raise_if_any_rank_failed(error)
