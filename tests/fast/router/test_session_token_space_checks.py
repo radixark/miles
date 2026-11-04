@@ -19,6 +19,8 @@ from tests.fast.fixtures.sglang_config_fixtures import make_sglang_config
 from tests.fast.router.test_sessions import _create_session, _post_chat
 
 from miles.backends.megatron_utils.megatron_config import MegatronConfig
+from miles.rollout.session import core as session_core
+from miles.rollout.session import image_expansion
 from miles.rollout.session.config import compute_session_server_config
 from miles.rollout.session.samples.codec import COMPUTED_FIELDS_V2, decode_samples_and_merge_input_sample
 from miles.rollout.session.server import SessionServer
@@ -59,9 +61,10 @@ def user_turn(payload: bytes | None, text: str) -> dict:
 
 
 class TokenSpaceChatBackend:
-    def __init__(self, vlm, *, count_bias_on_call: dict[int, int] | None = None):
+    def __init__(self, vlm, *, count_bias_on_call: dict[int, int] | None = None, return_prompt: bool = True):
         self.vlm = vlm
         self.count_bias_on_call = count_bias_on_call or {}
+        self.return_prompt = return_prompt
         self.calls: list[dict[str, Any]] = []
         self.host = "127.0.0.1"
         self.port = find_available_port(32000)
@@ -119,7 +122,7 @@ class TokenSpaceChatBackend:
                 "output_token_logprobs": [[-0.1, token_id, None] for token_id in output_ids],
             },
         }
-        if payload.get("return_prompt_token_ids"):
+        if self.return_prompt and payload.get("return_prompt_token_ids"):
             choice["prompt_token_ids"] = prompt
         return {"id": f"chat-{index}", "object": "chat.completion", "created": 0, "model": "m", "choices": [choice]}
 
@@ -160,8 +163,15 @@ def server_args(shared_media_dir: Path, **extra) -> dict[str, Any]:
 
 
 @contextmanager
-def session_server(vlm, shared_media_dir: Path, *, count_bias_on_call: dict[int, int] | None = None, **extra):
-    backend = TokenSpaceChatBackend(vlm, count_bias_on_call=count_bias_on_call)
+def session_server(
+    vlm,
+    shared_media_dir: Path,
+    *,
+    count_bias_on_call: dict[int, int] | None = None,
+    return_prompt: bool = True,
+    **extra,
+):
+    backend = TokenSpaceChatBackend(vlm, count_bias_on_call=count_bias_on_call, return_prompt=return_prompt)
     backend.start()
     args = SimpleNamespace(**server_args(shared_media_dir, **extra))
     try:
@@ -228,6 +238,42 @@ class TestEngineExpansionCheck:
         with session_server(vlm, tmp_path, count_bias_on_call={0: 1}, tito_model="default") as env:
             session_id = _create_session(env.url)
             assert chat(env, session_id, [user_turn(SHOT1, "one")]).status_code == 200
+
+    @pytest.mark.parametrize("use_session_server", ["v1", "v2"])
+    @pytest.mark.parametrize(
+        ("tito_model", "expected"),
+        [("qwen3_vl", ["elementwise"]), ("default", ["prefix"])],
+        ids=["counted", "uncounted"],
+    )
+    def test_a_turn_runs_one_engine_prompt_check(
+        self, vlm, tmp_path, monkeypatch, use_session_server, tito_model, expected
+    ):
+        ran = []
+
+        def spy(name, check):
+            def wrapped(*args):
+                ran.append(name)
+                return check(*args)
+
+            return wrapped
+
+        monkeypatch.setattr(session_core, "check_engine_prompt", spy("prefix", session_core.check_engine_prompt))
+        monkeypatch.setattr(
+            session_core,
+            "assert_engine_expansion_matches",
+            spy("elementwise", image_expansion.assert_engine_expansion_matches),
+        )
+        with session_server(vlm, tmp_path, tito_model=tito_model, use_session_server=use_session_server) as env:
+            session_id = _create_session(env.url)
+            assert chat(env, session_id, [user_turn(SHOT1, "one")]).status_code == 200
+        assert ran == expected
+
+    def test_an_engine_that_returns_no_prompt_fails_the_counted_check(self, vlm, tmp_path):
+        with session_server(vlm, tmp_path, return_prompt=False) as env:
+            session_id = _create_session(env.url)
+            response = chat(env, session_id, [user_turn(SHOT1, "one")])
+            assert response.status_code == 502
+            assert b"--enable-token-space-processor" in response.content
 
 
 class TestRetryPicker:

@@ -80,7 +80,11 @@ def assert_engine_expansion_matches(
 ) -> None:
     if MM_TOKEN_EXPANSION_START_LEN not in request_body:
         return
-    effective = choice["prompt_token_ids"]
+    effective = choice.get("prompt_token_ids")
+    if not isinstance(effective, list):
+        raise UpstreamResponseError(
+            "the engine did not return the expanded prompt it ran; it needs --enable-token-space-processor"
+        )
     expected = expected_engine_prompt(request_body, counter)
     if effective == expected:
         return

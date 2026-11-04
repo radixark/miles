@@ -476,8 +476,7 @@ class SessionCore:
             return proxy_result_to_response(result)
 
         response, choice, assistant_message, completion_token_ids = completion
-        check_engine_prompt(request_body, choice)
-        self._check_engine_expansion(request_body, choice)
+        self._check_engine_prompt(request_body, choice)
         assistant_message = tito_tokenizer.postprocess_completion(
             choice=choice,
             assistant_message=assistant_message,
@@ -525,8 +524,10 @@ class SessionCore:
 
         return _chat_client_response(result, response, response_intent)
 
-    def _check_engine_expansion(self, request_body: dict, choice: dict) -> None:
-        if self.image_token_counter is not None:
+    def _check_engine_prompt(self, request_body: dict, choice: dict) -> None:
+        if self.image_token_counter is None:
+            check_engine_prompt(request_body, choice)
+        else:
             assert_engine_expansion_matches(request_body, choice, self.image_token_counter)
 
     def _store_message_media(self, client_args: dict) -> dict:
