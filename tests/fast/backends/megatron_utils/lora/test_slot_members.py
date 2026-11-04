@@ -11,6 +11,7 @@ def _members(param: torch.Tensor, master: torch.Tensor) -> LayerWiseSlotMembers:
         slot_parameters=lambda slot: [param],
         local_shard_specs=lambda slot, holds: [SimpleNamespace(local_shape=param.shape)],
         local_pieces=lambda slot, tensors, holds: list(tensors),
+        bf16_adapter_key_style="peft",
     )
     child = SimpleNamespace(
         optimizer=SimpleNamespace(param_groups=[{"step": 1}], state={master: {}}),

@@ -41,8 +41,13 @@ class NativeAdapterSlots(BridgeAdapterSlots):
         return [param for adapter in self._slot_adapters(slot) for param in adapter.parameters()]
 
     def slot_spec(self, slot: int) -> AdapterSpec | None:
-        assert not self._multi_lora, "native multi-LoRA slots have no checkpoint members yet"
-        return None
+        if not self._multi_lora:
+            return None
+        self._assert_slot(slot)
+        multi_adapter = next(iter_multi_lora_adapters(self._model))
+        return AdapterSpec(
+            slot=slot, rank=multi_adapter.lora_ranks_by_slot[slot], alpha=multi_adapter.lora_alphas_by_slot[slot]
+        )
 
     def _init_slot(self, slot: int, lora_rank: int, lora_alpha: float, seed: int | None) -> None:
         if seed is not None:

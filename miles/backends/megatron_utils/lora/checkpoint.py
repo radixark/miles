@@ -51,12 +51,11 @@ _LEGACY_OPTIMIZER_KEY = re.compile(r"(chained_\d+\.)?optimizer\.")
 
 
 class LayerWiseSlotMembers:
-    """Checkpoint members of Bridge multi-LoRA slots trained by per-slot LayerWise optimizers."""
-
-    bf16_adapter_key_style = "peft"
+    """Checkpoint members of multi-LoRA slots trained by per-slot LayerWise optimizers."""
 
     def __init__(self, adapter_slots: BridgeAdapterSlots, slot_optimizers: dict[int, SlotOptimizer]):
         self._slots, self._optimizers = adapter_slots, slot_optimizers
+        self.bf16_adapter_key_style = adapter_slots.bf16_adapter_key_style
 
     def export_bf16_adapter(self, slot: int) -> Iterable[tuple[str, torch.Tensor]]:
         return self._slots.export_bf16_adapter(slot)

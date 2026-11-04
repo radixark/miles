@@ -11,7 +11,7 @@ import torch.distributed as dist
 from tqdm import tqdm
 
 from miles.backends.megatron_utils.lora.native import export_lora_hf_named
-from miles.backends.megatron_utils.lora.native.modules.linear import iter_adapters
+from miles.backends.megatron_utils.lora.native.modules.linear import iter_adapters, iter_slot_adapters
 from miles.backends.megatron_utils.megatron_to_hf import convert_to_hf
 from miles.backends.megatron_utils.named_weights import named_params_and_buffers
 from miles.backends.megatron_utils.sglang import monkey_patch_torch_reductions
@@ -133,9 +133,16 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
         return units
 
     def _export_pp_local_lora(self, adapter):
-        assert adapter is None, "multi-LoRA export requires --megatron-to-hf-mode bridge"
         started = time.perf_counter()
-        exported = export_lora_hf_named(iter_adapters(self.model))
+        if adapter is None:
+            exported = export_lora_hf_named(iter_adapters(self.model))
+        else:
+            from ..lora.slots import slice_lora_to_rank
+
+            exported = [
+                (name, slice_lora_to_rank(name, tensor, adapter.rank))
+                for name, tensor in export_lora_hf_named(iter_slot_adapters(self.model, adapter.slot))
+            ]
         if not dist.is_initialized() or dist.get_rank() == 0:
             peak_b = max(
                 (tensor.abs().max().item() for name, tensor in exported if name.endswith("lora_B.weight")),
