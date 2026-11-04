@@ -285,3 +285,41 @@ def test_models_that_place_media_themselves_get_only_the_processor_tensors(monke
     assert set(train_inputs.multimodal_train_inputs[0]) == {"pixel_values", "image_grid_thw"}
     assert train_inputs.multimodal_train_inputs[1] is None
     assert train_inputs.mrope_position_ids is None
+
+
+class _AudioProcessor(_RecordingProcessor):
+    async def process(self, **kwargs):
+        self.calls.append(kwargs)
+        return {
+            "input_ids": torch.tensor([kwargs["input_ids"]]),
+            "vision_patches_bthwc": torch.full((2, 1), 2.0),
+            "dmel_bins": torch.zeros(5, 80),
+            "mm_modalities": [Modality.AUDIO, Modality.IMAGE, Modality.AUDIO],
+            "mm_spans": [[(1, 3)], [(4, 6)], [(7, 10)]],
+        }
+
+
+def test_audio_rows_take_the_audio_spans(monkeypatch):
+    """Every modality's tower rows are placed from its own spans, in media order; no mRoPE without one."""
+    processor = _AudioProcessor()
+    monkeypatch.setattr(
+        token_space_media_process,
+        "_trainer_processor",
+        lambda *args: token_space_media_process._TrainerProcessor(core=processor, image_device=None),
+    )
+    pending = token_space_media_process.compute_multimodal_train_inputs(
+        object(),
+        [{"images": ["/shared/a.png"], "audios": ["/shared/a.wav", "/shared/b.wav"]}],
+        [torch.arange(11)],
+        mm_processor_worker_num=1,
+        mm_io_worker_num=0,
+        with_sglang_placement=True,
+        device=torch.device("cpu"),
+    )
+
+    (train_inputs,) = token_space_media_process.resolved(pending.multimodal_train_inputs)
+    assert processor.calls[0]["audio_data"] == ["/shared/a.wav", "/shared/b.wav"]
+    assert set(train_inputs) == {"vision_patches_bthwc", "dmel_bins", "mm_image_positions", "mm_audio_positions"}
+    assert train_inputs["mm_image_positions"].tolist() == [4, 5]
+    assert train_inputs["mm_audio_positions"].tolist() == [1, 2, 7, 8, 9]
+    assert token_space_media_process.resolved_mrope_position_ids(pending.mrope_position_ids) is None
