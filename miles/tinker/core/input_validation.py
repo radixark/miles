@@ -90,7 +90,7 @@ def validate_batch_payload(op: CommandOp, payload: dict, config: GatewayConfig) 
 
 def validate_sample_payload(payload: dict, config: GatewayConfig) -> None:
     validate_token_ids(payload["prompt_tokens"], config.vocab_size, "prompt")
-    max_tokens = payload["sampling_params"].get("max_tokens")
+    max_tokens = payload["sampling_params"]["max_tokens"]
     if type(max_tokens) is not int or max_tokens < 0:
         raise UserInputError("sampling_params.max_tokens must be a nonnegative integer")
     prompt_length = len(payload["prompt_tokens"])
@@ -160,10 +160,10 @@ _GATEWAY_LAYOUT_FLAGS = {
 }
 
 
-def validate_save_options(payload: dict) -> None:
-    if payload.get("ttl_seconds") is not None:
+def validate_save_options(ttl_seconds: int | None, user_metadata: dict | None) -> None:
+    if ttl_seconds is not None:
         raise UserInputError("ttl_seconds is not supported: checkpoints on this gateway do not expire")
-    if payload.get("user_metadata") is not None:
+    if user_metadata is not None:
         raise UserInputError("user_metadata is not supported by this gateway")
 
 
