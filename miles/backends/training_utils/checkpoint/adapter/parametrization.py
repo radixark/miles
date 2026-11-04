@@ -2,7 +2,7 @@
 
 import hashlib
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields as dataclass_fields
 from pathlib import Path
 
 import transformers
@@ -107,6 +107,13 @@ def read_parametrization(directory: Path) -> AdapterParametrization:
         raise ValueError(
             f"{directory / PARAMETRIZATION_FILENAME} has format version {version}; this miles reads version "
             f"{PARAMETRIZATION_FORMAT_VERSION}: load it with the miles version that wrote it"
+        )
+    # a newer miles adds a field with a default without bumping the version
+    unknown = sorted(fields.keys() - {field.name for field in dataclass_fields(AdapterParametrization)})
+    if unknown:
+        raise ValueError(
+            f"{directory / PARAMETRIZATION_FILENAME} has unknown fields {unknown}: "
+            "load it with the miles version that wrote it"
         )
     fields["target_modules"] = tuple(fields["target_modules"])
     fields["shared_lora_a_groups"] = tuple(tuple(group) for group in fields["shared_lora_a_groups"])

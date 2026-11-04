@@ -498,6 +498,14 @@ def test_the_parametrization_file_records_its_format_version_and_refuses_another
         read_parametrization(tmp_path)
 
 
+def test_a_parametrization_with_a_field_this_miles_does_not_know_is_refused(tmp_path):
+    write_parametrization(tmp_path, _run(target_modules=QKV[:1]))
+    fields = json.loads((tmp_path / PARAMETRIZATION_FILENAME).read_text())
+    (tmp_path / PARAMETRIZATION_FILENAME).write_text(json.dumps(fields | {"lora_dropout": 0.1}))
+    with pytest.raises(ValueError, match=r"unknown fields \['lora_dropout'\].*load it with the miles version that wrote it"):
+        read_parametrization(tmp_path)
+
+
 @pytest.mark.parametrize(
     "raw",
     [
