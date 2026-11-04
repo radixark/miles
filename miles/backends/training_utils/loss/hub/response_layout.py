@@ -34,6 +34,7 @@ from miles.backends.training_utils.data.context_parallel import (
     slice_log_prob_with_cp,
 )
 from miles.backends.training_utils.data.sampling_mask import get_rollout_sampling_masks
+from miles.backends.training_utils.loss.hub.fused_row_log_prob import FusedRowLogProb
 from miles.backends.training_utils.loss.hub.logit_processors import _iter_response_chunks, get_log_probs_and_entropy
 from miles.backends.training_utils.loss.hub.math_utils import (
     _safe_exp_neg_ppo_kl,
@@ -61,7 +62,14 @@ _PADDED_ROWS_REQUIREMENTS: dict[str, Callable[[Namespace], bool]] = {
 # features whose code reads per-sample tensors, or that PaddedRows does not score
 _UNSUPPORTED_FEATURES: dict[str, Callable[[Namespace], bool]] = {
     "--true-on-policy-mode": lambda args: args.true_on_policy_mode,
-    "--log-probs-backend fused": lambda args: args.log_probs_backend == "fused",
+    # the fused op keeps entropy out of the graph and needs the whole vocabulary on one rank
+    "--log-probs-backend fused with --entropy-coef != 0": lambda args: args.log_probs_backend == "fused"
+    and args.entropy_coef != 0,
+    "--log-probs-backend fused with --tensor-model-parallel-size > 1": lambda args: args.log_probs_backend == "fused"
+    and args.tensor_model_parallel_size != 1,
+    # score centering scores its candidates through map_logit_rows, which the fused op does not replace
+    "--log-probs-backend fused with --loss-type score_centering": lambda args: args.log_probs_backend == "fused"
+    and args.loss_type == "score_centering",
     "--allgather-cp": lambda args: args.allgather_cp,
     "--use-sampling-support-replay": lambda args: args.use_sampling_support_replay,
     "--use-opsm": lambda args: args.use_opsm,
@@ -419,6 +427,8 @@ class PaddedRows:
         return self._loss_masks
 
     def score(self, logits, *, with_entropy, entropy_requires_grad):
+        if self.args.log_probs_backend == "fused":
+            return FusedRowLogProb.apply(logits.squeeze(0), self._targets, self.args.rollout_temperature, with_entropy)
         log_probs, entropy = calculate_log_probs_and_entropy(
             logits.squeeze(0),
             self._targets,

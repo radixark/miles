@@ -75,6 +75,17 @@ model, dapo-math-17k and aime-2024 there if missing. The GLM launcher serves the
 
 wandb is on when `WANDB_API_KEY` is set.
 
+Opt-in speedups, passed through `--extra-args`:
+
+- `--titan-tpu-attention splash`: packed-document attention on JAX's Pallas splash-attention kernel
+  (documents as segment ids, tiles without a same-document pair skipped); needs `--seq-length` to be a
+  multiple of 1024.
+- `--log-probs-backend fused`: scores the padded `[T, V]` logits with one compiled program for the forward
+  and one for the backward; needs the policy loss, TP 1 and `--entropy-coef 0`.
+- `--titan-fsdp-reduce-dtype bfloat16`: reduce-scatters FSDP's gradients in bfloat16, halving the reduce
+  buffers and the bytes over ICI; refused with `--titan-fsdp-gather-once`, which would then accumulate
+  microbatch gradients in bfloat16.
+
 ## Notes
 
 - **Stop a training run gracefully while sglang is running.** The host's TPU network session is

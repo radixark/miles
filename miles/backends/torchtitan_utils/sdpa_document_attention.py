@@ -48,6 +48,7 @@ def document_ids(positions: torch.Tensor) -> torch.Tensor:
 
     Positions restart at 0 in every document and the padding tail, so this needs no cumsum, which libtpu
     (>= 0.0.44) miscompiles for lengths not a multiple of 1024.
+    The ids are non-decreasing, which splash attention's block skipping relies on.
     """
     token_index = torch.arange(positions.shape[-1], device=positions.device, dtype=torch.int32)
     return token_index - positions.to(torch.int32)
@@ -76,6 +77,11 @@ class BlockedSdpaInnerAttention(InnerAttention):
     def __init__(self, config: Config) -> None:
         super().__init__()
 
+    @staticmethod
+    def document_attention(q, k, v, doc_ids, *, scale: float | None, enable_gqa: bool) -> torch.Tensor:
+        """The kernel: q (B, Nq, L, H); k, v (B, Nkv, L, H); doc_ids (B, L)."""
+        return document_causal_attention(q, k, v, doc_ids, scale=scale, enable_gqa=enable_gqa)
+
     def forward(
         self,
         q_THK: torch.Tensor,
@@ -90,10 +96,10 @@ class BlockedSdpaInnerAttention(InnerAttention):
         **kwargs,
     ) -> torch.Tensor:
         if score_mod is not None or out_transform is not None or kwargs:
-            raise NotImplementedError("blocked SDPA attention takes no score_mod, out_transform or other options")
+            raise NotImplementedError("document attention takes no score_mod, out_transform or other options")
         if not isinstance(attention_metadata, torch.Tensor):
             raise TypeError(f"expected document ids as attention_metadata, got {type(attention_metadata).__name__}")
-        out_1HTV = document_causal_attention(
+        out_1HTV = self.document_attention(
             q_THK.transpose(0, 1).unsqueeze(0),
             k_THK.transpose(0, 1).unsqueeze(0),
             v_THV.transpose(0, 1).unsqueeze(0),
