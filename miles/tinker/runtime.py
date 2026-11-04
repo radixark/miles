@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import shutil
 from dataclasses import asdict
 from pathlib import Path
 from typing import TextIO
@@ -25,6 +26,7 @@ from miles.backends.training_utils.checkpoint.adapter.parametrization import (
     read_parametrization,
 )
 from miles.ray.rollout.train_data_conversion import ROLLOUT_DATA_VALUE_SPEC
+from miles.tinker.core.service import IMPORT_COPIES_DIRNAME
 from miles.tinker.core.types import OwnershipError, UserInputError
 from miles.utils import object_store
 from miles.utils.http_utils import post
@@ -75,6 +77,9 @@ def delete_retired_adapters(root: str) -> None:
 def take_checkpoint_root(checkpoint_root: str) -> TextIO:
     """Lock the root for this gateway, then recover every adapter root under it (``<model_id>/<kind>``)."""
     lock = lock_checkpoint_root(Path(checkpoint_root))
+    # copies of file:// imports a crash left behind; the lock means no load reads them
+    if (Path(checkpoint_root) / IMPORT_COPIES_DIRNAME).exists():
+        shutil.rmtree(Path(checkpoint_root) / IMPORT_COPIES_DIRNAME)
     for adapter_root in Path(checkpoint_root).glob("*/*"):
         if adapter_root.is_dir():
             delete_unreferenced_adapter_dirs(adapter_root)
@@ -131,9 +136,9 @@ def delete_adapter(root: str, name: str, tenant: str | None) -> None:
         raise OwnershipError(f"checkpoint {name!r} does not belong to this tenant") from error
 
 
-def read_imported_adapter(path: str) -> dict:
-    """Rank, alpha and base model of an adapter outside the checkpoint root; alpha and base model None when the
-    source records none."""
+def read_imported_adapter(path: str, shown_path: str) -> dict:
+    """Rank, alpha and base model of an adapter copied in from outside the checkpoint root; alpha and base model None
+    when the source records none. Errors name ``shown_path``, the tenant's path."""
     config_file = Path(path) / "adapter_config.json"
     # the source is the client's file: a malformed one is a user error, not a gateway failure
     try:
@@ -152,7 +157,7 @@ def read_imported_adapter(path: str) -> dict:
                 "base_model": config.get("base_model_name_or_path"),
             }
         else:
-            raise UserInputError(f"{path} holds no adapter ({PARAMETRIZATION_FILENAME} or adapter_config.json)")
+            raise UserInputError(f"{shown_path} holds no adapter ({PARAMETRIZATION_FILENAME} or adapter_config.json)")
         if source["base_model"] is not None and not isinstance(source["base_model"], str):
             raise TypeError(f"base model {source['base_model']!r} is not a name")
         if type(source["lora_rank"]) is not int:
@@ -160,7 +165,7 @@ def read_imported_adapter(path: str) -> dict:
         if source["lora_alpha"] is not None and type(source["lora_alpha"]) not in (int, float):
             raise TypeError(f"alpha {source['lora_alpha']!r} is not a number")
     except (OSError, ValueError, KeyError, TypeError, AssertionError, RecursionError) as error:
-        raise UserInputError(f"{path} is not a readable adapter: {type(error).__name__}: {error}") from error
+        raise UserInputError(f"{shown_path} is not a readable adapter: {type(error).__name__}: {error}") from error
     return source
 
 

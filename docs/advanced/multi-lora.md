@@ -145,11 +145,13 @@ cookbook only requires `tinker>=0.35`, so install the SDK pin explicitly. It sup
 - Import: `load_state` and `create_training_client_from_state` accept
   `file://` adapters (PEFT, official Tinker exports, miles adapter dirs) from
   under `--tinker-import-root`, weights only; the source must record its LoRA
-  alpha and hold only `.json` and `.safetensors` files (a pickled format such
-  as DCP's `.metadata` or a `.pt` would run code in the trainer, so an
-  `adapter_state/` dir is refused too). The import root must not expose the checkpoint root or any part of it
-  (by mount or link), and tenants must not rewrite an import while it loads:
-  `file://` skips the owner check that `tinker://` paths get.
+  alpha. The gateway copies the dir's top-level `.json` and `.safetensors`
+  files into the checkpoint root and the trainer loads that copy, so other
+  files (`README.md`, `.cache/`, a pickled DCP `.metadata` or `.pt`) are never
+  read. A symlink on the path or among those files is refused (an HF cache
+  snapshot links them; download with `hf download --local-dir`). The import
+  root must not expose the checkpoint root by mount or hard link: `file://`
+  skips the owner check that `tinker://` paths get.
 
 `rl_loop` defaults to the `stable_reinforce` loss; pass
 `loss_fn="importance_sampling"` (or `"cispo"`).

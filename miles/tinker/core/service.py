@@ -3,10 +3,11 @@
 The trainer lock serializes trainer calls across dispatch, model creation, and lease expiry."""
 
 import asyncio
-import json
+import errno
 import logging
 import os
 import secrets
+import shutil
 import stat
 import time
 import uuid
@@ -51,74 +52,39 @@ logger = logging.getLogger(__name__)
 _SDK_FINISH_RETRY_S = 300.0
 
 
-# commit.TENANT_FILENAME; the gateway does not import torch
-_TENANT_FILENAME = "tenant.json"
+# gateway-owned copies of file:// imports, under the checkpoint root so every trainer rank can read them
+IMPORT_COPIES_DIRNAME = ".imports"
 
 
-def _is_checkpoint_marker(real: str) -> bool:
-    """A file only a tinker:// checkpoint holds: its tenant record, or a pre-commit checkpoint's META.json."""
-    name = os.path.basename(real)
-    if name == _TENANT_FILENAME:
-        return True
-    if name != "META.json":
-        return False
-    with open(real) as f:
-        meta = json.load(f)
-    return isinstance(meta, dict) and "tenant_digest" in meta
+def _open_dir_beneath(root: str, relative: str) -> int:
+    """fd of the directory ``root/relative``, each component opened without following a symlink."""
+    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    for part in [] if relative == "." else relative.split(os.sep):
+        try:
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+        except OSError as error:
+            # a symlinked directory fails with ELOOP on Linux, ENOTDIR on macOS
+            if error.errno == errno.ENOTDIR and stat.S_ISLNK(os.lstat(part, dir_fd=fd).st_mode):
+                error = OSError(errno.ELOOP, os.strerror(errno.ELOOP), part)
+            raise error from None
+        finally:
+            os.close(fd)
+        fd = child
+    return fd
 
 
-def _check_import_tree(uri: str, path: str, import_root: str, checkpoint_root: str) -> None:
-    """Refuse an import that leaves ``import_root`` (a real path) by a symlink, or that reads a tinker:// checkpoint,
-    whose owner a file:// load would skip: by an ancestor that is the checkpoint root under another name (a bind mount
-    of it), a symlink, a hard link, or a checkpoint's own files, which give away any mount of its subdirectories."""
-    reaches = UserInputError(f"{uri} reaches a tinker:// checkpoint; load it by its tinker:// path")
-    real_root = os.path.realpath(checkpoint_root)
-    if os.path.commonpath([path, real_root]) == real_root:
-        raise reaches
-    # None: nothing saved yet
-    root_stat = os.stat(checkpoint_root) if os.path.exists(checkpoint_root) else None
-
-    def has_root_ancestor(real: str) -> bool:
-        while True:
-            if os.path.samestat(os.stat(real), root_stat):
-                return True
-            parent = os.path.dirname(real)
-            if parent == real:
-                return False
-            real = parent
-
-    seen, pending = set(), [path]
-    while pending:
-        listed = pending.pop()
-        real = os.path.realpath(listed)
-        if not os.path.exists(real):
-            # a dangling symlink reads nothing; a missing import fails in its reader
+def _copy_adapter_files(source_fd: int, copy_dir: str, suffixes: tuple[str, ...]) -> None:
+    """Copy the files a reader opens; anything else (README.md, .cache/, a pickled DCP or .pt) stays behind."""
+    for name in os.listdir(source_fd):
+        if not name.endswith(suffixes):
             continue
-        entry = os.stat(real)
-        # the trainer unpickles DCP (.metadata, .distcp) and .pt files; by the name a reader opens, so an HF cache's
-        # adapter_model.safetensors -> blobs/<hash> passes, and before the dedupe, so no second name of a file escapes
-        if stat.S_ISREG(entry.st_mode) and not listed.endswith((".json", ".safetensors")):
-            raise UserInputError(f"{uri} holds {listed}; an import may hold only .json and .safetensors files")
-        if (entry.st_dev, entry.st_ino) in seen:
-            continue
-        seen.add((entry.st_dev, entry.st_ino))
-        if root_stat is not None and has_root_ancestor(real):
-            raise reaches
-        # checked before listing: a link to / would otherwise walk the whole filesystem
-        if os.path.commonpath([real, import_root]) != import_root:
-            raise UserInputError(f"{uri} links outside the import root")
-        if stat.S_ISDIR(entry.st_mode):
-            pending += [os.path.join(real, name) for name in os.listdir(real)]
-        elif not stat.S_ISREG(entry.st_mode):
-            # a FIFO or device would block the open, and holds no adapter
-            raise UserInputError(f"{uri} holds {real}, which is not a regular file")
-        elif _is_checkpoint_marker(real):
-            raise reaches
-        elif root_stat is not None and entry.st_nlink > 1 and entry.st_dev == root_stat.st_dev:
-            # a hard link cannot cross filesystems; which of its links is the checkpoint's cannot be told
-            raise UserInputError(
-                f"{uri} holds {real}, which is hard-linked on the checkpoint root's filesystem; copy it instead"
-            )
+        # O_NONBLOCK: opening a FIFO would otherwise wait for a writer
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=source_fd)
+        with open(fd, "rb") as source:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise UserInputError(f"{name} is not a regular file")
+            with open(os.path.join(copy_dir, name), "wb") as copy:
+                shutil.copyfileobj(source, copy)
 
 
 class _EndedSession(NamedTuple):
@@ -614,31 +580,41 @@ class TinkerService:
         """An adapter from under --tinker-import-root; it has no Adam state this gateway could resume."""
         if payload["optimizer"]:
             raise UserInputError(f"{payload['path']} loads weights only; load it without optimizer state")
-        # the import walk must not block the event loop
-        path, source = await asyncio.to_thread(self._read_imported_adapter, payload["path"])
-        if source["lora_alpha"] is None:
-            raise UserInputError(f"{payload['path']} records no LoRA alpha, which a Tinker adapter must carry")
-        if source["lora_rank"] != record.lora_rank:
-            raise UserInputError(
-                f"{payload['path']} has lora_rank={source['lora_rank']}; this model has {record.lora_rank}"
+        # the trainer reads only this copy, so the tenant cannot change what it loads after the checks
+        copy_dir = await asyncio.to_thread(self._copy_import, payload["path"], (".json", ".safetensors"))
+        try:
+            source = await asyncio.to_thread(self._read_import_copy, payload["path"], copy_dir)
+            if source["lora_alpha"] is None:
+                raise UserInputError(f"{payload['path']} records no LoRA alpha, which a Tinker adapter must carry")
+            if source["lora_rank"] != record.lora_rank:
+                raise UserInputError(
+                    f"{payload['path']} has lora_rank={source['lora_rank']}; this model has {record.lora_rank}"
+                )
+            fields = build_parametrization_fields(record, self.config) | {"lora_alpha": source["lora_alpha"]}
+            failure = await self.backend.load_slot(
+                record.slot,
+                record.lora_rank,
+                source["lora_alpha"],
+                ckpt_path=copy_dir,
+                load_optimizer=False,
+                parametrization_fields=fields,
             )
-        fields = build_parametrization_fields(record, self.config) | {"lora_alpha": source["lora_alpha"]}
-        failure = await self.backend.load_slot(
-            record.slot,
-            record.lora_rank,
-            source["lora_alpha"],
-            ckpt_path=path,
-            load_optimizer=False,
-            parametrization_fields=fields,
-        )
+        finally:
+            await asyncio.to_thread(shutil.rmtree, copy_dir)
         if failure is not None:
             return failure
         record.lora_alpha = source["lora_alpha"]
         return {"op": "load_state"}
 
-    def _read_imported_adapter(self, uri: str) -> tuple[str, dict]:
-        path = self._imported_path(uri)
-        source = self.backend.read_imported_adapter(path)
+    def _read_imported_adapter(self, uri: str) -> dict:
+        copy_dir = self._copy_import(uri, (".json",))
+        try:
+            return self._read_import_copy(uri, copy_dir)
+        finally:
+            shutil.rmtree(copy_dir)
+
+    def _read_import_copy(self, uri: str, copy_dir: str) -> dict:
+        source = self.backend.read_imported_adapter(copy_dir, uri)
         # a source that records no base (official Tinker exports write null) is taken as trained on this one
         if source["base_model"] is not None and not _is_same_base_model(source["base_model"], self.config.base_model):
             raise UserInputError(
@@ -646,22 +622,38 @@ class TinkerService:
                 "(a hub id and a local path never match: start the gateway with --tinker-base-model naming the base "
                 "as its adapters record it)"
             )
-        return path, source
+        return source
 
-    def _imported_path(self, uri: str) -> str:
+    def _copy_import(self, uri: str, suffixes: tuple[str, ...]) -> str:
+        """Copy the adapter files of a file:// import into a new gateway-owned dir under the checkpoint root.
+
+        Each file is opened once, through components opened without following a symlink, and checked on its fd:
+        a path swapped after any check cannot redirect the copy, so it can neither leave the import root nor reach
+        another tenant's checkpoint.
+        """
         if self.config.import_root is None:
             raise UserInputError("this gateway imports no file:// adapters; start it with --tinker-import-root")
+        root = os.path.normpath(self.config.import_root)
+        copy_dir = os.path.join(self.config.checkpoint_root, IMPORT_COPIES_DIRNAME, uuid.uuid4().hex)
+        os.makedirs(copy_dir)
         try:
-            # realpath raises ValueError on a NUL byte or a lone surrogate in the tenant's path
-            root = os.path.realpath(self.config.import_root)
-            path = os.path.realpath(uri.removeprefix("file://"))
+            path = os.path.normpath(uri.removeprefix("file://"))
             if not path.startswith(root + os.sep):
                 raise UserInputError(f"{uri} is outside the import root {self.config.import_root}")
-            _check_import_tree(uri, path, root, self.config.checkpoint_root)
-        except (OSError, ValueError, RecursionError) as error:
-            # a tenant's unreadable import must not stop the gateway
-            raise UserInputError(f"cannot read {uri}: {error}") from None
-        return path
+            source_fd = _open_dir_beneath(root, os.path.relpath(path, root))
+            try:
+                _copy_adapter_files(source_fd, copy_dir, suffixes)
+            finally:
+                os.close(source_fd)
+        except BaseException as error:
+            shutil.rmtree(copy_dir)
+            if isinstance(error, OSError) and error.errno == errno.ELOOP:
+                raise UserInputError(f"{uri} is or holds a symlink; import a copy of the adapter's files") from None
+            if isinstance(error, OSError | ValueError):
+                # ValueError: a NUL byte or a lone surrogate in the tenant's path
+                raise UserInputError(f"cannot read {uri}: {error}") from None
+            raise
+        return copy_dir
 
     async def _save_weights_external(self, record: ModelRecord, payload: dict) -> dict:
         """The official Tinker export of the adapter, for download (get_external_weights_urls)."""
@@ -795,7 +787,7 @@ class TinkerService:
     def weights_info(self, tenant: str, tinker_path: str) -> dict:
         """What the SDK needs to rebuild a training client from a checkpoint."""
         if tinker_path.startswith("file://"):
-            _, source = self._read_imported_adapter(tinker_path)
+            source = self._read_imported_adapter(tinker_path)
             return {
                 "base_model": self.config.base_model,
                 "is_lora": True,
