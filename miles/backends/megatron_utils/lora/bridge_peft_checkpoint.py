@@ -165,7 +165,18 @@ class MegatronBridgeCheckpointLoader:
     def __call__(self, path: Path) -> AdapterParametrization:
         chunks = unwrap_model(self._model)
         names = ["model"] if len(chunks) == 1 else [f"model{i}" for i in range(len(chunks))]
-        config, model_state_dicts, adapter, base_dir, error = None, None, None, None, None
+        config, metadata, model_state_dicts, adapter, base_dir = self._read_source(path, chunks)
+        self._check_torch_dist_base(path, chunks, base_dir)
+        requested = self._requested_state(path, names, model_state_dicts, adapter, metadata)
+        self._load(path, names, chunks, requested)
+        # collective; asserts each bf16 adapter parameter is its fp32 master
+        self._members.export_adapter_state(0)
+        return replace(self._run, lora_alpha=float(config["peft"]["alpha"]))
+
+    def _read_source(self, path: Path, chunks):
+        """Collective: the source's run_config.yaml checked against this run, its content metadata, and this run's
+        sharded state dicts with their adapter subsets."""
+        config, metadata, model_state_dicts, adapter, base_dir, error = None, None, None, None, None, None
         try:
             config = yaml.safe_load((path / "run_config.yaml").read_text())
             assert config["checkpoint"]["ckpt_format"] == "torch_dist", f"{path} is not a torch_dist checkpoint"
@@ -179,15 +190,7 @@ class MegatronBridgeCheckpointLoader:
                 )
             metadata = dict(dist_checkpointing.load_content_metadata(str(path)) or {})
             if self._load_optimizer:
-                sharding = metadata.get("distrib_optim_sharding_type")
-                assert sharding is not None, (
-                    f"{path} records no optimizer sharding type (written by an older Megatron), so its Adam state "
-                    "cannot be resharded; pass --no-load-optim"
-                )
-                assert sharding in DistributedOptimizer.checkpoint_fully_reshardable_formats, (
-                    f"{path}'s optimizer state is {sharding}, which only loads under its saving layout; re-save it "
-                    "from Megatron-Bridge with dist_ckpt_optim_fully_reshardable=True, or pass --no-load-optim"
-                )
+                _assert_reshardable_optimizer_state(path, metadata)
             metadata["dp_cp_group"] = get_parallel_state().intra_dp_cp.group
             model_state_dicts = [chunk.sharded_state_dict(metadata=metadata) for chunk in chunks]
             adapter = [
@@ -197,6 +200,10 @@ class MegatronBridgeCheckpointLoader:
         except Exception as exc:
             error = exc
         raise_if_any_rank_failed(error)
+        return config, metadata, model_state_dicts, adapter, base_dir
+
+    def _check_torch_dist_base(self, path: Path, chunks, base_dir: Path | None) -> None:
+        """Collective: compares the model with a torch_dist pretrained_checkpoint every rank sees."""
         # a base visible on some nodes only would leave the others outside the collective load
         base_dirs = [None] * dist.get_world_size()
         dist.all_gather_object(base_dirs, base_dir, group=gloo_group())
@@ -204,11 +211,14 @@ class MegatronBridgeCheckpointLoader:
         if base_dir is not None:
             assert_same_base_as_torch_dist(str(path), chunks, base_dir)
 
+    def _requested_state(self, path: Path, names, model_state_dicts, adapter, metadata) -> dict:
+        """Collective: the state to load, after checking the source holds exactly this run's adapters."""
         # pipeline stages hold different layers; the checkpoint holds them all
         expected = [None] * dist.get_world_size()
         dist.all_gather_object(expected, {t.key for sd in adapter for t in nested_values(sd)}, group=gloo_group())
         expected = set().union(*expected)
         requested = dict(zip(names, adapter, strict=True))
+        error = None
         try:
             saved = {
                 k
@@ -225,7 +235,11 @@ class MegatronBridgeCheckpointLoader:
         except Exception as exc:
             error = exc
         raise_if_any_rank_failed(error)
+        return requested
 
+    def _load(self, path: Path, names, chunks, requested: dict) -> None:
+        """Collective: loads the adapters, and the Adam state or masters re-cast from them."""
+        error = None
         try:
             # a rank-local failure inside load's own collectives still hangs; one after them is agreed below
             loaded = dist_checkpointing.load(requested, str(path))
@@ -233,25 +247,35 @@ class MegatronBridgeCheckpointLoader:
                 result = chunk.load_state_dict(loaded[name], strict=False)
                 assert not result.unexpected_keys, f"unexpected adapter keys {result.unexpected_keys[:3]}"
             if self._load_optimizer:
-                # the run owns the schedule: only state and step come from the source, not its lr or weight decay
-                run_hyperparameters = [
-                    {k: v for k, v in g.items() if k not in ("params", "step")} for g in self._optimizer.param_groups
-                ]
-                try:
-                    self._optimizer.load_state_dict(loaded["optimizer"])
-                except KeyError as exc:
-                    # the DistributedOptimizer matches param groups by (wd_mult, lr_mult, is_expert_parallel,
-                    # is_decoupled_lr) and raises a bare KeyError of the missing key
-                    raise ValueError(
-                        f"{path} has no optimizer param group {exc} of this run's; pass --no-load-optim"
-                    ) from exc
-                for group, hyperparameters in zip(self._optimizer.param_groups, run_hyperparameters, strict=True):
-                    group.update(hyperparameters)
+                self._load_optimizer_state(path, loaded["optimizer"])
             else:
                 self._optimizer.reload_model_params()
         except Exception as exc:
             error = exc
         raise_if_any_rank_failed(error)
-        # collective; asserts each bf16 adapter parameter is its fp32 master
-        self._members.export_adapter_state(0)
-        return replace(self._run, lora_alpha=float(config["peft"]["alpha"]))
+
+    def _load_optimizer_state(self, path: Path, state: dict) -> None:
+        # the run owns the schedule: only state and step come from the source, not its lr or weight decay
+        run_hyperparameters = [
+            {k: v for k, v in g.items() if k not in ("params", "step")} for g in self._optimizer.param_groups
+        ]
+        try:
+            self._optimizer.load_state_dict(state)
+        except KeyError as exc:
+            # the DistributedOptimizer matches param groups by (wd_mult, lr_mult, is_expert_parallel,
+            # is_decoupled_lr) and raises a bare KeyError of the missing key
+            raise ValueError(f"{path} has no optimizer param group {exc} of this run's; pass --no-load-optim") from exc
+        for group, hyperparameters in zip(self._optimizer.param_groups, run_hyperparameters, strict=True):
+            group.update(hyperparameters)
+
+
+def _assert_reshardable_optimizer_state(path: Path, metadata: dict) -> None:
+    sharding = metadata.get("distrib_optim_sharding_type")
+    assert sharding is not None, (
+        f"{path} records no optimizer sharding type (written by an older Megatron), so its Adam state "
+        "cannot be resharded; pass --no-load-optim"
+    )
+    assert sharding in DistributedOptimizer.checkpoint_fully_reshardable_formats, (
+        f"{path}'s optimizer state is {sharding}, which only loads under its saving layout; re-save it "
+        "from Megatron-Bridge with dist_ckpt_optim_fully_reshardable=True, or pass --no-load-optim"
+    )
