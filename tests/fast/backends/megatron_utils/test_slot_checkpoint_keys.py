@@ -40,7 +40,7 @@ def test_single_lora_peft_export_names_native_experts_by_hf_module(tmp_path):
         experts_shared_outer_loras=False,
     )
 
-    write_peft_export(tmp_path, members, 0, parametrization, targets)
+    write_peft_export(tmp_path, members, 0, parametrization, targets, lora_dropout=0.0)
 
     with safe_open(tmp_path / "adapter_model.safetensors", framework="pt") as exported:
         assert set(exported.keys()) == {

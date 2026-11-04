@@ -686,7 +686,7 @@ class InklingHeadMembers(FakeMembers):
 
 def _write_inkling_head_adapter(path):
     weights = {f"{INKLING_HEAD}.lora_A": torch.full((2, 6), 3.0), f"{INKLING_HEAD}.lora_B": torch.full((8, 2), 7.0)}
-    write_peft_adapter(path, weights, INKLING_HEAD_RUN, INKLING)
+    write_peft_adapter(path, weights, INKLING_HEAD_RUN, INKLING, lora_dropout=0.0)
 
 
 def test_a_native_warm_start_loads_an_inkling_head_peft_dir(tmp_path):

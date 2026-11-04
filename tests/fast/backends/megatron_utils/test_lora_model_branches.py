@@ -260,6 +260,7 @@ class TestSaveHfModelRawLoRA:
             lora_rank=8,
             lora_alpha=16.0,
             lora_type="canonical_lora",
+            lora_dropout=0.05,
             experts_shared_outer_loras=False,
         )
 
@@ -270,7 +271,7 @@ class TestSaveHfModelRawLoRA:
             tmp_path, weights=merge.return_value, hf_checkpoint=args.hf_checkpoint
         )
         sampler_view.assert_called_once_with(
-            tmp_path / "adapter", slots, 0, slots.parametrization.return_value, slots.targets
+            tmp_path / "adapter", slots, 0, slots.parametrization.return_value, slots.targets, lora_dropout=0.05
         )
         get_bridge.assert_not_called()
 
@@ -317,6 +318,7 @@ def test_native_shared_outer_save_hf_writes_the_stacked_adapter_sglang_serves(
         lora_rank=2,
         lora_alpha=4.0,
         lora_type="lora",
+        lora_dropout=0.0,
         experts_shared_outer_loras=True,
     )
 
@@ -350,7 +352,8 @@ def test_native_shared_outer_save_hf_writes_the_stacked_adapter_sglang_serves(
 def test_native_save_hf_adapter_config_carries_mains_fields(
     _parallel_state, _write_dir, _is_lora, _named_weights, _merge, tmp_path
 ):
-    """The run's rank and alpha, as main wrote them; target_modules name HF modules, which sglang normalizes."""
+    """The run's rank, alpha and dropout, as main wrote them; target_modules name HF modules, which sglang
+    normalizes."""
     from miles.backends.megatron_utils.hf_export import save_hf_model
 
     args = Namespace(
@@ -360,6 +363,7 @@ def test_native_save_hf_adapter_config_carries_mains_fields(
         lora_rank=2,
         lora_alpha=4.0,
         lora_type="lora",
+        lora_dropout=0.05,
         experts_shared_outer_loras=True,
     )
 
@@ -375,7 +379,7 @@ def test_native_save_hf_adapter_config_carries_mains_fields(
 
     config = json.loads((tmp_path / "adapter" / "adapter_config.json").read_text())
     experts = _SharedOuterNativeSlots.experts
-    assert (config["r"], config["lora_alpha"]) == (2, 4.0)
+    assert (config["r"], config["lora_alpha"], config["lora_dropout"]) == (2, 4.0, 0.05)
     assert config["target_modules"] == [f"{experts}.{leaf}" for leaf in ("down_proj", "gate_proj", "up_proj")]
 
 

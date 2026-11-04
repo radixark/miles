@@ -231,11 +231,18 @@ def write_sampler_view(
     slot: int,
     parametrization: AdapterParametrization,
     targets: HfLoraTargets,
+    *,
+    lora_dropout: float,
 ) -> None:
     """All ranks call; rank 0 writes ``slot``'s bf16 sampler export into ``directory``, outside any commit."""
     # the sampler layout keeps every expert stacked
     _write_bf16_export(
-        directory, members, slot, parametrization, targets, lambda *view, stacked_keys: write_sampler_adapter(*view)
+        directory,
+        members,
+        slot,
+        parametrization,
+        targets,
+        lambda *view, stacked_keys: write_sampler_adapter(*view, lora_dropout=lora_dropout),
     )
 
 
