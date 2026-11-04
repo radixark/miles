@@ -108,57 +108,6 @@ def test_multi_lora_bridge_refuses_a_model_without_hf_lora_layout(monkeypatch):
         _validate(_bridge_args_without_layout(monkeypatch, multi_lora=True))
 
 
-_TINY_QWEN3_5_TEXT = dict(
-    vocab_size=64,
-    hidden_size=16,
-    intermediate_size=32,
-    num_hidden_layers=2,
-    layer_types=["linear_attention", "full_attention"],
-    num_attention_heads=2,
-    num_key_value_heads=1,
-    head_dim=8,
-    linear_num_key_heads=2,
-    linear_num_value_heads=2,
-    linear_key_head_dim=4,
-    linear_value_head_dim=4,
-)
-
-
-def _gdn_export_args(monkeypatch, targets, **overrides):
-    from transformers import Qwen3_5TextConfig
-
-    config = Qwen3_5TextConfig(**_TINY_QWEN3_5_TEXT)
-    monkeypatch.setattr(lora_arguments, "load_hf_config", lambda path: config)
-    fields = dict(
-        hf_checkpoint="/hf",
-        lora_type="canonical_lora",
-        hf_lora_targets=targets,
-        lora_rank=4,
-        lora_alpha=8.0,
-        experts_shared_outer_loras=False,
-        save_hf="/hf_out",
-        eval_hf_dir=None,
-        eval_uses_snapshots=False,
-        multi_lora=False,
-    )
-    return Namespace(**(fields | overrides))
-
-
-@pytest.mark.parametrize("targets", [["in_proj_qkv"], ["in_proj_*"], ["*.linear_attn.in_proj_*"]])
-def test_canonical_gdn_components_refuse_hf_exports_at_launch(monkeypatch, targets):
-    """The check resolves the targets to the base's modules, so a wildcard selecting in_proj_qkv is caught too."""
-    with pytest.raises(AssertionError, match=r"no PEFT adapter can name: use --lora-type lora"):
-        lora_arguments._assert_adapter_layout_defined(_gdn_export_args(monkeypatch, targets))
-    # no HF export: nothing to refuse
-    lora_arguments._assert_adapter_layout_defined(_gdn_export_args(monkeypatch, targets, save_hf=None))
-    # one shared lora_A per in_proj_qkv has a PEFT form
-    lora_arguments._assert_adapter_layout_defined(_gdn_export_args(monkeypatch, targets, lora_type="lora"))
-    # multi-LoRA reads the slots but writes no PEFT view
-    lora_arguments._assert_adapter_layout_defined(
-        _gdn_export_args(monkeypatch, targets, save_hf=None, multi_lora=True)
-    )
-
-
 def _gpt_oss_export_args(monkeypatch, **overrides):
     from transformers import GptOssConfig
 

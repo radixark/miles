@@ -3,7 +3,6 @@ from typing import Any
 
 from miles.backends.megatron_utils.lora.native import resolve_adapter_targets, validate_native_lora_args
 from miles.backends.sglang_utils.arguments import sglang_attention_dp_enabled
-from miles.backends.training_utils.checkpoint.adapter.adapter_exports import has_plain_peft_form
 from miles.backends.training_utils.checkpoint.adapter.key_mapping import fused_components
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
 from miles.utils.hf_utils.config import load_hf_config
@@ -107,17 +106,12 @@ def _assert_adapter_layout_defined(args) -> None:
             f"{hf_config.model_type!r}, which miles does not define"
         )
         if exports_hf_snapshots(args):
-            _assert_hf_exports_have_peft_form(args, hf_config)
+            _assert_bridge_hf_exports_keep_every_expert(args, hf_config)
 
 
-def _assert_hf_exports_have_peft_form(args, hf_config) -> None:
+def _assert_bridge_hf_exports_keep_every_expert(args, hf_config) -> None:
     targets = get_hf_lora_targets(hf_config.to_dict())
     run = _launch_parametrization(args, hf_config)
-    assert has_plain_peft_form(run, targets), (
-        f"--save-hf and eval snapshots write a PEFT adapter, but under --lora-type {args.lora_type} the components "
-        "of an HF-fused module have their own lora_A, which no PEFT adapter can name: use --lora-type lora (one "
-        "shared lora_A per fused module), or drop --save-hf and eval snapshots"
-    )
     # Bridge exports a packed family's per-expert side under one unindexed name for every expert
     packed_shared_outer = targets.packed_expert_gate_up_layout is not None and args.experts_shared_outer_loras
     assert not (packed_shared_outer and any(".experts." in module for module in run.target_modules)), (
