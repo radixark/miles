@@ -60,7 +60,6 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --input-key prompt
   --label-key label
   --rollout-shuffle
-  --rm-type math
   --num-rollout 100
   --rollout-batch-size 32
   --n-samples-per-prompt 8
@@ -69,7 +68,8 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --global-batch-size 64
   --balance-data
   --prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl
-  --apply-chat-template  
+  --apply-chat-template
+  --rm-type math  
   --advantage-estimator grpo
   --entropy-coef 0.0
   --eps-clip 0.2

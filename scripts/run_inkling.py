@@ -39,6 +39,10 @@ Tasks:
   - dapo_math  text (dapo-math-17k), chat template, aime25 eval.
   - geo3k      vision (geo3k), structured-message rendering, frozen towers,
                geo3k-val eval.
+  - avqa_audio audio multiple choice (AVQA, examples/avqa_audio/prepare_avqa_audio.py),
+               structured-message rendering, frozen towers.
+  Multimodal tasks run on SGLang's token-space processor; --no-token-space-mm keeps
+  the Miles-side Inkling processor (sentinel rendering and expansion at training).
 
 Usage patterns:
 
@@ -88,7 +92,7 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     ] = "Inkling"
 
     train_mode: Literal["full", "lora"] = "full"
-    task: Literal["dapo_math", "geo3k"] = "dapo_math"
+    task: Literal["dapo_math", "geo3k", "avqa_audio"] = "dapo_math"
     fully_async: bool = False
     rollout_num_nodes: int = 4
     enable_eval: bool = False
@@ -120,6 +124,7 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     lora_adapter_path: str | None = None
 
     enable_r3: bool = True
+    token_space_mm: bool = True
 
     extra_args: str = ""
 
@@ -147,7 +152,7 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
 
     @property
     def is_mm(self):
-        return self.task == "geo3k"
+        return self.task in ("geo3k", "avqa_audio")
 
 
 def _get_parallel_config(args: ScriptArgs) -> str:
@@ -239,7 +244,6 @@ def _train(args: ScriptArgs):
         "--input-key prompt "
         "--label-key label "
         "--rollout-shuffle "
-        "--rm-type math "
         f"--num-rollout {args.num_rollout} "
         f"--rollout-batch-size {args.rollout_batch_size} "
         f"--n-samples-per-prompt {args.n_samples_per_prompt} "
@@ -252,7 +256,9 @@ def _train(args: ScriptArgs):
     match args.task:
         case "dapo_math":
             rollout_args += (
-                f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl " "--apply-chat-template "
+                f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl "
+                "--apply-chat-template "
+                "--rm-type math "
             )
             if args.enable_eval:
                 eval_args = (
@@ -263,7 +269,7 @@ def _train(args: ScriptArgs):
                     f"--eval-max-response-len {args.rollout_max_response_len} "
                 )
         case "geo3k":
-            rollout_args += f"--prompt-data {args.data_dir}/geo3k/geo3k_train.jsonl "
+            rollout_args += f"--prompt-data {args.data_dir}/geo3k/geo3k_train.jsonl " "--rm-type math "
             if args.enable_eval:
                 eval_args = (
                     "--eval-interval 5 "
@@ -272,6 +278,8 @@ def _train(args: ScriptArgs):
                     "--n-samples-per-eval-prompt 1 --eval-temperature 1 "
                     f"--eval-max-response-len {args.rollout_max_response_len} "
                 )
+        case "avqa_audio":
+            rollout_args += f"--prompt-data {args.data_dir}/avqa_audio/train.jsonl " "--rm-type gpqa "
 
     grpo_args = (
         "--advantage-estimator grpo "
@@ -368,6 +376,10 @@ def _train(args: ScriptArgs):
         # The mm provider wires the frozen HF vision/audio towers; it overrides the
         # text provider from the model sh (MODEL_ARGS precede train_args; last one wins).
         inkling_args = "--custom-model-provider-path miles_plugins.models.inkling.model.inkling_mm_model_provider "
+        if args.token_space_mm:
+            # The engines expand the template's media placeholders and the trainer rebuilds
+            # the tower inputs with the same strategy, from the media paths in the prompts.
+            inkling_args += "--multimodal-token-space-processing " "--sglang-enable-token-space-processor "
 
     misc_args = (
         "--transformer-impl transformer_engine "
