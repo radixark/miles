@@ -177,7 +177,6 @@
         "pages": [
          "models/kimi/index",
          "models/kimi/kimi-k3",
-         "models/kimi/kimi-k31",
          "models/kimi/kimi-k2.5",
          "models/kimi/kimi-k2"
         ],
