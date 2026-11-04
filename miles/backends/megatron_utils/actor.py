@@ -470,6 +470,7 @@ class MegatronTrainRayActor(TrainRayActor):
         # empty cache after initialization
         clear_memory()
 
+        self._schedule_first_rollout = load_output.schedule_first_rollout
         return load_output
 
     def _load_auxiliary_checkpoints(self) -> None:
@@ -947,6 +948,7 @@ class MegatronTrainRayActor(TrainRayActor):
             self.optimizer,
             self.opt_param_scheduler,
             adapter_slots=self.adapter_slots,
+            schedule_first_rollout=self._schedule_first_rollout,
         )
 
         if self.args.save_hf is not None and self.role == "actor":

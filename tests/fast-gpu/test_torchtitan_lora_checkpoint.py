@@ -471,7 +471,7 @@ def test_a_dir_saved_by_a_run_from_start_rollout_id_resumes(tmp_path):
     [
         {"dcp_step": 40},
         {"training_state": {"iteration": 9, "step": 40, "first_rollout": 0, "lr_scheduler": {"last_epoch": 40}}},
-        {"training_state": {"iteration": 9, "opt_param_scheduler": {"num_steps": 320}}},
+        {"training_state": {"iteration": 9, "first_rollout": 0, "opt_param_scheduler": {"num_steps": 320}}},
     ],
 )
 def test_a_resume_from_another_start_rollout_id_writes_dirs_that_resume(tmp_path, source):
@@ -484,23 +484,22 @@ def test_a_resume_from_another_start_rollout_id_writes_dirs_that_resume(tmp_path
 
 def test_a_megatron_adapter_dir_resumes_the_schedule_after_its_rollout(tmp_path):
     """Megatron's scheduler state does not apply here; rollouts 0..2 are done."""
-    restored = _restore(tmp_path, training_state={"iteration": 2, "opt_param_scheduler": {"num_steps": 96}})
+    restored = _restore(
+        tmp_path, training_state={"iteration": 2, "first_rollout": 0, "opt_param_scheduler": {"num_steps": 96}}
+    )
     assert (restored.iteration, restored.step) == (2, 3 * _STEPS_PER_ROLLOUT)
     assert restored.lr_states == [{"last_epoch": 3 * _STEPS_PER_ROLLOUT}]
 
 
-def test_a_megatron_adapter_dir_from_a_later_rollout_resumes_the_samples_its_scheduler_counted(tmp_path):
-    """A Megatron run from --start-rollout-id 5 counted 2 rollouts of 32 samples by iteration 6."""
-    restored = _restore(tmp_path, training_state={"iteration": 6, "opt_param_scheduler": {"num_steps": 64}})
+def test_a_megatron_adapter_dir_resumes_from_the_rollout_its_schedule_counts_from(tmp_path):
+    """A Megatron run whose schedule counts from rollout 5 trained 2 rollouts by iteration 6."""
+    restored = _restore(
+        tmp_path, training_state={"iteration": 6, "first_rollout": 5, "opt_param_scheduler": {"num_steps": 64}}
+    )
     assert (restored.iteration, restored.step) == (6, 2 * _STEPS_PER_ROLLOUT)
     assert restored.lr_states == [{"last_epoch": 2 * _STEPS_PER_ROLLOUT}]
     # the resumed run's own saves count their steps from the same rollout
     assert restored.checkpoint._training_state(7)["first_rollout"] == 5
-
-
-def test_a_megatron_adapter_dir_off_this_runs_rollout_grid_is_refused(tmp_path):
-    with pytest.raises(AssertionError, match="counted 40 samples by iteration 2, not whole rollouts of this run's 32"):
-        _restore(tmp_path, training_state={"iteration": 2, "opt_param_scheduler": {"num_steps": 40}})
 
 
 @pytest.mark.parametrize(
@@ -511,23 +510,14 @@ def test_a_megatron_adapter_dir_off_this_runs_rollout_grid_is_refused(tmp_path):
         (96, {"use_dynamic_global_batch_size": True}),
     ],
 )
-def test_a_megatron_adapter_dir_whose_schedule_does_not_map_loads_its_weights_and_starts_fresh(
+def test_a_megatron_adapter_dir_whose_samples_do_not_map_to_rollouts_resumes_with_its_optimizer(
     tmp_path, num_steps, flags
 ):
-    training_state = {"iteration": 2, "opt_param_scheduler": {"num_steps": num_steps}}
-    with pytest.raises(AssertionError, match="pass --no-load-optim"):
-        _restore(tmp_path, training_state=training_state, **flags)
-    restored = _restore(
-        tmp_path,
-        training_state=training_state,
-        no_load_optim=True,
-        lora_adapter_convert_save=str(tmp_path / "out"),
-        **flags,
-    )
-    # the source's rollouts stay done: the fresh schedule starts at the next one
-    assert (restored.iteration, restored.step, restored.lr_states) == (2, 0, [])
-    converted = restored.save.call_args.kwargs["training_state"]
-    assert (converted["iteration"], converted["step"], converted["first_rollout"]) == (2, 0, 3)
+    """The rollouts it trained, not the samples Megatron's scheduler counted, place the schedule."""
+    training_state = {"iteration": 2, "first_rollout": 0, "opt_param_scheduler": {"num_steps": num_steps}}
+    restored = _restore(tmp_path, training_state=training_state, **flags)
+    assert (restored.iteration, restored.step) == (2, 3 * _STEPS_PER_ROLLOUT)
+    assert restored.lr_states == [{"last_epoch": 3 * _STEPS_PER_ROLLOUT}]
 
 
 def test_a_convert_save_of_a_model_only_source_writes_no_training_state(tmp_path):

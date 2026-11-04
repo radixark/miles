@@ -934,6 +934,7 @@ def save(
     non_persistent_ckpt: bool = False,
     *,
     adapter_slots: BridgeAdapterSlots | None = None,
+    schedule_first_rollout: int | None = None,
 ) -> None:
     """Persist a training checkpoint safely with forward hooks disabled.
 
@@ -954,7 +955,8 @@ def save(
 
     if is_lora_model(model):
         assert adapter_slots is not None, "a LoRA --save needs the model's adapter slots"
-        save_single_lora(model, optimizer, opt_param_scheduler, adapter_slots, args, iteration)
+        assert schedule_first_rollout is not None, "a LoRA --save records the rollout its schedule counts from"
+        save_single_lora(model, optimizer, opt_param_scheduler, adapter_slots, args, iteration, schedule_first_rollout)
     else:
         save_checkpoint(
             iteration,
@@ -1020,6 +1022,8 @@ def build_model_and_optimizer(
 class LoadCheckpointOutput:
     loaded_rollout_id: int
     start_rollout_id: int
+    # the rollout the LR schedule counts from: a restored adapter's, else 0 (the schedule fast-forward's origin)
+    schedule_first_rollout: int
 
 
 def load_model_state(
@@ -1072,7 +1076,7 @@ def load_model_state(
         restored_trained_iteration = not args.backend.finetune
         scheduler_restored = False
 
-    adapter_iteration = None
+    adapter_iteration, adapter_first_rollout = None, 0
     if is_lora_enabled(args) and role == "actor" and args.lora_adapter_path is not None:
         restored = restore_single_lora(
             model, args, adapter_slots=adapter_slots, optimizer=optimizer, opt_param_scheduler=opt_param_scheduler
@@ -1111,4 +1115,6 @@ def load_model_state(
     else:
         start_rollout_id = 0
 
-    return LoadCheckpointOutput(loaded_rollout_id=iteration, start_rollout_id=start_rollout_id)
+    return LoadCheckpointOutput(
+        loaded_rollout_id=iteration, start_rollout_id=start_rollout_id, schedule_first_rollout=adapter_first_rollout
+    )

@@ -561,7 +561,9 @@ def single_lora_parametrization(adapter_slots: BridgeAdapterSlots, args) -> Adap
     )
 
 
-def save_single_lora(model, optimizer, opt_param_scheduler, adapter_slots: BridgeAdapterSlots, args, iteration: int):
+def save_single_lora(
+    model, optimizer, opt_param_scheduler, adapter_slots: BridgeAdapterSlots, args, iteration: int, first_rollout: int
+):
     """``{save}/iter_N/adapter``: adapter state, training state and the PEFT export, committed by rank 0."""
     members = DistributedOptimizerMembers(
         adapter_slots,
@@ -572,6 +574,9 @@ def save_single_lora(model, optimizer, opt_param_scheduler, adapter_slots: Bridg
     )
     training_state = {
         "iteration": iteration,
+        # another backend resumes the schedule from it: Megatron's scheduler counts samples, which a skipped step or
+        # a dynamic global batch decouples from rollouts
+        "first_rollout": first_rollout,
         "opt_param_scheduler": opt_param_scheduler.state_dict() if opt_param_scheduler is not None else None,
     }
     save_and_commit_adapter_dir(
@@ -656,7 +661,7 @@ def restore_single_lora(
     scheduler_state = training_state.get("opt_param_scheduler")
     if opt_param_scheduler is not None and scheduler_state is not None:
         opt_param_scheduler.load_state_dict(scheduler_state)
-    # only a torchtitan run records it; Megatron's own scheduler state already counts from its first rollout
+    # an old-format save records none; its schedule counted from rollout 0
     first_rollout = training_state.get("first_rollout", 0)
     return AdapterRestore(training_state["iteration"], scheduler_state is not None, first_rollout)
 

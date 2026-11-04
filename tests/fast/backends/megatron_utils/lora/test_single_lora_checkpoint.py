@@ -21,6 +21,7 @@ from miles.backends.megatron_utils.lora.checkpoint import (
     _world_slice,
     restore_single_lora,
 )
+from miles.backends.training_utils.checkpoint.adapter.adapter_dir import read_training_state
 from miles.backends.training_utils.checkpoint.adapter.adapter_state import AdapterState, LocalShardSpec
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
 from miles.backends.training_utils.checkpoint.adapter.parametrization_conversion import (
@@ -341,8 +342,10 @@ def test_a_native_canonical_gdn_save_commits_without_a_peft_view(tmp_path):
         backend=SimpleNamespace(save=str(tmp_path / "save"), use_precision_aware_optimizer=False, no_save_optim=False),
     )
     with patch(f"{_MODULE}.DistributedOptimizerMembers", return_value=_CanonicalGdnMembers()):
-        lora_checkpoint.save_single_lora([], MagicMock(), None, slots, args, iteration=4)
+        lora_checkpoint.save_single_lora([], MagicMock(), None, slots, args, iteration=4, first_rollout=3)
 
     committed = resolve_adapter_dir(tmp_path / "save" / "iter_0000004", "adapter", tenant=None)
+    # another backend resumes the schedule from the rollout it counts from
+    assert read_training_state(committed.path)["first_rollout"] == 3
     assert (committed.path / "adapter_parametrization.json").is_file()
     assert not (committed.path / "adapter_model.safetensors").exists()

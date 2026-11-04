@@ -453,7 +453,7 @@ class TorchtitanLoraCheckpoint:
         elif training_state is not None and "lr_scheduler" in training_state:
             training_state = self._adopt_torchtitan_dir_schedule(path, training_state, load_optimizer)
         elif training_state is not None and training_state["iteration"] is not None:
-            training_state = self._adopt_megatron_dir_schedule(path, training_state, load_optimizer)
+            training_state = self._adopt_megatron_dir_schedule(training_state)
         if self._args.start_rollout_id is not None:
             # the actor starts at --start-rollout-id, not after the source's rollout: count later saves' steps from it
             self._first_rollout = self._args.start_rollout_id - self._trainer.step // self._steps_per_rollout
@@ -501,37 +501,12 @@ class TorchtitanLoraCheckpoint:
         self._trainer.engine.num_completed_steps = training_state["step"]
         return training_state
 
-    def _adopt_megatron_dir_schedule(self, path: Path, training_state: dict, load_optimizer: bool) -> dict:
-        """Megatron's scheduler state does not apply here: resume the schedule at the samples it counted, which
-        start at that run's first rollout, not rollout 0."""
+    def _adopt_megatron_dir_schedule(self, training_state: dict) -> dict:
+        """Megatron's scheduler state does not apply here: resume this run's schedule after the rollouts the source
+        trained from its first rollout on."""
         iteration = training_state["iteration"]
-        num_samples = training_state["opt_param_scheduler"]["num_steps"]
-        rollout_samples = self._steps_per_rollout * self._args.global_batch_size
-        trained_rollouts, remainder = divmod(num_samples, rollout_samples)
-        if self._args.use_dynamic_global_batch_size:
-            unmapped = (
-                "Megatron's schedule counts samples, and a dynamic global batch trains a data-dependent number "
-                "of them per rollout"
-            )
-        elif remainder or trained_rollouts > iteration + 1:
-            # a step skipped for an inf/nan grad does not advance Megatron's scheduler
-            unmapped = (
-                f"it counted {num_samples} samples by iteration {iteration}, not whole rollouts of this run's "
-                f"{rollout_samples}"
-            )
-        else:
-            unmapped = None
-        # loading weights alone needs no schedule: the schedule starts fresh
-        assert unmapped is None or not load_optimizer, (
-            f"{path} cannot resume this run's schedule: {unmapped}. Keep its rollout and batch sizes, or pass "
-            "--no-load-optim to load its weights and start the schedule fresh"
-        )
-        if unmapped is not None:
-            # only the schedule is dropped: the run still continues after the source's rollout
-            self._first_rollout = iteration + 1
-            return self._training_state(iteration)
-        self._first_rollout = iteration + 1 - trained_rollouts
-        step = trained_rollouts * self._steps_per_rollout
+        self._first_rollout = training_state["first_rollout"]
+        step = (iteration + 1 - self._first_rollout) * self._steps_per_rollout
         load_lr_schedulers(self._trainer.engine.optim.lr_schedulers, {"last_epoch": step})
         self._trainer.engine.num_completed_steps = step
         return training_state
