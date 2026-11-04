@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 import torch
 
+from miles.backends.training_utils.checkpoint.adapter.source_error import AdapterSourceError
 from miles.utils.lora.hf_lora_targets import GDN_IN_PROJ_COMPONENTS_BY_MODULE, HfLoraTargets
 
 _PEFT_PREFIX = "base_model.model."
@@ -24,9 +25,11 @@ class HfKey:
 
 def _split_weight_name(name: str) -> tuple[str, str]:
     # HF PEFT prefixes the model path; main's exports and sampler exports use the bare HF path
-    assert name.endswith(".weight"), f"not a PEFT LoRA tensor name: {name!r}"
+    if not name.endswith(".weight"):
+        raise AdapterSourceError(f"not a PEFT LoRA tensor name: {name!r}")
     module, factor = name.removeprefix(_PEFT_PREFIX).removesuffix(".weight").rsplit(".", 1)
-    assert factor in ("lora_A", "lora_B"), f"not a LoRA factor: {name!r}"
+    if factor not in ("lora_A", "lora_B"):
+        raise AdapterSourceError(f"not a LoRA factor: {name!r}")
     return module, factor
 
 
@@ -82,7 +85,8 @@ def map_tinker_keys_to_hf_keys(name: str, targets: HfLoraTargets) -> HfKey:
     module, factor = _split_weight_name(name)
     if module == _TINKER_UNEMBED:
         return HfKey(f"{targets.unembed[0]}.{factor}")
-    assert module.startswith(_TINKER_LAYER_PREFIX), f"unexpected Tinker tensor name: {name!r}"
+    if not module.startswith(_TINKER_LAYER_PREFIX):
+        raise AdapterSourceError(f"unexpected Tinker tensor name: {name!r}")
     module = _hf_layer_prefix(targets) + module[len(_TINKER_LAYER_PREFIX) :]
     for tinker_fragment, hf_fragment in targets.tinker_name_renames:
         module = module.replace(tinker_fragment, hf_fragment)
@@ -184,6 +188,7 @@ def map_named_tensors_to_hf_keys(
             for component, part in zip(components, split_fused_lora_b(module, value, targets), strict=True):
                 weights[f"{component}.lora_B"] = part.clone()
     for key, experts in per_expert.items():
-        assert sorted(experts) == list(range(len(experts))), f"{key}: expert indices are not 0..E-1"
+        if sorted(experts) != list(range(len(experts))):
+            raise AdapterSourceError(f"{key}: expert indices are not 0..E-1")
         weights[key] = torch.stack([experts[i] for i in range(len(experts))])
     return weights, fused_groups

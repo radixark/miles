@@ -483,7 +483,8 @@ def _train(args: ScriptArgs) -> None:
     if args.check_weight_update_equal:
         misc_args += "--check-weight-update-equal "
     # the adapter checkpoint stores Adam state, and debug_minimal trains with SGD
-    if not args.skip_saving and not (is_debug and is_lora):
+    assert args.skip_saving or not (is_debug and is_lora), "debug_minimal LoRA cannot --save; pass --skip-saving"
+    if not args.skip_saving:
         misc_args += f"--save {args.save_dir}/{args.run_id} --save-interval 50 "
 
     if args.enable_wandb:

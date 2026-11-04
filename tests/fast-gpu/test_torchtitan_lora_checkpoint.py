@@ -7,6 +7,7 @@ register_cuda_ci(
 
 import os
 import socket
+import weakref
 from dataclasses import dataclass, replace
 from datetime import timedelta
 from functools import partial
@@ -168,7 +169,7 @@ def _load_dcp(tmp_path, saved: dict) -> TorchtitanCheckpointLoader:
         patch.object(lora_checkpoint, "hf_fingerprint_tensors", return_value={}),
         patch.object(lora_checkpoint, "assert_same_base_tensors"),
     ):
-        loader.parametrization(path)
+        assert loader.parametrization(path)[1] is False
         # the checks read the source only; nothing is loaded until load_adapter_dir accepted it
         assert all(torch.equal(param, torch.zeros(2, 2)) for param in params.values())
         loader.apply(loader.prepare(path))
@@ -188,6 +189,29 @@ def test_a_full_dcp_loads_its_training_state(tmp_path, single_rank_gloo):
     saved |= {"train_state.step": 8, "train_state.ntokens_seen": 640, "lr_scheduler.last_epoch": 8}
     loader = _load_dcp(tmp_path, saved)
     assert loader.training_state() == ({"step": 8, "ntokens_seen": 640}, {"last_epoch": 8})
+
+
+@pytest.mark.parametrize("with_optimizer", [True, False])
+def test_a_dcp_reports_whether_it_holds_optimizer_state(tmp_path, single_rank_gloo, with_optimizer):
+    """load_adapter_dir refuses a source without it unless --no-load-optim."""
+    saved = {_LORA_A: torch.ones(2, 2), _LORA_B: torch.ones(2, 2)}
+    if with_optimizer:
+        for key in (_LORA_A, _LORA_B):
+            saved |= {f"optimizer.state.{key}.{name}": torch.zeros(2, 2) for name in ("exp_avg", "exp_avg_sq")}
+            saved[f"optimizer.state.{key}.step"] = torch.tensor(1.0)
+    path = tmp_path / "step-10"
+    dcp.save(saved, checkpoint_id=path, no_dist=True)
+    params = {key: torch.nn.Parameter(torch.zeros(2, 2)) for key in (_LORA_A, _LORA_B)}
+    loader = TorchtitanCheckpointLoader(
+        SimpleNamespace(parameters=params), None, [], None, _Run(str(tmp_path), 16), load_optimizer=True
+    )
+    with (
+        patch.object(lora_checkpoint, "resolve_hf_dir", return_value=tmp_path),
+        patch.object(lora_checkpoint, "hf_fingerprint_tensors", return_value={}),
+        patch.object(lora_checkpoint, "assert_same_base_tensors"),
+        patch.object(loader, "_base_fingerprint_tensors", return_value={}),
+    ):
+        assert loader.parametrization(path) == (replace(_Run(str(tmp_path), 16), lora_alpha=None), with_optimizer)
 
 
 def _base_check_worker(rank: int, world_size: int, port: int, path) -> None:
@@ -530,6 +554,11 @@ def test_a_megatron_adapter_dir_resumes_from_the_rollout_its_schedule_counts_fro
     assert restored.checkpoint._training_state(7)["first_rollout"] == 5
 
 
+def test_a_megatron_adapter_dir_without_first_rollout_is_refused(tmp_path):
+    with pytest.raises(KeyError, match="first_rollout"):
+        _restore(tmp_path, training_state={"iteration": 2, "opt_param_scheduler": {"num_steps": 96}})
+
+
 @pytest.mark.parametrize(
     "num_steps, flags",
     [
@@ -718,6 +747,31 @@ def _one_rank_fails_decoding(rank, world_size, port):
 
 def test_a_rank_local_probe_failure_fails_every_rank():
     run_multiprocess(_one_rank_fails_decoding)
+
+
+def _one_projection_at_a_time(rank, world_size, port):
+    init_gloo(rank, world_size, port=port)
+    init_gloo_group()
+    sd_adapter, params = _adapter()
+    real_local_codes, placed, most_alive = lora_checkpoint._local_codes, [], 0
+
+    def local_codes(param, start):
+        nonlocal most_alive
+        most_alive = max(most_alive, sum(ref() is not None for ref in placed))
+        codes = real_local_codes(param, start)
+        placed.append(weakref.ref(codes))
+        return codes
+
+    lora_checkpoint._local_codes = local_codes
+    mapping = probe_torchtitan_row_mapping(params, sd_adapter)
+    _check(mapping, list(params.values()), _expected(sd_adapter, params))
+    # a projection's lora_b is placed beside its own lora_a, never beside an earlier projection's codes
+    assert most_alive == 1, most_alive
+    dist.destroy_process_group()
+
+
+def test_the_probe_holds_one_projections_codes_at_a_time():
+    run_multiprocess(_one_projection_at_a_time, world_size=1)
 
 
 def _uneven_rows(rank, world_size, port):

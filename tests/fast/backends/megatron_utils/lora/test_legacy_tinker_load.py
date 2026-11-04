@@ -12,6 +12,7 @@ from miles.backends.training_utils.checkpoint.adapter.adapter_dir import HeadRow
 from miles.backends.training_utils.checkpoint.adapter.adapter_exports import write_peft_adapter
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
 from miles.backends.training_utils.checkpoint.adapter.readers import AdapterSourceKind
+from miles.backends.training_utils.checkpoint.adapter.source_error import AdapterSourceError
 from miles.utils.distributed_utils import init_gloo_group
 from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
 
@@ -20,12 +21,19 @@ UNSHARED = AdapterParametrization("m", 2, 4.0, "canonical_lora", (Q, K), False)
 TARGETS = get_hf_lora_targets({"model_type": "qwen3", "num_hidden_layers": 1})
 
 
-def _legacy_source(monkeypatch, saved_shape):
+def _legacy_metadata(saved_shape, *, with_optimizer=True):
+    keys = {"layer.adapter.w": SimpleNamespace(size=torch.Size(saved_shape))}
+    if with_optimizer:
+        keys["optimizer.state.exp_avg.layer.adapter.w"] = SimpleNamespace(size=torch.Size(saved_shape))
+    return SimpleNamespace(state_dict_metadata=keys)
+
+
+def _legacy_source(monkeypatch, saved_shape, *, with_optimizer=True):
     monkeypatch.setattr(
         checkpoint, "check_adapter_source", lambda *_, **__: AdapterSourceKind.LEGACY_TINKER_CHECKPOINT
     )
     monkeypatch.setattr(checkpoint, "_read_legacy_meta", lambda *_: {})
-    metadata = SimpleNamespace(state_dict_metadata={"layer.adapter.w": SimpleNamespace(size=torch.Size(saved_shape))})
+    metadata = _legacy_metadata(saved_shape, with_optimizer=with_optimizer)
     monkeypatch.setattr(checkpoint.dcp, "FileSystemReader", lambda _: SimpleNamespace(read_metadata=lambda: metadata))
     monkeypatch.setattr(
         checkpoint,
@@ -38,6 +46,13 @@ def _legacy_source(monkeypatch, saved_shape):
 def test_a_legacy_checkpoint_with_the_slots_keys_loads(gloo, monkeypatch, load_optimizer):
     _legacy_source(monkeypatch, saved_shape=(32, 6))
     assert checkpoint.find_load_mismatch(None, 0, "/ckpt", None, None, load_optimizer, run_shapes={}) is None
+
+
+@pytest.mark.parametrize("load_optimizer", [True, False])
+def test_a_legacy_checkpoint_without_optimizer_state_is_a_mismatch(gloo, monkeypatch, load_optimizer):
+    _legacy_source(monkeypatch, saved_shape=(32, 6), with_optimizer=False)
+    mismatch = checkpoint.find_load_mismatch(None, 0, "/ckpt", None, None, load_optimizer, run_shapes={})
+    assert mismatch is not None and "holds no optimizer state, which every legacy slot load reads" in mismatch
 
 
 def test_a_legacy_checkpoint_padded_to_another_max_rank_is_a_mismatch(gloo, monkeypatch):
@@ -59,7 +74,14 @@ def test_a_model_side_failure_is_a_server_error_not_a_mismatch(gloo, monkeypatch
 
 
 @pytest.mark.parametrize(
-    "error", [OSError(errno.EIO, "Input/output error"), TypeError("library bug")], ids=["storage_fault", "bug"]
+    "error",
+    [
+        OSError(errno.EIO, "Input/output error"),
+        TypeError("library bug"),
+        AssertionError("backend invariant"),
+        ValueError("backend value bug"),
+    ],
+    ids=["storage_fault", "bug", "assertion", "value_error"],
 )
 def test_a_failure_that_is_not_the_sources_fault_is_a_server_error(gloo, monkeypatch, error):
     def failing(*_, **__):
@@ -150,8 +172,19 @@ def test_an_in_model_source_without_a_loader_is_a_mismatch(gloo, tmp_path):
 def test_a_legacy_layout_mismatch_names_the_gateway_flag(tmp_path):
     # META.json from before the layout was recorded: fused, per-expert
     (tmp_path / "META.json").write_text('{"base_model": "m", "lora_rank": 2, "lora_alpha": 4.0}')
-    with pytest.raises(ValueError, match="launched with --lora-type lora"):
+    with pytest.raises(AdapterSourceError, match="launched with --lora-type lora"):
         checkpoint._read_legacy_meta(tmp_path, UNSHARED)
+
+
+def test_a_legacy_meta_without_a_required_field_is_the_users_mismatch(gloo, tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        checkpoint, "check_adapter_source", lambda *_, **__: AdapterSourceKind.LEGACY_TINKER_CHECKPOINT
+    )
+    (tmp_path / "META.json").write_text('{"base_model": "m", "lora_alpha": 4.0}')
+    mismatch = checkpoint.find_load_mismatch(
+        None, 0, str(tmp_path), UNSHARED, TARGETS, load_optimizer=False, run_shapes={}
+    )
+    assert mismatch is not None and "lacks ['lora_rank']" in mismatch
 
 
 def test_a_legacy_checkpoint_is_read_before_anything_is_loaded_into_the_slot(tmp_path, monkeypatch):
@@ -163,7 +196,14 @@ def test_a_legacy_checkpoint_is_read_before_anything_is_loaded_into_the_slot(tmp
     optimizer = SimpleNamespace(slot=2, sharded_state=lambda weights, is_loading: {"optim": is_loading})
     loader = checkpoint.LegacyTinkerCheckpointLoader("model", optimizer, run, load_optimizer=True)
 
-    assert loader.parametrization(tmp_path) == replace(run, lora_alpha=16.0)
+    saved = {"metadata": _legacy_metadata((4, 8))}
+    monkeypatch.setattr(
+        checkpoint.dcp, "FileSystemReader", lambda _: SimpleNamespace(read_metadata=lambda: saved["metadata"])
+    )
+    assert loader.parametrization(tmp_path) == (replace(run, lora_alpha=16.0), True)
+    saved["metadata"] = _legacy_metadata((4, 8), with_optimizer=False)
+    with pytest.raises(AdapterSourceError, match="holds no optimizer state"):
+        loader.parametrization(tmp_path)
     prepared = loader.prepare(tmp_path)
     assert loaded == [], "reading the source and its shells loads nothing"
     loader.apply(prepared)

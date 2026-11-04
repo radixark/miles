@@ -1,6 +1,7 @@
 """Bridge single LoRA's --save / --lora-adapter-path glue around the adapter library."""
 
 import json
+import multiprocessing
 from dataclasses import replace
 from functools import partial
 from pathlib import Path
@@ -9,9 +10,10 @@ from unittest.mock import DEFAULT, MagicMock, patch
 
 import pytest
 import torch
+import torch.distributed as dist
 from megatron.core.optimizer import DistributedOptimizer
 from megatron.core.optimizer.cpu_offloading.hybrid_optimizer import HybridDeviceOptimizer
-from tests.fast.dist_utils import run_multiprocess
+from tests.fast.dist_utils import init_gloo, run_multiprocess
 
 import miles.backends.megatron_utils.lora.checkpoint as lora_checkpoint
 import miles.backends.megatron_utils.lora.utils as lora_utils
@@ -31,6 +33,7 @@ from miles.backends.training_utils.checkpoint.adapter.parametrization_conversion
     assert_parametrization_matches_run,
 )
 from miles.backends.training_utils.checkpoint.adapter.readers import AdapterSourceKind
+from miles.backends.training_utils.checkpoint.adapter.source_error import AdapterSourceError
 
 _MODULE = "miles.backends.megatron_utils.lora.checkpoint"
 
@@ -73,9 +76,17 @@ def test_an_old_format_save_resumes_its_iteration_whichever_reader_loads_the_wei
         {"iteration": 7, "optimizer": None, "parameter_state": None, "opt_param_scheduler": {"num_steps": 56}},
         tmp_path / "training_state_rank0.pt",
     )
-    (iteration, _, _), scheduler, _ = _restore(tmp_path)
-    assert iteration == 7
+    restored, scheduler, mocks = _restore(tmp_path, convert_save=str(tmp_path / "converted"))
+    # it predates first_rollout: its schedule is taken to count from rollout 0, and a convert-save records that
+    assert restored == (7, True, 0)
+    assert mocks["save_and_commit_adapter_dir"].call_args.kwargs["training_state"]["first_rollout"] == 0
     scheduler.load_state_dict.assert_called_once_with({"num_steps": 56})
+
+
+def test_an_adapter_dir_without_first_rollout_is_refused(tmp_path):
+    with patch(f"{_MODULE}.read_training_state", return_value={"iteration": 6, "opt_param_scheduler": None}):
+        with pytest.raises(KeyError, match="first_rollout"):
+            _restore(tmp_path)
 
 
 def test_a_torchtitan_dir_reports_the_rollout_its_schedule_started_at(tmp_path):
@@ -130,12 +141,31 @@ def test_an_old_format_save_reports_the_alpha_its_peft_pair_records(tmp_path):
         experts_shared_outer_loras=False,
     )
     with patch.multiple(_MODULE, _native_adapter_shard=DEFAULT, _read_native_adapter_shard=DEFAULT) as m:
-        loaded = LegacyRankShardLoader(
+        loaded, has_optimizer_state = LegacyRankShardLoader(
             [], MagicMock(), run, load_optimizer=False, precision_aware=False
         ).parametrization(tmp_path)
-    assert loaded.lora_alpha == 32.0
+    assert loaded.lora_alpha == 32.0 and not has_optimizer_state
     # reading the parametrization leaves the model alone: a refused source loads nothing
     m["_read_native_adapter_shard"].assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "training_state, has_optimizer_state",
+    [
+        ({"optimizer": {"step": 7}, "parameter_state": []}, True),
+        ({"optimizer": None, "parameter_state": None}, False),
+        ({"optimizer": {"step": 7}}, False),
+    ],
+    ids=["full", "saved-with-no-save-optim", "pre-parameter-state-format"],
+)
+def test_an_old_format_save_reports_whether_it_holds_optimizer_state(tmp_path, training_state, has_optimizer_state):
+    """load_adapter_dir refuses a source without it unless --no-load-optim."""
+    (tmp_path / "adapter_config.json").write_text(json.dumps({"lora_alpha": 32.0}))
+    state = {"iteration": 5, "opt_param_scheduler": None} | training_state
+    torch.save(state, tmp_path / "training_state_rank0.pt")
+    run = AdapterParametrization("/hf", 2, 16.0, "lora", ("model.layers.0.self_attn.q_proj",), False)
+    loader = LegacyRankShardLoader([], MagicMock(), run, load_optimizer=True, precision_aware=False)
+    assert loader.parametrization(tmp_path)[1] == has_optimizer_state
 
 
 def _prepare_with_one_rank_missing_its_shard(rank, world_size, port, root):
@@ -292,7 +322,7 @@ def test_an_adapter_saved_under_one_mount_loads_under_another(monkeypatch):
     assert saved.base_model == "/root/models/Qwen3-4B", "the path stays as given, for information"
     assert_parametrization_matches_run(saved, run, [], load_optimizer=False, has_optimizer_state=False)
     other = _recorded_parametrization(monkeypatch, "/root/models/Qwen3-4B", hidden_size=4096)
-    with pytest.raises(AssertionError, match="is another model than run base"):
+    with pytest.raises(AdapterSourceError, match="is another model than run base"):
         assert_parametrization_matches_run(saved, other, [], load_optimizer=False, has_optimizer_state=False)
 
 
@@ -348,7 +378,11 @@ def _optimizer(calls):
 
 def _load(path, chunks, calls, *, load_optimizer):
     loader = LegacyRankShardLoader(chunks, _optimizer(calls), RUN, load_optimizer, precision_aware=False)
-    parametrization = loader.parametrization(path)
+    parametrization, has_optimizer_state = loader.parametrization(path)
+    # load_adapter_dir's check between reading the parametrization and preparing
+    assert_parametrization_matches_run(
+        parametrization, RUN, [], load_optimizer=load_optimizer, has_optimizer_state=has_optimizer_state
+    )
     loader.apply(loader.prepare(path))
     return parametrization
 
@@ -419,7 +453,7 @@ class TestLegacyRankShardLoader:
         monkeypatch.setattr(lora_checkpoint, "_distributed_optimizers", lambda _optimizer: [])
         _save_old_format(tmp_path, _random_chunks(1), **training_state)
 
-        with pytest.raises(AssertionError, match="no optimizer state to resume; pass --no-load-optim"):
+        with pytest.raises(AdapterSourceError, match=r"no optimizer state; load weights only \(--no-load-optim\)"):
             _load(tmp_path, [_Chunk()], [], load_optimizer=True)
         _load(tmp_path, [_Chunk()], [], load_optimizer=False)
 
@@ -468,3 +502,185 @@ def test_a_save_records_the_rollout_its_schedule_started_at():
     ) as mocks:
         lora_checkpoint.save_single_lora([], MagicMock(), None, slots, args, iteration=4, first_rollout=3)
     assert mocks["save_and_commit_adapter_dir"].call_args.kwargs["training_state"]["first_rollout"] == 3
+
+
+class _DpZeroOptimizer(DistributedOptimizer):
+    """A DistributedOptimizer's dp-zero gather and scatter over one parameter, on the gloo group Megatron gives it."""
+
+    def __init__(self, param, master, group):
+        self.group, self.init_state_fn, self.optimizer = group, None, torch.optim.Adam([torch.zeros(1)])
+        self.world = {
+            "param": master.flatten().clone(),
+            "exp_avg": master.flatten() + 1,
+            "exp_avg_sq": master.flatten() + 2,
+        }
+        n = param.numel()
+        self.buffers = [
+            SimpleNamespace(
+                param_index_map={param: (0, n, 0)},
+                bucket_indices=[(0, n)],
+                buckets=[SimpleNamespace(numel_unpadded=n)],
+                param_dtype=torch.bfloat16,
+                grad_dtype=torch.float32,
+            )
+        ]
+
+    def get_parameter_state_dp_zero(self, use_gloo_comm, empty_data=False):
+        assert use_gloo_comm
+        if self.group.rank() != 0:
+            return None
+        world = {k: torch.empty_like(v) if empty_data else v.clone() for k, v in self.world.items()}
+        return {0: {(torch.bfloat16, torch.float32): world}, "buckets_coalesced": None}
+
+    def load_parameter_state_from_dp_zero(self, gathered):
+        leader = dist.get_global_rank(self.group, 0)
+        for key, tensor in self.world.items():
+            if gathered is not None:
+                tensor.copy_(gathered[0][(torch.bfloat16, torch.float32)][key])
+            dist.broadcast(tensor, src=leader, group=self.group)
+
+
+def _expert_dp_round_trip(rank, world_size, port):
+    from megatron.core import parallel_state
+    from megatron.core.process_groups_config import ProcessGroupCollection
+
+    from miles.backends.megatron_utils import parallel as megatron_parallel
+    from miles.backends.training_utils.parallel import get_parallel_state, set_parallel_state
+
+    init_gloo(rank, world_size, port=port)
+    # dense DP is 4 (one leader), expert DP is 2 (a leader per expert-parallel rank)
+    parallel_state.initialize_model_parallel(expert_model_parallel_size=2)
+    megatron_parallel.get_args = lambda: SimpleNamespace(cp_comm_type=None)
+    set_parallel_state(megatron_parallel.create_megatron_parallel_state(indep_dp=None))
+
+    # dense values are the same on every rank, expert values the same within an expert DP group
+    masters = [
+        torch.randn(shape, generator=torch.Generator().manual_seed(seed)).bfloat16().float()
+        for shape, seed in (((2, 3), 0), ((4, 3), 1 + get_parallel_state().ep.rank))
+    ]
+    params = [torch.nn.Parameter(m.bfloat16()) for m in masters]
+    params[1].allreduce = False
+    # the gloo groups Megatron's optimizer setup hands the dense and the expert DistributedOptimizer
+    optimizer_groups = ProcessGroupCollection.setup_process_groups_for_optimizer(None, [SimpleNamespace()])
+    groups = [optimizer_groups["intra_dp_cp_group_gloo"], optimizer_groups["intra_expt_dp_group_gloo"]]
+    subs = [_DpZeroOptimizer(p, m, g) for p, m, g in zip(params, masters, groups, strict=True)]
+    slots = SimpleNamespace(
+        bf16_adapter_key_style="peft",
+        load_overwrites_every_element=True,
+        slot_parameters=lambda slot: params,
+        local_shard_specs=lambda slot, holds: [SimpleNamespace(local_shape=params[i].shape) for i in sorted(holds)],
+        piece_parameter=lambda slot, holds: [(i, torch.arange(params[i].numel())) for i in sorted(holds)],
+    )
+
+    def cast_masters_to_params():
+        for param, sub in zip(params, subs, strict=True):
+            param.data.copy_(sub.world["param"].view(param.shape))
+
+    lora_checkpoint._build_cast_main_to_params_fn = lambda optimizer, precision_aware: cast_masters_to_params
+    members = lora_checkpoint.DistributedOptimizerMembers(
+        slots, SimpleNamespace(chained_optimizers=subs), [], precision_aware=False
+    )
+    state = members.export_adapter_state(0)
+    expected = [{k: v.clone() for k, v in sub.world.items()} for sub in subs]
+    for sub in subs:
+        for tensor in sub.world.values():
+            tensor.zero_()
+    members.import_adapter_state(0, state)
+    members.finish_import_adapter_state(0)
+    for sub, saved in zip(subs, expected, strict=True):
+        assert all(torch.equal(sub.world[k], saved[k]) for k in saved)
+    assert all(torch.equal(p.float(), m) for p, m in zip(params, masters, strict=True))
+    parallel_state.destroy_model_parallel()
+    dist.destroy_process_group()
+
+
+def test_each_distributed_optimizers_gloo_leader_exports_and_imports_its_parameters():
+    """Dense and expert parameters have different DP groups, so different leaders."""
+    process = multiprocessing.get_context("spawn").Process(target=run_multiprocess, args=(_expert_dp_round_trip, 4))
+    process.start()
+    process.join(timeout=120)
+    hung = process.is_alive()
+    process.kill()
+    assert not hung and process.exitcode == 0
+
+
+class _LedElsewhere(torch.Tensor):
+    """A parameter another rank leads: exporting this rank's pieces must never read or copy it."""
+
+    def detach(self):
+        raise AssertionError("a parameter this rank does not lead was read")
+
+    def float(self):
+        raise AssertionError("a parameter this rank does not lead was copied")
+
+
+def test_an_export_reads_only_the_parameters_this_rank_leads(monkeypatch):
+    master = torch.tensor([[1.0, 2.0]])
+    led, elsewhere = torch.nn.Parameter(master.bfloat16()), torch.zeros(3, 4).as_subclass(_LedElsewhere)
+    elsewhere.allreduce = False
+    # this rank leads its dense DP group but not its expert DP group
+    monkeypatch.setattr(
+        lora_checkpoint,
+        "get_parallel_state",
+        lambda: SimpleNamespace(intra_dp_cp=SimpleNamespace(rank=0), edp=SimpleNamespace(rank=1)),
+    )
+    dense = _DpZeroOptimizer(led, master, SimpleNamespace(rank=lambda: 0))
+    expert = _DpZeroOptimizer(elsewhere, torch.zeros(3, 4), SimpleNamespace(rank=lambda: 1))
+    params = [led, elsewhere]
+    slots = SimpleNamespace(
+        bf16_adapter_key_style="peft",
+        slot_parameters=lambda slot: params,
+        local_shard_specs=lambda slot, holds: [SimpleNamespace(local_shape=led.shape)],
+        piece_parameter=lambda slot, holds: [(0, torch.arange(2))],
+    )
+    members = lora_checkpoint.DistributedOptimizerMembers(
+        slots, SimpleNamespace(chained_optimizers=[dense, expert]), [], precision_aware=False
+    )
+    state = members.export_adapter_state(0)
+    assert torch.equal(state.weights[0], master) and torch.equal(state.exp_avgs[0], master + 1)
+
+
+def test_without_an_optimizer_an_adapter_path_loads_the_weights_and_starts_over(tmp_path, monkeypatch):
+    param = torch.nn.Parameter(torch.zeros(2, 2, dtype=torch.bfloat16))
+    slots = SimpleNamespace(
+        bf16_adapter_key_style="peft",
+        targets=None,
+        slot_parameters=lambda slot: [param],
+        piece_parameter=lambda slot, holds: [(0, torch.tensor([3, 0]))],
+    )
+
+    def load_adapter_dir(path, members, slot, run, targets, *, in_model_loaders_by_kind, **_):
+        # a Bridge checkpoint's load refreshes the optimizer's masters; without one it is refused as unloadable
+        assert AdapterSourceKind.MEGATRON_BRIDGE_CHECKPOINT not in in_model_loaders_by_kind
+        members.import_adapter_state(
+            0,
+            AdapterState(
+                [SimpleNamespace(local_shape=(2,))],
+                [torch.tensor([5.0, 7.0])],
+                [],
+                [],
+                step=None,
+                has_optimizer_state=False,
+            ),
+        )
+        members.finish_import_adapter_state(0)
+        return SimpleNamespace(lora_alpha=16.0)
+
+    monkeypatch.setattr(lora_checkpoint, "single_lora_parametrization", lambda *_: SimpleNamespace(lora_alpha=16.0))
+    monkeypatch.setattr(lora_checkpoint, "load_adapter_dir", load_adapter_dir)
+    args = SimpleNamespace(
+        lora_adapter_path=str(tmp_path),
+        lora_adapter_convert_save=None,
+        megatron_to_hf_mode="bridge",
+        backend=SimpleNamespace(no_load_optim=True, no_save_optim=True, use_precision_aware_optimizer=False),
+    )
+    iteration = restore_single_lora([], args, adapter_slots=slots, optimizer=None, opt_param_scheduler=None)
+    assert iteration is None
+    assert torch.equal(param, torch.tensor([[7.0, 0.0], [0.0, 5.0]], dtype=torch.bfloat16))
+
+
+def test_without_an_optimizer_an_old_format_save_loads_the_weights_only():
+    param = torch.nn.Parameter(torch.zeros(2))
+    loader = LegacyRankShardLoader([], None, None, load_optimizer=False, precision_aware=False)
+    loader.apply(([(param, torch.ones(2))], None))
+    assert torch.equal(param, torch.ones(2))

@@ -78,21 +78,36 @@ def _local_codes(param: torch.Tensor, start: int) -> torch.Tensor:
 def probe_torchtitan_row_mapping(params: Mapping[str, torch.Tensor], sd_adapter) -> RowMapping:
     """Collective. ``params``: the adapter parameters by titan key, in the order their local shards are
     concatenated."""
-    # placing the codes is collective, so every rank does it for every parameter before any rank-local step can fail
-    codes, start = {}, 0
+    starts, total = {}, 0
     for key, param in params.items():
-        codes[key] = _local_codes(param, start)
-        start += (param.to_local() if isinstance(param, DTensor) else param).numel()
+        starts[key] = total
+        total += (param.to_local() if isinstance(param, DTensor) else param).numel()
+    keys_by_projection: dict[str, list[str]] = {}
+    for key in params:
+        keys_by_projection.setdefault(split_adapter_key(key)[0], []).append(key)
     error, pieces, groups, modules = None, [], [], set()
-    try:
-        pieces, groups, modules = _probe_local(codes, start, sd_adapter)
-    except Exception as exc:
-        error = exc
+    for keys in keys_by_projection.values():
+        # placing is collective: a rank whose decoding failed keeps placing, so every rank enters every collective
+        codes = {key: _local_codes(params[key], starts[key]) for key in keys}
+        if error is None:
+            try:
+                found = _probe_local(codes, sd_adapter)
+            except Exception as exc:
+                error = exc
+            else:
+                pieces, groups, modules = pieces + found[0], groups + found[1], modules | found[2]
+        # only one projection's global-shaped codes are alive at a time
+        del codes
+    if error is None:
+        try:
+            pieces = finish_local_pieces(pieces, total)
+        except Exception as exc:
+            error = exc
     return agreed_row_mapping(error, pieces, groups, modules)
 
 
 def _probe_local(
-    codes_by_key: Mapping[str, torch.Tensor], total: int, sd_adapter
+    codes_by_key: Mapping[str, torch.Tensor], sd_adapter
 ) -> tuple[list[HfPiece], list[tuple[str, ...]], set[str]]:
     """Rank-local: the pieces of this rank's placed codes, named by the export itself (iter_hf_adapter_tensors)."""
     pieces, modules, a_by_source = [], set(), {}
@@ -111,7 +126,7 @@ def _probe_local(
             groups.append(group)
         # a shared lora_A is stored once, under its sorted group's first member
         pieces += _pieces_of(f"{group[0]}.lora_A", codes)
-    return finish_local_pieces(pieces, total), groups, modules
+    return pieces, groups, modules
 
 
 def _pieces_of(hf_key: str, codes: torch.Tensor) -> list[HfPiece]:
@@ -276,9 +291,9 @@ class TorchtitanCheckpointLoader:
         dcp.load(tensors, checkpoint_id=path, no_dist=True)
         return {name: t for name, t in self._sd_adapter.to_hf(tensors).items() if is_fingerprint_tensor(name)}
 
-    def parametrization(self, path: Path) -> AdapterParametrization:
+    def parametrization(self, path: Path) -> tuple[AdapterParametrization, bool]:
         """Collective: every check against the source, reading it only; ``apply`` then loads it."""
-        metadata, error = None, None
+        metadata, error, has_optimizer_state = None, None, None
         try:
             metadata = dcp.FileSystemReader(path).read_metadata().state_dict_metadata
         except Exception as exc:
@@ -299,12 +314,14 @@ class TorchtitanCheckpointLoader:
                 ), f"{path}: {key} is {tuple(metadata[key].size)}, this run's is {shape} (another --lora-rank?)"
             present = [key in metadata for key in _TRAINING_STATE_KEYS]
             assert all(present) or not any(present), f"{path} holds part of {_TRAINING_STATE_KEYS}"
-            if self._load_optimizer:
+            has_optimizer_state = all(
+                f"optimizer.state.{key}.{name}" in metadata
+                for key in expected
+                for name in ("exp_avg", "exp_avg_sq", "step")
+            )
+            # without it load_adapter_dir refuses the load unless --no-load-optim
+            if self._load_optimizer and has_optimizer_state:
                 for key in params:
-                    for name in ("exp_avg", "exp_avg_sq", "step"):
-                        assert (
-                            f"optimizer.state.{key}.{name}" in metadata
-                        ), f"{path} has no optimizer state for {key}; pass --no-load-optim"
                     for name in ("exp_avg", "exp_avg_sq"):
                         dtype = metadata[f"optimizer.state.{key}.{name}"].properties.dtype
                         assert (
@@ -325,7 +342,7 @@ class TorchtitanCheckpointLoader:
             error = exc
         raise_if_any_rank_failed(error)
         self._checked = (path, metadata)
-        return replace(self._run, lora_alpha=None)
+        return replace(self._run, lora_alpha=None), has_optimizer_state
 
     def prepare(self, path: Path) -> tuple:
         checked_path, _ = self._checked
@@ -500,7 +517,7 @@ class TorchtitanLoraCheckpoint:
             "or pass --no-load-optim to load its weights and start the schedule fresh"
         )
         if training_state["step"] != grid_step:
-            # weights only: a fresh schedule after the source's rollout, as for a Megatron dir off the grid
+            # weights only: a fresh schedule that starts after the source's rollout
             self._first_rollout = 0 if iteration is None else iteration + 1
             return self._training_state(iteration)
         load_lr_schedulers(self._trainer.engine.optim.lr_schedulers, training_state["lr_scheduler"])

@@ -66,7 +66,7 @@ def agreed_row_mapping(
 ) -> RowMapping:
     """Collective: fail every rank if one failed, then take the run's groups and modules from every rank."""
     raise_if_any_rank_failed(error)
-    # pipeline stages hold different layers; every rank needs the whole parametrization
+    # a torchtitan stage sees only its own layers (Bridge exports all); every rank needs the whole parametrization
     gathered = [None] * dist.get_world_size()
     dist.all_gather_object(gathered, (sorted(groups), sorted(modules)), group=gloo_group())
     return RowMapping(

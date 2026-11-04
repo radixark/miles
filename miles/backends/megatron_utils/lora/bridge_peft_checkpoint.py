@@ -1,5 +1,6 @@
 """The reader of Megatron-Bridge PEFT ``iter_N/`` checkpoints (torch_dist), loaded straight into a single-LoRA run."""
 
+import re
 from dataclasses import asdict, replace
 from pathlib import Path
 
@@ -10,6 +11,7 @@ import yaml
 from megatron.core import dist_checkpointing
 from megatron.core.dist_checkpointing.dict_utils import nested_values
 from megatron.core.dist_checkpointing.mapping import ShardedTensor
+from megatron.core.fp8_utils import is_float8tensor
 from megatron.core.optimizer import DistributedOptimizer
 from megatron.core.utils import unwrap_model
 
@@ -114,23 +116,33 @@ def torch_dist_base_dir(pretrained_checkpoint: str | None) -> Path | None:
     return root if dist_checkpointing.check_is_distributed_checkpoint(str(root)) else None
 
 
+def _is_base_fingerprint(key: str, tensor) -> bool:
+    # a full fine-tune changes the norms, a merged LoRA the projections; a chunk's layer 0 is its first local layer
+    return (
+        isinstance(tensor, ShardedTensor)
+        and ".adapter." not in key
+        and not is_float8tensor(tensor.data)
+        and ("norm" in key or re.search(r"(^|\.)layers\.0\.self_attention\.", key) is not None)
+    )
+
+
 def assert_same_base_as_torch_dist(source: str, chunks, base_dir: Path) -> None:
-    """Collective: every norm weight this rank's model holds equals the torch_dist base checkpoint's, bitwise. The
-    in-memory model is the run's base, so a base fine-tuned in Megatron after its HF conversion is caught."""
+    """Collective: every norm weight and layer-0 attention weight this rank's model holds unquantized equals the
+    torch_dist base checkpoint's, bitwise. The in-memory model is the run's base, so a base fine-tuned in Megatron
+    after its HF conversion is caught. Not detected: a LoRA merged only into MLP or expert weights, or only into
+    layers past each chunk's first."""
     held, requested, error = {}, {}, None
     try:
         metadata = dict(dist_checkpointing.load_content_metadata(str(base_dir)) or {})
         metadata["dp_cp_group"] = get_parallel_state().intra_dp_cp.group
         for index, chunk in enumerate(chunks):
-            norms = {
-                k: t
-                for k, t in chunk.sharded_state_dict(metadata=metadata).items()
-                if isinstance(t, ShardedTensor) and "norm" in k and ".adapter." not in k
+            compared = {
+                k: t for k, t in chunk.sharded_state_dict(metadata=metadata).items() if _is_base_fingerprint(k, t)
             }
-            held |= {(index, k): t.data for k, t in norms.items()}
+            held |= {(index, k): t.data for k, t in compared.items()}
             # loading writes into the requested tensors: empty copies, never the model's own parameters
-            requested[f"model{index}"] = {k: replace(t, data=torch.empty_like(t.data)) for k, t in norms.items()}
-        assert held, "this run's model holds no norm weights to compare its base by"
+            requested[f"model{index}"] = {k: replace(t, data=torch.empty_like(t.data)) for k, t in compared.items()}
+        assert any("norm" in k for _, k in held), "this run's model holds no norm weights to compare its base by"
         saved = dcp.FileSystemReader(base_dir).read_metadata().state_dict_metadata
         missing = sorted({t.key for sd in requested.values() for t in sd.values()} - saved.keys())
         assert not missing, (
@@ -162,15 +174,15 @@ class MegatronBridgeCheckpointLoader:
         self._model, self._optimizer, self._members = model, optimizer, members
         self._run, self._load_optimizer = run, load_optimizer
 
-    def parametrization(self, path: Path) -> AdapterParametrization:
+    def parametrization(self, path: Path) -> tuple[AdapterParametrization, bool]:
         """Collective: every check against the source, reading it only; ``apply`` then loads what it requested."""
         chunks = unwrap_model(self._model)
         names = ["model"] if len(chunks) == 1 else [f"model{i}" for i in range(len(chunks))]
         config, metadata, model_state_dicts, adapter, base_dir = self._read_source(path, chunks)
         self._check_torch_dist_base(path, chunks, base_dir)
-        self._check_adapter_keys(path, adapter)
+        has_optimizer_state = self._check_adapter_keys(path, adapter)
         self._checked = (path, names, chunks, model_state_dicts, adapter, metadata)
-        return replace(self._run, lora_alpha=float(config["peft"]["alpha"]))
+        return replace(self._run, lora_alpha=float(config["peft"]["alpha"])), has_optimizer_state
 
     def prepare(self, path: Path) -> tuple:
         # the source was read and checked with parametrization; nothing rank-local is left before the load
@@ -224,31 +236,31 @@ class MegatronBridgeCheckpointLoader:
         if base_dir is not None:
             assert_same_base_as_torch_dist(str(path), chunks, base_dir)
 
-    def _check_adapter_keys(self, path: Path, adapter) -> None:
-        """Collective: the source holds exactly this run's adapters."""
+    def _check_adapter_keys(self, path: Path, adapter) -> bool:
+        """Collective: the source holds exactly this run's adapters; returns whether it holds optimizer state."""
         # pipeline stages hold different layers; the checkpoint holds them all
         expected = [None] * dist.get_world_size()
         dist.all_gather_object(expected, {t.key for sd in adapter for t in nested_values(sd)}, group=gloo_group())
         expected = set().union(*expected)
-        error = None
+        error, has_optimizer_state = None, None
         try:
-            saved = {
-                k
-                for k in dcp.FileSystemReader(path).read_metadata().state_dict_metadata
-                if ".adapter." in k and "_extra_state" not in k and not OPTIMIZER_KEY.match(k)
-            }
+            keys = list(dcp.FileSystemReader(path).read_metadata().state_dict_metadata)
+            has_optimizer_state = any(OPTIMIZER_KEY.match(k) for k in keys)
+            saved = {k for k in keys if ".adapter." in k and "_extra_state" not in k and not OPTIMIZER_KEY.match(k)}
             assert (
                 expected == saved
             ), f"{path} holds other adapters than this run's model, e.g. {sorted(expected ^ saved)[:3]}"
         except Exception as exc:
             error = exc
         raise_if_any_rank_failed(error)
+        return has_optimizer_state
 
     def _optimizer_state_to_load(self, names, model_state_dicts, metadata) -> dict:
         """Collective: the DistributedOptimizer's sharded state to load into, built once its offloaded state exists."""
         state, error = None, None
         try:
-            # building it runs Megatron's load_state_dict
+            # sharded_state_dict(is_loading=True) runs Megatron's load_state_dict, which would dummy-step an empty
+            # HDO state
             _zero_init_empty_hdo_states(_distributed_optimizers(self._optimizer))
             state = self._optimizer.sharded_state_dict(
                 dict(zip(names, model_state_dicts, strict=True)), is_loading=True, metadata=metadata
