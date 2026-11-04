@@ -14,6 +14,7 @@ from miles.backends.megatron_utils.lora.checkpoint import (
     LegacyRankShardLoader,
     _distributed_optimizer_step,
     _set_distributed_optimizer_step,
+    _world_slice,
     restore_single_lora,
     single_lora_parametrization,
 )
@@ -144,3 +145,22 @@ def test_restoring_the_step_of_an_offloaded_optimizer_reaches_its_gpu_sub_optimi
     assert hdo.gpu_optimizer.param_groups[0]["step"] == 5
     assert hdo.cpu_optimizers[0].state[host]["step"] == hdo.state[host]["step"] == 5
     assert _distributed_optimizer_step(sub) == 5
+
+
+def test_a_parameters_world_slice_skips_the_earlier_buckets_end_padding():
+    """dp-zero world tensors drop each bucket's end padding; a later bucket's parameter sits after the real elements."""
+    a, b, c = (torch.nn.Parameter(torch.empty(n)) for n in (4, 2, 5))
+    # bucket 0 spans [0, 8) with 6 real elements; bucket 1 spans [8, 16) with 5
+    buffer = SimpleNamespace(
+        param_index_map={a: (0, 4, 0), b: (4, 6, 0), c: (8, 13, 1)},
+        bucket_indices=[(0, 8), (8, 16)],
+        buckets=[SimpleNamespace(numel=8, numel_unpadded=6), SimpleNamespace(numel=8, numel_unpadded=5)],
+        param_dtype=torch.bfloat16,
+        grad_dtype=torch.float32,
+    )
+    # hand-written: a, b, then c, with no padding between them
+    world = torch.tensor([10.0, 11, 12, 13, 20, 21, 30, 31, 32, 33, 34])
+    gathered = {0: {(torch.bfloat16, torch.float32): {"param": world}}}
+    for param, expected in ((a, [10.0, 11, 12, 13]), (b, [20.0, 21]), (c, [30.0, 31, 32, 33, 34])):
+        tensors, start, end = _world_slice(gathered, 0, buffer, param)
+        assert torch.equal(tensors["param"][start:end], torch.tensor(expected))
