@@ -25,7 +25,6 @@ from miles.backends.megatron_utils.lora.native.modules.linear import (
 )
 from miles.backends.megatron_utils.lora.native.modules.lm_head import LoRAOutputHead
 from miles.backends.megatron_utils.lora.native.spec.base import AttachContext, ProjectionSpec, ShardLayout
-from miles.backends.megatron_utils.lora.slots import slice_lora_to_rank
 from miles.utils.lora.utils import AdapterSpec
 
 HIDDEN, OUT, MAX_RANK, NUM_SLOTS = 8, 6, 4, 3
@@ -211,25 +210,6 @@ def test_mixed_slots_equal_each_slot_alone(build):
     for slot, part in enumerate(x.detach().split(counts)):
         expected, _ = singles[slot].host(part)
         torch.testing.assert_close(out.split(counts)[slot], expected)
-
-
-@pytest.mark.parametrize("build", ADAPTER_BUILDS.values(), ids=ADAPTER_BUILDS)
-@pytest.mark.parametrize("rank", [MAX_RANK, 2])
-def test_slot_export_equals_single_lora_export_bitwise(build, rank):
-    base_weight = _base_weight()
-    single = _single(build, rank=rank, alpha=4.0, base_weight=base_weight, seed=3)
-    multi = _attached(build, _context(rank=MAX_RANK, num_slots=NUM_SLOTS), base_weight)
-    _load_slot(multi.adapter, 1, single.adapter, rank=rank, alpha=4.0)
-
-    expected = export_lora_hf_named(iter_adapters([single]))
-    exported = [
-        (name, slice_lora_to_rank(name, tensor, rank))
-        for name, tensor in export_lora_hf_named(iter_slot_adapters([multi], 1))
-    ]
-
-    assert [name for name, _ in exported] == [name for name, _ in expected]
-    for (name, tensor), (_, expected_tensor) in zip(exported, expected, strict=True):
-        assert torch.equal(tensor, expected_tensor), name
 
 
 def test_a_slot_claimed_below_max_rank_keeps_its_padding_out_of_training():
@@ -461,17 +441,18 @@ def test_hidden_adapters_leave_only_base_parameters(num_slots):
 
 
 @pytest.mark.parametrize("build", ADAPTER_BUILDS.values(), ids=ADAPTER_BUILDS)
-def test_the_weight_iterator_exports_a_slot_as_single_lora_at_its_rank(build):
+@pytest.mark.parametrize("rank", [MAX_RANK, 2])
+def test_the_weight_iterator_exports_a_slot_as_single_lora_at_its_rank(build, rank):
     """The sampler export of a native slot: its adapters, gathered, cut to the slot's rank."""
     from miles.backends.megatron_utils.update_weight.hf_weight_iterator_direct import HfWeightIteratorDirect
 
     base_weight = _base_weight()
-    single = _single(build, rank=2, alpha=4.0, base_weight=base_weight, seed=3)
+    single = _single(build, rank=rank, alpha=4.0, base_weight=base_weight, seed=3)
     multi = _attached(build, _context(rank=MAX_RANK, num_slots=NUM_SLOTS), base_weight)
-    _load_slot(multi.adapter, 1, single.adapter, rank=2, alpha=4.0)
+    _load_slot(multi.adapter, 1, single.adapter, rank=rank, alpha=4.0)
 
     exported = HfWeightIteratorDirect._export_pp_local_lora(
-        SimpleNamespace(model=[multi]), AdapterSpec(slot=1, rank=2, alpha=4.0)
+        SimpleNamespace(model=[multi]), AdapterSpec(slot=1, rank=rank, alpha=4.0)
     )
 
     expected = export_lora_hf_named(iter_adapters([single]))
@@ -484,4 +465,5 @@ def test_a_claimed_slot_reports_its_rank_and_alpha(monkeypatch):
     slots.init(1, 2, 4.0, seed=None)
 
     assert slots.slot_spec(1) == AdapterSpec(slot=1, rank=2, alpha=4.0)
-    assert slots.lora_rank(1) == 2
+    slots.clear(1)
+    assert slots.slot_spec(1) == AdapterSpec(slot=1, rank=MAX_RANK, alpha=0.0)
