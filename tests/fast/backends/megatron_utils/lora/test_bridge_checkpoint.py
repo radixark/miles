@@ -637,13 +637,13 @@ def _offloaded_optimizer():
     return chained, hdo, param, stepped
 
 
-def _checked_loader(optimizer, members, monkeypatch, *, load_optimizer=True):
+def _checked_loader(optimizer, members, monkeypatch, *, load_optimizer=True, keys=()):
     """A loader over an empty model with a stubbed source read."""
     run = AdapterParametrization("base", 4, 8.0, "lora", ("model.layers.0.self_attn.q_proj",), False)
     loader = bridge_peft_checkpoint.MegatronBridgeCheckpointLoader([], optimizer, members, run, load_optimizer)
     monkeypatch.setattr(bridge_peft_checkpoint, "unwrap_model", lambda model: [])
     monkeypatch.setattr(loader, "_read_source", lambda path, chunks: ({"peft": {"alpha": 16}}, {}, [], [], None))
-    metadata = SimpleNamespace(state_dict_metadata={})
+    metadata = SimpleNamespace(state_dict_metadata=dict.fromkeys(keys))
     monkeypatch.setattr(
         bridge_peft_checkpoint.dcp, "FileSystemReader", lambda path: SimpleNamespace(read_metadata=lambda: metadata)
     )
@@ -665,6 +665,19 @@ def test_an_offloaded_optimizer_is_never_dummy_stepped_from_parametrization_to_l
 
     assert not stepped, "the empty HDO state must be zero-initialized, not dummy-stepped"
     assert torch.equal(hdo.state[param]["master_param"], torch.ones(2)) and int(hdo.state[param]["step"]) == 0
+
+
+@pytest.mark.parametrize(
+    "keys, has_optimizer_state",
+    [(["optimizer.distributed.exp_avg"], True), (["chained_0.optimizer.step"], True), ([], False)],
+    ids=["optimizer", "chained-optimizer", "weights-only"],
+)
+def test_a_bridge_checkpoint_reports_whether_it_holds_optimizer_state(
+    single_rank_gloo, tmp_path, monkeypatch, keys, has_optimizer_state
+):
+    """load_adapter_dir refuses a source without it unless --no-load-optim."""
+    loader, run = _checked_loader(None, None, monkeypatch, keys=keys)
+    assert loader.parametrization(tmp_path) == (replace(run, lora_alpha=16.0), has_optimizer_state)
 
 
 def test_the_gateways_parametrization_fields_are_the_slots_keyword_arguments():

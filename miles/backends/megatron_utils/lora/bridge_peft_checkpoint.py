@@ -174,15 +174,15 @@ class MegatronBridgeCheckpointLoader:
         self._model, self._optimizer, self._members = model, optimizer, members
         self._run, self._load_optimizer = run, load_optimizer
 
-    def parametrization(self, path: Path) -> AdapterParametrization:
+    def parametrization(self, path: Path) -> tuple[AdapterParametrization, bool]:
         """Collective: every check against the source, reading it only; ``apply`` then loads what it requested."""
         chunks = unwrap_model(self._model)
         names = ["model"] if len(chunks) == 1 else [f"model{i}" for i in range(len(chunks))]
         config, metadata, model_state_dicts, adapter, base_dir = self._read_source(path, chunks)
         self._check_torch_dist_base(path, chunks, base_dir)
-        self._check_adapter_keys(path, adapter)
+        has_optimizer_state = self._check_adapter_keys(path, adapter)
         self._checked = (path, names, chunks, model_state_dicts, adapter, metadata)
-        return replace(self._run, lora_alpha=float(config["peft"]["alpha"]))
+        return replace(self._run, lora_alpha=float(config["peft"]["alpha"])), has_optimizer_state
 
     def prepare(self, path: Path) -> tuple:
         # the source was read and checked with parametrization; nothing rank-local is left before the load
@@ -236,25 +236,24 @@ class MegatronBridgeCheckpointLoader:
         if base_dir is not None:
             assert_same_base_as_torch_dist(str(path), chunks, base_dir)
 
-    def _check_adapter_keys(self, path: Path, adapter) -> None:
-        """Collective: the source holds exactly this run's adapters."""
+    def _check_adapter_keys(self, path: Path, adapter) -> bool:
+        """Collective: the source holds exactly this run's adapters; returns whether it holds optimizer state."""
         # pipeline stages hold different layers; the checkpoint holds them all
         expected = [None] * dist.get_world_size()
         dist.all_gather_object(expected, {t.key for sd in adapter for t in nested_values(sd)}, group=gloo_group())
         expected = set().union(*expected)
-        error = None
+        error, has_optimizer_state = None, None
         try:
-            saved = {
-                k
-                for k in dcp.FileSystemReader(path).read_metadata().state_dict_metadata
-                if ".adapter." in k and "_extra_state" not in k and not OPTIMIZER_KEY.match(k)
-            }
+            keys = list(dcp.FileSystemReader(path).read_metadata().state_dict_metadata)
+            has_optimizer_state = any(OPTIMIZER_KEY.match(k) for k in keys)
+            saved = {k for k in keys if ".adapter." in k and "_extra_state" not in k and not OPTIMIZER_KEY.match(k)}
             assert (
                 expected == saved
             ), f"{path} holds other adapters than this run's model, e.g. {sorted(expected ^ saved)[:3]}"
         except Exception as exc:
             error = exc
         raise_if_any_rank_failed(error)
+        return has_optimizer_state
 
     def _optimizer_state_to_load(self, names, model_state_dicts, metadata) -> dict:
         """Collective: the DistributedOptimizer's sharded state to load into, built once its offloaded state exists."""
