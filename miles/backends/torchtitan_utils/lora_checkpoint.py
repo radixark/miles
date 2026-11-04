@@ -268,7 +268,7 @@ class TorchtitanCheckpointLoader:
         return {name: t for name, t in self._sd_adapter.to_hf(tensors).items() if is_fingerprint_tensor(name)}
 
     def parametrization(self, path: Path) -> AdapterParametrization:
-        """Collective: every check against the source, reading it only; ``load`` then loads it."""
+        """Collective: every check against the source, reading it only; ``apply`` then loads it."""
         metadata, error = None, None
         try:
             metadata = dcp.FileSystemReader(path).read_metadata().state_dict_metadata
@@ -304,7 +304,7 @@ class TorchtitanCheckpointLoader:
         except Exception as exc:
             error = exc
         raise_if_any_rank_failed(error)
-        # agreed before the collective dcp.load in load: e.g. one node's HF cache may lack --hf-checkpoint
+        # agreed before the collective dcp.load in apply: e.g. one node's HF cache may lack --hf-checkpoint
         try:
             source_tensors = self._base_fingerprint_tensors(path, metadata)
             hf_dir = resolve_hf_dir(self._run.base_model)
@@ -318,9 +318,9 @@ class TorchtitanCheckpointLoader:
         self._checked = (path, metadata)
         return replace(self._run, lora_alpha=None)
 
-    def load(self, path: Path) -> None:
+    def prepare(self, path: Path) -> tuple:
         checked_path, metadata = self._checked
-        assert checked_path == path, f"load({path}) after checking {checked_path}"
+        assert checked_path == path, f"prepare({path}) after checking {checked_path}"
         params = self._slots.parameters
         states = self._members.adam_states()
         loaded = dict(params)
@@ -332,6 +332,10 @@ class TorchtitanCheckpointLoader:
         if has_training_state:
             # non-tensor entries: DCP replaces these placeholders with the saved values
             loaded |= dict.fromkeys(_TRAINING_STATE_KEYS, 0)
+        return path, loaded, states, has_training_state
+
+    def apply(self, prepared: tuple) -> None:
+        path, loaded, states, has_training_state = prepared
         with torch.no_grad():
             dcp.load(loaded, checkpoint_id=path)
         if has_training_state:

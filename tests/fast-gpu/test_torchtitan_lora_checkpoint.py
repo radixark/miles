@@ -168,7 +168,7 @@ def _load_dcp(tmp_path, saved: dict) -> TorchtitanCheckpointLoader:
         loader.parametrization(path)
         # the checks read the source only; nothing is loaded until load_adapter_dir accepted it
         assert all(torch.equal(param, torch.zeros(2, 2)) for param in params.values())
-        loader.load(path)
+        loader.apply(loader.prepare(path))
     for key, param in params.items():
         assert torch.equal(param, saved[key])
     return loader
