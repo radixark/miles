@@ -213,6 +213,8 @@ class Sample:
 
     metadata: dict = field(default_factory=dict)
     generate_function_path: str | None = None
+    # may only lower the run's max_new_tokens
+    max_response_len: int | None = None
     # metadata used during training, e.g., what loss to use for this sample.
     train_metadata: dict | None = None
 
@@ -452,7 +454,7 @@ class Sample:
         """Reset generated outputs so the original prompt can be re-sampled.
 
         Keeps identity / prompt fields (group_index, index, prompt, label,
-        multimodal_inputs, metadata, generate_function_path, routing_key) and
+        multimodal_inputs, metadata, generate_function_path, max_response_len, routing_key) and
         restores everything else to dataclass defaults.
         """
         self.tokens = []
