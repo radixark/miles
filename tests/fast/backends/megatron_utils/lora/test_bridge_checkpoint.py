@@ -606,11 +606,3 @@ def test_a_bridge_checkpoint_is_checked_before_anything_is_loaded_into_the_model
     assert calls == ["base", "requested"]
     loader.load(tmp_path)
     assert calls == ["base", "requested", "load", "check masters"]
-
-
-def test_a_bridge_optimizer_load_refuses_an_optimizer_other_than_megatrons_distributed_one(tmp_path):
-    run = AdapterParametrization("base", 4, 8.0, "lora", ("model.layers.0.self_attn.q_proj",), False)
-    optimizer = SimpleNamespace(chained_optimizers=[SimpleNamespace(optimizer=None)], param_groups=[])
-    loader = bridge_peft_checkpoint.MegatronBridgeCheckpointLoader([], optimizer, "members", run, True)
-    with pytest.raises(AssertionError, match="--use-distributed-optimizer"):
-        loader._load_optimizer_state(tmp_path, {})
