@@ -92,7 +92,7 @@ def get_optimizer_param_scheduler(args: TrainerConfig, optimizer: MegatronOptimi
         optimizer (MegatronOptimizer): Megatron optimizer bound to the model.
 
     Returns:
-        OptimizerParamScheduler: Initialized scheduler bound to ``optimizer``.
+        OptimizerParamScheduler | None: None when the run trains no step.
     """
     # Iteration-based training.
     with args.backend.mutable():

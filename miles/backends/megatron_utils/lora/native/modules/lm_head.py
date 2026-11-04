@@ -44,8 +44,7 @@ class LoRAOutputHead(NativeLoRAAdapter):
         )
         padded = self.padded_local_rows()
         if padded.start < padded.stop:
-            # the loss softmaxes over the padded vocab, but sglang serves only the trimmed rows and no checkpoint
-            # holds them: keep them at init
+            # no checkpoint or sglang export holds these rows; training them would make a resume diverge
             self.head_B.register_hook(
                 lambda grad: grad.index_fill(0, torch.arange(padded.start, padded.stop, device=grad.device), 0)
             )
