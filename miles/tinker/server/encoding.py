@@ -72,7 +72,9 @@ def validate_age_recipients(recipients: list[str]) -> None:
     """Refuse a bad recipient before the export, not after the trainer wrote it."""
     if len(recipients) > MAX_AGE_RECIPIENTS:
         raise UserInputError(f"at most {MAX_AGE_RECIPIENTS} age recipients, got {len(recipients)}")
-    # imported here: only external saves need it, and a gateway image installed with --no-deps may lack it
+    if not recipients:
+        return
+    # imported here: only encrypted saves need it, and a gateway image installed with --no-deps may lack it
     import pyrage
 
     for recipient in recipients:
