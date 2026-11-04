@@ -1,6 +1,7 @@
 """Bridge single LoRA's --save / --lora-adapter-path glue around the adapter library."""
 
 import json
+import multiprocessing
 from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
@@ -8,8 +9,9 @@ from unittest.mock import DEFAULT, MagicMock, patch
 
 import pytest
 import torch
+import torch.distributed as dist
 from megatron.core.optimizer.cpu_offloading.hybrid_optimizer import HybridDeviceOptimizer
-from tests.fast.dist_utils import run_multiprocess
+from tests.fast.dist_utils import init_gloo, run_multiprocess
 
 import miles.backends.megatron_utils.lora.checkpoint as lora_checkpoint
 from miles.backends.megatron_utils.lora.checkpoint import (
@@ -204,3 +206,98 @@ def test_an_adapter_saved_under_one_mount_loads_under_another(monkeypatch):
     other = _recorded_parametrization(monkeypatch, "/root/models/Qwen3-4B", hidden_size=4096)
     with pytest.raises(AssertionError, match="is another model than run base"):
         assert_parametrization_matches_run(saved, other, [], load_optimizer=False, has_optimizer_state=False)
+
+
+class _DpZeroOptimizer(lora_checkpoint.DistributedOptimizer):
+    """A DistributedOptimizer's dp-zero gather and scatter over one parameter, on the gloo group Megatron gives it."""
+
+    def __init__(self, param, master, group):
+        self.group, self.init_state_fn, self.optimizer = group, None, torch.optim.Adam([torch.zeros(1)])
+        self.world = {"param": master.flatten().clone(), "exp_avg": master.flatten() + 1, "exp_avg_sq": master.flatten() + 2}
+        n = param.numel()
+        self.buffers = [
+            SimpleNamespace(
+                param_index_map={param: (0, n, 0)},
+                bucket_indices=[(0, n)],
+                buckets=[SimpleNamespace(numel_unpadded=n)],
+                param_dtype=torch.bfloat16,
+                grad_dtype=torch.float32,
+            )
+        ]
+
+    def get_parameter_state_dp_zero(self, use_gloo_comm, empty_data=False):
+        assert use_gloo_comm
+        if self.group.rank() != 0:
+            return None
+        world = {k: torch.empty_like(v) if empty_data else v.clone() for k, v in self.world.items()}
+        return {0: {(torch.bfloat16, torch.float32): world}, "buckets_coalesced": None}
+
+    def load_parameter_state_from_dp_zero(self, gathered):
+        leader = dist.get_global_rank(self.group, 0)
+        for key, tensor in self.world.items():
+            if gathered is not None:
+                tensor.copy_(gathered[0][(torch.bfloat16, torch.float32)][key])
+            dist.broadcast(tensor, src=leader, group=self.group)
+
+
+def _expert_dp_round_trip(rank, world_size, port):
+    from megatron.core import parallel_state
+    from megatron.core.process_groups_config import ProcessGroupCollection
+
+    from miles.backends.megatron_utils import parallel as megatron_parallel
+    from miles.backends.training_utils.parallel import get_parallel_state, set_parallel_state
+
+    init_gloo(rank, world_size, port=port)
+    # dense DP is 4 (one leader), expert DP is 2 (a leader per expert-parallel rank)
+    parallel_state.initialize_model_parallel(expert_model_parallel_size=2)
+    megatron_parallel.get_args = lambda: SimpleNamespace(cp_comm_type=None)
+    set_parallel_state(megatron_parallel.create_megatron_parallel_state(indep_dp=None))
+
+    # dense values are the same on every rank, expert values the same within an expert DP group
+    masters = [
+        torch.randn(shape, generator=torch.Generator().manual_seed(seed)).bfloat16().float()
+        for shape, seed in (((2, 3), 0), ((4, 3), 1 + get_parallel_state().ep.rank))
+    ]
+    params = [torch.nn.Parameter(m.bfloat16()) for m in masters]
+    params[1].allreduce = False
+    # the gloo groups Megatron's optimizer setup hands the dense and the expert DistributedOptimizer
+    optimizer_groups = ProcessGroupCollection.setup_process_groups_for_optimizer(None, [SimpleNamespace()])
+    groups = [optimizer_groups["intra_dp_cp_group_gloo"], optimizer_groups["intra_expt_dp_group_gloo"]]
+    subs = [_DpZeroOptimizer(p, m, g) for p, m, g in zip(params, masters, groups, strict=True)]
+    slots = SimpleNamespace(
+        slot_parameters=lambda slot: params,
+        local_shard_specs=lambda slot, holds: [SimpleNamespace(local_shape=params[i].shape) for i in sorted(holds)],
+        local_pieces=lambda slot, tensors, holds: [tensors[i] for i in sorted(holds)],
+        piece_parameter=lambda slot, holds: [(i, torch.arange(params[i].numel())) for i in sorted(holds)],
+    )
+
+    def cast_masters_to_params():
+        for param, sub in zip(params, subs, strict=True):
+            param.data.copy_(sub.world["param"].view(param.shape))
+
+    lora_checkpoint._build_cast_main_to_params_fn = lambda optimizer, precision_aware: cast_masters_to_params
+    members = lora_checkpoint.DistributedOptimizerMembers(
+        slots, SimpleNamespace(chained_optimizers=subs), [], precision_aware=False
+    )
+    state = members.export_adapter_state(0)
+    expected = [{k: v.clone() for k, v in sub.world.items()} for sub in subs]
+    for sub in subs:
+        for tensor in sub.world.values():
+            tensor.zero_()
+    members.import_adapter_state(0, state)
+    members.finish_import_adapter_state(0)
+    for sub, saved in zip(subs, expected, strict=True):
+        assert all(torch.equal(sub.world[k], saved[k]) for k in saved)
+    assert all(torch.equal(p.float(), m) for p, m in zip(params, masters, strict=True))
+    parallel_state.destroy_model_parallel()
+    dist.destroy_process_group()
+
+
+def test_each_distributed_optimizers_gloo_leader_exports_and_imports_its_parameters():
+    """Dense and expert parameters have different DP groups, so different leaders."""
+    process = multiprocessing.get_context("spawn").Process(target=run_multiprocess, args=(_expert_dp_round_trip, 4))
+    process.start()
+    process.join(timeout=120)
+    hung = process.is_alive()
+    process.kill()
+    assert not hung and process.exitcode == 0
