@@ -234,6 +234,7 @@ def save_and_commit_adapter_dir(
     targets: HfLoraTargets,
     *,
     training_state: dict | None = None,
+    lora_dropout: float,
 ) -> CommittedAdapterDir:
     """RL's ``--save``: all ranks write, rank 0 commits over any earlier save of ``name``, then the PEFT export.
 
@@ -251,7 +252,7 @@ def save_and_commit_adapter_dir(
             error = exc
     raise_if_any_rank_failed(error)
     if has_plain_peft_form(parametrization, targets):
-        write_peft_export(written.path, members, slot, parametrization, targets)
+        write_peft_export(written.path, members, slot, parametrization, targets, lora_dropout=lora_dropout)
     elif _is_writer():
         logger.info(f"{written.path}: no PEFT view, as this parametrization has no plain-PEFT form")
     if _is_writer():

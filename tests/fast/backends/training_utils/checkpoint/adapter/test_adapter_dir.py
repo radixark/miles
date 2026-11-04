@@ -631,7 +631,9 @@ class CanonicalGdnSaveMembers(FakeMembers):
 
 def test_a_save_of_a_parametrization_with_no_plain_peft_form_commits_without_a_peft_view(tmp_path):
     run = AdapterParametrization("m", 2, 4.0, "canonical_lora", (f"{GDN}.in_proj_q",), False)
-    committed = save_and_commit_adapter_dir(tmp_path, "adapter", CanonicalGdnSaveMembers(), 0, run, GDN_TARGETS)
+    committed = save_and_commit_adapter_dir(
+        tmp_path, "adapter", CanonicalGdnSaveMembers(), 0, run, GDN_TARGETS, lora_dropout=0.0
+    )
     assert resolve_adapter_dir(tmp_path, "adapter", tenant=None).path == committed.path
     assert not (committed.path / "adapter_model.safetensors").exists()
 
