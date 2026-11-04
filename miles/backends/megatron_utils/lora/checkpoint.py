@@ -8,6 +8,7 @@ import json
 from collections.abc import Iterable, Sequence
 from dataclasses import asdict, replace
 from pathlib import Path
+from typing import NamedTuple
 
 import torch
 import torch.distributed as dist
@@ -582,9 +583,17 @@ def save_single_lora(model, optimizer, opt_param_scheduler, adapter_slots: Bridg
     )
 
 
+class AdapterRestore(NamedTuple):
+    # the saved iteration; None when the source records no training state
+    iteration: int | None
+    scheduler_restored: bool
+    # the rollout the saving run's schedule started at
+    first_rollout: int
+
+
 def restore_single_lora(
     model, args, *, adapter_slots: BridgeAdapterSlots, optimizer, opt_param_scheduler
-) -> tuple[int | None, bool, int]:
+) -> AdapterRestore:
     """``--lora-adapter-path`` from any recognized source; returns the saved iteration when the source has one,
     whether it restored the scheduler, and the rollout the saving run's schedule started at.
 
@@ -649,14 +658,14 @@ def restore_single_lora(
             training_state=training_state,
         )
     if training_state is None:
-        return None, False, 0
+        return AdapterRestore(None, False, 0)
     # a torchtitan run's training state has its own scheduler state, not Megatron's
     scheduler_state = training_state.get("opt_param_scheduler")
     if opt_param_scheduler is not None and scheduler_state is not None:
         opt_param_scheduler.load_state_dict(scheduler_state)
     # only a torchtitan run records it; Megatron's own scheduler state already counts from its first rollout
     first_rollout = training_state.get("first_rollout", 0)
-    return training_state["iteration"], scheduler_state is not None, first_rollout
+    return AdapterRestore(training_state["iteration"], scheduler_state is not None, first_rollout)
 
 
 class LegacyRankShardLoader:
