@@ -44,6 +44,18 @@ def test_a_legacy_checkpoint_padded_to_another_max_rank_is_a_mismatch(gloo, monk
     assert mismatch is not None and "layer.adapter.w: saved (64, 6), slot (32, 6)" in mismatch
 
 
+def test_a_model_side_failure_is_a_server_error_not_a_mismatch(gloo, monkeypatch):
+    _legacy_source(monkeypatch, saved_shape=(32, 6))
+
+    def broken(*_):
+        raise KeyError("slot 0 has no adapters")
+
+    monkeypatch.setattr(checkpoint, "_slot_weights_sharded_state_dict", broken)
+    # a mismatch is the user's 400; a bug in reading this gateway's own model must fail loudly instead
+    with pytest.raises(RuntimeError, match="slot 0 has no adapters"):
+        checkpoint.find_load_mismatch(None, 0, "/ckpt", None, None, load_optimizer=False, run_shapes={})
+
+
 @pytest.fixture
 def gloo():
     init_gloo(0, 1, port=find_free_port())

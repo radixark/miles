@@ -67,6 +67,9 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
     ) -> dict | None:
         """A source the slot cannot take is refused before the slot changes, as a user error."""
         if ckpt_path is not None:
+            assert (
+                parametrization_fields is not None
+            ), "a load from ckpt_path needs the source's parametrization_fields"
             mismatch = lora_checkpoint.find_load_mismatch(
                 self.model,
                 slot,

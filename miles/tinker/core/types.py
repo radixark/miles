@@ -70,6 +70,8 @@ class GatewayConfig:
     lora_alpha: float | None = None  # None: 2 * rank
     lora_type: str = "lora"
     experts_shared_outer_loras: bool = False
+    # the base's architecture fingerprint, recorded in every adapter this gateway writes
+    base_model_fingerprint: str | None = None
     # what the server-wide adapter layout trains; create_model rejects deviations
     trains_attn: bool = True
     trains_mlp: bool = True

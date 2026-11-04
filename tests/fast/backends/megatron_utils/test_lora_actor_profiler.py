@@ -10,12 +10,11 @@ import torch
 from miles.utils.profile_utils import TrainProfiler
 
 
-@pytest.mark.parametrize("method", ["forward_backward", "forward_only"])
-def test_lora_pass_emits_scheduled_trace(monkeypatch, method):
-    model = SimpleNamespace(run_forward_backward=lambda *args, **kwargs: torch.ones(2).sum())
+def _lora_actor_module(monkeypatch, *, model=None, checkpoint=None):
+    """The LoRA actor module with its heavy dependencies stubbed."""
     dependencies = {
         "miles.backends.megatron_utils.actor": {"MegatronTrainRayActor": object},
-        "miles.backends.megatron_utils.lora": {"checkpoint": None, "model": model},
+        "miles.backends.megatron_utils.lora": {"checkpoint": checkpoint, "model": model},
         "miles.backends.megatron_utils.lora.optimizer": {"SlotOptimizer": object},
         "miles.backends.training_utils.checkpoint.adapter.adapter_dir": {
             "write_external_export": None,
@@ -39,6 +38,20 @@ def test_lora_pass_emits_scheduled_trace(monkeypatch, method):
     spec = importlib.util.spec_from_file_location("lora_actor_under_test", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    return module
+
+
+def test_a_slot_load_from_a_checkpoint_requires_the_source_parametrization(monkeypatch):
+    module = _lora_actor_module(monkeypatch, checkpoint=SimpleNamespace())
+    actor = module.MultiLoRATrainRayActor()
+    with pytest.raises(AssertionError, match="parametrization_fields"):
+        actor.load_slot(0, rank=8, alpha=16.0, ckpt_path="/ckpt")
+
+
+@pytest.mark.parametrize("method", ["forward_backward", "forward_only"])
+def test_lora_pass_emits_scheduled_trace(monkeypatch, method):
+    model = SimpleNamespace(run_forward_backward=lambda *args, **kwargs: torch.ones(2).sum())
+    module = _lora_actor_module(monkeypatch, model=model)
     actor = module.MultiLoRATrainRayActor()
     actor.args = SimpleNamespace()
     actor.output_store_read = None

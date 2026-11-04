@@ -4,7 +4,7 @@ Uses the Megatron backend with bridge mode.  Runs a short GRPO training loop
 with LoRA enabled (rank=32, all-linear) to validate:
   - LoRA model setup via Bridge
   - LoRA weight sync to SGLang rollout engines
-  - LoRA checkpoint save (native + HF PEFT format)
+  - LoRA checkpoint save (iter_N/adapter: adapter_state and its PEFT export)
   - Training completes without errors
 
 Requires: 2 GPUs, Qwen2.5-0.5B-Instruct model, GSM8K dataset.

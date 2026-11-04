@@ -27,6 +27,7 @@ from torchtitan.components.optim.lr_scheduler import LRSchedulersContainer
 from torchtitan.config.parallelism import ParallelismConfig
 from torchtitan.models.qwen3 import build_model_config
 
+from miles.backends.torchtitan_utils import actor as titan_actor
 from miles.backends.torchtitan_utils import lora_checkpoint
 from miles.backends.torchtitan_utils.actor import _steps_per_rollout
 from miles.backends.torchtitan_utils.config import _checkpointer_config
@@ -44,9 +45,13 @@ from miles.backends.training_utils.checkpoint.adapter.key_mapping import (
 )
 from miles.utils.distributed_utils import init_gloo_group
 from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
+from miles.utils.timer import Timer
 
 _TARGETS = get_hf_lora_targets({"model_type": "qwen3", "num_hidden_layers": 28})
 _QKV, _WO, _W13 = "layers.3.attention.qkv_linear.wqkv", "layers.3.attention.wo", "layers.3.feed_forward.w13"
+
+
+_QWEN3_CONFIG = SimpleNamespace(to_dict=lambda: {"model_type": "qwen3", "hidden_size": 8, "vocab_size": 16})
 
 
 def _adapter(rank: int = 8) -> tuple[object, dict[str, torch.Tensor]]:
@@ -253,6 +258,7 @@ def _restore(tmp_path, *, dcp_step=None, training_state=None, **flags):
     trainer = _Trainer()
     slots = MagicMock()
     with (
+        patch("miles.utils.hf_utils.config.load_hf_config", return_value=_QWEN3_CONFIG),
         patch.object(lora_checkpoint, "_torchtitan_adapter_slots", return_value=slots),
         patch.object(lora_checkpoint, "load_adapter_dir", side_effect=load_adapter_dir),
         patch.object(lora_checkpoint, "read_training_state", return_value=training_state),
@@ -350,16 +356,16 @@ def test_a_torchtitan_adapter_dir_off_this_runs_rollout_grid_is_refused(tmp_path
         )
 
 
-def test_a_dir_records_the_base_its_path_resolves_to_at_save(tmp_path):
-    """A --hf-checkpoint symlink repointed at another base after the save must not let the adapter load onto it."""
-    (tmp_path / "v1").mkdir()
-    (tmp_path / "v2").mkdir()
-    (tmp_path / "cur").symlink_to(tmp_path / "v1")
-    saved = _restore(tmp_path, hf_checkpoint=str(tmp_path / "cur")).base_model
-    (tmp_path / "cur").unlink()
-    (tmp_path / "cur").symlink_to(tmp_path / "v2")
-    resumed = _restore(tmp_path, hf_checkpoint=str(tmp_path / "cur")).base_model
-    assert (saved, resumed) == (str((tmp_path / "v1").resolve()), str((tmp_path / "v2").resolve()))
+def test_a_torchtitan_adapter_dir_off_this_runs_rollout_grid_loads_its_weights_and_starts_fresh(tmp_path):
+    restored = _restore(
+        tmp_path,
+        training_state={"iteration": 9, "step": 20, "first_rollout": 0, "lr_scheduler": {"last_epoch": 20}},
+        no_load_optim=True,
+        lora_adapter_convert_save=str(tmp_path / "out"),
+    )
+    assert (restored.iteration, restored.step, restored.lr_states) == (9, 0, [])
+    converted = restored.save.call_args.kwargs["training_state"]
+    assert (converted["iteration"], converted["step"], converted["first_rollout"]) == (9, 0, 10)
 
 
 def test_a_dir_saved_by_a_run_from_start_rollout_id_resumes(tmp_path):
@@ -375,6 +381,7 @@ def test_a_dir_saved_by_a_run_from_start_rollout_id_resumes(tmp_path):
         backend=SimpleNamespace(no_save_optim=False, save=str(tmp_path)),
     )
     with (
+        patch("miles.utils.hf_utils.config.load_hf_config", return_value=_QWEN3_CONFIG),
         patch.object(lora_checkpoint, "_torchtitan_adapter_slots", return_value=MagicMock()),
         patch.object(lora_checkpoint, "save_and_commit_adapter_dir") as save,
     ):
@@ -444,8 +451,10 @@ def test_a_megatron_adapter_dir_whose_schedule_does_not_map_loads_its_weights_an
         lora_adapter_convert_save=str(tmp_path / "out"),
         **flags,
     )
-    assert (restored.iteration, restored.step, restored.lr_states) == (None, 0, [])
-    assert restored.save.call_args.kwargs["training_state"] is None
+    # the source's rollouts stay done: the fresh schedule starts at the next one
+    assert (restored.iteration, restored.step, restored.lr_states) == (2, 0, [])
+    converted = restored.save.call_args.kwargs["training_state"]
+    assert (converted["iteration"], converted["step"], converted["first_rollout"]) == (2, 0, 3)
 
 
 def test_a_convert_save_of_a_model_only_source_writes_no_training_state(tmp_path):
@@ -490,6 +499,8 @@ def test_lora_resumes_only_through_the_adapter_path(tmp_path):
     for flag in ("load", "save"):
         with pytest.raises(ValueError, match=f"--{flag} holds the torchtitan checkpoint {step}"):
             config(**{flag: str(old)})
+    with pytest.raises(ValueError, match=f"move {step} out of --save and pass its new path as --lora-adapter-path"):
+        config(save=str(old), lora_adapter_path=str(step))
     # migrating the old run: its rollout state from --load, its adapters from --lora-adapter-path
     assert config(load=str(old), lora_adapter_path=str(step)).initial_load_path is None
     adapters = tmp_path / "adapters"
@@ -505,6 +516,92 @@ def test_lora_resumes_only_through_the_adapter_path(tmp_path):
     assert (base.initial_load_path, base.initial_load_model_only, base.initial_load_in_hf) == (None, True, True)
 
 
+@pytest.mark.parametrize(
+    "save, lora_adapter_path, start_rollout_id, restored, expected",
+    [
+        (None, None, None, None, 0),
+        ("/save", None, None, None, 0),
+        (None, "/source", None, 2, 3),
+        ("/save", "/source", None, None, 0),
+        ("/save", "/source", 5, 2, 5),
+    ],
+)
+def test_the_actor_starts_after_the_restored_rollout_and_saves_lora_as_adapter_dirs(
+    monkeypatch, save, lora_adapter_path, start_rollout_id, restored, expected
+):
+    """``init`` builds the LoRA checkpoint only for --save or --lora-adapter-path, starts after the rollout the
+    restore returns, and LoRA saves go to iter_N/adapter instead of torchtitan's checkpointer."""
+    # init starts the process-wide train_wait timer
+    monkeypatch.setattr(Timer(), "start_time", {})
+    built = []
+
+    class _LoraCheckpoint:
+        def __init__(self, trainer, args, steps_per_rollout):
+            built.append(steps_per_rollout)
+            self.saved = []
+
+        def restore(self):
+            return restored
+
+        def save(self, rollout_id):
+            self.saved.append(rollout_id)
+
+    trainer = SimpleNamespace(
+        step=0,
+        model_parts=[],
+        optimizers=SimpleNamespace(optimizers=[]),
+        align_token_side_channel=None,
+        configure_loss_reduction=lambda: None,
+        has_last_stage=lambda: True,
+        parallelism=SimpleNamespace(get_optional_mesh=lambda name: None),
+        engine=SimpleNamespace(load_checkpoint=lambda: None, save_checkpoint=MagicMock()),
+    )
+    for name, value in {
+        "compat": SimpleNamespace(install=lambda: None),
+        "build_trainer_config": lambda *a, **k: SimpleNamespace(),
+        "enable_routing_replay": lambda args: None,
+        "TrainProfiler": lambda args: SimpleNamespace(on_init_end=lambda: None),
+        "TitanTrainer": lambda config: trainer,
+        "set_parallel_state": lambda state: None,
+        "create_titan_parallel_state": lambda *a, **k: None,
+        "install_routing_replay": lambda parts: None,
+        "get_parallel_state": lambda: SimpleNamespace(is_metrics_rank=False),
+        "TorchtitanLoraCheckpoint": _LoraCheckpoint,
+        "clear_memory": lambda: None,
+    }.items():
+        monkeypatch.setattr(titan_actor, name, value)
+    monkeypatch.setattr(titan_actor.TorchNativeTrainRayActor, "_init_common", lambda *a, **k: None)
+    monkeypatch.setattr(titan_actor.TorchtitanTrainRayActor, "load_hf_assets", lambda self: None)
+    monkeypatch.setattr(titan_actor.TorchtitanTrainRayActor, "_build_weight_updater", lambda *a: None)
+    monkeypatch.setattr(titan_actor, "TorchtitanArgsNamespace", SimpleNamespace)
+    args = SimpleNamespace(
+        backend=SimpleNamespace(save=save),
+        hf_checkpoint="/hf",
+        num_rollout=10,
+        rollout_batch_size=4,
+        n_samples_per_prompt=8,
+        global_batch_size=8,
+        use_dynamic_global_batch_size=False,
+        debug_rollout_only=False,
+        lora_rank=8,
+        lora_adapter_path=lora_adapter_path,
+        start_rollout_id=start_rollout_id,
+        stream_optimizer_state_to_disk=False,
+        offload_train=False,
+    )
+    actor = titan_actor.TorchtitanTrainRayActor.__new__(titan_actor.TorchtitanTrainRayActor)
+
+    start = actor.init(args, "actor", indep_dp_info=SimpleNamespace(quorum_id=0), indep_dp_store_addr=None)
+
+    assert start == expected
+    assert built == ([4] if save or lora_adapter_path else [])
+    if built:
+        actor.args = args
+        actor._save_checkpoint(7)
+        assert actor._lora_checkpoint.saved == [7]
+        trainer.engine.save_checkpoint.assert_not_called()
+
+
 @pytest.mark.parametrize("dynamic, steps", [(False, 4), (True, 1)])
 def test_a_dynamic_global_batch_is_one_step_per_rollout(dynamic, steps):
     """The LR schedule length and the adapter dirs' step grid count optimizer steps per rollout."""
@@ -512,3 +609,110 @@ def test_a_dynamic_global_batch_is_one_step_per_rollout(dynamic, steps):
         rollout_batch_size=8, n_samples_per_prompt=4, global_batch_size=8, use_dynamic_global_batch_size=dynamic
     )
     assert _steps_per_rollout(args) == steps
+
+
+def _uneven_rows(rank, world_size, port):
+    init_gloo(rank, world_size, port=port)
+    init_gloo_group()
+    mesh = init_device_mesh("cpu", (world_size,))
+    sd_adapter, params = _adapter()
+    expected = _expected(sd_adapter, params)
+    # wqkv's 4096 lora_B rows over 3 ranks: 1366 / 1366 / 1364, so rank 1's shard crosses q_proj into k_proj
+    sharded = {key: distribute_tensor(value, mesh, [Shard(0)]) for key, value in params.items()}
+    mapping = probe_torchtitan_row_mapping(sharded, sd_adapter)
+    _check(mapping, [p.to_local() for p in sharded.values()], expected)
+    attn = "model.layers.3.self_attn"
+    keys = {p.key for p in mapping.pieces}
+    if rank == 1:
+        assert {f"{attn}.q_proj.lora_B", f"{attn}.k_proj.lora_B"} <= keys, "a shard splitting HF modules maps to both"
+    dist.destroy_process_group()
+
+
+def test_an_uneven_shard_across_hf_modules_maps_to_each_module():
+    run_multiprocess(_uneven_rows, world_size=3)
+
+
+def _two_dim_mesh(rank, world_size, port):
+    init_gloo(rank, world_size, port=port)
+    init_gloo_group()
+    mesh = init_device_mesh("cpu", (2, 2))
+    sd_adapter, params = _adapter()
+    expected = _expected(sd_adapter, params)
+    # lora_A (rank, in) is split along its input columns as well as its rows
+    sharded = {key: distribute_tensor(value, mesh, [Shard(0), Shard(1)]) for key, value in params.items()}
+    mapping = probe_torchtitan_row_mapping(sharded, sd_adapter)
+    _check(mapping, [p.to_local() for p in sharded.values()], expected)
+    dist.destroy_process_group()
+
+
+def test_a_two_dim_mesh_with_column_shards_maps_to_rectangles():
+    run_multiprocess(_two_dim_mesh, world_size=4)
+
+
+def _pipeline_stages(rank, world_size, port):
+    init_gloo(rank, world_size, port=port)
+    init_gloo_group()
+    sd_adapter, params = _adapter()
+    # stage 0 holds the attention layer, stage 1 the MLP: each sees only its own modules
+    stage = {key: value for key, value in params.items() if (_W13 in key) == (rank == 1)}
+    mapping = probe_torchtitan_row_mapping(stage, sd_adapter)
+    attn, mlp = "model.layers.3.self_attn", "model.layers.3.mlp"
+    assert mapping.shared_lora_a_groups == (
+        (f"{mlp}.gate_proj", f"{mlp}.up_proj"),
+        (f"{attn}.k_proj", f"{attn}.q_proj", f"{attn}.v_proj"),
+    ), "every stage holds the whole run's shared-A groups"
+    assert set(mapping.target_modules) == {f"{attn}.{m}_proj" for m in "qkvo"} | {
+        f"{mlp}.{m}_proj" for m in ("gate", "up")
+    }, "every stage holds the whole run's target modules"
+    _check(mapping, list(stage.values()), _expected(sd_adapter, params))
+    dist.destroy_process_group()
+
+
+def test_pipeline_stages_share_the_runs_groups_and_modules():
+    run_multiprocess(_pipeline_stages)
+
+
+def test_torchtitan_slots_declare_a_trained_heads_rows():
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from miles.backends.torchtitan_utils.lora_checkpoint import TorchtitanAdapterSlots
+    from miles.backends.training_utils.checkpoint.adapter.adapter_dir import HeadRows
+
+    slots = TorchtitanAdapterSlots.__new__(TorchtitanAdapterSlots)
+    slots.targets = replace(get_hf_lora_targets({"model_type": "qwen3", "num_hidden_layers": 1}), vocab_size=12)
+    head_b = f"{slots.targets.unembed[0]}.lora_B"
+    slots.row_mapping = SimpleNamespace(pieces=[SimpleNamespace(key=head_b, global_shape=(10, 2))])
+    assert slots._head_rows() == HeadRows(head_b, max_source_rows=12)
+
+
+def test_a_torchtitan_run_records_its_bases_fingerprint_and_path_as_given(tmp_path):
+    from miles.backends.torchtitan_utils import lora_checkpoint
+    from miles.backends.training_utils.checkpoint.adapter.parametrization import base_model_fingerprint
+
+    args = SimpleNamespace(
+        start_rollout_id=None,
+        hf_checkpoint="/root/models/Qwen3-4B",
+        lora_rank=8,
+        lora_alpha=16,
+        lora_type="lora",
+        backend=SimpleNamespace(no_save_optim=False),
+    )
+    slots = MagicMock()
+    with (
+        patch("miles.utils.hf_utils.config.load_hf_config", return_value=_QWEN3_CONFIG),
+        patch.object(lora_checkpoint, "_torchtitan_adapter_slots", return_value=slots),
+    ):
+        lora_checkpoint.TorchtitanLoraCheckpoint(SimpleNamespace(optimizers=SimpleNamespace(optimizers=[])), args, 1)
+    fields = slots.parametrization.call_args.kwargs
+    assert fields["base_model"] == "/root/models/Qwen3-4B"
+    assert fields["base_model_fingerprint"] == base_model_fingerprint(_QWEN3_CONFIG.to_dict())
+
+
+def test_the_torchtitan_members_declare_their_slots_head_rows():
+    from miles.backends.torchtitan_utils.lora_checkpoint import TorchtitanOptimizerMembers
+    from miles.backends.training_utils.checkpoint.adapter.adapter_dir import HeadRows
+
+    head_rows = HeadRows("lm_head.lora_B", max_source_rows=8)
+    members = TorchtitanOptimizerMembers(SimpleNamespace(head_rows=head_rows), [], save_moments=True)
+    assert members.head_rows is head_rows

@@ -67,7 +67,8 @@ async def tinker_startup(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[Simpl
         tinker_server_host="127.0.0.1",
         tinker_server_port=10613,
     )
-    hf_config = SimpleNamespace(max_position_embeddings=4096, vocab_size=128)
+    hf_fields = {"model_type": "qwen3", "max_position_embeddings": 4096, "vocab_size": 128}
+    hf_config = SimpleNamespace(**hf_fields, to_dict=lambda: dict(hf_fields))
     actor_config = SimpleNamespace(role=serve_tinker.ACTOR_ROLE, trainer_id="actor", overrides={}, model_id=None)
     monkeypatch.setattr(
         serve_tinker,

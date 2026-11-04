@@ -58,7 +58,7 @@ from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.logging_utils import rebind_env_reporting
 from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
-from miles.utils.lora.utils import build_lora_config, is_multi_lora_enabled, publishes_snapshots
+from miles.utils.lora.utils import build_lora_config, is_multi_lora_enabled, publishes_snapshots, reads_adapter_slots
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.misc import partition
 from miles.utils.object_store import StoreObjectRef, ValueSpec
@@ -347,7 +347,8 @@ class MegatronTrainRayActor(TrainRayActor):
                 quantization_config=None if is_lora else quantization_config,
             )
             self.snapshot_publisher = SnapshotPublisher(iterator)
-            if is_lora:
+            # building the slots probes collectively; build them only for what reads them
+            if is_lora and reads_adapter_slots(args, args.backend.save):
                 self._build_adapter_slots(iterator)
 
     def _build_adapter_slots(self, iterator) -> None:
