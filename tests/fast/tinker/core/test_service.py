@@ -4,7 +4,12 @@ import asyncio
 import hashlib
 import json
 import os
+import pickle
+import re
 import shutil
+import subprocess
+import sys
+import tempfile
 import threading
 import time
 from contextlib import suppress
@@ -27,9 +32,14 @@ from tests.fast.tinker.harness import (
 
 import miles.tinker.core.service as service_module
 from miles.backends.training_utils.checkpoint.adapter.commit import _adopt_pre_commit_dir, resolve_adapter_dir
+from miles.backends.training_utils.checkpoint.adapter.parametrization import (
+    AdapterParametrization,
+    write_parametrization,
+)
 from miles.tinker.core.checkpoint_expiry import CheckpointExpiry
 from miles.tinker.core.future import DONE, FAILED
-from miles.tinker.core.types import NotFoundError, OwnershipError, UserInputError
+from miles.tinker.core.imports import IMPORT_COPIES_DIRNAME
+from miles.tinker.core.types import GatewayConfig, ImportConfig, NotFoundError, OwnershipError, UserInputError
 from miles.tinker.core.utils import resolve_checkpoint_dir, resolve_sampler_checkpoint, resolve_sampler_export
 
 
@@ -1700,6 +1710,276 @@ async def test_an_expiring_name_relinked_by_an_operator_is_kept_and_the_rest_are
     assert service.expiry.expires_at(paths["foreign"]) is not None
 
 
+@pytest.mark.parametrize(
+    "filename,content",
+    [
+        ("adapter_config.json", "{not json"),
+        ("adapter_config.json", json.dumps({"lora_alpha": 32})),
+        ("adapter_parametrization.json", json.dumps({"lora_rank": 8})),
+        ("adapter_config.json", json.dumps({"r": 8, "lora_alpha": "32"})),
+        # json.loads reads NaN / Infinity as floats; alpha scales the slot, so each would train NaN or zero updates
+        ("adapter_config.json", '{"r": 8, "lora_alpha": NaN}'),
+        ("adapter_config.json", '{"r": 8, "lora_alpha": Infinity}'),
+        ("adapter_config.json", json.dumps({"r": 8, "lora_alpha": 0})),
+        ("adapter_config.json", json.dumps({"r": 8, "lora_alpha": -16})),
+        # json.loads reads it as an int, which no float holds
+        ("adapter_config.json", '{"r": 8, "lora_alpha": 1' + "0" * 400 + "}"),
+    ],
+    ids=[
+        "bad_json",
+        "no_rank",
+        "bad_parametrization",
+        "string_alpha",
+        "nan_alpha",
+        "inf_alpha",
+        "zero_alpha",
+        "negative_alpha",
+        "huge_int_alpha",
+    ],
+)
+async def test_a_malformed_import_is_a_user_error_and_the_gateway_keeps_serving(tmp_path, filename, content):
+    adapter = tmp_path / "imports" / "adapter"
+    adapter.mkdir(parents=True)
+    (adapter / filename).write_text(content)
+    service = make_service(tmp_path / "root", import_root=str(tmp_path / "imports"))
+    run_task = asyncio.create_task(service.run())
+    try:
+        with pytest.raises(UserInputError, match=re.escape(str(adapter.resolve()))):
+            service.weights_info("tenant", f"file://{adapter}")
+        model_id = await created_model(service)
+        payload = {"model_id": model_id, "seq_id": 1, "path": f"file://{adapter}", "optimizer": False}
+        loaded = await await_settled(service, "tenant", service.submit("tenant", "load_state", payload))
+        assert loaded.state == FAILED and str(adapter.resolve()) in loaded.error
+        assert not run_task.done(), "the dispatcher survived"
+    finally:
+        run_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await run_task
+
+
+@pytest.mark.parametrize("bad", ["a\x00b", "a\ud800b"], ids=["nul", "lone_surrogate"])
+async def test_an_unencodable_import_path_is_a_user_error_and_the_gateway_keeps_serving(tmp_path, bad):
+    (tmp_path / "imports").mkdir()
+    service = make_service(tmp_path / "root", import_root=str(tmp_path / "imports"))
+    run_task = asyncio.create_task(service.run())
+    try:
+        model_id = await created_model(service)
+        payload = {"model_id": model_id, "seq_id": 1, "path": f"file://{tmp_path}/imports/{bad}", "optimizer": False}
+        loaded = await await_settled(service, "tenant", service.submit("tenant", "load_state", payload))
+        assert loaded.state == FAILED and "cannot read" in loaded.error
+        assert not run_task.done(), "the dispatcher survived"
+    finally:
+        run_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await run_task
+
+
+def test_an_import_with_a_string_alpha_is_a_user_error_under_python_O(tmp_path):
+    """python -O strips asserts; the client's types must be checked without them."""
+    (tmp_path / "adapter_config.json").write_text(json.dumps({"r": 8, "lora_alpha": "32"}))
+    code = (
+        "from miles.tinker.core.types import UserInputError\n"
+        "from miles.tinker.runtime import read_imported_adapter\n"
+        "try:\n"
+        f"    read_imported_adapter({str(tmp_path)!r}, 'file:///adapter')\n"
+        "except UserInputError:\n"
+        "    pass\n"
+        "else:\n"
+        "    raise SystemExit('accepted a string alpha')\n"
+    )
+    subprocess.run([sys.executable, "-O", "-c", code], check=True)
+
+
+@pytest.mark.parametrize(
+    "served,kind,recorded_base,accepted",
+    [
+        ("base", "peft", None, True),
+        ("base", "peft", "base", True),
+        ("base", "peft", "/models/base", False),
+        ("base", "peft", "org/other", False),
+        ("{models}/base/hf", "peft", "{models}/base/hf", True),
+        ("{models}/base/hf", "peft", "{models}/link/hf", True),
+        ("{models}/base/hf", "peft", "{models}/other/hf", False),
+        ("{models}/base/hf", "peft", "hf", False),
+        ("{models}/base/hf", "adapter_dir", "{models}/base/hf", True),
+        ("{models}/base/hf", "adapter_dir", "other", False),
+    ],
+)
+def test_an_import_trained_on_another_base_is_refused(tmp_path, served, kind, recorded_base, accepted):
+    """A source that records no base (official Tinker writes null) is accepted."""
+    models = tmp_path / "models"
+    for name in ("base", "other"):
+        (models / name / "hf").mkdir(parents=True)
+    (models / "link").symlink_to(models / "base")
+    served = served.format(models=models)
+    recorded_base = recorded_base and recorded_base.format(models=models)
+    adapter = tmp_path / "imports" / "adapter"
+    adapter.mkdir(parents=True)
+    if kind == "peft":
+        config = {"r": 8, "lora_alpha": 32, "base_model_name_or_path": recorded_base}
+        (adapter / "adapter_config.json").write_text(json.dumps(config))
+    else:
+        write_parametrization(
+            adapter,
+            AdapterParametrization(recorded_base, 8, 32.0, "lora", ("model.layers.0.self_attn.q_proj",), False),
+        )
+    service = make_service(tmp_path / "root", import_root=str(tmp_path / "imports"), base_model=served)
+    if accepted:
+        assert service.weights_info("tenant", f"file://{adapter}")["lora_rank"] == 8
+    else:
+        with pytest.raises(UserInputError, match=re.escape(f"trained on '{recorded_base}'")):
+            service.weights_info("tenant", f"file://{adapter}")
+
+
+async def test_file_imports_stay_under_the_import_root_and_load_weights_only(tmp_path):
+    imports = tmp_path / "imports"
+    adapter = imports / "adapter"
+    adapter.mkdir(parents=True)
+    (adapter / "adapter_config.json").write_text(json.dumps({"r": 8, "lora_alpha": 32}))
+    (tmp_path / "outside").mkdir()
+    (tmp_path / "outside" / "adapter_config.json").write_text(json.dumps({"r": 8, "lora_alpha": 32}))
+    (imports / "link").symlink_to(tmp_path / "outside")
+    (imports / "symlinked").mkdir()
+    (imports / "symlinked" / "adapter_config.json").symlink_to(tmp_path / "outside" / "adapter_config.json")
+    service = make_service(tmp_path / "root", import_root=str(imports))
+    run_task = asyncio.create_task(service.run())
+    try:
+        model_id = await created_model(service)
+        info = service.weights_info("tenant", f"file://{adapter}")
+        assert (info["base_model"], info["lora_rank"]) == ("base", 8)
+
+        def load(model_id, path, optimizer=False, seq_id=1):
+            payload = {"model_id": model_id, "seq_id": seq_id, "path": path, "optimizer": optimizer}
+            return await_settled(service, "tenant", service.submit("tenant", "load_state", payload))
+
+        assert (await load(model_id, f"file://{adapter}")).state == DONE
+        loaded = service.backend.named("load_slot")[-1]
+        copies = tmp_path / "root" / IMPORT_COPIES_DIRNAME
+        assert Path(loaded["source"]["path"]).parent == copies and loaded["source"]["load_optimizer"] is False
+        assert not any(copies.iterdir()), "the copy outlived its load"
+        assert service.models[model_id].lora_alpha == 32
+        # a refused load leaves the model open
+        for seq_id, (path, error) in enumerate(
+            (
+                (f"file://{imports}/../outside", "outside the import root"),
+                (f"file://{imports}/link", "symlink"),
+                (f"file://{imports}/symlinked", "symlink"),
+                (f"file://{adapter}", "weights only"),
+            ),
+            start=2,
+        ):
+            assert error in (await load(model_id, path, optimizer=error == "weights only", seq_id=seq_id)).error
+        assert not any(copies.iterdir()), "a refused import left its copy"
+    finally:
+        run_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await run_task
+
+
+async def test_a_file_import_swapped_after_the_checks_cannot_change_what_the_trainer_reads(tmp_path, monkeypatch):
+    """The import walk and the trainer's read used to be two opens of the tenant's path; the trainer reads a copy."""
+    adapter = tmp_path / "imports" / "adapter"
+    adapter.mkdir(parents=True)
+    (adapter / "adapter_config.json").write_text(json.dumps({"r": 8, "lora_alpha": 32}))
+    victim = tmp_path / "root" / "victim" / "weights" / "x" / "adapter_config.json"
+    victim.parent.mkdir(parents=True)
+    victim.write_text(json.dumps({"r": 8, "lora_alpha": 32, "secret": True}))
+    service = make_service(tmp_path / "root", import_root=str(tmp_path / "imports"))
+    load_slot, read = service.backend.load_slot, []
+
+    async def trainer_load_slot(slot, rank, alpha, source=None):
+        ckpt_path = None if source is None else source["path"]
+        if ckpt_path is not None:
+            # the tenant swaps in a link to another tenant's checkpoint once the gateway's checks are done
+            (adapter / "adapter_config.json").unlink()
+            (adapter / "adapter_config.json").symlink_to(victim)
+            read.append(json.loads((Path(ckpt_path) / "adapter_config.json").read_text()))
+        return await load_slot(slot, rank, alpha, source=source)
+
+    monkeypatch.setattr(service.backend, "load_slot", trainer_load_slot)
+    run_task = asyncio.create_task(service.run())
+    try:
+        model_id = await created_model(service)
+        payload = {"model_id": model_id, "seq_id": 1, "path": f"file://{adapter}", "optimizer": False}
+        assert (await await_settled(service, "tenant", service.submit("tenant", "load_state", payload))).state == DONE
+        assert read == [{"r": 8, "lora_alpha": 32}]
+    finally:
+        run_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await run_task
+
+
+async def test_an_import_that_cannot_be_copied_fails_only_its_load(tmp_path):
+    adapter = tmp_path / "imports" / "adapter"
+    adapter.mkdir(parents=True)
+    (adapter / "adapter_config.json").write_text(json.dumps({"r": 8, "lora_alpha": 32}))
+    service = make_service(tmp_path / "root", import_root=str(tmp_path / "imports"))
+    # stands in for an unwritable or full checkpoint root
+    (tmp_path / "root").mkdir()
+    (tmp_path / "root" / IMPORT_COPIES_DIRNAME).write_text("")
+    run_task = asyncio.create_task(service.run())
+    try:
+        model_id = await created_model(service)
+        payload = {"model_id": model_id, "seq_id": 1, "path": f"file://{adapter}", "optimizer": False}
+        loaded = await await_settled(service, "tenant", service.submit("tenant", "load_state", payload))
+        assert loaded.state == FAILED and loaded.error_category == "server", loaded.error
+        assert not run_task.done(), "the dispatcher survived"
+    finally:
+        run_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await run_task
+
+
+async def test_a_save_pretrained_or_hf_download_dir_is_importable(tmp_path, monkeypatch):
+    """Files no reader opens (save_pretrained's README.md, hf download --local-dir's .cache/) are left behind."""
+    adapter = tmp_path / "imports" / "adapter"
+    (adapter / ".cache" / "huggingface" / "download").mkdir(parents=True)
+    (adapter / "adapter_config.json").write_text(json.dumps({"r": 8, "lora_alpha": 32}))
+    (adapter / "adapter_model.safetensors").write_bytes(b"weights")
+    (adapter / "README.md").write_text("---\nlibrary_name: peft\n---\n")
+    (adapter / ".cache" / "huggingface" / "download" / "adapter_model.safetensors.metadata").write_text("abc\n")
+    service = make_service(tmp_path / "root", import_root=str(tmp_path / "imports"))
+    load_slot, copied = service.backend.load_slot, []
+
+    async def trainer_load_slot(slot, rank, alpha, source=None):
+        ckpt_path = None if source is None else source["path"]
+        if ckpt_path is not None:
+            copied.append(sorted(p.name for p in Path(ckpt_path).iterdir()))
+        return await load_slot(slot, rank, alpha, source=source)
+
+    monkeypatch.setattr(service.backend, "load_slot", trainer_load_slot)
+    run_task = asyncio.create_task(service.run())
+    try:
+        model_id = await created_model(service)
+        payload = {"model_id": model_id, "seq_id": 1, "path": f"file://{adapter}", "optimizer": False}
+        loaded = await await_settled(service, "tenant", service.submit("tenant", "load_state", payload))
+        assert loaded.state == DONE, loaded.error
+        assert copied == [["adapter_config.json", "adapter_model.safetensors"]]
+    finally:
+        run_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await run_task
+
+
+async def test_a_file_import_load_reads_the_import_off_the_event_loop(service, monkeypatch):
+    model_id = await created_model(service)
+    threads = []
+
+    def copy_import(uri, suffixes):
+        threads.append(threading.current_thread())
+        return tempfile.mkdtemp()
+
+    def read_import_copy(uri, copy_dir):
+        threads.append(threading.current_thread())
+        return {"lora_rank": service.models[model_id].lora_rank, "lora_alpha": 32}
+
+    monkeypatch.setattr(service, "_copy_import", copy_import)
+    monkeypatch.setattr(service, "_read_import_copy", read_import_copy)
+    payload = {"model_id": model_id, "seq_id": 1, "path": "file:///imports/adapter", "optimizer": False}
+    assert (await await_settled(service, "tenant", service.submit("tenant", "load_state", payload))).state == DONE
+    assert len(threads) == 2 and threading.main_thread() not in threads
+
+
 async def test_weights_info_rejects_a_sampler_link_whose_target_is_gone(service):
     model_id = await created_model(service)
     save = service.submit(
@@ -1750,6 +2030,259 @@ async def test_a_legacy_checkpoint_cannot_be_deleted_through_the_api(service):
         await service.external_weights_urls("tenant", model_id, "weights/old", "http://gateway/")
 
 
+async def test_an_unreadable_import_is_a_user_error(tmp_path):
+    adapter = tmp_path / "imports" / "adapter"
+    adapter.mkdir(parents=True)
+    (adapter / "adapter_config.json").write_text(json.dumps({"r": 8, "lora_alpha": 32}))
+    service = make_service(tmp_path / "root", import_root=str(tmp_path / "imports"))
+    (adapter / "adapter_config.json").chmod(0)
+    try:
+        if os.access(adapter / "adapter_config.json", os.R_OK):
+            pytest.skip("running as root: chmod 000 does not stop reads")
+        with pytest.raises(UserInputError, match="cannot read"):
+            service.weights_info("tenant", f"file://{adapter}")
+    finally:
+        (adapter / "adapter_config.json").chmod(0o644)
+
+
+def _link_to_blob(link: Path) -> None:
+    blob = link.parent.parent / "blobs" / "0123abcd"
+    blob.parent.mkdir()
+    blob.write_bytes(b"")
+    link.symlink_to(blob)
+
+
+@pytest.mark.parametrize(
+    "plant, error",
+    [
+        # no reader opens it, so where it points does not matter
+        (lambda adapter, tmp_path: (adapter / "weights").symlink_to(tmp_path / "outside"), None),
+        (lambda adapter, tmp_path: (adapter / "everything").symlink_to("/"), None),
+        # an HF cache snapshot links its files to blobs/; hf download --local-dir writes the files themselves
+        (lambda adapter, tmp_path: _link_to_blob(adapter / "adapter_model.safetensors"), "symlink"),
+        # opening a FIFO blocks until a writer appears
+        (lambda adapter, tmp_path: os.mkfifo(adapter / "adapter_parametrization.json"), "not a regular file"),
+    ],
+)
+async def test_a_file_import_reads_only_its_own_adapter_files(tmp_path, plant, error):
+    adapter = tmp_path / "imports" / "adapter"
+    adapter.mkdir(parents=True)
+    (adapter / "adapter_config.json").write_text(json.dumps({"r": 8, "lora_alpha": 32}))
+    (tmp_path / "outside").mkdir()
+    plant(adapter, tmp_path)
+    service = make_service(tmp_path / "root", import_root=str(tmp_path / "imports"))
+    run_task = asyncio.create_task(service.run())
+    try:
+        model_id = await created_model(service)
+        payload = {"model_id": model_id, "seq_id": 1, "path": f"file://{adapter}", "optimizer": False}
+        loaded = await await_settled(service, "tenant", service.submit("tenant", "load_state", payload))
+        if error is None:
+            assert loaded.state == DONE, loaded.error
+        else:
+            assert loaded.state == FAILED and error in loaded.error
+    finally:
+        run_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await run_task
+
+
+@pytest.mark.parametrize("name", ["adapter_config.json", "adapter_parametrization.json"])
+def test_a_directory_named_like_an_adapter_file_is_refused_without_leaking_its_fd(tmp_path, name):
+    adapter = tmp_path / "imports" / "adapter"
+    adapter.mkdir(parents=True)
+    (adapter / name).mkdir()
+    service = make_service(tmp_path / "root", import_root=str(tmp_path / "imports"))
+    # a tenant repeating this would otherwise run every tenant's gateway out of file descriptors
+    open_fds = len(os.listdir("/dev/fd"))
+    for _ in range(3):
+        with pytest.raises(UserInputError, match="not a regular file"):
+            service.weights_info("tenant", f"file://{adapter}")
+    assert len(os.listdir("/dev/fd")) == open_fds
+
+
+async def test_an_import_larger_than_any_adapter_is_refused_before_it_is_copied(tmp_path):
+    adapter = tmp_path / "imports" / "adapter"
+    adapter.mkdir(parents=True)
+    (adapter / "adapter_config.json").write_text(json.dumps({"r": 8, "lora_alpha": 32}))
+    # sparse: costs no disk here, but a copy would write every byte onto the shared checkpoint disk
+    with open(adapter / "adapter_model.safetensors", "wb") as weights:
+        weights.truncate(1 << 40)
+    service = make_service(tmp_path / "root", import_root=str(tmp_path / "imports"), import_max_bytes=1 << 20)
+    run_task = asyncio.create_task(service.run())
+    try:
+        model_id = await created_model(service)
+        payload = {"model_id": model_id, "seq_id": 1, "path": f"file://{adapter}", "optimizer": False}
+        loaded = await await_settled(service, "tenant", service.submit("tenant", "load_state", payload))
+        assert loaded.state == FAILED and "more than any adapter" in loaded.error
+        assert not any((tmp_path / "root" / IMPORT_COPIES_DIRNAME).iterdir()), "nothing was left on the disk"
+    finally:
+        run_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await run_task
+
+
+def test_weights_info_copies_only_the_files_it_reads(tmp_path):
+    adapter = tmp_path / "imports" / "adapter"
+    adapter.mkdir(parents=True)
+    (adapter / "adapter_config.json").write_text(json.dumps({"r": 8, "lora_alpha": 32}))
+    with open(adapter / "tokenizer.json", "wb") as other:
+        other.truncate(1 << 40)
+    service = make_service(tmp_path / "root", import_root=str(tmp_path / "imports"), import_max_bytes=1 << 20)
+
+    assert service.weights_info("tenant", f"file://{adapter}")["lora_rank"] == 8
+
+
+async def test_a_file_import_load_copies_only_the_files_a_reader_opens(tmp_path, monkeypatch):
+    """Thousands of tiny .json files cost a copy each under the trainer lock and an inode each; none is read."""
+    adapter = tmp_path / "imports" / "adapter"
+    adapter.mkdir(parents=True)
+    (adapter / "adapter_config.json").write_text(json.dumps({"r": 8, "lora_alpha": 32}))
+    for index in range(50):
+        (adapter / f"pad{index}.json").write_text("")
+    service = make_service(tmp_path / "root", import_root=str(tmp_path / "imports"))
+    load_slot, copied = service.backend.load_slot, []
+
+    async def trainer_load_slot(slot, rank, alpha, source=None):
+        ckpt_path = None if source is None else source["path"]
+        if ckpt_path is not None:
+            copied.append(sorted(p.name for p in Path(ckpt_path).iterdir()))
+        return await load_slot(slot, rank, alpha, source=source)
+
+    monkeypatch.setattr(service.backend, "load_slot", trainer_load_slot)
+    run_task = asyncio.create_task(service.run())
+    try:
+        model_id = await created_model(service)
+        payload = {"model_id": model_id, "seq_id": 1, "path": f"file://{adapter}", "optimizer": False}
+        await await_settled(service, "tenant", service.submit("tenant", "load_state", payload))
+        assert copied == [["adapter_config.json"]]
+    finally:
+        run_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await run_task
+
+
+def test_an_import_json_larger_than_any_adapter_config_is_refused_before_it_is_parsed(tmp_path):
+    adapter = tmp_path / "imports" / "adapter"
+    adapter.mkdir(parents=True)
+    # within the whole import's budget, but parsed whole by the gateway and every trainer rank
+    (adapter / "adapter_config.json").write_text(json.dumps({"r": 8, "lora_alpha": 32, "pad": "x" * (2 << 20)}))
+    service = make_service(tmp_path / "root", import_root=str(tmp_path / "imports"), import_max_bytes=1 << 30)
+
+    with pytest.raises(UserInputError, match="adapter_config.json is larger than"):
+        service.weights_info("tenant", f"file://{adapter}")
+
+
+def test_an_import_json_that_grows_while_it_is_copied_is_still_held_to_the_json_cap(tmp_path, monkeypatch):
+    """The size checked at open time is not the size copied: a tenant can keep appending meanwhile."""
+    adapter = tmp_path / "imports" / "adapter"
+    adapter.mkdir(parents=True)
+    (adapter / "adapter_config.json").write_text(json.dumps({"r": 8, "lora_alpha": 32, "pad": "x" * (2 << 20)}))
+    real_fstat = os.fstat
+
+    def fstat_before_the_growth(fd):
+        result = real_fstat(fd)
+        fields = list(result)
+        fields[6] = min(result.st_size, 100)  # st_size as it was when the file was opened
+        return os.stat_result(fields)
+
+    monkeypatch.setattr(service_module.os, "fstat", fstat_before_the_growth)
+    service = make_service(tmp_path / "root", import_root=str(tmp_path / "imports"), import_max_bytes=1 << 30)
+
+    with pytest.raises(UserInputError, match="adapter_config.json grew past"):
+        service.weights_info("tenant", f"file://{adapter}")
+
+
+def test_a_committed_checkpoint_dir_cannot_be_imported(tmp_path):
+    """A checkpoint store mounted under the import root would otherwise hand any tenant another tenant's adapter."""
+    adapter = tmp_path / "imports" / "mounted"
+    adapter.mkdir(parents=True)
+    (adapter / "adapter_config.json").write_text(json.dumps({"r": 8, "lora_alpha": 32}))
+    (adapter / "tenant.json").write_text(json.dumps({"tenant_digest": "someone"}))
+    service = make_service(tmp_path / "root", import_root=str(tmp_path / "imports"))
+
+    with pytest.raises(UserInputError, match="is a committed checkpoint"):
+        service.weights_info("tenant", f"file://{adapter}")
+
+
+def test_a_checkpoint_saved_before_commits_cannot_be_imported(tmp_path):
+    """Pre-commit dirs record their owner only in META.json; a mounted checkpoint store must not leak them."""
+    adapter = tmp_path / "imports" / "mounted-sampler"
+    adapter.mkdir(parents=True)
+    (adapter / "adapter_config.json").write_text(json.dumps({"r": 8, "lora_alpha": 32}))
+    (adapter / "META.json").write_text(json.dumps({"tenant_digest": "someone"}))
+    service = make_service(tmp_path / "root", import_root=str(tmp_path / "imports"))
+
+    with pytest.raises(UserInputError, match="is a checkpoint saved before commits"):
+        service.weights_info("tenant", f"file://{adapter}")
+
+
+def test_a_training_adapter_dir_cannot_be_imported(tmp_path):
+    """The copy keeps only its bf16 PEFT view: importing it would silently round the fp32 masters a tenant expects."""
+    adapter = tmp_path / "imports" / "rl-save"
+    (adapter / "adapter_state").mkdir(parents=True)
+    (adapter / "adapter_config.json").write_text(json.dumps({"r": 8, "lora_alpha": 32}))
+    service = make_service(tmp_path / "root", import_root=str(tmp_path / "imports"))
+
+    with pytest.raises(UserInputError, match="is a training adapter dir; import its sampler or PEFT export"):
+        service.weights_info("tenant", f"file://{adapter}")
+
+
+class _WritesMarker:
+    def __init__(self, marker: Path):
+        self.marker = marker
+
+    def __reduce__(self):
+        return (Path.touch, (self.marker,))
+
+
+@pytest.mark.parametrize("pickled", [".metadata", "adapter_state/.metadata", "adapter_megatron_rank0.pt"])
+async def test_a_pickle_in_a_file_import_never_reaches_the_trainer(tmp_path, monkeypatch, pickled):
+    from miles.backends.training_utils.checkpoint.adapter.adapter_dir import check_adapter_source
+    from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
+
+    adapter = tmp_path / "imports" / "adapter"
+    adapter.mkdir(parents=True)
+    (adapter / "adapter_config.json").write_text(json.dumps({"r": 8, "lora_alpha": 32}))
+    run = AdapterParametrization("base", 8, 32.0, "lora", ("model.layers.0.self_attn.q_proj",), False)
+    if pickled.startswith("adapter_state/"):
+        write_parametrization(adapter, run)
+    marker = tmp_path / "code_ran"
+    (adapter / pickled).parent.mkdir(exist_ok=True)
+    (adapter / pickled).write_bytes(pickle.dumps(_WritesMarker(marker)))
+    service = make_service(tmp_path / "root", import_root=str(tmp_path / "imports"))
+    load_slot, trainer_read = service.backend.load_slot, []
+
+    async def trainer_load_slot(slot, rank, alpha, source=None):
+        ckpt_path = None if source is None else source["path"]
+        # None: a new model's empty slot
+        if ckpt_path is not None:
+            trainer_read.append(sorted(str(p.relative_to(ckpt_path)) for p in Path(ckpt_path).rglob("*")))
+            # every trainer rank's dry run of the source (find_load_mismatch), on what the trainer is given
+            targets = get_hf_lora_targets({"model_type": "qwen3", "num_hidden_layers": 1})
+            with suppress(Exception):
+                check_adapter_source(Path(ckpt_path), run, targets, load_optimizer=False)
+        return await load_slot(slot, rank, alpha, source=source)
+
+    monkeypatch.setattr(service.backend, "load_slot", trainer_load_slot)
+    run_task = asyncio.create_task(service.run())
+    try:
+        model_id = await created_model(service)
+        payload = {"model_id": model_id, "seq_id": 1, "path": f"file://{adapter}", "optimizer": False}
+        future = await await_settled(service, "tenant", service.submit("tenant", "load_state", payload))
+        if pickled.startswith("adapter_state/"):
+            # a training adapter dir is refused before anything is copied
+            assert "is a training adapter dir" in future.error and not trainer_read
+        else:
+            assert trainer_read, "the trainer was never reached"
+            assert not any(pickled in files for files in trainer_read)
+        assert not marker.exists(), "the client's pickle ran"
+        assert not run_task.done()
+    finally:
+        run_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await run_task
+
+
 async def test_weights_info_reports_a_sampler_exports_own_groups_not_the_gateways(service):
     model_id = await created_model(service)
     save = service.submit(
@@ -1791,3 +2324,18 @@ async def test_a_checkpoint_name_linked_outside_the_library_is_a_user_error_on_e
         with pytest.raises(UserInputError, match="this library did not write"):
             await call
     assert shared.is_dir(), "the foreign dir is never touched"
+
+
+def test_an_import_root_cannot_be_configured_without_its_caps(tmp_path):
+    """A root without caps once reached the copy as None and raised a TypeError that stopped the dispatcher."""
+    with pytest.raises(TypeError):
+        GatewayConfig(
+            base_model="base",
+            n_slots=1,
+            checkpoint_root=str(tmp_path),
+            vocab_size=8,
+            exports_tinker_names=True,
+            import_root=str(tmp_path / "imports"),
+        )
+    with pytest.raises(TypeError):
+        ImportConfig(root=str(tmp_path / "imports"), max_bytes=1 << 20)
