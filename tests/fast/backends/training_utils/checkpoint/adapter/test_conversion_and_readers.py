@@ -503,7 +503,9 @@ def test_a_parametrization_with_a_field_this_miles_does_not_know_is_refused(tmp_
     write_parametrization(tmp_path, _run(target_modules=QKV[:1]))
     fields = json.loads((tmp_path / PARAMETRIZATION_FILENAME).read_text())
     (tmp_path / PARAMETRIZATION_FILENAME).write_text(json.dumps(fields | {"lora_dropout": 0.1}))
-    with pytest.raises(AdapterSourceError, match=r"unknown fields \['lora_dropout'\].*load it with the miles version that wrote it"):
+    with pytest.raises(
+        AdapterSourceError, match=r"unknown fields \['lora_dropout'\].*load it with the miles version that wrote it"
+    ):
         read_parametrization(tmp_path)
 
 

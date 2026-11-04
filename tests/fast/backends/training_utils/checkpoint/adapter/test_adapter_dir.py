@@ -181,9 +181,7 @@ class InModelLoaderStub:
         self._parametrization, self._has_optimizer_state, self.loaded = parametrization, has_optimizer_state, []
 
     def parametrization(self, path):
-        parametrization = (
-            self._parametrization(path) if callable(self._parametrization) else self._parametrization
-        )
+        parametrization = self._parametrization(path) if callable(self._parametrization) else self._parametrization
         return parametrization, self._has_optimizer_state
 
     def prepare(self, path):

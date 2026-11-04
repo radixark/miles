@@ -2,12 +2,14 @@
 
 import hashlib
 import json
-from dataclasses import asdict, dataclass, fields as dataclass_fields
+from dataclasses import asdict, dataclass
+from dataclasses import fields as dataclass_fields
 from pathlib import Path
 
 import transformers
 
 from miles.backends.training_utils.checkpoint.adapter.source_error import AdapterSourceError
+
 PARAMETRIZATION_FILENAME = "adapter_parametrization.json"
 # bumped when a field's meaning changes or a field without a default is added; files from before it are 1
 PARAMETRIZATION_FORMAT_VERSION = 1
