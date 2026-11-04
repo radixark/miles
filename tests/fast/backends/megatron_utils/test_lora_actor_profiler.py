@@ -44,7 +44,7 @@ def _lora_actor_module(monkeypatch, *, model=None, checkpoint=None):
 def test_a_slot_load_checks_and_loads_the_one_source_it_is_given(monkeypatch):
     calls = []
     checkpoint = SimpleNamespace(
-        find_load_mismatch=lambda model, slot, path, run, targets, load_optimizer: calls.append(
+        find_load_mismatch=lambda model, slot, path, run, targets, load_optimizer, **shapes: calls.append(
             ("check", path, run, load_optimizer)
         ),
         load_slot=lambda model, members, optimizer, path, run, targets, load_optimizer: calls.append(
@@ -55,7 +55,12 @@ def test_a_slot_load_checks_and_loads_the_one_source_it_is_given(monkeypatch):
     module = _lora_actor_module(monkeypatch, model=model, checkpoint=checkpoint)
     actor = module.MultiLoRATrainRayActor()
     actor.args, actor.model, actor.slot_optimizers = None, [], {}
-    actor.adapter_slots = SimpleNamespace(parametrization=lambda **fields: fields["base_model"], targets=None)
+    actor.adapter_slots = SimpleNamespace(
+        parametrization=lambda **fields: fields["base_model"],
+        targets=None,
+        global_shapes=lambda rank: {},
+        head_rows=None,
+    )
     actor._checkpoint_members = lambda: None
 
     source = {"path": "/ckpt", "load_optimizer": False, "parametrization_fields": {"base_model": "m"}}

@@ -67,12 +67,12 @@ def test_a_failure_that_is_not_the_sources_fault_is_a_server_error(gloo, monkeyp
 
     monkeypatch.setattr(checkpoint, "check_adapter_source", failing)
     with pytest.raises(RuntimeError, match=str(error.args[-1])):
-        checkpoint.find_load_mismatch(None, 0, "/ckpt", None, None, load_optimizer=False)
+        checkpoint.find_load_mismatch(None, 0, "/ckpt", None, None, load_optimizer=False, run_shapes={})
 
 
 def test_a_missing_source_is_the_users_mismatch(gloo, tmp_path):
     mismatch = checkpoint.find_load_mismatch(
-        None, 0, str(tmp_path / "absent"), UNSHARED, TARGETS, load_optimizer=False
+        None, 0, str(tmp_path / "absent"), UNSHARED, TARGETS, load_optimizer=False, run_shapes={}
     )
     assert mismatch is not None and "cannot load into this model" in mismatch
 
