@@ -28,6 +28,7 @@ from miles.ray.specs.train import external_trainer_controller_addrs
 from miles.rollout.checkpoint_eval import is_checkpoint_eval_fn
 from miles.rollout.reward_shaping import validate_length_penalty_args
 from miles.router.backend import RouterKind
+from miles.utils.args.configs.data import DataConfig
 from miles.utils.args.configs.fault_tolerance import _DEFAULT_FT_API_SERVER_PORT
 from miles.utils.args.configs.router import RouterConfig
 from miles.utils.args.custom_function import (
@@ -478,6 +479,9 @@ def _resolve_eval_datasets(args) -> list[EvalDatasetConfig]:
     return eval_datasets
 
 
+_DEFAULT_DATA_SOURCE_PATH = DataConfig.model_fields["data_source_path"].default.path
+
+
 def _check_dataset_rewards(args, datasets: list[RolloutDatasetConfig]) -> None:
     """A dataset's custom_rm_path / rm_type become its samples' reward_spec; reject what that spec cannot do."""
     run_rm_path = getattr(  # config-access-exempt: still a path string before custom hooks resolve
@@ -518,11 +522,25 @@ def _validate_rollout_data_yaml_config(args) -> None:
         rollout_max_response_len=args.rollout_max_response_len,
     )
     _check_dataset_rewards(args, datasets)
-    # TODO(#3947): drop once the mixing data source reads these datasets
-    raise NotImplementedError(
-        f"--rollout-data-yaml-config is valid ({len(datasets)} datasets), but no data source consumes it yet; "
-        "the mixing data source is tracked in https://github.com/radixark/miles/issues/3947"
-    )
+    for dataset in datasets:
+        # TODO(#3947): pass these settings on to the dataset's samples
+        set_fields = dataset.model_dump(exclude_none=True)
+        if unsupported := [
+            name for name in ("max_response_len", "custom_generate_function_path", "agent") if name in set_fields
+        ]:
+            raise NotImplementedError(
+                f"--rollout-data-yaml-config dataset {dataset.name!r}: {', '.join(unsupported)} not supported yet"
+            )
+    if args.num_rollout is None:
+        # an epoch has no single length across independently wrapping datasets
+        raise ValueError("--rollout-data-yaml-config needs --num-rollout; --num-epoch is not supported with it")
+    if args.partial_rollout:
+        raise ValueError("--rollout-data-yaml-config does not support --partial-rollout yet")
+    if args.data_source_path != _DEFAULT_DATA_SOURCE_PATH:
+        raise ValueError(
+            f"--rollout-data-yaml-config selects its own data source; drop --data-source-path {args.data_source_path}"
+        )
+    args.data_source_path = "miles.rollout.data_source.MixedRolloutDataSource"
 
 
 def _compute_init_expected_num_cells(
@@ -1954,6 +1972,6 @@ def hf_validate_args(args, hf_config):
 
 
 def _resolve_data_source_path(args: argparse.Namespace) -> None:
-    if args.partial_rollout and args.data_source_path == "miles.rollout.data_source.RolloutDataSource":
+    if args.partial_rollout and args.data_source_path == _DEFAULT_DATA_SOURCE_PATH:
         args.data_source_path = "miles.rollout.data_source.LegacyRolloutDataSourceWithBuffer"
         logger.info("Partial rollout uses the legacy buffered data source by default")
