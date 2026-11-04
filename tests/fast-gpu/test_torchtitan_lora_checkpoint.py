@@ -41,7 +41,8 @@ from miles.backends.torchtitan_utils.lora_checkpoint import (
     probe_torchtitan_row_mapping,
 )
 from miles.backends.torchtitan_utils.lora_names import iter_hf_adapter_tensors
-from miles.backends.training_utils.checkpoint.adapter.adapter_dir import HeadRows
+from miles.backends.training_utils.checkpoint.adapter.adapter_dir import HeadRows, load_adapter_dir, save_adapter_dir
+from miles.backends.training_utils.checkpoint.adapter.commit import commit_adapter_dir
 from miles.backends.training_utils.checkpoint.adapter.key_mapping import (
     map_named_tensors_to_hf_keys,
     map_peft_keys_to_hf_keys,
@@ -795,6 +796,69 @@ def _slots_on_strided_dtensors(rank, world_size, port, placements):
 )
 def test_the_slots_own_pieces_of_strided_dtensors_are_their_hf_slices(placements):
     run_multiprocess(partial(_slots_on_strided_dtensors, placements=placements), world_size=4)
+
+
+def _members_on(mesh, placements, sd_adapter, weights, moments=None):
+    """Members of a model part holding ``weights`` so placed; ``moments``: their AdamW (exp_avg, exp_avg_sq) at step 5."""
+
+    def place(tensor):
+        return distribute_tensor(tensor, mesh, [Replicate(), Replicate()]).redistribute(mesh, placements)
+
+    part = _model_part({key: place(value) for key, value in weights.items()}).requires_grad_(True)
+    slots = TorchtitanAdapterSlots([part], None, sd_adapter, _TARGETS)
+    members = TorchtitanOptimizerMembers(slots, [torch.optim.AdamW(part.parameters())], save_moments=True)
+    if moments is not None:
+        for key, state in zip(slots.parameters, members.adam_states(), strict=True):
+            for name, value in zip(("exp_avg", "exp_avg_sq"), moments[key], strict=True):
+                state[name].to_local().copy_(place(value).to_local())
+            state["step"].fill_(5)
+    return slots, members
+
+
+def _cross_layout_round_trip(rank, world_size, port, path, source, target):
+    init_gloo(rank, world_size, port=port)
+    init_gloo_group()
+    mesh = init_device_mesh("cpu", (2, 2))
+    sd_adapter, params = _adapter()
+    g = torch.Generator().manual_seed(1)
+    moments = {key: (torch.randn(v.shape, generator=g), torch.rand(v.shape, generator=g)) for key, v in params.items()}
+    slots, saved = _members_on(mesh, source, sd_adapter, params, moments)
+    run = slots.parametrization(
+        base_model="hub/model",
+        lora_rank=8,
+        lora_alpha=16,
+        lora_type="lora",
+        experts_shared_outer_loras=False,
+        base_model_fingerprint=None,
+    )
+    written = save_adapter_dir(path, "adapter", saved, 0, run, tenant_digest=None)
+    if rank == 0:
+        commit_adapter_dir(path, "adapter", written, overwrite=True)
+    dist.barrier()
+
+    slots, loaded = _members_on(mesh, target, sd_adapter, {key: torch.zeros_like(v) for key, v in params.items()})
+    load_adapter_dir(written.path, loaded, 0, run, slots.targets, load_optimizer=True)
+    for (key, param), state in zip(slots.parameters.items(), loaded.adam_states(), strict=True):
+        assert torch.equal(param.full_tensor(), params[key]), key
+        assert torch.equal(state["exp_avg"].full_tensor(), moments[key][0]), key
+        assert torch.equal(state["exp_avg_sq"].full_tensor(), moments[key][1]), key
+        assert int(state["step"]) == 5, key
+    dist.destroy_process_group()
+
+
+_STRIDED_ROWS = [Shard(0), _StridedShard(0, split_factor=2)]
+_COLUMNS_THEN_ROWS = [Shard(1), Shard(0)]
+
+
+@pytest.mark.parametrize(
+    "source, target",
+    [(_STRIDED_ROWS, _COLUMNS_THEN_ROWS), (_COLUMNS_THEN_ROWS, _STRIDED_ROWS)],
+    ids=["strided_to_columns", "columns_to_strided"],
+)
+def test_an_adapter_dir_moves_weights_and_moments_across_parallel_layouts(tmp_path, source, target):
+    mp.spawn(
+        _cross_layout_round_trip, args=(4, find_free_port(), tmp_path, source, target), nprocs=4, join=True
+    )
 
 
 def _pipeline_stages(rank, world_size, port):
