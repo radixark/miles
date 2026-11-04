@@ -10,6 +10,8 @@ from torch.distributed._shard.metadata import ShardMetadata
 from torch.distributed._shard.sharded_tensor import Shard, ShardedTensor, ShardedTensorMetadata
 from torch.distributed._shard.sharded_tensor.metadata import TensorProperties
 
+from miles.backends.training_utils.checkpoint.adapter.source_error import AdapterSourceError
+
 ADAPTER_STATE_DIRNAME = "adapter_state"
 STEP_KEY = "optimizer.step"
 _STATE_SUFFIXES = ("weight", "exp_avg", "exp_avg_sq")
@@ -226,10 +228,11 @@ def assert_adapter_state_keys(directory: Path, run_keys: set[str], *, with_optim
     suffixes = _STATE_SUFFIXES if with_optimizer else ("weight",)
     missing = {f"{key}.{suffix}" for key in run_keys for suffix in suffixes} - stored
     unexpected = stored - {f"{key}.{suffix}" for key in run_keys for suffix in _STATE_SUFFIXES}
-    assert not missing and not unexpected, (
-        f"{directory}: adapter_state/ does not match the run: "
-        f"missing {sorted(missing)[:8]}, unexpected {sorted(unexpected)[:8]}"
-    )
+    if missing or unexpected:
+        raise AdapterSourceError(
+            f"{directory}: adapter_state/ does not match the run: "
+            f"missing {sorted(missing)[:8]}, unexpected {sorted(unexpected)[:8]}"
+        )
 
 
 def read_adapter_state_weights(directory: Path) -> dict[str, torch.Tensor]:

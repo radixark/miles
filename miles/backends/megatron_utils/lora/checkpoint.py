@@ -50,6 +50,7 @@ from miles.backends.training_utils.checkpoint.adapter.parametrization import (
     base_model_fingerprint,
 )
 from miles.backends.training_utils.checkpoint.adapter.readers import AdapterSourceKind, read_source_lora_alpha
+from miles.backends.training_utils.checkpoint.adapter.source_error import AdapterSourceError, require_fields
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.hf_utils.config import load_hf_config
 
@@ -87,20 +88,24 @@ class LayerWiseSlotMembers:
                     owned[index_of[id(param)]] = (master, child.optimizer.state[master], group)
         return owned
 
-    def get_local_shard_specs(self, slot: int):
-        return self._slots.local_shard_specs(slot, frozenset(self._owned(slot)))
-
-    def export_adapter_state(self, slot: int) -> AdapterState:
+    def _holds(self, slot: int) -> tuple[dict[int, tuple[torch.Tensor, dict, dict]], list]:
+        """``_owned(slot)`` and this rank's shard specs, agreed by every rank first."""
         error, owned = None, {}
         try:
             owned = self._owned(slot)
         except Exception as exc:
             error = exc
-        # the specs below gather over Gloo: a rank that cannot list its ownership must not leave the others there
+        # the specs gather over Gloo: a rank that cannot list its ownership must not leave the others there
         raise_if_any_rank_failed(error)
+        return owned, self._slots.local_shard_specs(slot, frozenset(owned))
+
+    def get_local_shard_specs(self, slot: int):
+        return self._holds(slot)[1]
+
+    def export_adapter_state(self, slot: int) -> AdapterState:
+        owned, specs = self._holds(slot)
         holds = frozenset(owned)
         params = self._slots.slot_parameters(slot)
-        specs = self._slots.local_shard_specs(slot, holds)
         # each piece is cut from the one held parameter it comes from; parameters held elsewhere are never read
         sources = self._slots.piece_parameter(slot, holds)
 
@@ -231,20 +236,22 @@ class DistributedOptimizerMembers:
         holds = self._holds()
         params = self._slots.slot_parameters(0)
         specs = self._slots.local_shard_specs(0, holds)
+        # each piece is cut from the one led parameter it comes from; parameters led elsewhere are never read
+        sources = self._slots.piece_parameter(0, holds)
+
+        def cut(tensor: torch.Tensor, offsets: torch.Tensor) -> torch.Tensor:
+            return tensor.detach().reshape(-1)[offsets.flatten().to(tensor.device)]
 
         def pieces(key: str) -> list[torch.Tensor]:
-            if not holds:
-                # a rank that leads no DP group writes no pieces
-                return []
-            aligned = [whole[i][key] if i in whole else p.detach().float().cpu() for i, p in enumerate(params)]
             return [
-                piece.reshape(spec.local_shape)
-                for piece, spec in zip(self._slots.local_pieces(0, aligned, holds), specs, strict=True)
+                cut(whole[index][key], offsets).reshape(spec.local_shape)
+                for (index, offsets), spec in zip(sources, specs, strict=True)
             ]
 
         assert holds <= whole.keys(), "a led adapter parameter is outside every DistributedOptimizer"
         weights = pieces("param")
-        for weight, bf16 in zip(weights, self._slots.local_pieces(0, params, holds), strict=True):
+        for weight, (index, offsets) in zip(weights, sources, strict=True):
+            bf16 = cut(params[index], offsets)
             assert torch.equal(
                 weight.to(bf16), bf16.reshape(weight.shape)
             ), "a bf16 adapter parameter is not its master"
@@ -290,6 +297,35 @@ class DistributedOptimizerMembers:
         _build_cast_main_to_params_fn(self._optimizer, precision_aware=self._precision_aware)()
         for chunk in self._model:
             chunk.start_param_sync(force_sync=True)
+
+
+class ModelWeightMembers:
+    """Bridge single LoRA without an optimizer (--debug-disable-optimizer): every rank loads the weights of the
+    pieces it holds straight into its bf16 parameters."""
+
+    def __init__(self, adapter_slots: BridgeAdapterSlots):
+        self._slots = adapter_slots
+        self.bf16_adapter_key_style = adapter_slots.bf16_adapter_key_style
+
+    @property
+    def head_rows(self) -> HeadRows | None:
+        return self._slots.head_rows
+
+    def export_bf16_adapter(self, slot: int) -> Iterable[tuple[str, torch.Tensor]]:
+        return self._slots.export_bf16_adapter(slot)
+
+    def get_local_shard_specs(self, slot: int):
+        assert slot == 0, "single LoRA has only slot 0"
+        return self._slots.local_shard_specs(0, None)
+
+    def import_adapter_state(self, slot: int, state: AdapterState) -> None:
+        params = self._slots.slot_parameters(0)
+        for (index, offsets), weight in zip(self._slots.piece_parameter(0, None), state.weights, strict=True):
+            param = params[index]
+            param.data.view(-1)[offsets.flatten().to(param.device)] = weight.flatten().to(param)
+
+    def finish_import_adapter_state(self, slot: int) -> None:
+        pass
 
 
 _STATE_KEYS = ("param", "exp_avg", "exp_avg_sq")
@@ -408,10 +444,12 @@ def find_load_mismatch(
         kind = check_adapter_source(path, run, targets, load_optimizer=load_optimizer)
         if kind == AdapterSourceKind.LEGACY_TINKER_CHECKPOINT:
             _read_legacy_meta(path, run)
+            state_dict_metadata = dcp.FileSystemReader(path).read_metadata().state_dict_metadata
+            _assert_has_legacy_optimizer_state(path, state_dict_metadata)
             # TE's _extra_state objects are stored per shard (<key>/shard_i_j); the tensors decide the layout
             saved = {
                 k: tuple(metadata.size)
-                for k, metadata in dcp.FileSystemReader(path).read_metadata().state_dict_metadata.items()
+                for k, metadata in state_dict_metadata.items()
                 if ".adapter." in k and "_extra_state" not in k and not _LEGACY_OPTIMIZER_KEY.match(k)
             }
         elif kind.is_read_into_model():
@@ -449,15 +487,15 @@ def find_load_mismatch(
     return next((m for m in gathered if m is not None), None)
 
 
-# what the source checks raise for a source the user named: absent, unreadable, malformed or refused
+# what the source checks raise for a source the user named: absent, unreadable, malformed or refused; any other
+# AssertionError or ValueError is a bug
 _SOURCE_ERRORS = (
+    AdapterSourceError,
     FileNotFoundError,
     NotADirectoryError,
     IsADirectoryError,
     PermissionError,
-    ValueError,
-    KeyError,
-    AssertionError,
+    json.JSONDecodeError,
     SafetensorError,
 )
 
@@ -483,8 +521,10 @@ class LegacyTinkerCheckpointLoader:
     def __init__(self, model, slot_optimizer: SlotOptimizer, run: AdapterParametrization, load_optimizer: bool):
         self._model, self._optimizer, self._run, self._load_optimizer = model, slot_optimizer, run, load_optimizer
 
-    def parametrization(self, path: Path) -> AdapterParametrization:
-        return replace(self._run, lora_alpha=_read_legacy_meta(path, self._run)["lora_alpha"])
+    def parametrization(self, path: Path) -> tuple[AdapterParametrization, bool]:
+        alpha = _read_legacy_meta(path, self._run)["lora_alpha"]
+        _assert_has_legacy_optimizer_state(path, dcp.FileSystemReader(path).read_metadata().state_dict_metadata)
+        return replace(self._run, lora_alpha=alpha), True
 
     def prepare(self, path: Path) -> tuple[Path, dict]:
         error, weights = None, None
@@ -501,6 +541,12 @@ class LegacyTinkerCheckpointLoader:
     def apply(self, prepared: tuple[Path, dict]) -> None:
         path, shells = prepared
         _load_legacy_slot(shells, self._optimizer, str(path), self._load_optimizer)
+
+
+def _assert_has_legacy_optimizer_state(path: Path, state_dict_metadata: Iterable[str]) -> None:
+    # main always saved it; a weights-only load reads the saved masters too (see _load_legacy_slot)
+    if not any(_LEGACY_OPTIMIZER_KEY.match(k) for k in state_dict_metadata):
+        raise AdapterSourceError(f"{path} holds no optimizer state, which every legacy slot load reads")
 
 
 # a gateway-wide layout setting -> the launch flag that restores a checkpoint saved under `value`
@@ -520,6 +566,7 @@ def _read_legacy_meta(path: Path, run: AdapterParametrization) -> dict:
         "experts_shared_outer_loras": False,
         **json.loads((path / "META.json").read_text()),
     }
+    require_fields(meta, ("base_model", "lora_rank", "lora_alpha"), path / "META.json")
     run = asdict(run)
     for field in ("base_model", "lora_rank", "lora_type", "experts_shared_outer_loras"):
         if meta[field] != run[field]:
@@ -529,7 +576,7 @@ def _read_legacy_meta(path: Path, run: AdapterParametrization) -> dict:
                     f". The adapter layout is set per gateway: restore it on one launched with "
                     f"{_GATEWAY_LAYOUT_FLAGS[field](meta[field])}"
                 )
-            raise ValueError(message)
+            raise AdapterSourceError(message)
     return meta
 
 
@@ -559,8 +606,8 @@ def _load_legacy_slot(shells: dict, slot_optimizer: SlotOptimizer, path: str, lo
         slot_optimizer.load_sharded_state(loaded[_OPTIM_KEY])
         if not load_optimizer:
             slot_optimizer.reset_adam_state()
-        # dist_checkpointing.load leaves factory-built (grouped-expert) adapter weights unwritten (root cause open); the
-        # loaded masters are authoritative
+        # factory-built (grouped-expert) adapter weights come back unwritten (likely: dist_checkpointing.load writes
+        # them only into the returned dict); the loaded masters are authoritative
         for child in slot_optimizer.chained_optimizers:
             child._copy_main_params_to_model_params()
     except Exception as exc:
@@ -626,12 +673,16 @@ def restore_single_lora(
     slots, targets = adapter_slots, adapter_slots.targets
     load_optimizer = not args.backend.no_load_optim
     # a convert-save writes moments only when they were loaded
-    members = DistributedOptimizerMembers(
-        slots,
-        optimizer,
-        model,
-        precision_aware=args.backend.use_precision_aware_optimizer,
-        save_moments=load_optimizer and not args.backend.no_save_optim,
+    members = (
+        ModelWeightMembers(slots)
+        if optimizer is None
+        else DistributedOptimizerMembers(
+            slots,
+            optimizer,
+            model,
+            precision_aware=args.backend.use_precision_aware_optimizer,
+            save_moments=load_optimizer and not args.backend.no_save_optim,
+        )
     )
     run = single_lora_parametrization(slots, args)
     path = Path(args.lora_adapter_path)
@@ -651,6 +702,9 @@ def restore_single_lora(
     assert (
         source.lora_alpha == run.lora_alpha
     ), f"{path} was trained with lora_alpha={source.lora_alpha}; this run uses {run.lora_alpha}"
+    if optimizer is None:
+        # as main: without an optimizer the weights load, and the run starts over
+        return None
     # an old-format save holds its training state beside the rank shards, whichever reader loaded the weights
     training_state = read_training_state(path) or _read_legacy_training_state(path)
     if args.lora_adapter_convert_save is not None:
@@ -679,9 +733,11 @@ class LegacyRankShardLoader:
         self._model, self._optimizer, self._run, self._load_optimizer = model, optimizer, run, load_optimizer
         self._precision_aware = precision_aware
 
-    def parametrization(self, path: Path) -> AdapterParametrization:
+    def parametrization(self, path: Path) -> tuple[AdapterParametrization, bool]:
+        state = _load_training_state(path)
+        has_optimizer_state = state is not None and state["optimizer"] is not None and "parameter_state" in state
         # an old save records alpha in its PEFT pair; load_adapter_dir takes the run's when it records none
-        return replace(self._run, lora_alpha=read_source_lora_alpha(path))
+        return replace(self._run, lora_alpha=read_source_lora_alpha(path)), has_optimizer_state
 
     def prepare(self, path: Path) -> tuple[list, dict | None]:
         # every rank-local read and check, so a rank missing its shard fails before any rank enters a collective
@@ -691,9 +747,6 @@ class LegacyRankShardLoader:
         state = None
         if self._load_optimizer:
             state = _load_training_state(path)
-            assert (
-                state is not None and state["optimizer"] is not None and "parameter_state" in state
-            ), f"{path} has no optimizer state to resume; pass --no-load-optim"
             assert len(state["parameter_state"]) == len(
                 _distributed_optimizers(self._optimizer)
             ), f"{path} holds parameter state for another number of distributed optimizers"
@@ -719,7 +772,7 @@ class LegacyRankShardLoader:
             _build_cast_main_to_params_fn(self._optimizer, precision_aware=self._precision_aware)()
             for chunk in self._model:
                 chunk.start_param_sync(force_sync=True)
-        else:
+        elif self._optimizer is not None:
             # the fp32 masters were built before the adapter load
             self._optimizer.reload_model_params()
 

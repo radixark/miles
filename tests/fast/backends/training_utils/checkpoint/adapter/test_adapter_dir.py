@@ -31,6 +31,7 @@ from miles.backends.training_utils.checkpoint.adapter.commit import (
 )
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
 from miles.backends.training_utils.checkpoint.adapter.readers import AdapterSourceKind
+from miles.backends.training_utils.checkpoint.adapter.source_error import AdapterSourceError
 from miles.utils.distributed_utils import init_gloo_group
 from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
 
@@ -182,11 +183,12 @@ def test_a_rank0_prepare_failure_fails_every_rank_instead_of_hanging():
 class InModelLoaderStub:
     """An in-model source with a fixed parametrization; records what it loads."""
 
-    def __init__(self, parametrization):
-        self._parametrization, self.loaded = parametrization, []
+    def __init__(self, parametrization, has_optimizer_state=True):
+        self._parametrization, self._has_optimizer_state, self.loaded = parametrization, has_optimizer_state, []
 
     def parametrization(self, path):
-        return self._parametrization(path) if callable(self._parametrization) else self._parametrization
+        parametrization = self._parametrization(path) if callable(self._parametrization) else self._parametrization
+        return parametrization, self._has_optimizer_state
 
     def prepare(self, path):
         return path
@@ -441,6 +443,44 @@ def test_an_in_model_source_is_loaded_only_after_its_parametrization_is_accepted
         in_model_loaders_by_kind={AdapterSourceKind.TORCHTITAN_CHECKPOINT: accepted},
     )
     assert accepted.loaded == [tmp_path]
+
+
+def test_an_in_model_source_without_optimizer_state_is_refused_when_loading_it(tmp_path):
+    torch.distributed.checkpoint.save(
+        {"model.layers.0.attention.wq.lora_a.weight": torch.zeros(2)}, checkpoint_id=tmp_path, no_dist=True
+    )
+    loader = InModelLoaderStub(RUN, has_optimizer_state=False)
+    with pytest.raises(RuntimeError, match="no optimizer state"):
+        load_adapter_dir(
+            tmp_path,
+            FakeMembers(),
+            0,
+            RUN,
+            TARGETS,
+            load_optimizer=True,
+            in_model_loaders_by_kind={AdapterSourceKind.TORCHTITAN_CHECKPOINT: loader},
+        )
+    assert loader.loaded == [], "a refused source must not touch the model"
+    load_adapter_dir(
+        tmp_path,
+        FakeMembers(),
+        0,
+        RUN,
+        TARGETS,
+        load_optimizer=False,
+        in_model_loaders_by_kind={AdapterSourceKind.TORCHTITAN_CHECKPOINT: loader},
+    )
+    assert loader.loaded == [tmp_path]
+
+
+def test_a_refused_source_is_reported_as_a_source_error(tmp_path):
+    written = save_adapter_dir(tmp_path, "w", FakeMembers(), 0, RUN, tenant_digest=None)
+    with pytest.raises(RuntimeError, match="adapter rank 2 != run rank 4") as refused:
+        load_adapter_dir(written.path, FakeMembers(), 0, replace(RUN, lora_rank=4), TARGETS, load_optimizer=False)
+    assert isinstance(refused.value.__cause__, AdapterSourceError)
+    with pytest.raises(RuntimeError) as unrecognized:
+        load_adapter_dir(tmp_path, FakeMembers(), 0, RUN, TARGETS, load_optimizer=False)
+    assert isinstance(unrecognized.value.__cause__, AdapterSourceError)
 
 
 class NoPrimaryAMembers(FakeMembers):
