@@ -724,11 +724,15 @@ def iter_multi_lora_adapters(model_chunks: Sequence[nn.Module]) -> Iterator[Nati
             yield child
 
 
-def assert_every_adapter_slotted(model_chunks: Sequence[nn.Module]) -> None:
-    """Under multi-LoRA an adapter outside the slots would add one tenant-blind delta to every tenant's tokens."""
-    slotted = {
+def _slotted_adapter_ids(model_chunks: Sequence[nn.Module]) -> set[int]:
+    return {
         id(adapter) for multi_adapter in iter_multi_lora_adapters(model_chunks) for adapter in multi_adapter.adapters
     }
+
+
+def assert_every_adapter_slotted(model_chunks: Sequence[nn.Module]) -> None:
+    """Under multi-LoRA an adapter outside the slots would add one tenant-blind delta to every tenant's tokens."""
+    slotted = _slotted_adapter_ids(model_chunks)
     unslotted = [
         child.hf_prefix
         for child in _iter_modules(model_chunks)
@@ -743,9 +747,7 @@ def assert_every_adapter_slotted(model_chunks: Sequence[nn.Module]) -> None:
 def adapters_hidden_context(model_chunks: Sequence[nn.Module]) -> Iterator[None]:
     """Detaches every adapter from the model: a base load that maps each parameter to a checkpoint tensor finds none
     for them."""
-    slotted = {
-        id(adapter) for multi_adapter in iter_multi_lora_adapters(model_chunks) for adapter in multi_adapter.adapters
-    }
+    slotted = _slotted_adapter_ids(model_chunks)
     adapters = [
         (parent, name, child)
         for parent in list(_iter_modules(model_chunks))

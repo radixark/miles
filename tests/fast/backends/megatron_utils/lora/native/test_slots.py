@@ -409,6 +409,8 @@ def test_routing_tokens_to_an_unclaimed_slot_fails_before_routing(monkeypatch):
     assert multi.adapter.token_counts_by_slot == (2, 3, 0)
     with pytest.raises(AssertionError, match=r"unclaimed slots \[2\]"):
         slots.route_tokens([2, 0, 3])
+    with pytest.raises(AssertionError, match="slot 0 is already claimed"):
+        slots.init(0, MAX_RANK, 4.0, seed=0)
 
 
 def test_a_slot_outside_the_table_fails(monkeypatch):

@@ -295,6 +295,8 @@ class BridgeAdapterSlots:
     def init(self, slot: int, lora_rank: int, lora_alpha: float, seed: int) -> None:
         """Claim ``slot``: re-draw its weights through the RNG tracker from ``seed``, then mask past ``lora_rank``."""
         self._assert_slot(slot)
+        # a re-draw would wipe the tenant's adapter
+        assert slot not in self._claimed_slots, f"slot {slot} is already claimed"
         self._init_slot(slot, lora_rank, lora_alpha, seed)
         self._claimed_slots.add(slot)
 

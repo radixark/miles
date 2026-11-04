@@ -55,7 +55,7 @@ class NativeAdapterSlots(BridgeAdapterSlots):
 
         tracker = get_cuda_rng_tracker()
         saved_tracker_states, saved_cuda_rng_state = tracker.get_states(), torch.cuda.get_rng_state()
-        # the reseed and restore of Bridge's init_adapter_slot
+        # copied from Megatron-Bridge multi_lora_layers.init_adapter_slot
         try:
             model_parallel_cuda_manual_seed(seed)
             with tracker.fork(get_data_parallel_rng_tracker_name()):

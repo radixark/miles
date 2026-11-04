@@ -12,7 +12,11 @@ from tests.fast.backends.megatron_utils.lora.native.naming_stub import named
 from miles.backends.megatron_utils.lora.native.config import LoRAConfig
 from miles.backends.megatron_utils.lora.native.hf_adapter import export_lora_hf_named, load_lora_adapter_hf
 from miles.backends.megatron_utils.lora.native.merge import merge_lora_into_weights
-from miles.backends.megatron_utils.lora.native.modules.linear import iter_adapters
+from miles.backends.megatron_utils.lora.native.modules.linear import (
+    assert_every_adapter_slotted,
+    iter_adapters,
+    iter_multi_lora_adapters,
+)
 from miles.backends.megatron_utils.lora.native.modules.moe import _grouped_linear
 from miles.backends.megatron_utils.lora.native.registry import MODEL_SPECS, resolve_adapter_targets
 from miles.backends.megatron_utils.lora.native.spec.base import AttachContext
@@ -79,9 +83,9 @@ def _moe(num_experts=3, intermediate=5):
     return moe
 
 
-def _context(targets=None, *, sequence_parallel=False, tp_size=1, tp_rank=0):
+def _context(targets=None, *, sequence_parallel=False, tp_size=1, tp_rank=0, num_slots=None):
     return AttachContext(
-        lora=LoRAConfig(rank=RANK, alpha=4, dropout=0.0, target_modules=targets),
+        lora=LoRAConfig(rank=RANK, alpha=4, dropout=0.0, target_modules=targets, num_slots=num_slots),
         transformer_config=SimpleNamespace(
             hidden_size=HIDDEN,
             sequence_parallel=sequence_parallel,
@@ -113,12 +117,12 @@ def _single_rank_comms(monkeypatch):
     monkeypatch.setattr(parallel_state, "get_expert_model_parallel_world_size", lambda: 2)
 
 
-def _model(*, include_fc2=True, sequence_parallel=False):
+def _model(*, include_fc2=True, sequence_parallel=False, num_slots=None):
     """Layer 3: MLA attention + dense MLP. Layer 4: KDA attention + routed and shared experts."""
     leaves = ("w1", "w3", "w2") if include_fc2 else ("w1", "w3")
     targets = [f"{PREFIX}*.block_sparse_moe.experts.*.{leaf}" for leaf in leaves]
     targets += [f"{PREFIX}*.{block}.{leaf}" for block, leaf in _NON_EXPERT_TARGETS]
-    context = _context(tuple(targets), sequence_parallel=sequence_parallel)
+    context = _context(tuple(targets), sequence_parallel=sequence_parallel, num_slots=num_slots)
     model = nn.Module()
     model.mla, model.dense, model.kda, model.moe = _attention(False), _mlp(), _attention(True), _moe()
     K3.attention.attach(model.mla, None, named(context, f"{PREFIX}3.self_attn."))
@@ -424,3 +428,15 @@ def test_kda_o_proj_delta_stays_a_partial_sum(monkeypatch):
         output = output + attention.linear_attn.out_proj(inputs[:, columns])
 
     torch.testing.assert_close(output, inputs @ (weight + scale * lora_b @ lora_a).t())
+
+
+def test_slots_wrap_every_dense_host_and_leave_the_grouped_experts_outside():
+    """The specs' own attach builds slot modules; the grouped experts have none, which a multi-LoRA attach refuses."""
+    model = _model(num_slots=3)
+
+    multi_adapters = list(iter_multi_lora_adapters([model]))
+    assert {len(multi_adapter.adapters) for multi_adapter in multi_adapters} == {3}
+    blocks = {name.rsplit(".", 1)[0] for name, module in model.named_modules() if module in multi_adapters}
+    assert {"mla", "dense", "moe.shared_experts"} <= blocks, blocks
+    with pytest.raises(AssertionError, match="sit outside the slots"):
+        assert_every_adapter_slotted([model])
