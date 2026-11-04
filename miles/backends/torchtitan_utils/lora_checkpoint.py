@@ -439,6 +439,7 @@ class TorchtitanLoraCheckpoint:
             self.run,
             self.slots.targets,
             training_state=self._training_state(rollout_id),
+            lora_dropout=0.0,  # torchtitan's LoRA has no dropout
         )
 
     def restore(self) -> int | None:
@@ -550,4 +551,5 @@ class TorchtitanLoraCheckpoint:
             self.run,
             self.slots.targets,
             training_state=training_state,
+            lora_dropout=0.0,  # torchtitan's LoRA has no dropout
         )

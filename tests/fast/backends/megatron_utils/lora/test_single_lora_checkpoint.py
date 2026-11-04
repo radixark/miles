@@ -493,7 +493,8 @@ class TestLegacyRankShardLoader:
 def test_a_save_records_the_rollout_its_schedule_started_at():
     """Another backend resumes the schedule from the rollout it counts from."""
     args = SimpleNamespace(
-        backend=SimpleNamespace(save="/save", use_precision_aware_optimizer=False, no_save_optim=False)
+        lora_dropout=0.05,
+        backend=SimpleNamespace(save="/save", use_precision_aware_optimizer=False, no_save_optim=False),
     )
     slots = SimpleNamespace(targets=None)
     with patch.multiple(
@@ -504,6 +505,7 @@ def test_a_save_records_the_rollout_its_schedule_started_at():
     ) as mocks:
         lora_checkpoint.save_single_lora([], MagicMock(), None, slots, args, iteration=4, first_rollout=3)
     assert mocks["save_and_commit_adapter_dir"].call_args.kwargs["training_state"]["first_rollout"] == 3
+    assert mocks["save_and_commit_adapter_dir"].call_args.kwargs["lora_dropout"] == 0.05
 
 
 class _DpZeroOptimizer(DistributedOptimizer):
