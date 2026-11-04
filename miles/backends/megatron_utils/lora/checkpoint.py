@@ -43,8 +43,6 @@ from miles.backends.training_utils.checkpoint.adapter.commit import UncommittedA
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
 from miles.backends.training_utils.checkpoint.adapter.readers import AdapterSourceKind, read_source_lora_alpha
 from miles.backends.training_utils.parallel import get_parallel_state
-from miles.utils.hf_utils.config import load_hf_config
-from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
 
 _WEIGHTS_KEY = "adapter_weights"
 _OPTIM_KEY = "adapter_optimizer"
@@ -545,23 +543,15 @@ def save_single_lora(model, optimizer, opt_param_scheduler, adapter_slots: Bridg
     )
 
 
-def restore_single_lora(model, args, *, optimizer, opt_param_scheduler) -> int | None:
+def restore_single_lora(
+    model, args, *, adapter_slots: BridgeAdapterSlots, optimizer, opt_param_scheduler
+) -> int | None:
     """``--lora-adapter-path`` from any recognized source; returns the saved iteration when the source has one.
 
     ``--lora-adapter-convert-save`` then commits the loaded state there in the adapter format.
     """
-    from miles.backends.megatron_utils.update_weight.hf_weight_iterator import get_hf_weight_iterator
-    from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
-
-    iterator = get_hf_weight_iterator(
-        args,
-        model,
-        required_placement=WeightUpdatePlacement(gather_pp=True),
-        model_name=None,
-        quantization_config=None,
-    )
-    targets = get_hf_lora_targets(load_hf_config(args.hf_checkpoint).to_dict())
-    slots = BridgeAdapterSlots(model, iterator, targets, multi_lora=False)
+    assert adapter_slots is not None, "the actor builds the adapter slots before restoring --lora-adapter-path"
+    slots, targets = adapter_slots, adapter_slots.targets
     load_optimizer = not args.backend.no_load_optim
     # a convert-save writes moments only when they were loaded
     members = DistributedOptimizerMembers(

@@ -56,21 +56,18 @@ def _restore(path, *, convert_save=None, source_alpha=16.0):
         backend=SimpleNamespace(no_load_optim=True, no_save_optim=False, use_precision_aware_optimizer=False),
     )
     scheduler = MagicMock()
-    with (
-        patch("miles.backends.megatron_utils.update_weight.hf_weight_iterator.get_hf_weight_iterator"),
-        patch.multiple(
-            _MODULE,
-            get_hf_lora_targets=DEFAULT,
-            load_hf_config=DEFAULT,
-            BridgeAdapterSlots=DEFAULT,
-            DistributedOptimizerMembers=DEFAULT,
-            load_adapter_dir=DEFAULT,
-            save_and_commit_adapter_dir=DEFAULT,
-        ) as mocks,
-    ):
-        mocks["BridgeAdapterSlots"].return_value.parametrization.return_value = SimpleNamespace(lora_alpha=16.0)
+    slots = MagicMock()
+    slots.parametrization.return_value = SimpleNamespace(lora_alpha=16.0)
+    with patch.multiple(
+        _MODULE,
+        DistributedOptimizerMembers=DEFAULT,
+        load_adapter_dir=DEFAULT,
+        save_and_commit_adapter_dir=DEFAULT,
+    ) as mocks:
         mocks["load_adapter_dir"].return_value = SimpleNamespace(lora_alpha=source_alpha)
-        iteration = restore_single_lora([], args, optimizer=MagicMock(), opt_param_scheduler=scheduler)
+        iteration = restore_single_lora(
+            [], args, adapter_slots=slots, optimizer=MagicMock(), opt_param_scheduler=scheduler
+        )
     return iteration, scheduler, mocks
 
 
