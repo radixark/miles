@@ -16,10 +16,9 @@ from miles.tinker.runtime import (
     classify_lora_groups,
 )
 from miles.tinker.server.proto_codec import encode_sample_response
+from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
 from tinker import types as tinker_types
 from tinker.proto.response_conv import deserialize_sample_response
-
-from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
 
 
 async def test_sampling_preserves_engine_client_error_details(monkeypatch):

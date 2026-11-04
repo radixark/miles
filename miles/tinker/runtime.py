@@ -24,9 +24,9 @@ from miles.backends.training_utils.checkpoint.adapter.parametrization import (
 from miles.ray.rollout.train_data_conversion import ROLLOUT_DATA_VALUE_SPEC
 from miles.tinker.core.types import OwnershipError, UserInputError
 from miles.utils import object_store
+from miles.utils.http_utils import post
 from miles.utils.lora.hf_lora_targets import GDN_IN_PROJ_COMPONENTS_BY_MODULE, HfLoraTargets
 from miles.utils.lora.utils import matches_lora_target
-from miles.utils.http_utils import post
 from tinker.types.topk_logprobs import MASK_LOGPROB
 
 # internal datum key -> trainer batch key
@@ -119,7 +119,9 @@ def classify_lora_groups(target_modules, layout: HfLoraTargets) -> dict[str, boo
     flags = dict.fromkeys(groups, False)
     for module in target_modules:
         parent, _, leaf = module.rpartition(".")
-        names = (module, f"{parent}.{_FUSED_LEAF_BY_COMPONENT[leaf]}") if leaf in _FUSED_LEAF_BY_COMPONENT else (module,)
+        names = (
+            (module, f"{parent}.{_FUSED_LEAF_BY_COMPONENT[leaf]}") if leaf in _FUSED_LEAF_BY_COMPONENT else (module,)
+        )
         hits = [flag for flag, globs in groups.items() if any(matches_lora_target(n, g) for n in names for g in globs)]
         assert hits, f"adapter target {module!r} is in no LoRA group of this model"
         flags.update(dict.fromkeys(hits, True))
