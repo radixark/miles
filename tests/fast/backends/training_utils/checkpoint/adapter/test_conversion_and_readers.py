@@ -17,6 +17,7 @@ from miles.backends.training_utils.checkpoint.adapter.parametrization import (
     AdapterParametrization,
     base_model_fingerprint,
     read_parametrization,
+    write_parametrization,
 )
 from miles.backends.training_utils.checkpoint.adapter.parametrization_conversion import (
     ConversionOp,
@@ -471,6 +472,17 @@ def test_a_parametrization_written_before_the_fingerprint_reads_back_without_one
     }
     (tmp_path / PARAMETRIZATION_FILENAME).write_text(json.dumps(fields))
     assert read_parametrization(tmp_path).base_model_fingerprint is None
+
+
+def test_the_parametrization_file_records_its_format_version_and_refuses_another(tmp_path):
+    run = _run(target_modules=QKV[:1])
+    write_parametrization(tmp_path, run)
+    fields = json.loads((tmp_path / PARAMETRIZATION_FILENAME).read_text())
+    assert fields["format_version"] == 1
+    assert read_parametrization(tmp_path) == run
+    (tmp_path / PARAMETRIZATION_FILENAME).write_text(json.dumps(fields | {"format_version": 2}))
+    with pytest.raises(ValueError, match="format version 2; this miles reads version 1"):
+        read_parametrization(tmp_path)
 
 
 def test_a_vl_wrapper_has_its_language_models_fingerprint():
