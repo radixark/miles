@@ -1,3 +1,6 @@
+from dataclasses import replace
+from types import SimpleNamespace
+
 """The row-mapping probe recovers each rank's HF pieces, primaries and shared A from an export alone."""
 
 import pytest
@@ -11,6 +14,7 @@ from miles.backends.megatron_utils.lora.bridge_checkpoint import (
     _HfPiece,
     probe_bridge_row_mapping,
 )
+from miles.backends.training_utils.checkpoint.adapter.adapter_dir import HeadRows
 from miles.utils.distributed_utils import init_gloo_group
 from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
 
@@ -220,3 +224,17 @@ def _trim_a_tp_split_rank(rank, world_size, port):
 
 def test_a_multi_lora_slot_keeps_only_its_real_rank_of_a_tp_split_rank_axis():
     run_multiprocess(_trim_a_tp_split_rank)
+
+
+def _slots_with_pieces(keys_and_rows, vocab_size):
+    slots = BridgeAdapterSlots.__new__(BridgeAdapterSlots)
+    slots.targets = replace(TARGETS, vocab_size=vocab_size)
+    pieces = [SimpleNamespace(key=key, global_shape=(rows, 2)) for key, rows in keys_and_rows]
+    slots.row_mapping = SimpleNamespace(pieces=pieces)
+    return slots
+
+
+def test_a_trained_head_declares_its_served_rows_and_the_hf_vocab_a_source_may_hold():
+    head_b = f"{TARGETS.unembed[0]}.lora_B"
+    assert _slots_with_pieces([(head_b, 6)], vocab_size=8)._head_rows() == HeadRows(head_b, max_source_rows=8)
+    assert _slots_with_pieces([(f"{K}.lora_B", 4)], vocab_size=8)._head_rows() is None
