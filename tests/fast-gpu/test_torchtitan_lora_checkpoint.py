@@ -99,3 +99,64 @@ def _sharded(rank, world_size, port):
 
 def test_fsdp_shards_map_to_rectangles_of_the_hf_tensors():
     run_multiprocess(_sharded)
+
+
+def _uneven_rows(rank, world_size, port):
+    init_gloo(rank, world_size, port=port)
+    init_gloo_group()
+    mesh = init_device_mesh("cpu", (world_size,))
+    sd_adapter, params = _adapter()
+    expected = _expected(sd_adapter, params)
+    # wqkv's 4096 lora_B rows over 3 ranks: 1366 / 1366 / 1364, so rank 1's shard crosses q_proj into k_proj
+    sharded = {key: distribute_tensor(value, mesh, [Shard(0)]) for key, value in params.items()}
+    mapping = probe_torchtitan_row_mapping(sharded, sd_adapter)
+    _check(mapping, [p.to_local() for p in sharded.values()], expected)
+    attn = "model.layers.3.self_attn"
+    keys = {p.key for p in mapping.pieces}
+    if rank == 1:
+        assert {f"{attn}.q_proj.lora_B", f"{attn}.k_proj.lora_B"} <= keys, "a shard splitting HF modules maps to both"
+    dist.destroy_process_group()
+
+
+def test_an_uneven_shard_across_hf_modules_maps_to_each_module():
+    run_multiprocess(_uneven_rows, world_size=3)
+
+
+def _two_dim_mesh(rank, world_size, port):
+    init_gloo(rank, world_size, port=port)
+    init_gloo_group()
+    mesh = init_device_mesh("cpu", (2, 2))
+    sd_adapter, params = _adapter()
+    expected = _expected(sd_adapter, params)
+    # lora_A (rank, in) is split along its input columns as well as its rows
+    sharded = {key: distribute_tensor(value, mesh, [Shard(0), Shard(1)]) for key, value in params.items()}
+    mapping = probe_torchtitan_row_mapping(sharded, sd_adapter)
+    _check(mapping, [p.to_local() for p in sharded.values()], expected)
+    dist.destroy_process_group()
+
+
+def test_a_two_dim_mesh_with_column_shards_maps_to_rectangles():
+    run_multiprocess(_two_dim_mesh, world_size=4)
+
+
+def _pipeline_stages(rank, world_size, port):
+    init_gloo(rank, world_size, port=port)
+    init_gloo_group()
+    sd_adapter, params = _adapter()
+    # stage 0 holds the attention layer, stage 1 the MLP: each sees only its own modules
+    stage = {key: value for key, value in params.items() if (_W13 in key) == (rank == 1)}
+    mapping = probe_torchtitan_row_mapping(stage, sd_adapter)
+    attn, mlp = "model.layers.3.self_attn", "model.layers.3.mlp"
+    assert mapping.shared_lora_a_groups == (
+        (f"{mlp}.gate_proj", f"{mlp}.up_proj"),
+        (f"{attn}.k_proj", f"{attn}.q_proj", f"{attn}.v_proj"),
+    ), "every stage holds the whole run's shared-A groups"
+    assert set(mapping.target_modules) == {f"{attn}.{m}_proj" for m in "qkvo"} | {
+        f"{mlp}.{m}_proj" for m in ("gate", "up")
+    }, "every stage holds the whole run's target modules"
+    _check(mapping, list(stage.values()), _expected(sd_adapter, params))
+    dist.destroy_process_group()
+
+
+def test_pipeline_stages_share_the_runs_groups_and_modules():
+    run_multiprocess(_pipeline_stages)
