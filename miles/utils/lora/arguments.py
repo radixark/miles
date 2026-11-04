@@ -29,7 +29,7 @@ from miles.utils.lora.utils import (
     engine_loads_adapter_from_disk,
     is_lora_enabled,
     matches_lora_target,
-    publishes_snapshots,
+    reads_adapter_slots,
     targets_expert_leaves,
 )
 
@@ -48,8 +48,7 @@ def validate_lora_args(args):
     ), "--lora-adapter-convert-save converts --lora-adapter-path"
     if not is_lora_enabled(args):
         return
-    # the trainer actors load it from their own working directory, which need not be the driver's that resolves
-    # alpha; only engines alone may be given a hub id
+    # trainers resolve relative paths from their own cwd; rollout-only keeps the string so a hub id reaches SGLang
     if args.lora_adapter_path is not None and not args.debug_rollout_only:
         args.lora_adapter_path = os.path.abspath(args.lora_adapter_path)
     args.lora_alpha = _resolve_lora_alpha(args)
@@ -104,19 +103,6 @@ def validate_lora_args(args):
             "MoE-expert LoRA layout: %s (--experts-shared-outer-loras).",
             "shared-outer" if args.experts_shared_outer_loras else "per-expert",
         )
-
-
-def _assert_adapter_layout_defined(args, hf_config) -> None:
-    """The adapter slots need the family's HF LoRA target layout; runs that build none train any family."""
-    # a rollout-only run has no trainer; SGLang reads its adapter
-    builds_slots = not args.debug_rollout_only and (
-        publishes_snapshots(args, args.save) or args.lora_adapter_path is not None or args.multi_lora
-    )
-    assert not builds_slots or has_hf_lora_targets(hf_config.to_dict()), (
-        f"LoRA --save, --save-hf, eval snapshots and --lora-adapter-path need the HF LoRA target layout of "
-        f"model_type={hf_config.model_type!r}, which miles does not define (miles/utils/lora/hf_lora_targets.py); "
-        "run without them or define the layout"
-    )
 
 
 def _resolve_lora_alpha(args) -> float:
@@ -176,12 +162,19 @@ def _default_lora_type(args) -> str:
 def validate_lora_args_after_megatron(args):
     """Checks that read Megatron's resolved args; for native (raw-mode) LoRA also the targets its spec serves
     (e.g. the expert TP size it defaults from TP)."""
+    # save() writes a LoRA model to its adapter dir, never into the in-memory checkpoint a heal or rollback restores
+    if is_lora_enabled(args) and not args.multi_lora and not args.debug_rollout_only:
+        assert not args.indep_dp and args.non_persistent_ckpt_type != "local", (
+            "LoRA does not support train fault tolerance (--indep-dp / in-memory checkpoints): a healed or rolled-back "
+            "cell would lose the adapter; remove 'train' from --ft-components and resume from a saved iter_N/adapter "
+            "with --lora-adapter-path"
+        )
     # rollout-only builds no optimizer and saves nothing
     if is_lora_enabled(args) and not args.multi_lora and not args.debug_rollout_only:
         _validate_adapter_state_args(args)
-    if is_lora_enabled(args) and not args.debug_rollout_only:
-        # after miles_validate_args: the actor's predicate reads eval_uses_snapshots, resolved there
-        _assert_adapter_layout_defined(args, load_hf_config(args.hf_checkpoint))
+    # after miles_validate_args: the actor's predicate reads eval_uses_snapshots, resolved there
+    if is_lora_enabled(args):
+        _assert_adapter_layout_defined(args)
     if not (is_lora_enabled(args) and args.megatron_to_hf_mode == "raw"):
         return
     hf_config = load_hf_config(args.hf_checkpoint)
@@ -216,6 +209,18 @@ def _validate_adapter_state_args(args) -> None:
         assert (
             args.num_distributed_optimizer_instances == 1
         ), "--lora-adapter-path cannot be combined with --num-distributed-optimizer-instances > 1"
+
+
+def _assert_adapter_layout_defined(args) -> None:
+    """The adapter slots need the family's HF LoRA target layout; runs that build none train any family."""
+    # a rollout-only run has no trainer; SGLang reads its adapter
+    if not args.debug_rollout_only and reads_adapter_slots(args, args.save):
+        hf_config = load_hf_config(args.hf_checkpoint)
+        assert has_hf_lora_targets(hf_config.to_dict()), (
+            f"LoRA --save, --save-hf, eval snapshots and --lora-adapter-path need the HF LoRA target layout of "
+            f"model_type={hf_config.model_type!r}, which miles does not define (miles/utils/lora/hf_lora_targets.py); "
+            "run without them or define the layout"
+        )
 
 
 def _native_serving_targets(args, hf_config, hf_targets: list[str], hf_modules: list[str]) -> list[str] | str:

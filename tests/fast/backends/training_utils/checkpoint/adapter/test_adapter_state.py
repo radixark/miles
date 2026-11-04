@@ -140,6 +140,40 @@ def test_a_rank_without_parameters_agrees_on_the_step():
     assert _load_adapter_state(Path(directory), _state((0, 6), fill=-1.0, step=None)) == 7
 
 
+def _two_blocks_of_one_key(rank, world_size, port, *, directory):
+    init_gloo(rank, world_size, port=port)
+    init_gloo_group()
+    if rank == 0:
+        specs = [
+            LocalShardSpec("m.lora_B", (4, 2), (0, 0), (2, 2)),
+            LocalShardSpec("m.lora_B", (4, 2), (2, 0), (2, 2)),
+        ]
+        weights = [torch.zeros(2, 2), torch.ones(2, 2)]
+        state = AdapterState(specs, weights, weights, weights, step=0)
+    else:
+        state = AdapterState([], [], [], [], step=None)
+    with pytest.raises(
+        RuntimeError, match=r"rank 0: AssertionError: this rank holds several blocks of \['m.lora_B'\]"
+    ):
+        _save_adapter_state(Path(directory), state)
+    dist.destroy_process_group()
+
+
+def test_a_rank_holding_two_blocks_of_one_key_fails_every_rank():
+    run_multiprocess(partial(_two_blocks_of_one_key, directory=tempfile.mkdtemp()))
+
+
+def test_a_load_into_two_blocks_of_one_key_is_refused(tmp_path):
+    spec = LocalShardSpec("m.lora_B", (2, 2), (0, 0), (2, 2))
+    saved = torch.ones(2, 2)
+    _save_adapter_state(tmp_path, AdapterState([spec], [saved], [saved], [saved], step=1))
+    blocks = [torch.zeros(2, 2), torch.zeros(2, 2)]
+    template = AdapterState([spec, spec], blocks, [b.clone() for b in blocks], [b.clone() for b in blocks], step=None)
+    # the first block would stay unfilled
+    with pytest.raises(RuntimeError, match="several blocks"):
+        _load_adapter_state(tmp_path, template)
+
+
 def _without_gloo_group(rank, world_size, port):
     init_gloo(rank, world_size, port=port)
     with pytest.raises(RuntimeError, match="Gloo group has not been initialized"):

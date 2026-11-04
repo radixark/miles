@@ -12,6 +12,7 @@ import torch.distributed.checkpoint
 from tests.fast.dist_utils import init_gloo, run_multiprocess
 
 from miles.backends.training_utils.checkpoint.adapter.adapter_dir import (
+    HeadRows,
     load_adapter_dir,
     save_adapter_dir,
     write_peft_export,
@@ -43,6 +44,8 @@ FULL = {
 
 class FakeMembers:
     """B split by rows across ranks (column-parallel), A replicated with rank 0 primary."""
+
+    head_rows = None
 
     def __init__(self, scale: float = 1.0):
         self.rank, self.world = (dist.get_rank(), dist.get_world_size()) if dist.is_initialized() else (0, 1)
@@ -413,7 +416,9 @@ HEAD_RUN = AdapterParametrization("m", 2, 4.0, "canonical_lora", ("lm_head",), F
 
 
 class HeadMembers(FakeMembers):
-    """A head whose run holds the 6 served vocab rows of lora_B; Megatron's vocab padding is not in the spec."""
+    """A head that serves 6 rows of a vocab whose HF export has up to 8."""
+
+    head_rows = HeadRows("lm_head.lora_B", max_source_rows=8)
 
     def get_local_shard_specs(self, slot):
         return [
@@ -422,20 +427,13 @@ class HeadMembers(FakeMembers):
         ]
 
 
-def test_a_head_adapter_over_the_hf_vocab_drops_the_rows_past_the_served_vocab(tmp_path):
-    # e.g. a released Inkling adapter: lora_B has HF vocab_size rows, more than the served vocab
-    head_b = torch.arange(8 * 2, dtype=torch.float32).reshape(8, 2)
+@pytest.mark.parametrize("rows", [6, 8])
+def test_a_head_source_over_the_served_vocab_loads_the_served_rows(tmp_path, rows):
+    head_b = torch.arange(rows * 2, dtype=torch.float32).reshape(rows, 2)
     write_peft_adapter(tmp_path, {"lm_head.lora_A": FULL["lora_A"], "lm_head.lora_B": head_b}, HEAD_RUN, TARGETS)
     members = HeadMembers()
     load_adapter_dir(tmp_path, members, 0, HEAD_RUN, TARGETS, load_optimizer=False)
     assert torch.equal(members.imported.weights[1], head_b[:6].to(torch.bfloat16).float())
-
-
-def test_a_head_adapter_with_fewer_rows_than_the_served_vocab_is_refused(tmp_path):
-    head_b = torch.ones(5, 2)
-    write_peft_adapter(tmp_path, {"lm_head.lora_A": FULL["lora_A"], "lm_head.lora_B": head_b}, HEAD_RUN, TARGETS)
-    with pytest.raises(RuntimeError, match=r"lm_head.lora_B: source \(5, 2\) != run \(6, 2\)"):
-        load_adapter_dir(tmp_path, HeadMembers(), 0, HEAD_RUN, TARGETS, load_optimizer=False)
 
 
 INKLING = get_hf_lora_targets({"model_type": "inkling_text", "num_hidden_layers": 1, "mlp_layer_types": ["dense"]})
@@ -460,3 +458,11 @@ def test_a_peft_dir_without_adapter_config_is_refused_with_a_remedy(tmp_path):
     (tmp_path / "adapter_config.json").unlink()
     with pytest.raises(RuntimeError, match="no adapter_config.json.*save_pretrained"):
         load_adapter_dir(tmp_path, HeadMembers(), 0, HEAD_RUN, INKLING, load_optimizer=False)
+
+
+@pytest.mark.parametrize("rows", [5, 9])
+def test_a_head_source_outside_the_declared_rows_is_refused(tmp_path, rows):
+    head_b = torch.zeros(rows, 2)
+    write_peft_adapter(tmp_path, {"lm_head.lora_A": FULL["lora_A"], "lm_head.lora_B": head_b}, HEAD_RUN, TARGETS)
+    with pytest.raises(RuntimeError, match=f"lm_head.lora_B: the source has {rows} rows; this run serves 6"):
+        load_adapter_dir(tmp_path, HeadMembers(), 0, HEAD_RUN, TARGETS, load_optimizer=False)

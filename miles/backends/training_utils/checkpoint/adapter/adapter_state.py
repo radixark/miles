@@ -156,6 +156,10 @@ def _sharded(specs: list[LocalShardSpec], tensors: list[torch.Tensor]) -> Sharde
 
 
 def _state_dict(state: AdapterState, *, for_save: bool) -> dict:
+    keys = [spec.key for spec in state.shard_specs]
+    # one ShardedTensor per key: a second block of a key would overwrite the first, which a load then never fills
+    duplicated = sorted({key for key in keys if keys.count(key) > 1})
+    assert not duplicated, f"this rank holds several blocks of {duplicated}"
     distributed = dist.is_initialized()
     state_dict = {}
     for suffix, tensors in state.tensors_by_suffix().items():

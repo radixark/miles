@@ -6,6 +6,7 @@ import os
 import shutil
 import threading
 from contextlib import suppress
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -153,6 +154,15 @@ async def test_sampler_save_publishes_successive_versions(service):
         (str(root), "2"),
     ]
     assert all(resolve_adapter_dir(root, name, tenant="tenant") is not None for name in ("1", "2")), "both committed"
+
+
+async def test_an_export_records_the_base_fingerprint_the_gateway_serves(service):
+    service.config = replace(service.config, base_model_fingerprint="0123456789abcdef")
+    model_id = await created_model(service)
+    save = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
+    assert (await await_settled(service, "tenant", save)).state == DONE
+    (export,) = service.backend.named("export_slot")
+    assert export["parametrization_fields"]["base_model_fingerprint"] == "0123456789abcdef"
 
 
 async def test_sampling_resolves_against_the_saved_version(service):
@@ -1223,7 +1233,6 @@ async def test_weights_info_rejects_a_sampler_link_whose_target_is_gone(service)
 
 
 async def test_trainer_ranks_get_only_the_tenant_digest(service):
-    """The API key is the tenant's credential; it must not travel to trainer processes."""
     model_id = await created_model(service)
     save = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
     assert (await await_settled(service, "tenant", save)).state == DONE
