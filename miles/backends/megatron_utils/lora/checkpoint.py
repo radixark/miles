@@ -296,6 +296,36 @@ class DistributedOptimizerMembers:
             chunk.start_param_sync(force_sync=True)
 
 
+class ModelWeightMembers:
+    """Bridge single LoRA without an optimizer (--debug-disable-optimizer): every rank loads the weights of the
+    pieces it holds straight into its bf16 parameters."""
+
+    bf16_adapter_key_style = "peft"
+
+    def __init__(self, adapter_slots: BridgeAdapterSlots):
+        self._slots = adapter_slots
+
+    @property
+    def head_rows(self) -> HeadRows | None:
+        return self._slots.head_rows
+
+    def export_bf16_adapter(self, slot: int) -> Iterable[tuple[str, torch.Tensor]]:
+        return self._slots.export_bf16_adapter(slot)
+
+    def get_local_shard_specs(self, slot: int):
+        assert slot == 0, "single LoRA has only slot 0"
+        return self._slots.local_shard_specs(0, None)
+
+    def import_adapter_state(self, slot: int, state: AdapterState) -> None:
+        params = self._slots.slot_parameters(0)
+        for (index, offsets), weight in zip(self._slots.piece_parameter(0, None), state.weights, strict=True):
+            param = params[index]
+            param.data.view(-1)[offsets.flatten().to(param.device)] = weight.flatten().to(param)
+
+    def finish_import_adapter_state(self, slot: int) -> None:
+        pass
+
+
 _STATE_KEYS = ("param", "exp_avg", "exp_avg_sq")
 
 
@@ -637,12 +667,16 @@ def restore_single_lora(
     slots, targets = adapter_slots, adapter_slots.targets
     load_optimizer = not args.backend.no_load_optim
     # a convert-save writes moments only when they were loaded
-    members = DistributedOptimizerMembers(
-        slots,
-        optimizer,
-        model,
-        precision_aware=args.backend.use_precision_aware_optimizer,
-        save_moments=load_optimizer and not args.backend.no_save_optim,
+    members = (
+        ModelWeightMembers(slots)
+        if optimizer is None
+        else DistributedOptimizerMembers(
+            slots,
+            optimizer,
+            model,
+            precision_aware=args.backend.use_precision_aware_optimizer,
+            save_moments=load_optimizer and not args.backend.no_save_optim,
+        )
     )
     run = single_lora_parametrization(slots, args)
     path = Path(args.lora_adapter_path)
@@ -662,6 +696,9 @@ def restore_single_lora(
     assert (
         source.lora_alpha == run.lora_alpha
     ), f"{path} was trained with lora_alpha={source.lora_alpha}; this run uses {run.lora_alpha}"
+    if optimizer is None:
+        # as main: without an optimizer the weights load, and the run starts over
+        return None
     # an old-format save holds its training state beside the rank shards, whichever reader loaded the weights
     training_state = read_training_state(path) or _read_legacy_training_state(path)
     if args.lora_adapter_convert_save is not None:
@@ -730,7 +767,7 @@ class LegacyRankShardLoader:
             _build_cast_main_to_params_fn(self._optimizer, precision_aware=self._precision_aware)()
             for chunk in self._model:
                 chunk.start_param_sync(force_sync=True)
-        else:
+        elif self._optimizer is not None:
             # the fp32 masters were built before the adapter load
             self._optimizer.reload_model_params()
 

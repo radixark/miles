@@ -204,10 +204,13 @@ def _validate_adapter_state_args(args) -> None:
     """adapter_state/ holds Adam's fp32 master, fp32 moments and step, gathered whole per DP group over Gloo."""
     if args.save is None and args.lora_adapter_path is None:
         return
-    assert not args.debug_disable_optimizer, (
-        "--save / --lora-adapter-path store and load the adapter's fp32 optimizer masters, which "
+    assert not args.debug_disable_optimizer or (args.save is None and args.lora_adapter_convert_save is None), (
+        "--save / --lora-adapter-convert-save store the adapter's fp32 optimizer masters, which "
         "--debug-disable-optimizer does not build; drop one of them"
     )
+    if args.debug_disable_optimizer:
+        # --lora-adapter-path then loads the adapter's weights only, as into a model without an optimizer
+        return
     assert args.optimizer == "adam", f"--save / --lora-adapter-path store Adam state; got --optimizer {args.optimizer}"
     assert args.exp_avg_dtype == args.exp_avg_sq_dtype == torch.float32, "the adapter checkpoint stores fp32 moments"
     assert args.main_params_dtype == torch.float32, "the adapter checkpoint stores fp32 masters"

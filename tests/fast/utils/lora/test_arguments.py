@@ -275,6 +275,21 @@ def test_loading_the_adapter_checkpoint_refuses_several_distributed_optimizer_in
         _validate_adapter_state_args(args)
 
 
+def test_without_an_optimizer_an_adapter_path_loads_weights_only():
+    args = Namespace(save=None, lora_adapter_path="/adapter", lora_adapter_convert_save=None, debug_disable_optimizer=True)
+    _validate_adapter_state_args(args)
+
+
+@pytest.mark.parametrize("saved", [dict(save="/save"), dict(lora_adapter_convert_save="/converted")])
+def test_without_an_optimizer_nothing_that_stores_fp32_masters_is_accepted(saved):
+    args = Namespace(
+        **{"save": None, "lora_adapter_path": "/adapter", "lora_adapter_convert_save": None, **saved},
+        debug_disable_optimizer=True,
+    )
+    with pytest.raises(AssertionError, match="--debug-disable-optimizer does not build"):
+        _validate_adapter_state_args(args)
+
+
 class TestRolloutOnlyAdapter:
     @pytest.fixture(autouse=True)
     def _qwen3(self, monkeypatch):

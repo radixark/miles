@@ -21,6 +21,7 @@ from miles.backends.megatron_utils.lora.checkpoint import (
     _world_slice,
     restore_single_lora,
 )
+from miles.backends.training_utils.checkpoint.adapter.adapter_state import AdapterState
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
 from miles.backends.training_utils.checkpoint.adapter.parametrization_conversion import (
     assert_parametrization_matches_run,
@@ -335,3 +336,33 @@ def test_an_export_reads_only_the_parameters_this_rank_leads(monkeypatch):
     )
     state = members.export_adapter_state(0)
     assert torch.equal(state.weights[0], master) and torch.equal(state.exp_avgs[0], master + 1)
+
+
+def test_without_an_optimizer_an_adapter_path_loads_the_weights_and_starts_over(tmp_path, monkeypatch):
+    param = torch.nn.Parameter(torch.zeros(2, 2, dtype=torch.bfloat16))
+    slots = SimpleNamespace(
+        targets=None, slot_parameters=lambda slot: [param], piece_parameter=lambda slot, holds: [(0, torch.tensor([3, 0]))]
+    )
+
+    def load_adapter_dir(path, members, slot, run, targets, **_):
+        members.import_adapter_state(0, AdapterState([SimpleNamespace(local_shape=(2,))], [torch.tensor([5.0, 7.0])], [], [], step=None, has_optimizer_state=False))
+        members.finish_import_adapter_state(0)
+        return SimpleNamespace(lora_alpha=16.0)
+
+    monkeypatch.setattr(lora_checkpoint, "single_lora_parametrization", lambda *_: SimpleNamespace(lora_alpha=16.0))
+    monkeypatch.setattr(lora_checkpoint, "load_adapter_dir", load_adapter_dir)
+    args = SimpleNamespace(
+        lora_adapter_path=str(tmp_path),
+        lora_adapter_convert_save=None,
+        backend=SimpleNamespace(no_load_optim=True, no_save_optim=True, use_precision_aware_optimizer=False),
+    )
+    iteration = restore_single_lora([], args, adapter_slots=slots, optimizer=None, opt_param_scheduler=None)
+    assert iteration is None
+    assert torch.equal(param, torch.tensor([[7.0, 0.0], [0.0, 5.0]], dtype=torch.bfloat16))
+
+
+def test_without_an_optimizer_an_old_format_save_loads_the_weights_only():
+    param = torch.nn.Parameter(torch.zeros(2))
+    loader = LegacyRankShardLoader([], None, None, load_optimizer=False, precision_aware=False)
+    loader.apply(([(param, torch.ones(2))], None))
+    assert torch.equal(param, torch.ones(2))
