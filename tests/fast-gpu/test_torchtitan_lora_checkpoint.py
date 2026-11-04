@@ -51,6 +51,9 @@ _TARGETS = get_hf_lora_targets({"model_type": "qwen3", "num_hidden_layers": 28})
 _QKV, _WO, _W13 = "layers.3.attention.qkv_linear.wqkv", "layers.3.attention.wo", "layers.3.feed_forward.w13"
 
 
+_QWEN3_CONFIG = SimpleNamespace(to_dict=lambda: {"model_type": "qwen3", "hidden_size": 8, "vocab_size": 16})
+
+
 def _adapter(rank: int = 8) -> tuple[object, dict[str, torch.Tensor]]:
     model = build_model_config("0.6B", parallelism=ParallelismConfig(), seq_len=4096, attn_backend="flex")
     sd_adapter = model._owner.state_dict_adapter_cls(model, None)
@@ -255,6 +258,7 @@ def _restore(tmp_path, *, dcp_step=None, training_state=None, **flags):
     trainer = _Trainer()
     slots = MagicMock()
     with (
+        patch("miles.utils.hf_utils.config.load_hf_config", return_value=_QWEN3_CONFIG),
         patch.object(lora_checkpoint, "_torchtitan_adapter_slots", return_value=slots),
         patch.object(lora_checkpoint, "load_adapter_dir", side_effect=load_adapter_dir),
         patch.object(lora_checkpoint, "read_training_state", return_value=training_state),
@@ -364,18 +368,6 @@ def test_a_torchtitan_adapter_dir_off_this_runs_rollout_grid_loads_its_weights_a
     assert (converted["iteration"], converted["step"], converted["first_rollout"]) == (9, 0, 10)
 
 
-def test_a_dir_records_the_base_its_path_resolves_to_at_save(tmp_path):
-    """A --hf-checkpoint symlink repointed at another base after the save must not let the adapter load onto it."""
-    (tmp_path / "v1").mkdir()
-    (tmp_path / "v2").mkdir()
-    (tmp_path / "cur").symlink_to(tmp_path / "v1")
-    saved = _restore(tmp_path, hf_checkpoint=str(tmp_path / "cur")).base_model
-    (tmp_path / "cur").unlink()
-    (tmp_path / "cur").symlink_to(tmp_path / "v2")
-    resumed = _restore(tmp_path, hf_checkpoint=str(tmp_path / "cur")).base_model
-    assert (saved, resumed) == (str((tmp_path / "v1").resolve()), str((tmp_path / "v2").resolve()))
-
-
 def test_a_dir_saved_by_a_run_from_start_rollout_id_resumes(tmp_path):
     """--start-rollout-id 5 starts the steps at rollout 5: its rollout-6 save is at step 8, on its own grid."""
     trainer = _Trainer()
@@ -389,6 +381,7 @@ def test_a_dir_saved_by_a_run_from_start_rollout_id_resumes(tmp_path):
         backend=SimpleNamespace(no_save_optim=False, save=str(tmp_path)),
     )
     with (
+        patch("miles.utils.hf_utils.config.load_hf_config", return_value=_QWEN3_CONFIG),
         patch.object(lora_checkpoint, "_torchtitan_adapter_slots", return_value=MagicMock()),
         patch.object(lora_checkpoint, "save_and_commit_adapter_dir") as save,
     ):
@@ -691,3 +684,26 @@ def test_torchtitan_slots_declare_a_trained_heads_rows():
     head_b = f"{slots.targets.unembed[0]}.lora_B"
     slots.row_mapping = SimpleNamespace(pieces=[SimpleNamespace(key=head_b, global_shape=(10, 2))])
     assert slots._head_rows() == HeadRows(head_b, max_source_rows=12)
+
+
+def test_a_torchtitan_run_records_its_bases_fingerprint_and_path_as_given(tmp_path):
+    from miles.backends.torchtitan_utils import lora_checkpoint
+    from miles.backends.training_utils.checkpoint.adapter.parametrization import base_model_fingerprint
+
+    args = SimpleNamespace(
+        start_rollout_id=None,
+        hf_checkpoint="/root/models/Qwen3-4B",
+        lora_rank=8,
+        lora_alpha=16,
+        lora_type="lora",
+        backend=SimpleNamespace(no_save_optim=False),
+    )
+    slots = MagicMock()
+    with (
+        patch("miles.utils.hf_utils.config.load_hf_config", return_value=_QWEN3_CONFIG),
+        patch.object(lora_checkpoint, "_torchtitan_adapter_slots", return_value=slots),
+    ):
+        lora_checkpoint.TorchtitanLoraCheckpoint(SimpleNamespace(optimizers=SimpleNamespace(optimizers=[])), args, 1)
+    fields = slots.parametrization.call_args.kwargs
+    assert fields["base_model"] == "/root/models/Qwen3-4B"
+    assert fields["base_model_fingerprint"] == base_model_fingerprint(_QWEN3_CONFIG.to_dict())

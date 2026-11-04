@@ -10,7 +10,6 @@ The fp32 parameters are their own masters; AdamW keeps ``exp_avg`` / ``exp_avg_s
 one ``step`` per parameter.
 """
 
-import os
 from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
@@ -39,7 +38,10 @@ from miles.backends.training_utils.checkpoint.adapter.base_model import (
     is_fingerprint_tensor,
     resolve_hf_dir,
 )
-from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
+from miles.backends.training_utils.checkpoint.adapter.parametrization import (
+    AdapterParametrization,
+    base_model_fingerprint,
+)
 from miles.backends.training_utils.checkpoint.adapter.probed_slots import (
     HfPiece,
     ProbedAdapterSlots,
@@ -379,6 +381,8 @@ class TorchtitanLoraCheckpoint:
     """Single-LoRA RL checkpoints of the torchtitan backend: ``{save}/iter_N/adapter`` and ``--lora-adapter-path``."""
 
     def __init__(self, trainer, args, steps_per_rollout: int):
+        from miles.utils.hf_utils.config import load_hf_config
+
         self._trainer, self._args, self._steps_per_rollout = trainer, args, steps_per_rollout
         # the rollout at this schedule's step 0: --start-rollout-id starts the steps there, not at rollout 0
         self._first_rollout = 0 if args.start_rollout_id is None else args.start_rollout_id
@@ -386,16 +390,13 @@ class TorchtitanLoraCheckpoint:
         self.members = TorchtitanOptimizerMembers(
             self.slots, trainer.optimizers.optimizers, save_moments=not args.backend.no_save_optim
         )
-        base_model = args.hf_checkpoint
-        # the base as saved, as Megatron records it: a path later repointed at another model must not match it
-        if os.path.exists(base_model):
-            base_model = os.path.realpath(base_model)
         self.run = self.slots.parametrization(
-            base_model=base_model,
+            base_model=args.hf_checkpoint,
             lora_rank=args.lora_rank,
             lora_alpha=args.lora_alpha,
             lora_type=args.lora_type,
             experts_shared_outer_loras=False,
+            base_model_fingerprint=base_model_fingerprint(load_hf_config(args.hf_checkpoint).to_dict()),
         )
 
     def _training_state(self, iteration: int | None) -> dict:
