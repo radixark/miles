@@ -5,6 +5,7 @@ register_cuda_ci(
     est_time=30, suite="stage-b-2-gpu-h200", labels=["torchtitan", "lora"], hardware=["hopper"], num_gpus=2
 )
 
+from dataclasses import replace
 from functools import partial
 
 import pytest
@@ -22,8 +23,9 @@ from torch.distributed.tensor.placement_types import _StridedShard
 from torchtitan.config.parallelism import ParallelismConfig
 from torchtitan.models.qwen3 import build_model_config
 
-from miles.backends.torchtitan_utils.lora_checkpoint import probe_torchtitan_row_mapping
+from miles.backends.torchtitan_utils.lora_checkpoint import TorchtitanAdapterSlots, probe_torchtitan_row_mapping
 from miles.backends.torchtitan_utils.lora_names import iter_hf_adapter_tensors
+from miles.backends.training_utils.checkpoint.adapter.adapter_dir import HeadRows
 from miles.backends.training_utils.checkpoint.adapter.key_mapping import (
     map_named_tensors_to_hf_keys,
     map_peft_keys_to_hf_keys,
@@ -195,11 +197,6 @@ def test_pipeline_stages_share_the_runs_groups_and_modules():
 
 
 def _trained_head(rank, world_size, port):
-    from dataclasses import replace
-
-    from miles.backends.torchtitan_utils.lora_checkpoint import TorchtitanAdapterSlots
-    from miles.backends.training_utils.checkpoint.adapter.adapter_dir import HeadRows
-
     init_gloo(rank, world_size, port=port)
     init_gloo_group()
     # an untied flavor: a tied one's state dict adapter maps lm_head to nothing
