@@ -536,6 +536,35 @@ def test_the_external_export_is_the_fp32_masters_gathered_across_ranks():
         assert torch.equal(exported[f"{MODULE}.{factor}"], master)
 
 
+
+class DataParallelMembers(FakeMembers):
+    """Two data-parallel replicas of a two-way row split: ranks 2 and 3 hold non-primary copies of ranks 0 and 1."""
+
+    def get_local_shard_specs(self, slot):
+        replica, rows = self.rank // 2, 2
+        return [
+            LocalShardSpec(f"{MODULE}.lora_A", (2, 6), (0, 0), (2, 6), is_primary=self.rank == 0),
+            LocalShardSpec(f"{MODULE}.lora_B", (4, 2), (self.rank % 2 * rows, 0), (rows, 2), is_primary=replica == 0),
+        ]
+
+
+def _export_external_with_replicas(rank, world_size, port, *, root):
+    init_gloo(rank, world_size, port=port)
+    init_gloo_group()
+    written = write_external_export(Path(root), "x", DataParallelMembers(), 0, RUN, TARGETS, tenant_digest=None)
+    if rank == 0:
+        commit_adapter_dir(Path(root), "x", written, overwrite=False)
+    dist.destroy_process_group()
+
+
+def test_the_external_export_takes_each_piece_from_its_primary_rank_only():
+    root = tempfile.mkdtemp()
+    run_multiprocess(partial(_export_external_with_replicas, root=root), world_size=4)
+    committed = resolve_adapter_dir(Path(root), "x", tenant=None)
+    exported = ExternalWeightsReader(committed.path, RUN, TARGETS).read_weights()
+    for factor, full in FULL.items():
+        assert torch.equal(exported[f"{MODULE}.{factor}"], full)
+
 GDN = "model.layers.0.linear_attn"
 GDN_TARGETS = get_hf_lora_targets(
     {

@@ -348,16 +348,24 @@ def write_external_export(
 def _gather_whole_weights(state: AdapterState) -> dict[str, torch.Tensor] | None:
     """Collective: each key's whole fp32 weight, assembled on rank 0 from the primary pieces; None elsewhere."""
     pieces = [(s, w.cpu()) for s, w in zip(state.shard_specs, state.weights, strict=True) if s.is_primary]
-    gathered = [pieces]
+    specs_by_rank = [[spec for spec, _ in pieces]]
     if torch.distributed.is_initialized():
-        gathered = [None] * torch.distributed.get_world_size() if _is_writer() else None
-        torch.distributed.gather_object(pieces, gathered, dst=0, group=gloo_group())
+        # only the specs go through gather_object, which pads every rank's payload to the largest one
+        specs_by_rank = [None] * torch.distributed.get_world_size() if _is_writer() else None
+        torch.distributed.gather_object([spec for spec, _ in pieces], specs_by_rank, dst=0, group=gloo_group())
     if not _is_writer():
+        for _, piece in pieces:
+            torch.distributed.send(piece.float().contiguous(), dst=0, group=gloo_group())
         return None
     whole, filled = {}, {}
-    # each rank's pieces are released once placed, so rank 0 never holds the gathered adapter and the whole one
-    while gathered:
-        for spec, piece in gathered.pop():
+    # pieces arrive one at a time, so rank 0 holds the whole adapter plus one received piece
+    for rank, specs in enumerate(specs_by_rank):
+        for index, spec in enumerate(specs):
+            if rank == 0:
+                piece = pieces[index][1]
+            else:
+                piece = torch.empty(spec.local_shape, dtype=torch.float32)
+                torch.distributed.recv(piece, src=rank, group=gloo_group())
             full = whole.setdefault(spec.key, torch.empty(spec.global_shape, dtype=torch.float32))
             full[tuple(slice(o, o + n) for o, n in zip(spec.offsets, spec.local_shape, strict=True))] = piece
             filled[spec.key] = filled.get(spec.key, 0) + piece.numel()
