@@ -155,7 +155,7 @@ def run_worker(directory, tp, canonical):
     args = Namespace(
         backend=Namespace(optimizer="adam", bf16=True, use_gloo_process_groups=True, lr=ADAM["learning_rate"])
     )
-    optimizers = {slot: SlotOptimizer(args, model, slot) for slot in range(3)}
+    optimizers = {slot: SlotOptimizer(args, model, slot, adapter_slot_parameters(model, slot)) for slot in range(3)}
     params = [p for slot in range(3) for p in adapter_slot_parameters(model, slot)]
     assert_ep_replicas_equal(expert_model)
 
