@@ -42,7 +42,8 @@ class RowMapping:
 
 
 def finish_local_pieces(pieces: list[HfPiece], total: int, unexported: torch.Tensor | None = None) -> list[HfPiece]:
-    """Narrow the pieces' indices and assert they reach each of the rank's ``total`` elements once probed.
+    """Narrow the pieces' indices to int32 when they fit, and assert they reach every one of the rank's ``total``
+    elements.
 
     ``unexported``: offsets the export leaves out by construction; the pieces must not reach them.
     """

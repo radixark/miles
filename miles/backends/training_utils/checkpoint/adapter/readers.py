@@ -137,9 +137,7 @@ def read_source_lora_alpha(path: Path) -> float | None:
         kind = _dcp_source_kind(path)
         if kind is AdapterSourceKind.MEGATRON_BRIDGE_CHECKPOINT:
             peft = yaml.safe_load((path / "run_config.yaml").read_text())["peft"]
-            assert (
-                peft is not None
-            ), f"{path} is a Megatron-Bridge checkpoint without PEFT (a full fine-tune), not a LoRA"
+            assert peft is not None, f"{path} holds Megatron-Bridge adapter keys but its run_config.yaml has no peft"
             return float(peft["alpha"])
         if kind is AdapterSourceKind.TORCHTITAN_CHECKPOINT:
             return None

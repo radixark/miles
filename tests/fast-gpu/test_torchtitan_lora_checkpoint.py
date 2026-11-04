@@ -6,7 +6,8 @@ register_cuda_ci(
 )
 
 import socket
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from functools import partial
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -22,7 +23,8 @@ import miles.backends.torchtitan_utils  # noqa: F401
 
 # isort: split
 from torch.distributed.device_mesh import init_device_mesh
-from torch.distributed.tensor import Shard, distribute_tensor
+from torch.distributed.tensor import Replicate, Shard, distribute_tensor
+from torch.distributed.tensor.placement_types import _StridedShard
 from torchtitan.components.optim.lr_scheduler import LRSchedulersContainer
 from torchtitan.config.parallelism import ParallelismConfig
 from torchtitan.models.qwen3 import build_model_config
@@ -32,6 +34,7 @@ from miles.backends.torchtitan_utils import lora_checkpoint
 from miles.backends.torchtitan_utils.actor import _steps_per_rollout
 from miles.backends.torchtitan_utils.config import _checkpointer_config
 from miles.backends.torchtitan_utils.lora_checkpoint import (
+    TorchtitanAdapterSlots,
     TorchtitanCheckpointLoader,
     TorchtitanLoraCheckpoint,
     TorchtitanOptimizerMembers,
@@ -39,6 +42,7 @@ from miles.backends.torchtitan_utils.lora_checkpoint import (
     probe_torchtitan_row_mapping,
 )
 from miles.backends.torchtitan_utils.lora_names import iter_hf_adapter_tensors
+from miles.backends.training_utils.checkpoint.adapter.adapter_dir import HeadRows
 from miles.backends.training_utils.checkpoint.adapter.key_mapping import (
     map_named_tensors_to_hf_keys,
     map_peft_keys_to_hf_keys,
@@ -164,7 +168,7 @@ def _load_dcp(tmp_path, saved: dict) -> TorchtitanCheckpointLoader:
         loader.parametrization(path)
         # the checks read the source only; nothing is loaded until load_adapter_dir accepted it
         assert all(torch.equal(param, torch.zeros(2, 2)) for param in params.values())
-        loader.load(path)
+        loader.apply(loader.prepare(path))
     for key, param in params.items():
         assert torch.equal(param, saved[key])
     return loader
@@ -210,6 +214,45 @@ def test_a_base_check_failing_on_one_rank_fails_every_rank(tmp_path):
     mp.spawn(_base_check_worker, args=(2, find_free_port(), path), nprocs=2, join=True)
 
 
+class _Norms(torch.nn.Module):
+    """The titan parameters the base check reads, under torchtitan's names: ``norm`` and layer 0's attention norm."""
+
+    def __init__(self, norm: torch.Tensor):
+        super().__init__()
+        self.norm = torch.nn.Module()
+        self.norm.weight = torch.nn.Parameter(norm.clone())
+        self.layers = torch.nn.ModuleDict({"0": torch.nn.Module()})
+        self.layers["0"].attention_norm = torch.nn.Module()
+        self.layers["0"].attention_norm.weight = torch.nn.Parameter(norm.clone() + 1)
+
+
+@pytest.mark.parametrize("same_base", [True, False])
+def test_the_base_check_maps_the_dcps_norms_through_the_real_qwen3_adapter(tmp_path, single_rank_gloo, same_base):
+    from safetensors.torch import save_file
+
+    sd_adapter, _ = _adapter()
+    part = _Norms(torch.arange(4.0))
+    base = {fqn: param.detach().clone() for fqn, param in part.named_parameters()}
+    path = tmp_path / "step-10"
+    dcp.save(base | {_LORA_A: torch.ones(2, 2), _LORA_B: torch.ones(2, 2)}, checkpoint_id=path, no_dist=True)
+    hf = sd_adapter.to_hf(base)
+    assert set(hf) == {"model.norm.weight", "model.layers.0.input_layernorm.weight"}
+    if not same_base:
+        hf["model.norm.weight"] = hf["model.norm.weight"] + 1
+    (tmp_path / "hf").mkdir()
+    save_file(hf, str(tmp_path / "hf" / "model.safetensors"))
+    params = {key: torch.nn.Parameter(torch.zeros(2, 2)) for key in (_LORA_A, _LORA_B)}
+    members = SimpleNamespace(adam_states=lambda: [{"step": torch.tensor(0.0)} for _ in params])
+    loader = TorchtitanCheckpointLoader(
+        SimpleNamespace(parameters=params), members, [part], sd_adapter, _Run(str(tmp_path / "hf"), 16), False
+    )
+    if same_base:
+        loader.parametrization(path)
+    else:
+        with pytest.raises(RuntimeError, match=r"another base model .*model\.norm\.weight"):
+            loader.parametrization(path)
+
+
 _STEPS_PER_ROLLOUT = 4
 
 
@@ -235,14 +278,16 @@ class _Trainer:
         return self.engine.num_completed_steps
 
 
-def _restore(tmp_path, *, dcp_step=None, training_state=None, **flags):
-    """``dcp_step``: the source is a torchtitan DCP with this train_state step; ``training_state``: an adapter dir's."""
+def _restore(tmp_path, *, dcp_step=None, training_state=None, source_alpha=None, **flags):
+    """``dcp_step``: the source is a torchtitan DCP with this train_state step; ``training_state``: an adapter dir's;
+    ``source_alpha``: the alpha the trainer's load reads from the source, the run's when None."""
 
     def load_adapter_dir(path, members, slot, run, targets, *, load_optimizer, in_model_loaders_by_kind):
         if dcp_step is not None:
             (loader,) = in_model_loaders_by_kind.values()
             loader.train_state = {"step": dcp_step, "ntokens_seen": 7}
             loader.lr_scheduler_state = {"last_epoch": dcp_step}
+        return run if source_alpha is None else SimpleNamespace(lora_alpha=source_alpha)
 
     backend = SimpleNamespace(no_load_optim=False, no_save_optim=False, save=None)
     args = SimpleNamespace(
@@ -281,6 +326,12 @@ def _restore(tmp_path, *, dcp_step=None, training_state=None, **flags):
         base_model=slots.parametrization.call_args.kwargs["base_model"],
         checkpoint=checkpoint,
     )
+
+
+def test_a_source_trained_with_another_alpha_is_refused_on_the_trainer(tmp_path):
+    # the driver may have resolved --lora-alpha without seeing the path the trainers load
+    with pytest.raises(AssertionError, match="was trained with lora_alpha=32.0"):
+        _restore(tmp_path, source_alpha=32.0)
 
 
 @pytest.mark.parametrize("step", [6, 11 * _STEPS_PER_ROLLOUT + 1])
@@ -671,6 +722,77 @@ def test_a_two_dim_mesh_with_column_shards_maps_to_rectangles():
     run_multiprocess(_two_dim_mesh, world_size=4)
 
 
+def _strided_mesh(rank, world_size, port, placements):
+    init_gloo(rank, world_size, port=port)
+    init_gloo_group()
+    mesh = init_device_mesh("cpu", (2, 2))
+    sd_adapter, params = _adapter()
+    expected = _expected(sd_adapter, params)
+    # a strided shard holds rows that are not one contiguous box of the global tensor
+    # distribute_tensor cannot shard straight into a strided placement; redistributing a replicated tensor can
+    replicated = [Replicate(), Replicate()]
+    sharded = {
+        key: distribute_tensor(value, mesh, replicated).redistribute(mesh, placements) for key, value in params.items()
+    }
+    mapping = probe_torchtitan_row_mapping(sharded, sd_adapter)
+    _check(mapping, [p.to_local() for p in sharded.values()], expected)
+    dist.destroy_process_group()
+
+
+@pytest.mark.parametrize(
+    "placements",
+    [[Shard(0), _StridedShard(0, split_factor=2)], [_StridedShard(0, split_factor=2), Shard(0)]],
+    ids=["shard_then_strided", "strided_then_shard"],
+)
+def test_a_strided_shard_maps_each_local_row_to_its_global_row(placements):
+    run_multiprocess(partial(_strided_mesh, placements=placements), world_size=4)
+
+
+def _model_part(params: dict[str, torch.Tensor]) -> torch.nn.Module:
+    """A model part whose named_parameters() are ``params`` under their titan keys."""
+    part = torch.nn.Module()
+    for key, value in params.items():
+        *path, name = key.split(".")
+        module = part
+        for step in path:
+            if not hasattr(module, step):
+                module.add_module(step, torch.nn.Module())
+            module = getattr(module, step)
+        module.register_parameter(name, torch.nn.Parameter(value, requires_grad=False))
+    return part
+
+
+def _slots_on_strided_dtensors(rank, world_size, port, placements):
+    init_gloo(rank, world_size, port=port)
+    init_gloo_group()
+    mesh = init_device_mesh("cpu", (2, 2))
+    sd_adapter, params = _adapter()
+    expected = _expected(sd_adapter, params)
+    replicated = [Replicate(), Replicate()]
+    sharded = {
+        key: distribute_tensor(value, mesh, replicated).redistribute(mesh, placements) for key, value in params.items()
+    }
+
+    slots = TorchtitanAdapterSlots([_model_part(sharded)], None, sd_adapter, _TARGETS)
+
+    specs = slots.get_local_shard_specs(0)
+    pieces = slots.local_pieces(0, slots.slot_parameters(0))
+    assert specs and len(specs) == len(pieces)
+    for spec, piece in zip(specs, pieces, strict=True):
+        box = tuple(slice(o, o + n) for o, n in zip(spec.offsets, spec.local_shape, strict=True))
+        assert torch.equal(piece.reshape(spec.local_shape), expected[spec.key][box]), spec.key
+    dist.destroy_process_group()
+
+
+@pytest.mark.parametrize(
+    "placements",
+    [[Shard(0), _StridedShard(0, split_factor=2)], [_StridedShard(0, split_factor=2), Shard(0)]],
+    ids=["shard_then_strided", "strided_then_shard"],
+)
+def test_the_slots_own_pieces_of_strided_dtensors_are_their_hf_slices(placements):
+    run_multiprocess(partial(_slots_on_strided_dtensors, placements=placements), world_size=4)
+
+
 def _pipeline_stages(rank, world_size, port):
     init_gloo(rank, world_size, port=port)
     init_gloo_group()
@@ -695,11 +817,6 @@ def test_pipeline_stages_share_the_runs_groups_and_modules():
 
 
 def _trained_head(rank, world_size, port):
-    from dataclasses import replace
-
-    from miles.backends.torchtitan_utils.lora_checkpoint import TorchtitanAdapterSlots
-    from miles.backends.training_utils.checkpoint.adapter.adapter_dir import HeadRows
-
     init_gloo(rank, world_size, port=port)
     init_gloo_group()
     # an untied flavor: a tied one's state dict adapter maps lm_head to nothing

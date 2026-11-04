@@ -34,7 +34,26 @@ if TYPE_CHECKING:
 _FUSED_MODULE_BY_COMPONENTS = {
     components: module for module, components in GDN_IN_PROJ_COMPONENTS_BY_MODULE.items() if len(components) > 1
 }
-_FUSED_COMPONENTS = {component for components in _FUSED_MODULE_BY_COMPONENTS for component in components}
+
+
+def _components_without_plain_peft_form(parametrization: AdapterParametrization) -> list[str]:
+    """Targeted components of an HF-fused module that do not share one A with every component of that module."""
+    lonely = []
+    for module in parametrization.target_modules:
+        parent, _, leaf = module.rpartition(".")
+        components = next((c for c in _FUSED_MODULE_BY_COMPONENTS if leaf in c), None)
+        if components is None:
+            continue
+        members = {f"{parent}.{c}" for c in components}
+        if not any(members <= set(group) for group in parametrization.shared_lora_a_groups):
+            lonely.append(module)
+    return sorted(lonely)
+
+
+def has_plain_peft_form(parametrization: AdapterParametrization) -> bool:
+    """Whether ``write_peft_adapter`` can name every tensor: HF has a module for a fused projection's components only
+    when they share one A (e.g. canonical_lora's own A per GDN in_proj_q/k/v has none)."""
+    return not _components_without_plain_peft_form(parametrization)
 
 
 def _expand_shared_lora_a(
@@ -109,13 +128,10 @@ def write_peft_adapter(
     weights = apply_parametrization_conversion(weights, steps)
     tensors = {}
     expanded = _expand_shared_lora_a(weights, per_expert, targets)
-    # only components sharing one A fuse back to the HF module; HF has no module for a component on its own
-    unfused = sorted(
-        {k.rsplit(".", 1)[0] for k in expanded if k.rsplit(".", 1)[0].rpartition(".")[2] in _FUSED_COMPONENTS}
-    )
-    assert not unfused, (
-        f"{unfused} are components of an HF-fused module with their own lora_A, which a PEFT adapter cannot name; "
-        "train them with one shared lora_A (--lora-type lora)"
+    lonely = _components_without_plain_peft_form(parametrization)
+    assert not lonely, (
+        f"{lonely} are components of an HF-fused module with their own lora_A: this parametrization has no "
+        "plain-PEFT form; the adapter dir is the checkpoint"
     )
     packed = _packed_experts(expanded)
     for key, value in expanded.items():

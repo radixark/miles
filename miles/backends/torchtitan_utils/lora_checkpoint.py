@@ -18,7 +18,6 @@ import torch
 import torch.distributed as dist
 import torch.distributed.checkpoint as dcp
 from torch.distributed.tensor import DTensor
-from torch.distributed.tensor._utils import compute_local_shape_and_global_offset
 from torch.optim.lr_scheduler import _update_param_group_val
 
 from miles.backends.torchtitan_utils.lora_names import is_adapter_key, split_adapter_key
@@ -55,20 +54,22 @@ from miles.backends.training_utils.checkpoint.adapter.readers import AdapterSour
 from miles.utils.lora.hf_lora_targets import HfLoraTargets
 
 
-def _local_box(param: torch.Tensor) -> tuple[tuple[int, ...], tuple[int, ...]]:
-    if isinstance(param, DTensor):
-        shape, offset = compute_local_shape_and_global_offset(param.shape, param.device_mesh, param.placements)
-        return tuple(shape), tuple(offset)
-    return tuple(param.shape), (0,) * param.dim()
+# a placed code is rank * _RANK_STRIDE + the element's offset in the rank's concatenated local shards
+_RANK_STRIDE = 2**40
 
 
 def _local_codes(param: torch.Tensor, start: int) -> torch.Tensor:
-    """A global-shaped tensor: this rank's elements numbered from ``start`` in local row-major order, others -1."""
-    shape, offset = _local_box(param)
-    codes = torch.full(tuple(param.shape), -1, dtype=torch.long)
-    box = tuple(slice(o, o + n) for o, n in zip(offset, shape, strict=True))
-    codes[box] = torch.arange(start, start + int(torch.Size(shape).numel())).view(shape)
-    return codes
+    """Collective for a DTensor. A global-shaped tensor: this rank's elements numbered from ``start`` in local
+    row-major order, others -1."""
+    if not isinstance(param, DTensor):
+        return torch.arange(start, start + param.numel()).view(param.shape)
+    local = param.to_local()
+    rank = dist.get_rank()
+    codes = torch.arange(start, start + local.numel(), device=local.device).view(local.shape) + rank * _RANK_STRIDE
+    # DTensor places every rank's shard, so any placement (strided, uneven, multi-dim) lands on its global rows
+    placed = DTensor.from_local(codes, param.device_mesh, param.placements, shape=param.shape, stride=param.stride())
+    placed = placed.full_tensor().cpu()
+    return torch.where(placed // _RANK_STRIDE == rank, placed % _RANK_STRIDE, -1)
 
 
 def probe_torchtitan_row_mapping(params: Mapping[str, torch.Tensor], sd_adapter) -> RowMapping:
@@ -87,11 +88,8 @@ def _probe_local(
 ) -> tuple[list[HfPiece], list[tuple[str, ...]], set[str]]:
     starts, start = {}, 0
     for key, param in params.items():
-        shape = _local_box(param)[0]
-        # pieces index the to_local() shards, so the computed box must be exactly that shard
-        assert not isinstance(param, DTensor) or shape == tuple(param.to_local().shape), (key, shape)
         starts[key] = start
-        start += int(torch.Size(shape).numel())
+        start += (param.to_local() if isinstance(param, DTensor) else param).numel()
     pieces, groups, modules = [], [], set()
     for key in params:
         projection, factor = split_adapter_key(key)
@@ -270,7 +268,7 @@ class TorchtitanCheckpointLoader:
         return {name: t for name, t in self._sd_adapter.to_hf(tensors).items() if is_fingerprint_tensor(name)}
 
     def parametrization(self, path: Path) -> AdapterParametrization:
-        """Collective: every check against the source, reading it only; ``load`` then loads it."""
+        """Collective: every check against the source, reading it only; ``apply`` then loads it."""
         metadata, error = None, None
         try:
             metadata = dcp.FileSystemReader(path).read_metadata().state_dict_metadata
@@ -306,7 +304,7 @@ class TorchtitanCheckpointLoader:
         except Exception as exc:
             error = exc
         raise_if_any_rank_failed(error)
-        # agreed before the collective dcp.load in load: e.g. one node's HF cache may lack --hf-checkpoint
+        # agreed before the collective dcp.load in apply: e.g. one node's HF cache may lack --hf-checkpoint
         try:
             source_tensors = self._base_fingerprint_tensors(path, metadata)
             hf_dir = resolve_hf_dir(self._run.base_model)
@@ -320,9 +318,9 @@ class TorchtitanCheckpointLoader:
         self._checked = (path, metadata)
         return replace(self._run, lora_alpha=None)
 
-    def load(self, path: Path) -> None:
+    def prepare(self, path: Path) -> tuple:
         checked_path, metadata = self._checked
-        assert checked_path == path, f"load({path}) after checking {checked_path}"
+        assert checked_path == path, f"prepare({path}) after checking {checked_path}"
         params = self._slots.parameters
         states = self._members.adam_states()
         loaded = dict(params)
@@ -334,6 +332,10 @@ class TorchtitanCheckpointLoader:
         if has_training_state:
             # non-tensor entries: DCP replaces these placeholders with the saved values
             loaded |= dict.fromkeys(_TRAINING_STATE_KEYS, 0)
+        return path, loaded, states, has_training_state
+
+    def apply(self, prepared: tuple) -> None:
+        path, loaded, states, has_training_state = prepared
         with torch.no_grad():
             dcp.load(loaded, checkpoint_id=path)
         if has_training_state:
@@ -432,7 +434,7 @@ class TorchtitanLoraCheckpoint:
             self.run,
             load_optimizer,
         )
-        load_adapter_dir(
+        source = load_adapter_dir(
             path,
             self.members,
             0,
@@ -441,6 +443,10 @@ class TorchtitanLoraCheckpoint:
             load_optimizer=load_optimizer,
             in_model_loaders_by_kind={AdapterSourceKind.TORCHTITAN_CHECKPOINT: loader},
         )
+        # the driver resolved --lora-alpha from its own view of the path, which a trainer may see differently
+        assert (
+            source.lora_alpha == self.run.lora_alpha
+        ), f"{path} was trained with lora_alpha={source.lora_alpha}; this run uses {self.run.lora_alpha}"
         training_state = read_training_state(path)
         if loader.train_state is not None and self._dcp_on_rollout_grid(path, loader.train_state, load_optimizer):
             training_state = self._adopt_dcp_schedule(loader)
@@ -458,7 +464,7 @@ class TorchtitanLoraCheckpoint:
     def _dcp_on_rollout_grid(self, path: Path, train_state: dict, load_optimizer: bool) -> bool:
         # a torchtitan DCP records steps, not the rollout; only one miles saved on this run's rollout grid maps
         on_grid = train_state["step"] % self._steps_per_rollout == 0
-        # weights only need no step: a DCP off the grid (e.g. a standalone torchtitan run's) starts fresh
+        # loading weights alone needs no schedule: a DCP off the grid (e.g. a standalone torchtitan run's) starts fresh
         assert on_grid or not load_optimizer, (
             f"{path} is at step {train_state['step']}, not a whole rollout of this run's "
             f"{self._steps_per_rollout} steps; pass --no-load-optim to load its weights and start the schedule "
@@ -515,7 +521,7 @@ class TorchtitanLoraCheckpoint:
             )
         else:
             unmapped = None
-        # weights only need no schedule: load them and start the schedule fresh
+        # loading weights alone needs no schedule: the schedule starts fresh
         assert unmapped is None or not load_optimizer, (
             f"{path} cannot resume this run's schedule: {unmapped}. Keep its rollout and batch sizes, or pass "
             "--no-load-optim to load its weights and start the schedule fresh"

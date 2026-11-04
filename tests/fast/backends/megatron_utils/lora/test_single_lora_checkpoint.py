@@ -1,6 +1,8 @@
 """Bridge single LoRA's --save / --lora-adapter-path glue around the adapter library."""
 
 import json
+from functools import partial
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import DEFAULT, MagicMock, patch
 
@@ -8,6 +10,7 @@ import pytest
 import torch
 from megatron.core.optimizer import DistributedOptimizer
 from megatron.core.optimizer.cpu_offloading.hybrid_optimizer import HybridDeviceOptimizer
+from tests.fast.dist_utils import run_multiprocess
 
 import miles.backends.megatron_utils.lora.checkpoint as lora_checkpoint
 from miles.backends.megatron_utils.lora.checkpoint import (
@@ -18,7 +21,6 @@ from miles.backends.megatron_utils.lora.checkpoint import (
     _world_slice,
     restore_single_lora,
 )
-from miles.backends.training_utils.checkpoint.adapter.adapter_dir import HeadRows
 from miles.backends.training_utils.checkpoint.adapter.adapter_state import AdapterState, LocalShardSpec
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
 from miles.backends.training_utils.checkpoint.adapter.parametrization_conversion import (
@@ -99,10 +101,12 @@ def test_only_the_bridge_backend_loads_a_megatron_bridge_checkpoint(tmp_path):
     assert (
         loaders[AdapterSourceKind.MEGATRON_BRIDGE_CHECKPOINT] is mocks["MegatronBridgeCheckpointLoader"].return_value
     )
+    # argument validation refuses a Bridge source under raw mode
     _, _, mocks = _restore(tmp_path, megatron_to_hf_mode="raw")
-    loaders = mocks["load_adapter_dir"].call_args.kwargs["in_model_loaders_by_kind"]
-    with pytest.raises(AssertionError, match="convert it there first with --lora-adapter-convert-save"):
-        loaders[AdapterSourceKind.MEGATRON_BRIDGE_CHECKPOINT].parametrization(tmp_path)
+    assert (
+        AdapterSourceKind.MEGATRON_BRIDGE_CHECKPOINT
+        not in mocks["load_adapter_dir"].call_args.kwargs["in_model_loaders_by_kind"]
+    )
 
 
 def test_a_source_trained_with_another_alpha_is_refused_on_the_trainer(tmp_path):
@@ -115,14 +119,45 @@ def test_an_old_format_save_reports_the_alpha_its_peft_pair_records(tmp_path):
     (tmp_path / "adapter_config.json").write_text(json.dumps({"lora_alpha": 32.0}))
     run = AdapterParametrization.__new__(AdapterParametrization)
     with patch.multiple(
-        _MODULE, _native_adapter_shard=DEFAULT, _load_native_adapter_shard=DEFAULT, replace=DEFAULT
+        _MODULE, _native_adapter_shard=DEFAULT, _read_native_adapter_shard=DEFAULT, replace=DEFAULT
     ) as m:
         LegacyRankShardLoader([], MagicMock(), run, load_optimizer=False, precision_aware=False).parametrization(
             tmp_path
         )
     assert m["replace"].call_args.kwargs["lora_alpha"] == 32.0
     # reading the parametrization leaves the model alone: a refused source loads nothing
-    m["_load_native_adapter_shard"].assert_not_called()
+    m["_read_native_adapter_shard"].assert_not_called()
+
+
+def _prepare_with_one_rank_missing_its_shard(rank, world_size, port, root):
+    import torch.distributed as dist
+    from tests.fast.dist_utils import init_gloo
+
+    from miles.backends.training_utils.checkpoint.adapter.adapter_state import raise_if_any_rank_failed
+    from miles.utils.distributed_utils import init_gloo_group
+
+    init_gloo(rank, world_size, port=port)
+    init_gloo_group()
+    lora_checkpoint._read_native_adapter_shard = lambda model, shard: []
+    applied = []
+    # applying runs a collective, which a rank that failed alone would never join
+    optimizer = SimpleNamespace(reload_model_params=lambda: (applied.append(rank), dist.barrier()))
+    loader = LegacyRankShardLoader([], optimizer, None, load_optimizer=False, precision_aware=False)
+    error = None
+    try:
+        loader.prepare(Path(root))
+    except Exception as exc:
+        error = exc
+    with pytest.raises(RuntimeError, match="none for global rank 1"):
+        raise_if_any_rank_failed(error)
+    assert applied == []
+    dist.destroy_process_group()
+
+
+def test_a_rank_missing_its_old_format_shard_fails_every_rank_before_the_collectives(tmp_path):
+    # saved by one rank, loaded by two: rank 1 has no shard
+    torch.save({}, tmp_path / "adapter_megatron_rank0.pt")
+    run_multiprocess(partial(_prepare_with_one_rank_missing_its_shard, root=str(tmp_path)))
 
 
 def test_an_optimizer_other_than_megatrons_distributed_one_is_refused():
@@ -177,22 +212,6 @@ def test_a_restore_keeps_the_state_of_elements_no_checkpoint_holds(leaves_out_el
     assert world["param"].tolist() == [5.0, 5.0, 5.0, kept[0]]
     assert world["exp_avg"].tolist() == [6.0, 6.0, 6.0, kept[1]]
     assert world["exp_avg_sq"].tolist() == [7.0, 7.0, 7.0, kept[2]]
-
-
-def test_a_legacy_optimizer_load_refuses_an_optimizer_other_than_megatrons_distributed_one(tmp_path):
-    run = AdapterParametrization.__new__(AdapterParametrization)
-    optimizer = SimpleNamespace(chained_optimizers=[MagicMock()])
-    state = {"optimizer": {}, "parameter_state": [{}]}
-    with patch.multiple(
-        _MODULE,
-        _native_adapter_shard=DEFAULT,
-        _load_native_adapter_shard=DEFAULT,
-        _load_training_state=MagicMock(return_value=state),
-        replace=DEFAULT,
-    ):
-        loader = LegacyRankShardLoader([], optimizer, run, load_optimizer=True, precision_aware=False)
-        with pytest.raises(AssertionError, match="--use-distributed-optimizer"):
-            loader.load(tmp_path)
 
 
 def _offloaded_optimizer(*, offloaded: bool) -> tuple[HybridDeviceOptimizer, torch.nn.Parameter, torch.nn.Parameter]:
@@ -266,8 +285,64 @@ def test_an_adapter_saved_under_one_mount_loads_under_another(monkeypatch):
         assert_parametrization_matches_run(saved, other, [], load_optimizer=False, has_optimizer_state=False)
 
 
-def test_the_members_declare_their_slots_head_rows():
-    head_rows = HeadRows("lm_head.lora_B", max_source_rows=8)
-    slots = SimpleNamespace(head_rows=head_rows, bf16_adapter_key_style="peft")
-    members = DistributedOptimizerMembers(slots, MagicMock(), [], precision_aware=False)
-    assert members.head_rows is head_rows
+_GDN = "model.layers.0.linear_attn"
+
+
+class _CanonicalGdnMembers:
+    """One canonical GDN component's own A and B, as native's default canonical_lora trains them."""
+
+    bf16_adapter_key_style = "sampler"
+    head_rows = None
+
+    def get_local_shard_specs(self, slot):
+        return [
+            LocalShardSpec(f"{_GDN}.in_proj_q.lora_A", (2, 6), (0, 0), (2, 6)),
+            LocalShardSpec(f"{_GDN}.in_proj_q.lora_B", (2, 2), (0, 0), (2, 2)),
+        ]
+
+    def export_adapter_state(self, slot):
+        specs = self.get_local_shard_specs(slot)
+        pieces = [torch.ones(spec.local_shape) for spec in specs]
+        return AdapterState(specs, pieces, pieces, pieces, step=3)
+
+    def export_bf16_adapter(self, slot):
+        raise AssertionError("no PEFT view is written for this parametrization")
+
+
+def test_a_native_canonical_gdn_save_commits_without_a_peft_view(tmp_path):
+    from miles.backends.training_utils.checkpoint.adapter.commit import resolve_adapter_dir
+    from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
+
+    hf = tmp_path / "hf"
+    hf.mkdir()
+    (hf / "config.json").write_text(json.dumps({"model_type": "qwen3_5_text", "hidden_size": 6}))
+    targets = get_hf_lora_targets(
+        {
+            "model_type": "qwen3_5_text",
+            "num_hidden_layers": 1,
+            "layer_types": ["linear_attention"],
+            "linear_num_key_heads": 1,
+            "linear_key_head_dim": 2,
+            "linear_num_value_heads": 1,
+            "linear_value_head_dim": 3,
+        }
+    )
+    slots = SimpleNamespace(
+        slot_spec=lambda slot: None,
+        targets=targets,
+        parametrization=lambda **fields: AdapterParametrization(target_modules=(f"{_GDN}.in_proj_q",), **fields),
+    )
+    args = SimpleNamespace(
+        hf_checkpoint=str(hf),
+        lora_rank=2,
+        lora_alpha=4.0,
+        lora_type="canonical_lora",
+        experts_shared_outer_loras=False,
+        backend=SimpleNamespace(save=str(tmp_path / "save"), use_precision_aware_optimizer=False, no_save_optim=False),
+    )
+    with patch(f"{_MODULE}.DistributedOptimizerMembers", return_value=_CanonicalGdnMembers()):
+        lora_checkpoint.save_single_lora([], MagicMock(), None, slots, args, iteration=4)
+
+    committed = resolve_adapter_dir(tmp_path / "save" / "iter_0000004", "adapter", tenant=None)
+    assert (committed.path / "adapter_parametrization.json").is_file()
+    assert not (committed.path / "adapter_model.safetensors").exists()
