@@ -1802,7 +1802,7 @@ async def test_file_imports_stay_under_the_import_root_and_load_weights_only(tmp
         assert (await load(model_id, f"file://{adapter}")).state == DONE
         loaded = service.backend.named("load_slot")[-1]
         copies = tmp_path / "root" / IMPORT_COPIES_DIRNAME
-        assert Path(loaded["ckpt_path"]).parent == copies and loaded["load_optimizer"] is False
+        assert Path(loaded["source"]["path"]).parent == copies and loaded["source"]["load_optimizer"] is False
         assert not any(copies.iterdir()), "the copy outlived its load"
         assert service.models[model_id].lora_alpha == 32
         # a refused load leaves the model open
@@ -1834,13 +1834,14 @@ async def test_a_file_import_swapped_after_the_checks_cannot_change_what_the_tra
     service = make_service(tmp_path / "root", import_root=str(tmp_path / "imports"))
     load_slot, read = service.backend.load_slot, []
 
-    async def trainer_load_slot(slot, rank, alpha, ckpt_path=None, **kwargs):
+    async def trainer_load_slot(slot, rank, alpha, source=None):
+        ckpt_path = None if source is None else source["path"]
         if ckpt_path is not None:
             # the tenant swaps in a link to another tenant's checkpoint once the gateway's checks are done
             (adapter / "adapter_config.json").unlink()
             (adapter / "adapter_config.json").symlink_to(victim)
             read.append(json.loads((Path(ckpt_path) / "adapter_config.json").read_text()))
-        return await load_slot(slot, rank, alpha, ckpt_path=ckpt_path, **kwargs)
+        return await load_slot(slot, rank, alpha, source=source)
 
     monkeypatch.setattr(service.backend, "load_slot", trainer_load_slot)
     run_task = asyncio.create_task(service.run())
@@ -1887,10 +1888,11 @@ async def test_a_save_pretrained_or_hf_download_dir_is_importable(tmp_path, monk
     service = make_service(tmp_path / "root", import_root=str(tmp_path / "imports"))
     load_slot, copied = service.backend.load_slot, []
 
-    async def trainer_load_slot(slot, rank, alpha, ckpt_path=None, **kwargs):
+    async def trainer_load_slot(slot, rank, alpha, source=None):
+        ckpt_path = None if source is None else source["path"]
         if ckpt_path is not None:
             copied.append(sorted(p.name for p in Path(ckpt_path).iterdir()))
-        return await load_slot(slot, rank, alpha, ckpt_path=ckpt_path, **kwargs)
+        return await load_slot(slot, rank, alpha, source=source)
 
     monkeypatch.setattr(service.backend, "load_slot", trainer_load_slot)
     run_task = asyncio.create_task(service.run())
@@ -2087,10 +2089,11 @@ async def test_a_file_import_load_copies_only_the_files_a_reader_opens(tmp_path,
     service = make_service(tmp_path / "root", import_root=str(tmp_path / "imports"))
     load_slot, copied = service.backend.load_slot, []
 
-    async def trainer_load_slot(slot, rank, alpha, ckpt_path=None, **kwargs):
+    async def trainer_load_slot(slot, rank, alpha, source=None):
+        ckpt_path = None if source is None else source["path"]
         if ckpt_path is not None:
             copied.append(sorted(p.name for p in Path(ckpt_path).iterdir()))
-        return await load_slot(slot, rank, alpha, ckpt_path=ckpt_path, **kwargs)
+        return await load_slot(slot, rank, alpha, source=source)
 
     monkeypatch.setattr(service.backend, "load_slot", trainer_load_slot)
     run_task = asyncio.create_task(service.run())
@@ -2153,7 +2156,8 @@ async def test_a_pickle_in_a_file_import_never_reaches_the_trainer(tmp_path, mon
     service = make_service(tmp_path / "root", import_root=str(tmp_path / "imports"))
     load_slot, trainer_read = service.backend.load_slot, []
 
-    async def trainer_load_slot(slot, rank, alpha, ckpt_path=None, **kwargs):
+    async def trainer_load_slot(slot, rank, alpha, source=None):
+        ckpt_path = None if source is None else source["path"]
         # None: a new model's empty slot
         if ckpt_path is not None:
             trainer_read.append(sorted(str(p.relative_to(ckpt_path)) for p in Path(ckpt_path).rglob("*")))
@@ -2161,7 +2165,7 @@ async def test_a_pickle_in_a_file_import_never_reaches_the_trainer(tmp_path, mon
             targets = get_hf_lora_targets({"model_type": "qwen3", "num_hidden_layers": 1})
             with suppress(Exception):
                 check_adapter_source(Path(ckpt_path), run, targets, load_optimizer=False)
-        return await load_slot(slot, rank, alpha, ckpt_path=ckpt_path, **kwargs)
+        return await load_slot(slot, rank, alpha, source=source)
 
     monkeypatch.setattr(service.backend, "load_slot", trainer_load_slot)
     run_task = asyncio.create_task(service.run())

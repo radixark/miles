@@ -645,9 +645,7 @@ class TinkerService:
                 record.slot,
                 record.lora_rank,
                 source["lora_alpha"],
-                ckpt_path=copy_dir,
-                load_optimizer=False,
-                parametrization_fields=fields,
+                source={"path": copy_dir, "load_optimizer": False, "parametrization_fields": fields},
             )
         finally:
             try:
