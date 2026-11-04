@@ -367,9 +367,6 @@ class MegatronBridgeCheckpointLoader:
             assert_same_base_model(str(path), bridge_base_model_candidates(config), self._run.base_model)
             metadata = dict(dist_checkpointing.load_content_metadata(str(path)) or {})
             if self._load_optimizer:
-                assert all(
-                    isinstance(sub, DistributedOptimizer) for sub in self._optimizer.chained_optimizers
-                ), "a Megatron-Bridge source's Adam state loads only into the DistributedOptimizer; pass --no-load-optim"
                 sharding = metadata.get("distrib_optim_sharding_type")
                 assert sharding is not None, (
                     f"{path} records no optimizer sharding type (written by an older Megatron), so its Adam state "
