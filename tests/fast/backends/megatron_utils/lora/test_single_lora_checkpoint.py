@@ -1,7 +1,6 @@
 """Bridge single LoRA's --save / --lora-adapter-path glue around the adapter library."""
 
 import json
-import os
 from types import SimpleNamespace
 from unittest.mock import DEFAULT, MagicMock, patch
 
@@ -9,6 +8,7 @@ import pytest
 import torch
 from megatron.core.optimizer.cpu_offloading.hybrid_optimizer import HybridDeviceOptimizer
 
+import miles.backends.megatron_utils.lora.checkpoint as lora_checkpoint
 from miles.backends.megatron_utils.lora.checkpoint import (
     DistributedOptimizerMembers,
     LegacyRankShardLoader,
@@ -16,32 +16,13 @@ from miles.backends.megatron_utils.lora.checkpoint import (
     _set_distributed_optimizer_step,
     _world_slice,
     restore_single_lora,
-    single_lora_parametrization,
 )
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
+from miles.backends.training_utils.checkpoint.adapter.parametrization_conversion import (
+    assert_parametrization_matches_run,
+)
 
 _MODULE = "miles.backends.megatron_utils.lora.checkpoint"
-
-
-def _base_model(hf_checkpoint: str) -> str:
-    slots = MagicMock()
-    args = SimpleNamespace(
-        hf_checkpoint=hf_checkpoint, lora_rank=8, lora_alpha=16.0, lora_type="lora", experts_shared_outer_loras=False
-    )
-    single_lora_parametrization(slots, args)
-    return slots.parametrization.call_args.kwargs["base_model"]
-
-
-def test_one_local_model_under_another_path_string_is_the_same_base(tmp_path):
-    model = tmp_path / "model"
-    model.mkdir()
-    (tmp_path / "mount").symlink_to(model)
-    expected = os.path.realpath(model)
-    assert _base_model(str(model)) == _base_model(f"{model}/") == _base_model(str(tmp_path / "mount")) == expected
-
-
-def test_a_hub_id_is_kept():
-    assert _base_model("Qwen/Qwen3-8B") == "Qwen/Qwen3-8B"
 
 
 def _restore(path, *, convert_save=None, source_alpha=16.0):
@@ -64,6 +45,7 @@ def _restore(path, *, convert_save=None, source_alpha=16.0):
         DistributedOptimizerMembers=DEFAULT,
         load_adapter_dir=DEFAULT,
         save_and_commit_adapter_dir=DEFAULT,
+        load_hf_config=lambda path: SimpleNamespace(to_dict=lambda: {"model_type": "qwen3"}),
     ) as mocks:
         mocks["load_adapter_dir"].return_value = SimpleNamespace(lora_alpha=source_alpha)
         iteration = restore_single_lora(
@@ -164,3 +146,26 @@ def test_a_parameters_world_slice_skips_the_earlier_buckets_end_padding():
     for param, expected in ((a, [10.0, 11, 12, 13]), (b, [20.0, 21]), (c, [30.0, 31, 32, 33, 34])):
         tensors, start, end = _world_slice(gathered, 0, buffer, param)
         assert torch.equal(tensors["param"][start:end], torch.tensor(expected))
+
+
+def _recorded_parametrization(monkeypatch, hf_checkpoint, hidden_size=2560):
+    config = {"model_type": "qwen3", "hidden_size": hidden_size, "num_hidden_layers": 36, "vocab_size": 151936}
+    monkeypatch.setattr(lora_checkpoint, "load_hf_config", lambda path: SimpleNamespace(to_dict=lambda: config))
+    slots = SimpleNamespace(
+        slot_spec=lambda slot: None,
+        parametrization=lambda **fields: AdapterParametrization(target_modules=("q",), **fields),
+    )
+    args = SimpleNamespace(
+        hf_checkpoint=hf_checkpoint, lora_rank=8, lora_alpha=16.0, lora_type="lora", experts_shared_outer_loras=False
+    )
+    return lora_checkpoint.single_lora_parametrization(slots, args)
+
+
+def test_an_adapter_saved_under_one_mount_loads_under_another(monkeypatch):
+    saved = _recorded_parametrization(monkeypatch, "/root/models/Qwen3-4B")
+    run = _recorded_parametrization(monkeypatch, "/lustre/models/Qwen3-4B")
+    assert saved.base_model == "/root/models/Qwen3-4B", "the path stays as given, for information"
+    assert_parametrization_matches_run(saved, run, [], load_optimizer=False, has_optimizer_state=False)
+    other = _recorded_parametrization(monkeypatch, "/root/models/Qwen3-4B", hidden_size=4096)
+    with pytest.raises(AssertionError, match="is another model than run base"):
+        assert_parametrization_matches_run(saved, other, [], load_optimizer=False, has_optimizer_state=False)

@@ -5,7 +5,6 @@ fp32 master (a Float16 child's ``fp32_from_float16_groups``) and its Adam state;
 """
 
 import json
-import os
 import re
 from collections.abc import Iterable, Sequence
 from dataclasses import asdict, replace
@@ -45,9 +44,13 @@ from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
     raise_if_any_rank_failed,
 )
 from miles.backends.training_utils.checkpoint.adapter.commit import UncommittedAdapterDir
-from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
+from miles.backends.training_utils.checkpoint.adapter.parametrization import (
+    AdapterParametrization,
+    base_model_fingerprint,
+)
 from miles.backends.training_utils.checkpoint.adapter.readers import AdapterSourceKind, read_source_lora_alpha
 from miles.backends.training_utils.parallel import get_parallel_state
+from miles.utils.hf_utils.config import load_hf_config
 
 _WEIGHTS_KEY = "adapter_weights"
 _OPTIM_KEY = "adapter_optimizer"
@@ -527,17 +530,13 @@ def _load_legacy_slot(model: Sequence[DDP], slot_optimizer: SlotOptimizer, path:
 def single_lora_parametrization(adapter_slots: BridgeAdapterSlots, args) -> AdapterParametrization:
     """The run's parametrization; under multi-LoRA, slot 0's rank and alpha, which its exported tensors carry."""
     spec = adapter_slots.slot_spec(0)
-    base_model = args.hf_checkpoint
-    # one local model under another path string (a trailing slash, a symlinked mount) is the same base; a hub id
-    # is no local path
-    if os.path.exists(base_model):
-        base_model = os.path.realpath(base_model)
     return adapter_slots.parametrization(
-        base_model=base_model,
+        base_model=args.hf_checkpoint,
         lora_rank=args.lora_rank if spec is None else spec.rank,
         lora_alpha=args.lora_alpha if spec is None else spec.alpha,
         lora_type=args.lora_type,
         experts_shared_outer_loras=args.experts_shared_outer_loras,
+        base_model_fingerprint=base_model_fingerprint(load_hf_config(args.hf_checkpoint).to_dict()),
     )
 
 
