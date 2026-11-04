@@ -24,7 +24,10 @@ def main(output_dir: str = "/root/datasets/tau2"):
     for domain in DOMAINS:
         for split in SPLITS:
             rows = [
-                {"prompt": f"{domain}/{task.id}", "metadata": {"domain": domain, "task_split": split, "task_id": task.id}}
+                {
+                    "prompt": f"{domain}/{task.id}",
+                    "metadata": {"domain": domain, "task_split": split, "task_id": task.id},
+                }
                 for task in get_tasks(domain, task_split_name=split)
             ]
             _write_jsonl(Path(output_dir) / f"{domain}_{split}.jsonl", rows)
