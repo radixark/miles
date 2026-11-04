@@ -29,7 +29,9 @@ def main() -> None:
     reader = MilesAdapterDirReader(args.src, targets)
     # the training run's dropout, which the source's own export recorded
     lora_dropout = json.loads((args.src / "adapter_config.json").read_text())["lora_dropout"]
-    write_peft_adapter(args.dst, reader.read_weights(), reader.source.parametrization, targets, lora_dropout=lora_dropout)
+    write_peft_adapter(
+        args.dst, reader.read_weights(), reader.source.parametrization, targets, lora_dropout=lora_dropout
+    )
 
 
 if __name__ == "__main__":
