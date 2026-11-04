@@ -15,7 +15,6 @@ from megatron.core.optimizer import DistributedOptimizer
 from megatron.core.optimizer.cpu_offloading.hybrid_optimizer import HybridDeviceOptimizer
 from megatron.core.utils import unwrap_model
 
-from miles.backends.megatron_utils.lora.utils import _distributed_optimizers
 from miles.backends.training_utils.checkpoint.adapter.adapter_dir import AdapterCheckpointMembers
 from miles.backends.training_utils.checkpoint.adapter.adapter_state import gloo_group, raise_if_any_rank_failed
 from miles.backends.training_utils.checkpoint.adapter.base_model import assert_same_base_model
@@ -265,7 +264,7 @@ class MegatronBridgeCheckpointLoader:
             {k: v for k, v in g.items() if k not in ("params", "step")} for g in self._optimizer.param_groups
         ]
         # lora.checkpoint imports this module
-        from miles.backends.megatron_utils.lora.checkpoint import _init_zero_hdo_state
+        from miles.backends.megatron_utils.lora.checkpoint import _distributed_optimizers, _init_zero_hdo_state
 
         for sub in _distributed_optimizers(self._optimizer):
             # on an empty HDO state Megatron's load_state_dict would run dummy_step, a real Adam step
