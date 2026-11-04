@@ -66,12 +66,12 @@ scored exactly as tau2 reports them.
 Put the keys in a file of `NAME=value` lines under the provider's own variable
 names (`OPENAI_API_KEY`, or `HOSTED_VLLM_API_KEY` for an endpoint that checks
 one), on a filesystem every node reads, readable only by you (`chmod 600`), and
-point `TAU2_KEY_FILE` at it. Each episode loads the file; a variable already in
-the worker's environment wins. The launcher forwards the `TAU2_*` variables to
-the ray workers by value, which puts them in plaintext in its log of the submit
-command, so it forwards only the file's path: keep keys out of the `*_ARGS`
-JSON too. The launcher refuses to start, before downloading anything, when a
-model it would call has no key.
+point `TAU2_KEY_FILE` at its absolute path. Each episode loads the file; a
+variable already in the worker's environment wins. The launcher forwards the
+`TAU2_*` variables to the ray workers by value, which puts them in plaintext in
+its log of the submit command, so it forwards only the file's path: keep keys
+out of the `*_ARGS` JSON too. The launcher refuses to start, before downloading
+anything, when a model it would call has no key.
 
 ## Run
 

@@ -37,9 +37,10 @@ Env vars (read by every episode):
                        NL-assertion judge and the semantic communicate judge
                        (default: tau2's own judge for each).
   TAU2_JUDGE_LLM_ARGS  JSON object of litellm kwargs for it (default: none).
-  TAU2_KEY_FILE        path of a file of ``NAME=value`` lines with the provider keys
-                       these models use (e.g. ``OPENAI_API_KEY``), on a filesystem
-                       every node reads. A variable already in the environment wins.
+  TAU2_KEY_FILE        absolute path of a file of ``NAME=value`` lines with the
+                       provider keys these models use (e.g. ``OPENAI_API_KEY``), on
+                       a filesystem every node reads. A variable already in the
+                       environment wins.
 """
 
 import asyncio
@@ -159,7 +160,7 @@ def _to_tau2_reply(message: ChatCompletionMessage) -> AssistantMessage:
 def read_key_file(path: str) -> dict[str, str]:
     """The ``NAME=value`` lines of a ``TAU2_KEY_FILE``; blank lines and ``#`` comments are skipped."""
     keys = {}
-    for number, line in enumerate(Path(path).expanduser().read_text().splitlines(), start=1):
+    for number, line in enumerate(Path(path).read_text().splitlines(), start=1):
         line = line.strip()
         if not line or line.startswith("#"):
             continue

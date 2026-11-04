@@ -232,6 +232,17 @@ def test_preflight_judges_the_configuration_the_workers_get(monkeypatch):
         launcher._preflight_api_keys(args)
 
 
+def test_preflight_rejects_a_relative_key_file(monkeypatch, tmp_path):
+    # It resolves against the launcher's cwd here, but against each ray worker's own cwd there.
+    launcher = _load_launcher()
+    (tmp_path / "keys").write_text("OPENAI_API_KEY=key\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("TAU2_KEY_FILE", "keys")
+
+    with pytest.raises(RuntimeError, match="absolute path"):
+        launcher._preflight_api_keys(launcher.ScriptArgs(domain="retail"))
+
+
 _JUDGE = "hosted_vllm/judge"
 _JUDGE_ARGS = {"api_base": "http://judge:8000/v1", "temperature": 0.0}
 

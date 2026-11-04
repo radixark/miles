@@ -139,6 +139,11 @@ def _preflight_api_keys(args: ScriptArgs) -> None:
     extra_env_vars = command_utils.resolve_extra_env_vars({}, args)
     with mock.patch.dict(os.environ, extra_env_vars):
         key_file = os.environ.get("TAU2_KEY_FILE")
+        if key_file and not os.path.isabs(key_file):
+            raise RuntimeError(
+                f"TAU2_KEY_FILE={key_file} is relative: give an absolute path, since each ray worker opens it "
+                "from its own working directory."
+            )
         worker_keys = {**(read_key_file(key_file) if key_file else {}), **extra_env_vars}
         bases = {
             basis
