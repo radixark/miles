@@ -1,5 +1,6 @@
 """Bridge single LoRA's --save / --lora-adapter-path glue around the adapter library."""
 
+import json
 import os
 from types import SimpleNamespace
 from unittest.mock import DEFAULT, MagicMock, patch
@@ -10,11 +11,13 @@ from megatron.core.optimizer.cpu_offloading.hybrid_optimizer import HybridDevice
 
 from miles.backends.megatron_utils.lora.checkpoint import (
     DistributedOptimizerMembers,
+    LegacyRankShardLoader,
     _distributed_optimizer_step,
     _set_distributed_optimizer_step,
     restore_single_lora,
     single_lora_parametrization,
 )
+from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
 
 _MODULE = "miles.backends.megatron_utils.lora.checkpoint"
 
@@ -40,7 +43,7 @@ def test_a_hub_id_is_kept():
     assert _base_model("Qwen/Qwen3-8B") == "Qwen/Qwen3-8B"
 
 
-def _restore(path, *, convert_save=None):
+def _restore(path, *, convert_save=None, source_alpha=16.0):
     """``restore_single_lora`` with the model-facing pieces mocked; returns (iteration, scheduler, mocks)."""
     args = SimpleNamespace(
         hf_checkpoint="/hf",
@@ -65,6 +68,8 @@ def _restore(path, *, convert_save=None):
             save_and_commit_adapter_dir=DEFAULT,
         ) as mocks,
     ):
+        mocks["BridgeAdapterSlots"].return_value.parametrization.return_value = SimpleNamespace(lora_alpha=16.0)
+        mocks["load_adapter_dir"].return_value = SimpleNamespace(lora_alpha=source_alpha)
         iteration = restore_single_lora([], args, optimizer=MagicMock(), opt_param_scheduler=scheduler)
     return iteration, scheduler, mocks
 
@@ -90,6 +95,22 @@ def test_a_weights_only_convert_save_writes_neither_moments_nor_a_placeholder_tr
     _, _, mocks = _restore(tmp_path / "source", convert_save=str(tmp_path / "converted"))
     assert mocks["DistributedOptimizerMembers"].call_args.kwargs["save_moments"] is False
     assert mocks["save_and_commit_adapter_dir"].call_args.kwargs["training_state"] is None
+
+
+def test_a_source_trained_with_another_alpha_is_refused_on_the_trainer(tmp_path):
+    # the driver may have resolved --lora-alpha without seeing the path the trainers load
+    with pytest.raises(AssertionError, match="lora_alpha=32.0; this run uses 16.0"):
+        _restore(tmp_path, source_alpha=32.0)
+
+
+def test_an_old_format_save_reports_the_alpha_its_peft_pair_records(tmp_path):
+    (tmp_path / "adapter_config.json").write_text(json.dumps({"lora_alpha": 32.0}))
+    run = AdapterParametrization.__new__(AdapterParametrization)
+    with patch.multiple(
+        _MODULE, _native_adapter_shard=DEFAULT, _load_native_adapter_shard=DEFAULT, replace=DEFAULT
+    ) as m:
+        LegacyRankShardLoader([], MagicMock(), run, load_optimizer=False, precision_aware=False)(tmp_path)
+    assert m["replace"].call_args.kwargs["lora_alpha"] == 32.0
 
 
 def test_an_optimizer_other_than_megatrons_distributed_one_is_refused():

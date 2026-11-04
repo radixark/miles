@@ -41,7 +41,7 @@ from miles.backends.training_utils.checkpoint.adapter.adapter_dir import (
 from miles.backends.training_utils.checkpoint.adapter.adapter_state import AdapterState, gloo_group
 from miles.backends.training_utils.checkpoint.adapter.commit import UncommittedAdapterDir
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
-from miles.backends.training_utils.checkpoint.adapter.readers import AdapterSourceKind
+from miles.backends.training_utils.checkpoint.adapter.readers import AdapterSourceKind, read_source_lora_alpha
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.hf_utils.config import load_hf_config
 from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
@@ -576,7 +576,7 @@ def restore_single_lora(model, args, *, optimizer, opt_param_scheduler) -> int |
     legacy = LegacyRankShardLoader(
         model, optimizer, run, load_optimizer, precision_aware=args.backend.use_precision_aware_optimizer
     )
-    load_adapter_dir(
+    source = load_adapter_dir(
         path,
         members,
         0,
@@ -585,6 +585,10 @@ def restore_single_lora(model, args, *, optimizer, opt_param_scheduler) -> int |
         load_optimizer=load_optimizer,
         in_model_loaders_by_kind={AdapterSourceKind.LEGACY_RANK_SHARD: legacy},
     )
+    # the driver resolved --lora-alpha from its own view of the path, which a trainer may see differently
+    assert (
+        source.lora_alpha == run.lora_alpha
+    ), f"{path} was trained with lora_alpha={source.lora_alpha}; this run uses {run.lora_alpha}"
     # an old-format save holds its training state beside the rank shards, whichever reader loaded the weights
     training_state = read_training_state(path) or _read_legacy_training_state(path)
     if args.lora_adapter_convert_save is not None:
@@ -640,8 +644,8 @@ class LegacyRankShardLoader:
         else:
             # the fp32 masters were built before the adapter load
             self._optimizer.reload_model_params()
-        # _resolve_lora_alpha already made the run's alpha the source's
-        return self._run
+        # an old save records alpha in its PEFT pair; load_adapter_dir takes the run's when it records none
+        return replace(self._run, lora_alpha=read_source_lora_alpha(path))
 
 
 def _read_legacy_training_state(path: Path) -> dict | None:
