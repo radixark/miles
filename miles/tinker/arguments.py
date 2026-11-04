@@ -26,7 +26,9 @@ def validate_tinker_args(args):
     if args.tinker_import_root is not None:
         # file:// loads skip tenant ownership checks, so they must never reach tinker:// checkpoints
         imports, checkpoints = (os.path.realpath(p) for p in (args.tinker_import_root, args.tinker_checkpoint_root))
-        assert os.path.commonpath([imports, checkpoints]) not in (imports, checkpoints), (
-            f"--tinker-import-root {args.tinker_import_root} and --tinker-checkpoint-root "
-            f"{args.tinker_checkpoint_root} must not contain one another"
-        )
+        # raised, not asserted: tenant isolation rests on it, and python -O strips asserts
+        if os.path.commonpath([imports, checkpoints]) in (imports, checkpoints):
+            raise ValueError(
+                f"--tinker-import-root {args.tinker_import_root} and --tinker-checkpoint-root "
+                f"{args.tinker_checkpoint_root} must not contain one another"
+            )

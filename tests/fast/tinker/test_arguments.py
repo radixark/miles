@@ -1,3 +1,5 @@
+import subprocess
+import sys
 from argparse import Namespace
 
 import pytest
@@ -52,6 +54,16 @@ class TestTinkerCheckpointOwnership:
     @pytest.mark.parametrize("import_root", ["/checkpoints", "/checkpoints/tinker", "/checkpoints/tinker/imports"])
     def test_an_import_root_overlapping_the_checkpoint_root_is_refused(self, import_root: str) -> None:
         """file:// loads skip ownership checks; overlapping roots would open other tenants' checkpoints."""
-        with pytest.raises(AssertionError, match="must not contain one another"):
+        with pytest.raises(ValueError, match="must not contain one another"):
             validate_tinker_args(_tinker_args(tinker_import_root=import_root))
         validate_tinker_args(_tinker_args(tinker_import_root="/checkpoints/imports"))
+
+    def test_the_root_overlap_is_refused_under_python_O(self) -> None:
+        """Tenant isolation must not depend on asserts surviving optimization."""
+        probe = (
+            "from types import SimpleNamespace; from miles.tinker.arguments import validate_tinker_args; "
+            "validate_tinker_args(SimpleNamespace(save=None, save_hf=None, tinker_checkpoint_root='/checkpoints', "
+            "tinker_import_root='/checkpoints/imports/..'))"
+        )
+        result = subprocess.run([sys.executable, "-O", "-c", probe], capture_output=True, text=True)
+        assert result.returncode != 0 and "must not contain one another" in result.stderr
