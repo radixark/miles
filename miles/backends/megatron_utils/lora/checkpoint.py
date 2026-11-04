@@ -36,6 +36,7 @@ from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
 from miles.backends.training_utils.checkpoint.adapter.commit import UncommittedAdapterDir
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
 from miles.backends.training_utils.checkpoint.adapter.readers import AdapterSourceKind
+from miles.backends.training_utils.checkpoint.adapter.source_error import AdapterSourceError
 
 _WEIGHTS_KEY = "adapter_weights"
 _OPTIM_KEY = "adapter_optimizer"
@@ -208,10 +209,12 @@ def find_load_mismatch(
         kind = check_adapter_source(path, run, targets, load_optimizer=load_optimizer)
         if kind == AdapterSourceKind.LEGACY_TINKER_CHECKPOINT:
             _read_legacy_meta(path, run)
+            state_dict_metadata = dcp.FileSystemReader(path).read_metadata().state_dict_metadata
+            _assert_has_legacy_optimizer_state(path, state_dict_metadata)
             # TE's _extra_state objects are stored per shard (<key>/shard_i_j); the tensors decide the layout
             saved = {
                 k: tuple(metadata.size)
-                for k, metadata in dcp.FileSystemReader(path).read_metadata().state_dict_metadata.items()
+                for k, metadata in state_dict_metadata.items()
                 if ".adapter." in k and "_extra_state" not in k and not _LEGACY_OPTIMIZER_KEY.match(k)
             }
         elif kind.is_read_into_model():
@@ -283,8 +286,10 @@ class LegacyTinkerCheckpointLoader:
     def __init__(self, model, slot_optimizer: SlotOptimizer, run: AdapterParametrization, load_optimizer: bool):
         self._model, self._optimizer, self._run, self._load_optimizer = model, slot_optimizer, run, load_optimizer
 
-    def parametrization(self, path: Path) -> AdapterParametrization:
-        return replace(self._run, lora_alpha=_read_legacy_meta(path, self._run)["lora_alpha"])
+    def parametrization(self, path: Path) -> tuple[AdapterParametrization, bool]:
+        alpha = _read_legacy_meta(path, self._run)["lora_alpha"]
+        _assert_has_legacy_optimizer_state(path, dcp.FileSystemReader(path).read_metadata().state_dict_metadata)
+        return replace(self._run, lora_alpha=alpha), True
 
     def prepare(self, path: Path) -> tuple[Path, dict]:
         error, weights = None, None
@@ -301,6 +306,12 @@ class LegacyTinkerCheckpointLoader:
     def apply(self, prepared: tuple[Path, dict]) -> None:
         path, shells = prepared
         _load_legacy_slot(shells, self._optimizer, str(path), self._load_optimizer)
+
+
+def _assert_has_legacy_optimizer_state(path: Path, state_dict_metadata: Iterable[str]) -> None:
+    # main always saved it; a weights-only load reads the saved masters too (see _load_legacy_slot)
+    if not any(_LEGACY_OPTIMIZER_KEY.match(k) for k in state_dict_metadata):
+        raise AdapterSourceError(f"{path} holds no optimizer state, which every legacy slot load reads")
 
 
 # a gateway-wide layout setting -> the launch flag that restores a checkpoint saved under `value`
