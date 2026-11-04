@@ -1021,9 +1021,9 @@ _GLM_MODELS = [
     pytest.param("zai-org/GLM-5.3", TITOTokenizerType.GLM53, id="glm53"),
 ]
 
-# sys, user, assistant(tool_calls): a stop at <|observation|> whose call was parsed.
+# sys, user, assistant(tool_calls)
 _STORED_TOOL_CALL = SingleToolTrajectory.MESSAGES[:3]
-# sys, user, assistant(text): a stop whose call, if any, was not parsed.
+# sys, user, assistant(text)
 _STORED_TEXT = [
     *SingleToolTrajectory.MESSAGES[:2],
     {"role": "assistant", "content": "Let me check the weather."},
@@ -1036,8 +1036,7 @@ _APPENDED = {
 # (stop token, stored history, appended role, the stop is replaced)
 _GLM_BOUNDARY_CASES = [
     pytest.param("<|observation|>", _STORED_TOOL_CALL, "tool", False, id="observation_then_tool"),
-    pytest.param("<|observation|>", _STORED_TOOL_CALL, "user", True, id="observation_then_user_call_parsed"),
-    pytest.param("<|observation|>", _STORED_TEXT, "user", True, id="observation_then_user_call_unparsed"),
+    pytest.param("<|observation|>", _STORED_TOOL_CALL, "user", True, id="observation_then_user"),
     pytest.param("<|user|>", _STORED_TEXT, "user", False, id="user_then_user"),
     pytest.param("<|user|>", _STORED_TOOL_CALL, "tool", True, id="user_then_tool"),
 ]
@@ -1080,10 +1079,7 @@ class TestGLMStopTokenReplace:
         message = caplog.records[0].getMessage()
         replacement = tito.tokenizer.convert_ids_to_tokens(expected[2])
         assert replacement != stop_token
-        assert f"stopped at {stop_token}" in message
-        assert f"appended {appended_role} message starts with {replacement}" in message
-        tool_calls = "has" if stored[-1].get("tool_calls") else "has no"
-        assert f"stored assistant turn {tool_calls} parsed tool calls" in message
+        assert f"sampled stop token {stop_token} is replaced by {replacement}" in message
 
     @pytest.mark.parametrize("stop_token,stored,appended_role,replaced", _GLM_BOUNDARY_CASES)
     def test_disallowed_rejects_only_replacement(
@@ -1097,7 +1093,7 @@ class TestGLMStopTokenReplace:
                 with pytest.raises(MessageValidationError, match="--no-allow-stop-token-replace") as exc_info:
                     _merge_at_stop(tito, stop_token, stored, appended_role)
                 assert exc_info.value.status_code == 400
-                assert f"stopped at {stop_token}" in str(exc_info.value)
+                assert f"sampled stop token {stop_token} is replaced" in str(exc_info.value)
             else:
                 result, expected = _merge_at_stop(tito, stop_token, stored, appended_role)
                 assert result == expected

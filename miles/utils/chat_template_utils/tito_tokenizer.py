@@ -542,37 +542,16 @@ class GLM47TITOTokenizer(TITOTokenizer):
         prefix = list(pretokenized_token_ids)
         if prefix and prefix[-1] in self._ambiguous_boundary_ids:
             if prefix[-1] != incremental[0]:
-                self._check_stop_token_replace(
-                    old_messages, new_messages, sampled_id=prefix[-1], replacement_id=incremental[0]
+                sampled, replacement = self.tokenizer.convert_ids_to_tokens([prefix[-1], incremental[0]])
+                detail = (
+                    f"sampled stop token {sampled} is replaced by {replacement}, "
+                    "the first token of the appended render"
                 )
+                if not self.allow_stop_token_replace:
+                    raise MessageValidationError(f"{detail}; rejected by --no-allow-stop-token-replace")
+                logger.warning("%s; that turn's training sample drops the sampled token", detail)
             prefix = prefix[:-1]
         return prefix + incremental
-
-    def _check_stop_token_replace(
-        self,
-        old_messages: list[dict[str, Any]],
-        new_messages: list[dict[str, Any]],
-        *,
-        sampled_id: int,
-        replacement_id: int,
-    ) -> None:
-        """Warn about, or reject, replacing the sampled stop token with the appended render's first token."""
-        sampled, replacement = self.tokenizer.convert_ids_to_tokens([sampled_id, replacement_id])
-        appended = new_messages[len(old_messages) :]
-        next_render = f"appended {appended[0]['role']} message" if appended else "generation prompt"
-        tool_calls = "has" if old_messages[-1].get("tool_calls") else "has no"
-        detail = (
-            f"the model stopped at {sampled}, but the {next_render} starts with {replacement} "
-            f"(the stored assistant turn {tool_calls} parsed tool calls)"
-        )
-        if not self.allow_stop_token_replace:
-            raise MessageValidationError(
-                f"{detail}; --no-allow-stop-token-replace rejects replacing the sampled stop token: "
-                f"follow a stop at {sampled} with the message that token opens, or allow the replacement"
-            )
-        logger.warning(
-            "Replacing the sampled stop token: %s; that turn's training sample drops the sampled token", detail
-        )
 
 
 class GLM53TITOTokenizer(GLM47TITOTokenizer):
