@@ -36,7 +36,7 @@ class TritonAttnFunction(torch.autograd.Function):
         Returns:
             o: [total, num_heads, D], bf16
         """
-        from sglang.srt.layers.attention.triton_ops.extend_attention import extend_attention_fwd_unified
+        from sglang.kernels.ops.attention.extend_attention import extend_attention_fwd_unified
 
         total = B * S
         device = q.device
@@ -52,10 +52,12 @@ class TritonAttnFunction(torch.autograd.Function):
             o,
             k,
             v,
-            qo_indptr,
-            kv_indptr,
-            kv_indices,
-            prefix_lens,
+            k_scale=1.0,
+            v_scale=1.0,
+            qo_indptr=qo_indptr,
+            kv_indptr=kv_indptr,
+            kv_indices=kv_indices,
+            prefix_lens=prefix_lens,
             max_len_extend=S,
             is_causal=True,
         )

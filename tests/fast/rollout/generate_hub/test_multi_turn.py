@@ -131,6 +131,7 @@ def verify_samples(actual: Sample | list[Sample], expected: list[ExpectedSampleI
         # template kwargs the last turn recorded) that varies with mock setup.
         # Strip these before comparing structure.
         for key in (
+            "session_id",
             "tito_session_mismatch",
             "accumulated_token_ids",
             "max_trim_tokens",
