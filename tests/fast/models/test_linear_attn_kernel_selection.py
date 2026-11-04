@@ -158,6 +158,69 @@ def test_the_cake_kda_backend_parses_with_its_supported_layout():
     assert config.kda_backend == "cake"
 
 
+def _fake_ext_package(monkeypatch, name: str, **attrs) -> types.ModuleType:
+    module = types.ModuleType(f"miles_ext_kernels.{name}")
+    for attr, value in attrs.items():
+        setattr(module, attr, value)
+    monkeypatch.setitem(sys.modules, "miles_ext_kernels", types.ModuleType("miles_ext_kernels"))
+    monkeypatch.setitem(sys.modules, f"miles_ext_kernels.{name}", module)
+    return module
+
+
+def test_miles_ext_configures_the_package_with_its_own_argument_values(monkeypatch):
+    configured = []
+    module = _fake_ext_package(monkeypatch, "conv1d", configure=configured.append)
+
+    assert linear_attn.miles_ext("conv1d") is module
+    assert configured == []
+    assert linear_attn.miles_ext("conv1d", types.SimpleNamespace(miles_ext_kernels_args={"x": 1})) is module
+    assert configured == [argparse.Namespace(x=1)]
+
+
+def test_miles_ext_without_the_submodule_names_the_flag_and_the_checkout(monkeypatch):
+    monkeypatch.setitem(sys.modules, "miles_ext_kernels", None)
+    monkeypatch.setitem(sys.modules, "miles_ext_kernels.conv1d", None)
+
+    with pytest.raises(ImportError, match="--use-miles-ext-kernels") as excinfo:
+        linear_attn.miles_ext("conv1d")
+    assert "git submodule update --init 3rdparty/miles-ext-kernels" in str(excinfo.value)
+
+
+def test_the_cake_short_conv_runs_the_kernel_package(monkeypatch):
+    calls = []
+    _fake_ext_package(monkeypatch, "conv1d", causal_conv1d=lambda *args: calls.append(args) or "cake-out")
+
+    assert linear_attn.causal_short_conv("x", "w", "silu", "cake", cu_seqlens="cu") == "cake-out"
+    assert calls == [("x", "w", "cu")]
+    with pytest.raises(NotImplementedError, match="context parallelism"):
+        linear_attn.causal_short_conv("x", "w", "silu", "cake", cu_seqlens="cu", cp_context=object())
+
+
+def test_a_cake_short_conv_checks_its_shape_when_built(monkeypatch):
+    torch = pytest.importorskip("torch")
+    checked = []
+    _fake_ext_package(monkeypatch, "conv1d", check_supported=lambda *args: checked.append(args))
+
+    conv = linear_attn.ShardedShortConv(16, 4, tp_group=None, device="cpu", dtype=torch.float32, backend="cake")
+
+    assert conv.backend == "cake"
+    assert checked == [(16, 4, "silu")]
+
+
+def test_the_cake_short_conv_rejects_context_parallelism_at_startup():
+    with pytest.raises(ValueError, match="--linear-attention-conv-backend cake does not support context parallelism"):
+        parse_megatron_test_config(
+            "--use-miles-ext-kernels", "--linear-attention-conv-backend", "cake", "--context-parallel-size", "2"
+        )
+
+
+def test_the_cake_short_conv_resolves_its_arguments():
+    config = parse_megatron_test_config("--use-miles-ext-kernels", "--linear-attention-conv-backend", "cake")
+
+    assert config.miles_ext_kernels_args["cake_conv1d_variant"] == "fast"
+    assert config.miles_ext_kernels_args["cake_conv1d_silu_grad_preactivation"] == "bf16"
+
+
 def test_short_conv_backend_respects_fla_conv_backend(monkeypatch):
     monkeypatch.setenv("FLA_CONV_BACKEND", "cuda")
     assert linear_attn.short_conv_backend.__wrapped__() == "cuda"

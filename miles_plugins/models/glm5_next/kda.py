@@ -14,7 +14,7 @@ except ImportError:
 
 from miles_plugins.models.cp_utils import build_gdn_cp_context
 from miles_plugins.models.hf_attention import HuggingfaceAttention
-from miles_plugins.models.linear_attn import kda_kernel
+from miles_plugins.models.linear_attn import kda_kernel, miles_ext
 
 
 def _get_text_config(hf_config):
@@ -34,6 +34,7 @@ class Glm5NextKDA(nn.Module):
         gate_lower_bound: float,
         rms_norm_eps: float,
         kda_backend: str = "fla",
+        conv_backend: str = "fla",
     ):
         super().__init__()
         if ShortConvolution is None or chunk_kda is None:
@@ -66,6 +67,11 @@ class Glm5NextKDA(nn.Module):
         self.o_norm = FusedRMSNormGated(head_dim, eps=rms_norm_eps, activation="sigmoid")
         self.o_proj = nn.Linear(self.projection_size, hidden_size, bias=False)
         self.kda_backend = kda_backend
+        self.conv_backend = conv_backend
+        if conv_backend == "cake":
+            conv = miles_ext("conv1d")
+            conv.check_supported(3 * self.projection_size, conv_kernel_size, "silu")
+            conv.prebuild(torch.bfloat16)
         if kda_backend == "cake":
             if head_dim != 128:
                 raise ValueError(f"--kda-backend cake needs head dimension 128, got {head_dim}")
@@ -82,12 +88,17 @@ class Glm5NextKDA(nn.Module):
             (self.q_proj(hidden_states), self.k_proj(hidden_states), self.v_proj(hidden_states)),
             dim=-1,
         )
-        conv_cu_seqlens = cp_context.cu_seqlens if cp_context is not None else cu_seqlens
-        mixed_qkv, _ = self.conv1d(
-            x=mixed_qkv,
-            cu_seqlens=conv_cu_seqlens,
-            cp_context=cp_context,
-        )
+        if self.conv_backend == "cake":
+            if cp_context is not None:
+                raise NotImplementedError("--linear-attention-conv-backend cake does not support context parallelism")
+            mixed_qkv = miles_ext("conv1d").causal_conv1d(mixed_qkv, self.conv1d.weight[:, 0], cu_seqlens)
+        else:
+            conv_cu_seqlens = cp_context.cu_seqlens if cp_context is not None else cu_seqlens
+            mixed_qkv, _ = self.conv1d(
+                x=mixed_qkv,
+                cu_seqlens=conv_cu_seqlens,
+                cp_context=cp_context,
+            )
         query, key, value = torch.split(mixed_qkv, [self.projection_size] * 3, dim=-1)
         query = query.unflatten(-1, (self.num_heads, self.head_dim))
         key = key.unflatten(-1, (self.num_heads, self.head_dim))
@@ -177,6 +188,8 @@ class Glm5NextKDAAttention(HuggingfaceAttention):
         # the native config parses linear_attn_config into the linear_* fields
         if text_config.linear_lower_bound is None:
             raise ValueError("GLM-5.3 KDA requires gate_lower_bound (safe gate) in the HF config.")
+        if args.linear_attention_conv_backend == "cake":
+            miles_ext("conv1d", args)
         self.kda = Glm5NextKDA(
             hidden_size=text_config.hidden_size,
             num_heads=text_config.linear_num_heads,
@@ -185,6 +198,7 @@ class Glm5NextKDAAttention(HuggingfaceAttention):
             gate_lower_bound=text_config.linear_lower_bound,
             rms_norm_eps=text_config.rms_norm_eps,
             kda_backend=args.kda_backend,
+            conv_backend=args.linear_attention_conv_backend,
         )
 
     def hf_forward(self, hidden_states, packed_seq_params):

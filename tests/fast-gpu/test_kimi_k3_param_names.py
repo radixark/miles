@@ -58,6 +58,7 @@ def config():
     config.kimi_linear_conv_kernel_size = 4
     config.kimi_kda_gate_lower_bound = -5.0
     config.kimi_kda_backend = "fla"
+    config.kimi_linear_conv_backend = None
     yield config
     parallel_state.destroy_model_parallel()
     dist.destroy_process_group()

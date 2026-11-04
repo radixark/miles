@@ -15,9 +15,11 @@ from __future__ import annotations
 
 import argparse
 import functools
+import importlib
 import logging
 import os
 from abc import ABC, abstractmethod
+from types import ModuleType
 from typing import NamedTuple
 
 import torch
@@ -36,7 +38,7 @@ from megatron.core.tensor_parallel.random import get_cuda_rng_tracker
 from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.utils import ensure_metadata_has_dp_cp_group, make_sharded_tensors_for_checkpoint
 
-from miles.backends.megatron_utils.fp32_param_utils import mark_param_dtype
+from miles.backends.megatron_utils.fp32_param_utils import FORCED_PARAM_DTYPE_ATTR, mark_param_dtype
 from miles.backends.megatron_utils.megatron_to_hf.linear_attn_layout import LinearAttnHeads
 from miles_plugins.models.cp_utils import build_fla_cp_context, packed_shard_to_zigzag, zigzag_to_packed_shard
 
@@ -53,6 +55,23 @@ INT32_ELEMENTS = 2**31 - 1
 _CHUNK_ELEMENTS = 2**30
 _CHANNEL_ALIGN = 128
 _ROW_STRIDE_ALIGN = 8
+
+
+def miles_ext(name: str, args=None) -> ModuleType:
+    """The kernel package ``miles_ext_kernels.<name>`` of the miles-ext-kernels submodule, with a clear error when it
+    is not importable. Where the caller has the parsed miles configuration ``args``, the values of the package's own
+    arguments (``args.miles_ext_kernels_args``) go to its ``configure`` first."""
+    try:
+        module = importlib.import_module(f"miles_ext_kernels.{name}")
+    except ImportError as exc:
+        raise ImportError(
+            f"the 'cake' backend runs miles_ext_kernels.{name} from the miles-ext-kernels submodule: pass "
+            "--use-miles-ext-kernels and check the submodule out with "
+            "'git submodule update --init 3rdparty/miles-ext-kernels'."
+        ) from exc
+    if args is not None:
+        module.configure(argparse.Namespace(**(args.miles_ext_kernels_args or {})))
+    return module
 
 
 def gdn_kernel(backend: str, args=None):
@@ -240,9 +259,15 @@ class _ContiguousGrad(torch.autograd.Function):
 
 
 def causal_short_conv(x, weight, activation, backend, cu_seqlens=None, cp_context=None):
-    """Depthwise causal conv of ``x`` ``[b, s, C]`` with ``weight`` ``[C, K]`` through fla. fla indexes with
-    int32, so inputs past 2**31 elements (long sequences at low TP) run as channel chunks of at most
-    2**30; the conv is per channel, so this is exact."""
+    """Depthwise causal conv of ``x`` ``[b, s, C]`` with ``weight`` ``[C, K]`` through fla, or the Cake kernels of
+    ``miles_ext_kernels.conv1d`` for ``backend`` 'cake' (SiLU, kernel size 4, one packed sequence, no context
+    parallelism: both checked when the layer is built and at startup). fla indexes with int32, so inputs past 2**31
+    elements (long sequences at low TP) run as channel chunks of at most 2**30; the conv is per channel, so this is
+    exact. The Cake kernels take any size and copy a strided ``x`` themselves."""
+    if backend == "cake":
+        if cp_context is not None:
+            raise NotImplementedError("--linear-attention-conv-backend cake does not support context parallelism yet.")
+        return miles_ext("conv1d").causal_conv1d(x, weight, cu_seqlens)
     from fla.modules.conv.causal_conv1d import causal_conv1d
 
     tokens = x.shape[0] * x.shape[1]
@@ -265,7 +290,8 @@ def causal_short_conv(x, weight, activation, backend, cu_seqlens=None, cp_contex
 
 class ShardedShortConv(nn.Conv1d):
     """Depthwise causal conv (SiLU, no bias) over this rank's channels, holding the TP-sharded weight.
-    Built like fla's ``ShortConvolution``, so weights and checkpoints match it."""
+    Built like fla's ``ShortConvolution``, so weights and checkpoints match it. ``backend`` is fla's conv backend, or
+    'cake' for the Cake kernels (see :func:`causal_short_conv`)."""
 
     def __init__(self, channels: int, kernel_size: int, tp_group, device=None, dtype=None, backend: str | None = None):
         super().__init__(
@@ -280,6 +306,8 @@ class ShardedShortConv(nn.Conv1d):
         )
         self.activation = "silu"
         self.backend = backend or short_conv_backend()
+        if self.backend == "cake":
+            miles_ext("conv1d").check_supported(channels, kernel_size, self.activation)
         self.tp_group = tp_group
         set_tensor_model_parallel_attributes(self.weight, True, 0, 1)
 
@@ -361,7 +389,8 @@ class LinearAttention(MegatronModule, ABC):
     """This rank's heads: projections -> conv -> recurrence -> gated norm. ``out_proj`` holds this
     rank's columns; :class:`LinearAttentionLayer` applies it and the TP reduction. ``dt_bias`` is one
     value per value head, or per value channel when the family sets ``dt_bias_per_channel``.
-    ``conv_backend`` pins the short conv's fla backend (``None``: :func:`short_conv_backend`).
+    ``conv_backend`` pins the short conv's fla backend (``None``: :func:`short_conv_backend`), or selects the Cake
+    short-conv kernels ('cake'), whose libraries for this layer's conv weight dtypes are built with the layer.
     ``reproducible_norm`` runs the gated output norm on :func:`reproducible_rms_norm_gated` instead of fla's
     fused kernels; the backends that promise reproducible gradients set it."""
 
@@ -401,6 +430,17 @@ class LinearAttention(MegatronModule, ABC):
                 torch.empty(self.local.num_v_heads, dtype=torch.float32, device=device).uniform_(1, 16).log_()
             )
         mark_param_dtype(self.A_log, torch.float32)
+        if conv_backend == "cake":
+            # the weight dtype the conv trains in: KDA marks its taps FP32, GDN keeps the params dtype
+            prebuild = miles_ext("conv1d").prebuild
+            for module in self.modules():
+                if isinstance(module, ShardedShortConv):
+                    prebuild(
+                        getattr(  # config-access-exempt: only mark_param_dtype sets the forced training dtype
+                            module.weight, FORCED_PARAM_DTYPE_ATTR, None
+                        )
+                        or module.weight.dtype
+                    )
         dt_bias_size = self.local.value_dim if self.dt_bias_per_channel else self.local.num_v_heads
         self.dt_bias = nn.Parameter(torch.ones(dt_bias_size, dtype=self.dt_bias_dtype or dtype, device=device))
         if self.dt_bias_dtype is not None:
@@ -513,7 +553,8 @@ class GatedDeltaNet(LinearAttention):
     non-deterministic package; its short conv runs on :func:`cake_conv_backend` and its gated output norm on
     :func:`reproducible_rms_norm_gated`, so the whole layer's gradients are reproducible). ``args``, the parsed miles
     arguments, configure the ``cake`` kernels (see :func:`gdn_kernel`); a
-    layer built without them runs det. Models subclass it with their
+    layer built without them runs det. ``args.linear_attention_conv_backend`` 'cake' runs the short conv on the Cake
+    kernels, with any GDN backend. Models subclass it with their
     projections and :meth:`in_proj_sections`; all four projections run as one GEMM whose width is zero-padded
     to a multiple of 8, the row-stride alignment causal-conv1d's channel-last backward requires of the q/k/v
     view."""
@@ -522,7 +563,11 @@ class GatedDeltaNet(LinearAttention):
         self, config, heads, conv_kernel_size, norm_eps, tp_group, backend="fla", norm_activation="silu", args=None
     ):
         gdn_kernel(backend, args=args)
-        conv_backend = cake_conv_backend() if backend == "cake" else None
+        if args is not None and args.linear_attention_conv_backend == "cake":
+            miles_ext("conv1d", args)
+            conv_backend = "cake"
+        else:
+            conv_backend = cake_conv_backend() if backend == "cake" else None
         super().__init__(
             config, heads, conv_kernel_size, norm_eps, tp_group, norm_activation, conv_backend=conv_backend
         )
@@ -571,16 +616,25 @@ class KimiDeltaAttention(LinearAttention):
     so its weight passes the TP copy op like the norm. The conv weights train in fp32, as Kimi's
     checkpoints store them. ``kda_backend`` 'cake' runs the recurrence on the deterministic Cake kernels of
     ``miles_ext_kernels.kda`` (1 to 64 heads per rank, SM100a / SM103a), whose kernels for this rank's head count are
-    built when the layer is; its short convs then run on :func:`cake_conv_backend` and its gated output norm on
-    :func:`reproducible_rms_norm_gated`, so the layer's gradients are reproducible."""
+    built when the layer is; its short convs then default to :func:`cake_conv_backend` and its gated output norm
+    runs on :func:`reproducible_rms_norm_gated`, so the layer's gradients are reproducible."""
 
     dt_bias_per_channel = True
     dt_bias_dtype = torch.float32
 
     def __init__(
-        self, config, heads, conv_kernel_size, norm_eps, tp_group, gate_lower_bound: float, kda_backend: str = "fla"
+        self,
+        config,
+        heads,
+        conv_kernel_size,
+        norm_eps,
+        tp_group,
+        gate_lower_bound: float,
+        kda_backend: str = "fla",
+        conv_backend: str | None = None,
     ):
-        conv_backend = cake_conv_backend() if kda_backend == "cake" else None
+        if conv_backend is None and kda_backend == "cake":
+            conv_backend = cake_conv_backend()
         super().__init__(
             config, heads, conv_kernel_size, norm_eps, tp_group, norm_activation="sigmoid", conv_backend=conv_backend
         )

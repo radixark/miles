@@ -149,3 +149,4 @@ Opt-in Blackwell kernels of the miles-ext-kernels submodule for this model (setu
 [Cake Training Kernels](/advanced/cake-kernels)):
 
 - `--kda-backend cake`: the KDA layers (64 heads, not head-sharded; no context parallelism).
+- `--linear-attention-conv-backend cake`: the KDA short conv (no context parallelism).

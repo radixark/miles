@@ -63,6 +63,7 @@ REQUIRED_ARGS = ["--rollout-batch-size", "64"]
 CAKE_CHOICE_DEFAULTS = {
     "linear_attention_backend": "fla",
     "kda_backend": "fla",
+    "linear_attention_conv_backend": "fla",
 }
 _P2P_ARGS = ["--update-weight-transfer-mode", "p2p"]
 DYNAMIC_BATCH_ARGS = ["--use-dynamic-batch-size", "--max-tokens-per-gpu", "1024"]

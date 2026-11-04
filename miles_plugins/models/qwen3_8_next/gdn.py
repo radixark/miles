@@ -15,7 +15,7 @@ except ImportError:
 from miles.backends.megatron_utils.fp32_param_utils import mark_param_dtype
 from miles_plugins.models.cp_utils import build_gdn_cp_context
 from miles_plugins.models.hf_attention import HuggingfaceAttention
-from miles_plugins.models.linear_attn import gdn_kernel
+from miles_plugins.models.linear_attn import gdn_kernel, miles_ext
 from miles_plugins.models.qwen3_5 import _get_text_config
 
 
@@ -54,6 +54,11 @@ class ReplicatedGatedDeltaNet(nn.Module):
             bias=False,
             kernel_size=self.conv_kernel_size,
         )
+        self.conv_backend = args.linear_attention_conv_backend if args is not None else "fla"
+        if self.conv_backend == "cake":
+            conv = miles_ext("conv1d", args)
+            conv.check_supported(self.conv_dim, self.conv_kernel_size, "silu")
+            conv.prebuild(torch.bfloat16)
 
         # Separate projections for QKV and Z (unlike Qwen3Next which combines QKVZ)
         projection_size_qkv = self.key_dim * 2 + self.value_dim
@@ -104,12 +109,17 @@ class ReplicatedGatedDeltaNet(nn.Module):
         a = self.in_proj_a(hidden_states)
 
         # Convolution on the flat QKV (pass cp_context for boundary handling)
-        conv_cu_seqlens = cp_context.cu_seqlens if cp_context is not None else cu_seqlens
-        mixed_qkv, _ = self.conv1d(
-            x=mixed_qkv,
-            cu_seqlens=conv_cu_seqlens,
-            cp_context=cp_context,
-        )
+        if self.conv_backend == "cake":
+            if cp_context is not None:
+                raise NotImplementedError("--linear-attention-conv-backend cake does not support context parallelism")
+            mixed_qkv = miles_ext("conv1d").causal_conv1d(mixed_qkv, self.conv1d.weight[:, 0], cu_seqlens)
+        else:
+            conv_cu_seqlens = cp_context.cu_seqlens if cp_context is not None else cu_seqlens
+            mixed_qkv, _ = self.conv1d(
+                x=mixed_qkv,
+                cu_seqlens=conv_cu_seqlens,
+                cp_context=cp_context,
+            )
 
         # Split into Q, K, V (flat split, matching HF layout)
         query, key, value = torch.split(

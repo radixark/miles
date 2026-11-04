@@ -77,7 +77,9 @@ class TestGdnConfig:
             None
             if backend is None
             else SimpleNamespace(
-                linear_attention_backend=backend, miles_ext_kernels_args={"cake_gdn_recompute_state": True}
+                linear_attention_backend=backend,
+                linear_attention_conv_backend="fla",
+                miles_ext_kernels_args={"cake_gdn_recompute_state": True},
             )
         )
 
@@ -122,7 +124,9 @@ class TestGdnConfig:
         monkeypatch.setattr(torch.cuda, "current_device", lambda: "cpu")
         cp_context = SimpleNamespace(cu_seqlens=torch.tensor([0, 3], dtype=torch.int32))
         monkeypatch.setattr(gdn, "build_gdn_cp_context", lambda module, cu_seqlens, device: cp_context)
-        args = SimpleNamespace(linear_attention_backend=backend, miles_ext_kernels_args=None)
+        args = SimpleNamespace(
+            linear_attention_backend=backend, linear_attention_conv_backend="fla", miles_ext_kernels_args=None
+        )
         layer = gdn.ReplicatedGatedDeltaNet(config=_config(), layer_idx=0, args=args)
         hidden_states = torch.randn(1, 3, 4)
         cu_seqlens = torch.tensor([0, 3], dtype=torch.int32)

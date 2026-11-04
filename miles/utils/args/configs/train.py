@@ -53,6 +53,19 @@ class TrainConfig(BaseConfig):
             ),
         ),
     ] = "fla"
+    linear_attention_conv_backend: A[
+        str,
+        Arg(
+            choices=("fla", "cake"),
+            help=(
+                "Backend for the causal depthwise short convolution (SiLU, kernel size 4) of the GDN and KDA "
+                "linear-attention layers. 'fla' is flash-linear-attention's kernel. 'cake' is the Cake kernel from "
+                "the miles-ext-kernels submodule (--cake-conv1d-variant det or fast, "
+                "--cake-conv1d-silu-grad-preactivation bf16 or fp32); it requires --use-miles-ext-kernels, no "
+                "context parallelism and NVIDIA SM100a/SM103a (Blackwell)."
+            ),
+        ),
+    ] = "fla"
     true_on_policy_mode: A[bool, Arg(help="Whether to enable true-on-policy mode.")] = False
     train_env_vars: A[
         Any,
