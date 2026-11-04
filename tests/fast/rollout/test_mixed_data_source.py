@@ -1,3 +1,4 @@
+import hashlib
 import json
 from collections import Counter
 from pathlib import Path
@@ -182,4 +183,56 @@ class TestMixedRolloutDataSource:
 
         del datasets["code"]
         with pytest.raises(ValueError, match="now lists \\['math'\\]"):
+            _make_source(tmp_path, datasets).load(tmp_path / "ckpt")
+
+
+class TestSha256:
+    def test_a_matching_hash_passes_and_a_wrong_one_stops_startup(self, tmp_path):
+        datasets = _two_datasets(tmp_path)
+        actual = hashlib.sha256(Path(datasets["math"]["path"]).read_bytes()).hexdigest()
+
+        datasets["math"]["sha256"] = actual[:8]
+        _make_source(tmp_path, datasets)
+
+        datasets["math"]["sha256"] = "0" * 8
+        with pytest.raises(ValueError, match=f"expected {'0' * 8}, got {actual[:8]}"):
+            _make_source(tmp_path, datasets)
+
+    def test_a_file_rewritten_while_loading_is_refused(self, tmp_path, monkeypatch):
+        """The file is hashed, then reopened to parse; a rewrite in between used to train on unpinned bytes."""
+        datasets = _two_datasets(tmp_path)
+        path = Path(datasets["math"]["path"])
+        datasets["math"]["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()[:8]
+
+        def rewrite_during_tokenizer_load(args):
+            path.write_text(json.dumps({"input": "replacement data", "label": "replacement"}) + "\n")
+            return _WordTokenizer(), None
+
+        monkeypatch.setattr(data_source, "_load_prompt_tokenizer_and_processor", rewrite_during_tokenizer_load)
+        with pytest.raises(ValueError, match="'math'.*changed while loading"):
+            _make_source(tmp_path, datasets)
+
+    def test_an_unpinned_file_is_hashed_once(self, tmp_path, monkeypatch):
+        calls = []
+        real = data_source._hash_file
+        monkeypatch.setattr(data_source, "_hash_file", lambda path: calls.append(path) or real(path))
+        _make_source(tmp_path, _two_datasets(tmp_path))
+        assert len(calls) == 2
+
+    def test_a_missing_hash_logs_the_value_to_pin(self, tmp_path, caplog):
+        datasets = _two_datasets(tmp_path)
+        actual = hashlib.sha256(Path(datasets["code"]["path"]).read_bytes()).hexdigest()
+
+        with caplog.at_level("WARNING", logger="miles.rollout.data_source"):
+            _make_source(tmp_path, datasets)
+        # quoted, so an all-digit prefix stays a string when pasted into YAML
+        assert f'sha256: "{actual[:8]}"' in caplog.text
+
+    def test_resume_refuses_a_dataset_that_changed_since_the_checkpoint(self, tmp_path):
+        datasets = _two_datasets(tmp_path)
+        source = _make_source(tmp_path, datasets)
+        source.save(tmp_path / "ckpt")
+
+        _write_jsonl(Path(datasets["code"]["path"]), ["edited"])
+        with pytest.raises(ValueError, match="'code' changed since the checkpoint"):
             _make_source(tmp_path, datasets).load(tmp_path / "ckpt")
