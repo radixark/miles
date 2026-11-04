@@ -27,6 +27,7 @@ from torchtitan.components.optim.lr_scheduler import LRSchedulersContainer
 from torchtitan.config.parallelism import ParallelismConfig
 from torchtitan.models.qwen3 import build_model_config
 
+from miles.backends.torchtitan_utils import actor as titan_actor
 from miles.backends.torchtitan_utils import lora_checkpoint
 from miles.backends.torchtitan_utils.actor import _steps_per_rollout
 from miles.backends.torchtitan_utils.config import _checkpointer_config
@@ -44,6 +45,7 @@ from miles.backends.training_utils.checkpoint.adapter.key_mapping import (
 )
 from miles.utils.distributed_utils import init_gloo_group
 from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
+from miles.utils.timer import Timer
 
 _TARGETS = get_hf_lora_targets({"model_type": "qwen3", "num_hidden_layers": 28})
 _QKV, _WO, _W13 = "layers.3.attention.qkv_linear.wqkv", "layers.3.attention.wo", "layers.3.feed_forward.w13"
@@ -519,6 +521,92 @@ def test_lora_resumes_only_through_the_adapter_path(tmp_path):
     assert resumed.initial_load_path is None
     base = config(load=str(tmp_path / "empty"), save=str(tmp_path / "save"))
     assert (base.initial_load_path, base.initial_load_model_only, base.initial_load_in_hf) == (None, True, True)
+
+
+@pytest.mark.parametrize(
+    "save, lora_adapter_path, start_rollout_id, restored, expected",
+    [
+        (None, None, None, None, 0),
+        ("/save", None, None, None, 0),
+        (None, "/source", None, 2, 3),
+        ("/save", "/source", None, None, 0),
+        ("/save", "/source", 5, 2, 5),
+    ],
+)
+def test_the_actor_starts_after_the_restored_rollout_and_saves_lora_as_adapter_dirs(
+    monkeypatch, save, lora_adapter_path, start_rollout_id, restored, expected
+):
+    """``init`` builds the LoRA checkpoint only for --save or --lora-adapter-path, starts after the rollout the
+    restore returns, and LoRA saves go to iter_N/adapter instead of torchtitan's checkpointer."""
+    # init starts the process-wide train_wait timer
+    monkeypatch.setattr(Timer(), "start_time", {})
+    built = []
+
+    class _LoraCheckpoint:
+        def __init__(self, trainer, args, steps_per_rollout):
+            built.append(steps_per_rollout)
+            self.saved = []
+
+        def restore(self):
+            return restored
+
+        def save(self, rollout_id):
+            self.saved.append(rollout_id)
+
+    trainer = SimpleNamespace(
+        step=0,
+        model_parts=[],
+        optimizers=SimpleNamespace(optimizers=[]),
+        align_token_side_channel=None,
+        configure_loss_reduction=lambda: None,
+        has_last_stage=lambda: True,
+        parallelism=SimpleNamespace(get_optional_mesh=lambda name: None),
+        engine=SimpleNamespace(load_checkpoint=lambda: None, save_checkpoint=MagicMock()),
+    )
+    for name, value in {
+        "compat": SimpleNamespace(install=lambda: None),
+        "build_trainer_config": lambda *a, **k: SimpleNamespace(),
+        "enable_routing_replay": lambda args: None,
+        "TrainProfiler": lambda args: SimpleNamespace(on_init_end=lambda: None),
+        "TitanTrainer": lambda config: trainer,
+        "set_parallel_state": lambda state: None,
+        "create_titan_parallel_state": lambda *a, **k: None,
+        "install_routing_replay": lambda parts: None,
+        "get_parallel_state": lambda: SimpleNamespace(is_metrics_rank=False),
+        "TorchtitanLoraCheckpoint": _LoraCheckpoint,
+        "clear_memory": lambda: None,
+    }.items():
+        monkeypatch.setattr(titan_actor, name, value)
+    monkeypatch.setattr(titan_actor.TorchNativeTrainRayActor, "_init_common", lambda *a, **k: None)
+    monkeypatch.setattr(titan_actor.TorchtitanTrainRayActor, "load_hf_assets", lambda self: None)
+    monkeypatch.setattr(titan_actor.TorchtitanTrainRayActor, "_build_weight_updater", lambda *a: None)
+    monkeypatch.setattr(titan_actor, "TorchtitanArgsNamespace", SimpleNamespace)
+    args = SimpleNamespace(
+        backend=SimpleNamespace(save=save),
+        hf_checkpoint="/hf",
+        num_rollout=10,
+        rollout_batch_size=4,
+        n_samples_per_prompt=8,
+        global_batch_size=8,
+        use_dynamic_global_batch_size=False,
+        debug_rollout_only=False,
+        lora_rank=8,
+        lora_adapter_path=lora_adapter_path,
+        start_rollout_id=start_rollout_id,
+        stream_optimizer_state_to_disk=False,
+        offload_train=False,
+    )
+    actor = titan_actor.TorchtitanTrainRayActor.__new__(titan_actor.TorchtitanTrainRayActor)
+
+    start = actor.init(args, "actor", indep_dp_info=SimpleNamespace(quorum_id=0), indep_dp_store_addr=None)
+
+    assert start == expected
+    assert built == ([4] if save or lora_adapter_path else [])
+    if built:
+        actor.args = args
+        actor._save_checkpoint(7)
+        assert actor._lora_checkpoint.saved == [7]
+        trainer.engine.save_checkpoint.assert_not_called()
 
 
 @pytest.mark.parametrize("dynamic, steps", [(False, 4), (True, 1)])
