@@ -93,7 +93,7 @@ def test_only_the_bridge_backend_loads_a_megatron_bridge_checkpoint(tmp_path):
     _, _, mocks = _restore(tmp_path, megatron_to_hf_mode="raw")
     loaders = mocks["load_adapter_dir"].call_args.kwargs["in_model_loaders_by_kind"]
     with pytest.raises(AssertionError, match="convert it there first with --lora-adapter-convert-save"):
-        loaders[AdapterSourceKind.MEGATRON_BRIDGE_CHECKPOINT](tmp_path)
+        loaders[AdapterSourceKind.MEGATRON_BRIDGE_CHECKPOINT].parametrization(tmp_path)
 
 
 def test_a_source_trained_with_another_alpha_is_refused_on_the_trainer(tmp_path):

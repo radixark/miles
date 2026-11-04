@@ -586,3 +586,23 @@ def test_a_bridge_optimizer_load_never_steps_an_empty_offloaded_optimizer(tmp_pa
 
     assert not stepped, "the empty HDO state must be zero-initialized, not dummy-stepped"
     assert torch.equal(hdo.state[param]["master_param"], torch.ones(2)) and int(hdo.state[param]["step"]) == 0
+
+
+def test_a_bridge_checkpoint_is_checked_before_anything_is_loaded_into_the_model(tmp_path, monkeypatch):
+    """load_adapter_dir checks the parametrization before ``load``: reading it must not load the model or optimizer."""
+    run = AdapterParametrization("base", 4, 8.0, "lora", ("model.layers.0.self_attn.q_proj",), False)
+    loader = bridge_peft_checkpoint.MegatronBridgeCheckpointLoader([], "optimizer", "members", run, True)
+    calls = []
+    monkeypatch.setattr(bridge_peft_checkpoint, "unwrap_model", lambda model: [])
+    monkeypatch.setattr(
+        loader, "_read_source", lambda path, chunks: ({"peft": {"alpha": 16}}, {}, [], [], None), raising=False
+    )
+    monkeypatch.setattr(loader, "_check_torch_dist_base", lambda *args: calls.append("base"), raising=False)
+    monkeypatch.setattr(loader, "_requested_state", lambda *args: calls.append("requested") or {}, raising=False)
+    monkeypatch.setattr(loader, "_load", lambda *args: calls.append("load"), raising=False)
+    loader._members = SimpleNamespace(export_adapter_state=lambda slot: calls.append("check masters"))
+
+    assert loader.parametrization(tmp_path) == replace(run, lora_alpha=16.0)
+    assert calls == ["base", "requested"]
+    loader.load(tmp_path)
+    assert calls == ["base", "requested", "load", "check masters"]

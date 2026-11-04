@@ -162,16 +162,21 @@ class MegatronBridgeCheckpointLoader:
         self._model, self._optimizer, self._members = model, optimizer, members
         self._run, self._load_optimizer = run, load_optimizer
 
-    def __call__(self, path: Path) -> AdapterParametrization:
+    def parametrization(self, path: Path) -> AdapterParametrization:
+        """Collective: every check against the source, reading it only; ``load`` then loads what it requested."""
         chunks = unwrap_model(self._model)
         names = ["model"] if len(chunks) == 1 else [f"model{i}" for i in range(len(chunks))]
         config, metadata, model_state_dicts, adapter, base_dir = self._read_source(path, chunks)
         self._check_torch_dist_base(path, chunks, base_dir)
-        requested = self._requested_state(path, names, model_state_dicts, adapter, metadata)
+        self._checked = (path, names, chunks, self._requested_state(path, names, model_state_dicts, adapter, metadata))
+        return replace(self._run, lora_alpha=float(config["peft"]["alpha"]))
+
+    def load(self, path: Path) -> None:
+        checked_path, names, chunks, requested = self._checked
+        assert checked_path == path, f"load({path}) after checking {checked_path}"
         self._load(path, names, chunks, requested)
         # collective; asserts each bf16 adapter parameter is its fp32 master
         self._members.export_adapter_state(0)
-        return replace(self._run, lora_alpha=float(config["peft"]["alpha"]))
 
     def _read_source(self, path: Path, chunks):
         """Collective: the source's run_config.yaml checked against this run, its content metadata, and this run's
