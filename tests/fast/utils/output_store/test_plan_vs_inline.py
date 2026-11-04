@@ -18,7 +18,7 @@ import pybase64
 import pytest
 import torch
 from tests.fast.fixtures.sglang_config_fixtures import make_sglang_config
-from tests.fast.utils.output_store.test_plan import Ref, Spec, fake_store_refs, read_rows
+from tests.fast.utils.output_store.test_plan import Ref, Spec, fake_store_refs, read_rows, stored_parts
 
 from miles.rollout.generate_utils import tool_call_utils
 from miles.rollout.generate_utils.generate_endpoint_utils import update_sample_from_response
@@ -29,6 +29,7 @@ from miles.utils.output_store.plan import (
     MASK_TOKEN_IDS,
     OUTPUT_STORE_REF_KEY,
     OUTPUT_STORE_REQUEST_KEY,
+    REPLAY_LAYER_SPLITS_KEY,
     RoutedExpertsSegments,
     StorePlanError,
 )
@@ -38,6 +39,8 @@ R3 = RoutedExpertsSegments.name
 VOCAB = 64
 SELECTED_MAX_SUPPORT = 6
 LAYERS, EXPERTS_PER_TOKEN = 2, 3
+# SGLang stores routed experts in parts split at these layers: a two-stage pipeline's.
+LAYER_SPLITS = [1]
 TOPK_COLUMNS = ("rollout_topk_token_ids", "rollout_topk_log_probs")
 
 
@@ -92,7 +95,7 @@ def generate(
         # Every /generate forward covers the whole sequence: a row per position but the last.
         rows = rng.integers(1, 64, size=(num_tokens + len(tokens) - 1, LAYERS, EXPERTS_PER_TOKEN), dtype=np.int32)
         inline["routed_experts"] = pybase64.b64encode(rows.tobytes()).decode()
-        arrays[R3] = rows
+        arrays |= stored_parts(R3, rows, LAYER_SPLITS)
     store[OUTPUT_STORE_REF_KEY] = Ref(
         key, tuple(Spec(n, a.dtype.name, a.shape) for n, a in arrays.items())
     ).to_builtins()
@@ -108,6 +111,7 @@ def respond(sample: Sample, meta_info: dict, *, mode: str, k: int, routed_expert
         payload[RoutedExpertsSegments.request_key] = True
     if via_store:
         payload[OUTPUT_STORE_REQUEST_KEY] = True
+        payload[REPLAY_LAYER_SPLITS_KEY] = LAYER_SPLITS
     args = Namespace(
         rollout_top_logprobs_num=k, sglang=make_sglang_config(speculative_algorithm=None), num_layers=LAYERS
     )

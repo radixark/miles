@@ -10,7 +10,7 @@ from unittest.mock import MagicMock
 import numpy as np
 import pybase64
 import pytest
-from tests.fast.utils.output_store.test_plan import Ref, Spec, fake_store_refs, read_rows
+from tests.fast.utils.output_store.test_plan import Ref, Spec, fake_store_refs, read_rows, stored_parts
 
 from miles.rollout.generate_utils.sample_utils import merge_samples
 from miles.rollout.session.samples.merge import (
@@ -1039,7 +1039,9 @@ def _store_record(
         arrays[MASK_SUPPORT_LOGPROBS] = np.asarray(log_probs, dtype=np.float32)
     if routed_experts is not None:
         request["return_routed_experts"] = True
-        arrays[R3] = routed_experts
+        # Stored in parts split at layer 1, as a two-stage pipeline's requests ask.
+        request["replay_layer_splits"] = [1]
+        arrays |= stored_parts(R3, routed_experts, [1])
     if routed_experts_start_len is not None:
         request["routed_experts_start_len"] = routed_experts_start_len
     meta_info = {

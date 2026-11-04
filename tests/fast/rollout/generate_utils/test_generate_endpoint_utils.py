@@ -4,7 +4,7 @@ import pytest
 
 from miles.rollout.generate_utils import generate_endpoint_utils
 from miles.rollout.generate_utils.generate_endpoint_utils import compute_request_payload
-from miles.utils.output_store.plan import OUTPUT_STORE_REQUEST_KEY, StorePlanError
+from miles.utils.output_store.plan import OUTPUT_STORE_REQUEST_KEY, REPLAY_LAYER_SPLITS_KEY, StorePlanError
 
 
 def _make_args() -> SimpleNamespace:
@@ -19,6 +19,7 @@ def _make_args() -> SimpleNamespace:
         lora_rank=0,
         lora_adapter_path=None,
         use_output_store=False,
+        replay_layer_splits=[],
     )
 
 
@@ -50,6 +51,16 @@ class TestComputeRequestPayloadOutputStore:
         )
 
         assert payload[OUTPUT_STORE_REQUEST_KEY] is True
+        assert REPLAY_LAYER_SPLITS_KEY not in payload
+
+    def test_a_pipeline_parallel_trainer_sends_its_layer_splits_with_the_store_only(self):
+        args = self.make_args(use_rollout_routing_replay=True, replay_layer_splits=[12, 24, 36])
+
+        payload, _ = compute_request_payload(args, input_ids=[1, 2], sampling_params={})
+        evaluation, _ = compute_request_payload(args, input_ids=[1, 2], sampling_params={}, evaluation=True)
+
+        assert payload[REPLAY_LAYER_SPLITS_KEY] == [12, 24, 36]
+        assert REPLAY_LAYER_SPLITS_KEY not in evaluation
 
     @pytest.mark.parametrize(
         ("overrides", "evaluation"),
