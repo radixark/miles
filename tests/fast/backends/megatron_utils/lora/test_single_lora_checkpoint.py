@@ -552,7 +552,10 @@ def test_without_an_optimizer_an_adapter_path_loads_the_weights_and_starts_over(
         piece_parameter=lambda slot, holds: [(0, torch.tensor([3, 0]))],
     )
 
-    def load_adapter_dir(path, members, slot, run, targets, **_):
+    loaded_with = {}
+
+    def load_adapter_dir(path, members, slot, run, targets, **kwargs):
+        loaded_with.update(kwargs)
         members.import_adapter_state(
             0,
             AdapterState(
@@ -572,10 +575,11 @@ def test_without_an_optimizer_an_adapter_path_loads_the_weights_and_starts_over(
     args = SimpleNamespace(
         lora_adapter_path=str(tmp_path),
         lora_adapter_convert_save=None,
-        backend=SimpleNamespace(no_load_optim=True, no_save_optim=True, use_precision_aware_optimizer=False),
+        backend=SimpleNamespace(no_load_optim=False, no_save_optim=True, use_precision_aware_optimizer=False),
     )
     iteration = restore_single_lora([], args, adapter_slots=slots, optimizer=None, opt_param_scheduler=None)
     assert iteration is None
+    assert loaded_with["load_optimizer"] is False
     assert torch.equal(param, torch.tensor([[7.0, 0.0], [0.0, 5.0]], dtype=torch.bfloat16))
 
 
