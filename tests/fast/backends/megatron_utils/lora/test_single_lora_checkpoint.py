@@ -46,6 +46,7 @@ def _restore(path, *, convert_save=None, source_alpha=16.0):
         lora_rank=8,
         lora_alpha=16.0,
         lora_type="lora",
+        lora_dropout=0.05,
         experts_shared_outer_loras=False,
         megatron_to_hf_mode="bridge",
         multi_lora=False,
@@ -89,6 +90,7 @@ def test_a_weights_only_convert_save_writes_neither_moments_nor_a_placeholder_tr
     _, _, mocks = _restore(tmp_path / "source", convert_save=str(tmp_path / "converted"))
     assert mocks["DistributedOptimizerMembers"].call_args.kwargs["save_moments"] is False
     assert mocks["save_and_commit_adapter_dir"].call_args.kwargs["training_state"] is None
+    assert mocks["save_and_commit_adapter_dir"].call_args.kwargs["lora_dropout"] == 0.05
 
 
 def test_a_source_trained_with_another_alpha_is_refused_on_the_trainer(tmp_path):
