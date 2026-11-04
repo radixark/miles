@@ -8,7 +8,11 @@ import torch
 from safetensors.torch import load_file, save_file
 
 from miles.backends.training_utils.checkpoint.adapter.adapter_dir import write_peft_export, write_sampler_export
-from miles.backends.training_utils.checkpoint.adapter.adapter_exports import write_peft_adapter, write_sampler_adapter
+from miles.backends.training_utils.checkpoint.adapter.adapter_exports import (
+    has_plain_peft_form,
+    write_peft_adapter,
+    write_sampler_adapter,
+)
 from miles.backends.training_utils.checkpoint.adapter.key_mapping import (
     map_hf_keys_to_peft_export_keys,
     map_peft_keys_to_hf_keys,
@@ -94,9 +98,17 @@ def test_peft_export_reads_back_bitwise(tmp_path):
 
 
 def test_gdn_components_with_their_own_a_are_refused_by_the_peft_export(tmp_path):
-    with pytest.raises(AssertionError, match="components of an HF-fused module with their own lora_A"):
+    with pytest.raises(AssertionError, match="has no plain-PEFT form; the adapter dir is the checkpoint"):
         write_peft_adapter(tmp_path, _weights(False), _run(), QWEN35)
     assert not (tmp_path / "adapter_model.safetensors").exists()
+
+
+def test_only_fused_components_sharing_one_a_have_a_plain_peft_form():
+    assert not has_plain_peft_form(_run())
+    assert has_plain_peft_form(_run(shared_lora_a_groups=(tuple(sorted(QKV)),)))
+    # a lone component of a fused module has no HF module either
+    assert not has_plain_peft_form(_run(target_modules=(QKV[0],)))
+    assert has_plain_peft_form(_run(target_modules=EXPERTS))
 
 
 def test_hf_peft_loads_the_peft_export(tmp_path):
@@ -477,17 +489,17 @@ def test_a_megatron_bridge_full_fine_tune_is_no_lora_source(tmp_path):
         read_source_lora_alpha(tmp_path)
 
 
+def test_a_bridge_checkpoint_with_adapter_keys_but_no_peft_config_is_refused(tmp_path):
+    _dcp_with(tmp_path, "decoder.layers.0.self_attention.linear_qkv.adapter.linear_in.weight")
+    (tmp_path / "run_config.yaml").write_text("peft: null\n")
+    with pytest.raises(AssertionError, match="adapter keys but its run_config.yaml has no peft"):
+        read_source_lora_alpha(tmp_path)
+
+
 def test_a_peft_dir_takes_its_alpha_from_adapter_config_despite_a_run_config(tmp_path):
     (tmp_path / "adapter_config.json").write_text(json.dumps({"lora_alpha": 4}))
     (tmp_path / "run_config.yaml").write_text("peft:\n  alpha: 32\n")
     assert read_source_lora_alpha(tmp_path) == 4
-
-
-def test_one_local_base_under_another_path_string_matches(tmp_path):
-    (tmp_path / "model").mkdir()
-    (tmp_path / "link").symlink_to(tmp_path / "model")
-    source, run = _run(base_model=f"{tmp_path}/model/"), _run(base_model=str(tmp_path / "link"))
-    assert_parametrization_matches_run(source, run, [], load_optimizer=False, has_optimizer_state=False)
 
 
 class _StackedDownExport:
@@ -695,3 +707,10 @@ def test_a_source_s_alpha_is_read_from_the_kind_it_classifies_as(tmp_path):
     (tmp_path / "run_config.yaml").write_text("peft:\n  alpha: 16\n")
 
     assert read_source_lora_alpha(tmp_path) == 32
+
+
+def test_one_local_base_under_another_path_string_matches(tmp_path):
+    (tmp_path / "model").mkdir()
+    (tmp_path / "link").symlink_to(tmp_path / "model")
+    source, run = _run(base_model=f"{tmp_path}/model/"), _run(base_model=str(tmp_path / "link"))
+    assert_parametrization_matches_run(source, run, [], load_optimizer=False, has_optimizer_state=False)

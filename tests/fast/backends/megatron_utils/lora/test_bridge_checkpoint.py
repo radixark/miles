@@ -553,13 +553,11 @@ def test_a_trained_head_declares_its_served_rows_and_the_hf_vocab_a_source_may_h
     assert _slots_with_pieces([(f"{K}.lora_B", 4)], vocab_size=8)._head_rows() is None
 
 
-def test_a_bridge_optimizer_load_never_steps_an_empty_offloaded_optimizer(tmp_path):
-    """Megatron's load_state_dict runs dummy_step on an empty HybridDeviceOptimizer state: a real Adam step on random
-    gradients, before any source state lands."""
+def _offloaded_optimizer():
+    """A ChainedOptimizer over one DistributedOptimizer whose HybridDeviceOptimizer state is empty, and the list its
+    dummy steps land in."""
     from megatron.core.optimizer import ChainedOptimizer, DistributedOptimizer
     from megatron.core.optimizer.cpu_offloading.hybrid_optimizer import HybridDeviceOptimizer
-
-    from miles.backends.megatron_utils.lora.bridge_peft_checkpoint import MegatronBridgeCheckpointLoader
 
     param = torch.nn.Parameter(torch.zeros(2))
     hdo = HybridDeviceOptimizer.__new__(HybridDeviceOptimizer)
@@ -567,50 +565,72 @@ def test_a_bridge_optimizer_load_never_steps_an_empty_offloaded_optimizer(tmp_pa
     stepped = []
     hdo.dummy_step = lambda: stepped.append(True)
     sub = DistributedOptimizer.__new__(DistributedOptimizer)
-    sub.optimizer = sub_optimizer = hdo
+    sub.optimizer = hdo
 
     class Chained(ChainedOptimizer):
         param_groups = []
 
+        def state_dict(self):
+            return {}
+
         def load_state_dict(self, state):
             # what DistributedOptimizer.load_state_dict does before reading the state
-            if len(sub_optimizer.state) == 0 and isinstance(sub_optimizer, HybridDeviceOptimizer):
-                sub_optimizer.dummy_step()
+            if len(hdo.state) == 0:
+                hdo.dummy_step()
+
+        def sharded_state_dict(self, model_sharded_state_dict, is_loading=False, metadata=None):
+            # what DistributedOptimizer.sharded_state_dict does when it builds the state to load
+            if is_loading:
+                self.load_state_dict(self.state_dict())
+            return {}
 
     chained = Chained.__new__(Chained)
     chained.chained_optimizers = [sub]
-    loader = MegatronBridgeCheckpointLoader.__new__(MegatronBridgeCheckpointLoader)
-    loader._optimizer = chained
+    return chained, hdo, param, stepped
 
-    loader._load_optimizer_state(tmp_path, {})
+
+def _checked_loader(optimizer, members, monkeypatch, *, load_optimizer=True):
+    """A loader over an empty model whose source read is stubbed: its own checks and load run for real."""
+    run = AdapterParametrization("base", 4, 8.0, "lora", ("model.layers.0.self_attn.q_proj",), False)
+    loader = bridge_peft_checkpoint.MegatronBridgeCheckpointLoader([], optimizer, members, run, load_optimizer)
+    monkeypatch.setattr(bridge_peft_checkpoint, "unwrap_model", lambda model: [])
+    monkeypatch.setattr(loader, "_read_source", lambda path, chunks: ({"peft": {"alpha": 16}}, {}, [], [], None))
+    metadata = SimpleNamespace(state_dict_metadata={})
+    monkeypatch.setattr(
+        bridge_peft_checkpoint.dcp, "FileSystemReader", lambda path: SimpleNamespace(read_metadata=lambda: metadata)
+    )
+    monkeypatch.setattr(bridge_peft_checkpoint.dist_checkpointing, "load", lambda state, path: {"optimizer": {}})
+    return loader, run
+
+
+def test_an_offloaded_optimizer_is_never_dummy_stepped_from_parametrization_to_load(
+    single_rank_gloo, tmp_path, monkeypatch
+):
+    """Building the optimizer's state to load runs Megatron's load_state_dict, which dummy-steps an empty
+    HybridDeviceOptimizer state: a real Adam step on random gradients, before any source state lands."""
+    optimizer, hdo, param, stepped = _offloaded_optimizer()
+    loader, _ = _checked_loader(optimizer, SimpleNamespace(export_adapter_state=lambda slot: None), monkeypatch)
+
+    loader.parametrization(tmp_path)
+    assert not stepped and not hdo.state, "checking the source must not touch the optimizer"
+    loader.apply(loader.prepare(tmp_path))
 
     assert not stepped, "the empty HDO state must be zero-initialized, not dummy-stepped"
     assert torch.equal(hdo.state[param]["master_param"], torch.ones(2)) and int(hdo.state[param]["step"]) == 0
 
 
-def test_a_bridge_checkpoint_is_checked_before_anything_is_loaded_into_the_model(tmp_path, monkeypatch):
+def test_a_bridge_checkpoint_is_checked_before_anything_is_loaded_into_the_model(
+    single_rank_gloo, tmp_path, monkeypatch
+):
     """load_adapter_dir checks the parametrization before ``load``: reading it must not load the model or optimizer."""
-    run = AdapterParametrization("base", 4, 8.0, "lora", ("model.layers.0.self_attn.q_proj",), False)
-    loader = bridge_peft_checkpoint.MegatronBridgeCheckpointLoader([], "optimizer", "members", run, True)
     calls = []
-    monkeypatch.setattr(bridge_peft_checkpoint, "unwrap_model", lambda model: [])
-    monkeypatch.setattr(
-        loader, "_read_source", lambda path, chunks: ({"peft": {"alpha": 16}}, {}, [], [], None), raising=False
-    )
-    monkeypatch.setattr(loader, "_check_torch_dist_base", lambda *args: calls.append("base"), raising=False)
-    monkeypatch.setattr(loader, "_requested_state", lambda *args: calls.append("requested") or {}, raising=False)
-    monkeypatch.setattr(loader, "_load", lambda *args: calls.append("load"), raising=False)
+    # any use of the optimizer while checking fails: an object with no optimizer methods
+    loader, run = _checked_loader(object(), "members", monkeypatch)
+    monkeypatch.setattr(loader, "_optimizer_state_to_load", lambda *args: calls.append("optimizer state") or {})
+    monkeypatch.setattr(loader, "_load", lambda *args: calls.append("load"))
     loader._members = SimpleNamespace(export_adapter_state=lambda slot: calls.append("check masters"))
 
     assert loader.parametrization(tmp_path) == replace(run, lora_alpha=16.0)
-    assert calls == ["base", "requested"]
-    loader.load(tmp_path)
-    assert calls == ["base", "requested", "load", "check masters"]
-
-
-def test_a_bridge_optimizer_load_refuses_an_optimizer_other_than_megatrons_distributed_one(tmp_path):
-    run = AdapterParametrization("base", 4, 8.0, "lora", ("model.layers.0.self_attn.q_proj",), False)
-    optimizer = SimpleNamespace(chained_optimizers=[SimpleNamespace(optimizer=None)], param_groups=[])
-    loader = bridge_peft_checkpoint.MegatronBridgeCheckpointLoader([], optimizer, "members", run, True)
-    with pytest.raises(AssertionError, match="--use-distributed-optimizer"):
-        loader._load_optimizer_state(tmp_path, {})
+    assert calls == []
+    loader.apply(loader.prepare(tmp_path))
+    assert calls == ["optimizer state", "load", "check masters"]

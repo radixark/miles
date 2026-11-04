@@ -76,7 +76,7 @@ def _optimizer(calls):
 def _load(path, chunks, calls, *, load_optimizer):
     loader = LegacyRankShardLoader(chunks, _optimizer(calls), RUN, load_optimizer, precision_aware=False)
     parametrization = loader.parametrization(path)
-    loader.load(path)
+    loader.apply(loader.prepare(path))
     return parametrization
 
 
