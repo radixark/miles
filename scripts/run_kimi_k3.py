@@ -23,14 +23,22 @@ _DEFAULT_MODEL_ORG = {
     # experts or the first 64 of them
     "Kimi-K3-4layer": "Pinaster",
     "Kimi-K3-4layer-64experts": "Pinaster",
+    # exported locally from moonshotai/Kimi-K3.1 with the 64-expert cut above; not on the Hub
+    "Kimi-K3.1-4layer-64experts": "moonshotai",
 }
 _MEGATRON_MODEL_TYPE = {
     "Kimi-K3": "kimi-k3",
     "Kimi-K3-4layer": "kimi-k3-4layer",
     "Kimi-K3-4layer-64experts": "kimi-k3-4layer-64experts",
+    "Kimi-K3.1-4layer-64experts": "kimi-k31-4layer-64experts",
 }
-_NUM_LAYERS = {"Kimi-K3": 93, "Kimi-K3-4layer": 4, "Kimi-K3-4layer-64experts": 4}
-_NUM_EXPERTS = {"Kimi-K3": 896, "Kimi-K3-4layer": 896, "Kimi-K3-4layer-64experts": 64}
+_NUM_LAYERS = {"Kimi-K3": 93, "Kimi-K3-4layer": 4, "Kimi-K3-4layer-64experts": 4, "Kimi-K3.1-4layer-64experts": 4}
+_NUM_EXPERTS = {
+    "Kimi-K3": 896,
+    "Kimi-K3-4layer": 896,
+    "Kimi-K3-4layer-64experts": 64,
+    "Kimi-K3.1-4layer-64experts": 64,
+}
 _NUM_ATTENTION_HEADS = 96
 _VALIDATED_FULL_MODEL_GPUS = 64
 
@@ -40,7 +48,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
     mode: Literal["normal", "debug_minimal"] = "debug_minimal"
     run_id: str = U.create_run_id()
     model_org: str = ""
-    model_name: Literal["Kimi-K3", "Kimi-K3-4layer", "Kimi-K3-4layer-64experts"] = "Kimi-K3-4layer-64experts"
+    model_name: Literal["Kimi-K3", "Kimi-K3-4layer", "Kimi-K3-4layer-64experts", "Kimi-K3.1-4layer-64experts"] = (
+        "Kimi-K3-4layer-64experts"
+    )
     train_mode: Literal["lora", "full"] = "lora"
     task: Literal["gsm8k", "dapo-math"] = "gsm8k"
     hardware: Literal["auto", "H100", "H200", "B200", "B300", "GB200", "GB300"] = "auto"
@@ -128,12 +138,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
                 f"rollout_ep_size must divide rollout_tp_size and {self.num_experts} experts, got {self.rollout_ep_size}"
             )
 
-        if self.is_4layer:
-            if self.pipeline_parallel_size != 1 or self.context_parallel_size != 1:
-                raise NotImplementedError("Pipeline and context parallelism are only wired for the full model")
-            return
-
-        if self.num_gpus != _VALIDATED_FULL_MODEL_GPUS and self.tp_size_override is None:
+        if not self.is_4layer and self.num_gpus != _VALIDATED_FULL_MODEL_GPUS and self.tp_size_override is None:
             raise ValueError(
                 f"The full-model layout is derived for {_VALIDATED_FULL_MODEL_GPUS} GPUs; pass --tp-size-override "
                 f"(and --ep-size-override) for {self.num_gpus} GPUs"
@@ -187,7 +192,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
         if self.tp_size_override is not None:
             return self.tp_size_override
         if self.is_4layer:
-            return min(8, self.num_gpus)
+            return min(8, self.num_gpus) // (self.pipeline_parallel_size * self.context_parallel_size)
         if self.pipeline_parallel_size == 1:
             return 32
         return self.num_gpus // (self.pipeline_parallel_size * self.context_parallel_size)

@@ -13,6 +13,7 @@ is a SparseAttentionConfig: measured rows live in _TUNED, keyed by (CUDA major o
 callers may pass their own.
 """
 
+import inspect
 from dataclasses import dataclass, replace
 from typing import Literal
 
@@ -28,6 +29,14 @@ try:
     from cudnn import DSA as cudnn_dsa
 except ImportError:
     cudnn_dsa = None
+
+# sgl-flash-mla (FlashMLA 2026.09.30+) defaults to its current kernels, whose sparse prefill is SM100-only;
+# its legacy side is the kernel the older flash_mla build ships, and returns the same natural-log LSE
+_FLASH_MLA_LEGACY_KWARGS = (
+    {"use_legacy": True}
+    if flash_mla_sparse_fwd is not None and "use_legacy" in inspect.signature(flash_mla_sparse_fwd).parameters
+    else {}
+)
 
 _LOG2_E = 1.4426950408889634
 _LN_2 = 0.6931471805599453
@@ -192,7 +201,13 @@ def _flash_mla_forward(q, kv, indices, attn_sink, sm_scale):
         sink = None if attn_sink is None else torch.nn.functional.pad(attn_sink, (0, padded_heads - heads))
     flat_indices = _flat_indices(_pad_topk_block(indices, _FLASH_MLA_TOPK_MULTIPLE), seq_len_kv)
     out, _, lse = flash_mla_sparse_fwd(
-        q, kv.reshape(batch * seq_len_kv, 1, -1), flat_indices.unsqueeze(1), sm_scale, d_v=512, attn_sink=sink
+        q,
+        kv.reshape(batch * seq_len_kv, 1, -1),
+        flat_indices.unsqueeze(1),
+        sm_scale,
+        d_v=512,
+        attn_sink=sink,
+        **_FLASH_MLA_LEGACY_KWARGS,
     )
     out, lse = out[:, :heads].contiguous(), lse[:, :heads] * _LOG2_E
     if attn_sink is not None:

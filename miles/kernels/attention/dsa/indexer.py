@@ -41,13 +41,16 @@ _TUNED = {
 }
 
 
-def causal_ranges(cu_seqlens: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    """Packed causal ranges: query t attends keys [segment_start(t), t + 1)."""
-    seq_len = cu_seqlens[-1].item()
-    q_indices = torch.arange(0, seq_len, device=cu_seqlens.device)
-    seq_indices = torch.searchsorted(cu_seqlens, q_indices, right=True) - 1
+def causal_ranges(
+    cu_seqlens: torch.Tensor, positions: torch.Tensor | None = None
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Packed causal ranges: the query at packed position t attends keys [segment_start(t), t + 1).
+    ``positions`` are the queries' packed positions (e.g. a CP rank's rows); every position by default."""
+    if positions is None:
+        positions = torch.arange(0, cu_seqlens[-1].item(), device=cu_seqlens.device)
+    seq_indices = torch.searchsorted(cu_seqlens, positions, right=True) - 1
     starts = cu_seqlens[seq_indices]
-    ends = q_indices + 1
+    ends = positions + 1
     assert torch.all((ends - starts) > 0)
     return starts, ends
 

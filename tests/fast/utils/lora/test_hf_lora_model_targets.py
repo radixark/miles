@@ -117,6 +117,7 @@ def test_native_model_coverage():
         "kimi_k2",
         "kimi_k25",
         "kimi_k3",
+        "kimi_k31",
         "mimo_v2",
         "inkling_model",
         "inkling_mm_model",

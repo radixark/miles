@@ -1797,7 +1797,10 @@ def miles_validate_args(args):
 
     if args.use_rollout_indexer_replay:
         args.use_indexer_replay = True
-        assert args.context_parallel_size == 1, "indexer replay does not support context parallelism yet"
+        # indices are rebased onto the global packed stream only for zigzag-CP THD batches
+        assert args.context_parallel_size == 1 or (
+            args.qkv_format == "thd" and not args.allgather_cp
+        ), "rollout indexer replay under context parallelism needs zigzag CP (no --allgather-cp) on THD"
 
     if args.eval_max_context_len is None:
         logger.info(

@@ -285,6 +285,12 @@ _HF_LORA_MODELS = {
         unembed="language_model.lm_head",
         unwrap_text_config=True,
     ),
+    "kimi_k31": _HfLoraModelSpec(
+        _kimi_k3_targets,
+        layer_prefix="language_model.model.layers.*",
+        unembed="language_model.lm_head",
+        unwrap_text_config=True,
+    ),
     "glm4_moe": _HfLoraModelSpec(_glm4_moe_targets),
     "glm_moe_dsa": _HfLoraModelSpec(_glm_dsa_targets),
     "glm5_next": _HfLoraModelSpec(

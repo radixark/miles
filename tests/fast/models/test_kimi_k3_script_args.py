@@ -61,6 +61,17 @@ def test_four_layer_layout_follows_the_gpu_count(num_gpus_per_node, expected_tp)
     assert args.rollout_ep_size == 1
 
 
+@pytest.mark.parametrize("pipeline_parallel_size,context_parallel_size", [(2, 1), (1, 2)])
+def test_four_layer_pp_or_cp_splits_the_node(pipeline_parallel_size, context_parallel_size):
+    """PP/CP shrink TP so one 8-GPU node still holds the whole layout; EP stays at TP."""
+    args = _four_layer(
+        num_gpus_per_node=8, pipeline_parallel_size=pipeline_parallel_size, context_parallel_size=context_parallel_size
+    )
+    assert args.tensor_parallel_size == 4
+    assert args.expert_parallel_size == 4
+    assert args.pipeline_layer_split == ((2, 2) if pipeline_parallel_size == 2 else (4, 4))
+
+
 def test_four_layer_rollout_tp_can_span_nodes():
     """TP16 pads the Marlin MoE intermediate, the layout the padding fix is only decidable on."""
     args = _four_layer(num_nodes=2, num_gpus_per_node=8, rollout_tp_size=16, rollout_ep_size=1)
