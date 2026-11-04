@@ -1,7 +1,7 @@
 """The save / load flow, written once; backends only provide their checkpoint members."""
 
 import json
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Protocol
@@ -46,6 +46,15 @@ class HeadRows:
 
     key: str  # the HF key adapter_state/ holds it under, e.g. "lm_head.lora_B"
     max_source_rows: int
+
+
+class InModelLoader(Protocol):
+    """A source a backend reads straight into its model, in the run's own parametrization."""
+
+    # read before anything is loaded, so a refused source leaves the model as it was
+    def parametrization(self, path: Path) -> AdapterParametrization: ...
+
+    def load(self, path: Path) -> None: ...
 
 
 class AdapterCheckpointMembers(Protocol):
@@ -157,7 +166,7 @@ def load_adapter_dir(
     targets: HfLoraTargets,
     *,
     load_optimizer: bool,
-    in_model_loaders_by_kind: Mapping[AdapterSourceKind, Callable[[Path], AdapterParametrization]] | None = None,
+    in_model_loaders_by_kind: Mapping[AdapterSourceKind, InModelLoader] | None = None,
 ) -> AdapterParametrization:
     """Load any recognized source into ``slot``; returns the source parametrization.
 
@@ -178,15 +187,20 @@ def load_adapter_dir(
         error = exc
     raise_if_any_rank_failed(error)
     if kind.is_read_into_model():
-        source = None
+        loader, source = in_model_loaders_by_kind[kind], None
         try:
-            source = _with_run_alpha_if_unknown(in_model_loaders_by_kind[kind](path), run)
+            source = _with_run_alpha_if_unknown(loader.parametrization(path), run)
             steps = plan_parametrization_conversion(source, run, source_dtype=torch.float32)
             # an in-model loader reads straight into the run's parametrization; it cannot convert
             assert not steps, f"{path} needs {steps} to match the run, which an in-model loader cannot do"
             assert_parametrization_matches_run(
                 source, run, steps, load_optimizer=load_optimizer, has_optimizer_state=True
             )
+        except Exception as exc:
+            error = exc
+        raise_if_any_rank_failed(error)
+        try:
+            loader.load(path)
         except Exception as exc:
             error = exc
         raise_if_any_rank_failed(error)
