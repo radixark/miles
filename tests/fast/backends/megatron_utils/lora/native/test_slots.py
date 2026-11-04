@@ -6,6 +6,7 @@ import pytest
 import torch
 import torch.nn as nn
 
+from miles.backends.megatron_utils.lora.native import checkpoint as native_checkpoint
 from miles.backends.megatron_utils.lora.native.config import LoRAConfig
 from miles.backends.megatron_utils.lora.native.hf_adapter import export_lora_hf_named
 from miles.backends.megatron_utils.lora.native.modules.linear import (
@@ -243,7 +244,7 @@ def test_a_cleared_slot_adds_nothing():
 
 def test_a_slot_forward_outside_the_routing_fails():
     multi = _attached(_column, _context(rank=MAX_RANK, num_slots=NUM_SLOTS), _base_weight())
-    with pytest.raises(AssertionError, match="routed_tokens_context"):
+    with pytest.raises(AssertionError, match="route_tokens"):
         multi.host(_tokens(5))
 
 
@@ -263,6 +264,39 @@ def test_a_multi_lora_model_is_read_per_slot():
     assert list(iter_slot_adapters([multi], 2)) == [multi.adapter.slots[2]]
     with pytest.raises(AssertionError, match="iter_slot_adapters"):
         list(iter_adapters([multi]))
+
+
+def _routed(num_slots=NUM_SLOTS):
+    multi = _attached(_column, _context(rank=MAX_RANK, num_slots=num_slots), _base_weight())
+    slots = native_checkpoint.NativeAdapterSlots.__new__(native_checkpoint.NativeAdapterSlots)
+    slots._model, slots._multi_lora = [multi], True
+    return multi, slots
+
+
+def test_routing_takes_integer_counts_one_per_slot():
+    multi, slots = _routed()
+    for slot in range(NUM_SLOTS):
+        multi.adapter.init_slot(slot, MAX_RANK, 4.0)
+
+    slots.route_tokens(torch.tensor([2, 0, 3]))
+
+    assert multi.adapter.token_counts_by_slot == (2, 0, 3)
+    with pytest.raises(AssertionError, match="integers"):
+        slots.route_tokens(torch.tensor([2.0, 0.0, 3.0]))
+    with pytest.raises(AssertionError, match="2 token counts for 3 slots"):
+        slots.route_tokens([2, 3])
+    with pytest.raises(AssertionError, match="negative"):
+        slots.route_tokens([2, -1, 3])
+
+
+def test_routing_tokens_to_a_free_slot_fails():
+    """A free slot's alpha is 0: its tenant would silently train against the base model."""
+    multi, slots = _routed()
+    multi.adapter.init_slot(0, MAX_RANK, 4.0)
+
+    slots.route_tokens([5, 0, 0])
+    with pytest.raises(AssertionError, match=r"free slots \[1\]"):
+        slots.route_tokens([2, 3, 0])
 
 
 def test_an_adapter_outside_the_slots_fails_a_multi_lora_attach():

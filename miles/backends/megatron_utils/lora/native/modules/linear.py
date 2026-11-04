@@ -606,7 +606,7 @@ class NativeMultiLoRAAdapter(nn.Module):
     def _local_token_counts(self, num_rows: int) -> list[int]:
         """Each slot's rows among ``num_rows``: all routed tokens, or this rank's sequence-parallel shard of them."""
         counts = self.token_counts_by_slot
-        assert counts is not None, "multi-LoRA slots run only inside AdapterSlots.routed_tokens_context"
+        assert counts is not None, "multi-LoRA slots need AdapterSlots.route_tokens before a forward"
         total = sum(counts)
         if num_rows == total:
             return list(counts)
@@ -625,6 +625,8 @@ class NativeMultiLoRAAdapter(nn.Module):
     def init_slot(self, slot: int, lora_rank: int, lora_alpha: float) -> None:
         """Draw A within ``lora_rank`` and zero the rest; the caller holds the RNG stream."""
         assert 0 < lora_rank <= self.max_lora_rank, f"LoRA rank {lora_rank} is not in (0, {self.max_lora_rank}]"
+        # alpha 0 marks a free slot
+        assert lora_alpha > 0, f"LoRA alpha {lora_alpha} must be positive"
         for name, param in self.slots[slot].named_parameters():
             param.zero_()
             if name.endswith("_A"):

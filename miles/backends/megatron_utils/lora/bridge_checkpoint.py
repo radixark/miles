@@ -296,20 +296,25 @@ class BridgeAdapterSlots:
 
         clear_adapter_slot(self._model, slot)
 
-    @contextmanager
-    def routed_tokens_context(self, token_counts_by_slot: Sequence[int] | torch.Tensor) -> Iterator[None]:
-        """Route the forward's tokens, sorted by slot, to their slots; the routing ends with the context."""
+    def route_tokens(self, token_counts_by_slot: Sequence[int] | torch.Tensor) -> None:
+        """Route the next forward's tokens, sorted by slot, to their slots, until the next call.
+
+        Recomputation reruns the forward inside the backward, after the forward step has returned.
+        """
         assert self._multi_lora, "single LoRA routes no tokens"
         from megatron.bridge.peft.multi_lora_layers import MultiLoRALinear, set_tokens_per_adapter_slot
 
         set_tokens_per_adapter_slot(self._model, torch.as_tensor(token_counts_by_slot))
-        try:
-            yield
-        finally:
-            for module in (m for chunk in self._model for m in chunk.modules() if isinstance(m, MultiLoRALinear)):
-                module.tokens_per_adapter = None
-                module.tokens_per_adapter_splits = None
-                module.tokens_per_adapter_total = None
+        module = next(m for chunk in self._model for m in chunk.modules() if isinstance(m, MultiLoRALinear))
+        # clear_adapter_slot zeroes a free slot's alpha
+        free = [
+            slot
+            for slot, (alpha, count) in enumerate(
+                zip(module.alpha_values.tolist(), module.tokens_per_adapter_splits, strict=True)
+            )
+            if alpha == 0 and count
+        ]
+        assert not free, f"tokens routed to free slots {free}"
 
     def adapters_hidden_context(self):
         """Hides the adapters from the Bridge walk that loads the base checkpoint."""

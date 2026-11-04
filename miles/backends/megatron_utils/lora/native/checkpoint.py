@@ -1,7 +1,6 @@
 """Native LoRA's adapter slots: the same probe-built HF layout as Bridge, over native's own export."""
 
-from collections.abc import Iterator, Sequence
-from contextlib import contextmanager
+from collections.abc import Sequence
 
 import torch
 
@@ -75,26 +74,24 @@ class NativeAdapterSlots(BridgeAdapterSlots):
         for slot_adapters in iter_multi_lora_adapters(self._model):
             slot_adapters.clear_slot(slot)
 
-    @contextmanager
-    def routed_tokens_context(self, token_counts_by_slot: Sequence[int] | torch.Tensor) -> Iterator[None]:
-        """Route the forward's tokens, sorted by slot, to their slots; the routing ends with the context.
+    def route_tokens(self, token_counts_by_slot: Sequence[int] | torch.Tensor) -> None:
+        """Route the next forward's tokens, sorted by slot, to their slots, until the next call.
 
-        Recomputation reruns the forward in backward, so the context spans the backward too.
+        Recomputation reruns the forward inside the backward, after the forward step has returned.
         """
         assert self._multi_lora, "single LoRA routes no tokens"
-        # one host sync per forward
-        counts = tuple(int(count) for count in torch.as_tensor(token_counts_by_slot).tolist())
         all_slot_adapters = list(iter_multi_lora_adapters(self._model))
+        counts_tensor = torch.as_tensor(token_counts_by_slot)
+        assert not counts_tensor.is_floating_point(), f"token counts must be integers, got {counts_tensor.dtype}"
+        # one host sync per forward
+        counts = tuple(counts_tensor.tolist())
         num_slots = len(all_slot_adapters[0].slots)
         assert len(counts) == num_slots, f"{len(counts)} token counts for {num_slots} slots"
         assert min(counts) >= 0, f"negative token counts {counts}"
+        free = [slot for slot, alpha in enumerate(all_slot_adapters[0].lora_alphas) if alpha == 0 and counts[slot]]
+        assert not free, f"tokens routed to free slots {free}"
         for slot_adapters in all_slot_adapters:
             slot_adapters.token_counts_by_slot = counts
-        try:
-            yield
-        finally:
-            for slot_adapters in all_slot_adapters:
-                slot_adapters.token_counts_by_slot = None
 
     def adapters_hidden_context(self):
         return adapters_hidden(self._model)
