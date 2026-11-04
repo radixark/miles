@@ -291,9 +291,9 @@ class TorchtitanCheckpointLoader:
         dcp.load(tensors, checkpoint_id=path, no_dist=True)
         return {name: t for name, t in self._sd_adapter.to_hf(tensors).items() if is_fingerprint_tensor(name)}
 
-    def parametrization(self, path: Path) -> AdapterParametrization:
+    def parametrization(self, path: Path) -> tuple[AdapterParametrization, bool]:
         """Collective: every check against the source, reading it only; ``apply`` then loads it."""
-        metadata, error = None, None
+        metadata, error, has_optimizer_state = None, None, None
         try:
             metadata = dcp.FileSystemReader(path).read_metadata().state_dict_metadata
         except Exception as exc:
@@ -314,12 +314,14 @@ class TorchtitanCheckpointLoader:
                 ), f"{path}: {key} is {tuple(metadata[key].size)}, this run's is {shape} (another --lora-rank?)"
             present = [key in metadata for key in _TRAINING_STATE_KEYS]
             assert all(present) or not any(present), f"{path} holds part of {_TRAINING_STATE_KEYS}"
-            if self._load_optimizer:
+            has_optimizer_state = all(
+                f"optimizer.state.{key}.{name}" in metadata
+                for key in expected
+                for name in ("exp_avg", "exp_avg_sq", "step")
+            )
+            # without it load_adapter_dir refuses the load unless --no-load-optim
+            if self._load_optimizer and has_optimizer_state:
                 for key in params:
-                    for name in ("exp_avg", "exp_avg_sq", "step"):
-                        assert (
-                            f"optimizer.state.{key}.{name}" in metadata
-                        ), f"{path} has no optimizer state for {key}; pass --no-load-optim"
                     for name in ("exp_avg", "exp_avg_sq"):
                         dtype = metadata[f"optimizer.state.{key}.{name}"].properties.dtype
                         assert (
@@ -340,7 +342,7 @@ class TorchtitanCheckpointLoader:
             error = exc
         raise_if_any_rank_failed(error)
         self._checked = (path, metadata)
-        return replace(self._run, lora_alpha=None)
+        return replace(self._run, lora_alpha=None), has_optimizer_state
 
     def prepare(self, path: Path) -> tuple:
         checked_path, _ = self._checked

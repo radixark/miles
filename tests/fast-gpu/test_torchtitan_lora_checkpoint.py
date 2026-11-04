@@ -169,7 +169,7 @@ def _load_dcp(tmp_path, saved: dict) -> TorchtitanCheckpointLoader:
         patch.object(lora_checkpoint, "hf_fingerprint_tensors", return_value={}),
         patch.object(lora_checkpoint, "assert_same_base_tensors"),
     ):
-        loader.parametrization(path)
+        assert loader.parametrization(path)[1] is False
         # the checks read the source only; nothing is loaded until load_adapter_dir accepted it
         assert all(torch.equal(param, torch.zeros(2, 2)) for param in params.values())
         loader.apply(loader.prepare(path))
@@ -189,6 +189,29 @@ def test_a_full_dcp_loads_its_training_state(tmp_path, single_rank_gloo):
     saved |= {"train_state.step": 8, "train_state.ntokens_seen": 640, "lr_scheduler.last_epoch": 8}
     loader = _load_dcp(tmp_path, saved)
     assert loader.training_state() == ({"step": 8, "ntokens_seen": 640}, {"last_epoch": 8})
+
+
+@pytest.mark.parametrize("with_optimizer", [True, False])
+def test_a_dcp_reports_whether_it_holds_optimizer_state(tmp_path, single_rank_gloo, with_optimizer):
+    """load_adapter_dir refuses a source without it unless --no-load-optim."""
+    saved = {_LORA_A: torch.ones(2, 2), _LORA_B: torch.ones(2, 2)}
+    if with_optimizer:
+        for key in (_LORA_A, _LORA_B):
+            saved |= {f"optimizer.state.{key}.{name}": torch.zeros(2, 2) for name in ("exp_avg", "exp_avg_sq")}
+            saved[f"optimizer.state.{key}.step"] = torch.tensor(1.0)
+    path = tmp_path / "step-10"
+    dcp.save(saved, checkpoint_id=path, no_dist=True)
+    params = {key: torch.nn.Parameter(torch.zeros(2, 2)) for key in (_LORA_A, _LORA_B)}
+    loader = TorchtitanCheckpointLoader(
+        SimpleNamespace(parameters=params), None, [], None, _Run(str(tmp_path), 16), load_optimizer=True
+    )
+    with (
+        patch.object(lora_checkpoint, "resolve_hf_dir", return_value=tmp_path),
+        patch.object(lora_checkpoint, "hf_fingerprint_tensors", return_value={}),
+        patch.object(lora_checkpoint, "assert_same_base_tensors"),
+        patch.object(loader, "_base_fingerprint_tensors", return_value={}),
+    ):
+        assert loader.parametrization(path) == (replace(_Run(str(tmp_path), 16), lora_alpha=None), with_optimizer)
 
 
 def _base_check_worker(rank: int, world_size: int, port: int, path) -> None:
