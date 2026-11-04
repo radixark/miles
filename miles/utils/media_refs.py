@@ -15,7 +15,7 @@ import hashlib
 import io
 import os
 import shutil
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -91,13 +91,7 @@ def collect_media_refs(messages: Iterable[dict[str, Any]], media_dir: str | None
     """
     multimodal_inputs: dict[str, list[str]] = {}
     for message in messages:
-        content = message.get("content")
-        if not isinstance(content, list):
-            continue
-        for part in content:
-            if (media := _media_source(part)) is None:
-                continue
-            key, _, source = media
+        for key, _, source in _media_parts(message):
             if isinstance(source, dict) and "url" in source:
                 source = source["url"]
             multimodal_inputs.setdefault(key, []).append(materialize_media_ref(source, media_dir))
@@ -106,12 +100,7 @@ def collect_media_refs(messages: Iterable[dict[str, Any]], media_dir: str | None
 
 def has_message_media(messages: Iterable[dict[str, Any]]) -> bool:
     """Whether any message holds an image, audio or video part."""
-    return any(
-        isinstance(part, dict) and part.get("type") in _PART_TYPES
-        for message in messages
-        if isinstance(message.get("content"), list)
-        for part in message["content"]
-    )
+    return any(next(_media_parts(message), None) is not None for message in messages)
 
 
 def materialize_message_media(messages: list[dict[str, Any]], media_dir: str | None) -> list[dict[str, Any]]:
@@ -123,12 +112,11 @@ def materialize_message_media(messages: list[dict[str, Any]], media_dir: str | N
     """
     out = []
     for message in messages:
-        content = message.get("content")
-        if not isinstance(content, list) or not has_message_media([message]):
+        if not has_message_media([message]):
             out.append(message)
             continue
         parts = []
-        for part in content:
+        for part in message["content"]:
             if (media := _media_source(part)) is None:
                 parts.append(part)
                 continue
@@ -140,6 +128,12 @@ def materialize_message_media(messages: list[dict[str, Any]], media_dir: str | N
             parts.append(part)
         out.append({**message, "content": parts})
     return out
+
+
+def _media_parts(message: dict[str, Any]) -> Iterator[tuple[str, str | None, Any]]:
+    content = message.get("content")
+    if isinstance(content, list):
+        yield from filter(None, map(_media_source, content))
 
 
 def materialize_media_ref(source: Any, media_dir: str | None) -> str:
