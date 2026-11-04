@@ -114,6 +114,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --sglang-dsa-decode-backend tilelang
   --sglang-dsa-prefill-backend tilelang
   --sglang-attention-backend nsa
+  --no-sglang-enable-dsa-fused-indexer
   --sglang-page-size 64
   --sglang-cuda-graph-max-bs-decode 32
   --sglang-max-running-requests 512

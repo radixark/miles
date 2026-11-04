@@ -228,6 +228,9 @@ def _execute_train(args: ScriptArgs):
         "--sglang-dsa-decode-backend tilelang "
         "--sglang-dsa-prefill-backend tilelang "
         "--sglang-attention-backend nsa "
+        # SGLang turns its gfx950 fused DSA indexer on by default, but that path keeps one-time copies of
+        # k_norm and rejects every online weight update, which training relies on.
+        "--no-sglang-enable-dsa-fused-indexer "
         "--sglang-page-size 64 "
         f"--sglang-cuda-graph-max-bs-decode {sglang_decode_max_bs} "
         # concurrency
