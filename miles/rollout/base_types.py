@@ -106,6 +106,10 @@ class BaseRolloutFn(abc.ABC):
     def load(self, directory: Path) -> None:
         return None
 
+    def drop_saved_in_flight(self, directory: Path) -> None:
+        """Instead of ``load``: record the saved in-flight prompt groups as dropped, as their data source was reset."""
+        return None
+
     async def dispose(self) -> None:
         return None
 
