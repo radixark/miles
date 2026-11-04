@@ -2131,6 +2131,17 @@ def test_a_committed_checkpoint_dir_cannot_be_imported(tmp_path):
         service.weights_info("tenant", f"file://{adapter}")
 
 
+def test_a_training_adapter_dir_cannot_be_imported(tmp_path):
+    """The copy keeps only its bf16 PEFT view: importing it would silently round the fp32 masters a tenant expects."""
+    adapter = tmp_path / "imports" / "rl-save"
+    (adapter / "adapter_state").mkdir(parents=True)
+    (adapter / "adapter_config.json").write_text(json.dumps({"r": 8, "lora_alpha": 32}))
+    service = make_service(tmp_path / "root", import_root=str(tmp_path / "imports"))
+
+    with pytest.raises(UserInputError, match="is a training adapter dir; import its sampler or PEFT export"):
+        service.weights_info("tenant", f"file://{adapter}")
+
+
 class _WritesMarker:
     def __init__(self, marker: Path):
         self.marker = marker
@@ -2172,9 +2183,13 @@ async def test_a_pickle_in_a_file_import_never_reaches_the_trainer(tmp_path, mon
     try:
         model_id = await created_model(service)
         payload = {"model_id": model_id, "seq_id": 1, "path": f"file://{adapter}", "optimizer": False}
-        await await_settled(service, "tenant", service.submit("tenant", "load_state", payload))
-        assert trainer_read, "the trainer was never reached"
-        assert not any(pickled in files for files in trainer_read)
+        future = await await_settled(service, "tenant", service.submit("tenant", "load_state", payload))
+        if pickled.startswith("adapter_state/"):
+            # a training adapter dir is refused before anything is copied
+            assert "is a training adapter dir" in future.error and not trainer_read
+        else:
+            assert trainer_read, "the trainer was never reached"
+            assert not any(pickled in files for files in trainer_read)
         assert not marker.exists(), "the client's pickle ran"
         assert not run_task.done()
     finally:

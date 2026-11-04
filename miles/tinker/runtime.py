@@ -11,6 +11,7 @@ from typing import TextIO
 import httpx
 from safetensors import safe_open
 
+from miles.backends.training_utils.checkpoint.adapter.adapter_state import ADAPTER_STATE_DIRNAME
 from miles.backends.training_utils.checkpoint.adapter.base_model import resolve_hf_dir
 from miles.backends.training_utils.checkpoint.adapter.commit import TENANT_FILENAME
 from miles.backends.training_utils.checkpoint.adapter.commit import OwnershipError as AdapterOwnershipError
@@ -147,6 +148,12 @@ def delete_adapter(root: str, name: str, tenant: str | None) -> None:
 IMPORTED_ADAPTER_FILES = (PARAMETRIZATION_FILENAME, "adapter_config.json")
 # every file a reader opens for a weights-only source; load_state copies only these
 LOADED_ADAPTER_FILES = (PARAMETRIZATION_FILENAME, *PEFT_FILES)
+# entries that make a file:// source something no tenant may import: its name -> why
+REFUSED_IMPORT_ENTRIES = {
+    TENANT_FILENAME: "is a committed checkpoint; import an export of it",
+    # the copy keeps only the bf16 PEFT view, so the fp32 masters a tenant expects would be silently rounded
+    ADAPTER_STATE_DIRNAME: "is a training adapter dir; import its sampler or PEFT export",
+}
 
 
 def max_adapter_bytes(hf_checkpoint: str, max_lora_rank: int, targets: HfLoraTargets) -> int:
@@ -244,7 +251,7 @@ class MilesBackend:
     imported_adapter_files = IMPORTED_ADAPTER_FILES
     loaded_adapter_files = LOADED_ADAPTER_FILES
     # every committed checkpoint dir holds it; an import never does
-    committed_checkpoint_file = TENANT_FILENAME
+    refused_import_entries = REFUSED_IMPORT_ENTRIES
 
     def lora_groups(self, target_modules) -> dict[str, bool]:
         return classify_lora_groups(target_modules, self.lora_layout)

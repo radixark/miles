@@ -145,7 +145,7 @@ cookbook only requires `tinker>=0.35`, so install the SDK pin explicitly. It sup
   `--tinker-public-url` to the URL clients reach; by default URLs use the one
   each request arrived at.
 - Import: `load_state` and `create_training_client_from_state` accept
-  `file://` adapters (PEFT, official Tinker exports, miles adapter dirs) from
+  `file://` adapters (PEFT, official Tinker exports, miles sampler or PEFT exports) from
   under `--tinker-import-root`, weights only; the source must record its LoRA
   alpha. The gateway copies only the files a reader opens
   (`adapter_parametrization.json`, `adapter_config.json`,
@@ -155,7 +155,10 @@ cookbook only requires `tinker>=0.35`, so install the SDK pin explicitly. It sup
   among those files is refused (an HF cache snapshot links them; download with
   `hf download --local-dir`). A dir holding `tenant.json`, i.e. a committed
   checkpoint (checkpoint storage mounted under the import root), is refused:
-  `file://` skips the owner check that `tinker://` paths get. The import root is
+  `file://` skips the owner check that `tinker://` paths get. A training adapter
+  dir (one holding `adapter_state/`, e.g. an RL `--save`) is refused too: the copy
+  would carry only its bf16 PEFT view, not the fp32 masters; import its sampler or
+  PEFT export instead. The import root is
   shared by every tenant: any tenant can import files another tenant placed
   there.
 

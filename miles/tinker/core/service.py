@@ -79,14 +79,15 @@ def _open_dir_beneath(root: str, relative: str) -> int:
 
 
 def _copy_adapter_files(
-    source_fd: int, copy_dir: str, wanted: Callable[[str], bool], max_bytes: int, committed_marker: str
+    source_fd: int, copy_dir: str, wanted: Callable[[str], bool], max_bytes: int, refused_entries: dict[str, str]
 ) -> None:
     """Copy the files a reader opens, ``max_bytes`` in total; anything else (README.md, .cache/, a pickled DCP or
     .pt) stays behind."""
     names = os.listdir(source_fd)
-    # a checkpoint store mounted under the import root: realpath checks cannot see the alias
-    if committed_marker in names:
-        raise UserInputError(f"the import is a committed checkpoint ({committed_marker}); import an export of it")
+    # e.g. a checkpoint store mounted under the import root, which realpath checks cannot see
+    for entry, why in refused_entries.items():
+        if entry in names:
+            raise UserInputError(f"the import {why} ({entry})")
     budget = max_bytes
     for name in names:
         if not wanted(name):
@@ -691,7 +692,7 @@ class TinkerService:
             source_fd = _open_dir_beneath(root, os.path.relpath(path, root))
             try:
                 _copy_adapter_files(
-                    source_fd, copy_dir, wanted, self.config.import_max_bytes, self.backend.committed_checkpoint_file
+                    source_fd, copy_dir, wanted, self.config.import_max_bytes, self.backend.refused_import_entries
                 )
             finally:
                 os.close(source_fd)
