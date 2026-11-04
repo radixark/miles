@@ -9,16 +9,16 @@ targets and shared-A groups.
 from collections.abc import Mapping
 
 import torch
-import torch.distributed as dist
 from torch.distributed.tensor import DTensor
 from torch.distributed.tensor._utils import compute_local_shape_and_global_offset
 
 from miles.backends.torchtitan_utils.lora_names import is_adapter_key, split_adapter_key
-from miles.backends.training_utils.checkpoint.adapter.adapter_state import gloo_group, raise_if_any_rank_failed
 from miles.backends.training_utils.checkpoint.adapter.probed_slots import (
     HfPiece,
     ProbedAdapterSlots,
     RowMapping,
+    agreed_row_mapping,
+    finish_local_pieces,
     rectangles,
 )
 from miles.utils.lora.hf_lora_targets import HfLoraTargets
@@ -43,21 +43,12 @@ def _local_codes(param: torch.Tensor, start: int) -> torch.Tensor:
 def probe_torchtitan_row_mapping(params: Mapping[str, torch.Tensor], sd_adapter) -> RowMapping:
     """Collective. ``params``: the adapter parameters by titan key, in the order their local shards are
     concatenated."""
-    error = None
+    error, pieces, groups, modules = None, [], [], set()
     try:
         pieces, groups, modules = _probe_local(params, sd_adapter)
     except Exception as exc:
         error = exc
-    raise_if_any_rank_failed(error)
-
-    # pipeline stages hold different layers; every rank needs the whole parametrization
-    gathered = [None] * dist.get_world_size()
-    dist.all_gather_object(gathered, (sorted(groups), sorted(modules)), group=gloo_group())
-    return RowMapping(
-        pieces,
-        tuple(sorted({g for rank_groups, _ in gathered for g in rank_groups})),
-        tuple(sorted({m for _, rank_modules in gathered for m in rank_modules})),
-    )
+    return agreed_row_mapping(error, pieces, groups, modules)
 
 
 def _probe_local(
@@ -94,11 +85,7 @@ def _probe_local(
                     HfPiece(hf_key, tuple(codes.shape), tuple(s.start for s in box), codes[box].clone())
                     for box in rectangles(hf_key, mine)
                 ]
-    covered = torch.zeros(start, dtype=torch.bool)
-    for piece in pieces:
-        covered[piece.local_elements.flatten()] = True
-    assert covered.all(), f"to_hf does not reach {int((~covered).sum())} of this rank's adapter elements"
-    return pieces, groups, modules
+    return finish_local_pieces(pieces, start), groups, modules
 
 
 class TorchtitanAdapterSlots(ProbedAdapterSlots):

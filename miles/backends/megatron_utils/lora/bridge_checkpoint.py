@@ -13,7 +13,7 @@ import torch
 import torch.distributed as dist
 
 from miles.backends.megatron_utils.lora.utils import adapter_named_parameters
-from miles.backends.training_utils.checkpoint.adapter.adapter_state import gloo_group, raise_if_any_rank_failed
+from miles.backends.training_utils.checkpoint.adapter.adapter_state import gloo_group
 from miles.backends.training_utils.checkpoint.adapter.key_mapping import (
     HfKey,
     fused_components,
@@ -24,6 +24,8 @@ from miles.backends.training_utils.checkpoint.adapter.probed_slots import (
     HfPiece,
     ProbedAdapterSlots,
     RowMapping,
+    agreed_row_mapping,
+    finish_local_pieces,
     rectangles,
 )
 from miles.utils.lora.hf_lora_targets import HfLoraTargets
@@ -156,28 +158,10 @@ def probe_bridge_row_mapping(
                     for p in pieces
                     if p.key not in a_keys or p.key == held[0]
                 ]
-            # one index per local element stays resident for the run
-            if total < 2**31:
-                pieces = [replace(p, local_elements=p.local_elements.int()) for p in pieces]
-            covered = torch.zeros(total, dtype=torch.bool)
-            for piece in pieces:
-                covered[piece.local_elements.flatten()] = True
-            if unexported is not None:
-                assert not covered[unexported].any(), "the export reaches elements declared unexported"
-                covered[unexported] = True
-            assert covered.all(), f"the export does not reach {int((~covered).sum())} of this rank's elements"
+            pieces = finish_local_pieces(pieces, total, unexported)
         except Exception as exc:
             error = exc
-    raise_if_any_rank_failed(error)
-
-    # pipeline stages export different layers; every rank needs the whole parametrization
-    gathered = [None] * dist.get_world_size()
-    dist.all_gather_object(gathered, (sorted(groups), sorted(modules)), group=gloo_group())
-    return RowMapping(
-        pieces,
-        tuple(sorted({g for rank_groups, _ in gathered for g in rank_groups})),
-        tuple(sorted({m for _, rank_modules in gathered for m in rank_modules})),
-    )
+    return agreed_row_mapping(error, pieces, groups, modules)
 
 
 @contextmanager

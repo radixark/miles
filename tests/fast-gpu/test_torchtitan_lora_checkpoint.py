@@ -78,6 +78,8 @@ def _whole(rank, world_size, port):
         + [f"{mlp}.{m}_proj.lora_B" for m in ("gate", "up")]
     )
     _check(mapping, list(params.values()), _expected(sd_adapter, params))
+    # one index per local element stays resident for the run
+    assert {p.local_elements.dtype for p in mapping.pieces} == {torch.int32}
     dist.destroy_process_group()
 
 

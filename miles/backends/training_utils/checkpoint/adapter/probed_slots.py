@@ -6,14 +6,18 @@ concatenated adapter parameters; specs, piece extraction and scatter back follow
 
 import bisect
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from itertools import groupby
 
 import torch
 import torch.distributed as dist
 
 from miles.backends.training_utils.checkpoint.adapter.adapter_dir import HeadRows
-from miles.backends.training_utils.checkpoint.adapter.adapter_state import LocalShardSpec, gloo_group
+from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
+    LocalShardSpec,
+    gloo_group,
+    raise_if_any_rank_failed,
+)
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
 from miles.utils.lora.hf_lora_targets import HfLoraTargets
 
@@ -35,6 +39,39 @@ class RowMapping:
     # HF modules whose lora_A is one backend parameter; groups and members sorted
     shared_lora_a_groups: tuple[tuple[str, ...], ...]
     target_modules: tuple[str, ...]
+
+
+def finish_local_pieces(pieces: list[HfPiece], total: int, unexported: torch.Tensor | None = None) -> list[HfPiece]:
+    """Narrow the pieces' indices and assert they reach each of the rank's ``total`` elements once probed.
+
+    ``unexported``: offsets the export leaves out by construction; the pieces must not reach them.
+    """
+    # one index per local element stays resident for the run
+    if total < 2**31:
+        pieces = [replace(p, local_elements=p.local_elements.int()) for p in pieces]
+    covered = torch.zeros(total, dtype=torch.bool)
+    for piece in pieces:
+        covered[piece.local_elements.flatten()] = True
+    if unexported is not None:
+        assert not covered[unexported].any(), "the export reaches elements declared unexported"
+        covered[unexported] = True
+    assert covered.all(), f"the export does not reach {int((~covered).sum())} of this rank's elements"
+    return pieces
+
+
+def agreed_row_mapping(
+    error: Exception | None, pieces: list[HfPiece], groups: Iterable[tuple[str, ...]], modules: Iterable[str]
+) -> RowMapping:
+    """Collective: fail every rank if one failed, then take the run's groups and modules from every rank."""
+    raise_if_any_rank_failed(error)
+    # pipeline stages hold different layers; every rank needs the whole parametrization
+    gathered = [None] * dist.get_world_size()
+    dist.all_gather_object(gathered, (sorted(groups), sorted(modules)), group=gloo_group())
+    return RowMapping(
+        pieces,
+        tuple(sorted({g for rank_groups, _ in gathered for g in rank_groups})),
+        tuple(sorted({m for _, rank_modules in gathered for m in rank_modules})),
+    )
 
 
 def rectangles(name: str, mine: torch.Tensor, box: tuple[slice, ...] | None = None) -> list[tuple[slice, ...]]:
