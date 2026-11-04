@@ -199,6 +199,16 @@ class TestComputeZeroStdMetrics:
         assert out["zero_std/all_zero_percentage"] == 1.0
         assert out["zero_std/all_one_percentage"] == 0.0
 
+    def test_unrewarded_group_gets_no_reward_bucket(self):
+        """An aborted episode carries no reward; rounding it crashed the whole eval log."""
+        args = make_args(advantage_estimator="grpo", reward_key=None)
+        samples = [make_sample(group_index=0, reward=None), make_sample(group_index=1, reward=1.0)]
+
+        out = _compute_zero_std_metrics(args, samples)
+
+        assert out["zero_std/count_1.0"] == 1
+        assert not any(key.startswith("zero_std/count_None") for key in out)
+
     def test_returns_empty_for_ppo_regardless_of_reward_distribution(self):
         args = make_args(advantage_estimator="ppo")
         out = _compute_zero_std_metrics(args, make_samples_grouped(2, 4, rewards=[1.0] * 8))
