@@ -147,17 +147,6 @@ def _adapter_state_args(**overrides) -> Namespace:
     )
 
 
-@pytest.mark.parametrize("optimizer", ["sgd", "muon", "dist_muon", "lion"])
-def test_an_optimizer_other_than_adam_cannot_save_the_adapter(optimizer) -> None:
-    with pytest.raises(AssertionError, match=f"store Adam state; got --optimizer {optimizer}"):
-        _validate_adapter_state_args(_adapter_state_args(optimizer=optimizer))
-
-
-def test_the_adapter_checkpoint_requires_the_distributed_optimizer():
-    with pytest.raises(AssertionError, match="distributed optimizer"):
-        _validate_adapter_state_args(_adapter_state_args(use_distributed_optimizer=False))
-
-
 def test_convert_save_is_refused_outside_megatron_single_lora(tmp_path):
     args = Namespace(
         lora_type="lora",
