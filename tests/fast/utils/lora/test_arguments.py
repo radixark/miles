@@ -91,10 +91,29 @@ def _check_layout(monkeypatch, args, hf_config):
     lora_arguments._assert_adapter_layout_defined(Namespace(**{**vars(args), "hf_checkpoint": "/hf"}))
 
 
+class _LayoutlessConfig(PretrainedConfig):
+    """A family native trains with no HF LoRA layout: no published checkpoint names qwen3_6."""
+
+    model_type = "qwen3_6"
+
+
 class _MimoConfig(PretrainedConfig):
-    """A family native trains with no HF LoRA layout; transformers ships no MiMo config."""
+    """transformers ships no MiMo config."""
 
     model_type = "mimo"
+
+
+class _JoyAIConfig(PretrainedConfig):
+    model_type = "joyai_llm_flash"
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.num_hidden_layers = 2
+        self.n_routed_experts = 4
+        self.n_shared_experts = 1
+        self.first_k_dense_replace = 1
+        self.moe_layer_freq = 1
+        self.q_lora_rank = 8
 
 
 @pytest.mark.parametrize(
@@ -108,26 +127,33 @@ class _MimoConfig(PretrainedConfig):
     ids=["save", "save_hf", "eval_snapshots", "lora_adapter_path"],
 )
 def test_adapter_slots_need_the_families_hf_lora_layout(monkeypatch, overrides) -> None:
-    """Native trains mimo, which has no HF LoRA layout; saving or loading its adapter would crash building the slots."""
+    """Native trains qwen3_6, which has no HF LoRA layout; saving or loading its adapter would crash building the
+    slots."""
     args = Namespace(**(_NO_SNAPSHOTS | overrides))
-    with pytest.raises(AssertionError, match="model_type='mimo', which miles does not define"):
-        _check_layout(monkeypatch, args, _MimoConfig())
+    with pytest.raises(AssertionError, match="model_type='qwen3_6', which miles does not define"):
+        _check_layout(monkeypatch, args, _LayoutlessConfig())
     _check_layout(monkeypatch, args, AutoConfig.for_model("qwen3"))
+
+
+@pytest.mark.parametrize("config", [_MimoConfig, _JoyAIConfig], ids=["mimo", "joyai_llm_flash"])
+def test_native_remote_code_families_save_and_load_their_adapters(monkeypatch, config) -> None:
+    for overrides in ({"save": "/ckpt"}, {"lora_adapter_path": "/adapter"}):
+        _check_layout(monkeypatch, Namespace(**(_NO_SNAPSHOTS | overrides)), config())
 
 
 def test_a_rollout_only_run_builds_no_slots_for_any_family(monkeypatch) -> None:
     args = Namespace(**(_NO_SNAPSHOTS | {"lora_adapter_path": "/adapter", "debug_rollout_only": True}))
-    _check_layout(monkeypatch, args, _MimoConfig())
+    _check_layout(monkeypatch, args, _LayoutlessConfig())
 
 
 def test_an_eval_dir_without_eval_snapshots_builds_no_slots(monkeypatch) -> None:
     """The actor publishes eval snapshots only under eval_uses_snapshots; validation must not refuse the run."""
     args = Namespace(**(_NO_SNAPSHOTS | {"eval_hf_dir": "/eval"}))
-    _check_layout(monkeypatch, args, _MimoConfig())
+    _check_layout(monkeypatch, args, _LayoutlessConfig())
 
 
 def test_a_run_without_adapter_snapshots_trains_any_family(monkeypatch) -> None:
-    _check_layout(monkeypatch, Namespace(**_NO_SNAPSHOTS), _MimoConfig())
+    _check_layout(monkeypatch, Namespace(**_NO_SNAPSHOTS), _LayoutlessConfig())
 
 
 def _adapter_state_args(**overrides) -> Namespace:

@@ -165,12 +165,12 @@ hybrid attention. Vision towers, routers, norms, and GDN convolutions are exclud
 
 | Model layout | Attention | MLP | Ordinary LoRA default |
 |---|---|---|---|
-| Llama, Qwen2/2.5, Qwen3 | Q/K/V/O | Dense gate/up/down | Attention + MLP |
+| Llama, Qwen2/2.5, Qwen3, MiMo | Q/K/V/O | Dense gate/up/down | Attention + MLP |
 | Qwen3 MoE | Q/K/V/O | Routed experts; dense layers when configured | Attention + MLP |
 | Qwen3-Next | Q/K/V/O + GDN qkvz/ba/out | Routed + shared experts; configured dense layers | Attention + MLP |
 | Qwen3.5/3.6, text and multimodal | Q/K/V/O + GDN qkv/z/b/a/out | Dense or packed routed + shared experts | Attention + MLP |
 | GPT-OSS | Q/K/V/O | Packed gate_up/down experts | Attention + MLP |
-| DeepSeek V2/V3, Kimi K2/K2.5 | MLA | Dense + routed + shared experts as configured | Attention + MLP |
+| DeepSeek V2/V3, Kimi K2/K2.5, JoyAI-LLM-Flash | MLA | Dense + routed + shared experts as configured | Attention + MLP |
 | DeepSeek V3.2, GLM-5/5.1/5.2 | MLA + DSA indexer | Dense + routed + shared experts as configured | Attention + MLP, excluding indexer |
 | GLM-4 MoE | Q/K/V/O | Dense + routed + shared experts as configured | Attention + MLP |
 | Inkling | Q/K/V/R/O | Dense + packed routed + shared expert projections | Attention + MLP + output head |
