@@ -57,6 +57,7 @@
        "user-guide/launch-script",
        "user-guide/argument-groups",
        "user-guide/fully-async",
+       "user-guide/mixing-datasets",
        "user-guide/training-backend",
        "user-guide/monitoring",
        "user-guide/customization",
