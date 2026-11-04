@@ -223,8 +223,7 @@ class TorchtitanCheckpointLoader:
     straight into this run's adapter parameters and AdamW state under any parallel layout.
 
     Only lora_a / lora_b, their ``optimizer.state.<fqn>.*``, ``train_state`` and ``lr_scheduler`` are read; the base
-    must match the run's HF files. The DCP records no alpha: the run's (``--lora-alpha``) is used. A model-only DCP
-    leaves ``train_state`` None.
+    must match the run's HF files. The DCP records no alpha: the run's (``--lora-alpha``) is used.
     """
 
     def __init__(
@@ -243,8 +242,8 @@ class TorchtitanCheckpointLoader:
             sd_adapter,
         )
         self._run, self._load_optimizer = run, load_optimizer
-        self.train_state: dict | None = None
-        self.lr_scheduler_state: dict | None = None
+        # (path, metadata) once parametrization accepted a source
+        self._checked: tuple[Path, dict] | None = None
 
     def _base_fingerprint_tensors(self, path: Path, metadata) -> dict[str, torch.Tensor]:
         """The DCP's fingerprint tensors under their HF names (only what the titan model holds, e.g. no MTP)."""
@@ -322,7 +321,7 @@ class TorchtitanCheckpointLoader:
         return replace(self._run, lora_alpha=None)
 
     def prepare(self, path: Path) -> tuple:
-        checked_path, metadata = self._checked
+        checked_path, _ = self._checked
         assert checked_path == path, f"prepare({path}) after checking {checked_path}"
         params = self._slots.parameters
         states = self._members.adam_states()
@@ -330,27 +329,30 @@ class TorchtitanCheckpointLoader:
         if self._load_optimizer:
             for key, state in zip(params, states, strict=True):
                 loaded |= {f"optimizer.state.{key}.{name}": state[name] for name in ("exp_avg", "exp_avg_sq", "step")}
-        # torchtitan's default final checkpoint (last_save_model_only) holds the model alone: no training state
-        has_training_state = all(key in metadata for key in _TRAINING_STATE_KEYS)
-        if has_training_state:
-            # non-tensor entries: DCP replaces these placeholders with the saved values
-            loaded |= dict.fromkeys(_TRAINING_STATE_KEYS, 0)
-        return path, loaded, states, has_training_state
+        return path, loaded, states
 
     def apply(self, prepared: tuple) -> None:
-        path, loaded, states, has_training_state = prepared
+        path, loaded, states = prepared
         with torch.no_grad():
             dcp.load(loaded, checkpoint_id=path)
-        if has_training_state:
-            self.train_state = {
-                "step": loaded["train_state.step"],
-                "ntokens_seen": loaded["train_state.ntokens_seen"],
-            }
-            self.lr_scheduler_state = {"last_epoch": loaded["lr_scheduler.last_epoch"]}
         steps = [None] * dist.get_world_size()
         dist.all_gather_object(steps, {int(state["step"]) for state in states}, group=gloo_group())
         steps = set().union(*steps)
         assert len(steps) == 1, f"{path}'s adapter parameters disagree on the AdamW step: {steps}"
+
+    def training_state(self) -> tuple[dict, dict] | None:
+        """The loaded DCP's train_state and lr_scheduler state; None if no DCP was loaded or it holds the model alone."""
+        if self._checked is None:
+            return None
+        path, metadata = self._checked
+        # torchtitan's default final checkpoint (last_save_model_only) holds the model alone: no training state
+        if not all(key in metadata for key in _TRAINING_STATE_KEYS):
+            return None
+        # non-tensor entries: DCP replaces these placeholders with the saved values
+        loaded = dict.fromkeys(_TRAINING_STATE_KEYS, 0)
+        dcp.load(loaded, checkpoint_id=path, no_dist=True)
+        train_state = {"step": loaded["train_state.step"], "ntokens_seen": loaded["train_state.ntokens_seen"]}
+        return train_state, {"last_epoch": loaded["lr_scheduler.last_epoch"]}
 
 
 def load_lr_schedulers(lr_schedulers, state: dict) -> None:
@@ -444,8 +446,9 @@ class TorchtitanLoraCheckpoint:
             source.lora_alpha == self.run.lora_alpha
         ), f"{path} was trained with lora_alpha={source.lora_alpha}; this run uses {self.run.lora_alpha}"
         training_state = read_training_state(path)
-        if loader.train_state is not None and self._dcp_on_rollout_grid(path, loader.train_state, load_optimizer):
-            training_state = self._adopt_dcp_schedule(loader)
+        dcp_state = loader.training_state()
+        if dcp_state is not None and self._dcp_on_rollout_grid(path, dcp_state[0], load_optimizer):
+            training_state = self._adopt_dcp_schedule(*dcp_state)
         elif training_state is not None and "lr_scheduler" in training_state:
             training_state = self._adopt_torchtitan_dir_schedule(path, training_state, load_optimizer)
         elif training_state is not None and training_state["iteration"] is not None:
@@ -468,11 +471,11 @@ class TorchtitanLoraCheckpoint:
         )
         return on_grid
 
-    def _adopt_dcp_schedule(self, loader: TorchtitanCheckpointLoader) -> dict:
-        completed_rollouts = loader.train_state["step"] // self._steps_per_rollout
+    def _adopt_dcp_schedule(self, train_state: dict, lr_scheduler_state: dict) -> dict:
+        completed_rollouts = train_state["step"] // self._steps_per_rollout
         self._first_rollout = 0
-        self._trainer.engine.load_state_dict(loader.train_state)
-        load_lr_schedulers(self._trainer.engine.optim.lr_schedulers, loader.lr_scheduler_state)
+        self._trainer.engine.load_state_dict(train_state)
+        load_lr_schedulers(self._trainer.engine.optim.lr_schedulers, lr_scheduler_state)
         return self._training_state(completed_rollouts - 1 if completed_rollouts else None)
 
     def _adopt_torchtitan_dir_schedule(self, path: Path, training_state: dict, load_optimizer: bool) -> dict:

@@ -176,15 +176,14 @@ def _load_dcp(tmp_path, saved: dict) -> TorchtitanCheckpointLoader:
 def test_a_model_only_dcp_loads_the_adapters_without_training_state(tmp_path, single_rank_gloo):
     """torchtitan's default final checkpoint (last_save_model_only) holds no train_state or lr_scheduler."""
     loader = _load_dcp(tmp_path, {_LORA_A: torch.ones(2, 2), _LORA_B: torch.full((2, 2), 2.0)})
-    assert (loader.train_state, loader.lr_scheduler_state) == (None, None)
+    assert loader.training_state() is None
 
 
 def test_a_full_dcp_loads_its_training_state(tmp_path, single_rank_gloo):
     saved = {_LORA_A: torch.ones(2, 2), _LORA_B: torch.full((2, 2), 2.0)}
     saved |= {"train_state.step": 8, "train_state.ntokens_seen": 640, "lr_scheduler.last_epoch": 8}
     loader = _load_dcp(tmp_path, saved)
-    assert loader.train_state == {"step": 8, "ntokens_seen": 640}
-    assert loader.lr_scheduler_state == {"last_epoch": 8}
+    assert loader.training_state() == ({"step": 8, "ntokens_seen": 640}, {"last_epoch": 8})
 
 
 def _base_check_worker(rank: int, world_size: int, port: int, path) -> None:
@@ -284,8 +283,7 @@ def _restore(tmp_path, *, dcp_step=None, training_state=None, source_alpha=None,
     def load_adapter_dir(path, members, slot, run, targets, *, load_optimizer, in_model_loaders_by_kind):
         if dcp_step is not None:
             (loader,) = in_model_loaders_by_kind.values()
-            loader.train_state = {"step": dcp_step, "ntokens_seen": 7}
-            loader.lr_scheduler_state = {"last_epoch": dcp_step}
+            loader.training_state = lambda: ({"step": dcp_step, "ntokens_seen": 7}, {"last_epoch": dcp_step})
         return run if source_alpha is None else SimpleNamespace(lora_alpha=source_alpha)
 
     backend = SimpleNamespace(no_load_optim=False, no_save_optim=False, save=None)
