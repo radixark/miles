@@ -210,6 +210,45 @@ def test_a_base_check_failing_on_one_rank_fails_every_rank(tmp_path):
     mp.spawn(_base_check_worker, args=(2, find_free_port(), path), nprocs=2, join=True)
 
 
+class _Norms(torch.nn.Module):
+    """The titan parameters the base check reads, under torchtitan's names: ``norm`` and layer 0's attention norm."""
+
+    def __init__(self, norm: torch.Tensor):
+        super().__init__()
+        self.norm = torch.nn.Module()
+        self.norm.weight = torch.nn.Parameter(norm.clone())
+        self.layers = torch.nn.ModuleDict({"0": torch.nn.Module()})
+        self.layers["0"].attention_norm = torch.nn.Module()
+        self.layers["0"].attention_norm.weight = torch.nn.Parameter(norm.clone() + 1)
+
+
+@pytest.mark.parametrize("same_base", [True, False])
+def test_the_base_check_maps_the_dcps_norms_through_the_real_qwen3_adapter(tmp_path, single_rank_gloo, same_base):
+    from safetensors.torch import save_file
+
+    sd_adapter, _ = _adapter()
+    part = _Norms(torch.arange(4.0))
+    base = {fqn: param.detach().clone() for fqn, param in part.named_parameters()}
+    path = tmp_path / "step-10"
+    dcp.save(base | {_LORA_A: torch.ones(2, 2), _LORA_B: torch.ones(2, 2)}, checkpoint_id=path, no_dist=True)
+    hf = sd_adapter.to_hf(base)
+    assert set(hf) == {"model.norm.weight", "model.layers.0.input_layernorm.weight"}
+    if not same_base:
+        hf["model.norm.weight"] = hf["model.norm.weight"] + 1
+    (tmp_path / "hf").mkdir()
+    save_file(hf, str(tmp_path / "hf" / "model.safetensors"))
+    params = {key: torch.nn.Parameter(torch.zeros(2, 2)) for key in (_LORA_A, _LORA_B)}
+    members = SimpleNamespace(adam_states=lambda: [{"step": torch.tensor(0.0)} for _ in params])
+    loader = TorchtitanCheckpointLoader(
+        SimpleNamespace(parameters=params), members, [part], sd_adapter, _Run(str(tmp_path / "hf"), 16), False
+    )
+    if same_base:
+        loader.parametrization(path)
+    else:
+        with pytest.raises(RuntimeError, match=r"another base model .*model\.norm\.weight"):
+            loader.parametrization(path)
+
+
 _STEPS_PER_ROLLOUT = 4
 
 
