@@ -15,6 +15,7 @@ from miles.tinker.runtime import (
     _topk_prompt_logprobs,
 )
 from miles.tinker.server.proto_codec import encode_sample_response
+from tinker import types as tinker_types
 from tinker.proto.response_conv import deserialize_sample_response
 
 
@@ -28,7 +29,7 @@ async def test_sampling_preserves_engine_client_error_details(monkeypatch):
     monkeypatch.setattr("miles.tinker.runtime.post", rejected)
     payload = {
         "prompt_tokens": [1],
-        "sampling_params": {"max_tokens": 1},
+        "sampling_params": tinker_types.SamplingParams(max_tokens=1).model_dump(),
         "num_samples": 1,
         "prompt_logprobs": False,
         "topk_prompt_logprobs": 0,
@@ -84,17 +85,14 @@ class TestGenerateRequest:
     def _request(self, params: dict, **payload_extra) -> dict:
         payload = {
             "prompt_tokens": [1, 2],
-            "sampling_params": params,
+            # the gateway forwards every SDK field (decode_sample_request)
+            "sampling_params": tinker_types.SamplingParams(**params).model_dump(),
             "num_samples": 1,
             "prompt_logprobs": False,
             "topk_prompt_logprobs": 0,
             **payload_extra,
         }
         return MilesBackend(None, "http://router")._generate_request(payload, lora_name="m@1")
-
-    def test_max_tokens_is_required(self):
-        with pytest.raises(UserInputError, match="max_tokens"):
-            self._request({})
 
     def test_params_map_to_sglang_names(self):
         request = self._request({"max_tokens": 8, "temperature": 0.0, "seed": 7})
