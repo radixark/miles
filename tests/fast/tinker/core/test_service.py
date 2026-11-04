@@ -1265,7 +1265,9 @@ async def test_a_sampler_dir_written_before_commits_still_resolves(service):
 async def test_a_sampler_name_resolves_to_a_commit_a_dir_before_commits_or_nothing(service):
     """weights_info and engine reloads share one resolution: a link whose target is gone is an unknown checkpoint."""
     model_id = await created_model(service)
-    save = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
+    save = service.submit(
+        "tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1, "ttl_seconds": None}
+    )
     path = (await await_settled(service, "tenant", save)).result["path"]
     link = resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "sampler_weights", "1")
     assert resolve_sampler_export(link, "tenant", model_id, path, service.backend.resolve_adapter) is not None

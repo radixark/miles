@@ -61,6 +61,11 @@ def _registered(model):
     return list(model[0].parameters())
 
 
+class _ProbedSlots(ProbedAdapterSlots):
+    def slot_parameters(self, slot):
+        raise AssertionError("global_shapes reads only the row mapping")
+
+
 def _probe(rank, world_size, port):
     init_gloo(rank, world_size, port=port)
     init_gloo_group()
@@ -87,7 +92,7 @@ def _probe(rank, world_size, port):
     flat = torch.cat([p.data.reshape(-1) for p in params])
     assert torch.equal(flat[pieces[f"{K}.lora_B"].local_elements], params[2].data)
     assert torch.equal(flat[pieces[f"{K}.lora_A"].local_elements], params[0].data)
-    slots = ProbedAdapterSlots(mapping, TARGETS, iterator=None)
+    slots = _ProbedSlots(mapping, TARGETS, iterator=None)
     assert slots.global_shapes(2) == {f"{K}.lora_A": (2, 5), f"{Q}.lora_B": (4, 2), f"{K}.lora_B": (4, 2)}
     # one index per local element stays resident; int64 would double it
     assert all(p.local_elements.dtype == torch.int32 for p in mapping.pieces)
