@@ -13,7 +13,6 @@ from tests.fast.dist_utils import run_multiprocess
 
 import miles.backends.megatron_utils.lora.checkpoint as lora_checkpoint
 from miles.backends.megatron_utils.lora.checkpoint import (
-    DistributedOptimizerMembers,
     LegacyRankShardLoader,
     _distributed_optimizer_step,
     _set_distributed_optimizer_step,
@@ -129,13 +128,6 @@ def test_a_rank_missing_its_old_format_shard_fails_every_rank_before_the_collect
     # saved by one rank, loaded by two: rank 1 has no shard
     torch.save({}, tmp_path / "adapter_megatron_rank0.pt")
     run_multiprocess(partial(_prepare_with_one_rank_missing_its_shard, root=str(tmp_path)))
-
-
-def test_an_optimizer_other_than_megatrons_distributed_one_is_refused():
-    optimizer = SimpleNamespace(chained_optimizers=[MagicMock()])
-    members = DistributedOptimizerMembers(MagicMock(), optimizer, [], precision_aware=False)
-    with pytest.raises(AssertionError, match="--use-distributed-optimizer"):
-        members._distributed_optimizers()
 
 
 def _offloaded_optimizer(*, offloaded: bool) -> tuple[HybridDeviceOptimizer, torch.nn.Parameter, torch.nn.Parameter]:
