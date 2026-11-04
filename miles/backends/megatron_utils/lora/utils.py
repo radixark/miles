@@ -4,7 +4,7 @@ import logging
 from argparse import Namespace
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING
 
 import torch
 import torch.distributed as dist
@@ -16,6 +16,9 @@ from miles.utils.lora.utils import (  # noqa: F401  (re-exported)
     is_lora_enabled,
     lora_rollout_enabled,
 )
+
+if TYPE_CHECKING:
+    from megatron.core.optimizer.cpu_offloading.hybrid_optimizer import HybridDeviceOptimizer
 
 logger = logging.getLogger(__name__)
 
@@ -235,9 +238,29 @@ def _load_training_state(adapter_dir: Path) -> dict | None:
     return torch.load(state_path, map_location="cpu", weights_only=False)
 
 
-def _distributed_optimizers(optimizer: Any) -> list:
-    """The DistributedOptimizers under ``optimizer``, whose ``state_dict()`` leaves out the per-parameter state."""
-    from megatron.core.optimizer import ChainedOptimizer, DistributedOptimizer
+def _distributed_optimizers(optimizer) -> list:
+    # Megatron is imported on use: this module is also imported where Megatron is not
+    from megatron.core.optimizer import DistributedOptimizer
 
-    subs = optimizer.chained_optimizers if isinstance(optimizer, ChainedOptimizer) else [optimizer]
-    return [sub for sub in subs if isinstance(sub, DistributedOptimizer)]
+    subs = optimizer.chained_optimizers
+    # another optimizer's state would be silently left out of the checkpoint
+    assert all(
+        isinstance(sub, DistributedOptimizer) for sub in subs
+    ), f"the adapter checkpoint needs --use-distributed-optimizer; got {[type(sub).__name__ for sub in subs]}"
+    return subs
+
+
+def _init_zero_hdo_state(hdo: "HybridDeviceOptimizer") -> None:
+    """The state a never-stepped HDO is equivalent to: its fp32 master, zero moments, step 0.
+
+    Megatron's own dummy_step would take a real Adam step on random gradients.
+    """
+    for group in hdo.param_groups:
+        for param in group["params"]:
+            master = hdo.param_to_inner_param[param]
+            hdo.state[param] = {
+                "step": torch.tensor(0.0),
+                "exp_avg": torch.zeros_like(master),
+                "exp_avg_sq": torch.zeros_like(master),
+                "master_param": master,
+            }
