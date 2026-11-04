@@ -79,17 +79,21 @@ class LayerWiseSlotMembers:
         holds = frozenset(owned)
         params = self._slots.slot_parameters(slot)
         specs = self._slots.local_shard_specs(slot, holds)
+        # each piece is cut from the one held parameter it comes from; parameters held elsewhere are never read
+        sources = self._slots.piece_parameter(slot, holds)
+
+        def cut(tensor: torch.Tensor, offsets: torch.Tensor) -> torch.Tensor:
+            return tensor.detach().reshape(-1)[offsets.flatten().to(tensor.device)]
 
         def pieces(pick) -> list[torch.Tensor]:
-            # parameters held elsewhere only pad the index space; none of their pieces is taken
-            aligned = [pick(*owned[i]) if i in owned else p.detach().float() for i, p in enumerate(params)]
             return [
-                piece.reshape(spec.local_shape)
-                for piece, spec in zip(self._slots.local_pieces(slot, aligned, holds), specs, strict=True)
+                cut(pick(*owned[index]), offsets).reshape(spec.local_shape)
+                for (index, offsets), spec in zip(sources, specs, strict=True)
             ]
 
         weights = pieces(lambda master, adam, group: master)
-        for weight, bf16 in zip(weights, self._slots.local_pieces(slot, params, holds), strict=True):
+        for weight, (index, offsets) in zip(weights, sources, strict=True):
+            bf16 = cut(params[index], offsets)
             # NaN-safe: a slot that diverged still saves what it holds
             assert torch.allclose(
                 weight.to(bf16.dtype), bf16.reshape(weight.shape), rtol=0, atol=0, equal_nan=True
