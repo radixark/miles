@@ -229,8 +229,13 @@ class _ImageProcessor(BaseImageProcessor):
 
 @pytest.mark.parametrize(
     ("backend", "image_processor", "expected"),
-    [("auto", _ImageProcessor(), "cuda:3"), ("pil", _ImageProcessor(), None), ("auto", object(), None)],
-    ids=["image-processor", "pil-backend", "not-an-image-processor"],
+    [
+        ("auto", _ImageProcessor(), "cuda:3"),
+        ("pil", _ImageProcessor(), None),
+        ("auto", object(), None),
+        ("auto", None, None),
+    ],
+    ids=["image-processor", "pil-backend", "not-an-image-processor", "tokenizer-only"],
 )
 def test_image_device_follows_the_engine_wrapper(monkeypatch, backend, image_processor, expected):
     """A trainer that preprocesses images on another device than the engines computes other pixels."""
@@ -243,7 +248,9 @@ def test_image_device_follows_the_engine_wrapper(monkeypatch, backend, image_pro
         return f"cuda:{base_gpu_id}"
 
     monkeypatch.setattr(serving_preprocessing, "fast_image_processor_device", fake_fast_image_processor_device)
-    hf_processor = type("Processor", (), {"image_processor": image_processor})()
+    # A model whose strategy decodes its own media hands the trainer a bare tokenizer, with no image processor.
+    attributes = {} if image_processor is None else {"image_processor": image_processor}
+    hf_processor = type("Processor", (), attributes)()
 
     image_device = token_space_media_process._image_device(
         hf_processor, image_processor_backend=backend, device=torch.device("cuda", 3)
