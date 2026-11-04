@@ -635,6 +635,25 @@ def test_a_parametrization_with_a_field_this_miles_does_not_know_is_refused(tmp_
         read_parametrization(tmp_path)
 
 
+def test_a_parametrization_without_a_required_field_is_refused(tmp_path):
+    write_parametrization(tmp_path, _run(target_modules=QKV[:1]))
+    fields = json.loads((tmp_path / PARAMETRIZATION_FILENAME).read_text())
+    del fields["lora_rank"]
+    (tmp_path / PARAMETRIZATION_FILENAME).write_text(json.dumps(fields))
+    with pytest.raises(AdapterSourceError, match=r"lacks \['lora_rank'\]"):
+        read_parametrization(tmp_path)
+
+
+def test_a_peft_config_without_rank_or_alpha_is_refused(tmp_path):
+    save_file(
+        {"base_model.model.x.lora_A.weight": torch.zeros(2, 2), "base_model.model.x.lora_B.weight": torch.zeros(2, 2)},
+        str(tmp_path / "adapter_model.safetensors"),
+    )
+    (tmp_path / "adapter_config.json").write_text(json.dumps({"r": 2}))
+    with pytest.raises(AdapterSourceError, match=r"lacks \['lora_alpha'\]"):
+        PeftAdapterReader(tmp_path, _run(), QWEN3)
+
+
 @pytest.mark.parametrize(
     "raw",
     [
