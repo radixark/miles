@@ -13,7 +13,7 @@ from miles.backends.megatron_utils.lora.checkpoint import single_lora_parametriz
 from miles.backends.megatron_utils.lora.native.merge import merge_lora_into_weights
 from miles.backends.megatron_utils.lora.utils import is_lora_model
 from miles.backends.megatron_utils.named_weights import named_params_and_buffers
-from miles.backends.training_utils.checkpoint.adapter.adapter_dir import write_peft_export
+from miles.backends.training_utils.checkpoint.adapter.adapter_dir import write_peft_export, write_sampler_view
 from miles.backends.training_utils.checkpoint.io import write_checkpoint_dir
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.backends.training_utils.weight_update.snapshot_publisher import SnapshotPublisher
@@ -73,7 +73,12 @@ def save_hf_model(
                 )
         if is_lora_model(model):
             assert adapter_slots is not None, "a LoRA export needs the model's adapter slots"
-            write_peft_export(
+            # native's adapter goes out in sglang's stacked expert layout, as main's raw export wrote it; PEFT's
+            # per-expert 2D names cannot carry a shared-outer side
+            write_export = (
+                write_sampler_view if adapter_slots.bf16_adapter_key_style == "sampler" else write_peft_export
+            )
+            write_export(
                 checkpoint_dir / "adapter",
                 adapter_slots,
                 0,

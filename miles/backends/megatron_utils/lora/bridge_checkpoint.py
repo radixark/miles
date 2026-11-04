@@ -13,6 +13,7 @@ import torch
 import torch.distributed as dist
 
 from miles.backends.megatron_utils.lora.utils import adapter_named_parameters
+from miles.backends.training_utils.checkpoint.adapter.adapter_dir import HeadRows
 from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
     LocalShardSpec,
     gloo_group,
@@ -160,6 +161,9 @@ def probe_bridge_row_mapping(
                     for p in pieces
                     if p.key not in a_keys or p.key == held[0]
                 ]
+            # one index per local element stays resident for the run
+            if total < 2**31:
+                pieces = [replace(p, local_elements=p.local_elements.int()) for p in pieces]
             covered = torch.zeros(total, dtype=torch.bool)
             for piece in pieces:
                 covered[piece.local_elements.flatten()] = True
@@ -219,10 +223,27 @@ class BridgeAdapterSlots(ProbedAdapterSlots):
         """Collective: probes the row mapping now, while nothing else touches the parameters."""
         self._model, self._iterator, self.targets, self._multi_lora = model, iterator, targets, multi_lora
         self._specs: dict[tuple[int, int | None, frozenset[int] | None], list[LocalShardSpec]] = {}
+        unexported = self._unexported_elements()
         # every slot has the same layout
         self.row_mapping = probe_bridge_row_mapping(
-            model, self.slot_parameters(0), self._export_probe, targets, self._map_name, self._unexported_elements()
+            model, self.slot_parameters(0), self._export_probe, targets, self._map_name, unexported
         )
+        # agreed by every rank: a dp-zero gather that skips the data also skips its collective
+        leaves_out = torch.tensor([int(unexported is not None and unexported.numel() > 0)])
+        dist.all_reduce(leaves_out, op=dist.ReduceOp.MAX, group=gloo_group())
+        self.load_overwrites_every_element = not leaves_out.item()
+        self.head_rows = self._head_rows()
+
+    def _head_key(self) -> str | None:
+        return f"{self.targets.unembed[0]}.lora_B"
+
+    def _head_rows(self) -> HeadRows | None:
+        head_b = self._head_key()
+        if head_b is None or not any(piece.key == head_b for piece in self.row_mapping.pieces):
+            return None
+        served = next(piece.global_shape[0] for piece in self.row_mapping.pieces if piece.key == head_b)
+        assert self.targets.vocab_size is not None, "a trained head needs the HF vocab size"
+        return HeadRows(head_b, max(self.targets.vocab_size, served))
 
     def _map_name(self, name: str) -> HfKey:
         return map_peft_keys_to_hf_keys(name)

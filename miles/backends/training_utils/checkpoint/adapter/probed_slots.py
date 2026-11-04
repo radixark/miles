@@ -175,11 +175,13 @@ class ProbedAdapterSlots:
         lora_alpha: float,
         lora_type: str,
         experts_shared_outer_loras: bool,
+        base_model_fingerprint: str | None,
     ) -> AdapterParametrization:
         """Targets and shared-A groups are the model's (same for every slot); the rest is the caller's."""
         mapping = self.row_mapping
         return AdapterParametrization(
             base_model=base_model,
+            base_model_fingerprint=base_model_fingerprint,
             lora_rank=lora_rank,
             lora_alpha=lora_alpha,
             lora_type=lora_type,

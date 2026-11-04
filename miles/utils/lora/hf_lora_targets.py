@@ -26,6 +26,8 @@ class HfLoraTargets:
     # set when the family's adapters name routed experts packed and stacked (experts.gate_up_proj / down_proj, 3D);
     # the value is how gate and up rows share gate_up_proj
     packed_expert_gate_up_layout: str | None = None
+    # the HF vocab: the most head lora_B rows an HF-shaped source may hold
+    vocab_size: int | None = None
 
 
 @dataclass(frozen=True)
@@ -156,6 +158,11 @@ def _kimi_k3_targets(config):
         if config["num_shared_experts"] is not None:
             mlp.extend(_prefix_paths("block_sparse_moe.shared_experts", "gate_proj", "up_proj", "down_proj"))
     return attention, tuple(mlp)
+
+
+def _glm4_targets(config):
+    # HF GLM-4 keeps gate / up fused in one dense gate_up_proj
+    return _QKVO_ATTENTION, _prefix_paths("mlp", "gate_up_proj", "down_proj")
 
 
 def _glm4_moe_targets(config):
@@ -323,7 +330,10 @@ _HF_LORA_MODELS = {
         unembed="language_model.lm_head",
         unwrap_text_config=True,
     ),
+    "glm4": _HfLoraModelSpec(_glm4_targets),
     "glm4_moe": _HfLoraModelSpec(_glm4_moe_targets),
+    # GLM-4.7-Flash: MLA attention with dense / sparse MLPs chosen per layer, as GLM-5's DSA stack
+    "glm4_moe_lite": _HfLoraModelSpec(_glm_dsa_targets),
     "glm_moe_dsa": _HfLoraModelSpec(_glm_dsa_targets),
     "glm5_next": _HfLoraModelSpec(
         _glm5_next_targets, layer_prefix="model.language_model.layers.*", unwrap_text_config=True
@@ -359,6 +369,7 @@ def get_hf_lora_targets(hf_config: dict) -> HfLoraTargets:
         whole_fused_attention=_prefix_paths(spec.layer_prefix, *spec.build_whole_fused_attention(text_config)),
         tinker_name_renames=spec.tinker_name_renames,
         component_rows_by_fused_module=spec.component_rows_by_fused_module(text_config),
+        vocab_size=text_config.get("vocab_size"),
         packed_expert_gate_up_layout=spec.packed_expert_gate_up_layout,
     )
 
