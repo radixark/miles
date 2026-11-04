@@ -26,6 +26,7 @@ from miles.backends.training_utils.checkpoint.adapter.parametrization import Ada
 from miles.backends.training_utils.checkpoint.adapter.parametrization_conversion import (
     assert_parametrization_matches_run,
 )
+from miles.backends.training_utils.checkpoint.adapter.source_error import AdapterSourceError
 
 _MODULE = "miles.backends.megatron_utils.lora.checkpoint"
 
@@ -224,7 +225,7 @@ def test_an_adapter_saved_under_one_mount_loads_under_another(monkeypatch):
     assert saved.base_model == "/root/models/Qwen3-4B", "the path stays as given, for information"
     assert_parametrization_matches_run(saved, run, [], load_optimizer=False, has_optimizer_state=False)
     other = _recorded_parametrization(monkeypatch, "/root/models/Qwen3-4B", hidden_size=4096)
-    with pytest.raises(AssertionError, match="is another model than run base"):
+    with pytest.raises(AdapterSourceError, match="is another model than run base"):
         assert_parametrization_matches_run(saved, other, [], load_optimizer=False, has_optimizer_state=False)
 
 
