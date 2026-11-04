@@ -143,6 +143,17 @@ def test_a_shard_that_does_not_match_the_adapter_fails(tmp_path):
         _load(tmp_path, [_Chunk()], [], load_optimizer=False)
 
 
+def test_a_shard_tensor_of_another_shape_fails(tmp_path):
+    """copy_ would broadcast a shared-outer [1, ...] into a per-expert [E, ...] parameter without a word."""
+    torch.save(
+        {"adapter.lora_A": torch.ones(1, 2), "adapter.lora_B": torch.ones(1, 1)},
+        tmp_path / "adapter_megatron_rank0.pt",
+    )
+
+    with pytest.raises(RuntimeError, match=r"adapter.lora_B: saved \(1, 1\) != parameter \(2, 1\)"):
+        _load(tmp_path, [_Chunk()], [], load_optimizer=False)
+
+
 def test_shards_saved_under_another_layout_fail(tmp_path):
     """Falling through to fresh adapter weights would hide a resharding mistake."""
     torch.save({"adapter.lora_A": torch.ones(1, 2)}, tmp_path / "adapter_megatron_rank1.pt")
