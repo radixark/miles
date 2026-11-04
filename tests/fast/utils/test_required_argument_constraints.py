@@ -69,9 +69,21 @@ class TestRequiredArgumentConstraints:
         self, field: str, message: str
     ) -> None:
         """Multi-adapter validation rejects incompatible optimizer lifecycles before model construction."""
-        args = _parse_megatron_args(["--multi-lora-n-adapters", "2", "--lora-rank", "8"])
+        args = _parse_megatron_args(
+            ["--multi-lora-n-adapters", "2", "--lora-rank", "8", "--megatron-to-hf-mode", "bridge"]
+        )
         args.ft_components = []
         setattr(args, field, True)
 
         with pytest.raises(AssertionError, match=message):
+            validate_multi_lora_args(args)
+
+    def test_multi_adapter_training_requires_bridge_weight_conversion(self) -> None:
+        """Multi-LoRA slots exist only on Bridge adapters, so a raw-mode request is refused."""
+        args = _parse_megatron_args(
+            ["--multi-lora-n-adapters", "2", "--lora-rank", "8", "--megatron-to-hf-mode", "raw"]
+        )
+        args.ft_components = []
+
+        with pytest.raises(AssertionError, match="--megatron-to-hf-mode bridge"):
             validate_multi_lora_args(args)
