@@ -16,7 +16,6 @@ from megatron.core import dist_checkpointing
 from megatron.core.dist_checkpointing.dict_utils import nested_values
 from megatron.core.dist_checkpointing.mapping import apply_factories
 from megatron.core.distributed import DistributedDataParallel as DDP
-from megatron.core.optimizer import DistributedOptimizer
 from megatron.core.optimizer.cpu_offloading.hybrid_optimizer import HybridDeviceOptimizer
 from megatron.core.utils import unwrap_model
 from safetensors import SafetensorError
@@ -25,6 +24,8 @@ from miles.backends.megatron_utils.lora.bridge_checkpoint import BridgeAdapterSl
 from miles.backends.megatron_utils.lora.bridge_peft_checkpoint import OPTIMIZER_KEY, MegatronBridgeCheckpointLoader
 from miles.backends.megatron_utils.lora.optimizer import SlotOptimizer
 from miles.backends.megatron_utils.lora.utils import (
+    _distributed_optimizers,
+    _init_zero_hdo_state,
     _load_native_adapter_shard,
     _load_training_state,
     _native_adapter_shard,
@@ -139,15 +140,6 @@ class LayerWiseSlotMembers:
         for child in optimizer.chained_optimizers:
             child._copy_main_params_to_model_params()
         optimizer.allgather_params()
-
-
-def _distributed_optimizers(optimizer) -> list:
-    subs = optimizer.chained_optimizers
-    # another optimizer's state would be silently left out of the checkpoint
-    assert all(
-        isinstance(sub, DistributedOptimizer) for sub in subs
-    ), f"the adapter checkpoint needs --use-distributed-optimizer; got {[type(sub).__name__ for sub in subs]}"
-    return subs
 
 
 class DistributedOptimizerMembers:
@@ -317,22 +309,6 @@ def _distributed_optimizer_step(sub) -> int | None:
             steps |= {int(group.get("step", 0)) for group in optimizer.param_groups if group["params"]}
     assert len(steps) <= 1, f"the Adam optimizers of one DistributedOptimizer disagree on the step: {steps}"
     return steps.pop() if steps else None
-
-
-def _init_zero_hdo_state(hdo: HybridDeviceOptimizer) -> None:
-    """The state a never-stepped HDO is equivalent to: its fp32 master, zero moments, step 0.
-
-    Megatron's own dummy_step would take a real Adam step on random gradients.
-    """
-    for group in hdo.param_groups:
-        for param in group["params"]:
-            master = hdo.param_to_inner_param[param]
-            hdo.state[param] = {
-                "step": torch.tensor(0.0),
-                "exp_avg": torch.zeros_like(master),
-                "exp_avg_sq": torch.zeros_like(master),
-                "master_param": master,
-            }
 
 
 def _set_distributed_optimizer_step(sub, step: int) -> None:
