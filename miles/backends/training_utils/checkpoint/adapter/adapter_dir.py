@@ -29,7 +29,6 @@ from miles.backends.training_utils.checkpoint.adapter.key_mapping import (
     map_named_tensors_to_hf_keys,
     map_peft_keys_to_hf_keys,
     map_sampler_keys_to_hf_keys,
-    map_tinker_keys_to_hf_keys,
 )
 from miles.backends.training_utils.checkpoint.adapter.parametrization import (
     AdapterParametrization,
@@ -56,8 +55,8 @@ TRAINING_STATE_FILENAME = "training_state.json"
 class AdapterCheckpointMembers(Protocol):
     """The checkpoint members every backend's AdapterSlots implements; they never touch files."""
 
-    # the names export_bf16_adapter yields: HF module paths, official Tinker names, or sglang's (experts.w1/w3/w2)
-    bf16_adapter_key_style: Literal["peft", "tinker", "sampler"]
+    # the names export_bf16_adapter yields: HF module paths or sglang's (experts.w1/w3/w2)
+    bf16_adapter_key_style: Literal["peft", "sampler"]
 
     def export_bf16_adapter(self, slot: int) -> Iterable[tuple[str, torch.Tensor]]:
         """Collective; whole bf16 tensors on rank 0, nothing elsewhere."""
@@ -133,7 +132,6 @@ def _hf_keyed_bf16_adapter(
 ) -> dict[str, torch.Tensor]:
     map_name = {
         "peft": map_peft_keys_to_hf_keys,
-        "tinker": partial(map_tinker_keys_to_hf_keys, targets=targets),
         "sampler": partial(map_sampler_keys_to_hf_keys, targets=targets),
     }[members.bf16_adapter_key_style]
     weights, fused_groups = map_named_tensors_to_hf_keys(named_tensors, map_name, targets)
