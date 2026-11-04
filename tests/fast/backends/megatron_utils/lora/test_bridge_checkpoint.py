@@ -9,6 +9,7 @@ from safetensors.torch import save_file
 from tests.fast.dist_utils import init_gloo, run_multiprocess
 
 from miles.backends.megatron_utils.lora.bridge_checkpoint import (
+    _BRIDGE_BASE_REMEDY,
     BridgeAdapterSlots,
     assert_bridge_run_config_matches,
     bridge_base_model_candidates,
@@ -352,18 +353,20 @@ def test_the_base_is_bridge_pretrained_checkpoint_not_the_hf_template(tmp_path):
         "tokenizer": {"tokenizer_model": None},
     }
     with pytest.raises(AssertionError, match="another base model"):
-        assert_same_base_model("src", bridge_base_model_candidates(config), template)
+        assert_same_base_model("src", bridge_base_model_candidates(config), template, remedy=_BRIDGE_BASE_REMEDY)
     # a torch_dist base has no HF files: its HF template stands in
     config["checkpoint"]["pretrained_checkpoint"] = str(tmp_path)
-    assert_same_base_model("src", bridge_base_model_candidates(config), template)
+    assert_same_base_model("src", bridge_base_model_candidates(config), template, remedy=_BRIDGE_BASE_REMEDY)
     # Bridge's last fallback
     config["checkpoint"]["hf_source_path"] = None
     config["tokenizer"]["tokenizer_model"] = template
-    assert_same_base_model("src", bridge_base_model_candidates(config), template)
+    assert_same_base_model("src", bridge_base_model_candidates(config), template, remedy=_BRIDGE_BASE_REMEDY)
     # Bridge's template is hf_model_id, absent here: a later candidate that resolves must not stand in for it
     config["model"]["hf_model_id"] = str(tmp_path / "missing")
-    with pytest.raises(AssertionError, match="has no local HF files"):
-        assert_same_base_model("src", bridge_base_model_candidates(config), template)
+    with pytest.raises(
+        AssertionError, match="has no local HF files.*set checkpoint.hf_source_path in the source's run_config.yaml"
+    ):
+        assert_same_base_model("src", bridge_base_model_candidates(config), template, remedy=_BRIDGE_BASE_REMEDY)
 
 
 GDN = "model.layers.0.linear_attn"

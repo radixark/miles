@@ -329,6 +329,12 @@ def assert_bridge_run_config_matches(
         assert config["checkpoint"]["save_optim"], "the source saved no optimizer state; pass --no-load-optim"
 
 
+_BRIDGE_BASE_REMEDY = (
+    "download it into the local HF cache (`hf download <id>`), or set checkpoint.hf_source_path in the source's "
+    "run_config.yaml to a local HF dir of it"
+)
+
+
 def bridge_base_model_candidates(config: dict) -> tuple[str | None, str | None]:
     """Bridge PEFT loads its base from pretrained_checkpoint. When that is no HF dir here (torch_dist, or another
     machine's path), the HF template it was converted from stands in, as Bridge's _resolve_hf_source picks it; that
@@ -364,7 +370,9 @@ class MegatronBridgeCheckpointLoader:
             assert_bridge_run_config_matches(
                 config, self._run, params_dtype=chunks[0].config.params_dtype, load_optimizer=self._load_optimizer
             )
-            assert_same_base_model(str(path), bridge_base_model_candidates(config), self._run.base_model)
+            assert_same_base_model(
+                str(path), bridge_base_model_candidates(config), self._run.base_model, remedy=_BRIDGE_BASE_REMEDY
+            )
             metadata = dict(dist_checkpointing.load_content_metadata(str(path)) or {})
             if self._load_optimizer:
                 sharding = metadata.get("distrib_optim_sharding_type")

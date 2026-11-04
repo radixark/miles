@@ -73,13 +73,14 @@ def resolve_hf_dir(name_or_path: str) -> Path | None:
     return hf_dir if any(hf_dir.glob("*.safetensors")) else None
 
 
-def assert_same_base_model(source: str, candidates: Iterable[str], run_hf_checkpoint: str) -> None:
-    """``candidates``: what the source records as its base, best first; the first resolvable one is compared."""
+def assert_same_base_model(source: str, candidates: Iterable[str], run_hf_checkpoint: str, *, remedy: str) -> None:
+    """``candidates``: what the source records as its base, best first; the first resolvable one is compared.
+    ``remedy``: how to give the source's base local HF files."""
     candidates = [c for c in candidates if c]
     hf_dir = next((d for c in candidates if (d := resolve_hf_dir(c)) is not None), None)
     assert hf_dir is not None, (
         f"{source}'s base model ({candidates or 'not recorded'}) has no local HF files to compare with "
-        f"--hf-checkpoint {run_hf_checkpoint}"
+        f"--hf-checkpoint {run_hf_checkpoint}: {remedy}"
     )
     run_dir = resolve_hf_dir(run_hf_checkpoint)
     assert run_dir is not None, f"--hf-checkpoint {run_hf_checkpoint} has no local HF weights to compare with"
