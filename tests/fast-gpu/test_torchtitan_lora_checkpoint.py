@@ -479,6 +479,7 @@ def test_restored_lr_schedule_reaches_the_optimizers():
 
 def test_lora_resumes_only_through_the_adapter_path(tmp_path):
     """A step dir under --load or --save would resume the adapters through torchtitan's checkpointer."""
+
     def config(load=None, save=None, lora_adapter_path=None):
         args = SimpleNamespace(backend=SimpleNamespace(load=load, save=save), lora_adapter_path=lora_adapter_path)
         return _checkpointer_config(args, dump_subdir="actor", with_lora=True)
