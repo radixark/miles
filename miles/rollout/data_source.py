@@ -438,6 +438,7 @@ class MixedRolloutDataSource(DataSource):
                 sample.metadata["agent_config"] = copy.deepcopy(config.agent)
             sample.agent_function_path = config.custom_agent_function_path
             sample.max_seq_len = config.max_seq_len
+            sample.max_response_len = config.max_response_len
             sample.generate_function_path = config.custom_generate_function_path
             if config.custom_rm_path is not None or config.rm_type is not None:
                 sample.reward_spec = RewardSpec(rm_type=config.rm_type, custom_rm_path=config.custom_rm_path)

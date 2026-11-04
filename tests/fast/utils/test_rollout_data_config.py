@@ -195,10 +195,6 @@ class TestStartupValidation:
         args = _parse("--rollout-data-yaml-config", _inline(_with_dataset(max_prompt_len=8192, sha256=_SHA)))
         assert args.data_source_path.path == "miles.rollout.data_source.MixedRolloutDataSource"
 
-    def test_a_per_dataset_response_budget_fails_at_startup_until_samples_carry_it(self):
-        with pytest.raises(NotImplementedError, match="max_response_len not supported yet"):
-            _parse("--rollout-data-yaml-config", _inline(_with_dataset(max_response_len=64)))
-
     def test_it_needs_num_rollout(self):
         i = _BASE_ARGV.index("--num-rollout")
         argv = _BASE_ARGV[:i] + _BASE_ARGV[i + 2 :] + ["--num-epoch", "1"]

@@ -16,6 +16,7 @@ datasets:
     path: /data/science.jsonl
     samples_per_step: 5
     max_prompt_len: 8192
+    max_response_len: 16384
     custom_generate_function_path: my_pkg.science_generate
     agent:
       max_turns: 50
@@ -31,6 +32,7 @@ The flag also accepts an inline `base64:<payload>`, like `--eval-config`.
 | `samples_per_step` | yes | Weight of this dataset in every request for prompts. |
 | `sha256` | no | First 8 hex characters of the file's SHA-256. A mismatch stops the run at startup; when unset, the value to pin is logged. |
 | `max_prompt_len` | no | Drop this dataset's longer prompts. At most `--rollout-max-prompt-len`. |
+| `max_response_len` | no | Response budget (`max_new_tokens`) for this dataset's samples, also sent to an agentic dataset's model calls. At most `--rollout-max-response-len`. |
 | `custom_generate_function_path` | no | Generate function for this dataset's samples. Unset: `--custom-generate-function-path`, or Miles' default `miles.rollout.generate_hub.single_turn.generate` when that is unset too. |
 | `custom_agent_function_path` | no | Agent function for `agentic_tool_call` on this dataset, instead of `--custom-agent-function-path`. |
 | `max_seq_len` | no | Agentic sequence limit for this dataset. At most `--max-seq-len`. |

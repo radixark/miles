@@ -156,6 +156,15 @@ class TestMixedRolloutDataSource:
         assert (code.agent_function_path, code.max_seq_len) == ("json.loads", 4096)
         assert (math.agent_function_path, math.max_seq_len) == (None, None)
 
+    def test_a_dataset_response_budget_reaches_its_samples_only(self, tmp_path):
+        datasets = _two_datasets(tmp_path)
+        datasets["code"]["max_response_len"] = 64
+        source = _make_source(tmp_path, datasets)
+
+        by_name = {group[0].metadata["dataset_name"]: group for group in source.get_samples(8)}
+        assert {sample.max_response_len for sample in by_name["code"]} == {64}
+        assert {sample.max_response_len for sample in by_name["math"]} == {None}
+
     def test_max_prompt_len_filters_only_its_dataset(self, tmp_path):
         datasets = _two_datasets(tmp_path)
         datasets["math"]["path"] = str(_write_jsonl(tmp_path / "math.jsonl", ["short", "a much longer prompt"]))
@@ -234,7 +243,13 @@ class TestMixedRolloutDataSource:
         assert Counter(_names(resumed.get_samples(100))) == {"math": 50, "code": 50}
 
     @pytest.mark.parametrize(
-        "change", [{"custom_generate_function_path": "json.dumps"}, {"rm_type": "math"}, {"max_prompt_len": 100}]
+        "change",
+        [
+            {"custom_generate_function_path": "json.dumps"},
+            {"rm_type": "math"},
+            {"max_prompt_len": 100},
+            {"max_response_len": 100},
+        ],
     )
     def test_resume_refuses_a_changed_dataset_setting(self, tmp_path, change):
         """Groups drawn before the save still carry the old setting, so resuming under a new one would mix both."""

@@ -1,4 +1,4 @@
-"""A train rollout over `--rollout-data-yaml-config` draws its groups from every dataset by weight."""
+"""A train rollout over `--rollout-data-yaml-config` draws its groups from every dataset by weight and budget."""
 
 from collections import Counter
 
@@ -12,7 +12,8 @@ from miles.utils.test_utils import mock_tools
 
 _MIXED_DATASETS = {
     "math": ([{"input": "What is 1+7?", "label": "8"}] * 3, {"samples_per_step": 1}),
-    "science": ([{"input": "What is 1+7?", "label": "8"}] * 5, {"samples_per_step": 3}),
+    # below the run's --rollout-max-response-len of 16
+    "science": ([{"input": "What is 1+7?", "label": "8"}] * 5, {"samples_per_step": 3, "max_response_len": 8}),
 }
 
 _BATCH_ARGV = ["--rollout-batch-size", "4", "--n-samples-per-prompt", "2", "--global-batch-size", "8"]
@@ -42,7 +43,7 @@ _VARIANTS = [
 
 
 @pytest.mark.parametrize("rollout_env", _VARIANTS, indirect=True)
-def test_train_rollout_mixes_datasets_by_weight(rollout_env):
+def test_train_rollout_mixes_datasets_by_weight_and_budget(rollout_env):
     out = load_and_call_train(rollout_env.args, rollout_env.data_source)
 
     groups = out.samples
@@ -51,6 +52,9 @@ def test_train_rollout_mixes_datasets_by_weight(rollout_env):
     for group in groups:
         assert len({sample.metadata["dataset_name"] for sample in group}) == 1
         assert [sample.reward for sample in group] == [1, 1]
+
+    budgets = sorted(request["sampling_params"]["max_new_tokens"] for request in rollout_env.mock_server.request_log)
+    assert budgets == [8] * 6 + [16] * 2
 
 
 _GENERATE_CALLS: Counter = Counter()
@@ -88,12 +92,12 @@ def test_a_dataset_generate_function_runs_only_on_its_samples(rollout_env):
     assert _GENERATE_CALLS == {"science": 6}
 
 
-_AGENT_CONFIGS: list = []
+_AGENT_CALLS_SEEN: list = []
 
 
-async def recording_agent(metadata, **kwargs):
-    _AGENT_CONFIGS.append((metadata["dataset_name"], metadata.get("agent_config")))
-    return await mock_tools.run_agentic_tool_call(metadata=metadata, **kwargs)
+async def recording_agent(metadata, request_kwargs, **kwargs):
+    _AGENT_CALLS_SEEN.append((metadata["dataset_name"], metadata.get("agent_config"), request_kwargs["max_tokens"]))
+    return await mock_tools.run_agentic_tool_call(metadata=metadata, request_kwargs=request_kwargs, **kwargs)
 
 
 @pytest.mark.parametrize(
@@ -108,7 +112,10 @@ async def recording_agent(metadata, **kwargs):
                 + _BATCH_ARGV,
                 mixed_datasets={
                     "math": _MIXED_DATASETS["math"],
-                    "science": (_MIXED_DATASETS["science"][0], {"samples_per_step": 3, "agent": {"max_turns": 3}}),
+                    "science": (
+                        _MIXED_DATASETS["science"][0],
+                        {"samples_per_step": 3, "agent": {"max_turns": 3}, "max_response_len": 8},
+                    ),
                 },
             ),
             id="agentic",
@@ -116,12 +123,12 @@ async def recording_agent(metadata, **kwargs):
     ],
     indirect=True,
 )
-def test_a_dataset_agent_block_reaches_the_agent_function(rollout_env):
-    _AGENT_CONFIGS.clear()
+def test_a_dataset_agent_block_and_budget_reach_the_agent_function(rollout_env):
+    _AGENT_CALLS_SEEN.clear()
     load_and_call_train(rollout_env.args, rollout_env.data_source)
 
-    assert sorted(_AGENT_CONFIGS, key=str) == sorted(
-        [("math", None)] * 2 + [("science", {"max_turns": 3})] * 6, key=str
+    assert sorted(_AGENT_CALLS_SEEN, key=str) == sorted(
+        [("math", None, 16)] * 2 + [("science", {"max_turns": 3}, 8)] * 6, key=str
     )
 
 
