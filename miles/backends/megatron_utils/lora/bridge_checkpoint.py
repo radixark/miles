@@ -13,7 +13,6 @@ import torch
 import torch.distributed as dist
 
 from miles.backends.megatron_utils.lora.utils import adapter_named_parameters
-from miles.backends.training_utils.checkpoint.adapter.adapter_state import gloo_group
 from miles.backends.training_utils.checkpoint.adapter.key_mapping import (
     HfKey,
     fused_components,
@@ -152,7 +151,10 @@ def probe_bridge_row_mapping(
             for group in groups:
                 a_keys = {f"{member}.lora_A" for member in group}
                 held = [p.key for p in pieces if p.key in a_keys]
-                assert held, f"{group}: this rank holds no piece of the shared A"
+                # Bridge broadcasts every pipeline stage's adapters to all stages; another stage's group has no
+                # piece here, and the coverage check below still catches a group of this rank's that has none
+                if not held:
+                    continue
                 pieces = [
                     replace(p, key=f"{group[0]}.lora_A") if p.key == held[0] else p
                     for p in pieces
@@ -190,14 +192,6 @@ def _registered_in_place_of(
             module._parameters[name] = param
 
 
-def agreed_load_overwrites_every_element(unexported: torch.Tensor | None) -> bool:
-    """Collective: whether a load writes every adapter element on every rank; a dp-zero gather that skips the data
-    also skips its collective, so all ranks must agree."""
-    leaves_out = torch.tensor([int(unexported is not None and unexported.numel() > 0)])
-    dist.all_reduce(leaves_out, op=dist.ReduceOp.MAX, group=gloo_group())
-    return not leaves_out.item()
-
-
 class BridgeAdapterSlots(ProbedAdapterSlots):
     """Checkpoint members of Bridge LoRA; single LoRA is slot 0 of one, multi-LoRA slots are its MultiLoRALinears'.
 
@@ -208,7 +202,7 @@ class BridgeAdapterSlots(ProbedAdapterSlots):
 
     def __init__(self, model, iterator, targets: HfLoraTargets, *, multi_lora: bool):
         """Collective: probes the row mapping now, while nothing else touches the parameters."""
-        # the probe's export reads these before the base is set up
+        # _export_probe and slot_parameters read these during the probe, before super().__init__
         self._model, self._iterator, self.targets, self._multi_lora = model, iterator, targets, multi_lora
         # every slot has the same layout
         row_mapping = probe_bridge_row_mapping(model, self.slot_parameters(0), self._export_probe, targets)

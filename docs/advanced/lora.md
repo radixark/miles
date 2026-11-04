@@ -152,9 +152,9 @@ Ordinary LoRA also accepts specific HF targets mixed with group names, such as
 | `--check-lora-weight-equal` | off | Verify each synchronized adapter tensor with SHA-256. |
 | `--update-weights-interval` | `1` | Publish new weights every N rollout/train iterations. This is not LoRA-specific, but it controls when the live adapter is synchronized. |
 
-A Megatron-Bridge PEFT `iter_N/` (`torch_dist`, `LoRA` or `CanonicalLoRA` matching this run's rank, type and targets) loads under any parallel layout, under `--megatron-to-hf-mode bridge` only; other backends need it converted first with `--lora-adapter-convert-save` under Bridge. Its Adam state loads only into the DistributedOptimizer from a fully reshardable save (else `--no-load-optim`); its iteration, scheduler and RNG are not resumed.
+A Megatron-Bridge PEFT `iter_N/` (`torch_dist`, `LoRA` or `CanonicalLoRA` matching this run's rank, type and targets) loads under `--megatron-to-hf-mode bridge` only. On GPU, a TP2 EP2 save was validated loading under TP2 EP2 and TP1 EP4; PP > 1, virtual pipeline chunks, `--optimizer-cpu-offload` and the `torch_dist` base check below have not run on GPU. Other backends need it converted first with `--lora-adapter-convert-save` under Bridge. Its Adam state loads only into the DistributedOptimizer from a fully reshardable save (else `--no-load-optim`); its iteration, scheduler and RNG are not resumed.
 
-Its base model must match `--hf-checkpoint`. A `checkpoint.pretrained_checkpoint` that is a `torch_dist` on this machine has its norm weights compared bitwise with the run's model. Otherwise the local HF files of the base its `run_config.yaml` records (`checkpoint.pretrained_checkpoint`, else the first set of `checkpoint.hf_source_path`, `model.hf_model_id`, `tokenizer.tokenizer_model`), from a local dir or the HF cache (nothing is downloaded), are compared by their norm and first-layer attention weights. Not detected: a LoRA merged only into MLP or expert weights, or only into layers past the first; a base fine-tuned in Megatron whose `torch_dist` is not on this machine; and, against an FP8 or MXFP4 base, anything but the norms, the only weights both sides hold unquantized.
+Its base model must match `--hf-checkpoint`. A `checkpoint.pretrained_checkpoint` that is a `torch_dist` on this machine has its norm weights and the unquantized attention weights of each model chunk's first layer compared bitwise with the run's model. Otherwise the local HF files of the base its `run_config.yaml` records (`checkpoint.pretrained_checkpoint`, else the first set of `checkpoint.hf_source_path`, `model.hf_model_id`, `tokenizer.tokenizer_model`), from a local dir or the HF cache (nothing is downloaded), are compared by their norm and first-layer attention weights. Not detected: a LoRA merged only into MLP or expert weights, or only into layers past the first; a base fine-tuned in Megatron whose `torch_dist` is not on this machine; and, against an FP8 or MXFP4 base, anything but the norms, the only weights both sides hold unquantized.
 
 ### HF target source of truth
 
@@ -439,6 +439,7 @@ saving weights for sampling publishes an immutable adapter version.
 `--experts-shared-outer-loras` also works with multi-LoRA: routed experts share
 the hidden-side factor within each adapter, while tenants remain independent.
 The flag applies to the whole server and preserves the single-LoRA export format.
+Its `save_state` / `load_state` checkpoints have not been verified on GPU yet.
 SGLang currently rejects combining this layout with fused shared experts.
 
 `save_state` saves adapter parameters and optimizer state, including FP32 masters.
@@ -446,7 +447,8 @@ It waits for preceding commands but neither steps nor saves pending gradients;
 call it after `optim_step` to save the effect of the accumulated training work.
 A save commits a new adapter directory and then points the name at it, so an
 overwrite that fails keeps the previous checkpoint; one gateway holds a checkpoint
-root at a time. `load_state` adopts the checkpoint's alpha, and a checkpoint saved
+root at a time, through an `flock` that the root's filesystem must enforce across hosts (NFS
+mounted `nolock` and Lustre with `localflock` do not). `load_state` adopts the checkpoint's alpha, and a checkpoint saved
 under another adapter layout loads its weights only, where the conversion is exact
 (factors become shared only when they are equal).
 Sampler saves commit an immutable adapter directory on shared storage, without

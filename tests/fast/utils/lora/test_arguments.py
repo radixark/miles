@@ -144,6 +144,7 @@ def _adapter_state_args(**overrides) -> Namespace:
             "use_gloo_process_groups": True,
             "use_precision_aware_optimizer": False,
             "optimizer_cpu_offload": False,
+            "stream_optimizer_state_to_disk": False,
             "overlap_param_gather": False,
             "num_distributed_optimizer_instances": 1,
         }
@@ -298,6 +299,23 @@ def test_lora_refuses_the_checkpoints_that_cannot_carry_its_adapter(fault_tolera
         validate_lora_args_after_megatron(args)
 
 
+def test_lora_refuses_a_load_holding_adapter_checkpoints_without_an_adapter_path(tmp_path):
+    """Megatron finds no checkpoint there and would start from the base model, overwriting those adapters."""
+    (tmp_path / "iter_0000003" / "adapter").mkdir(parents=True)
+    args = Namespace(
+        lora_rank=8,
+        multi_lora=False,
+        megatron_to_hf_mode="raw",
+        debug_rollout_only=False,
+        indep_dp=False,
+        non_persistent_ckpt_type=None,
+        load=str(tmp_path),
+        lora_adapter_path=None,
+    )
+    with pytest.raises(AssertionError, match=r"holds LoRA adapter checkpoints \(iter_\*/adapter\)"):
+        validate_lora_args_after_megatron(args)
+
+
 def test_the_adapter_checkpoint_requires_fp32_masters():
     with pytest.raises(AssertionError, match="fp32 masters"):
         _validate_adapter_state_args(_adapter_state_args(main_params_dtype=torch.float16))
@@ -306,6 +324,42 @@ def test_the_adapter_checkpoint_requires_fp32_masters():
 def test_loading_the_adapter_checkpoint_refuses_several_distributed_optimizer_instances():
     args = _adapter_state_args(save=None, lora_adapter_path="/adapter", num_distributed_optimizer_instances=2)
     with pytest.raises(AssertionError, match="--num-distributed-optimizer-instances"):
+        _validate_adapter_state_args(args)
+
+
+def test_without_an_optimizer_an_adapter_path_loads_weights_only():
+    args = Namespace(
+        save=None, lora_adapter_path="/adapter", lora_adapter_convert_save=None, debug_disable_optimizer=True
+    )
+    _validate_adapter_state_args(args)
+
+
+@pytest.mark.parametrize("saved", [dict(save="/save"), dict(lora_adapter_convert_save="/converted")])
+def test_without_an_optimizer_nothing_that_stores_fp32_masters_is_accepted(saved):
+    args = Namespace(
+        **{"save": None, "lora_adapter_path": "/adapter", "lora_adapter_convert_save": None, **saved},
+        debug_disable_optimizer=True,
+    )
+    with pytest.raises(AssertionError, match="--debug-disable-optimizer does not build"):
+        _validate_adapter_state_args(args)
+
+
+def test_the_adapter_checkpoint_refuses_optimizer_state_streamed_to_disk():
+    args = Namespace(
+        save="/save",
+        lora_adapter_path=None,
+        lora_adapter_convert_save=None,
+        debug_disable_optimizer=False,
+        optimizer="adam",
+        exp_avg_dtype=torch.float32,
+        exp_avg_sq_dtype=torch.float32,
+        main_params_dtype=torch.float32,
+        use_distributed_optimizer=True,
+        use_gloo_process_groups=True,
+        stream_optimizer_state_to_disk=True,
+        use_precision_aware_optimizer=False,
+    )
+    with pytest.raises(AssertionError, match="--stream-optimizer-state-to-disk keeps the moments"):
         _validate_adapter_state_args(args)
 
 
@@ -359,6 +413,26 @@ class TestRolloutOnlyAdapter:
             self._validate(tmp_path)
         assert "--lora-adapter-convert-save" not in str(raised.value)
 
+    def test_a_sampler_export_of_an_adapter_with_no_plain_peft_form_goes_to_sglang(self, tmp_path):
+        gdn = "model.layers.0.linear_attn"
+        components = tuple(f"{gdn}.{leaf}" for leaf in ("in_proj_q", "in_proj_k", "in_proj_v"))
+        parametrization = AdapterParametrization(
+            base_model="/hf",
+            lora_rank=2,
+            lora_alpha=4.0,
+            lora_type="canonical_lora",
+            target_modules=components,
+            experts_shared_outer_loras=False,
+        )
+        # what write_sampler_adapter commits: sglang-named tensors and the parametrization
+        save_file(
+            {f"base_model.model.{gdn}.in_proj_q.lora_A.weight": torch.zeros(2, 4)},
+            str(tmp_path / "adapter_model.safetensors"),
+        )
+        (tmp_path / "adapter_config.json").write_text(json.dumps({"r": 2, "lora_alpha": 4.0}))
+        write_parametrization(tmp_path, parametrization)
+        self._validate(tmp_path)
+
 
 def _bridge_args_without_layout(monkeypatch, *, multi_lora=False, **overrides):
     hf_config = SimpleNamespace(model_type="gpt2", to_dict=lambda: {"model_type": "gpt2"})
@@ -385,6 +459,7 @@ def _bridge_args_without_layout(monkeypatch, *, multi_lora=False, **overrides):
         eval_hf_dir=None,
         eval_uses_snapshots=False,
         save=None,
+        load=None,
         indep_dp=False,
         non_persistent_ckpt_type=None,
     )

@@ -7,6 +7,7 @@ register_cuda_ci(
 
 import os
 import socket
+import weakref
 from dataclasses import dataclass, replace
 from datetime import timedelta
 from functools import partial
@@ -723,6 +724,31 @@ def _one_rank_fails_decoding(rank, world_size, port):
 
 def test_a_rank_local_probe_failure_fails_every_rank():
     run_multiprocess(_one_rank_fails_decoding)
+
+
+def _one_projection_at_a_time(rank, world_size, port):
+    init_gloo(rank, world_size, port=port)
+    init_gloo_group()
+    sd_adapter, params = _adapter()
+    real_local_codes, placed, most_alive = lora_checkpoint._local_codes, [], 0
+
+    def local_codes(param, start):
+        nonlocal most_alive
+        most_alive = max(most_alive, sum(ref() is not None for ref in placed))
+        codes = real_local_codes(param, start)
+        placed.append(weakref.ref(codes))
+        return codes
+
+    lora_checkpoint._local_codes = local_codes
+    mapping = probe_torchtitan_row_mapping(params, sd_adapter)
+    _check(mapping, list(params.values()), _expected(sd_adapter, params))
+    # a projection's lora_b is placed beside its own lora_a, never beside an earlier projection's codes
+    assert most_alive == 1, most_alive
+    dist.destroy_process_group()
+
+
+def test_the_probe_holds_one_projections_codes_at_a_time():
+    run_multiprocess(_one_projection_at_a_time, world_size=1)
 
 
 def _uneven_rows(rank, world_size, port):

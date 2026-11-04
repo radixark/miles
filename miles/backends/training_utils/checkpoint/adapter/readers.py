@@ -30,6 +30,7 @@ from miles.backends.training_utils.checkpoint.adapter.parametrization import (
     AdapterParametrization,
     read_parametrization,
 )
+from miles.backends.training_utils.checkpoint.adapter.source_error import AdapterSourceError, require_fields
 from miles.utils.lora.hf_lora_targets import HfLoraTargets
 
 _PEFT_FILES = ("adapter_config.json", "adapter_model.safetensors")
@@ -105,16 +106,17 @@ def classify_adapter_source(path: Path, targets: HfLoraTargets, *, load_optimize
             is_tinker_only_name(rename_sampler_experts_to_hf(n, targets), targets) for n in names
         ):
             hf_only = [n for n in names if is_hf_only_name(n, targets)]
-            assert not hf_only, f"{path} mixes official Tinker and HF names, e.g. {hf_only[:3]}"
+            if hf_only:
+                raise AdapterSourceError(f"{path} mixes official Tinker and HF names, e.g. {hf_only[:3]}")
             return AdapterSourceKind.EXTERNAL_WEIGHTS
         return AdapterSourceKind.PEFT
     if (path / "adapter_model.safetensors").is_file():
-        raise ValueError(
+        raise AdapterSourceError(
             f"{path} has adapter_model.safetensors but no adapter_config.json, which the load needs to check the "
             "adapter's rank, alpha, target modules and PEFT features against the run; write it next to the weights "
             "(PEFT's save_pretrained writes both)"
         )
-    raise ValueError(f"{path} is not a recognized LoRA adapter source")
+    raise AdapterSourceError(f"{path} is not a recognized LoRA adapter source")
 
 
 def _dcp_source_kind(path: Path) -> AdapterSourceKind:
@@ -125,7 +127,7 @@ def _dcp_source_kind(path: Path) -> AdapterSourceKind:
         return AdapterSourceKind.MEGATRON_BRIDGE_CHECKPOINT
     if any(".lora_a." in k or ".lora_b." in k for k in keys):
         return AdapterSourceKind.TORCHTITAN_CHECKPOINT
-    raise ValueError(f"{path} is a DCP checkpoint with neither Megatron-Bridge nor torchtitan LoRA keys")
+    raise AdapterSourceError(f"{path} is a DCP checkpoint with neither Megatron-Bridge nor torchtitan LoRA keys")
 
 
 def read_source_lora_alpha(path: Path) -> float | None:
@@ -161,9 +163,8 @@ def collapse_shared_lora_a(
         for member in group[1:]:
             if member in read_without_a:
                 continue
-            assert torch.equal(
-                weights.pop(f"{member}.lora_A"), first
-            ), f"{member}.lora_A differs inside a shared-A group"
+            if not torch.equal(weights.pop(f"{member}.lora_A"), first):
+                raise AdapterSourceError(f"{member}.lora_A differs inside a shared-A group")
     return weights
 
 
@@ -184,11 +185,10 @@ class MilesAdapterDirReader:
         parametrization = read_parametrization(self.path)
         if not has_state:
             config = json.loads((self.path / "adapter_config.json").read_text())
+            require_fields(config, ("r", "lora_alpha"), self.path / "adapter_config.json")
             # adapter_config.json is derived from the parametrization; a mismatch means the export was edited
-            assert (config["r"], config["lora_alpha"]) == (
-                parametrization.lora_rank,
-                parametrization.lora_alpha,
-            ), f"{self.path}: adapter_config.json disagrees with {PARAMETRIZATION_FILENAME}"
+            if (config["r"], config["lora_alpha"]) != (parametrization.lora_rank, parametrization.lora_alpha):
+                raise AdapterSourceError(f"{self.path}: adapter_config.json disagrees with {PARAMETRIZATION_FILENAME}")
         self.source = AdapterSource(
             AdapterSourceKind.ADAPTER_DIR,
             parametrization,
@@ -216,7 +216,10 @@ def _check_peft_config(config: dict, path: Path) -> None:
     init = config.get("init_lora_weights")
     if isinstance(init, str) and init.startswith(_BASE_REWRITING_INITS):
         used.append(f"init_lora_weights={init}")
-    assert not used, f"{path}: PEFT features {used} change what the tensors mean; only plain LoRA can be read"
+    if used:
+        raise AdapterSourceError(
+            f"{path}: PEFT features {used} change what the tensors mean; only plain LoRA can be read"
+        )
 
 
 class PeftAdapterReader:
@@ -228,7 +231,9 @@ class PeftAdapterReader:
     def __init__(self, path: Path, run: AdapterParametrization, targets: HfLoraTargets):
         self.path, self.targets = Path(path), targets
         config = json.loads((self.path / "adapter_config.json").read_text())
-        assert config.get("peft_type", "LORA") == "LORA", f"{self.path}: {config['peft_type']} is not LoRA"
+        if config.get("peft_type", "LORA") != "LORA":
+            raise AdapterSourceError(f"{self.path}: {config['peft_type']} is not LoRA")
+        require_fields(config, ("r", "lora_alpha"), self.path / "adapter_config.json")
         _check_peft_config(config, self.path)
         self._weights, self._fused_groups = _read_peft_tensors(self.path, self._map_name, targets)
         modules = sorted({k.rsplit(".", 1)[0] for k in self._weights if k.endswith(".lora_B")})

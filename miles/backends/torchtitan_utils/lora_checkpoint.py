@@ -78,21 +78,36 @@ def _local_codes(param: torch.Tensor, start: int) -> torch.Tensor:
 def probe_torchtitan_row_mapping(params: Mapping[str, torch.Tensor], sd_adapter) -> RowMapping:
     """Collective. ``params``: the adapter parameters by titan key, in the order their local shards are
     concatenated."""
-    # placing the codes is collective, so every rank does it for every parameter before any rank-local step can fail
-    codes, start = {}, 0
+    starts, total = {}, 0
     for key, param in params.items():
-        codes[key] = _local_codes(param, start)
-        start += (param.to_local() if isinstance(param, DTensor) else param).numel()
+        starts[key] = total
+        total += (param.to_local() if isinstance(param, DTensor) else param).numel()
+    keys_by_projection: dict[str, list[str]] = {}
+    for key in params:
+        keys_by_projection.setdefault(split_adapter_key(key)[0], []).append(key)
     error, pieces, groups, modules = None, [], [], set()
-    try:
-        pieces, groups, modules = _probe_local(codes, start, sd_adapter)
-    except Exception as exc:
-        error = exc
+    for keys in keys_by_projection.values():
+        # placing is collective: a rank whose decoding failed keeps placing, so every rank enters every collective
+        codes = {key: _local_codes(params[key], starts[key]) for key in keys}
+        if error is None:
+            try:
+                found = _probe_local(codes, sd_adapter)
+            except Exception as exc:
+                error = exc
+            else:
+                pieces, groups, modules = pieces + found[0], groups + found[1], modules | found[2]
+        # only one projection's global-shaped codes are alive at a time
+        del codes
+    if error is None:
+        try:
+            pieces = finish_local_pieces(pieces, total)
+        except Exception as exc:
+            error = exc
     return agreed_row_mapping(error, pieces, groups, modules)
 
 
 def _probe_local(
-    codes_by_key: Mapping[str, torch.Tensor], total: int, sd_adapter
+    codes_by_key: Mapping[str, torch.Tensor], sd_adapter
 ) -> tuple[list[HfPiece], list[tuple[str, ...]], set[str]]:
     """Rank-local: the pieces of this rank's placed codes, named by the export itself (iter_hf_adapter_tensors)."""
     pieces, modules, a_by_source = [], set(), {}
@@ -111,7 +126,7 @@ def _probe_local(
             groups.append(group)
         # a shared lora_A is stored once, under its sorted group's first member
         pieces += _pieces_of(f"{group[0]}.lora_A", codes)
-    return finish_local_pieces(pieces, total), groups, modules
+    return pieces, groups, modules
 
 
 def _pieces_of(hf_key: str, codes: torch.Tensor) -> list[HfPiece]:

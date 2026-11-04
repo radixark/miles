@@ -96,6 +96,44 @@ def test_probe_recovers_pieces_and_shared_a_from_a_tp_split_export():
     run_multiprocess(_probe)
 
 
+def _pp_broadcast_export(params):
+    """Bridge-like at PP=2: each stage holds one layer, and every stage's adapters reach every stage."""
+    a, b_q, b_k = params
+
+    def broadcast(local):
+        parts = [torch.empty_like(local) for _ in range(dist.get_world_size())]
+        dist.all_gather(parts, local.data)
+        return parts
+
+    for layer, (stage_a, stage_b_q, stage_b_k) in enumerate(
+        zip(broadcast(a), broadcast(b_q), broadcast(b_k), strict=True)
+    ):
+        q, k = Q.replace(".0.", f".{layer}."), K.replace(".0.", f".{layer}.")
+        yield f"{q}.lora_A.weight", stage_a.clone()
+        yield f"{q}.lora_B.weight", stage_b_q
+        yield f"{k}.lora_A.weight", stage_a.clone()
+        yield f"{k}.lora_B.weight", stage_b_k
+
+
+def _probe_pp(rank, world_size, port):
+    init_gloo(rank, world_size, port=port)
+    init_gloo_group()
+    params = [torch.nn.Parameter(torch.randn(3, 5)) for _ in range(3)]
+    model = _model(params)
+    targets = get_hf_lora_targets({"model_type": "qwen3", "num_hidden_layers": 2})
+    mapping = probe_bridge_row_mapping(model, params, lambda: _pp_broadcast_export(_registered(model)), targets)
+    k, q = (name.replace(".0.", f".{rank}.") for name in (K, Q))
+    assert {p.key for p in mapping.pieces} == {f"{k}.lora_A", f"{q}.lora_B", f"{k}.lora_B"}
+    assert mapping.shared_lora_a_groups == tuple(
+        (K.replace(".0.", f".{s}."), Q.replace(".0.", f".{s}.")) for s in range(2)
+    )
+    dist.destroy_process_group()
+
+
+def test_probe_skips_the_shared_a_of_another_pipeline_stage():
+    run_multiprocess(_probe_pp)
+
+
 GATE, UP = "model.layers.0.mlp.experts.{}.gate_proj", "model.layers.0.mlp.experts.{}.up_proj"
 
 
@@ -375,9 +413,10 @@ NORM_KEY, QKV_KEY = "decoder.final_layernorm.weight", "decoder.layers.self_atten
 class _Chunk(torch.nn.Module):
     """A model chunk: one norm, one projection and one adapter weight, keyed as Megatron shards them."""
 
-    def __init__(self, norm: torch.Tensor):
+    def __init__(self, norm: torch.Tensor, qkv: torch.Tensor | None = None):
         super().__init__()
-        self.norm, self.qkv, self.lora = (torch.nn.Parameter(t) for t in (norm, torch.ones(2, 2), torch.ones(2)))
+        qkv = torch.ones(2, 2) if qkv is None else qkv
+        self.norm, self.qkv, self.lora = (torch.nn.Parameter(t) for t in (norm, qkv, torch.ones(2)))
 
     def sharded_state_dict(self, metadata=None) -> dict:
         lora_key = "decoder.layers.self_attention.linear_qkv.adapter.linear_in.weight"
@@ -407,9 +446,9 @@ def single_rank_gloo(tmp_path, monkeypatch):
         dist.destroy_process_group()
 
 
-def _torch_dist_base(path, norm: torch.Tensor, *, with_norm: bool = True):
+def _torch_dist_base(path, norm: torch.Tensor, *, with_norm: bool = True, qkv: torch.Tensor | None = None):
     path.mkdir()
-    state = _Chunk(norm).sharded_state_dict()
+    state = _Chunk(norm, qkv).sharded_state_dict()
     if not with_norm:
         del state[NORM_KEY]
     dist_checkpointing.save({"model": state}, str(path))
@@ -427,6 +466,16 @@ def test_a_torch_dist_base_fine_tuned_after_its_hf_conversion_is_refused(single_
         assert_same_base_as_torch_dist("src", [chunk], _torch_dist_base(tmp_path / "sft", base + 1))
     with pytest.raises(RuntimeError, match="cannot be compared with this run's model: it lacks"):
         assert_same_base_as_torch_dist("src", [chunk], _torch_dist_base(tmp_path / "bare", base, with_norm=False))
+
+
+def test_a_torch_dist_base_with_a_merged_lora_is_refused(single_rank_gloo, tmp_path):
+    norm = torch.randn(4)
+    with pytest.raises(
+        RuntimeError, match="trained on another base model .* differs in e.g. \\['decoder.layers.0.self"
+    ):
+        assert_same_base_as_torch_dist(
+            "src", [_Chunk(norm.clone())], _torch_dist_base(tmp_path / "merged", norm, qkv=torch.ones(2, 2) + 1)
+        )
 
 
 def test_a_pretrained_checkpoint_resolves_to_its_tracked_torch_dist_iteration(single_rank_gloo, tmp_path):
@@ -588,13 +637,13 @@ def _offloaded_optimizer():
     return chained, hdo, param, stepped
 
 
-def _checked_loader(optimizer, members, monkeypatch, *, load_optimizer=True):
+def _checked_loader(optimizer, members, monkeypatch, *, load_optimizer=True, keys=()):
     """A loader over an empty model with a stubbed source read."""
     run = AdapterParametrization("base", 4, 8.0, "lora", ("model.layers.0.self_attn.q_proj",), False)
     loader = bridge_peft_checkpoint.MegatronBridgeCheckpointLoader([], optimizer, members, run, load_optimizer)
     monkeypatch.setattr(bridge_peft_checkpoint, "unwrap_model", lambda model: [])
     monkeypatch.setattr(loader, "_read_source", lambda path, chunks: ({"peft": {"alpha": 16}}, {}, [], [], None))
-    metadata = SimpleNamespace(state_dict_metadata={})
+    metadata = SimpleNamespace(state_dict_metadata=dict.fromkeys(keys))
     monkeypatch.setattr(
         bridge_peft_checkpoint.dcp, "FileSystemReader", lambda path: SimpleNamespace(read_metadata=lambda: metadata)
     )
@@ -616,6 +665,19 @@ def test_an_offloaded_optimizer_is_never_dummy_stepped_from_parametrization_to_l
 
     assert not stepped, "the empty HDO state must be zero-initialized, not dummy-stepped"
     assert torch.equal(hdo.state[param]["master_param"], torch.ones(2)) and int(hdo.state[param]["step"]) == 0
+
+
+@pytest.mark.parametrize(
+    "keys, has_optimizer_state",
+    [(["optimizer.distributed.exp_avg"], True), (["chained_0.optimizer.step"], True), ([], False)],
+    ids=["optimizer", "chained-optimizer", "weights-only"],
+)
+def test_a_bridge_checkpoint_reports_whether_it_holds_optimizer_state(
+    single_rank_gloo, tmp_path, monkeypatch, keys, has_optimizer_state
+):
+    """load_adapter_dir refuses a source without it unless --no-load-optim."""
+    loader, run = _checked_loader(None, None, monkeypatch, keys=keys)
+    assert loader.parametrization(tmp_path) == (replace(run, lora_alpha=16.0), has_optimizer_state)
 
 
 def test_the_gateways_parametrization_fields_are_the_slots_keyword_arguments():
