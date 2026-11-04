@@ -625,8 +625,7 @@ class LegacyRankShardLoader:
             for sub, parameter_state in zip(subs, state["parameter_state"], strict=True):
                 sub.load_parameter_state_from_dp_reshardable(parameter_state)
                 if isinstance(sub.optimizer, HybridDeviceOptimizer):
-                    # unlike Megatron's other parameter-state loaders, this one leaves the sub-optimizers'
-                    # fp32 params and state devices stale
+                    # load_parameter_state_from_dp_reshardable does not sync the HDO sub-optimizers' fp32 params and state
                     sub.optimizer._sync_hdo_state_to_sub_optimizers()
             _build_cast_main_to_params_fn(self._optimizer, precision_aware=self._precision_aware)()
             for chunk in self._model:

@@ -47,8 +47,7 @@ def validate_lora_args(args):
     ), "--lora-adapter-convert-save converts --lora-adapter-path"
     if not is_lora_enabled(args):
         return
-    # the trainer actors load it from their own working directory, which need not be the driver's that resolves
-    # alpha; only engines alone may be given a hub id
+    # trainers resolve relative paths from their own cwd; rollout-only keeps the string so a hub id reaches SGLang
     if args.lora_adapter_path is not None and not args.debug_rollout_only:
         args.lora_adapter_path = os.path.abspath(args.lora_adapter_path)
     args.lora_alpha = _resolve_lora_alpha(args)
