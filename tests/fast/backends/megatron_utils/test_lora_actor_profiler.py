@@ -77,6 +77,7 @@ def test_a_source_the_slot_cannot_take_is_a_user_error_and_leaves_the_slot_alone
     assert actor.load_slot(0, rank=8, alpha=16.0, source=source) == {"error": "rank 4 != 8", "error_category": "user"}
     assert loaded == [] and actor.slot_optimizers == {}
 
+
 @pytest.mark.parametrize("method", ["forward_backward", "forward_only"])
 def test_lora_pass_emits_scheduled_trace(monkeypatch, method):
     model = SimpleNamespace(run_forward_backward=lambda *args, **kwargs: torch.ones(2).sum())
