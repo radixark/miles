@@ -411,6 +411,7 @@ def parse_args_and_get_parser(
     sglang, sglang_scaling = SglangConfig.parse_args(args)
     raw_megatron = resolve_megatron_config(args, base_args=backend_values if backend == "megatron" else {})
     check_output_store_args(args, sglang=sglang, megatron=raw_megatron)
+    _check_stop_token_replace_streaming_session(args, sglang=sglang)
     values = {name: value for name, value in vars(args).items() if name in AllConfig.model_fields} | {
         "raw_megatron": raw_megatron,
         "raw_fsdp": FsdpArgsNamespace(**backend_values) if backend == "fsdp" else None,
@@ -1009,6 +1010,37 @@ def _resolve_sample_ownership_check(args: argparse.Namespace) -> None:
         )
 
 
+def _resolve_allow_stop_token_replace(args: argparse.Namespace) -> bool:
+    if not args.use_session_server:
+        if args.allow_stop_token_replace is not None:
+            raise ValueError(
+                "--allow-stop-token-replace requires --use-session-server; "
+                "this flag only configures the session-server TITO middleware."
+            )
+        return False
+    family_default = TITOTokenizerType.get_tokenizer_class(TITOTokenizerType(args.tito_model)).allow_stop_token_replace
+    # An explicit flag wins over the --tito-model family default.
+    allowed = family_default if args.allow_stop_token_replace is None else args.allow_stop_token_replace
+    source = (
+        f"--tito-model={args.tito_model} default"
+        if args.allow_stop_token_replace is None
+        else "explicit --allow-stop-token-replace"
+    )
+    logger.info(f"Session server stop-token replacement {'allowed' if allowed else 'rejected'} ({source})")
+    return allowed
+
+
+def _check_stop_token_replace_streaming_session(args: argparse.Namespace, *, sglang: SglangConfig) -> None:
+    if args.allow_stop_token_replace and sglang.common_value("enable_streaming_session"):
+        raise ValueError(
+            f"Stop-token replacement (allowed by --tito-model={args.tito_model} or --allow-stop-token-replace) "
+            "cannot be combined with --sglang-enable-streaming-session: replacing the sampled stop token rewrites "
+            "the last generated token, while a streaming session extends the engine's stored tokens append-only. "
+            "Change the agent harness so a stop at a role token is followed by the message that token opens and "
+            "pass --no-allow-stop-token-replace, or drop --sglang-enable-streaming-session."
+        )
+
+
 def _apply_custom_config(args, data: dict) -> None:
     # configs written before --router
     if data.pop("use_miles_router", False):
@@ -1168,6 +1200,8 @@ def miles_validate_args(args):
             "thinking-token trimming). This can cause input_ids to diverge from "
             "the canonical template output. Use at your own risk."
         )
+
+    args.allow_stop_token_replace = _resolve_allow_stop_token_replace(args)
 
     if args.debug_disable_optimizer:
         args.no_load_optim = True

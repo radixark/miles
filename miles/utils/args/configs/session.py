@@ -1,3 +1,4 @@
+import argparse
 from typing import ClassVar
 
 from miles.rollout.session.types import SessionServerInstance
@@ -63,6 +64,20 @@ class SessionConfig(BaseConfig):
             "the pretokenized prefix in multi-turn agentic sessions.",
         ),
     ] = "default"
+    allow_stop_token_replace: A[
+        bool | None,
+        Arg(
+            action=argparse.BooleanOptionalAction,
+            help=(
+                "Whether the session server may replace the stop token the model sampled with the first "
+                "token of the appended render, as GLM does when it stops at <|observation|> but the next "
+                "message is not a tool message. Allowed replacements log a warning; with "
+                "--no-allow-stop-token-replace such a request is rejected with HTTP 400. Defaults to the "
+                "--tito-model family's setting (allowed for glm47 and glm53, rejected otherwise). "
+                "Allowing it cannot be combined with --sglang-enable-streaming-session."
+            ),
+        ),
+    ] = None
     session_message_matcher: A[
         str,
         Arg(

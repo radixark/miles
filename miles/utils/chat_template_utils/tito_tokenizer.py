@@ -20,6 +20,7 @@ except ImportError:
 from pathlib import Path
 from typing import Any
 
+from miles.rollout.session.errors import MessageValidationError
 from miles.utils.chat_template_utils import deepseek, template
 from miles.utils.chat_template_utils.inkling_parser import InklingResponseParser
 from miles.utils.chat_template_utils.message_matcher_hub import (
@@ -101,6 +102,9 @@ class TITOTokenizer:
 
     max_trim_tokens: int = 0
     trailing_token_ids: frozenset[int] = frozenset()
+    # Family default for ``--allow-stop-token-replace``: whether ``merge_tokens`` may replace
+    # the sampled stop token with a different first token of the appended render.
+    allow_stop_token_replace: bool = False
 
     # The family's fixed renderer contract. DEFAULT uses the model's native
     # template with the maximal best-effort append surface.
@@ -485,11 +489,15 @@ class GLM47TITOTokenizer(TITOTokenizer):
 
     ``<|user|>`` and ``<|observation|>`` are both assistant stop tokens *and*
     next-message start tokens in the chat template.  In ``merge_tokens``,
-    the last token of the pretokenized prefix is always stripped when it is
-    one of these boundary tokens — whether it matches the first incremental
-    token (overlap) or differs (e.g. model stopped with ``<|observation|>`` but
-    next turn is ``<|user|>`` because the tool call failed and a system message
-    is injected instead).
+    the last token of the pretokenized prefix is stripped when it is one of
+    these boundary tokens.  When the first incremental token is the same token
+    (a tool message after ``<|observation|>``, a user message after
+    ``<|user|>``), the strip only drops the duplicate.  When it differs (e.g.
+    the model stopped with ``<|observation|>`` but the next message is a user
+    message because the tool call failed to parse or went unanswered), the
+    strip replaces the sampled stop token: allowed by default for this family
+    with one warning per replacement, rejected under
+    ``--no-allow-stop-token-replace``.
     """
 
     reasoning_parser = "glm45"
@@ -503,6 +511,7 @@ class GLM47TITOTokenizer(TITOTokenizer):
     )
 
     max_trim_tokens: int = 1
+    allow_stop_token_replace: bool = True
     _default_assistant_start_str: str = "<|assistant|>"
 
     def __init__(
@@ -532,8 +541,38 @@ class GLM47TITOTokenizer(TITOTokenizer):
         incremental = self.tokenize_additional_messages(old_messages, new_messages, template_args=template_args)
         prefix = list(pretokenized_token_ids)
         if prefix and prefix[-1] in self._ambiguous_boundary_ids:
+            if prefix[-1] != incremental[0]:
+                self._check_stop_token_replace(
+                    old_messages, new_messages, sampled_id=prefix[-1], replacement_id=incremental[0]
+                )
             prefix = prefix[:-1]
         return prefix + incremental
+
+    def _check_stop_token_replace(
+        self,
+        old_messages: list[dict[str, Any]],
+        new_messages: list[dict[str, Any]],
+        *,
+        sampled_id: int,
+        replacement_id: int,
+    ) -> None:
+        """Warn about, or reject, replacing the sampled stop token with the appended render's first token."""
+        sampled, replacement = self.tokenizer.convert_ids_to_tokens([sampled_id, replacement_id])
+        appended = new_messages[len(old_messages) :]
+        next_render = f"appended {appended[0]['role']} message" if appended else "generation prompt"
+        tool_calls = "has" if old_messages[-1].get("tool_calls") else "has no"
+        detail = (
+            f"the model stopped at {sampled}, but the {next_render} starts with {replacement} "
+            f"(the stored assistant turn {tool_calls} parsed tool calls)"
+        )
+        if not self.allow_stop_token_replace:
+            raise MessageValidationError(
+                f"{detail}; --no-allow-stop-token-replace rejects replacing the sampled stop token: "
+                f"follow a stop at {sampled} with the message that token opens, or allow the replacement"
+            )
+        logger.warning(
+            "Replacing the sampled stop token: %s; that turn's training sample drops the sampled token", detail
+        )
 
 
 class GLM53TITOTokenizer(GLM47TITOTokenizer):
@@ -1136,6 +1175,7 @@ def get_tito_tokenizer(
     tokenizer_type: TITOTokenizerType | str = TITOTokenizerType.DEFAULT,
     chat_template_kwargs: dict[str, Any] | None = None,
     assistant_start_str: str | None = None,
+    allow_stop_token_replace: bool | None = None,
 ) -> TITOTokenizer:
     """Create a ``TITOTokenizer`` instance.
 
@@ -1147,6 +1187,8 @@ def get_tito_tokenizer(
         assistant_start_str: Decoded text prefix identifying assistant content
             segments (e.g. ``"<|im_start|>assistant"``).  Auto-detected from
             the chat template by default; pass explicitly to override.
+        allow_stop_token_replace: The run's resolved ``--allow-stop-token-replace``;
+            ``None`` keeps the family default.
     """
     if tokenizer is None:
         raise ValueError("tokenizer must not be None")
@@ -1156,7 +1198,10 @@ def get_tito_tokenizer(
     kwargs: dict[str, Any] = {"chat_template_kwargs": chat_template_kwargs}
     if assistant_start_str is not None:
         kwargs["assistant_start_str"] = assistant_start_str
-    return cls(tokenizer, **kwargs)
+    tito = cls(tokenizer, **kwargs)
+    if allow_stop_token_replace is not None:
+        tito.allow_stop_token_replace = allow_stop_token_replace
+    return tito
 
 
 # ---------------------------------------------------------------------------

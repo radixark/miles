@@ -123,6 +123,7 @@ class TestConfigToArgv:
             hf_checkpoint="/fake/model",
             chat_template_path=None,
             tito_model="qwen3",
+            allow_stop_token_replace=False,
             apply_chat_template_kwargs={"enable_thinking": False},
             use_rollout_routing_replay=True,
             use_rollout_indexer_replay=False,
