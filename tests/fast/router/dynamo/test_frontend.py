@@ -13,10 +13,20 @@ def config():
     )
 
 
+def test_default_launch_does_not_connect_to_inherited_nats(config):
+    assert "NATS_SERVER" not in runtime_env(config, inherited_env={"NATS_SERVER": "nats://wrong:4222"})
+
+
 def test_nats_is_run_owned(config):
+    config = config.model_copy(update={"nats_server": "nats://nats:4222"})
     assert runtime_env(config, inherited_env={"NATS_SERVER": "nats://wrong:4222"})["NATS_SERVER"] == config.nats_server
     with pytest.raises(ValueError, match="NATS_SERVER"):
         runtime_env(config.model_copy(update={"env": {"NATS_SERVER": "wrong"}}), inherited_env={})
+
+
+def test_nats_cannot_be_enabled_through_unvalidated_env(config):
+    with pytest.raises(ValueError, match="NATS_SERVER"):
+        runtime_env(config.model_copy(update={"env": {"NATS_SERVER": "nats://nats:4222"}}), inherited_env={})
 
 
 @pytest.mark.parametrize("option", ["--namespace=wrong", "--namespace", "--names", "--no-namespace", "--"])
