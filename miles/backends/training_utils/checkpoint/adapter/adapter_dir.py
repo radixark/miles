@@ -138,6 +138,10 @@ def load_adapter_dir(
 
     All ranks call. A failure on one rank fails every rank before the next collective.
     Alpha is not checked here: the caller owns it (Tinker adopts the source's, RL compares it to ``--lora-alpha``).
+
+    A source that needs conversion (PEFT, external weights, another parametrization) is read whole on every rank:
+    about 6 bytes of host memory per source element for a bf16 file (its tensors and their fp32 upcast), e.g.
+    ~41 GB per rank and ~330 GB per 8-rank node for a rank-16 adapter on every DeepSeek-V3 expert.
     """
     kind, error = None, None
     try:
