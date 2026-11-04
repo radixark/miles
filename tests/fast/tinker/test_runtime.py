@@ -1,5 +1,7 @@
 """Runtime translation preserves datum order, sampling parameters, and token logprobs."""
 
+import json
+
 import httpx
 import pytest
 import torch
@@ -18,6 +20,7 @@ from miles.tinker.runtime import (
     _topk_prompt_logprobs,
     classify_lora_groups,
     max_adapter_bytes,
+    max_adapter_json_bytes,
 )
 from miles.tinker.server.proto_codec import encode_sample_response
 from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
@@ -285,7 +288,31 @@ def test_the_import_bound_is_every_base_weight_targeted_at_the_slot_rank(tmp_pat
     # rank 8 on q (6 + 4) and on each of the 3 experts (5 + 2); the norm is no LoRA target
     elements = 8 * (6 + 4) + 3 * 8 * (5 + 2)
     targets = get_hf_lora_targets({"model_type": "qwen3", "num_hidden_layers": 1})
-    assert max_adapter_bytes(str(tmp_path), 8, targets) == 4 * elements + (1 << 20) * 9
+    # one target_modules entry for q and one per expert
+    json_bytes = (1 << 20) + (len("q") + 64) + 3 * (len("experts.w") + 64)
+    assert max_adapter_json_bytes(str(tmp_path), targets) == json_bytes
+    assert max_adapter_bytes(str(tmp_path), 8, targets) == 4 * elements + json_bytes * 9
+
+
+def test_the_import_json_bound_fits_a_per_expert_moe_bases_peft_config(tmp_path):
+    """A PEFT export lists every expert's modules in target_modules: on a large per-expert MoE base that alone is
+    past a flat MiB, so the bound must grow with the base, and only with it."""
+    from safetensors.torch import save_file
+
+    layers, experts, projections = 94, 128, ("gate_proj", "up_proj", "down_proj")
+    names = [
+        f"model.layers.{layer}.mlp.experts.{expert}.{projection}"
+        for layer in range(layers)
+        for expert in range(experts)
+        for projection in projections
+    ]
+    save_file({f"{name}.weight": torch.zeros(1, 1) for name in names}, tmp_path / "model.safetensors")
+    config = json.dumps({"r": 8, "lora_alpha": 16, "target_modules": names}, indent=2)
+    targets = get_hf_lora_targets({"model_type": "qwen3", "num_hidden_layers": 1})
+
+    bound = max_adapter_json_bytes(str(tmp_path), targets)
+    assert len(config) > 1 << 20, "a flat MiB would refuse it"
+    assert len(config) <= bound < 3 * len(config) + (1 << 20)
 
 
 def test_the_import_bound_counts_one_a_per_component_of_a_fused_matrix(tmp_path):

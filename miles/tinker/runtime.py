@@ -4,6 +4,7 @@ import asyncio
 import json
 import math
 import shutil
+from collections.abc import Iterator
 from dataclasses import asdict
 from pathlib import Path
 from typing import TextIO
@@ -32,7 +33,7 @@ from miles.backends.training_utils.checkpoint.adapter.parametrization import (
 )
 from miles.backends.training_utils.checkpoint.adapter.readers import PEFT_FILES
 from miles.ray.rollout.train_data_conversion import ROLLOUT_DATA_VALUE_SPEC
-from miles.tinker.core.service import IMPORT_COPIES_DIRNAME, IMPORT_JSON_MAX_BYTES
+from miles.tinker.core.service import IMPORT_COPIES_DIRNAME
 from miles.tinker.core.types import OwnershipError, UserInputError
 from miles.tinker.core.utils import PRE_COMMIT_META_FILENAME
 from miles.utils import object_store
@@ -161,25 +162,48 @@ REFUSED_IMPORT_ENTRIES = {
 }
 
 
+# beyond its target_modules, an adapter config or parametrization holds a few small fields
+_IMPORT_JSON_BASE_BYTES = 1 << 20
+# one indented, quoted target_modules entry beyond its HF name: PEFT's prefix, an expert index, punctuation
+_IMPORT_JSON_ENTRY_OVERHEAD_BYTES = 64
+
+
+def _lora_matrices(hf_checkpoint: str, targets: HfLoraTargets) -> Iterator[tuple[str, tuple[int, ...], int]]:
+    """(module, shape ``[..., out, in]``, HF-fused components each with its own A) of every base weight a LoRA can
+    target; a norm or bias is none."""
+    hf_dir = resolve_hf_dir(hf_checkpoint)
+    assert hf_dir is not None, f"--hf-checkpoint {hf_checkpoint} has no local weights to bound file:// imports by"
+    files = sorted(hf_dir.glob("*.safetensors"))
+    assert files, f"{hf_dir} holds no .safetensors weights"
+    for file in files:
+        with safe_open(file, framework="pt") as weights:
+            for key in weights.keys():
+                if len(shape := weights.get_slice(key).get_shape()) >= 2:
+                    module = key.removesuffix(".weight")
+                    components = fused_components(module, targets)
+                    yield module, tuple(shape), 1 if components is None else len(components)
+
+
+def max_adapter_json_bytes(hf_checkpoint: str, targets: HfLoraTargets) -> int:
+    """The largest JSON an adapter of this base needs: its few fields, plus one target_modules entry for every
+    module path a PEFT export can name (each expert and each fused component apart)."""
+    entries = sum(
+        math.prod(shape[:-2]) * components * (len(module) + _IMPORT_JSON_ENTRY_OVERHEAD_BYTES)
+        for module, shape, components in _lora_matrices(hf_checkpoint, targets)
+    )
+    return _IMPORT_JSON_BASE_BYTES + entries
+
+
 def max_adapter_bytes(hf_checkpoint: str, max_lora_rank: int, targets: HfLoraTargets) -> int:
     """The largest fp32 adapter any parametrization of this base can have: every weight ``[..., out, in]`` targeted at
     ``max_lora_rank``, i.e. ``rank * (n * in + out)`` elements per matrix whose HF-fused module exports ``n``
-    components (each with its own A), plus a MiB for each file's header and JSON."""
-    hf_dir = resolve_hf_dir(hf_checkpoint)
-    assert hf_dir is not None, f"--hf-checkpoint {hf_checkpoint} has no local weights to bound file:// imports by"
-    elements, files = 0, 0
-    for file in sorted(hf_dir.glob("*.safetensors")):
-        files += 1
-        with safe_open(file, framework="pt") as weights:
-            for key in weights.keys():
-                # a norm or bias is no LoRA target
-                if len(shape := weights.get_slice(key).get_shape()) >= 2:
-                    *lead, out_features, in_features = shape
-                    components = fused_components(key.removesuffix(".weight"), targets)
-                    copies_of_a = 1 if components is None else len(components)
-                    elements += math.prod(lead) * max_lora_rank * (out_features + copies_of_a * in_features)
-    assert files, f"{hf_dir} holds no .safetensors weights"
-    return 4 * elements + IMPORT_JSON_MAX_BYTES * (files + 8)
+    components (each with its own A), plus each base file's share of headers and JSON."""
+    elements = sum(
+        math.prod(lead) * max_lora_rank * (out_features + components * in_features)
+        for _, (*lead, out_features, in_features), components in _lora_matrices(hf_checkpoint, targets)
+    )
+    files = len(list(resolve_hf_dir(hf_checkpoint).glob("*.safetensors")))
+    return 4 * elements + max_adapter_json_bytes(hf_checkpoint, targets) * (files + 8)
 
 
 def read_imported_adapter(path: str, shown_path: str) -> dict:

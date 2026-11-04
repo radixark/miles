@@ -13,7 +13,7 @@ from miles.ray.train.init_request import TrainerControllerInitRequest
 from miles.tinker.arguments import configure_tinker_args, validate_tinker_args
 from miles.tinker.core.service import TinkerService
 from miles.tinker.core.types import GatewayConfig
-from miles.tinker.runtime import MilesBackend, max_adapter_bytes, take_checkpoint_root
+from miles.tinker.runtime import MilesBackend, max_adapter_bytes, max_adapter_json_bytes, take_checkpoint_root
 from miles.tinker.server.app import build_app
 from miles.tinker.server.encoding import assert_installed_sdk_version
 from miles.utils.args.trainer_utils import compute_trainer_ckpt_load_config
@@ -87,6 +87,9 @@ async def serve(args, *, disposer: Disposer):
             None
             if args.tinker_import_root is None
             else max_adapter_bytes(args.hf_checkpoint, args.lora_rank, lora_layout)
+        ),
+        import_json_max_bytes=(
+            None if args.tinker_import_root is None else max_adapter_json_bytes(args.hf_checkpoint, lora_layout)
         ),
         public_url=args.tinker_public_url,
         vocab_size=hf_config.vocab_size,

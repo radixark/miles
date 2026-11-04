@@ -55,9 +55,6 @@ _SDK_FINISH_RETRY_S = 300.0
 
 # gateway-owned copies of file:// imports, under the checkpoint root so every trainer rank can read them
 IMPORT_COPIES_DIRNAME = ".imports"
-# a JSON a reader parses whole, on the gateway and every trainer rank; also each file's header allowance in the
-# import budget
-IMPORT_JSON_MAX_BYTES = 1 << 20
 _COPY_CHUNK_BYTES = 1 << 24
 
 
@@ -79,10 +76,15 @@ def _open_dir_beneath(root: str, relative: str) -> int:
 
 
 def _copy_adapter_files(
-    source_fd: int, copy_dir: str, wanted: Callable[[str], bool], max_bytes: int, refused_entries: dict[str, str]
+    source_fd: int,
+    copy_dir: str,
+    wanted: Callable[[str], bool],
+    max_bytes: int,
+    json_max_bytes: int,
+    refused_entries: dict[str, str],
 ) -> None:
-    """Copy the files a reader opens, ``max_bytes`` in total; anything else (README.md, .cache/, a pickled DCP or
-    .pt) stays behind."""
+    """Copy the files a reader opens, ``max_bytes`` in total and ``json_max_bytes`` per JSON; anything else (README.md,
+    .cache/, a pickled DCP or .pt) stays behind."""
     names = os.listdir(source_fd)
     # e.g. a checkpoint store mounted under the import root, which realpath checks cannot see
     for entry, why in refused_entries.items():
@@ -101,10 +103,11 @@ def _copy_adapter_files(
             # sized before reading: a sparse file would otherwise fill the checkpoint disk every tenant shares
             if os.fstat(fd).st_size > budget:
                 raise UserInputError(f"{name} would bring the import past {max_bytes} bytes, more than any adapter")
-            if name.endswith(".json") and os.fstat(fd).st_size > IMPORT_JSON_MAX_BYTES:
-                raise UserInputError(f"{name} is larger than {IMPORT_JSON_MAX_BYTES} bytes, more than any adapter's")
+            # a JSON is parsed whole by the gateway and every trainer rank
+            if name.endswith(".json") and os.fstat(fd).st_size > json_max_bytes:
+                raise UserInputError(f"{name} is larger than {json_max_bytes} bytes, more than any adapter's")
             # a file growing while it is copied is still held to its cap
-            limit = min(budget, IMPORT_JSON_MAX_BYTES) if name.endswith(".json") else budget
+            limit = min(budget, json_max_bytes) if name.endswith(".json") else budget
             source = open(fd, "rb", closefd=False)
             with source, open(os.path.join(copy_dir, name), "wb") as copy:
                 while chunk := source.read(min(_COPY_CHUNK_BYTES, limit + 1)):
@@ -694,7 +697,12 @@ class TinkerService:
             source_fd = _open_dir_beneath(root, os.path.relpath(path, root))
             try:
                 _copy_adapter_files(
-                    source_fd, copy_dir, wanted, self.config.import_max_bytes, self.backend.refused_import_entries
+                    source_fd,
+                    copy_dir,
+                    wanted,
+                    self.config.import_max_bytes,
+                    self.config.import_json_max_bytes,
+                    self.backend.refused_import_entries,
                 )
             finally:
                 os.close(source_fd)

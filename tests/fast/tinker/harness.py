@@ -220,6 +220,7 @@ def make_config(checkpoint_root, **overrides) -> GatewayConfig:
         vocab_size=128000,
         exports_tinker_names=True,
         import_max_bytes=1 << 20,
+        import_json_max_bytes=1 << 20,
     )
     return GatewayConfig(**{**defaults, **overrides})
 
