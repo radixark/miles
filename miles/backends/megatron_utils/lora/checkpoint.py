@@ -327,8 +327,8 @@ def _load_legacy_slot(model: Sequence[DDP], slot_optimizer: SlotOptimizer, path:
     slot_optimizer.load_sharded_state(loaded[_OPTIM_KEY])
     if not load_optimizer:
         slot_optimizer.reset_adam_state()
-    # the masters are authoritative, also for weights only: main's layout leaves grouped-expert adapter weights
-    # unloaded in the model
+    # main's torch_dist load leaves factory-built (grouped-expert) adapter weights unwritten; masters are
+    # authoritative until that is fixed in main
     for child in slot_optimizer.chained_optimizers:
         child._copy_main_params_to_model_params()
     slot_optimizer.allgather_params()
