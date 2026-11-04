@@ -1,4 +1,5 @@
 import json
+import os
 from argparse import Namespace
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
@@ -62,7 +63,10 @@ def save_adapter_to_disk(out_dir, config: dict, tensors: dict) -> None:
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     (out / "adapter_config.json").write_text(json.dumps(config, indent=2))
-    safetensors.torch.save_file(tensors, str(out / "adapter_model.safetensors"))
+    # engines may read the dir while it is written (an RL --save exports into its committed dir): never a partial file
+    partial = out / "adapter_model.safetensors.partial"
+    safetensors.torch.save_file(tensors, str(partial))
+    os.replace(partial, out / "adapter_model.safetensors")
 
 
 def build_lora_config(args, *, target_modules):
