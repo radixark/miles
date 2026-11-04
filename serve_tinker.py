@@ -19,6 +19,7 @@ from miles.utils.args.trainer_utils import compute_trainer_ckpt_load_config
 from miles.utils.arguments import parse_args
 from miles.utils.async_utils import Disposer, with_disposer
 from miles.utils.hf_utils.config import load_hf_config
+from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
 from miles.utils.http_utils import init_http_client
 from miles.utils.orchestration_utils import ArgvOrchestratorStartupInfo, init_orchestration_script
 
@@ -34,7 +35,8 @@ async def serve(args, *, disposer: Disposer):
     ckpt_load_config = compute_trainer_ckpt_load_config(args, actor_config)
     assert ckpt_load_config is not None
     assert ckpt_load_config.load == args.hf_checkpoint, "Tinker trainers and engines must load the same frozen HF base"
-    hf_config = load_hf_config(args.hf_checkpoint).get_text_config()
+    full_hf_config = load_hf_config(args.hf_checkpoint)
+    hf_config = full_hf_config.get_text_config()
     max_tokens_per_datum = hf_config.max_position_embeddings
     if args.max_tokens_per_gpu is not None:
         # The trainer pads each packed microbatch to this multiple.
@@ -96,7 +98,8 @@ async def serve(args, *, disposer: Disposer):
         * args.raw_megatron.base_args["pipeline_model_parallel_size"]
         * args.raw_megatron.base_args["context_parallel_size"]
     )
-    service = TinkerService(MilesBackend(trainer, router_url, dp_size=dp_size), config)
+    lora_layout = get_hf_lora_targets(full_hf_config.to_dict())
+    service = TinkerService(MilesBackend(trainer, router_url, lora_layout, dp_size=dp_size), config)
 
     server = uvicorn.Server(
         uvicorn.Config(

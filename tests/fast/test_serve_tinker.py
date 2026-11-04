@@ -27,7 +27,7 @@ class TestServe:
         assert args.inference_runtime_mut_state.engine_count == 2
         assert not http_utils._http_clients
         assert http_utils._client_concurrency == 24
-        result = await MilesBackend(trainer=tinker_startup.trainer, router_url="http://router:30000").sample(
+        result = await MilesBackend(trainer=tinker_startup.trainer, router_url="http://router:30000", lora_layout=None).sample(
             payload={
                 "prompt_tokens": [1, 2],
                 "num_samples": 1,
