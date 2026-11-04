@@ -18,6 +18,7 @@ from megatron.core.dist_checkpointing.dict_utils import nested_values
 from megatron.core.dist_checkpointing.mapping import apply_factories
 from megatron.core.distributed import DistributedDataParallel as DDP
 from megatron.core.utils import unwrap_model
+from safetensors import SafetensorError
 
 from miles.backends.megatron_utils.lora.bridge_checkpoint import BridgeAdapterSlots
 from miles.backends.megatron_utils.lora.optimizer import SlotOptimizer
@@ -179,8 +180,9 @@ def find_load_mismatch(
     e.g. one fused GDN in_proj adapter saved before the canonical in_proj_q/k/v/z split.
     """
     path = Path(path)
-    mismatch, saved = None, None
-    # any failure to read the user's source is theirs; raised after the slot reset, it kills the trainer cell
+    mismatch, saved, server_error = None, None, None
+    # a source the user named that is missing, malformed or refused is theirs; raised after the slot reset, it kills
+    # the trainer cell
     try:
         kind = check_adapter_source(path, run, targets, load_optimizer=load_optimizer)
         if kind == AdapterSourceKind.LEGACY_TINKER_CHECKPOINT:
@@ -194,16 +196,19 @@ def find_load_mismatch(
         elif kind.is_read_into_model():
             # load_adapter_dir refuses it only after the slot reset
             mismatch = f"{path} is a {kind.value} source, which this backend cannot load"
-    except Exception as error:
+    except _SOURCE_ERRORS as error:
         mismatch = f"{path} cannot load into this model: {error}"
+    except Exception as error:
+        # storage faults (EIO, ESTALE) and bugs are the gateway's
+        server_error = error
     # the slot's own layout is this gateway's: a failure computing it is a server error on every rank
-    expected, model_error = None, None
-    if saved is not None:
+    expected = None
+    if saved is not None and server_error is None:
         try:
             expected = _legacy_slot_layout(model, slot)
         except Exception as error:
-            model_error = error
-    raise_if_any_rank_failed(model_error)
+            server_error = error
+    raise_if_any_rank_failed(server_error)
     if expected is not None:
         if expected.keys() != saved.keys():
             mismatch = (
@@ -221,6 +226,19 @@ def find_load_mismatch(
     gathered = [None] * dist.get_world_size()
     dist.all_gather_object(gathered, mismatch, group=gloo_group())
     return next((m for m in gathered if m is not None), None)
+
+
+# what the source checks raise for a source the user named: absent, unreadable, malformed or refused
+_SOURCE_ERRORS = (
+    FileNotFoundError,
+    NotADirectoryError,
+    IsADirectoryError,
+    PermissionError,
+    ValueError,
+    KeyError,
+    AssertionError,
+    SafetensorError,
+)
 
 
 def _legacy_slot_layout(model, slot: int) -> dict[str, tuple[int, ...]]:

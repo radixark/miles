@@ -1,3 +1,4 @@
+import errno
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -54,6 +55,25 @@ def test_a_model_side_failure_is_a_server_error_not_a_mismatch(gloo, monkeypatch
     # a mismatch is the user's 400; a bug in reading this gateway's own model must fail loudly instead
     with pytest.raises(RuntimeError, match="slot 0 has no adapters"):
         checkpoint.find_load_mismatch(None, 0, "/ckpt", None, None, load_optimizer=False)
+
+
+@pytest.mark.parametrize(
+    "error", [OSError(errno.EIO, "Input/output error"), TypeError("library bug")], ids=["storage_fault", "bug"]
+)
+def test_a_failure_that_is_not_the_sources_fault_is_a_server_error(gloo, monkeypatch, error):
+    def failing(*_, **__):
+        raise error
+
+    monkeypatch.setattr(checkpoint, "check_adapter_source", failing)
+    with pytest.raises(RuntimeError, match=str(error.args[-1])):
+        checkpoint.find_load_mismatch(None, 0, "/ckpt", None, None, load_optimizer=False)
+
+
+def test_a_missing_source_is_the_users_mismatch(gloo, tmp_path):
+    mismatch = checkpoint.find_load_mismatch(
+        None, 0, str(tmp_path / "absent"), UNSHARED, TARGETS, load_optimizer=False
+    )
+    assert mismatch is not None and "cannot load into this model" in mismatch
 
 
 @pytest.fixture
