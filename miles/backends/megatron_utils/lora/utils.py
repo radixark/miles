@@ -1,6 +1,7 @@
 """LoRA utilities for Megatron backend using Megatron-Bridge PEFT integration."""
 
 import logging
+import re
 from argparse import Namespace
 from collections.abc import Sequence
 from pathlib import Path
@@ -21,6 +22,9 @@ if TYPE_CHECKING:
     from megatron.core.optimizer.cpu_offloading.hybrid_optimizer import HybridDeviceOptimizer
 
 logger = logging.getLogger(__name__)
+
+# a Megatron dist-checkpoint's optimizer keys; a ChainedOptimizer may prefix each child's keys with chained_<i>.
+OPTIMIZER_KEY = re.compile(r"(chained_\d+\.)?optimizer\.")
 
 _marked_lora_grad_params_cache: dict[int, list] = {}
 
@@ -249,6 +253,18 @@ def _distributed_optimizers(optimizer) -> list:
         isinstance(sub, DistributedOptimizer) for sub in subs
     ), f"the adapter checkpoint needs --use-distributed-optimizer; got {[type(sub).__name__ for sub in subs]}"
     return subs
+
+
+def _zero_init_empty_hdo_states(subs) -> None:
+    """Gives every DistributedOptimizer sub whose HDO has no state yet the state of a never-stepped HDO.
+
+    Megatron's load_state_dict would otherwise run dummy_step on it: a real Adam step on random gradients.
+    """
+    from megatron.core.optimizer.cpu_offloading.hybrid_optimizer import HybridDeviceOptimizer
+
+    for sub in subs:
+        if isinstance(sub.optimizer, HybridDeviceOptimizer) and not sub.optimizer.state:
+            _init_zero_hdo_state(sub.optimizer)
 
 
 def _init_zero_hdo_state(hdo: "HybridDeviceOptimizer") -> None:

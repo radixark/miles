@@ -112,6 +112,7 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
                 iteration = self._lora_checkpoint.restore()
         # after the restore, which may set the step
         start_rollout_id = self.trainer.step // _steps_per_rollout(args) if iteration is None else iteration + 1
+        # after the restore: setup keeps the moments it wrote
         if args.stream_optimizer_state_to_disk:
             setup_adam_state_on_disk(self.optimizers, state_dir_root=optimizer_state_dir_root(args))
 

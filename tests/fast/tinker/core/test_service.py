@@ -40,7 +40,7 @@ from miles.tinker.core.checkpoint_expiry import CheckpointExpiry
 from miles.tinker.core.future import DONE, FAILED
 from miles.tinker.core.imports import IMPORT_COPIES_DIRNAME
 from miles.tinker.core.types import GatewayConfig, ImportConfig, NotFoundError, OwnershipError, UserInputError
-from miles.tinker.core.utils import resolve_checkpoint_dir, resolve_sampler_checkpoint
+from miles.tinker.core.utils import resolve_checkpoint_dir, resolve_sampler_checkpoint, resolve_sampler_export
 
 
 def _optim_payload(model_id: str, seq_id: int) -> dict:
@@ -1260,6 +1260,24 @@ async def test_a_sampler_dir_written_before_commits_still_resolves(service):
         f"{model_id}@old",
         legacy,
     )
+
+
+async def test_a_sampler_name_resolves_to_a_commit_a_dir_before_commits_or_nothing(service):
+    """weights_info and engine reloads share one resolution: a link whose target is gone is an unknown checkpoint."""
+    model_id = await created_model(service)
+    save = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
+    path = (await await_settled(service, "tenant", save)).result["path"]
+    link = resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "sampler_weights", "1")
+    assert resolve_sampler_export(link, "tenant", model_id, path, service.backend.resolve_adapter) is not None
+    legacy = resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "sampler_weights", "old")
+    os.makedirs(legacy)
+    assert resolve_sampler_export(legacy, "tenant", model_id, path, service.backend.resolve_adapter) is None
+
+    shutil.rmtree(resolve_adapter_dir(Path(link).parent, "1", tenant=None).path)
+    with pytest.raises(UserInputError, match="unknown checkpoint"):
+        service.weights_info("tenant", path)
+    with pytest.raises(UserInputError, match="unknown checkpoint"):
+        resolve_sampler_checkpoint(service.config, "tenant", path, service.backend.resolve_adapter)
 
 
 @pytest.mark.parametrize("filename", ["tenant.json", "adapter_parametrization.json"])

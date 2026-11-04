@@ -4,6 +4,7 @@ A piece is one rank's rectangle of an HF-keyed tensor plus where each of its ele
 concatenated adapter parameters; specs, piece extraction and scatter back follow from that alone.
 """
 
+import abc
 import bisect
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
@@ -111,7 +112,7 @@ def _rank_axis(key: str, ndim: int) -> int:
     return ndim - 2 if key.endswith(".lora_A") else ndim - 1
 
 
-class ProbedAdapterSlots:
+class ProbedAdapterSlots(abc.ABC):
     """Subclasses probe their ``row_mapping``, pass it here and define ``slot_parameters``."""
 
     def __init__(self, row_mapping: RowMapping, targets: HfLoraTargets, iterator):
@@ -119,8 +120,8 @@ class ProbedAdapterSlots:
         self._specs: dict[tuple[int, int | None, frozenset[int] | None], list[LocalShardSpec]] = {}
         self.head_rows = self._head_rows()
 
-    def slot_parameters(self, slot: int) -> list[torch.Tensor]:
-        raise NotImplementedError
+    @abc.abstractmethod
+    def slot_parameters(self, slot: int) -> list[torch.Tensor]: ...
 
     def slot_spec(self, slot: int):
         """The adapter the iterator exports for ``slot``; None for a single LoRA."""

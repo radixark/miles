@@ -73,18 +73,18 @@ class HeadRows:
 class InModelLoader(Protocol):
     """A source a backend reads straight into its model, in the run's own parametrization.
 
-    ``load_adapter_dir`` calls ``parametrization``, then ``prepare``, agreeing across ranks after each, then ``apply``:
-    a failure on one rank must surface before any rank enters a collective.
+    Every rank calls each step; ``load_adapter_dir`` agrees across ranks after each. A step that enters a collective
+    agrees its own rank-local failures before it (``raise_if_any_rank_failed``), so one rank never fails alone while
+    the others wait inside it.
     """
 
-    # rank-local and side-effect free: read before anything is loaded, so a refused source leaves the model as it was
+    # reads and checks the source without changing the model, so a refused source leaves the model as it was
     def parametrization(self, path: Path) -> AdapterParametrization: ...
 
-    # rank-local and side-effect free: every read and check that can fail on one rank alone; returns what apply needs
+    # every read and check left before the model is written; returns what apply needs
     def prepare(self, path: Path) -> Any: ...
 
-    # writes the prepared source into the model and runs the collectives; it must not fail on one rank alone, as the
-    # others may already be inside a collective
+    # writes the prepared source into the model
     def apply(self, prepared: Any) -> None: ...
 
 
@@ -103,8 +103,11 @@ class AdapterCheckpointMembers(Protocol):
 
     def export_adapter_state(self, slot: int) -> AdapterState: ...
 
-    # may run collectives, so every check that can fail on one rank alone comes before the first of them
+    # rank-local, no collectives: the library agrees across ranks after it, before finish_import_adapter_state
     def import_adapter_state(self, slot: int, state: AdapterState) -> None: ...
+
+    # the collectives that complete an import (e.g. syncing params from the written masters); every rank calls it
+    def finish_import_adapter_state(self, slot: int) -> None: ...
 
 
 def save_adapter_dir(
@@ -279,7 +282,7 @@ def save_and_commit_adapter_dir(
         except Exception as exc:
             error = exc
     raise_if_any_rank_failed(error)
-    if has_plain_peft_form(parametrization):
+    if has_plain_peft_form(parametrization, targets):
         write_peft_export(written.path, members, slot, parametrization, targets)
     elif _is_writer():
         logger.info(f"{written.path}: no PEFT view, as this parametrization has no plain-PEFT form")
@@ -478,7 +481,7 @@ def load_adapter_dir(
     """Load any recognized source into ``slot``; returns the source parametrization.
 
     All ranks call. A failure on one rank fails every rank before the next collective, provided a backend's in-model
-    loader and ``import_adapter_state`` do their rank-local checks before their collectives.
+    loader agrees its own failures before each collective it enters (see ``InModelLoader``).
     Alpha is not checked here: the caller owns it (Tinker adopts the source's, RL compares it to ``--lora-alpha``).
 
     A source that needs conversion (PEFT, external weights, another parametrization) is read whole on every rank:
@@ -556,6 +559,11 @@ def load_adapter_dir(
         raise_if_any_rank_failed(error)
     try:
         members.import_adapter_state(slot, state)
+    except Exception as exc:
+        error = exc
+    raise_if_any_rank_failed(error)
+    try:
+        members.finish_import_adapter_state(slot)
     except Exception as exc:
         error = exc
     raise_if_any_rank_failed(error)

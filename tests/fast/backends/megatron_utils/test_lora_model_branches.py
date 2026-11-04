@@ -200,9 +200,9 @@ class TestSaveLoRaBranch:
 
         model = [MagicMock()]
         slots = MagicMock()
-        save(make_trainer_args(), 42, model, MagicMock(), MagicMock(), adapter_slots=slots)
+        save(make_trainer_args(), 42, model, MagicMock(), MagicMock(), adapter_slots=slots, schedule_first_rollout=5)
 
-        assert mock_save_lora.call_args.args[3] is slots
+        assert mock_save_lora.call_args.args[3] is slots and mock_save_lora.call_args.args[6] == 5
 
     @patch(f"{_MODEL_MODULE}.should_disable_forward_pre_hook", return_value=False)
     @patch(f"{_MODEL_MODULE}.is_lora_model", return_value=True)

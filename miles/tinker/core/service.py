@@ -43,6 +43,7 @@ from miles.tinker.core.utils import (
     read_checkpoint_metadata,
     resolve_checkpoint_dir,
     resolve_sampler_checkpoint,
+    resolve_sampler_export,
     tenant_digest,
 )
 
@@ -535,8 +536,6 @@ class TinkerService:
             tenant_digest=tenant_digest(record.tenant),
             parametrization_fields=build_parametrization_fields(record, self.config),
         )
-        if isinstance(written, dict):
-            return written
         # the commit's recovery walk and fsyncs hit shared storage; keep the event loop serving
         try:
             await asyncio.to_thread(self.backend.commit_adapter, root, version, written, overwrite=False)
@@ -801,7 +800,13 @@ class TinkerService:
         if kind == "external_weights":
             raise UserInputError(f"{tinker_path} is a download; create a training client from a weights checkpoint")
         checkpoint_dir = resolve_checkpoint_dir(self.config.checkpoint_root, model_id, kind, name)
-        committed = self.backend.resolve_adapter(os.path.dirname(checkpoint_dir), name, tenant, model_id)
+        if kind == "sampler_weights":
+            committed = resolve_sampler_export(
+                checkpoint_dir, tenant, model_id, tinker_path, self.backend.resolve_adapter
+            )
+        else:
+            # a training checkpoint's link may point at a legacy dir an interrupted overwrite adopted
+            committed = self.backend.resolve_adapter(os.path.dirname(checkpoint_dir), name, tenant, model_id)
         if committed is not None:
             parametrization = committed["parametrization"]
             # an adapter dir records targets, not group flags; any gateway or import may have written it

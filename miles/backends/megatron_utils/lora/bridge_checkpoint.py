@@ -190,6 +190,14 @@ def _registered_in_place_of(
             module._parameters[name] = param
 
 
+def agreed_load_overwrites_every_element(unexported: torch.Tensor | None) -> bool:
+    """Collective: whether a load writes every adapter element on every rank; a dp-zero gather that skips the data
+    also skips its collective, so all ranks must agree."""
+    leaves_out = torch.tensor([int(unexported is not None and unexported.numel() > 0)])
+    dist.all_reduce(leaves_out, op=dist.ReduceOp.MAX, group=gloo_group())
+    return not leaves_out.item()
+
+
 class BridgeAdapterSlots(ProbedAdapterSlots):
     """Checkpoint members of Bridge LoRA; single LoRA is slot 0 of one, multi-LoRA slots are its MultiLoRALinears'.
 
@@ -200,25 +208,13 @@ class BridgeAdapterSlots(ProbedAdapterSlots):
 
     def __init__(self, model, iterator, targets: HfLoraTargets, *, multi_lora: bool):
         """Collective: probes the row mapping now, while nothing else touches the parameters."""
-        # the probe's name mapping and export read these before the base is set up
+        # the probe's export reads these before the base is set up
         self._model, self._iterator, self.targets, self._multi_lora = model, iterator, targets, multi_lora
-        unexported = self._unexported_elements()
         # every slot has the same layout
-        row_mapping = probe_bridge_row_mapping(
-            model, self.slot_parameters(0), self._export_probe, targets, self._map_name, unexported
-        )
+        row_mapping = probe_bridge_row_mapping(model, self.slot_parameters(0), self._export_probe, targets)
         super().__init__(row_mapping, targets, iterator)
-        # agreed by every rank: a dp-zero gather that skips the data also skips its collective
-        leaves_out = torch.tensor([int(unexported is not None and unexported.numel() > 0)])
-        dist.all_reduce(leaves_out, op=dist.ReduceOp.MAX, group=gloo_group())
-        self.load_overwrites_every_element = not leaves_out.item()
-
-    def _map_name(self, name: str) -> HfKey:
-        return map_peft_keys_to_hf_keys(name)
-
-    def _unexported_elements(self) -> torch.Tensor | None:
         # Bridge exports every adapter element
-        return None
+        self.load_overwrites_every_element = True
 
     def slot_parameters(self, slot: int) -> list[torch.nn.Parameter]:
         if self._multi_lora:

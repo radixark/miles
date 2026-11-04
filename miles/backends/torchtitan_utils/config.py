@@ -154,7 +154,6 @@ def _checkpointer_config(args: TrainerConfig, *, dump_subdir: str, with_lora: bo
 
 
 def _refuse_lora_resume_through_checkpointer(args: TrainerConfig, dump_subdir: str, load_step: str | None) -> None:
-    """LoRA resumes only through --lora-adapter-path."""
     # torchtitan's checkpointer resumes from the latest step dir under --save whatever initial_load_path says
     save_step = args.backend.save and _latest_step_dir(args.backend.save, dump_subdir)
     if save_step:

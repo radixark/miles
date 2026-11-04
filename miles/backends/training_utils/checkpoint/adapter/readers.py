@@ -132,7 +132,8 @@ def read_source_lora_alpha(path: Path) -> float | None:
     """The alpha a source records, read without the model; None for a source that records none (torchtitan)."""
     if (path / PARAMETRIZATION_FILENAME).is_file():
         return read_parametrization(path).lora_alpha
-    # the alpha's file is the one of the kind the source classifies as: a PEFT dir may hold a stray run_config.yaml
+    # a DCP source's alpha is in the file of the kind it classifies as (a legacy Tinker dir may hold a stray
+    # run_config.yaml)
     if (path / ".metadata").is_file():
         kind = _dcp_source_kind(path)
         if kind is AdapterSourceKind.MEGATRON_BRIDGE_CHECKPOINT:

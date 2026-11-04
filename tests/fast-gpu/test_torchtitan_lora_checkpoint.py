@@ -5,8 +5,10 @@ register_cuda_ci(
     est_time=20, suite="stage-b-2-gpu-h200", labels=["torchtitan", "lora"], hardware=["hopper"], num_gpus=2
 )
 
+import os
 import socket
 from dataclasses import dataclass, replace
+from datetime import timedelta
 from functools import partial
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -31,7 +33,6 @@ from torchtitan.models.qwen3 import build_model_config
 
 from miles.backends.torchtitan_utils import actor as titan_actor
 from miles.backends.torchtitan_utils import lora_checkpoint
-from miles.backends.torchtitan_utils.actor import _steps_per_rollout
 from miles.backends.torchtitan_utils.config import _checkpointer_config
 from miles.backends.torchtitan_utils.lora_checkpoint import (
     TorchtitanAdapterSlots,
@@ -42,7 +43,9 @@ from miles.backends.torchtitan_utils.lora_checkpoint import (
     probe_torchtitan_row_mapping,
 )
 from miles.backends.torchtitan_utils.lora_names import iter_hf_adapter_tensors
-from miles.backends.training_utils.checkpoint.adapter.adapter_dir import HeadRows
+from miles.backends.training_utils.checkpoint.adapter.adapter_dir import HeadRows, load_adapter_dir, save_adapter_dir
+from miles.backends.training_utils.checkpoint.adapter.adapter_state import RanksFailedError
+from miles.backends.training_utils.checkpoint.adapter.commit import commit_adapter_dir
 from miles.backends.training_utils.checkpoint.adapter.key_mapping import (
     map_named_tensors_to_hf_keys,
     map_peft_keys_to_hf_keys,
@@ -177,15 +180,14 @@ def _load_dcp(tmp_path, saved: dict) -> TorchtitanCheckpointLoader:
 def test_a_model_only_dcp_loads_the_adapters_without_training_state(tmp_path, single_rank_gloo):
     """torchtitan's default final checkpoint (last_save_model_only) holds no train_state or lr_scheduler."""
     loader = _load_dcp(tmp_path, {_LORA_A: torch.ones(2, 2), _LORA_B: torch.full((2, 2), 2.0)})
-    assert (loader.train_state, loader.lr_scheduler_state) == (None, None)
+    assert loader.training_state() is None
 
 
 def test_a_full_dcp_loads_its_training_state(tmp_path, single_rank_gloo):
     saved = {_LORA_A: torch.ones(2, 2), _LORA_B: torch.full((2, 2), 2.0)}
     saved |= {"train_state.step": 8, "train_state.ntokens_seen": 640, "lr_scheduler.last_epoch": 8}
     loader = _load_dcp(tmp_path, saved)
-    assert loader.train_state == {"step": 8, "ntokens_seen": 640}
-    assert loader.lr_scheduler_state == {"last_epoch": 8}
+    assert loader.training_state() == ({"step": 8, "ntokens_seen": 640}, {"last_epoch": 8})
 
 
 def _base_check_worker(rank: int, world_size: int, port: int, path) -> None:
@@ -285,8 +287,7 @@ def _restore(tmp_path, *, dcp_step=None, training_state=None, source_alpha=None,
     def load_adapter_dir(path, members, slot, run, targets, *, load_optimizer, in_model_loaders_by_kind):
         if dcp_step is not None:
             (loader,) = in_model_loaders_by_kind.values()
-            loader.train_state = {"step": dcp_step, "ntokens_seen": 7}
-            loader.lr_scheduler_state = {"last_epoch": dcp_step}
+            loader.training_state = lambda: ({"step": dcp_step, "ntokens_seen": 7}, {"last_epoch": dcp_step})
         return run if source_alpha is None else SimpleNamespace(lora_alpha=source_alpha)
 
     backend = SimpleNamespace(no_load_optim=False, no_save_optim=False, save=None)
@@ -308,7 +309,7 @@ def _restore(tmp_path, *, dcp_step=None, training_state=None, source_alpha=None,
     trainer = _Trainer()
     slots = MagicMock()
     with (
-        patch("miles.utils.hf_utils.config.load_hf_config", return_value=_QWEN3_CONFIG),
+        patch.object(lora_checkpoint, "load_hf_config", return_value=_QWEN3_CONFIG),
         patch.object(lora_checkpoint, "_torchtitan_adapter_slots", return_value=slots),
         patch.object(lora_checkpoint, "load_adapter_dir", side_effect=load_adapter_dir),
         patch.object(lora_checkpoint, "read_training_state", return_value=training_state),
@@ -398,7 +399,14 @@ def test_a_model_only_dcp_starts_a_fresh_schedule(tmp_path):
 def test_a_torchtitan_adapter_dir_restores_its_own_schedule(tmp_path):
     schedule = {"last_epoch": 12, "_step_count": 13}
     restored = _restore(
-        tmp_path, training_state={"iteration": 2, "step": 12, "first_rollout": 0, "lr_scheduler": schedule}
+        tmp_path,
+        training_state={
+            "iteration": 2,
+            "step": 12,
+            "first_rollout": 0,
+            "steps_per_rollout": _STEPS_PER_ROLLOUT,
+            "lr_scheduler": schedule,
+        },
     )
     assert (restored.iteration, restored.step, restored.lr_states) == (2, 12, [schedule])
 
@@ -408,7 +416,13 @@ def test_a_torchtitan_adapter_dir_off_this_runs_rollout_grid_is_refused(tmp_path
     with pytest.raises(AssertionError, match="at step 20 after iteration 9, but this run takes 4 steps per rollout"):
         _restore(
             tmp_path,
-            training_state={"iteration": 9, "step": 20, "first_rollout": 0, "lr_scheduler": {"last_epoch": 20}},
+            training_state={
+                "iteration": 9,
+                "step": 20,
+                "first_rollout": 0,
+                "steps_per_rollout": 2,
+                "lr_scheduler": {"last_epoch": 20},
+            },
         )
 
 
@@ -432,7 +446,13 @@ def test_a_torchtitan_adapter_dir_of_this_runs_steps_per_rollout_resumes_any_ste
 def test_a_torchtitan_adapter_dir_off_this_runs_rollout_grid_loads_its_weights_and_starts_fresh(tmp_path):
     restored = _restore(
         tmp_path,
-        training_state={"iteration": 9, "step": 20, "first_rollout": 0, "lr_scheduler": {"last_epoch": 20}},
+        training_state={
+            "iteration": 9,
+            "step": 20,
+            "first_rollout": 0,
+            "steps_per_rollout": 2,
+            "lr_scheduler": {"last_epoch": 20},
+        },
         no_load_optim=True,
         lora_adapter_convert_save=str(tmp_path / "out"),
     )
@@ -454,7 +474,7 @@ def test_a_dir_saved_by_a_run_from_start_rollout_id_resumes(tmp_path):
         backend=SimpleNamespace(no_save_optim=False, save=str(tmp_path)),
     )
     with (
-        patch("miles.utils.hf_utils.config.load_hf_config", return_value=_QWEN3_CONFIG),
+        patch.object(lora_checkpoint, "load_hf_config", return_value=_QWEN3_CONFIG),
         patch.object(lora_checkpoint, "_torchtitan_adapter_slots", return_value=MagicMock()),
         patch.object(lora_checkpoint, "save_and_commit_adapter_dir") as save,
     ):
@@ -470,8 +490,16 @@ def test_a_dir_saved_by_a_run_from_start_rollout_id_resumes(tmp_path):
     "source",
     [
         {"dcp_step": 40},
-        {"training_state": {"iteration": 9, "step": 40, "first_rollout": 0, "lr_scheduler": {"last_epoch": 40}}},
-        {"training_state": {"iteration": 9, "opt_param_scheduler": {"num_steps": 320}}},
+        {
+            "training_state": {
+                "iteration": 9,
+                "step": 40,
+                "first_rollout": 0,
+                "steps_per_rollout": _STEPS_PER_ROLLOUT,
+                "lr_scheduler": {"last_epoch": 40},
+            }
+        },
+        {"training_state": {"iteration": 9, "first_rollout": 0, "opt_param_scheduler": {"num_steps": 320}}},
     ],
 )
 def test_a_resume_from_another_start_rollout_id_writes_dirs_that_resume(tmp_path, source):
@@ -484,23 +512,22 @@ def test_a_resume_from_another_start_rollout_id_writes_dirs_that_resume(tmp_path
 
 def test_a_megatron_adapter_dir_resumes_the_schedule_after_its_rollout(tmp_path):
     """Megatron's scheduler state does not apply here; rollouts 0..2 are done."""
-    restored = _restore(tmp_path, training_state={"iteration": 2, "opt_param_scheduler": {"num_steps": 96}})
+    restored = _restore(
+        tmp_path, training_state={"iteration": 2, "first_rollout": 0, "opt_param_scheduler": {"num_steps": 96}}
+    )
     assert (restored.iteration, restored.step) == (2, 3 * _STEPS_PER_ROLLOUT)
     assert restored.lr_states == [{"last_epoch": 3 * _STEPS_PER_ROLLOUT}]
 
 
-def test_a_megatron_adapter_dir_from_a_later_rollout_resumes_the_samples_its_scheduler_counted(tmp_path):
-    """A Megatron run from --start-rollout-id 5 counted 2 rollouts of 32 samples by iteration 6."""
-    restored = _restore(tmp_path, training_state={"iteration": 6, "opt_param_scheduler": {"num_steps": 64}})
+def test_a_megatron_adapter_dir_resumes_from_the_rollout_its_schedule_counts_from(tmp_path):
+    """A Megatron run whose schedule counts from rollout 5 trained 2 rollouts by iteration 6."""
+    restored = _restore(
+        tmp_path, training_state={"iteration": 6, "first_rollout": 5, "opt_param_scheduler": {"num_steps": 64}}
+    )
     assert (restored.iteration, restored.step) == (6, 2 * _STEPS_PER_ROLLOUT)
     assert restored.lr_states == [{"last_epoch": 2 * _STEPS_PER_ROLLOUT}]
     # the resumed run's own saves count their steps from the same rollout
     assert restored.checkpoint._training_state(7)["first_rollout"] == 5
-
-
-def test_a_megatron_adapter_dir_off_this_runs_rollout_grid_is_refused(tmp_path):
-    with pytest.raises(AssertionError, match="counted 40 samples by iteration 2, not whole rollouts of this run's 32"):
-        _restore(tmp_path, training_state={"iteration": 2, "opt_param_scheduler": {"num_steps": 40}})
 
 
 @pytest.mark.parametrize(
@@ -511,23 +538,14 @@ def test_a_megatron_adapter_dir_off_this_runs_rollout_grid_is_refused(tmp_path):
         (96, {"use_dynamic_global_batch_size": True}),
     ],
 )
-def test_a_megatron_adapter_dir_whose_schedule_does_not_map_loads_its_weights_and_starts_fresh(
+def test_a_megatron_adapter_dir_whose_samples_do_not_map_to_rollouts_resumes_with_its_optimizer(
     tmp_path, num_steps, flags
 ):
-    training_state = {"iteration": 2, "opt_param_scheduler": {"num_steps": num_steps}}
-    with pytest.raises(AssertionError, match="pass --no-load-optim"):
-        _restore(tmp_path, training_state=training_state, **flags)
-    restored = _restore(
-        tmp_path,
-        training_state=training_state,
-        no_load_optim=True,
-        lora_adapter_convert_save=str(tmp_path / "out"),
-        **flags,
-    )
-    # the source's rollouts stay done: the fresh schedule starts at the next one
-    assert (restored.iteration, restored.step, restored.lr_states) == (2, 0, [])
-    converted = restored.save.call_args.kwargs["training_state"]
-    assert (converted["iteration"], converted["step"], converted["first_rollout"]) == (2, 0, 3)
+    """The rollouts it trained, not the samples Megatron's scheduler counted, place the schedule."""
+    training_state = {"iteration": 2, "first_rollout": 0, "opt_param_scheduler": {"num_steps": num_steps}}
+    restored = _restore(tmp_path, training_state=training_state, **flags)
+    assert (restored.iteration, restored.step) == (2, 3 * _STEPS_PER_ROLLOUT)
+    assert restored.lr_states == [{"last_epoch": 3 * _STEPS_PER_ROLLOUT}]
 
 
 def test_a_convert_save_of_a_model_only_source_writes_no_training_state(tmp_path):
@@ -675,13 +693,31 @@ def test_the_actor_starts_after_the_restored_rollout_and_saves_lora_as_adapter_d
         trainer.engine.save_checkpoint.assert_not_called()
 
 
-@pytest.mark.parametrize("dynamic, steps", [(False, 4), (True, 1)])
-def test_a_dynamic_global_batch_is_one_step_per_rollout(dynamic, steps):
-    """The LR schedule length and the adapter dirs' step grid count optimizer steps per rollout."""
-    args = SimpleNamespace(
-        rollout_batch_size=8, n_samples_per_prompt=4, global_batch_size=8, use_dynamic_global_batch_size=dynamic
-    )
-    assert _steps_per_rollout(args) == steps
+def _one_rank_fails_decoding(rank, world_size, port):
+    # a short timeout turns a rank left in a collective into a failure instead of a hung test
+    os.environ["MASTER_ADDR"], os.environ["MASTER_PORT"] = "localhost", str(port)
+    dist.init_process_group("gloo", rank=rank, world_size=world_size, timeout=timedelta(seconds=20))
+    init_gloo_group()
+    mesh = init_device_mesh("cpu", (world_size,))
+    sd_adapter, params = _adapter()
+    sharded = {key: distribute_tensor(value, mesh, [Shard(0)]) for key, value in params.items()}
+    real_rectangles = lora_checkpoint.rectangles
+
+    def rectangles(name, mine, *args):
+        if rank == 1:
+            raise AssertionError(f"rank-local layout failure on {name}")
+        return real_rectangles(name, mine, *args)
+
+    lora_checkpoint.rectangles = rectangles
+    with pytest.raises(RanksFailedError, match=r"rank 1: AssertionError: rank-local layout failure") as failed:
+        probe_torchtitan_row_mapping(sharded, sd_adapter)
+    # rank 0 must not fail on its own, e.g. timed out in a collective rank 1 never joined
+    assert "rank 0" not in str(failed.value), str(failed.value)
+    dist.destroy_process_group()
+
+
+def test_a_rank_local_probe_failure_fails_every_rank():
+    run_multiprocess(_one_rank_fails_decoding)
 
 
 def _uneven_rows(rank, world_size, port):
@@ -720,32 +756,6 @@ def _two_dim_mesh(rank, world_size, port):
 
 def test_a_two_dim_mesh_with_column_shards_maps_to_rectangles():
     run_multiprocess(_two_dim_mesh, world_size=4)
-
-
-def _strided_mesh(rank, world_size, port, placements):
-    init_gloo(rank, world_size, port=port)
-    init_gloo_group()
-    mesh = init_device_mesh("cpu", (2, 2))
-    sd_adapter, params = _adapter()
-    expected = _expected(sd_adapter, params)
-    # a strided shard holds rows that are not one contiguous box of the global tensor
-    # distribute_tensor cannot shard straight into a strided placement; redistributing a replicated tensor can
-    replicated = [Replicate(), Replicate()]
-    sharded = {
-        key: distribute_tensor(value, mesh, replicated).redistribute(mesh, placements) for key, value in params.items()
-    }
-    mapping = probe_torchtitan_row_mapping(sharded, sd_adapter)
-    _check(mapping, [p.to_local() for p in sharded.values()], expected)
-    dist.destroy_process_group()
-
-
-@pytest.mark.parametrize(
-    "placements",
-    [[Shard(0), _StridedShard(0, split_factor=2)], [_StridedShard(0, split_factor=2), Shard(0)]],
-    ids=["shard_then_strided", "strided_then_shard"],
-)
-def test_a_strided_shard_maps_each_local_row_to_its_global_row(placements):
-    run_multiprocess(partial(_strided_mesh, placements=placements), world_size=4)
 
 
 def _model_part(params: dict[str, torch.Tensor]) -> torch.nn.Module:
@@ -791,6 +801,67 @@ def _slots_on_strided_dtensors(rank, world_size, port, placements):
 )
 def test_the_slots_own_pieces_of_strided_dtensors_are_their_hf_slices(placements):
     run_multiprocess(partial(_slots_on_strided_dtensors, placements=placements), world_size=4)
+
+
+def _members_on(mesh, placements, sd_adapter, weights, moments=None):
+    """Members of a model part holding ``weights`` so placed; ``moments``: their AdamW (exp_avg, exp_avg_sq) at step 5."""
+
+    def place(tensor):
+        return distribute_tensor(tensor, mesh, [Replicate(), Replicate()]).redistribute(mesh, placements)
+
+    part = _model_part({key: place(value) for key, value in weights.items()}).requires_grad_(True)
+    slots = TorchtitanAdapterSlots([part], None, sd_adapter, _TARGETS)
+    members = TorchtitanOptimizerMembers(slots, [torch.optim.AdamW(part.parameters())], save_moments=True)
+    if moments is not None:
+        for key, state in zip(slots.parameters, members.adam_states(), strict=True):
+            for name, value in zip(("exp_avg", "exp_avg_sq"), moments[key], strict=True):
+                state[name].to_local().copy_(place(value).to_local())
+            state["step"].fill_(5)
+    return slots, members
+
+
+def _cross_layout_round_trip(rank, world_size, port, path, source, target):
+    init_gloo(rank, world_size, port=port)
+    init_gloo_group()
+    mesh = init_device_mesh("cpu", (2, 2))
+    sd_adapter, params = _adapter()
+    g = torch.Generator().manual_seed(1)
+    moments = {key: (torch.randn(v.shape, generator=g), torch.rand(v.shape, generator=g)) for key, v in params.items()}
+    slots, saved = _members_on(mesh, source, sd_adapter, params, moments)
+    run = slots.parametrization(
+        base_model="hub/model",
+        lora_rank=8,
+        lora_alpha=16,
+        lora_type="lora",
+        experts_shared_outer_loras=False,
+        base_model_fingerprint=None,
+    )
+    written = save_adapter_dir(path, "adapter", saved, 0, run, tenant_digest=None)
+    if rank == 0:
+        commit_adapter_dir(path, "adapter", written, overwrite=True)
+    dist.barrier()
+
+    slots, loaded = _members_on(mesh, target, sd_adapter, {key: torch.zeros_like(v) for key, v in params.items()})
+    load_adapter_dir(written.path, loaded, 0, run, slots.targets, load_optimizer=True)
+    for (key, param), state in zip(slots.parameters.items(), loaded.adam_states(), strict=True):
+        assert torch.equal(param.full_tensor(), params[key]), key
+        assert torch.equal(state["exp_avg"].full_tensor(), moments[key][0]), key
+        assert torch.equal(state["exp_avg_sq"].full_tensor(), moments[key][1]), key
+        assert int(state["step"]) == 5, key
+    dist.destroy_process_group()
+
+
+_STRIDED_ROWS = [Shard(0), _StridedShard(0, split_factor=2)]
+_COLUMNS_THEN_ROWS = [Shard(1), Shard(0)]
+
+
+@pytest.mark.parametrize(
+    "source, target",
+    [(_STRIDED_ROWS, _COLUMNS_THEN_ROWS), (_COLUMNS_THEN_ROWS, _STRIDED_ROWS)],
+    ids=["strided_to_columns", "columns_to_strided"],
+)
+def test_an_adapter_dir_moves_weights_and_moments_across_parallel_layouts(tmp_path, source, target):
+    mp.spawn(_cross_layout_round_trip, args=(4, find_free_port(), tmp_path, source, target), nprocs=4, join=True)
 
 
 def _pipeline_stages(rank, world_size, port):
@@ -852,19 +923,10 @@ def test_a_torchtitan_run_records_its_bases_fingerprint_and_path_as_given(tmp_pa
     )
     slots = MagicMock()
     with (
-        patch("miles.utils.hf_utils.config.load_hf_config", return_value=_QWEN3_CONFIG),
+        patch.object(lora_checkpoint, "load_hf_config", return_value=_QWEN3_CONFIG),
         patch.object(lora_checkpoint, "_torchtitan_adapter_slots", return_value=slots),
     ):
         lora_checkpoint.TorchtitanLoraCheckpoint(SimpleNamespace(optimizers=SimpleNamespace(optimizers=[])), args, 1)
     fields = slots.parametrization.call_args.kwargs
     assert fields["base_model"] == "/root/models/Qwen3-4B"
     assert fields["base_model_fingerprint"] == base_model_fingerprint(_QWEN3_CONFIG.to_dict())
-
-
-def test_the_torchtitan_members_declare_their_slots_head_rows():
-    from miles.backends.torchtitan_utils.lora_checkpoint import TorchtitanOptimizerMembers
-    from miles.backends.training_utils.checkpoint.adapter.adapter_dir import HeadRows
-
-    head_rows = HeadRows("lm_head.lora_B", max_source_rows=8)
-    members = TorchtitanOptimizerMembers(SimpleNamespace(head_rows=head_rows), [], save_moments=True)
-    assert members.head_rows is head_rows

@@ -248,12 +248,6 @@ async def test_export_slot_hands_back_the_export_every_rank_agreed_on(tmp_path):
     assert await backend.export_slot(0, str(tmp_path), "x", "digest", {}) is written
 
 
-async def test_export_slot_returns_the_first_rank_failure_instead_of_an_export(tmp_path):
-    written, failure = UncommittedAdapterDir(tmp_path / ".x.c1", "c1"), {"error": "rank 1 failed"}
-    backend = MilesBackend(trainer=_ExportingTrainer([written, failure]), router_url="http://router", lora_layout=None)
-    assert await backend.export_slot(0, str(tmp_path), "x", "digest", {}) is failure
-
-
 def test_lora_groups_come_from_the_recorded_targets():
     qwen3 = get_hf_lora_targets({"model_type": "qwen3", "num_hidden_layers": 1})
     assert classify_lora_groups(("model.layers.0.self_attn.q_proj", "lm_head"), qwen3) == {

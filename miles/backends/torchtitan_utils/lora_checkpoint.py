@@ -20,7 +20,8 @@ import torch.distributed.checkpoint as dcp
 from torch.distributed.tensor import DTensor
 from torch.optim.lr_scheduler import _update_param_group_val
 
-from miles.backends.torchtitan_utils.lora_names import is_adapter_key, split_adapter_key
+from miles.backends.torchtitan_utils.hf_weight_iterator import TitanHfWeightIterator
+from miles.backends.torchtitan_utils.lora_names import is_adapter_key, iter_hf_adapter_tensors, split_adapter_key
 from miles.backends.training_utils.checkpoint.adapter.adapter_dir import (
     HeadRows,
     load_adapter_dir,
@@ -51,7 +52,9 @@ from miles.backends.training_utils.checkpoint.adapter.probed_slots import (
     rectangles,
 )
 from miles.backends.training_utils.checkpoint.adapter.readers import AdapterSourceKind
-from miles.utils.lora.hf_lora_targets import HfLoraTargets
+from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
+from miles.utils.hf_utils.config import load_hf_config
+from miles.utils.lora.hf_lora_targets import HfLoraTargets, get_hf_lora_targets
 
 
 # a placed code is rank * _RANK_STRIDE + the element's offset in the rank's concatenated local shards
@@ -75,46 +78,49 @@ def _local_codes(param: torch.Tensor, start: int) -> torch.Tensor:
 def probe_torchtitan_row_mapping(params: Mapping[str, torch.Tensor], sd_adapter) -> RowMapping:
     """Collective. ``params``: the adapter parameters by titan key, in the order their local shards are
     concatenated."""
+    # placing the codes is collective, so every rank does it for every parameter before any rank-local step can fail
+    codes, start = {}, 0
+    for key, param in params.items():
+        codes[key] = _local_codes(param, start)
+        start += (param.to_local() if isinstance(param, DTensor) else param).numel()
     error, pieces, groups, modules = None, [], [], set()
     try:
-        pieces, groups, modules = _probe_local(params, sd_adapter)
+        pieces, groups, modules = _probe_local(codes, start, sd_adapter)
     except Exception as exc:
         error = exc
     return agreed_row_mapping(error, pieces, groups, modules)
 
 
 def _probe_local(
-    params: Mapping[str, torch.Tensor], sd_adapter
+    codes_by_key: Mapping[str, torch.Tensor], total: int, sd_adapter
 ) -> tuple[list[HfPiece], list[tuple[str, ...]], set[str]]:
-    starts, start = {}, 0
-    for key, param in params.items():
-        starts[key] = start
-        start += (param.to_local() if isinstance(param, DTensor) else param).numel()
-    pieces, groups, modules = [], [], set()
-    for key in params:
-        projection, factor = split_adapter_key(key)
-        if factor != "lora_b":
-            continue
-        lora_a_key = f"{projection}.lora_a.weight"
-        lora_b = sd_adapter.to_hf({f"{projection}.weight": _local_codes(params[key], starts[key])})
-        assert lora_b, f"{projection}: to_hf exports nothing"
-        lora_a = _local_codes(params[lora_a_key], starts[lora_a_key])
-        hf_modules = [name.removesuffix(".weight") for name in lora_b]
-        modules.update(hf_modules)
-        group = tuple(sorted(hf_modules))
+    """Rank-local: the pieces of this rank's placed codes, named by the export itself (iter_hf_adapter_tensors)."""
+    pieces, modules, a_by_source = [], set(), {}
+    for name, codes in iter_hf_adapter_tensors(sd_adapter, codes_by_key):
+        module, factor = name.removesuffix(".weight").rsplit(".", 1)
+        modules.add(module)
+        if factor == "lora_A":
+            # the export yields one titan lora_a under every HF projection of a fused weight
+            a_by_source.setdefault(id(codes), (codes, []))[1].append(module)
+        else:
+            pieces += _pieces_of(f"{module}.lora_B", codes)
+    groups = []
+    for codes, members in a_by_source.values():
+        group = tuple(sorted(members))
         if len(group) > 1:
-            # one titan lora_a serves every HF projection of a fused weight; it is stored once, under the group's
-            # first member
             groups.append(group)
-        named = [(f"{group[0]}.lora_A", lora_a)]
-        named += [(f"{module}.lora_B", part) for module, part in zip(hf_modules, lora_b.values(), strict=True)]
-        for hf_key, codes in named:
-            if (mine := codes >= 0).any():
-                pieces += [
-                    HfPiece(hf_key, tuple(codes.shape), tuple(s.start for s in box), codes[box].clone())
-                    for box in rectangles(hf_key, mine)
-                ]
-    return finish_local_pieces(pieces, start), groups, modules
+        # a shared lora_A is stored once, under its sorted group's first member
+        pieces += _pieces_of(f"{group[0]}.lora_A", codes)
+    return finish_local_pieces(pieces, total), groups, modules
+
+
+def _pieces_of(hf_key: str, codes: torch.Tensor) -> list[HfPiece]:
+    if not (mine := codes >= 0).any():
+        return []
+    return [
+        HfPiece(hf_key, tuple(codes.shape), tuple(s.start for s in box), codes[box].clone())
+        for box in rectangles(hf_key, mine)
+    ]
 
 
 class TorchtitanAdapterSlots(ProbedAdapterSlots):
@@ -198,7 +204,7 @@ class TorchtitanOptimizerMembers:
         )
 
     def import_adapter_state(self, slot: int, state: AdapterState) -> None:
-        """In place, into the AdamW state; restore() runs before --stream-optimizer-state-to-disk moves it to files."""
+        """In place, into the AdamW state."""
         states = self.adam_states()
         params = self._slots.slot_parameters(slot)
         with torch.no_grad():
@@ -211,6 +217,10 @@ class TorchtitanOptimizerMembers:
             for adam in states:
                 adam["step"].fill_(state.step)
 
+    def finish_import_adapter_state(self, slot: int) -> None:
+        # each rank wrote its own shards of the parameters and moments in place: nothing is left to gather
+        pass
+
 
 _TRAINING_STATE_KEYS = ("train_state.step", "train_state.ntokens_seen", "lr_scheduler.last_epoch")
 
@@ -220,8 +230,7 @@ class TorchtitanCheckpointLoader:
     straight into this run's adapter parameters and AdamW state under any parallel layout.
 
     Only lora_a / lora_b, their ``optimizer.state.<fqn>.*``, ``train_state`` and ``lr_scheduler`` are read; the base
-    must match the run's HF files. The DCP records no alpha: the run's (``--lora-alpha``) is used. A model-only DCP
-    leaves ``train_state`` None.
+    must match the run's HF files. The DCP records no alpha: the run's (``--lora-alpha``) is used.
     """
 
     def __init__(
@@ -240,8 +249,8 @@ class TorchtitanCheckpointLoader:
             sd_adapter,
         )
         self._run, self._load_optimizer = run, load_optimizer
-        self.train_state: dict | None = None
-        self.lr_scheduler_state: dict | None = None
+        # (path, metadata) once parametrization accepted a source
+        self._checked: tuple[Path, dict] | None = None
 
     def _base_fingerprint_tensors(self, path: Path, metadata) -> dict[str, torch.Tensor]:
         """The DCP's fingerprint tensors under their HF names (only what the titan model holds, e.g. no MTP)."""
@@ -319,7 +328,7 @@ class TorchtitanCheckpointLoader:
         return replace(self._run, lora_alpha=None)
 
     def prepare(self, path: Path) -> tuple:
-        checked_path, metadata = self._checked
+        checked_path, _ = self._checked
         assert checked_path == path, f"prepare({path}) after checking {checked_path}"
         params = self._slots.parameters
         states = self._members.adam_states()
@@ -327,27 +336,30 @@ class TorchtitanCheckpointLoader:
         if self._load_optimizer:
             for key, state in zip(params, states, strict=True):
                 loaded |= {f"optimizer.state.{key}.{name}": state[name] for name in ("exp_avg", "exp_avg_sq", "step")}
-        # torchtitan's default final checkpoint (last_save_model_only) holds the model alone: no training state
-        has_training_state = all(key in metadata for key in _TRAINING_STATE_KEYS)
-        if has_training_state:
-            # non-tensor entries: DCP replaces these placeholders with the saved values
-            loaded |= dict.fromkeys(_TRAINING_STATE_KEYS, 0)
-        return path, loaded, states, has_training_state
+        return path, loaded, states
 
     def apply(self, prepared: tuple) -> None:
-        path, loaded, states, has_training_state = prepared
+        path, loaded, states = prepared
         with torch.no_grad():
             dcp.load(loaded, checkpoint_id=path)
-        if has_training_state:
-            self.train_state = {
-                "step": loaded["train_state.step"],
-                "ntokens_seen": loaded["train_state.ntokens_seen"],
-            }
-            self.lr_scheduler_state = {"last_epoch": loaded["lr_scheduler.last_epoch"]}
         steps = [None] * dist.get_world_size()
         dist.all_gather_object(steps, {int(state["step"]) for state in states}, group=gloo_group())
         steps = set().union(*steps)
         assert len(steps) == 1, f"{path}'s adapter parameters disagree on the AdamW step: {steps}"
+
+    def training_state(self) -> tuple[dict, dict] | None:
+        """The loaded DCP's train_state and lr_scheduler state; None if no DCP was loaded or it holds the model alone."""
+        if self._checked is None:
+            return None
+        path, metadata = self._checked
+        # torchtitan's default final checkpoint (last_save_model_only) holds the model alone: no training state
+        if not all(key in metadata for key in _TRAINING_STATE_KEYS):
+            return None
+        # non-tensor entries: DCP replaces these placeholders with the saved values
+        loaded = dict.fromkeys(_TRAINING_STATE_KEYS, 0)
+        dcp.load(loaded, checkpoint_id=path, no_dist=True)
+        train_state = {"step": loaded["train_state.step"], "ntokens_seen": loaded["train_state.ntokens_seen"]}
+        return train_state, {"last_epoch": loaded["lr_scheduler.last_epoch"]}
 
 
 def load_lr_schedulers(lr_schedulers, state: dict) -> None:
@@ -360,11 +372,6 @@ def load_lr_schedulers(lr_schedulers, state: dict) -> None:
 
 def _torchtitan_adapter_slots(trainer, args) -> TorchtitanAdapterSlots:
     """Collective: probes the adapter's HF layout."""
-    from miles.backends.torchtitan_utils.hf_weight_iterator import TitanHfWeightIterator
-    from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
-    from miles.utils.hf_utils.config import load_hf_config
-    from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
-
     iterator = TitanHfWeightIterator.build(
         args,
         trainer,
@@ -380,8 +387,6 @@ class TorchtitanLoraCheckpoint:
     """Single-LoRA RL checkpoints of the torchtitan backend: ``{save}/iter_N/adapter`` and ``--lora-adapter-path``."""
 
     def __init__(self, trainer, args, steps_per_rollout: int):
-        from miles.utils.hf_utils.config import load_hf_config
-
         self._trainer, self._args, self._steps_per_rollout = trainer, args, steps_per_rollout
         # the rollout at this schedule's step 0: --start-rollout-id starts the steps there, not at rollout 0
         self._first_rollout = 0 if args.start_rollout_id is None else args.start_rollout_id
@@ -448,12 +453,13 @@ class TorchtitanLoraCheckpoint:
             source.lora_alpha == self.run.lora_alpha
         ), f"{path} was trained with lora_alpha={source.lora_alpha}; this run uses {self.run.lora_alpha}"
         training_state = read_training_state(path)
-        if loader.train_state is not None and self._dcp_on_rollout_grid(path, loader.train_state, load_optimizer):
-            training_state = self._adopt_dcp_schedule(loader)
+        dcp_state = loader.training_state()
+        if dcp_state is not None and self._dcp_on_rollout_grid(path, dcp_state[0], load_optimizer):
+            training_state = self._adopt_dcp_schedule(*dcp_state)
         elif training_state is not None and "lr_scheduler" in training_state:
             training_state = self._adopt_torchtitan_dir_schedule(path, training_state, load_optimizer)
         elif training_state is not None and training_state["iteration"] is not None:
-            training_state = self._adopt_megatron_dir_schedule(path, training_state, load_optimizer)
+            training_state = self._adopt_megatron_dir_schedule(training_state)
         if self._args.start_rollout_id is not None:
             # the actor starts at --start-rollout-id, not after the source's rollout: count later saves' steps from it
             self._first_rollout = self._args.start_rollout_id - self._trainer.step // self._steps_per_rollout
@@ -472,18 +478,18 @@ class TorchtitanLoraCheckpoint:
         )
         return on_grid
 
-    def _adopt_dcp_schedule(self, loader: TorchtitanCheckpointLoader) -> dict:
-        completed_rollouts = loader.train_state["step"] // self._steps_per_rollout
+    def _adopt_dcp_schedule(self, train_state: dict, lr_scheduler_state: dict) -> dict:
+        completed_rollouts = train_state["step"] // self._steps_per_rollout
         self._first_rollout = 0
-        self._trainer.engine.load_state_dict(loader.train_state)
-        load_lr_schedulers(self._trainer.engine.optim.lr_schedulers, loader.lr_scheduler_state)
+        self._trainer.engine.load_state_dict(train_state)
+        load_lr_schedulers(self._trainer.engine.optim.lr_schedulers, lr_scheduler_state)
         return self._training_state(completed_rollouts - 1 if completed_rollouts else None)
 
     def _adopt_torchtitan_dir_schedule(self, path: Path, training_state: dict, load_optimizer: bool) -> dict:
         iteration = training_state["iteration"]
         self._first_rollout = training_state["first_rollout"]
         # compacted rollouts train a data-dependent number of steps each, so a run's own dir may sit off the grid
-        same_steps_per_rollout = training_state.get("steps_per_rollout") == self._steps_per_rollout
+        same_steps_per_rollout = training_state["steps_per_rollout"] == self._steps_per_rollout
         # the schedule is restored by step: on another --global-batch-size grid it would not match the rollout
         grid_step = 0 if iteration is None else (iteration + 1 - self._first_rollout) * self._steps_per_rollout
         if same_steps_per_rollout:
@@ -501,37 +507,12 @@ class TorchtitanLoraCheckpoint:
         self._trainer.engine.num_completed_steps = training_state["step"]
         return training_state
 
-    def _adopt_megatron_dir_schedule(self, path: Path, training_state: dict, load_optimizer: bool) -> dict:
-        """Megatron's scheduler state does not apply here: resume the schedule at the samples it counted, which
-        start at that run's first rollout, not rollout 0."""
+    def _adopt_megatron_dir_schedule(self, training_state: dict) -> dict:
+        """Megatron's scheduler state does not apply here: resume this run's schedule after the rollouts the source
+        trained from its first rollout on."""
         iteration = training_state["iteration"]
-        num_samples = training_state["opt_param_scheduler"]["num_steps"]
-        rollout_samples = self._steps_per_rollout * self._args.global_batch_size
-        trained_rollouts, remainder = divmod(num_samples, rollout_samples)
-        if self._args.use_dynamic_global_batch_size:
-            unmapped = (
-                "Megatron's schedule counts samples, and a dynamic global batch trains a data-dependent number "
-                "of them per rollout"
-            )
-        elif remainder or trained_rollouts > iteration + 1:
-            # a step skipped for an inf/nan grad does not advance Megatron's scheduler
-            unmapped = (
-                f"it counted {num_samples} samples by iteration {iteration}, not whole rollouts of this run's "
-                f"{rollout_samples}"
-            )
-        else:
-            unmapped = None
-        # loading weights alone needs no schedule: the schedule starts fresh
-        assert unmapped is None or not load_optimizer, (
-            f"{path} cannot resume this run's schedule: {unmapped}. Keep its rollout and batch sizes, or pass "
-            "--no-load-optim to load its weights and start the schedule fresh"
-        )
-        if unmapped is not None:
-            # only the schedule is dropped: the run still continues after the source's rollout
-            self._first_rollout = iteration + 1
-            return self._training_state(iteration)
-        self._first_rollout = iteration + 1 - trained_rollouts
-        step = trained_rollouts * self._steps_per_rollout
+        self._first_rollout = training_state["first_rollout"]
+        step = (iteration + 1 - self._first_rollout) * self._steps_per_rollout
         load_lr_schedulers(self._trainer.engine.optim.lr_schedulers, {"last_epoch": step})
         self._trainer.engine.num_completed_steps = step
         return training_state

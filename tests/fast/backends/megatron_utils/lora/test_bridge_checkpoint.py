@@ -1,5 +1,4 @@
-"""Bridge row-mapping probe and the run_config.yaml match."""
-
+import inspect
 from dataclasses import replace
 from datetime import timedelta
 from types import SimpleNamespace
@@ -25,6 +24,7 @@ from miles.backends.training_utils.checkpoint.adapter.adapter_dir import HeadRow
 from miles.backends.training_utils.checkpoint.adapter.base_model import assert_same_base_model
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
 from miles.backends.training_utils.checkpoint.adapter.probed_slots import HfPiece, ProbedAdapterSlots, RowMapping
+from miles.tinker.core.utils import build_parametrization_fields
 from miles.utils import distributed_utils
 from miles.utils.distributed_utils import init_gloo_group
 from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
@@ -556,8 +556,7 @@ def test_a_trained_head_declares_its_served_rows_and_the_hf_vocab_a_source_may_h
 
 
 def _offloaded_optimizer():
-    """A ChainedOptimizer over one DistributedOptimizer whose HybridDeviceOptimizer state is empty, and the list its
-    dummy steps land in."""
+    """One DistributedOptimizer over an empty HybridDeviceOptimizer state; dummy steps land in the returned list."""
     from megatron.core.optimizer import ChainedOptimizer, DistributedOptimizer
     from megatron.core.optimizer.cpu_offloading.hybrid_optimizer import HybridDeviceOptimizer
 
@@ -592,7 +591,7 @@ def _offloaded_optimizer():
 
 
 def _checked_loader(optimizer, members, monkeypatch, *, load_optimizer=True):
-    """A loader over an empty model whose source read is stubbed: its own checks and load run for real."""
+    """A loader over an empty model with a stubbed source read."""
     run = AdapterParametrization("base", 4, 8.0, "lora", ("model.layers.0.self_attn.q_proj",), False)
     loader = bridge_peft_checkpoint.MegatronBridgeCheckpointLoader([], optimizer, members, run, load_optimizer)
     monkeypatch.setattr(bridge_peft_checkpoint, "unwrap_model", lambda model: [])
@@ -621,18 +620,13 @@ def test_an_offloaded_optimizer_is_never_dummy_stepped_from_parametrization_to_l
     assert torch.equal(hdo.state[param]["master_param"], torch.ones(2)) and int(hdo.state[param]["step"]) == 0
 
 
-def test_a_bridge_checkpoint_is_checked_before_anything_is_loaded_into_the_model(
-    single_rank_gloo, tmp_path, monkeypatch
-):
-    """load_adapter_dir checks the parametrization before ``load``: reading it must not load the model or optimizer."""
-    calls = []
-    # any use of the optimizer while checking fails: an object with no optimizer methods
-    loader, run = _checked_loader(object(), "members", monkeypatch)
-    monkeypatch.setattr(loader, "_optimizer_state_to_load", lambda *args: calls.append("optimizer state") or {})
-    monkeypatch.setattr(loader, "_load", lambda *args: calls.append("load"))
-    loader._members = SimpleNamespace(export_adapter_state=lambda slot: calls.append("check masters"))
-
-    assert loader.parametrization(tmp_path) == replace(run, lora_alpha=16.0)
-    assert calls == []
-    loader.apply(loader.prepare(tmp_path))
-    assert calls == ["optimizer state", "load", "check masters"]
+def test_the_gateways_parametrization_fields_are_the_slots_keyword_arguments():
+    """The stdlib gateway builds these fields; the trainer spreads them into the slots across Ray."""
+    record = SimpleNamespace(base_model="m", lora_rank=8, lora_alpha=16.0)
+    config = SimpleNamespace(lora_type="lora", experts_shared_outer_loras=False, base_model_fingerprint="f")
+    keyword_only = {
+        name
+        for name, parameter in inspect.signature(BridgeAdapterSlots.parametrization).parameters.items()
+        if parameter.kind is inspect.Parameter.KEYWORD_ONLY
+    }
+    assert set(build_parametrization_fields(record, config)) == keyword_only

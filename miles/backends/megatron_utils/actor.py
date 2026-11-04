@@ -11,7 +11,7 @@ from torch_memory_saver import torch_memory_saver
 
 from miles.backends.megatron_utils.checkpoint_request import MegatronCkptLoadConfig
 from miles.backends.megatron_utils.hf_export import save_hf_model
-from miles.backends.megatron_utils.lora.bridge_checkpoint import BridgeAdapterSlots
+from miles.backends.training_utils.checkpoint.adapter.probed_slots import ProbedAdapterSlots
 from miles.backends.megatron_utils.lora.checkpoint import build_adapter_slots
 from miles.backends.megatron_utils.lora.utils import is_lora_enabled, lora_rollout_enabled
 from miles.backends.megatron_utils.megatron_config import has_megatron_checkpoint
@@ -145,7 +145,7 @@ class MegatronTrainRayActor(TrainRayActor):
         assert ckpt_load_config is not None, "Megatron initialization requires checkpoint load inputs"
         self.weight_updater: WeightUpdater | None = None
         self.snapshot_publisher: SnapshotPublisher | None = None
-        self.adapter_slots: BridgeAdapterSlots | None = None
+        self.adapter_slots: ProbedAdapterSlots | None = None
         monkey_patch_torch_dist()
 
         self._last_rollout_id: int | None = None
@@ -470,6 +470,7 @@ class MegatronTrainRayActor(TrainRayActor):
         # empty cache after initialization
         clear_memory()
 
+        self._schedule_first_rollout = load_output.schedule_first_rollout
         return load_output
 
     def _load_auxiliary_checkpoints(self) -> None:
@@ -947,6 +948,7 @@ class MegatronTrainRayActor(TrainRayActor):
             self.optimizer,
             self.opt_param_scheduler,
             adapter_slots=self.adapter_slots,
+            schedule_first_rollout=self._schedule_first_rollout,
         )
 
         if self.args.save_hf is not None and self.role == "actor":

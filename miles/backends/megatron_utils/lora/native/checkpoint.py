@@ -2,20 +2,37 @@
 
 import torch
 
-from miles.backends.megatron_utils.lora.bridge_checkpoint import BridgeAdapterSlots
+from miles.backends.megatron_utils.lora.bridge_checkpoint import (
+    agreed_load_overwrites_every_element,
+    probe_bridge_row_mapping,
+)
 from miles.backends.megatron_utils.lora.native.hf_adapter import export_lora_hf_named
 from miles.backends.megatron_utils.lora.native.modules.linear import iter_adapters
 from miles.backends.megatron_utils.lora.native.modules.lm_head import LoRAOutputHead
+from miles.backends.megatron_utils.lora.utils import adapter_named_parameters
 from miles.backends.training_utils.checkpoint.adapter.key_mapping import HfKey, map_sampler_keys_to_hf_keys
+from miles.backends.training_utils.checkpoint.adapter.probed_slots import ProbedAdapterSlots
 
 
-class NativeAdapterSlots(BridgeAdapterSlots):
+class NativeAdapterSlots(ProbedAdapterSlots):
     """Native exports grouped experts stacked under sglang's ``experts.w1/w3/w2`` (per-expert or ``[1, ...]``)."""
 
     bf16_adapter_key_style = "sampler"
 
     def __init__(self, model, iterator, targets):
-        super().__init__(model, iterator, targets, multi_lora=False)
+        """Collective: probes the row mapping now, while nothing else touches the parameters."""
+        # the probe's name mapping and export read these before the base is set up
+        self._model, self._iterator, self.targets = model, iterator, targets
+        unexported = self._unexported_elements()
+        row_mapping = probe_bridge_row_mapping(
+            model, self.slot_parameters(0), self._export_probe, targets, self._map_name, unexported
+        )
+        super().__init__(row_mapping, targets, iterator)
+        self.load_overwrites_every_element = agreed_load_overwrites_every_element(unexported)
+
+    def slot_parameters(self, slot: int) -> list[torch.nn.Parameter]:
+        assert slot == 0, "native LoRA has only slot 0"
+        return [param for params in adapter_named_parameters(self._model) for param in params.values()]
 
     def _map_name(self, name: str) -> HfKey:
         return map_sampler_keys_to_hf_keys(name, self.targets)

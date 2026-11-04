@@ -196,7 +196,7 @@ def _initialize_with_scheduler(*, iteration: int = 100, **overrides) -> MagicMoc
         model,
         optimizer,
         opt_param_scheduler,
-        LoadCheckpointOutput(loaded_rollout_id=iteration, start_rollout_id=iteration + 1),
+        LoadCheckpointOutput(loaded_rollout_id=iteration, start_rollout_id=iteration + 1, schedule_first_rollout=0),
     )
     return opt_param_scheduler
 

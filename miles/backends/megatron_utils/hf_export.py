@@ -8,7 +8,7 @@ from pathlib import Path
 import torch
 from megatron.core.distributed import DistributedDataParallel as DDP
 
-from miles.backends.megatron_utils.lora.bridge_checkpoint import BridgeAdapterSlots
+from miles.backends.training_utils.checkpoint.adapter.probed_slots import ProbedAdapterSlots
 from miles.backends.megatron_utils.lora.checkpoint import single_lora_parametrization
 from miles.backends.megatron_utils.lora.native.merge import merge_lora_into_weights
 from miles.backends.megatron_utils.lora.utils import is_lora_model
@@ -35,7 +35,7 @@ def save_hf_model(
     model: Sequence[DDP],
     *,
     publisher: SnapshotPublisher,
-    adapter_slots: BridgeAdapterSlots | None,
+    adapter_slots: ProbedAdapterSlots | None,
     path: str | Path | None = None,
     raise_on_error: bool = False,
 ) -> None:
