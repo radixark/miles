@@ -104,8 +104,7 @@ class FakeBackend:
             tenant_digest=tenant_digest,
             parametrization_fields=parametrization_fields,
         )
-        if failure is not None:
-            return failure
+        assert failure is None, "a trainer's export_slot raises; it never returns a failure"
         # one tiny module stands in for the model's targets
         parametrization = AdapterParametrization(
             **parametrization_fields, target_modules=("model.layers.0.self_attn.q_proj",)
