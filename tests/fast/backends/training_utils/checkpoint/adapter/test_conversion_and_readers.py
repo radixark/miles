@@ -477,6 +477,13 @@ def test_a_megatron_bridge_full_fine_tune_is_no_lora_source(tmp_path):
         read_source_lora_alpha(tmp_path)
 
 
+def test_a_bridge_checkpoint_with_adapter_keys_but_no_peft_config_is_refused(tmp_path):
+    _dcp_with(tmp_path, "decoder.layers.0.self_attention.linear_qkv.adapter.linear_in.weight")
+    (tmp_path / "run_config.yaml").write_text("peft: null\n")
+    with pytest.raises(AssertionError, match="adapter keys but its run_config.yaml has no peft"):
+        read_source_lora_alpha(tmp_path)
+
+
 def test_a_peft_dir_takes_its_alpha_from_adapter_config_despite_a_run_config(tmp_path):
     (tmp_path / "adapter_config.json").write_text(json.dumps({"lora_alpha": 4}))
     (tmp_path / "run_config.yaml").write_text("peft:\n  alpha: 32\n")
