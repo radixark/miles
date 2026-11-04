@@ -517,7 +517,7 @@ class TorchtitanLoraCheckpoint:
             )
         else:
             unmapped = None
-        # weights only need no schedule: start it fresh, as for a DCP off the rollout grid
+        # weights only need no schedule: load them and start the schedule fresh
         assert unmapped is None or not load_optimizer, (
             f"{path} cannot resume this run's schedule: {unmapped}. Keep its rollout and batch sizes, or pass "
             "--no-load-optim to load its weights and start the schedule fresh"
