@@ -479,7 +479,7 @@ class TorchtitanLoraCheckpoint:
         iteration = training_state["iteration"]
         self._first_rollout = training_state["first_rollout"]
         # compacted rollouts train a data-dependent number of steps each, so a run's own dir may sit off the grid
-        same_steps_per_rollout = training_state.get("steps_per_rollout") == self._steps_per_rollout
+        same_steps_per_rollout = training_state["steps_per_rollout"] == self._steps_per_rollout
         # the schedule is restored by step: on another --global-batch-size grid it would not match the rollout
         grid_step = 0 if iteration is None else (iteration + 1 - self._first_rollout) * self._steps_per_rollout
         if same_steps_per_rollout:
