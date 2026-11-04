@@ -23,11 +23,15 @@ import argparse
 import os
 import sys
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import pytest
 import torch
+from tests.fast.fixtures.args_fixtures import ConfigNamespace
+
+from miles.backends.megatron_utils.megatron_config import MegatronArgsNamespace
 
 
 def _ensure_module(dotted: str) -> ModuleType:
@@ -99,6 +103,7 @@ for _sub in [
 from miles.utils.debug_utils.run_megatron.worker.main import (  # noqa: E402
     _apply_source_patches,
     _finalize_dumper,
+    _initialize_megatron,
     _parse_args,
     _run_forward_backward,
 )
@@ -106,45 +111,124 @@ from miles.utils.debug_utils.run_megatron.worker.main import (  # noqa: E402
 _MODULE = "miles.utils.debug_utils.run_megatron.worker.main"
 
 
+def _parsed_standalone_args(*, trainers: list[SimpleNamespace], **overrides: Any) -> ConfigNamespace:
+    defaults = {
+        "train_backend": "megatron",
+        "megatron_to_hf_mode": "bridge",
+        "load": None,
+        "ref_load": None,
+        "no_load_optim": None,
+        "no_load_rng": None,
+        "finetune": None,
+        "ckpt_step": None,
+        "exit_on_missing_checkpoint": False,
+        "debug_train_only": True,
+        "debug_rollout_only": False,
+        "offload_train": False,
+        "colocate": False,
+        "starts_inference_engines": False,
+        "hf_checkpoint": "/model",
+        "actor_num_nodes": 1,
+        "actor_num_gpus_per_node": 1,
+    }
+    for trainer in trainers:
+        trainer.overrides = {}
+        trainer.model_id = None
+    return ConfigNamespace(**(defaults | overrides), raw_megatron=SimpleNamespace(base_args={}, trainers=trainers))
+
+
+def _trainer_config(*, world_size: int) -> SimpleNamespace:
+    return SimpleNamespace(backend=SimpleNamespace(world_size=world_size), offload_train=False)
+
+
 class TestParseArgs:
-    @patch(f"{_MODULE}.WORKER_SCRIPT_ARGS_BRIDGE")
-    @patch(f"{_MODULE}.parse_args")
-    def test_ref_load_overrides_args_load(
-        self,
-        mock_parse_args: MagicMock,
-        mock_bridge: MagicMock,
-    ) -> None:
-        """When script_args.ref_load is set, args.load is overridden."""
-        args = argparse.Namespace(load=None)
-        mock_parse_args.return_value = args
+    def test_script_options_are_translated_for_the_shared_parser(self) -> None:
+        """Use the shared parser with standalone topology and checkpoint options."""
+        argv = [
+            "worker",
+            "--script-hf-checkpoint",
+            "/model",
+            "--script-token-ids-file",
+            "/tokens",
+            "--script-ref-load",
+            "/checkpoint",
+            "--script-role",
+            "critic",
+            "--micro-batch-size",
+            "2",
+            "--dsv4-impl",
+            "miles",
+        ]
+        captured: list[str] = []
+        actor, critic = SimpleNamespace(role="actor"), SimpleNamespace(role="critic")
+        parsed = _parsed_standalone_args(
+            actor_num_nodes=2,
+            actor_num_gpus_per_node=4,
+            advantage_estimator="ppo",
+            load="/checkpoint",
+            ref_load="/checkpoint",
+            trainers=[actor, critic],
+        )
+        trainer_config = _trainer_config(world_size=8)
 
-        script_args = MagicMock()
-        script_args.ref_load = Path("/some/path")
-        mock_bridge.from_namespace.return_value = script_args
+        def parse_shared() -> SimpleNamespace:
+            captured.extend(sys.argv[1:])
+            return parsed
 
-        returned_args, returned_script = _parse_args()
+        with patch.object(sys, "argv", argv), patch.dict(
+            os.environ, {"WORLD_SIZE": "8", "LOCAL_WORLD_SIZE": "4"}
+        ), patch(f"{_MODULE}.parse_args", side_effect=parse_shared), patch(
+            f"{_MODULE}.compute_trainer_config", return_value=trainer_config
+        ) as compute:
+            inputs = _parse_args()
+            args, script_args = inputs.trainer, inputs.script
+            assert sys.argv is argv
 
-        assert returned_args.load == "/some/path"
-        assert returned_script is script_args
+        assert inputs.ckpt_load_config.load == "/checkpoint"
+        assert not inputs.ckpt_load_config.resume_from_ckpt
+        assert args is trainer_config
+        compute.assert_called_once_with(parsed, critic)
+        assert script_args.ref_load == Path("/checkpoint")
+        for flag, value in [
+            ("--hf-checkpoint", "/model"),
+            ("--load", "/checkpoint"),
+            ("--ref-load", "/checkpoint"),
+            ("--actor-num-nodes", "2"),
+            ("--actor-num-gpus-per-node", "4"),
+            ("--micro-batch-size", "2"),
+            ("--dsv4-impl", "miles"),
+            ("--advantage-estimator", "ppo"),
+        ]:
+            assert captured[captured.index(flag) + 1] == value
+        assert "--debug-train-only" in captured
+        assert not any(argument.startswith("--script-") for argument in captured)
 
-    @patch(f"{_MODULE}.WORKER_SCRIPT_ARGS_BRIDGE")
-    @patch(f"{_MODULE}.parse_args")
-    def test_ref_load_none_preserves_original_load(
-        self,
-        mock_parse_args: MagicMock,
-        mock_bridge: MagicMock,
-    ) -> None:
-        """When script_args.ref_load is None, args.load stays as-is."""
-        args = argparse.Namespace(load="/orig")
-        mock_parse_args.return_value = args
+    def test_missing_ref_load_preserves_model_load_argument(self) -> None:
+        """Preserve a model checkpoint when the script does not override it."""
+        argv = [
+            "worker",
+            "--script-hf-checkpoint",
+            "/model",
+            "--script-token-ids-file",
+            "/tokens",
+            "--load",
+            "/original",
+        ]
+        captured: list[str] = []
 
-        script_args = MagicMock()
-        script_args.ref_load = None
-        mock_bridge.from_namespace.return_value = script_args
+        def parse_shared() -> SimpleNamespace:
+            captured.extend(sys.argv[1:])
+            return _parsed_standalone_args(trainers=[SimpleNamespace(role="actor")])
 
-        returned_args, _ = _parse_args()
+        with patch.object(sys, "argv", argv), patch.dict(
+            os.environ, {"WORLD_SIZE": "1", "LOCAL_WORLD_SIZE": "1"}
+        ), patch(f"{_MODULE}.parse_args", side_effect=parse_shared), patch(
+            f"{_MODULE}.compute_trainer_config", return_value=_trainer_config(world_size=1)
+        ):
+            _parse_args()
 
-        assert returned_args.load == "/orig"
+        assert captured.count("--load") == 1
+        assert captured[captured.index("--load") + 1] == "/original"
 
 
 class TestApplySourcePatches:
@@ -178,7 +262,7 @@ class TestRunForwardBackward:
         mock_get_fb.return_value = mock_fb_func
         mock_dist.get_rank.return_value = 1
 
-        args = argparse.Namespace(seq_length=4, micro_batch_size=1)
+        args = argparse.Namespace(backend=argparse.Namespace(seq_length=4, micro_batch_size=1))
         script = MagicMock()
         script.run_backward = False
 
@@ -206,7 +290,7 @@ class TestRunForwardBackward:
         mock_get_fb.return_value = mock_fb_func
         mock_dist.get_rank.return_value = 1
 
-        args = argparse.Namespace(seq_length=4, micro_batch_size=1)
+        args = argparse.Namespace(backend=argparse.Namespace(seq_length=4, micro_batch_size=1))
         script = MagicMock()
         script.run_backward = False
 
@@ -257,3 +341,26 @@ if __name__ == "__main__":
     import pytest
 
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+class TestStandaloneTopologyGuards:
+    def test_invalid_world_topologies_fail_before_shared_configuration(self) -> None:
+        """Invalid torchrun topology is rejected before parsing the shared training configuration."""
+        argv = ["worker", "--script-hf-checkpoint", "/model", "--script-token-ids-file", "/tokens"]
+        for world_size, local_world_size in [(0, 1), (-1, 1), (4, 0), (3, 2)]:
+            with patch.object(sys, "argv", argv), patch.dict(
+                os.environ, {"WORLD_SIZE": str(world_size), "LOCAL_WORLD_SIZE": str(local_world_size)}
+            ), patch(f"{_MODULE}.parse_args", side_effect=lambda: pytest.fail("Parsed invalid topology")):
+                with pytest.raises(AssertionError):
+                    _parse_args()
+
+    def test_runtime_world_mismatch_fails_before_megatron_initialization(self) -> None:
+        """A different process-group world size cannot initialize the configured Megatron topology."""
+        args = SimpleNamespace(backend=MegatronArgsNamespace(world_size=4))
+        with patch(f"{_MODULE}.torch.distributed.init_process_group"), patch(
+            f"{_MODULE}.torch.cuda.set_device"
+        ), patch(f"{_MODULE}.dist.get_world_size", return_value=8), patch(
+            f"{_MODULE}.init", side_effect=lambda *args: pytest.fail("Initialized mismatched topology")
+        ):
+            with pytest.raises(AssertionError):
+                _initialize_megatron(args=args)

@@ -66,7 +66,9 @@ class Glm5NextBridge(GlmMoeDsaBridge):
     }
 
     def __init__(self, hf_config, *args, **kwargs):
-        text_config = getattr(hf_config, "text_config", None) or hf_config
+        text_config = (
+            getattr(hf_config, "text_config", None) or hf_config
+        )  # config-access-exempt: HF configs may wrap text_config for multimodal checkpoints
         super().__init__(text_config, *args, **kwargs)
 
     # GLM-5.3-Flash is NoPE (qk_rope_head_dim 0), so its config carries no rope fields;
@@ -113,7 +115,9 @@ class Glm5NextBridge(GlmMoeDsaBridge):
                 assert len(hf_weights) == 1
                 return hf_weights[0].reshape(-1)[alpha_slice].clone()
         if len(hf_weights) == 1 and hf_weights[0].dtype == torch.float32:
-            saved_dtype = getattr(self, "dtype", None)
+            saved_dtype = getattr(
+                self, "dtype", None
+            )  # config-access-exempt: the bridge sets dtype only after conversion starts
             self.dtype = None
             try:
                 return DeepseekV3Bridge._weight_to_mcore_format(self, mcore_weights_name, hf_weights)

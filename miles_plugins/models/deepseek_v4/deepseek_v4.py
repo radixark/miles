@@ -32,6 +32,7 @@ from miles_plugins.models.deepseek_v4.ops.cp_utils import (
     get_q_positions_for_cp,
     get_window_topk_idxs_cp,
 )
+from miles_plugins.models.deepseek_v4.ops.grouped_matmul import grouped_matmul
 from miles_plugins.models.deepseek_v4.ops.qat import fp8_simulate_qat
 from miles_plugins.models.deepseek_v4.ops.rope import apply_rotary_emb, wrapped_precompute_freqs_cis
 from miles_plugins.models.deepseek_v4.ops.thd_utils import (
@@ -73,10 +74,14 @@ class DeepSeekV4Attention(MegatronModule):
         if pg_collection is None:
             pg_collection = ProcessGroupCollection.use_mpu_process_groups(required_pgs=["tp"])
         else:
-            assert hasattr(pg_collection, "tp")
+            assert hasattr(
+                pg_collection, "tp"
+            )  # config-access-exempt: process-group collections vary across Megatron versions
         self.pg_collection = pg_collection
         self.tp_group = self.pg_collection.tp
-        self.cp_group = pg_collection.cp if hasattr(pg_collection, "cp") else None
+        self.cp_group = (
+            pg_collection.cp if hasattr(pg_collection, "cp") else None
+        )  # config-access-exempt: context-parallel groups are optional in upstream collections
         self.cp_size = self.cp_group.size() if self.cp_group else 1
         self.cp_rank = self.cp_group.rank() if self.cp_group else 0
 
@@ -196,7 +201,7 @@ class DeepSeekV4Attention(MegatronModule):
                         config=config, pg_collection=pg_collection, layer_id=layer_id
                     )
                 else:
-                    if topk_backend != "torch":
+                    if topk_backend not in ("canonical", "torch"):
                         raise ValueError(
                             "DeepSeek V4 miles DSA topk backend is only supported with V4_INDEXER_IMPL=tilelang; "
                             f"got {topk_backend=} with {indexer_impl=}."
@@ -418,9 +423,7 @@ class DeepSeekV4Attention(MegatronModule):
 
         o = torch.cat((o[..., :-rd], apply_rotary_emb(o[..., -rd:].clone(), freqs_cis, inverse=True)), dim=-1)
 
-        o = o.view(bsz, seqlen_local, self.n_local_groups, -1)
-        wo_a = self.linear_o_group_proj.view(self.n_local_groups, self.o_lora_rank, -1)
-        o = torch.einsum("bsgd,grd->bsgr", o, wo_a)
+        o = grouped_matmul(o.view(bsz, seqlen_local, self.n_local_groups, -1), self.linear_o_group_proj)
         x, _ = self.linear_proj(o.flatten(2))
 
         output = einops.rearrange(x, "b s d -> s b d")

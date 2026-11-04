@@ -94,7 +94,9 @@ class LoRAGroupedFC1(NativeLoRAAdapter):
     def weight_deltas(self):
         (host,) = self._hosts
         for index in range(self.w1_B.shape[0]):
-            yield getattr(host, f"weight{index}"), lambda index=index: self.context.lora.scale * torch.cat(
+            yield getattr(
+                host, f"weight{index}"
+            ), lambda index=index: self.context.lora.scale * torch.cat(  # config-access-exempt: grouped expert hosts register indexed weight parameters
                 [self.w1_B[index].float() @ self.w1_A.float(), self.w3_B[index].float() @ self.w3_A.float()]
             )
 
@@ -163,7 +165,9 @@ class LoRAGroupedFC2(NativeLoRAAdapter):
     def weight_deltas(self):
         (host,) = self._hosts
         for index in range(self.w2_A.shape[0]):
-            yield getattr(host, f"weight{index}"), lambda index=index: self.context.lora.scale * (
+            yield getattr(
+                host, f"weight{index}"
+            ), lambda index=index: self.context.lora.scale * (  # config-access-exempt: grouped expert hosts register indexed weight parameters
                 self.w2_B.float() @ self.w2_A[index].float()
             )
 

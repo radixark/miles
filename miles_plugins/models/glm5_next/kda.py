@@ -17,7 +17,9 @@ from miles_plugins.models.hf_attention import HuggingfaceAttention
 
 
 def _get_text_config(hf_config):
-    return getattr(hf_config, "text_config", None) or hf_config
+    return (
+        getattr(hf_config, "text_config", None) or hf_config
+    )  # config-access-exempt: HF configs may wrap text_config for multimodal checkpoints
 
 
 class Glm5NextKDA(nn.Module):

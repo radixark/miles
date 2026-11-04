@@ -1,4 +1,5 @@
 import uuid
+from collections.abc import Callable
 from copy import deepcopy
 from unittest.mock import patch
 
@@ -92,7 +93,11 @@ def test_aborted_generation_is_not_committed(version):
 
 
 @pytest.mark.parametrize("random_tool_ids", [False, True])
-def test_agentic_v2_same_prompt_retries_match_v1_training_payload_bitwise(random_tool_ids, monkeypatch):
+def test_agentic_v2_same_prompt_retries_match_v1_training_payload_bitwise(
+    random_tool_ids: bool, monkeypatch: pytest.MonkeyPatch, synchronize_mock_requests: Callable[[int], None]
+) -> None:
+    """Concurrent v1 and v2 trajectories preserve identical training payloads and retry history."""
+    synchronize_mock_requests(_BATCH_SIZE)
     if random_tool_ids:
         original = MockSGLangServer._compute_chat_completions_response
 
@@ -179,7 +184,7 @@ def _run_scripted_agents(version: str):
     ]
     with (
         patch.object(MockSGLangServer, "_compute_chat_completions_response", new=_stamp_prompt_versions),
-        with_mock_server(model_name=_MODEL, process_fn=_process_agent_prompt, latency=0.05) as backend,
+        with_mock_server(model_name=_MODEL, process_fn=_process_agent_prompt) as backend,
     ):
         results = run_agentic_retry_trajectories(
             backend_url=backend.url,

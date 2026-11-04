@@ -57,7 +57,7 @@ _GITHUB_ENV_VARS = (
 
 
 @pytest.fixture(autouse=True)
-def _clear_github_env(monkeypatch):
+def _clear_github_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Each test starts from a clean GitHub environment so leftovers from the
     real CI runner (or a prior test) cannot leak in."""
     for var in _GITHUB_ENV_VARS:
@@ -876,6 +876,7 @@ class TestHarnessEnforcement:
         with caplog.at_level("INFO"):
             rc = ci_utils.run_unittest_files(
                 files,
+                snapshot_hardware="cpu",
                 timeout_per_file=10,
                 continue_on_error=continue_on_error,
                 enable_retry=True,
@@ -932,6 +933,7 @@ class TestHarnessEnforcement:
         with caplog.at_level("INFO"):
             rc = ci_utils.run_unittest_files(
                 [registry],
+                snapshot_hardware="cpu",
                 timeout_per_file=10,
                 enable_retry=True,
                 max_attempts=3,

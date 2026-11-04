@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 from examples.infra_features.split_deployment.address_book import DEFAULT_TRAINER_ID
 from tests.e2e.deploy.conftest_deploy.hot_restart import scenario_hot_restart_realistic_gsm8k as scenario
@@ -92,10 +94,20 @@ class TestTheSoakOfOneDeployment:
         assert form.event_log is soak["event_log"]
         assert launch.config is soak["config"]
         assert form.launch_spec.config == soak["config"]
-        assert (
-            f"{form.launch_spec.train_args} --deploy-component {launch.config.deploy_component.value}"
-            == launch.request.train_args
-        )
+        relaunched = f"{form.launch_spec.train_args} --deploy-component {launch.config.deploy_component.value}"
+        assert launch.request.train_args == relaunched
+
+    def test_a_take_over_preserves_the_original_snapshot_configuration(self, harness: ScenarioHarness) -> None:
+        """Changing the snapshot name would restart retained trainer and controller pods."""
+        scenario.run_ci(seed=5, num_rollout=40, hot_restart_interval_seconds=17.0)
+        (soak,) = harness.soaks
+        (form,) = soak["forms"][DEPLOYMENT_TARGET_KIND]
+
+        asyncio.run(gsm8k.launch(form.launch_spec))
+        first, second = harness.launches
+        assert first.value_of("--config-snapshot-name") == second.value_of("--config-snapshot-name")
+        assert first.request.train_args == second.request.train_args
+        assert "--ci-disable-config-snapshot" not in first.argv
 
     def test_the_observer_watches_the_release_checkpoints_and_events_of_this_run(
         self, harness: ScenarioHarness

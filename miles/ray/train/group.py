@@ -8,13 +8,16 @@ from pathlib import Path
 from typing import Any, TypeVar
 from uuid import uuid4
 
+from miles.backends.megatron_utils.megatron_config import CRITIC_ROLE
 from miles.backends.training_utils.types import TrainStepOutcome, TrainStepOutput
 from miles.ray.rollout.inference_controller import UpdatableEngines
-from miles.ray.specs.train import compute_trainer_num_cells, compute_trainer_pool_id
+from miles.ray.specs.train import compute_trainer_pool_id
 from miles.ray.train.cell import TrainerCell
 from miles.ray.train.cell_monitor import create_trainer_cell_health_checker
+from miles.ray.train.init_request import TrainerControllerInitRequest
 from miles.ray.train_actor import WeightUpdateOutput
 from miles.utils import object_store
+from miles.utils.args.runtime import TrainerConfig
 from miles.utils.arguments import supports_partial_target_weight_update
 from miles.utils.async_utils import AsyncioGatherUtils, gather_and_raise_first
 from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
@@ -41,7 +44,6 @@ from miles.utils.test_utils.fault_injector.controller import fault_hook_controll
 from miles.utils.test_utils.fault_injector.models import FaultHookName, FaultHookOwner
 from miles.utils.tracking_utils.structured_log import log_structured
 from miles.utils.workers.cell_operations.base import BaseCellOperations
-from miles.utils.workers.rpc.common.wire_types import Pickled
 from miles.utils.workers.types import DeploymentIdentity
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, StopWatchFn
 from miles.utils.workers.worker_provider.utils import apply_cell_observation
@@ -55,8 +57,8 @@ _RETRY_MAX_ATTEMPTS = 30
 _CELLS_READY_TIMEOUT_SECONDS = 3600.0
 
 
-def compute_trainer_health_checker_config(args, *, expected_num_cells: int) -> SimpleHealthCheckerConfig | None:
-    if expected_num_cells == 1:
+def compute_trainer_health_checker_config(args: TrainerConfig) -> SimpleHealthCheckerConfig | None:
+    if not args.indep_dp:
         return None
     return SimpleHealthCheckerConfig.from_args(args, prefix="trainer_heartbeat_checker")
 
@@ -65,21 +67,19 @@ class TrainerController:
     def __init__(
         self,
         *,
+        args: TrainerConfig,
         deployment_identity: DeploymentIdentity,
         cell_provider: BaseWorkerProvider,
         cell_operations: BaseCellOperations,
-        trainer_id: str,
-        role: str,
-        with_ref: bool,
-        with_opd_teacher: bool = False,
     ) -> None:
         self._init_once = InitOnce(type(self).__name__)
+        self.args = args
         self._deployment_identity = deployment_identity
-        self._trainer_id = trainer_id
-        self._role = role
-        self._with_ref = with_ref
-        self._with_opd_teacher = with_opd_teacher
-        self._pool_id = compute_trainer_pool_id(trainer_id)
+        self._trainer_id = args.trainer_id
+        self._role = args.trainer_role
+        self._with_ref = (args.trainer_role != CRITIC_ROLE) and (args.kl_coef != 0 or args.use_kl_loss)
+        self._with_opd_teacher = (args.trainer_role != CRITIC_ROLE) and args.use_opd and args.opd_type == "megatron"
+        self._pool_id = compute_trainer_pool_id(args.trainer_id)
         self._provider = cell_provider
         self._cell_operations = cell_operations
         self._watcher_disposer: StopWatchFn | None = None
@@ -103,7 +103,7 @@ class TrainerController:
 
     @property
     def _expected_num_cells(self) -> int:
-        return compute_trainer_num_cells(self.args, role=self._role)
+        return self.args.trainer_init_expected_num_cells
 
     @property
     def _cells(self) -> list[TrainerCell]:
@@ -148,7 +148,7 @@ class TrainerController:
 
     async def _remove_cell(self, cell_id: str) -> None:
         cell = self._cells_by_id.pop(cell_id)
-        cell.health_checker.stop()
+        cell.dispose()
 
     def _create_cell(self, cell_id: str, *, cell_index: int, workers_hash: str) -> TrainerCell:
         cell = TrainerCell(
@@ -333,23 +333,24 @@ class TrainerController:
     # ------------------------ API :: others ------------------------
 
     @init_once
-    async def init(self, args: Pickled) -> list[Any]:
+    async def init(self, request: TrainerControllerInitRequest) -> list[Any]:
         """
         Observe the controller's cells, then allocate GPU resources and initialize
         model, optimzier, local ckpt, etc.
         """
-        self.args = args
+        args = self.args
+        args.num_rollout = request.num_rollout
+        args.wandb_run_id = request.wandb_run_id
+        args.mlflow_run_id = request.mlflow_run_id
         configure_logger(
             args, source=TrainerControllerProcessIdentity(trainer_id=self._trainer_id, model_id=args.trainer_model_id)
         )
         object_store.init_instance(args, contribute_segment=False)
 
-        if self._expected_num_cells > 1:
+        if args.indep_dp:
             self._indep_dp_store, self._indep_dp_store_addr = create_tcp_store()
 
-        self._health_checker_config = compute_trainer_health_checker_config(
-            args, expected_num_cells=self._expected_num_cells
-        )
+        self._health_checker_config = compute_trainer_health_checker_config(args)
 
         self._witness_allocator: WitnessIdAllocator | None = (
             WitnessIdAllocator(buffer_size=args.witness_buffer_size) if args.enable_witness else None
@@ -370,17 +371,20 @@ class TrainerController:
         self._watcher_disposer = await self._provider.watch_cells(self._reconcile)
         await self._wait_expected_num_cells()
 
+        initial_cells = self._cells
+        initial_cell_indices = [cell.cell_index for cell in initial_cells]
         cell_results = await asyncio.gather(
             *[
                 cell.init(
+                    ckpt_load_config=request.ckpt_load_config,
                     indep_dp_info=self._compute_indep_dp_info(
                         cell_index=cell.cell_index,
                         # all cells will be alive for this first initialization
-                        alive_cell_indices=list(range(len(self._cells))),
+                        alive_cell_indices=initial_cell_indices,
                     ),
                     indep_dp_store_addr=self._indep_dp_store_addr,
                 )
-                for cell in self._cells
+                for cell in initial_cells
             ]
         )
         return [item for sublist in cell_results for item in sublist]
@@ -388,7 +392,7 @@ class TrainerController:
     async def is_initialized(self) -> bool:
         return self._init_once.is_initialized()
 
-    async def load_state(self) -> list[Any]:
+    async def load_state(self, request: TrainerControllerInitRequest) -> list[Any]:
         assert self._init_once.is_initialized()
 
         await self._wait_expected_num_cells(timeout=_CELLS_READY_TIMEOUT_SECONDS)
@@ -396,7 +400,9 @@ class TrainerController:
         not_alive = [cell.cell_id for cell in self._cells if not cell.is_alive]
         assert not not_alive, f"a reload does not support cells that are not alive: {not_alive}"
 
-        cell_results = await gather_and_raise_first([cell.load_state() for cell in self._cells])
+        cell_results = await gather_and_raise_first(
+            [cell.load_state(request.ckpt_load_config) for cell in self._cells]
+        )
         self._debug_trainer_load_state_timestamp = time.time()
         return [item for sublist in cell_results for item in sublist]
 

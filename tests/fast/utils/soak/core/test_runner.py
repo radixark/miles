@@ -1,7 +1,7 @@
 import asyncio
 import contextlib
 from collections.abc import Callable
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -236,7 +236,9 @@ class TestSoakRunnerTail:
         kinds = [event.kind for event in runner.event_log.events]
         assert kinds.index("admission_closed") == len(kinds) - 3
 
-    async def test_a_tail_exceeding_its_budget_drains_training_then_fails_the_soak(self, tmp_path: Path) -> None:
+    async def test_a_tail_exceeding_its_budget_drains_training_then_fails_the_soak(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """An expired recovery tail drains its launcher before teardown and still propagates the timeout."""
         feed = _ScriptedSutFeed([[_step_end(0, at=_now())]])
         runner = _make_runner(
@@ -249,12 +251,21 @@ class TestSoakRunnerTail:
         )
         teardown = _RecordingTeardown(runner.event_log)
 
+        expired = asyncio.Event()
+
+        class _ExpiredTailClock:
+            @staticmethod
+            def now(tz: timezone) -> datetime:
+                expired.set()
+                return datetime.now(tz) + timedelta(seconds=1)
+
+        monkeypatch.setattr("tests.utils.soak.core.runner.datetime", _ExpiredTailClock)
         release = asyncio.Event()
         training = asyncio.create_task(release.wait())
         task = asyncio.create_task(runner.run(training, teardown=teardown))
 
         try:
-            await _wait_until(lambda: len(runner.event_log.events) >= 3)
+            await asyncio.wait_for(expired.wait(), timeout=5.0)
             assert not training.done() and not task.done()
             assert teardown.calls == 0
             assert not any(isinstance(e, SoakCollectionClosedEvent) for e in runner.event_log.events)

@@ -115,13 +115,13 @@ class TestHookForms:
         }
         assert HOOK_FAULT_MAX_DELAY_MS == 1000.0
 
-    def test_ray_engines_are_killed_from_another_trainers_send_hook(self) -> None:
+    def test_ray_engines_are_killed_within_a_50ms_delay_from_another_trainers_send_hook(self) -> None:
         """Only the send hook sits inside a transfer to the engine, and the engine itself reaches no hook."""
         forms = _forms(ClusterBackend.RAY, FaultTrigger.HOOK)
 
         [form] = forms[ROLLOUT_CELL_TYPE]
         assert (form.action, form.hook_name, form.through_trainer_hook) == (KillProcessAction(), _BEFORE_SEND, True)
-        assert (form.lifetime_seconds, form.max_delay_ms) == (300.0, 1000.0)
+        assert (form.lifetime_seconds, form.max_delay_ms) == (300.0, 50)
 
     def test_kubernetes_engines_get_no_hook_forms(self) -> None:
         """Kubernetes engines cannot be reached through a trainer's api server action."""

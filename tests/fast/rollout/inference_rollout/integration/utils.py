@@ -1,6 +1,7 @@
 from tests.fast.fixtures.generation_fixtures import extra_argv_for_variant
 from tests.fast.fixtures.rollout_fixtures import RolloutEnvConfig
 
+from miles.ray.rollout.rollout_executor import _compute_rollout_function_config
 from miles.rollout.base_types import (
     RolloutFnConstructorInput,
     RolloutFnEvalInput,
@@ -74,7 +75,7 @@ def integration_env_config(
 def load_and_call_rollout(args, data_source, mode: str = "train") -> RolloutFnOutput:
     function_path = args.rollout_function_path if mode == "train" else args.eval_function_path
     fn = load_rollout_function(
-        RolloutFnConstructorInput(args=args, data_source=data_source),
+        RolloutFnConstructorInput(args=_compute_rollout_function_config(args, function_path), data_source=data_source),
         function_path,
     )
     if mode == "train":

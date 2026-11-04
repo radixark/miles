@@ -109,7 +109,9 @@ class TokenSeqComparator:
         ``special=True``, so they are not collected here.
         """
         ids = set(tokenizer.all_special_ids)
-        decoder = getattr(tokenizer, "added_tokens_decoder", None)
+        decoder = getattr(
+            tokenizer, "added_tokens_decoder", None
+        )  # config-access-exempt: custom tokenizers may omit added-token metadata
         if decoder:
             ids |= {k for k, v in decoder.items() if v.special}
         return ids

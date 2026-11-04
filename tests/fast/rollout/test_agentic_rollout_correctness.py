@@ -14,6 +14,7 @@ from tests.manual.session import _rollout_benchmark_agent as agent
 from tests.manual.session.bench_agentic_rollout import NUM_LAYERS, TOPK, build_args, close_http_client
 from tests.manual.session.bench_session_server_overhead import _completion_token_ids
 
+from miles.ray.rollout.rollout_executor import _compute_rollout_function_config
 from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnTrainInput
 from miles.rollout.inference_rollout.compatibility import load_rollout_function
 from miles.utils import http_utils
@@ -108,9 +109,9 @@ def test_small_batch_rollout_preserves_data(tmp_path, monkeypatch):
 
     port = http_utils.find_available_port(28000)
 
-    @app.get("/list_workers")
+    @app.get("/workers")
     async def list_workers():
-        return {"urls": [f"http://127.0.0.1:{port}"]}
+        return {"workers": [{"url": f"http://127.0.0.1:{port}"}]}
 
     @app.post("/abort_request")
     async def abort():
@@ -131,8 +132,7 @@ def test_small_batch_rollout_preserves_data(tmp_path, monkeypatch):
         "".join(json.dumps({"prompt": [{"role": "user", "content": str(i)}], "label": ""}) + "\n" for i in range(2))
     )
     bench = Namespace(hf_checkpoint="Qwen/Qwen3-0.6B", sessions=2, repetitions=1)
-    args = build_args(bench, prompt_path, port)
-    args.apply_chat_template = False
+    args = build_args(bench, prompt_path, port, apply_chat_template=False)
     backend = UvicornThreadServer(app, host="127.0.0.1", port=port)
     SingletonMeta.clear_all_instances()
     try:
@@ -140,7 +140,10 @@ def test_small_batch_rollout_preserves_data(tmp_path, monkeypatch):
         http_utils.init_http_client(args)
         with with_session_server(backend.url, args, port=http_utils.find_available_port(33000)):
             rollout = load_rollout_function(
-                RolloutFnConstructorInput(args=args, data_source=load_function(args.data_source_path)(args)),
+                RolloutFnConstructorInput(
+                    args=_compute_rollout_function_config(args, args.rollout_function_path),
+                    data_source=load_function(args.data_source_path)(args),
+                ),
                 args.rollout_function_path,
             )
             output = run(asyncio.wait_for(rollout(RolloutFnTrainInput(rollout_id=0)), timeout=30))
@@ -150,7 +153,8 @@ def test_small_batch_rollout_preserves_data(tmp_path, monkeypatch):
         for group in output.samples:
             assert len(group) == 1 and len(group[0]) == 1
             sample = group[0][0]
-            case = sample.index
+            # Key on the prompt, not the index: --rollout-shuffle reorders which prompt gets which index.
+            case = int(sample.prompt[0]["content"])
             expected = cases[case][2]
             assert sample.status == Sample.Status.COMPLETED
             assert sample.metadata["case"] == case

@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from pathlib import Path
 
 import pytest
 from tests.utils.deploy.hot_restart import release as release_module
@@ -47,3 +48,14 @@ def install_cluster(monkeypatch: pytest.MonkeyPatch) -> InstallReleaseCluster:
         return cluster
 
     return install
+
+
+@pytest.fixture
+def recorded_rollout_generations(tmp_path: Path) -> list[str]:
+    for generation, rollout_ids in enumerate(((0, 1, 2), (2, 3))):
+        directory = tmp_path / f"generation_{generation}"
+        directory.mkdir()
+        for rollout_id in rollout_ids:
+            (directory / f"{rollout_id}.pt").touch()
+    (tmp_path / "dashboard_columns").mkdir()
+    return [str(tmp_path / f"generation_{generation}" / "{rollout_id}.pt") for generation in range(2)]

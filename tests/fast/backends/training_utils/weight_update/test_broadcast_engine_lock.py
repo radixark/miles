@@ -28,7 +28,7 @@ def _build_protocol(
         patch(f"{_BROADCAST_MODULE}.get_parallel_state", return_value=parallel_state),
         patch(f"{_BROADCAST_MODULE}.create_world_ticket_lock") as create_lock,
     ):
-        protocol = UpdateWeightFromDistributed(Namespace())
+        protocol = UpdateWeightFromDistributed(Namespace(check_weight_update_equal=False))
     return protocol, create_lock
 
 
@@ -86,7 +86,7 @@ class TestSendBucketUnderTheEngineLock:
     @staticmethod
     def _make_self(store: HashStore) -> SimpleNamespace:
         return SimpleNamespace(
-            args=Namespace(),
+            args=Namespace(update_weight_transfer_mode="broadcast"),
             _engine_lock=StoreTicketLock(store=store, prefix=_PREFIX, poll_interval=0.001),
             group_name="miles-pp_0",
             _model_update_groups=MagicMock(name="nccl_group"),

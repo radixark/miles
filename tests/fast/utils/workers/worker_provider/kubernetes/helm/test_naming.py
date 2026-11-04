@@ -5,8 +5,10 @@ from miles.utils.workers.worker_provider.kubernetes.helm.naming import (
     LONGEST_REVISION_HASH_SUFFIX,
     MAX_OBJECT_NAME_LENGTH,
     component_name,
+    static_cell_addrs_raw,
     static_worker_host,
 )
+from miles.utils.workers.worker_spec import PortInfo
 
 _LONGEST_CELL_INDEX = 10**NAME_INDEX_PAD_WIDTH - 1
 
@@ -40,3 +42,21 @@ class TestComponentName:
         host = static_worker_host("a" * 80, "b" * 80, _LONGEST_CELL_INDEX)
 
         assert all(len(label) <= MAX_OBJECT_NAME_LENGTH for label in host.split("."))
+
+
+class TestStaticCellAddresses:
+    def test_workers_in_one_pod_get_distinct_ports_on_the_same_cell_host(self):
+        """Workers sharing a pod need distinct RPC ports while their master port stays fixed."""
+        ports = [
+            PortInfo(name="rpc", static_port=8000, num_consecutive=2),
+            PortInfo(name="master", static_port=9000, mode="master"),
+        ]
+
+        first = static_cell_addrs_raw(name="trainer", port_infos=ports, release="run", cell_index=3)
+        second = static_cell_addrs_raw(
+            name="trainer", port_infos=ports, release="run", cell_index=3, worker_in_pod_index=1
+        )
+
+        assert first["rpc"].host == second["rpc"].host == static_worker_host("run", "trainer", 3)
+        assert (first["rpc"].port, second["rpc"].port) == (8000, 8002)
+        assert first["master"].port == second["master"].port == 9000

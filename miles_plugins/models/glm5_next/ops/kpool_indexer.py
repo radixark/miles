@@ -12,10 +12,11 @@ def kpool_select_topk(
     pool_cu_seqlens: torch.Tensor,
     index_topk: int,
     kpool: int,
+    query_token_ids: torch.Tensor | None = None,
 ) -> torch.Tensor:
     num_tokens = index_q.shape[0]
     device = index_q.device
-    token_ids = torch.arange(num_tokens, device=device)
+    token_ids = torch.arange(num_tokens, device=device) if query_token_ids is None else query_token_ids
     seq_indices = torch.searchsorted(cu_seqlens, token_ids, right=True) - 1
     seq_token_base = cu_seqlens[seq_indices].to(torch.int32)
     pool_base = pool_cu_seqlens[seq_indices].to(torch.int32)

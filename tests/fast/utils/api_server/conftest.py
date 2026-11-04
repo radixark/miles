@@ -187,19 +187,24 @@ class MockInferenceController:
 
 
 class MockWorkerManager:
-    def __init__(self, summaries: dict[str, CellInfo] | None = None) -> None:
+    def __init__(
+        self, summaries: dict[str, CellInfo] | None = None, *, categories: dict[str, str] | None = None
+    ) -> None:
         self._summaries = dict(summaries or {})
+        self._categories = dict(categories or {})
         self.stopped_cells: list[list[str]] = []
         self.started_cells: list[list[str]] = []
         self.cell_info_calls: list[dict[str, object]] = []
 
     @property
     def get_cell_infos(self) -> MockRemoteCall:
-        def _filtered(**kwargs: object) -> dict[str, CellInfo]:
-            pool_ids = kwargs.get("pool_ids")
-            if pool_ids is None:
-                return dict(self._summaries)
-            return {cell_id: info for cell_id, info in self._summaries.items() if info.pool_id in pool_ids}
+        def _filtered(*, pool_ids: list[str] | None, category: str | None) -> dict[str, CellInfo]:
+            return {
+                cell_id: info
+                for cell_id, info in self._summaries.items()
+                if (pool_ids is None or info.pool_id in pool_ids)
+                and (category is None or self._categories.get(info.pool_id) == category)
+            }
 
         return MockRemoteCall(
             None,

@@ -18,7 +18,8 @@ from miles.ray.rollout.inference_controller import (
 )
 from miles.ray.rollout.rollout_server import RolloutServer
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
-from miles.ray.specs.inference import compute_engine_pool_ids, compute_router_pool_id, specs_inference_engine
+from miles.ray.specs.inference import InferenceEngineSpec, compute_router_pool_id
+from miles.utils.args.configs.scaling import ScalingConfig
 from miles.utils.audit_utils.checksum_utils import ChecksumCollectionFailure
 from miles.utils.context_lock import ContextLock
 from miles.utils.ft_utils.health_checker import ActivenessTracker
@@ -28,7 +29,7 @@ from miles.utils.workers.rpc.client.handle import RpcWorkerHandle
 from miles.utils.workers.rpc.common.metadata import collect_rpc_method_specs
 from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, CellReconcileFn, StopWatchFn
-from miles.utils.workers.worker_spec import HostAndPort, NamedHostAndPorts, WorkerMetaContext
+from miles.utils.workers.worker_spec import HostAndPort, NamedHostAndPorts
 
 _RUN_UUID = "run-uuid-1"
 
@@ -253,6 +254,10 @@ class _RecordingEvalFleet:
         return None
 
 
+def _engine_pool_ids(args: Namespace) -> list[str]:
+    return [spec.name for spec in InferenceEngineSpec.create(args)]
+
+
 class _FakeWorkerProvider(BaseWorkerProvider):
     def __init__(self, cell_infos: list[CellInfo], *, pool_ids: list[str] | None = None) -> None:
         self._cell_infos = cell_infos
@@ -286,9 +291,12 @@ class _FakeWorkerProvider(BaseWorkerProvider):
 
 class _RecordingInferenceControllerEvalFleet:
     def __init__(self, info: EvalFleetInfo):
-        self.info = info
+        self._info = info
         self.pins: list[dict] = []
         self.checked_versions: list[str] = []
+
+    async def info(self) -> EvalFleetInfo:
+        return self._info
 
     async def pin(self, checkpoint_dir: str, weight_version: str) -> EvalFleetPin:
         self.pins.append(dict(checkpoint_dir=checkpoint_dir, weight_version=weight_version))
@@ -696,7 +704,7 @@ class TestInitSubscription:
         monkeypatch.setattr(inference_controller_module, "create_rollout_servers", _fake_create_rollout_servers)
         monkeypatch.setattr(inference_controller_module, "resolve_router_addrs", _fake_resolve_router_addrs)
         args = make_args()
-        provider = _OrderRecordingProvider([], pool_ids=compute_engine_pool_ids(args))
+        provider = _OrderRecordingProvider([], pool_ids=_engine_pool_ids(args))
 
         await _init_controller(args, engine_provider=provider)
 
@@ -706,12 +714,12 @@ class TestInitSubscription:
     async def test_init_watches_the_engine_provider_it_was_handed(self, monkeypatch: pytest.MonkeyPatch):
         """The pools are the provider's own, so the controller may only open a watch on what it was given."""
         args = make_args()
-        provider = _FakeWorkerProvider([], pool_ids=compute_engine_pool_ids(args))
+        provider = _FakeWorkerProvider([], pool_ids=_engine_pool_ids(args))
         _patch_init(monkeypatch, servers={"default": _RecordingServer()})
 
         await _init_controller(args, engine_provider=provider)
 
-        assert provider.watched_pool_ids == compute_engine_pool_ids(args)
+        assert provider.watched_pool_ids == _engine_pool_ids(args)
         assert compute_router_pool_id(0) not in provider.watched_pool_ids
         assert "session-server" not in provider.watched_pool_ids
 
@@ -720,7 +728,7 @@ class TestInitSubscription:
         """A router cell carries no engine meta, so reading one as engine meta would kill startup; the
         controller is safe because it subscribes to the engine pools alone."""
         args = make_args()
-        assert compute_router_pool_id(0) not in compute_engine_pool_ids(args)
+        assert compute_router_pool_id(0) not in _engine_pool_ids(args)
 
         router_info = CellInfo(
             cell_id="inference-router-0-0",
@@ -730,8 +738,8 @@ class TestInitSubscription:
             workers_hash="pseudo-hash-router",
             meta={},
         )
-        engine_info = _make_cell_info(model_id="default", pool_id=compute_engine_pool_ids(args)[0])
-        provider = _FakeWorkerProvider([router_info, engine_info], pool_ids=compute_engine_pool_ids(args))
+        engine_info = _make_cell_info(model_id="default", pool_id=_engine_pool_ids(args)[0])
+        provider = _FakeWorkerProvider([router_info, engine_info], pool_ids=_engine_pool_ids(args))
         srv = _RecordingServer()
         _patch_init(monkeypatch, servers={"default": srv})
 
@@ -753,7 +761,7 @@ class TestEngineMetaContract:
             "        num_gpus_per_engine: 2\n"
         )
         args = make_args(sglang_config=str(config_path), rollout_num_gpus=4, sglang_api_key="from-args")
-        (spec,) = specs_inference_engine(args)
+        (spec,) = InferenceEngineSpec.create(args)
 
         info = CellInfo(
             cell_id="inference-engine-0-0-1",
@@ -761,7 +769,7 @@ class TestEngineMetaContract:
             alive=True,
             worker_names=["inference-engine-0-0-1-0"],
             workers_hash="pseudo-hash-0",
-            meta=spec.meta(WorkerMetaContext(cell_index=1)),
+            meta=spec.compute_static_meta(ScalingConfig(sglang_scaling=args.sglang_scaling)).resolve(cell_index=1),
         )
 
         assert _compute_server_cell_meta_from_info(info) == ServerCellMetadata(
@@ -802,6 +810,24 @@ class TestUpdateWeightsLockWindow:
 
         await controller.abort_update_weights()
         assert not controller.context_lock.locked
+
+    async def test_aborting_without_a_pending_update_leaves_the_controller_usable(self) -> None:
+        """A takeover without an interrupted weight update must still reset the fleet."""
+        controller = _make_controller({})
+
+        await controller.abort_update_weights()
+        await controller.prepare_eval()
+
+        assert not controller.context_lock.locked
+
+    async def test_aborting_an_update_does_not_release_an_ordinary_active_call(self) -> None:
+        """Recovery may release an abandoned update window but never another call's lock."""
+        controller = _make_controller({})
+
+        async with controller.context_lock:
+            await asyncio.create_task(controller.abort_update_weights())
+            assert controller.context_lock.locked
+            assert controller.context_lock.held_in_current_context
 
     @pytest.mark.asyncio
     async def test_reconcile_waits_while_the_update_weights_window_is_open(self):
@@ -1325,12 +1351,15 @@ class TestInitLifecycle:
         assert received["context_lock"] is controller.context_lock
 
     @pytest.mark.asyncio
-    async def test_init_creates_the_eval_fleet_from_the_eval_server(self, monkeypatch: pytest.MonkeyPatch):
+    @pytest.mark.parametrize("eval_num_gpus", [0, 2])
+    async def test_init_creates_the_eval_fleet_from_the_eval_server(
+        self, monkeypatch: pytest.MonkeyPatch, eval_num_gpus: int
+    ) -> None:
         """The eval fleet drives the dedicated eval engines, so it must be handed that server and no other."""
         monkeypatch.setattr(inference_controller_module, "InferenceControllerEvalFleet", _RecordingEvalFleet)
         default, eval_srv = _RecordingServer(model_name="default"), _RecordingServer(model_name="eval")
         _patch_init(monkeypatch, servers={"default": default, "eval": eval_srv})
-        controller = self._controller(make_args(eval_num_gpus=2))
+        controller = self._controller(make_args(eval_num_gpus=eval_num_gpus))
 
         await controller.init()
         await controller.dispose()
@@ -1340,15 +1369,18 @@ class TestInitLifecycle:
         assert controller._eval_fleet.args is controller.args
 
     @pytest.mark.asyncio
-    async def test_init_without_eval_gpus_creates_no_eval_fleet(self, monkeypatch: pytest.MonkeyPatch):
+    @pytest.mark.parametrize("eval_num_gpus", [0, 2])
+    async def test_init_without_an_eval_server_creates_no_eval_fleet(
+        self, monkeypatch: pytest.MonkeyPatch, eval_num_gpus: int
+    ) -> None:
         """A run without dedicated eval engines has no eval server to build a fleet from."""
         monkeypatch.setattr(
             inference_controller_module,
             "InferenceControllerEvalFleet",
-            lambda *args, **kwargs: pytest.fail("no eval fleet without eval gpus"),
+            lambda *args, **kwargs: pytest.fail("no eval fleet without an eval server"),
         )
         _patch_init(monkeypatch, servers={"default": _RecordingServer()})
-        controller = self._controller(make_args(eval_num_gpus=0))
+        controller = self._controller(make_args(eval_num_gpus=eval_num_gpus))
 
         await controller.init()
         await controller.dispose()
@@ -1535,7 +1567,7 @@ class TestEvalFleetSurface:
     def test_the_fleet_description_survives_the_wire(self):
         """The executor retargets its eval args to what it decodes, so every field must round-trip."""
         serializer = collect_rpc_method_specs(InferenceController)["get_eval_fleet_info"].serializer
-        info = EvalFleetInfo(router=HostAndPort(host="10.0.0.2", port=31000), num_gpus=2, num_gpus_per_engine=1)
+        info = EvalFleetInfo(router=HostAndPort(host="10.0.0.2", port=31000), engine_gpu_counts=[1, 1])
 
         assert serializer.decode_result(serializer.encode_result(info)) == info
         assert serializer.decode_result(serializer.encode_result(None)) is None
@@ -1578,7 +1610,7 @@ class TestEvalFleetSurface:
     async def test_the_fleet_answers_and_pins_through_the_controller(self):
         """The fleet lives beside its engines: the executor only ever addresses it through the controller."""
         controller = _make_controller({})
-        info = EvalFleetInfo(router=HostAndPort(host="10.0.0.2", port=31000), num_gpus=2, num_gpus_per_engine=1)
+        info = EvalFleetInfo(router=HostAndPort(host="10.0.0.2", port=31000), engine_gpu_counts=[1, 1])
         controller._eval_fleet = _RecordingInferenceControllerEvalFleet(info)
 
         assert await controller.get_eval_fleet_info() == info

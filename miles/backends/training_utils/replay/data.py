@@ -40,6 +40,7 @@ def fill_replay_data(
     if_sp_region=True,
     indices_are_token_positions=False,
     sequence_first=False,
+    kept_in_train_dump=False,
 ):
     """Load rollout replay tensors into module replay queues.
 
@@ -126,7 +127,7 @@ def fill_replay_data(
                     replay_data = pad_func(replay_data, pad)
 
         # sequence_parallel is Megatron-only; FSDP has tp_size == 1 so the slice is a no-op there.
-        if getattr(args, "sequence_parallel", False) and if_sp_region:
+        if args.train_backend == "megatron" and args.backend.sequence_parallel and if_sp_region:
             seqlen = replay_data.size(0)
             assert seqlen % tp_size == 0
             start, end = seqlen // tp_size * tp_rank, seqlen // tp_size * (tp_rank + 1)
@@ -134,7 +135,9 @@ def fill_replay_data(
 
         register_replay_list_func(replay_list, replay_data, models=models)
 
-    del rollout_data[data_key]
+    # A train-data dump, written after training, keeps the column so it holds what replay consumed.
+    if not (kept_in_train_dump and args.save_debug_train_data is not None):
+        del rollout_data[data_key]
 
     for iterator in data_iterator:
         iterator.reset()

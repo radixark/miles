@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from tests.fast.fixtures.args_fixtures import make_trainer_args
 
 import miles.backends.megatron_utils.lora.utils as lora_utils
 from miles.backends.megatron_utils.lora.native.modules.linear import NativeLoRAAdapter
@@ -31,10 +32,6 @@ class TestIsLoraEnabled:
 
     def test_disabled(self):
         args = Namespace(lora_rank=0, lora_adapter_path=None)
-        assert is_lora_enabled(args) is False
-
-    def test_disabled_missing_attrs(self):
-        args = Namespace()
         assert is_lora_enabled(args) is False
 
 
@@ -141,7 +138,7 @@ class TestSaveLoraCheckpointTrainingState:
         publisher = SimpleNamespace(write_adapter=lambda *_: None)
 
         model = [_AdapterModel()]
-        args = Namespace(megatron_to_hf_mode="bridge", no_save_optim=no_save_optim)
+        args = make_trainer_args(megatron_to_hf_mode="bridge", no_save_optim=no_save_optim)
         optimizer = SimpleNamespace(state_dict=lambda: {"step": 7})
         save_lora_checkpoint(
             model,
@@ -204,7 +201,7 @@ class TestDistributedOptimizerParameterState:
     def test_save_writes_each_distributed_optimizers_parameter_state(self, tmp_path, monkeypatch):
         calls = []
         monkeypatch.setattr(lora_utils, "_distributed_optimizers", lambda _optimizer: [self._distributed(calls)])
-        args = Namespace(no_save_optim=False, megatron_to_hf_mode="bridge")
+        args = make_trainer_args(no_save_optim=False, megatron_to_hf_mode="bridge")
         publisher = SimpleNamespace(write_adapter=lambda *_args: None)
 
         save_lora_checkpoint(
@@ -222,7 +219,9 @@ class TestRestoreLoraAdapter:
 
     @staticmethod
     def _args(tmp_path, *, no_load_optim, mode="raw"):
-        return Namespace(lora_adapter_path=str(tmp_path), no_load_optim=no_load_optim, megatron_to_hf_mode=mode)
+        return make_trainer_args(
+            lora_adapter_path=str(tmp_path), no_load_optim=no_load_optim, megatron_to_hf_mode=mode
+        )
 
     @staticmethod
     def _optimizer(calls):

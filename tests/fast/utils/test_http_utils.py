@@ -37,9 +37,11 @@ from unittest.mock import patch
 import httpx
 import pytest
 import ray
+from tests.fast.import_isolation_utils import run_with_blocked_imports
 from tests.fast.utils.fake_ray_ids import fake_ray_node_id
 
 from miles.utils import http_utils
+from miles.utils.args.component_rollout import InferenceRuntimeMutState
 from miles.utils.http_utils import (
     MILES_PREFER_IPV6_ENV,
     GeneralHttpClientProvider,
@@ -53,6 +55,39 @@ def _find_free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [400, 401, 403, 404, 422])
+async def test_post_does_not_retry_permanent_client_errors(status):
+    calls = []
+
+    def respond(request):
+        calls.append(request)
+        return httpx.Response(status, text="invalid request")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        with pytest.raises(httpx.HTTPStatusError, match=str(status)):
+            await http_utils._post(client, "http://engine/generate", {})
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [408, 429, 503])
+async def test_post_still_retries_transient_responses(status, monkeypatch):
+    calls = []
+
+    def respond(request):
+        calls.append(request)
+        return httpx.Response(status if len(calls) == 1 else 200, json={"ok": True})
+
+    async def no_wait(_):
+        pass
+
+    monkeypatch.setattr(http_utils.asyncio, "sleep", no_wait)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        assert await http_utils._post(client, "http://engine/generate", {}) == {"ok": True}
+    assert len(calls) == 2
 
 
 def _listen_after_delay(host: str, port: int, delay: float, stop_event: threading.Event):
@@ -766,18 +801,15 @@ class TestPosterActorKeywordOnlyConstruction:
 
 
 class TestInitHttpClientConcurrency:
-    def _args(self, **overrides):
-        defaults = dict(
-            rollout_num_gpus=0,
-            rollout_num_gpus_per_engine=1,
-            eval_num_gpus=0,
-            eval_num_gpus_per_engine=1,
-            eval_uses_snapshots=True,
+    def _args(self, *, engine_count: int = 0, eval_engine_count: int = 0, eval_uses_snapshots: bool = True):
+        return SimpleNamespace(
+            inference_runtime_mut_state=InferenceRuntimeMutState(
+                engine_count=engine_count, eval_engine_count=eval_engine_count
+            ),
+            eval_uses_snapshots=eval_uses_snapshots,
             sglang_server_concurrency=512,
             use_distributed_post=False,
         )
-        defaults.update(overrides)
-        return SimpleNamespace(**defaults)
 
     def _init(self, monkeypatch, args):
         monkeypatch.setattr(http_utils, "_http_clients", {})
@@ -799,16 +831,28 @@ class TestInitHttpClientConcurrency:
         assert concurrency == 512
 
     def test_train_only_eval_fleet_sizes_the_pool_from_the_fleet(self, monkeypatch):
-        args = self._args(rollout_num_gpus=None, eval_num_gpus=4, eval_num_gpus_per_engine=2)
+        args = self._args(eval_engine_count=4 // 2)
         concurrency, client = self._init(monkeypatch, args)
         assert client is not None
         assert concurrency == 512 * 4 // 2
 
     def test_in_job_gpu_sizing_is_unchanged(self, monkeypatch):
-        args = self._args(rollout_num_gpus=8, rollout_num_gpus_per_engine=2, eval_uses_snapshots=False)
+        args = self._args(engine_count=8 // 2, eval_uses_snapshots=False)
         concurrency, _ = self._init(monkeypatch, args)
         assert concurrency == 512 * 8 // 2
 
     def test_no_client_without_gpus_or_snapshot_eval(self, monkeypatch):
         _, client = self._init(monkeypatch, self._args(eval_uses_snapshots=False))
         assert client is None
+
+
+def test_http_utilities_import_without_router_logging_initialization() -> None:
+    """General HTTP helpers remain available without importing the router logging dependency graph."""
+    run_with_blocked_imports(
+        blocked_prefixes=("miles.utils.logging_utils",),
+        script="""
+from miles.utils.http_utils import wrap_ipv6
+assert wrap_ipv6("::1") == "[::1]"
+assert wrap_ipv6("127.0.0.1") == "127.0.0.1"
+""",
+    )

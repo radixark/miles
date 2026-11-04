@@ -27,10 +27,8 @@ class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        from megatron.bridge import AutoBridge
-
         bridge_checkpoint = _select_bridge_checkpoint(self.args)
-        self._bridge = AutoBridge.from_hf_pretrained(bridge_checkpoint, trust_remote_code=True)
+        self._bridge = megatron_bridge_utils.load_auto_bridge(bridge_checkpoint)
         # Bridge may export official DSV4 checkpoint names, e.g. layers.0.attn.wq_a.weight,
         # while SGLang's model uses model.layers.0.self_attn.wq_a.weight.
         # Resolve the mapping once so postprocessing, quantization, and bucketing
@@ -189,7 +187,11 @@ def _gather_export_dtypes(conversion_tasks):
     """Share owner parameter dtypes with PP receivers that have no local tensor."""
     local_dtypes = {
         task.global_param_name: (
-            torch.float32 if getattr(task.param_weight, "keep_in_fp32", False) else task.param_weight.dtype
+            torch.float32
+            if getattr(
+                task.param_weight, "keep_in_fp32", False
+            )  # config-access-exempt: Megatron annotates only parameters requiring float32 preservation
+            else task.param_weight.dtype
         )
         for task in conversion_tasks
         if task is not None and task.param_weight is not None

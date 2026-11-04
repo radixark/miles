@@ -114,7 +114,7 @@ def _create_hook_forms(config: command_utils.ExecuteTrainConfig) -> CellFaultFor
                         action=action,
                         hook_name=FaultHookName.TRAINER_WEIGHT_UPDATE_BEFORE_SEND,
                         lifetime_seconds=HOOK_FAULT_LIFETIME_SECONDS,
-                        max_delay_ms=HOOK_FAULT_MAX_DELAY_MS,
+                        max_delay_ms=50,
                         through_trainer_hook=True,
                     )
                     for action in ROLLOUT_HOOK_FAULT_ACTIONS

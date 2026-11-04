@@ -1,6 +1,8 @@
 import asyncio
+import base64
 import ctypes
 import dataclasses
+import functools
 import importlib
 import sys
 import threading
@@ -14,7 +16,12 @@ from typing import Any
 import pytest
 import torch
 
+from miles.backends.sglang_utils.sglang_config import SglangConfig
 from miles.backends.training_utils.weight_update.checksum_utils import hash_tensor_sha256
+from miles.backends.training_utils.weight_update.protocols.transports.remote_shard import (
+    RemoteShard,
+    RemoteWeightLocation,
+)
 from miles.backends.training_utils.weight_update.protocols.utils.loader_probe import HfNameMapping
 from miles.backends.training_utils.weight_update.protocols.utils.rollout_engine_rank_assignment import (
     assign_rollout_engine_ranks_for_data_replica,
@@ -184,6 +191,70 @@ class _FakeTransferEngine:
         return payload
 
 
+class _FakeNixlAgent:
+    """Transfers like a NIXL agent through the fake transfer engine, so a NIXL write lands where a Mooncake one would:
+    the remote agent's name is the session the fake rollout engine publishes."""
+
+    def __init__(self, transfer_engine: _FakeTransferEngine) -> None:
+        self._transfer_engine = transfer_engine
+        self.remote_agents: list[str] = []
+        self.remote_gpu_ids_by_remote_agent: dict[str, set[int]] = defaultdict(set)
+        self.stuck_remote_agents: set[str] = set()
+        self.transfer_started = threading.Event()
+
+    def get_plugin_list(self) -> list[str]:
+        return ["UCX"]
+
+    def register_memory(self, tensor: torch.Tensor) -> int:
+        self._transfer_engine.register_memory(tensor.data_ptr(), tensor.nbytes)
+        return tensor.data_ptr()
+
+    def deregister_memory(self, registration: int) -> None:
+        self._transfer_engine.unregister_memory(registration)
+
+    def add_remote_agent(self, agent_metadata: bytes) -> str:
+        remote_agent = agent_metadata.decode()
+        self.remote_agents.append(remote_agent)
+        return remote_agent
+
+    def remove_remote_agent(self, remote_agent: str) -> None:
+        self.remote_agents.remove(remote_agent)
+
+    def get_xfer_descs(self, descs: list, mem_type: str | None = None) -> list[tuple[int, int, int]]:
+        if mem_type is None:
+            return [(tensor.data_ptr(), tensor.nbytes, 0) for tensor in descs]
+        assert mem_type == "VRAM"
+        return descs
+
+    def initialize_xfer(self, operation: str, local_descs: list, remote_descs: list, remote_agent: str) -> tuple:
+        assert operation == "WRITE" and remote_agent in self.remote_agents
+        return local_descs, remote_descs, remote_agent
+
+    def transfer(self, transfer: tuple) -> str:
+        local_descs, remote_descs, remote_agent = transfer
+        self.remote_gpu_ids_by_remote_agent[remote_agent].update(gpu_id for _, _, gpu_id in remote_descs)
+        self.transfer_started.set()
+        if remote_agent in self.stuck_remote_agents:
+            return "PROC"
+        ret = self._transfer_engine.batch_transfer_sync_write(
+            remote_agent,
+            [address for address, _, _ in local_descs],
+            [address for address, _, _ in remote_descs],
+            [nbytes for _, nbytes, _ in local_descs],
+        )
+        return "DONE" if ret == 0 else "ERR"
+
+    def check_xfer_state(self, transfer: tuple) -> str:
+        _, _, remote_agent = transfer
+        # as NIXL fails a transfer whose remote agent was removed
+        if remote_agent not in self.remote_agents:
+            raise RuntimeError("NIXL_ERR_NOT_FOUND")
+        return "PROC"
+
+    def release_xfer_handle(self, transfer: tuple) -> None:
+        pass
+
+
 class _FakeRolloutApi:
     def __init__(
         self,
@@ -196,12 +267,14 @@ class _FakeRolloutApi:
         speculative_args: dict | None = None,
         draft_shares_target_weights: bool = True,
         unreachable: bool = False,
+        transport: str = "mooncake",
     ) -> None:
         self.unreachable = unreachable
         self.request_failures: dict[str, Exception] = {}
         self.hanging_requests: set[str] = set()
         self.corrupted_roles: set[str] = set()
         self.cell_id = cell_id
+        self.transport = transport
         self.draft_shares_target_weights = draft_shares_target_weights
         self.gpu_count = gpu_count
         self.generation = generation
@@ -226,13 +299,21 @@ class _FakeRolloutApi:
         address_role = "target" if self.draft_shares_target_weights else runner_role
         return hash((self.session_id(rank, address_role), name)) & 0xFFFFFFFF
 
-    async def get_remote_instance_transfer_engine_info(self, rank: int, role: str) -> tuple[str, dict]:
+    async def get_remote_instance_transfer_engine_info(self, rank: int, role: str) -> dict:
         await self._before_request(f"get_remote_instance_transfer_engine_info {role}")
         weights = {
             name: (self.published_address(rank, name, role), self.published_weight_numel, 4)
             for name in _PUBLISHED_PARAM_NAMES_BY_RUNNER_ROLE[role]
         }
-        return self.session_id(rank, role), weights
+        if self.transport == "nixl":
+            return {
+                "transport": "nixl",
+                "agent_name": self.session_id(rank, role),
+                "agent_metadata": base64.b64encode(self.session_id(rank, role).encode()).decode("ascii"),
+                "gpu_id": rank,
+                "weights_info_dict": weights,
+            }
+        return {"transport": "mooncake", "session_id": self.session_id(rank, role), "weights_info_dict": weights}
 
     async def get_parallelism_info(self, rank: int, role: str) -> dict:
         await self._before_request(f"get_parallelism_info {role}")
@@ -255,8 +336,9 @@ class _FakeRolloutApi:
             if not landed:
                 continue
             offset = 1.0 if rank in self.corrupted_ranks or selector in self.corrupted_roles else 0.0
+            prefix = "" if selector == "target" else f"{selector}."
             checksums = {
-                (name if selector == "target" else f"{selector}.{name}"): hash_tensor_sha256(
+                f"{prefix}{name}": hash_tensor_sha256(
                     torch.tensor(landed[self.published_address(rank, name, selector)]) + offset
                 )
                 for name in names
@@ -295,10 +377,12 @@ class _ProtocolCall:
 
 
 class _P2PSenderHarness:
-    def __init__(self, p2p_protocol: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    def __init__(self, p2p_protocol: ModuleType, monkeypatch: pytest.MonkeyPatch, p2p_transport: str) -> None:
         self._p2p_protocol = p2p_protocol
+        self.p2p_transport = p2p_transport
         self.log: list[tuple] = []
         self.transfer_engine = _FakeTransferEngine(self.log)
+        self.nixl_agent = _FakeNixlAgent(self.transfer_engine)
         self.transfer_engines_created = 0
         self.replicas_created: list[_FakeModelReplica] = []
         self._loaded_events: dict[int, threading.Event] = {}
@@ -311,6 +395,9 @@ class _P2PSenderHarness:
 
         mooncake_transport = sys.modules[p2p_protocol.MooncakeTransport.__module__]
         monkeypatch.setattr(mooncake_transport, "_create_transfer_engine", self._create_transfer_engine)
+        monkeypatch.setattr(
+            sys.modules[p2p_protocol.NixlTransport.__module__], "_create_nixl_agent", self._create_nixl_agent
+        )
         monkeypatch.setattr(p2p_protocol, "assign_rollout_engine_ranks", self._assign_rollout_engine_ranks)
         monkeypatch.setattr(p2p_protocol, "get_gloo_group", lambda: None)
         monkeypatch.setattr(p2p_protocol, "dist", SimpleNamespace(get_rank=lambda group=None: 0))
@@ -342,7 +429,8 @@ class _P2PSenderHarness:
             update_weight_engine_request_timeout=_FAILURE_BOUND,
             update_weight_buffer_size=update_weight_buffer_size,
             check_weight_transfer_checksum=check_weight_transfer_checksum,
-            sglang_pp_size=1,
+            sglang=SglangConfig(models=[], base_args={"pp_size": 1}),
+            p2p_transport=self.p2p_transport,
         )
         protocol = self._p2p_protocol.UpdateWeightP2P(args)
         self._protocols.append(protocol)
@@ -383,7 +471,7 @@ class _P2PSenderHarness:
             call.join()
         for protocol in self._protocols:
             if protocol._transport is not None:
-                for executor in protocol._transport._write_executors_by_rollout_engine_ind.values():
+                for executor in protocol._transport._executors_by_rollout_engine_ind.values():
                     executor.shutdown(wait=True)
 
     def _assign_rollout_engine_ranks(
@@ -399,6 +487,10 @@ class _P2PSenderHarness:
     def _create_transfer_engine(self) -> _FakeTransferEngine:
         self.transfer_engines_created += 1
         return self.transfer_engine
+
+    def _create_nixl_agent(self) -> _FakeNixlAgent:
+        self.transfer_engines_created += 1
+        return self.nixl_agent
 
     def _build_model_replica(
         self, config: Any, model_path: str, *, transfer_buffer_device: torch.device
@@ -496,16 +588,23 @@ def model_replica_module(p2p_protocol: ModuleType) -> ModuleType:
     return sys.modules[p2p_protocol.query_rollout_engine_rank_configs.__module__]
 
 
+@pytest.fixture(params=["mooncake", "nixl"])
+def p2p_transport(request: pytest.FixtureRequest) -> str:
+    return request.param
+
+
 @pytest.fixture
-def p2p_sender(p2p_protocol: ModuleType, monkeypatch: pytest.MonkeyPatch) -> Iterator[_P2PSenderHarness]:
-    harness = _P2PSenderHarness(p2p_protocol, monkeypatch)
+def p2p_sender(
+    p2p_protocol: ModuleType, monkeypatch: pytest.MonkeyPatch, p2p_transport: str
+) -> Iterator[_P2PSenderHarness]:
+    harness = _P2PSenderHarness(p2p_protocol, monkeypatch, p2p_transport)
     yield harness
     harness.close()
 
 
 @pytest.fixture
-def make_rollout_api() -> Callable[..., _FakeRolloutApi]:
-    return _FakeRolloutApi
+def make_rollout_api(p2p_transport: str) -> Callable[..., _FakeRolloutApi]:
+    return functools.partial(_FakeRolloutApi, transport=p2p_transport)
 
 
 @pytest.fixture
@@ -529,26 +628,24 @@ def make_cell_updater(p2p_protocol: ModuleType) -> Callable[..., Any]:
 
 
 @pytest.fixture
-def make_remote_shard(mooncake_module: ModuleType) -> Callable[..., Any]:
+def make_remote_shard() -> Callable[..., Any]:
     def make(cell_id: str = "cell-a", rank: int = 0, runner_role: str = "target") -> Any:
-        return mooncake_module.RemoteShard(
+        return RemoteShard(
             cell_id=cell_id,
             rollout_engine_ind=0,
             rollout_engine_rank=rank,
             runner_role=runner_role,
-            session_id=f"{cell_id}-{runner_role}-r{rank}",
-            weight_locations_by_name={
-                "w": mooncake_module.RemoteWeightLocation(address=0x1000, numel=4, element_size=4)
-            },
+            transport_peer=f"{cell_id}-{runner_role}-r{rank}",
+            weight_locations_by_name={"w": RemoteWeightLocation(address=0x1000, numel=4, element_size=4)},
         )
 
     return make
 
 
 @pytest.fixture
-def transport(p2p_sender: Any, mooncake_module: ModuleType) -> Iterator[Any]:
-    transport = mooncake_module.MooncakeTransport()
+def transport(p2p_sender: Any, p2p_protocol: ModuleType, mooncake_module: ModuleType) -> Iterator[Any]:
+    transport = p2p_protocol.P2PTransport(mooncake_module.MooncakeTransport())
     yield transport
     p2p_sender.transfer_engine.release_all()
-    for executor in transport._write_executors_by_rollout_engine_ind.values():
+    for executor in transport._executors_by_rollout_engine_ind.values():
         executor.shutdown(wait=True)

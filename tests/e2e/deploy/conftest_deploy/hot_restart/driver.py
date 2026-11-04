@@ -110,6 +110,7 @@ class HotRestartDriver:
         self._worker = PollingWorker(name="hot-restart-driver", run=self._drive)
         self._max_finished_rollout_id: int | None = None
         self._num_take_overs_caught_up: int = 0
+        self._rollback_observed_for_take_over: int = 0
         self._observer = ClusterObserver(release=self.release, namespace=self.namespace, trainer_id=self.trainer_id)
 
     @property
@@ -124,6 +125,7 @@ class HotRestartDriver:
             release=self.release,
             observation_attempts=self._observer.attempts,
             observation_failures=self._observer.failures,
+            commands_of_pod_uid=self._observer.commands_of_pod_uid,
         )
 
     def start(self) -> None:
@@ -298,10 +300,13 @@ class HotRestartDriver:
     def _is_catching_up_after_take_over(self, finished: int) -> bool:
         if not self.records or self._num_take_overs_caught_up >= len(self.records):
             return False
-        if self._max_finished_rollout_id is not None and finished >= self._max_finished_rollout_id:
+        frozen = self.records[-1].frozen_rollout_id
+        if finished < frozen:
+            self._rollback_observed_for_take_over = len(self.records)
+        if finished > frozen or (finished == frozen and self._rollback_observed_for_take_over == len(self.records)):
             self._num_take_overs_caught_up = len(self.records)
             return False
-        return finished <= self.records[-1].frozen_rollout_id
+        return True
 
     def _relaunch_on_thread(self, index: int) -> None:
         thread = threading.Thread(

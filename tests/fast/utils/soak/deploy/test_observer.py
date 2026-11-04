@@ -1,6 +1,8 @@
 import subprocess
 import threading
+from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import pytest
 from tests.fast.e2e.deploy.hot_restart.cluster_facts import NAMESPACE, ORCHESTRATOR, RELEASE, ROLLOUT_EXECUTOR, TRAINER
@@ -9,6 +11,10 @@ from tests.utils.deploy.hot_restart.cluster_observer import ClusterSnapshot, com
 from tests.utils.soak.deploy.observers import DeploymentObserver
 from tests.utils.soak.deploy.types import DeploymentObservationDetails, DeploymentTarget
 
+from miles.utils.audit_utils.event_logger import logger as event_logger_module
+from miles.utils.audit_utils.event_logger.logger import EventLogger
+from miles.utils.audit_utils.event_logger.models import MetricEvent
+from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.external_utils.command_utils.helm_backend.naming import RunNames
 
 
@@ -179,3 +185,52 @@ class TestDeploymentObserverIncarnation:
         [after], _ = await _observe(monkeypatch, _FakeDeploymentReads(snapshot=_release_snapshot(stamps=stamps)))
 
         assert before.incarnation != after.incarnation
+
+
+class TestDeploymentProgressReads:
+    async def test_repeated_observations_parse_only_appended_events(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Long runs must not reparse their complete actor history on every observation."""
+        events_dir = tmp_path / "events"
+        observer = replace(_observer(), events_dir=events_dir, checkpoint_dir=tmp_path / "checkpoints")
+        event_logger = EventLogger(log_dir=events_dir, source=SimpleProcessIdentity(component="main"))
+        original = event_logger_module._event_adapter.validate_json
+        parsed: list[bytes] = []
+
+        def validate_json(data: bytes, **kwargs: Any) -> Any:
+            parsed.append(data)
+            return original(data, **kwargs)
+
+        monkeypatch.setattr(event_logger_module._event_adapter, "validate_json", validate_json)
+        event_logger.log(MetricEvent, {"rollout_id": 1, "metrics": {"train/grad_norm": 1.0}}, print_log=False)
+        errors: dict[str, str] = {}
+        assert (await observer._observe_progress(errors=errors)).last_finished_rollout_id == 1
+        event_logger.log(MetricEvent, {"rollout_id": 2, "metrics": {"train/grad_norm": 1.0}}, print_log=False)
+        assert (await observer._observe_progress(errors=errors)).last_finished_rollout_id == 2
+        assert (await observer._observe_progress(errors=errors)).last_finished_rollout_id == 2
+        assert errors == {}
+        assert len(parsed) == 2
+
+    @pytest.mark.parametrize("replace_inode", [False, True])
+    async def test_checkpoint_rollback_discards_cached_future_progress(
+        self, tmp_path: Path, replace_inode: bool
+    ) -> None:
+        """Restoring event files must invalidate progress from discarded training."""
+        events_dir = tmp_path / "events"
+        observer = replace(_observer(), events_dir=events_dir, checkpoint_dir=tmp_path / "checkpoints")
+        event_logger = EventLogger(log_dir=events_dir, source=SimpleProcessIdentity(component="main"))
+        event_logger.log(MetricEvent, {"rollout_id": 99, "metrics": {"train/grad_norm": 1.0}}, print_log=False)
+        errors: dict[str, str] = {}
+        assert (await observer._observe_progress(errors=errors)).last_finished_rollout_id == 99
+
+        path = events_dir / "events.jsonl"
+        if replace_inode:
+            path.rename(events_dir / "old.txt")
+        else:
+            path.write_text("")
+        event_logger.log(MetricEvent, {"rollout_id": 2, "metrics": {"train/grad_norm": 1.0}}, print_log=False)
+        assert (await observer._observe_progress(errors=errors)).last_finished_rollout_id == 2
+        path.unlink()
+        assert (await observer._observe_progress(errors=errors)).last_finished_rollout_id is None
+        assert errors == {}

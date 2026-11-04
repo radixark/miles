@@ -1,14 +1,19 @@
 import subprocess
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pydantic
 import pytest
 import yaml
+from tests.fast.utils.external_utils.command_utils.helm_backend.launcher.utils import (
+    LauncherArgs,
+    launcher_args_orchestrator_command,
+)
+from tests.fast.utils.workers.fake_specs import FakeCommandSpec, FakeServeSpec
 
 from miles.ray.specs.inference import POOL_CATEGORY_INFERENCE_ENGINE
 from miles.ray.specs.train import POOL_CATEGORY_TRAINER_ENGINE
+from miles.utils.args.runtime_base import BaseLeafConfig
 from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig, ExecuteTrainRequest
 from miles.utils.external_utils.command_utils.helm_backend.launcher import command_wrapper, entrypoint
 from miles.utils.external_utils.command_utils.helm_backend.launcher.command_wrapper import Helm
@@ -16,7 +21,7 @@ from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc 
 from miles.utils.external_utils.command_utils.helm_backend.naming import ReleaseName
 from miles.utils.external_utils.command_utils.helm_backend.orchestrator import state as orchestrator_state
 from miles.utils.workers.types import DeployComponent
-from miles.utils.workers.worker_spec import CommandWorkerSpec, PortInfo, SchedulingSpec, ServeWorkerSpec
+from miles.utils.workers.worker_spec import DEFAULT_RPC_PORT_INFO, PortInfo, SchedulingSpec
 
 RUN_ID = "260101-000000-000"
 NAMESPACE = "myns"
@@ -30,13 +35,13 @@ def _engine(
     workers_per_cell: int,
     name: str = "inference-engine-0-0",
     gpu_offset: int = 0,
-) -> CommandWorkerSpec:
-    return CommandWorkerSpec(
+) -> FakeCommandSpec:
+    return FakeCommandSpec(
         name=name,
         category=POOL_CATEGORY_INFERENCE_ENGINE,
         port_infos=[PortInfo(name="primary", static_port=8000)],
-        env_var=lambda ctx: {},
-        scheduling=SchedulingSpec(
+        env_vars=lambda ctx: {},
+        fixed_scheduling=SchedulingSpec(
             num_cells=num_cells,
             num_workers_per_cell=workers_per_cell,
             num_gpus_per_worker=0.2,
@@ -44,25 +49,25 @@ def _engine(
             num_gpus_per_node=8,
             pg_slot_offset=gpu_offset,
         ),
-        launch_command=lambda ctx: "python -m sglang.launch_server",
+        command=lambda ctx: "python -m sglang.launch_server",
     )
 
 
-def _trainer(*, num_cells: int, workers_per_cell: int) -> ServeWorkerSpec:
-    return ServeWorkerSpec(
+def _trainer(*, num_cells: int, workers_per_cell: int) -> FakeServeSpec:
+    return FakeServeSpec(
         name="trainer-engine-actor",
         category=POOL_CATEGORY_TRAINER_ENGINE,
-        port_infos=[PortInfo(name="master", static_port=9000, mode="master")],
-        env_var=lambda ctx: {},
-        scheduling=SchedulingSpec(
+        port_infos=[PortInfo(name="master", static_port=9000, mode="master"), DEFAULT_RPC_PORT_INFO],
+        env_vars=lambda ctx: {},
+        fixed_scheduling=SchedulingSpec(
             num_cells=num_cells,
             num_workers_per_cell=workers_per_cell,
             num_gpus_per_worker=0.4,
             num_gpu_slots_per_worker=1,
             num_gpus_per_node=8,
         ),
+        args=BaseLeafConfig(),
         worker_class="miles.backends.megatron_utils.actor.MegatronTrainRayActor",
-        ctor_kwargs=lambda ctx: {},
     )
 
 
@@ -142,17 +147,10 @@ def _stub_launch_inputs(monkeypatch, *, specs, colocate: bool = False) -> None:
     monkeypatch.setattr(
         entrypoint,
         "parse_args",
-        lambda: SimpleNamespace(
-            colocate=colocate,
-            deploy_component="all",
-            deploy_instance_id=None,
-            argv=[],
-            train_env_vars={},
-            use_wandb=False,
-            wandb_run_id=None,
-        ),
+        lambda: LauncherArgs(colocate=colocate),
     )
     monkeypatch.setattr(MooncakeInfo, "plan_of_args", staticmethod(lambda args: None))
+    monkeypatch.setattr(entrypoint, "_compute_orchestrator_command", launcher_args_orchestrator_command)
     monkeypatch.setattr(entrypoint, "_follow_until_finished", lambda **kwargs: None)
 
 

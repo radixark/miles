@@ -5,6 +5,8 @@ import sys
 
 import pytest
 
+from miles.utils.args.runtime import TrainerConfig
+
 GDN_NAMES = ("self_attention.linear_attn.in_proj_qkv.weight", "self_attention.linear_attn.conv1d.weight")
 
 
@@ -20,7 +22,9 @@ def test_the_export_passes_the_replicated_gdn_weights_through(name, monkeypatch)
 
     monkeypatch.setattr(qwen3_5_export, "qkv_group_major_to_flat", _fail)
     param = torch.zeros(4, 2)
-    converted = convert_qwen3_8_next_to_hf(None, f"module.module.decoder.layers.3.{name}", param)
+    converted = convert_qwen3_8_next_to_hf(
+        TrainerConfig.model_construct(), f"module.module.decoder.layers.3.{name}", param
+    )
 
     hf_rest = name[len("self_attention.") :]
     assert converted == [(f"model.language_model.layers.3.{hf_rest}", param)]

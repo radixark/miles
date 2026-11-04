@@ -13,6 +13,18 @@ def indexer_logits_ref(q, k, weights, cu_seqlen_ks, cu_seqlen_ke):
     return logits.masked_fill(~valid, float("-inf"))
 
 
+def canonical_topk_ref(logits, topk, row_starts, row_ends):
+    """Exact top-k of each row's [start, end) with ties at equal scores kept by the smaller column and -inf
+    never picked: int32 column ids ascending, -1 padded at the tail."""
+    columns = torch.arange(logits.shape[1], device=logits.device)
+    in_range = (columns >= row_starts.long().unsqueeze(1)) & (columns < row_ends.long().unsqueeze(1))
+    masked = logits.float().masked_fill(~in_range, float("-inf"))
+    values, order = torch.sort(masked, dim=-1, descending=True, stable=True)
+    picks = order[:, :topk].masked_fill(values[:, :topk] == float("-inf"), logits.shape[1])
+    picks = picks.sort(dim=-1).values
+    return picks.masked_fill(picks == logits.shape[1], -1).int()
+
+
 def sparse_attention_ref(q, kv, indices, sm_scale, d_v, attn_sink=None):
     """q [B, S, H, Dq], kv [B, S_kv, G, Dq], indices [B, S, G, topk] (-1 = padding), attn_sink [H] or None.
     Returns out [B, S, H, d_v]."""

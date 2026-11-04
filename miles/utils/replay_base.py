@@ -59,6 +59,9 @@ class BaseReplayManager:
     # True when replayed indices are token/KV positions (indexer): rebase the
     # per-sample 0-based rollout indices onto the packed training sequence.
     replay_indices_are_token_positions = False
+    # True when a train-data dump keeps the rollout column replay consumed. Only R3 is
+    # kept: indexer top-k takes about 0.5 MB per token on DeepSeek-V3.2.
+    kept_in_train_dump = False
 
     def __init__(self):
         self.replays: list[Replay] = []
@@ -225,6 +228,7 @@ class RoutingReplayManager(BaseReplayManager):
     if_sp_region = True
     enable_check_replay_result = False
     replay_check_max_mismatch_fraction = 1e-2
+    kept_in_train_dump = True
 
 
 class IndexerReplayManager(BaseReplayManager):

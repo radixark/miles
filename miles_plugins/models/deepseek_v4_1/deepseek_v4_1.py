@@ -37,6 +37,7 @@ from miles_plugins.models.deepseek_v4.ops.cp_utils import (
     get_q_positions_for_cp,
     get_window_topk_idxs_cp,
 )
+from miles_plugins.models.deepseek_v4.ops.grouped_matmul import GroupedMatmul
 from miles_plugins.models.deepseek_v4.ops.rope import wrapped_precompute_freqs_cis
 from miles_plugins.models.deepseek_v4_1.engram import DeepSeekV41Engram
 from miles_plugins.models.deepseek_v4_1.ops.compressor import DeepSeekV41Compressor
@@ -81,7 +82,7 @@ def get_runtime(config) -> V41Runtime:
 
 def apply_v41_config(config, hf_config):
     for field in V41_CONFIG_FIELDS:
-        value = getattr(hf_config, field)
+        value = getattr(hf_config, field)  # config-access-exempt: HF field name is selected from V41_CONFIG_FIELDS
         setattr(config, f"v41_{field}", tuple(value) if isinstance(value, list) else value)
 
 
@@ -294,10 +295,17 @@ class V41TransformerLayer(HyperConnectionTransformerLayer):
         self.v41_engram = None
         if layer_id in config.v41_engram_layer_ids:
             self.v41_engram = DeepSeekV41Engram(
-                config, layer_id, self.pg_collection.tp, getattr(self.pg_collection, "cp", None)
+                config,
+                layer_id,
+                self.pg_collection.tp,
+                getattr(
+                    self.pg_collection, "cp", None
+                ),  # config-access-exempt: Megatron process-group collections may omit context parallelism
             )
         self.v41_is_last = self.layer_number == config.num_layers
-        self.v41_carry = getattr(config, "v41_carry_state", False)
+        self.v41_carry = getattr(
+            config, "v41_carry_state", False
+        )  # config-access-exempt: Megatron configurations without V4.1 carry support omit this extension
         self.v41_plan = V41CarryPlan(config, layer_id) if self.v41_carry else None
         self.v41_base_cols = config.hidden_size * config.num_residual_streams
 
@@ -333,7 +341,9 @@ class DeepSeekV41Attention(MegatronModule):
             pg_collection = ProcessGroupCollection.use_mpu_process_groups(required_pgs=["tp"])
         self.pg_collection = pg_collection
         self.tp_group = pg_collection.tp
-        self.cp_group = pg_collection.cp if hasattr(pg_collection, "cp") else None
+        self.cp_group = (
+            pg_collection.cp if hasattr(pg_collection, "cp") else None
+        )  # config-access-exempt: Megatron process-group collections may omit context parallelism
         self.cp_size = self.cp_group.size() if self.cp_group is not None else 1
 
         layer_id = layer_number - 1
@@ -421,6 +431,7 @@ class DeepSeekV41Attention(MegatronModule):
         config.init_method(o_group_proj)
         self.linear_o_group_proj = nn.Parameter(o_group_proj)
         set_tensor_model_parallel_attributes(self.linear_o_group_proj, is_parallel=True, dim=0, stride=1)
+        self.o_group_matmul = GroupedMatmul()
         self.linear_proj = TERowParallelLinear(
             self.n_groups * self.o_lora_rank,
             self.dim,
@@ -554,9 +565,7 @@ class DeepSeekV41Attention(MegatronModule):
         )
         o = torch.cat((o[..., :-rd], apply_rotary_emb(o[..., -rd:].clone(), freqs_cis, inverse=True)), dim=-1)
 
-        o = o.view(bsz, seqlen, self.n_local_groups, -1)
-        wo_a = self.linear_o_group_proj.view(self.n_local_groups, self.o_lora_rank, -1)
-        o = torch.einsum("bsgd,grd->bsgr", o, wo_a)
+        o = self.o_group_matmul(o.view(bsz, seqlen, self.n_local_groups, -1), self.linear_o_group_proj)
         out, _ = self.linear_proj(o.flatten(2))
         output = einops.rearrange(out, "b s d -> s b d")
         if self.sequence_parallel:
@@ -569,7 +578,9 @@ def _dsv41_attention_module_spec(config, backend=None):
 
 
 def _install_patches(config):
-    if getattr(GPTModel.forward, "v41_patched", False):
+    if getattr(
+        GPTModel.forward, "v41_patched", False
+    ):  # config-access-exempt: patch installation marker is attached to GPTModel.forward at runtime
         return
 
     original_contract = _transformer_block.learned_output_contract
@@ -597,7 +608,9 @@ def _install_patches(config):
     def input_expand(hidden_states, n):
         expanded = original_input_expand(hidden_states, n)
         rt = get_runtime(config)
-        if getattr(config, "v41_carry_state", False) and rt.input_ids is not None:
+        if (
+            getattr(config, "v41_carry_state", False) and rt.input_ids is not None
+        ):  # config-access-exempt: Megatron configurations without V4.1 carry support omit this extension
             expanded = v41_pack_carry(expanded, rt, V41IdsOnlyPlan)
         return expanded
 

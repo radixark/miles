@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import torch
 
+from miles.backends.sglang_utils.sglang_config import SglangConfig
 from miles.backends.training_utils.weight_update.session import check_weight_sync_results
 from miles.backends.training_utils.weight_update.updater import WeightUpdater
 from miles.utils.lora.utils import is_lora_weight_name
@@ -57,7 +58,7 @@ def _make_args(**overrides):
         actor_num_nodes=1,
         actor_num_gpus_per_node=1,
         pause_generation_mode="retract",
-        sglang_speculative_algorithm=None,
+        sglang=SglangConfig(models=[], base_args={"speculative_algorithm": None}),
         enable_mtp_training=False,
     )
     defaults.update(overrides)

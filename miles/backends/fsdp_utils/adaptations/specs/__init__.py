@@ -32,4 +32,6 @@ _STOCK_HF = ArchAdapter()
 
 
 def resolve_arch_adapter(hf_config) -> ArchAdapter:
-    return _ADAPTER_BY_MODEL_TYPE.get(getattr(hf_config, "model_type", None), _STOCK_HF)
+    return _ADAPTER_BY_MODEL_TYPE.get(
+        getattr(hf_config, "model_type", None), _STOCK_HF
+    )  # config-access-exempt: third-party HF configurations may omit model_type

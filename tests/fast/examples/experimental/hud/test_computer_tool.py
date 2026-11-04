@@ -52,7 +52,7 @@ def _tool(shot_width=640, display_width=1920, focused=True):
 
 
 def _run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+    return asyncio.run(coro)
 
 
 def test_press_sequence_is_one_call_per_key():

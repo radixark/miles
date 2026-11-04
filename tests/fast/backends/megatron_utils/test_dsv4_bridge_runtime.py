@@ -39,7 +39,11 @@ def _runtime_args(**overrides):
         "moe_aux_loss_coeff": None,
     }
     values.update(overrides)
-    return SimpleNamespace(**values)
+    return SimpleNamespace(
+        backend=SimpleNamespace(**values),
+        enable_mtp_training=False,
+        dsa_attention_backend=values.get("dsa_attention_backend"),
+    )
 
 
 def _provider():

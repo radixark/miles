@@ -1,6 +1,6 @@
 import json
 import logging
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from miles.utils.retry_utils import retry_until_deadline
 from miles.utils.test_utils.fault_injector.actions.base import (
@@ -9,7 +9,11 @@ from miles.utils.test_utils.fault_injector.actions.base import (
     FaultHookResources,
     _assert_synchronous_orchestrator,
 )
-from miles.utils.workers.naming import parse_cell_id
+
+if TYPE_CHECKING:
+    from miles.utils.workers.cell_operations.base import BaseCellOperations
+    from miles.utils.workers.worker_handle import BaseWorkerHandle
+    from miles.utils.workers.worker_provider.base import CellInfo
 
 logger = logging.getLogger(__name__)
 
@@ -58,33 +62,39 @@ class RestartRolloutCellAction(BaseFaultAction):
         _assert_synchronous_orchestrator(args, trainer_model_id=context.trainer_model_id, action=self.kind)
         assert "rollout" in args.ft_components, "Rollout restart testing requires rollout fault tolerance"
         # Only this test action needs the backend and serving dependencies.
-        from miles.ray.specs.inference import compute_engine_pool_ids, create_inference_controller_handle
-        from miles.ray.wiring import get_backend_capability
+        from miles.ray.specs.inference import POOL_CATEGORY_INFERENCE_ENGINE, create_inference_controller_handle
+        from miles.ray.wiring import compute_backend_capability
         from miles.utils.workers.types import ClusterBackend
 
-        capability = get_backend_capability(args)
+        capability = compute_backend_capability(args)
         receipt = await _restart_rollout_cell(
             self.cell_id,
             operations=capability.cell_operations(),
             controller=create_inference_controller_handle(capability=capability),
-            pool_ids=compute_engine_pool_ids(args),
+            category=POOL_CATEGORY_INFERENCE_ENGINE,
             auto_resume=ClusterBackend(args.cluster_backend) == ClusterBackend.KUBERNETES,
         )
         logger.warning("[ft test rollout restart] %s", json.dumps({"at_rollout": context.rollout_id, **receipt}))
 
 
-async def _restart_rollout_cell(cell_id: str, operations, controller, pool_ids: list[str], auto_resume: bool) -> dict:
+async def _restart_rollout_cell(
+    cell_id: str,
+    operations: "BaseCellOperations",
+    controller: "BaseWorkerHandle",
+    category: str,
+    auto_resume: bool,
+) -> dict[str, object]:
     """Restart before the update lock is taken, then wait for the fresh cell to be registered and ready."""
-    assert parse_cell_id(cell_id).pool_id in pool_ids, f"{cell_id} is not a rollout cell"
-    before = await operations.cell_infos(pool_ids=pool_ids)
+    before = await operations.cell_infos(pool_ids=None, category=category)
+    assert cell_id in before, f"{cell_id} is not an observed rollout cell"
     original = before[cell_id]
     assert original.alive, f"{cell_id} was not alive before the test restart"
     await operations.suspend(cell_id=cell_id)
     if not auto_resume:
         await operations.resume(cell_id=cell_id)
 
-    async def _check(_remaining: float) -> dict:
-        after = await operations.cell_infos(pool_ids=pool_ids)
+    async def _check(_remaining: float) -> dict[str, "CellInfo"]:
+        after = await operations.cell_infos(pool_ids=None, category=category)
         replacement = after.get(cell_id)
         statuses = await controller.get_cell_statuses()
         status = statuses.get(cell_id)
@@ -108,7 +118,7 @@ async def _restart_rollout_cell(cell_id: str, operations, controller, pool_ids: 
         log_fields=dict(tag="ft", op="wait_rollout_replacement", cell=cell_id),
     )
 
-    def identity(cell):
+    def identity(cell: "CellInfo") -> dict[str, object]:
         return dict(
             workers_hash=cell.workers_hash,
             worker_names=cell.worker_names,

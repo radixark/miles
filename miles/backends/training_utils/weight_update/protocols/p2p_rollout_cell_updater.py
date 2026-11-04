@@ -2,7 +2,7 @@ import logging
 from collections.abc import Callable
 
 from miles.backends.training_utils.weight_update import checksum_utils
-from miles.backends.training_utils.weight_update.protocols.transports.mooncake import RemoteShard
+from miles.backends.training_utils.weight_update.protocols.transports.remote_shard import RemoteShard
 from miles.backends.training_utils.weight_update.rollout_cell_updater import _RolloutCellUpdater
 
 logger = logging.getLogger(__name__)

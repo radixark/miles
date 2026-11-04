@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import sys
+from unittest.mock import patch
 
 
 import pytest
@@ -10,6 +12,7 @@ pytest.importorskip("sglang")
 from sglang.srt.server_args import ServerArgs
 
 from miles.backends.sglang_utils.arguments import add_sglang_arguments, collect_eval_sglang_overrides, validate_args
+from miles.utils.arguments import parse_args
 from miles.utils.workers.argv_utils import _record_field_names
 
 
@@ -25,7 +28,9 @@ def _parse_sglang_args(argv: list[str]) -> argparse.Namespace:
 class TestSglangModelRoutersDefault:
     def test_parsing_without_model_routers_sets_none(self):
         """Parsing without multi-policy routers exposes a safe None default."""
-        args = _parse_sglang_args([])
+        argv = ["pytest", "--train-backend", "fsdp", "--rollout-batch-size", "1", "--num-rollout", "1"]
+        with patch.object(sys, "argv", argv):
+            args = parse_args()
 
         assert args.sglang_model_routers is None
 
@@ -75,8 +80,29 @@ def test_score_centering_enables_fp32_lm_head(loss_type: str | None, explicit_fp
     args.loss_type = loss_type
     args.rollout_num_gpus_per_engine = 1
     args.true_on_policy_mode = False
+    args.recompute_logprobs_via_prefill = False
     args.use_session_server = False
+    args.sglang_router_policy = None
+    args.sglang_router_ip = None
 
     validate_args(args)
 
     assert args.sglang_enable_fp32_lm_head is (explicit_fp32 or loss_type == "score_centering")
+
+
+class TestParserMethodRestoration:
+    def test_later_parser_extensions_use_class_method_lookup(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Registering SGLang flags must not hide later parser extensions behind a saved bound method."""
+        parser = add_sglang_arguments(argparse.ArgumentParser())
+        original = argparse.ArgumentParser.add_argument
+        registered: list[str] = []
+
+        def add_argument(self: argparse.ArgumentParser, name: str, **kwargs: object) -> argparse.Action:
+            registered.append(name)
+            return original(self, name, **kwargs)
+
+        monkeypatch.setattr(argparse.ArgumentParser, "add_argument", add_argument)
+        parser.add_argument("--later-extension", type=int)
+
+        assert registered == ["--later-extension"]
+        assert parser.parse_args(["--later-extension", "17"]).later_extension == 17

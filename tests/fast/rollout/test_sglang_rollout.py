@@ -4,6 +4,7 @@ from argparse import Namespace
 from types import SimpleNamespace
 
 import pytest
+from tests.fast.fixtures.args_fixtures import parser_defaults, resolve_parse_boundary_configs
 
 from miles.rollout import sglang_rollout
 from miles.utils.lora.utils import LORA_ADAPTER_NAME
@@ -11,21 +12,13 @@ from miles.utils.types import Sample
 
 
 def _make_generate_args() -> Namespace:
-    return Namespace(
+    values = parser_defaults() | dict(
         ci_test=False,
         sglang_router_ip="router",
         sglang_router_port=30000,
-        sglang_router_policy="round_robin",
-        sglang_speculative_algorithm=None,
-        use_rollout_routing_replay=False,
-        use_rollout_indexer_replay=False,
-        use_sampling_support_replay=False,
         rollout_top_logprobs_num=0,
-        partial_rollout=False,
-        mask_offpolicy_in_partial_rollout=False,
-        lora_rank=0,
-        lora_adapter_path=None,
     )
+    return resolve_parse_boundary_configs(Namespace(**values))
 
 
 class TestGenerateExtraKey:
@@ -84,7 +77,6 @@ class TestAbort:
             partial_rollout=True,
             sglang_router_ip="router",
             sglang_router_port=30000,
-            use_miles_router=True,
         )
         sample = SimpleNamespace(response="partial", metadata={})
         state = SimpleNamespace(args=args, aborted=False)
@@ -92,8 +84,8 @@ class TestAbort:
         posted_urls: list[str] = []
         hook_finished = asyncio.Event()
 
-        async def fake_get(url: str) -> dict[str, list[str]]:
-            return {"urls": ["http://healthy", "http://unresponsive"]}
+        async def fake_get(url: str) -> dict[str, list[dict[str, str]]]:
+            return {"workers": [{"url": "http://healthy"}, {"url": "http://unresponsive"}]}
 
         async def fake_post(url: str, payload: dict[str, bool]) -> None:
             posted_urls.append(url)
@@ -123,3 +115,26 @@ class TestAbort:
         assert aborted_groups == [[sample]]
         assert sample.metadata["start_rollout_id"] == 23
         assert "Failed to abort worker at http://unresponsive: worker cannot answer" in caplog.text
+
+
+class TestGenerationStateReuse:
+    def test_changed_configuration_is_rejected_without_replacing_the_active_state(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A reused generation singleton cannot silently serve a new configuration with stale state."""
+        monkeypatch.setattr(sglang_rollout.SingletonMeta, "_instances", {})
+        monkeypatch.setattr(sglang_rollout, "load_tokenizer", lambda *args, **kwargs: object())
+        monkeypatch.setattr(sglang_rollout, "load_processor", lambda *args, **kwargs: None)
+        args = _make_generate_args()
+        state = sglang_rollout.GenerateState(args)
+        state.remaining_batch_size = 7
+        equal_args = Namespace(**vars(args))
+        changed_args = Namespace(**(vars(args) | {"rollout_temperature": args.rollout_temperature + 1}))
+
+        assert sglang_rollout.GenerateState(equal_args) is state
+        with pytest.raises(AssertionError):
+            sglang_rollout.GenerateState(changed_args)
+
+        assert sglang_rollout.GenerateState(args) is state
+        assert state.remaining_batch_size == 7
+        assert state.sampling_params["temperature"] == args.rollout_temperature

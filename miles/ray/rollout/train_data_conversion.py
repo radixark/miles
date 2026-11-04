@@ -4,10 +4,20 @@ from typing import Any
 import torch
 
 from miles.rollout.generate_utils.rollout_topk_logprobs import validate_rollout_topk_logprobs_sample
+from miles.rollout.reward_shaping import (
+    apply_length_penalty,
+    is_correct_reward,
+    reward_group_segments,
+    rollout_segments,
+)
+from miles.utils.args.custom_view import compute_custom_function_config
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
 from miles.utils.dp_schedule import TrainParallelConfig, build_dp_schedule
 from miles.utils.lora.utils import is_multi_lora_enabled
 from miles.utils.object_store import ValueSpec
+from miles.utils.output_store.dropped import has_inline_replay
+from miles.utils.output_store.plan import FIELDS, SamplingMaskSegments, StorePlanError
+from miles.utils.rollout_topk_logprobs import requests_support_logprobs
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
 from miles.utils.timer import Timer
 from miles.utils.types import Sample
@@ -48,6 +58,7 @@ ROLLOUT_DATA_VALUE_SPEC: dict[str, ValueSpec] = {
     "prompt": ValueSpec(codec="msgpack_ragged"),
     "metadata": ValueSpec(codec="msgpack_ragged"),
     "weight_versions": ValueSpec(codec="msgpack_ragged"),
+    "rollout_store_plan": ValueSpec(codec="msgpack_ragged"),
     "raw_reward": ValueSpec(codec="auto"),
     "total_lengths": ValueSpec(codec="auto"),
     "dynamic_global_batch_size": ValueSpec(codec="auto"),
@@ -68,7 +79,20 @@ def convert_samples_to_train_data(
     Convert inference generated samples to training data.
     """
     if (f := custom_convert_samples_to_train_data_func) is not None:
-        return f(args, samples)
+        fn_args = compute_custom_function_config(args, args.custom_convert_samples_to_train_data_path)
+        return f(fn_args, samples)
+
+    # Finalize masks before shaping: only tokens used by the training loss count.
+    loss_masks = []
+    for sample in samples:
+        if sample.loss_mask is None:
+            sample.loss_mask = [1] * sample.response_length
+        assert (
+            len(sample.loss_mask) == sample.response_length
+        ), f"loss mask length {len(sample.loss_mask)} != response length {sample.response_length}"
+        if sample.remove_sample:
+            sample.loss_mask = [0] * sample.response_length
+        loss_masks.append(sample.loss_mask)
 
     raw_rewards, rewards = _post_process_rewards(
         args,
@@ -97,20 +121,6 @@ def convert_samples_to_train_data(
         "rollout_ids": [s.rollout_id if s.rollout_id is not None else s.index for s in samples],
     }
 
-    # loss mask
-    # TODO: compress the loss mask
-    loss_masks = []
-    for sample in samples:
-        # always instantiate loss_mask if not provided
-        if sample.loss_mask is None:
-            sample.loss_mask = [1] * sample.response_length
-
-        assert (
-            len(sample.loss_mask) == sample.response_length
-        ), f"loss mask length {len(sample.loss_mask)} != response length {sample.response_length}"
-        if sample.remove_sample:
-            sample.loss_mask = [0] * sample.response_length
-        loss_masks.append(sample.loss_mask)
     train_data["loss_masks"] = loss_masks
 
     train_data["rollout_mask_sums"] = _compute_rollout_mask_sums(train_data["rollout_ids"], loss_masks)
@@ -127,19 +137,36 @@ def convert_samples_to_train_data(
     if samples[0].rollout_log_probs is not None:
         train_data["rollout_log_probs"] = [sample.rollout_log_probs for sample in samples]
 
+    has_store_plan = any(sample.rollout_store_plan is not None for sample in samples)
+    if has_store_plan:
+        _check_store_plans(args, samples)
+        train_data["rollout_store_plan"] = [sample.rollout_store_plan.to_dict() for sample in samples]
+    elif args.use_output_store and any(has_inline_replay(sample) for sample in samples):
+        # The switch only reaches requests built by compute_request_payload or the session server.
+        raise StorePlanError(
+            "--use-output-store is set, but the samples carry inline replay arrays and no output store plan: "
+            "the generate function builds its own SGLang requests"
+        )
+
     if k := args.rollout_top_logprobs_num:
+        # Support mode with the output store: the trainer builds the candidates from the stored mask.
+        store_support = has_store_plan and requests_support_logprobs(args)
+        candidate_fields = () if store_support else ("rollout_topk_token_ids", "rollout_topk_log_probs")
         for sample in samples:
-            for field in ("rollout_topk_token_ids", "rollout_topk_log_probs", "rollout_log_probs"):
-                if getattr(sample, field) is None:
+            for field in (*candidate_fields, "rollout_log_probs"):
+                if (
+                    getattr(sample, field) is None
+                ):  # config-access-exempt: sample field name is selected from the explicit rollout probability fields
                     raise ValueError(
                         f"Rollout top-k logprobs collection requires {field}; "
                         f"sample_index={sample.index}. Custom rollout producers must record probabilities during generation."
                     )
-        if args.ci_test:
-            for sample in samples:
-                validate_rollout_topk_logprobs_sample(sample, k)
-        train_data["rollout_topk_token_ids"] = [sample.rollout_topk_token_ids for sample in samples]
-        train_data["rollout_topk_log_probs"] = [sample.rollout_topk_log_probs for sample in samples]
+        if not store_support:
+            if args.ci_test:
+                for sample in samples:
+                    validate_rollout_topk_logprobs_sample(sample, k)
+            train_data["rollout_topk_token_ids"] = [sample.rollout_topk_token_ids for sample in samples]
+            train_data["rollout_topk_log_probs"] = [sample.rollout_topk_log_probs for sample in samples]
 
     has_sampling_mask = any(sample.rollout_sampling_mask is not None for sample in samples)
     if has_sampling_mask:
@@ -159,12 +186,11 @@ def convert_samples_to_train_data(
 
         train_data["rollout_sampling_mask_ids"] = sampling_mask_ids
         train_data["rollout_sampling_mask_offsets"] = sampling_mask_offsets
-        if k and args.loss_type == "score_centering" and args.rollout_sampling_logprobs_mode == "support":
-            _compact_candidate_ids(train_data)
+        compact_score_centering_candidates(args, train_data)
 
     if samples[0].rollout_routed_experts is not None:
         train_data["rollout_routed_experts"] = [sample.rollout_routed_experts for sample in samples]
-    elif getattr(args, "use_rollout_routing_replay", False):
+    elif args.use_rollout_routing_replay and not has_store_plan:
         raise ValueError(
             "--use-rollout-routing-replay is set but the rollout samples carry no "
             "rollout_routed_experts: the engine response meta_info lacked 'routed_experts'."
@@ -172,7 +198,7 @@ def convert_samples_to_train_data(
 
     if samples[0].rollout_indexer_topk is not None:
         train_data["rollout_indexer_topk"] = [sample.rollout_indexer_topk for sample in samples]
-    elif getattr(args, "use_rollout_indexer_replay", False):
+    elif args.use_rollout_indexer_replay and not has_store_plan:
         raise ValueError(
             "--use-rollout-indexer-replay is set but the rollout samples carry no "
             "rollout_indexer_topk: the engine response meta_info lacked 'indexer_topk'."
@@ -202,6 +228,45 @@ def convert_samples_to_train_data(
         train_data["dynamic_global_batch_size"] = x
 
     return train_data
+
+
+def _check_store_plans(args, samples: list[Sample]) -> None:
+    """Every sample has a plan matching its rows; all plans have the same fields, including the flag-required ones."""
+    for position, sample in enumerate(samples):
+        if sample.rollout_store_plan is None:
+            raise StorePlanError(
+                "output store plans must be present for every training sample; "
+                f"missing at position={position}, sample_index={sample.index}, status={sample.status}"
+            )
+        # Nothing else checks a store-path sample's row counts before the trainer.
+        sample.validate()
+    names = samples[0].rollout_store_plan.fields.keys()
+    for sample in samples:
+        if sample.rollout_store_plan.fields.keys() != names:
+            raise StorePlanError(
+                f"output store plans must have the same fields: sample_index={samples[0].index} has {sorted(names)}, "
+                f"sample_index={sample.index} has {sorted(sample.rollout_store_plan.fields)}"
+            )
+    for field in FIELDS:
+        # The fields are the same on every plan, so the first plan speaks for all.
+        if (
+            field.required_by and getattr(args, field.required_by, False) and field.name not in names
+        ):  # config-access-exempt: each replay field names the launch flag that requires it
+            raise StorePlanError(
+                f"--{field.required_by.replace('_', '-')} is set but the samples' output store plans have no {field.name}."
+            )
+    if requests_support_logprobs(args):
+        if SamplingMaskSegments.name not in names:
+            raise StorePlanError(
+                "Support-mode rollout top-k logprobs are built from the stored sampling mask; "
+                "the samples' output store plans have none."
+            )
+
+
+def compact_score_centering_candidates(args, data: dict) -> None:
+    """Score centering trains on support-mode candidates compacted onto the sampling mask's ids."""
+    if requests_support_logprobs(args) and args.loss_type == "score_centering":
+        _compact_candidate_ids(data)
 
 
 def _compact_candidate_ids(data: dict) -> None:
@@ -255,86 +320,52 @@ def _compute_rollout_mask_sums(rollout_ids: list[int], loss_masks: list[list[int
     return [totals[rid] for rid in rollout_ids]
 
 
-def _reward_group_segments(args: Any, samples: list[Sample], prompt_group_sizes: list[int] | None) -> list[list[int]]:
-    """Return the flattened row indices for each prompt reward group."""
-    # Multi-LoRA records explicit prompt boundaries before flattening.
-    if prompt_group_sizes is not None:
-        assert sum(prompt_group_sizes) == len(
-            samples
-        ), f"prompt group sizes sum to {sum(prompt_group_sizes)}, but got {len(samples)} rewards"
-        groups: list[list[int]] = []
-        start = 0
-        for size in prompt_group_sizes:
-            end = start + size
-            if size > 0:
-                groups.append(list(range(start, end)))
-            start = end
-        return groups
-
-    # Standard rollout samples carry their prompt identity in `group_index`.
-    group_indices = [sample.group_index for sample in samples]
-    if all(group_index is not None for group_index in group_indices):
-        segments_by_group_index: dict[int, list[int]] = {}
-        for segment_index, group_index in enumerate(group_indices):
-            segments_by_group_index.setdefault(int(group_index), []).append(segment_index)
-        return list(segments_by_group_index.values())
-
-    # Legacy fixed-fanout batches store each prompt's segments contiguously.
-    expected_samples = args.n_samples_per_prompt * args.rollout_batch_size
-    if len(samples) == expected_samples:
-        return [
-            list(range(start, start + args.n_samples_per_prompt))
-            for start in range(0, len(samples), args.n_samples_per_prompt)
-        ]
-    # Without prompt identities or a complete fixed layout, use one reward group.
-    return [list(range(len(samples)))]
-
-
 def _normalize_rewards_by_rollout(
     args: Any,
     samples: list[Sample],
     raw_rewards: list[float],
     prompt_group_sizes: list[int] | None,
+    *,
+    unshaped_rewards: list[float] | None = None,
 ) -> list[float]:
     """Normalize one shared reward per rollout, then broadcast it to siblings."""
     if not samples:
         return []
 
     normalized_rewards = torch.empty(len(raw_rewards), dtype=torch.float)
-    for prompt_segments in _reward_group_segments(args, samples, prompt_group_sizes):
-        segments_by_rollout_key: dict[int | tuple[str, int], list[int]] = {}
-        for segment_index in prompt_segments:
-            sample = samples[segment_index]
-            if sample.rollout_id is not None:
-                rollout_key = sample.rollout_id
-            elif sample.index is not None:
-                rollout_key = sample.index
-            else:
-                rollout_key = ("row", segment_index)
-            segments_by_rollout_key.setdefault(rollout_key, []).append(segment_index)
-
-        rollout_segment_groups = list(segments_by_rollout_key.items())
+    for prompt_segments in reward_group_segments(args, samples, prompt_group_sizes):
+        rollout_segment_groups = rollout_segments(samples, prompt_segments)
         shared_rewards: list[float] = []
-        for rollout_key, rollout_segments in rollout_segment_groups:
-            sibling_rewards = [raw_rewards[segment_index] for segment_index in rollout_segments]
+        for sibling_rows in rollout_segment_groups:
+            sibling_rewards = [raw_rewards[segment_index] for segment_index in sibling_rows]
             if any(reward != sibling_rewards[0] for reward in sibling_rewards[1:]):
                 raise ValueError(
-                    f"all samples in rollout {rollout_key!r} must share one reward; "
-                    f"rows {rollout_segments} have rewards {sibling_rewards}"
+                    "all samples in a rollout must share one reward; "
+                    f"rows {sibling_rows} have rewards {sibling_rewards}"
                 )
             shared_rewards.append(sibling_rewards[0])
 
         rollout_rewards = torch.tensor(shared_rewards, dtype=torch.float)
         normalized_rollout_rewards = rollout_rewards - rollout_rewards.mean()
-        if args.advantage_estimator in ["grpo", "gspo"] and args.grpo_std_normalization and len(rollout_rewards) > 1:
+        # In all-correct groups the only signal is length. Standardizing it would
+        # amplify arbitrarily small penalties into full-strength advantages.
+        length_only = unshaped_rewards is not None and all(
+            is_correct_reward(unshaped_rewards[row]) for row in prompt_segments
+        )
+        if (
+            args.advantage_estimator in ["grpo", "gspo"]
+            and args.grpo_std_normalization
+            and len(rollout_rewards) > 1
+            and not length_only
+        ):
             rollout_std = rollout_rewards.std()
             if rollout_std > 0:
                 normalized_rollout_rewards = normalized_rollout_rewards / (rollout_std + 1e-6)
 
-        for (_, rollout_segments), normalized_reward in zip(
+        for sibling_rows, normalized_reward in zip(
             rollout_segment_groups, normalized_rollout_rewards.tolist(), strict=True
         ):
-            for segment_index in rollout_segments:
+            for segment_index in sibling_rows:
                 normalized_rewards[segment_index] = normalized_reward
 
     return normalized_rewards.tolist()
@@ -347,14 +378,22 @@ def _post_process_rewards(
     prompt_group_sizes: list[int] | None = None,
 ):
     if (f := custom_reward_post_process_func) is not None:
-        return f(args, samples)
+        fn_args = compute_custom_function_config(args, args.custom_reward_post_process_path)
+        return f(fn_args, samples)
 
     raw_rewards = [sample.get_reward_value(args) for sample in samples]
+    rewards = raw_rewards
+    if args.length_penalty_coeff > 0:
+        rewards = apply_length_penalty(
+            args, samples, raw_rewards, reward_group_segments(args, samples, prompt_group_sizes), log_penalties=True
+        )
     if args.advantage_estimator in ["grpo", "gspo", "reinforce_plus_plus_baseline"] and args.rewards_normalization:
-        normalized_rewards = _normalize_rewards_by_rollout(args, samples, raw_rewards, prompt_group_sizes)
+        normalized_rewards = _normalize_rewards_by_rollout(
+            args, samples, rewards, prompt_group_sizes, unshaped_rewards=raw_rewards
+        )
         return raw_rewards, normalized_rewards
 
-    return raw_rewards, raw_rewards
+    return raw_rewards, rewards
 
 
 def split_train_data_by_dp(
@@ -484,6 +523,7 @@ def _package_shards(args, data: dict[str, Any], partitions) -> list[dict[str, An
             "rollout_sampling_mask_offsets",
             "rollout_routed_experts",
             "rollout_indexer_topk",
+            "rollout_store_plan",
             "prompt",
             "teacher_log_probs",
             "opd_reverse_kl",

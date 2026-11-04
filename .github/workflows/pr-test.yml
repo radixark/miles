@@ -259,7 +259,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        partition_id: ${{ fromJSON(needs.resolve-ci-policy.outputs.cadence == 'regular' && '[0]' || '[0,1]') }}
+        partition_id: ${{ fromJSON(needs.resolve-ci-policy.outputs.cadence == 'regular' && '[0,1]' || '[0,1,2]') }}
     uses: ./.github/workflows/_run-ci.yml
     with:
       runs_on: '["h100", "8gpu"]'
@@ -285,7 +285,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        partition_id: [0, 1, 2, 3]
+        partition_id: ${{ fromJSON(needs.resolve-ci-policy.outputs.cadence == 'regular' && '[0,1,2,3]' || '[0,1,2,3,4]') }}
     uses: ./.github/workflows/_run-ci.yml
     with:
       runs_on: '["h200", "8gpu"]'

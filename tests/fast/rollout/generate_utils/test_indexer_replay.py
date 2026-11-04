@@ -17,7 +17,7 @@ def _encode_int32(values: np.ndarray) -> str:
 
 
 def test_get_indexer_topk_from_response_decodes_using_meta_info_num_layers():
-    args = SimpleNamespace()
+    args = SimpleNamespace(rollout_indexer_topk_num_streams=None)
     sample = Sample(tokens=[1, 2, 3])
     values = np.arange(2 * 2 * 3, dtype=np.int32)
     output = {
@@ -33,7 +33,7 @@ def test_get_indexer_topk_from_response_decodes_using_meta_info_num_layers():
 
 
 def test_get_indexer_topk_from_response_returns_none_when_absent():
-    args = SimpleNamespace()
+    args = SimpleNamespace(rollout_indexer_topk_num_streams=None)
     sample = Sample(tokens=[1, 2, 3])
     output = {"meta_info": {}}
 
@@ -41,7 +41,7 @@ def test_get_indexer_topk_from_response_returns_none_when_absent():
 
 
 def test_get_indexer_topk_from_response_rejects_missing_num_layers():
-    args = SimpleNamespace()
+    args = SimpleNamespace(rollout_indexer_topk_num_streams=None)
     sample = Sample(tokens=[1, 2, 3])
     values = np.arange(2 * 2 * 3, dtype=np.int32)
     output = {"meta_info": {"indexer_topk": _encode_int32(values)}}

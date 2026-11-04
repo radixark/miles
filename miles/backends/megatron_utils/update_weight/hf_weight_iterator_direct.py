@@ -9,6 +9,7 @@ import torch.distributed as dist
 from tqdm import tqdm
 
 from miles.backends.megatron_utils.lora.native import export_lora_hf_named
+from miles.backends.megatron_utils.lora.native.modules.linear import iter_adapters
 from miles.backends.megatron_utils.megatron_to_hf import convert_to_hf
 from miles.backends.megatron_utils.named_weights import named_params_and_buffers
 from miles.backends.megatron_utils.sglang import monkey_patch_torch_reductions
@@ -54,7 +55,7 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
             edp = parallel.edp
             assert edp is not None, "Expert data parallel state is required for MoE weight updates"
             owner_infos = _partition_expert_infos(
-                expert_infos, num_local_experts=self.args.num_experts // ep_size, edp_size=edp.size
+                expert_infos, num_local_experts=self.args.backend.num_experts // ep_size, edp_size=edp.size
             )
             # At ETP1, TP x DP x CP is exactly EP x EDP. Borrow Megatron's
             # combined group to avoid repacking between EP and EDP gathers.
@@ -129,7 +130,7 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
 
     def _export_pp_local_lora(self, adapter):
         assert adapter is None, "multi-LoRA export requires --megatron-to-hf-mode bridge"
-        return export_lora_hf_named(self.model)
+        return export_lora_hf_named(iter_adapters(self.model))
 
     def _convert_to_hf_param_units(self, named_params: Sequence[tuple[str, torch.Tensor]]):
         for name, param in named_params:
@@ -301,10 +302,18 @@ def _get_megatron_local_param_infos(
             dtype=param.dtype,
             shape=param.shape,
             attrs={
-                "tensor_model_parallel": getattr(param, "tensor_model_parallel", False),
-                "partition_dim": getattr(param, "partition_dim", -1),
-                "partition_stride": getattr(param, "partition_stride", 1),
-                "parallel_mode": getattr(param, "parallel_mode", None),
+                "tensor_model_parallel": getattr(
+                    param, "tensor_model_parallel", False
+                ),  # config-access-exempt: tensor_model_parallel is optional backend-attached tensor metadata
+                "partition_dim": getattr(
+                    param, "partition_dim", -1
+                ),  # config-access-exempt: partition_dim is optional backend-attached tensor metadata
+                "partition_stride": getattr(
+                    param, "partition_stride", 1
+                ),  # config-access-exempt: partition_stride is optional backend-attached tensor metadata
+                "parallel_mode": getattr(
+                    param, "parallel_mode", None
+                ),  # config-access-exempt: parallel_mode is optional backend-attached tensor metadata
             },
             size=param.numel() * param.element_size(),
             src_rank=rank,
@@ -321,7 +330,7 @@ def _get_megatron_local_param_infos(
             for name, info in infos.items():
                 if name in param_infos:
                     # Duplicates across PP only exist for MTP virtual-PP layers.
-                    assert args.mtp_num_layers is not None
+                    assert args.backend.mtp_num_layers is not None
                     if param_infos[name].src_rank > src_rank:
                         param_infos[name] = info
                 else:
@@ -394,7 +403,7 @@ def _check_and_fix_partition(args: Namespace, name: str, partition_stride: int, 
     (GLU/SwiGLU interleaved [gate, up]), so assert partition_stride==2 is removed.
     But TEGroupedLinear still does not set partition_stride/partition_dim correctly for grouped moe gemm
     """
-    if "linear_fc1.weight" in name and args.swiglu:
+    if "linear_fc1.weight" in name and (args.backend.swiglu or args.backend.quick_geglu):
         partition_stride = 2
         if partition_dim < 0:
             partition_dim = 0
@@ -425,7 +434,9 @@ def all_gather_params_async(
         if "expert_bias" in info.name:
             gather_tasks.append((info, param, None, None, None, None))
             handles.append(None)
-        elif getattr(param, "parallel_mode", None) == "duplicated" or (
+        elif getattr(
+            param, "parallel_mode", None
+        ) == "duplicated" or (  # config-access-exempt: parallel_mode is optional backend-attached tensor metadata
             not param.tensor_model_parallel and not _is_unmarked_grouped_expert_weight(info.name, param)
         ):
             gather_tasks.append((info, param.data, None, None, None, None))

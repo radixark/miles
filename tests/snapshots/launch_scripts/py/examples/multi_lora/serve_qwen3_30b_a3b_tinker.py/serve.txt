@@ -64,7 +64,8 @@ nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l
   --expert-model-parallel-size 4
   --expert-tensor-parallel-size 1
   --use-dynamic-batch-size
-  --max-tokens-per-gpu 8192 
+  --max-tokens-per-gpu 8192
+  --log-probs-chunk-size 1024 
   --rollout-num-gpus-per-engine 2
   --sglang-mem-fraction-static 0.7
   --sglang-lora-backend triton 

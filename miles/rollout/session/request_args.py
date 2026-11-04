@@ -23,6 +23,7 @@ from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.errors import MessageValidationError
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer, extract_template_args
 from miles.utils.lora.utils import LORA_ADAPTER_NAME, lora_rollout_enabled
+from miles.utils.output_store.plan import FIELDS, OUTPUT_STORE_REQUEST_KEY
 
 DEFAULT_TURN_ARGS_DROP_KEYS = ("input_ids", "messages")
 
@@ -111,6 +112,14 @@ def prepare_chat_request(
             request_args["return_sampling_mask"] = True
         else:
             request_args.pop("return_sampling_mask", None)
+    # The launch flag owns the output store, as it owns the replay outputs: a client's value is replaced.
+    request_args.pop(OUTPUT_STORE_REQUEST_KEY, None)
+    if (
+        config.output_store_backend_config is not None
+        and not evaluation
+        and any(request_args.get(field.request_key) for field in FIELDS)
+    ):
+        request_args[OUTPUT_STORE_REQUEST_KEY] = True
     return PreparedChatRequest(
         body=request_args, template_args=extract_template_args(request_args), response_intent=response_intent
     )

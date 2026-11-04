@@ -123,16 +123,18 @@ class TestRayCellOperationsDisruptiveOperations:
 
 
 class TestRayCellOperationsProtocol:
-    async def test_cell_infos_forwards_pool_ids_and_returns_the_actor_result(self) -> None:
-        """Cell info reads forward every pool ID by keyword and preserve the actor result."""
+    async def test_cell_infos_forwards_pool_ids_and_category_and_returns_the_actor_result(self) -> None:
+        """Cell info reads forward every pool ID and the category by keyword and preserve the actor result."""
         fixture = _make_fixture()
         pool_ids = ["engine-0", "rollout-1"]
         actor_result = {"engine-0-2": SimpleNamespace(), "rollout-1-3": SimpleNamespace()}
         fixture.worker_manager.get_cell_infos.result = actor_result
 
-        result = await fixture.operations.cell_infos(pool_ids=pool_ids)
+        result = await fixture.operations.cell_infos(pool_ids=pool_ids, category="inference-engine")
 
-        assert fixture.worker_manager.calls == [("get_cell_infos", (), {"pool_ids": pool_ids})]
+        assert fixture.worker_manager.calls == [
+            ("get_cell_infos", (), {"pool_ids": pool_ids, "category": "inference-engine"})
+        ]
         assert result is actor_result
 
     async def test_resume_starts_exactly_the_requested_cell(self) -> None:

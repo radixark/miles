@@ -15,6 +15,7 @@ from tests.fast.utils.event_analyzer.rules.weight_event_fakes import (
 )
 
 from miles.backends.training_utils.types import TrainStepOutcome
+from miles.utils.args.configs.debug import DebugConfig
 from miles.utils.audit_utils.event_analyzer import analyzer as analyzer_module
 from miles.utils.audit_utils.event_analyzer.analyzer import (
     _partition_by_model_id,
@@ -255,12 +256,29 @@ class TestWeightPublicationRulesWiredIn:
 
 
 class TestRunAnalysisFromArgs:
+    @pytest.mark.parametrize("enabled", [False, True])
+    def test_typed_analyzer_flag_controls_mismatch_detection(self, tmp_path: Path, enabled: bool) -> None:
+        """Typed enablement gates real mismatched events rather than only changing a parser default."""
+        for index, checksum in enumerate(("aaa", "zzz")):
+            event_logger = EventLogger(
+                log_dir=tmp_path, file_name=f"rank-{index}.jsonl", source=_make_source(cell_index=index)
+            )
+            _log_checksum_event(event_logger, rollout_id=0, param_hashes={"pp0.w": checksum})
+            event_logger.close()
+        config = DebugConfig(enable_event_analyzer=enabled, save_debug_event_data=str(tmp_path))
+
+        if enabled:
+            with pytest.raises(ValueError, match="issues"):
+                run_analysis_from_args(config)
+        else:
+            run_analysis_from_args(config)
+
     def test_skips_when_disabled(self) -> None:
         args = Namespace(enable_event_analyzer=False, save_debug_event_data="/tmp/whatever")
         run_analysis_from_args(args)
 
     def test_skips_when_no_event_dir(self) -> None:
-        args = Namespace(enable_event_analyzer=True)
+        args = Namespace(enable_event_analyzer=True, save_debug_event_data=None)
         run_analysis_from_args(args)
 
     def test_logs_analysis_duration(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:

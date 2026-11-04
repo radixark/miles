@@ -192,7 +192,8 @@ def test_main_fails_closed_on_an_unregistered_file(monkeypatch, tmp_path, capsys
     assert "::error::" in capsys.readouterr().err
 
 
-def test_target_workflow_keeps_orchestration_trusted_and_checks_out_exact_head():
+def test_target_workflow_keeps_orchestration_trusted_and_checks_out_exact_head() -> None:
+    """Resolved file jobs preserve trust boundaries and use the snapshot-aware CUDA entrypoint."""
     root = Path(__file__).parents[3]
     workflow = (root / ".github/workflows/run-ci-file.yml").read_text()
     gpu_workflow = (root / ".github/workflows/_run-ci.yml").read_text()

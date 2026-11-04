@@ -3,10 +3,15 @@ from __future__ import annotations
 from collections.abc import Iterator
 
 import pytest
-from tests.fast.utils.workers import conformance
-from tests.fast.utils.workers.conformance import CHECK_IDS, CHECKS, ConformanceWorker, HandleCheck
-
-from tests.fast.utils.workers.e2e.harness import ServerProcess, spawn_server, wait_until_serving
+from tests.fast.utils.workers.conformance import (
+    CHECK_IDS,
+    CHECKS,
+    ConformanceServeSpec,
+    ConformanceWorker,
+    ConformanceWorkerConfig,
+    HandleCheck,
+)
+from tests.fast.utils.workers.e2e.harness import ServerProcess, reserve_port, spawn_config_server, wait_until_serving
 
 from miles.utils.workers.rpc.client.handle import RpcWorkerHandle
 from miles.utils.workers.worker_handle import BaseWorkerHandle
@@ -17,12 +22,12 @@ from miles.utils.workers.worker_handle import BaseWorkerHandle
 @pytest.fixture(scope="class")
 def conformance_server(tmp_path_factory) -> Iterator[ServerProcess]:
     root = tmp_path_factory.mktemp("conformance")
-    state_dir = root / "state"
-    state_dir.mkdir()
-    server = spawn_server(
-        state_dir=state_dir,
+    port = reserve_port()
+    server = spawn_config_server(
+        spec_class=ConformanceServeSpec,
+        config=ConformanceWorkerConfig(rpc_port=port),
+        port=port,
         log_path=root / "server.log",
-        specs_path=f"{conformance.__name__}.compute_specs",
     )
     wait_until_serving(server)
     yield server

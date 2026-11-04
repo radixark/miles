@@ -3,6 +3,8 @@ from tempfile import TemporaryDirectory
 
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
+from miles.utils.audit_utils.config_snapshot.enabled import SNAPSHOT_TESTING_ENABLED
+from miles.utils.audit_utils.config_snapshot.generated_value_registry import generated_value_registry
 from miles.utils.external_utils import command_utils
 
 register_cuda_ci(
@@ -144,4 +146,6 @@ if __name__ == "__main__":
         os.environ.pop(proxy_var, None)
     # CI containers share host IPC, so each run must own its snapshot directory.
     with TemporaryDirectory(prefix="miles_e2e_eval_hf_", dir="/dev/shm") as eval_hf_dir:
+        if SNAPSHOT_TESTING_ENABLED:
+            generated_value_registry.register(kind="temporary_directory", name="fully_async_eval", value=eval_hf_dir)
         execute(eval_hf_dir)

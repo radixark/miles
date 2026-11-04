@@ -13,6 +13,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Literal, get_args
 
+from miles.utils.audit_utils.config_snapshot.enabled import SNAPSHOT_TESTING_ENABLED
 from miles.utils.external_utils.command_utils.common import (
     ArgvManipulator,
     _parse_extra_env_vars,
@@ -25,11 +26,14 @@ from miles.utils.external_utils.command_utils.common import (
 from miles.utils.external_utils.command_utils.helm_backend.launcher.command_wrapper import Helm, Kubectl
 from miles.utils.external_utils.command_utils.helm_backend.launcher.manifest_types import Manifest
 from miles.utils.external_utils.model_args_utils import shell_safe_model_args
+from miles.utils.port_range import ray_worker_port_args
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
+from miles.utils.test_utils.snapshot import SNAPSHOT_RECORD_DIR_ENV_VAR
 from miles.utils.typer_utils import dataclass_from_env
 from miles.utils.workers.types import ClusterBackend, DeployComponent, HotRestartComponent, parse_hot_restart
 
 logger = logging.getLogger(__name__)
+_CONFIG_SNAPSHOT_LAUNCH_COUNTS: dict[str, int] = {}
 
 
 CONVERSION_VERSION_FILE = "miles_conversion_version.txt"
@@ -38,7 +42,7 @@ CONVERSION_VERSION_FILE = "miles_conversion_version.txt"
 # weight layout change bumps it. Values 1 and 2 were written briefly by an earlier numbering and
 # are never trusted. 3: the layouts before the head-sharded linear-attention layer.
 # 4: Qwen3.5 / Qwen3-Next GDN weights in group-major rows. 5: Kimi-K3 KDA under linear_attn.*.
-CONVERSION_VERSION = "5"
+CONVERSION_VERSION = "6"
 
 
 class LaunchGuard:
@@ -211,6 +215,8 @@ class BaseCommandBackend(ABC):
             _assert_train_args_name_no_other_run_uuid(train_argv, run_uuid=config.run_uuid)
             train_args = f"{train_args} {_RUN_UUID_FLAG} {config.run_uuid}"
 
+        if SNAPSHOT_TESTING_ENABLED:
+            train_args = _add_config_snapshot_name(train_args)
         self._execute_train_inner(
             request=ExecuteTrainRequest(
                 train_args=train_args,
@@ -303,7 +309,7 @@ class BaseCommandBackend(ABC):
             'ssh root@"$worker_ip" '
             '"pkill -9 sglang ; ray stop --force ; pkill -9 miles ; '
             f"ray start --address={master_addr}:6379 --num-gpus {num_gpus_per_node} "
-            '--node-ip-address $worker_ip --disable-usage-stats" & '
+            f'--node-ip-address $worker_ip --disable-usage-stats{ray_worker_port_args()}" & '
             "done; wait"
         )
 
@@ -428,6 +434,25 @@ def _assert_train_args_name_no_other_run_uuid(train_argv: list[str], *, run_uuid
     assert (
         not conflicting
     ), f"the train arguments already say {_RUN_UUID_FLAG} {conflicting}, but this launch drives run {run_uuid}"
+
+
+def _add_config_snapshot_name(train_args: str) -> str:
+    if not os.environ.get(SNAPSHOT_RECORD_DIR_ENV_VAR):
+        return train_args
+    argv = shlex.split(train_args)
+    if not ArgvManipulator.is_defined(argv=argv, flag="--ci-test"):
+        return train_args
+    if ArgvManipulator.is_defined(argv=argv, flag="--ci-disable-config-snapshot"):
+        return train_args
+    if ArgvManipulator.is_defined(argv=argv, flag="--config-snapshot-name"):
+        return train_args
+
+    script = Path(sys.argv[0]).resolve()
+    relative = script.relative_to(repo_base_dir)
+    name = relative.with_suffix("").as_posix()
+    index = _CONFIG_SNAPSHOT_LAUNCH_COUNTS.get(name, 0)
+    _CONFIG_SNAPSHOT_LAUNCH_COUNTS[name] = index + 1
+    return f"{train_args} --config-snapshot-name {shlex.quote(f'{name}/run-{index:04d}')}"
 
 
 def _declared_cluster_backends(train_argv: list[str]) -> list[str]:

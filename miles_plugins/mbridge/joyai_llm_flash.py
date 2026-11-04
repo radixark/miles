@@ -15,7 +15,9 @@ class JoyAILLMFlashBridge(DeepseekV3Bridge):
         config = super()._build_config()
 
         # Keep JoyAI conversion on the non-MTP path for now.
-        if hasattr(config, "mtp_num_layers"):
+        if hasattr(
+            config, "mtp_num_layers"
+        ):  # config-access-exempt: MTP support varies across upstream TransformerConfig versions
             config.mtp_num_layers = None
         elif isinstance(config, dict):
             config["mtp_num_layers"] = None

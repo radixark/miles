@@ -26,7 +26,9 @@ def _read_model_type(name_or_path: str) -> str:
 
 
 def is_inkling(tokenizer: Any) -> bool:
-    return _read_model_type(getattr(tokenizer, "name_or_path", "")) in _MODEL_TYPES
+    return (
+        _read_model_type(getattr(tokenizer, "name_or_path", "")) in _MODEL_TYPES
+    )  # config-access-exempt: custom tokenizers may omit a pretrained model path
 
 
 def is_inkling_checkpoint(name_or_path: str) -> bool:

@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from tests.fast.utils.external_utils.command_utils.helm_backend.orchestrator.observer_fakes import _ObserverProbe
@@ -18,7 +19,7 @@ class TestUnreadableGenerationBudget:
         path = tmp_path / "state.json"
         OrchestratorState(status=OrchestratorStatus.EXITED, exit_code=0).write(path)
         probe = _ObserverProbe(generations=[OSError("unreachable")] * 30, pods=[])
-        monkeypatch.setattr(observer.time, "sleep", probe.sleep)
+        monkeypatch.setattr(observer, "time", SimpleNamespace(sleep=probe.sleep))
 
         with pytest.raises(RuntimeError, match="30 polls in a row"):
             observer.wait_for_run(
@@ -38,7 +39,7 @@ class TestUnreadableGenerationBudget:
             generations=[OSError("first")] * 29 + [path] + [OSError("second")] * 30,
             pods=[observer.ObservedPod(phase="Running")],
         )
-        monkeypatch.setattr(observer.time, "sleep", probe.sleep)
+        monkeypatch.setattr(observer, "time", SimpleNamespace(sleep=probe.sleep))
 
         with pytest.raises(RuntimeError, match="30 polls in a row"):
             observer.wait_for_run(

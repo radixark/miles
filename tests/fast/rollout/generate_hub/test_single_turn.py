@@ -10,9 +10,12 @@ from PIL import Image
 from tests.fast.fixtures.generation_fixtures import GenerateEnv, generation_env, listify, make_sample, run_generate
 from transformers import AutoProcessor
 
+from miles.rollout import sglang_rollout
 from miles.rollout.base_types import GenerateFnInput
 from miles.rollout.generate_hub import single_turn
+from miles.rollout.inference_rollout import inference_rollout_common
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
+from miles.utils.async_utils import run
 from miles.utils.processing_utils import encode_image_for_rollout_engine
 from miles.utils.test_utils.mock_sglang_server import ProcessResult, ProcessResultMetaInfo
 from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
@@ -287,21 +290,19 @@ class TestRoutedExperts:
         "generation_env",
         [
             {
-                "args_kwargs": {"use_rollout_routing_replay": True},
+                "args_kwargs": {"use_rollout_routing_replay": True, "num_layers": 2},
                 "process_fn_kwargs": {"routed_experts": "placeholder"},
             }
         ],
         indirect=True,
     )
     def test_routed_experts_enabled_and_parsed(self, variant, generation_env):
-        num_layers, moe_router_topk = 2, 4
+        num_layers, moe_router_topk = generation_env.args.num_layers, 4
         num_tokens = len(PROMPT_TOKENS) + len(RESPONSE_TOKENS)
         routed_experts_array = np.arange((num_tokens - 1) * num_layers * moe_router_topk, dtype=np.int32).reshape(
             num_tokens - 1, num_layers, moe_router_topk
         )
 
-        generation_env.args.num_layers = num_layers
-        generation_env.args.moe_router_topk = moe_router_topk
         routed_experts_str = pybase64.b64encode(routed_experts_array.tobytes()).decode("ascii")
         generation_env.mock_server.process_fn = lambda _: ProcessResult(
             text=RESPONSE_TEXT,
@@ -404,6 +405,25 @@ class TestPayloadStructure:
             expected_request(variant, sampling_params={"max_new_tokens": 16, "temperature": 0.5, "top_p": 1.0})
         ]
         assert listify(result.sample) == [expected_sample(variant)]
+
+    def test_sample_max_response_len_reaches_the_engine_request(self, variant, generation_env):
+        """generate_and_rm of each rollout path sends the sample's own budget to the engine."""
+        sample = _make_sample()
+        sample.index = 0
+        sample.max_response_len = 5
+        generation_env.mock_server.request_log.clear()
+        if variant == "old_sglang_rollout":
+            run(sglang_rollout.generate_and_rm(generation_env.args, sample, dict(SAMPLING_PARAMS)))
+        else:
+            run(
+                inference_rollout_common.generate_and_rm(
+                    GenerateState(generation_env.args), sample, dict(SAMPLING_PARAMS)
+                )
+            )
+
+        requests = generation_env.mock_server.request_log
+        assert requests[0]["sampling_params"]["max_new_tokens"] == 5
+        assert all(r["sampling_params"]["max_new_tokens"] <= 5 for r in requests)
 
 
 class TestBoundaryConditions:

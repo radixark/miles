@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import functools
 import logging
-from typing import Any, NamedTuple
+from typing import NamedTuple
 
-from miles.utils.flops_utils import calculate_fwd_flops
+from miles.utils.args.runtime import RolloutConfig, TrainerConfig
+from miles.utils.flops_utils import ModelFlops, model_flops_from_hf_config
+from miles.utils.hf_utils.config import load_hf_config
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.seqlen_balancing import (
     expand_bins_by_splitting,
@@ -33,12 +36,25 @@ class DPSchedule(NamedTuple):
     num_rollouts: list[int]  # (num_steps,): distinct rollout counts
 
 
-def _calculate_workloads(step_lengths, args):
-    return [calculate_fwd_flops([sl], args) for sl in step_lengths]
+@functools.cache
+def _model_flops(hf_checkpoint: str) -> ModelFlops | None:
+    hf_config = load_hf_config(hf_checkpoint)
+    try:
+        return model_flops_from_hf_config(hf_config)
+    except Exception as e:
+        logger.warning(f"--balance-by-flops balances by token count, the HF config could not be sized: {e!r}")
+        return None
+
+
+def _calculate_workloads(step_lengths: list[int], args: TrainerConfig | RolloutConfig) -> list[float]:
+    model_flops = _model_flops(args.hf_checkpoint)
+    if model_flops is None:
+        return list(step_lengths)
+    return [model_flops.fwd_flops([sl]) for sl in step_lengths]
 
 
 def build_dp_schedule(
-    args: Any,
+    args: TrainerConfig | RolloutConfig,
     train_parallel_config: TrainParallelConfig,
     total_lengths: list[int],
     *,
@@ -77,7 +93,7 @@ def build_dp_schedule(
     )
     num_rollouts = [global_batch_size] * num_full_steps
     leftover = len(rollout_ids) - num_full_steps * global_batch_size
-    if leftover and getattr(args, "allow_partial_train_step", False) and args.use_dynamic_batch_size:
+    if leftover and args.allow_partial_train_step and args.use_dynamic_batch_size:
         leftover_samples = sum(len(rollout_id_to_sample_index[rid]) for rid in rollout_ids[-leftover:])
         if leftover_samples >= dp_size:
             num_rollouts.append(leftover)
@@ -99,7 +115,7 @@ def build_dp_schedule(
             f"each step needs at least one sample per rank."
         )
 
-        balance_by_flops = getattr(args, "balance_by_flops", False)
+        balance_by_flops = args.balance_by_flops
         # Shared by FLOPs-balanced packing and FLOPs-balanced distribution below.
         workloads = _calculate_workloads(step_lengths, args) if balance_by_flops else None
         if args.use_dynamic_batch_size:

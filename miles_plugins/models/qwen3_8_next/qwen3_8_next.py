@@ -38,7 +38,9 @@ def _strip_block_layernorms(layer_spec):
     """Replace the fused-layernorm qkv with a plain TE linear, and drop pre_mlp_layernorm."""
     submodules = layer_spec.submodules
     attn = submodules.self_attention
-    if getattr(attn, "submodules", None) is not None and hasattr(attn.submodules, "linear_qkv"):
+    if getattr(attn, "submodules", None) is not None and hasattr(
+        attn.submodules, "linear_qkv"
+    ):  # config-access-exempt: attention specs differ in submodule layout
         attn.submodules.linear_qkv = TEColumnParallelLinear
     submodules.input_layernorm = IdentityOp
     submodules.pre_mlp_layernorm = IdentityOp
@@ -90,7 +92,9 @@ def get_qwen3_8_next_spec(args, config, vp_stage=None):
     _apply_qwen3_8_next_config(config, text_config)
     config.qwen3_8_next_hf_checkpoint = args.hf_checkpoint
 
-    if getattr(config, "virtual_pipeline_model_parallel_size", None):
+    if getattr(
+        config, "virtual_pipeline_model_parallel_size", None
+    ):  # config-access-exempt: Megatron configs set virtual pipeline size only when enabled
         raise NotImplementedError(
             "Qwen3.8-Next + interleaved pipeline parallelism is unverified: "
             "megatron/core/pipeline_parallel/schedules.py widens every intermediate "
@@ -98,7 +102,7 @@ def get_qwen3_8_next_spec(args, config, vp_stage=None):
             "simplified. Run with --num-layers-per-virtual-pipeline-stage unset."
         )
 
-    if not args.num_experts:
+    if not args.backend.num_experts:
         config.moe_layer_freq = [0] * config.num_layers
 
     kwargs = {"use_transformer_engine": True}
