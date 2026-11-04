@@ -4,7 +4,9 @@ import httpx
 import pytest
 import torch
 
+from miles.backends.training_utils.checkpoint.adapter.commit import tenant_digest as library_digest
 from miles.tinker.core.types import UserInputError
+from miles.tinker.core.utils import tenant_digest as gateway_digest
 from miles.tinker.runtime import (
     MilesBackend,
     _build_train_data,
@@ -217,3 +219,9 @@ def test_an_aborted_sample_fails_instead_of_passing_as_a_stop():
     """A truncated sequence fed to RL as a completed sample corrupts training data silently."""
     response = {"meta_info": {"output_token_logprobs": [(-0.1, 11)], "finish_reason": {"type": "abort"}}}
     assert "abort" in _to_sequence(response)["error"]
+
+
+@pytest.mark.parametrize("tenant", ["tenant-a", "", "ключ/with spaces"])
+def test_the_gateway_digests_a_tenant_as_the_library_checks_it(tenant):
+    """Core (stdlib-only) writes the digest the library's ownership check recomputes; the two must agree."""
+    assert gateway_digest(tenant) == library_digest(tenant)
