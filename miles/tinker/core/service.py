@@ -428,7 +428,7 @@ class TinkerService:
                 # the link outlived its target
                 raise UserInputError(f"unknown checkpoint {tinker_path!r}")
             parametrization = committed["parametrization"]
-            # a sampler export records targets, not group flags; it was written under this gateway's layout
+            # a sampler export records only its targets; the group flags reported are this gateway's
             return {
                 "base_model": parametrization["base_model"],
                 "is_lora": True,

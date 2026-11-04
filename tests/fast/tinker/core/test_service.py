@@ -1056,7 +1056,6 @@ async def test_weights_info_rejects_a_sampler_link_whose_target_is_gone(service)
 
 
 async def test_trainer_ranks_get_only_the_tenant_digest(service):
-    """The API key is the tenant's credential; it must not travel to trainer processes."""
     model_id = await created_model(service)
     save = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
     assert (await await_settled(service, "tenant", save)).state == DONE
