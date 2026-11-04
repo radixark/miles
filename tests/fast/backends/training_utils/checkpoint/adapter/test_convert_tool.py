@@ -28,7 +28,7 @@ def test_sampler_export_converts_to_per_expert_peft(tmp_path, monkeypatch):
     weights = {
         f"{m}.lora_{f}": torch.randn(3, 2, 8) if f == "A" else torch.randn(3, 8, 2) for m in EXPERTS for f in "AB"
     }
-    write_sampler_adapter(tmp_path / "src", weights, run)
+    write_sampler_adapter(tmp_path / "src", weights, run, lora_dropout=0.0)
     config = tmp_path / "config.json"
     config.write_text(
         json.dumps(

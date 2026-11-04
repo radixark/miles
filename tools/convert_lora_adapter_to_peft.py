@@ -27,7 +27,9 @@ def main() -> None:
         kind == AdapterSourceKind.ADAPTER_DIR
     ), f"{args.src} is a {kind.value} source; load it in a training run and save it in the miles format first"
     reader = MilesAdapterDirReader(args.src, targets)
-    write_peft_adapter(args.dst, reader.read_weights(), reader.source.parametrization)
+    # the training run's dropout, which the source's own export recorded
+    lora_dropout = json.loads((args.src / "adapter_config.json").read_text())["lora_dropout"]
+    write_peft_adapter(args.dst, reader.read_weights(), reader.source.parametrization, lora_dropout=lora_dropout)
 
 
 if __name__ == "__main__":
