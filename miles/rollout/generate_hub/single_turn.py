@@ -2,6 +2,8 @@
 Simple single-turn generation.
 """
 
+import uuid
+
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
 from miles.rollout.generate_utils.generate_endpoint_utils import (
     compute_prompt_ids_from_sample,
@@ -46,6 +48,9 @@ async def generate(input: GenerateFnInput, url: str | None = None) -> GenerateFn
         sample.status = halt_status
         return GenerateFnOutput(samples=sample)
 
+    if sample.index is not None:
+        # Correlate engine logs with this sample; HTTP retries reuse the same ID.
+        payload["rid"] = f"{sample.index}:{uuid.uuid4().hex}"
     output = await post(url, payload, headers=compute_routing_headers(args, sample))
     await update_sample_from_response(args, sample, payload=payload, output=output)
 
