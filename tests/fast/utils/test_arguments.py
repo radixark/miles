@@ -69,6 +69,8 @@ CAKE_CHOICE_DEFAULTS = {
     "dsa_attention_backend": "tilelang",
     "mhc_backend": "megatron",
     "full_attention_backend": "megatron",
+    "batched_projection_gemm_backend": "torch",
+    "moe_router_gemm_backend": "megatron",
 }
 _P2P_ARGS = ["--update-weight-transfer-mode", "p2p"]
 DYNAMIC_BATCH_ARGS = ["--use-dynamic-batch-size", "--max-tokens-per-gpu", "1024"]
@@ -4149,6 +4151,13 @@ class TestMilesExtKernels:
         )
 
         with pytest.raises(ValueError, match="--dsa-attention-backend cake runs in the miles DSA plugin layers"):
+            validate_miles_ext_kernels_args(args)
+
+    @pytest.mark.parametrize("flag", ["--batched-projection-gemm-backend", "--moe-router-gemm-backend"])
+    def test_the_cake_dense_gemms_need_the_megatron_backend(self, flag: str) -> None:
+        args = self._parse(["--use-miles-ext-kernels", flag, "cake", "--train-backend", "torchtitan"])
+
+        with pytest.raises(ValueError, match=f"{flag} cake runs in the Megatron backend's layers"):
             validate_miles_ext_kernels_args(args)
 
     def test_the_cake_mhc_backend_runs_its_startup_checks(self) -> None:

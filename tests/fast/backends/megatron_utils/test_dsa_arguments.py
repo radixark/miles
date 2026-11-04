@@ -32,6 +32,7 @@ def _args(**overrides):
         dsa_indexer_loss_coeff=None,
         miles_dsa_topk_backend="canonical",
         dsa_attention_backend="tilelang",
+        batched_projection_gemm_backend="torch",
         cp_comm_type=None,
         true_on_policy_mode=False,
         debug_disable_optimizer=False,
@@ -275,6 +276,7 @@ GLM5_NEXT_SPEC = ["miles_plugins.models.glm5_next.glm5_next", "get_glm5_next_spe
 def _cake_args(**overrides):
     values = dict(
         dsa_attention_backend="cake",
+        batched_projection_gemm_backend="torch",
         megatron_to_hf_mode="raw",
         multi_lora_n_adapters=0,
         spec=list(MILES_DSA_SPEC),
@@ -350,3 +352,36 @@ def test_set_default_megatron_args_validates_the_cake_kernels(megatron_defaults)
     )
     with pytest.raises(ValueError, match="pass --dsa-impl miles"):
         megatron_defaults(args)
+
+
+def _cake_projection_args(**overrides):
+    return _cake_args(**({"dsa_attention_backend": "tilelang", "batched_projection_gemm_backend": "cake"} | overrides))
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {},
+        {"spec": GLM5_NEXT_SPEC},
+        {"spec": DSV4_SPEC, "dsv4_impl": "miles"},
+        {"spec": DSV41_SPEC, "dsv4_impl": "miles"},
+        {"batched_projection_gemm_backend": "torch", "megatron_to_hf_mode": "bridge", "spec": None},
+    ],
+    ids=["glm5-dsv32", "glm5.3-flash", "dsv4", "dsv4.1", "torch-anywhere"],
+)
+def test_the_cake_batched_projection_is_accepted_on_the_miles_dsa_plugin_specs(megatron_arguments, overrides):
+    megatron_arguments._validate_cake_batched_projection_backend(_cake_projection_args(**overrides))
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"megatron_to_hf_mode": "bridge"}, "--batched-projection-gemm-backend cake requires --megatron-to-hf"),
+        ({"spec": ["miles_plugins.models.qwen3_5.qwen3_5", "get_qwen3_5_spec"]}, "only wired"),
+        ({"spec": DSV4_SPEC}, "pass --dsv4-impl miles"),
+    ],
+    ids=["bridge", "other-spec", "native-dsv4"],
+)
+def test_the_cake_batched_projection_is_rejected_where_it_would_be_ignored(megatron_arguments, overrides, message):
+    with pytest.raises(ValueError, match=message):
+        megatron_arguments._validate_cake_batched_projection_backend(_cake_projection_args(**overrides))

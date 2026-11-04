@@ -83,6 +83,8 @@ CAKE_BACKEND_ARGS = (
     "linear_attention_input_norm",
     "mhc_backend",
     "full_attention_backend",
+    "batched_projection_gemm_backend",
+    "moe_router_gemm_backend",
 )
 LINEAR_ATTENTION_INPUT_NORMS = ("te", "hf", "cake")
 
@@ -964,6 +966,16 @@ def validate_miles_ext_kernels_args(args) -> None:
             "--dsa-attention-backend cake runs in the miles DSA plugin layers of the Megatron backend; "
             f"--train-backend {args.train_backend} would silently ignore it: use --train-backend megatron"
         )
+    megatron_gemms = {
+        "--batched-projection-gemm-backend": args.batched_projection_gemm_backend,
+        "--moe-router-gemm-backend": args.moe_router_gemm_backend,
+    }
+    for flag, backend in megatron_gemms.items():
+        if backend == "cake" and args.train_backend != "megatron":
+            raise ValueError(
+                f"{flag} cake runs in the Megatron backend's layers; --train-backend {args.train_backend} would "
+                "silently ignore it: use --train-backend megatron"
+            )
     if args.kda_backend == "cake" and args.train_backend != "megatron":
         raise ValueError(
             f"--kda-backend cake runs in the Megatron KDA layers; --train-backend {args.train_backend} would silently "

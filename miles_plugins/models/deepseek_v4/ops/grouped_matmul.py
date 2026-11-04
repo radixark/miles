@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
 
+from miles_plugins.models import cake_batched_projection
+
 
 def grouped_matmul(x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
     """Group ``g`` of ``x`` [b, s, g, d] times row block ``g`` of ``weight`` [g * r, d]."""
@@ -8,7 +10,14 @@ def grouped_matmul(x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
 
 
 class GroupedMatmul(nn.Module):
-    """``grouped_matmul`` as a module, so a LoRA adapter can wrap the product."""
+    """``grouped_matmul`` as a module, so a LoRA adapter can wrap the product. ``backend`` 'cake'
+    (--batched-projection-gemm-backend) runs it on the Cake deterministic GEMM."""
+
+    def __init__(self, backend: str = "torch"):
+        super().__init__()
+        self.backend = backend
 
     def forward(self, x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
-        return grouped_matmul(x, weight)
+        if self.backend == "torch":
+            return grouped_matmul(x, weight)
+        return cake_batched_projection.grouped_matmul(x, weight, backend=self.backend)

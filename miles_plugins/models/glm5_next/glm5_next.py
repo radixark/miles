@@ -116,6 +116,7 @@ def get_glm5_next_spec(args, config, vp_stage=None):
             "attn_mask_type": AttnMaskType.causal,
             "topk_backend": args.miles_dsa_topk_backend,
             "dsa_attention_backend": args.dsa_attention_backend,
+            "batched_projection_backend": args.batched_projection_gemm_backend,
         },
         submodules=DSASelfAttentionSubmodules(
             linear_q_down_proj=backend.linear(),

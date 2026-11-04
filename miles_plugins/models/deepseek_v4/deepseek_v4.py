@@ -25,6 +25,7 @@ from megatron.core.transformer.utils import make_sharded_tensors_for_checkpoint
 
 from miles.kernels.attention.dsa import cake, sparse_attention
 from miles.kernels.attention.dsa.sparse_attention import CAKE_SPARSE_ATTENTION_CONFIG
+from miles_plugins.models.cake_batched_projection import grouped_matmul, validate_batched_projection_config
 from miles_plugins.models.cake_hyper_connection import apply_mhc_backend
 from miles_plugins.models.deepseek_v4.ops.compressor import DeepSeekV4Compressor
 from miles_plugins.models.deepseek_v4.ops.cp_utils import (
@@ -34,7 +35,6 @@ from miles_plugins.models.deepseek_v4.ops.cp_utils import (
     get_q_positions_for_cp,
     get_window_topk_idxs_cp,
 )
-from miles_plugins.models.deepseek_v4.ops.grouped_matmul import grouped_matmul
 from miles_plugins.models.deepseek_v4.ops.qat import fp8_simulate_qat
 from miles_plugins.models.deepseek_v4.ops.rope import apply_rotary_emb, wrapped_precompute_freqs_cis
 from miles_plugins.models.deepseek_v4.ops.thd_utils import (
@@ -188,6 +188,14 @@ class DeepSeekV4Attention(MegatronModule):
         self.sequence_parallel = config.sequence_parallel
         use_cake = config.miles_dsa_attention_backend == "cake"
         self.attention_config = CAKE_SPARSE_ATTENTION_CONFIG if use_cake else None
+        # --batched-projection-gemm-backend: the grouped output projection on torch.einsum or the Cake GEMM
+        self.batched_projection_backend = config.miles_batched_projection_gemm_backend
+        validate_batched_projection_config(
+            config,
+            d_in=self.n_heads * self.head_dim // self.n_groups,
+            d_out=self.o_lora_rank,
+            backend=self.batched_projection_backend,
+        )
 
         if self.compress_ratio:
             self.core_attention.compressor = DeepSeekV4Compressor(
@@ -433,7 +441,11 @@ class DeepSeekV4Attention(MegatronModule):
 
         o = torch.cat((o[..., :-rd], apply_rotary_emb(o[..., -rd:].clone(), freqs_cis, inverse=True)), dim=-1)
 
-        o = grouped_matmul(o.view(bsz, seqlen_local, self.n_local_groups, -1), self.linear_o_group_proj)
+        o = grouped_matmul(
+            o.view(bsz, seqlen_local, self.n_local_groups, -1),
+            self.linear_o_group_proj,
+            backend=self.batched_projection_backend,
+        )
         x, _ = self.linear_proj(o.flatten(2))
 
         output = einops.rearrange(x, "b s d -> s b d")
@@ -472,6 +484,7 @@ def get_dsv4_spec(args, config, vp_stage):
 
     config.miles_dsa_topk_backend = args.miles_dsa_topk_backend
     config.miles_dsa_attention_backend = args.dsa_attention_backend
+    config.miles_batched_projection_gemm_backend = args.batched_projection_gemm_backend
     if args.dsa_attention_backend == "cake":
         cake.setup(args, index_heads=config.dsa_indexer_n_heads, index_head_dim=config.dsa_indexer_head_dim)
     _orig_get_spec = _eav_specs.get_experimental_attention_variant_module_spec

@@ -32,6 +32,7 @@ from miles.kernels.hyper_connection.mhc import mhc_aggregate, mhc_mix
 from miles.kernels.position.rope import apply_rotary_emb
 from miles.kernels.quant.fake_quant import fake_quant_compressed_kv
 from miles.utils.hf_utils.config import load_hf_config
+from miles_plugins.models.cake_batched_projection import validate_batched_projection_config
 from miles_plugins.models.deepseek_v4.ops.cp_utils import (
     all_gather_cp,
     get_freqs_cis_for_cp,
@@ -434,7 +435,14 @@ class DeepSeekV41Attention(MegatronModule):
         config.init_method(o_group_proj)
         self.linear_o_group_proj = nn.Parameter(o_group_proj)
         set_tensor_model_parallel_attributes(self.linear_o_group_proj, is_parallel=True, dim=0, stride=1)
-        self.o_group_matmul = GroupedMatmul()
+        # --batched-projection-gemm-backend: the grouped output projection on torch.einsum or the Cake GEMM
+        validate_batched_projection_config(
+            config,
+            d_in=self.n_heads * self.head_dim // self.n_groups,
+            d_out=self.o_lora_rank,
+            backend=config.miles_batched_projection_gemm_backend,
+        )
+        self.o_group_matmul = GroupedMatmul(backend=config.miles_batched_projection_gemm_backend)
         self.linear_proj = TERowParallelLinear(
             self.n_groups * self.o_lora_rank,
             self.dim,
@@ -641,6 +649,7 @@ def get_dsv41_spec(args, config, vp_stage):
     config.v41_runtime = V41Runtime()
     config.miles_dsa_topk_backend = args.miles_dsa_topk_backend
     config.miles_dsa_attention_backend = args.dsa_attention_backend
+    config.miles_batched_projection_gemm_backend = args.batched_projection_gemm_backend
     if args.dsa_attention_backend == "cake":
         cake.setup(args, index_heads=config.dsa_indexer_n_heads, index_head_dim=config.dsa_indexer_head_dim)
     _install_patches(config)
