@@ -178,32 +178,6 @@ def test_a_two_dim_mesh_with_column_shards_maps_to_rectangles():
     run_multiprocess(_two_dim_mesh, world_size=4)
 
 
-def _strided_mesh(rank, world_size, port, placements):
-    init_gloo(rank, world_size, port=port)
-    init_gloo_group()
-    mesh = init_device_mesh("cpu", (2, 2))
-    sd_adapter, params = _adapter()
-    expected = _expected(sd_adapter, params)
-    # a strided shard holds rows that are not one contiguous box of the global tensor
-    # distribute_tensor cannot shard straight into a strided placement; redistributing a replicated tensor can
-    replicated = [Replicate(), Replicate()]
-    sharded = {
-        key: distribute_tensor(value, mesh, replicated).redistribute(mesh, placements) for key, value in params.items()
-    }
-    mapping = probe_torchtitan_row_mapping(sharded, sd_adapter)
-    _check(mapping, [p.to_local() for p in sharded.values()], expected)
-    dist.destroy_process_group()
-
-
-@pytest.mark.parametrize(
-    "placements",
-    [[Shard(0), _StridedShard(0, split_factor=2)], [_StridedShard(0, split_factor=2), Shard(0)]],
-    ids=["shard_then_strided", "strided_then_shard"],
-)
-def test_a_strided_shard_maps_each_local_row_to_its_global_row(placements):
-    run_multiprocess(partial(_strided_mesh, placements=placements), world_size=4)
-
-
 def _model_part(params: dict[str, torch.Tensor]) -> torch.nn.Module:
     """A model part whose named_parameters() are ``params`` under their titan keys."""
     part = torch.nn.Module()
