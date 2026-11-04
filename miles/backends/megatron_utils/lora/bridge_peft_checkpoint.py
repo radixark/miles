@@ -167,12 +167,16 @@ class MegatronBridgeCheckpointLoader:
         names = ["model"] if len(chunks) == 1 else [f"model{i}" for i in range(len(chunks))]
         config, metadata, model_state_dicts, adapter, base_dir = self._read_source(path, chunks)
         self._check_torch_dist_base(path, chunks, base_dir)
-        self._checked = (path, names, chunks, self._requested_state(path, names, model_state_dicts, adapter, metadata))
+        self._check_adapter_keys(path, adapter)
+        self._checked = (path, names, chunks, model_state_dicts, adapter, metadata)
         return replace(self._run, lora_alpha=float(config["peft"]["alpha"]))
 
     def load(self, path: Path) -> None:
-        checked_path, names, chunks, requested = self._checked
+        checked_path, names, chunks, model_state_dicts, adapter, metadata = self._checked
         assert checked_path == path, f"load({path}) after checking {checked_path}"
+        requested = dict(zip(names, adapter, strict=True))
+        if self._load_optimizer:
+            requested["optimizer"] = self._optimizer_state_to_load(names, model_state_dicts, metadata)
         self._load(path, names, chunks, requested)
         # collective; asserts each bf16 adapter parameter is its fp32 master
         self._members.export_adapter_state(0)
@@ -215,13 +219,12 @@ class MegatronBridgeCheckpointLoader:
         if base_dir is not None:
             assert_same_base_as_torch_dist(str(path), chunks, base_dir)
 
-    def _requested_state(self, path: Path, names, model_state_dicts, adapter, metadata) -> dict:
-        """Collective: the state to load, after checking the source holds exactly this run's adapters."""
+    def _check_adapter_keys(self, path: Path, adapter) -> None:
+        """Collective: the source holds exactly this run's adapters."""
         # pipeline stages hold different layers; the checkpoint holds them all
         expected = [None] * dist.get_world_size()
         dist.all_gather_object(expected, {t.key for sd in adapter for t in nested_values(sd)}, group=gloo_group())
         expected = set().union(*expected)
-        requested = dict(zip(names, adapter, strict=True))
         error = None
         try:
             saved = {
@@ -232,14 +235,29 @@ class MegatronBridgeCheckpointLoader:
             assert (
                 expected == saved
             ), f"{path} holds other adapters than this run's model, e.g. {sorted(expected ^ saved)[:3]}"
-            if self._load_optimizer:
-                requested["optimizer"] = self._optimizer.sharded_state_dict(
-                    dict(zip(names, model_state_dicts, strict=True)), is_loading=True, metadata=metadata
-                )
         except Exception as exc:
             error = exc
         raise_if_any_rank_failed(error)
-        return requested
+
+    def _optimizer_state_to_load(self, names, model_state_dicts, metadata) -> dict:
+        """Collective: the DistributedOptimizer's sharded state to load into, built once its offloaded state exists."""
+        state, error = None, None
+        try:
+            # lora.checkpoint imports this module
+            from miles.backends.megatron_utils.lora.checkpoint import _distributed_optimizers, _init_zero_hdo_state
+
+            for sub in _distributed_optimizers(self._optimizer):
+                # building it runs Megatron's load_state_dict, whose dummy_step on an empty HDO state is a real Adam
+                # step on random gradients
+                if isinstance(sub.optimizer, HybridDeviceOptimizer) and not sub.optimizer.state:
+                    _init_zero_hdo_state(sub.optimizer)
+            state = self._optimizer.sharded_state_dict(
+                dict(zip(names, model_state_dicts, strict=True)), is_loading=True, metadata=metadata
+            )
+        except Exception as exc:
+            error = exc
+        raise_if_any_rank_failed(error)
+        return state
 
     def _load(self, path: Path, names, chunks, requested: dict) -> None:
         """Collective: loads the adapters, and the Adam state or masters re-cast from them."""
@@ -263,13 +281,6 @@ class MegatronBridgeCheckpointLoader:
         run_hyperparameters = [
             {k: v for k, v in g.items() if k not in ("params", "step")} for g in self._optimizer.param_groups
         ]
-        # lora.checkpoint imports this module
-        from miles.backends.megatron_utils.lora.checkpoint import _distributed_optimizers, _init_zero_hdo_state
-
-        for sub in _distributed_optimizers(self._optimizer):
-            # on an empty HDO state Megatron's load_state_dict would run dummy_step, a real Adam step
-            if isinstance(sub.optimizer, HybridDeviceOptimizer) and not sub.optimizer.state:
-                _init_zero_hdo_state(sub.optimizer)
         try:
             self._optimizer.load_state_dict(state)
         except KeyError as exc:
