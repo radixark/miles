@@ -11,7 +11,6 @@ from miles.utils.profile_utils import TrainProfiler
 
 
 def _lora_actor_module(monkeypatch, *, model=None, checkpoint=None):
-    """The LoRA actor module with its heavy dependencies stubbed."""
     dependencies = {
         "miles.backends.megatron_utils.actor": {"MegatronTrainRayActor": object},
         "miles.backends.megatron_utils.lora": {"checkpoint": checkpoint, "model": model},
