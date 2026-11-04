@@ -13,11 +13,7 @@ import torch
 import torch.distributed as dist
 
 from miles.backends.megatron_utils.lora.utils import adapter_named_parameters
-from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
-    LocalShardSpec,
-    gloo_group,
-    raise_if_any_rank_failed,
-)
+from miles.backends.training_utils.checkpoint.adapter.adapter_state import gloo_group, raise_if_any_rank_failed
 from miles.backends.training_utils.checkpoint.adapter.key_mapping import (
     HfKey,
     fused_components,
@@ -220,18 +216,18 @@ class BridgeAdapterSlots(ProbedAdapterSlots):
 
     def __init__(self, model, iterator, targets: HfLoraTargets, *, multi_lora: bool):
         """Collective: probes the row mapping now, while nothing else touches the parameters."""
+        # the probe's name mapping and export read these before the base is set up
         self._model, self._iterator, self.targets, self._multi_lora = model, iterator, targets, multi_lora
-        self._specs: dict[tuple[int, int | None, frozenset[int] | None], list[LocalShardSpec]] = {}
         unexported = self._unexported_elements()
         # every slot has the same layout
-        self.row_mapping = probe_bridge_row_mapping(
+        row_mapping = probe_bridge_row_mapping(
             model, self.slot_parameters(0), self._export_probe, targets, self._map_name, unexported
         )
+        super().__init__(row_mapping, targets, iterator)
         # agreed by every rank: a dp-zero gather that skips the data also skips its collective
         leaves_out = torch.tensor([int(unexported is not None and unexported.numel() > 0)])
         dist.all_reduce(leaves_out, op=dist.ReduceOp.MAX, group=gloo_group())
         self.load_overwrites_every_element = not leaves_out.item()
-        self.head_rows = self._head_rows()
 
     def _map_name(self, name: str) -> HfKey:
         return map_peft_keys_to_hf_keys(name)

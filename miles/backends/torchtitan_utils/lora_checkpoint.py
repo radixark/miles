@@ -108,13 +108,10 @@ class TorchtitanAdapterSlots(ProbedAdapterSlots):
 
     def __init__(self, model_parts, iterator, sd_adapter, targets: HfLoraTargets):
         """Collective: probes the row mapping."""
-        self._iterator, self.targets = iterator, targets
-        self._specs = {}
         self._params = {
             key: param for part in model_parts for key, param in part.named_parameters() if is_adapter_key(key)
         }
-        self.row_mapping = probe_torchtitan_row_mapping(self._params, sd_adapter)
-        self.head_rows = self._head_rows()
+        super().__init__(probe_torchtitan_row_mapping(self._params, sd_adapter), targets, iterator)
 
     def slot_parameters(self, slot: int) -> list[torch.Tensor]:
         assert slot == 0, "the torchtitan backend trains a single LoRA adapter"

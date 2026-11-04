@@ -74,10 +74,12 @@ def _rank_axis(key: str, ndim: int) -> int:
 
 
 class ProbedAdapterSlots:
-    """Subclasses set ``row_mapping``, ``targets``, ``_iterator``, ``_specs`` and define ``slot_parameters``."""
+    """Subclasses probe their ``row_mapping``, pass it here and define ``slot_parameters``."""
 
-    row_mapping: RowMapping
-    targets: HfLoraTargets
+    def __init__(self, row_mapping: RowMapping, targets: HfLoraTargets, iterator):
+        self.row_mapping, self.targets, self._iterator = row_mapping, targets, iterator
+        self._specs: dict[tuple[int, int | None, frozenset[int] | None], list[LocalShardSpec]] = {}
+        self.head_rows = self._head_rows()
 
     def slot_parameters(self, slot: int) -> list[torch.Tensor]:
         raise NotImplementedError
