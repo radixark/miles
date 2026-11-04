@@ -63,6 +63,7 @@ from miles.utils.rollout_topk_logprobs import validate_rollout_topk_logprobs_arg
 from miles.utils.run_uuid import generate_run_uuid, validate_run_uuid
 from miles.utils.score_centering import validate_score_centering_args
 from miles.utils.tracking_utils.ci_history import RECORD_DIR_ENV
+from miles.utils.workers.argv_utils import with_relax_parser_required_args, with_suppressed_parser_help
 from miles.utils.workers.naming import DEPLOY_INSTANCE_ID_MAX_LENGTH, DNS_LABEL_PATTERN
 from miles.utils.workers.types import ClusterBackend, DeployComponent, WorkerCommBackend, resolve_worker_comm_backend
 from miles.utils.workers.worker_provider.static import parse_host_and_port
@@ -70,6 +71,8 @@ from miles.utils.workers.worker_provider.static import parse_host_and_port
 logger = logging.getLogger(__name__)
 
 LINEAR_ATTENTION_BACKENDS = ("fla", "flashqla")
+# Backend arguments whose 'cake' choice runs a kernel from the miles-ext-kernels submodule.
+CAKE_BACKEND_ARGS = ("linear_attention_backend", "dsa_attention_backend", "miles_dsa_topk_backend")
 LINEAR_ATTENTION_INPUT_NORMS = ("te", "hf")
 
 FULLY_ASYNC_ROLLOUT_PATH = "miles.rollout.fully_async_rollout.FullyAsyncRolloutFn"
@@ -174,6 +177,19 @@ def _resolve_rollout_functions(args) -> None:
     args.eval_uses_snapshots = args.eval_num_gpus > 0 or checkpoint_backend
 
 
+def _add_miles_ext_kernels_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    try:
+        with with_relax_parser_required_args(parser), with_suppressed_parser_help(parser):
+            args_partial, _ = parser.parse_known_args()
+    except SystemExit:
+        return parser
+    if args_partial.use_miles_ext_kernels:
+        import miles_ext_kernels
+
+        miles_ext_kernels.add_arguments(parser)
+    return parser
+
+
 def get_miles_extra_args_provider(
     add_custom_arguments: Callable[[argparse.ArgumentParser], argparse.ArgumentParser] | None = None,
 ) -> Callable[[argparse.ArgumentParser], argparse.ArgumentParser]:
@@ -185,6 +201,7 @@ def get_miles_extra_args_provider(
             parser = add_custom_arguments(parser)
 
         AllConfig.add_arguments(parser=parser)
+        parser = _add_miles_ext_kernels_arguments(parser)
         parser = add_user_provided_function_arguments(parser, modify_args=resolve_rollout_function_paths)
 
         reset_arg(
@@ -892,6 +909,17 @@ def _resolve_run_uuid(args: argparse.Namespace) -> str:
     return generate_run_uuid()
 
 
+def validate_miles_ext_kernels_args(args) -> None:
+    for name in CAKE_BACKEND_ARGS:
+        backend = getattr(args, name)  # config-access-exempt: backend flags named in CAKE_BACKEND_ARGS
+        if backend == "cake" and not args.use_miles_ext_kernels:
+            raise ValueError(f"--{name.replace('_', '-')} cake requires --use-miles-ext-kernels")
+    if args.use_miles_ext_kernels:
+        import miles_ext_kernels
+
+        miles_ext_kernels.validate_args(args)
+
+
 def validate_log_probs_backend_args(args) -> None:
     """Reject settings the fused log-prob op does not cover, at startup rather than mid-run."""
     if args.log_probs_backend != "fused":
@@ -1007,6 +1035,7 @@ def miles_validate_args(args):
     if mode == "broadcast_packed" and (args.train_backend != "megatron" or args.colocate):
         raise ValueError("broadcast_packed requires Megatron non-colocated weight transfer")
     validate_dashboard_args(args)
+    validate_miles_ext_kernels_args(args)
 
     args.ft_components = _resolve_ft_components(args)
     assert "rollout" not in args.ft_components or supports_partial_target_weight_update(args), (
