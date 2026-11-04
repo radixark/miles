@@ -269,8 +269,13 @@ class LegacyTinkerCheckpointLoader:
     def parametrization(self, path: Path) -> AdapterParametrization:
         return replace(self._run, lora_alpha=_read_legacy_meta(path, self._run)["lora_alpha"])
 
-    def load(self, path: Path) -> None:
-        _load_legacy_slot(self._model, self._optimizer, str(path), self._load_optimizer)
+    def prepare(self, path: Path) -> tuple[Path, dict]:
+        # a rank that exposes no slot tensors fails here, before any rank enters the collective load
+        return path, _slot_weights_sharded_state_dict(self._model, self._optimizer.slot)
+
+    def apply(self, prepared: tuple[Path, dict]) -> None:
+        path, weights = prepared
+        _load_legacy_slot(weights, self._optimizer, str(path), self._load_optimizer)
 
 
 # a gateway-wide layout setting -> the launch flag that restores a checkpoint saved under `value`
@@ -322,8 +327,7 @@ def _canonicalize_slot_keys(tree: dict, slot: int) -> dict:
     return tree
 
 
-def _load_legacy_slot(model: Sequence[DDP], slot_optimizer: SlotOptimizer, path: str, load_optimizer: bool) -> None:
-    weights = _slot_weights_sharded_state_dict(model, slot_optimizer.slot)
+def _load_legacy_slot(weights: dict, slot_optimizer: SlotOptimizer, path: str, load_optimizer: bool) -> None:
     shells = {_WEIGHTS_KEY: weights, _OPTIM_KEY: slot_optimizer.sharded_state(weights, is_loading=True)}
     _canonicalize_slot_keys(shells, slot_optimizer.slot)
 

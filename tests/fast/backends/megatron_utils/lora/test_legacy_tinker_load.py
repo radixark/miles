@@ -119,9 +119,11 @@ def test_a_legacy_checkpoint_is_read_before_anything_is_loaded_into_the_slot(tmp
     (tmp_path / "META.json").write_text('{"base_model": "base", "lora_rank": 4, "lora_alpha": 16.0}')
     loaded = []
     monkeypatch.setattr(checkpoint, "_load_legacy_slot", lambda *args: loaded.append(args))
-    loader = checkpoint.LegacyTinkerCheckpointLoader("model", "optimizer", run, load_optimizer=True)
+    monkeypatch.setattr(checkpoint, "_slot_weights_sharded_state_dict", lambda model, slot: {"w": (model, slot)})
+    loader = checkpoint.LegacyTinkerCheckpointLoader("model", SimpleNamespace(slot=2), run, load_optimizer=True)
 
     assert loader.parametrization(tmp_path) == replace(run, lora_alpha=16.0)
-    assert loaded == []
-    loader.load(tmp_path)
-    assert loaded == [("model", "optimizer", str(tmp_path), True)]
+    prepared = loader.prepare(tmp_path)
+    assert loaded == [], "reading the source and its shells loads nothing"
+    loader.apply(prepared)
+    assert loaded == [({"w": ("model", 2)}, loader._optimizer, str(tmp_path), True)]
