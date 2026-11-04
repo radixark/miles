@@ -48,8 +48,8 @@ from miles.backends.training_utils.checkpoint.adapter.readers import (
     ExternalWeightsReader,
     MilesAdapterDirReader,
     PeftAdapterReader,
-    _collapse_shared_lora_a,
     classify_adapter_source,
+    collapse_shared_lora_a,
 )
 from miles.utils.lora.hf_lora_targets import HfLoraTargets
 
@@ -64,6 +64,15 @@ class HeadRows:
 
     key: str  # the HF key adapter_state/ holds it under, e.g. "lm_head.lora_B"
     max_source_rows: int
+
+
+class InModelLoader(Protocol):
+    """A source a backend reads straight into its model, in the run's own parametrization."""
+
+    # read before anything is loaded, so a refused source leaves the model as it was
+    def parametrization(self, path: Path) -> AdapterParametrization: ...
+
+    def load(self, path: Path) -> None: ...
 
 
 class AdapterCheckpointMembers(Protocol):
@@ -155,15 +164,16 @@ def _hf_keyed_bf16_adapter(
 ) -> dict[str, torch.Tensor]:
     weights, fused_groups = map_named_tensors_to_hf_keys(named_tensors, _hf_key_mapper(members, targets), targets)
     # the export names a shared A once per module; the writers expect it once per group
-    return _collapse_shared_lora_a(weights, parametrization, fused_groups)
+    return collapse_shared_lora_a(weights, parametrization, fused_groups)
 
 
 def _stacked_expert_keys(named_tensors: list[tuple[str, torch.Tensor]], map_name) -> frozenset[str]:
-    """The HF keys the export names as one stacked experts tensor: the base checkpoint's packed form."""
+    """The HF keys the export names as one stacked experts tensor: the base checkpoint's packed form. A shared-outer
+    side also comes unindexed, as ``[1, ...]``; it is one tensor for every expert, not a stack, so it is left out."""
     keys = set()
     for name, tensor in named_tensors:
         hf_key = map_name(name)
-        if hf_key.expert_index is None and ".experts." in hf_key.key and tensor.dim() == 3:
+        if hf_key.expert_index is None and ".experts." in hf_key.key and tensor.dim() == 3 and tensor.shape[0] > 1:
             keys.add(hf_key.key)
     return frozenset(keys)
 
@@ -445,7 +455,7 @@ def load_adapter_dir(
     targets: HfLoraTargets,
     *,
     load_optimizer: bool,
-    in_model_loaders_by_kind: Mapping[AdapterSourceKind, Callable[[Path], AdapterParametrization]] | None = None,
+    in_model_loaders_by_kind: Mapping[AdapterSourceKind, InModelLoader] | None = None,
 ) -> AdapterParametrization:
     """Load any recognized source into ``slot``; returns the source parametrization.
 
@@ -466,15 +476,20 @@ def load_adapter_dir(
         error = exc
     raise_if_any_rank_failed(error)
     if kind.is_read_into_model():
-        source = None
+        loader, source = in_model_loaders_by_kind[kind], None
         try:
-            source = _with_run_alpha_if_unknown(in_model_loaders_by_kind[kind](path), run)
+            source = _with_run_alpha_if_unknown(loader.parametrization(path), run)
             steps = plan_parametrization_conversion(source, run, source_dtype=torch.float32)
             # an in-model loader reads straight into the run's parametrization; it cannot convert
             assert not steps, f"{path} needs {steps} to match the run, which an in-model loader cannot do"
             assert_parametrization_matches_run(
                 source, run, steps, load_optimizer=load_optimizer, has_optimizer_state=True
             )
+        except Exception as exc:
+            error = exc
+        raise_if_any_rank_failed(error)
+        try:
+            loader.load(path)
         except Exception as exc:
             error = exc
         raise_if_any_rank_failed(error)

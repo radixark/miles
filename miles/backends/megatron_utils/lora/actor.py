@@ -56,42 +56,33 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
         return result
 
     @with_logs
-    def load_slot(
-        self,
-        slot: int,
-        rank: int,
-        alpha: float,
-        ckpt_path: str | None = None,
-        load_optimizer: bool = True,
-        parametrization_fields: dict | None = None,
-    ) -> dict | None:
-        """A source the slot cannot take is refused before the slot changes, as a user error."""
-        if ckpt_path is not None:
-            assert (
-                parametrization_fields is not None
-            ), "a load from ckpt_path needs the source's parametrization_fields"
+    def load_slot(self, slot: int, rank: int, alpha: float, source: dict | None = None) -> dict | None:
+        """``source``: ``path``, ``load_optimizer`` and the source's ``parametrization_fields``; None starts the slot
+        fresh. A source the slot cannot take is refused before the slot changes, as a user error."""
+        if source is not None:
+            parametrization = self.adapter_slots.parametrization(**source["parametrization_fields"])
             mismatch = lora_checkpoint.find_load_mismatch(
                 self.model,
                 slot,
-                ckpt_path,
-                self.adapter_slots.parametrization(**parametrization_fields),
+                source["path"],
+                parametrization,
                 self.adapter_slots.targets,
-                load_optimizer,
+                source["load_optimizer"],
                 run_shapes=self.adapter_slots.global_shapes(rank),
                 head_rows=self.adapter_slots.head_rows,
             )
             if mismatch is not None:
                 return {"error": mismatch, "error_category": "user"}
         self.slot_optimizers[slot] = lora_model.load_slot(self.args, self.model, slot, rank, alpha)
-        if ckpt_path is not None:
+        if source is not None:
             lora_checkpoint.load_slot(
                 self.model,
                 self._checkpoint_members(),
                 self.slot_optimizers[slot],
-                ckpt_path,
-                self.adapter_slots.parametrization(**parametrization_fields),
+                source["path"],
+                parametrization,
                 self.adapter_slots.targets,
-                load_optimizer,
+                source["load_optimizer"],
             )
         return None
 
@@ -123,12 +114,12 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
             slot
         ), "the gateway and the slot disagree on rank"
         return write_sampler_export(
-            Path(root),
-            name,
-            self.adapter_slots,
-            slot,
-            parametrization,
-            self.adapter_slots.targets,
+            root=Path(root),
+            name=name,
+            members=self.adapter_slots,
+            slot=slot,
+            parametrization=parametrization,
+            targets=self.adapter_slots.targets,
             tenant_digest=tenant_digest,
         )
 

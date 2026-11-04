@@ -47,6 +47,8 @@ from miles.backends.training_utils.checkpoint.adapter.probed_slots import (
     HfPiece,
     ProbedAdapterSlots,
     RowMapping,
+    agreed_row_mapping,
+    finish_local_pieces,
     rectangles,
 )
 from miles.backends.training_utils.checkpoint.adapter.readers import AdapterSourceKind
@@ -72,21 +74,12 @@ def _local_codes(param: torch.Tensor, start: int) -> torch.Tensor:
 def probe_torchtitan_row_mapping(params: Mapping[str, torch.Tensor], sd_adapter) -> RowMapping:
     """Collective. ``params``: the adapter parameters by titan key, in the order their local shards are
     concatenated."""
-    error = None
+    error, pieces, groups, modules = None, [], [], set()
     try:
         pieces, groups, modules = _probe_local(params, sd_adapter)
     except Exception as exc:
         error = exc
-    raise_if_any_rank_failed(error)
-
-    # pipeline stages hold different layers; every rank needs the whole parametrization
-    gathered = [None] * dist.get_world_size()
-    dist.all_gather_object(gathered, (sorted(groups), sorted(modules)), group=gloo_group())
-    return RowMapping(
-        pieces,
-        tuple(sorted({g for rank_groups, _ in gathered for g in rank_groups})),
-        tuple(sorted({m for _, rank_modules in gathered for m in rank_modules})),
-    )
+    return agreed_row_mapping(error, pieces, groups, modules)
 
 
 def _probe_local(
@@ -123,11 +116,7 @@ def _probe_local(
                     HfPiece(hf_key, tuple(codes.shape), tuple(s.start for s in box), codes[box].clone())
                     for box in rectangles(hf_key, mine)
                 ]
-    covered = torch.zeros(start, dtype=torch.bool)
-    for piece in pieces:
-        covered[piece.local_elements.flatten()] = True
-    assert covered.all(), f"to_hf does not reach {int((~covered).sum())} of this rank's adapter elements"
-    return pieces, groups, modules
+    return finish_local_pieces(pieces, start), groups, modules
 
 
 class TorchtitanAdapterSlots(ProbedAdapterSlots):
@@ -137,13 +126,10 @@ class TorchtitanAdapterSlots(ProbedAdapterSlots):
 
     def __init__(self, model_parts, iterator, sd_adapter, targets: HfLoraTargets):
         """Collective: probes the row mapping."""
-        self._iterator, self.targets = iterator, targets
-        self._specs = {}
         self._params = {
             key: param for part in model_parts for key, param in part.named_parameters() if is_adapter_key(key)
         }
-        self.row_mapping = probe_torchtitan_row_mapping(self._params, sd_adapter)
-        self.head_rows = self._head_rows()
+        super().__init__(probe_torchtitan_row_mapping(self._params, sd_adapter), targets, iterator)
 
     @property
     def parameters(self) -> dict[str, torch.nn.Parameter]:
@@ -283,7 +269,8 @@ class TorchtitanCheckpointLoader:
         dcp.load(tensors, checkpoint_id=path, no_dist=True)
         return {name: t for name, t in self._sd_adapter.to_hf(tensors).items() if is_fingerprint_tensor(name)}
 
-    def __call__(self, path: Path) -> AdapterParametrization:
+    def parametrization(self, path: Path) -> AdapterParametrization:
+        """Collective: every check against the source, reading it only; ``load`` then loads it."""
         metadata, error = None, None
         try:
             metadata = dcp.FileSystemReader(path).read_metadata().state_dict_metadata
@@ -319,7 +306,7 @@ class TorchtitanCheckpointLoader:
         except Exception as exc:
             error = exc
         raise_if_any_rank_failed(error)
-        # agreed before the collective dcp.load below: e.g. one node's HF cache may lack --hf-checkpoint
+        # agreed before the collective dcp.load in load: e.g. one node's HF cache may lack --hf-checkpoint
         try:
             source_tensors = self._base_fingerprint_tensors(path, metadata)
             hf_dir = resolve_hf_dir(self._run.base_model)
@@ -330,7 +317,13 @@ class TorchtitanCheckpointLoader:
         except Exception as exc:
             error = exc
         raise_if_any_rank_failed(error)
+        self._checked = (path, metadata)
+        return replace(self._run, lora_alpha=None)
 
+    def load(self, path: Path) -> None:
+        checked_path, metadata = self._checked
+        assert checked_path == path, f"load({path}) after checking {checked_path}"
+        params = self._slots.parameters
         states = self._members.adam_states()
         loaded = dict(params)
         if self._load_optimizer:
@@ -353,7 +346,6 @@ class TorchtitanCheckpointLoader:
         dist.all_gather_object(steps, {int(state["step"]) for state in states}, group=gloo_group())
         steps = set().union(*steps)
         assert len(steps) == 1, f"{path}'s adapter parameters disagree on the AdamW step: {steps}"
-        return replace(self._run, lora_alpha=None)
 
 
 def load_lr_schedulers(lr_schedulers, state: dict) -> None:
@@ -409,6 +401,8 @@ class TorchtitanLoraCheckpoint:
             "iteration": iteration,
             "step": self._trainer.step,
             "first_rollout": self._first_rollout,
+            # a run with these steps per rollout resumes the recorded step exactly, even off the grid
+            "steps_per_rollout": self._steps_per_rollout,
             "lr_scheduler": self._trainer.engine.optim.lr_schedulers.state_dict(),
         }
 
@@ -482,8 +476,12 @@ class TorchtitanLoraCheckpoint:
     def _adopt_torchtitan_dir_schedule(self, path: Path, training_state: dict, load_optimizer: bool) -> dict:
         iteration = training_state["iteration"]
         self._first_rollout = training_state["first_rollout"]
+        # compacted rollouts train a data-dependent number of steps each, so a run's own dir may sit off the grid
+        same_steps_per_rollout = training_state.get("steps_per_rollout") == self._steps_per_rollout
         # the schedule is restored by step: on another --global-batch-size grid it would not match the rollout
         grid_step = 0 if iteration is None else (iteration + 1 - self._first_rollout) * self._steps_per_rollout
+        if same_steps_per_rollout:
+            grid_step = training_state["step"]
         assert training_state["step"] == grid_step or not load_optimizer, (
             f"{path} is at step {training_state['step']} after iteration {iteration}, but this run takes "
             f"{self._steps_per_rollout} steps per rollout (step {grid_step}): keep its rollout and batch sizes, "
@@ -517,7 +515,7 @@ class TorchtitanLoraCheckpoint:
             )
         else:
             unmapped = None
-        # weights only need no schedule: start it fresh, as for a DCP off the rollout grid
+        # weights only need no schedule: load them and start the schedule fresh
         assert unmapped is None or not load_optimizer, (
             f"{path} cannot resume this run's schedule: {unmapped}. Keep its rollout and batch sizes, or pass "
             "--no-load-optim to load its weights and start the schedule fresh"

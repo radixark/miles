@@ -75,7 +75,9 @@ def _optimizer(calls):
 
 def _load(path, chunks, calls, *, load_optimizer):
     loader = LegacyRankShardLoader(chunks, _optimizer(calls), RUN, load_optimizer, precision_aware=False)
-    return loader(path)
+    parametrization = loader.parametrization(path)
+    loader.load(path)
+    return parametrization
 
 
 def test_virtual_pipeline_chunks_restore_their_own_adapters_bitwise(tmp_path):
@@ -140,6 +142,17 @@ def test_a_shard_that_does_not_match_the_adapter_fails(tmp_path):
     )
 
     with pytest.raises(RuntimeError, match=r"missing=\['adapter.lora_B'\], unexpected=\['stale_lora_C'\]"):
+        _load(tmp_path, [_Chunk()], [], load_optimizer=False)
+
+
+def test_a_shard_tensor_of_another_shape_fails(tmp_path):
+    """copy_ would broadcast a shared-outer [1, ...] into a per-expert [E, ...] parameter without a word."""
+    torch.save(
+        {"adapter.lora_A": torch.ones(1, 2), "adapter.lora_B": torch.ones(1, 1)},
+        tmp_path / "adapter_megatron_rank0.pt",
+    )
+
+    with pytest.raises(RuntimeError, match=r"adapter.lora_B: saved \(1, 1\) != parameter \(2, 1\)"):
         _load(tmp_path, [_Chunk()], [], load_optimizer=False)
 
 

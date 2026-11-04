@@ -25,11 +25,16 @@ from miles.backends.training_utils.checkpoint.adapter.parametrization_conversion
     apply_parametrization_conversion,
     plan_parametrization_conversion,
 )
-from miles.utils.lora.hf_lora_targets import HfLoraTargets
+from miles.utils.lora.hf_lora_targets import GDN_IN_PROJ_COMPONENTS_BY_MODULE, HfLoraTargets
 from miles.utils.lora.utils import get_adapter_target_modules, save_adapter_to_disk
 
 if TYPE_CHECKING:
     import pyrage
+
+_FUSED_MODULE_BY_COMPONENTS = {
+    components: module for module, components in GDN_IN_PROJ_COMPONENTS_BY_MODULE.items() if len(components) > 1
+}
+_FUSED_COMPONENTS = {component for components in _FUSED_MODULE_BY_COMPONENTS for component in components}
 
 
 def _expand_shared_lora_a(
@@ -104,6 +109,14 @@ def write_peft_adapter(
     weights = apply_parametrization_conversion(weights, steps)
     tensors = {}
     expanded = _expand_shared_lora_a(weights, per_expert, targets)
+    # only components sharing one A fuse back to the HF module; HF has no module for a component on its own
+    unfused = sorted(
+        {k.rsplit(".", 1)[0] for k in expanded if k.rsplit(".", 1)[0].rpartition(".")[2] in _FUSED_COMPONENTS}
+    )
+    assert not unfused, (
+        f"{unfused} are components of an HF-fused module with their own lora_A, which a PEFT adapter cannot name; "
+        "train them with one shared lora_A (--lora-type lora)"
+    )
     packed = _packed_experts(expanded)
     for key, value in expanded.items():
         value = value.to(torch.bfloat16).contiguous()

@@ -252,25 +252,8 @@ class MilesBackend:
     async def trainer_dead(self) -> bool:
         return await self.trainer.has_errored_cell()
 
-    async def load_slot(
-        self,
-        slot: int,
-        rank: int,
-        alpha: float,
-        ckpt_path: str | None = None,
-        load_optimizer: bool = True,
-        parametrization_fields: dict | None = None,
-    ) -> dict | None:
-        return _slot_failure(
-            await self.trainer.load_slot(
-                slot,
-                rank,
-                alpha,
-                ckpt_path=ckpt_path,
-                load_optimizer=load_optimizer,
-                parametrization_fields=parametrization_fields,
-            )
-        )
+    async def load_slot(self, slot: int, rank: int, alpha: float, source: dict | None = None) -> dict | None:
+        return _slot_failure(await self.trainer.load_slot(slot, rank, alpha, source=source))
 
     async def unload_slot(self, slot: int) -> dict | None:
         return _slot_failure(await self.trainer.unload_slot(slot))

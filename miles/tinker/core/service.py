@@ -566,9 +566,11 @@ class TinkerService:
             record.slot,
             record.lora_rank,
             source["lora_alpha"],
-            ckpt_path=os.path.realpath(ckpt_path),
-            load_optimizer=payload["optimizer"],
-            parametrization_fields=fields,
+            source={
+                "path": os.path.realpath(ckpt_path),
+                "load_optimizer": payload["optimizer"],
+                "parametrization_fields": fields,
+            },
         )
         if failure is not None:
             return failure

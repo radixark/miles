@@ -101,6 +101,8 @@ def _whole(rank, world_size, port):
         + [f"{mlp}.{m}_proj.lora_B" for m in ("gate", "up")]
     )
     _check(mapping, list(params.values()), _expected(sd_adapter, params))
+    # one index per local element stays resident for the run
+    assert {p.local_elements.dtype for p in mapping.pieces} == {torch.int32}
     dist.destroy_process_group()
 
 
@@ -159,7 +161,10 @@ def _load_dcp(tmp_path, saved: dict) -> TorchtitanCheckpointLoader:
         patch.object(lora_checkpoint, "hf_fingerprint_tensors", return_value={}),
         patch.object(lora_checkpoint, "assert_same_base_tensors"),
     ):
-        loader(path)
+        loader.parametrization(path)
+        # the checks read the source only; nothing is loaded until load_adapter_dir accepted it
+        assert all(torch.equal(param, torch.zeros(2, 2)) for param in params.values())
+        loader.load(path)
     for key, param in params.items():
         assert torch.equal(param, saved[key])
     return loader
@@ -194,7 +199,7 @@ def _base_check_worker(rank: int, world_size: int, port: int, path) -> None:
         patch.object(lora_checkpoint, "assert_same_base_tensors"),
         pytest.raises(RuntimeError, match="rank 1: .*has no local HF weights"),
     ):
-        loader(path)
+        loader.parametrization(path)
     dist.destroy_process_group()
 
 
@@ -354,6 +359,23 @@ def test_a_torchtitan_adapter_dir_off_this_runs_rollout_grid_is_refused(tmp_path
             tmp_path,
             training_state={"iteration": 9, "step": 20, "first_rollout": 0, "lr_scheduler": {"last_epoch": 20}},
         )
+
+
+def test_a_torchtitan_adapter_dir_of_this_runs_steps_per_rollout_resumes_any_step(tmp_path):
+    """Compacted rollouts train a data-dependent number of steps each: the run's own dir sits off the grid, but its
+    recorded step and schedule are exact for a run that configures the same steps per rollout."""
+    schedule = {"last_epoch": 21}
+    restored = _restore(
+        tmp_path,
+        training_state={
+            "iteration": 4,
+            "step": 21,
+            "first_rollout": 0,
+            "steps_per_rollout": _STEPS_PER_ROLLOUT,
+            "lr_scheduler": schedule,
+        },
+    )
+    assert (restored.iteration, restored.step, restored.lr_states) == (4, 21, [schedule])
 
 
 def test_a_torchtitan_adapter_dir_off_this_runs_rollout_grid_loads_its_weights_and_starts_fresh(tmp_path):
@@ -672,18 +694,31 @@ def test_pipeline_stages_share_the_runs_groups_and_modules():
     run_multiprocess(_pipeline_stages)
 
 
-def test_torchtitan_slots_declare_a_trained_heads_rows():
+def _trained_head(rank, world_size, port):
     from dataclasses import replace
-    from types import SimpleNamespace
 
     from miles.backends.torchtitan_utils.lora_checkpoint import TorchtitanAdapterSlots
     from miles.backends.training_utils.checkpoint.adapter.adapter_dir import HeadRows
 
-    slots = TorchtitanAdapterSlots.__new__(TorchtitanAdapterSlots)
-    slots.targets = replace(get_hf_lora_targets({"model_type": "qwen3", "num_hidden_layers": 1}), vocab_size=12)
-    head_b = f"{slots.targets.unembed[0]}.lora_B"
-    slots.row_mapping = SimpleNamespace(pieces=[SimpleNamespace(key=head_b, global_shape=(10, 2))])
-    assert slots._head_rows() == HeadRows(head_b, max_source_rows=12)
+    init_gloo(rank, world_size, port=port)
+    init_gloo_group()
+    # an untied flavor: a tied one's state dict adapter maps lm_head to nothing
+    model = build_model_config("8B", parallelism=ParallelismConfig(), seq_len=4096, attn_backend="flex")
+    sd_adapter = model._owner.state_dict_adapter_cls(model, None)
+    part = torch.nn.Module()
+    part.lm_head = torch.nn.Module()
+    part.lm_head.lora_a = torch.nn.Linear(model.dim, 4, bias=False)
+    part.lm_head.lora_b = torch.nn.Linear(4, model.vocab_size, bias=False)
+    targets = replace(_TARGETS, vocab_size=model.vocab_size + 2)
+
+    slots = TorchtitanAdapterSlots([part], None, sd_adapter, targets)
+
+    assert slots.head_rows == HeadRows("lm_head.lora_B", max_source_rows=model.vocab_size + 2)
+    dist.destroy_process_group()
+
+
+def test_torchtitan_slots_declare_a_trained_heads_rows():
+    run_multiprocess(_trained_head, world_size=1)
 
 
 def test_a_torchtitan_run_records_its_bases_fingerprint_and_path_as_given(tmp_path):

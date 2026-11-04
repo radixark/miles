@@ -244,6 +244,7 @@ def _load_model_state_with(
     megatron_to_hf_mode: str = "core",
     **trainer_values,
 ) -> "LoadCheckpointOutput":
+    from miles.backends.megatron_utils.lora.checkpoint import AdapterRestore
     from miles.backends.megatron_utils.model import load_model_state
 
     load_dir = tmp_path / "ckpt"
@@ -263,7 +264,7 @@ def _load_model_state_with(
         stack.enter_context(
             patch(
                 "miles.backends.megatron_utils.model.restore_single_lora",
-                return_value=(adapter_iteration, adapter_scheduler_restored, adapter_first_rollout),
+                return_value=AdapterRestore(adapter_iteration, adapter_scheduler_restored, adapter_first_rollout),
             )
         )
         _patch_initialize_side_effects(stack)

@@ -175,6 +175,19 @@ def test_a_rank0_prepare_failure_fails_every_rank_instead_of_hanging():
     assert not hung and process.exitcode == 0
 
 
+class InModelLoaderStub:
+    """An in-model source with a fixed parametrization; records what it loads."""
+
+    def __init__(self, parametrization):
+        self._parametrization, self.loaded = parametrization, []
+
+    def parametrization(self, path):
+        return self._parametrization(path) if callable(self._parametrization) else self._parametrization
+
+    def load(self, path):
+        self.loaded.append(path)
+
+
 def test_an_in_model_source_without_alpha_takes_the_runs(tmp_path):
     torch.distributed.checkpoint.save(
         {"model.layers.0.attention.wq.lora_a.weight": torch.zeros(2)}, checkpoint_id=tmp_path, no_dist=True
@@ -186,7 +199,9 @@ def test_an_in_model_source_without_alpha_takes_the_runs(tmp_path):
         RUN,
         TARGETS,
         load_optimizer=True,
-        in_model_loaders_by_kind={AdapterSourceKind.TORCHTITAN_CHECKPOINT: lambda path: replace(RUN, lora_alpha=None)},
+        in_model_loaders_by_kind={
+            AdapterSourceKind.TORCHTITAN_CHECKPOINT: InModelLoaderStub(replace(RUN, lora_alpha=None))
+        },
     )
     assert source.lora_alpha == RUN.lora_alpha
 
@@ -249,7 +264,9 @@ def _every_rank_refuses_the_same_source(rank, world_size, port, *, root):
             RUN,
             TARGETS,
             load_optimizer=True,
-            in_model_loaders_by_kind={AdapterSourceKind.TORCHTITAN_CHECKPOINT: _refused_by_an_in_model_loader},
+            in_model_loaders_by_kind={
+                AdapterSourceKind.TORCHTITAN_CHECKPOINT: InModelLoaderStub(_refused_by_an_in_model_loader)
+            },
         )
     assert str(refused.value) == "adapter checkpoint failed: rank 0,1,2: ValueError: base mismatch"
     dist.destroy_process_group()
@@ -290,6 +307,7 @@ def test_an_in_model_source_with_another_parametrization_is_refused(tmp_path):
         {"model.layers.0.attention.wq.lora_a.weight": torch.zeros(2)}, checkpoint_id=tmp_path, no_dist=True
     )
     shared = replace(RUN, target_modules=(MODULE, "m.k_proj"), shared_lora_a_groups=((MODULE, "m.k_proj"),))
+    loader = InModelLoaderStub(shared)
     with pytest.raises(RuntimeError, match="cannot do"):
         load_adapter_dir(
             tmp_path,
@@ -298,8 +316,38 @@ def test_an_in_model_source_with_another_parametrization_is_refused(tmp_path):
             replace(shared, shared_lora_a_groups=()),
             TARGETS,
             load_optimizer=False,
-            in_model_loaders_by_kind={AdapterSourceKind.TORCHTITAN_CHECKPOINT: lambda path: shared},
+            in_model_loaders_by_kind={AdapterSourceKind.TORCHTITAN_CHECKPOINT: loader},
         )
+    assert loader.loaded == [], "a refused source must not touch the model"
+
+
+def test_an_in_model_source_is_loaded_only_after_its_parametrization_is_accepted(tmp_path):
+    torch.distributed.checkpoint.save(
+        {"model.layers.0.attention.wq.lora_a.weight": torch.zeros(2)}, checkpoint_id=tmp_path, no_dist=True
+    )
+    refused = InModelLoaderStub(replace(RUN, lora_rank=RUN.lora_rank + 1))
+    with pytest.raises(RuntimeError, match="adapter rank"):
+        load_adapter_dir(
+            tmp_path,
+            FakeMembers(),
+            0,
+            RUN,
+            TARGETS,
+            load_optimizer=False,
+            in_model_loaders_by_kind={AdapterSourceKind.TORCHTITAN_CHECKPOINT: refused},
+        )
+    assert refused.loaded == [], "a refused source must not touch the model"
+    accepted = InModelLoaderStub(RUN)
+    load_adapter_dir(
+        tmp_path,
+        FakeMembers(),
+        0,
+        RUN,
+        TARGETS,
+        load_optimizer=False,
+        in_model_loaders_by_kind={AdapterSourceKind.TORCHTITAN_CHECKPOINT: accepted},
+    )
+    assert accepted.loaded == [tmp_path]
 
 
 class NoPrimaryAMembers(FakeMembers):
