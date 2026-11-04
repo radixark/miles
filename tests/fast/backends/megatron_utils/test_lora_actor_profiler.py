@@ -61,6 +61,22 @@ def test_a_slot_load_checks_and_loads_the_one_source_it_is_given(monkeypatch):
     assert calls == [("check", "/ckpt", "m", False), ("load", "/ckpt", "m", False)]
 
 
+def test_a_source_the_slot_cannot_take_is_a_user_error_and_leaves_the_slot_alone(monkeypatch):
+    loaded = []
+    checkpoint = SimpleNamespace(
+        find_load_mismatch=lambda *args: "rank 4 != 8",
+        load_slot=lambda *args: loaded.append("checkpoint"),
+    )
+    model = SimpleNamespace(load_slot=lambda *args: loaded.append("model"))
+    module = _lora_actor_module(monkeypatch, model=model, checkpoint=checkpoint)
+    actor = module.MultiLoRATrainRayActor()
+    actor.args, actor.model, actor.slot_optimizers = None, [], {}
+    actor.adapter_slots = SimpleNamespace(parametrization=lambda **fields: fields["base_model"], targets=None)
+
+    source = {"path": "/ckpt", "load_optimizer": False, "parametrization_fields": {"base_model": "m"}}
+    assert actor.load_slot(0, rank=8, alpha=16.0, source=source) == {"error": "rank 4 != 8", "error_category": "user"}
+    assert loaded == [] and actor.slot_optimizers == {}
+
 @pytest.mark.parametrize("method", ["forward_backward", "forward_only"])
 def test_lora_pass_emits_scheduled_trace(monkeypatch, method):
     model = SimpleNamespace(run_forward_backward=lambda *args, **kwargs: torch.ones(2).sum())
