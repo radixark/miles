@@ -1,8 +1,6 @@
 """Exports read back to the same HF-keyed tensors; conversions refuse what would change the training."""
 
 import json
-import subprocess
-import sys
 from dataclasses import replace
 
 import pyrage
@@ -265,15 +263,6 @@ def test_the_external_export_copies_only_a_shared_as_later_members(tmp_path, mon
     storages = {t.untyped_storage().data_ptr() for t in weights.values()}
     copied = [name for name, t in written.items() if t.untyped_storage().data_ptr() not in storages]
     assert len(copied) == len(QKV) - 1, f"only the shared A's later members are copies, got {copied}"
-
-
-def test_the_export_module_does_not_import_pyrage():
-    """Only Tinker's encrypted downloads need it, and every training actor imports the exports module."""
-    probe = (
-        "import sys, miles.backends.training_utils.checkpoint.adapter.adapter_exports; print('pyrage' in sys.modules)"
-    )
-    result = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, check=True)
-    assert result.stdout.strip() == "False"
 
 
 def _ssh_identity() -> tuple[pyrage.ssh.Identity, str]:

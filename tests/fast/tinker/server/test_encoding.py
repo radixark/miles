@@ -1,8 +1,5 @@
 """JSON decoding validates datum inputs and renders SDK result shapes."""
 
-import subprocess
-import sys
-
 import pyrage
 import pytest
 from cryptography.hazmat.primitives.asymmetric import ed25519
@@ -226,10 +223,3 @@ def test_x25519_and_ssh_age_recipients_are_accepted():
     }
     _, decoded = decode_command("save_weights_external", payload)
     assert "validation_error" not in decoded and decoded["age_recipients"] == [_RECIPIENT, _SSH_RECIPIENT]
-
-
-def test_the_encoding_module_does_not_import_pyrage():
-    """Only an encrypted external save validates age recipients; every gateway request imports the encoding."""
-    probe = "import sys, miles.tinker.server.encoding; print('pyrage' in sys.modules)"
-    result = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, check=True)
-    assert result.stdout.strip() == "False"
