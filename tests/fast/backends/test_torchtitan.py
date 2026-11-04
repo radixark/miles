@@ -53,6 +53,24 @@ def _args(**overrides) -> Namespace:
         lora_adapter_path=None,
         lora_train_only=False,
         colocate_memory_peak_device="cpu",
+        # read by the padded-rows loss layout's startup check on a static-shape platform
+        train_backend="torchtitan",
+        loss_type="policy_loss",
+        qkv_format="thd",
+        advantage_estimator="grpo",
+        entropy_coef=0.0,
+        tensor_model_parallel_size=1,
+        true_on_policy_mode=False,
+        allgather_cp=False,
+        use_sampling_support_replay=False,
+        use_rollout_routing_replay=False,
+        use_opsm=False,
+        use_tis=False,
+        get_mismatch_metrics=False,
+        use_opd=False,
+        custom_pg_loss_reducer_function_path=None,
+        dump_details=None,
+        multi_lora=False,
     )
     return Namespace(**{**base, **overrides})
 
