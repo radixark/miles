@@ -460,6 +460,26 @@ def test_peft_export_of_a_fused_gdn_group_writes_one_a_per_exported_module(tmp_p
         assert torch.equal(tensors[f"base_model.model.{GDN}.{module}.lora_B.weight"], b.to(torch.bfloat16))
 
 
+class CanonicalGdnMembers:
+    """Bridge's canonical export: each GDN in_proj_qkv component under its own name with its own lora_A."""
+
+    bf16_adapter_key_style = "peft"
+
+    def export_bf16_adapter(self, slot):
+        for component, rows in (("in_proj_q", 2), ("in_proj_k", 2), ("in_proj_v", 3)):
+            yield f"{GDN}.{component}.lora_A.weight", torch.randn(4, 6)
+            yield f"{GDN}.{component}.lora_B.weight", torch.randn(rows, 4)
+
+
+def test_peft_export_refuses_canonical_gdn_components(tmp_path):
+    """HF has only the fused in_proj_qkv: components with their own lora_A have no PEFT name, so the export fails."""
+    components = tuple(f"{GDN}.in_proj_{c}" for c in "kqv")
+    run = AdapterParametrization("m", 4, 8.0, "canonical_lora", components, False)
+    with pytest.raises(RuntimeError, match="which a PEFT adapter cannot name"):
+        write_peft_export(tmp_path, CanonicalGdnMembers(), 0, run, GDN_TARGETS)
+    assert not (tmp_path / "adapter_model.safetensors").exists()
+
+
 HEAD_RUN = AdapterParametrization("m", 2, 4.0, "canonical_lora", ("lm_head",), False)
 
 
