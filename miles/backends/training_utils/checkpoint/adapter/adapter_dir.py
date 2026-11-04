@@ -3,7 +3,6 @@
 import json
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import replace
-from functools import partial
 from pathlib import Path
 from typing import Literal, Protocol
 
@@ -28,7 +27,6 @@ from miles.backends.training_utils.checkpoint.adapter.commit import (
 from miles.backends.training_utils.checkpoint.adapter.key_mapping import (
     map_named_tensors_to_hf_keys,
     map_peft_keys_to_hf_keys,
-    map_tinker_keys_to_hf_keys,
 )
 from miles.backends.training_utils.checkpoint.adapter.parametrization import (
     AdapterParametrization,
@@ -55,8 +53,8 @@ TRAINING_STATE_FILENAME = "training_state.json"
 class AdapterCheckpointMembers(Protocol):
     """The checkpoint members every backend's AdapterSlots implements; they never touch files."""
 
-    # the names export_bf16_adapter yields: HF module paths or official Tinker names
-    bf16_adapter_key_style: Literal["peft", "tinker"]
+    # the names export_bf16_adapter yields: HF module paths
+    bf16_adapter_key_style: Literal["peft"]
 
     def export_bf16_adapter(self, slot: int) -> Iterable[tuple[str, torch.Tensor]]:
         """Collective; whole bf16 tensors on rank 0, nothing elsewhere."""
@@ -130,10 +128,7 @@ def _hf_keyed_bf16_adapter(
     parametrization: AdapterParametrization,
     targets: HfLoraTargets,
 ) -> dict[str, torch.Tensor]:
-    if members.bf16_adapter_key_style == "peft":
-        map_name = map_peft_keys_to_hf_keys
-    else:
-        map_name = partial(map_tinker_keys_to_hf_keys, targets=targets)
+    map_name = {"peft": map_peft_keys_to_hf_keys}[members.bf16_adapter_key_style]
     weights, fused_groups = map_named_tensors_to_hf_keys(named_tensors, map_name, targets)
     # the export names a shared A once per module; the writers expect it once per group
     return _collapse_shared_lora_a(weights, parametrization, fused_groups)
