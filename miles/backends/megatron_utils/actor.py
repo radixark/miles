@@ -338,7 +338,7 @@ class MegatronTrainRayActor(TrainRayActor):
             self.snapshot_publisher = SnapshotPublisher(
                 iterator, build_lora_config(args, target_modules=args.lora_adapter_targets) if is_lora else None
             )
-            # building the slots probes collectively; only the HF exports read them
+            # building the slots probes collectively on every rank
             if is_lora and args.megatron_to_hf_mode == "bridge" and exports_hf_snapshots(args):
                 self.adapter_slots = BridgeAdapterSlots(
                     self.model,
