@@ -47,6 +47,11 @@ setup(
         "modal": [
             "modal>=1.5.5",
         ],
+        # the openenv novita sandbox backend, imported only when that backend is
+        # selected; 2.0.7 is the release the recipe was written against
+        "novita": [
+            "novita-sandbox>=2.0.7",
+        ],
     },
     # sglang needs 3.11; nvidia-resiliency-ext 0.6 has no 3.13 wheel
     python_requires=">=3.11",
