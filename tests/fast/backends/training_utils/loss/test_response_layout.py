@@ -20,6 +20,7 @@ import torch.distributed as dist
 
 from miles.backends.training_utils.data.context_parallel import get_sum_of_sample_mean
 from miles.backends.training_utils.loss.hub import response_layout
+from miles.backends.training_utils.loss.hub.advantages import normalize_advantages
 from miles.backends.training_utils.loss.hub.losses import policy_loss_function
 from miles.backends.training_utils.loss.hub.response_layout import (
     PackedSlices,
@@ -216,6 +217,25 @@ def test_unbiased_kl_keeps_tokens_outside_the_loss_mask_out_of_the_gradient():
     loss.backward()
     assert torch.isfinite(loss)
     assert torch.isfinite(logits.grad).all()
+
+
+def test_host_advantages_whiten_over_the_given_gloo_group():
+    """PaddedRows keeps advantages on the host, so the actor whitens them over the gloo DP group it passes in."""
+    args = _args(normalize_advantages=True)
+    batch = _batch(_inputs(args), "policy_loss")
+    advantages, masks = batch["advantages"], batch["loss_masks"]
+    assert all(a.device.type == "cpu" for a in advantages)
+
+    whitened = normalize_advantages(
+        args, advantages, masks, batch["total_lengths"], batch["response_lengths"], process_group=dist.group.WORLD
+    )
+
+    values, mask = torch.cat(advantages), torch.cat(masks).float()
+    mean = (values * mask).sum() / mask.sum()
+    var = ((values**2 * mask).sum() / mask.sum() - mean**2) * mask.sum() / (mask.sum() - 1)
+    want = (values - mean) * torch.rsqrt(var + 1e-8)
+    assert all(w.device.type == "cpu" for w in whitened)
+    torch.testing.assert_close(torch.cat(whitened), want, rtol=1e-5, atol=1e-6)
 
 
 def _score_centering_args(**overrides):
