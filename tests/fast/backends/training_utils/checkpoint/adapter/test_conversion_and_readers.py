@@ -35,6 +35,7 @@ from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
 
 L = "model.layers.0"
 QKV = (f"{L}.linear_attn.in_proj_q", f"{L}.linear_attn.in_proj_k", f"{L}.linear_attn.in_proj_v")
+Q_PROJ = f"{L}.self_attn.q_proj"
 EXPERTS = (f"{L}.mlp.experts.gate_proj", f"{L}.mlp.experts.up_proj", f"{L}.mlp.experts.down_proj")
 QWEN3 = get_hf_lora_targets({"model_type": "qwen3", "num_hidden_layers": 1})
 # GDN v has more rows than q / k, as in Qwen3.5 (more value heads than key heads)
@@ -76,18 +77,23 @@ def _weights(shared_qkv: bool):
     return w
 
 
-@pytest.mark.parametrize("shared_qkv", [False, True], ids=["canonical", "fused_gdn"])
-def test_peft_export_reads_back_bitwise(tmp_path, shared_qkv):
-    run = _run(shared_lora_a_groups=(QKV,) if shared_qkv else ())
-    weights = {k: v.to(torch.bfloat16) for k, v in _weights(shared_qkv).items()}
+def test_peft_export_reads_back_bitwise(tmp_path):
+    run = _run(shared_lora_a_groups=(QKV,))
+    weights = {k: v.to(torch.bfloat16) for k, v in _weights(True).items()}
     write_peft_adapter(tmp_path, weights, run)
     names = json.loads((tmp_path / "adapter_config.json").read_text())["target_modules"]
-    assert any("in_proj_qkv" in n for n in names) == shared_qkv, "shared-A GDN components go back to their HF name"
+    assert any("in_proj_qkv" in n for n in names), "shared-A GDN components go back to their HF name"
     assert classify_adapter_source(tmp_path, QWEN35, load_optimizer=False) == AdapterSourceKind.PEFT
     reader = PeftAdapterReader(tmp_path, run, QWEN35)
     assert reader.read_weights().keys() == weights.keys()
     assert all(torch.equal(reader.read_weights()[k], v) for k, v in weights.items())
     assert reader.source.parametrization.shared_lora_a_groups == run.shared_lora_a_groups
+
+
+def test_gdn_components_with_their_own_a_are_refused_by_the_peft_export(tmp_path):
+    with pytest.raises(AssertionError, match="components of an HF-fused module with their own lora_A"):
+        write_peft_adapter(tmp_path, _weights(False), _run())
+    assert not (tmp_path / "adapter_model.safetensors").exists()
 
 
 def test_hf_peft_loads_the_peft_export(tmp_path):
@@ -211,8 +217,12 @@ def test_a_head_adapter_reads_back(tmp_path):
 @pytest.mark.parametrize("write", [write_peft_adapter, write_sampler_adapter])
 def test_bf16_input_with_a_shared_a_group_writes(tmp_path, write):
     group = EXPERTS[:2]
-    weights = {k: v.to(torch.bfloat16) for k, v in _weights(False).items() if k != f"{group[1]}.lora_A"}
-    write(tmp_path, weights, _run(shared_lora_a_groups=(group,)))
+    weights = {
+        k: v.to(torch.bfloat16)
+        for k, v in _weights(False).items()
+        if k.rsplit(".", 1)[0] in EXPERTS and k != f"{group[1]}.lora_A"
+    }
+    write(tmp_path, weights, _run(target_modules=EXPERTS, shared_lora_a_groups=(group,)))
 
 
 @pytest.mark.parametrize(
@@ -282,8 +292,8 @@ def test_a_shared_outer_peft_export_has_every_experts_copy_and_reads_back_into_a
 def test_fan_in_fan_out_is_refused(tmp_path):
     write_peft_adapter(
         tmp_path,
-        {f"{QKV[0]}.lora_A": torch.ones(2, 8), f"{QKV[0]}.lora_B": torch.ones(4, 2)},
-        _run(target_modules=QKV[:1]),
+        {f"{Q_PROJ}.lora_A": torch.ones(2, 8), f"{Q_PROJ}.lora_B": torch.ones(4, 2)},
+        _run(target_modules=(Q_PROJ,)),
     )
     config = json.loads((tmp_path / "adapter_config.json").read_text()) | {"fan_in_fan_out": True}
     (tmp_path / "adapter_config.json").write_text(json.dumps(config))
@@ -338,8 +348,8 @@ def test_a_sampler_export_reads_back_when_the_group_starts_at_a_later_gdn_compon
 def test_base_rewriting_and_activated_lora_are_refused(tmp_path, field, value):
     write_peft_adapter(
         tmp_path,
-        {f"{QKV[0]}.lora_A": torch.ones(2, 8), f"{QKV[0]}.lora_B": torch.ones(4, 2)},
-        _run(target_modules=QKV[:1]),
+        {f"{Q_PROJ}.lora_A": torch.ones(2, 8), f"{Q_PROJ}.lora_B": torch.ones(4, 2)},
+        _run(target_modules=(Q_PROJ,)),
     )
     config = json.loads((tmp_path / "adapter_config.json").read_text()) | {field: value}
     (tmp_path / "adapter_config.json").write_text(json.dumps(config))

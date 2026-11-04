@@ -24,6 +24,7 @@ from miles.utils.lora.utils import get_adapter_target_modules, save_adapter_to_d
 _FUSED_MODULE_BY_COMPONENTS = {
     components: module for module, components in GDN_IN_PROJ_COMPONENTS_BY_MODULE.items() if len(components) > 1
 }
+_FUSED_COMPONENTS = {component for components in _FUSED_MODULE_BY_COMPONENTS for component in components}
 
 
 def _expand_shared_lora_a(weights: dict[str, torch.Tensor], parametrization: AdapterParametrization) -> dict:
@@ -66,8 +67,17 @@ def write_peft_adapter(
     per_expert = replace(parametrization, experts_shared_outer_loras=False)
     steps = plan_parametrization_conversion(parametrization, per_expert, source_dtype=torch.float32)
     weights = apply_parametrization_conversion(weights, steps)
+    expanded = _expand_shared_lora_a(weights, per_expert)
+    # only components sharing one A fuse back to the HF module; HF has no module for a component on its own
+    unfused = sorted(
+        {k.rsplit(".", 1)[0] for k in expanded if k.rsplit(".", 1)[0].rpartition(".")[2] in _FUSED_COMPONENTS}
+    )
+    assert not unfused, (
+        f"{unfused} are components of an HF-fused module with their own lora_A, which a PEFT adapter cannot name; "
+        "train them with one shared lora_A (--lora-type lora)"
+    )
     tensors = {}
-    for key, value in _expand_shared_lora_a(weights, per_expert).items():
+    for key, value in expanded.items():
         value = value.to(torch.bfloat16).contiguous()
         if ".experts." in key and value.dim() == 3:
             for expert_index in range(value.shape[0]):
