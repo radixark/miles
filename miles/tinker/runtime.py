@@ -252,6 +252,9 @@ def read_imported_adapter(path: str, shown_path: str) -> dict:
             raise TypeError(f"rank {source['lora_rank']!r} is not an integer")
         if source["lora_alpha"] is not None and type(source["lora_alpha"]) not in (int, float):
             raise TypeError(f"alpha {source['lora_alpha']!r} is not a number")
+        # alpha scales the slot: NaN, infinite, zero or negative would train NaN or zero updates
+        if source["lora_alpha"] is not None and not (math.isfinite(source["lora_alpha"]) and source["lora_alpha"] > 0):
+            raise ValueError(f"alpha {source['lora_alpha']!r} is not a positive finite number")
     except (OSError, ValueError, KeyError, TypeError, AssertionError, RecursionError) as error:
         raise UserInputError(f"{shown_path} is not a readable adapter: {type(error).__name__}: {error}") from error
     return source

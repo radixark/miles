@@ -1681,8 +1681,22 @@ async def test_an_expiring_name_relinked_by_an_operator_is_kept_and_the_rest_are
         ("adapter_config.json", json.dumps({"lora_alpha": 32})),
         ("adapter_parametrization.json", json.dumps({"lora_rank": 8})),
         ("adapter_config.json", json.dumps({"r": 8, "lora_alpha": "32"})),
+        # json.loads reads NaN / Infinity as floats; alpha scales the slot, so each would train NaN or zero updates
+        ("adapter_config.json", '{"r": 8, "lora_alpha": NaN}'),
+        ("adapter_config.json", '{"r": 8, "lora_alpha": Infinity}'),
+        ("adapter_config.json", json.dumps({"r": 8, "lora_alpha": 0})),
+        ("adapter_config.json", json.dumps({"r": 8, "lora_alpha": -16})),
     ],
-    ids=["bad_json", "no_rank", "bad_parametrization", "string_alpha"],
+    ids=[
+        "bad_json",
+        "no_rank",
+        "bad_parametrization",
+        "string_alpha",
+        "nan_alpha",
+        "inf_alpha",
+        "zero_alpha",
+        "negative_alpha",
+    ],
 )
 async def test_a_malformed_import_is_a_user_error_and_the_gateway_keeps_serving(tmp_path, filename, content):
     adapter = tmp_path / "imports" / "adapter"
