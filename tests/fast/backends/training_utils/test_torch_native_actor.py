@@ -105,7 +105,9 @@ def step(monkeypatch):
         "_optimizer_steps",
         lambda self, runner, it, n, rollout_id: calls["steps"].append(runner),
     )
-    monkeypatch.setattr(base_module, "compute_advantages_and_returns", lambda args, data: data.update(adv=True))
+    monkeypatch.setattr(
+        base_module, "compute_advantages_and_returns", lambda args, data, **_kwargs: data.update(adv=True)
+    )
     monkeypatch.setattr(base_module, "log_rollout_data", lambda rid, args, data: None)
     monkeypatch.setattr(base_module, "timer", _noop_timer)
     return calls

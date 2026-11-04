@@ -203,7 +203,10 @@ class TorchNativeTrainRayActor(TrainRayActor):
             rollout_data.update(self._log_probs(runner, data_iterator, num_microbatches))
         routing_replay.rewind()
 
-        compute_advantages_and_returns(self.args, rollout_data)
+        # PaddedRows keeps the per-sample tensors on the host, so their whitening reduces over the gloo group
+        on_host = response_layout_type(self.args).sample_device is not None
+        whiten_group = get_parallel_state().effective_dp.gloo_group if on_host else None
+        compute_advantages_and_returns(self.args, rollout_data, whiten_group=whiten_group)
         log_rollout_data(rollout_id, self.args, rollout_data)
 
         with routing_replay.stage(routing_replay.REPLAY_BACKWARD), timer("actor_train"):
