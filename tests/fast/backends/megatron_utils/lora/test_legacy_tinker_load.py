@@ -115,7 +115,6 @@ def test_a_legacy_layout_mismatch_names_the_gateway_flag(tmp_path):
 
 
 def test_a_legacy_checkpoint_is_read_before_anything_is_loaded_into_the_slot(tmp_path, monkeypatch):
-    """load_adapter_dir checks the parametrization before ``load``; reading it must not touch the slot."""
     run = AdapterParametrization("base", 4, 8.0, "lora", ("model.layers.0.self_attn.q_proj",), False)
     (tmp_path / "META.json").write_text('{"base_model": "base", "lora_rank": 4, "lora_alpha": 16.0}')
     loaded = []
