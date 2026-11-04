@@ -151,7 +151,10 @@ def probe_bridge_row_mapping(
             for group in groups:
                 a_keys = {f"{member}.lora_A" for member in group}
                 held = [p.key for p in pieces if p.key in a_keys]
-                assert held, f"{group}: this rank holds no piece of the shared A"
+                # Bridge broadcasts every pipeline stage's adapters to all stages; another stage's group has no
+                # piece here, and the coverage check below still catches a group of this rank's that has none
+                if not held:
+                    continue
                 pieces = [
                     replace(p, key=f"{group[0]}.lora_A") if p.key == held[0] else p
                     for p in pieces

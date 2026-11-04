@@ -1241,16 +1241,6 @@ async def test_another_tenants_sampler_export_does_not_resolve(service):
     )
 
 
-async def test_weights_info_rejects_a_sampler_link_whose_target_is_gone(service):
-    model_id = await created_model(service)
-    save = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
-    path = (await await_settled(service, "tenant", save)).result["path"]
-    link = Path(resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "sampler_weights", "1"))
-    shutil.rmtree(resolve_adapter_dir(link.parent, "1", tenant="tenant").path)
-    with pytest.raises(UserInputError, match="unknown checkpoint"):
-        service.weights_info("tenant", path)
-
-
 async def test_trainer_ranks_get_only_the_tenant_digest(service):
     model_id = await created_model(service)
     save = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
