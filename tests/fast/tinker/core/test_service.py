@@ -2200,3 +2200,27 @@ async def test_weights_info_reports_a_sampler_exports_own_groups_not_the_gateway
     info = service.weights_info("tenant", path)
 
     assert (info["train_attn"], info["train_mlp"], info["train_unembed"]) == (False, True, False)
+
+
+async def test_a_checkpoint_name_linked_outside_the_library_is_a_user_error_on_every_api(service, tmp_path):
+    """A foreign link under a checkpoint name answers 4xx on delete, TTL, URLs and download, not 500 (SDK retries 5xx)."""
+    model_id = await created_model(service)
+    save = service.submit("tenant", "save_weights_external", _external_payload(model_id, 1, "export"))
+    await await_settled(service, "tenant", save)
+    urls = await service.external_weights_urls("tenant", model_id, "external_weights/export", "http://gateway/")
+    token = urls["urls"]["adapter_config.json"].split("/")[-2]
+    link = Path(resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "external_weights", "export"))
+    shared = tmp_path / "shared-adapter"
+    shared.mkdir()
+    link.unlink()
+    link.symlink_to(shared)
+
+    for call in (
+        service.delete_checkpoint("tenant", model_id, "external_weights/export"),
+        service.set_checkpoint_ttl("tenant", model_id, "external_weights/export", 7200),
+        service.external_weights_urls("tenant", model_id, "external_weights/export", "http://gateway/"),
+        service.download_path(token, "adapter_config.json"),
+    ):
+        with pytest.raises(UserInputError, match="this library did not write"):
+            await call
+    assert shared.is_dir(), "the foreign dir is never touched"

@@ -751,7 +751,11 @@ class TinkerService:
         tinker_path = f"tinker://{model_id}/{checkpoint_id}"
         _, kind, name = parse_tinker_path(tinker_path)
         root = os.path.dirname(resolve_checkpoint_dir(self.config.checkpoint_root, model_id, kind, name))
-        files = self.backend.resolve_checkpoint_files(root, name, tenant)
+        try:
+            files = self.backend.resolve_checkpoint_files(root, name, tenant)
+        except ValueError as error:
+            # a name linked to a dir this gateway did not write (resolve_adapter_dir refuses it)
+            raise UserInputError(str(error)) from None
         if files is None:
             if os.path.isdir(os.path.join(root, name)):
                 raise UserInputError(
