@@ -3,7 +3,6 @@ from dataclasses import replace
 from datetime import timedelta
 from types import SimpleNamespace
 
-
 import pytest
 import torch
 import torch.distributed as dist
