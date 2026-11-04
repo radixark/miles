@@ -23,6 +23,7 @@ from torch.optim.lr_scheduler import _update_param_group_val
 
 from miles.backends.torchtitan_utils.lora_names import is_adapter_key, split_adapter_key
 from miles.backends.training_utils.checkpoint.adapter.adapter_dir import (
+    HeadRows,
     load_adapter_dir,
     read_training_state,
     save_and_commit_adapter_dir,
@@ -167,6 +168,10 @@ class TorchtitanOptimizerMembers:
         self, adapter_slots: TorchtitanAdapterSlots, optimizers: list[torch.optim.Optimizer], *, save_moments: bool
     ):
         self._slots, self._optimizers, self._save_moments = adapter_slots, optimizers, save_moments
+
+    @property
+    def head_rows(self) -> HeadRows | None:
+        return self._slots.head_rows
 
     def export_bf16_adapter(self, slot: int):
         return self._slots.export_bf16_adapter(slot)

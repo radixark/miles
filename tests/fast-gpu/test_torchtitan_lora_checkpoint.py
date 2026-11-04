@@ -707,3 +707,12 @@ def test_a_torchtitan_run_records_its_bases_fingerprint_and_path_as_given(tmp_pa
     fields = slots.parametrization.call_args.kwargs
     assert fields["base_model"] == "/root/models/Qwen3-4B"
     assert fields["base_model_fingerprint"] == base_model_fingerprint(_QWEN3_CONFIG.to_dict())
+
+
+def test_the_torchtitan_members_declare_their_slots_head_rows():
+    from miles.backends.torchtitan_utils.lora_checkpoint import TorchtitanOptimizerMembers
+    from miles.backends.training_utils.checkpoint.adapter.adapter_dir import HeadRows
+
+    head_rows = HeadRows("lm_head.lora_B", max_source_rows=8)
+    members = TorchtitanOptimizerMembers(SimpleNamespace(head_rows=head_rows), [], save_moments=True)
+    assert members.head_rows is head_rows
