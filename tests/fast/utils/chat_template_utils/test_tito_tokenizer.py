@@ -916,6 +916,11 @@ _BND_OLD, _BND_NEW, _BND_TOOLS = _split_at(SingleToolTrajectory, 3)
 _TITO_LOGGER = "miles.utils.chat_template_utils.tito_tokenizer"
 
 
+def _tito_warnings(caplog) -> list[str]:
+    """Warnings from the TITO module; INFO records such as template resolution on a cold tokenizer cache are ignored."""
+    return [r.getMessage() for r in caplog.records if r.name == _TITO_LOGGER and r.levelno >= logging.WARNING]
+
+
 class TestMergeTokensBoundary:
     """merge_tokens correctly manipulates the prefix before concatenating incremental tokens."""
 
@@ -959,7 +964,7 @@ class TestMergeTokensBoundary:
                 template_args=glm47_tito.default_template_args(_BND_TOOLS),
             )
         assert result == [100, 200] + incremental
-        assert not caplog.records
+        assert not _tito_warnings(caplog)
 
     def test_glm47_strips_user(self, glm47_tito: GLM47TITOTokenizer, caplog):
         """<|user|> is also an ambiguous boundary — stripped the same way; before a tool message it is replaced."""
@@ -974,7 +979,7 @@ class TestMergeTokensBoundary:
                 template_args=glm47_tito.default_template_args(_BND_TOOLS),
             )
         assert result == [100, 200] + incremental
-        assert [record.levelno for record in caplog.records] == [logging.WARNING]
+        assert len(_tito_warnings(caplog)) == 1
 
     def test_glm47_no_strip_otherwise(self, glm47_tito: GLM47TITOTokenizer):
         """Non-boundary trailing token is preserved."""
@@ -1073,10 +1078,11 @@ class TestGLMStopTokenReplace:
 
         assert result == expected
         if not replaced:
-            assert not caplog.records
+            assert not _tito_warnings(caplog)
             return
-        assert len(caplog.records) == 1
-        message = caplog.records[0].getMessage()
+        warnings = _tito_warnings(caplog)
+        assert len(warnings) == 1
+        message = warnings[0]
         replacement = tito.tokenizer.convert_ids_to_tokens(expected[2])
         assert replacement != stop_token
         assert f"sampled stop token {stop_token} is replaced by {replacement}" in message
@@ -1098,7 +1104,7 @@ class TestGLMStopTokenReplace:
                 result, expected = _merge_at_stop(tito, stop_token, stored, appended_role)
                 assert result == expected
 
-        assert not caplog.records
+        assert not _tito_warnings(caplog)
 
     def test_non_boundary_stop_is_kept(self, caplog, model_id, tito_type):
         """A prefix that does not end in a boundary token is neither stripped nor checked."""
@@ -1110,7 +1116,7 @@ class TestGLMStopTokenReplace:
             result = tito.merge_tokens(_STORED_TEXT, new, [100, 200, 300])
 
         assert result == [100, 200, 300] + incremental
-        assert not caplog.records
+        assert not _tito_warnings(caplog)
 
 
 @pytest.mark.parametrize("tito_type", list(TITOTokenizerType))
