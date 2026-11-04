@@ -88,12 +88,13 @@ class TestRequiredArgumentConstraints:
         with pytest.raises(AssertionError, match="--save is single LoRA only"):
             validate_multi_lora_args(args)
 
-    def test_multi_adapter_training_requires_bridge_weight_conversion(self) -> None:
-        """Multi-LoRA slots exist only on Bridge adapters, so a raw-mode request is refused."""
+    @pytest.mark.parametrize("megatron_to_hf_mode", ["raw", "bridge"])
+    def test_multi_adapter_training_runs_on_native_and_bridge_adapters(self, megatron_to_hf_mode) -> None:
         args = _parse_megatron_args(
-            ["--multi-lora-n-adapters", "2", "--lora-rank", "8", "--megatron-to-hf-mode", "raw"]
+            ["--multi-lora-n-adapters", "2", "--lora-rank", "8", "--megatron-to-hf-mode", megatron_to_hf_mode]
         )
         args.ft_components = []
 
-        with pytest.raises(AssertionError, match="--megatron-to-hf-mode bridge"):
-            validate_multi_lora_args(args)
+        validate_multi_lora_args(args)
+
+        assert args.multi_lora

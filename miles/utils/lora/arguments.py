@@ -350,10 +350,6 @@ def validate_multi_lora_args(args: Any) -> None:
         "Multi-LoRA requires --optimizer adam: the per-slot SlotOptimizer only "
         f"implements Adam semantics; got --optimizer {args.optimizer}"
     )
-    assert args.megatron_to_hf_mode == "bridge", (
-        "Multi-LoRA runs on Megatron-Bridge adapters; pass --megatron-to-hf-mode bridge "
-        f"(got {args.megatron_to_hf_mode!r})"
-    )
     # train.py's save() writes single LoRA's adapter dir; multi-LoRA slots are saved through the Tinker gateway
     assert (
         args.entry != "train" or args.save is None
