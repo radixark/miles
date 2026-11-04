@@ -1,8 +1,8 @@
 from tests.ci.ci_register import register_cuda_ci
 
-# CPU-only checks, on this stage because only the GPU image ships torchtitan; est_time is an unmeasured upper bound
+# CPU-only checks, on this stage because only the GPU image ships torchtitan
 register_cuda_ci(
-    est_time=120, suite="stage-b-2-gpu-h200", labels=["torchtitan", "lora"], hardware=["hopper"], num_gpus=2
+    est_time=20, suite="stage-b-2-gpu-h200", labels=["torchtitan", "lora"], hardware=["hopper"], num_gpus=2
 )
 
 import socket
