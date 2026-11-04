@@ -27,6 +27,7 @@ class FakeGenerateState(GenerateState):
         self.generate_fn_semaphore = asyncio.Semaphore(2)
         self.aborted = False
         self.generate_function = generate_function
+        self.sample_generate_functions = {}
 
 
 def make_state(generate_function: Callable, *, args: Any = None) -> FakeGenerateState:

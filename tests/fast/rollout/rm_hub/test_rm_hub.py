@@ -4,7 +4,7 @@ import pytest
 
 from miles.rollout.rm_hub import async_rm, batched_async_rm
 from miles.utils.async_utils import run
-from miles.utils.types import Sample
+from miles.utils.types import RewardSpec, Sample
 
 
 @pytest.fixture
@@ -133,6 +133,15 @@ class TestBatchedAsyncRm:
         samples = [Sample(prompt="", response=r, label=label) for r, label in samples_data]
         rewards = run(batched_async_rm(mock_args, samples))
         assert rewards == expected
+
+    def test_batched_custom_rm_rejects_another_spec_custom_rm_path(self, mock_args):
+        mock_args.custom_rm_path = "global.batched_fn"
+        samples = [
+            Sample(prompt="", response="a", label="a"),
+            Sample(prompt="", response="b", label="b", reward_spec=RewardSpec(custom_rm_path="row.fn")),
+        ]
+        with pytest.raises(ValueError, match=r"group samples \[1\]"):
+            run(batched_async_rm(mock_args, samples))
 
     def test_inplace_set_reward_field(self, mock_args):
         mock_args.rm_type = "math"
