@@ -181,7 +181,6 @@ class DistributedOptimizerMembers:
         return self._slots.export_bf16_adapter(slot)
 
     def _holds(self) -> frozenset[int]:
-        """Parameters whose DP group this rank leads: expert parameters reduce over expert DP."""
         parallel = get_parallel_state()
         # the DistributedOptimizer gathers dense parameters over intra-DP x CP and expert ones over expert DP
         dense_lead, expert_lead = parallel.intra_dp_cp.rank == 0, parallel.edp.rank == 0
