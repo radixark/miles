@@ -110,6 +110,40 @@ class TestBackendOwnedSpecs:
         assert args.model_dump() == original
 
 
+@pytest.mark.parametrize("family", ["qwen3_5", "qwen3_next"])
+@pytest.mark.parametrize("backend", ["megatron", "cake"])
+def test_the_qwen_full_attention_layers_take_the_cake_core_attention(
+    monkeypatch: pytest.MonkeyPatch, family: str, backend: str, gdn: ModuleType
+) -> None:
+    """--full-attention-backend cake swaps the full-attention layer specs (never the GDN ones) through
+    apply_cake_full_attention; the default leaves them as Megatron built them."""
+    module = importlib.import_module(f"miles_plugins.models.{family}")
+    args = make_trainer_config(full_attention_backend=backend, num_experts=None, hf_checkpoint="/qwen-checkpoint")
+    config = SimpleNamespace(num_layers=2, moe_layer_freq=[0, 0], pipeline_model_parallel_layout=None)
+    text = SimpleNamespace(layer_types=["linear_attention", "full_attention"], num_hidden_layers=2)
+    full_attention = SimpleNamespace(submodules=SimpleNamespace(self_attention="TE attention"))
+    block = SimpleNamespace(
+        layer_specs=[SimpleNamespace(submodules=SimpleNamespace(self_attention="TE attention")), full_attention]
+    )
+    cake = ModuleType("miles_plugins.models.cake_full_attention")
+    cake.apply_cake_full_attention = lambda spec: ("cake", spec)
+    monkeypatch.setitem(sys.modules, "miles_plugins.models.cake_full_attention", cake)
+    monkeypatch.setattr(module, "get_gpt_decoder_block_spec", lambda config, **kwargs: block)
+    monkeypatch.setattr(module, "get_num_layers_to_build", lambda config, vp_stage: 2)
+    monkeypatch.setattr(module, "get_transformer_layer_offset", lambda config, vp_stage: 0)
+    monkeypatch.setattr(module.AutoConfig, "from_pretrained", lambda path, **kwargs: text)
+
+    spec_fn = module.get_qwen3_5_spec if family == "qwen3_5" else module.get_qwen3_next_spec
+    result = spec_fn(args=args, config=config, vp_stage=None)
+
+    assert result.layer_specs[0].submodules.self_attention.module is module.Attention
+    if backend == "cake":
+        tag, swapped = result.layer_specs[1]
+        assert tag == "cake" and swapped is full_attention
+    else:
+        assert result.layer_specs[1] is full_attention
+
+
 def test_a_cake_gdn_input_norm_is_the_kernel_package_norm(monkeypatch: pytest.MonkeyPatch, gdn: ModuleType) -> None:
     """--linear-attention-input-norm cake: the Qwen3.5 / Qwen3-Next GDN input norm is the package's zero-centred
     RMSNorm, configured with the run's values, holding the single weight parameter of the te and hf norms."""

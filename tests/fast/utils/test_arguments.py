@@ -68,6 +68,7 @@ CAKE_CHOICE_DEFAULTS = {
     "linear_attention_input_norm": "te",
     "dsa_attention_backend": "tilelang",
     "mhc_backend": "megatron",
+    "full_attention_backend": "megatron",
 }
 _P2P_ARGS = ["--update-weight-transfer-mode", "p2p"]
 DYNAMIC_BATCH_ARGS = ["--use-dynamic-batch-size", "--max-tokens-per-gpu", "1024"]

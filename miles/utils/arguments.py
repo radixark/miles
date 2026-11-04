@@ -82,6 +82,7 @@ CAKE_BACKEND_ARGS = (
     "linear_attention_output_norm_backend",
     "linear_attention_input_norm",
     "mhc_backend",
+    "full_attention_backend",
 )
 LINEAR_ATTENTION_INPUT_NORMS = ("te", "hf", "cake")
 
@@ -408,6 +409,13 @@ def parse_args_and_get_parser(
 
         validate_hybrid_shard_args(args)
         validate_kernel_backend_args(args)
+
+    if args.full_attention_backend == "cake":
+        # local import: the layer module owns its startup rules, which need Megatron's resolved kv_channels and
+        # query groups, and imports Transformer Engine's attention, which only the cake backend needs
+        from miles_plugins.models.cake_full_attention import validate_full_attention_backend
+
+        validate_full_attention_backend(args)
 
     if backend != "megatron":
         training_backend_arg_names.update(
