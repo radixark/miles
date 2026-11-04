@@ -262,10 +262,11 @@ class LegacyTinkerCheckpointLoader:
     def __init__(self, model, slot_optimizer: SlotOptimizer, run: AdapterParametrization, load_optimizer: bool):
         self._model, self._optimizer, self._run, self._load_optimizer = model, slot_optimizer, run, load_optimizer
 
-    def __call__(self, path: Path) -> AdapterParametrization:
-        meta = _read_legacy_meta(path, self._run)
+    def parametrization(self, path: Path) -> AdapterParametrization:
+        return replace(self._run, lora_alpha=_read_legacy_meta(path, self._run)["lora_alpha"])
+
+    def load(self, path: Path) -> None:
         _load_legacy_slot(self._model, self._optimizer, str(path), self._load_optimizer)
-        return replace(self._run, lora_alpha=meta["lora_alpha"])
 
 
 # a gateway-wide layout setting -> the launch flag that restores a checkpoint saved under `value`
