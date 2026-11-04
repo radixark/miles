@@ -1,6 +1,7 @@
 """LegacyRankShardLoader reads a single-LoRA ``--save`` written before the adapter format (adapter_megatron_rank*.pt)
 into the model as main's restore_lora_adapter did."""
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -82,7 +83,8 @@ def test_virtual_pipeline_chunks_restore_their_own_adapters_bitwise(tmp_path):
     _save_old_format(tmp_path, saved)
     restored, calls = [_Chunk(), _Chunk()], []
 
-    assert _load(tmp_path, restored, calls, load_optimizer=False) == RUN
+    # the old save records no alpha; load_adapter_dir falls back to the run's
+    assert _load(tmp_path, restored, calls, load_optimizer=False) == replace(RUN, lora_alpha=None)
 
     for before, after in zip(saved, restored, strict=True):
         for a, b in zip(before.adapter.parameters(), after.adapter.parameters(), strict=True):
