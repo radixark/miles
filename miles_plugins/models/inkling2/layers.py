@@ -150,7 +150,9 @@ class Inkling2Attention(MegatronModule):
         q, r, gate, sink = projected.split(self.q_split, dim=-1)
         k, v = self._kv(sources, positions)
         tau = (
-            None if self.is_local else log_scaling_tau(positions, self.inkling2.log_scaling_n_floor, self.inkling2.log_scaling_alpha)
+            None
+            if self.is_local
+            else log_scaling_tau(positions, self.inkling2.log_scaling_n_floor, self.inkling2.log_scaling_alpha)
         )
         q = l2_clip(
             q.view(total, self.num_heads, self.head_dim),
@@ -224,7 +226,9 @@ class Inkling2GroupedMLP(TEGroupedMLP):
         tokens_per_expert = tokens_per_expert.tolist()
         fc1_output, _ = self.linear_fc1(permuted_local_hidden_states, tokens_per_expert)
         inkling2 = self.config.inkling2
-        activated = capped_swiglu(fc1_output, permuted_probs.unsqueeze(-1), inkling2.mlp_gate_softcap, inkling2.mlp_up_softcap)
+        activated = capped_swiglu(
+            fc1_output, permuted_probs.unsqueeze(-1), inkling2.mlp_gate_softcap, inkling2.mlp_up_softcap
+        )
         output, _ = self.linear_fc2(activated, tokens_per_expert)
         return output.float(), None
 
@@ -312,7 +316,9 @@ class Inkling2TransformerLayer(TransformerLayer):
             partial = (partial.float() + attention.float() + mlp_output.float()).to(partial.dtype)
         if self.layer_number == self.config.num_layers:
             (output,) = attn_res_mix(
-                [*blocks, partial], self.output_query.view(1, -1), normalize_values=self.inkling2.attn_res_normalize_values
+                [*blocks, partial],
+                self.output_query.view(1, -1),
+                normalize_values=self.inkling2.attn_res_normalize_values,
             )
             return output, torch.stack(blocks, dim=-2)
         return partial, torch.stack(blocks, dim=-2)
