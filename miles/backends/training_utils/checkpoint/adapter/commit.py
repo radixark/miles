@@ -129,22 +129,26 @@ def commit_adapter_dir(
     if _link_target(link) == written.path:
         # a retry after the link swap; the commit already stands
         return CommittedAdapterDir(written.path, written.commit_id)
-    if os.path.lexists(link) and not link.is_symlink() and not link.is_dir():
-        # a file the library did not write: overwrite replaces commits, never a user's data
-        _rmtree(written.path)
-        raise FileExistsError(f"{link} is a file, not an adapter")
-    if not overwrite and os.path.lexists(link):
-        _rmtree(written.path)
-        raise FileExistsError(f"adapter {name!r} already exists")
-    if link.is_dir() and not link.is_symlink():
-        _adopt_pre_commit_dir(root, name)
-    previous = _link_target(link)
-    if previous is not None and not _is_library_dir(root, name, previous):
-        _rmtree(written.path)
-        raise _foreign_link_error(link, previous)
     staging_link = root / f".{name}.{written.commit_id}{_STAGING_SUFFIX}"
-    staging_link.symlink_to(written.path.name)
-    os.replace(staging_link, link)
+    try:
+        if os.path.lexists(link) and not link.is_symlink() and not link.is_dir():
+            # a file the library did not write: overwrite replaces commits, never a user's data
+            raise FileExistsError(f"{link} is a file, not an adapter")
+        if not overwrite and os.path.lexists(link):
+            raise FileExistsError(f"adapter {name!r} already exists")
+        if link.is_dir() and not link.is_symlink():
+            _adopt_pre_commit_dir(root, name)
+        previous = _link_target(link)
+        if previous is not None and not _is_library_dir(root, name, previous):
+            raise _foreign_link_error(link, previous)
+        staging_link.symlink_to(written.path.name)
+        os.replace(staging_link, link)
+    except BaseException:
+        # nothing points at the written dir before the swap, so a failed commit would leave it on disk
+        if os.path.lexists(staging_link):
+            staging_link.unlink()
+        _rmtree(written.path)
+        raise
     _fsync(root)
     if previous is not None and previous.exists():
         _retire(previous)
