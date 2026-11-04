@@ -92,7 +92,7 @@ def generate(
         # Every /generate forward covers the whole sequence: a row per position but the last.
         rows = rng.integers(1, 64, size=(num_tokens + len(tokens) - 1, LAYERS, EXPERTS_PER_TOKEN), dtype=np.int32)
         inline["routed_experts"] = pybase64.b64encode(rows.tobytes()).decode()
-        arrays[R3] = rows
+        arrays[f"{R3}.0-{LAYERS}"] = rows
     store[OUTPUT_STORE_REF_KEY] = Ref(
         key, tuple(Spec(n, a.dtype.name, a.shape) for n, a in arrays.items())
     ).to_builtins()

@@ -57,12 +57,15 @@ def _read_objects(plans: Sequence[StorePlan], read: Callable, *, support_topk: i
     except (KeyError, ValueError) as e:
         # A missing object or array, or one whose size differs from its ref: no retry can fix it.
         raise StorePlanError(f"cannot read this shard's output store objects: {e}") from e
-    return {
-        key: {
-            name: getattr(stash, name) for name in names
-        }  # config-access-exempt: names lists the stash arrays the plan reads
-        for (key, (_, names)), stash in zip(requests.items(), stashes, strict=True)
-    }
+    objects = {}
+    for (key, (_, names)), stash in zip(requests.items(), stashes, strict=True):
+        arrays = {}
+        for name in names:
+            field, _, block = name.partition(".")
+            value = getattr(stash, field)  # config-access-exempt: stored field names select stash arrays
+            arrays[name] = value[tuple(map(int, block.split("-")))] if block else value
+        objects[key] = arrays
+    return objects
 
 
 def _validate_candidates(rollout_data: dict, k: int) -> None:

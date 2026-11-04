@@ -1039,7 +1039,7 @@ def _store_record(
         arrays[MASK_SUPPORT_LOGPROBS] = np.asarray(log_probs, dtype=np.float32)
     if routed_experts is not None:
         request["return_routed_experts"] = True
-        arrays[R3] = routed_experts
+        arrays[f"{R3}.0-{routed_experts.shape[1]}"] = routed_experts
     if routed_experts_start_len is not None:
         request["routed_experts_start_len"] = routed_experts_start_len
     meta_info = {

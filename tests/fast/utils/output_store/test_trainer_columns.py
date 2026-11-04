@@ -13,7 +13,7 @@ import torch
 from tests.fast.fixtures.driver_fakes import FakeObjectStore
 from tests.fast.ray.rollout.conftest import make_args
 from tests.fast.train_parallel_config_utils import make_train_parallel_config
-from tests.fast.utils.output_store.test_plan import fake_store_refs
+from tests.fast.utils.output_store.test_plan import Ref, Spec, fake_store_refs
 from tests.fast.utils.output_store.test_plan_vs_inline import LAYERS, run_case
 
 from miles.ray.rollout.train_data_conversion import (
@@ -26,7 +26,7 @@ from miles.rollout.generate_utils import tool_call_utils
 from miles.utils import object_store
 from miles.utils.data import process_rollout_data
 from miles.utils.object_store import ObjectStoreGetResult
-from miles.utils.output_store.plan import MASK_SUPPORT_LOGPROBS, StorePlanError
+from miles.utils.output_store.plan import MASK_SUPPORT_LOGPROBS, StorePlan, StorePlanError
 from miles.utils.output_store.trainer_columns import materialize_store_columns
 
 DP_SIZE = 2
@@ -43,9 +43,63 @@ def reader(objects: dict, calls: list):
 
     def read(requests):
         calls.append([(ref.key, tuple(names)) for ref, names in requests])
-        return [SimpleNamespace(**{name: objects[ref.key][name] for name in names}) for ref, names in requests]
+        stashes = []
+        for ref, names in requests:
+            values = {}
+            for name in names:
+                field, _, block = name.partition(".")
+                array = objects[ref.key][name]
+                if block:
+                    values.setdefault(field, {})[tuple(map(int, block.split("-")))] = array
+                else:
+                    values[field] = array
+            stashes.append(SimpleNamespace(**values))
+        return stashes
 
     return read
+
+
+@pytest.mark.parametrize("splits", [[], [1], [2, 10]])
+def test_layer_blocks_reassemble_routing_and_indexer_rows_across_incremental_responses(splits):
+    routed = np.arange(6 * 12 * 2, dtype=np.int32).reshape(6, 12, 2)
+    # A dense-only block may be zero; the all-zero check applies to the whole response.
+    routed[:, :2] = 0
+    indexer = np.arange(6 * 3 * 4, dtype=np.int32).reshape(6, 3, 4)
+    objects, plan = {}, None
+    for key, start, end in [("a", 0, 3), ("b", 3, 6)]:
+        arrays = {}
+        for name, rows, edges in (
+            ("routed_experts", routed[start:end], [0, *splits, 12]),
+            ("indexer_topk", indexer[:end], [0, 1, 3]),
+        ):
+            # Neither insertion order nor lexicographic name order is layer order.
+            for a, b in reversed(list(zip(edges[:-1], edges[1:], strict=True))):
+                arrays[f"{name}.{a}-{b}"] = rows[:, a:b]
+        objects[key] = arrays
+        ref = Ref(key, tuple(Spec(n, a.dtype.name, a.shape) for n, a in arrays.items()))
+        response = StorePlan.from_response(
+            ref,
+            request={"return_routed_experts": True, "return_indexer_topk": True, "routed_experts_start_len": start},
+            num_tokens=end + 1,
+            response_length=1,
+        )
+        plan = response if plan is None else plan.append_response(response)
+    args = make_args(
+        rollout_top_logprobs_num=0,
+        rollout_sampling_logprobs_mode="selected",
+        backend=SimpleNamespace(rollout_indexer_topk_num_streams=3),
+    )
+    data = {"rollout_store_plan": [plan.to_dict()], "tokens": [list(range(7))], "response_lengths": [1]}
+    calls = []
+
+    materialize_store_columns(args, data, read=reader(objects, calls))
+
+    np.testing.assert_array_equal(data["rollout_routed_experts"][0], routed)
+    np.testing.assert_array_equal(data["rollout_indexer_topk"][0], indexer)
+    assert data["rollout_routed_experts"][0].dtype == data["rollout_indexer_topk"][0].dtype == np.int32
+    (requests,) = calls
+    assert len(requests) == 2
+    assert all("." in name for _, names in requests for name in names)
 
 
 def rollout(seed: int):

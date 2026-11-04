@@ -59,8 +59,8 @@ def fake_store_refs(monkeypatch) -> None:
 def ref(key: str, *, seq_rows: int | None = None, mask_rows: int | None = None) -> Ref:
     specs = []
     if seq_rows is not None:
-        specs.append(Spec(R3, "int32", (seq_rows, 2, 4)))
-        specs.append(Spec(INDEXER, "int32", (seq_rows, 2, 8)))
+        specs.append(Spec(f"{R3}.0-2", "int32", (seq_rows, 2, 4)))
+        specs.append(Spec(f"{INDEXER}.0-2", "int32", (seq_rows, 2, 8)))
     if mask_rows is not None:
         specs.append(Spec(MASK_LENGTHS, "int32", (mask_rows,)))
         specs.append(Spec(MASK_TOKEN_IDS, "int32", (3 * mask_rows,)))
@@ -88,6 +88,27 @@ def segs(plan: StorePlan, name: str) -> list[tuple[str | None, int, int]]:
 
 
 class TestFromResponse:
+    @pytest.mark.parametrize(
+        "parts",
+        [
+            [(1, 3, (4, 2, 4))],
+            [(0, 1, (4, 1, 4)), (2, 3, (4, 1, 4))],
+            [(0, 2, (4, 2, 4)), (1, 3, (4, 2, 4))],
+            [(0, 0, (4, 0, 4))],
+            [(0, 2, (4, 1, 4))],
+            [(0, 2, (4, 2))],
+        ],
+    )
+    def test_layer_blocks_must_tile_the_layer_axis_and_match_their_shapes(self, parts):
+        stored = Ref("a", tuple(Spec(f"{R3}.{a}-{b}", "int32", shape) for a, b, shape in parts))
+        with pytest.raises(StorePlanError, match="does not tile"):
+            StorePlan.from_response(stored, request=request({R3}), num_tokens=5, response_length=2)
+
+    def test_every_layer_block_must_hold_every_forward_row(self):
+        stored = Ref("a", (Spec(f"{R3}.0-1", "int32", (4, 1, 4)), Spec(f"{R3}.1-2", "int32", (3, 1, 4))))
+        with pytest.raises(StorePlanError, match="has 3 rows; expected 4"):
+            StorePlan.from_response(stored, request=request({R3}), num_tokens=5, response_length=2)
+
     def test_requested_fields_take_every_row_of_the_object(self):
         plan = response("a", prompt=3, output=2)
         assert segs(plan, R3) == [("a", 0, 4)] and segs(plan, INDEXER) == [("a", 0, 4)]
@@ -136,7 +157,7 @@ class TestFromResponse:
 
     def test_an_incremental_forward_covers_only_its_new_rows(self):
         # The object of routed experts starts at sequence position 4; indexer top-k always covers all of it.
-        b = Ref("b", (Spec(R3, "int32", (6, 2, 4)), Spec(INDEXER, "int32", (10, 2, 8))))
+        b = Ref("b", (Spec(f"{R3}.0-2", "int32", (6, 2, 4)), Spec(f"{INDEXER}.0-2", "int32", (10, 2, 8))))
         plan = StorePlan.from_response(
             b, request=request({R3, INDEXER}, routed_experts_start_len=4), num_tokens=11, response_length=1
         )
@@ -163,7 +184,12 @@ class TestEdits:
         # 3 observation tokens, then a turn over 8 input tokens and 1 output token (forward rows 0..7),
         # whose object stores rows 4..7 only.
         b = Ref(
-            "b", (Spec(R3, "int32", (4, 2, 4)), Spec(MASK_LENGTHS, "int32", (1,)), Spec(MASK_TOKEN_IDS, "int32", (3,)))
+            "b",
+            (
+                Spec(f"{R3}.0-2", "int32", (4, 2, 4)),
+                Spec(MASK_LENGTHS, "int32", (1,)),
+                Spec(MASK_TOKEN_IDS, "int32", (3,)),
+            ),
         )
         turn2 = StorePlan.from_response(
             b, request=request({R3, MASK}, routed_experts_start_len=4), num_tokens=9, response_length=1
@@ -179,7 +205,7 @@ class TestEdits:
         # Rows 0..3 came before, but the next object starts at position 5: a row is missing.
         before = response("a", prompt=3, output=2, requested={R3})
         later = StorePlan.from_response(
-            Ref("b", (Spec(R3, "int32", (3, 2, 4)),)),
+            Ref("b", (Spec(f"{R3}.0-2", "int32", (3, 2, 4)),)),
             request=request({R3}, routed_experts_start_len=5),
             num_tokens=9,
             response_length=1,
@@ -237,7 +263,7 @@ class TestReads:
 
         # "a"'s forward rows were replaced by "b"'s; "x" is owned but unused.
         assert {key: names for key, (_, names) in reads.items()} == {
-            "b": [R3, INDEXER, MASK_LENGTHS, MASK_TOKEN_IDS, MASK_SUPPORT_LOGPROBS],
+            "b": [f"{R3}.0-2", f"{INDEXER}.0-2", MASK_LENGTHS, MASK_TOKEN_IDS, MASK_SUPPORT_LOGPROBS],
             "a": [MASK_LENGTHS, MASK_TOKEN_IDS, MASK_SUPPORT_LOGPROBS],
         }
         assert reads["b"][0] is plan.fields[R3].segs[0].ref
@@ -249,7 +275,7 @@ class TestReads:
 
         reads = store_reads([merged, alone], support_topk=2)
 
-        assert reads["a"][1] == [MASK_LENGTHS, MASK_TOKEN_IDS, MASK_SUPPORT_LOGPROBS, R3, INDEXER]
+        assert reads["a"][1] == [MASK_LENGTHS, MASK_TOKEN_IDS, MASK_SUPPORT_LOGPROBS, f"{R3}.0-2", f"{INDEXER}.0-2"]
 
     def test_support_log_probs_are_read_only_in_support_mode(self):
         # A selected-mode request: SGLang stores no support log-probs.
@@ -308,7 +334,7 @@ def test_no_ref_stays_none():
 
 def test_store_refs_round_trip():
     rtp = pytest.importorskip("radix_transfer_plugins")
-    spec = rtp.FieldSpec(name=R3, dtype="int32", shape=(4, 2, 4), codec="raw", nbytes=128)
+    spec = rtp.FieldSpec(name=f"{R3}.0-2", dtype="int32", shape=(4, 2, 4), codec="raw", nbytes=128)
     plan = StorePlan.from_response(
         rtp.StoreRef(backend="mooncake", key="k", fields=(spec,)),
         request=request({R3}),
@@ -343,13 +369,13 @@ def mask_arrays(supports: list[list[int]], logprobs: list[list[float]] | None = 
 
 def rows_of(name: str, *segs: tuple[str, int, int]):
     cls = {cls.name: cls for cls in FIELDS}[name]
-    return cls(tuple(Seg(None if key is None else ref(key), start, end) for key, start, end in segs))
+    return cls(tuple(Seg(None if key is None else ref(key, seq_rows=end), start, end) for key, start, end in segs))
 
 
 class TestMaterializeForward:
     def test_rows_are_concatenated_across_objects_in_plan_order(self):
         a, b = r3(4, 1), r3(6, 2)
-        objects = {"a": {R3: a}, "b": {R3: b}}
+        objects = {"a": {f"{R3}.0-2": a}, "b": {f"{R3}.0-2": b}}
 
         columns = rows_of(R3, ("a", 0, 4), ("b", 0, 6)).materialize(objects, response_tokens=np.empty(0), **opts())
 
@@ -359,15 +385,15 @@ class TestMaterializeForward:
         np.testing.assert_array_equal(partial["rollout_routed_experts"], b[1:3])
 
     def test_all_zero_routed_experts_are_rejected_per_object(self):
-        objects = {"a": {R3: r3(4, 1)}, "b": {R3: np.zeros((3, 2, 4), dtype=np.int32)}}
+        objects = {"a": {f"{R3}.0-2": r3(4, 1)}, "b": {f"{R3}.0-2": np.zeros((3, 2, 4), dtype=np.int32)}}
         with pytest.raises(StorePlanError, match="all zeros"):
             rows_of(R3, ("a", 0, 4), ("b", 0, 3)).materialize(objects, response_tokens=np.empty(0), **opts())
         # Expert 0 is valid: only a whole object of zeros is rejected, not the zero rows a plan keeps.
-        objects["b"][R3] = np.concatenate([np.zeros((2, 2, 4), dtype=np.int32), r3(1, 2)])
+        objects["b"][f"{R3}.0-2"] = np.concatenate([np.zeros((2, 2, 4), dtype=np.int32), r3(1, 2)])
         rows_of(R3, ("a", 0, 4), ("b", 0, 2)).materialize(objects, response_tokens=np.empty(0), **opts())
 
     def test_indexer_streams_must_match_the_model(self):
-        objects = {"a": {INDEXER: r3(3, 3, streams=2)}}
+        objects = {"a": {f"{INDEXER}.0-2": r3(3, 3, streams=2)}}
         columns = rows_of(INDEXER, ("a", 0, 3)).materialize(objects, response_tokens=np.empty(0), **opts())
         assert columns["rollout_indexer_topk"].shape == (3, 2, 4)
         with pytest.raises(StorePlanError, match="2 streams but the model has 4"):
@@ -443,7 +469,7 @@ def test_plan_materialize_merges_every_fields_columns():
     plan = StorePlan.from_response(
         ref("a", seq_rows=4, mask_rows=2), request=request(), num_tokens=5, response_length=2
     )
-    objects = {"a": {R3: r3(4, 1), INDEXER: r3(4, 2), **mask_arrays([[5, 6], [8]])}}
+    objects = {"a": {f"{R3}.0-2": r3(4, 1), f"{INDEXER}.0-2": r3(4, 2), **mask_arrays([[5, 6], [8]])}}
 
     columns = plan.materialize(objects, response_tokens=np.asarray([6, 8]), **opts())
 

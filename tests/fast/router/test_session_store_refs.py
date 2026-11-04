@@ -61,7 +61,7 @@ class _Backend:
         if payload.get(OUTPUT_STORE_REQUEST_KEY) and not self.drop_opt_in:
             rows = len(payload["input_ids"]) + len(self.output_ids) - 1
             meta_info[OUTPUT_STORE_REF_KEY] = Ref(
-                f"key-{self.num_calls}", (Spec(R3, "int32", (rows, LAYERS, TOPK)),)
+                f"key-{self.num_calls}", (Spec(f"{R3}.0-{LAYERS}", "int32", (rows, LAYERS, TOPK)),)
             ).to_builtins()
         choice = {
             "index": 0,

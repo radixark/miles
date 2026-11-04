@@ -24,6 +24,7 @@ rows like the inline path: forward fields ``len(tokens) - 1``, the mask ``respon
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple
@@ -115,15 +116,22 @@ class Segments:
         cls, ref: StoreRef | None, specs: Mapping[str, Any], rows: int, *, no_output_abort: bool
     ) -> tuple[Seg, ...]:
         """All rows of the response's object, which must hold exactly ``rows``."""
-        spec = specs.get(cls.stored[0])
-        if spec is None:
+        counted = cls._row_specs(specs)
+        if not counted:
             # Aborted in SGLang's waiting queue: no ref; aborted after prefill: no mask.
             if no_output_abort and (ref is None or rows == 0):
                 return ()
             raise StorePlanError(f"the request asked for {cls.name}, but the response's output store ref has none")
-        if spec.shape[0] != rows:
-            raise StorePlanError(f"stored {cls.stored[0]} has {spec.shape[0]} rows; expected {rows}")
+        for spec in counted:
+            if spec.shape[0] != rows:
+                raise StorePlanError(f"stored {spec.name} has {spec.shape[0]} rows; expected {rows}")
         return (Seg(ref, 0, rows),) if rows else ()
+
+    @classmethod
+    def _row_specs(cls, specs: Mapping[str, Any]) -> list[Any]:
+        """Stored arrays whose leading dimension counts this field's rows."""
+        spec = specs.get(cls.stored[0])
+        return [] if spec is None else [spec]
 
     def append(self, new: Segments) -> Segments:
         """A later response of the same sample."""
@@ -154,7 +162,7 @@ class Segments:
         """
         raise NotImplementedError
 
-    def needed(self, *, support_topk: int) -> tuple[str, ...]:
+    def needed(self, *, ref: StoreRef, support_topk: int) -> tuple[str, ...]:
         """The stored arrays ``materialize`` reads from this field's objects."""
         return self.stored
 
@@ -173,6 +181,24 @@ class ForwardSegments(Segments):
     column: ClassVar[str]
     # The request field holding the field's start position; None means always 0.
     start_key: ClassVar[str | None] = None
+
+    @classmethod
+    def _row_specs(cls, specs: Mapping[str, Any]) -> list[Any]:
+        # SGLang stores even an unsplit forward field as one name.0-end block.
+        blocks = sorted(
+            (int(match[1]), int(match[2]), spec)
+            for name, spec in specs.items()
+            if (match := re.fullmatch(rf"{re.escape(cls.name)}\.(\d+)-(\d+)", name)) is not None
+        )
+        end = 0
+        for start, stop, spec in blocks:
+            if start != end or stop <= start or len(spec.shape) != 3 or spec.shape[1] != stop - start:
+                raise StorePlanError(f"stored {spec.name} with shape {spec.shape} does not tile {cls.name} from {end}")
+            end = stop
+        return [spec for _, _, spec in blocks]
+
+    def needed(self, *, ref: StoreRef, support_topk: int) -> tuple[str, ...]:
+        return tuple(spec.name for spec in self._row_specs({spec.name: spec for spec in ref.fields}))
 
     @classmethod
     def from_ref(
@@ -216,10 +242,17 @@ class ForwardSegments(Segments):
         support_topk: int,
         indexer_streams: int | None,
     ) -> dict[str, Any]:
-        (name,) = self.stored
-        for key in dict.fromkeys(seg.ref.key for seg in self.segs):
-            self.check(objects[key][name], indexer_streams=indexer_streams)
-        return {self.column: np.concatenate([objects[seg.ref.key][name][seg.start : seg.end] for seg in self.segs])}
+        arrays = {}
+        for seg in self.segs:
+            key = seg.ref.key
+            if key in arrays:
+                continue
+            names = self.needed(ref=seg.ref, support_topk=support_topk)
+            parts = [objects[key][name] for name in names]
+            rows = parts[0] if len(parts) == 1 else np.concatenate(parts, axis=1)
+            self.check(rows, indexer_streams=indexer_streams)
+            arrays[key] = rows
+        return {self.column: np.concatenate([arrays[seg.ref.key][seg.start : seg.end] for seg in self.segs])}
 
     def check(self, rows: np.ndarray, *, indexer_streams: int | None) -> None:
         """The field's check of every row one response stored."""
@@ -283,7 +316,7 @@ class SamplingMaskSegments(Segments):
     def expected_rows(*, num_tokens: int, response_length: int) -> int:
         return response_length
 
-    def needed(self, *, support_topk: int) -> tuple[str, ...]:
+    def needed(self, *, ref: StoreRef, support_topk: int) -> tuple[str, ...]:
         # Support log-probs exist only for support requests.
         return self.stored if support_topk else (MASK_LENGTHS, MASK_TOKEN_IDS)
 
@@ -516,10 +549,10 @@ def store_reads(plans: Iterable[StorePlan], *, support_topk: int) -> dict[str, t
     reads: dict[str, tuple[StoreRef, list[str]]] = {}
     for plan in plans:
         for segments in plan.fields.values():
-            needed = segments.needed(support_topk=support_topk)
             for seg in segments.segs:
                 if seg.ref is None:
                     continue
+                needed = segments.needed(ref=seg.ref, support_topk=support_topk)
                 names = reads.setdefault(seg.ref.key, (seg.ref, []))[1]
                 names += [name for name in needed if name not in names]
     return reads
