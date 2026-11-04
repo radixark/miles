@@ -432,7 +432,7 @@ per tenant. The key identifies ownership of models, futures, and checkpoints.
 Each adapter accumulates gradients until its client submits an optimizer step;
 saving weights for sampling publishes an immutable adapter version.
 
-`--experts-shared-outer-loras` also works with multi-LoRA: routed experts share
+`--experts-shared-outer-loras` also works with multi-LoRA on Bridge: routed experts share
 the hidden-side factor within each adapter, while tenants remain independent.
 The flag applies to the whole server and preserves the single-LoRA export format.
 SGLang currently rejects combining this layout with fused shared experts.

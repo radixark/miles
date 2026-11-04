@@ -109,12 +109,13 @@ native.
 
 The trainer rejects a multi-LoRA launch that breaks any of these constraints:
 
-- `--megatron-to-hf-mode bridge`: the adapter slots are Megatron-Bridge adapters.
+- On native LoRA (`--megatron-to-hf-mode raw`): no expert adapters, and context parallel size 1 for GDN
+  `in_proj` / GLM-5.3 KDA slots.
 - Separate training and sampling GPUs: no `--colocate` and no `--offload-train`,
   because each adapter's gradients stay in GPU buffers between calls.
 - `--pipeline-model-parallel-size 1` and `--qkv-format thd`.
 - Adam optimizer in BF16, without the distributed optimizer.
-- For adapters on MoE experts: grouped-GEMM experts, expert tensor parallel size 1,
+- On Bridge, for adapters on MoE experts: grouped-GEMM experts, expert tensor parallel size 1,
   BF16 experts (no FP8/FP4 training), and all of `gate_proj`, `up_proj` and
   `down_proj` targeted. The rollout engines may still serve a quantized base.
 - SGLang without attention DP, and with one tokenizer worker.
