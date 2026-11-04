@@ -158,6 +158,11 @@ def _kimi_k3_targets(config):
     return attention, tuple(mlp)
 
 
+def _glm4_targets(config):
+    # HF GLM-4 keeps gate / up fused in one dense gate_up_proj
+    return _QKVO_ATTENTION, _prefix_paths("mlp", "gate_up_proj", "down_proj")
+
+
 def _glm4_moe_targets(config):
     return _QKVO_ATTENTION, _deepseek_mlp_targets(config)
 
@@ -323,7 +328,10 @@ _HF_LORA_MODELS = {
         unembed="language_model.lm_head",
         unwrap_text_config=True,
     ),
+    "glm4": _HfLoraModelSpec(_glm4_targets),
     "glm4_moe": _HfLoraModelSpec(_glm4_moe_targets),
+    # GLM-4.7-Flash: MLA attention with dense / sparse MLPs chosen per layer, as GLM-5's DSA stack
+    "glm4_moe_lite": _HfLoraModelSpec(_glm_dsa_targets),
     "glm_moe_dsa": _HfLoraModelSpec(_glm_dsa_targets),
     "glm5_next": _HfLoraModelSpec(
         _glm5_next_targets, layer_prefix="model.language_model.layers.*", unwrap_text_config=True

@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 from safetensors.torch import save_file
-from transformers import AutoConfig, LlamaConfig
+from transformers import AutoConfig, LlamaConfig, PretrainedConfig
 
 from miles.utils.lora import arguments as lora_arguments
 from miles.utils.lora.arguments import (
@@ -80,6 +80,12 @@ _NO_SNAPSHOTS = dict(
 )
 
 
+class _MimoConfig(PretrainedConfig):
+    """A family native trains with no HF LoRA layout; transformers ships no MiMo config."""
+
+    model_type = "mimo"
+
+
 @pytest.mark.parametrize(
     "overrides",
     [
@@ -91,26 +97,26 @@ _NO_SNAPSHOTS = dict(
     ids=["save", "save_hf", "eval_snapshots", "lora_adapter_path"],
 )
 def test_adapter_slots_need_the_families_hf_lora_layout(overrides) -> None:
-    """Native trains glm4, which has no HF LoRA layout; saving or loading its adapter would crash building the slots."""
+    """Native trains mimo, which has no HF LoRA layout; saving or loading its adapter would crash building the slots."""
     args = Namespace(**(_NO_SNAPSHOTS | overrides))
-    with pytest.raises(AssertionError, match="model_type='glm4', which miles does not define"):
-        _assert_adapter_layout_defined(args, AutoConfig.for_model("glm4"))
+    with pytest.raises(AssertionError, match="model_type='mimo', which miles does not define"):
+        _assert_adapter_layout_defined(args, _MimoConfig())
     _assert_adapter_layout_defined(args, AutoConfig.for_model("qwen3"))
 
 
 def test_a_rollout_only_run_builds_no_slots_for_any_family() -> None:
     args = Namespace(**(_NO_SNAPSHOTS | {"lora_adapter_path": "/adapter", "debug_rollout_only": True}))
-    _assert_adapter_layout_defined(args, AutoConfig.for_model("glm4"))
+    _assert_adapter_layout_defined(args, _MimoConfig())
 
 
 def test_an_eval_dir_without_eval_snapshots_builds_no_slots() -> None:
     """The actor publishes eval snapshots only under eval_uses_snapshots; validation must not refuse the run."""
     args = Namespace(**(_NO_SNAPSHOTS | {"eval_hf_dir": "/eval"}))
-    _assert_adapter_layout_defined(args, AutoConfig.for_model("glm4"))
+    _assert_adapter_layout_defined(args, _MimoConfig())
 
 
 def test_a_run_without_adapter_snapshots_trains_any_family() -> None:
-    _assert_adapter_layout_defined(Namespace(**_NO_SNAPSHOTS), AutoConfig.for_model("glm4"))
+    _assert_adapter_layout_defined(Namespace(**_NO_SNAPSHOTS), _MimoConfig())
 
 
 def _adapter_state_args(**overrides) -> Namespace:
