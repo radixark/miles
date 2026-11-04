@@ -552,8 +552,7 @@ def test_a_trained_head_declares_its_served_rows_and_the_hf_vocab_a_source_may_h
 
 
 def _offloaded_optimizer():
-    """A ChainedOptimizer over one DistributedOptimizer whose HybridDeviceOptimizer state is empty, and the list its
-    dummy steps land in."""
+    """One DistributedOptimizer over an empty HybridDeviceOptimizer state; dummy steps land in the returned list."""
     from megatron.core.optimizer import ChainedOptimizer, DistributedOptimizer
     from megatron.core.optimizer.cpu_offloading.hybrid_optimizer import HybridDeviceOptimizer
 
@@ -588,7 +587,7 @@ def _offloaded_optimizer():
 
 
 def _checked_loader(optimizer, members, monkeypatch, *, load_optimizer=True):
-    """A loader over an empty model whose source read is stubbed: its own checks and load run for real."""
+    """A loader over an empty model with a stubbed source read."""
     run = AdapterParametrization("base", 4, 8.0, "lora", ("model.layers.0.self_attn.q_proj",), False)
     loader = bridge_peft_checkpoint.MegatronBridgeCheckpointLoader([], optimizer, members, run, load_optimizer)
     monkeypatch.setattr(bridge_peft_checkpoint, "unwrap_model", lambda model: [])
