@@ -101,6 +101,22 @@ def test_an_optimizer_other_than_megatrons_distributed_one_is_refused():
         members._distributed_optimizers()
 
 
+def test_a_legacy_optimizer_load_refuses_an_optimizer_other_than_megatrons_distributed_one(tmp_path):
+    run = AdapterParametrization.__new__(AdapterParametrization)
+    optimizer = SimpleNamespace(chained_optimizers=[MagicMock()])
+    state = {"optimizer": {}, "parameter_state": [{}]}
+    with patch.multiple(
+        _MODULE,
+        _native_adapter_shard=DEFAULT,
+        _load_native_adapter_shard=DEFAULT,
+        _load_training_state=MagicMock(return_value=state),
+        replace=DEFAULT,
+    ):
+        loader = LegacyRankShardLoader([], optimizer, run, load_optimizer=True, precision_aware=False)
+        with pytest.raises(AssertionError, match="--use-distributed-optimizer"):
+            loader(tmp_path)
+
+
 def _offloaded_optimizer(*, offloaded: bool) -> tuple[HybridDeviceOptimizer, torch.nn.Parameter, torch.nn.Parameter]:
     """An HDO with one GPU-resident parameter and, if ``offloaded``, one host one; built without CUDA."""
     host, device = torch.nn.Parameter(torch.zeros(2)), torch.nn.Parameter(torch.zeros(2))

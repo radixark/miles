@@ -24,7 +24,6 @@ from megatron.core.utils import unwrap_model
 from miles.backends.megatron_utils.lora.bridge_checkpoint import BridgeAdapterSlots
 from miles.backends.megatron_utils.lora.optimizer import SlotOptimizer
 from miles.backends.megatron_utils.lora.utils import (
-    _distributed_optimizers,
     _load_native_adapter_shard,
     _load_training_state,
     _native_adapter_shard,
@@ -143,6 +142,15 @@ class LayerWiseSlotMembers:
         optimizer.allgather_params()
 
 
+def _distributed_optimizers(optimizer) -> list:
+    subs = optimizer.chained_optimizers
+    # another optimizer's state would be silently left out of the checkpoint
+    assert all(
+        isinstance(sub, DistributedOptimizer) for sub in subs
+    ), f"the adapter checkpoint needs --use-distributed-optimizer; got {[type(sub).__name__ for sub in subs]}"
+    return subs
+
+
 class DistributedOptimizerMembers:
     """Checkpoint members of Bridge single LoRA (slot 0) trained by Megatron's DistributedOptimizer.
 
@@ -185,12 +193,7 @@ class DistributedOptimizerMembers:
         return self._slots.local_shard_specs(0, self._holds())
 
     def _distributed_optimizers(self) -> list:
-        subs = self._optimizer.chained_optimizers
-        # another optimizer's state would be silently left out of the checkpoint
-        assert all(
-            isinstance(sub, DistributedOptimizer) for sub in subs
-        ), f"the adapter checkpoint needs --use-distributed-optimizer; got {[type(sub).__name__ for sub in subs]}"
-        return subs
+        return _distributed_optimizers(self._optimizer)
 
     def _whole_state(self) -> tuple[dict[int, dict[str, torch.Tensor]], int | None]:
         """Collective: on each DP group's rank 0, its parameters' whole fp32 master and moments; and the step."""
