@@ -440,6 +440,26 @@ class TestALoraAdapterThatCarriesItsOwnIteration:
         )
         scheduler.step.assert_called_once_with(increment=2 * 16)
 
+    @pytest.mark.parametrize(
+        "adapter_iteration, adapter_first_rollout, schedule_first_rollout",
+        # a fresh adapter: the schedule starts at rollout 20; a source that trained rollouts 5 and 6: 18 = 20 - 2
+        [(None, 0, 20), (6, 5, 18)],
+    )
+    def test_start_rollout_id_moves_the_rollout_a_save_counts_its_schedule_from(
+        self, tmp_path: Path, adapter_iteration, adapter_first_rollout, schedule_first_rollout
+    ) -> None:
+        output = _load_model_state_with(
+            tmp_path=tmp_path,
+            finetune=True,
+            iteration=0,
+            adapter_iteration=adapter_iteration,
+            adapter_first_rollout=adapter_first_rollout,
+            lora_adapter_path=str(tmp_path / "adapter"),
+            resume_from_ckpt=False,
+            start_rollout_id=20,
+        )
+        assert output.schedule_first_rollout == schedule_first_rollout
+
 
 class TestCheckpointSourceRequirement:
     def test_local_checkpoint_manager_allows_loading_without_disk_or_pretrained_path(self) -> None:

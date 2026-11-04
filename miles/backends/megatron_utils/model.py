@@ -1022,7 +1022,8 @@ def build_model_and_optimizer(
 class LoadCheckpointOutput:
     loaded_rollout_id: int
     start_rollout_id: int
-    # the rollout the LR schedule counts from: a restored adapter's, else 0 (the schedule fast-forward's origin)
+    # the rollout the LR schedule counts from: --start-rollout-id less the rollouts it completed, else a restored
+    # adapter's, else 0
     schedule_first_rollout: int
 
 
@@ -1107,6 +1108,12 @@ def load_model_state(
             increment = iteration * args.backend.global_batch_size
         opt_param_scheduler.step(increment=increment)
 
+    schedule_first_rollout = adapter_first_rollout
+    if args.start_rollout_id is not None:
+        # the run starts at --start-rollout-id, not after the restored rollout: the schedule's origin moves with it
+        completed_rollouts = 0 if adapter_iteration is None else adapter_iteration + 1 - adapter_first_rollout
+        schedule_first_rollout = args.start_rollout_id - completed_rollouts
+
     if not restored_trained_iteration:
         assert iteration == 0, f"Weight initialization returned a trained iteration: {iteration}"
         start_rollout_id = 0
@@ -1116,5 +1123,5 @@ def load_model_state(
         start_rollout_id = 0
 
     return LoadCheckpointOutput(
-        loaded_rollout_id=iteration, start_rollout_id=start_rollout_id, schedule_first_rollout=adapter_first_rollout
+        loaded_rollout_id=iteration, start_rollout_id=start_rollout_id, schedule_first_rollout=schedule_first_rollout
     )
