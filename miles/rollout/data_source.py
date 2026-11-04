@@ -10,7 +10,7 @@ from miles.utils.data import Dataset, _parse_generalized_path
 from miles.utils.function_registry import load_function
 from miles.utils.processing_utils import load_processor, load_tokenizer
 from miles.utils.rollout_data_config import RolloutDatasetConfig, load_rollout_data_config, lower_limit
-from miles.utils.simple_checkpointer import load_simple_checkpoint, save_simple_checkpoint
+from miles.utils.simple_checkpointer import has_simple_checkpoint, load_simple_checkpoint, save_simple_checkpoint
 from miles.utils.types import RewardSpec, Sample
 
 logger = logging.getLogger(__name__)
@@ -150,6 +150,12 @@ class RolloutDataSource(DataSource):
             return
 
         state_dict = load_simple_checkpoint(directory=directory)
+        if "offsets" in state_dict:
+            raise RolloutDataResumeMismatch(
+                "the checkpoint holds a --rollout-data-yaml-config mix, so the --prompt-data dataset starts from "
+                "its first prompt",
+                needs_flag=False,
+            )
         self.sample_offset = state_dict.get("sample_offset", 0)
         self.epoch_id = state_dict.get("epoch_id", 0)
         self.sample_group_index = state_dict.get("sample_group_index", 0)
@@ -158,6 +164,12 @@ class RolloutDataSource(DataSource):
 
         if self.args.rollout_global_dataset and self.args.rollout_shuffle:
             self.dataset.shuffle(self.epoch_id)
+
+    def load_sample_ids(self, directory: Path) -> None:
+        """Instead of ``load``, for a reset: the dataset starts over, but sample ids keep counting past the run's."""
+        state_dict = load_simple_checkpoint(directory=directory)
+        self.sample_group_index = state_dict["sample_group_index"]
+        self.sample_index = state_dict["sample_index"]
 
 
 class LegacyRolloutDataSourceWithBuffer(RolloutDataSource):
@@ -245,6 +257,18 @@ def split_by_weight(num_samples: int, weights: list[int], credits: list[int]) ->
     return counts, credits
 
 
+class RolloutDataResumeMismatch(ValueError):
+    """The checkpoint's data source state cannot be resumed under the current data configuration.
+
+    ``needs_flag`` is False when starting the data over is the only sensible resume, so the executor resets
+    without --rollout-data-reset-on-load (e.g. a --rollout-data-yaml-config mix resumed under --prompt-data).
+    """
+
+    def __init__(self, message: str, *, needs_flag: bool = True) -> None:
+        super().__init__(message)
+        self.needs_flag = needs_flag
+
+
 class MixedRolloutDataSource(DataSource):
     """Draws every request from the `--rollout-data-yaml-config` datasets in proportion to their weights.
 
@@ -321,27 +345,46 @@ class MixedRolloutDataSource(DataSource):
             "sample_group_index": self.sample_group_index,
             "sample_index": self.sample_index,
             "sha256": self.dataset_sha256,
+            "settings": {config.name: _resumed_settings(config) for config in self.dataset_configs},
         }
         save_simple_checkpoint(directory=directory, data=state_dict)
 
     def load(self, directory: Path) -> None:
-        state_dict = load_simple_checkpoint(directory=directory)
-        if set(state_dict["offsets"]) != set(self.datasets):
-            raise ValueError(
-                f"the checkpoint mixed datasets {sorted(state_dict['offsets'])}, but --rollout-data-yaml-config now "
-                f"lists {sorted(self.datasets)}"
+        if not has_simple_checkpoint(directory):
+            raise RolloutDataResumeMismatch(
+                f"the checkpoint holds no data source state (a --disable-rollout-global-dataset run){_RESET_HINT}"
             )
+        state_dict = load_simple_checkpoint(directory=directory)
+        if "offsets" not in state_dict:
+            raise RolloutDataResumeMismatch(
+                f"the checkpoint holds a single-dataset (--prompt-data) data source, not a "
+                f"--rollout-data-yaml-config mix{_RESET_HINT}"
+            )
+        if set(state_dict["offsets"]) != set(self.datasets):
+            raise RolloutDataResumeMismatch(
+                f"the checkpoint mixed datasets {sorted(state_dict['offsets'])}, but --rollout-data-yaml-config now "
+                f"lists {sorted(self.datasets)}{_RESET_HINT}"
+            )
+        # groups drawn before the save carry the settings stamped then, so resuming under changed ones would mix both
+        # a checkpoint saved before the settings were recorded has none to compare
+        for config in self.dataset_configs if "settings" in state_dict else []:
+            saved, now = state_dict["settings"][config.name], _resumed_settings(config)
+            if changed := sorted(key for key in saved.keys() | now.keys() if saved.get(key) != now.get(key)):
+                raise RolloutDataResumeMismatch(
+                    f"rollout dataset {config.name!r} changed {', '.join(changed)} since the checkpoint was saved, "
+                    f"but groups drawn before the save still carry the old values{_RESET_HINT}"
+                )
         for name, saved in state_dict["sha256"].items():
             if saved != self.dataset_sha256[name]:
-                raise ValueError(
+                raise RolloutDataResumeMismatch(
                     f"rollout dataset {name!r} changed since the checkpoint was saved: sha256 was {saved}, "
-                    f"now {self.dataset_sha256[name]}"
+                    f"now {self.dataset_sha256[name]}{_RESET_HINT}"
                 )
         # a dataset filtered shorter since the save (e.g. a lower max_prompt_len) cannot resume at its position
         if too_far := {n: o for n, o in state_dict["offsets"].items() if o > len(self.datasets[n])}:
-            raise ValueError(
+            raise RolloutDataResumeMismatch(
                 f"the checkpoint resumes {too_far} past the end of datasets now holding "
-                f"{ {n: len(self.datasets[n]) for n in too_far} } prompts; keep the dataset and its filters unchanged"
+                f"{ {n: len(self.datasets[n]) for n in too_far} } prompts; keep the dataset and its filters unchanged{_RESET_HINT}"
             )
         self.offsets = dict(state_dict["offsets"])
         self.epoch_ids = dict(state_dict["epoch_ids"])
@@ -350,6 +393,18 @@ class MixedRolloutDataSource(DataSource):
         self.sample_group_index = state_dict["sample_group_index"]
         self.sample_index = state_dict["sample_index"]
         self._shuffle_datasets()
+
+    def load_sample_ids(self, directory: Path) -> None:
+        """Instead of ``load``, for a reset: every dataset starts over, but sample ids keep counting past the run's.
+
+        Also reads a single-dataset (--prompt-data) checkpoint, which saves the same two counters; a run that saved
+        no data source state has no ids to continue from.
+        """
+        if not has_simple_checkpoint(directory):
+            return
+        state_dict = load_simple_checkpoint(directory=directory)
+        self.sample_group_index = state_dict["sample_group_index"]
+        self.sample_index = state_dict["sample_index"]
 
     def _shuffle_datasets(self) -> None:
         if self.args.rollout_shuffle:
@@ -389,6 +444,15 @@ class MixedRolloutDataSource(DataSource):
             group.append(sample)
         self.sample_group_index += 1
         return group
+
+
+_RESET_HINT = "; pass --rollout-data-reset-on-load to keep the model and optimizer but start every dataset fresh"
+# samples_per_step may change on resume; the file itself is checked through sha256
+_RESUME_FREE_FIELDS = {"name", "path", "samples_per_step", "sha256"}
+
+
+def _resumed_settings(config: RolloutDatasetConfig) -> dict:
+    return config.model_dump(exclude=_RESUME_FREE_FIELDS, exclude_none=True)
 
 
 def _hash_file(path: str) -> str:

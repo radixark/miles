@@ -71,6 +71,19 @@ class DataConfig(BaseConfig):
             )
         ),
     ] = None
+    rollout_data_reset_on_load: A[
+        bool,
+        Arg(
+            help=(
+                "With --load, start every training dataset over when the checkpoint cannot be resumed under the "
+                "current --rollout-data-yaml-config (other datasets, a changed file or dataset field, or a "
+                "--prompt-data checkpoint), and drop the prompt groups and untrained batches drawn from the old "
+                "data. The model, optimizer, rollout step and sample ids still resume; a checkpoint that does match "
+                "resumes in place, so the flag can stay set. A mix resumed under --prompt-data starts over without "
+                "this flag."
+            )
+        ),
+    ] = False
     apply_chat_template: A[bool, Arg()] = False
     # Temporarily be JSON-serialized str, will be a real dict after using Omegaconf
     apply_chat_template_kwargs: A[Any, Arg(type_parser=json.loads)] = "{}"

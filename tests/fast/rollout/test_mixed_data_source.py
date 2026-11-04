@@ -9,6 +9,7 @@ import yaml
 
 from miles.rollout import data_source
 from miles.rollout.data_source import MixedRolloutDataSource, split_by_weight
+from miles.utils.simple_checkpointer import load_simple_checkpoint, save_simple_checkpoint
 from miles.utils.types import RewardSpec
 
 
@@ -214,9 +215,86 @@ class TestMixedRolloutDataSource:
         assert source.offsets["math"] == 6
         source.save(tmp_path / "ckpt")
 
-        datasets["math"]["max_prompt_len"] = 1
+        # the run-wide limit is not a dataset setting, so only the position check catches it
         with pytest.raises(ValueError, match="past the end"):
+            _make_source(tmp_path, datasets, rollout_max_prompt_len=1).load(tmp_path / "ckpt")
+
+    def test_resume_with_new_weights_keeps_each_position_and_applies_the_new_ratio(self, tmp_path):
+        datasets = _two_datasets(tmp_path)
+        source = _make_source(tmp_path, datasets)
+        source.get_samples(8)
+        source.save(tmp_path / "ckpt")
+
+        datasets["math"]["samples_per_step"] = 1
+        datasets["code"]["samples_per_step"] = 1
+        resumed = _make_source(tmp_path, datasets)
+        resumed.load(tmp_path / "ckpt")
+
+        assert (resumed.offsets, resumed.epoch_ids) == (source.offsets, source.epoch_ids)
+        assert Counter(_names(resumed.get_samples(100))) == {"math": 50, "code": 50}
+
+    @pytest.mark.parametrize(
+        "change", [{"custom_generate_function_path": "json.dumps"}, {"rm_type": "math"}, {"max_prompt_len": 100}]
+    )
+    def test_resume_refuses_a_changed_dataset_setting(self, tmp_path, change):
+        """Groups drawn before the save still carry the old setting, so resuming under a new one would mix both."""
+        datasets = _two_datasets(tmp_path)
+        _make_source(tmp_path, datasets).save(tmp_path / "ckpt")
+
+        datasets["code"] |= change
+        with pytest.raises(ValueError, match=f"'code' changed {next(iter(change))}.*--rollout-data-reset-on-load"):
             _make_source(tmp_path, datasets).load(tmp_path / "ckpt")
+
+    def test_a_reset_keeps_counting_sample_ids_but_starts_every_dataset_over(self, tmp_path):
+        """Reusing trained sample ids after a reset would collide with the restored ownership records."""
+        datasets = _two_datasets(tmp_path)
+        source = _make_source(tmp_path, datasets)
+        source.get_samples(8)
+        source.save(tmp_path / "ckpt")
+
+        del datasets["code"]
+        reset = _make_source(tmp_path, datasets)
+        reset.load_sample_ids(tmp_path / "ckpt")
+
+        assert (reset.sample_index, reset.sample_group_index) == (source.sample_index, source.sample_group_index)
+        assert reset.offsets == {"math": 0}
+
+    def test_a_checkpoint_saved_before_settings_were_recorded_still_resumes(self, tmp_path):
+        datasets = _two_datasets(tmp_path)
+        source = _make_source(tmp_path, datasets)
+        source.get_samples(8)
+        source.save(tmp_path / "ckpt")
+        state = load_simple_checkpoint(directory=tmp_path / "ckpt")
+        del state["settings"]
+        save_simple_checkpoint(directory=tmp_path / "old", data=state)
+
+        resumed = _make_source(tmp_path, datasets)
+        resumed.load(tmp_path / "old")
+        assert resumed.offsets == source.offsets
+
+    def test_a_single_dataset_checkpoint_is_a_mismatch_that_a_reset_can_continue_from(self, tmp_path):
+        """Moving a --prompt-data run onto a mix must reach the reset path, not crash on a missing key."""
+        save_simple_checkpoint(
+            directory=tmp_path / "ckpt",
+            data={"sample_offset": 4, "epoch_id": 0, "sample_group_index": 5, "sample_index": 10, "metadata": {}},
+        )
+        source = _make_source(tmp_path, _two_datasets(tmp_path))
+        with pytest.raises(data_source.RolloutDataResumeMismatch, match="single-dataset"):
+            source.load(tmp_path / "ckpt")
+
+        source.load_sample_ids(tmp_path / "ckpt")
+        assert (source.sample_index, source.sample_group_index) == (10, 5)
+
+    def test_a_checkpoint_without_data_source_state_is_a_mismatch(self, tmp_path):
+        """A --disable-rollout-global-dataset run saves none, and the flag must be able to move it onto a mix."""
+        source = _make_source(tmp_path, _two_datasets(tmp_path))
+        (tmp_path / "ckpt").mkdir()
+
+        with pytest.raises(data_source.RolloutDataResumeMismatch, match="no data source state") as err:
+            source.load(tmp_path / "ckpt")
+        assert err.value.needs_flag
+        source.load_sample_ids(tmp_path / "ckpt")
+        assert source.sample_index == 0
 
     def test_resume_refuses_a_different_dataset_list(self, tmp_path):
         datasets = _two_datasets(tmp_path)

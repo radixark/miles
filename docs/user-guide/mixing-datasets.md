@@ -69,6 +69,19 @@ so with `--custom-rm-path` set, a dataset's `rm_type` needs its own `custom_rm_p
 - **Separate epochs.** Each dataset has its own position, epoch and shuffle, and wraps around on its own.
   The checkpoint saves all of them, and resuming also re-checks every file's SHA-256.
 
+### Resuming with different datasets
+
+A resumed run continues every dataset from its saved position, so `--load` refuses a YAML that lists other
+datasets, a changed file, a dataset filtered shorter than its saved position, or any other changed dataset field
+(groups drawn before the save still carry the old generate function, agent or reward). Changing only the
+`samples_per_step` weights is fine. To switch datasets mid-training, add `--rollout-data-reset-on-load`: the
+model, optimizer, rollout step and sample ids still resume from `--load`, while every dataset starts from its
+beginning and the prompt groups and untrained batches drawn from the old datasets are dropped. The reset happens
+only when the checkpoint does not match the current YAML, so the flag can stay in the launch command: later
+resumes from the run's own checkpoints continue in place. The same flag moves a run started with `--prompt-data`
+onto a mix. The other way needs no flag: a mix resumed under `--prompt-data` starts that dataset from its first
+prompt, with the same drops and the same sample ids.
+
 Every sample carries `metadata["dataset_name"]`, and the rollout metrics add
 `rollout/dataset/<name>/{episode_raw_reward,response_len/mean,truncated_ratio,num_training_samples}`.
 
