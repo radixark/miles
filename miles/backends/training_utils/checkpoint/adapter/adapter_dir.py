@@ -168,6 +168,8 @@ def write_peft_export(
     slot: int,
     parametrization: AdapterParametrization,
     targets: HfLoraTargets,
+    *,
+    lora_dropout: float,
 ) -> None:
     """All ranks call; rank 0 writes ``slot``'s bf16 PEFT export into ``directory``."""
     error = None
@@ -185,6 +187,7 @@ def write_peft_export(
                 parametrization,
                 targets,
                 stacked_keys=_stacked_expert_keys(named_tensors, map_name),
+                lora_dropout=lora_dropout,
             )
     except Exception as exc:
         error = exc

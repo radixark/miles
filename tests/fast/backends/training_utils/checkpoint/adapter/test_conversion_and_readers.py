@@ -424,7 +424,9 @@ def test_mixed_tinker_and_hf_names_are_refused(tmp_path):
 
 
 def test_an_edited_sampler_config_is_refused(tmp_path):
-    write_sampler_adapter(tmp_path, {k: v.to(torch.bfloat16) for k, v in _weights(False).items()}, _run(), QWEN35, lora_dropout=0.0)
+    write_sampler_adapter(
+        tmp_path, {k: v.to(torch.bfloat16) for k, v in _weights(False).items()}, _run(), QWEN35, lora_dropout=0.0
+    )
     config = json.loads((tmp_path / "adapter_config.json").read_text()) | {"lora_alpha": 99}
     (tmp_path / "adapter_config.json").write_text(json.dumps(config))
     with pytest.raises(AdapterSourceError, match="disagrees"):
@@ -489,7 +491,7 @@ def test_an_expert_module_the_export_stacks_stays_stacked(tmp_path):
     """The written form follows Bridge's export, not the model family: a packed base has no per-expert names."""
     down = f"{L}.mlp.experts.down_proj"
     export = _StackedDownExport()
-    write_peft_export(tmp_path, export, 0, _run(target_modules=(down,)), QWEN3)
+    write_peft_export(tmp_path, export, 0, _run(target_modules=(down,)), QWEN3, lora_dropout=0.0)
 
     written = load_file(str(tmp_path / "adapter_model.safetensors"))
     assert set(written) == {f"base_model.model.{down}.lora_A.weight", f"base_model.model.{down}.lora_B.weight"}
@@ -517,7 +519,9 @@ def test_a_bridge_shared_outer_side_is_written_per_expert_like_its_pair(tmp_path
     """A shared [1, ...] side is not a packed checkpoint's stacked tensor: HF PEFT needs it under every expert."""
     gate = f"{L}.mlp.experts.gate_proj"
     export = _BridgeSharedOuterExport(num_experts=3)
-    write_peft_export(tmp_path, export, 0, _run(target_modules=(gate,), experts_shared_outer_loras=True), QWEN3)
+    write_peft_export(
+        tmp_path, export, 0, _run(target_modules=(gate,), experts_shared_outer_loras=True), QWEN3, lora_dropout=0.0
+    )
 
     written = load_file(str(tmp_path / "adapter_model.safetensors"))
     expert = f"base_model.model.{L}.mlp.experts.{{}}.gate_proj"

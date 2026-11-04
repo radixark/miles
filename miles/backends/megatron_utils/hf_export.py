@@ -88,6 +88,7 @@ def save_hf_model(
                     experts_shared_outer_loras=args.experts_shared_outer_loras,
                 ),
                 adapter_slots.targets,
+                lora_dropout=args.lora_dropout,
             )
 
     if should_log:

@@ -288,6 +288,7 @@ class TestSaveHfModelBridgeLoRA:
             lora_rank=8,
             lora_alpha=16.0,
             lora_type="lora",
+            lora_dropout=0.05,
             experts_shared_outer_loras=False,
         )
 
@@ -301,5 +302,5 @@ class TestSaveHfModelBridgeLoRA:
             base_model="/hf", lora_rank=rank, lora_alpha=alpha, lora_type="lora", experts_shared_outer_loras=False
         )
         peft_export.assert_called_once_with(
-            tmp_path / "adapter", slots, 0, slots.parametrization.return_value, slots.targets
+            tmp_path / "adapter", slots, 0, slots.parametrization.return_value, slots.targets, lora_dropout=0.05
         )
