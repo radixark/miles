@@ -409,6 +409,8 @@ class TorchtitanLoraCheckpoint:
             "iteration": iteration,
             "step": self._trainer.step,
             "first_rollout": self._first_rollout,
+            # a run with these steps per rollout resumes the recorded step exactly, even off the grid
+            "steps_per_rollout": self._steps_per_rollout,
             "lr_scheduler": self._trainer.engine.optim.lr_schedulers.state_dict(),
         }
 
@@ -482,8 +484,12 @@ class TorchtitanLoraCheckpoint:
     def _adopt_torchtitan_dir_schedule(self, path: Path, training_state: dict, load_optimizer: bool) -> dict:
         iteration = training_state["iteration"]
         self._first_rollout = training_state["first_rollout"]
+        # compacted rollouts train a data-dependent number of steps each, so a run's own dir may sit off the grid
+        same_steps_per_rollout = training_state.get("steps_per_rollout") == self._steps_per_rollout
         # the schedule is restored by step: on another --global-batch-size grid it would not match the rollout
         grid_step = 0 if iteration is None else (iteration + 1 - self._first_rollout) * self._steps_per_rollout
+        if same_steps_per_rollout:
+            grid_step = training_state["step"]
         assert training_state["step"] == grid_step or not load_optimizer, (
             f"{path} is at step {training_state['step']} after iteration {iteration}, but this run takes "
             f"{self._steps_per_rollout} steps per rollout (step {grid_step}): keep its rollout and batch sizes, "

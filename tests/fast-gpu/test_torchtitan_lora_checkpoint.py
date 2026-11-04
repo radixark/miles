@@ -356,6 +356,23 @@ def test_a_torchtitan_adapter_dir_off_this_runs_rollout_grid_is_refused(tmp_path
         )
 
 
+def test_a_torchtitan_adapter_dir_of_this_runs_steps_per_rollout_resumes_any_step(tmp_path):
+    """Compacted rollouts train a data-dependent number of steps each: the run's own dir sits off the grid, but its
+    recorded step and schedule are exact for a run that configures the same steps per rollout."""
+    schedule = {"last_epoch": 21}
+    restored = _restore(
+        tmp_path,
+        training_state={
+            "iteration": 4,
+            "step": 21,
+            "first_rollout": 0,
+            "steps_per_rollout": _STEPS_PER_ROLLOUT,
+            "lr_scheduler": schedule,
+        },
+    )
+    assert (restored.iteration, restored.step, restored.lr_states) == (4, 21, [schedule])
+
+
 def test_a_torchtitan_adapter_dir_off_this_runs_rollout_grid_loads_its_weights_and_starts_fresh(tmp_path):
     restored = _restore(
         tmp_path,
