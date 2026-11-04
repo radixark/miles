@@ -1,4 +1,5 @@
-"""Bridge LoRA's adapter checkpoint members: HF-keyed views of the adapter parameters.
+"""Bridge LoRA's adapter checkpoint members: HF-keyed views of the adapter parameters, and the reader of
+Megatron-Bridge PEFT ``iter_N/`` checkpoints.
 
 The HF layout of every Megatron adapter element (TP / EP shards, the qkv group permutation, fc1 gate / up,
 GDN in_proj, per-expert names) comes from Bridge's own export, run once on index-valued parameters.

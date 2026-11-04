@@ -1,8 +1,8 @@
 """Whether a source adapter was trained on this run's base model, judged from both sides' HF files.
 
-The fingerprint hashes every norm weight and the first layer's attention weights: every family has both, they
-are small, and a full fine-tune changes the norms while a merged LoRA changes the projections. Weights are read from
-the HF files, never from a loaded (possibly quantized) model.
+The check compares every norm weight and the first layer's attention weights that both sides hold unquantized:
+every family has both, they are small, and a full fine-tune changes the norms while a merged LoRA changes the
+projections. Weights are read from the HF files, never from a loaded (possibly quantized) model.
 """
 
 import json
