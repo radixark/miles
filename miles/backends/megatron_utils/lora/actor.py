@@ -79,6 +79,9 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
             )
             if mismatch is not None:
                 return {"error": mismatch, "error_category": "user"}
+        if slot in self.slot_optimizers:
+            # load_state into a live model: the slot is claimed again at the source's alpha
+            lora_model.unload_slot(self.adapter_slots, self.slot_optimizers.pop(slot))
         self.slot_optimizers[slot] = lora_model.load_slot(self.args, self.model, self.adapter_slots, slot, rank, alpha)
         if ckpt_path is not None:
             lora_checkpoint.load_slot(
