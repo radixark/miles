@@ -500,6 +500,9 @@ class TorchtitanLoraCheckpoint:
                 self._trainer.engine.num_completed_steps = step
             else:
                 training_state = None
+        if self._args.start_rollout_id is not None:
+            # the actor starts at --start-rollout-id, not after the source's rollout: count later saves' steps from it
+            self._first_rollout = self._args.start_rollout_id - self._trainer.step // self._steps_per_rollout
         if self._args.lora_adapter_convert_save is not None:
             destination = Path(self._args.lora_adapter_convert_save)
             # a convert-save writes moments only when they were loaded

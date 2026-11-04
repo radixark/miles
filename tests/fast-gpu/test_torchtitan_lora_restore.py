@@ -292,6 +292,22 @@ def test_a_dir_saved_by_a_run_from_start_rollout_id_resumes(tmp_path):
     assert restored.checkpoint._training_state(7)["first_rollout"] == 5
 
 
+@pytest.mark.parametrize(
+    "source",
+    [
+        {"dcp_step": 40},
+        {"training_state": {"iteration": 9, "step": 40, "first_rollout": 0, "lr_scheduler": {"last_epoch": 40}}},
+        {"training_state": {"iteration": 9, "opt_param_scheduler": {"num_steps": 320}}},
+    ],
+)
+def test_a_resume_from_another_start_rollout_id_writes_dirs_that_resume(tmp_path, source):
+    """Restored at step 40 and started at --start-rollout-id 20: its rollout-29 save is 10 rollouts later, at step 80."""
+    resumed = _restore(tmp_path, start_rollout_id=20, **source).checkpoint
+    resumed._trainer.engine.num_completed_steps = 80
+    restored = _restore(tmp_path, training_state=resumed._training_state(29))
+    assert (restored.iteration, restored.step) == (29, 80)
+
+
 def test_a_megatron_adapter_dir_resumes_the_schedule_after_its_rollout(tmp_path):
     """Megatron's scheduler state does not apply here; rollouts 0..2 are done."""
     restored = _restore(tmp_path, training_state={"iteration": 2, "opt_param_scheduler": {"num_steps": 96}})
