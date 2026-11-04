@@ -115,37 +115,34 @@ class LayerWiseSlotMembers:
         )
 
     def import_adapter_state(self, slot: int, state: AdapterState) -> None:
-        """Owners write masters and moments; then every rank refreshes its bf16 parameters from them."""
+        """Owners write masters and moments into place and refresh their bf16 parameters from them."""
         optimizer = self._optimizers[slot]
-        error = None
-        try:
-            owned = self._owned(slot)
-            targets = self._slots.piece_parameter(slot, frozenset(owned))
-            for (index, offsets), weight, exp_avg, exp_avg_sq in zip(
-                targets, state.weights, state.exp_avgs, state.exp_avg_sqs, strict=True
+        owned = self._owned(slot)
+        targets = self._slots.piece_parameter(slot, frozenset(owned))
+        for (index, offsets), weight, exp_avg, exp_avg_sq in zip(
+            targets, state.weights, state.exp_avgs, state.exp_avg_sqs, strict=True
+        ):
+            master, adam, _ = owned[index]
+            if not adam:
+                adam["exp_avg"], adam["exp_avg_sq"] = torch.zeros_like(master), torch.zeros_like(master)
+            for destination, piece in (
+                (master, weight),
+                (adam["exp_avg"], exp_avg),
+                (adam["exp_avg_sq"], exp_avg_sq),
             ):
-                master, adam, _ = owned[index]
-                if not adam:
-                    adam["exp_avg"], adam["exp_avg_sq"] = torch.zeros_like(master), torch.zeros_like(master)
-                for destination, piece in (
-                    (master, weight),
-                    (adam["exp_avg"], exp_avg),
-                    (adam["exp_avg_sq"], exp_avg_sq),
-                ):
-                    destination.view(-1)[offsets.flatten().to(destination.device)] = piece.flatten().to(destination)
-            for child in optimizer.chained_optimizers:
-                for group in child.optimizer.param_groups:
-                    if state.step:
-                        group["step"] = state.step
-                    else:
-                        group.pop("step", None)
-            for child in optimizer.chained_optimizers:
-                child._copy_main_params_to_model_params()
-        except Exception as exc:
-            error = exc
-        # allgather_params is collective: a rank whose writes failed must not leave the others inside it
-        raise_if_any_rank_failed(error)
-        optimizer.allgather_params()
+                destination.view(-1)[offsets.flatten().to(destination.device)] = piece.flatten().to(destination)
+        for child in optimizer.chained_optimizers:
+            for group in child.optimizer.param_groups:
+                if state.step:
+                    group["step"] = state.step
+                else:
+                    group.pop("step", None)
+        for child in optimizer.chained_optimizers:
+            child._copy_main_params_to_model_params()
+
+    def finish_import_adapter_state(self, slot: int) -> None:
+        """Every rank gathers the refreshed bf16 parameters of the owners."""
+        self._optimizers[slot].allgather_params()
 
 
 def _moment(state: dict, master: torch.Tensor, key: str) -> torch.Tensor:

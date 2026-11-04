@@ -97,6 +97,8 @@ def test_an_import_writes_the_pieces_at_their_offsets_and_builds_missing_moments
     members.import_adapter_state(
         0, _state(7, torch.tensor([1.0, 2.0]), torch.tensor([3.0, 4.0]), torch.tensor([5.0, 6.0]))
     )
+    assert calls == ["copy"], "the import writes only this rank's pieces"
+    members.finish_import_adapter_state(0)
 
     # Adam state appears at the first step; an import before it creates the moments
     assert torch.equal(master.view(-1), torch.tensor([0.0, 1.0, 0.0, 0.0, 2.0, 0.0]))
