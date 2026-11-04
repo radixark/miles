@@ -161,7 +161,10 @@ def _load_dcp(tmp_path, saved: dict) -> TorchtitanCheckpointLoader:
         patch.object(lora_checkpoint, "hf_fingerprint_tensors", return_value={}),
         patch.object(lora_checkpoint, "assert_same_base_tensors"),
     ):
-        loader(path)
+        loader.parametrization(path)
+        # the checks read the source only; nothing is loaded until load_adapter_dir accepted it
+        assert all(torch.equal(param, torch.zeros(2, 2)) for param in params.values())
+        loader.load(path)
     for key, param in params.items():
         assert torch.equal(param, saved[key])
     return loader
@@ -196,7 +199,7 @@ def _base_check_worker(rank: int, world_size: int, port: int, path) -> None:
         patch.object(lora_checkpoint, "assert_same_base_tensors"),
         pytest.raises(RuntimeError, match="rank 1: .*has no local HF weights"),
     ):
-        loader(path)
+        loader.parametrization(path)
     dist.destroy_process_group()
 
 

@@ -269,7 +269,8 @@ class TorchtitanCheckpointLoader:
         dcp.load(tensors, checkpoint_id=path, no_dist=True)
         return {name: t for name, t in self._sd_adapter.to_hf(tensors).items() if is_fingerprint_tensor(name)}
 
-    def __call__(self, path: Path) -> AdapterParametrization:
+    def parametrization(self, path: Path) -> AdapterParametrization:
+        """Collective: every check against the source, reading it only; ``load`` then loads it."""
         metadata, error = None, None
         try:
             metadata = dcp.FileSystemReader(path).read_metadata().state_dict_metadata
@@ -305,7 +306,7 @@ class TorchtitanCheckpointLoader:
         except Exception as exc:
             error = exc
         raise_if_any_rank_failed(error)
-        # agreed before the collective dcp.load below: e.g. one node's HF cache may lack --hf-checkpoint
+        # agreed before the collective dcp.load in load: e.g. one node's HF cache may lack --hf-checkpoint
         try:
             source_tensors = self._base_fingerprint_tensors(path, metadata)
             hf_dir = resolve_hf_dir(self._run.base_model)
@@ -316,7 +317,13 @@ class TorchtitanCheckpointLoader:
         except Exception as exc:
             error = exc
         raise_if_any_rank_failed(error)
+        self._checked = (path, metadata)
+        return replace(self._run, lora_alpha=None)
 
+    def load(self, path: Path) -> None:
+        checked_path, metadata = self._checked
+        assert checked_path == path, f"load({path}) after checking {checked_path}"
+        params = self._slots.parameters
         states = self._members.adam_states()
         loaded = dict(params)
         if self._load_optimizer:
@@ -339,7 +346,6 @@ class TorchtitanCheckpointLoader:
         dist.all_gather_object(steps, {int(state["step"]) for state in states}, group=gloo_group())
         steps = set().union(*steps)
         assert len(steps) == 1, f"{path}'s adapter parameters disagree on the AdamW step: {steps}"
-        return replace(self._run, lora_alpha=None)
 
 
 def load_lr_schedulers(lr_schedulers, state: dict) -> None:
