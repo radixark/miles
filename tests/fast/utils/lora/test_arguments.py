@@ -10,6 +10,10 @@ import torch
 from safetensors.torch import save_file
 from transformers import LlamaConfig
 
+from miles.backends.training_utils.checkpoint.adapter.parametrization import (
+    AdapterParametrization,
+    write_parametrization,
+)
 from miles.utils.lora import arguments as lora_arguments
 from miles.utils.lora.arguments import (
     _resolve_lora_alpha,
@@ -302,6 +306,24 @@ class TestRolloutOnlyAdapter:
         torch.save({}, tmp_path / "adapter_megatron_rank0.pt")
         with pytest.raises(AssertionError, match="only a trainer can read"):
             self._validate(tmp_path)
+
+    def test_an_adapter_dir_with_no_plain_peft_form_is_refused_without_a_convert_save_remedy(self, tmp_path):
+        gdn = "model.layers.0.linear_attn"
+        components = tuple(f"{gdn}.{leaf}" for leaf in ("in_proj_q", "in_proj_k", "in_proj_v"))
+        write_parametrization(
+            tmp_path,
+            AdapterParametrization(
+                base_model="/hf",
+                lora_rank=2,
+                lora_alpha=4.0,
+                lora_type="canonical_lora",
+                target_modules=components,
+                experts_shared_outer_loras=False,
+            ),
+        )
+        with pytest.raises(AssertionError, match="no plain-PEFT form") as raised:
+            self._validate(tmp_path)
+        assert "--lora-adapter-convert-save" not in str(raised.value)
 
 
 def _bridge_args_without_layout(monkeypatch, *, multi_lora=False, **overrides):

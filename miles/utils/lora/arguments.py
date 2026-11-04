@@ -7,6 +7,8 @@ import torch
 
 from miles.backends.megatron_utils.lora.native import resolve_adapter_targets, validate_native_lora_args
 from miles.backends.sglang_utils.arguments import sglang_attention_dp_enabled
+from miles.backends.training_utils.checkpoint.adapter.adapter_exports import has_plain_peft_form
+from miles.backends.training_utils.checkpoint.adapter.parametrization import read_parametrization
 from miles.backends.training_utils.checkpoint.adapter.readers import (
     AdapterSourceKind,
     classify_adapter_source,
@@ -143,6 +145,11 @@ def _validate_rollout_only_adapter(args) -> None:
     assert kind != AdapterSourceKind.EXTERNAL_WEIGHTS, (
         f"{path} uses official Tinker tensor names, which need a conversion that rollout-only does not do; "
         "convert it first with --lora-adapter-convert-save"
+    )
+    # such an adapter dir never holds a PEFT export, converted or not
+    assert kind != AdapterSourceKind.ADAPTER_DIR or has_plain_peft_form(read_parametrization(path)), (
+        f"{path} has no plain-PEFT form (fused-module components with their own lora_A), so rollout-only cannot "
+        "serve it to the engines"
     )
     assert (
         path / "adapter_model.safetensors"
