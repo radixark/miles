@@ -173,6 +173,51 @@ def test_a_strided_shard_maps_each_local_row_to_its_global_row(placements):
     run_multiprocess(partial(_strided_mesh, placements=placements), world_size=4)
 
 
+def _model_part(params: dict[str, torch.Tensor]) -> torch.nn.Module:
+    """A model part whose named_parameters() are ``params`` under their titan keys."""
+    part = torch.nn.Module()
+    for key, value in params.items():
+        *path, name = key.split(".")
+        module = part
+        for step in path:
+            if not hasattr(module, step):
+                module.add_module(step, torch.nn.Module())
+            module = getattr(module, step)
+        module.register_parameter(name, torch.nn.Parameter(value, requires_grad=False))
+    return part
+
+
+def _slots_on_strided_dtensors(rank, world_size, port, placements):
+    init_gloo(rank, world_size, port=port)
+    init_gloo_group()
+    mesh = init_device_mesh("cpu", (2, 2))
+    sd_adapter, params = _adapter()
+    expected = _expected(sd_adapter, params)
+    replicated = [Replicate(), Replicate()]
+    sharded = {
+        key: distribute_tensor(value, mesh, replicated).redistribute(mesh, placements) for key, value in params.items()
+    }
+
+    slots = TorchtitanAdapterSlots([_model_part(sharded)], None, sd_adapter, _TARGETS)
+
+    specs = slots.get_local_shard_specs(0)
+    pieces = slots.local_pieces(0, slots.slot_parameters(0))
+    assert specs and len(specs) == len(pieces)
+    for spec, piece in zip(specs, pieces, strict=True):
+        box = tuple(slice(o, o + n) for o, n in zip(spec.offsets, spec.local_shape, strict=True))
+        assert torch.equal(piece.reshape(spec.local_shape), expected[spec.key][box]), spec.key
+    dist.destroy_process_group()
+
+
+@pytest.mark.parametrize(
+    "placements",
+    [[Shard(0), _StridedShard(0, split_factor=2)], [_StridedShard(0, split_factor=2), Shard(0)]],
+    ids=["shard_then_strided", "strided_then_shard"],
+)
+def test_the_slots_own_pieces_of_strided_dtensors_are_their_hf_slices(placements):
+    run_multiprocess(partial(_slots_on_strided_dtensors, placements=placements), world_size=4)
+
+
 def _pipeline_stages(rank, world_size, port):
     init_gloo(rank, world_size, port=port)
     init_gloo_group()
