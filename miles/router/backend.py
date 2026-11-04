@@ -28,7 +28,6 @@ logger = logging.getLogger(__name__)
 class RouterKind(str, enum.Enum):
     SGLANG = "sglang"
     MILES = "miles"
-    DYNAMO = "dynamo"
 
 
 @dataclass(frozen=True)
