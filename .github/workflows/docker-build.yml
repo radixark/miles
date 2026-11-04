@@ -54,6 +54,11 @@ on:
         required: false
         type: boolean
         default: false
+      build_args:
+        description: 'Space-separated KEY=VALUE build-args passed to build.py (e.g. MILES_COMMIT=<sha> SGLANG_BRANCH=<branch>)'
+        required: false
+        default: ''
+        type: string
 
 jobs:
   check-upstream:
@@ -220,12 +225,19 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build and push
+        shell: bash
+        env:
+          BUILD_ARGS: ${{ inputs.build_args || '' }}
         run: |
+          EXTRA=()
+          read -ra SPECS <<< "$BUILD_ARGS"
+          for spec in "${SPECS[@]}"; do EXTRA+=(--build-arg "$spec"); done
           python3 docker/build.py \
             --variant ${{ inputs.variant || 'cu13' }} \
             --image-tag ${{ inputs.image_tag || 'dev' }} \
             --dockerfile ${{ inputs.dockerfile || 'docker/Dockerfile' }} \
             ${{ inputs.custom_tag && format('--custom-tag {0}', inputs.custom_tag) || '' }} \
+            "${EXTRA[@]}" \
             --push
 
       - name: Point latest to current dev
