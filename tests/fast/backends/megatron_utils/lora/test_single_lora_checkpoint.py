@@ -345,7 +345,11 @@ def _optimizer(calls):
 
 def _load(path, chunks, calls, *, load_optimizer):
     loader = LegacyRankShardLoader(chunks, _optimizer(calls), RUN, load_optimizer, precision_aware=False)
-    parametrization = loader.parametrization(path)
+    parametrization, has_optimizer_state = loader.parametrization(path)
+    # load_adapter_dir's check between reading the parametrization and preparing
+    assert_parametrization_matches_run(
+        parametrization, RUN, [], load_optimizer=load_optimizer, has_optimizer_state=has_optimizer_state
+    )
     loader.apply(loader.prepare(path))
     return parametrization
 
@@ -416,7 +420,7 @@ class TestLegacyRankShardLoader:
         monkeypatch.setattr(lora_checkpoint, "_distributed_optimizers", lambda _optimizer: [])
         _save_old_format(tmp_path, _random_chunks(1), **training_state)
 
-        with pytest.raises(AssertionError, match="no optimizer state to resume; pass --no-load-optim"):
+        with pytest.raises(AdapterSourceError, match=r"no optimizer state; load weights only \(--no-load-optim\)"):
             _load(tmp_path, [_Chunk()], [], load_optimizer=True)
         _load(tmp_path, [_Chunk()], [], load_optimizer=False)
 
