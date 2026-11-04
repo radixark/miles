@@ -104,7 +104,7 @@ def classify_lora_groups(target_modules, layout: HfLoraTargets) -> dict[str, boo
         )
         hits = [flag for flag, globs in groups.items() if any(matches_lora_target(n, g) for n in names for g in globs)]
         if not hits:
-            # an import or another gateway's checkpoint may come from another model
+            # a checkpoint another gateway wrote may come from another model
             raise UserInputError(f"adapter target {module!r} is in no LoRA group of this model")
         flags.update(dict.fromkeys(hits, True))
     return flags
