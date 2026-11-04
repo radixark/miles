@@ -272,6 +272,17 @@ class MegatronTrainRayActor(TrainRayActor):
             with self.args.backend.mutable():
                 self.args.backend.vocab_size = self.tokenizer.vocab_size
 
+        if is_lora_enabled(args) and args.lora_adapter_path is not None:
+            self._build_adapter_slots(
+                get_hf_weight_iterator(
+                    args,
+                    self.model,
+                    required_placement=WeightUpdatePlacement(gather_pp=True),
+                    model_name=converter_model_name(args, self.hf_config),
+                    quantization_config=None,
+                )
+            )
+
         with ckpt_load_config.apply(args.backend):
             load_output = self._load_state_core(
                 checkpointing_context=checkpointing_context,
@@ -309,7 +320,6 @@ class MegatronTrainRayActor(TrainRayActor):
         )  # config-access-exempt: model-family schemas differ in optional quantization_config metadata
         self.weight_updater = None
         self.snapshot_publisher = None
-        self.adapter_slots = None
 
         if update_weights:
             is_lora = lora_rollout_enabled(args)
@@ -338,9 +348,14 @@ class MegatronTrainRayActor(TrainRayActor):
             )
             self.snapshot_publisher = SnapshotPublisher(iterator)
             if is_lora:
-                self.adapter_slots = build_adapter_slots(
-                    args, self.model, iterator, get_hf_lora_targets(self.hf_config.to_dict())
-                )
+                self._build_adapter_slots(iterator)
+
+    def _build_adapter_slots(self, iterator) -> None:
+        # each build probes by exporting the whole adapter in float64; the restore and every save share one
+        if self.adapter_slots is None:
+            self.adapter_slots = build_adapter_slots(
+                self.args, self.model, iterator, get_hf_lora_targets(self.hf_config.to_dict())
+            )
 
     def _clear_quantized_weight_workspaces(self) -> None:
         if not (
@@ -442,6 +457,7 @@ class MegatronTrainRayActor(TrainRayActor):
                 role=self.role,
                 checkpointing_context=checkpointing_context,
                 resume_from_ckpt=resume_from_ckpt,
+                adapter_slots=self.adapter_slots,
             )
 
         if self.role != "critic":

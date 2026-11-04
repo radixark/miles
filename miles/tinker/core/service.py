@@ -476,14 +476,12 @@ class TinkerService:
         committed = self.backend.resolve_adapter(os.path.dirname(checkpoint_dir), name, tenant, model_id)
         if committed is not None:
             parametrization = committed["parametrization"]
-            # an adapter dir records targets, not group flags; it was written under this gateway's layout
+            # an adapter dir records targets, not group flags; any gateway or import may have written it
             return {
                 "base_model": parametrization["base_model"],
                 "is_lora": True,
                 "lora_rank": parametrization["lora_rank"],
-                "train_attn": self.config.trains_attn,
-                "train_mlp": self.config.trains_mlp,
-                "train_unembed": self.config.trains_unembed,
+                **self.backend.lora_groups(parametrization["target_modules"]),
             }
         meta = read_checkpoint_metadata(checkpoint_dir, tenant, tinker_path)
         return {
