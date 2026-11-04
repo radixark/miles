@@ -31,10 +31,10 @@ The vision tower stays in the checkpoint but is not trained (text-only RL). One 
 ### 3.1 Image and storage
 
 ```bash
-docker pull <TBD>
+docker pull radixark/miles:kimi-k31
 ```
 
-Run it on every node, on InfiniBand. The image carries miles with the Kimi-K3.1 recipe, Megatron-LM (`radixark/Megatron-LM` `miles-main`, validated at `eb547f33e`) and the SGLang build of [section 3.3](#33-sglang).
+Run it on every node, on InfiniBand. The image (multi-arch; arm64 hosts pull arm64) carries miles at `/root/miles` from [radixark/miles#4667](https://github.com/radixark/miles/pull/4667), which adds these recipes on top of the Kimi-K3.1 model support in [radixark/miles#4666](https://github.com/radixark/miles/pull/4666); Megatron-LM (`radixark/Megatron-LM` `miles-main` at `eb547f33e`); and the SGLang branch of [section 3.3](#33-sglang) at `/sgl-workspace/sglang/python`.
 
 `--model-dir` must hold the checkpoint at the same path on every node, on shared storage or as one copy per node. `--save-dir` must be shared by all nodes: every training rank writes its own adapter shard into the directory rank 0 creates.
 
@@ -50,7 +50,7 @@ Nothing is converted. The trainer loads the native checkpoint in raw bridge mode
 
 ### 3.3 SGLang
 
-Beyond Kimi-K3.1 model support, the rollout relies on these SGLang changes:
+The image carries the [`sglang-miles-kimi-k31`](https://github.com/sgl-project/sglang/tree/sglang-miles-kimi-k31) branch (at `35708f7`), which adds Kimi-K3.1 support and the rollout changes this recipe relies on:
 
 - a BF16 KV cache for K3.1's DSA attention;
 - MoE LoRA on the Marlin MXFP4 runner under expert parallelism, with each rank keeping only its own experts' rows of a streamed adapter;
@@ -58,7 +58,7 @@ Beyond Kimi-K3.1 model support, the rollout relies on these SGLang changes:
 - the DSA top-k broadcast (`SGLANG_DSA_TOPK_BROADCAST`);
 - the DSA prefill padding-row fix.
 
-They are not in public SGLang yet; the image above carries them.
+These are not in `sglang-miles` yet.
 
 ## 4. Launch
 
