@@ -22,7 +22,6 @@ from megatron.core.utils import unwrap_model
 from safetensors import SafetensorError
 
 from miles.backends.megatron_utils.lora.bridge_checkpoint import BridgeAdapterSlots
-from miles.backends.training_utils.checkpoint.adapter.probed_slots import ProbedAdapterSlots
 from miles.backends.megatron_utils.lora.optimizer import SlotOptimizer
 from miles.backends.megatron_utils.lora.utils import (
     _distributed_optimizers,
@@ -50,6 +49,7 @@ from miles.backends.training_utils.checkpoint.adapter.parametrization import (
     AdapterParametrization,
     base_model_fingerprint,
 )
+from miles.backends.training_utils.checkpoint.adapter.probed_slots import ProbedAdapterSlots
 from miles.backends.training_utils.checkpoint.adapter.readers import AdapterSourceKind, read_source_lora_alpha
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.hf_utils.config import load_hf_config
