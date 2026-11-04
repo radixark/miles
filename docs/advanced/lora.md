@@ -434,6 +434,7 @@ saving weights for sampling publishes an immutable adapter version.
 `--experts-shared-outer-loras` also works with multi-LoRA: routed experts share
 the hidden-side factor within each adapter, while tenants remain independent.
 The flag applies to the whole server and preserves the single-LoRA export format.
+Its `save_state` / `load_state` checkpoints have not been verified on GPU yet.
 SGLang currently rejects combining this layout with fused shared experts.
 
 `save_state` saves adapter parameters and optimizer state, including FP32 masters.

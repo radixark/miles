@@ -139,6 +139,7 @@ matching PEFT and the Tinker cookbook; it is the default for `serve_tinker.py`.
 `--lora-type lora` keeps one adapter for each fused QKV or gate/up linear.
 It can be combined with `--experts-shared-outer-loras`: expert gate and up then each
 have their own A matrix shared across experts; their B matrices remain per expert.
+Saving and loading such slots in the committed checkpoint format has not been verified on GPU yet.
 These settings are fixed for the gateway. A training checkpoint saved under another layout loads its
 weights only, converted to this gateway's layout where that is exact: a shared factor splits, but
 per-component or per-expert factors become shared only when they are equal. Its optimizer state, and
