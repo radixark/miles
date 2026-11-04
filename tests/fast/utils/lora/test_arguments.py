@@ -155,8 +155,7 @@ def test_the_adapter_checkpoint_requires_the_distributed_optimizer():
         _validate_adapter_state_args(_adapter_state_args(use_distributed_optimizer=False))
 
 
-@pytest.mark.parametrize("train_backend, megatron_to_hf_mode", [("torchtitan", "bridge")], ids=["torchtitan"])
-def test_convert_save_is_refused_outside_megatron_single_lora(tmp_path, train_backend, megatron_to_hf_mode):
+def test_convert_save_is_refused_outside_megatron_single_lora(tmp_path):
     args = Namespace(
         lora_type="lora",
         multi_lora_n_adapters=0,
@@ -164,8 +163,8 @@ def test_convert_save_is_refused_outside_megatron_single_lora(tmp_path, train_ba
         lora_alpha=16.0,
         lora_adapter_path=str(tmp_path),
         lora_adapter_convert_save=str(tmp_path / "converted"),
-        train_backend=train_backend,
-        megatron_to_hf_mode=megatron_to_hf_mode,
+        train_backend="torchtitan",
+        megatron_to_hf_mode="bridge",
         debug_rollout_only=False,
     )
     with pytest.raises(AssertionError, match="--lora-adapter-convert-save is implemented only"):
