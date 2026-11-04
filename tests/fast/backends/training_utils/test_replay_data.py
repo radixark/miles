@@ -45,6 +45,12 @@ def _manager(replays, *, if_sp_region=True, indexer=False, kept_in_train_dump=Fa
     return manager
 
 
+def _attach(manager, **kwargs):
+    """`attach_replay_data`, waited for: the manager's worker records the entries."""
+    attach_replay_data(manager, **kwargs)
+    manager.wait_filled(sum(kwargs["num_microbatches"]) - 1)
+
+
 def test_register_replay_list_sequential_falls_back_to_enum_when_no_stream_idx():
     replay_data = torch.arange(5 * 3 * 2).reshape(5, 3, 2)
     replays = [_Replay(), _Replay(), _Replay()]
@@ -119,7 +125,7 @@ def test_fill_replay_bshd_token_alignment(
                 "max_seq_lens": [max_seqlen] * len(tokens),
             }
             replays = [_Replay(), _Replay()]
-            attach_replay_data(
+            _attach(
                 _manager(replays, if_sp_region=sequence_first),
                 args=args,
                 models=None,
@@ -178,7 +184,7 @@ def test_fill_replay_thd_preserves_packed_order(
             "max_seq_lens": None,
         }
         replay = _Replay()
-        attach_replay_data(
+        _attach(
             _manager([replay], kept_in_train_dump=kept_in_train_dump),
             args=args,
             models=None,
@@ -210,7 +216,7 @@ def test_a_dump_keeps_none_for_a_sample_no_micro_batch_holds(monkeypatch):
         "tokens": [torch.arange(3)] * 3,
         "max_seq_lens": None,
     }
-    attach_replay_data(
+    _attach(
         _manager([_Replay()], kept_in_train_dump=True),
         args=args,
         models=None,
@@ -239,7 +245,7 @@ def _fill_thd_cp2(monkeypatch, *, cp_rank, allgather_cp, lengths, data_pad_size_
         "max_seq_lens": None,
     }
     replay = _Replay()
-    attach_replay_data(
+    _attach(
         _manager([replay], indexer=indexer),
         args=args,
         models=None,
@@ -319,7 +325,7 @@ def test_attach_fills_micro_batches_in_the_iterator_order(monkeypatch, schedule,
     replay = _Replay()
     iterator = DataIterator(rollout_data, **schedule)
 
-    attach_replay_data(
+    _attach(
         _manager([replay]),
         args=args,
         models=None,
@@ -354,7 +360,7 @@ def test_attach_aligns_each_recorded_entry_once(monkeypatch):
     def append_pad_row(entry, pad_value):
         return torch.cat([entry, entry.new_full((1, *entry.shape[1:]), pad_value)])
 
-    attach_replay_data(
+    _attach(
         _manager(replays),
         args=args,
         models=None,
@@ -389,7 +395,7 @@ class TestNativeReplayOwnership:
         }
         replay = _Replay()
 
-        attach_replay_data(
+        _attach(
             _manager([replay]),
             args=args,
             models=None,
@@ -470,7 +476,7 @@ def _attach_both(monkeypatch, args, *, state, lengths, max_seq_len, indexer, sto
     replays = [_Replay(), _Replay()]
     manager = manager or _manager(replays, indexer=indexer, kept_in_train_dump=dump)
     manager.replays = replays
-    attach_replay_data(
+    _attach(
         manager,
         args=args,
         models=None,
@@ -557,7 +563,7 @@ def test_store_rows_need_an_output_store_client(monkeypatch, fake_plugin):
     column, _ = _stored([torch.ones(2, 2, 2, dtype=torch.int32)], indexer=False)
     rollout_data = {"routes": column, "tokens": [torch.arange(3)], "max_seq_lens": None}
     with pytest.raises(StorePlanError, match="no output store client"):
-        attach_replay_data(
+        _attach(
             _manager([_Replay()]),
             args=args,
             models=None,

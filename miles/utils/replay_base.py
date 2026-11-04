@@ -2,6 +2,7 @@ import logging
 import os
 import time
 from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor, wait
 
 import torch
 import torch.distributed as dist
@@ -14,6 +15,17 @@ logger = logging.getLogger(__name__)
 
 def _get_rank():
     return dist.get_rank() if dist.is_initialized() else 0
+
+
+def _worker_device() -> dict:
+    """`ThreadPoolExecutor` kwargs binding its thread to this process's accelerator.
+
+    `Replay.record` allocates pinned memory on the worker, and a thread's first accelerator call
+    would otherwise target device 0, which need not be this rank's.
+    """
+    if not torch.accelerator.is_available():
+        return {}
+    return {"initializer": torch.accelerator.set_device_index, "initargs": (torch.accelerator.current_device_index(),)}
 
 
 class Replay:
@@ -38,11 +50,19 @@ class Replay:
                 f"len(top_indices_list)={len(self.top_indices_list)}, shapes={shapes}"
             )
         top_indices = self.top_indices_list[self.forward_index]
+        if top_indices is None:
+            raise IndexError(f"pop_forward: entry {self.forward_index} was already released by its backward pop")
         self.forward_index += 1
         return top_indices.to(current_platform.current_device())
 
     def pop_backward(self) -> torch.Tensor:
+        # The train pass is the step's last pass that pops, and its backward (recompute) pop is the
+        # entry's last use: release the pinned entry here, so the step's host memory shrinks as the
+        # pass advances. Without recompute nothing pops backward and `clear` releases them.
         top_indices = self.top_indices_list[self.backward_index]
+        if top_indices is None:
+            raise IndexError(f"pop_backward: entry {self.backward_index} was already released by its backward pop")
+        self.top_indices_list[self.backward_index] = None
         self.backward_index += 1
         return top_indices.to(current_platform.current_device())
 
@@ -76,9 +96,17 @@ class BaseReplayManager:
         self.enabled = False
         self.stage = "fallthrough"
         self.register_replay_list_func = None
-        # This step's source: `fill(i)` records micro batch i's entry in every replay.
-        self._fill: Callable[[int], None] | None = None
-        self._filled = 0
+        # This step's fills, one per micro batch: `fill(i)` records micro batch i's entry in every
+        # replay. They run in order on `_worker` from `attach` on, ahead of the forwards that pop
+        # their entries; the first `_ready` are known to be done. `_finish` runs on the main thread
+        # once the last fill has been waited for.
+        self._worker: ThreadPoolExecutor | None = None
+        self._fills: list[Future] = []
+        self._ready = 0
+        self._finish: Callable[[], None] | None = None
+        # Set once a fill failed or the step ended: the worker skips the fills still queued.
+        self._stopped = False
+        self._fill_seconds = 0.0
         # With output store columns: the ReadSlots their rows are read into, kept across steps.
         self.read_slots = None
 
@@ -93,24 +121,63 @@ class BaseReplayManager:
     def get_current(self) -> Replay | None:
         return self.current
 
-    def attach(self, fill: Callable[[int], None]) -> None:
-        """Take this step's source, dropping the previous step's entries."""
-        self.clear_all()
-        self._fill = fill
+    def attach(self, fill: Callable[[int], None], total: int, finish: Callable[[], None] | None = None) -> None:
+        """Take this step's source, dropping the previous step's entries; returns without waiting.
 
-    def fill_through(self, cursor: int) -> None:
-        """Fill micro batches up to and including `cursor` that are not filled yet."""
-        while self._fill is not None and self._filled <= cursor:
-            start = time.perf_counter()
-            self._fill(self._filled)
-            Timer().add("replay_fill", time.perf_counter() - start)
-            self._filled += 1
+        `fill(i)` for i < `total` records micro batch i's entry in every replay; they run in order
+        on this manager's worker thread, starting now, as far ahead of the pops as the reads allow.
+        `finish` runs on the main thread after the last of them has been waited for.
+        """
+        self.clear_all()
+        if self._worker is None:
+            self._worker = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix=f"replay-{self.name}", **_worker_device()
+            )
+        self._stopped = False
+        self._fill_seconds = 0.0
+        self._finish = finish
+        self._fills = [self._worker.submit(self._run, fill, i) for i in range(total)]
+
+    def _run(self, fill: Callable[[int], None], index: int) -> None:
+        if self._stopped:
+            return
+        start = time.perf_counter()
+        try:
+            fill(index)
+        except BaseException:
+            self._stopped = True
+            raise
+        self._fill_seconds += time.perf_counter() - start
+
+    def wait_filled(self, cursor: int) -> None:
+        """Block until micro batches up to and including `cursor` are filled; the only wait a pop does.
+
+        A fill's failure is raised here, at the first pop that needs it.
+        """
+        if not self._fills or self._ready > cursor:
+            return
+        start = time.perf_counter()
+        for future in self._fills[self._ready : cursor + 1]:
+            future.result()
+            self._ready += 1
+        Timer().add("replay_wait", time.perf_counter() - start)
+        if self._ready == len(self._fills) and self._finish is not None:
+            Timer().add("replay_fill", self._fill_seconds)
+            finish, self._finish = self._finish, None
+            finish()
 
     def clear_all(self):
+        """Drop this step's entries; blocks until the worker has stopped filling.
+
+        The fill still running appends to the queues, so it is joined before they are cleared.
+        """
+        self._stopped = True
+        for future in self._fills:
+            future.cancel()
+        wait(self._fills)
+        self._fills, self._ready, self._finish = [], 0, None
         for replay in self.replays:
             replay.clear()
-        self._fill = None
-        self._filled = 0
 
     def clear_all_forward(self):
         for replay in self.replays:
@@ -165,9 +232,11 @@ class BaseReplayManager:
                 return result
 
             elif stage == "replay_forward":
+                manager.wait_filled(replay.forward_index)
                 return _get_replay_result(replay.pop_forward(), scores, topk, *args, **kwargs)
 
             elif stage == "replay_backward":
+                manager.wait_filled(replay.backward_index)
                 return _get_replay_result(replay.pop_backward(), scores, topk, *args, **kwargs)
 
             else:
