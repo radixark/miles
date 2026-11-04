@@ -266,6 +266,24 @@ def test_modal_provisioning_uses_public_sandbox_v2_switch(monkeypatch, tmp_path)
     assert overridden["MODAL_SANDBOX_V2"] == "0"
 
 
+def test_novita_provisioning_forwards_the_region_by_value(monkeypatch, tmp_path):
+    """Novita's region and endpoint selectors are addresses, forwarded by value;
+    the key rides by path like every other single-key provider's."""
+    key_file = tmp_path / "api_key"
+    key_file.write_text("nvt_secret\n")
+    monkeypatch.setenv("NOVITA_DOMAIN", "sandbox.novita.ai")
+    monkeypatch.delenv("NOVITA_API_URL", raising=False)
+    monkeypatch.delenv("NOVITA_SANDBOX_URL", raising=False)
+    monkeypatch.setitem(sys.modules, "novita_sandbox", types.ModuleType("novita_sandbox"))
+    monkeypatch.setattr(credentials.importlib.metadata, "version", lambda name: "2.0.7")
+
+    env: dict[str, str] = {}
+    provision_provider(env, PROVIDER_CREDENTIALS["novita"], arg_path=str(key_file))
+
+    assert env == {"NOVITA_API_KEY_FILE": str(key_file), "NOVITA_DOMAIN": "sandbox.novita.ai"}
+    assert "nvt_secret" not in str(env)
+
+
 def test_credential_available_accepts_either_supply(monkeypatch, tmp_path):
     """The predicate a caller uses to decide rather than fail: a non-empty key
     file, or every one of the provider's credential variables."""
