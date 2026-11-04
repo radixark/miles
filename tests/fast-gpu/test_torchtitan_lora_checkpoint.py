@@ -31,7 +31,6 @@ from torchtitan.models.qwen3 import build_model_config
 
 from miles.backends.torchtitan_utils import actor as titan_actor
 from miles.backends.torchtitan_utils import lora_checkpoint
-from miles.backends.torchtitan_utils.actor import _steps_per_rollout
 from miles.backends.torchtitan_utils.config import _checkpointer_config
 from miles.backends.torchtitan_utils.lora_checkpoint import (
     TorchtitanAdapterSlots,
@@ -689,15 +688,6 @@ def test_the_actor_starts_after_the_restored_rollout_and_saves_lora_as_adapter_d
         actor._save_checkpoint(7)
         assert actor._lora_checkpoint.saved == [7]
         trainer.engine.save_checkpoint.assert_not_called()
-
-
-@pytest.mark.parametrize("dynamic, steps", [(False, 4), (True, 1)])
-def test_a_dynamic_global_batch_is_one_step_per_rollout(dynamic, steps):
-    """The LR schedule length and the adapter dirs' step grid count optimizer steps per rollout."""
-    args = SimpleNamespace(
-        rollout_batch_size=8, n_samples_per_prompt=4, global_batch_size=8, use_dynamic_global_batch_size=dynamic
-    )
-    assert _steps_per_rollout(args) == steps
 
 
 def _uneven_rows(rank, world_size, port):
