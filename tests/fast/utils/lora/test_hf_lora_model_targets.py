@@ -123,7 +123,9 @@ def test_native_model_coverage():
         "kimi_k2",
         "kimi_k25",
         "kimi_k3",
+        "mimo",
         "mimo_v2",
+        "joyai_llm_flash",
         "inkling_model",
         "inkling_mm_model",
         "inkling_text",
@@ -299,3 +301,62 @@ def test_layouts_name_the_native_specs_projections(model_type, group, overrides)
     native_spec = getattr(MODEL_SPECS[model_type], group)
     native_leaves = {binding.projection.hf_leaf for binding in native_spec.layout.singles}
     assert {target.rsplit(".", 1)[1] for target in getattr(layout, group)} == native_leaves
+
+
+# remote-code families: config fields and checkpoint projection names of XiaomiMiMo/MiMo-7B-RL and
+# jdopensource/JoyAI-LLM-Flash (config.json, model.safetensors.index.json); layer indices folded to *
+_MIMO_7B = {"model_type": "mimo", "num_hidden_layers": 36, "num_nextn_predict_layers": 1}
+_JOYAI_LLM_FLASH = {
+    "model_type": "joyai_llm_flash",
+    "num_hidden_layers": 40,
+    "n_routed_experts": 256,
+    "n_shared_experts": 1,
+    "first_k_dense_replace": 1,
+    "moe_layer_freq": 1,
+    "q_lora_rank": 1536,
+}
+_REMOTE_CHECKPOINT_PROJECTIONS = {
+    "mimo": {
+        *(f"model.layers.*.self_attn.{leaf}" for leaf in ("q_proj", "k_proj", "v_proj", "o_proj")),
+        *(f"model.layers.*.mlp.{leaf}" for leaf in ("gate_proj", "up_proj", "down_proj")),
+        "lm_head",
+    },
+    "joyai_llm_flash": {
+        *(
+            f"model.layers.*.self_attn.{leaf}"
+            for leaf in ("q_a_proj", "q_b_proj", "kv_a_proj_with_mqa", "kv_b_proj", "o_proj")
+        ),
+        *(
+            f"model.layers.*.mlp.{block}{leaf}"
+            for block in ("", "experts.*.", "shared_experts.")
+            for leaf in ("gate_proj", "up_proj", "down_proj")
+        ),
+        "lm_head",
+    },
+}
+
+
+@pytest.mark.parametrize("config", [_MIMO_7B, _JOYAI_LLM_FLASH], ids=lambda config: config["model_type"])
+def test_remote_code_native_families_name_their_checkpoints_projections(config):
+    """Native trains these families; their adapter checkpoint and export need the HF layout."""
+    layout = get_hf_lora_targets(config)
+    assert set(layout.attention + layout.mlp + layout.unembed) == _REMOTE_CHECKPOINT_PROJECTIONS[config["model_type"]]
+
+
+@pytest.mark.parametrize("config", [_MIMO_7B, _JOYAI_LLM_FLASH], ids=lambda config: config["model_type"])
+def test_native_attaches_the_remote_families_layouts_as_their_relatives(config):
+    """MiMo attaches like Qwen2; JoyAI like Kimi K2, whose native MLA spec adapts no routed experts."""
+    from miles.backends.megatron_utils.lora.native.registry import MODEL_SPECS
+
+    relative = {
+        "mimo": {"model_type": "qwen2", "num_hidden_layers": 36},
+        "joyai_llm_flash": {**_JOYAI_LLM_FLASH, "model_type": "kimi_k2"},
+    }[config["model_type"]]
+
+    def attached(hf_config):
+        layout = get_hf_lora_targets(hf_config)
+        spec = MODEL_SPECS[hf_config["model_type"]]
+        return [module for module in layout.attention + layout.mlp + layout.unembed if spec.attaches(module)]
+
+    assert attached(config) == attached(relative)
+    assert attached(config)
