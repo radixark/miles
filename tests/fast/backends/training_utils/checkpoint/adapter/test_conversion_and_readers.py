@@ -5,6 +5,7 @@ from dataclasses import replace
 
 import pytest
 import torch
+import transformers
 from safetensors.torch import load_file, save_file
 
 from miles.backends.training_utils.checkpoint.adapter.adapter_exports import (
@@ -495,6 +496,61 @@ def test_the_parametrization_file_records_its_format_version_and_refuses_another
     (tmp_path / PARAMETRIZATION_FILENAME).write_text(json.dumps(fields | {"format_version": 2}))
     with pytest.raises(ValueError, match="format version 2; this miles reads version 1"):
         read_parametrization(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        # config.json names the expert count num_experts; Qwen3MoeConfig.to_dict() names it num_local_experts
+        dict(
+            model_type="qwen3_moe",
+            vocab_size=151936,
+            hidden_size=2048,
+            intermediate_size=6144,
+            moe_intermediate_size=768,
+            num_hidden_layers=48,
+            num_attention_heads=32,
+            num_key_value_heads=4,
+            head_dim=128,
+            num_experts=128,
+            tie_word_embeddings=False,
+        ),
+        # config.json leaves head_dim out; to_dict() derives it (for MLA not from hidden_size / heads)
+        dict(
+            model_type="llama",
+            vocab_size=128256,
+            hidden_size=4096,
+            intermediate_size=14336,
+            num_hidden_layers=32,
+            num_attention_heads=32,
+            num_key_value_heads=8,
+            tie_word_embeddings=False,
+        ),
+        dict(
+            model_type="deepseek_v3",
+            vocab_size=129280,
+            hidden_size=7168,
+            intermediate_size=18432,
+            moe_intermediate_size=2048,
+            num_hidden_layers=61,
+            num_attention_heads=128,
+            num_key_value_heads=128,
+            n_routed_experts=256,
+            tie_word_embeddings=False,
+        ),
+    ],
+    ids=lambda raw: raw["model_type"],
+)
+def test_config_json_and_its_to_dict_have_one_fingerprint(raw):
+    resolved = transformers.AutoConfig.for_model(**raw).to_dict()
+    assert base_model_fingerprint(raw) == base_model_fingerprint(resolved)
+
+
+def test_a_remote_code_config_resolves_its_expert_count_aliases():
+    common = {"model_type": "not_in_transformers", "hidden_size": 8}
+    assert base_model_fingerprint(common | {"n_routed_experts": 4}) == base_model_fingerprint(
+        common | {"num_local_experts": 4}
+    )
 
 
 def test_a_vl_wrapper_has_its_language_models_fingerprint():
