@@ -127,7 +127,7 @@ def read_source_lora_alpha(path: Path) -> float | None:
     return None
 
 
-def _collapse_shared_lora_a(
+def collapse_shared_lora_a(
     weights: dict, parametrization: AdapterParametrization, fused_groups: list[tuple[str, ...]]
 ) -> dict:
     """Undo a written expansion: keep the first member's A, after checking every copy matches it.
@@ -187,7 +187,7 @@ class MilesAdapterDirReader:
         weights, fused_groups = _read_peft_tensors(
             self.path, lambda name: map_sampler_keys_to_hf_keys(name, self.targets), self.targets
         )
-        return _collapse_shared_lora_a(weights, self.source.parametrization, fused_groups)
+        return collapse_shared_lora_a(weights, self.source.parametrization, fused_groups)
 
 
 def _check_peft_config(config: dict, path: Path) -> None:
