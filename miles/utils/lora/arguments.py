@@ -123,9 +123,7 @@ def _resolve_lora_alpha(args) -> float:
 
 
 def _validate_rollout_only_adapter(args) -> None:
-    """With no trainer, the engines load --lora-adapter-path as given. A local source the adapter library
-    recognizes must carry an HF-named PEFT pair; anything else (a hub id, a PEFT dir with adapter_model.bin)
-    is SGLang's to read."""
+    """A local source the library reads must carry an HF-named PEFT pair; anything else goes to SGLang as given."""
     path = Path(args.lora_adapter_path)
     hf_config = load_hf_config(args.hf_checkpoint).to_dict()
     # without the family's layout the library reads no source; SGLang gets it as before
