@@ -46,12 +46,16 @@ SAMPLER_EXPERT_NAMES_BY_HF = {
 }
 
 
-def map_sampler_keys_to_hf_keys(name: str, targets: HfLoraTargets) -> HfKey:
+def rename_sampler_experts_to_hf(name: str, targets: HfLoraTargets) -> str:
     """Inverse of the sampler export's renaming; families whose HF experts are already w1 / w2 / w3 keep them."""
     if not any(target.rsplit(".", 1)[1] in ("w1", "w2", "w3") for target in targets.mlp):
         for hf_fragment, sglang_fragment in SAMPLER_EXPERT_NAMES_BY_HF.items():
             name = name.replace(sglang_fragment, hf_fragment)
-    return map_peft_keys_to_hf_keys(name)
+    return name
+
+
+def map_sampler_keys_to_hf_keys(name: str, targets: HfLoraTargets) -> HfKey:
+    return map_peft_keys_to_hf_keys(rename_sampler_experts_to_hf(name, targets))
 
 
 def map_hf_keys_to_peft_keys(key: str, expert_index: int | None = None) -> str:

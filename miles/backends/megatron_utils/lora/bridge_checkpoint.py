@@ -13,6 +13,7 @@ import torch
 import torch.distributed as dist
 
 from miles.backends.megatron_utils.lora.utils import adapter_named_parameters
+from miles.backends.training_utils.checkpoint.adapter.adapter_dir import HeadRows
 from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
     LocalShardSpec,
     gloo_group,
@@ -229,6 +230,15 @@ class BridgeAdapterSlots:
         self._specs: dict[int, list[LocalShardSpec]] = {}
         # every slot has the same layout
         self.row_mapping = probe_bridge_row_mapping(model, self.slot_parameters(0), self._export_probe, targets)
+        self.head_rows = self._head_rows()
+
+    def _head_rows(self) -> HeadRows | None:
+        head_b = f"{self.targets.unembed[0]}.lora_B"
+        if not any(piece.key == head_b for piece in self.row_mapping.pieces):
+            return None
+        served = next(piece.global_shape[0] for piece in self.row_mapping.pieces if piece.key == head_b)
+        assert self.targets.vocab_size is not None, "a trained head needs the HF vocab size"
+        return HeadRows(head_b, max(self.targets.vocab_size, served))
 
     def slot_parameters(self, slot: int) -> list[torch.nn.Parameter]:
         if self._multi_lora:
