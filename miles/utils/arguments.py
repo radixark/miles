@@ -30,7 +30,11 @@ from miles.rollout.reward_shaping import validate_length_penalty_args
 from miles.router.backend import RouterKind
 from miles.utils.args.configs.fault_tolerance import _DEFAULT_FT_API_SERVER_PORT
 from miles.utils.args.configs.router import RouterConfig
-from miles.utils.args.custom_function import add_user_provided_function_arguments, resolve_custom_function_configs
+from miles.utils.args.custom_function import (
+    _compute_config_class,
+    add_user_provided_function_arguments,
+    resolve_custom_function_configs,
+)
 from miles.utils.args.runtime import AllConfig
 from miles.utils.args.schema import reset_arg
 from miles.utils.audit_utils.config_snapshot.enabled import SNAPSHOT_TESTING_ENABLED
@@ -40,6 +44,7 @@ from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
 from miles.utils.environ import use_legacy_rollout_v1
 from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
 from miles.utils.file_arg_utils import resolve_file_arg
+from miles.utils.function_registry import load_function
 from miles.utils.hf_utils.config import is_dsa, load_hf_config
 from miles.utils.logging_utils import configure_logger_raw
 from miles.utils.lora.arguments import validate_lora_args, validate_lora_args_after_megatron
@@ -52,7 +57,7 @@ from miles.utils.object_store_config import (
     compute_mooncake_init_kwargs_vanilla,
 )
 from miles.utils.output_store.config import check_output_store_args
-from miles.utils.rollout_data_config import check_dataset_length_limits, load_rollout_data_config
+from miles.utils.rollout_data_config import RolloutDatasetConfig, check_dataset_length_limits, load_rollout_data_config
 from miles.utils.rollout_topk_logprobs import validate_rollout_topk_logprobs_args
 from miles.utils.run_uuid import generate_run_uuid, validate_run_uuid
 from miles.utils.score_centering import validate_score_centering_args
@@ -473,6 +478,32 @@ def _resolve_eval_datasets(args) -> list[EvalDatasetConfig]:
     return eval_datasets
 
 
+def _check_dataset_rewards(args, datasets: list[RolloutDatasetConfig]) -> None:
+    """A dataset's custom_rm_path / rm_type become its samples' reward_spec; reject what that spec cannot do."""
+    run_rm_path = getattr(  # config-access-exempt: still a path string before custom hooks resolve
+        args.custom_rm_path, "path", args.custom_rm_path
+    )
+    for dataset in datasets:
+        other_rm_path = dataset.custom_rm_path not in (None, run_rm_path)
+        if args.group_rm and run_rm_path is not None and (other_rm_path or dataset.rm_type is not None):
+            raise ValueError(
+                f"--rollout-data-yaml-config dataset {dataset.name!r} sets its own reward, but --group-rm scores "
+                f"every group with the batched --custom-rm-path {run_rm_path}; drop the dataset's reward fields"
+            )
+        # a custom reward function outranks any rm_type, so the dataset's rm_type would never run
+        if run_rm_path is not None and dataset.rm_type is not None and dataset.custom_rm_path is None:
+            raise ValueError(
+                f"--rollout-data-yaml-config dataset {dataset.name!r} sets rm_type {dataset.rm_type}, but "
+                f"--custom-rm-path {run_rm_path} scores every sample without a custom_rm_path of its own; set the "
+                "dataset's custom_rm_path or drop --custom-rm-path"
+            )
+        if other_rm_path and _compute_config_class(load_function(dataset.custom_rm_path), path=dataset.custom_rm_path):
+            raise ValueError(
+                f"--rollout-data-yaml-config dataset {dataset.name!r}: custom_rm_path {dataset.custom_rm_path} "
+                "declares its own config, which a per-sample reward_spec cannot carry; set it as --custom-rm-path"
+            )
+
+
 def _validate_rollout_data_yaml_config(args) -> None:
     if args.rollout_data_yaml_config is None:
         return
@@ -486,6 +517,7 @@ def _validate_rollout_data_yaml_config(args) -> None:
         rollout_max_prompt_len=args.rollout_max_prompt_len,
         rollout_max_response_len=args.rollout_max_response_len,
     )
+    _check_dataset_rewards(args, datasets)
     # TODO(#3947): drop once the mixing data source reads these datasets
     raise NotImplementedError(
         f"--rollout-data-yaml-config is valid ({len(datasets)} datasets), but no data source consumes it yet; "

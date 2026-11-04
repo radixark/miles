@@ -5,6 +5,7 @@ import pytest
 import yaml
 
 from miles.utils.arguments import parse_args
+from miles.utils.function_registry import function_registry
 from miles.utils.rollout_data_config import (
     RolloutDatasetConfig,
     check_dataset_length_limits,
@@ -79,7 +80,9 @@ class TestRejects:
         "fields",
         [
             {"sample_per_step": 2},
-            {"rm_type": "math"},
+            {"input_key": "question"},
+            {"rm_type": ""},
+            {"custom_rm_path": ""},
             {"name": "other"},
             {"samples_per_step": 0},
             {"samples_per_step": True},
@@ -201,6 +204,47 @@ class TestStartupValidation:
         too_long = _with_dataset(max_prompt_len=8192)
         with pytest.raises(ValueError, match="exceeds --rollout-max-prompt-len 8191"):
             _parse("--rollout-data-yaml-config", _inline(too_long), "--rollout-max-context-len", "8192")
+
+    @pytest.mark.parametrize("reward", [{"rm_type": "gpqa"}, {"custom_rm_path": "json.loads"}])
+    def test_a_dataset_reward_under_a_batched_group_rm_fails_at_startup(self, reward):
+        """--group-rm scores each group with the batched --custom-rm-path, so a dataset's own reward never runs."""
+        with pytest.raises(ValueError, match="--group-rm scores every group"):
+            _parse(
+                "--rollout-data-yaml-config",
+                _inline(_with_dataset(**reward)),
+                "--group-rm",
+                "--custom-rm-path",
+                "json.dumps",
+            )
+
+    def test_a_dataset_rm_type_under_a_run_wide_custom_rm_path_fails_at_startup(self):
+        """A custom reward function outranks any rm_type, so the dataset would be scored by --custom-rm-path."""
+        with pytest.raises(ValueError, match="sets rm_type gpqa, but --custom-rm-path json.dumps"):
+            _parse(
+                "--rollout-data-yaml-config",
+                _inline(_with_dataset(rm_type="gpqa")),
+                "--custom-rm-path",
+                "json.dumps",
+            )
+
+    def test_a_dataset_naming_the_batched_group_rm_function_is_accepted(self):
+        with pytest.raises(NotImplementedError, match="valid"):
+            _parse(
+                "--rollout-data-yaml-config",
+                _inline(_with_dataset(custom_rm_path="json.dumps")),
+                "--group-rm",
+                "--custom-rm-path",
+                "json.dumps",
+            )
+
+    def test_a_dataset_reward_function_with_its_own_config_fails_at_startup(self):
+        async def typed_reward(args, sample):
+            pass
+
+        typed_reward.add_arguments = lambda parser: parser.add_argument("--test-typed-reward-scale", type=float)
+        with function_registry.temporary("test4553.typed_reward", typed_reward):
+            with pytest.raises(ValueError, match="declares its own config"):
+                _parse("--rollout-data-yaml-config", _inline(_with_dataset(custom_rm_path="test4553.typed_reward")))
 
     def test_unset_leaves_startup_unchanged(self):
         assert _parse("--prompt-data", "/dev/null").rollout_data_yaml_config is None
