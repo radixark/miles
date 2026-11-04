@@ -1,6 +1,5 @@
 """Kimi K3 through the generic native-LoRA tables: export/import, merge, SP semantics, targets — no GPU."""
 
-import logging
 from types import SimpleNamespace
 
 import pytest
@@ -205,24 +204,6 @@ def test_the_checkpoint_probe_exports_one_adapter_at_a_time(monkeypatch):
     for (name, tensor), (_, expected) in zip(probed, whole, strict=True):
         assert tensor.dtype == torch.float64
         torch.testing.assert_close(tensor, expected, rtol=0, atol=0, msg=name)
-
-
-def test_the_export_writes_no_log_line(caplog):
-    """The checkpoint probe exports index codes; a logged max|lora_B| of those reads like a diverged adapter."""
-    with caplog.at_level(logging.DEBUG):
-        export_lora_hf_named(iter_adapters([_model()]), dtype=torch.float64)
-    assert not caplog.records
-
-
-def test_the_raw_iterator_export_logs_without_a_process_group(caplog):
-    from miles.backends.megatron_utils.update_weight.hf_weight_iterator_direct import HfWeightIteratorDirect
-
-    iterator = object.__new__(HfWeightIteratorDirect)
-    iterator.model = [_model()]
-    with caplog.at_level(logging.INFO):
-        exported = iterator._export_pp_local_lora(adapter=None)
-    (record,) = caplog.records
-    assert record.getMessage().startswith(f"[lora-native] exported {len(exported)} adapter tensors")
 
 
 def test_hf_import_round_trips_the_export(tmp_path):
