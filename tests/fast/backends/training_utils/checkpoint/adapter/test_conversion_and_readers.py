@@ -10,6 +10,7 @@ from cryptography.hazmat.primitives.asymmetric import ed25519
 from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat, PublicFormat
 from safetensors.torch import load_file, save_file
 
+from miles.backends.training_utils.checkpoint.adapter import adapter_exports
 from miles.backends.training_utils.checkpoint.adapter.adapter_exports import (
     write_external_adapter,
     write_peft_adapter,
@@ -222,6 +223,21 @@ def test_external_export_reads_back_through_the_external_reader(tmp_path, shared
         source = run.shared_lora_a_groups[0][0] if shared_qkv and module in QKV else module
         assert torch.equal(read[f"{module}.lora_A"], weights[f"{source}.lora_A"])
         assert torch.equal(read[f"{module}.lora_B"], weights[f"{module}.lora_B"])
+
+
+def test_the_external_export_copies_only_a_shared_as_later_members(tmp_path, monkeypatch):
+    """Rank 0 holds the whole fp32 adapter; a copy of every tensor would double it."""
+    run = _run(target_modules=QKV, shared_lora_a_groups=(QKV,))
+    weights = _weights(shared_qkv=True)
+    written = {}
+    monkeypatch.setattr(
+        adapter_exports, "save_adapter_to_disk", lambda directory, config, tensors: written.update(tensors)
+    )
+    write_external_adapter(tmp_path, weights, run, QWEN35)
+
+    storages = {t.untyped_storage().data_ptr() for t in weights.values()}
+    copied = [name for name, t in written.items() if t.untyped_storage().data_ptr() not in storages]
+    assert len(copied) == len(QKV) - 1, f"only the shared A's later members are copies, got {copied}"
 
 
 def _ssh_identity() -> tuple[pyrage.ssh.Identity, str]:

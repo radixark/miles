@@ -132,8 +132,10 @@ def write_external_adapter(
     for module in parametrization.target_modules:
         for factor in ("lora_A", "lora_B"):
             source = f"{shared_copies.get(module, module)}.lora_A" if factor == "lora_A" else f"{module}.lora_B"
-            tensors[map_hf_keys_to_tinker_keys(f"{module}.{factor}", targets)] = weights[source].to(
-                torch.float32, copy=True
+            tensor = weights[source].float()
+            # safetensors refuses two names on one storage: only a shared A's later members get their own copy
+            tensors[map_hf_keys_to_tinker_keys(f"{module}.{factor}", targets)] = (
+                tensor.clone() if factor == "lora_A" and module in shared_copies else tensor
             )
     # as the official export writes it: the training run, not the file, names the base and the adapted modules (an
     # explicit list of HF leaves would not match the Tinker-named expert tensors)
@@ -147,14 +149,14 @@ def write_external_adapter(
         save_adapter_to_disk(directory, config, tensors)
         return
     recipients = [parse_age_recipient(r) for r in age_recipients]
-    # encrypted in memory: no plaintext reaches the disk, where a crash, snapshot or backup could keep it
-    plaintexts = {
-        "adapter_config.json": json.dumps(config, indent=2).encode(),
-        "adapter_model.safetensors": safetensors.torch.save(tensors),
-    }
+    # encrypted in memory: no plaintext reaches the disk, where a crash, snapshot or backup could keep it; one file at
+    # a time, so the adapter's plaintext and ciphertext are the only extra copies alive
     Path(directory).mkdir(parents=True, exist_ok=True)
-    for name, data in plaintexts.items():
-        (Path(directory) / f"{name}.age").write_bytes(pyrage.encrypt(data, recipients))
+    for name, plaintext in (
+        ("adapter_config.json", lambda: json.dumps(config, indent=2).encode()),
+        ("adapter_model.safetensors", lambda: safetensors.torch.save(tensors)),
+    ):
+        (Path(directory) / f"{name}.age").write_bytes(pyrage.encrypt(plaintext(), recipients))
 
 
 def parse_age_recipient(recipient: str) -> pyrage.x25519.Recipient | pyrage.ssh.Recipient:

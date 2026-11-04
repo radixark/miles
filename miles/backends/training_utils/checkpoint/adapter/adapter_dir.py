@@ -239,6 +239,8 @@ def write_external_export(
         # agree before the gather, so one rank's failure cannot leave the others waiting in it
         raise_if_any_rank_failed(error)
         weights = _gather_whole_weights(state)
+        # rank 0's own pieces are in ``weights`` now; the export would otherwise hold them twice
+        del state
         if _is_writer():
             keys, expected = set(weights), parametrization.adapter_state_keys()
             assert keys == expected, (
@@ -259,10 +261,12 @@ def _gather_whole_weights(state: AdapterState) -> dict[str, torch.Tensor] | None
     if not _is_writer():
         return None
     whole, filled = {}, {}
-    for spec, piece in (p for rank_pieces in gathered for p in rank_pieces):
-        full = whole.setdefault(spec.key, torch.empty(spec.global_shape, dtype=torch.float32))
-        full[tuple(slice(o, o + n) for o, n in zip(spec.offsets, spec.local_shape, strict=True))] = piece
-        filled[spec.key] = filled.get(spec.key, 0) + piece.numel()
+    # each rank's pieces are released once placed, so rank 0 never holds the gathered adapter and the whole one
+    while gathered:
+        for spec, piece in gathered.pop():
+            full = whole.setdefault(spec.key, torch.empty(spec.global_shape, dtype=torch.float32))
+            full[tuple(slice(o, o + n) for o, n in zip(spec.offsets, spec.local_shape, strict=True))] = piece
+            filled[spec.key] = filled.get(spec.key, 0) + piece.numel()
     # primary pieces never overlap, so a tensor is whole exactly when they cover all of its elements
     partial_keys = sorted(key for key, tensor in whole.items() if filled[key] != tensor.numel())
     assert not partial_keys, f"the primary pieces do not cover {partial_keys[:8]}"
