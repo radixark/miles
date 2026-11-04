@@ -199,6 +199,7 @@ def test_a_restore_keeps_the_state_of_elements_no_checkpoint_holds(leaves_out_el
     assert world["exp_avg"].tolist() == [6.0, 6.0, 6.0, kept[1]]
     assert world["exp_avg_sq"].tolist() == [7.0, 7.0, 7.0, kept[2]]
 
+
 def _offloaded_optimizer(*, offloaded: bool) -> tuple[HybridDeviceOptimizer, torch.nn.Parameter, torch.nn.Parameter]:
     """An HDO with one GPU-resident parameter and, if ``offloaded``, one host one; built without CUDA."""
     host, device = torch.nn.Parameter(torch.zeros(2)), torch.nn.Parameter(torch.zeros(2))
