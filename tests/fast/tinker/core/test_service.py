@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import json
 import shutil
 import threading
 from contextlib import suppress
@@ -1071,3 +1072,20 @@ async def test_trainer_ranks_get_only_the_tenant_digest(service):
     assert (await await_settled(service, "tenant", save)).state == DONE
     (export,) = service.backend.named("export_slot")
     assert export["tenant_digest"] == hashlib.sha256(b"tenant").hexdigest()
+
+
+async def test_weights_info_reports_a_sampler_exports_own_groups_not_the_gateways(service):
+    model_id = await created_model(service)
+    save = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
+    path = (await await_settled(service, "tenant", save)).result["path"]
+    root = Path(resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "sampler_weights", "1")).parent
+    # an mlp-only export, as another gateway would have written it
+    parametrization = resolve_adapter_dir(root, "1", tenant=None).path / "adapter_parametrization.json"
+    fields = json.loads(parametrization.read_text())
+    fields["target_modules"] = ["model.layers.0.mlp.gate_proj"]
+    parametrization.write_text(json.dumps(fields))
+    assert service.config.trains_attn
+
+    info = service.weights_info("tenant", path)
+
+    assert (info["train_attn"], info["train_mlp"], info["train_unembed"]) == (False, True, False)

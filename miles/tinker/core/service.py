@@ -428,14 +428,12 @@ class TinkerService:
                 # the link outlived its target
                 raise UserInputError(f"unknown checkpoint {tinker_path!r}")
             parametrization = committed["parametrization"]
-            # a sampler export records only its targets; the group flags reported are this gateway's
+            # an export records targets, not group flags; another gateway may have written it
             return {
                 "base_model": parametrization["base_model"],
                 "is_lora": True,
                 "lora_rank": parametrization["lora_rank"],
-                "train_attn": self.config.trains_attn,
-                "train_mlp": self.config.trains_mlp,
-                "train_unembed": self.config.trains_unembed,
+                **self.backend.lora_groups(parametrization["target_modules"]),
             }
         meta = read_checkpoint_metadata(checkpoint_dir, tenant, tinker_path)
         return {

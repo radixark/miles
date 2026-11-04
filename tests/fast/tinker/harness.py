@@ -12,7 +12,7 @@ from miles.backends.training_utils.checkpoint.io import write_checkpoint_dir
 from miles.tinker.core.future import DONE, PENDING, RequestFuture
 from miles.tinker.core.service import TinkerService
 from miles.tinker.core.types import Command, CommandOp, GatewayConfig
-from miles.tinker.runtime import commit_adapter, resolve_adapter
+from miles.tinker.runtime import classify_lora_groups, commit_adapter, resolve_adapter
 from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
 
 _TARGETS = get_hf_lora_targets({"model_type": "qwen3", "num_hidden_layers": 1})
@@ -91,6 +91,9 @@ class FakeBackend:
 
     commit_adapter = staticmethod(commit_adapter)
     resolve_adapter = staticmethod(resolve_adapter)
+
+    def lora_groups(self, target_modules):
+        return classify_lora_groups(target_modules, _TARGETS)
 
     async def export_slot(self, slot, root, name, tenant_digest, parametrization_fields):
         failure = self._record(
