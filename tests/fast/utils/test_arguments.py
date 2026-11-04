@@ -66,6 +66,7 @@ CAKE_CHOICE_DEFAULTS = {
     "linear_attention_conv_backend": "fla",
     "linear_attention_output_norm_backend": "fla",
     "linear_attention_input_norm": "te",
+    "dsa_attention_backend": "tilelang",
 }
 _P2P_ARGS = ["--update-weight-transfer-mode", "p2p"]
 DYNAMIC_BATCH_ARGS = ["--use-dynamic-batch-size", "--max-tokens-per-gpu", "1024"]
@@ -4114,6 +4115,38 @@ class TestMilesExtKernels:
         args = self._parse(["--use-miles-ext-kernels", "--kda-backend", "cake", "--train-backend", train_backend])
 
         with pytest.raises(ValueError, match="--kda-backend cake runs in the Megatron KDA layers"):
+            validate_miles_ext_kernels_args(args)
+
+    def _parse_cake_dsa(self, argv: list[str]) -> argparse.Namespace:
+        # --deterministic-mode is a Megatron flag, so these parse with Megatron's arguments as well as miles'.
+        argv = ["--use-miles-ext-kernels", "--dsa-attention-backend", "cake", *argv, "--num-rollout", "1"]
+        with patch.object(sys, "argv", ["test", *argv, *REQUIRED_ARGS]):
+            return _megatron_and_miles_parser().parse_args()
+
+    @pytest.mark.parametrize(
+        "argv,variant",
+        [(["--cake-dsa-variant", "fast"], "fast"), ([], "fast"), (["--deterministic-mode"], "det")],
+    )
+    def test_the_cake_dsa_attention_backend_resolves_its_variant(self, argv: list[str], variant: str) -> None:
+        args = self._parse_cake_dsa(argv)
+
+        validate_miles_ext_kernels_args(args)
+
+        assert args.cake_dsa_variant == variant
+
+    def test_deterministic_mode_rejects_the_fast_cake_dsa_variant(self) -> None:
+        args = self._parse_cake_dsa(["--cake-dsa-variant", "fast", "--deterministic-mode"])
+
+        with pytest.raises(ValueError, match="--cake-dsa-variant fast is not bit-reproducible"):
+            validate_miles_ext_kernels_args(args)
+
+    @pytest.mark.parametrize("train_backend", ["fsdp", "torchtitan"])
+    def test_the_cake_dsa_attention_backend_needs_the_megatron_backend(self, train_backend: str) -> None:
+        args = self._parse(
+            ["--use-miles-ext-kernels", "--dsa-attention-backend", "cake", "--train-backend", train_backend]
+        )
+
+        with pytest.raises(ValueError, match="--dsa-attention-backend cake runs in the miles DSA plugin layers"):
             validate_miles_ext_kernels_args(args)
 
     def test_a_missing_submodule_names_the_command_that_checks_it_out(self, monkeypatch) -> None:

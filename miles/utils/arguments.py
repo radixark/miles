@@ -950,6 +950,11 @@ def validate_miles_ext_kernels_args(args) -> None:
         backend = getattr(args, name)  # config-access-exempt: backend flags named in CAKE_BACKEND_ARGS
         if backend == "cake" and not args.use_miles_ext_kernels:
             raise ValueError(f"--{name.replace('_', '-')} cake requires --use-miles-ext-kernels")
+    if args.dsa_attention_backend == "cake" and args.train_backend != "megatron":
+        raise ValueError(
+            "--dsa-attention-backend cake runs in the miles DSA plugin layers of the Megatron backend; "
+            f"--train-backend {args.train_backend} would silently ignore it: use --train-backend megatron"
+        )
     if args.kda_backend == "cake" and args.train_backend != "megatron":
         raise ValueError(
             f"--kda-backend cake runs in the Megatron KDA layers; --train-backend {args.train_backend} would silently "

@@ -134,6 +134,8 @@ Alternatively, you can set `MILES_SCRIPT_EXTERNAL_RAY=1` and `RAY_ADDRESS=…` t
 
 ### 4.4 Notable quirks
 
+- **Cake DSA kernels.** On Blackwell, `--use-miles-ext-kernels --dsa-attention-backend cake` with `--dsv4-impl miles` runs the sparse attention and indexer scores on the Cake kernels (`det` only: the layers have an attention sink); see [Cake Training Kernels](/advanced/cake-kernels).
+
 - **`model_type` rewrite for pruned checkpoints.** The older layer-pruning flow wrote `"model_type": "deepseek_ref"` into the local `config.json`. The launcher rewrites it back to `deepseek_v4` in place (`scripts/run_deepseek_v4.py`), so HF's `AutoConfig.from_pretrained` resolves the checkpoint without a patched `transformers`.
 
 ## 5. Example Recipe Configuration

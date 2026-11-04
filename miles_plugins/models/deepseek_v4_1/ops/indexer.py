@@ -9,6 +9,7 @@ from megatron.core.transformer.module import MegatronModule, mark_keep_in_fp32
 from megatron.core.transformer.transformer_config import TransformerConfig
 
 from miles.kernels.attention.dsa import indexer_logits_sbhd
+from miles.kernels.attention.dsa.indexer import CAKE_INDEXER_CONFIG
 from miles.kernels.attention.dsa.topk import get_dsa_topk_fn
 from miles.kernels.position.rope import apply_rotary_emb
 from miles.kernels.quant.fake_quant import fake_quant_fp4
@@ -62,6 +63,7 @@ def indexer_select(
     canonical_topk: bool,
     allow_deep_select: bool,
     query_chunk: int | None,
+    indexer_config=None,
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
     bsz, seqlen = q.shape[:2]
     n_kv = index_k.size(1)
@@ -88,8 +90,10 @@ def indexer_select(
             row_starts,
             lens,
             clean_logits=clean_logits,
+            config=indexer_config,
         )
-        # with clean_logits, indexer_logits_sbhd wrote -inf outside [0, lens) for every query
+        # with clean_logits (always with indexer_config CAKE_INDEXER_CONFIG), indexer_logits_sbhd wrote -inf outside
+        # [0, lens) for every query
         if is_candidate_source:
             cand = select_candidate_blocks(
                 scores[..., :n_kv], lens.unsqueeze(-1), candidate_topk_blocks, candidate_block_size
@@ -152,6 +156,7 @@ class DeepSeekV41Indexer(MegatronModule):
         self.index_head_dim = config.dsa_indexer_head_dim
         self.index_topk = config.dsa_indexer_topk
         self.topk_backend = config.miles_dsa_topk_backend
+        self.indexer_config = CAKE_INDEXER_CONFIG if config.miles_dsa_attention_backend == "cake" else None
         self.rope_head_dim = config.qk_pos_emb_head_dim
         self.softmax_scale = self.index_head_dim**-0.5
         q_lora_rank = config.q_lora_rank if config.q_lora_rank is not None else config.hidden_size
@@ -226,5 +231,6 @@ class DeepSeekV41Indexer(MegatronModule):
             allow_deep_select=self.topk_backend == "torch"
             and (not indexer_replay_manager.enabled or indexer_replay_manager.stage == "fallthrough"),
             query_chunk=INDEXER_QUERY_CHUNK,
+            indexer_config=self.indexer_config,
         )
         return idx, candidates

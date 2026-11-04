@@ -26,7 +26,8 @@ from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.transformer.transformer_layer import HyperConnectionTransformerLayer, get_transformer_layer_offset
 from megatron.core.transformer.utils import make_sharded_tensors_for_checkpoint
 
-from miles.kernels.attention.dsa import sparse_attention
+from miles.kernels.attention.dsa import cake, sparse_attention
+from miles.kernels.attention.dsa.sparse_attention import CAKE_SPARSE_ATTENTION_CONFIG
 from miles.kernels.hyper_connection.mhc import mhc_aggregate, mhc_mix
 from miles.kernels.position.rope import apply_rotary_emb
 from miles.kernels.quant.fake_quant import fake_quant_compressed_kv
@@ -363,6 +364,8 @@ class DeepSeekV41Attention(MegatronModule):
         self.eps = config.layernorm_epsilon
         self.softmax_scale = self.head_dim**-0.5
         self.sequence_parallel = config.sequence_parallel
+        use_cake = config.miles_dsa_attention_backend == "cake"
+        self.attention_config = CAKE_SPARSE_ATTENTION_CONFIG if use_cake else None
         assert self.compress_ratio in (0, 1, 2)
         assert self.head_dim == 512 and self.rope_head_dim == 64 and self.window_size == 128
 
@@ -562,6 +565,7 @@ class DeepSeekV41Attention(MegatronModule):
             topk_idxs.unsqueeze(2),
             self.softmax_scale,
             attn_sink=self.core_attention.attn_sink,
+            config=self.attention_config,
         )
         o = torch.cat((o[..., :-rd], apply_rotary_emb(o[..., -rd:].clone(), freqs_cis, inverse=True)), dim=-1)
 
@@ -636,6 +640,9 @@ def get_dsv41_spec(args, config, vp_stage):
     config.v41_hf_checkpoint = args.hf_checkpoint
     config.v41_runtime = V41Runtime()
     config.miles_dsa_topk_backend = args.miles_dsa_topk_backend
+    config.miles_dsa_attention_backend = args.dsa_attention_backend
+    if args.dsa_attention_backend == "cake":
+        cake.setup(args, index_heads=config.dsa_indexer_n_heads, index_head_dim=config.dsa_indexer_head_dim)
     _install_patches(config)
 
     _orig_get_spec = _eav_specs.get_experimental_attention_variant_module_spec

@@ -144,14 +144,20 @@ class TrainConfig(BaseConfig):
         str,
         Arg(
             type_parser=None,
-            choices=["megatron", "tilelang"],
+            choices=["megatron", "tilelang", "cake"],
             help=(
                 "DSA sparse-MLA kernel backend for GLM (glm_moe_dsa) under --megatron-to-hf-mode bridge. "
                 "'tilelang' (default) uses the fused TileLang kernels (SparseMLA + lighting_indexer, vendored from slime) for "
                 "rollout<->train numerical parity; 'megatron' uses the portable unfused megatron-core "
                 "kernels. 'tilelang' requires --qkv-format thd and the optional tilelang dep, and is "
                 "training/forward-only (no KV cache, cannot serve inference). Both support GLM-5.1 and "
-                "GLM-5.2, full or LoRA. No effect on non-DSA models or the 'raw' path."
+                "GLM-5.2, full or LoRA. Neither has an effect on non-DSA models or the 'raw' path, whose miles DSA "
+                "layers keep their measured default kernels. 'cake' is for the 'raw' path only: the miles DSA "
+                "plugin layers (GLM-5 / DeepSeek-V3.2 and GLM-5.3 with --dsa-impl miles, DeepSeek-V4 / V4.1 with "
+                "--dsv4-impl miles) run their sparse attention and indexer scores on the Cake kernels from the "
+                "miles-ext-kernels submodule (--cake-dsa-variant det or fast; the scores are always det). It "
+                "requires --use-miles-ext-kernels, NVIDIA SM100a/SM103a (Blackwell), the Megatron backend, a "
+                "512-wide latent with a 0 or 64 RoPE tail and 8/16/32/64 indexer heads of dimension 128."
             ),
         ),
     ] = "tilelang"
