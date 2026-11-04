@@ -44,7 +44,7 @@ class FakeMembers:
 
     def __init__(self, scale: float = 1.0):
         self.rank, self.world = (dist.get_rank(), dist.get_world_size()) if dist.is_initialized() else (0, 1)
-        self.scale, self.imported = scale, None
+        self.scale, self.imported, self.finished = scale, None, False
 
     def get_local_shard_specs(self, slot):
         rows = 4 // self.world
@@ -62,6 +62,10 @@ class FakeMembers:
 
     def import_adapter_state(self, slot, state):
         self.imported = state
+
+    def finish_import_adapter_state(self, slot):
+        assert self.imported is not None, "finish runs after the import"
+        self.finished = True
 
     def export_bf16_adapter(self, slot):
         raise NotImplementedError
@@ -292,6 +296,49 @@ def test_a_load_failure_on_one_rank_fails_every_rank_instead_of_hanging(tmp_path
     hung = process.is_alive()
     process.kill()
     assert not hung and process.exitcode == 0
+
+
+class OneRankCannotImport(FakeMembers):
+    """Rank 1 fails writing its pieces; finishing the import on any rank would enter a collective."""
+
+    def import_adapter_state(self, slot, state):
+        assert dist.get_rank() != 1, "rank 1 cannot write its pieces"
+        super().import_adapter_state(slot, state)
+
+    def finish_import_adapter_state(self, slot):
+        dist.barrier()
+        super().finish_import_adapter_state(slot)
+
+
+def _one_rank_cannot_import(rank, world_size, port, *, root):
+    init_gloo(rank, world_size, port=port)
+    init_gloo_group()
+    members = OneRankCannotImport()
+    with pytest.raises(RuntimeError, match="adapter checkpoint failed: rank 1: AssertionError: rank 1 cannot write"):
+        load_adapter_dir(Path(root), members, 0, RUN, TARGETS, load_optimizer=False)
+    assert not members.finished, "no rank finishes an import another rank could not write"
+    dist.destroy_process_group()
+
+
+def test_a_rank_local_import_failure_fails_every_rank_before_the_import_collectives(tmp_path):
+    write_peft_adapter(tmp_path, {f"{MODULE}.{k}": v for k, v in FULL.items()}, RUN)
+    process = (
+        __import__("multiprocessing")
+        .get_context("spawn")
+        .Process(target=run_multiprocess, args=(partial(_one_rank_cannot_import, root=str(tmp_path)),))
+    )
+    process.start()
+    process.join(timeout=60)
+    hung = process.is_alive()
+    process.kill()
+    assert not hung and process.exitcode == 0
+
+
+def test_an_import_is_finished_after_its_pieces_are_written(tmp_path):
+    write_peft_adapter(tmp_path, {f"{MODULE}.{k}": v for k, v in FULL.items()}, RUN)
+    members = FakeMembers()
+    load_adapter_dir(tmp_path, members, 0, RUN, TARGETS, load_optimizer=False)
+    assert members.imported is not None and members.finished
 
 
 class OneRankCannotPrepare(InModelLoaderStub):
