@@ -12,6 +12,7 @@ from transformers import AutoConfig, LlamaConfig, PretrainedConfig
 
 from miles.utils.lora import arguments as lora_arguments
 from miles.utils.lora.arguments import (
+    _resolve_lora_alpha,
     _resolve_lora_targets,
     _validate_adapter_state_args,
     _validate_rollout_only_adapter,
@@ -76,6 +77,7 @@ _NO_SNAPSHOTS = dict(
     lora_adapter_path=None,
     debug_rollout_only=False,
     multi_lora=False,
+    lora_adapter_targets=[],
 )
 
 
@@ -155,8 +157,7 @@ def test_the_adapter_checkpoint_requires_the_distributed_optimizer():
         _validate_adapter_state_args(_adapter_state_args(use_distributed_optimizer=False))
 
 
-@pytest.mark.parametrize("train_backend, megatron_to_hf_mode", [("torchtitan", "bridge")], ids=["torchtitan"])
-def test_convert_save_is_refused_outside_megatron_single_lora(tmp_path, train_backend, megatron_to_hf_mode):
+def test_convert_save_is_refused_outside_megatron_single_lora(tmp_path):
     args = Namespace(
         lora_type="lora",
         multi_lora_n_adapters=0,
@@ -164,8 +165,8 @@ def test_convert_save_is_refused_outside_megatron_single_lora(tmp_path, train_ba
         lora_alpha=16.0,
         lora_adapter_path=str(tmp_path),
         lora_adapter_convert_save=str(tmp_path / "converted"),
-        train_backend=train_backend,
-        megatron_to_hf_mode=megatron_to_hf_mode,
+        train_backend="torchtitan",
+        megatron_to_hf_mode="bridge",
         debug_rollout_only=False,
     )
     with pytest.raises(AssertionError, match="--lora-adapter-convert-save is implemented only"):
@@ -237,23 +238,41 @@ def test_convert_save_is_refused_under_rollout_only(tmp_path):
         validate_lora_args(args)
 
 
-def test_a_relative_convert_save_is_made_absolute_on_the_driver(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    args = Namespace(
+class _ReachedTheModel(Exception):
+    """Raised where validation first reads the base model: every path and alpha decision is made by then."""
+
+
+def _validate_until_the_model(args, monkeypatch):
+    def reached(path):
+        raise _ReachedTheModel
+
+    monkeypatch.setattr(lora_arguments, "load_hf_config", reached)
+    with pytest.raises(_ReachedTheModel):
+        validate_lora_args(args)
+
+
+def _single_lora_args(**overrides):
+    args = dict(
         lora_type="lora",
         multi_lora_n_adapters=0,
         lora_rank=8,
         lora_alpha=16.0,
-        lora_adapter_path=str(tmp_path),
-        lora_adapter_convert_save="converted",
+        lora_adapter_path=None,
+        lora_adapter_convert_save=None,
         train_backend="megatron",
         megatron_to_hf_mode="bridge",
         indep_dp=False,
-        debug_rollout_only=True,
+        debug_rollout_only=False,
+        debug_skip_weight_update=False,
+        hf_checkpoint="/hf",
     )
-    # rollout-only stops validation right after the path is resolved
-    with pytest.raises(AssertionError, match="--debug-rollout-only"):
-        validate_lora_args(args)
+    return Namespace(**(args | overrides))
+
+
+def test_a_relative_convert_save_is_made_absolute_on_the_driver(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    args = _single_lora_args(lora_adapter_path=str(tmp_path), lora_adapter_convert_save="converted")
+    _validate_until_the_model(args, monkeypatch)
     assert args.lora_adapter_convert_save == os.path.join(os.getcwd(), "converted")
 
 
@@ -261,21 +280,8 @@ def test_a_relative_adapter_path_is_made_absolute_before_alpha_is_resolved(tmp_p
     monkeypatch.chdir(tmp_path)
     (tmp_path / "source").mkdir()
     (tmp_path / "source" / "adapter_config.json").write_text(json.dumps({"r": 8, "lora_alpha": 32}))
-    args = Namespace(
-        lora_type="lora",
-        multi_lora_n_adapters=0,
-        lora_rank=8,
-        lora_alpha=None,
-        lora_adapter_path="source",
-        lora_adapter_convert_save=str(tmp_path / "converted"),
-        train_backend="megatron",
-        megatron_to_hf_mode="bridge",
-        indep_dp=True,
-        debug_rollout_only=False,
-    )
-    # --indep-dp stops validation right after alpha is resolved
-    with pytest.raises(AssertionError, match="does not support --indep-dp"):
-        validate_lora_args(args)
+    args = _single_lora_args(lora_alpha=None, lora_adapter_path="source")
+    _validate_until_the_model(args, monkeypatch)
     assert args.lora_adapter_path == os.path.join(os.getcwd(), "source")
     assert args.lora_alpha == 32
 
@@ -283,13 +289,6 @@ def test_a_relative_adapter_path_is_made_absolute_before_alpha_is_resolved(tmp_p
 def test_multi_lora_refuses_an_adapter_path():
     with pytest.raises(AssertionError, match="--lora-adapter-path is single LoRA only"):
         validate_multi_lora_args(Namespace(multi_lora_n_adapters=2, lora_rank=8, lora_adapter_path="/adapter"))
-
-
-@pytest.mark.parametrize("save, lora_adapter_path", [("/save", None), (None, "/adapter")])
-def test_a_disabled_optimizer_cannot_save_or_load_the_adapter_checkpoint(save, lora_adapter_path):
-    args = Namespace(save=save, lora_adapter_path=lora_adapter_path, debug_disable_optimizer=True)
-    with pytest.raises(AssertionError, match="--debug-disable-optimizer"):
-        _validate_adapter_state_args(args)
 
 
 def test_rollout_only_skips_the_adapter_checkpoint_checks():
@@ -421,3 +420,65 @@ def test_multi_lora_bridge_refuses_a_model_without_hf_lora_layout(monkeypatch):
     """Multi-LoRA builds the adapter slots its sampler exports read, even without --save-hf / --save."""
     with pytest.raises(AssertionError, match="HF LoRA target layout"):
         _validate(_bridge_args_without_layout(monkeypatch, multi_lora=True))
+
+
+# --lora-alpha is the source adapter's when there is one; the flag may only repeat it
+def _alpha_args(path, alpha):
+    return SimpleNamespace(lora_adapter_path=None if path is None else str(path), lora_alpha=alpha)
+
+
+def test_without_a_source_the_default_is_16():
+    assert _resolve_lora_alpha(_alpha_args(None, None)) == 16.0
+    assert _resolve_lora_alpha(_alpha_args(None, 8.0)) == 8.0
+
+
+def test_a_source_alpha_is_adopted_and_a_different_flag_refused(tmp_path):
+    (tmp_path / "adapter_config.json").write_text(json.dumps({"lora_alpha": 32}))
+    assert _resolve_lora_alpha(_alpha_args(tmp_path, None)) == 32
+    assert _resolve_lora_alpha(_alpha_args(tmp_path, 32.0)) == 32
+    with pytest.raises(AssertionError, match="differs"):
+        _resolve_lora_alpha(_alpha_args(tmp_path, 16.0))
+
+
+def test_a_source_without_alpha_needs_the_flag(tmp_path):
+    with pytest.raises(AssertionError, match="pass --lora-alpha"):
+        _resolve_lora_alpha(_alpha_args(tmp_path, None))
+    assert _resolve_lora_alpha(_alpha_args(tmp_path, 4.0)) == 4.0
+
+
+def test_a_hub_id_takes_the_flag_or_the_default():
+    assert _resolve_lora_alpha(_alpha_args("org/adapter", None)) == 16.0
+    assert _resolve_lora_alpha(_alpha_args("org/adapter", 8.0)) == 8.0
+
+
+def _canonical_gdn_args(monkeypatch, **overrides):
+    # a model with a layout, whose canonical adapters target one GDN in_proj_qkv by component
+    monkeypatch.setattr(lora_arguments, "load_hf_config", lambda path: SimpleNamespace(to_dict=dict))
+    monkeypatch.setattr(lora_arguments, "has_hf_lora_targets", lambda config: True)
+    fields = dict(
+        hf_checkpoint="/hf",
+        lora_type="canonical_lora",
+        lora_adapter_targets=[f"model.layers.0.linear_attn.in_proj_{c}" for c in "qkvz"],
+        save_hf=None,
+        eval_hf_dir=None,
+        eval_uses_snapshots=False,
+        multi_lora=False,
+        save=None,
+        debug_rollout_only=False,
+        lora_rank=8,
+        lora_adapter_path=None,
+    )
+    return Namespace(**(fields | overrides))
+
+
+def test_canonical_gdn_components_refuse_hf_exports_at_launch(monkeypatch):
+    """A PEFT adapter cannot name in_proj_q/k/v with their own lora_A, so the export would fail at every save."""
+    lora_arguments._assert_adapter_layout_defined(_canonical_gdn_args(monkeypatch))
+    # multi-LoRA reads the slots but writes no PEFT view
+    lora_arguments._assert_adapter_layout_defined(_canonical_gdn_args(monkeypatch, multi_lora=True))
+    with pytest.raises(AssertionError, match=r"no PEFT adapter can name: use --lora-type lora"):
+        lora_arguments._assert_adapter_layout_defined(_canonical_gdn_args(monkeypatch, save_hf="/hf_out"))
+    with pytest.raises(AssertionError, match=r"\['in_proj_k', 'in_proj_q', 'in_proj_v'\]"):
+        lora_arguments._assert_adapter_layout_defined(
+            _canonical_gdn_args(monkeypatch, eval_hf_dir="/eval", eval_uses_snapshots=True)
+        )

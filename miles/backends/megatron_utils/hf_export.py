@@ -73,8 +73,7 @@ def save_hf_model(
                 )
         if is_lora_model(model):
             assert adapter_slots is not None, "a LoRA export needs the model's adapter slots"
-            # native's adapter goes out in sglang's stacked expert layout, as main's raw export wrote it; PEFT's
-            # per-expert 2D names cannot carry a shared-outer side
+            # PEFT's per-expert 2D names cannot carry a shared-outer side; native keeps sglang's stacked expert layout
             write_export = (
                 write_sampler_view if adapter_slots.bf16_adapter_key_style == "sampler" else write_peft_export
             )

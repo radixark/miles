@@ -4,7 +4,7 @@ import logging
 from argparse import Namespace
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING
 
 import torch
 import torch.distributed as dist
@@ -16,6 +16,9 @@ from miles.utils.lora.utils import (  # noqa: F401  (re-exported)
     is_lora_enabled,
     lora_rollout_enabled,
 )
+
+if TYPE_CHECKING:
+    from megatron.core.optimizer.cpu_offloading.hybrid_optimizer import HybridDeviceOptimizer
 
 logger = logging.getLogger(__name__)
 
@@ -203,7 +206,10 @@ def _native_adapter_shard(adapter_dir: Path) -> Path | None:
     return None
 
 
-def _load_native_adapter_shard(model: Sequence[torch.nn.Module], shard: Path) -> None:
+def _read_native_adapter_shard(
+    model: Sequence[torch.nn.Module], shard: Path
+) -> list[tuple[torch.nn.Parameter, torch.Tensor]]:
+    """Each adapter parameter with its tensor from ``shard``, checked against the model; writes nothing."""
     state_dict = torch.load(shard, map_location="cpu", weights_only=True)
     adapter_params = _adapter_shard_params(model)
     missing = adapter_params.keys() - state_dict.keys()
@@ -221,9 +227,7 @@ def _load_native_adapter_shard(model: Sequence[torch.nn.Module], shard: Path) ->
     # copy_ would broadcast a [1, ...] tensor into an [E, ...] parameter
     if mismatched:
         raise RuntimeError(f"Adapter checkpoint {shard} does not match the model's adapter shapes: {mismatched}")
-    for name, param in adapter_params.items():
-        param.data.copy_(state_dict[name].to(device=param.device))
-    logger.info(f"Loaded {len(adapter_params)} adapter tensors from Megatron-native checkpoint: {shard}")
+    return [(param, state_dict[name]) for name, param in adapter_params.items()]
 
 
 def _load_training_state(adapter_dir: Path) -> dict | None:
@@ -235,9 +239,29 @@ def _load_training_state(adapter_dir: Path) -> dict | None:
     return torch.load(state_path, map_location="cpu", weights_only=False)
 
 
-def _distributed_optimizers(optimizer: Any) -> list:
-    """The DistributedOptimizers under ``optimizer``, whose ``state_dict()`` leaves out the per-parameter state."""
-    from megatron.core.optimizer import ChainedOptimizer, DistributedOptimizer
+def _distributed_optimizers(optimizer) -> list:
+    # Megatron is imported on use: this module is also imported where Megatron is not
+    from megatron.core.optimizer import DistributedOptimizer
 
-    subs = optimizer.chained_optimizers if isinstance(optimizer, ChainedOptimizer) else [optimizer]
-    return [sub for sub in subs if isinstance(sub, DistributedOptimizer)]
+    subs = optimizer.chained_optimizers
+    # another optimizer's state would be silently left out of the checkpoint
+    assert all(
+        isinstance(sub, DistributedOptimizer) for sub in subs
+    ), f"the adapter checkpoint needs --use-distributed-optimizer; got {[type(sub).__name__ for sub in subs]}"
+    return subs
+
+
+def _init_zero_hdo_state(hdo: "HybridDeviceOptimizer") -> None:
+    """The state a never-stepped HDO is equivalent to: its fp32 master, zero moments, step 0.
+
+    Megatron's own dummy_step would take a real Adam step on random gradients.
+    """
+    for group in hdo.param_groups:
+        for param in group["params"]:
+            master = hdo.param_to_inner_param[param]
+            hdo.state[param] = {
+                "step": torch.tensor(0.0),
+                "exp_avg": torch.zeros_like(master),
+                "exp_avg_sq": torch.zeros_like(master),
+                "master_param": master,
+            }

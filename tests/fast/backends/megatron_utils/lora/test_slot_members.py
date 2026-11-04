@@ -11,7 +11,7 @@ def _members(param: torch.Tensor, master: torch.Tensor) -> LayerWiseSlotMembers:
     slots = SimpleNamespace(
         slot_parameters=lambda slot: [param],
         local_shard_specs=lambda slot, holds: [SimpleNamespace(local_shape=param.shape)],
-        local_pieces=lambda slot, tensors, holds: list(tensors),
+        piece_parameter=lambda slot, holds: [(0, torch.arange(param.numel()).view(param.shape))],
     )
     child = SimpleNamespace(
         optimizer=SimpleNamespace(param_groups=[{"step": 1}], state={master: {}}),
@@ -32,6 +32,35 @@ def test_a_bf16_parameter_that_is_not_its_master_is_refused():
     master = torch.tensor([[1.0, 2.0]])
     with pytest.raises(AssertionError, match="is not its master"):
         _members(torch.tensor([[1.0, 3.0]], dtype=torch.bfloat16), master).export_adapter_state(0)
+
+
+class _NotHeld(torch.Tensor):
+    """A parameter another rank holds: exporting this rank's pieces must never read or convert it."""
+
+    def detach(self):
+        raise AssertionError("a parameter this rank does not hold was read")
+
+    def float(self):
+        raise AssertionError("a parameter this rank does not hold was converted")
+
+
+def test_an_export_reads_only_the_parameters_this_rank_holds():
+    master = torch.tensor([[1.0, 2.0]])
+    held, elsewhere = master.to(torch.bfloat16), torch.zeros(3, 4).as_subclass(_NotHeld)
+    slots = SimpleNamespace(
+        slot_parameters=lambda slot: [held, elsewhere],
+        local_shard_specs=lambda slot, holds: [SimpleNamespace(local_shape=held.shape)],
+        piece_parameter=lambda slot, holds: [(0, torch.arange(2).view(1, 2))],
+        local_pieces=lambda slot, tensors, holds: [torch.cat([t.detach().float().reshape(-1) for t in tensors])[:2]],
+    )
+    child = SimpleNamespace(
+        optimizer=SimpleNamespace(param_groups=[{"step": 1}], state={master: {}}),
+        float16_groups=[[held]],
+        fp32_from_float16_groups=[[master]],
+        fp32_from_fp32_groups=[[]],
+    )
+    state = LayerWiseSlotMembers(slots, {0: SimpleNamespace(chained_optimizers=[child])}).export_adapter_state(0)
+    assert torch.equal(state.weights[0], master)
 
 
 def _importing_members(master: torch.Tensor, adam: dict, group: dict, offsets: torch.Tensor, calls: list):
