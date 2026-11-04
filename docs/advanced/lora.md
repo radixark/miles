@@ -441,7 +441,8 @@ It waits for preceding commands but neither steps nor saves pending gradients;
 call it after `optim_step` to save the effect of the accumulated training work.
 A save commits a new adapter directory and then points the name at it, so an
 overwrite that fails keeps the previous checkpoint; one gateway holds a checkpoint
-root at a time. `load_state` adopts the checkpoint's alpha, and a checkpoint saved
+root at a time, through an `flock` that the root's filesystem must enforce across hosts (NFS
+mounted `nolock` and Lustre with `localflock` do not). `load_state` adopts the checkpoint's alpha, and a checkpoint saved
 under another adapter layout loads its weights only, where the conversion is exact
 (factors become shared only when they are equal).
 Sampler saves commit an immutable adapter directory on shared storage, without

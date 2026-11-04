@@ -122,7 +122,9 @@ Existing sampler versions cannot be overwritten. Saving between `forward_backwar
 and `optim_step` neither applies nor discards pending gradients.
 
 Training checkpoint saves and loads are serialized within the gateway, and one
-gateway holds a checkpoint root at a time (an `flock` on the root). A save writes a
+gateway holds a checkpoint root at a time (an `flock` on the root). That needs a filesystem that
+enforces `flock` across hosts: NFS mounted `nolock` and Lustre with `localflock` lock only within one host,
+so two gateways on different hosts could both hold the root. A save writes a
 new commit and then points the name at it; an overwrite retires the previous commit
 only after the new one is committed, so a failed overwrite keeps the previous
 checkpoint. A load adopts the alpha the checkpoint was trained with.
