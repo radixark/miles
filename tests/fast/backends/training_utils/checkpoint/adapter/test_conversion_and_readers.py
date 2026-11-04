@@ -103,11 +103,11 @@ def test_gdn_components_with_their_own_a_are_refused_by_the_peft_export(tmp_path
 
 
 def test_only_fused_components_sharing_one_a_have_a_plain_peft_form():
-    assert not has_plain_peft_form(_run())
-    assert has_plain_peft_form(_run(shared_lora_a_groups=(tuple(sorted(QKV)),)))
+    assert not has_plain_peft_form(_run(), QWEN35)
+    assert has_plain_peft_form(_run(shared_lora_a_groups=(tuple(sorted(QKV)),)), QWEN35)
     # a lone component of a fused module has no HF module either
-    assert not has_plain_peft_form(_run(target_modules=(QKV[0],)))
-    assert has_plain_peft_form(_run(target_modules=EXPERTS))
+    assert not has_plain_peft_form(_run(target_modules=(QKV[0],)), QWEN35)
+    assert has_plain_peft_form(_run(target_modules=EXPERTS), QWEN35)
 
 
 def test_hf_peft_loads_the_peft_export(tmp_path):
@@ -421,7 +421,8 @@ def test_an_edited_sampler_config_is_refused(tmp_path):
         MilesAdapterDirReader(tmp_path, QWEN35)
 
 
-def test_gpt_oss_experts_without_a_shared_a_stay_per_expert(tmp_path):
+def test_gpt_oss_gate_and_up_with_their_own_a_have_no_plain_peft_form(tmp_path):
+    # HF gpt-oss has one packed experts.gate_up_proj; canonical gate / up with their own A have no module there
     gate, up, down = (f"{L}.mlp.experts.{p}" for p in ("gate_proj", "up_proj", "down_proj"))
     run = _run(target_modules=(gate, up, down))
     weights = {
@@ -429,11 +430,10 @@ def test_gpt_oss_experts_without_a_shared_a_stay_per_expert(tmp_path):
         for m in (gate, up, down)
         for f in "AB"
     }
-    write_peft_adapter(tmp_path, weights, run, GPT_OSS)
-    names = set(load_file(str(tmp_path / "adapter_model.safetensors")))
-    assert f"base_model.model.{L}.mlp.experts.2.up_proj.lora_A.weight" in names and not any(
-        "gate_up_proj" in n for n in names
-    )
+    assert not has_plain_peft_form(run, GPT_OSS)
+    assert has_plain_peft_form(_run(target_modules=(gate, up, down), shared_lora_a_groups=((gate, up),)), GPT_OSS)
+    with pytest.raises(AssertionError, match="has no plain-PEFT form"):
+        write_peft_adapter(tmp_path, weights, run, GPT_OSS)
 
 
 def test_gpt_oss_sampler_export_keeps_packed_hf_names(tmp_path):
