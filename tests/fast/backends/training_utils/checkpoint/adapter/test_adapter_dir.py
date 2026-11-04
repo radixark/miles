@@ -183,8 +183,11 @@ class InModelLoaderStub:
     def parametrization(self, path):
         return self._parametrization(path) if callable(self._parametrization) else self._parametrization
 
-    def load(self, path):
-        self.loaded.append(path)
+    def prepare(self, path):
+        return path
+
+    def apply(self, prepared):
+        self.loaded.append(prepared)
 
 
 def test_an_in_model_source_without_alpha_takes_the_runs(tmp_path):
@@ -288,6 +291,54 @@ def test_a_load_failure_on_one_rank_fails_every_rank_instead_of_hanging(tmp_path
         __import__("multiprocessing")
         .get_context("spawn")
         .Process(target=run_multiprocess, args=(partial(_one_rank_cannot_read, root=str(tmp_path)),))
+    )
+    process.start()
+    process.join(timeout=60)
+    hung = process.is_alive()
+    process.kill()
+    assert not hung and process.exitcode == 0
+
+
+class OneRankCannotPrepare(InModelLoaderStub):
+    """Rank 1 fails reading its part of the source; applying it on any rank would enter a collective."""
+
+    def prepare(self, path):
+        assert dist.get_rank() != 1, "rank 1 has no shard"
+        return path
+
+    def apply(self, prepared):
+        dist.barrier()
+        super().apply(prepared)
+
+
+def _one_rank_cannot_prepare_an_in_model_source(rank, world_size, port, *, root):
+    init_gloo(rank, world_size, port=port)
+    init_gloo_group()
+    loader = OneRankCannotPrepare(RUN)
+    with pytest.raises(RuntimeError, match="adapter checkpoint failed: rank 1: AssertionError: rank 1 has no shard"):
+        load_adapter_dir(
+            Path(root),
+            FakeMembers(),
+            0,
+            RUN,
+            TARGETS,
+            load_optimizer=False,
+            in_model_loaders_by_kind={AdapterSourceKind.TORCHTITAN_CHECKPOINT: loader},
+        )
+    assert loader.loaded == [], "no rank applies a source another rank could not prepare"
+    dist.destroy_process_group()
+
+
+def test_a_rank_local_failure_of_an_in_model_source_fails_every_rank_before_its_collectives(tmp_path):
+    torch.distributed.checkpoint.save(
+        {"model.layers.0.attention.wq.lora_a.weight": torch.zeros(2)}, checkpoint_id=tmp_path, no_dist=True
+    )
+    process = (
+        __import__("multiprocessing")
+        .get_context("spawn")
+        .Process(
+            target=run_multiprocess, args=(partial(_one_rank_cannot_prepare_an_in_model_source, root=str(tmp_path)),)
+        )
     )
     process.start()
     process.join(timeout=60)
@@ -458,6 +509,26 @@ def test_peft_export_of_a_fused_gdn_group_writes_one_a_per_exported_module(tmp_p
     for module, b in members.b.items():
         assert torch.equal(tensors[f"base_model.model.{GDN}.{module}.lora_A.weight"], members.a.to(torch.bfloat16))
         assert torch.equal(tensors[f"base_model.model.{GDN}.{module}.lora_B.weight"], b.to(torch.bfloat16))
+
+
+class CanonicalGdnMembers:
+    """Bridge's canonical export: each GDN in_proj_qkv component under its own name with its own lora_A."""
+
+    bf16_adapter_key_style = "peft"
+
+    def export_bf16_adapter(self, slot):
+        for component, rows in (("in_proj_q", 2), ("in_proj_k", 2), ("in_proj_v", 3)):
+            yield f"{GDN}.{component}.lora_A.weight", torch.randn(4, 6)
+            yield f"{GDN}.{component}.lora_B.weight", torch.randn(rows, 4)
+
+
+def test_peft_export_refuses_canonical_gdn_components(tmp_path):
+    """HF has only the fused in_proj_qkv: components with their own lora_A have no PEFT name, so the export fails."""
+    components = tuple(f"{GDN}.in_proj_{c}" for c in "kqv")
+    run = AdapterParametrization("m", 4, 8.0, "canonical_lora", components, False)
+    with pytest.raises(RuntimeError, match="has no plain-PEFT form; the adapter dir is the checkpoint"):
+        write_peft_export(tmp_path, CanonicalGdnMembers(), 0, run, GDN_TARGETS)
+    assert not (tmp_path / "adapter_model.safetensors").exists()
 
 
 HEAD_RUN = AdapterParametrization("m", 2, 4.0, "canonical_lora", ("lm_head",), False)

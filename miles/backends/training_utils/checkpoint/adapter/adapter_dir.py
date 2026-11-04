@@ -4,7 +4,7 @@ import json
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
 import torch
 
@@ -55,12 +55,21 @@ class HeadRows:
 
 
 class InModelLoader(Protocol):
-    """A source a backend reads straight into its model, in the run's own parametrization."""
+    """A source a backend reads straight into its model, in the run's own parametrization.
 
-    # read before anything is loaded, so a refused source leaves the model as it was
+    ``load_adapter_dir`` calls ``parametrization``, then ``prepare``, agreeing across ranks after each, then ``apply``:
+    a failure on one rank must surface before any rank enters a collective.
+    """
+
+    # rank-local and side-effect free: read before anything is loaded, so a refused source leaves the model as it was
     def parametrization(self, path: Path) -> AdapterParametrization: ...
 
-    def load(self, path: Path) -> None: ...
+    # rank-local and side-effect free: every read and check that can fail on one rank alone; returns what apply needs
+    def prepare(self, path: Path) -> Any: ...
+
+    # writes the prepared source into the model and runs the collectives; it must not fail on one rank alone, as the
+    # others may already be inside a collective
+    def apply(self, prepared: Any) -> None: ...
 
 
 class AdapterCheckpointMembers(Protocol):
@@ -78,6 +87,7 @@ class AdapterCheckpointMembers(Protocol):
 
     def export_adapter_state(self, slot: int) -> AdapterState: ...
 
+    # may run collectives, so every check that can fail on one rank alone comes before the first of them
     def import_adapter_state(self, slot: int, state: AdapterState) -> None: ...
 
 
@@ -250,7 +260,8 @@ def load_adapter_dir(
 ) -> AdapterParametrization:
     """Load any recognized source into ``slot``; returns the source parametrization.
 
-    All ranks call. A failure on one rank fails every rank before the next collective.
+    All ranks call. A failure on one rank fails every rank before the next collective, provided a backend's in-model
+    loader and ``import_adapter_state`` do their rank-local checks before their collectives.
     Alpha is not checked here: the caller owns it (Tinker adopts the source's, RL compares it to ``--lora-alpha``).
 
     A source that needs conversion (PEFT, external weights, another parametrization) is read whole on every rank:
@@ -279,8 +290,14 @@ def load_adapter_dir(
         except Exception as exc:
             error = exc
         raise_if_any_rank_failed(error)
+        prepared = None
         try:
-            loader.load(path)
+            prepared = loader.prepare(path)
+        except Exception as exc:
+            error = exc
+        raise_if_any_rank_failed(error)
+        try:
+            loader.apply(prepared)
         except Exception as exc:
             error = exc
         raise_if_any_rank_failed(error)
