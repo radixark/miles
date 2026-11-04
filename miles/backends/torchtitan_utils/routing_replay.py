@@ -2,6 +2,7 @@ import contextlib
 import functools
 import logging
 
+import torch
 import torch.nn as nn
 
 from miles.backends.training_utils.replay.routing_replay import FALLTHROUGH, REPLAY_BACKWARD, REPLAY_FORWARD, stage
@@ -43,9 +44,16 @@ def _part_routers(part: nn.Module) -> list[tuple[int, nn.Module]]:
     return sorted(routers, key=lambda pair: pair[0])
 
 
+def _allow_forward_side_effects_in_compiled_checkpoints() -> None:
+    # the router pre-hook and the consumed-ids clear write Python state inside the block; a compiled
+    # checkpoint refuses that unless the writes stay out of the recompute, which reuses the saved ids anyway
+    torch._dynamo.config.skip_fwd_side_effects_in_bwd_under_checkpoint = True
+
+
 def install(model_parts: list[nn.Module]) -> int:
     if not routing_replay_manager.enabled:
         return 0
+    _allow_forward_side_effects_in_compiled_checkpoints()
 
     part_routers = [_part_routers(part) for part in model_parts]
     if not any(part_routers):

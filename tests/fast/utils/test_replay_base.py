@@ -170,7 +170,8 @@ def test_staged_ids_compile_once_under_activation_checkpointing(monkeypatch):
     blocks = [checkpoint_wrapper(router) for router in routers]
     for block in blocks:
         block.compile(backend=counter, fullgraph=True, dynamic=False)
-    with torch._dynamo.config.patch(skip_fwd_side_effects_in_bwd_under_checkpoint=True):
+    with torch._dynamo.config.patch(skip_fwd_side_effects_in_bwd_under_checkpoint=False):
+        routing_replay._allow_forward_side_effects_in_compiled_checkpoints()  # what install() does
         for _ in ids:
             hidden = torch.rand(8, 5, requires_grad=True)
             manager.stage = "replay_forward"
