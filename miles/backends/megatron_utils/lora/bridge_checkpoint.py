@@ -192,7 +192,7 @@ class BridgeAdapterSlots:
     Multi-LoRA slots are padded to ``max_rank``; a slot's HF tensors have its real rank.
     """
 
-    bf16_adapter_key_style: Literal["peft", "tinker"] = "peft"
+    bf16_adapter_key_style: Literal["peft"] = "peft"
 
     def __init__(self, model, iterator, targets: HfLoraTargets, *, multi_lora: bool):
         """Collective: probes the row mapping now, while nothing else touches the parameters."""
