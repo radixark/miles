@@ -6,6 +6,8 @@ import os
 from typing import Any
 
 _MODEL_TYPES = ("inkling_mm_model", "inkling_mm_model")
+# Inkling2 keeps Inkling's message format but not its multimodal processor.
+_INKLING2_MODEL_TYPES = ("inkling2_mm_model",)
 
 
 @functools.cache
@@ -28,6 +30,12 @@ def _read_model_type(name_or_path: str) -> str:
 def is_inkling(tokenizer: Any) -> bool:
     return (
         _read_model_type(getattr(tokenizer, "name_or_path", "")) in _MODEL_TYPES
+    )  # config-access-exempt: custom tokenizers may omit a pretrained model path
+
+
+def is_inkling2(tokenizer: Any) -> bool:
+    return (
+        _read_model_type(getattr(tokenizer, "name_or_path", "")) in _INKLING2_MODEL_TYPES
     )  # config-access-exempt: custom tokenizers may omit a pretrained model path
 
 
