@@ -56,8 +56,9 @@ class InModelLoader(Protocol):
     the others wait inside it.
     """
 
-    # reads and checks the source without changing the model, so a refused source leaves the model as it was
-    def parametrization(self, path: Path) -> AdapterParametrization: ...
+    # reads and checks the source without changing the model, so a refused source leaves the model as it was;
+    # returns the source's parametrization and whether it holds optimizer state
+    def parametrization(self, path: Path) -> tuple[AdapterParametrization, bool]: ...
 
     # every read and check left before the model is written; returns what apply needs
     def prepare(self, path: Path) -> Any: ...
@@ -208,12 +209,13 @@ def load_adapter_dir(
     if kind.is_read_into_model():
         loader, source = in_model_loaders_by_kind[kind], None
         try:
-            source = _with_run_alpha_if_unknown(loader.parametrization(path), run)
+            source, has_optimizer_state = loader.parametrization(path)
+            source = _with_run_alpha_if_unknown(source, run)
             steps = plan_parametrization_conversion(source, run, source_dtype=torch.float32)
             # an in-model loader reads straight into the run's parametrization; it cannot convert
             assert not steps, f"{path} needs {steps} to match the run, which an in-model loader cannot do"
             assert_parametrization_matches_run(
-                source, run, steps, load_optimizer=load_optimizer, has_optimizer_state=True
+                source, run, steps, load_optimizer=load_optimizer, has_optimizer_state=has_optimizer_state
             )
         except Exception as exc:
             error = exc

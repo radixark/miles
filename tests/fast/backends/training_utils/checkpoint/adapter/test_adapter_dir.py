@@ -176,11 +176,14 @@ def test_a_rank0_prepare_failure_fails_every_rank_instead_of_hanging():
 class InModelLoaderStub:
     """An in-model source with a fixed parametrization; records what it loads."""
 
-    def __init__(self, parametrization):
-        self._parametrization, self.loaded = parametrization, []
+    def __init__(self, parametrization, has_optimizer_state=True):
+        self._parametrization, self._has_optimizer_state, self.loaded = parametrization, has_optimizer_state, []
 
     def parametrization(self, path):
-        return self._parametrization(path) if callable(self._parametrization) else self._parametrization
+        parametrization = (
+            self._parametrization(path) if callable(self._parametrization) else self._parametrization
+        )
+        return parametrization, self._has_optimizer_state
 
     def prepare(self, path):
         return path
@@ -435,6 +438,34 @@ def test_an_in_model_source_is_loaded_only_after_its_parametrization_is_accepted
         in_model_loaders_by_kind={AdapterSourceKind.TORCHTITAN_CHECKPOINT: accepted},
     )
     assert accepted.loaded == [tmp_path]
+
+
+def test_an_in_model_source_without_optimizer_state_is_refused_when_loading_it(tmp_path):
+    torch.distributed.checkpoint.save(
+        {"model.layers.0.attention.wq.lora_a.weight": torch.zeros(2)}, checkpoint_id=tmp_path, no_dist=True
+    )
+    loader = InModelLoaderStub(RUN, has_optimizer_state=False)
+    with pytest.raises(RuntimeError, match="no optimizer state"):
+        load_adapter_dir(
+            tmp_path,
+            FakeMembers(),
+            0,
+            RUN,
+            TARGETS,
+            load_optimizer=True,
+            in_model_loaders_by_kind={AdapterSourceKind.TORCHTITAN_CHECKPOINT: loader},
+        )
+    assert loader.loaded == [], "a refused source must not touch the model"
+    load_adapter_dir(
+        tmp_path,
+        FakeMembers(),
+        0,
+        RUN,
+        TARGETS,
+        load_optimizer=False,
+        in_model_loaders_by_kind={AdapterSourceKind.TORCHTITAN_CHECKPOINT: loader},
+    )
+    assert loader.loaded == [tmp_path]
 
 
 class NoPrimaryAMembers(FakeMembers):
