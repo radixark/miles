@@ -359,8 +359,8 @@ def _load_legacy_slot(shells: dict, slot_optimizer: SlotOptimizer, path: str, lo
         slot_optimizer.load_sharded_state(loaded[_OPTIM_KEY])
         if not load_optimizer:
             slot_optimizer.reset_adam_state()
-        # dist_checkpointing.load leaves factory-built (grouped-expert) adapter weights unwritten (root cause open); the
-        # loaded masters are authoritative
+        # factory-built (grouped-expert) adapter weights come back unwritten (likely: dist_checkpointing.load writes
+        # them only into the returned dict); the loaded masters are authoritative
         for child in slot_optimizer.chained_optimizers:
             child._copy_main_params_to_model_params()
     except Exception as exc:
