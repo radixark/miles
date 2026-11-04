@@ -183,7 +183,7 @@ class TestRouterFlag:
 
     def test_an_unknown_router_is_rejected_at_parse_time(self):
         with pytest.raises(SystemExit):
-            parse_megatron_test_config("--router", "dynamo")
+            parse_megatron_test_config("--router", "unknown-router")
 
     @pytest.mark.parametrize(
         ("config", "expected"),
@@ -198,7 +198,7 @@ class TestRouterFlag:
 
     def test_an_unknown_router_in_a_config_file_is_rejected(self, tmp_path: Path):
         path = tmp_path / "config.yaml"
-        path.write_text("router: dynamo")
+        path.write_text("router: unknown-router")
         with pytest.raises(ValueError, match="router"):
             parse_megatron_test_config("--custom-config-path", str(path))
 
