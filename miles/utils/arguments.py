@@ -762,25 +762,49 @@ def _resolve_run_uuid(args: argparse.Namespace) -> str:
 
 
 def validate_log_probs_backend_args(args) -> None:
-    """Reject settings the fused log-prob op does not cover, at startup rather than mid-run."""
-    if args.log_probs_backend != "fused":
+    """Reject settings the fused log-prob ops do not cover, at startup rather than mid-run."""
+    backend = args.log_probs_backend
+    if backend not in ("fused", "fused_lm_head"):
         return
     if args.true_on_policy_mode:
         raise ValueError(
-            "--log-probs-backend fused does not support --true-on-policy-mode, which needs bitwise "
+            f"--log-probs-backend {backend} does not support --true-on-policy-mode, which needs bitwise "
             "parity with the rollout engine's own log-softmax; use --log-probs-backend torch."
         )
     if args.use_sampling_support_replay:
         raise ValueError(
-            "--log-probs-backend fused does not support sampling-support replay "
+            f"--log-probs-backend {backend} does not support sampling-support replay "
             f"(--rollout-top-p {args.rollout_top_p}, --rollout-top-k {args.rollout_top_k}); "
             "use --log-probs-backend torch."
         )
     # unset, the actor falls back to the tokenizer's vocab_size, which can leave out added special tokens
     if args.train_backend == "megatron" and args.vocab_size is None:
         raise ValueError(
-            "--log-probs-backend fused needs --vocab-size (the HF config's vocab_size) on the megatron "
+            f"--log-probs-backend {backend} needs --vocab-size (the HF config's vocab_size) on the megatron "
             "backend, to exclude Megatron's vocabulary padding from the softmax."
+        )
+    if backend == "fused_lm_head":
+        _validate_fused_lm_head_args(args)
+
+
+def _validate_fused_lm_head_args(args) -> None:
+    """The model returns the output layer's input, so only losses that score target tokens can read it."""
+    if args.train_backend != "megatron":
+        raise ValueError(
+            "--log-probs-backend fused_lm_head needs --train-backend megatron (GPTModel's output_processor)"
+        )
+    if args.loss_type not in ("policy_loss", "sft_loss"):
+        raise ValueError(
+            f"--log-probs-backend fused_lm_head supports --loss-type policy_loss and sft_loss, got {args.loss_type}"
+        )
+    # the raw flag: args.multi_lora is derived from it later, in validate_lora_args
+    if args.multi_lora_n_adapters > 0:
+        raise ValueError("--log-probs-backend fused_lm_head does not support multi-LoRA (--multi-lora-n-adapters)")
+    # Megatron computes the MTP loss inside GPTModel's postprocess, before the output_processor runs
+    if args.enable_mtp_training:
+        logger.warning(
+            "--log-probs-backend fused_lm_head does not cover the MTP heads: with --enable-mtp-training each MTP "
+            "layer's loss still materializes its fp32 logits, [tokens x vocab/TP] per layer"
         )
 
 

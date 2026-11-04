@@ -24,6 +24,7 @@ from megatron.core.utils import get_model_config
 from megatron.training.training import get_model
 
 from miles.backends.megatron_utils.ft.indep_dp import allreduce_grads_and_losses_across_replicas
+from miles.backends.megatron_utils.lm_head import check_model_takes_output_processor, lm_head_forward_kwargs
 from miles.backends.megatron_utils.local_weight_checksum import dump_local_weight_checksums
 from miles.backends.megatron_utils.lora.native import wrap_model_provider_with_lora
 from miles.backends.megatron_utils.optimizer_state_reset import reset_optimizer_states
@@ -289,7 +290,7 @@ def should_disable_forward_pre_hook(args: TrainerConfig) -> bool:
 def forward_only(
     f: Callable[..., dict[str, list[torch.Tensor]]],
     args: TrainerConfig,
-    model: Sequence[DDP],
+    model_chunks: Sequence[DDP],
     data_iterator: Sequence[DataIterator],
     num_microbatches: Sequence[int],
     rollout_id: int,
@@ -305,7 +306,7 @@ def forward_only(
     Args:
         f: Post-forward callback used to compute and package outputs to collect.
         args: Runtime arguments.
-        model: Sequence of DDP-wrapped model chunks.
+        model_chunks: Sequence of DDP-wrapped model chunks.
         data_iterator: Iterable(s) yielding batches for inference.
         num_microbatches: Number of microbatches per rollout step.
         rollout_id: Rollout identifier (selects the per-rollout dump subdirectory).
@@ -319,14 +320,14 @@ def forward_only(
     """
 
     dumper_phase_util = DumperMegatronUtil(
-        args, model, DumperPhase.FWD_ONLY, rollout_id=rollout_id, store_prefix=store_prefix
+        args, model_chunks, DumperPhase.FWD_ONLY, rollout_id=rollout_id, store_prefix=store_prefix
     )
 
     # reset data iterator
     for iterator in data_iterator:
         iterator.reset()
 
-    config = get_model_config(model[0])
+    config = get_model_config(model_chunks[0])
 
     @dumper_phase_util.wrap_forward_step
     def forward_step(
@@ -364,6 +365,7 @@ def forward_only(
 
             set_tokens_per_adapter_slot(model, batch["adapter_token_counts"])
 
+        lm_head_kwargs, lm_head = lm_head_forward_kwargs(args, model_chunks)
         output_tensor = model(
             input_ids=tokens,
             position_ids=None,
@@ -373,6 +375,7 @@ def forward_only(
             loss_mask=batch["input_loss_masks"],
             **(filter_keys(batch, ["witness_ids"]) if args.enable_witness else {}),
             **(batch["multimodal_train_inputs"] if batch["multimodal_train_inputs"] is not None else {}),
+            **lm_head_kwargs,
             fp32_output=fp32_output,
         )
 
@@ -386,13 +389,15 @@ def forward_only(
         )
         if use_rollout_sampling_mask:
             callback_kwargs["rollout_sampling_mask"] = rollout_sampling_mask
+        if lm_head is not None:
+            callback_kwargs["lm_head"] = lm_head
 
         return output_tensor, partial(f, **callback_kwargs)
 
     # eval() switches off dropout but also selects inference kernels (TE attention), so the log probs
     # would come from a different function than the training forward; call it only for dropout
     if config.hidden_dropout or config.attention_dropout or args.lora_dropout:
-        for model_module in model:
+        for model_module in model_chunks:
             model_module.eval()
 
     if (x := args.custom_megatron_before_log_prob_hook_path) is not None:
@@ -401,7 +406,7 @@ def forward_only(
 
         custom_before_log_prob_hook = load_function(x)
         fn_args = compute_custom_function_config(args, x)
-        custom_before_log_prob_hook(fn_args, model, store_prefix)
+        custom_before_log_prob_hook(fn_args, model_chunks, store_prefix)
 
     forward_backward_func = get_forward_backward_func()
     # Don't care about timing during evaluation
@@ -413,7 +418,7 @@ def forward_only(
         forward_data_store += forward_backward_func(
             forward_step_func=forward_step,
             data_iterator=data_iterator,
-            model=model,
+            model=model_chunks,
             num_microbatches=num_microbatches[step_id],
             seq_length=args.backend.seq_length,
             micro_batch_size=args.backend.micro_batch_size,
@@ -422,10 +427,10 @@ def forward_only(
         )
 
     # Move model back to the train mode.
-    for model_module in model:
+    for model_module in model_chunks:
         model_module.train()
 
-    dumper_phase_util.finalize(model)
+    dumper_phase_util.finalize(model_chunks)
 
     rollout_data = {}
     # Store the results on the last stage
@@ -444,7 +449,7 @@ def _zero_grads(model: Sequence[DDP], optimizer: MegatronOptimizer | None, disab
 
 
 def run_forward_backward_pass(
-    args, dumper_phase_util, data_iterator, model, num_microbatches, num_rollouts, forward_only=False
+    args, dumper_phase_util, data_iterator, model_chunks, num_microbatches, num_rollouts, forward_only=False
 ):
     """One pipeline forward/backward pass over the microbatches; no optimizer interaction."""
 
@@ -515,8 +520,10 @@ def run_forward_backward_pass(
         for m in all_replay_managers:
             m.stage = "replay_forward"
 
+        lm_head_kwargs, lm_head = lm_head_forward_kwargs(args, model_chunks)
         if return_schedule_plan:
             assert not args.enable_mtp_training, "MTP training should not be enabled when using combined 1f1b"
+            assert lm_head is None, "--log-probs-backend fused_lm_head is not supported with combined 1f1b"
             assert not args.enable_witness, "Witness is not supported with combined 1f1b (build_schedule_plan)"
             output_tensor = model.build_schedule_plan(
                 input_ids=batch["tokens"],
@@ -541,10 +548,13 @@ def run_forward_backward_pass(
 
             if (x := batch["multimodal_train_inputs"]) is not None:
                 forward_kwargs.update(x)
+            forward_kwargs.update(lm_head_kwargs)
 
             output_tensor = model(
                 **forward_kwargs, fp32_output=args.loss_type not in ("policy_loss", "sft_loss", "score_centering")
             )
+            if lm_head is not None:
+                batch["lm_head"] = lm_head
 
         for m, old_stage in zip(all_replay_managers, old_stages, strict=True):
             m.stage = old_stage
@@ -564,7 +574,7 @@ def run_forward_backward_pass(
         return forward_backward_func(
             forward_step_func=forward_step,
             data_iterator=data_iterator,
-            model=model,
+            model=model_chunks,
             num_microbatches=num_microbatches,
             seq_length=args.backend.seq_length,
             micro_batch_size=args.backend.micro_batch_size,
@@ -1014,6 +1024,8 @@ def build_model_and_optimizer(
 ) -> tuple[list[DDP], MegatronOptimizer | None, OptimizerParamScheduler | None]:
     model, optimizer, opt_param_scheduler = setup_model_and_optimizer(args, role)
     model[0].role = role
+    if args.log_probs_backend == "fused_lm_head":
+        check_model_takes_output_processor(model)
     clear_memory()
     return model, optimizer, opt_param_scheduler
 
