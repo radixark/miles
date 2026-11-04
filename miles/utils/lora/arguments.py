@@ -8,7 +8,11 @@ import torch
 from miles.backends.megatron_utils.lora.native import resolve_adapter_targets, validate_native_lora_args
 from miles.backends.sglang_utils.arguments import sglang_attention_dp_enabled
 from miles.backends.training_utils.checkpoint.adapter.adapter_exports import has_plain_peft_form
-from miles.backends.training_utils.checkpoint.adapter.parametrization import read_parametrization
+from miles.backends.training_utils.checkpoint.adapter.key_mapping import fused_components
+from miles.backends.training_utils.checkpoint.adapter.parametrization import (
+    AdapterParametrization,
+    read_parametrization,
+)
 from miles.backends.training_utils.checkpoint.adapter.readers import (
     AdapterSourceKind,
     classify_adapter_source,
@@ -17,7 +21,6 @@ from miles.backends.training_utils.checkpoint.adapter.readers import (
 from miles.utils.hf_utils.config import load_hf_config
 from miles.utils.hf_utils.weight_mapping import HfWeightMapping
 from miles.utils.lora.hf_lora_targets import (
-    GDN_IN_PROJ_COMPONENTS_BY_MODULE,
     LORA_TARGET_GROUPS,
     exclude_hf_lora_targets,
     expand_hf_lora_targets,
@@ -168,8 +171,8 @@ def _default_lora_type(args) -> str:
 
 
 def validate_lora_args_after_megatron(args):
-    """Checks that read Megatron's resolved args; for native (raw-mode) LoRA also the targets its spec serves
-    (e.g. the expert TP size it defaults from TP)."""
+    """Checks that need Megatron's resolved args or the resolved eval-snapshot setting: Bridge LoRA's HF-export
+    layout, and the targets native (raw-mode) LoRA's spec serves."""
     # save() writes a LoRA model to its adapter dir, never into the in-memory checkpoint a heal or rollback restores
     if is_lora_enabled(args) and not args.multi_lora and not args.debug_rollout_only:
         assert not args.indep_dp and args.non_persistent_ckpt_type != "local", (
@@ -194,9 +197,6 @@ def validate_lora_args_after_megatron(args):
     hf_modules = _hf_modules(hf_config)
     args.lora_adapter_targets = _native_serving_targets(args, hf_config, args.hf_lora_targets, hf_modules)
     validate_native_lora_args(args, hf_modules)
-
-
-_GDN_QKV_COMPONENTS = GDN_IN_PROJ_COMPONENTS_BY_MODULE["in_proj_qkv"]
 
 
 def _validate_adapter_state_args(args) -> None:
@@ -236,17 +236,49 @@ def _assert_adapter_layout_defined(args) -> None:
             f"Bridge LoRA snapshots and checkpoints need the HF LoRA target layout of model_type="
             f"{hf_config.model_type!r}, which miles does not define"
         )
-    if exports_hf_snapshots(args):
-        _assert_hf_exports_have_peft_form(args)
+        if exports_hf_snapshots(args):
+            _assert_hf_exports_have_peft_form(args, hf_config)
 
 
-def _assert_hf_exports_have_peft_form(args) -> None:
-    # canonical adapters give each GDN in_proj_qkv component its own lora_A; HF has no module per component
-    components = sorted({target.rpartition(".")[2] for target in args.lora_adapter_targets} & set(_GDN_QKV_COMPONENTS))
-    assert not components, (
-        f"--save-hf and eval snapshots write a PEFT adapter, but canonical_lora's GDN {components} have their own "
-        "lora_A, which no PEFT adapter can name: use --lora-type lora (one shared lora_A per in_proj_qkv), or drop "
-        "--save-hf and eval snapshots"
+def _assert_hf_exports_have_peft_form(args, hf_config) -> None:
+    targets = get_hf_lora_targets(hf_config.to_dict())
+    run = _launch_parametrization(args, hf_config)
+    assert has_plain_peft_form(run, targets), (
+        f"--save-hf and eval snapshots write a PEFT adapter, but under --lora-type {args.lora_type} the components "
+        "of an HF-fused module have their own lora_A, which no PEFT adapter can name: use --lora-type lora (one "
+        "shared lora_A per fused module), or drop --save-hf and eval snapshots"
+    )
+    # Bridge exports a packed family's per-expert side under one unindexed name for every expert
+    packed_shared_outer = targets.packed_expert_gate_up_layout is not None and args.experts_shared_outer_loras
+    assert not (packed_shared_outer and any(".experts." in module for module in run.target_modules)), (
+        "--save-hf and eval snapshots of a packed-expert family's --experts-shared-outer-loras adapter would keep "
+        "only the last expert's per-expert side: drop --experts-shared-outer-loras, or --save-hf and eval snapshots"
+    )
+
+
+def _launch_parametrization(args, hf_config) -> AdapterParametrization:
+    """The run's parametrization as Bridge will build it, from the HF modules the targets select (wildcards resolved):
+    canonical_lora gives each component of an HF-fused module its own lora_A, lora one shared per module."""
+    targets = get_hf_lora_targets(hf_config.to_dict())
+    modules, groups = [], []
+    for module in _hf_modules(hf_config):
+        if not any(matches_lora_target(module, target) for target in args.hf_lora_targets):
+            continue
+        components = fused_components(module, targets)
+        if components is None:
+            modules.append(module)
+            continue
+        modules.extend(components)
+        if args.lora_type != "canonical_lora":
+            groups.append(tuple(sorted(components)))
+    return AdapterParametrization(
+        base_model=args.hf_checkpoint,
+        lora_rank=args.lora_rank,
+        lora_alpha=args.lora_alpha,
+        lora_type=args.lora_type,
+        target_modules=tuple(modules),
+        experts_shared_outer_loras=args.experts_shared_outer_loras,
+        shared_lora_a_groups=tuple(groups),
     )
 
 
