@@ -396,7 +396,8 @@ def test_a_model_only_dcp_starts_a_fresh_schedule(tmp_path):
 def test_a_torchtitan_adapter_dir_restores_its_own_schedule(tmp_path):
     schedule = {"last_epoch": 12, "_step_count": 13}
     restored = _restore(
-        tmp_path, training_state={
+        tmp_path,
+        training_state={
             "iteration": 2,
             "step": 12,
             "first_rollout": 0,
@@ -443,12 +444,12 @@ def test_a_torchtitan_adapter_dir_off_this_runs_rollout_grid_loads_its_weights_a
     restored = _restore(
         tmp_path,
         training_state={
-                "iteration": 9,
-                "step": 20,
-                "first_rollout": 0,
-                "steps_per_rollout": 2,
-                "lr_scheduler": {"last_epoch": 20},
-            },
+            "iteration": 9,
+            "step": 20,
+            "first_rollout": 0,
+            "steps_per_rollout": 2,
+            "lr_scheduler": {"last_epoch": 20},
+        },
         no_load_optim=True,
         lora_adapter_convert_save=str(tmp_path / "out"),
     )
@@ -856,9 +857,7 @@ _COLUMNS_THEN_ROWS = [Shard(1), Shard(0)]
     ids=["strided_to_columns", "columns_to_strided"],
 )
 def test_an_adapter_dir_moves_weights_and_moments_across_parallel_layouts(tmp_path, source, target):
-    mp.spawn(
-        _cross_layout_round_trip, args=(4, find_free_port(), tmp_path, source, target), nprocs=4, join=True
-    )
+    mp.spawn(_cross_layout_round_trip, args=(4, find_free_port(), tmp_path, source, target), nprocs=4, join=True)
 
 
 def _pipeline_stages(rank, world_size, port):
