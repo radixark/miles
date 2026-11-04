@@ -34,6 +34,9 @@ logger = logging.getLogger(__name__)
 
 
 def _steps_per_rollout(args: TrainerConfig) -> int:
+    # the rollout buffer sizes a dynamic global batch to the whole rollout
+    if args.use_dynamic_global_batch_size:
+        return 1
     return max(args.rollout_batch_size * args.n_samples_per_prompt // args.global_batch_size, 1)
 
 
