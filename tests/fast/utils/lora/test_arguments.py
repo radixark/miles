@@ -151,23 +151,41 @@ def test_convert_save_is_refused_under_rollout_only(tmp_path):
         validate_lora_args(args)
 
 
-def test_a_relative_convert_save_is_made_absolute_on_the_driver(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    args = Namespace(
+class _ReachedTheModel(Exception):
+    """Raised where validation first reads the base model: every path and alpha decision is made by then."""
+
+
+def _validate_until_the_model(args, monkeypatch):
+    def reached(path):
+        raise _ReachedTheModel
+
+    monkeypatch.setattr(lora_arguments, "load_hf_config", reached)
+    with pytest.raises(_ReachedTheModel):
+        validate_lora_args(args)
+
+
+def _single_lora_args(**overrides):
+    args = dict(
         lora_type="lora",
         multi_lora_n_adapters=0,
         lora_rank=8,
         lora_alpha=16.0,
-        lora_adapter_path=str(tmp_path),
-        lora_adapter_convert_save="converted",
+        lora_adapter_path=None,
+        lora_adapter_convert_save=None,
         train_backend="megatron",
         megatron_to_hf_mode="bridge",
         indep_dp=False,
-        debug_rollout_only=True,
+        debug_rollout_only=False,
+        debug_skip_weight_update=False,
+        hf_checkpoint="/hf",
     )
-    # rollout-only stops validation right after the path is resolved
-    with pytest.raises(AssertionError, match="--debug-rollout-only"):
-        validate_lora_args(args)
+    return Namespace(**(args | overrides))
+
+
+def test_a_relative_convert_save_is_made_absolute_on_the_driver(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    args = _single_lora_args(lora_adapter_path=str(tmp_path), lora_adapter_convert_save="converted")
+    _validate_until_the_model(args, monkeypatch)
     assert args.lora_adapter_convert_save == os.path.join(os.getcwd(), "converted")
 
 
@@ -175,21 +193,8 @@ def test_a_relative_adapter_path_is_made_absolute_before_alpha_is_resolved(tmp_p
     monkeypatch.chdir(tmp_path)
     (tmp_path / "source").mkdir()
     (tmp_path / "source" / "adapter_config.json").write_text(json.dumps({"r": 8, "lora_alpha": 32}))
-    args = Namespace(
-        lora_type="lora",
-        multi_lora_n_adapters=0,
-        lora_rank=8,
-        lora_alpha=None,
-        lora_adapter_path="source",
-        lora_adapter_convert_save=str(tmp_path / "converted"),
-        train_backend="megatron",
-        megatron_to_hf_mode="bridge",
-        indep_dp=True,
-        debug_rollout_only=False,
-    )
-    # --indep-dp stops validation right after alpha is resolved
-    with pytest.raises(AssertionError, match="does not support --indep-dp"):
-        validate_lora_args(args)
+    args = _single_lora_args(lora_alpha=None, lora_adapter_path="source")
+    _validate_until_the_model(args, monkeypatch)
     assert args.lora_adapter_path == os.path.join(os.getcwd(), "source")
     assert args.lora_alpha == 32
 
