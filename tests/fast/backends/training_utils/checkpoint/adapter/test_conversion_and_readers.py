@@ -457,13 +457,6 @@ def test_gpt_oss_down_proj_alone_stays_one_packed_3d_tensor(tmp_path):
         assert tensors[f"{prefix}{down}.lora_A.weight"].shape == (3, 2, 4)
 
 
-def test_one_local_base_under_another_path_string_matches(tmp_path):
-    (tmp_path / "model").mkdir()
-    (tmp_path / "link").symlink_to(tmp_path / "model")
-    source, run = _run(base_model=f"{tmp_path}/model/"), _run(base_model=str(tmp_path / "link"))
-    assert_parametrization_matches_run(source, run, [], load_optimizer=False, has_optimizer_state=False)
-
-
 class _StackedDownExport:
     """Bridge's export of a packed checkpoint: experts.down_proj comes as one 3D tensor, not one per expert."""
 
@@ -660,3 +653,10 @@ def test_a_vl_wrapper_has_its_language_models_fingerprint():
     assert base_model_fingerprint({"model_type": "qwen3_vl", "text_config": _QWEN3_4B}) == base_model_fingerprint(
         _QWEN3_4B
     )
+
+
+def test_one_local_base_under_another_path_string_matches(tmp_path):
+    (tmp_path / "model").mkdir()
+    (tmp_path / "link").symlink_to(tmp_path / "model")
+    source, run = _run(base_model=f"{tmp_path}/model/"), _run(base_model=str(tmp_path / "link"))
+    assert_parametrization_matches_run(source, run, [], load_optimizer=False, has_optimizer_state=False)
