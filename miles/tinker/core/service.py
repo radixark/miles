@@ -485,8 +485,8 @@ class TinkerService:
                     self.backend.commit_adapter, root, name, written, overwrite=payload["overwrite"]
                 )
             except Exception as error:
-                # the commit can fail before or after its link swap; only the old commit keeps the old expiry. Still
-                # recorded: the failure came before the drop took effect
+                # the commit can fail before or after its link swap; only the old commit keeps the old expiry. An
+                # entry still present means the drop never happened
                 if old_expires_at is not None and self.expiry.expires_at(tinker_path) is None:
                     try:
                         if await asyncio.to_thread(self._live_commit_id, root, name) == old_commit_id:
@@ -677,12 +677,8 @@ class TinkerService:
         return source
 
     def _copy_import(self, uri: str, wanted: Callable[[str], bool]) -> str:
-        """Copy the adapter files of a file:// import into a new gateway-owned dir under the checkpoint root.
-
-        Each file is opened once, through components opened without following a symlink, and checked on its fd:
-        a path swapped after any check cannot redirect the copy, so it can neither leave the import root nor reach
-        another tenant's checkpoint.
-        """
+        """Copy a file:// import's adapter files, opened beneath the import root without following symlinks, into a
+        gateway-owned dir."""
         if self.config.import_root is None:
             raise UserInputError("this gateway imports no file:// adapters; start it with --tinker-import-root")
         root = os.path.normpath(self.config.import_root)
