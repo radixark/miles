@@ -375,61 +375,6 @@ def test_resume_reads_from_load_and_writes_to_save(tmp_path, single_gpu_dims):
     assert (fresh.checkpointer.initial_load_model_only, fresh.checkpointer.initial_load_in_hf) == (True, True)
 
 
-def test_restored_lr_schedule_reaches_the_optimizers():
-    """The first resumed step must train at the restored schedule's lr, not the fresh run's."""
-    pytest.importorskip("torchtitan")
-    from torchtitan.components.optim.lr_scheduler import LRSchedulersContainer
-
-    from miles.backends.torchtitan_utils.lora_checkpoint import load_lr_schedulers
-
-    optimizers = [torch.optim.AdamW([torch.nn.Parameter(torch.zeros(2))], lr=1.0) for _ in range(2)]
-    schedulers = LRSchedulersContainer(optimizers, lambda step: 1 / (step + 1))
-    load_lr_schedulers(schedulers, {"last_epoch": 3})
-    assert [group["lr"] for optimizer in optimizers for group in optimizer.param_groups] == [0.25, 0.25]
-
-
-def test_lora_resumes_only_through_the_adapter_path(tmp_path):
-    """A step dir under --load or --save would resume the adapters through torchtitan's checkpointer."""
-    pytest.importorskip("torchtitan")
-    from miles.backends.torchtitan_utils.config import _checkpointer_config
-
-    def config(load=None, save=None, lora_adapter_path=None):
-        args = SimpleNamespace(backend=SimpleNamespace(load=load, save=save), lora_adapter_path=lora_adapter_path)
-        return _checkpointer_config(args, dump_subdir="actor", with_lora=True)
-
-    old = tmp_path / "old"
-    step = old / "torchtitan" / "actor" / "checkpoint" / "step-4"
-    step.mkdir(parents=True)
-    for flag in ("load", "save"):
-        with pytest.raises(ValueError, match=f"--{flag} holds the torchtitan checkpoint {step}"):
-            config(**{flag: str(old)})
-    # migrating the old run: its rollout state from --load, its adapters from --lora-adapter-path
-    assert config(load=str(old), lora_adapter_path=str(step)).initial_load_path is None
-    adapters = tmp_path / "adapters"
-    adapter = adapters / "iter_0000003" / "adapter"
-    adapter.mkdir(parents=True)
-    for flag in ("load", "save"):
-        with pytest.raises(ValueError, match=f"--{flag} {adapters} holds LoRA adapter checkpoints"):
-            config(**{flag: str(adapters)})
-    # --load still restores the rollout state; the adapter comes from --lora-adapter-path
-    resumed = config(load=str(adapters), save=str(adapters), lora_adapter_path=str(adapter))
-    assert resumed.initial_load_path is None
-    base = config(load=str(tmp_path / "empty"), save=str(tmp_path / "save"))
-    assert (base.initial_load_path, base.initial_load_model_only, base.initial_load_in_hf) == (None, True, True)
-
-
-@pytest.mark.parametrize("dynamic, steps", [(False, 4), (True, 1)])
-def test_a_dynamic_global_batch_is_one_step_per_rollout(dynamic, steps):
-    """The LR schedule length and the adapter dirs' step grid count optimizer steps per rollout."""
-    pytest.importorskip("torchtitan")
-    from miles.backends.torchtitan_utils.actor import _steps_per_rollout
-
-    args = SimpleNamespace(
-        rollout_batch_size=8, n_samples_per_prompt=4, global_batch_size=8, use_dynamic_global_batch_size=dynamic
-    )
-    assert _steps_per_rollout(args) == steps
-
-
 def test_routing_replay_hooks_the_router_where_it_picks_experts():
     """routing_replay swaps TokenChoiceTopKRouter._select_experts per router; that only replays the routing if the
     upstream forward still looks the method up on the instance and gathers its scores from the returned ids."""

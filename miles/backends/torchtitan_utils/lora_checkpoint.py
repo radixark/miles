@@ -471,22 +471,38 @@ class TorchtitanLoraCheckpoint:
         elif training_state is not None and training_state["iteration"] is not None:
             # written by a Megatron run, whose scheduler state does not apply here: resume the schedule at the
             # samples it counted, which start at that run's first rollout, not rollout 0
-            assert not self._args.use_dynamic_global_batch_size, (
-                f"{path} was written by Megatron, whose schedule counts samples; a dynamic global batch trains a "
-                "data-dependent number of them per rollout, so its rollouts cannot be recovered from the count"
-            )
             iteration = training_state["iteration"]
             num_samples = training_state["opt_param_scheduler"]["num_steps"]
             rollout_samples = self._steps_per_rollout * self._args.global_batch_size
             trained_rollouts, remainder = divmod(num_samples, rollout_samples)
-            assert remainder == 0 and trained_rollouts <= iteration + 1, (
-                f"{path} counted {num_samples} samples by iteration {iteration}, not whole rollouts of this run's "
-                f"{rollout_samples}: keep its rollout and batch sizes"
+            if self._args.use_dynamic_global_batch_size:
+                unmapped = (
+                    "Megatron's schedule counts samples, and a dynamic global batch trains a data-dependent number "
+                    "of them per rollout"
+                )
+            elif remainder or trained_rollouts > iteration + 1:
+                # a step skipped for an inf/nan grad does not advance Megatron's scheduler
+                unmapped = (
+                    f"it counted {num_samples} samples by iteration {iteration}, not whole rollouts of this run's "
+                    f"{rollout_samples}"
+                )
+            else:
+                unmapped = None
+            # weights only need no schedule: start it fresh, as for a DCP off the rollout grid
+            assert unmapped is None or not load_optimizer, (
+                f"{path} cannot resume this run's schedule: {unmapped}. Keep its rollout and batch sizes, or pass "
+                "--no-load-optim to load its weights and start the schedule fresh"
             )
-            self._first_rollout = iteration + 1 - trained_rollouts
-            step = trained_rollouts * self._steps_per_rollout
-            load_lr_schedulers(self._trainer.engine.optim.lr_schedulers, {"last_epoch": step})
-            self._trainer.engine.num_completed_steps = step
+            if unmapped is None:
+                self._first_rollout = iteration + 1 - trained_rollouts
+                step = trained_rollouts * self._steps_per_rollout
+                load_lr_schedulers(self._trainer.engine.optim.lr_schedulers, {"last_epoch": step})
+                self._trainer.engine.num_completed_steps = step
+            else:
+                training_state = None
+        if self._args.start_rollout_id is not None:
+            # the actor starts at --start-rollout-id, not after the source's rollout: count later saves' steps from it
+            self._first_rollout = self._args.start_rollout_id - self._trainer.step // self._steps_per_rollout
         if self._args.lora_adapter_convert_save is not None:
             destination = Path(self._args.lora_adapter_convert_save)
             # a convert-save writes moments only when they were loaded

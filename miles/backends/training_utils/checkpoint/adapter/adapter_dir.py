@@ -33,7 +33,6 @@ from miles.backends.training_utils.checkpoint.adapter.key_mapping import (
     map_named_tensors_to_hf_keys,
     map_peft_keys_to_hf_keys,
     map_sampler_keys_to_hf_keys,
-    map_tinker_keys_to_hf_keys,
 )
 from miles.backends.training_utils.checkpoint.adapter.parametrization import (
     AdapterParametrization,
@@ -60,8 +59,8 @@ TRAINING_STATE_FILENAME = "training_state.json"
 class AdapterCheckpointMembers(Protocol):
     """The checkpoint members every backend's AdapterSlots implements; they never touch files."""
 
-    # the names export_bf16_adapter yields: HF module paths, official Tinker names, or sglang's (experts.w1/w3/w2)
-    bf16_adapter_key_style: Literal["peft", "tinker", "sampler"]
+    # the names export_bf16_adapter yields: HF module paths or sglang's (experts.w1/w3/w2)
+    bf16_adapter_key_style: Literal["peft", "sampler"]
 
     def export_bf16_adapter(self, slot: int) -> Iterable[tuple[str, torch.Tensor]]:
         """Collective; whole tensors on rank 0, nothing elsewhere. Any float dtype; the exports cast to bf16."""
@@ -137,7 +136,6 @@ def _hf_keyed_bf16_adapter(
 ) -> dict[str, torch.Tensor]:
     map_name = {
         "peft": map_peft_keys_to_hf_keys,
-        "tinker": partial(map_tinker_keys_to_hf_keys, targets=targets),
         "sampler": partial(map_sampler_keys_to_hf_keys, targets=targets),
     }[members.bf16_adapter_key_style]
     weights, fused_groups = map_named_tensors_to_hf_keys(named_tensors, map_name, targets)
@@ -287,9 +285,20 @@ def _assert_has_keys(weights: dict[str, torch.Tensor], keys: set[str]) -> None:
     assert not missing, f"the source lacks tensors the run trains: {sorted(missing)}"
 
 
-def _weights_only_state(weights: dict[str, torch.Tensor], specs: list[LocalShardSpec]) -> AdapterState:
+def _weights_only_state(
+    weights: dict[str, torch.Tensor], specs: list[LocalShardSpec], targets: HfLoraTargets
+) -> AdapterState:
     _assert_has_keys(weights, {s.key for s in specs})
-    return _with_zero_moments(specs, [_slice(weights[s.key], s).float() for s in specs])
+    head_b = f"{targets.unembed[0]}.lora_B"
+    return _with_zero_moments(
+        specs,
+        [_slice(_served_rows(weights[s.key], s) if s.key == head_b else weights[s.key], s).float() for s in specs],
+    )
+
+
+def _served_rows(head_b: torch.Tensor, spec: LocalShardSpec) -> torch.Tensor:
+    # the run holds the served vocab; rows past it (HF vocab_size, Megatron padding) stay at init, as exports trim them
+    return head_b[: spec.global_shape[0]]
 
 
 def _with_run_alpha_if_unknown(source: AdapterParametrization, run: AdapterParametrization) -> AdapterParametrization:
@@ -419,7 +428,7 @@ def load_adapter_dir(
     else:
         state = None
         try:
-            state = _weights_only_state(apply_parametrization_conversion(reader.read_weights(), steps), specs)
+            state = _weights_only_state(apply_parametrization_conversion(reader.read_weights(), steps), specs, targets)
         except Exception as exc:
             error = exc
         raise_if_any_rank_failed(error)

@@ -175,11 +175,6 @@ def _default_lora_type(args) -> str:
 def validate_lora_args_after_megatron(args):
     """Checks that read Megatron's resolved args; for native (raw-mode) LoRA also the targets its spec serves
     (e.g. the expert TP size it defaults from TP)."""
-    # save() writes a LoRA model to its adapter dir, never into the in-memory checkpoint a peer heal sends
-    if is_lora_enabled(args) and not args.debug_rollout_only:
-        assert (
-            not args.indep_dp
-        ), "LoRA does not support --indep-dp: a healed cell cannot receive the adapter; remove 'train' from --ft-components"
     # rollout-only builds no optimizer and saves nothing
     if is_lora_enabled(args) and not args.multi_lora and not args.debug_rollout_only:
         _validate_adapter_state_args(args)
@@ -195,44 +190,24 @@ def validate_lora_args_after_megatron(args):
 
 
 def _validate_adapter_state_args(args) -> None:
-    """adapter_state/ holds Adam's fp32 master, fp32 moments and step, gathered whole per DP group over Gloo; without
-    optimizer state, the fp32 masters of SGD without momentum."""
+    """adapter_state/ holds Adam's fp32 master, fp32 moments and step, gathered whole per DP group over Gloo."""
     if args.save is None and args.lora_adapter_path is None:
         return
     assert not args.debug_disable_optimizer, (
         "--save / --lora-adapter-path store and load the adapter's fp32 optimizer masters, which "
         "--debug-disable-optimizer does not build; drop one of them"
     )
-    # other optimizers (Muon, ...) keep masters the adapter checkpoint cannot find
-    assert args.optimizer in (
-        "adam",
-        "sgd",
-    ), f"--save / --lora-adapter-path support --optimizer adam or sgd; got --optimizer {args.optimizer}"
-    saves_optimizer = args.save is not None and not args.no_save_optim
-    loads_optimizer = args.lora_adapter_path is not None and not args.no_load_optim
-    if saves_optimizer or loads_optimizer:
-        assert args.optimizer == "adam", (
-            f"--save / --lora-adapter-path store Adam state; got --optimizer {args.optimizer}. "
-            "Pass --no-save-optim (and --no-load-optim with --lora-adapter-path) to keep the fp32 masters only"
-        )
-        assert (
-            args.exp_avg_dtype == args.exp_avg_sq_dtype == torch.float32
-        ), "the adapter checkpoint stores fp32 moments"
+    assert args.optimizer == "adam", f"--save / --lora-adapter-path store Adam state; got --optimizer {args.optimizer}"
+    assert args.exp_avg_dtype == args.exp_avg_sq_dtype == torch.float32, "the adapter checkpoint stores fp32 moments"
     assert args.main_params_dtype == torch.float32, "the adapter checkpoint stores fp32 masters"
-    # SGD's checkpoint holds the masters alone, which would drop a momentum buffer
     assert (
-        args.optimizer != "sgd" or args.sgd_momentum == 0
-    ), f"--save / --lora-adapter-path with --optimizer sgd need --sgd-momentum 0; got {args.sgd_momentum}"
-    # Bridge's DDP reduce-scatters grads for a distributed optimizer, but SGD's plain optimizer steps the whole grad
+        args.use_distributed_optimizer
+    ), "the adapter checkpoint gathers optimizer state from the distributed optimizer"
+    assert args.use_gloo_process_groups, "the adapter checkpoint gathers optimizer state over Gloo"
+    # TE FusedAdam keeps the master as an int16 remainder unless the optimizer runs on the host
     assert (
-        args.optimizer != "sgd" or args.megatron_to_hf_mode == "raw"
-    ), f"--save / --lora-adapter-path with --optimizer sgd need --megatron-to-hf-mode raw; got {args.megatron_to_hf_mode}"
-    if args.use_distributed_optimizer:
-        assert args.use_gloo_process_groups, "the adapter checkpoint gathers optimizer state over Gloo"
-        # TE FusedAdam keeps the master as an int16 remainder unless the optimizer runs on the host
-        assert (
-            not args.use_precision_aware_optimizer or args.optimizer_cpu_offload
-        ), "--use-precision-aware-optimizer needs --optimizer-cpu-offload to save or load a LoRA adapter"
+        not args.use_precision_aware_optimizer or args.optimizer_cpu_offload
+    ), "--use-precision-aware-optimizer needs --optimizer-cpu-offload to save or load a LoRA adapter"
     if args.lora_adapter_path is not None:
         # loading writes masters and re-casts them, which an overlapped param all-gather would race
         assert not args.overlap_param_gather, "--lora-adapter-path cannot be combined with --overlap-param-gather"
@@ -376,3 +351,7 @@ def validate_multi_lora_args(args: Any) -> None:
         "Multi-LoRA runs on Megatron-Bridge adapters; pass --megatron-to-hf-mode bridge "
         f"(got {args.megatron_to_hf_mode!r})"
     )
+    # train.py's save() writes single LoRA's adapter dir; multi-LoRA slots are saved through the Tinker gateway
+    assert (
+        args.entry != "train" or args.save is None
+    ), "Multi-LoRA saves its adapters through the Tinker gateway; --save is single LoRA only"

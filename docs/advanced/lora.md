@@ -304,8 +304,7 @@ alternative aligned-expert path.
   adapters.
 - **Checkpoints.** Single LoRA (Bridge or native) saves `{save}/iter_N/adapter`
   as an adapter dir: whole fp32 masters, Adam moments and step (resumable under
-  any parallel layout; masters only with `--no-save-optim`, which SGD needs;
-  SGD must run with `--sgd-momentum 0` and resumes with `--no-load-optim`), the iteration and scheduler state, and an HF PEFT
+  any parallel layout; masters only with `--no-save-optim`), the iteration and scheduler state, and an HF PEFT
   `adapter_model.safetensors` plus `adapter_config.json` export. A failed PEFT
   export fails the save; the committed checkpoint is kept. `{save}/iter_N/adapter`
   is a symlink to the hidden dir `{save}/iter_N/.adapter.<commit_id>/`, so copy it

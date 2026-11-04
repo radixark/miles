@@ -671,6 +671,28 @@ async def test_weights_info_reads_the_checkpoint_not_the_lease(service):
         service.weights_info("thief", path)
 
 
+async def test_weights_info_reports_the_checkpoints_groups_not_the_gateways(service):
+    import json
+
+    model_id = await created_model(service)
+    save = service.submit(
+        "tenant",
+        "save_state",
+        {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False, "ttl_seconds": None},
+    )
+    path = (await await_settled(service, "tenant", save)).result["path"]
+    # an attn-only adapter, as another gateway or an import would have written it
+    committed = Path(resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "weights", "ck")).resolve()
+    fields = json.loads((committed / "adapter_parametrization.json").read_text())
+    fields["target_modules"] = ["model.layers.0.self_attn.q_proj"]
+    (committed / "adapter_parametrization.json").write_text(json.dumps(fields))
+    assert service.config.trains_mlp
+
+    info = service.weights_info("tenant", path)
+
+    assert (info["train_attn"], info["train_mlp"], info["train_unembed"]) == (True, False, False)
+
+
 async def test_a_failed_optim_step_retires_the_model(service):
     model_id = await created_model(service)
     slot = service.models[model_id].slot
