@@ -9,8 +9,16 @@ from safetensors.torch import load_file, save_file
 
 from miles.backends.training_utils.checkpoint.adapter.adapter_dir import write_peft_export
 from miles.backends.training_utils.checkpoint.adapter.adapter_exports import write_peft_adapter, write_sampler_adapter
-from miles.backends.training_utils.checkpoint.adapter.key_mapping import map_peft_keys_to_hf_keys
-from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
+from miles.backends.training_utils.checkpoint.adapter.key_mapping import (
+    map_hf_keys_to_peft_export_keys,
+    map_peft_keys_to_hf_keys,
+)
+from miles.backends.training_utils.checkpoint.adapter.parametrization import (
+    PARAMETRIZATION_FILENAME,
+    AdapterParametrization,
+    base_model_fingerprint,
+    read_parametrization,
+)
 from miles.backends.training_utils.checkpoint.adapter.parametrization_conversion import (
     ConversionOp,
     apply_parametrization_conversion,
@@ -233,15 +241,43 @@ def test_dcp_sources_are_classified_by_their_keys(tmp_path, key, run_config, kin
 
 def test_shared_outer_is_detected_on_experts_without_a_gate(tmp_path):
     up, down = f"{L}.mlp.experts.up_proj", f"{L}.mlp.experts.down_proj"
-    run = _run(target_modules=(up, down), experts_shared_outer_loras=True)
-    weights = {
-        f"{up}.lora_A": torch.ones(1, 2, 8),
-        f"{up}.lora_B": torch.ones(3, 8, 2),
-        f"{down}.lora_A": torch.ones(3, 2, 8),
-        f"{down}.lora_B": torch.ones(1, 8, 2),
+    tensors = {
+        map_hf_keys_to_peft_export_keys(f"{up}.lora_A"): torch.ones(1, 2, 8),
+        map_hf_keys_to_peft_export_keys(f"{down}.lora_B"): torch.ones(1, 8, 2),
     }
-    write_peft_adapter(tmp_path, weights, run, QWEN35)
+    for e in range(3):
+        tensors[map_hf_keys_to_peft_export_keys(f"{up}.lora_B", e)] = torch.ones(8, 2)
+        tensors[map_hf_keys_to_peft_export_keys(f"{down}.lora_A", e)] = torch.ones(2, 8)
+    save_file(tensors, tmp_path / "adapter_model.safetensors")
+    (tmp_path / "adapter_config.json").write_text(json.dumps({"peft_type": "LORA", "r": 2, "lora_alpha": 4.0}))
     assert PeftAdapterReader(tmp_path, _run(), QWEN3).source.parametrization.experts_shared_outer_loras
+
+
+def test_a_shared_outer_peft_export_has_every_experts_copy_and_reads_back_into_a_shared_outer_run(tmp_path):
+    up, down = f"{L}.mlp.experts.up_proj", f"{L}.mlp.experts.down_proj"
+    run = _run(target_modules=(up, down), experts_shared_outer_loras=True)
+    g = torch.Generator().manual_seed(0)
+    weights = {
+        f"{up}.lora_A": torch.randn(1, 2, 8, generator=g),
+        f"{up}.lora_B": torch.randn(3, 8, 2, generator=g),
+        f"{down}.lora_A": torch.randn(3, 2, 8, generator=g),
+        f"{down}.lora_B": torch.randn(1, 8, 2, generator=g),
+    }
+    write_peft_adapter(tmp_path, weights, run, QWEN3)
+
+    names = set(load_file(tmp_path / "adapter_model.safetensors"))
+    assert names == {
+        map_hf_keys_to_peft_export_keys(f"{module}.lora_{factor}", e)
+        for module in (up, down)
+        for factor in "AB"
+        for e in range(3)
+    }, "HF PEFT matches only per-expert names"
+    reader = PeftAdapterReader(tmp_path, run, QWEN3)
+    steps = plan_parametrization_conversion(reader.source.parametrization, run, source_dtype=torch.bfloat16)
+    assert ConversionOp.COLLAPSE_SHARED_EXPERT_SIDE in {s.op for s in steps}
+    read = apply_parametrization_conversion(reader.read_weights(), steps)
+    for key, value in weights.items():
+        assert torch.equal(read[key], value.bfloat16().float()), key
 
 
 def test_fan_in_fan_out_is_refused(tmp_path):
@@ -425,3 +461,104 @@ def test_an_expert_module_the_export_stacks_stays_stacked(tmp_path):
     written = load_file(str(tmp_path / "adapter_model.safetensors"))
     assert set(written) == {f"base_model.model.{down}.lora_A.weight", f"base_model.model.{down}.lora_B.weight"}
     assert torch.equal(written[f"base_model.model.{down}.lora_B.weight"], export.b.to(torch.bfloat16))
+
+
+_GLM5 = get_hf_lora_targets(
+    {"model_type": "glm_moe_dsa", "mlp_layer_types": ["sparse"], "n_shared_experts": 0, "q_lora_rank": 4}
+)
+_QWEN35_MOE = get_hf_lora_targets(
+    {
+        "model_type": "qwen3_5_moe",
+        "text_config": {
+            "layer_types": ["full_attention"],
+            "shared_expert_intermediate_size": 0,
+            "linear_num_key_heads": 2,
+            "linear_key_head_dim": 2,
+            "linear_num_value_heads": 2,
+            "linear_value_head_dim": 2,
+        },
+    }
+)
+_INKLING = get_hf_lora_targets({"model_type": "inkling_model", "mlp_layer_types": ["sparse"], "n_shared_experts": 0})
+
+
+@pytest.mark.parametrize(
+    "targets, layer",
+    [(_GLM5, "model.layers.0"), (_QWEN35_MOE, "model.language_model.layers.0"), (_INKLING, "model.layers.0")],
+    ids=["glm_moe_dsa", "qwen3_5_moe", "inkling"],
+)
+def test_mains_native_export_with_sglang_expert_names_reads_back(tmp_path, targets, layer):
+    """main's native --save-hf stacks experts under sglang's w1 / w3 / w2 and keeps HF names otherwise."""
+    g = torch.Generator().manual_seed(0)
+    hf_by_sglang = {"w1": "gate_proj", "w3": "up_proj", "w2": "down_proj"}
+    tensors = {
+        f"{layer}.self_attn.o_proj.lora_A.weight": torch.randn(2, 8, generator=g),
+        f"{layer}.self_attn.o_proj.lora_B.weight": torch.randn(8, 2, generator=g),
+    }
+    for sglang in hf_by_sglang:
+        tensors[f"{layer}.mlp.experts.{sglang}.lora_A.weight"] = torch.randn(3, 2, 8, generator=g)
+        tensors[f"{layer}.mlp.experts.{sglang}.lora_B.weight"] = torch.randn(3, 8, 2, generator=g)
+    save_file(tensors, str(tmp_path / "adapter_model.safetensors"))
+    (tmp_path / "adapter_config.json").write_text(json.dumps({"peft_type": "LORA", "r": 2, "lora_alpha": 4.0}))
+
+    assert classify_adapter_source(tmp_path, targets, load_optimizer=False) == AdapterSourceKind.PEFT
+    weights = PeftAdapterReader(tmp_path, _run(), targets).read_weights()
+
+    def hf_key(name: str) -> str:
+        for sglang, hf in hf_by_sglang.items():
+            name = name.replace(f".experts.{sglang}.", f".experts.{hf}.")
+        return name.removesuffix(".weight")
+
+    expected = {hf_key(name): value for name, value in tensors.items()}
+    assert weights.keys() == expected.keys()
+    assert all(torch.equal(weights[k], v) for k, v in expected.items())
+
+
+_QWEN3_4B = {"model_type": "qwen3", "hidden_size": 2560, "num_hidden_layers": 36, "vocab_size": 151936}
+
+
+def _check_bases(source, target):
+    assert_parametrization_matches_run(source, target, [], load_optimizer=False, has_optimizer_state=False)
+
+
+def test_a_base_read_from_another_mount_matches_by_its_fingerprint():
+    fingerprint = base_model_fingerprint(_QWEN3_4B | {"_name_or_path": "/root/models/Qwen3-4B"})
+    saved = _run(base_model="/root/models/Qwen3-4B", base_model_fingerprint=fingerprint)
+    _check_bases(saved, _run(base_model="/lustre/models/Qwen3-4B", base_model_fingerprint=fingerprint))
+    _check_bases(saved, _run(base_model="Qwen/Qwen3-4B", base_model_fingerprint=fingerprint))
+
+
+def test_a_base_of_another_architecture_is_refused_whatever_its_name():
+    saved = _run(base_model="Qwen/Qwen3-4B", base_model_fingerprint=base_model_fingerprint(_QWEN3_4B))
+    other = _run(
+        base_model="Qwen/Qwen3-4B", base_model_fingerprint=base_model_fingerprint(_QWEN3_4B | {"hidden_size": 4096})
+    )
+    with pytest.raises(AssertionError, match="is another model than run base"):
+        _check_bases(saved, other)
+
+
+def test_a_side_without_a_fingerprint_compares_where_the_base_was_read_from():
+    run = _run(base_model="/root/models/Qwen3-4B", base_model_fingerprint=base_model_fingerprint(_QWEN3_4B))
+    _check_bases(_run(base_model="/root/models/Qwen3-4B"), run)
+    with pytest.raises(AssertionError, match="adapter base '/lustre/models/Qwen3-4B' != run base"):
+        _check_bases(_run(base_model="/lustre/models/Qwen3-4B"), run)
+
+
+def test_a_parametrization_written_before_the_fingerprint_reads_back_without_one(tmp_path):
+    fields = {
+        "base_model": "m",
+        "lora_rank": 2,
+        "lora_alpha": 4.0,
+        "lora_type": "lora",
+        "target_modules": [QKV[0]],
+        "experts_shared_outer_loras": False,
+        "shared_lora_a_groups": [],
+    }
+    (tmp_path / PARAMETRIZATION_FILENAME).write_text(json.dumps(fields))
+    assert read_parametrization(tmp_path).base_model_fingerprint is None
+
+
+def test_a_vl_wrapper_has_its_language_models_fingerprint():
+    assert base_model_fingerprint({"model_type": "qwen3_vl", "text_config": _QWEN3_4B}) == base_model_fingerprint(
+        _QWEN3_4B
+    )

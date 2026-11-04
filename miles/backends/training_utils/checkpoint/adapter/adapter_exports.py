@@ -1,5 +1,6 @@
 """PEFT and sampler exports, written from whole HF-keyed tensors on one process."""
 
+from dataclasses import replace
 from pathlib import Path
 
 import torch
@@ -14,6 +15,10 @@ from miles.backends.training_utils.checkpoint.adapter.key_mapping import (
 from miles.backends.training_utils.checkpoint.adapter.parametrization import (
     AdapterParametrization,
     write_parametrization,
+)
+from miles.backends.training_utils.checkpoint.adapter.parametrization_conversion import (
+    apply_parametrization_conversion,
+    plan_parametrization_conversion,
 )
 from miles.utils.lora.hf_lora_targets import HfLoraTargets
 from miles.utils.lora.utils import get_adapter_target_modules, save_adapter_to_disk
@@ -80,19 +85,22 @@ def write_peft_adapter(
     targets: HfLoraTargets,
     stacked_keys: frozenset[str] | None = None,
 ) -> None:
-    """bf16 PEFT with per-expert 2D tensors (experts re-packed into ``gate_up_proj`` stay stacked); a shared-outer
-    side stays ``[1, ...]`` under the unindexed name.
+    """bf16 PEFT with per-expert 2D tensors (experts re-packed into ``gate_up_proj`` stay stacked).
 
     ``stacked_keys``: the HF keys a backend's export named as one stacked tensor, which stay stacked; without it, the
     model family's packed layout decides.
     """
+    # HF PEFT has no shared-outer form: every expert gets its own copy of the shared side
+    per_expert = replace(parametrization, experts_shared_outer_loras=False)
+    steps = plan_parametrization_conversion(parametrization, per_expert, source_dtype=torch.float32)
+    weights = apply_parametrization_conversion(weights, steps)
     tensors = {}
-    expanded = _expand_shared_lora_a(weights, parametrization, targets)
+    expanded = _expand_shared_lora_a(weights, per_expert, targets)
     packed = _packed_experts(expanded)
     for key, value in expanded.items():
         value = value.to(torch.bfloat16).contiguous()
         stays_stacked = key in stacked_keys if stacked_keys is not None else _stays_stacked(key, packed, targets)
-        if ".experts." in key and value.dim() == 3 and value.shape[0] > 1 and not stays_stacked:
+        if ".experts." in key and value.dim() == 3 and not stays_stacked:
             for expert_index in range(value.shape[0]):
                 tensors[map_hf_keys_to_peft_export_keys(key, expert_index)] = value[expert_index].clone()
         else:

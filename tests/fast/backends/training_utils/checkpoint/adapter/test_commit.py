@@ -42,10 +42,11 @@ def test_refuses_to_overwrite_when_asked_not_to(tmp_path):
     assert sorted(p.name for p in tmp_path.iterdir()) == sorted(["w", first.path.name]), "the refused write is removed"
 
 
-def test_refuses_to_overwrite_a_regular_file(tmp_path):
+@pytest.mark.parametrize("overwrite", [False, True])
+def test_refuses_to_overwrite_a_regular_file(tmp_path, overwrite):
     (tmp_path / "w").write_text("user file")
     with pytest.raises(FileExistsError):
-        _save(tmp_path, "w", "2", overwrite=False)
+        _save(tmp_path, "w", "2", overwrite=overwrite)
     assert (tmp_path / "w").read_text() == "user file"
 
 
@@ -66,6 +67,18 @@ def test_a_failed_write_is_never_visible_and_leaves_nothing(tmp_path):
             raise OSError("disk full")
     assert resolve_adapter_dir(tmp_path, "w", tenant=None) is None
     assert list(tmp_path.iterdir()) == [], "a retry under a new name must not leave the failed write behind"
+
+
+def test_a_commit_failing_before_the_link_swap_removes_what_it_wrote(tmp_path, monkeypatch):
+    first = _save(tmp_path, "w", "1")
+
+    def fail(src, dst):
+        raise OSError("link swap failed")
+
+    monkeypatch.setattr(os, "replace", fail)
+    with pytest.raises(OSError, match="link swap failed"):
+        _save(tmp_path, "w", "2")
+    assert sorted(p.name for p in tmp_path.iterdir()) == sorted(["w", first.path.name]), "no orphan dir or link"
 
 
 def test_a_failed_prepare_leaves_nothing(tmp_path):

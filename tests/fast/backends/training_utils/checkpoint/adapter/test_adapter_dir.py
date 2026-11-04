@@ -12,6 +12,7 @@ import torch.distributed.checkpoint
 from tests.fast.dist_utils import init_gloo, run_multiprocess
 
 from miles.backends.training_utils.checkpoint.adapter.adapter_dir import (
+    HeadRows,
     load_adapter_dir,
     save_adapter_dir,
     write_peft_export,
@@ -43,6 +44,8 @@ FULL = {
 
 class FakeMembers:
     """B split by rows across ranks (column-parallel), A replicated with rank 0 primary."""
+
+    head_rows = None
 
     def __init__(self, scale: float = 1.0):
         self.rank, self.world = (dist.get_rank(), dist.get_world_size()) if dist.is_initialized() else (0, 1)
@@ -407,3 +410,35 @@ def test_peft_export_of_a_fused_gdn_group_writes_one_a_per_exported_module(tmp_p
     for module, b in members.b.items():
         assert torch.equal(tensors[f"base_model.model.{GDN}.{module}.lora_A.weight"], members.a.to(torch.bfloat16))
         assert torch.equal(tensors[f"base_model.model.{GDN}.{module}.lora_B.weight"], b.to(torch.bfloat16))
+
+
+HEAD_RUN = AdapterParametrization("m", 2, 4.0, "canonical_lora", ("lm_head",), False)
+
+
+class HeadMembers(FakeMembers):
+    """A head that serves 6 rows of a vocab whose HF export has up to 8."""
+
+    head_rows = HeadRows("lm_head.lora_B", max_source_rows=8)
+
+    def get_local_shard_specs(self, slot):
+        return [
+            LocalShardSpec("lm_head.lora_A", (2, 6), (0, 0), (2, 6)),
+            LocalShardSpec("lm_head.lora_B", (6, 2), (0, 0), (6, 2)),
+        ]
+
+
+@pytest.mark.parametrize("rows", [6, 8])
+def test_a_head_source_over_the_served_vocab_loads_the_served_rows(tmp_path, rows):
+    head_b = torch.arange(rows * 2, dtype=torch.float32).reshape(rows, 2)
+    write_peft_adapter(tmp_path, {"lm_head.lora_A": FULL["lora_A"], "lm_head.lora_B": head_b}, HEAD_RUN, TARGETS)
+    members = HeadMembers()
+    load_adapter_dir(tmp_path, members, 0, HEAD_RUN, TARGETS, load_optimizer=False)
+    assert torch.equal(members.imported.weights[1], head_b[:6].to(torch.bfloat16).float())
+
+
+@pytest.mark.parametrize("rows", [5, 9])
+def test_a_head_source_outside_the_declared_rows_is_refused(tmp_path, rows):
+    head_b = torch.zeros(rows, 2)
+    write_peft_adapter(tmp_path, {"lm_head.lora_A": FULL["lora_A"], "lm_head.lora_B": head_b}, HEAD_RUN, TARGETS)
+    with pytest.raises(RuntimeError, match=f"lm_head.lora_B: the source has {rows} rows; this run serves 6"):
+        load_adapter_dir(tmp_path, HeadMembers(), 0, HEAD_RUN, TARGETS, load_optimizer=False)
