@@ -110,6 +110,16 @@ def _assert_real_rank(specs: list[LocalShardSpec], lora_rank: int) -> None:
         ), f"{spec.key}: rank {spec.global_shape[rank_axis]} != {lora_rank}"
 
 
+def _stacked_expert_keys(named_tensors: list[tuple[str, torch.Tensor]], map_name) -> frozenset[str]:
+    """The HF keys the export names as one stacked experts tensor: the base checkpoint's packed form."""
+    keys = set()
+    for name, tensor in named_tensors:
+        hf_key = map_name(name)
+        if hf_key.expert_index is None and ".experts." in hf_key.key and tensor.dim() == 3:
+            keys.add(hf_key.key)
+    return frozenset(keys)
+
+
 def write_peft_export(
     directory: Path,
     members: AdapterCheckpointMembers,
@@ -127,7 +137,13 @@ def write_peft_export(
             weights, fused_groups = map_named_tensors_to_hf_keys(named_tensors, map_name, targets)
             # the export names a shared A once per module; the writer expects it once per group
             weights = _collapse_shared_lora_a(weights, parametrization, fused_groups)
-            write_peft_adapter(directory, weights, parametrization, targets)
+            write_peft_adapter(
+                directory,
+                weights,
+                parametrization,
+                targets,
+                stacked_keys=_stacked_expert_keys(named_tensors, map_name),
+            )
     except Exception as exc:
         error = exc
     raise_if_any_rank_failed(error)
