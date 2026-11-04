@@ -174,6 +174,7 @@ def write_external_adapter(
     parametrization: AdapterParametrization,
     targets: HfLoraTargets,
     *,
+    lora_dropout: float,
     age_recipients: Sequence[str] = (),
 ) -> None:
     """The official Tinker export: F32 under Tinker names, experts stacked 3D as the parametrization has them
@@ -191,7 +192,7 @@ def write_external_adapter(
             )
     # as the official export writes it: the training run, not the file, names the base and the adapted modules (an
     # explicit list of HF leaves would not match the Tinker-named expert tensors)
-    config = _adapter_config(parametrization, ()) | {
+    config = _adapter_config(parametrization, (), lora_dropout) | {
         "target_modules": "all-linear",
         "modules_to_save": None,
         "target_parameters": None,

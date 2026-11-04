@@ -122,7 +122,11 @@ def test_a_head_over_the_served_vocab_is_no_mismatch(gloo, tmp_path):
     """Official Tinker and HF PEFT exports carry the HF vocab's head rows; the load keeps the served ones."""
     head = replace(UNSHARED, target_modules=("lm_head",))
     write_peft_adapter(
-        tmp_path, {"lm_head.lora_A": torch.zeros(2, 6), "lm_head.lora_B": torch.zeros(8, 2)}, head, TARGETS
+        tmp_path,
+        {"lm_head.lora_A": torch.zeros(2, 6), "lm_head.lora_B": torch.zeros(8, 2)},
+        head,
+        TARGETS,
+        lora_dropout=0.0,
     )
     run_shapes = {"lm_head.lora_A": (2, 6), "lm_head.lora_B": (6, 2)}
     assert (

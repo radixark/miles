@@ -339,6 +339,7 @@ def write_external_export(
     *,
     tenant_digest: str | None,
     age_recipients: Sequence[str] = (),
+    lora_dropout: float,
 ) -> UncommittedAdapterDir:
     """All ranks call; rank 0 writes ``slot``'s external export from the fp32 masters (no parametrization: it is a
     download, not a checkpoint). The caller's committer then commits it."""
@@ -359,7 +360,14 @@ def write_external_export(
                 f"the backend's adapter state does not match the parametrization: "
                 f"missing {sorted(expected - keys)[:8]}, unexpected {sorted(keys - expected)[:8]}"
             )
-            write_external_adapter(written.path, weights, parametrization, targets, age_recipients=age_recipients)
+            write_external_adapter(
+                written.path,
+                weights,
+                parametrization,
+                targets,
+                age_recipients=age_recipients,
+                lora_dropout=lora_dropout,
+            )
     return written
 
 

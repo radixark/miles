@@ -253,7 +253,7 @@ def test_a_backend_state_that_does_not_match_the_parametrization_is_refused_at_s
 
 def test_a_backend_state_that_does_not_match_the_parametrization_is_refused_at_external_export(tmp_path):
     with pytest.raises(RuntimeError, match="unexpected .*k_proj"):
-        write_external_export(tmp_path, "w", ExtraKeyMembers(), 0, RUN, TARGETS, tenant_digest=None)
+        write_external_export(tmp_path, "w", ExtraKeyMembers(), 0, RUN, TARGETS, tenant_digest=None, lora_dropout=0.0)
 
 
 def _refused_by_an_in_model_loader(path):
@@ -558,7 +558,9 @@ def test_a_padded_rank_is_refused_at_save(tmp_path):
 def _export_external(rank, world_size, port, *, root):
     init_gloo(rank, world_size, port=port)
     init_gloo_group()
-    written = write_external_export(Path(root), "x", FakeMembers(scale=1 / 3), 0, RUN, TARGETS, tenant_digest=None)
+    written = write_external_export(
+        Path(root), "x", FakeMembers(scale=1 / 3), 0, RUN, TARGETS, tenant_digest=None, lora_dropout=0.0
+    )
     if rank == 0:
         commit_adapter_dir(Path(root), "x", written, overwrite=False)
     dist.destroy_process_group()
@@ -590,7 +592,9 @@ class DataParallelMembers(FakeMembers):
 def _export_external_with_replicas(rank, world_size, port, *, root):
     init_gloo(rank, world_size, port=port)
     init_gloo_group()
-    written = write_external_export(Path(root), "x", DataParallelMembers(), 0, RUN, TARGETS, tenant_digest=None)
+    written = write_external_export(
+        Path(root), "x", DataParallelMembers(), 0, RUN, TARGETS, tenant_digest=None, lora_dropout=0.0
+    )
     if rank == 0:
         commit_adapter_dir(Path(root), "x", written, overwrite=False)
     dist.destroy_process_group()

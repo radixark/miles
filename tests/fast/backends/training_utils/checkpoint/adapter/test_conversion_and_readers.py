@@ -239,7 +239,7 @@ def test_external_export_reads_back_through_the_external_reader(tmp_path, shared
     # experts' Tinker names are sglang's too; Tinker's head name is what marks the export as Tinker's
     run = _run(target_modules=(*QKV, *EXPERTS, "lm_head"), shared_lora_a_groups=(QKV,) if shared_qkv else ())
     weights = _weights(shared_qkv) | {"lm_head.lora_A": torch.randn(2, 8), "lm_head.lora_B": torch.randn(16, 2)}
-    write_external_adapter(tmp_path, weights, run, QWEN35)
+    write_external_adapter(tmp_path, weights, run, QWEN35, lora_dropout=0.0)
     tensors = load_file(str(tmp_path / "adapter_model.safetensors"))
     assert all(t.dtype == torch.float32 for t in tensors.values())
     assert any(".experts.w1." in name for name in tensors), "gated experts take Tinker's names"
@@ -268,7 +268,7 @@ def test_the_external_export_copies_only_a_shared_as_later_members(tmp_path, mon
     monkeypatch.setattr(
         adapter_exports, "save_adapter_to_disk", lambda directory, config, tensors: written.update(tensors)
     )
-    write_external_adapter(tmp_path, weights, run, QWEN35)
+    write_external_adapter(tmp_path, weights, run, QWEN35, lora_dropout=0.0)
 
     storages = {t.untyped_storage().data_ptr() for t in weights.values()}
     copied = [name for name, t in written.items() if t.untyped_storage().data_ptr() not in storages]
@@ -289,8 +289,10 @@ def test_an_encrypted_external_export_decrypts_to_the_plain_one(tmp_path, key_ty
     else:
         identity = pyrage.x25519.Identity.generate()
         recipient = str(identity.to_public())
-    write_external_adapter(tmp_path / "plain", _weights(False), _run(), QWEN35)
-    write_external_adapter(tmp_path / "age", _weights(False), _run(), QWEN35, age_recipients=[recipient])
+    write_external_adapter(tmp_path / "plain", _weights(False), _run(), QWEN35, lora_dropout=0.0)
+    write_external_adapter(
+        tmp_path / "age", _weights(False), _run(), QWEN35, age_recipients=[recipient], lora_dropout=0.0
+    )
     assert sorted(p.name for p in (tmp_path / "age").iterdir()) == [
         "adapter_config.json.age",
         "adapter_model.safetensors.age",
@@ -310,7 +312,7 @@ def test_an_encrypted_external_export_never_writes_plaintext(tmp_path, monkeypat
 
     monkeypatch.setattr(pyrage, "encrypt", encrypt)
     write_external_adapter(
-        tmp_path / "age", _weights(False), _run(), QWEN35, age_recipients=[str(identity.to_public())]
+        tmp_path / "age", _weights(False), _run(), QWEN35, age_recipients=[str(identity.to_public())], lora_dropout=0.0
     )
 
 

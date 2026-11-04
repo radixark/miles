@@ -29,7 +29,7 @@ def gloo():
 
 def _write(path, rank_in_tensors=2):
     shapes = {k: tuple(rank_in_tensors if n == 2 else n for n in s) for k, s in RUN_SHAPES.items()}
-    write_peft_adapter(path, {k: torch.randn(s) for k, s in shapes.items()}, RUN, TARGETS)
+    write_peft_adapter(path, {k: torch.randn(s) for k, s in shapes.items()}, RUN, TARGETS, lora_dropout=0.0)
     # the config keeps the run's rank whatever the tensors hold
     config = json.loads((path / "adapter_config.json").read_text())
     (path / "adapter_config.json").write_text(json.dumps(config | {"r": 2}))
