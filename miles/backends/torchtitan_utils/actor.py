@@ -136,6 +136,11 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
         ref_trainer = TitanTrainer(ref_config, parallelism=self.trainer.parallelism)
         ref_trainer.configure_loss_reduction()
         ref_trainer.engine.load_checkpoint()
+        # The reference routers replay the same rollout routes as the actor's
+        # (replay/routing_replay.py ref_log_prob_stage); each router registers
+        # under its global layer index, so fill() records the rollout's stream
+        # for that layer into both models' queues.
+        install_routing_replay(ref_trainer.model_parts)
         for part in ref_trainer.model_parts:
             part.eval()
             part.requires_grad_(False)

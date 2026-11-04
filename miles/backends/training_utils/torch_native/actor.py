@@ -196,7 +196,7 @@ class TorchNativeTrainRayActor(TrainRayActor):
         runner = self._step_runner()
 
         if self.ref_runner is not None:
-            with routing_replay.stage(routing_replay.FALLTHROUGH), self._ref_context():
+            with routing_replay.stage(routing_replay.ref_log_prob_stage(self.args)), self._ref_context():
                 rollout_data.update(self._log_probs(self.ref_runner, data_iterator, num_microbatches, "ref_"))
         with routing_replay.stage(routing_replay.log_prob_stage(self.args)):
             rollout_data.update(self._log_probs(runner, data_iterator, num_microbatches))
