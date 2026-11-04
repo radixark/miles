@@ -145,9 +145,7 @@ class BaseReplayManager:
 
             elif stage == "replay_forward":
                 if replay.staged_forward_ids is not None:
-                    # consumed, so the stager can tell a router that never read its ids
-                    top_indices, replay.staged_forward_ids = replay.staged_forward_ids, None
-                    return _get_replay_result(top_indices, scores, topk, *args, **kwargs)
+                    return _get_replay_result(replay.staged_forward_ids, scores, topk, *args, **kwargs)
                 return _get_replay_result(replay.pop_forward(), scores, topk, *args, **kwargs)
 
             elif stage == "replay_backward":

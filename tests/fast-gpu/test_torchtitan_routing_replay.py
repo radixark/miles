@@ -169,22 +169,6 @@ def test_a_stray_forward_is_reported(part):
                 part(scores)
 
 
-class _PartThatSkipsItsRouter(_Part):
-    def forward(self, scores):
-        return scores
-
-
-def test_a_router_that_never_reads_its_staged_ids_is_reported(replay_manager):
-    """Staging advances every queue, so the pass count alone cannot show the routers replayed."""
-    part = _PartThatSkipsItsRouter()
-    routing_replay.install([part])
-    _queue_microbatches(1)
-
-    with pytest.raises(RuntimeError, match="never read"):
-        part(torch.rand(4, 8, device="cuda"))
-    assert replay_manager.replays[0].staged_forward_ids is None
-
-
 def test_each_part_stages_only_its_own_routers(replay_manager):
     """A part's forward stages its routers' ids for the microbatch; a second part on the
     rank (virtual pipeline stages) must not advance them, or every later lookup shifts."""

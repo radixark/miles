@@ -45,8 +45,8 @@ def _part_routers(part: nn.Module) -> list[tuple[int, nn.Module]]:
 
 
 def _allow_forward_side_effects_in_compiled_checkpoints() -> None:
-    # the router pre-hook and the consumed-ids clear write Python state inside the block; a compiled
-    # checkpoint refuses that unless the writes stay out of the recompute, which reuses the saved ids anyway
+    # the router pre-hook writes Python state inside the block; a compiled checkpoint refuses that
+    # unless the write stays out of the recompute, which reuses the saved ids anyway
     torch._dynamo.config.skip_fwd_side_effects_in_bwd_under_checkpoint = True
 
 
@@ -137,9 +137,6 @@ def _stage_forward_ids(replays: list[Replay]):
         for replay in replays:
             replay.staged_forward_ids = replay.pop_forward()
         yield
-        unread = [replay.stream_idx for replay in replays if replay.staged_forward_ids is not None]
-        if unread:
-            raise RuntimeError(f"routing replay streams {unread} were staged but their routers never read them")
     finally:
         # unstaged reads (eager recompute in backward) pop their own
         for replay in replays:

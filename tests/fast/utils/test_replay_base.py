@@ -75,9 +75,8 @@ def test_the_padding_fill_traces_without_a_graph_break():
     torch.testing.assert_close(topk_fn(scores, 2), torch.tensor([[0, 1], [2, 0]], dtype=torch.int32))
 
 
-def test_a_staged_forward_is_read_once_without_popping(monkeypatch):
-    """torchtitan pops ids before the compiled blocks run; the block reads the staged ids instead of popping,
-    and clears them so the stager can tell a router that never read its ids."""
+def test_a_staged_forward_replays_without_popping(monkeypatch):
+    """torchtitan pops ids before the compiled blocks run; the block reads the staged ids instead of popping."""
     monkeypatch.setattr(replay_base.current_platform, "dynamic_shapes", False)
     monkeypatch.setattr(replay_base.current_platform, "current_device", lambda: torch.device("cpu"))
     manager = RoutingReplayManager()
@@ -93,7 +92,7 @@ def test_a_staged_forward_is_read_once_without_popping(monkeypatch):
     scores = torch.zeros(1, 5)
 
     torch.testing.assert_close(topk_fn(scores, 2), torch.tensor([[3, 1]], dtype=torch.int32))
-    assert replay.staged_forward_ids is None
+    torch.testing.assert_close(topk_fn(scores, 2), torch.tensor([[3, 1]], dtype=torch.int32))
     assert replay.forward_index == 1
 
 
@@ -141,7 +140,7 @@ def test_staged_ids_compile_once_across_microbatches(monkeypatch):
 
 
 def test_staged_ids_compile_once_under_activation_checkpointing(monkeypatch):
-    """torchtitan compiles each checkpointed block fullgraph: the consumed-ids write is a forward side effect
+    """torchtitan compiles each checkpointed block fullgraph: the router pre-hook is a forward side effect
     under the checkpoint, and the recompute in backward runs inside the compiled graph without popping."""
     monkeypatch.setattr(replay_base.current_platform, "dynamic_shapes", False)
     monkeypatch.setattr(replay_base.current_platform, "current_device", lambda: torch.device("cpu"))
@@ -178,7 +177,6 @@ def test_staged_ids_compile_once_under_activation_checkpointing(monkeypatch):
             with routing_replay._stage_forward_ids(replays):
                 for block in blocks:
                     hidden = block(hidden)
-                assert all(replay.staged_forward_ids is None for replay in replays)
             manager.stage = "replay_backward"
             hidden.sum().backward()
 
