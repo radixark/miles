@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 from argparse import Namespace
 
 import pytest
@@ -13,6 +14,7 @@ from miles.backends.sglang_utils.sglang_config import (
     SglangConfig,
     _compute_megatron_num_gpus,
     _compute_rollout_offset,
+    _extract_base_args,
 )
 from miles.utils.external_utils.command_utils.common import encode_pseudo_file
 
@@ -811,3 +813,16 @@ class TestCommonValueBoundaries:
 
         with pytest.raises(AttributeError, match="No common field 'x'"):
             SglangConfig(models=[model], base_args={}).common_value("x")
+
+
+def test_a_suppress_default_server_arg_is_extracted_only_when_given(monkeypatch):
+    """A SUPPRESS-default action leaves no dest on the namespace; reading it raised KeyError at startup."""
+
+    def add_server_args(parser):
+        parser.add_argument("--sglang-tp-size", dest="sglang_tp_size", type=int, default=1)
+        parser.add_argument("--sglang-old-alias", dest="sglang_old_alias", default=argparse.SUPPRESS)
+
+    monkeypatch.setattr("miles.backends.sglang_utils.sglang_config._add_prefixed_primary_server_args", add_server_args)
+
+    assert _extract_base_args(Namespace(sglang_tp_size=1)) == {"tp_size": 1}
+    assert _extract_base_args(Namespace(sglang_tp_size=1, sglang_old_alias="x")) == {"tp_size": 1, "old_alias": "x"}
