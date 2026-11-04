@@ -160,3 +160,17 @@ def _pipeline_stages(rank, world_size, port):
 
 def test_pipeline_stages_share_the_runs_groups_and_modules():
     run_multiprocess(_pipeline_stages)
+
+
+def test_torchtitan_slots_declare_a_trained_heads_rows():
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from miles.backends.torchtitan_utils.lora_checkpoint import TorchtitanAdapterSlots
+    from miles.backends.training_utils.checkpoint.adapter.adapter_dir import HeadRows
+
+    slots = TorchtitanAdapterSlots.__new__(TorchtitanAdapterSlots)
+    slots.targets = replace(get_hf_lora_targets({"model_type": "qwen3", "num_hidden_layers": 1}), vocab_size=12)
+    head_b = f"{slots.targets.unembed[0]}.lora_B"
+    slots.row_mapping = SimpleNamespace(pieces=[SimpleNamespace(key=head_b, global_shape=(10, 2))])
+    assert slots._head_rows() == HeadRows(head_b, max_source_rows=12)
