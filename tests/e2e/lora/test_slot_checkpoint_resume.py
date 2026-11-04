@@ -30,6 +30,7 @@ from miles.backends.training_utils.checkpoint.adapter.commit import (
     resolve_adapter_dir,
     tenant_digest,
 )
+from miles.backends.training_utils.checkpoint.adapter.parametrization import base_model_fingerprint
 from miles.utils.distributed_utils import init_gloo_group
 from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
 
@@ -134,12 +135,18 @@ def run_worker(checkpoint_dir):
     )
     for slot in (0, 1):
         init_adapter_slot(model, slot, rank=4, alpha=8)
-    targets = get_hf_lora_targets({"model_type": "qwen3", "num_hidden_layers": 2})
+    hf_config = {"model_type": "qwen3", "num_hidden_layers": 2}
+    targets = get_hf_lora_targets(hf_config)
     slots = BridgeAdapterSlots(model, CheckpointModelExport(model), targets, multi_lora=True)
     optimizers = {}
     members = LayerWiseSlotMembers(slots, optimizers)
     run = slots.parametrization(
-        base_model="toy", lora_rank=4, lora_alpha=8.0, lora_type="lora", experts_shared_outer_loras=False
+        base_model="toy",
+        base_model_fingerprint=base_model_fingerprint(hf_config),
+        lora_rank=4,
+        lora_alpha=8.0,
+        lora_type="lora",
+        experts_shared_outer_loras=False,
     )
     source = optimizers[0] = SlotOptimizer(args, model, slot=0)
     for step in (1, 2, 3):
