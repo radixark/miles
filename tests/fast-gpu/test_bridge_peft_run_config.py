@@ -4,8 +4,8 @@ reader's checks: a Bridge bump that renames or drops a field the reader reads fa
 from tests.ci.ci_register import register_cuda_ci
 
 # CPU-only checks, on this stage because only the GPU image ships Megatron-Bridge's peft (it imports Transformer
-# Engine); est_time is an unmeasured upper bound
-register_cuda_ci(est_time=120, suite="stage-b-2-gpu-h200", labels=["lora"], hardware=["hopper"], num_gpus=2)
+# Engine)
+register_cuda_ci(est_time=30, suite="stage-b-2-gpu-h200", labels=["lora"], hardware=["hopper"], num_gpus=2)
 
 import pytest
 import torch
