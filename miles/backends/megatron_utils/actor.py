@@ -11,13 +11,13 @@ from torch_memory_saver import torch_memory_saver
 
 from miles.backends.megatron_utils.checkpoint_request import MegatronCkptLoadConfig
 from miles.backends.megatron_utils.hf_export import save_hf_model
-from miles.backends.training_utils.checkpoint.adapter.probed_slots import ProbedAdapterSlots
 from miles.backends.megatron_utils.lora.checkpoint import build_adapter_slots
 from miles.backends.megatron_utils.lora.utils import is_lora_enabled, lora_rollout_enabled
 from miles.backends.megatron_utils.megatron_config import has_megatron_checkpoint
 from miles.backends.megatron_utils.megatron_to_hf import converter_model_name
 from miles.backends.megatron_utils.rematerialize_utils import build_main_cast_context
 from miles.backends.megatron_utils.update_weight.hf_weight_iterator import get_hf_weight_iterator
+from miles.backends.training_utils.checkpoint.adapter.probed_slots import ProbedAdapterSlots
 from miles.backends.training_utils.data.rollout import (
     DataIterator,
     get_data_iterator,
