@@ -100,3 +100,29 @@ def test_an_eval_hf_dir_without_eval_snapshots_needs_no_layout(monkeypatch):
     _validate(_bridge_args_without_layout(monkeypatch, eval_hf_dir="/eval"))
     with pytest.raises(AssertionError, match="HF LoRA target layout"):
         _validate(_bridge_args_without_layout(monkeypatch, eval_hf_dir="/eval", eval_uses_snapshots=True))
+
+
+def _canonical_gdn_args(monkeypatch, **overrides):
+    # a model with a layout, whose canonical adapters target one GDN in_proj_qkv by component
+    monkeypatch.setattr(lora_arguments, "load_hf_config", lambda path: SimpleNamespace(to_dict=dict))
+    monkeypatch.setattr(lora_arguments, "has_hf_lora_targets", lambda config: True)
+    fields = dict(
+        hf_checkpoint="/hf",
+        lora_type="canonical_lora",
+        lora_adapter_targets=[f"model.layers.0.linear_attn.in_proj_{c}" for c in "qkvz"],
+        save_hf=None,
+        eval_hf_dir=None,
+        eval_uses_snapshots=False,
+    )
+    return Namespace(**(fields | overrides))
+
+
+def test_canonical_gdn_components_refuse_hf_exports_at_launch(monkeypatch):
+    """A PEFT adapter cannot name in_proj_q/k/v with their own lora_A, so the export would fail at every save."""
+    lora_arguments._assert_adapter_layout_defined(_canonical_gdn_args(monkeypatch))
+    with pytest.raises(AssertionError, match=r"no PEFT adapter can name: use --lora-type lora"):
+        lora_arguments._assert_adapter_layout_defined(_canonical_gdn_args(monkeypatch, save_hf="/hf_out"))
+    with pytest.raises(AssertionError, match=r"\['in_proj_k', 'in_proj_q', 'in_proj_v'\]"):
+        lora_arguments._assert_adapter_layout_defined(
+            _canonical_gdn_args(monkeypatch, eval_hf_dir="/eval", eval_uses_snapshots=True)
+        )
