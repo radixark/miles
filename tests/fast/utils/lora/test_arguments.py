@@ -219,6 +219,22 @@ def test_rollout_only_skips_the_adapter_checkpoint_checks():
     validate_lora_args_after_megatron(args)
 
 
+@pytest.mark.parametrize(
+    "fault_tolerance", [dict(indep_dp=True), dict(non_persistent_ckpt_type="local")], ids=["peer_heal", "in_memory"]
+)
+def test_lora_refuses_the_checkpoints_that_cannot_carry_its_adapter(fault_tolerance):
+    """save() writes a LoRA adapter to its adapter dir: a healed cell or an in-memory rollback would lose it."""
+    args = Namespace(
+        lora_rank=8,
+        multi_lora=False,
+        megatron_to_hf_mode="raw",
+        debug_rollout_only=False,
+        **{"indep_dp": False, "non_persistent_ckpt_type": None, **fault_tolerance},
+    )
+    with pytest.raises(AssertionError, match="remove 'train' from --ft-components"):
+        validate_lora_args_after_megatron(args)
+
+
 def test_the_adapter_checkpoint_requires_the_distributed_optimizer():
     args = Namespace(
         save="/save",
