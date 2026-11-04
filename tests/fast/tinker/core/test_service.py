@@ -14,6 +14,7 @@ import threading
 import time
 from contextlib import suppress
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 
 import pyrage
@@ -29,6 +30,7 @@ from tests.fast.tinker.harness import (
     write_legacy_checkpoint,
 )
 
+import miles.tinker.core.service as service_module
 from miles.backends.training_utils.checkpoint.adapter.commit import _adopt_pre_commit_dir, resolve_adapter_dir
 from miles.backends.training_utils.checkpoint.adapter.parametrization import (
     AdapterParametrization,
@@ -1372,6 +1374,39 @@ async def test_repeated_url_requests_reuse_one_token_and_the_sweeper_drops_expir
         await service.download_path(first, "adapter_config.json")
     urls = await service.external_weights_urls("tenant", model_id, "external_weights/export", "http://gateway/")
     assert token() != first, "an expired token is never handed out again"
+
+
+async def test_a_download_token_never_outlives_the_expiry_it_was_issued_with(service, monkeypatch):
+    """The URL is the credential: a request after its expiry, before the sweeper runs, must not revive it."""
+    model_id = await created_model(service)
+    save = service.submit("tenant", "save_weights_external", _external_payload(model_id, 1, "export"))
+    await await_settled(service, "tenant", save)
+    now = [time.time()]
+    monkeypatch.setattr(service_module.time, "time", lambda: now[0])
+
+    def token(urls):
+        return urls["urls"]["adapter_config.json"].split("/")[-2]
+
+    first = await service.external_weights_urls("tenant", model_id, "external_weights/export", "http://gateway/")
+    reported = datetime.fromisoformat(first["expires"]).timestamp()
+    now[0] += 3601
+    with pytest.raises(NotFoundError):
+        await service.download_path(token(first), "adapter_config.json")
+    again = await service.external_weights_urls("tenant", model_id, "external_weights/export", "http://gateway/")
+    assert token(again) != token(first), "an expired token is never handed out again, swept or not"
+    with pytest.raises(NotFoundError):
+        await service.download_path(token(first), "adapter_config.json")
+    assert service._downloads[token(again)].expires_at > now[0]
+    # a reused token keeps the expiry it was issued with
+    now[0] += 10
+    reused = await service.external_weights_urls("tenant", model_id, "external_weights/export", "http://gateway/")
+    assert token(reused) == token(again) and reused["expires"] == again["expires"]
+    # the table never lets a token live past what its response reported
+    issued = datetime.fromisoformat(again["expires"]).timestamp()
+    assert service._downloads[token(again)].expires_at == pytest.approx(issued, abs=1e-5)
+    assert service._downloads.get(token(first)) is None or service._downloads[
+        token(first)
+    ].expires_at == pytest.approx(reported, abs=1e-5)
 
 
 async def test_an_encrypted_external_save_keeps_its_owner(service):

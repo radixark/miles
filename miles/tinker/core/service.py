@@ -764,10 +764,13 @@ class TinkerService:
                 raise NotFoundError(f"checkpoint {tinker_path} has expired")
             expires_at = min(expires_at, checkpoint_expires_at)
         key = (tenant, tinker_path, files["commit_id"])
-        token = self._download_tokens.get(key)
-        if token is None:
+        # a token keeps the expiry it was issued with; reuse it only while it has half its life left
+        live = self._downloads.get(self._download_tokens.get(key))
+        if live is not None and live.expires_at - now >= _DOWNLOAD_URL_TTL_S / 2:
+            token, expires_at = self._download_tokens[key], live.expires_at
+        else:
             token = self._download_tokens[key] = secrets.token_urlsafe(32)
-        self._downloads[token] = _Download(*key, expires_at)
+            self._downloads[token] = _Download(*key, expires_at)
         return {
             "urls": {f: f"{base_url}api/v1/external_weights/{token}/{f}" for f in files["files"]},
             "expires": datetime.fromtimestamp(expires_at, UTC).isoformat(),
@@ -821,7 +824,9 @@ class TinkerService:
         for token, download in list(self._downloads.items()):
             if download.expires_at <= now:
                 del self._downloads[token]
-                del self._download_tokens[download[:3]]
+                # the key may already name a newer token
+                if self._download_tokens.get(download[:3]) == token:
+                    del self._download_tokens[download[:3]]
 
     async def _expire_checkpoints(self) -> None:
         # the trainer lock waits for a whole training call; take it only when there is something to delete
