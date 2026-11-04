@@ -146,3 +146,41 @@ def test_canonical_gdn_components_refuse_hf_exports_at_launch(monkeypatch, targe
     lora_arguments._assert_adapter_layout_defined(_gdn_export_args(monkeypatch, targets, save_hf=None))
     # one shared lora_A per in_proj_qkv has a PEFT form
     lora_arguments._assert_adapter_layout_defined(_gdn_export_args(monkeypatch, targets, lora_type="lora"))
+
+
+def _gpt_oss_export_args(monkeypatch, **overrides):
+    from transformers import GptOssConfig
+
+    config = GptOssConfig(
+        vocab_size=64,
+        hidden_size=16,
+        intermediate_size=16,
+        num_hidden_layers=2,
+        num_attention_heads=2,
+        num_key_value_heads=1,
+        head_dim=8,
+        num_local_experts=4,
+        num_experts_per_tok=2,
+        layer_types=["sliding_attention", "full_attention"],
+    )
+    monkeypatch.setattr(lora_arguments, "load_hf_config", lambda path: config)
+    fields = dict(
+        hf_checkpoint="/hf",
+        lora_type="lora",
+        hf_lora_targets=["gate_up_proj", "down_proj"],
+        lora_rank=4,
+        lora_alpha=8.0,
+        experts_shared_outer_loras=True,
+        save_hf="/hf_out",
+        eval_hf_dir=None,
+        eval_uses_snapshots=False,
+    )
+    return Namespace(**(fields | overrides))
+
+
+def test_a_packed_expert_shared_outer_adapter_refuses_hf_exports_at_launch(monkeypatch):
+    """Bridge names a packed family's per-expert side once for all experts, so the export keeps only the last."""
+    with pytest.raises(AssertionError, match="would keep only the last expert's per-expert side"):
+        lora_arguments._assert_adapter_layout_defined(_gpt_oss_export_args(monkeypatch))
+    lora_arguments._assert_adapter_layout_defined(_gpt_oss_export_args(monkeypatch, experts_shared_outer_loras=False))
+    lora_arguments._assert_adapter_layout_defined(_gpt_oss_export_args(monkeypatch, save_hf=None))

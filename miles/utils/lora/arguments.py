@@ -104,11 +104,18 @@ def _assert_adapter_layout_defined(args) -> None:
 
 
 def _assert_hf_exports_have_peft_form(args, hf_config) -> None:
+    targets = get_hf_lora_targets(hf_config.to_dict())
     run = _launch_parametrization(args, hf_config)
-    assert has_plain_peft_form(run, get_hf_lora_targets(hf_config.to_dict())), (
+    assert has_plain_peft_form(run, targets), (
         f"--save-hf and eval snapshots write a PEFT adapter, but under --lora-type {args.lora_type} the components "
         "of an HF-fused module have their own lora_A, which no PEFT adapter can name: use --lora-type lora (one "
         "shared lora_A per fused module), or drop --save-hf and eval snapshots"
+    )
+    # Bridge exports a packed family's per-expert side under one unindexed name for every expert
+    packed_shared_outer = targets.packed_expert_gate_up_layout is not None and args.experts_shared_outer_loras
+    assert not (packed_shared_outer and any(".experts." in module for module in run.target_modules)), (
+        "--save-hf and eval snapshots of a packed-expert family's --experts-shared-outer-loras adapter would keep "
+        "only the last expert's per-expert side: drop --experts-shared-outer-loras, or --save-hf and eval snapshots"
     )
 
 
