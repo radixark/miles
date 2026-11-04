@@ -518,7 +518,7 @@ def test_a_native_warm_start_loads_an_inkling_head_peft_dir(tmp_path):
 
 
 def test_a_peft_dir_without_adapter_config_is_refused_with_a_remedy(tmp_path):
-    # main's native loader read such a dir under the run's parametrization; the config is what the load checks
+    # the load checks the adapter's rank, alpha and targets against the run from adapter_config.json
     _write_inkling_head_adapter(tmp_path)
     (tmp_path / "adapter_config.json").unlink()
     with pytest.raises(RuntimeError, match="no adapter_config.json.*save_pretrained"):
