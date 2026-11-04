@@ -7,7 +7,7 @@ import pytest
 import torch
 from safetensors.torch import load_file, save_file
 
-from miles.backends.training_utils.checkpoint.adapter.adapter_dir import write_peft_export
+from miles.backends.training_utils.checkpoint.adapter.adapter_dir import write_peft_export, write_sampler_export
 from miles.backends.training_utils.checkpoint.adapter.adapter_exports import write_peft_adapter, write_sampler_adapter
 from miles.backends.training_utils.checkpoint.adapter.key_mapping import map_peft_keys_to_hf_keys
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
@@ -433,3 +433,33 @@ def test_an_expert_module_the_export_stacks_stays_stacked(tmp_path):
     written = load_file(str(tmp_path / "adapter_model.safetensors"))
     assert set(written) == {f"base_model.model.{down}.lora_A.weight", f"base_model.model.{down}.lora_B.weight"}
     assert torch.equal(written[f"base_model.model.{down}.lora_B.weight"], export.b.to(torch.bfloat16))
+
+
+class _PerExpertDownExport:
+    """Bridge's per-expert export: one 2D tensor per expert."""
+
+    bf16_adapter_key_style = "peft"
+
+    def __init__(self):
+        self.a, self.b = torch.randn(3, 2, 4), torch.randn(3, 4, 2)
+
+    def export_bf16_adapter(self, slot):
+        for e in range(3):
+            yield f"{L}.mlp.experts.{e}.down_proj.lora_A.weight", self.a[e].clone()
+            yield f"{L}.mlp.experts.{e}.down_proj.lora_B.weight", self.b[e].clone()
+
+
+def test_a_sampler_export_is_written_uncommitted_with_its_tenant_and_parametrization(tmp_path):
+    down = f"{L}.mlp.experts.down_proj"
+    run = _run(target_modules=(down,))
+    export = _PerExpertDownExport()
+
+    written = write_sampler_export(tmp_path, "v1", export, 0, run, QWEN3, tenant_digest="digest")
+
+    assert written.path.parent == tmp_path and not (tmp_path / "v1").exists(), "the committer links it"
+    tensors = load_file(str(written.path / "adapter_model.safetensors"))
+    # sglang's stacked expert names, every expert in one 3D tensor
+    assert set(tensors) == {f"{L}.mlp.experts.w2.lora_A.weight", f"{L}.mlp.experts.w2.lora_B.weight"}
+    assert torch.equal(tensors[f"{L}.mlp.experts.w2.lora_B.weight"], export.b.to(torch.bfloat16))
+    assert json.loads((written.path / "tenant.json").read_text()) == {"tenant_digest": "digest"}
+    assert MilesAdapterDirReader(written.path, QWEN3).source.parametrization == run

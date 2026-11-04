@@ -4,6 +4,7 @@ import httpx
 import pytest
 import torch
 
+from miles.backends.training_utils.checkpoint.adapter.commit import UncommittedAdapterDir
 from miles.backends.training_utils.checkpoint.adapter.commit import tenant_digest as library_digest
 from miles.tinker.core.types import UserInputError
 from miles.tinker.core.utils import tenant_digest as gateway_digest
@@ -225,3 +226,23 @@ def test_an_aborted_sample_fails_instead_of_passing_as_a_stop():
 def test_the_gateway_digests_a_tenant_as_the_library_checks_it(tenant):
     """Core (stdlib-only) writes the digest the library's ownership check recomputes; the two must agree."""
     assert gateway_digest(tenant) == library_digest(tenant)
+
+
+class _ExportingTrainer:
+    def __init__(self, results):
+        self.results = results
+
+    async def export_slot(self, **kwargs):
+        return self.results
+
+
+async def test_export_slot_hands_back_the_export_every_rank_agreed_on(tmp_path):
+    written = UncommittedAdapterDir(tmp_path / ".x.c1", "c1")
+    backend = MilesBackend(trainer=_ExportingTrainer([written, written]), router_url="http://router")
+    assert await backend.export_slot(0, str(tmp_path), "x", "digest", {}) is written
+
+
+async def test_export_slot_returns_the_first_rank_failure_instead_of_an_export(tmp_path):
+    written, failure = UncommittedAdapterDir(tmp_path / ".x.c1", "c1"), {"error": "rank 1 failed"}
+    backend = MilesBackend(trainer=_ExportingTrainer([written, failure]), router_url="http://router")
+    assert await backend.export_slot(0, str(tmp_path), "x", "digest", {}) is failure
