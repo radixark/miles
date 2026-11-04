@@ -102,6 +102,11 @@ class TestRejects:
         with pytest.raises(ValueError, match="dataset 'math'"):
             parse_rollout_datasets(_with_dataset(**fields))
 
+    @pytest.mark.parametrize("name", ["math/v2", "has space", ""])
+    def test_a_dataset_name_unfit_for_a_metrics_key(self, name):
+        with pytest.raises(ValueError, match="--rollout-data-yaml-config"):
+            parse_rollout_datasets({"datasets": {name: {"path": "/data/x.jsonl", "samples_per_step": 1}}})
+
     @pytest.mark.parametrize("sha256", ["00001234", "1234e567"])
     def test_an_unquoted_numeric_sha256_says_to_quote_it(self, sha256, tmp_path):
         config = tmp_path / "mix.yaml"
