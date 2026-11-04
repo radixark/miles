@@ -136,8 +136,9 @@ def _validate_rollout_only_adapter(args) -> None:
     # without the family's layout the library reads no source; SGLang gets it as before
     if not path.is_dir() or not has_hf_lora_targets(hf_config):
         return
+    targets = get_hf_lora_targets(hf_config)
     try:
-        kind = classify_adapter_source(path, get_hf_lora_targets(hf_config), load_optimizer=False)
+        kind = classify_adapter_source(path, targets, load_optimizer=False)
     except ValueError:
         # not a source the library reads
         return
@@ -150,7 +151,7 @@ def _validate_rollout_only_adapter(args) -> None:
         "convert it first with --lora-adapter-convert-save"
     )
     # such an adapter dir never holds a PEFT export, converted or not
-    assert kind != AdapterSourceKind.ADAPTER_DIR or has_plain_peft_form(read_parametrization(path)), (
+    assert kind != AdapterSourceKind.ADAPTER_DIR or has_plain_peft_form(read_parametrization(path), targets), (
         f"{path} has no plain-PEFT form (fused-module components with their own lora_A), so rollout-only cannot "
         "serve it to the engines"
     )

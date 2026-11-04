@@ -239,7 +239,7 @@ def save_and_commit_adapter_dir(
         except Exception as exc:
             error = exc
     raise_if_any_rank_failed(error)
-    if has_plain_peft_form(parametrization):
+    if has_plain_peft_form(parametrization, targets):
         write_peft_export(written.path, members, slot, parametrization, targets)
     elif _is_writer():
         logger.info(f"{written.path}: no PEFT view, as this parametrization has no plain-PEFT form")
