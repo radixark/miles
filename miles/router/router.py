@@ -45,6 +45,8 @@ class MilesRouter:
 
         # URL -> Active Request Count (load state)
         self.worker_request_counts: dict[str, int] = {}
+        # URL -> KV-cache capacity in tokens, read once from the worker when it registers
+        self.worker_capacities: dict[str, int] = {}
         # URL -> Consecutive Failures
         self.worker_failure_counts: dict[str, int] = {}
         # Quarantined workers excluded from routing pool
@@ -193,7 +195,7 @@ class MilesRouter:
                 status_code=400, content={"error": "worker_url is required (use query ?url=... or JSON body)"}
             )
 
-        self._add_worker_url(worker_url)
+        await self._register_worker(worker_url)
         return {"status": "success", "worker_urls": self.worker_request_counts}
 
     async def remove_worker(self, request: Request):
@@ -219,7 +221,7 @@ class MilesRouter:
                 status_code=400, content={"error": "miles router serves only regular workers (no PD disaggregation)"}
             )
 
-        self._add_worker_url(worker_url)
+        await self._register_worker(worker_url)
         return {"status": "success", "worker_id": _worker_id(worker_url)}
 
     async def get_workers(self, request: Request):
@@ -230,16 +232,41 @@ class MilesRouter:
         self._remove_worker_url(worker_id)
         return {"status": "success"}
 
-    def _add_worker_url(self, worker_url: str) -> None:
+    async def _register_worker(self, worker_url: str) -> None:
+        if worker_url in self.worker_request_counts:
+            return
+        capacity = await self._fetch_worker_capacity(worker_url)
+        self._add_worker_url(worker_url, capacity=capacity)
+
+    async def _fetch_worker_capacity(self, worker_url: str) -> int | None:
+        """KV-cache capacity of a worker in tokens, or None when the worker does not report it.
+
+        SGLang reports `max_total_num_tokens` per data-parallel replica, so the worker's
+        capacity is that times `dp_size`.
+        """
+        try:
+            response = await self.client.get(f"{worker_url}/get_server_info", timeout=_CAPACITY_FETCH_TIMEOUT)
+            response.raise_for_status()
+            info = response.json()
+        except Exception as e:
+            logger.warning(f"[miles-router] Could not read capacity of {worker_url}: {e!r}")
+            return None
+        return _capacity_from_server_info(info)
+
+    def _add_worker_url(self, worker_url: str, *, capacity: int | None = None) -> None:
         if worker_url not in self.worker_request_counts:
             self.worker_request_counts[worker_url] = 0
             self.worker_failure_counts[worker_url] = 0
             self.dead_workers.discard(worker_url)
+            if capacity is not None:
+                self.worker_capacities[worker_url] = capacity
+            logger.info(f"[miles-router] Worker {worker_url} KV capacity: {capacity} tokens")
             if self.verbose:
                 print(f"[miles-router] Added new worker: {worker_url}")
 
     def _remove_worker_url(self, worker_url: str) -> None:
         self.worker_request_counts.pop(worker_url, None)
+        self.worker_capacities.pop(worker_url, None)
         self.worker_failure_counts.pop(worker_url, None)
         self.dead_workers.discard(worker_url)
         logger.info(f"[miles-router] Removed worker: {worker_url}")
@@ -257,19 +284,12 @@ class MilesRouter:
         return {"urls": list(self.worker_request_counts.keys())}
 
     def _use_url(self):
-        """Select worker URL with minimal active requests."""
+        """Select the live worker with the least load (see `_select_worker`)."""
+        live_workers = [w for w in self.worker_request_counts if w not in self.dead_workers]
+        if not live_workers:
+            raise RuntimeError("No healthy workers available in the pool")
 
-        if not self.dead_workers:
-            # Healthy path: select from all workers
-            url = min(self.worker_request_counts, key=self.worker_request_counts.get)
-        else:
-            # Degraded path: select from workers not in dead_workers
-            valid_workers = (w for w in self.worker_request_counts if w not in self.dead_workers)
-            try:
-                url = min(valid_workers, key=self.worker_request_counts.get)
-            except ValueError:
-                raise RuntimeError("No healthy workers available in the pool") from None
-
+        url = _select_worker(live_workers, self.worker_request_counts, self.worker_capacities)
         self.worker_request_counts[url] += 1
         return url
 
@@ -279,6 +299,30 @@ class MilesRouter:
             logger.info(f"[miles-router] Request to {url} finished after the worker was deregistered; ignoring")
             return
         self.worker_request_counts[url] = count - 1
+
+
+_CAPACITY_FETCH_TIMEOUT = 30.0
+
+
+def _capacity_from_server_info(info: dict) -> int | None:
+    tokens_per_replica = info.get("max_total_num_tokens")
+    if not tokens_per_replica:
+        return None
+    return int(tokens_per_replica) * max(int(info.get("dp_size") or 1), 1)
+
+
+def _select_worker(workers: list[str], request_counts: dict[str, int], capacities: dict[str, int]) -> str:
+    """Pick the worker with the fewest in-flight requests per token of KV capacity.
+
+    Weighting by capacity keeps a mixed pool (e.g. a 2.7M-token B300 engine next to a 0.23M-token
+    H200 engine) loaded in proportion to what each engine can hold, instead of giving every engine
+    the same number of requests. `+ 1` counts the request being placed, so ties between idle
+    workers go to the larger one. When any worker's capacity is unknown, all workers fall back to
+    plain least-requests, so a partial capacity map never skews the pool.
+    """
+    if all(w in capacities for w in workers):
+        return min(workers, key=lambda w: (request_counts[w] + 1) / capacities[w])
+    return min(workers, key=request_counts.__getitem__)
 
 
 def _worker_id(worker_url: str) -> str:

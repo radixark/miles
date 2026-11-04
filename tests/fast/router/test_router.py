@@ -6,7 +6,7 @@ import httpx
 import pytest
 import requests
 import sglang_router
-from fastapi import Request
+from fastapi import FastAPI, Request
 
 from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient
@@ -300,6 +300,94 @@ class TestLoadBalancing:
 
         with pytest.raises(RuntimeError, match="No healthy workers"):
             router._use_url()
+
+
+class TestCapacityWeightedLoadBalancing:
+    def test_a_bigger_worker_takes_more_requests_before_a_smaller_one(self, router_factory):
+        router = router_factory()
+        router.worker_request_counts = {"http://big:8000": 10, "http://small:8000": 2}
+        router.worker_capacities = {"http://big:8000": 1000, "http://small:8000": 100}
+
+        # 11/1000 per token of capacity on the big worker beats 3/100 on the small one
+        assert router._use_url() == "http://big:8000"
+
+    def test_equal_capacities_pick_the_same_worker_as_least_requests(self, router_factory):
+        router = router_factory()
+        router.worker_request_counts = {"http://w1:8000": 5, "http://w2:8000": 2, "http://w3:8000": 8}
+        router.worker_capacities = dict.fromkeys(router.worker_request_counts, 500)
+
+        assert router._use_url() == "http://w2:8000"
+
+    def test_one_unknown_capacity_falls_back_to_least_requests_for_all(self, router_factory):
+        router = router_factory()
+        router.worker_request_counts = {"http://big:8000": 10, "http://small:8000": 2}
+        router.worker_capacities = {"http://big:8000": 1000}
+
+        assert router._use_url() == "http://small:8000"
+
+    def test_dead_workers_are_skipped_by_capacity_weighting(self, router_factory):
+        router = router_factory()
+        router.worker_request_counts = {"http://big:8000": 0, "http://small:8000": 0}
+        router.worker_capacities = {"http://big:8000": 1000, "http://small:8000": 100}
+        router.dead_workers = {"http://big:8000"}
+
+        assert router._use_url() == "http://small:8000"
+
+    def test_requests_spread_in_proportion_to_capacity(self, router_factory):
+        router = router_factory()
+        capacities = {"http://b300:8000": 2_749_184, "http://mi355x:8000": 1_524_672, "http://h200:8000": 233_280}
+        router.worker_request_counts = dict.fromkeys(capacities, 0)
+        router.worker_capacities = dict(capacities)
+
+        for _ in range(4096):
+            router._use_url()
+
+        total_capacity = sum(capacities.values())
+        for url, capacity in capacities.items():
+            assert router.worker_request_counts[url] == pytest.approx(4096 * capacity / total_capacity, abs=1)
+
+
+class TestWorkerCapacity:
+    @pytest.mark.parametrize(
+        ("info", "expected"),
+        [
+            ({"max_total_num_tokens": 233_280, "dp_size": 1}, 233_280),
+            ({"max_total_num_tokens": 100_000, "dp_size": 8}, 800_000),
+            ({"max_total_num_tokens": 100_000}, 100_000),
+            ({"dp_size": 2}, None),
+            ({}, None),
+        ],
+    )
+    def test_capacity_from_server_info(self, info, expected):
+        assert router_module._capacity_from_server_info(info) == expected
+
+    def test_registering_a_worker_reads_its_capacity(self, router_env: RouterEnv):
+        app = FastAPI()
+        app.get("/get_server_info")(lambda: {"max_total_num_tokens": 4096, "dp_size": 2})
+        worker = UvicornThreadServer(app, host="127.0.0.1", port=find_available_port(31000))
+        worker.start()
+        try:
+            requests.post(f"{router_env.url}/add_worker", params={"url": worker.url}, timeout=10.0).raise_for_status()
+        finally:
+            worker.stop()
+
+        assert router_env.router.worker_capacities == {worker.url: 8192}
+
+    def test_a_worker_without_server_info_registers_with_unknown_capacity(
+        self, router_env: RouterEnv, mock_worker: MockSGLangServer
+    ):
+        requests.post(f"{router_env.url}/add_worker", params={"url": mock_worker.url}, timeout=10.0).raise_for_status()
+
+        assert mock_worker.url in router_env.router.worker_request_counts
+        assert router_env.router.worker_capacities == {}
+
+    def test_removing_a_worker_forgets_its_capacity(self, router_factory):
+        router = router_factory()
+        router._add_worker_url("http://w1:8000", capacity=1000)
+
+        router._remove_worker_url("http://w1:8000")
+
+        assert router.worker_capacities == {}
 
 
 class TestFinishingARequestAfterDeregistration:
