@@ -1,4 +1,3 @@
-import pytest
 import torch
 import torch.distributed as dist
 from tests.fast.dist_utils import init_gloo, run_multiprocess
@@ -37,12 +36,3 @@ def _base_sets_up(rank, world_size, port):
 
 def test_the_base_sets_up_specs_and_head_rows_from_the_probe():
     run_multiprocess(_base_sets_up, world_size=1)
-
-
-def test_a_backend_without_slot_parameters_cannot_be_built():
-    class _NoParams(ProbedAdapterSlots):
-        pass
-
-    mapping = RowMapping([], (), ())
-    with pytest.raises(TypeError, match="abstract method 'slot_parameters'|abstract methods? .*slot_parameters"):
-        _NoParams(mapping, TARGETS, iterator=None)

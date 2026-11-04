@@ -96,6 +96,44 @@ def test_probe_recovers_pieces_and_shared_a_from_a_tp_split_export():
     run_multiprocess(_probe)
 
 
+def _pp_broadcast_export(params):
+    """Bridge-like at PP=2: each stage holds one layer, and every stage's adapters reach every stage."""
+    a, b_q, b_k = params
+
+    def broadcast(local):
+        parts = [torch.empty_like(local) for _ in range(dist.get_world_size())]
+        dist.all_gather(parts, local.data)
+        return parts
+
+    for layer, (stage_a, stage_b_q, stage_b_k) in enumerate(
+        zip(broadcast(a), broadcast(b_q), broadcast(b_k), strict=True)
+    ):
+        q, k = Q.replace(".0.", f".{layer}."), K.replace(".0.", f".{layer}.")
+        yield f"{q}.lora_A.weight", stage_a.clone()
+        yield f"{q}.lora_B.weight", stage_b_q
+        yield f"{k}.lora_A.weight", stage_a.clone()
+        yield f"{k}.lora_B.weight", stage_b_k
+
+
+def _probe_pp(rank, world_size, port):
+    init_gloo(rank, world_size, port=port)
+    init_gloo_group()
+    params = [torch.nn.Parameter(torch.randn(3, 5)) for _ in range(3)]
+    model = _model(params)
+    targets = get_hf_lora_targets({"model_type": "qwen3", "num_hidden_layers": 2})
+    mapping = probe_bridge_row_mapping(model, params, lambda: _pp_broadcast_export(_registered(model)), targets)
+    k, q = (name.replace(".0.", f".{rank}.") for name in (K, Q))
+    assert {p.key for p in mapping.pieces} == {f"{k}.lora_A", f"{q}.lora_B", f"{k}.lora_B"}
+    assert mapping.shared_lora_a_groups == tuple(
+        (K.replace(".0.", f".{s}."), Q.replace(".0.", f".{s}.")) for s in range(2)
+    )
+    dist.destroy_process_group()
+
+
+def test_probe_skips_the_shared_a_of_another_pipeline_stage():
+    run_multiprocess(_probe_pp)
+
+
 GATE, UP = "model.layers.0.mlp.experts.{}.gate_proj", "model.layers.0.mlp.experts.{}.up_proj"
 
 

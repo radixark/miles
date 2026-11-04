@@ -166,14 +166,18 @@ def _validate_rollout_only_adapter(args) -> None:
         f"{path} uses official Tinker tensor names, which need a conversion that rollout-only does not do; "
         "convert it first with --lora-adapter-convert-save"
     )
-    # such an adapter dir never holds a PEFT export, converted or not
-    assert kind != AdapterSourceKind.ADAPTER_DIR or has_plain_peft_form(read_parametrization(path), targets), (
+    # a sampler export holds the engines' own form whatever the parametrization
+    has_export = (path / "adapter_model.safetensors").is_file()
+    # any other such adapter dir never gets a PEFT export, converted or not
+    assert (
+        has_export or kind != AdapterSourceKind.ADAPTER_DIR or has_plain_peft_form(read_parametrization(path), targets)
+    ), (
         f"{path} has no plain-PEFT form (fused-module components with their own lora_A), so rollout-only cannot "
         "serve it to the engines"
     )
     assert (
-        path / "adapter_model.safetensors"
-    ).is_file(), f"{path} has no PEFT export for the engines to load; write one first with --lora-adapter-convert-save"
+        has_export
+    ), f"{path} has no PEFT export for the engines to load; write one first with --lora-adapter-convert-save"
 
 
 def _default_lora_type(args) -> str:
@@ -197,6 +201,11 @@ def validate_lora_args_after_megatron(args):
             "cell would lose the adapter; remove 'train' from --ft-components and resume from a saved iter_N/adapter "
             "with --lora-adapter-path"
         )
+        # without --lora-adapter-path the run would start from the base model and overwrite those adapters
+        assert args.lora_adapter_path is not None or not (args.load and any(Path(args.load).glob("iter_*/adapter"))), (
+            f"--load {args.load} holds LoRA adapter checkpoints (iter_*/adapter): resume one with "
+            "--lora-adapter-path, or point --load elsewhere"
+        )
     # rollout-only builds no optimizer and saves nothing
     if is_lora_enabled(args) and not args.multi_lora and not args.debug_rollout_only:
         _validate_adapter_state_args(args)
@@ -215,10 +224,13 @@ def _validate_adapter_state_args(args) -> None:
     """adapter_state/ holds Adam's fp32 master, fp32 moments and step, gathered whole per DP group over Gloo."""
     if args.save is None and args.lora_adapter_path is None:
         return
-    assert not args.debug_disable_optimizer, (
-        "--save / --lora-adapter-path store and load the adapter's fp32 optimizer masters, which "
+    assert not args.debug_disable_optimizer or (args.save is None and args.lora_adapter_convert_save is None), (
+        "--save / --lora-adapter-convert-save store the adapter's fp32 optimizer masters, which "
         "--debug-disable-optimizer does not build; drop one of them"
     )
+    if args.debug_disable_optimizer:
+        # --lora-adapter-path then loads the adapter's weights only, as into a model without an optimizer
+        return
     assert args.optimizer == "adam", f"--save / --lora-adapter-path store Adam state; got --optimizer {args.optimizer}"
     assert args.exp_avg_dtype == args.exp_avg_sq_dtype == torch.float32, "the adapter checkpoint stores fp32 moments"
     assert args.main_params_dtype == torch.float32, "the adapter checkpoint stores fp32 masters"
@@ -226,6 +238,10 @@ def _validate_adapter_state_args(args) -> None:
         args.use_distributed_optimizer
     ), "the adapter checkpoint gathers optimizer state from the distributed optimizer"
     assert args.use_gloo_process_groups, "the adapter checkpoint gathers optimizer state over Gloo"
+    assert not args.stream_optimizer_state_to_disk, (
+        "--save / --lora-adapter-path gather the fp32 masters and moments from the distributed optimizer, but "
+        "--stream-optimizer-state-to-disk keeps the moments in its own store and defers the masters"
+    )
     # TE FusedAdam keeps the master as an int16 remainder unless the optimizer runs on the host
     assert (
         not args.use_precision_aware_optimizer or args.optimizer_cpu_offload

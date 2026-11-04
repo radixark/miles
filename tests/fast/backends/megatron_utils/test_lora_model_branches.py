@@ -342,6 +342,43 @@ def test_native_shared_outer_save_hf_writes_the_stacked_adapter_sglang_serves(
     }
 
 
+@patch(f"{_HF_EXPORT_MODULE}.merge_lora_into_weights")
+@patch(f"{_HF_EXPORT_MODULE}.named_params_and_buffers", return_value=[])
+@patch(f"{_HF_EXPORT_MODULE}.is_lora_model", return_value=True)
+@patch(f"{_HF_EXPORT_MODULE}.write_checkpoint_dir", side_effect=lambda path, write, **_kwargs: write(path))
+@patch(f"{_HF_EXPORT_MODULE}.get_parallel_state")
+def test_native_save_hf_adapter_config_carries_mains_fields(
+    _parallel_state, _write_dir, _is_lora, _named_weights, _merge, tmp_path
+):
+    """The run's rank and alpha, as main wrote them; target_modules name HF modules, which sglang normalizes."""
+    from miles.backends.megatron_utils.hf_export import save_hf_model
+
+    args = Namespace(
+        megatron_to_hf_mode="raw",
+        hf_checkpoint=_hf_dir(tmp_path),
+        save_hf=None,
+        lora_rank=2,
+        lora_alpha=4.0,
+        lora_type="lora",
+        experts_shared_outer_loras=True,
+    )
+
+    save_hf_model(
+        args,
+        0,
+        [MagicMock()],
+        publisher=MagicMock(),
+        adapter_slots=_SharedOuterNativeSlots(),
+        path=tmp_path,
+        raise_on_error=True,
+    )
+
+    config = json.loads((tmp_path / "adapter" / "adapter_config.json").read_text())
+    experts = _SharedOuterNativeSlots.experts
+    assert (config["r"], config["lora_alpha"]) == (2, 4.0)
+    assert config["target_modules"] == [f"{experts}.{leaf}" for leaf in ("down_proj", "gate_proj", "up_proj")]
+
+
 def _hf_dir(tmp_path) -> str:
     """A base whose config.json --save-hf reads for the adapter's base fingerprint."""
     hf = tmp_path / "hf"
