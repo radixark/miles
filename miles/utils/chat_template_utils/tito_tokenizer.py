@@ -26,7 +26,7 @@ from miles.utils.chat_template_utils.message_matcher_hub import (
     assert_messages_append_only_with_allowed_role,
     strict_message_matches,
 )
-from miles.utils.chat_template_utils.token_seq_comparator import TokenSeqComparator
+from miles.utils.chat_template_utils.token_seq_comparator import Mismatch, TokenSeqComparator
 
 logger = logging.getLogger(__name__)
 
@@ -681,6 +681,130 @@ class Kimi26TITOTokenizer(TITOTokenizer):
 
 
 # ---------------------------------------------------------------------------
+# Kimi K3 implementation
+# ---------------------------------------------------------------------------
+
+
+class KimiK3TITOTokenizer(TITOTokenizer):
+    """Moonshot Kimi K3 / K3.1: XTML messages from the checkpoint's own encoder.
+
+    The tokenizer's ``apply_chat_template`` (``encoding_k3.build_chat_segments``)
+    is the native renderer; the checkpoint ships no Jinja template.  Every
+    message is ``<|open|>message ...<|sep|> ... <|close|>message<|sep|><|end_of_msg|>``,
+    and ``<|end_of_msg|>`` is the only tokenizer special token among them, so
+    comparator segments are whole messages.  ``thinking`` and
+    ``thinking_effort`` render once at the top of the prompt, so a continued
+    turn keeps the recorded values.
+
+    The encoder tokenizes segment by segment and keeps user and tool text as
+    plain text, so appended messages are diffed as token IDs, never re-encoded
+    from rendered text.  A text turn stops at the eos ``<|end_of_msg|>``; a
+    tool-call turn stops at ``<|close|>tools<|sep|>``, which SGLang adds as a
+    stop string for the ``kimi_k3`` encoding whenever tools are active, so
+    ``merge_tokens`` appends the message closer the encoder renders after it.
+    """
+
+    reasoning_parser = "kimi_k3"
+    tool_call_parser = "kimi_k3"
+
+    FIXED_TEMPLATE = FixedTemplate(
+        template=None,
+        consistant_kwargs=["thinking", "thinking_effort"],
+    )
+
+    # A message segment starts after the previous message's <|end_of_msg|>.
+    _default_assistant_start_str: str = '<|end_of_msg|><|open|>message role="assistant"'
+
+    def __init__(
+        self,
+        tokenizer: Any,
+        chat_template_kwargs: dict[str, Any] | None = None,
+        assistant_start_str: str | None = None,
+    ):
+        super().__init__(
+            tokenizer,
+            chat_template_kwargs,
+            assistant_start_str or self._default_assistant_start_str,
+        )
+        self._tool_call_stop_ids: list[int] = tokenizer.encode("<|close|>tools<|sep|>")
+        self._message_closer_ids: list[int] = tokenizer.encode("<|close|>message<|sep|><|end_of_msg|>")
+
+    def _tokenize_rendered_suffix(
+        self,
+        base_messages: list[dict[str, Any]],
+        appended_messages: list[dict[str, Any]],
+        *,
+        template_args: dict[str, Any] | None = None,
+        add_generation_prompt: bool = False,
+    ) -> list[int]:
+        ids_without = self.apply_chat_template(
+            base_messages, add_generation_prompt=False, tokenize=True, template_args=template_args
+        )
+        ids_with = self.apply_chat_template(
+            base_messages + appended_messages,
+            add_generation_prompt=add_generation_prompt,
+            tokenize=True,
+            template_args=template_args,
+        )
+        if ids_with[: len(ids_without)] != ids_without:
+            roles = [msg["role"] for msg in appended_messages] if appended_messages else ["generation_prompt"]
+            raise ValueError(f"rendered suffix diff failed for {roles}")
+        return ids_with[len(ids_without) :]
+
+    def _close_tool_call_stop(self, token_ids: list[int]) -> list[int]:
+        """Append the message closer when *token_ids* end at the tool-call stop."""
+        if token_ids[-len(self._tool_call_stop_ids) :] == self._tool_call_stop_ids:
+            return [*token_ids, *self._message_closer_ids]
+        return list(token_ids)
+
+    def merge_tokens(
+        self,
+        old_messages: list[dict[str, Any]],
+        new_messages: list[dict[str, Any]],
+        pretokenized_token_ids: list[int],
+        *,
+        template_args: dict[str, Any] | None = None,
+    ) -> list[int]:
+        incremental = self.tokenize_additional_messages(old_messages, new_messages, template_args=template_args)
+        return self._close_tool_call_stop(pretokenized_token_ids) + incremental
+
+    def create_comparator(self) -> TokenSeqComparator:
+        return _KimiK3SessionComparator(
+            self.tokenizer,
+            assistant_start_str=self._assistant_start_str,
+            special_token_ids=self.special_token_ids,
+            trim_trailing_ids={self._message_closer_ids[-1]},
+            close_tool_call_stop=self._close_tool_call_stop,
+        )
+
+
+class _KimiK3SessionComparator(TokenSeqComparator):
+    """Compare a K3 session as the next turn would continue it.
+
+    A session can end on a tool-call turn, for example when the policy's token
+    budget runs out right after the call, so its tokens stop at
+    ``<|close|>tools<|sep|>`` and no later ``merge_tokens`` adds the closer that
+    the canonical render has; the actual side gets that same closer here.  A
+    last turn cut by ``max_tokens`` never reaches the eos ``<|end_of_msg|>``
+    that closes the canonical render, so the trailing ``<|end_of_msg|>`` is
+    trimmed from both sides (``trim_trailing_ids``) and the cut message reports
+    as ``assistant_text``, not as a structural mismatch.
+    """
+
+    def __init__(self, *args: Any, close_tool_call_stop: Callable[[list[int]], list[int]], **kwargs: Any):
+        super().__init__(*args, **kwargs)
+        self._close_tool_call_stop = close_tool_call_stop
+
+    def compare_sequences(
+        self,
+        expected_ids: list[int],
+        actual_ids: list[int],
+        trim_trailing_ids: set[int] | None = None,
+    ) -> list[Mismatch]:
+        return super().compare_sequences(expected_ids, self._close_tool_call_stop(actual_ids), trim_trailing_ids)
+
+
+# ---------------------------------------------------------------------------
 # MiniMax M2 family implementation (M2.5 and M2.7 share tokenizer/arch and
 # stop-token semantics; only their default system identity strings differ).
 # ---------------------------------------------------------------------------
@@ -1082,6 +1206,7 @@ class TITOTokenizerType(StrEnum):
     NEMOTRON3 = "nemotron3"
     KIMI25 = "kimi25"
     KIMI26 = "kimi26"
+    KIMI_K3 = "kimi_k3"
     MINIMAX_M25 = "minimax_m25"
     MINIMAX_M27 = "minimax_m27"
     DEEPSEEKV32 = "deepseekv32"
@@ -1115,6 +1240,8 @@ class TITOTokenizerType(StrEnum):
                 return Kimi25TITOTokenizer
             case cls.KIMI26:
                 return Kimi26TITOTokenizer
+            case cls.KIMI_K3:
+                return KimiK3TITOTokenizer
             case cls.MINIMAX_M25:
                 return MinimaxM25TITOTokenizer
             case cls.MINIMAX_M27:

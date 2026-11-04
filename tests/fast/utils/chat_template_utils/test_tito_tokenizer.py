@@ -71,6 +71,7 @@ from miles.utils.chat_template_utils.tito_tokenizer import (
     InklingTITOTokenizer,
     Kimi25TITOTokenizer,
     Kimi26TITOTokenizer,
+    KimiK3TITOTokenizer,
     Nemotron3TITOTokenizer,
     Qwen3TITOTokenizer,
     Qwen35TITOTokenizer,
@@ -125,6 +126,7 @@ def _get_tokenizer(model_id: str, tito_type: TITOTokenizerType | None = None) ->
 _TITO_MODELS: dict[str, tuple[str, type[TITOTokenizer], TITOTokenizerType]] = {
     "qwen3": ("Qwen/Qwen3-4B", Qwen3TITOTokenizer, TITOTokenizerType.QWEN3),
     "glm47": ("zai-org/GLM-4.7-Flash", GLM47TITOTokenizer, TITOTokenizerType.GLM47),
+    "kimi_k3": ("moonshotai/Kimi-K3", KimiK3TITOTokenizer, TITOTokenizerType.KIMI_K3),
 }
 
 
@@ -243,6 +245,12 @@ class TestConfig:
     def test_default(self, default_tito: TITOTokenizer):
         assert default_tito._assistant_start_str is None
         assert default_tito.trailing_token_ids == frozenset()
+
+    def test_kimi_k3(self):
+        tito = KimiK3TITOTokenizer(_get_tokenizer("moonshotai/Kimi-K3"))
+        assert tito._assistant_start_str == '<|end_of_msg|><|open|>message role="assistant"'
+        assert tito.allowed_append_roles == ALL_APPEND_ROLES
+        assert tito.FIXED_TEMPLATE.consistant_kwargs == ["thinking", "thinking_effort"]
 
     @pytest.mark.parametrize(
         "chat_template_kwargs, expected",
@@ -1175,6 +1183,7 @@ class TestFactory:
             ("qwen4exp", "Qwen/Qwen3-4B", Qwen38SmallTITOTokenizer),
             ("qwennext", "Qwen/Qwen3-4B", QwenNextTITOTokenizer),
             ("glm47", "zai-org/GLM-4.7-Flash", GLM47TITOTokenizer),
+            ("kimi_k3", "moonshotai/Kimi-K3", KimiK3TITOTokenizer),
             ("default", "Qwen/Qwen3-4B", TITOTokenizer),
         ],
     )
@@ -1236,6 +1245,7 @@ class TestParserBinding:
             (TITOTokenizerType.NEMOTRON3, "nemotron_3", "qwen3_coder"),
             (TITOTokenizerType.KIMI25, None, None),
             (TITOTokenizerType.KIMI26, "kimi_k2", "kimi_k2_raw_id"),
+            (TITOTokenizerType.KIMI_K3, "kimi_k3", "kimi_k3"),
             (TITOTokenizerType.MINIMAX_M25, "minimax-append-think", "minimax-m2"),
             (TITOTokenizerType.MINIMAX_M27, "minimax-append-think", "minimax-m2"),
             (TITOTokenizerType.DEEPSEEKV32, "deepseek-v3", "deepseekv32"),
