@@ -4,6 +4,7 @@ import pytest
 import torch
 
 from miles.backends.megatron_utils.lora.checkpoint import LayerWiseSlotMembers
+from miles.backends.training_utils.checkpoint.adapter.adapter_dir import HeadRows
 from miles.backends.training_utils.checkpoint.adapter.adapter_state import AdapterState, LocalShardSpec
 
 
@@ -75,3 +76,9 @@ def test_an_import_without_a_step_drops_the_groups_step():
     members = _importing_members(master, adam, group, torch.arange(4), calls)
     members.import_adapter_state(0, _state(None, torch.ones(4), torch.zeros(4), torch.zeros(4)))
     assert "step" not in group, "a source saved before any step restarts Adam's bias correction"
+
+
+def test_the_members_declare_their_slots_head_rows():
+    head_rows = HeadRows("lm_head.lora_B", max_source_rows=8)
+    members = LayerWiseSlotMembers(SimpleNamespace(head_rows=head_rows), {})
+    assert members.head_rows is head_rows

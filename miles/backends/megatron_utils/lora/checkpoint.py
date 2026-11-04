@@ -22,6 +22,7 @@ from megatron.core.utils import unwrap_model
 from miles.backends.megatron_utils.lora.bridge_checkpoint import BridgeAdapterSlots
 from miles.backends.megatron_utils.lora.optimizer import SlotOptimizer
 from miles.backends.training_utils.checkpoint.adapter.adapter_dir import (
+    HeadRows,
     check_adapter_source,
     load_adapter_dir,
     save_adapter_dir,
@@ -48,6 +49,10 @@ class LayerWiseSlotMembers:
 
     def __init__(self, adapter_slots: BridgeAdapterSlots, slot_optimizers: dict[int, SlotOptimizer]):
         self._slots, self._optimizers = adapter_slots, slot_optimizers
+
+    @property
+    def head_rows(self) -> HeadRows | None:
+        return self._slots.head_rows
 
     def export_bf16_adapter(self, slot: int) -> Iterable[tuple[str, torch.Tensor]]:
         return self._slots.export_bf16_adapter(slot)
