@@ -20,11 +20,8 @@ from megatron.core.optimizer import DistributedOptimizer
 from megatron.core.optimizer.cpu_offloading.hybrid_optimizer import HybridDeviceOptimizer
 from megatron.core.utils import unwrap_model
 
-from miles.backends.megatron_utils.lora.bridge_checkpoint import (
-    OPTIMIZER_KEY,
-    BridgeAdapterSlots,
-    MegatronBridgeCheckpointLoader,
-)
+from miles.backends.megatron_utils.lora.bridge_checkpoint import BridgeAdapterSlots
+from miles.backends.megatron_utils.lora.bridge_peft_checkpoint import OPTIMIZER_KEY, MegatronBridgeCheckpointLoader
 from miles.backends.megatron_utils.lora.optimizer import SlotOptimizer
 from miles.backends.megatron_utils.lora.utils import (
     _distributed_optimizers,

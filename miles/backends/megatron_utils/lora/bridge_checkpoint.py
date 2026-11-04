@@ -1,58 +1,37 @@
-"""Bridge LoRA's adapter checkpoint members: HF-keyed views of the adapter parameters, and the reader of
-Megatron-Bridge PEFT ``iter_N/`` checkpoints.
+"""Bridge LoRA's adapter checkpoint members: HF-keyed views of the adapter parameters.
 
 The HF layout of every Megatron adapter element (TP / EP shards, the qkv group permutation, fc1 gate / up,
 GDN in_proj, per-expert names) comes from Bridge's own export, run once on index-valued parameters.
 """
 
-import re
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import contextmanager
-from dataclasses import asdict, replace
-from pathlib import Path
+from dataclasses import replace
 from typing import Literal
 
 import torch
 import torch.distributed as dist
-import torch.distributed.checkpoint as dcp
-import yaml
-from megatron.core import dist_checkpointing
-from megatron.core.dist_checkpointing.dict_utils import nested_values
-from megatron.core.dist_checkpointing.mapping import ShardedTensor
-from megatron.core.optimizer import DistributedOptimizer
-from megatron.core.utils import unwrap_model
 
 from miles.backends.megatron_utils.lora.utils import adapter_named_parameters
-from miles.backends.training_utils.checkpoint.adapter.adapter_dir import AdapterCheckpointMembers
 from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
     LocalShardSpec,
     gloo_group,
     raise_if_any_rank_failed,
 )
-from miles.backends.training_utils.checkpoint.adapter.base_model import assert_same_base_model
 from miles.backends.training_utils.checkpoint.adapter.key_mapping import (
     HfKey,
     fused_components,
     map_peft_keys_to_hf_keys,
     split_fused_lora_b,
 )
-from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
 from miles.backends.training_utils.checkpoint.adapter.probed_slots import (
     HfPiece,
     ProbedAdapterSlots,
     RowMapping,
     rectangles,
 )
-from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.lora.hf_lora_targets import HfLoraTargets
 from miles.utils.lora.utils import AdapterSpec
-
-# a ChainedOptimizer prefixes each child's keys with chained_<i>. in the formats that are not fully reshardable
-OPTIMIZER_KEY = re.compile(r"(chained_\d+\.)?optimizer\.")
-_BRIDGE_LORA_TYPES = {
-    "megatron.bridge.peft.lora.LoRA": "lora",
-    "megatron.bridge.peft.canonical_lora.CanonicalLoRA": "canonical_lora",
-}
 
 # a probe value is rank * _RANK_STRIDE + the element's offset in the rank's concatenated adapter parameters;
 # float64 holds it exactly
@@ -287,232 +266,3 @@ class BridgeAdapterSlots(ProbedAdapterSlots):
                 yield from self._iterator.iter_current_adapter()
 
         return exported()
-
-
-def _yaml_dtype(value) -> str | None:
-    # run_config.yaml writes a dtype as {_target_: torch.bfloat16, _call_: false}
-    return None if value is None else value["_target_"]
-
-
-def assert_bridge_run_config_matches(
-    config: dict, run: AdapterParametrization, *, params_dtype: torch.dtype, load_optimizer: bool
-) -> None:
-    """A Megatron-Bridge run_config.yaml must describe the LoRA this run trains, and resumable Adam state."""
-    peft = config["peft"]
-    lora_type = _BRIDGE_LORA_TYPES.get(peft["_target_"])
-    assert lora_type is not None, f"Megatron-Bridge PEFT {peft['_target_']} is neither LoRA nor CanonicalLoRA"
-    # .get: a field newer than the Bridge that wrote the config is absent and takes the dataclass default, which is
-    # Bridge's behaviour before the field (experts_shared_outer_loras, share_expert_adapters, normalize_moe_lora)
-    source = {
-        "lora_type": lora_type,
-        "lora_rank": peft["dim"],
-        "experts_shared_outer_loras": peft.get("experts_shared_outer_loras", False),
-    }
-    run_fields = asdict(run)
-    for field, value in source.items():
-        assert value == run_fields[field], f"the source has {field}={value!r}; this run has {run_fields[field]!r}"
-    assert peft["dropout"] == 0, f"LoRA dropout {peft['dropout']} is not supported"
-    assert not peft["exclude_modules"], f"exclude_modules {peft['exclude_modules']} is not supported"
-    assert not peft.get("normalize_moe_lora", False), "normalize_moe_lora makes expert ranks depend on the saving ETP"
-    # CanonicalLoRA has neither field
-    if lora_type == "lora":
-        assert not peft["a2a_experimental"], "a2a_experimental LoRA is not supported"
-        assert _yaml_dtype(peft["lora_dtype"]) in (
-            None,
-            str(params_dtype),
-        ), f"lora_dtype {_yaml_dtype(peft['lora_dtype'])} differs from the model's {params_dtype}"
-    expert_targets = any(".experts." in module for module in run.target_modules)
-    if expert_targets and config["model"]["moe_grouped_gemm"] and not run.experts_shared_outer_loras:
-        # Bridge shares one adapter across grouped experts by default; sequential experts always get one each,
-        # and a grouping that differs from this run's fails the adapter key check
-        assert not peft.get("share_expert_adapters", True), "share_expert_adapters=True is not supported"
-    if load_optimizer:
-        optimizer = config["optimizer"]
-        assert (
-            optimizer["optimizer"] == "adam"
-        ), f"optimizer {optimizer['optimizer']} has no Adam state; pass --no-load-optim"
-        assert optimizer[
-            "use_distributed_optimizer"
-        ], "the source did not use the DistributedOptimizer; pass --no-load-optim"
-        assert not optimizer["use_precision_aware_optimizer"], "precision-aware optimizer state is not supported"
-        for field in ("main_params_dtype", "exp_avg_dtype", "exp_avg_sq_dtype"):
-            assert _yaml_dtype(optimizer[field]) in (None, "torch.float32"), f"{field} must be fp32"
-        assert config["checkpoint"]["save_optim"], "the source saved no optimizer state; pass --no-load-optim"
-
-
-_BRIDGE_BASE_REMEDY = (
-    "download it into the local HF cache (`hf download <id>`), or set checkpoint.hf_source_path in the source's "
-    "run_config.yaml to a local HF dir of it"
-)
-
-
-def bridge_base_model_candidates(config: dict) -> tuple[str | None, str | None]:
-    """Bridge PEFT loads its base from pretrained_checkpoint. When that is no HF dir here, the HF template it was
-    converted from stands in, as Bridge's _resolve_hf_source picks it; a local torch_dist pretrained_checkpoint is
-    compared directly instead (``assert_same_base_as_torch_dist``), so the stand-in is used only for another machine's
-    path, where it misses a base fine-tuned in Megatron."""
-    checkpoint = config["checkpoint"]
-    # hf_source_path and hf_model_id are newer than some Bridge configs; Bridge takes the first non-empty one even
-    # when it is no HF dir here, so a later one would compare a model Bridge never used
-    template = (
-        checkpoint.get("hf_source_path")
-        or config["model"].get("hf_model_id")
-        or config["tokenizer"]["tokenizer_model"]
-    )
-    return checkpoint["pretrained_checkpoint"], template
-
-
-def torch_dist_base_dir(pretrained_checkpoint: str | None) -> Path | None:
-    """The torch_dist checkpoint at ``pretrained_checkpoint``, or at the iteration its Megatron tracker names; None
-    when it is no torch_dist on this machine."""
-    if not pretrained_checkpoint or not Path(pretrained_checkpoint).is_dir():
-        return None
-    root = Path(pretrained_checkpoint)
-    tracker = root / "latest_checkpointed_iteration.txt"
-    if tracker.is_file():
-        iteration = tracker.read_text().strip()
-        root = root / ("release" if iteration == "release" else f"iter_{int(iteration):07d}")
-    return root if dist_checkpointing.check_is_distributed_checkpoint(str(root)) else None
-
-
-def assert_same_base_as_torch_dist(source: str, chunks, base_dir: Path) -> None:
-    """Collective: every norm weight this rank's model holds equals the torch_dist base checkpoint's, bitwise. The
-    in-memory model is the run's base, so a base fine-tuned in Megatron after its HF conversion is caught."""
-    held, requested, error = {}, {}, None
-    try:
-        metadata = dict(dist_checkpointing.load_content_metadata(str(base_dir)) or {})
-        metadata["dp_cp_group"] = get_parallel_state().intra_dp_cp.group
-        for index, chunk in enumerate(chunks):
-            norms = {
-                k: t
-                for k, t in chunk.sharded_state_dict(metadata=metadata).items()
-                if isinstance(t, ShardedTensor) and "norm" in k and ".adapter." not in k
-            }
-            held |= {(index, k): t.data for k, t in norms.items()}
-            # loading writes into the requested tensors: empty copies, never the model's own parameters
-            requested[f"model{index}"] = {k: replace(t, data=torch.empty_like(t.data)) for k, t in norms.items()}
-        assert held, "this run's model holds no norm weights to compare its base by"
-        saved = dcp.FileSystemReader(base_dir).read_metadata().state_dict_metadata
-        missing = sorted({t.key for sd in requested.values() for t in sd.values()} - saved.keys())
-        assert not missing, (
-            f"{source}'s base checkpoint {base_dir} cannot be compared with this run's model: it lacks e.g. "
-            f"{missing[:3]}"
-        )
-    except Exception as exc:
-        error = exc
-    raise_if_any_rank_failed(error)
-    try:
-        loaded = dist_checkpointing.load(requested, str(base_dir))
-        differing = [k for (index, k), data in held.items() if not torch.equal(loaded[f"model{index}"][k], data)]
-        assert not differing, (
-            f"{source} was trained on another base model than this run's --hf-checkpoint: its base checkpoint "
-            f"{base_dir} differs in e.g. {differing[:3]}"
-        )
-    except Exception as exc:
-        error = exc
-    raise_if_any_rank_failed(error)
-
-
-class MegatronBridgeCheckpointLoader:
-    """A Megatron-Bridge PEFT ``iter_N/`` (torch_dist), read straight into this run's model and DistributedOptimizer
-    under any TP / PP / EP / DP layout. The source's iteration, scheduler and RNG are not resumed."""
-
-    def __init__(
-        self, model, optimizer, members: AdapterCheckpointMembers, run: AdapterParametrization, load_optimizer: bool
-    ):
-        self._model, self._optimizer, self._members = model, optimizer, members
-        self._run, self._load_optimizer = run, load_optimizer
-
-    def __call__(self, path: Path) -> AdapterParametrization:
-        chunks = unwrap_model(self._model)
-        names = ["model"] if len(chunks) == 1 else [f"model{i}" for i in range(len(chunks))]
-        config, model_state_dicts, adapter, base_dir, error = None, None, None, None, None
-        try:
-            config = yaml.safe_load((path / "run_config.yaml").read_text())
-            assert config["checkpoint"]["ckpt_format"] == "torch_dist", f"{path} is not a torch_dist checkpoint"
-            assert_bridge_run_config_matches(
-                config, self._run, params_dtype=chunks[0].config.params_dtype, load_optimizer=self._load_optimizer
-            )
-            base_dir = torch_dist_base_dir(config["checkpoint"]["pretrained_checkpoint"])
-            if base_dir is None:
-                assert_same_base_model(
-                    str(path), bridge_base_model_candidates(config), self._run.base_model, remedy=_BRIDGE_BASE_REMEDY
-                )
-            metadata = dict(dist_checkpointing.load_content_metadata(str(path)) or {})
-            if self._load_optimizer:
-                sharding = metadata.get("distrib_optim_sharding_type")
-                assert sharding is not None, (
-                    f"{path} records no optimizer sharding type (written by an older Megatron), so its Adam state "
-                    "cannot be resharded; pass --no-load-optim"
-                )
-                assert sharding in DistributedOptimizer.checkpoint_fully_reshardable_formats, (
-                    f"{path}'s optimizer state is {sharding}, which only loads under its saving layout; re-save it "
-                    "from Megatron-Bridge with dist_ckpt_optim_fully_reshardable=True, or pass --no-load-optim"
-                )
-            metadata["dp_cp_group"] = get_parallel_state().intra_dp_cp.group
-            model_state_dicts = [chunk.sharded_state_dict(metadata=metadata) for chunk in chunks]
-            adapter = [
-                {k: v for k, v in sd.items() if ".adapter." in k and "_extra_state" not in k}
-                for sd in model_state_dicts
-            ]
-        except Exception as exc:
-            error = exc
-        raise_if_any_rank_failed(error)
-        # a base visible on some nodes only would leave the others outside the collective load
-        base_dirs = [None] * dist.get_world_size()
-        dist.all_gather_object(base_dirs, base_dir, group=gloo_group())
-        assert len(set(base_dirs)) == 1, f"ranks resolve {path}'s pretrained_checkpoint differently: {set(base_dirs)}"
-        if base_dir is not None:
-            assert_same_base_as_torch_dist(str(path), chunks, base_dir)
-
-        # pipeline stages hold different layers; the checkpoint holds them all
-        expected = [None] * dist.get_world_size()
-        dist.all_gather_object(expected, {t.key for sd in adapter for t in nested_values(sd)}, group=gloo_group())
-        expected = set().union(*expected)
-        requested = dict(zip(names, adapter, strict=True))
-        try:
-            saved = {
-                k
-                for k in dcp.FileSystemReader(path).read_metadata().state_dict_metadata
-                if ".adapter." in k and "_extra_state" not in k and not OPTIMIZER_KEY.match(k)
-            }
-            assert (
-                expected == saved
-            ), f"{path} holds other adapters than this run's model, e.g. {sorted(expected ^ saved)[:3]}"
-            if self._load_optimizer:
-                requested["optimizer"] = self._optimizer.sharded_state_dict(
-                    dict(zip(names, model_state_dicts, strict=True)), is_loading=True, metadata=metadata
-                )
-        except Exception as exc:
-            error = exc
-        raise_if_any_rank_failed(error)
-
-        try:
-            # a rank-local failure inside load's own collectives still hangs; one after them is agreed below
-            loaded = dist_checkpointing.load(requested, str(path))
-            for name, chunk in zip(names, chunks, strict=True):
-                result = chunk.load_state_dict(loaded[name], strict=False)
-                assert not result.unexpected_keys, f"unexpected adapter keys {result.unexpected_keys[:3]}"
-            if self._load_optimizer:
-                # the run owns the schedule: only state and step come from the source, not its lr or weight decay
-                run_hyperparameters = [
-                    {k: v for k, v in g.items() if k not in ("params", "step")} for g in self._optimizer.param_groups
-                ]
-                try:
-                    self._optimizer.load_state_dict(loaded["optimizer"])
-                except KeyError as exc:
-                    # the DistributedOptimizer matches param groups by (wd_mult, lr_mult, is_expert_parallel,
-                    # is_decoupled_lr) and raises a bare KeyError of the missing key
-                    raise ValueError(
-                        f"{path} has no optimizer param group {exc} of this run's; pass --no-load-optim"
-                    ) from exc
-                for group, hyperparameters in zip(self._optimizer.param_groups, run_hyperparameters, strict=True):
-                    group.update(hyperparameters)
-            else:
-                self._optimizer.reload_model_params()
-        except Exception as exc:
-            error = exc
-        raise_if_any_rank_failed(error)
-        # collective; asserts each bf16 adapter parameter is its fp32 master
-        self._members.export_adapter_state(0)
-        return replace(self._run, lora_alpha=float(config["peft"]["alpha"]))

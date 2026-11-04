@@ -12,14 +12,13 @@ from megatron.core.dist_checkpointing.mapping import ShardedTensor
 from safetensors.torch import save_file
 from tests.fast.dist_utils import init_gloo, run_multiprocess
 
-from miles.backends.megatron_utils.lora import bridge_checkpoint
-from miles.backends.megatron_utils.lora.bridge_checkpoint import (
+from miles.backends.megatron_utils.lora import bridge_peft_checkpoint
+from miles.backends.megatron_utils.lora.bridge_checkpoint import BridgeAdapterSlots, probe_bridge_row_mapping
+from miles.backends.megatron_utils.lora.bridge_peft_checkpoint import (
     _BRIDGE_BASE_REMEDY,
-    BridgeAdapterSlots,
     assert_bridge_run_config_matches,
     assert_same_base_as_torch_dist,
     bridge_base_model_candidates,
-    probe_bridge_row_mapping,
     torch_dist_base_dir,
 )
 from miles.backends.training_utils.checkpoint.adapter.adapter_dir import HeadRows
@@ -409,7 +408,7 @@ def single_rank_gloo(tmp_path, monkeypatch):
     monkeypatch.setattr(torch.cuda, "synchronize", lambda *args: None)
     monkeypatch.setattr(torch.cuda, "current_device", lambda: "cpu")
     monkeypatch.setattr(
-        bridge_checkpoint, "get_parallel_state", lambda: SimpleNamespace(intra_dp_cp=SimpleNamespace(group=None))
+        bridge_peft_checkpoint, "get_parallel_state", lambda: SimpleNamespace(intra_dp_cp=SimpleNamespace(group=None))
     )
     init_gloo_group()
     try:
