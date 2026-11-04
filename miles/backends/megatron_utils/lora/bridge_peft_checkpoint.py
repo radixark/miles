@@ -163,7 +163,7 @@ class MegatronBridgeCheckpointLoader:
         self._run, self._load_optimizer = run, load_optimizer
 
     def parametrization(self, path: Path) -> AdapterParametrization:
-        """Collective: every check against the source, reading it only; ``load`` then loads what it requested."""
+        """Collective: every check against the source, reading it only; ``apply`` then loads what it requested."""
         chunks = unwrap_model(self._model)
         names = ["model"] if len(chunks) == 1 else [f"model{i}" for i in range(len(chunks))]
         config, metadata, model_state_dicts, adapter, base_dir = self._read_source(path, chunks)
@@ -172,9 +172,13 @@ class MegatronBridgeCheckpointLoader:
         self._checked = (path, names, chunks, model_state_dicts, adapter, metadata)
         return replace(self._run, lora_alpha=float(config["peft"]["alpha"]))
 
-    def load(self, path: Path) -> None:
-        checked_path, names, chunks, model_state_dicts, adapter, metadata = self._checked
-        assert checked_path == path, f"load({path}) after checking {checked_path}"
+    def prepare(self, path: Path) -> tuple:
+        # the source was read and checked with parametrization; nothing rank-local is left before the load
+        assert self._checked[0] == path, f"prepare({path}) after checking {self._checked[0]}"
+        return self._checked
+
+    def apply(self, prepared: tuple) -> None:
+        path, names, chunks, model_state_dicts, adapter, metadata = prepared
         requested = dict(zip(names, adapter, strict=True))
         if self._load_optimizer:
             requested["optimizer"] = self._optimizer_state_to_load(names, model_state_dicts, metadata)

@@ -613,7 +613,7 @@ def test_an_offloaded_optimizer_is_never_dummy_stepped_from_parametrization_to_l
 
     loader.parametrization(tmp_path)
     assert not stepped and not hdo.state, "checking the source must not touch the optimizer"
-    loader.load(tmp_path)
+    loader.apply(loader.prepare(tmp_path))
 
     assert not stepped, "the empty HDO state must be zero-initialized, not dummy-stepped"
     assert torch.equal(hdo.state[param]["master_param"], torch.ones(2)) and int(hdo.state[param]["step"]) == 0
@@ -632,5 +632,5 @@ def test_a_bridge_checkpoint_is_checked_before_anything_is_loaded_into_the_model
 
     assert loader.parametrization(tmp_path) == replace(run, lora_alpha=16.0)
     assert calls == []
-    loader.load(tmp_path)
+    loader.apply(loader.prepare(tmp_path))
     assert calls == ["optimizer state", "load", "check masters"]
