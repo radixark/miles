@@ -270,7 +270,8 @@ class TestPublishedWeightVersion:
         actor.weight_updater.update_weights.return_value = completed
         info = SimpleNamespace(rollout_engines=[object()])
         monkeypatch.setattr(base_module, "print_memory", lambda message: None)
-        monkeypatch.setattr(base_module, "clear_memory", lambda: None)
+        clear_memory_calls = []
+        monkeypatch.setattr(base_module, "clear_memory", lambda **kwargs: clear_memory_calls.append(kwargs))
 
         result = TorchNativeTrainRayActor.update_weights.__wrapped__(
             actor, info, debug_weight_update_id="update-1", rollout_id=1
@@ -281,6 +282,8 @@ class TestPublishedWeightVersion:
         assert result.failed_cell_ids == ()
         assert actor._published_weight_version == expected_version
         actor.weight_updater.update_weights.assert_called_once_with(weight_version=previous_version + 1)
+        # a full garbage collection here costs about a second per step
+        assert clear_memory_calls == [{"collect_garbage": False}]
         if expected_version:
             actor.weight_updater.verify_engine_version.assert_called_once_with(
                 info.rollout_engines, weight_version=expected_version

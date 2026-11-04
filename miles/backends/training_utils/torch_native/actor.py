@@ -320,7 +320,9 @@ class TorchNativeTrainRayActor(TrainRayActor):
             self.weight_updater.verify_engine_version(
                 info.rollout_engines, weight_version=self._published_weight_version
             )
-        clear_memory()
+        # no full gc.collect() (about a second): train.py ran one just before the update, and in train_async.py
+        # Python's own collector keeps up
+        clear_memory(collect_garbage=False)
         return WeightUpdateOutput(weight_version=self._published_weight_version, failed_cell_ids=())
 
 

@@ -7,9 +7,12 @@ import torch.distributed as dist
 logger = logging.getLogger(__name__)
 
 
-def clear_memory(clear_host_memory: bool = False):
+def clear_memory(clear_host_memory: bool = False, collect_garbage: bool = True):
+    """`collect_garbage=False` skips the full `gc.collect()`, which costs about a second in a trainer process however
+    little it finds."""
     torch.accelerator.synchronize()
-    gc.collect()
+    if collect_garbage:
+        gc.collect()
     torch.accelerator.empty_cache()
     if clear_host_memory:
         torch._C._host_emptyCache()
