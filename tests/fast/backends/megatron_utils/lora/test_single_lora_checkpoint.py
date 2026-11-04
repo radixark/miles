@@ -87,14 +87,19 @@ def test_a_source_trained_with_another_alpha_is_refused_on_the_trainer(tmp_path)
 
 def test_an_old_format_save_reports_the_alpha_its_peft_pair_records(tmp_path):
     (tmp_path / "adapter_config.json").write_text(json.dumps({"lora_alpha": 32.0}))
-    run = AdapterParametrization.__new__(AdapterParametrization)
-    with patch.multiple(
-        _MODULE, _native_adapter_shard=DEFAULT, _read_native_adapter_shard=DEFAULT, replace=DEFAULT
-    ) as m:
-        LegacyRankShardLoader([], MagicMock(), run, load_optimizer=False, precision_aware=False).parametrization(
-            tmp_path
-        )
-    assert m["replace"].call_args.kwargs["lora_alpha"] == 32.0
+    run = AdapterParametrization(
+        base_model="/hf",
+        lora_rank=2,
+        lora_alpha=16.0,
+        lora_type="lora",
+        target_modules=("model.layers.0.self_attn.q_proj",),
+        experts_shared_outer_loras=False,
+    )
+    with patch.multiple(_MODULE, _native_adapter_shard=DEFAULT, _read_native_adapter_shard=DEFAULT) as m:
+        loaded = LegacyRankShardLoader(
+            [], MagicMock(), run, load_optimizer=False, precision_aware=False
+        ).parametrization(tmp_path)
+    assert loaded.lora_alpha == 32.0
     # reading the parametrization leaves the model alone: a refused source loads nothing
     m["_read_native_adapter_shard"].assert_not_called()
 
