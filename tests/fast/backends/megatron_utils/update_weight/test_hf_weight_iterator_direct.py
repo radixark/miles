@@ -25,7 +25,7 @@ class TestNativeInklingExport:
         iterator.model_name = "inkling"
         adapter = inkling_adapter_model.lora_lm_head_adapter
 
-        named = dict(iterator._export_pp_local_lora(adapter=None))
+        named = dict(pair for chunk in iterator._iter_pp_local_lora(adapter=None) for pair in chunk)
 
         assert set(named) == {"language_model.lm_head.lora_A.weight", "language_model.lm_head.lora_B.weight"}
         torch.testing.assert_close(named["language_model.lm_head.lora_A.weight"], adapter.head_A.to(torch.bfloat16))
@@ -46,7 +46,7 @@ class TestNativeInklingExport:
         iterator.model = [inkling_adapter_model]
         iterator.model_name = "other"
 
-        named = dict(iterator._export_pp_local_lora(adapter=None))
+        named = dict(pair for chunk in iterator._iter_pp_local_lora(adapter=None) for pair in chunk)
 
         assert set(named) == {"language_model.lm_head.lora_A.weight", "language_model.lm_head.lora_B.weight"}
         adapter = inkling_adapter_model.lora_lm_head_adapter

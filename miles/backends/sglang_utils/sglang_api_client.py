@@ -431,10 +431,16 @@ class SGLangApiClient:
     async def abort_all_requests(self, timeout: float | None = None):
         return await self._make_request("abort_request", {"abort_all": True}, timeout=timeout)
 
-    async def begin_weight_update(self, selector: str = "all", sync_base: bool = True):
+    async def begin_weight_update(
+        self, selector: str = "all", sync_base: bool = True, verify_lora_checksums: bool = False
+    ):
         """Open a weight-update session on the engine. sync_base=False declares an
-        adapter-only session (no quant unpack; base tensors rejected)."""
-        return await self._make_request("begin_weight_update", {"selector": selector, "sync_base": sync_base})
+        adapter-only session (no quant unpack; base tensors rejected); verify_lora_checksums
+        announces the sha256 manifest end_weight_update will carry."""
+        return await self._make_request(
+            "begin_weight_update",
+            {"selector": selector, "sync_base": sync_base, "verify_lora_checksums": verify_lora_checksums},
+        )
 
     async def end_weight_update(self, expected_lora_checksums=None):
         """Close the weight-update session: re-finalize base weights (sync_base

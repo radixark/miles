@@ -122,7 +122,6 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --sglang-server-concurrency 16
   --sglang-max-running-requests 16
   --sglang-max-mamba-cache-size 16
-  --use-miles-router
   --sglang-lora-backend triton
   --sglang-lora-strict-loading
   --sglang-max-lora-rank 16

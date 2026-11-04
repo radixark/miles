@@ -5,8 +5,8 @@ from megatron.core.transformer.enums import AttnBackend
 from mbridge.core import register_model
 from mbridge.core.safetensor_io import SafeTensorIO
 from mbridge.models import DeepseekV3Bridge
+from miles.utils.mxfp4 import MXFP4_GROUP_SIZE, pack_mxfp4_rows
 from miles_plugins.mbridge.linear_attn import LinearAttentionBridgeMixin
-
 from miles_plugins.models.kimi_k3.model import build_kimi_k3_spec
 from miles_plugins.models.kimi_k3.ops import situ_and_mul
 
@@ -133,6 +133,22 @@ class KimiK3Bridge(LinearAttentionBridgeMixin, DeepseekV3Bridge):
         ],
     }
 
+    # a compressed-tensors MXFP4 checkpoint keeps each expert as packed codes plus E8M0 scales; they load as the
+    # trainer's frozen MXFP4 experts (miles_plugins.models.kimi_k3.mxfp4_experts), never as BF16
+    _MXFP4_EXPERT_MAPPING = {
+        "mlp.experts.linear_fc1.weight": [
+            "language_model.model.layers.{layer_number}.block_sparse_moe.experts.{expert_id}.w1.weight_packed",
+            "language_model.model.layers.{layer_number}.block_sparse_moe.experts.{expert_id}.w3.weight_packed",
+            "language_model.model.layers.{layer_number}.block_sparse_moe.experts.{expert_id}.w1.weight_scale",
+            "language_model.model.layers.{layer_number}.block_sparse_moe.experts.{expert_id}.w3.weight_scale",
+        ],
+        "mlp.experts.linear_fc2.weight": [
+            "language_model.model.layers.{layer_number}.block_sparse_moe.experts.{expert_id}.w2.weight_packed",
+            "language_model.model.layers.{layer_number}.block_sparse_moe.experts.{expert_id}.w2.weight_scale",
+        ],
+    }
+    _experts_packed = False
+
     _OTHER_MAPPING = {
         "output_attn_res_norm.weight": ["language_model.model.output_attn_res_norm.weight"],
         "output_attn_res_proj.weight": ["language_model.model.output_attn_res_proj.weight"],
@@ -205,11 +221,17 @@ class KimiK3Bridge(LinearAttentionBridgeMixin, DeepseekV3Bridge):
 
     def _get_safetensor_io(self, weights_path: str):
         safetensor_io = SafeTensorIO(self._get_actual_hf_path(weights_path))
-        assert not any(name.endswith(".weight_packed") for name in safetensor_io.index), (
-            "Kimi K3 Megatron loading requires the experts to be converted from MXFP4 "
-            "to standard BF16 safetensors first"
-        )
+        self._experts_packed = any(name.endswith(".weight_packed") for name in safetensor_io.index)
         return safetensor_io
+
+    def _weight_name_mapping_mlp(self, name: str) -> list[str]:
+        if self._experts_packed:
+            for keyword, templates in self._MXFP4_EXPERT_MAPPING.items():
+                if keyword in name:
+                    layer_number = name.split(".")[2]
+                    expert_id = name.split("weight")[-1]
+                    return [x.format(layer_number=layer_number, expert_id=expert_id) for x in templates]
+        return super()._weight_name_mapping_mlp(name)
 
     def _weight_name_mapping_mcore_to_hf(self, mcore_weights_name: str) -> list[str]:
         assert "_extra_state" not in mcore_weights_name
@@ -241,4 +263,10 @@ class KimiK3Bridge(LinearAttentionBridgeMixin, DeepseekV3Bridge):
         if mcore_weights_name.endswith("self_attention.linear_attn.dt_bias"):
             assert len(hf_weights) == 1
             return hf_weights[0].float().contiguous()
+        if self._experts_packed and ".mlp.experts.linear_fc" in mcore_weights_name:
+            # the packed codes of w1 and w3 stack as fc1's rows, exactly as their BF16 weights would; the scales follow
+            half = len(hf_weights) // 2
+            return pack_mxfp4_rows(
+                torch.cat(hf_weights[:half], dim=0), torch.cat(hf_weights[half:], dim=0), MXFP4_GROUP_SIZE
+            )
         return super()._weight_to_mcore_format(mcore_weights_name, hf_weights)

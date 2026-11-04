@@ -46,3 +46,28 @@ def test_over_sampling_rounds(rollout_env, expected_rounds):
     requests_count = len(env.mock_server.request_log)
     expected_requests = expected_rounds * env.args.over_sampling_batch_size
     assert requests_count == expected_requests, f"Expected {expected_rounds} round(s) = {expected_requests} requests"
+
+
+@pytest.mark.parametrize(
+    "rollout_env",
+    [
+        pytest.param(
+            integration_env_config(
+                ["--rollout-batch-size", "2", "--over-sampling-batch-size", "1"] + _BASE_ARGV[2:], data_rows=_DATA_ROWS
+            ),
+            id="refill_one_group",
+        )
+    ],
+    indirect=True,
+)
+def test_over_sampling_below_rollout_batch_refills_until_the_batch_is_kept(rollout_env):
+    env = rollout_env
+
+    with function_registry.temporary("test:filter_by_reward", filter_by_reward):
+        out = load_and_call_train(env.args, env.data_source)
+
+    assert len(out.samples) == env.args.rollout_batch_size
+    assert all(group[0].reward == 1 for group in out.samples)
+    # the seeded shuffle serves the one correct prompt last in both epochs; one-group refills stop at its second
+    # serving instead of overshooting by a whole batch
+    assert len(env.mock_server.request_log) == 8

@@ -42,13 +42,25 @@ def weight_update_selector(*, speculative_algorithm: str | None, enable_mtp_trai
 
 
 def begin_weight_update(
-    cell_updaters: Sequence[_RolloutCellUpdater], selector: str = "all", *, sync_base: bool = True
+    cell_updaters: Sequence[_RolloutCellUpdater],
+    selector: str = "all",
+    *,
+    sync_base: bool = True,
+    verify_lora_checksums: bool = False,
 ) -> None:
     """Open a weight-update session on the selected engines. ``sync_base=False``
-    declares an adapter-only session: no quant unpack, base tensors rejected."""
+    declares an adapter-only session: no quant unpack, base tensors rejected.
+    ``verify_lora_checksums`` announces the sha256 manifest end_weight_update will
+    carry, so an engine rank that keeps only its experts' rows of a streamed stack
+    hashes the whole stack on arrival."""
     async_utils.wait_futures(
         [
-            updater.submit_client_call("begin_weight_update", selector=selector, sync_base=sync_base)
+            updater.submit_client_call(
+                "begin_weight_update",
+                selector=selector,
+                sync_base=sync_base,
+                verify_lora_checksums=verify_lora_checksums,
+            )
             for updater in cell_updaters
         ]
     )

@@ -6,6 +6,7 @@ Torch-only, so checkpoint tooling can use it without importing Megatron.
 import torch
 
 _E2M1_VALUES = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0)
+MXFP4_GROUP_SIZE = 32  # OCP MXFP4: one E8M0 scale per 32 elements
 
 
 def quantize_mxfp4(weight, group_size):
@@ -57,3 +58,32 @@ def dequantize_mxfp4(
     dequantized = dequantized.reshape(-1, group_size)
     scales = torch.exp2(weight_scale.float().reshape(-1, 1) - 127.0)
     return (dequantized * scales).reshape(unpacked.shape).to(torch.bfloat16).contiguous()
+
+
+def mxfp4_row_width(in_features: int, group_size: int) -> int:
+    """Bytes per output row of a packed row tensor: K/2 codes, then K/group_size scales."""
+    assert in_features % group_size == 0 and in_features % 2 == 0, (in_features, group_size)
+    return in_features // 2 + in_features // group_size
+
+
+def pack_mxfp4_rows(weight_packed: torch.Tensor, weight_scale: torch.Tensor, group_size: int) -> torch.Tensor:
+    """[N, K/2] codes and [N, K/group_size] scales -> one [N, K/2 + K/group_size] uint8 tensor."""
+    assert weight_packed.dtype == torch.uint8 and weight_scale.dtype == torch.uint8
+    assert weight_packed.shape[0] == weight_scale.shape[0]
+    assert weight_packed.shape[1] * 2 == weight_scale.shape[1] * group_size
+    return torch.cat([weight_packed, weight_scale], dim=1)
+
+
+def split_mxfp4_rows(rows: torch.Tensor, group_size: int) -> tuple[torch.Tensor, torch.Tensor]:
+    """The codes and scales a packed row tensor holds; the inverse of ``pack_mxfp4_rows``."""
+    assert rows.dtype == torch.uint8
+    width = rows.shape[-1]
+    # width = K/2 + K/group_size = K (group_size + 2) / (2 group_size)
+    assert (width * 2 * group_size) % (group_size + 2) == 0, (width, group_size)
+    in_features = width * 2 * group_size // (group_size + 2)
+    return rows[:, : in_features // 2], rows[:, in_features // 2 :]
+
+
+def dequantize_mxfp4_rows(rows: torch.Tensor, group_size: int) -> torch.Tensor:
+    """The BF16 [N, K] weight a packed row tensor encodes; exact."""
+    return dequantize_mxfp4(*split_mxfp4_rows(rows, group_size), group_size)

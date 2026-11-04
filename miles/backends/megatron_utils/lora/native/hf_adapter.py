@@ -6,7 +6,7 @@ import logging
 import os
 import re
 import time
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 
 import torch
 import torch.distributed as dist
@@ -28,28 +28,9 @@ def export_lora_hf_named(adapters: Iterable[NativeLoRAAdapter]) -> list[tuple[st
     """
     started = time.perf_counter()
     gather = ParallelGather()
-    plan: list[tuple[str, object]] = []
-
-    for adapter in adapters:
-        custom = adapter.export_plan(gather)
-        if custom is not None:
-            plan.extend(custom)
-            continue
-        for export in adapter.exports():
-            a: object = export.a
-            b: object = export.b
-            if export.layout == ShardLayout.COLUMN:
-                b = gather.request(export.b, 0)
-            elif export.layout == ShardLayout.ROW:
-                a = gather.request(export.a, 1)
-            plan.append((f"{export.hf_name}.lora_A.weight", a))
-            plan.append((f"{export.hf_name}.lora_B.weight", b))
-
+    plan = [entry for adapter in adapters for entry in _plan_adapter_export(adapter, gather)]
     gather.flush()
-    exported = [
-        (name, (source() if callable(source) else source).detach().to(torch.bfloat16).contiguous())
-        for name, source in plan
-    ]
+    exported = _materialize_plan(plan)
     if not dist.is_initialized() or dist.get_rank() == 0:
         peak_b = max(
             (tensor.abs().max().item() for name, tensor in exported if name.endswith("lora_B.weight")),
@@ -62,6 +43,40 @@ def export_lora_hf_named(adapters: Iterable[NativeLoRAAdapter]) -> list[tuple[st
             peak_b,
         )
     return exported
+
+
+def iter_export_lora_hf_named(adapters: Iterable[NativeLoRAAdapter]) -> Iterator[list[tuple[str, torch.Tensor]]]:
+    """Like `export_lora_hf_named`, one adapted module at a time, so the peak is one module's
+    gathered adapter rather than the whole PP stage's."""
+    for adapter in adapters:
+        gather = ParallelGather()
+        plan = _plan_adapter_export(adapter, gather)
+        gather.flush()
+        yield _materialize_plan(plan)
+
+
+def _plan_adapter_export(adapter: NativeLoRAAdapter, gather: ParallelGather) -> list[tuple[str, object]]:
+    custom = adapter.export_plan(gather)
+    if custom is not None:
+        return list(custom)
+    plan: list[tuple[str, object]] = []
+    for export in adapter.exports():
+        a: object = export.a
+        b: object = export.b
+        if export.layout == ShardLayout.COLUMN:
+            b = gather.request(export.b, 0)
+        elif export.layout == ShardLayout.ROW:
+            a = gather.request(export.a, 1)
+        plan.append((f"{export.hf_name}.lora_A.weight", a))
+        plan.append((f"{export.hf_name}.lora_B.weight", b))
+    return plan
+
+
+def _materialize_plan(plan: list[tuple[str, object]]) -> list[tuple[str, torch.Tensor]]:
+    return [
+        (name, (source() if callable(source) else source).detach().to(torch.bfloat16).contiguous())
+        for name, source in plan
+    ]
 
 
 def load_lora_adapter_hf(model_chunks, adapter_path: str) -> int:

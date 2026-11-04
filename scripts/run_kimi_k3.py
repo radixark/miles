@@ -25,19 +25,28 @@ _DEFAULT_MODEL_ORG = {
     "Kimi-K3-4layer-64experts": "Pinaster",
     # exported locally from moonshotai/Kimi-K3.1 with the 64-expert cut above; not on the Hub
     "Kimi-K3.1-4layer-64experts": "moonshotai",
+    "Kimi-K3.1": "moonshotai",
 }
 _MEGATRON_MODEL_TYPE = {
     "Kimi-K3": "kimi-k3",
     "Kimi-K3-4layer": "kimi-k3-4layer",
     "Kimi-K3-4layer-64experts": "kimi-k3-4layer-64experts",
     "Kimi-K3.1-4layer-64experts": "kimi-k31-4layer-64experts",
+    "Kimi-K3.1": "kimi-k31",
 }
-_NUM_LAYERS = {"Kimi-K3": 93, "Kimi-K3-4layer": 4, "Kimi-K3-4layer-64experts": 4, "Kimi-K3.1-4layer-64experts": 4}
+_NUM_LAYERS = {
+    "Kimi-K3": 93,
+    "Kimi-K3-4layer": 4,
+    "Kimi-K3-4layer-64experts": 4,
+    "Kimi-K3.1-4layer-64experts": 4,
+    "Kimi-K3.1": 93,
+}
 _NUM_EXPERTS = {
     "Kimi-K3": 896,
     "Kimi-K3-4layer": 896,
     "Kimi-K3-4layer-64experts": 64,
     "Kimi-K3.1-4layer-64experts": 64,
+    "Kimi-K3.1": 896,
 }
 _NUM_ATTENTION_HEADS = 96
 _VALIDATED_FULL_MODEL_GPUS = 64
@@ -48,9 +57,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
     mode: Literal["normal", "debug_minimal"] = "debug_minimal"
     run_id: str = U.create_run_id()
     model_org: str = ""
-    model_name: Literal["Kimi-K3", "Kimi-K3-4layer", "Kimi-K3-4layer-64experts", "Kimi-K3.1-4layer-64experts"] = (
-        "Kimi-K3-4layer-64experts"
-    )
+    model_name: Literal[
+        "Kimi-K3", "Kimi-K3-4layer", "Kimi-K3-4layer-64experts", "Kimi-K3.1-4layer-64experts", "Kimi-K3.1"
+    ] = "Kimi-K3-4layer-64experts"
     train_mode: Literal["lora", "full"] = "lora"
     task: Literal["gsm8k", "dapo-math"] = "gsm8k"
     hardware: Literal["auto", "H100", "H200", "B200", "B300", "GB200", "GB300"] = "auto"
@@ -75,6 +84,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
     ep_size_override: int | None = None
     rollout_tp_size: int | None = None
     rollout_ep_size: int | None = None
+    # attention DP inside each engine: attention runs on rollout_tp_size / rollout_attn_dp_size ranks per DP group,
+    # the FFN on the whole engine
+    rollout_attn_dp_size: int = 1
     rollout_max_concurrency: int = 64
 
     lora_rank: int = 16
@@ -82,6 +94,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     lora_dropout: float = 0.0
     target_modules: str = "all-linear"
     experts_shared_outer_loras: bool = True
+    # host mirror of the rollout base, so releasing it does not re-ship the base every step
+    lora_base_cpu_backup: bool = True
 
     reward_model: Literal["deterministic_random", "deepscaler", "math"] | None = None
     num_rollout: int | None = None
@@ -133,6 +147,10 @@ class ScriptArgs(U.ExecuteTrainConfig):
                 f"rollout_tp_size must divide {self.num_gpus} GPUs and {_NUM_ATTENTION_HEADS} attention heads, "
                 f"got {self.rollout_tp_size}"
             )
+        if self.rollout_tp_size % self.rollout_attn_dp_size != 0:
+            raise ValueError(
+                f"rollout_attn_dp_size must divide rollout_tp_size {self.rollout_tp_size}, got {self.rollout_attn_dp_size}"
+            )
         if self.rollout_tp_size % self.rollout_ep_size != 0 or self.num_experts % self.rollout_ep_size != 0:
             raise ValueError(
                 f"rollout_ep_size must divide rollout_tp_size and {self.num_experts} experts, got {self.rollout_ep_size}"
@@ -165,7 +183,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
     @property
     def is_4layer(self) -> bool:
-        return self.model_name != "Kimi-K3"
+        return self.num_layers < _NUM_LAYERS["Kimi-K3"]
 
     @property
     def num_layers(self) -> int:
@@ -319,9 +337,9 @@ def _train(args: ScriptArgs) -> None:
             f"--lora-dropout {args.lora_dropout} "
             f'--target-modules "{args.target_modules}" '
             "--no-gradient-accumulation-fusion "
-            # host mirror of the rollout base, so releasing it does not re-ship the base every step
-            "--lora-base-cpu-backup "
         )
+        if args.lora_base_cpu_backup:
+            lora_args += "--lora-base-cpu-backup "
         if args.experts_shared_outer_loras:
             lora_args += "--experts-shared-outer-loras "
         if args.check_lora_weight_equal:
@@ -425,20 +443,38 @@ def _train(args: ScriptArgs) -> None:
     update_weight_buffer_size = args.update_weight_buffer_size
     if update_weight_buffer_size is None:
         update_weight_buffer_size = 2 * 1024**3 if args.is_4layer or not is_lora else 256 * 1024**2
+    # the 4-layer model takes 16 requests per attention-DP group, so a group still fills its attention-TP-wide batch
+    sglang_request_capacity = 16 * args.rollout_attn_dp_size if args.is_4layer else args.rollout_max_concurrency
     # the radix extra-buffer strategy needs five KDA cache slots per running request
-    sglang_request_capacity = 16 if args.is_4layer else args.rollout_max_concurrency
-    sglang_mamba_capacity = 16 if args.is_4layer else 5 * args.rollout_max_concurrency
-    graph_bs = " ".join(str(b) for b in (1, 2, 4, 8, 16, 32) if b <= max(1, args.rollout_max_concurrency))
+    sglang_mamba_capacity = sglang_request_capacity if args.is_4layer else 5 * args.rollout_max_concurrency
+    # every 8 above 16: a decode batch runs at the next captured size, so sparse sizes pad it (65 -> 128)
+    graph_bs = " ".join(
+        str(b)
+        for b in (1, 2, 4, 8, *range(16, args.rollout_max_concurrency + 1, 8))
+        if b <= max(1, args.rollout_max_concurrency)
+    )
+    if args.rollout_attn_dp_size > 1:
+        # a DP group's decode batch is padded to a multiple of its attention TP width, and holds at most its
+        # share of the engine's running requests
+        attn_tp = args.rollout_tp_size // args.rollout_attn_dp_size
+        graph_bs = " ".join(
+            str(b) for b in range(attn_tp, sglang_request_capacity // args.rollout_attn_dp_size + 1, attn_tp)
+        )
 
     sglang_args = (
         f"--rollout-num-gpus-per-engine {args.rollout_tp_size} "
         f"--sglang-tp-size {args.rollout_tp_size} "
         f"--sglang-ep-size {args.rollout_ep_size} "
-        "--sglang-server-concurrency 16 "
+        f"--sglang-server-concurrency {sglang_request_capacity} "
         f"--sglang-max-running-requests {sglang_request_capacity} "
         f"--sglang-max-mamba-cache-size {sglang_mamba_capacity} "
-        "--use-miles-router "
     )
+    if args.rollout_attn_dp_size > 1:
+        # running requests, mamba slots and chunked prefill are engine-wide and split over the DP groups;
+        # --sglang-max-total-tokens is per group
+        sglang_args += (
+            f"--sglang-attn-dp-size {args.rollout_attn_dp_size} " "--sglang-load-balance-method total_requests "
+        )
     if is_lora:
         sglang_args += (
             "--sglang-lora-backend triton " "--sglang-lora-strict-loading " f"--sglang-max-lora-rank {args.lora_rank} "
@@ -453,13 +489,17 @@ def _train(args: ScriptArgs) -> None:
     sglang_args += f"--sglang-moe-runner-backend {'triton' if args.rollout_bf16 else 'marlin'} "
     if args.is_4layer:
         sglang_args += (
-            "--sglang-cuda-graph-bs-decode 1 2 4 8 16 "
+            f"--sglang-cuda-graph-bs-decode {graph_bs if args.rollout_attn_dp_size > 1 else '1 2 4 8 16'} "
             "--sglang-mem-fraction-static 0.7 "
             "--sglang-disable-shared-experts-fusion "
         )
     else:
+        if args.hardware not in ("H100", "H200") and not args.model_name.startswith("Kimi-K3.1"):
+            # TRT-LLM MLA kernels are Blackwell-only; Hopper keeps SGLang's default backend. K3.1's MLA layers
+            # carry a DSA indexer: naming any attention backend stops SGLang defaulting them to its sparse "dsa"
+            # backend, so decode would attend densely while the trainer attends to the indexer's top-k
+            sglang_args += "--sglang-decode-attention-backend trtllm_mla "
         sglang_args += (
-            "--sglang-decode-attention-backend trtllm_mla "
             "--sglang-mamba-radix-cache-strategy extra_buffer "
             f"--sglang-cuda-graph-bs-decode {graph_bs} "
             "--sglang-cuda-graph-backend-prefill disabled "
@@ -522,6 +562,11 @@ def _train(args: ScriptArgs) -> None:
     if is_lora:
         # the LoRA wrapper bypasses the o_proj.forward patch the K3 all-reduce fusion relies on
         extra_env_vars["SGLANG_K3_AR_FUSION"] = "0"
+    if args.rollout_attn_dp_size > 1 and args.model_name.startswith("Kimi-K3.1"):
+        # Without a top-k capturer each attention-TP rank selects its own DSA top-k, and the ranks of a DP group can
+        # disagree past index_topk keys; every rank attending rank 0's selection cut the far-context logprob gap to
+        # the trainer (attention DP 4: p99 0.54 -> 0.13, TP32 without it 0.33).
+        extra_env_vars["SGLANG_DSA_TOPK_BROADCAST"] = "1"
     # Ray's runtime_env replaces the actor env; without the JIT cache dirs the KDA kernels recompile every run
     for cache_var in ("TRITON_CACHE_DIR", "TORCHINDUCTOR_CACHE_DIR"):
         cache_dir = os.environ.get(cache_var)

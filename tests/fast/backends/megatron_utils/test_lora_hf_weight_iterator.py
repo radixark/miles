@@ -101,8 +101,8 @@ class TestPpLocalAdapterUnits:
             def _iter_hf_param_units(self, weights, *, materialize):
                 yield from ()
 
-            def _export_pp_local_lora(self, adapter):
-                return list(stage_tensors)
+            def _iter_pp_local_lora(self, adapter):
+                return [list(stage_tensors)]
 
         iterator = object.__new__(_Stage)
         iterator.placement = WeightUpdatePlacement(gather_pp=False)

@@ -63,8 +63,9 @@ class KimiK31DSAAttention(KimiK3Attention):
         self.index_topk = config.kimi_dsa_index_topk
         self.topk_fn = get_dsa_topk_fn(config.miles_dsa_topk_backend)
         self.indexer = KimiK31Indexer(config)
+        # SGLang returns one top-k stream per DSA layer, in layer order
         indexer_replay_manager.register_to_module(
-            self, "indexer_replay", stream_idx=self.layer_idx, supports_zigzag_cp=True
+            self, "indexer_replay", stream_idx=config.kimi_dsa_layers.index(layer_number), supports_zigzag_cp=True
         )
 
     def _select_topk(self, q_lora, hidden, cu_seqlens, cp_layout) -> torch.Tensor:
@@ -135,6 +136,7 @@ def configure_kimi_k31_dsa(config, dsa_config: dict, topk_backend: str) -> None:
     assert sorted(dsa_config["dsa_layers"]) == [n for n in range(1, 94) if n not in KIMI_K3_KDA_LAYERS]
     assert dsa_config.get("index_topk_freq", 1) == 1 and dsa_config.get("index_rope_dim", 0) == 0
     assert dsa_config.get("index_k_norm_type", "layernorm") == "layernorm"
+    config.kimi_dsa_layers = sorted(dsa_config["dsa_layers"])
     config.kimi_dsa_index_topk = dsa_config["index_topk"]
     config.kimi_dsa_index_num_heads = dsa_config["index_num_heads"]
     config.kimi_dsa_index_head_dim = dsa_config["index_head_dim"]

@@ -216,7 +216,10 @@ class TestWeightUpdateSessionFrame:
         for method in phases:
             assert _engines_called(calls, method) == list(range(_ENGINE_COUNT))
         assert _kwargs_of(calls, "pause_generation") == [{"mode": pause_generation_mode}] * _ENGINE_COUNT
-        assert _kwargs_of(calls, "begin_weight_update") == [{"selector": "all", "sync_base": True}] * _ENGINE_COUNT
+        assert (
+            _kwargs_of(calls, "begin_weight_update")
+            == [{"selector": "all", "sync_base": True, "verify_lora_checksums": False}] * _ENGINE_COUNT
+        )
         assert _kwargs_of(calls, "update_weight_version") == [{"weight_version": "1"}] * _ENGINE_COUNT
 
     def test_in_place_pause_mode_skips_the_flush(self):
