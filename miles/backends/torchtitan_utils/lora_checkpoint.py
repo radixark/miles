@@ -217,6 +217,10 @@ class TorchtitanOptimizerMembers:
             for adam in states:
                 adam["step"].fill_(state.step)
 
+    def finish_import_adapter_state(self, slot: int) -> None:
+        # each rank wrote its own shards of the parameters and moments in place: nothing is left to gather
+        pass
+
 
 _TRAINING_STATE_KEYS = ("train_state.step", "train_state.ntokens_seen", "lr_scheduler.last_epoch")
 
