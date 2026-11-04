@@ -5,7 +5,12 @@ import torch
 import torch.distributed as dist
 from tests.fast.dist_utils import init_gloo, run_multiprocess
 
-from miles.backends.megatron_utils.lora.bridge_checkpoint import probe_bridge_row_mapping
+from miles.backends.megatron_utils.lora.bridge_checkpoint import (
+    BridgeAdapterSlots,
+    BridgeRowMapping,
+    _HfPiece,
+    probe_bridge_row_mapping,
+)
 from miles.utils.distributed_utils import init_gloo_group
 from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
 
@@ -179,3 +184,39 @@ def _probe_export_fails(rank, world_size, port):
 def test_an_export_failure_on_one_rank_fails_every_rank():
     """The fake export has no collectives; a rank failing inside one of Bridge's still hangs the others."""
     run_multiprocess(_probe_export_fails)
+
+
+def _slots_of(pieces, real_rank):
+    """Multi-LoRA slots whose probe found ``pieces``, padded to max rank 4; the slot's real rank is ``real_rank``."""
+    slots = BridgeAdapterSlots.__new__(BridgeAdapterSlots)
+    slots.row_mapping, slots._specs = BridgeRowMapping(pieces, (), ()), {}
+    slots.lora_rank = lambda slot: real_rank
+    return slots
+
+
+def _trim_a_tp_split_rank(rank, world_size, port):
+    init_gloo(rank, world_size, port=port)
+    init_gloo_group()
+    # max rank 4 split over 2 TP ranks: each rank holds 2 rows of A ([rank, in]) and 2 columns of B ([out, rank])
+    a = _HfPiece(f"{Q}.lora_A", (4, 3), (2 * rank, 0), torch.arange(6).view(2, 3))
+    b = _HfPiece(f"{Q}.lora_B", (5, 4), (0, 2 * rank), torch.arange(6, 16).view(5, 2))
+    flat = torch.arange(16.0)
+
+    slots = _slots_of([a, b], real_rank=3)
+    specs = [(s.key, s.global_shape, s.offsets, s.local_shape) for s in slots.get_local_shard_specs(1)]
+    kept = 2 if rank == 0 else 1
+    assert specs == [(a.key, (3, 3), (2 * rank, 0), (kept, 3)), (b.key, (5, 3), (0, 2 * rank), (5, kept))]
+    piece_a, piece_b = slots.local_pieces(1, [flat])
+    assert torch.equal(piece_a, flat[a.local_elements[:kept]]) and torch.equal(
+        piece_b, flat[b.local_elements[:, :kept]]
+    )
+
+    # real rank 2: rank 1's rows and columns are all padding, so it holds no piece of the slot
+    slots = _slots_of([a, b], real_rank=2)
+    assert (slots.get_local_shard_specs(1) == []) == (rank == 1)
+    assert (slots.local_pieces(1, [flat]) == []) == (rank == 1)
+    dist.destroy_process_group()
+
+
+def test_a_multi_lora_slot_keeps_only_its_real_rank_of_a_tp_split_rank_axis():
+    run_multiprocess(_trim_a_tp_split_rank)
