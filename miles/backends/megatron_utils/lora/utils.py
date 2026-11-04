@@ -251,6 +251,18 @@ def _distributed_optimizers(optimizer) -> list:
     return subs
 
 
+def _zero_init_empty_hdo_states(subs) -> None:
+    """Gives every DistributedOptimizer sub whose HDO has no state yet the state of a never-stepped HDO.
+
+    Megatron's load_state_dict would otherwise run dummy_step on it: a real Adam step on random gradients.
+    """
+    from megatron.core.optimizer.cpu_offloading.hybrid_optimizer import HybridDeviceOptimizer
+
+    for sub in subs:
+        if isinstance(sub.optimizer, HybridDeviceOptimizer) and not sub.optimizer.state:
+            _init_zero_hdo_state(sub.optimizer)
+
+
 def _init_zero_hdo_state(hdo: "HybridDeviceOptimizer") -> None:
     """The state a never-stepped HDO is equivalent to: its fp32 master, zero moments, step 0.
 

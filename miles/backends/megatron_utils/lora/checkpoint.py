@@ -25,10 +25,10 @@ from miles.backends.megatron_utils.lora.bridge_peft_checkpoint import OPTIMIZER_
 from miles.backends.megatron_utils.lora.optimizer import SlotOptimizer
 from miles.backends.megatron_utils.lora.utils import (
     _distributed_optimizers,
-    _init_zero_hdo_state,
     _load_training_state,
     _native_adapter_shard,
     _read_native_adapter_shard,
+    _zero_init_empty_hdo_states,
 )
 from miles.backends.megatron_utils.rematerialize_utils import _build_cast_main_to_params_fn
 from miles.backends.training_utils.checkpoint.adapter.adapter_dir import (
@@ -197,8 +197,8 @@ class DistributedOptimizerMembers:
             # a never-stepped optimizer has no Adam state yet (zero moments); this fills only empty states
             if sub.init_state_fn is not None:
                 sub.init_state_fn(sub.optimizer, sub.config)
-            elif isinstance(sub.optimizer, HybridDeviceOptimizer) and not sub.optimizer.state:
-                _init_zero_hdo_state(sub.optimizer)
+            else:
+                _zero_init_empty_hdo_states([sub])
             gathered = sub.get_parameter_state_dp_zero(use_gloo_comm=True)
             if (step := _distributed_optimizer_step(sub)) is not None:
                 steps.add(step)
@@ -250,8 +250,8 @@ class DistributedOptimizerMembers:
         for sub in self._distributed_optimizers():
             if sub.init_state_fn is not None:
                 sub.init_state_fn(sub.optimizer, sub.config)
-            elif isinstance(sub.optimizer, HybridDeviceOptimizer) and not sub.optimizer.state:
-                _init_zero_hdo_state(sub.optimizer)
+            else:
+                _zero_init_empty_hdo_states([sub])
             # elements no piece holds (vocab padding) must keep their master and moments, so they are gathered
             gathered = sub.get_parameter_state_dp_zero(
                 use_gloo_comm=True, empty_data=self._slots.load_overwrites_every_element
@@ -681,10 +681,7 @@ class LegacyRankShardLoader:
             param.data.copy_(tensor.to(device=param.device))
         if state is not None:
             subs = _distributed_optimizers(self._optimizer)
-            for sub in subs:
-                # on an empty HDO state Megatron's load_state_dict would run dummy_step, a real Adam step
-                if isinstance(sub.optimizer, HybridDeviceOptimizer) and not sub.optimizer.state:
-                    _init_zero_hdo_state(sub.optimizer)
+            _zero_init_empty_hdo_states(subs)
             self._optimizer.load_state_dict(state["optimizer"])
             for sub, parameter_state in zip(subs, state["parameter_state"], strict=True):
                 sub.load_parameter_state_from_dp_reshardable(parameter_state)
