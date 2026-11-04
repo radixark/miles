@@ -7,8 +7,8 @@ Flow-matching RL algorithms fall into two paradigms:
 - **Coupled (Flow-GRPO)** — training re-scores the same `(x_t → x_{t+1})`
   transitions that rollout produced, so it needs tractable log-probs via
   `SdeStepBackend`.
-- **Decoupled (DiffusionNFT, …)** — training samples its own timesteps from the
-  final image; rollout dynamics are irrelevant, so this backend is unused.
+- **Decoupled (DiffusionNFT, …)** — training re-noises the final image at the
+  rollout's sampling sigmas; rollout dynamics are irrelevant, so this backend is unused.
 
 ## 1. When it applies
 
@@ -31,9 +31,9 @@ Implementation: `miles/backends/fsdp_utils/sde_step_backend.py`. Override with
 
 | Formulation | `--diffusion-sde-type` | Backend | Notes |
 |---|---|---|---|
-| Flow-SDE | `sde` (default) | `DiffusersSdeStepBackend` | η√(t/(1−t)) via scheduler σ; [Flow-GRPO](https://arxiv.org/abs/2505.05470) |
-| CPS | `cps` | `CpsSdeStepBackend` | [FlowCPS](https://arxiv.org/abs/2509.05952) |
-| ODE | `ode` | `DiffusersSdeStepBackend` (η=0) | Deterministic; NFT rollout only |
+| Flow-SDE | `sde` (default) | `FlowSdeStepBackend` | Transition noise std η·√(σ/(1−σ))·√(−dt) with the rollout's recorded σ (the grid's second σ replaces the denominator's σ at σ = 1); [Flow-GRPO](https://arxiv.org/abs/2505.05470) |
+| CPS | `cps` | `CpsSdeStepBackend` | Transition noise std σ_next·sin(η·π/2); log-prob is −(x−μ)², without the Gaussian constants or the 1/(2σ²) scale (forces `--diffusion-log-prob-no-const`); [FlowCPS](https://arxiv.org/abs/2509.05952) |
+| ODE | `ode` | `FlowSdeStepBackend` (placeholder; NFT never calls it) | Deterministic; NFT (or a custom loss formula) only — with the Flow-GRPO loss it is rejected at parse time |
 
 `--diffusion-noise-level` (η) sets the SDE noise scale. DanceGRPO-style constant-η
 schedules use the same `sde` backend with a tuned η
@@ -63,8 +63,8 @@ Example (SD3 Flow-GRPO OCR — full-window SDE):
 ```
 
 Step strategies live in `miles/rollout/step_strategy_hub.py`. `sde_window` picks a
-contiguous window; `epoch_global_random_choice` picks a per-epoch subset via
-`--diffusion-sde-candidate-steps`. Partial windows follow the MixGRPO /
+contiguous window; `epoch_global_random_choice` picks a subset of
+`--diffusion-sde-candidate-steps`, shared by each block of `--rollout-batch-size` consecutive prompt groups (one rollout, unless a dynamic-sampling filter drops groups). Partial windows follow the MixGRPO /
 TempFlow-GRPO idea ([MixGRPO](https://arxiv.org/abs/2507.21802),
 [TempFlow-GRPO](https://arxiv.org/abs/2508.04324)).
 
@@ -75,8 +75,10 @@ or noise level shows up as a rising `train/log_prob_mean_abs_diff`.
 
 Checklist:
 
-1. Match `--diffusion-sde-type` and `--diffusion-noise-level` on train and rollout.
-2. Use the same `--diffusion-num-steps` schedule.
+1. Both sides read `--diffusion-sde-type` and `--diffusion-noise-level`, and the default backend is derived from the
+   former, so only a custom `--sde-step-backend-path` can drift from the engine's dynamics.
+2. Train-side scoring takes σ from the trajectory the rollout recorded (`sigma`, `next_sigma`, `sigma_max` per
+   transition), not from a scheduler, so `--diffusion-num-steps` needs no train-side copy.
 3. Match input dtypes between FSDP forward and the rollout engine for fp32 runs.
 4. Watch `train/log_prob_mean_abs_diff` — near zero before the first optimizer step.
 

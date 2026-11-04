@@ -52,12 +52,12 @@ def _teacher_url_for_sample(args: Namespace, sample: Sample) -> str:
     and raise if no default is configured — silently distilling from the
     wrong teacher is worse than failing the rollout.
     """
-    url_map = parse_teacher_urls(getattr(args, "opd_teacher_urls", None))
+    url_map = parse_teacher_urls(args.opd_teacher_urls)
     if not url_map:
         return args.rm_url
 
     metadata = sample.metadata if isinstance(sample.metadata, dict) else {}
-    key = getattr(args, "opd_teacher_key", "opd_teacher")
+    key = args.opd_teacher_key
     name = metadata.get(key)
     if name is not None:
         url = url_map.get(str(name))
@@ -75,18 +75,18 @@ def _teacher_url_for_sample(args: Namespace, sample: Sample) -> str:
 
 
 def _get_opd_top_k(args: Namespace) -> int:
-    return max(0, int(getattr(args, "opd_log_prob_top_k", 0) or 0))
+    return max(0, int(args.opd_log_prob_top_k or 0))
 
 
 def _get_top_k_strategy(args: Namespace) -> str:
-    strategy = getattr(args, "opd_top_k_strategy", "only-student")
+    strategy = args.opd_top_k_strategy
     if strategy not in TOP_K_STRATEGIES:
         raise ValueError(f"Unknown OPD top-k strategy: {strategy}")
     return strategy
 
 
 def _get_reward_weight_mode(args: Namespace) -> str:
-    mode = getattr(args, "opd_reward_weight_mode", "student_p")
+    mode = args.opd_reward_weight_mode
     if mode not in REWARD_WEIGHT_MODES:
         raise ValueError(f"Unknown OPD reward weight mode: {mode}")
     return mode
@@ -97,6 +97,7 @@ def _score_payload(
     top_k: int = 0,
     token_ids: list[int] | None = None,
     token_ids_positions: list[list[int]] | None = None,
+    extra_key: str | None = None,
 ) -> dict[str, Any]:
     payload = {
         "input_ids": input_ids,
@@ -117,6 +118,8 @@ def _score_payload(
         payload["token_ids_logprob_positions"] = token_ids_positions
     elif token_ids:
         payload["token_ids_logprob"] = token_ids
+    if extra_key is not None:
+        payload["extra_key"] = extra_key
     return payload
 
 
@@ -353,7 +356,7 @@ async def reward_func(args: Namespace, sample: Sample, **kwargs: Any) -> dict[st
     top_k = _get_opd_top_k(args)
     # Optional per-request timeout so a hung teacher/student scoring call cannot stall
     # the whole rollout (no-op when unset).
-    request_timeout = getattr(args, "sglang_router_request_timeout_secs", None)
+    request_timeout = args.sglang_router_request_timeout_secs
     # Multi-teacher routing: pick this sample's teacher endpoint (falls back to
     # --rm-url when --opd-teacher-urls is unset).
     teacher_url = _teacher_url_for_sample(args, sample)
@@ -363,7 +366,7 @@ async def reward_func(args: Namespace, sample: Sample, **kwargs: Any) -> dict[st
     strategy = _get_top_k_strategy(args)
     # Per-position scoring requires a patched teacher/student server that understands
     # token_ids_logprob_positions; default off so an unpatched server keeps working.
-    per_position = getattr(args, "opd_topk_per_position", False)
+    per_position = args.opd_topk_per_position
     prompt_len = len(sample.tokens) - sample.response_length
 
     teacher_top_k = top_k if strategy in TEACHER_TOP_STRATEGIES else 0
@@ -387,12 +390,17 @@ async def reward_func(args: Namespace, sample: Sample, **kwargs: Any) -> dict[st
     reward_payload = {"teacher": teacher_response}
     if strategy in STUDENT_ON_TEACHER_STRATEGIES:
         teacher_top = _trim_input_field(teacher_response["meta_info"], "input_top_logprobs", sample.response_length)
+        student_extra_key = sample.kv_cache_namespace
         if per_position:
             student_payload = _score_payload(
-                sample.tokens, token_ids_positions=_per_position_ids(teacher_top, prompt_len)
+                sample.tokens,
+                token_ids_positions=_per_position_ids(teacher_top, prompt_len),
+                extra_key=student_extra_key,
             )
         else:
-            student_payload = _score_payload(sample.tokens, token_ids=_unique_ids(teacher_top))
+            student_payload = _score_payload(
+                sample.tokens, token_ids=_unique_ids(teacher_top), extra_key=student_extra_key
+            )
         reward_payload["student_on_teacher"] = await _post_json(
             _student_score_url(args), student_payload, timeout_secs=request_timeout
         )

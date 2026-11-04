@@ -11,7 +11,7 @@ register_cuda_ci(
     suite="stage-c-8-gpu-h200",
     labels=["ft-long"],
     hardware=["hopper", "blackwell"],
-    disabled="FT soak tests pending CI infra support",
+    num_gpus=8,
 )
 
 if __name__ == "__main__":

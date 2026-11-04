@@ -7,16 +7,14 @@ from tests.ci.ci_register import register_cuda_ci
 from miles.utils.external_utils import command_utils
 
 register_cuda_ci(
-    est_time=800,
-    suite="stage-c-8-gpu-b200",
-    labels=["megatron", "model-scripts"],
-    hardware=["blackwell"],
+    est_time=1000, suite="stage-c-8-gpu-b200", labels=["megatron", "model-scripts"], hardware=["blackwell"], num_gpus=8
 )
 
 MODEL_ORG = "Pinaster"
 MODEL_NAME = "GLM-5.2_5layer"
 MODEL_TYPE = "glm5.2-744B-A40B_5layer"
 MEGATRON_MODEL_NAME = f"{MODEL_NAME}-megatron-dsa"
+NVFP4_MODEL_NAME = f"{MODEL_NAME}-NVFP4-w4a16"
 DSA_ARGS = "--megatron-to-hf-mode raw --dsa-impl megatron --dsa-kernel-backend cudnn "
 NUM_GPUS = 8
 ACTOR_NUM_GPUS = 4
@@ -109,13 +107,12 @@ def prepare():
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=DATA_DIR)
 
     _validate_glm_checkpoint()
-    U.exec_command_cpu(f"rm -rf {MODEL_DIR}/{MODEL_NAME}-NVFP4 {MODEL_DIR}/{MEGATRON_MODEL_NAME}_torch_dist")
-
-    U.exec_command_gpu(
+    U.exec_command_gpu_once(
         f"python tools/convert_hf_to_nvfp4.py "
         f"--model-dir {MODEL_DIR}/{MODEL_NAME} "
-        f"--save-dir {MODEL_DIR}/{MODEL_NAME}-NVFP4 "
-        f"{_extra_high_precision_layers_hf_args()}"
+        f"--save-dir {MODEL_DIR}/{NVFP4_MODEL_NAME} "
+        f"{_extra_high_precision_layers_hf_args()}",
+        f"{MODEL_DIR}/{NVFP4_MODEL_NAME}",
     )
 
     U.convert_checkpoint(
@@ -143,7 +140,7 @@ def execute():
     te_precision_config_path = command_utils.encode_pseudo_file(TE_PRECISION_CONFIG)
 
     ckpt_args = (
-        f"--hf-checkpoint {MODEL_DIR}/{MODEL_NAME}-NVFP4/ " f"--ref-load {MODEL_DIR}/{MEGATRON_MODEL_NAME}_torch_dist "
+        f"--hf-checkpoint {MODEL_DIR}/{NVFP4_MODEL_NAME}/ " f"--ref-load {MODEL_DIR}/{MEGATRON_MODEL_NAME}_torch_dist "
     )
 
     rollout_args = (
@@ -154,11 +151,11 @@ def execute():
         "--rollout-shuffle "
         "--rm-type deepscaler "
         "--num-rollout 2 "
-        "--rollout-batch-size 8 "
-        "--n-samples-per-prompt 8 "
+        "--rollout-batch-size 4 "
+        "--n-samples-per-prompt 4 "
         "--rollout-max-response-len 100 "
         "--rollout-temperature 1 "
-        "--global-batch-size 64 "
+        "--global-batch-size 16 "
     )
 
     perf_args = (
@@ -257,7 +254,6 @@ def execute():
         f"--actor-num-gpus-per-node {ACTOR_NUM_GPUS} "
         f"--num-gpus-per-node {NUM_GPUS} "
         f"--rollout-num-gpus {ROLLOUT_NUM_GPUS} "
-        "--use-fault-tolerance "
         "--moe-enable-deepep "
         "--moe-token-dispatcher-type flex "
         # Event logging requests weight checksums that SGLang does not support for NVFP4.

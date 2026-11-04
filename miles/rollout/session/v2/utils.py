@@ -6,6 +6,7 @@ from miles.rollout.generate_utils.sample_utils import merge_samples
 from miles.rollout.session.errors import TokenizationError
 from miles.rollout.session.request_args import filter_turn_args
 from miles.rollout.session.samples.merge import (
+    adopt_session_records,
     compute_samples_from_openai_records,
     merge_samples_with_addition_r3,
     truncate_samples_by_total_tokens,
@@ -50,6 +51,7 @@ def build_leaf_material(
     session_id: str,
     max_seq_len: int | None,
     use_addition_r3: bool = False,
+    computed_mismatch: dict[int, list[dict] | None] | None = None,
 ) -> list[Sample]:
     """Merge each leaf's root-to-leaf node records into one raw sample, in commit order.
 
@@ -61,6 +63,9 @@ def build_leaf_material(
     With ``use_addition_r3``, each record along a path carries only its
     additional R3 rows; the per-leaf assembler materializes the required prefix
     because a path is the linear record chain its offsets were computed on.
+
+    ``computed_mismatch`` maps a leaf's ``seq`` to the ``tito_session_mismatch``
+    already computed for its path, so that path is not re-rendered and re-tokenized.
     """
     material: list[Sample] = []
     for leaf in state.tree.leaves():
@@ -83,6 +88,7 @@ def build_leaf_material(
             sample = merge_samples_with_addition_r3(args, turns, records, registry.tokenizer)
         else:
             sample = merge_samples(turns, registry.tokenizer)
+        adopt_session_records(sample, records)
         flat: dict[str, Any] = {
             "accumulated_token_ids": list(leaf.token_ids),
             "turn_args": filter_turn_args(leaf.turn_args),
@@ -93,11 +99,14 @@ def build_leaf_material(
                 "response_id": leaf.response_id,
             },
         }
-        try:
-            mismatch = registry.compute_mismatch(leaf.path_messages(), leaf.token_ids, turn_args=leaf.turn_args)
-        except TokenizationError:
-            logger.exception("Failed to compute tito_session_mismatch for session %s", session_id)
-            mismatch = None
+        if computed_mismatch is not None and leaf.seq in computed_mismatch:
+            mismatch = computed_mismatch[leaf.seq]
+        else:
+            try:
+                mismatch = registry.compute_mismatch(leaf.path_messages(), leaf.token_ids, turn_args=leaf.turn_args)
+            except TokenizationError:
+                logger.exception("Failed to compute tito_session_mismatch for session %s", session_id)
+                mismatch = None
         if mismatch is not None:
             flat["tito_session_mismatch"] = mismatch
         sample.metadata = {**(sample.metadata or {}), **flat}

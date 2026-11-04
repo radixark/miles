@@ -42,6 +42,7 @@ CUDA_STAGES: dict[str, CudaStage] = {
     "stage-c-8-gpu-h200": CudaStage("hopper", 8, ("h200", "8gpu")),
     "stage-c-4-gpu-h200": CudaStage("hopper", 4, ("h200", "4gpu")),
     "stage-c-2-gpu-h200": CudaStage("hopper", 2, ("h200", "2gpu")),
+    "stage-c-4-gpu-b200": CudaStage("blackwell", 4, ("b200", "4gpu")),
     "stage-c-8-gpu-b200": CudaStage("blackwell", 8, ("b200", "8gpu")),
 }
 
@@ -63,11 +64,6 @@ def target_stage(home_suite: str, arch: str) -> str | None:
     `ray start --num-gpus` / `torchrun --nproc-per-node` rather than reading the
     devices it can see, so a larger stage just leaves the surplus idle. None
     when that arch has no stage big enough.
-
-    Derived rather than tabulated. A hand-written home -> destination map would
-    encode a fleet shape that does not exist yet; this rule gives today's
-    degenerate answer (one Blackwell stage absorbs everything) and a 1:1 mirror
-    once the Blackwell fleet is partitioned, from the same three lines.
     """
     home = CUDA_STAGES[home_suite]
     if home.arch == arch:

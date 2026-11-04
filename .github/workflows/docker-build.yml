@@ -26,8 +26,11 @@ on:
           - cu13
           - cu13-x86
           - cu13-aarch64
+          - rubin
+          - tpu
           - rocm724-mi35x
           - rocm10-mi35x
+          - rocm10-mi30x
       image_tag:
         description: 'Tag mode: latest, dev (rolling + timestamped), or custom'
         required: true
@@ -60,6 +63,12 @@ jobs:
     outputs:
       should_build: ${{ steps.check.outputs.should_build }}
     steps:
+      # before the cache restore: checkout empties a workspace that is not yet a clone
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/workflows/scripts/gh_api.sh
+          sparse-checkout-cone-mode: false
+
       - name: Restore last known upstream SHAs
         uses: actions/cache/restore@v4
         with:
@@ -73,6 +82,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -o pipefail
+          source .github/workflows/scripts/gh_api.sh
           SHOULD_BUILD=false
 
           # A failed lookup must not read as an upstream move (an error body stored as
@@ -82,18 +92,6 @@ jobs:
           fail_poll() {
             echo "::error::$1"
             exit 1
-          }
-
-          # Retry transient API errors (e.g. HTTP 502) so only a lookup that keeps
-          # failing reaches fail_poll. Buffer each attempt so a failed attempt's error
-          # body never mixes into the output.
-          gh_api() {
-            local out attempt
-            for attempt in 1 2 3; do
-              out=$(gh api "$@") && { printf '%s\n' "$out"; return 0; }
-              [ "$attempt" -lt 3 ] && sleep 10
-            done
-            return 1
           }
 
           head_sha() {
@@ -111,8 +109,8 @@ jobs:
               | python3 -c "import sys,json,hashlib; a=json.load(sys.stdin).get('assets',[]); fp=sorted([x['name'],x['id'],x['size'],x['updated_at']] for x in a); print(hashlib.sha256(repr(fp).encode()).hexdigest() if a else '')") \
               && [[ "$fp" =~ ^[0-9a-f]{64}$ ]] && echo "$fp"
           }
-          WHEELS_CU13_X86_FP=$(wheels_fp cu130-torch213-x86_64) || fail_poll "wheels cu130-torch213-x86_64 lookup failed"
-          WHEELS_CU13_ARM64_FP=$(wheels_fp cu130-torch213-aarch64) || fail_poll "wheels cu130-torch213-aarch64 lookup failed"
+          WHEELS_CU13_X86_FP=$(wheels_fp cu130-torch214-x86_64) || fail_poll "wheels cu130-torch214-x86_64 lookup failed"
+          WHEELS_CU13_ARM64_FP=$(wheels_fp cu130-torch214-aarch64) || fail_poll "wheels cu130-torch214-aarch64 lookup failed"
 
           echo "sglang HEAD:   ${SGLANG_SHA}"
           echo "megatron HEAD: ${MEGATRON_SHA}"

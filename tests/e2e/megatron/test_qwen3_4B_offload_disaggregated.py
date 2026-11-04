@@ -18,14 +18,16 @@ TRAIN_GPUS = 4
 ROLLOUT_GPUS = 4
 
 register_cuda_ci(
-    est_time=600,
-    suite="stage-c-8-gpu-h200",
+    est_time=400,
+    suite="stage-c-8-gpu-h100",
     labels=["megatron", "weight-update"],
     hardware=["hopper", "blackwell"],
+    num_gpus=8,
 )
 register_rocm_ci(est_time=300, suite="nightly-stage-c-8-gpu-mi350", labels=["megatron", "weight-update"])
 register_ci_gate(metric_key="train/grad_norm")
 register_ci_gate(metric_key="rollout/raw_reward")
+register_ci_gate(metric_key="perf/actor_train_mfu")
 
 
 def prepare():
@@ -38,7 +40,7 @@ def prepare():
 
 def execute():
     U = command_utils.default_config().create_backend()
-    ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " f"--ref-load /root/{MODEL_NAME}_torch_dist "
+    ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " f"--ref-load /root/models/{MODEL_NAME}_torch_dist "
     rollout_args = (
         "--prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl "
         "--input-key prompt "

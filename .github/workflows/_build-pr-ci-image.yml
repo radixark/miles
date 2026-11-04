@@ -190,12 +190,15 @@ jobs:
       # Shared builders accumulate buildkit cache and orphaned builder volumes
       # until the disk fills and installs die with ENOSPC mid-layer. Reclaim
       # anything idle for 48h before building; recent cache survives.
+      # The daemon is shared with the host's GPU runners, so prune only what
+      # holds disk: `system prune` would also delete their idle networks
+      # (the aliyun rdma-rail* networks job containers need for RDMA).
       - name: Free builder disk
         if: env.BUILD == 'true'
         run: |
           df -h / || true
           docker builder prune -af --filter "until=48h" || true
-          docker system prune -af --filter "until=48h" || true
+          docker image prune -af --filter "until=48h" || true
           docker volume prune -f || true
           df -h / || true
       - name: Set up Docker Buildx

@@ -2,6 +2,7 @@ from miles.utils.external_utils.command_utils.base_backend import (
     CommandUtilConfig,
     ExecuteTrainConfig,
     default_config,
+    exclusive_path_lock,
     resolve_extra_env_vars,
     resolve_hardware,
 )
@@ -15,6 +16,7 @@ from miles.utils.external_utils.command_utils.common import (
     get_default_wandb_args,
     get_env_enable_infinite_run,
     get_mooncake_object_store_args,
+    get_output_store_args,
     repo_base_dir,
     rsync_cmd,
 )
@@ -30,10 +32,12 @@ __all__ = [
     "default_config",
     "detect_hardware",
     "encode_pseudo_file",
+    "exclusive_path_lock",
     "get_bool_env_var",
     "get_default_wandb_args",
     "get_env_enable_infinite_run",
     "get_mooncake_object_store_args",
+    "get_output_store_args",
     "repo_base_dir",
     "resolve_extra_env_vars",
     "resolve_hardware",

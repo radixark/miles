@@ -122,14 +122,14 @@ class TestManualProtocol:
             assert poll.status_code == 200
             if poll.json()["status"] != "pending":
                 break
-        assert poll.json() == {"status": "success", "result": 7, "error": None}
+        assert poll.json() == {"status": "success", "result": 7, "error": None, "error_type": None}
 
     async def test_finished_call_can_be_polled_repeatedly(self, raw):
         """A finished outcome stays retrievable for later polls."""
         await raw.post("/v1/demo_sync", json={"call_id": "manual-2", "query": {"a": 1, "b": 1}})
         for _ in range(3):
             body = (await raw.get("/v1/calls/manual-2", params={"timeout": 5.0})).json()
-        assert body == {"status": "success", "result": 2, "error": None}
+        assert body == {"status": "success", "result": 2, "error": None, "error_type": None}
 
     async def test_second_client_sees_the_outcome(self, raw, server):
         """Call state belongs to the server, not to the connection that submitted it."""

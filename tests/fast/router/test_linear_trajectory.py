@@ -999,7 +999,8 @@ class TestComputeSessionMismatch:
         assert mock_tokenize.call_args.kwargs["template_args"] == {"reasoning_effort": "low"}
 
 
-def test_committed_full_turn_args_are_isolated_from_later_request_mutation(registry):
+def test_committed_full_turn_args_are_the_committed_request(registry):
+    """One copy: the history keeps the committed request itself, read-only from then on."""
     session = registry.get_session(registry.create_session())
     request_args = {
         "temperature": 0.7,
@@ -1011,18 +1012,7 @@ def test_committed_full_turn_args_are_isolated_from_later_request_mutation(regis
     session.update_pretokenized_state(
         [SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2], [3], max_trim_tokens=0, turn_args=request_args
     )
-    request_args["temperature"] = 0.1
-    request_args["messages"][0]["content"] = "changed"
-    request_args["tools"][0]["function"]["name"] = "changed"
-    request_args["chat_template_kwargs"]["nested"].append(2)
-    request_args["input_ids"].append(9)
-    assert session.turn_args == {
-        "temperature": 0.7,
-        "messages": [{"role": "user", "content": "hi"}],
-        "tools": [{"function": {"name": "f"}}],
-        "chat_template_kwargs": {"nested": [1]},
-        "input_ids": [1, 2],
-    }
+    assert session.turn_args is request_args
 
 
 def test_mismatch_does_not_resolve_defaults_for_an_empty_committed_record(registry):

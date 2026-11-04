@@ -105,7 +105,9 @@ class DeepseekV4Bridge(DeepseekV3Bridge):
         # round these to bf16 before they reach the fp32 mcore params. Run the base
         # reshaping but skip the dtype downcast for fp32-source weights.
         if len(hf_weights) == 1 and hf_weights[0].dtype == torch.float32:
-            saved_dtype = getattr(self, "dtype", None)
+            saved_dtype = getattr(
+                self, "dtype", None
+            )  # config-access-exempt: mbridge versions may leave the optional weight-conversion dtype unset
             self.dtype = None
             try:
                 return super()._weight_to_mcore_format(mcore_weights_name, hf_weights)
@@ -113,32 +115,84 @@ class DeepseekV4Bridge(DeepseekV3Bridge):
                 self.dtype = saved_dtype
         return super()._weight_to_mcore_format(mcore_weights_name, hf_weights)
 
+    _MLA_YARN_KEYS = (
+        "beta_fast",
+        "beta_slow",
+        "factor",
+        "mscale",
+        "mscale_all_dim",
+        "original_max_position_embeddings",
+        "type",
+    )
+
     def _build_config(self):
-        self.hf_config.rope_theta = self.hf_config.rope_scaling["rope_theta"]
+        rope_scaling = self.hf_config.rope_scaling
+        if "rope_theta" in rope_scaling:
+            self.hf_config.rope_theta = rope_scaling["rope_theta"]
+        else:
+            # transformers >= 5.12 DeepseekV4Config republishes the checkpoint's flat
+            # yarn rope_scaling under "compress"; the DSV3 bridge base reads the flat form.
+            yarn = rope_scaling["compress"]
+            self.hf_config.rope_scaling = {key: yarn[key] for key in self._MLA_YARN_KEYS if key in yarn}
+        # MLA fields the DSV3 bridge base reads but DeepseekV4Config does not
+        # define; conversion builds the model from CLI args, so the DSV3Config
+        # defaults only need to exist here.
+        for key, value in (
+            ("kv_lora_rank", 512),
+            ("qk_nope_head_dim", 128),
+            ("v_head_dim", 128),
+            ("first_k_dense_replace", 3),
+        ):
+            if key not in self.hf_config:
+                setattr(self.hf_config, key, value)
         config = super()._build_config()
 
         config.attention_backend = AttnBackend.auto
         config.moe_router_score_function = self.hf_config.scoring_func
 
         config.experimental_attention_variant = "dsv4"
-        config.dsa_indexer_n_heads = getattr(self.hf_config, "index_n_heads", 64)
-        config.dsa_indexer_head_dim = getattr(self.hf_config, "index_head_dim", 128)
-        config.dsa_indexer_topk = getattr(self.hf_config, "index_topk", 512)
+        config.dsa_indexer_n_heads = getattr(
+            self.hf_config, "index_n_heads", 64
+        )  # config-access-exempt: HF checkpoints may omit indexer head count
+        config.dsa_indexer_head_dim = getattr(
+            self.hf_config, "index_head_dim", 128
+        )  # config-access-exempt: HF checkpoints may omit indexer head dimension
+        config.dsa_indexer_topk = getattr(
+            self.hf_config, "index_topk", 512
+        )  # config-access-exempt: HF checkpoints may omit indexer top-k
 
-        config.num_residual_streams = getattr(self.hf_config, "hc_mult", 4)
-        config.mhc_sinkhorn_iterations = getattr(self.hf_config, "hc_sinkhorn_iters", 20)
+        config.num_residual_streams = getattr(
+            self.hf_config, "hc_mult", 4
+        )  # config-access-exempt: HF checkpoints may omit hyper-connection multiplicity
+        config.mhc_sinkhorn_iterations = getattr(
+            self.hf_config, "hc_sinkhorn_iters", 20
+        )  # config-access-exempt: HF checkpoints may omit Sinkhorn iteration count
 
-        config.csa_compress_ratios = getattr(self.hf_config, "compress_ratios", None)
-        config.csa_compress_rotary_base = getattr(self.hf_config, "compress_rope_theta", 160000)
+        config.csa_compress_ratios = getattr(
+            self.hf_config, "compress_ratios", None
+        )  # config-access-exempt: HF checkpoints may omit compression ratios
+        config.csa_compress_rotary_base = getattr(
+            self.hf_config, "compress_rope_theta", 160000
+        )  # config-access-exempt: HF checkpoints may omit compression rotary base
 
-        swiglu_limit = getattr(self.hf_config, "swiglu_limit", 0.0)
+        swiglu_limit = getattr(
+            self.hf_config, "swiglu_limit", 0.0
+        )  # config-access-exempt: HF checkpoints may omit the SwiGLU clamp
         if swiglu_limit > 0:
             config.bias_activation_fusion = False
             config.activation_func_clamp_value = swiglu_limit
 
-        config.o_groups = getattr(self.hf_config, "o_groups", 8)
-        config.o_lora_rank = getattr(self.hf_config, "o_lora_rank", 1024)
-        config.moe_n_hash_layers = getattr(self.hf_config, "n_hash_layers", 3)
-        config.csa_window_size = getattr(self.hf_config, "window_size", 128)
+        config.o_groups = getattr(
+            self.hf_config, "o_groups", 8
+        )  # config-access-exempt: HF checkpoints may omit output projection groups
+        config.o_lora_rank = getattr(
+            self.hf_config, "o_lora_rank", 1024
+        )  # config-access-exempt: HF checkpoints may omit output projection rank
+        config.moe_n_hash_layers = getattr(
+            self.hf_config, "n_hash_layers", 3
+        )  # config-access-exempt: HF checkpoints may omit hash-layer count
+        config.csa_window_size = getattr(
+            self.hf_config, "window_size", 128
+        )  # config-access-exempt: HF checkpoints may omit the CSA window
 
         return config

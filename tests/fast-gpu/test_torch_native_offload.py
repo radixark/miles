@@ -1,14 +1,17 @@
 import torch
 import torch.distributed as dist
 import torch.nn as nn
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from torch.distributed.device_mesh import init_device_mesh
 from torch.distributed.fsdp import fully_shard
 from torch.distributed.tensor import DTensor
 
 from miles.backends.training_utils.torch_native.offload import move_train_state
 
-register_cuda_ci(est_time=30, suite="stage-b-2-gpu-h200", labels=["fsdp", "torchtitan"], hardware=["hopper"])
+register_cuda_ci(
+    est_time=30, suite="stage-b-2-gpu-h200", labels=["fsdp", "torchtitan"], hardware=["hopper"], num_gpus=2
+)
+register_rocm_ci(est_time=60, suite="nightly-stage-c-2-gpu-mi350", labels=["fsdp", "torchtitan"])
 
 
 def _local(tensor: torch.Tensor) -> torch.Tensor:
@@ -36,12 +39,12 @@ def test_offload_round_trips_fsdp_state_through_pinned_host_memory(monkeypatch):
         optimizer.step()
         before = [tensor.detach().cpu().clone() for tensor in _train_state(model, optimizer)]
 
-        move_train_state([model], [optimizer], "cpu")
+        move_train_state([model], [optimizer], to_host=True)
         offloaded = _train_state(model, optimizer)
         assert all(tensor.device.type == "cpu" and tensor.is_pinned() for tensor in offloaded)
         assert all(isinstance(param, DTensor) for param in model.parameters())
 
-        move_train_state([model], [optimizer], "cuda")
+        move_train_state([model], [optimizer], to_host=False)
         restored = _train_state(model, optimizer)
         assert all(tensor.device.type == "cuda" for tensor in restored)
         assert all(torch.equal(a, b.cpu()) for a, b in zip(before, restored, strict=True))
@@ -50,3 +53,11 @@ def test_offload_round_trips_fsdp_state_through_pinned_host_memory(monkeypatch):
         optimizer.step()
     finally:
         dist.destroy_process_group()
+
+
+if __name__ == "__main__":
+    import sys
+
+    import pytest
+
+    sys.exit(pytest.main([__file__, "-v"]))

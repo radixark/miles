@@ -7,7 +7,7 @@ Run with:
 Each rank runs V4Indexer.forward's two steps around the key gather, start_row_exchange and
 topk_for_local_rows, once keeping its rows and once balancing them with a collective on the CP group
 while the rows are in flight. The balanced picks must equal the local ones, bit for bit for the torch
-top-k and as sets for flashinfer; unpacked, the local ones must also equal the pre-balancing
+and canonical top-k and as sets for flashinfer; unpacked, the local ones must also equal the pre-balancing
 indexer's (tests/fast/test_dsv4_thd.py pins the THD bounds to running each sample alone). Cases:
 unpacked batch 1 and 2, THD packs with a long document and with odd scored-row counts, a pack of
 tiny documents that leaves a CP4 rank nothing to score, and a pack of equal short documents, which
@@ -19,23 +19,22 @@ import sys
 
 import torch
 import torch.distributed as dist
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
+from miles.kernels.attention.dsa import causal_ranges_compressed, indexer_logits_sbhd
+from miles.kernels.attention.dsa.topk import get_dsa_topk_fn
 from miles_plugins.models.deepseek_v4.ops.cp_row_balance import RowExchange
-from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_indexer_fwd import (
-    _make_causal_cu_seqlens,
-    batched_indexer_fwd,
-)
 from miles_plugins.models.deepseek_v4.ops.thd_utils import ThdLayout, compressed_cu_seqlens
 from miles_plugins.models.deepseek_v4.ops.v4_indexer import start_row_exchange, topk_for_local_rows
-from miles_plugins.models.dsa_topk import get_dsa_topk_fn
 
 register_cuda_ci(
     est_time=60,
     suite="stage-c-4-gpu-h200",
     labels=["precision", "megatron"],
     hardware=["hopper", "blackwell"],
+    num_gpus=4,
 )
+register_rocm_ci(est_time=60, suite="nightly-stage-c-4-gpu-mi350", labels=["precision", "megatron"])
 
 SEQLEN_GLOBAL = 16384
 RATIO = 4
@@ -73,21 +72,22 @@ def _thd_layout(seq_lens, rank, rank_rows):
     return layout
 
 
-def _unbalanced_unpacked_topk(q, k, weights, rank, topk_fn):
+def _unbalanced_unpacked_topk(q, k, weights, rank, topk_fn, clean_logits):
     """The unpacked indexer before balancing: this rank's own rows, bounds sliced from the contiguous run."""
     rank_rows = q.shape[0]
-    cu_ks, cu_ke = _make_causal_cu_seqlens(SEQLEN_GLOBAL, k.shape[0], RATIO, q.device)
+    cu_ks, cu_ke = causal_ranges_compressed(SEQLEN_GLOBAL, RATIO, q.device)
     cu_ks, cu_ke = (
         cu_ks[rank * rank_rows : (rank + 1) * rank_rows],
         cu_ke[rank * rank_rows : (rank + 1) * rank_rows],
     )
-    scores = batched_indexer_fwd(q, k, weights, cu_ks, cu_ke)
+    scores = indexer_logits_sbhd(q, k, weights, cu_ks, cu_ke, clean_logits=clean_logits)
     bsz, rows, n_kv = scores.shape
-    return topk_fn(scores.reshape(bsz * rows, n_kv), min(TOPK, n_kv)).reshape(bsz, rows, -1)
+    flat_scores = scores.reshape(bsz * rows, n_kv)
+    return topk_fn(flat_scores, min(TOPK, n_kv), cu_ks.repeat(bsz), cu_ke.repeat(bsz)).reshape(bsz, rows, -1)
 
 
 def _same_picks(got, expected, topk_backend):
-    if topk_backend == "torch":
+    if topk_backend in ("torch", "canonical"):
         return torch.equal(got, expected)
     # flashinfer returns each row's picks unsorted
     return torch.equal(got.sort(dim=-1).values, expected.sort(dim=-1).values)
@@ -100,7 +100,8 @@ def check_picks(rank, world_size, topk_backend, thd_seq_lens=None, bsz=1):
     n_kv = int(thd_layout.cu_seqlens_compressed[-1]) if thd_layout else SEQLEN_GLOBAL // RATIO
     q, k, weights = _inputs(rank, rank_rows, n_kv, bsz)
     topk_fn = get_dsa_topk_fn(topk_backend)
-    options = dict(compress_ratio=RATIO, index_topk=TOPK, topk_fn=topk_fn)
+    clean_logits = topk_backend != "canonical"
+    options = dict(compress_ratio=RATIO, index_topk=TOPK, topk_fn=topk_fn, clean_logits=clean_logits)
     group = dist.group.WORLD
 
     kept = start_row_exchange(q, weights, thd_layout, group, balance=False)
@@ -112,13 +113,13 @@ def check_picks(rank, world_size, topk_backend, thd_seq_lens=None, bsz=1):
 
     picks_equal = _same_picks(balanced, local, topk_backend)
     if thd_layout is None:
-        expected = _unbalanced_unpacked_topk(q, k, weights, rank, topk_fn)
+        expected = _unbalanced_unpacked_topk(q, k, weights, rank, topk_fn, clean_logits)
         picks_equal = picks_equal and _same_picks(local, expected, topk_backend)
     return picks_equal, isinstance(exchange, RowExchange)
 
 
 def _topk_backends():
-    backends = ["torch"]
+    backends = ["torch", "canonical"]
     try:
         get_dsa_topk_fn("flashinfer")(torch.randn(2, 1024, device="cuda"), 8)
         backends.append("flashinfer")

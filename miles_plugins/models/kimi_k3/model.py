@@ -5,7 +5,7 @@ from megatron.core.models.gpt.gpt_layer_specs import get_gpt_decoder_block_spec
 from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.transformer.transformer_layer import get_transformer_layer_offset
 
-from .layers import KimiK3Attention, KimiK3TransformerLayer
+from .layers import KimiK3Attention, KimiK3KDAAttention, KimiK3TransformerLayer
 from .ops import situ_and_mul
 
 
@@ -46,7 +46,9 @@ def build_kimi_k3_spec(config, vp_stage=None):
     for layer_spec in block_spec.layer_specs:
         layer_spec = copy.deepcopy(layer_spec)
         layer_spec.module = KimiK3TransformerLayer
-        layer_spec.submodules.self_attention = ModuleSpec(module=KimiK3Attention)
+        layer_number = layer_offset + len(layer_specs) + 1
+        attention = KimiK3KDAAttention if layer_number in config.kimi_kda_layers else KimiK3Attention
+        layer_spec.submodules.self_attention = ModuleSpec(module=attention)
         layer_spec.submodules.input_layernorm = TENorm
         layer_spec.submodules.pre_mlp_layernorm = TENorm
 

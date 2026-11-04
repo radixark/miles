@@ -117,6 +117,12 @@ async def run_agentic_tool_call(
     return AGENTIC_RETURN_METADATA
 
 
+async def run_agentic_tool_call_returning_reward(**kwargs) -> dict[str, Any]:
+    """``run_agentic_tool_call`` returning a fixed reward without module state, which a fresh process lacks."""
+    await run_agentic_tool_call(**kwargs)
+    return {"agent_reward": 42.0}
+
+
 async def run_agentic_noop(**kwargs) -> None:
     """Agent function that makes no model calls — for testing the no-records path."""
     return None

@@ -16,6 +16,7 @@ from pathlib import Path
 from types import FrameType
 
 import pytest
+from tests.ci.ci_register import register_cpu_ci
 from torch.distributed.elastic.multiprocessing import DefaultLogsSpecs
 from torch.distributed.elastic.multiprocessing.api import RunProcsResult, SignalException
 from torch.distributed.elastic.multiprocessing.errors import ProcessFailure
@@ -31,6 +32,8 @@ from miles.utils.workers.process_supervisor import (
     main,
     supervise,
 )
+
+register_cpu_ci(est_time=100, suite="stage-b-cpu", labels=["rpc-comm"])
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 CHILD_SCRIPT = Path(__file__).resolve()

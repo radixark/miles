@@ -1,7 +1,7 @@
 from tests.ci.ci_register import register_cuda_ci
 from tests.e2e.torchtitan._common import CaseConfig, execute, prepare
 
-register_cuda_ci(est_time=600, suite="stage-c-2-gpu-h200", labels=["torchtitan"], hardware=["hopper"])
+register_cuda_ci(est_time=600, suite="stage-c-2-gpu-h200", labels=["torchtitan"], hardware=["hopper"], num_gpus=2)
 
 # The baseline: one model, no parallelism beyond data, colocated engines. What
 # it covers is the path itself -- torchtitan's Trainer built from miles' args,

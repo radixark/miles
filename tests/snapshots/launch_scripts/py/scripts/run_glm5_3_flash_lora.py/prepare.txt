@@ -1,0 +1,64 @@
+### 0
+mkdir -p /root/models /root/ckpt /root/datasets
+
+### 1
+hf download CharyZeng/GLM-5.3-Flash-4layer
+  --local-dir /root/models/GLM-5.3-Flash-4layer
+
+### 2
+hf download zai-org/GLM-5.3-Flash processor_config.json
+  --local-dir /root/models/GLM-5.3-Flash-4layer
+
+### 3
+hf download
+  --repo-type dataset zhuzilin/dapo-math-17k
+  --local-dir /root/datasets/dapo-math-17k
+
+### 4
+PYTHONPATH=<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath torchrun
+  --nproc-per-node 8 <REPO_ROOT>/tools/convert_hf_to_torch_dist.py
+  --spec miles_plugins.models.glm5_next.glm5_next get_glm5_next_spec
+  --num-layers 4
+  --hidden-size 4096
+  --ffn-hidden-size 12288
+  --num-attention-heads 64
+  --multi-latent-attention
+  --q-lora-rank 1536
+  --kv-lora-rank 512
+  --qk-head-dim 256
+  --qk-pos-emb-head-dim 0
+  --v-head-dim 256
+  --kv-channels 256
+  --qk-layernorm
+  --moe-layer-freq '[0,1,1,1]'
+  --num-experts 288
+  --moe-router-topk 8
+  --moe-router-score-function sigmoid
+  --moe-router-pre-softmax
+  --moe-router-enable-expert-bias
+  --moe-router-bias-update-rate 0
+  --moe-router-topk-scaling-factor 2.5
+  --moe-ffn-hidden-size 2048
+  --moe-shared-expert-intermediate-size 2048
+  --moe-router-dtype fp32
+  --moe-grouped-gemm
+  --moe-permute-fusion
+  --vocab-size 154880
+  --rotary-base 10000
+  --rope-type rope
+  --no-rope-fusion
+  --position-embedding-type rope
+  --normalization RMSNorm
+  --norm-epsilon 1e-5
+  --swiglu
+  --activation-func-clamp-value 10
+  --disable-bias-linear
+  --untie-embeddings-and-output-weights
+  --make-vocab-size-divisible-by 16
+  --enable-experimental
+  --hf-checkpoint /root/models/GLM-5.3-Flash-4layer
+  --save /root/ckpt/glm5.3-flash-4layer_torch_dist
+  --tensor-model-parallel-size 2
+  --pipeline-model-parallel-size 1
+  --expert-model-parallel-size 8
+  --expert-tensor-parallel-size 1

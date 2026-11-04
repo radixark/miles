@@ -20,9 +20,6 @@ RAY_USING_MODULES = {
     "miles/ray/placement_group.py": "launcher closure: placement groups are how ray is asked to schedule",
     "miles/ray/wiring.py": "launcher closure: driver shutdown kills the manager it launched by ActorHandle",
     "miles/utils/ray_utils.py": "launcher closure: node lookup and pinning options for the launcher's own calls",
-    "miles/utils/orchestration_utils.py": (
-        "launcher closure: the shared driver composition root returns its ray worker manager"
-    ),
     "miles/utils/workers/ray_worker_manager.py": "launcher closure: it is the launcher",
     "miles/utils/workers/ray_worker_handle.py": "launcher closure: the handle of the ray communication mode itself",
     "miles/utils/workers/worker_provider/ray.py": "launcher closure: it reads the launcher's own bookkeeping",
@@ -39,7 +36,7 @@ RAY_USING_MODULES = {
     "miles/utils/tracking_utils/prometheus_utils.py": "known debt: the prometheus collector is a ray actor, skipped under kubernetes",
     "miles/ray/train_actor.py": "launcher closure: a launched actor reads the gpu ids ray gave it",
     "miles/backends/training_utils/weight_update/protocols/broadcast.py": "node ip lookup for a collective, not a call to another worker",
-    "miles/backends/training_utils/weight_update/protocols/p2p_transfer_utils.py": "node ip lookup for a collective, not a call to another worker",
+    "miles/backends/training_utils/weight_update/protocols/transports/mooncake.py": "node ip lookup for a collective, not a call to another worker",
     "miles/utils/debug_utils/replay_reward_fn.py": "tooling: a standalone debugging script",
     "miles/utils/test_utils/mock_sglang_engine.py": "tooling: a test double that stands in for a ray-launched engine",
     "tools/convert_torch_dist_to_hf_ray.py": "tooling: a standalone conversion script that fans out over a ray cluster",

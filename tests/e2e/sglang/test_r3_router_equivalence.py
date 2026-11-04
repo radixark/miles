@@ -8,6 +8,7 @@ register_cuda_ci(
     labels=["sglang"],
     hardware=["hopper", "blackwell"],
     disabled="Miles Router is deprecated.",
+    num_gpus=4,
 )
 
 """E2E test: verify sglang router and miles router produce identical rollout
@@ -182,7 +183,7 @@ def _build_train_args(cfg: ModelConfig, variant: str) -> str:
 
     infra_args = (
         "--debug-rollout-only "
-        "--ci-test "
+        "--ci-test --no-enable-sample-ownership-checker "
         "--actor-num-nodes 1 "
         f"--actor-num-gpus-per-node {cfg.num_gpus} "
         "--colocate "

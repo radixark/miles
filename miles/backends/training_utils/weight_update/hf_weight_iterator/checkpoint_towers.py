@@ -6,6 +6,8 @@ import os
 import torch
 from safetensors import safe_open
 
+from miles.platforms import current_platform
+
 _TOWERS = ("visual", "audio")
 
 
@@ -43,4 +45,4 @@ def iter_checkpoint_tower_units(hf_checkpoint: str, *, materialize: bool):
     if not materialize:
         return
     for name, tensor in _load_towers(hf_checkpoint):
-        yield [(name, tensor.to(torch.cuda.current_device()))]
+        yield [(name, tensor.to(current_platform.current_device()))]

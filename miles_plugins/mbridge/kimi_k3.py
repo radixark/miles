@@ -5,13 +5,14 @@ from megatron.core.transformer.enums import AttnBackend
 from mbridge.core import register_model
 from mbridge.core.safetensor_io import SafeTensorIO
 from mbridge.models import DeepseekV3Bridge
+from miles_plugins.mbridge.linear_attn import LinearAttentionBridgeMixin
 
 from miles_plugins.models.kimi_k3.model import build_kimi_k3_spec
 from miles_plugins.models.kimi_k3.ops import situ_and_mul
 
 
 @register_model("kimi_k3")
-class KimiK3Bridge(DeepseekV3Bridge):
+class KimiK3Bridge(LinearAttentionBridgeMixin, DeepseekV3Bridge):
     TransformerConfigClass = MLATransformerConfig
 
     _CONFIG_MAPPING = {
@@ -34,19 +35,45 @@ class KimiK3Bridge(DeepseekV3Bridge):
 
     _ATTENTION_MAPPING = {
         "input_layernorm.weight": ["language_model.model.layers.{layer_number}.input_layernorm.weight"],
-        "self_attention.q_proj.weight": ["language_model.model.layers.{layer_number}.self_attn.q_proj.weight"],
-        "self_attention.k_proj.weight": ["language_model.model.layers.{layer_number}.self_attn.k_proj.weight"],
-        "self_attention.v_proj.weight": ["language_model.model.layers.{layer_number}.self_attn.v_proj.weight"],
-        "self_attention.q_conv1d.weight": ["language_model.model.layers.{layer_number}.self_attn.q_conv1d.weight"],
-        "self_attention.k_conv1d.weight": ["language_model.model.layers.{layer_number}.self_attn.k_conv1d.weight"],
-        "self_attention.v_conv1d.weight": ["language_model.model.layers.{layer_number}.self_attn.v_conv1d.weight"],
-        "self_attention.A_log": ["language_model.model.layers.{layer_number}.self_attn.A_log"],
-        "self_attention.dt_bias": ["language_model.model.layers.{layer_number}.self_attn.dt_bias"],
-        "self_attention.f_a_proj.weight": ["language_model.model.layers.{layer_number}.self_attn.f_a_proj.weight"],
-        "self_attention.f_b_proj.weight": ["language_model.model.layers.{layer_number}.self_attn.f_b_proj.weight"],
-        "self_attention.b_proj.weight": ["language_model.model.layers.{layer_number}.self_attn.b_proj.weight"],
+        "self_attention.linear_attn.q_proj.weight": [
+            "language_model.model.layers.{layer_number}.self_attn.q_proj.weight"
+        ],
+        "self_attention.linear_attn.k_proj.weight": [
+            "language_model.model.layers.{layer_number}.self_attn.k_proj.weight"
+        ],
+        "self_attention.linear_attn.v_proj.weight": [
+            "language_model.model.layers.{layer_number}.self_attn.v_proj.weight"
+        ],
+        "self_attention.linear_attn.q_conv1d.weight": [
+            "language_model.model.layers.{layer_number}.self_attn.q_conv1d.weight"
+        ],
+        "self_attention.linear_attn.k_conv1d.weight": [
+            "language_model.model.layers.{layer_number}.self_attn.k_conv1d.weight"
+        ],
+        "self_attention.linear_attn.v_conv1d.weight": [
+            "language_model.model.layers.{layer_number}.self_attn.v_conv1d.weight"
+        ],
+        "self_attention.linear_attn.A_log": ["language_model.model.layers.{layer_number}.self_attn.A_log"],
+        "self_attention.linear_attn.dt_bias": ["language_model.model.layers.{layer_number}.self_attn.dt_bias"],
+        "self_attention.linear_attn.f_a_proj.weight": [
+            "language_model.model.layers.{layer_number}.self_attn.f_a_proj.weight"
+        ],
+        "self_attention.linear_attn.f_b_proj.weight": [
+            "language_model.model.layers.{layer_number}.self_attn.f_b_proj.weight"
+        ],
+        "self_attention.linear_attn.b_proj.weight": [
+            "language_model.model.layers.{layer_number}.self_attn.b_proj.weight"
+        ],
+        "self_attention.linear_attn.g_proj.weight": [
+            "language_model.model.layers.{layer_number}.self_attn.g_proj.weight"
+        ],
+        "self_attention.linear_attn.norm.weight": [
+            "language_model.model.layers.{layer_number}.self_attn.o_norm.weight"
+        ],
+        "self_attention.linear_attn.out_proj.weight": [
+            "language_model.model.layers.{layer_number}.self_attn.o_proj.weight"
+        ],
         "self_attention.g_proj.weight": ["language_model.model.layers.{layer_number}.self_attn.g_proj.weight"],
-        "self_attention.o_norm.weight": ["language_model.model.layers.{layer_number}.self_attn.o_norm.weight"],
         "self_attention.o_proj.weight": ["language_model.model.layers.{layer_number}.self_attn.o_proj.weight"],
         "self_attention.q_a_proj.weight": ["language_model.model.layers.{layer_number}.self_attn.q_a_proj.weight"],
         "self_attention.q_a_layernorm.weight": [
@@ -201,17 +228,17 @@ class KimiK3Bridge(DeepseekV3Bridge):
     ) -> torch.Tensor:
         if mcore_weights_name.endswith(
             (
-                "self_attention.q_conv1d.weight",
-                "self_attention.k_conv1d.weight",
-                "self_attention.v_conv1d.weight",
+                "self_attention.linear_attn.q_conv1d.weight",
+                "self_attention.linear_attn.k_conv1d.weight",
+                "self_attention.linear_attn.v_conv1d.weight",
             )
         ):
             assert len(hf_weights) == 1
             return hf_weights[0].float().contiguous()
-        if mcore_weights_name.endswith("self_attention.A_log"):
+        if mcore_weights_name.endswith("self_attention.linear_attn.A_log"):
             assert len(hf_weights) == 1
             return hf_weights[0][: self.config.kimi_linear_num_heads].float().contiguous()
-        if mcore_weights_name.endswith("self_attention.dt_bias"):
+        if mcore_weights_name.endswith("self_attention.linear_attn.dt_bias"):
             assert len(hf_weights) == 1
             return hf_weights[0].float().contiguous()
         return super()._weight_to_mcore_format(mcore_weights_name, hf_weights)

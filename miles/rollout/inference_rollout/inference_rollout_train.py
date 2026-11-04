@@ -3,11 +3,9 @@ import logging
 from argparse import Namespace
 from collections.abc import Callable
 
-import sglang_router
-from packaging.version import parse
 from tqdm import tqdm
 
-from miles.rollout.base_types import RolloutFnTrainOutput
+from miles.rollout.base_types import RolloutFnTrainOutput, stamp_kv_cache_namespace
 from miles.rollout.filter_hub.base_types import MetricGatherer
 from miles.rollout.filter_hub.common_filters import apply_preput_filters
 from miles.rollout.generate_utils.prefill_logprobs import recompute_samples_rollout_logprobs_via_prefill
@@ -15,9 +13,12 @@ from miles.rollout.generate_utils.sample_utils import reward_log_summary, sample
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState, generate_and_rm_group
 from miles.rollout.submission_scheduler import make_submission_scheduler
 from miles.utils import dumper_utils
+from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
 from miles.utils.function_registry import load_function
 from miles.utils.http_utils import get, post, router_worker_base_urls
 from miles.utils.misc import as_completed_async, call_agent_abort_hook
+from miles.utils.output_store.dropped import record_dropped_samples
+from miles.utils.retry_utils import NonRetryableError
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
@@ -46,6 +47,12 @@ async def abort(state: GenerateState, pendings: set, rollout_id: int) -> list[li
     aborted_samples = []
     async for group in as_completed_async(pendings):
         if not args.partial_rollout:
+            record_dropped_samples(group)
+            SampleOwnershipRecorder.log_dropped_samples(
+                args=args,
+                samples=[sample for item in group for sample in (item if isinstance(item, list) else [item])],
+                reason="aborted",
+            )
             continue
 
         # for partial rollout, collect the partial samples into the data buffer
@@ -61,13 +68,8 @@ async def abort(state: GenerateState, pendings: set, rollout_id: int) -> list[li
 
 
 async def get_worker_urls(args: Namespace):
-    if parse(sglang_router.__version__) <= parse("0.2.1") or args.use_miles_router:
-        response = await get(f"http://{args.sglang_router_ip}:{args.sglang_router_port}/list_workers")
-        urls = response["urls"]
-    else:
-        response = await get(f"http://{args.sglang_router_ip}:{args.sglang_router_port}/workers")
-        urls = [worker["url"] for worker in response["workers"]]
-    return router_worker_base_urls(urls)
+    response = await get(f"http://{args.sglang_router_ip}:{args.sglang_router_port}/workers")
+    return router_worker_base_urls([worker["url"] for worker in response["workers"]])
 
 
 def submit_generate_tasks(
@@ -91,7 +93,11 @@ def submit_generate_tasks(
 
 
 async def generate_rollout_async(
-    state: GenerateState, rollout_id: int, data_source: Callable[[int], list[list[Sample]]]
+    state: GenerateState,
+    rollout_id: int,
+    data_source: Callable[[int], list[list[Sample]]],
+    *,
+    kv_cache_namespace: str | None = None,
 ) -> tuple[RolloutFnTrainOutput, list[list[Sample]]]:
     args = state.args
     assert args.rollout_global_dataset
@@ -118,6 +124,7 @@ async def generate_rollout_async(
         while scheduler.has_capacity(pending_groups=len(pendings), group_budget=target_data_size - len(data)):
             # get samples from the buffer and submit the generation requests.
             samples = data_source(args.over_sampling_batch_size)
+            stamp_kv_cache_namespace(samples, namespace=kv_cache_namespace)
             scheduler.on_submit(samples)
             pendings.update(submit_generate_tasks(state, samples, scheduler.sample_done_callback))
 
@@ -128,6 +135,9 @@ async def generate_rollout_async(
         for task in done:
             try:
                 group: list[Sample] = task.result()
+            except NonRetryableError:
+                # A broken contract fails every later group the same way; stop instead of spinning.
+                raise
             except Exception as e:
                 logger.error(f"[rollout] Task raised exception: {e!r}", exc_info=True)
                 continue
@@ -148,6 +158,8 @@ async def generate_rollout_async(
             filter_output = apply_preput_filters(args, dynamic_filter, group)
             if not filter_output.keep:
                 metric_gatherer.on_dynamic_filter_drop(reason=filter_output.reason)
+                record_dropped_samples(group)
+                SampleOwnershipRecorder.log_dropped_groups(args=args, before=group, after=[], reason="dynamic_filter")
                 continue
 
             # add the samples to the data
@@ -155,6 +167,9 @@ async def generate_rollout_async(
             if len(data) < target_data_size:
                 data.append(group)
                 pbar.update(args.n_samples_per_prompt)
+            else:
+                record_dropped_samples(group)
+                SampleOwnershipRecorder.log_dropped_groups(args=args, before=group, after=[], reason="oversampling")
 
     pbar.close()
     sample = data[-1][0][0] if isinstance(data[-1][0], list) else data[-1][0]
@@ -177,8 +192,14 @@ async def generate_rollout_async(
     # reset the global state to prevent effects on the next rollout or eval.
     state.reset()
 
+    before_filter = SampleOwnershipRecorder.flatten_samples(data)
     if f := load_function(args.rollout_sample_filter_path):
         f(args, data)
+    kept = {id(sample) for sample in SampleOwnershipRecorder.flatten_samples(data)}
+    record_dropped_samples(sample for sample in before_filter if id(sample) not in kept)
+    SampleOwnershipRecorder.log_dropped_groups(
+        args=args, before=before_filter, after=data, reason="rollout_sample_filter"
+    )
     # There can be circumstances where users want to process all samples including filtered ones.
     if f := load_function(args.rollout_all_samples_process_path):
         f(args, all_samples, data_source)

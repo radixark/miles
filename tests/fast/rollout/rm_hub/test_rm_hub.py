@@ -4,7 +4,7 @@ import pytest
 
 from miles.rollout.rm_hub import async_rm, batched_async_rm
 from miles.utils.async_utils import run
-from miles.utils.types import Sample
+from miles.utils.types import RewardSpec, Sample
 
 
 @pytest.fixture
@@ -33,6 +33,16 @@ class TestAsyncRm:
             ("deepscaler", r"</think>\boxed{42}", "42", 1),
             ("gpqa", "Answer: A", "A", 1.0),
             ("boxed_f1", r"Final answer is \boxed{hello world}", "hello world", 1.0),
+            ("boxed_math", r"<think>2+3=5</think> So the result is \boxed{5}.", "5", 1),
+            ("boxed_math", r"<think>2+3=5</think> So the result is \boxed{6}.", "5", 0),
+            ("boxed_deepscaler", r"<think>2+3=5</think> So the result is \boxed{5}.", "5", 1),
+            ("boxed_gemma_math", r"thinking<channel|>So the result is \boxed{\frac{1}{2}}.", "0.5", 1),
+            ("boxed_dapo", r"<think>2+3=5</think> So the result is \boxed{5}.", "5", {"score": 1.0}),
+            ("boxed_dapo", r"<think>2+3=5</think> So the result is \boxed{6}.", "5", {"score": -1.0}),
+            ("boxed_math", "no box here", "5", 0),
+            # A box only inside unfinished reasoning must not count for graders that need a closer.
+            ("boxed_deepscaler", r"<think>so \boxed{5} maybe", "5", 0),
+            ("boxed_gemma_math", r"\boxed{5} thinking<channel|>the answer is 5", "5", 0),
         ],
     )
     def test_rm_types(self, mock_args, rm_type, response, label, expected):
@@ -123,6 +133,15 @@ class TestBatchedAsyncRm:
         samples = [Sample(prompt="", response=r, label=label) for r, label in samples_data]
         rewards = run(batched_async_rm(mock_args, samples))
         assert rewards == expected
+
+    def test_batched_custom_rm_rejects_another_spec_custom_rm_path(self, mock_args):
+        mock_args.custom_rm_path = "global.batched_fn"
+        samples = [
+            Sample(prompt="", response="a", label="a"),
+            Sample(prompt="", response="b", label="b", reward_spec=RewardSpec(custom_rm_path="row.fn")),
+        ]
+        with pytest.raises(ValueError, match=r"group samples \[1\]"):
+            run(batched_async_rm(mock_args, samples))
 
     def test_inplace_set_reward_field(self, mock_args):
         mock_args.rm_type = "math"

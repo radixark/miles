@@ -10,6 +10,7 @@ from decimal import Decimal
 from typing import Any
 
 import pytest
+from tests.ci.ci_register import register_cpu_ci
 
 import miles.utils.chat_template_utils as chat_template_utils
 from miles.utils.chat_template_utils import message_matcher_hub, template
@@ -21,6 +22,8 @@ from miles.utils.chat_template_utils.message_matcher_hub import (
     strict_message_matches,
 )
 from miles.utils.chat_template_utils.message_matcher_hub.funcs import _validated
+
+register_cpu_ci(est_time=50, suite="stage-b-cpu", labels=["rollout"])
 
 _MISSING = object()
 

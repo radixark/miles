@@ -1,9 +1,17 @@
-import polars as pl
-from tests.fast.dashboard.dummy_dump import blank_samples, dump_dummy_run
+from dataclasses import replace
+
 
 from miles.dashboard.advisory import compute_advisories
-from miles.dashboard.dump_reader import DumpReader, RolloutIds
-from miles.dashboard.store import EngineSample, Meta, MetricsRecord, MetricStore, PhaseEvent, Stream
+from miles.dashboard.store import (
+    EngineSample,
+    GpuSample,
+    Meta,
+    MetricsRecord,
+    MetricStore,
+    PhaseEvent,
+    Stream,
+    _ThinnedEngineSeries,
+)
 
 
 def _store(tmp_path, *, args: dict, engine_samples: list[EngineSample]) -> MetricStore:
@@ -124,7 +132,9 @@ def _imbalanced(tmp_path, args: dict) -> str:
 
 def test_dp_imbalance_names_the_knob_that_applies(tmp_path):
     assert "--router-dp-aware" in _imbalanced(tmp_path / "a", {})
-    assert "--sglang-load-balance-method" in _imbalanced(tmp_path / "b", {"use_miles_router": True})
+    assert "--sglang-load-balance-method" in _imbalanced(tmp_path / "b", {"router": "miles"})
+    # runs recorded before --router
+    assert "--sglang-load-balance-method" in _imbalanced(tmp_path / "b2", {"use_miles_router": True})
     assert "--router-policy (cache_aware)" in _imbalanced(
         tmp_path / "c", {"router_dp_aware": True, "router_policy": "cache_aware"}
     )
@@ -327,53 +337,38 @@ def test_kv_bound_concurrency_names_the_real_bottleneck(tmp_path):
     assert "do NOT lower" in advisory.message
 
 
-class _StubReader:
-    def __init__(self, groups_df, summary_df):
-        self._groups = groups_df
-        self._summary = summary_df
-
-    def rollout_ids(self):
-        return RolloutIds(train=[3], eval=[])
-
-    def groups(self, rollout_id, *, evaluation=False):
-        return self._groups
-
-    def summary(self, rollout_id, *, evaluation=False):
-        return self._summary
-
-
-def _summary_df(truncated):
-    return pl.DataFrame({"truncated": truncated})
+def _rollout_store(tmp_path, metrics: dict, *, args: dict | None = None) -> MetricStore:
+    writer = MetricStore(tmp_path)
+    writer.write_meta(Meta(run_name="advisory-test", start_ts=0.0, args=args or {}))
+    writer.append(MetricsRecord(ts=1.0, step_key="rollout/step", step=3, metrics=metrics))
+    writer.flush()
+    return MetricStore.load(tmp_path)
 
 
 def test_zero_std_groups_are_warning(tmp_path):
-    store = _store(tmp_path, args={}, engine_samples=[])
-    groups = pl.DataFrame({"reward_mean": [0.0, 0.0, 0.5], "zero_std": [True, True, False]})
-    [advisory] = compute_advisories(store, _StubReader(groups, _summary_df([False] * 8)))
+    """Read off the logged rollout metrics: the advisory reads no dump."""
+    store = _rollout_store(
+        tmp_path, {"rollout/zero_std/percentage": 2 / 3, "rollout/zero_std/all_zero_percentage": 2 / 3}
+    )
+    [advisory] = compute_advisories(store)
     assert advisory.level == "warning"
-    assert "zero reward std" in advisory.message
+    assert "67% of groups in rollout 3 have zero reward std" in advisory.message
+    assert "systematic failure" not in advisory.message
 
 
 def test_all_zero_rewards_note_systematic_failure(tmp_path):
-    store = _store(tmp_path, args={}, engine_samples=[])
-    groups = pl.DataFrame({"reward_mean": [0.0, 0.0], "zero_std": [True, True]})
-    [advisory] = compute_advisories(store, _StubReader(groups, _summary_df([False] * 8)))
+    store = _rollout_store(tmp_path, {"rollout/zero_std/percentage": 1.0, "rollout/zero_std/all_zero_percentage": 1.0})
+    [advisory] = compute_advisories(store)
     assert "systematic failure" in advisory.message
 
 
-def test_null_rewards_are_missing_data_not_zero_std(tmp_path):
-    store = _store(tmp_path, args={}, engine_samples=[])
-    groups = pl.DataFrame(
-        {"reward_mean": [None, None], "zero_std": [False, False]},
-        schema={"reward_mean": pl.Float64, "zero_std": pl.Boolean},
-    )
-    assert compute_advisories(store, _StubReader(groups, _summary_df([False] * 8))) == []
+def test_run_without_rollout_metrics_makes_no_rollout_claim(tmp_path):
+    assert compute_advisories(_rollout_store(tmp_path, {})) == []
 
 
 def test_truncation_warning_cites_per_turn_cap(tmp_path):
-    store = _store(tmp_path, args={"rollout_max_response_len": 8192}, engine_samples=[])
-    groups = pl.DataFrame({"reward_mean": [0.5], "zero_std": [False]})
-    [advisory] = compute_advisories(store, _StubReader(groups, _summary_df([True] * 3 + [False] * 5)))
+    store = _rollout_store(tmp_path, {"rollout/truncated_ratio": 3 / 8}, args={"rollout_max_response_len": 8192})
+    [advisory] = compute_advisories(store)
     assert advisory.level == "warning"
     assert "--rollout-max-response-len" in advisory.message
 
@@ -436,9 +431,119 @@ def test_no_mfu_metric_no_claim(tmp_path):
     assert compute_advisories(MetricStore.load(tmp_path)) == []
 
 
-def test_blank_newest_step_does_not_break_rollout_advisories(tmp_path):
-    dump_dir = tmp_path / "dump"
-    dump_dummy_run(dump_dir, steps=2, with_eval=False)
-    blank_samples(dump_dir, 1)
-    store = _store(tmp_path, args={}, engine_samples=[])
-    assert compute_advisories(store, DumpReader(dump_dir)) == []
+def test_stall_older_than_the_baseline_window_is_still_judged(tmp_path):
+    """The stalled marker is a day older than every closed interval the
+    median comes from."""
+    writer = MetricStore(tmp_path)
+    writer.write_meta(Meta(run_name="day-old-stall", start_ts=0.0, args={}))
+    writer.append(_phase("train_wait", 10.0, PhaseEvent.OPEN_T1))
+    day = 86400.0
+    for closed in _closed_steps(n=5, start=day):
+        writer.append(replace(closed, rank=1))
+    writer.flush()
+
+    [advisory] = compute_advisories(MetricStore.load(tmp_path))
+    assert advisory.level == "critical" and "train_wait" in advisory.message
+
+
+def test_stall_on_every_rank_keeps_its_baseline(tmp_path):
+    """Every rank stuck in one phase closes none for a day while GPU samples
+    keep the edge moving: the baseline must outlive any trailing window."""
+    writer = MetricStore(tmp_path)
+    writer.write_meta(Meta(run_name="global-stall", start_ts=0.0, args={}))
+    for i in range(5):
+        writer.append(_phase("train_wait", 20.0 * i, 20.0 * i + 10.0))
+    writer.append(_phase("train_wait", 200.0, PhaseEvent.OPEN_T1))
+    writer.append(GpuSample(ts=86400.0, node="n1", gpu=0, util=0, mem_mb=1, power_w=1))
+    writer.flush()
+
+    [advisory] = compute_advisories(MetricStore.load(tmp_path))
+    assert advisory.level == "critical" and "train_wait" in advisory.message
+
+
+def test_earlier_long_stalls_do_not_raise_the_baseline(tmp_path):
+    """Four 5 h stalls that ended are not the phase's usual length: a new
+    stall is judged against its 10 s closes."""
+    writer = MetricStore(tmp_path)
+    writer.write_meta(Meta(run_name="long-stalls", start_ts=0.0, args={}))
+    hour = 3600.0
+    for i in range(4):
+        writer.append(_phase("train_wait", i * 6 * hour, i * 6 * hour + 5 * hour))
+    for i in range(3):
+        writer.append(_phase("train_wait", 24 * hour + 20.0 * i, 24 * hour + 20.0 * i + 10.0))
+    writer.append(_phase("train_wait", 24 * hour + 100.0, PhaseEvent.OPEN_T1))
+    writer.append(GpuSample(ts=24 * hour + 2100.0, node="n1", gpu=0, util=0, mem_mb=1, power_w=1))
+    writer.flush()
+
+    [advisory] = compute_advisories(MetricStore.load(tmp_path))
+    assert advisory.level == "critical" and "train_wait" in advisory.message
+
+
+def test_tuning_advice_follows_the_recent_engine_state(tmp_path):
+    """A busy hour a day ago does not describe the engines now; the default
+    window ends at the newest scrape."""
+    day = 86400.0
+    store = _store(
+        tmp_path,
+        args={"sglang_max_running_requests": 100},
+        engine_samples=[
+            _engine("sglang_num_running_reqs", 90.0, ts=1.0),
+            _engine("sglang_num_running_reqs", 5.0, ts=day),
+        ],
+    )
+    [advisory] = compute_advisories(store)
+    assert "Peak concurrency (5)" in advisory.message
+
+
+def test_healthy_run_reads_no_run_long_engine_series(tmp_path, monkeypatch):
+    """Polled every few seconds by the live view: without an alarm to explain,
+    nothing may read the whole engine history."""
+    store = _store(
+        tmp_path,
+        args={"sglang_max_running_requests": 100},
+        engine_samples=[
+            _engine("sglang_num_requests_total", 0.0, ts=1.0),
+            _engine("sglang_num_requests_total", 1000.0, ts=2.0),
+            _engine("sglang_num_running_reqs", 90.0, ts=2.0),
+        ],
+    )
+    queried_windows = []
+    engine_series = store.engine_series
+    monkeypatch.setattr(
+        store,
+        "engine_series",
+        lambda metric, **kw: queried_windows.append((kw.get("t0"), kw.get("t1"))) or engine_series(metric, **kw),
+    )
+    compute_advisories(store)
+    assert queried_windows and (None, None) not in queried_windows
+
+
+def test_engine_stream_with_only_a_partial_line_makes_no_engine_claim(tmp_path):
+    """The live collector's first engine write can be mid-line when polled:
+    the stream exists but holds no record yet."""
+    writer = MetricStore(tmp_path)
+    writer.write_meta(Meta(run_name="partial", start_ts=0.0, args={}))
+    writer.flush()
+    (tmp_path / Stream.ENGINE_SERIES.value).mkdir()
+    (tmp_path / Stream.ENGINE_SERIES.value / "19700101_00.jsonl").write_bytes(b'{"ts":1')
+    store = MetricStore.load(tmp_path)
+    assert compute_advisories(store) == []
+    assert not store.has_stream(Stream.ENGINE_SERIES)
+
+
+def test_abort_storm_run_share_counts_the_newest_scrape(tmp_path, monkeypatch):
+    """The run-long view keeps one scrape per bucket and can drop the newest:
+    counters flat for an hour, then one storm in the last scrape."""
+
+    monkeypatch.setattr(_ThinnedEngineSeries, "SCRAPES_PER_ENGINE", 50)
+    last = 2001
+    samples = []
+    for k in range(last + 1):
+        requests, aborts = (200.0, 100.0) if k == last else (0.0, 0.0)
+        samples += [
+            _engine("sglang_num_requests_total", requests, ts=2.0 * k),
+            _engine("sglang_num_aborted_requests_total", aborts, ts=2.0 * k),
+        ]
+    [advisory] = compute_advisories(_store(tmp_path, args={}, engine_samples=samples))
+    assert advisory.level == "warning"
+    assert "(100/200; 50% over the run)" in advisory.message

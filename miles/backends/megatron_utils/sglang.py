@@ -17,6 +17,7 @@ try:
 except ImportError:
     from sglang.srt.patch_torch import monkey_patch_torch_reductions
 
+from sglang.srt.layers.quantization.utils import is_layer_skipped
 from sglang.srt.utils import MultiprocessingSerializer
 
 try:
@@ -25,6 +26,7 @@ except ImportError:
     from sglang.srt.model_executor.model_runner import FlattenedTensorBucket  # type: ignore[import]
 
 __all__ = [
+    "is_layer_skipped",
     "per_block_cast_to_fp8",
     "quant_weight_ue8m0",
     "transform_scale_ue8m0",

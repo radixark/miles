@@ -1,0 +1,435 @@
+"""Native-LoRA attention specs for fused GQA, gated GQA, MLA, GLM-5.3-Flash, and Inkling."""
+
+from __future__ import annotations
+
+import dataclasses
+
+import torch.nn as nn
+
+from miles.backends.megatron_utils.lora.native.modules.linear import (
+    LoRAGroupedColumnLinear,
+    LoRAReplicatedPlainLinear,
+    LoRASplitAdapter,
+    LoRASplitQKV,
+    LoRAUnreducedRowLinear,
+    attach_adapter_forward,
+)
+from miles.backends.megatron_utils.lora.native.spec import layout as L
+from miles.backends.megatron_utils.lora.native.spec.base import (
+    AttachContext,
+    AttentionFamily,
+    ProjectionSpec,
+    ShardLayout,
+)
+from miles.backends.megatron_utils.lora.native.spec.layout import (
+    AttentionSpecBase,
+    FusedAttach,
+    ModuleLayout,
+    ProjectionBinding,
+    attach_layout,
+)
+
+
+def _build_split_qkv(
+    attention: nn.Module,
+    hf_prefix: str,
+    context: AttachContext,
+    active: tuple[ProjectionSpec, ...],
+) -> LoRASplitQKV:
+    return LoRASplitQKV(
+        hf_prefix=hf_prefix,
+        reference=attention.linear_qkv.weight,
+        context=context,
+        projections=active,
+        num_q=attention.num_attention_heads_per_partition,
+        num_kv=attention.num_query_groups_per_partition,
+        head_dim=attention.hidden_size_per_attention_head,
+    )
+
+
+def _replicated_guard(host: nn.Module, _context: AttachContext, projection: ProjectionSpec, full_out: int) -> None:
+    assert _is_replicated_linear(host, full_out), (
+        f"native MLA LoRA expects a replicated {projection.hf_leaf} (TELinear parallel_mode='duplicated'); "
+        f"this build shards it ({tuple(host.weight.shape)} vs full out {full_out}). "
+        "Use --megatron-to-hf-mode bridge for this variant."
+    )
+
+
+class GQAAttentionSpec(AttentionSpecBase):
+    """Fused MCore QKV, including the gated-query layout used by Qwen hybrids."""
+
+    name = "gqa"
+    family = AttentionFamily.GQA
+    layout = ModuleLayout(
+        name="gqa",
+        present_when_attr="linear_qkv",
+        fused=(
+            FusedAttach(
+                module_attr="linear_qkv",
+                projections=(
+                    ProjectionSpec("q_proj", "q", ShardLayout.COLUMN),
+                    ProjectionSpec("k_proj", "k", ShardLayout.COLUMN),
+                    ProjectionSpec("v_proj", "v", ShardLayout.COLUMN),
+                ),
+                adapter_attr="lora_qkv_adapter",
+                build=_build_split_qkv,
+            ),
+        ),
+        singles=(
+            ProjectionBinding(
+                projection=ProjectionSpec("o_proj", "o", ShardLayout.ROW),
+                module_attr="linear_proj",
+                in_dim=L.gqa_o_in_local,
+                out_dim=L.hidden_size,
+                adapter_attr="lora_o_adapter",
+            ),
+        ),
+    )
+
+    def validate(self, config, *, tp_size: int) -> None:
+        num_query_groups = getattr(
+            config, "num_query_groups", None
+        )  # config-access-exempt: architecture configs without query groups represent ordinary multi-head attention
+        assert num_query_groups is None or num_query_groups >= tp_size, (
+            "native LoRA (--megatron-to-hf-mode raw) does not support this architecture: "
+            f"num_query_groups ({num_query_groups}) < tensor parallel size ({tp_size}), so mcore splits a "
+            "single query group across ranks and the local qkv rows are not a per-group slice. "
+            "Use --megatron-to-hf-mode bridge."
+        )
+
+
+class MLAAttentionSpec(AttentionSpecBase):
+    """Compressed query and key/value projection layout used by DeepSeek/GLM/Kimi."""
+
+    name = "mla"
+    family = AttentionFamily.MLA
+
+    layout = ModuleLayout(
+        name="mla",
+        singles=(
+            ProjectionBinding(
+                projection=ProjectionSpec("q_a_proj", "a", ShardLayout.REPLICATED),
+                module_attr="linear_q_down_proj",
+                in_dim=L.hidden_size,
+                out_dim=L.config_dim("q_lora_rank"),
+                adapter_attr="lora_mla_q_a_adapter",
+                guard=_replicated_guard,
+            ),
+            ProjectionBinding(
+                projection=ProjectionSpec("q_b_proj", "b", ShardLayout.COLUMN),
+                module_attr="linear_q_up_proj",
+                in_dim=L.config_dim("q_lora_rank"),
+                out_dim=L.mla_q_up_out_local,
+                adapter_attr="lora_mla_q_b_adapter",
+            ),
+            ProjectionBinding(
+                projection=ProjectionSpec("kv_a_proj_with_mqa", "a", ShardLayout.REPLICATED),
+                module_attr="linear_kv_down_proj",
+                in_dim=L.hidden_size,
+                out_dim=L.mla_kv_down_out,
+                adapter_attr="lora_mla_kv_a_adapter",
+                guard=_replicated_guard,
+            ),
+            ProjectionBinding(
+                projection=ProjectionSpec("kv_b_proj", "b", ShardLayout.COLUMN),
+                module_attr="linear_kv_up_proj",
+                in_dim=L.config_dim("kv_lora_rank"),
+                out_dim=L.mla_kv_up_out_local,
+                adapter_attr="lora_mla_kv_b_adapter",
+            ),
+            ProjectionBinding(
+                projection=ProjectionSpec("o_proj", "o", ShardLayout.ROW),
+                module_attr="linear_proj",
+                in_dim=L.mla_o_in_local,
+                out_dim=L.hidden_size,
+                adapter_attr="lora_o_adapter",
+            ),
+        ),
+    )
+
+    def validate(self, config, *, tp_size: int) -> None:
+        del tp_size
+        assert getattr(
+            config, "q_lora_rank", None
+        ), (  # config-access-exempt: only MLA architecture configs declare q_lora_rank
+            "native LoRA does not support multi-latent attention without q_lora_rank "
+            "(DeepSeek-V2-Lite, Moonlight): the query path is uncompressed, so the adapter exports "
+            "an unfused q_proj alongside kv_a_proj_with_mqa, and SGLang's loader expects the fused "
+            "qkv_a layout. Use --megatron-to-hf-mode bridge."
+        )
+
+
+class Glm5NextAttentionSpec(MLAAttentionSpec):
+    """GLM-5.3-Flash: DSA layers adapt the MLA projections, KDA layers their HF-named projections.
+
+    The DSA block reads ``linear_kv_up_proj.weight`` to absorb it into the query and output and never
+    calls the module, so a ``kv_b_proj`` adapter would not run. A KDA block gathers the sequence-parallel
+    input and runs plain ``nn.Linear``s that every TP rank holds whole.
+    """
+
+    name = "glm5_next"
+    layout = dataclasses.replace(
+        MLAAttentionSpec.layout,
+        name="glm5_next_dsa_attention",
+        singles=tuple(
+            binding for binding in MLAAttentionSpec.layout.singles if binding.projection.hf_leaf != "kv_b_proj"
+        ),
+    )
+    kda_layout = ModuleLayout(
+        name="glm5_next_kda_attention",
+        full_sequence=True,
+        singles=tuple(
+            ProjectionBinding(
+                projection=ProjectionSpec(hf_leaf, param_prefix, ShardLayout.REPLICATED),
+                module_attr=f"{param_prefix}_proj",
+                in_dim=L.host_in_local(f"{param_prefix}_proj"),
+                out_dim=L.host_out_local(f"{param_prefix}_proj"),
+                adapter_attr=f"lora_{param_prefix}_adapter",
+                adapter_class=LoRAReplicatedPlainLinear,
+            )
+            for param_prefix, hf_leaf in (
+                ("q", "q_proj"),
+                ("k", "k_proj"),
+                ("v", "v_proj"),
+                ("b", "b_proj"),
+                ("f_a", "forget_gate.f_a_proj"),
+                ("f_b", "forget_gate.f_b_proj"),
+                ("g_a", "g_a_proj"),
+                ("g_b", "g_b_proj"),
+                ("o", "o_proj"),
+            )
+        ),
+    )
+
+    @property
+    def supported_targets(self) -> frozenset[str]:
+        return self.layout.targets | self.kda_layout.targets
+
+    @property
+    def canonical_targets_csv(self) -> str:
+        # a dotted selector must match the whole module name, so pass leaves
+        names = [
+            binding.projection.hf_leaf.rpartition(".")[2] for binding in self.kda_layout.singles + self.layout.singles
+        ]
+        return ",".join(dict.fromkeys(names))
+
+    def attach(self, block: nn.Module, layer: nn.Module, context: AttachContext) -> int:
+        if hasattr(block, "kda"):  # config-access-exempt: only KDA layers carry the HF-style KDA module
+            return attach_layout(block.kda, self.kda_layout, layer, context)
+        return attach_layout(block, self.layout, layer, context)
+
+
+class KimiK3AttentionSpec(AttentionSpecBase):
+    """Kimi K3's HF-named attention: ``o_proj`` on every layer, the duplicated MLA down projections on MLA layers.
+
+    The block gathers the sequence-parallel input once, so its linears run without SP. KDA
+    layers have no ``q_a_proj``/``kv_a_proj_with_mqa``; their ``o_proj`` is the head-sharded
+    linear-attention layer's ``out_proj``, whose partial sums the layer reduces itself.
+    """
+
+    name = "kimi_k3"
+    family = AttentionFamily.MLA
+    layout = ModuleLayout(
+        name="kimi_k3_attention",
+        full_sequence=True,
+        singles=(
+            ProjectionBinding(
+                projection=ProjectionSpec("q_a_proj", "q_a", ShardLayout.REPLICATED),
+                module_attr="q_a_proj",
+                in_dim=L.hidden_size,
+                out_dim=L.config_dim("q_lora_rank"),
+                adapter_attr="lora_mla_q_a_adapter",
+                guard=_replicated_guard,
+            ),
+            ProjectionBinding(
+                projection=ProjectionSpec("kv_a_proj_with_mqa", "kv_a", ShardLayout.REPLICATED),
+                module_attr="kv_a_proj_with_mqa",
+                in_dim=L.hidden_size,
+                out_dim=L.mla_kv_down_out,
+                adapter_attr="lora_mla_kv_a_adapter",
+                guard=_replicated_guard,
+            ),
+            ProjectionBinding(
+                projection=ProjectionSpec("o_proj", "o", ShardLayout.ROW),
+                module_attr="o_proj",
+                in_dim=L.host_in_local("o_proj"),
+                out_dim=L.hidden_size,
+                adapter_attr="lora_o_adapter",
+            ),
+        ),
+    )
+    kda_layout = ModuleLayout(
+        name="kimi_k3_kda_attention",
+        full_sequence=True,
+        singles=(
+            ProjectionBinding(
+                projection=ProjectionSpec("o_proj", "o", ShardLayout.ROW),
+                module_attr="out_proj",
+                in_dim=L.host_in_local("out_proj"),
+                out_dim=L.hidden_size,
+                adapter_attr="lora_o_adapter",
+                adapter_class=LoRAUnreducedRowLinear,
+            ),
+        ),
+    )
+
+    def applies_to(self, block: nn.Module) -> bool:
+        return True
+
+    def attach(self, block: nn.Module, layer: nn.Module, context: AttachContext) -> int:
+        if block.is_kda:
+            return attach_layout(block.linear_attn, self.kda_layout, layer, context)
+        return attach_layout(block, self.layout, layer, context)
+
+
+class DeepSeekV41AttentionSpec(AttentionSpecBase):
+    """DeepSeek-V4.1's attention: replicated ``wq_a``/``wkv``, column ``wq_b``, grouped ``wo_a``, row ``wo_b``.
+
+    The block gathers the sequence-parallel input once, so its linears run without SP. ``wo_a`` is a
+    parameter that ``o_group_matmul`` applies one head group at a time, and its adapter keeps that
+    grouping. The compressor and indexer are not adapted; the indexer scores under ``no_grad``.
+    """
+
+    name = "deepseek_v41"
+    family = AttentionFamily.MLA
+    o_group_projection = ProjectionSpec("wo_a", "o_a", ShardLayout.COLUMN)
+    layout = ModuleLayout(
+        name="deepseek_v41_attention",
+        present_when_attr="linear_o_group_proj",
+        hf_block_prefix="attn.",
+        full_sequence=True,
+        singles=(
+            ProjectionBinding(
+                projection=ProjectionSpec("wq_a", "q_a", ShardLayout.REPLICATED),
+                module_attr="linear_q_down_proj",
+                in_dim=L.hidden_size,
+                out_dim=L.config_dim("q_lora_rank"),
+                adapter_attr="lora_q_a_adapter",
+                guard=_replicated_guard,
+            ),
+            ProjectionBinding(
+                projection=ProjectionSpec("wq_b", "q_b", ShardLayout.COLUMN),
+                module_attr="linear_q_up_proj",
+                in_dim=L.config_dim("q_lora_rank"),
+                out_dim=L.host_out_local("linear_q_up_proj"),
+                adapter_attr="lora_q_b_adapter",
+            ),
+            ProjectionBinding(
+                projection=ProjectionSpec("wkv", "kv", ShardLayout.REPLICATED),
+                module_attr="linear_kv_proj",
+                in_dim=L.hidden_size,
+                out_dim=L.host_out_local("linear_kv_proj"),
+                adapter_attr="lora_kv_adapter",
+                guard=_replicated_guard,
+            ),
+            ProjectionBinding(
+                projection=ProjectionSpec("wo_b", "o_b", ShardLayout.ROW),
+                module_attr="linear_proj",
+                in_dim=L.host_in_local("linear_proj"),
+                out_dim=L.hidden_size,
+                adapter_attr="lora_o_b_adapter",
+            ),
+        ),
+    )
+
+    @property
+    def supported_targets(self) -> frozenset[str]:
+        return self.layout.targets | {self.o_group_projection.hf_leaf}
+
+    @property
+    def canonical_targets_csv(self) -> str:
+        return f"{super().canonical_targets_csv},{self.o_group_projection.hf_leaf}"
+
+    def attach(self, block: nn.Module, layer: nn.Module, context: AttachContext) -> int:
+        count = attach_layout(block, self.layout, layer, context)
+        leaf = self.o_group_projection.hf_leaf
+        weight = block.linear_o_group_proj
+        hf_prefix = context.naming.block_prefix(layer, weight, [leaf])
+        if not context.lora.selects(f"{hf_prefix}{leaf}"):
+            return count
+        block.lora_o_a_adapter = LoRAGroupedColumnLinear(
+            hf_prefix=hf_prefix,
+            projection=self.o_group_projection,
+            reference=weight,
+            context=context,
+            in_features=weight.shape[1],
+            out_features=weight.shape[0],
+        )
+        attach_adapter_forward(block.o_group_matmul, block.lora_o_a_adapter, context.lora.scale)
+        return count + 1
+
+
+class HybridGQAGDNAttentionSpec(GQAAttentionSpec):
+    """Qwen hybrids: GQA layers carry adapters; GDN mixer layers lack ``linear_qkv`` and are skipped."""
+
+    name = "gqa_gdn"
+
+
+class _InklingSplitQKVR(LoRASplitAdapter):
+    """Four independent adapters over Inkling's plain-concat fused [q;k;v;r]."""
+
+
+def _build_split_qkvr(
+    attention: nn.Module,
+    hf_prefix: str,
+    context: AttachContext,
+    active: tuple[ProjectionSpec, ...],
+) -> _InklingSplitQKVR:
+    return _InklingSplitQKVR(
+        hf_prefix=hf_prefix,
+        reference=attention.linear_qkv.weight,
+        context=context,
+        projections=active,
+        rows_by_param_prefix={
+            "q": attention.nh_l * attention.hd,
+            "k": attention.nkv_l * attention.hd,
+            "v": attention.nkv_l * attention.hd,
+            "r": attention.nh_l * attention.d_rel,
+        },
+    )
+
+
+class InklingAttentionSpec(AttentionSpecBase):
+    """GQA-with-relative-projection: fused [q;k;v;r], plain concat (no group permute).
+
+    Exports carry Inkling's TML names (``attn.wq_du/wk_dv/wv_dv/wr_du/wo_ud``),
+    which SGLang auto-detects, so serving passes ``lora_target_modules=["all"]``.
+    """
+
+    name = "inkling"
+    family = AttentionFamily.GQA
+    layout = ModuleLayout(
+        name="inkling_attention",
+        present_when_attr="linear_qkv",
+        hf_block_prefix="attn.",
+        fused=(
+            FusedAttach(
+                module_attr="linear_qkv",
+                projections=(
+                    ProjectionSpec("wq_du", "q", ShardLayout.COLUMN),
+                    ProjectionSpec("wk_dv", "k", ShardLayout.COLUMN),
+                    ProjectionSpec("wv_dv", "v", ShardLayout.COLUMN),
+                    ProjectionSpec("wr_du", "r", ShardLayout.COLUMN),
+                ),
+                adapter_attr="lora_qkv_adapter",
+                build=_build_split_qkvr,
+            ),
+        ),
+        singles=(
+            ProjectionBinding(
+                projection=ProjectionSpec("wo_ud", "o", ShardLayout.ROW),
+                module_attr="linear_proj",
+                in_dim=L.inkling_o_in_local,
+                out_dim=L.hidden_size,
+                adapter_attr="lora_o_adapter",
+            ),
+        ),
+    )
+
+
+def _is_replicated_linear(module: nn.Module, full_out: int) -> bool:
+    if (
+        getattr(module, "parallel_mode", None) == "duplicated"
+    ):  # config-access-exempt: third-party projection modules may omit parallel_mode
+        return True
+    return module.weight.shape[0] == full_out

@@ -32,7 +32,32 @@ on:
         required: false
 
 jobs:
+  plan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      has_tests: ${{ steps.select.outputs.has_tests }}
+      ref: ${{ steps.select.outputs.ref }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Resolve suite plan
+        id: select
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          echo "ref=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          ${{ inputs.execute_command }} --list-only --github-output "$GITHUB_OUTPUT"
+
   run:
+    needs: plan
+    if: needs.plan.result == 'success' && needs.plan.outputs.has_tests == 'true'
     # fromJSON parses the input list so `runs-on` receives an actual array.
     # Without this, GitHub treats the string verbatim as one label literal
     # (e.g. the label name '["amd", "mi350", "4gpu"]' with brackets), which no
@@ -73,7 +98,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ needs.plan.outputs.ref }}
           persist-credentials: false
 
       - name: Cleanup Ray processes
@@ -183,9 +208,15 @@ jobs:
           ref: ${{ github.event.inputs.ci_megatron_bridge_pr || '' }}
           pr_body: ${{ github.event.pull_request.body || '' }}
 
-      - name: Resolve suite plan
+      - name: Load one HIP runtime
         shell: bash
-        run: ${{ inputs.execute_command }} --list-only
+        run: |
+          torch_lib="$(python3 -c 'import os, torch; print(os.path.join(os.path.dirname(torch.__file__), "lib"))')"
+          for lib in libamdhip64.so libhsa-runtime64.so; do
+            target="$(readlink -f "/opt/rocm/lib/${lib}")"
+            [ -f "$torch_lib/$lib" ] && [ -f "$target" ] && ln -sfn "$target" "$torch_lib/$lib"
+            ls -l "$torch_lib/$lib"
+          done
 
       - name: Run tests
         shell: bash

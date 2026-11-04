@@ -31,10 +31,8 @@ def _args(qkv_format: str) -> Namespace:
         enable_witness=False,
         qkv_format=qkv_format,
         data_pad_size_multiplier=16,
-        compress_ratios=[],
         true_on_policy_mode=False,
-        bf16=False,
-        fp16=False,
+        backend=Namespace(compress_ratios=[], bf16=False, fp16=False),
     )
 
 
@@ -59,9 +57,13 @@ def _load_rollout_data(
     monkeypatch.setattr(data_utils, "process_rollout_data", lambda *args, **kwargs: (rollout_data, object()))
     monkeypatch.setattr(data_utils, "get_parallel_state", lambda: parallel_state)
     monkeypatch.setattr(context_parallel, "get_parallel_state", lambda: parallel_state)
-    monkeypatch.setattr(torch.cuda, "current_device", lambda: torch.device("cpu"))
+    monkeypatch.setattr(data_utils.current_platform, "current_device", lambda: torch.device("cpu"))
 
-    loaded_rollout_data, _store_get_result = data_utils.get_rollout_data(_args(qkv_format), object())
+    loaded_rollout_data, _store_get_result = data_utils.get_rollout_data(
+        args=_args(qkv_format),
+        rollout_data_ref=object(),
+        train_parallel_config=parallel_state.train_parallel_config(supports_precomputed_schedule=True),
+    )
     return loaded_rollout_data
 
 

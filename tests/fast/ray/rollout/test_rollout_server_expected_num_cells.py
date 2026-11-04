@@ -8,7 +8,7 @@ from tests.fast.ray.rollout.conftest import make_args
 
 from miles.ray.rollout.rollout_server import RolloutServer, create_rollout_servers
 from miles.ray.rollout.router_manager import resolve_router_addrs
-from miles.ray.specs.inference import compute_engine_pool_id, specs_inference_engine
+from miles.ray.specs.inference import InferenceEngineSpec, compute_engine_pool_id
 from miles.utils.context_lock import ContextLock
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider
 from miles.utils.workers.worker_spec import HostAndPort, NamedHostAndPorts
@@ -93,11 +93,11 @@ def _make_args_with_config(models: list[dict], tmp_path: Path) -> Namespace:
 
 
 def _expected_num_cells_from_specs(args: Namespace) -> dict[int, int]:
-    specs_by_name = {spec.name: spec for spec in specs_inference_engine(args)}
+    specs_by_name = {spec.name: spec for spec in InferenceEngineSpec.create(args)}
     counts: dict[int, int] = {}
     for name, spec in specs_by_name.items():
         model_idx = int(name.split("-")[-2])
-        counts[model_idx] = counts.get(model_idx, 0) + spec.scheduling.num_cells
+        counts[model_idx] = counts.get(model_idx, 0) + spec.scheduling(args).num_cells
     return counts
 
 

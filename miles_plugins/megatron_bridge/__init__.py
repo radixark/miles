@@ -36,7 +36,9 @@ def _install_bridge_pp_group_unwrap() -> None:
 
     from miles.utils.reloadable_process_group import ReloadableProcessGroup
 
-    if getattr(MegatronParamMapping, "_miles_pp_group_unwrap_installed", False):
+    if getattr(
+        MegatronParamMapping, "_miles_pp_group_unwrap_installed", False
+    ):  # config-access-exempt: the unwrap marker exists only after patch installation
         return
 
     _orig = MegatronParamMapping.broadcast_obj_from_pp_rank
@@ -76,3 +78,8 @@ try:
     from . import nemotron_h  # noqa: F401
 except Exception as _e:  # pragma: no cover - defensive
     logger.warning("miles nemotron_h plugin failed to load: %s", _e)
+
+try:
+    from . import mimo_v2  # noqa: F401
+except Exception as _e:  # pragma: no cover - defensive
+    logger.warning("miles mimo_v2 plugin failed to load: %s", _e)

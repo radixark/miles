@@ -20,6 +20,7 @@ Components:
 import logging
 
 from miles.rollout.base_types import RolloutFnTrainInput, RolloutFnTrainOutput
+from miles.rollout.filter_hub.base_types import iter_samples
 from miles.rollout.inference_rollout.inference_rollout_common import InferenceRolloutFn
 from miles.utils.types import Sample
 
@@ -62,9 +63,7 @@ def _agg_mean(metrics: dict, all_metrics: list[dict], keys: list[str], prefix: s
 def aggregate_agent_metrics(samples: list[Sample]) -> dict:
     """Aggregate agent metrics across samples for logging."""
     all_metrics = [
-        s.metadata.get("agent_metrics", {})
-        for s in samples
-        if hasattr(s, "metadata") and s.metadata and s.metadata.get("agent_metrics")
+        s.metadata.get("agent_metrics", {}) for s in samples if s.metadata and s.metadata.get("agent_metrics")
     ]
     if not all_metrics:
         return {}
@@ -102,7 +101,7 @@ class RolloutFn(InferenceRolloutFn):
         all_samples = []
         for group in output.samples:
             if isinstance(group, list):
-                all_samples.extend(group)
+                all_samples.extend(iter_samples(group))
             else:
                 all_samples.append(group)
 

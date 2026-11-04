@@ -45,21 +45,27 @@ input_dtype_policy = {"latents": ..., "cond": ..., "timestep": ...}
 
 
 The base class defaults to passthrough on all three, but the model family dtypes in the
-`TrainPipelineConfig` are aligned with sglang-d by default. LTX-2 is the current example:
+`TrainPipelineConfig` are aligned with sglang-d by default. LTX-2 and Cosmos3 declare their own
+policies; every other family inherits passthrough:
 
 ```python
 # miles/backends/fsdp_utils/configs/ltx.py
 input_dtype_policy = {"latents": "default", "cond": "default", "timestep": None}
+
+# miles/backends/fsdp_utils/configs/cosmos3.py
+input_dtype_policy = {"latents": "default", "cond": None, "timestep": "fp32"}
 ```
 
 **Division of labour:** `input_dtype_policy` owns the boundary; autocast owns the interior. That
 split also keeps gradient-checkpointing recompute consistent, since the recomputed forward sees
-the same ambient autocast as the original.
+the same ambient autocast as the original. Autocast is off when `--diffusion-forward-dtype` is
+`fp32` and for families that set `enable_autocast = False` (MiniMax H3).
 
 ## 3. Per-parameter dtype overrides
 
-Some parameters must stay fp32 even in a bf16 forward — timestep embedders, RoPE frequency
-buffers, `scale_shift_table`-style modulation parameters. FSDP2's stock `MixedPrecisionPolicy`
+Some parameters must stay fp32 even in a bf16 forward — timestep embedders,
+`scale_shift_table`-style modulation parameters. The patterns match parameters only; buffers
+(such as RoPE frequencies) are outside this mechanism. FSDP2's stock `MixedPrecisionPolicy`
 is per-wrap, not per-parameter, so miles-diffusion adds a targeted patch.
 
 ### Declaring the rule
@@ -81,7 +87,7 @@ Semantics:
 rule can carve a parameter back out of a broad one.
 - A pattern matching **nothing** is an error, not a no-op. Rules do not rot silently when a model
 is renamed.
-- An assignment equal to the group default compiles to nothing
+- An assignment equal to the group default compiles to nothing.
 
 
 
@@ -144,8 +150,9 @@ divergence is pure forward-path difference. Watch these metrics:
 For a sense of scale: the Qwen-Image RoPE cache bug — CPU-built vs CUDA-built frequency tables
 differing by fp32 ULPs — produced a frozen-weight `noise_pred` mean |Δ| of about **2e-2**. Small
 absolute numbers here are not automatically fine; compare against a known-good run. With CFG
-enabled, `noise_pred` is the guided combination scaled by `--diffusion-guidance-scale`, so the
-output magnitude — and every abs-diff metric above — scales with it; factor the CFG scale in
-before comparing runs.
+enabled, `noise_pred` is the guided combination of two forwards weighted by the CFG scale (`true_cfg_scale` when
+set, else `--diffusion-guidance-scale`; Qwen-Image may also rescale it to the conditional branch's norm, see its
+[model page](/diffusion/models/qwen-image/qwen-image)), so these
+metrics depend on the CFG settings — compare runs only at the same ones.
 
 

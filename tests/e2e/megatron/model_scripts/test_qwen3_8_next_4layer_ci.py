@@ -2,7 +2,7 @@ import os
 
 from scripts.run_qwen3_8_next import _MODEL_REGISTRY, ScriptArgs, _train
 
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from tests.ci.metric_history import register_ci_gate
 
 
@@ -11,6 +11,12 @@ register_cuda_ci(
     suite="stage-c-8-gpu-h200",
     labels=["megatron", "model-scripts"],
     hardware=["hopper", "blackwell"],
+    num_gpus=8,
+)
+register_rocm_ci(
+    est_time=600,
+    suite="nightly-stage-c-8-gpu-mi350",
+    labels=["megatron", "model-scripts"],
 )
 
 register_ci_gate(metric_key="train/grad_norm")
@@ -18,6 +24,7 @@ register_ci_gate(metric_key="train/ppo_kl")
 register_ci_gate(metric_key="train/train_rollout_logprob_abs_diff")
 register_ci_gate(metric_key="train/train_rollout_kl")
 register_ci_gate(metric_key="rollout/raw_reward")
+register_ci_gate(metric_key="perf/actor_train_mfu")
 
 _MODEL_ORG = "CharyZeng"
 
@@ -25,6 +32,7 @@ _MODEL_ORG = "CharyZeng"
 def _args() -> ScriptArgs:
     return ScriptArgs.from_env(
         model_name="Qwen3.8-Flash-Next-4layer",
+        ckpt_dir="/root/models",
         num_nodes=1,
         num_gpus_per_node=8,
         num_rollout=5,
@@ -33,6 +41,11 @@ def _args() -> ScriptArgs:
         skip_saving=True,
         extra_args=(
             "--ci-test " "--ci-disable-kl-checker " "--ci-disable-logprobs-checker " "--offload-train-target cpu "
+        )
+        + (
+            "--linear-attention-backend fla --sglang-linear-attn-prefill-backend triton "
+            if os.getenv("MILES_HARDWARE_PLATFORM") == "rocm"
+            else ""
         ),
     )
 

@@ -12,8 +12,9 @@ import time
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
-from tests.ci.ci_register import CIRegistry, HWBackend
+from tests.ci.ci_register import CIRegistry, HWBackend, file_timeout
 from tests.ci.metric_history import (
     NEON_DATABASE_URL_ENV,
     MetricSample,
@@ -21,7 +22,10 @@ from tests.ci.metric_history import (
     RunIdentity,
     RunProvenance,
 )
-from tests.ci.metric_history.gate import evaluate_gate
+from tests.ci.metric_history.gate import MIN_ENFORCED_BASELINES, GateStatus, evaluate_gate
+from tests.ci.metric_history.register import parse_ci_gate_specs
+
+from miles.utils.audit_utils.config_snapshot.enabled import SNAPSHOT_TESTING_ENABLED
 
 # Env var the training process reads to find the per-attempt record directory; kept
 # in sync with miles.utils.tracking_utils.ci_history.RECORD_DIR_ENV.
@@ -211,8 +215,11 @@ def write_github_step_summary(content: str):
     """Write content to GitHub Step Summary if available."""
     summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary_file:
-        with open(summary_file, "a") as f:
-            f.write(content)
+        try:
+            with open(summary_file, "a") as f:
+                f.write(content)
+        except OSError as e:
+            logger.warning("Could not write GitHub Step Summary: %s", e)
 
 
 def _gate_pr_number_from_env() -> int | None:
@@ -276,22 +283,12 @@ def gate_provenance_from_env() -> RunProvenance:
 
 
 def build_store_from_env():
-    """Return the metric-history store for this environment, or None.
-
-    A hosted store is used only when `NEON_DATABASE_URL` is set (CI with the
-    secret inherited). Locally / in dev the var is unset and this returns None,
-    which disables the gate hook entirely -- no store, no evaluation, no writes.
-
-    Construction opens a DB connection eagerly. That happens outside the gate
-    hook's try/except, so a missing driver / bad DSN / DB outage is caught here
-    and degraded to None -- the gate must never fail a CI job (CUDA or ROCm)
-    before any test runs.
-    """
+    """Build the lazy hosted store, or explicitly skip history without a DSN."""
     if os.environ.get(NEON_DATABASE_URL_ENV):
-        try:
-            return NeonMetricHistoryStore()
-        except Exception as e:  # noqa: BLE001 -- never let store setup fail CI
-            logger.warning("[CI Gate] store unavailable (%s: %s); gate disabled.", type(e).__name__, e)
+        return NeonMetricHistoryStore()
+    message = "[CI Gate] skipped: NEON_DATABASE_URL is not set; no history enforcement."
+    logger.info(message)
+    write_github_step_summary(message + "\n")
     return None
 
 
@@ -307,7 +304,7 @@ def _shadow_verdict_line(filename: str, result) -> str:
 
 def run_gate_hook(
     filename: str,
-    merged_record_path: str,
+    merged_record_path: str | None,
     *,
     store,
     registry: CIRegistry,
@@ -315,21 +312,53 @@ def run_gate_hook(
     write_baseline: bool,
     provenance: RunProvenance,
     now_iso: str | None = None,
-) -> None:
-    """Evaluate the history gate for one passed CUDA test and act on the verdict.
+) -> bool:
+    """Return whether the passed CUDA test also satisfies the enabled history gates.
 
-    BASELINE-WRITING run -> persist the run as a trusted/untrusted baseline via
-    `store.write_run`, one `metric_values` row per coordinate (specs sharing a
-    coordinate collapse to one row); a file that declares no gate writes
-    nothing at all. ORDINARY PR run -> never write; log a shadow verdict and
-    append it to `GITHUB_STEP_SUMMARY`.
-
-    The entire body is wrapped: any gate or store error is caught and logged and
-    NEVER propagates, so the gate verdict can never change the test's pass/fail
-    this round.
+    Baseline writers retain the full trusted/untrusted verdict. Numerical
+    enforcement needs ten trusted values per coordinate; missing metrics and
+    gate/store errors fail tests with enforcement enabled. Other declarations
+    remain shadow.
     """
     try:
-        result = evaluate_gate(filename, merged_record_path, store, executing_suite=executing_suite, registry=registry)
+        specs = parse_ci_gate_specs(filename)
+    except Exception as e:
+        message = f"[CI Gate] invalid declarations in {filename}: {type(e).__name__}: {e}"
+        logger.warning(message)
+        write_github_step_summary(message + "\n")
+        return False
+    enforced_keys = {s.metric_key for s in specs if s.enforce}
+    try:
+        if merged_record_path is None:
+            raise RuntimeError("passing-attempt metric record is unavailable")
+        result = evaluate_gate(
+            filename, merged_record_path, store, executing_suite=executing_suite, registry=registry, specs=specs
+        )
+        enforced_metrics = [m for m in result.metrics if m.metric_key in enforced_keys]
+        failed = any(
+            m.historical_status == GateStatus.ERROR
+            or (m.historical_status == GateStatus.FAIL and m.baseline_n >= MIN_ENFORCED_BASELINES)
+            for m in enforced_metrics
+        )
+        if enforced_keys or not write_baseline:
+            line = (
+                f"[CI Gate][enforce] {filename}: {'FAIL' if failed else 'PASS'}"
+                if enforced_keys
+                else _shadow_verdict_line(filename, result)
+            )
+            details = []
+            for m in result.metrics:
+                reason = m.reason
+                if (
+                    m in enforced_metrics
+                    and m.historical_status != GateStatus.ERROR
+                    and m.baseline_n < MIN_ENFORCED_BASELINES
+                ):
+                    reason += f"; NOT ENFORCED: insufficient history ({m.baseline_n}/{MIN_ENFORCED_BASELINES})"
+                details.append(f"  - {m.metric_key} (step={m.step}, baseline_n={m.baseline_n}): {reason}")
+            message = line + ("\n" + "\n".join(details) if details else "")
+            logger.info(message)
+            write_github_step_summary(message + "\n")
 
         if write_baseline:
             if not result.metrics:
@@ -337,26 +366,19 @@ def run_gate_hook(
                 # empty list means the file declares no gate: an empty runs row
                 # is nothing a baseline can use, so write nothing.
                 logger.info(f"[CI Gate][baseline] {filename}: no gate declared; skipping write")
-                return
+                return True
             identity = RunIdentity(
                 test_path=result.test_path,
                 backend=result.backend,
                 suite=result.suite,
             )
             created_at = now_iso or datetime.datetime.now(datetime.timezone.utc).isoformat()
-            # Specs sharing a coordinate (identical declaration literals,
-            # differing only in policy metadata) select the same value; writing
-            # one row per spec would double-weight that baseline mean.
-            seen_coords: set[tuple[str, str, str, int]] = set()
-            values: list[MetricSample] = []
-            for m in result.metrics:
-                if m.current is None:
-                    continue
-                coord = (m.metric_key, m.steps_key, m.constraint_key, m.step)
-                if coord in seen_coords:
-                    continue
-                seen_coords.add(coord)
-                values.append(MetricSample(m.metric_key, m.steps_key, m.constraint_key, m.step, m.current))
+            # The parser allows one declaration per metric, so each (metric, step) is written once.
+            values = [
+                MetricSample(m.metric_key, m.steps_key, m.constraint_key, m.step, m.current)
+                for m in result.metrics
+                if m.current is not None
+            ]
             store.write_run(
                 identity,
                 provenance,
@@ -365,15 +387,12 @@ def run_gate_hook(
                 values=values,
             )
             logger.info(f"[CI Gate][baseline] {filename}: wrote baseline")
-        else:
-            line = _shadow_verdict_line(filename, result)
-            logger.info(line)
-            detail = "\n".join(f"  - {m.metric_key} (step={m.step}): {m.reason}" for m in result.metrics)
-            write_github_step_summary(line + ("\n" + detail if detail else "") + "\n")
+        return not failed
     except Exception as e:
-        # The gate is informational this round: a gate error, a missing record,
-        # or a DB error must never fail the test or CI.
-        logger.warning(f"[CI Gate] hook failed for {filename}: {type(e).__name__}: {e}")
+        message = f"[CI Gate] hook failed for {filename}: {type(e).__name__}: {e}"
+        logger.warning(message)
+        write_github_step_summary(message + "\n")
+        return not enforced_keys
 
 
 def _gha_emit_group(title: str) -> None:
@@ -421,6 +440,7 @@ def run_unittest_files(
     retry_wait_seconds: int = 60,
     gate_store=None,
     gate_executing_suite: str = "",
+    snapshot_hardware: str | None = None,
     gate_write_baseline: bool = False,
     gate_provenance: RunProvenance | None = None,
     reap_leftovers: bool = False,
@@ -440,13 +460,17 @@ def run_unittest_files(
         gate_store: Metric-history store for the regression gate, or None to skip
                     the gate hook entirely. Built by `build_store_from_env`.
         gate_write_baseline: True when this run writes a baseline; False for
-                    a non-baseline-writing run, which only logs a shadow verdict.
+                    a non-baseline-writing run. Enforcement applies to either cadence.
         gate_provenance: RunProvenance for the gate write; defaults to
                     `gate_provenance_from_env()` when None.
         reap_leftovers: If True, kill leftover engine and ray processes before every
                     attempt. Off by default because reaping is process-wide: it would
                     also reach the caller when this function runs inside a test.
     """
+    from miles.utils.audit_utils.config_snapshot.models import ConfigSnapshotVariant
+    from miles.utils.audit_utils.config_snapshot.runner import ConfigSnapshotMismatch, ConfigSnapshotTestRunner
+    from miles.utils.test_utils.snapshot import SNAPSHOT_RECORD_DIR_ENV_VAR
+
     tic = time.perf_counter()
     success = True
     passed_tests = []
@@ -455,17 +479,24 @@ def run_unittest_files(
 
     for i, file in enumerate(files):
         if isinstance(file, CIRegistry):
-            filename, estimated_time = file.filename, file.est_time
+            filename, estimated_time, labels = file.filename, file.est_time, file.labels
         else:
-            filename, estimated_time = file.name, file.estimated_time
+            filename, estimated_time, labels = file.name, file.estimated_time, ()
 
-        effective_timeout = max(timeout_per_file, int(estimated_time * 1.25))
+        effective_timeout = file_timeout(estimated_time, labels, timeout_per_file)
 
         process = None
         output_lines = []
         output_tail: deque = deque(maxlen=FAILURE_TAIL_LINES * 8)
 
-        def run_one_file(filename, capture_output=False, record_dir=None, _i=i, _estimated_time=estimated_time):
+        def run_one_file(
+            filename: str,
+            capture_output: bool = False,
+            record_dir: str | None = None,
+            _i: int = i,
+            _estimated_time: float = estimated_time,
+            env: dict[str, str] | None = None,
+        ) -> int:
             nonlocal process, output_lines, output_tail
             output_tail = deque(maxlen=FAILURE_TAIL_LINES * 8)
 
@@ -473,11 +504,10 @@ def run_unittest_files(
             logger.info(f".\n.\nBegin ({_i}/{len(files) - 1}):\npython3 {full_path}\n.\n.\n")
             file_tic = time.perf_counter()
 
-            child_env = None
+            child_env = (os.environ if env is None else env).copy()
             if record_dir is not None:
                 # Point the training process at this attempt's own record dir.
                 os.makedirs(record_dir, exist_ok=True)
-                child_env = os.environ.copy()
                 child_env[CI_GATE_RECORD_DIR_ENV] = record_dir
 
             if capture_output:
@@ -547,37 +577,70 @@ def run_unittest_files(
 
             try:
                 try:
+                    if SNAPSHOT_TESTING_ENABLED:
+                        child_env = None
+                        snapshot_runner = (
+                            ConfigSnapshotTestRunner.create(
+                                test=filename,
+                                repo_root=Path(__file__).resolve().parents[2],
+                                variant=ConfigSnapshotVariant(
+                                    hardware=snapshot_hardware,
+                                    wandb_available=bool(os.environ.get("WANDB_API_KEY")),
+                                ),
+                            )
+                            if os.environ.get(SNAPSHOT_RECORD_DIR_ENV_VAR)
+                            else None
+                        )
+                        if snapshot_runner is not None:
+                            child_env = {
+                                **os.environ,
+                                SNAPSHOT_RECORD_DIR_ENV_VAR: str(snapshot_runner.record_directory),
+                            }
                     ret_code = run_with_timeout(
                         run_one_file,
                         args=(filename,),
-                        kwargs={"capture_output": enable_retry, "record_dir": attempt_record_dir},
+                        kwargs={
+                            "capture_output": enable_retry,
+                            "record_dir": attempt_record_dir,
+                            "env": child_env if SNAPSHOT_TESTING_ENABLED else None,
+                        },
                         timeout=effective_timeout,
                     )
+                    if SNAPSHOT_TESTING_ENABLED and snapshot_runner is not None:
+                        snapshot_runner.finish(returncode=ret_code)
                     attempt_elapsed = time.perf_counter() - attempt_tic
 
                     if ret_code == 0:
                         attempt_status = "PASS"
                         file_passed = True
                         if attempt_record_dir is not None:
-                            # The training process has exited, so its per-process
-                            # JSONL records are complete. Merge the passing
-                            # attempt's records into the one per-run record the
-                            # gate consumes. Gate infrastructure: a merge I/O
-                            # error must never propagate and change the test's
-                            # pass/fail, so it is caught and logged and only
-                            # skips the gate hook.
+                            # Merge only the passing process attempt. A failed merge
+                            # leaves no record, which the hook rejects when enforcement is enabled.
                             merged_path = f"{attempt_record_dir}.merged.jsonl"
                             try:
                                 _merge_attempt_records(attempt_record_dir, merged_path)
                                 passing_record_path = merged_path
-                            except Exception as e:  # noqa: BLE001 -- gate infra must not affect pass/fail
+                            except Exception as e:  # noqa: BLE001 -- the hook applies enforcement below
                                 logger.warning(
                                     "[CI Gate] record merge failed for %s: %s: %s", filename, type(e).__name__, e
                                 )
-                        if was_retried:
+                        if gate_store is not None and isinstance(file, CIRegistry) and file.backend == HWBackend.CUDA:
+                            file_passed = run_gate_hook(
+                                filename,
+                                passing_record_path,
+                                store=gate_store,
+                                registry=file,
+                                executing_suite=gate_executing_suite,
+                                write_baseline=gate_write_baseline,
+                                provenance=gate_provenance or gate_provenance_from_env(),
+                            )
+                            if not file_passed:
+                                attempt_status = "FAIL"
+                                failed_tests.append((filename, "metric-history gate failed (see verdict above)", ""))
+                                if was_retried:
+                                    retried_tests.append((filename, attempt, "failed"))
+                        if was_retried and file_passed:
                             logger.info(f"\nPASSED on retry (attempt {attempt}): {filename}\n")
-                            retried_tests.append((filename, attempt, "passed"))
-                        passed_tests.append(filename)
                         break
                     else:
                         attempt_status = "FAIL"
@@ -603,6 +666,14 @@ def run_unittest_files(
                         failed_tests.append((filename, f"exit code {ret_code}", _failure_tail(output_tail)))
                         break
 
+                except ConfigSnapshotMismatch as error:
+                    attempt_elapsed = time.perf_counter() - attempt_tic
+                    attempt_status = "FAIL"
+                    attempt_exit_code = 1
+                    failed_tests.append((filename, "snapshot mismatch", str(error)))
+                    if was_retried:
+                        retried_tests.append((filename, attempt, "failed"))
+                    break
                 except TimeoutError:
                     attempt_elapsed = time.perf_counter() - attempt_tic
                     attempt_status = "TIMEOUT"
@@ -632,26 +703,10 @@ def run_unittest_files(
                         retry_of=(current_attempt - 1) if current_attempt >= 2 else None,
                     )
 
-        # Gate hook (CUDA path only): only run_unittest_files dispatches CUDA
-        # suites; CPU suites go through pytest in run_a_suite and never reach
-        # here. Fire only on a PASS with a selected passing-attempt record and a
-        # configured store. The hook never affects file_passed / success.
-        if (
-            file_passed
-            and gate_store is not None
-            and passing_record_path is not None
-            and isinstance(file, CIRegistry)
-            and file.backend == HWBackend.CUDA
-        ):
-            run_gate_hook(
-                filename,
-                passing_record_path,
-                store=gate_store,
-                registry=file,
-                executing_suite=gate_executing_suite,
-                write_baseline=gate_write_baseline,
-                provenance=gate_provenance or gate_provenance_from_env(),
-            )
+        if file_passed:
+            passed_tests.append(filename)
+            if was_retried:
+                retried_tests.append((filename, attempt, "passed"))
 
         if not file_passed:
             success = False

@@ -8,7 +8,7 @@ from miles.ray.rollout.train_data_conversion import ROLLOUT_DATA_VALUE_SPEC
 from miles.tinker.core.types import UserInputError
 from miles.utils import object_store
 from miles.utils.http_utils import post
-from tinker.types.sample_response import MASK_LOGPROB
+from tinker.types.topk_logprobs import MASK_LOGPROB
 
 # internal datum key -> trainer batch key
 DATUM_TO_BATCH_KEYS = {"weights": "loss_weights", "advantages": "advantages", "sampling_logprobs": "rollout_log_probs"}
@@ -96,7 +96,9 @@ class MilesBackend:
         store = object_store.get_instance()
         data_ref = store.put(value=train_data, value_spec=ROLLOUT_DATA_VALUE_SPEC)
         try:
-            return await getattr(self.trainer, method)(batch_id=batch_id, data_ref=data_ref)
+            return await getattr(self.trainer, method)(
+                batch_id=batch_id, data_ref=data_ref
+            )  # config-access-exempt: attribute selected at runtime from method
         finally:
             store.remove(data_ref)
 
@@ -125,6 +127,10 @@ class MilesBackend:
                     for index in range(payload["num_samples"])
                 ]
             )
+        except httpx.HTTPStatusError as error:
+            if 400 <= error.response.status_code < 500 and error.response.status_code not in (408, 429):
+                raise UserInputError(error.response.text) from error
+            return {"error": f"{error}: {error.response.text}"}
         except httpx.HTTPError as error:
             return {"error": str(error)}
         sequences = [_to_sequence(response) for response in responses]
@@ -139,19 +145,17 @@ class MilesBackend:
         return result
 
     def _generate_request(self, payload: dict, lora_name: str | None, lora_path: str | None = None) -> dict:
+        # every SDK SamplingParams field, which core has already validated
         params = payload["sampling_params"]
-        max_tokens = params.get("max_tokens")
-        if max_tokens is None:
-            raise UserInputError("sampling_params.max_tokens is required")
         sampling_params = {
-            "max_new_tokens": max_tokens,
-            "temperature": params.get("temperature", 1.0),
-            "top_p": params.get("top_p", 1.0),
-            "top_k": params.get("top_k", -1),
+            "max_new_tokens": params["max_tokens"],
+            "temperature": params["temperature"],
+            "top_p": params["top_p"],
+            "top_k": params["top_k"],
         }
-        if params.get("seed") is not None:
+        if params["seed"] is not None:
             sampling_params["sampling_seed"] = params["seed"]
-        stop = params.get("stop")
+        stop = params["stop"]
         if stop is not None:
             if stop == []:
                 # tinker defines stop=[] as disabling every stop token, EOS included

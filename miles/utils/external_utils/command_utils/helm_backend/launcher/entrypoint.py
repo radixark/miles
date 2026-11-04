@@ -12,16 +12,19 @@ import yaml
 from miles.ray.specs.entrypoint import compute_specs
 from miles.ray.specs.train import (
     TRAINER_CONTROLLER_ADDRS_FLAG,
+    TrainerControllerSpec,
     compute_trainer_controller_pool_id,
     compute_trainer_ids,
-    specs_trainer_controller,
 )
+from miles.utils.args.configs.scaling import ScalingConfig
+from miles.utils.args.runtime import OrchestratorConfig
 from miles.utils.arguments import parse_args
 from miles.utils.env_report.launcher_report import LAUNCHER_REPORT_ENV_VAR
 from miles.utils.external_utils.command_utils.base_backend import (
     CLUSTER_BACKEND_FLAG,
     ExecuteTrainConfig,
     ExecuteTrainRequest,
+    LaunchGuard,
 )
 from miles.utils.external_utils.command_utils.common import (
     MOONCAKE_INIT_KWARGS_FLAG,
@@ -45,7 +48,10 @@ from miles.utils.external_utils.command_utils.helm_backend.launcher.manifest_typ
 from miles.utils.external_utils.command_utils.helm_backend.launcher.observability import farewell, with_observability
 from miles.utils.external_utils.command_utils.helm_backend.launcher.observability.diagnosis import collect_diagnosis
 from miles.utils.external_utils.command_utils.helm_backend.launcher.observability.pod_facts import observed_pod
-from miles.utils.external_utils.command_utils.helm_backend.launcher.values.builder import build_values
+from miles.utils.external_utils.command_utils.helm_backend.launcher.values.builder import (
+    build_values,
+    compute_static_connections,
+)
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import (
     InfraInfo,
     LaunchPlan,
@@ -56,10 +62,13 @@ from miles.utils.external_utils.command_utils.helm_backend.naming import Release
 from miles.utils.external_utils.command_utils.helm_backend.orchestrator.observer import wait_for_run
 from miles.utils.external_utils.model_args_utils import shell_safe_model_args
 from miles.utils.file_utils import atomic_write_text
-from miles.utils.object_store import ObjectStoreBackend
+from miles.utils.object_store_config import ObjectStoreBackend
 from miles.utils.run_uuid import generate_run_uuid, validate_run_uuid
+from miles.utils.workers.argv_utils import ORCHESTRATOR_CONFIG_FLAG, config_json_for_argv
+from miles.utils.workers.connection_config import StaticConnConfig
 from miles.utils.workers.naming import DNS_LABEL_PATTERN
 from miles.utils.workers.serving.utils import override_argv, override_env
+from miles.utils.workers.serving.worker_config import OrchestratorWorkerConfig
 from miles.utils.workers.types import ClusterBackend, DeployComponent
 from miles.utils.workers.worker_provider.kubernetes.helm.naming import static_cell_addrs
 from miles.utils.workers.worker_spec import RPC_PORT_NAME
@@ -68,8 +77,8 @@ logger = logging.getLogger(__name__)
 
 _RUN_UUID_FLAG = "--run-uuid"
 _ENV_REPORT_FLAG = "--env-report"
-_WANDB_RUN_ID_FLAG = "--wandb-run-id"
 _RUN_ID_PATTERN = re.compile(DNS_LABEL_PATTERN)
+_DEFAULT_LAUNCH_GUARD = LaunchGuard()
 
 
 class RunExitedError(SystemExit):
@@ -78,7 +87,10 @@ class RunExitedError(SystemExit):
         self.exit_code = exit_code
 
 
-def execute_train(*, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -> None:
+def execute_train(
+    *, request: ExecuteTrainRequest, config: ExecuteTrainConfig, guard: LaunchGuard | None = None
+) -> None:
+    guard = _DEFAULT_LAUNCH_GUARD if guard is None else guard
     run_id = config.run_id
     assert _RUN_ID_PATTERN.fullmatch(
         run_id
@@ -90,10 +102,21 @@ def execute_train(*, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -
         deploy_component=config.deploy_component,
         deploy_instance_id=config.deploy_instance_id,
     ).serialize()
-    installed_manifest = Helm.get_manifest(release, namespace)
-    run_uuid = _resolve_run_uuid(config, installed_manifest=installed_manifest, release=release)
+    installed_manifest = guard.get_manifest(release, namespace)
+    installed_payload = _installed_orchestrator_payload(installed_manifest, release=release)
+    run_uuid = _resolve_run_uuid(config, installed_payload=installed_payload)
     env = train_env_vars(request, {}, config=config)
-    pod_argv, args = _compute_train_argv(request, run_uuid=run_uuid, release=release, namespace=namespace, env=env)
+    chart = chart_dir(repo_base_dir=repo_base_dir)
+    shared_root = InfraInfo.shared_root(InfraInfo.load(chart, list(config.helm_values)), namespace=namespace)
+    worker_argv, args = _compute_train_argv(
+        request,
+        run_uuid=run_uuid,
+        installed_payload=installed_payload,
+        release=release,
+        namespace=namespace,
+        env=env,
+        ci_event_root=Path(shared_root),
+    )
     deploy_component = DeployComponent(args.deploy_component)
     assert (deploy_component, args.deploy_instance_id) == (config.deploy_component, config.deploy_instance_id), (
         f"the run's pods are told {deploy_component.value}/{args.deploy_instance_id!r}, the release is named "
@@ -101,17 +124,22 @@ def execute_train(*, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -
     )
     deploys_orchestration_script = deploy_component.deploys_orchestration_script()
 
+    run_directory = RunFiles.run_dir(shared_root=shared_root, run_id=run_id)
+
+    scaling = ScalingConfig.slice_from(args)
     with override_env(env):
         specs = compute_specs(args)
-    chart = chart_dir(repo_base_dir=repo_base_dir)
-    shared_root = InfraInfo.shared_root(InfraInfo.load(chart, list(config.helm_values)), namespace=namespace)
-    run_directory = RunFiles.run_dir(shared_root=shared_root, run_id=run_id)
+        static_connections = compute_static_connections(specs, scaling=scaling)
 
     if config.ci_run:
         _uninstall_leftover_ci_releases(namespace, keep_run_id=run_id)
     Helm.build_dependencies(chart)
 
-    orchestrator_command = ["python", request.train_script, *pod_argv] if deploys_orchestration_script else []
+    orchestrator_command = (
+        _compute_orchestrator_command(request.train_script, args=args, static_connections=static_connections)
+        if deploys_orchestration_script
+        else []
+    )
     hot_restart_plan = plan_hot_restart(
         components=config.parsed_hot_restart,
         deploy_component=deploy_component,
@@ -134,7 +162,7 @@ def execute_train(*, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -
             namespace=namespace,
             state_file=str(state_file) if state_file is not None else "",
             orchestrator_command=orchestrator_command,
-            worker_argv=pod_argv,
+            worker_argv=worker_argv,
             env=env,
             colocate=bool(args.colocate),
             mooncake_plan=_compute_mooncake_plan(args),
@@ -151,7 +179,10 @@ def execute_train(*, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -
                 ),
             }
         )
-        _write_helm_values(values_path, build_values(specs, rendered).as_values())
+        _write_helm_values(
+            values_path,
+            build_values(specs, rendered, scaling=scaling, static_connections=static_connections).as_values(),
+        )
         return computed, Helm.render_upgrade(
             release=release, namespace=namespace, chart=chart, values_files=values_files
         )
@@ -194,14 +225,21 @@ def execute_train(*, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -
             allow_diff_object_keys=hot_restart_plan.allow_diff_object_keys,
         )
     if rebuilds_orchestrator:
-        _defuse_previous_generation(
+        guard.before_defuse(
             release, namespace=namespace, superseded_state_file=carried_state_file, state_file=state_file
+        )
+        _defuse_previous_generation(
+            release,
+            namespace=namespace,
+            superseded_state_file=carried_state_file,
+            state_file=state_file,
+            guard=guard,
         )
 
     record.write(path=record_path)
     logger.info(f"What this launch launched is recorded under {record_path}")
 
-    Helm.upgrade(
+    guard.upgrade(
         release=release,
         namespace=namespace,
         chart=chart,
@@ -228,7 +266,8 @@ def execute_train(*, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -
 
 
 def _compute_trainer_controller_addrs(args: Any, *, release: str, namespace: str) -> dict[str, str]:
-    specs_by_pool_id = {spec.name: spec for spec in specs_trainer_controller(args)}
+    specs = map(TrainerControllerSpec.create, TrainerControllerSpec.slice_configs(args))
+    specs_by_pool_id = {spec.name: spec for spec in specs}
     addrs = {}
     for trainer_id in compute_trainer_ids(args):
         spec = specs_by_pool_id[compute_trainer_controller_pool_id(trainer_id)]
@@ -274,7 +313,19 @@ def _follow_until_finished(*, release: str, namespace: str, state_file: Path) ->
         logger.info(farewell(namespace=namespace, release=release, workload=orchestrator_workload))
 
 
-def _resolve_run_uuid(config: ExecuteTrainConfig, *, installed_manifest: Manifest | None, release: str) -> str:
+def _installed_orchestrator_payload(installed_manifest: Manifest | None, *, release: str) -> dict[str, Any] | None:
+    if installed_manifest is None:
+        return None
+
+    serialized = installed_manifest.flag_value(
+        ORCHESTRATOR_CONFIG_FLAG,
+        stateful_set=RunNames.orchestrator_object(release=release),
+        container=naming.ORCHESTRATOR_COMPONENT,
+    )
+    return json.loads(serialized) if serialized is not None else None
+
+
+def _resolve_run_uuid(config: ExecuteTrainConfig, *, installed_payload: dict[str, Any] | None) -> str:
     if (given := config.run_uuid) is not None:
         return validate_run_uuid(given)
 
@@ -284,20 +335,34 @@ def _resolve_run_uuid(config: ExecuteTrainConfig, *, installed_manifest: Manifes
         f"them all has to name it with --run-uuid"
     )
 
-    if installed_manifest is not None:
-        installed = installed_manifest.flag_value(
-            _RUN_UUID_FLAG,
-            stateful_set=RunNames.orchestrator_object(release=release),
-            container=naming.ORCHESTRATOR_COMPONENT,
-        )
-        if installed is not None:
-            return installed
+    if installed_payload is not None:
+        return installed_payload["args"]["run_uuid"]
 
     return generate_run_uuid()
 
 
+def _resolve_wandb_run_id(args: Any, *, installed_payload: dict[str, Any] | None) -> str | None:
+    if not args.use_wandb:
+        return None
+
+    if (given := args.wandb_run_id) is not None:
+        return given
+
+    if installed_payload is not None and (installed := installed_payload["args"]["wandb_run_id"]) is not None:
+        return installed
+
+    return _generate_wandb_run_id()
+
+
 def _compute_train_argv(
-    request: ExecuteTrainRequest, *, run_uuid: str, release: str, namespace: str, env: dict[str, str]
+    request: ExecuteTrainRequest,
+    *,
+    run_uuid: str,
+    installed_payload: dict[str, Any] | None,
+    release: str,
+    namespace: str,
+    env: dict[str, str],
+    ci_event_root: Path | None = None,
 ) -> tuple[list[str], Any]:
     argv = [*shlex.split(shell_safe_model_args(request.megatron_model_type)), *shlex.split(request.train_args)]
     assert not ArgvManipulator.is_defined(argv, _ENV_REPORT_FLAG), (
@@ -308,20 +373,32 @@ def _compute_train_argv(
         argv = ArgvManipulator.set(argv, CLUSTER_BACKEND_FLAG, ClusterBackend.KUBERNETES.value)
     if not ArgvManipulator.is_defined(argv, _RUN_UUID_FLAG):
         argv = ArgvManipulator.set(argv, _RUN_UUID_FLAG, run_uuid)
+    if ci_event_root is not None and not ArgvManipulator.is_defined(argv, "--ci-event-root"):
+        argv = ArgvManipulator.set(argv, "--ci-event-root", str(ci_event_root))
 
     with override_argv(argv), override_env(env):
         args = parse_args()
     assert LAUNCHER_REPORT_ENV_VAR not in args.train_env_vars
 
-    # TODO: remove after args refactor handles wandb ids
-    if args.use_wandb and args.wandb_run_id is None:
-        args.wandb_run_id = _generate_wandb_run_id()
-        argv = ArgvManipulator.set(argv, _WANDB_RUN_ID_FLAG, args.wandb_run_id)
+    wandb_run_id = _resolve_wandb_run_id(args, installed_payload=installed_payload)
+    if wandb_run_id is not None:
+        args.wandb_run_id = wandb_run_id
 
-    pod_argv = MooncakeInfo.with_cluster_master(
-        argv, plan=_compute_mooncake_plan(args), host=MooncakeInfo.master_service_host(release, namespace)
+    mooncake_plan = _compute_mooncake_plan(args)
+    mooncake_host = MooncakeInfo.master_service_host(release, namespace)
+    if mooncake_plan is not None:
+        args = args.model_copy(
+            update={"mooncake_store_init_kwargs": MooncakeInfo.cluster_init_kwargs(mooncake_plan, host=mooncake_host)}
+        )
+    return argv, args
+
+
+def _compute_orchestrator_command(train_script: str, *, args: Any, static_connections: StaticConnConfig) -> list[str]:
+    payload = OrchestratorWorkerConfig(
+        args=OrchestratorConfig.slice_from(args).model_dump(mode="json", exclude={"env_report"}),
+        static_connections=static_connections,
     )
-    return pod_argv, args
+    return ["python", train_script, ORCHESTRATOR_CONFIG_FLAG, config_json_for_argv(payload)]
 
 
 def _generate_wandb_run_id() -> str:
@@ -417,7 +494,12 @@ def _uninstall_leftover_ci_releases(namespace: str, *, keep_run_id: str) -> list
 
 
 def _defuse_previous_generation(
-    release: str, *, namespace: str, superseded_state_file: Path | None, state_file: Path | None
+    release: str,
+    *,
+    namespace: str,
+    superseded_state_file: Path | None,
+    state_file: Path | None,
+    guard: LaunchGuard = _DEFAULT_LAUNCH_GUARD,
 ) -> None:
     if superseded_state_file is not None:
         marker = RunFiles.superseded_marker(state_file=superseded_state_file)
@@ -430,7 +512,7 @@ def _defuse_previous_generation(
 
     job = RunNames.uninstall_job(release=release)
     logger.info(f"Deleting {job} if it is pending, so it cannot uninstall the release this launch installs")
-    Kubectl.delete_job(job, namespace=namespace, check=True)
+    guard.delete_uninstall_job(job, namespace=namespace, check=True)
 
 
 def _collect_diagnosis(*, release: str, namespace: str, state_file: Path) -> None:

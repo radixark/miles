@@ -13,13 +13,14 @@ from tests.ci.metric_history import register_ci_gate
 from tests.e2e.megatron.test_glm47_flash._common import CaseConfig, execute, prepare
 
 # 4x H200: the 8x H200 runners cannot bring NVSHMEM up over IB, which DeepEP low-latency mode needs.
-register_cuda_ci(est_time=1400, suite="stage-c-4-gpu-h200", labels=["megatron"], hardware=["hopper"])
+register_cuda_ci(est_time=1400, suite="stage-c-4-gpu-h200", labels=["megatron"], hardware=["hopper"], num_gpus=4)
 
 register_ci_gate(metric_key="train/grad_norm")
 register_ci_gate(metric_key="train/ppo_kl")
 register_ci_gate(metric_key="train/train_rollout_logprob_abs_diff")
 register_ci_gate(metric_key="train/train_rollout_kl")
 register_ci_gate(metric_key="rollout/raw_reward")
+register_ci_gate(metric_key="perf/actor_train_mfu")
 
 CASE = CaseConfig(
     use_deepep=True,

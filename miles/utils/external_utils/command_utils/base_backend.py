@@ -13,6 +13,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Literal, get_args
 
+from miles.utils.audit_utils.config_snapshot.enabled import SNAPSHOT_TESTING_ENABLED
 from miles.utils.external_utils.command_utils.common import (
     ArgvManipulator,
     _parse_extra_env_vars,
@@ -22,12 +23,44 @@ from miles.utils.external_utils.command_utils.common import (
     repo_base_dir,
     run_shell_command,
 )
+from miles.utils.external_utils.command_utils.helm_backend.launcher.command_wrapper import Helm, Kubectl
+from miles.utils.external_utils.command_utils.helm_backend.launcher.manifest_types import Manifest
 from miles.utils.external_utils.model_args_utils import shell_safe_model_args
+from miles.utils.port_range import ray_worker_port_args
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
+from miles.utils.test_utils.snapshot import SNAPSHOT_RECORD_DIR_ENV_VAR
 from miles.utils.typer_utils import dataclass_from_env
 from miles.utils.workers.types import ClusterBackend, DeployComponent, HotRestartComponent, parse_hot_restart
 
 logger = logging.getLogger(__name__)
+_CONFIG_SNAPSHOT_LAUNCH_COUNTS: dict[str, int] = {}
+
+
+CONVERSION_VERSION_FILE = "miles_conversion_version.txt"
+# Bump when a conversion this checkout writes would not load on a checkout holding another value:
+# the skip path trusts a cache only when the stamp equals the running checkout's value, so every
+# weight layout change bumps it. Values 1 and 2 were written briefly by an earlier numbering and
+# are never trusted. 3: the layouts before the head-sharded linear-attention layer.
+# 4: Qwen3.5 / Qwen3-Next GDN weights in group-major rows. 5: Kimi-K3 KDA under linear_attn.*.
+CONVERSION_VERSION = "6"
+
+
+class LaunchGuard:
+    def before_defuse(
+        self, release: str, *, namespace: str, superseded_state_file: Path | None, state_file: Path | None
+    ) -> None:
+        pass
+
+    def delete_uninstall_job(self, name: str, *, namespace: str, check: bool = False) -> None:
+        Kubectl.delete_job(name, namespace=namespace, check=check)
+
+    def upgrade(
+        self, *, release: str, namespace: str, chart: str | Path, values_files: list[str | Path], ci_run: bool
+    ) -> None:
+        Helm.upgrade(release=release, namespace=namespace, chart=chart, values_files=values_files, ci_run=ci_run)
+
+    def get_manifest(self, release: str, namespace: str) -> Manifest | None:
+        return Helm.get_manifest(release, namespace)
 
 
 @dataclass
@@ -67,6 +100,7 @@ class ExecuteTrainConfig(CommandUtilConfig):
     run_uuid: str | None = None
     skip_upgrade_check: bool = False
     external_mooncake: bool = False
+    ray_submission_id: str | None = None
 
     @property
     def parsed_hot_restart(self) -> list[HotRestartComponent]:
@@ -132,6 +166,7 @@ class BaseCommandBackend(ABC):
         prepare_cmd: dict[str, str] | None = None,
         extra_manifests: list[str] | None = None,
         config: ExecuteTrainConfig | None = None,
+        guard: LaunchGuard | None = None,
     ) -> None:
         if config is None:
             assert isinstance(
@@ -180,6 +215,8 @@ class BaseCommandBackend(ABC):
             _assert_train_args_name_no_other_run_uuid(train_argv, run_uuid=config.run_uuid)
             train_args = f"{train_args} {_RUN_UUID_FLAG} {config.run_uuid}"
 
+        if SNAPSHOT_TESTING_ENABLED:
+            train_args = _add_config_snapshot_name(train_args)
         self._execute_train_inner(
             request=ExecuteTrainRequest(
                 train_args=train_args,
@@ -195,6 +232,7 @@ class BaseCommandBackend(ABC):
                 extra_manifests=extra_manifests if extra_manifests is not None else [],
             ),
             config=config,
+            guard=guard,
         )
 
     def convert_checkpoint(
@@ -205,19 +243,22 @@ class BaseCommandBackend(ABC):
         multinode: bool = False,
         num_nodes: int | None = None,
         extra_args: str = "",
-        dir_dst: str = "/root",
+        dir_dst: str = "/root/models",
         hf_checkpoint: str | None = None,
         megatron_path: str = "/root/Megatron-LM",
     ):
         hf_checkpoint = hf_checkpoint or f"/root/models/{model_name}"
 
-        # TODO shall we make it in host-mapped folder and thus can cache it to speedup CI
         path_dst = f"{dir_dst}/{model_name}_torch_dist"
-        with _exclusive_path_lock(path_dst):
+        with exclusive_path_lock(path_dst):
             tracker = Path(path_dst) / "latest_checkpointed_iteration.txt"
-            if tracker.exists() and tracker.read_text().strip() == "release":
+            stamp = Path(path_dst) / CONVERSION_VERSION_FILE
+            cached = tracker.exists() and tracker.read_text().strip() == "release"
+            if cached and stamp.exists() and stamp.read_text().strip() == CONVERSION_VERSION:
                 logger.info(f"convert_checkpoint skip {path_dst} since tracker is 'release'")
                 return
+            if cached:
+                logger.info(f"convert_checkpoint redo {path_dst}: converted before layout {CONVERSION_VERSION}")
 
             multinode_args = ""
             if multinode:
@@ -244,6 +285,8 @@ class BaseCommandBackend(ABC):
                 f"--save {path_dst} "
                 f"{extra_args}"
             )
+            stamp.parent.mkdir(parents=True, exist_ok=True)
+            stamp.write_text(CONVERSION_VERSION)
 
     def ssh_start_ray_workers(
         self,
@@ -266,7 +309,7 @@ class BaseCommandBackend(ABC):
             'ssh root@"$worker_ip" '
             '"pkill -9 sglang ; ray stop --force ; pkill -9 miles ; '
             f"ray start --address={master_addr}:6379 --num-gpus {num_gpus_per_node} "
-            '--node-ip-address $worker_ip --disable-usage-stats" & '
+            f'--node-ip-address $worker_ip --disable-usage-stats{ray_worker_port_args()}" & '
             "done; wait"
         )
 
@@ -275,7 +318,7 @@ class BaseCommandBackend(ABC):
         self.exec_command_cpu(f"hf download --repo-type dataset {full_name} --local-dir {data_dir}/{partial_name}")
 
     def fp8_cast_bf16(self, path_src, path_dst):
-        with _exclusive_path_lock(path_dst):
+        with exclusive_path_lock(path_dst):
             sentinel = Path(path_dst) / "model.safetensors.index.json"
             if sentinel.exists():
                 logger.info(f"fp8_cast_bf16 skip {path_dst} since {sentinel} exists")
@@ -287,11 +330,29 @@ class BaseCommandBackend(ABC):
                 f"--output-bf16-hf-path {path_dst} "
             )
 
+    def exec_command_gpu_once(self, cmd: str, path_dst: str):
+        """Run `cmd`, which writes `path_dst`, unless an earlier run on this host finished it.
+
+        The converters copy the source's index files first, so nothing inside `path_dst`
+        marks completion; a sibling `<path_dst>.done` written after `cmd` succeeds does.
+        """
+        done = Path(f"{path_dst}.done")
+        with exclusive_path_lock(path_dst):
+            if done.exists():
+                logger.info(f"exec_command_gpu_once skip {path_dst} since {done} exists")
+                return
+
+            self.exec_command_cpu(f"rm -rf {shlex.quote(path_dst)}")
+            self.exec_command_gpu(cmd)
+            done.touch()
+
     def api_server_host(self, config: ExecuteTrainConfig) -> str:
         return "localhost"
 
     @abstractmethod
-    def _execute_train_inner(self, *, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -> None: ...
+    def _execute_train_inner(
+        self, *, request: ExecuteTrainRequest, config: ExecuteTrainConfig, guard: LaunchGuard | None
+    ) -> None: ...
 
     def exec_command_cpu(self, cmd: str, capture_output: bool = False) -> str | None:
         return self._exec_command_cpu_inner(cmd, capture_output=capture_output)
@@ -338,7 +399,7 @@ def resolve_extra_env_vars(extra_env_vars: dict[str, str], config: ExecuteTrainC
 
 
 @contextmanager
-def _exclusive_path_lock(path_dst: str):
+def exclusive_path_lock(path_dst: str):
     """Serialize prepare steps racing on a cache dir shared between runners on one host."""
     path = Path(path_dst)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -373,6 +434,25 @@ def _assert_train_args_name_no_other_run_uuid(train_argv: list[str], *, run_uuid
     assert (
         not conflicting
     ), f"the train arguments already say {_RUN_UUID_FLAG} {conflicting}, but this launch drives run {run_uuid}"
+
+
+def _add_config_snapshot_name(train_args: str) -> str:
+    if not os.environ.get(SNAPSHOT_RECORD_DIR_ENV_VAR):
+        return train_args
+    argv = shlex.split(train_args)
+    if not ArgvManipulator.is_defined(argv=argv, flag="--ci-test"):
+        return train_args
+    if ArgvManipulator.is_defined(argv=argv, flag="--ci-disable-config-snapshot"):
+        return train_args
+    if ArgvManipulator.is_defined(argv=argv, flag="--config-snapshot-name"):
+        return train_args
+
+    script = Path(sys.argv[0]).resolve()
+    relative = script.relative_to(repo_base_dir)
+    name = relative.with_suffix("").as_posix()
+    index = _CONFIG_SNAPSHOT_LAUNCH_COUNTS.get(name, 0)
+    _CONFIG_SNAPSHOT_LAUNCH_COUNTS[name] = index + 1
+    return f"{train_args} --config-snapshot-name {shlex.quote(f'{name}/run-{index:04d}')}"
 
 
 def _declared_cluster_backends(train_argv: list[str]) -> list[str]:

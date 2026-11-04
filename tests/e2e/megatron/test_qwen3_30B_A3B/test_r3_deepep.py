@@ -7,7 +7,11 @@ from tests.e2e.megatron.test_qwen3_30B_A3B._common import CaseConfig, execute, p
 # BF16 DeepEP control: test_r3_baseline's topology with DeepEP on both sides, so a failure
 # here isolates DeepEP from the FP8 rollout in the disabled test_r3_deepep_fp8.
 register_cuda_ci(
-    est_time=1400, suite="stage-c-4-gpu-h200", labels=["megatron", "replay"], hardware=["hopper", "blackwell"]
+    est_time=1400,
+    suite="stage-c-4-gpu-h200",
+    labels=["megatron", "replay"],
+    hardware=["hopper", "blackwell"],
+    num_gpus=4,
 )
 
 register_ci_gate(metric_key="train/grad_norm")
@@ -15,6 +19,7 @@ register_ci_gate(metric_key="train/ppo_kl")
 register_ci_gate(metric_key="train/train_rollout_logprob_abs_diff")
 register_ci_gate(metric_key="train/train_rollout_kl")
 register_ci_gate(metric_key="rollout/raw_reward")
+register_ci_gate(metric_key="perf/actor_train_mfu")
 
 CASE = CaseConfig(
     use_deepep=True,
@@ -22,6 +27,7 @@ CASE = CaseConfig(
     use_int4_rollout=False,
     use_bridge=False,
     use_r3=True,
+    use_output_store=True,
     num_gpus_per_node=4,
     cp_size=2,
     pp_size=1,

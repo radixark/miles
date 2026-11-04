@@ -18,7 +18,16 @@ def _write_checksums(side_dir: Path, checksums: list[str]) -> None:
     for rollout_id, checksum in enumerate(checksums):
         event_logger.log(
             InferenceEngineWeightChecksumEvent,
-            dict(rollout_id=rollout_id, trainer_model_id=None, engine_checksums=[{"rank0/w": checksum}]),
+            dict(
+                rollout_id=rollout_id,
+                trainer_model_id=None,
+                weight_version=rollout_id + 1,
+                debug_trainer_load_state_timestamp=0.0,
+                debug_weight_update_id=f"update-{rollout_id + 1}",
+                engine_snapshots=[
+                    dict(cell_id="cell-0", workers_hash="incarnation-0", tensor_checksums={"rank0/w": checksum})
+                ],
+            ),
             print_log=False,
         )
     event_logger.close()

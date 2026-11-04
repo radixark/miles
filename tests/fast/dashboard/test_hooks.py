@@ -251,7 +251,7 @@ def _worker_info(name, node, gpus, generation=1):
 
 
 def _servers(cells):
-    server = type("FakeServer", (), {"server_cells": {f"cell-{i}": cell for i, cell in enumerate(cells)}})()
+    server = type("FakeServer", (), {"all_server_cells": {f"cell-{i}": cell for i, cell in enumerate(cells)}})()
     return {"default": server}
 
 

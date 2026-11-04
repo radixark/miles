@@ -33,7 +33,7 @@ def _canonicalize_slot_keys(tree: dict, slot: int) -> dict:
     """Rewrite storage keys so a checkpoint saved from slot i loads into slot j."""
     marker, canonical = f".adapters.{slot}.", ".adapter."
     for sharded in nested_values(tree):
-        if hasattr(sharded, "key"):
+        if hasattr(sharded, "key"):  # config-access-exempt: nested checkpoint values differ in key support
             sharded.key = sharded.key.replace(marker, canonical)
     return tree
 

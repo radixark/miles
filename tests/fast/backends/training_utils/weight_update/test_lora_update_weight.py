@@ -10,6 +10,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 import torch
 
+from tests.fast.fixtures.sglang_config_fixtures import make_sglang_config
+
 from miles.backends.training_utils.weight_update.updater import WeightUpdater
 from miles.utils.lora.utils import is_lora_weight_name
 
@@ -64,12 +66,12 @@ _UPDATER_MODULE = "miles.backends.training_utils.weight_update.updater"
 class TestWeightUpdaterLoraConfig:
     """The updater requires a lora_sync_config exactly when LoRA is active."""
 
-    def _make_updater(self, *, is_lora, lora_sync_config):
+    def _make_updater(self, *, is_lora, lora_sync_config, args=None):
         protocol = MagicMock()
         protocol.supports_lora = True
         with patch(f"{_UPDATER_MODULE}.get_weight_transfer_protocol", return_value=protocol):
             return WeightUpdater(
-                Namespace(),
+                args or Namespace(),
                 [MagicMock()],
                 weights_getter=lambda: {},
                 model_name="qwen",
@@ -91,3 +93,20 @@ class TestWeightUpdaterLoraConfig:
     def test_no_lora_no_config(self):
         updater = self._make_updater(is_lora=False, lora_sync_config=None)
         assert updater._lora_sync_config is None
+
+    @pytest.mark.parametrize("attention_dp", [False, True], ids=["no-attention-dp", "attention-dp"])
+    def test_registration_pins_the_adapter_only_under_attention_dp(self, attention_dp):
+        """SGLang's attention-DP LoRA rejects unpinned adapters; other layouts keep them evictable."""
+        updater = self._make_updater(
+            is_lora=True,
+            lora_sync_config={"peft_type": "LORA", "r": 8},
+            args=Namespace(
+                sglang=make_sglang_config(attn_dp_size=8 if attention_dp else 1, enable_dp_attention=False, dp_size=1)
+            ),
+        )
+        engines = [MagicMock()]
+        with patch(f"{_UPDATER_MODULE}.register_lora_adapter") as register:
+            updater._register_new_lora_adapters(engines, [("miles_lora", None)])
+        register.assert_called_once_with(
+            engines, lora_name="miles_lora", lora_config={"peft_type": "LORA", "r": 8}, pinned=attention_dp
+        )

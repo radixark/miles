@@ -8,6 +8,7 @@ register_cuda_ci(
     labels=["deploy", "ft-long"],
     hardware=["hopper", "blackwell"],
     disabled="needs a Kubernetes cluster backend; FT soak tests pending CI infra support",
+    num_gpus=8,
 )
 
 if __name__ == "__main__":

@@ -4,13 +4,15 @@ from tests.ci.ci_register import register_cuda_ci
 from tests.ci.metric_history import register_ci_gate
 from tests.e2e.fsdp.r3._common import CaseConfig, main
 
-register_cuda_ci(est_time=1800, suite="stage-c-8-gpu-h200", labels=["fsdp", "replay"], hardware=["hopper"])
+register_cuda_ci(est_time=1800, suite="stage-c-8-gpu-h200", labels=["fsdp", "replay"], hardware=["hopper"], num_gpus=8)
 
 register_ci_gate(metric_key="train/grad_norm")
 register_ci_gate(metric_key="train/ppo_kl")
 register_ci_gate(metric_key="rollout/raw_reward")
+register_ci_gate(metric_key="perf/actor_train_mfu")
 
 CASE = CaseConfig(
+    use_output_store=True,
     model_name="Qwen3.5-35B-A3B",
     hf_repo="Qwen/Qwen3.5-35B-A3B",
     num_gpus=8,

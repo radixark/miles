@@ -1,7 +1,8 @@
 """The dedicated in-job eval engines (``--eval-num-gpus``).
 
-Weight delivery only: ``pin`` loads a snapshot onto every engine and verifies each
-one reports the expected version. The fleet lives beside its engines, in the
+Weight delivery only: ``pin`` loads a snapshot onto every engine; ``current``
+checks an already-synchronized version without reloading. Both verify each engine
+reports the expected version. The fleet lives beside its engines, in the
 inference controller; the executor holds an ``RolloutExecutorEvalFleet`` over the wire and
 builds the state to generate against from the fleet's description. Who generates is
 the eval fn's business, exactly as on the training engines.
@@ -16,6 +17,7 @@ from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.ray.specs.inference import inference_controller_worker_name
 from miles.rollout.checkpoint_eval import EvalSkip, retarget_args
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
+from miles.utils.args.component_rollout import InferenceRuntimeMutState
 from miles.utils.http_utils import wait_http_ok
 from miles.utils.workers.rpc.client.misc import ServerRestartedError
 from miles.utils.workers.worker_handle import BaseWorkerHandle, WorkerUnreachableError
@@ -30,8 +32,7 @@ EVAL_WEIGHT_LOAD_TIMEOUT_SECS = 600.0
 @dataclasses.dataclass(frozen=True)
 class EvalFleetInfo:
     router: HostAndPort
-    num_gpus: int
-    num_gpus_per_engine: int
+    engine_gpu_counts: list[int]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -52,7 +53,12 @@ class RolloutExecutorEvalFleet:
             inference_controller_worker_name()
         )
         self._state = GenerateState(
-            retarget_args(args, info.router.host, info.router.port, info.num_gpus, info.num_gpus_per_engine)
+            retarget_args(
+                args=args,
+                router_ip=info.router.host,
+                router_port=info.router.port,
+                engine_gpu_counts=info.engine_gpu_counts,
+            )
         )
 
     async def pin(self, checkpoint_dir: str, weight_version: str) -> GenerateState:
@@ -60,12 +66,28 @@ class RolloutExecutorEvalFleet:
             pin = await self._inference_controller.pin_eval_fleet(
                 checkpoint_dir=checkpoint_dir, weight_version=weight_version
             )
+            info = await self._inference_controller.get_eval_fleet_info()
         except UNREACHABLE_CONTROLLER_ERRORS as e:
             logger.warning(f"Eval fleet controller could not be reached: {e!r}")
             raise EvalSkip("controller_unreachable") from e
 
         if (skip_reason := pin.skip_reason) is not None:
             raise EvalSkip(skip_reason)
+        if info is None:
+            raise EvalSkip("controller_unreachable")
+        self._state.args.inference_runtime_mut_state.set_(
+            InferenceRuntimeMutState(engine_count=len(info.engine_gpu_counts), gpu_count=sum(info.engine_gpu_counts))
+        )
+        return self._state
+
+    async def current(self, weight_version: str) -> GenerateState:
+        """Use the synchronized fleet only after every engine confirms its version."""
+        try:
+            pin = await self._inference_controller.check_eval_fleet_version(weight_version=weight_version)
+        except UNREACHABLE_CONTROLLER_ERRORS as e:
+            raise EvalSkip("controller_unreachable") from e
+        if pin.skip_reason is not None:
+            raise EvalSkip(pin.skip_reason)
         return self._state
 
 
@@ -76,12 +98,12 @@ class InferenceControllerEvalFleet:
         self.args = args
         self._srv = srv
 
-    @property
-    def info(self) -> EvalFleetInfo:
+    async def info(self) -> EvalFleetInfo:
+        async with self._srv.context_lock:
+            engine_gpu_counts = list(self._srv.engine_gpu_counts)
         return EvalFleetInfo(
             router=HostAndPort(host=self._srv.router_ip, port=self._srv.router_port),
-            num_gpus=self.args.eval_num_gpus,
-            num_gpus_per_engine=self.args.eval_num_gpus_per_engine,
+            engine_gpu_counts=engine_gpu_counts,
         )
 
     async def pin(self, checkpoint_dir: str, weight_version: str) -> EvalFleetPin:
@@ -98,6 +120,18 @@ class InferenceControllerEvalFleet:
             logger.warning(f"Eval router not ready: {e}")
             return EvalFleetPin(skip_reason="unhealthy")
 
+        return EvalFleetPin(skip_reason=None)
+
+    async def check_version(self, weight_version: str) -> EvalFleetPin:
+        """Read every current engine's version; never reload or retry weights."""
+        try:
+            versions = await self._weight_versions()
+            if not versions or any(str(version) != weight_version for version in versions):
+                return EvalFleetPin(skip_reason="pin_violation")
+            await self._wait_router_ready()
+        except Exception as e:
+            logger.warning(f"Synchronized eval fleet is not ready: {e}")
+            return EvalFleetPin(skip_reason="unhealthy")
         return EvalFleetPin(skip_reason=None)
 
     async def _pin_fleet(self, checkpoint_dir: str, weight_version: str, *, retries: int = 2) -> bool:
@@ -117,10 +151,7 @@ class InferenceControllerEvalFleet:
                     ),
                     timeout=EVAL_WEIGHT_LOAD_TIMEOUT_SECS,
                 )
-                versions = await asyncio.wait_for(
-                    asyncio.gather(*[client.get_weight_version() for client in await self._fleet_api_clients()]),
-                    timeout=EVAL_WEIGHT_LOAD_TIMEOUT_SECS,
-                )
+                versions = await self._weight_versions()
             except Exception as e:
                 logger.warning(f"Weight pin to {checkpoint_dir} failed (attempt {attempt + 1}/{retries}): {e}")
                 continue
@@ -128,6 +159,12 @@ class InferenceControllerEvalFleet:
                 return True
         logger.warning(f"Failed to pin weight_version={weight_version} to {checkpoint_dir} (got {versions})")
         return False
+
+    async def _weight_versions(self):
+        return await asyncio.wait_for(
+            asyncio.gather(*[client.get_weight_version() for client in await self._fleet_api_clients()]),
+            timeout=EVAL_WEIGHT_LOAD_TIMEOUT_SECS,
+        )
 
     async def _fleet_api_clients(self) -> list[SGLangApiClient]:
         async with self._srv.context_lock:

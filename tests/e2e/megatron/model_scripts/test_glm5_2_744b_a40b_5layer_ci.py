@@ -29,28 +29,36 @@ from tests.ci.metric_history import register_ci_gate
 
 
 register_cuda_ci(
-    est_time=900, suite="stage-c-4-gpu-h200", labels=["megatron", "model-scripts"], hardware=["hopper", "blackwell"]
+    est_time=900,
+    suite="stage-c-2-gpu-h200",
+    labels=["megatron", "model-scripts"],
+    hardware=["hopper", "blackwell"],
+    num_gpus=2,
 )
 register_rocm_ci(
     est_time=900,
     suite="stage-c-4-gpu-mi350",
     labels=["megatron", "model-scripts", "amd"],
 )
-register_rocm_ci(est_time=900, suite="nightly-stage-c-4-gpu-mi350", labels=["megatron", "model-scripts", "amd"])
+register_rocm_ci(est_time=900, suite="nightly-stage-c-2-gpu-mi350", labels=["megatron", "model-scripts", "amd"])
 
 register_ci_gate(metric_key="train/grad_norm")
 register_ci_gate(metric_key="train/ppo_kl")
 register_ci_gate(metric_key="train/train_rollout_logprob_abs_diff")
 register_ci_gate(metric_key="train/train_rollout_kl")
 register_ci_gate(metric_key="rollout/raw_reward")
+register_ci_gate(metric_key="perf/actor_train_mfu")
 
 
 def _args() -> ScriptArgs:
     return ScriptArgs.from_env(
         model_name="GLM-5.2_5layer",
         num_nodes=1,
-        num_gpus_per_node=4,
+        num_gpus_per_node=2,
         num_rollout=2,
+        rollout_batch_size=4,
+        n_samples_per_prompt=4,
+        global_batch_size=16,
         enable_optimizer_offload=True,
         extra_args=("--ci-test " "--ci-disable-logprobs-checker "),
     )

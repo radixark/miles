@@ -120,5 +120,5 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --actor-num-nodes 1
   --actor-num-gpus-per-node 4
   --num-gpus-per-node 8
-  --rollout-num-gpus 4
-  --use-fault-tolerance   
+  --rollout-num-gpus 4   
+  --deploy-component all

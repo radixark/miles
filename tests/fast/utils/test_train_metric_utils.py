@@ -110,3 +110,20 @@ class TestLogPerfData:
         [(payload, step_key)] = calls
         assert step_key == "alpha/rollout/step"
         assert payload == {"alpha/perf/actor_train_time": 2.0, "alpha/rollout/step": 3}
+
+
+def test_train_flops_replace_three_forwards_when_given(timer, logged):
+    timer.timers = {"actor_train": 2.0, "log_probs": 1.0}
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(perf, "local_peak_bf16_tflops", lambda: 989.0)
+        log_perf_data_raw(
+            rollout_id=0,
+            args=make_args(),
+            is_primary_rank=True,
+            compute_total_fwd_flops=lambda seq_lens: FWD_TFLOPS,
+            compute_total_train_flops=lambda seq_lens: 140.0,
+        )
+    [payload] = logged
+    assert payload["perf/log_probs_tflops"] == pytest.approx(FWD_TFLOPS)
+    assert payload["perf/actor_train_tflops"] == pytest.approx(70.0)
+    assert payload["perf/actor_train_mfu"] == pytest.approx(70.0 / 989.0)

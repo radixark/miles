@@ -218,14 +218,6 @@ def test_create_runs_the_env_server_as_root(monkeypatch, fake_e2b):
     assert "serve" in args[0]
 
 
-def test_build_lock_is_per_alias():
-    lock_a1 = sandbox._build_lock("tb2-a-123")
-    lock_a2 = sandbox._build_lock("tb2-a-123")
-    lock_b = sandbox._build_lock("tb2-b-456")
-    assert lock_a1 is lock_a2
-    assert lock_a1 is not lock_b
-
-
 def test_task_build_resources_from_task_toml(tmp_path: Path):
     (tmp_path / "task.toml").write_text("[environment]\ncpus = 4\nmemory_mb = 8192\n")
     assert sandbox.task_build_resources(tmp_path) == {"cpu_count": 4, "memory_mb": 8192}

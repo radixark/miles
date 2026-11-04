@@ -7,13 +7,15 @@ torch = pytest.importorskip("torch")
 if not torch.cuda.is_available():  # pragma: no cover - needs a GPU
     pytest.skip("QSA kernels need CUDA", allow_module_level=True)
 
-from miles_plugins.models.qwen3_8_next.ops.kernel.qsa_block_sparse_attn import (  # noqa: E402
-    build_tile_index_pair,
-    qsa_block_sparse_attention_triton,
+from miles.kernels.attention.qsa import (  # noqa: E402
+    qsa_block_sparse_attention,
+    qsa_sparse_attention,
     qsa_sparse_attention_from_indices,
+)
+from miles.kernels.attention.qsa.block_sparse_attention import (  # noqa: E402
+    build_tile_index_pair,
     selection_to_block_bitmap,
 )
-from miles_plugins.models.qwen3_8_next.ops.kernel.qsa_sparse_attn import qsa_sparse_attention_triton  # noqa: E402
 
 BLK = 4
 HQ, HKV, D = 4, 1, 128
@@ -62,7 +64,7 @@ def _rel(a, b):
 def test_matches_gather_kernel_and_reference():
     q, k, v, idx = _single_sequence_case()
     ref = _reference(q, k, v, idx, SCALE)
-    old = qsa_sparse_attention_triton(q, k, v, idx, SCALE)
+    old = qsa_sparse_attention(q, k, v, idx, SCALE)
     new = qsa_sparse_attention_from_indices(q, k, v, idx, SCALE)
 
     old_max, _ = _rel(old, ref)
@@ -82,9 +84,7 @@ def test_gradients_match_gather_kernel():
         fn(qq, kk, vv, idx, SCALE).backward(gout)
         return qq.grad, kk.grad, vv.grad
 
-    for a, b, name in zip(
-        run(qsa_sparse_attention_from_indices), run(qsa_sparse_attention_triton), "qkv", strict=True
-    ):
+    for a, b, name in zip(run(qsa_sparse_attention_from_indices), run(qsa_sparse_attention), "qkv", strict=True):
         rel = _rel(a, b)[1]
         assert rel < 1e-2, (name, rel)
 
@@ -129,7 +129,7 @@ def test_packed_boundary_not_a_multiple_of_the_block(lens):
 
     hi = torch.arange(T, dtype=torch.int32, device="cuda")
     qq, kk, vv = (t.clone().requires_grad_(True) for t in (q, k, v))
-    out = qsa_block_sparse_attention_triton(
+    out = qsa_block_sparse_attention(
         qq, kk, vv, sel, tok_base, hi, blk_base, tok_base, block_first, block_last, SCALE, BLK
     )
     ref = _reference(q, k, v, idx, SCALE)
@@ -140,7 +140,7 @@ def test_packed_boundary_not_a_multiple_of_the_block(lens):
     gout = torch.randn(q.shape, device="cuda", dtype=torch.bfloat16, generator=g)
     out.backward(gout)
     ref_grads = [t.clone().requires_grad_(True) for t in (q, k, v)]
-    qsa_sparse_attention_triton(*ref_grads, idx, SCALE).backward(gout)
+    qsa_sparse_attention(*ref_grads, idx, SCALE).backward(gout)
     for got, want, name in zip((qq, kk, vv), ref_grads, "qkv", strict=True):
         assert _rel(got.grad, want.grad)[1] < 1e-2, name
 
@@ -149,7 +149,7 @@ def test_tile_index_pair_is_consistent_both_ways():
     q, k, v, idx = _single_sequence_case(T=256, budget=32)
     sel = selection_to_block_bitmap(idx, 256, BLK)
     block_first = torch.arange(sel.shape[1], dtype=torch.int32, device="cuda") * BLK
-    klist, kcnt, qlist, qcnt = build_tile_index_pair(sel, block_first, block_first + BLK - 1, 64, 32)
+    klist, kcnt, qlist, qcnt = build_tile_index_pair(sel, block_first, block_first + BLK - 1, 64, 32, BLK)
 
     forward = {(qt, int(klist[qt, i])) for qt in range(kcnt.numel()) for i in range(int(kcnt[qt]))}
     backward = {(int(qlist[kt, i]), kt) for kt in range(qcnt.numel()) for i in range(int(qcnt[kt]))}

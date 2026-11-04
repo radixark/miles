@@ -5,10 +5,7 @@ from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from miles.utils.external_utils import command_utils
 
 register_cuda_ci(
-    est_time=2200,
-    suite="stage-c-4-gpu-h200",
-    labels=["long"],
-    hardware=["hopper", "blackwell"],
+    est_time=2200, suite="stage-c-4-gpu-h200", labels=["long"], hardware=["hopper", "blackwell"], num_gpus=4
 )
 register_rocm_ci(
     est_time=2400,
@@ -87,7 +84,7 @@ def execute():
     )
 
     ci_args = (
-        "--ci-test "
+        "--ci-test --no-enable-sample-ownership-checker "
         "--ci-disable-kl-checker "
         "--ci-metric-checker-key eval/gsm8k "
         "--ci-metric-checker-threshold 0.71 "  # loose threshold at 60 step

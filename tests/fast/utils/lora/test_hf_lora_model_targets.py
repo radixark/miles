@@ -12,6 +12,7 @@ from miles.utils.hf_utils.weight_mapping import HfWeightMapping
 from miles.utils.lora.hf_lora_targets import (
     _HF_LORA_MODELS,
     exclude_hf_lora_targets,
+    gdn_in_proj_served_targets,
     get_hf_lora_targets,
     parse_lora_targets,
     resolve_hf_lora_targets,
@@ -32,8 +33,9 @@ _NATIVE_MODELS = (
     "deepseek_v3",
     "glm4_moe",
     "glm_moe_dsa",
+    "glm5_next",
 )
-_MULTIMODAL_MODELS = {"qwen3_5", "qwen3_5_moe"}
+_MULTIMODAL_MODELS = {"qwen3_5", "qwen3_5_moe", "glm5_next"}
 
 
 def _small_config(model_type, overrides):
@@ -63,7 +65,7 @@ def _small_config(model_type, overrides):
         )
     if model_type == "gpt_oss":
         text.update(num_local_experts=2, num_experts_per_tok=1)
-    if model_type in {"deepseek_v2", "deepseek_v3", "glm4_moe", "glm_moe_dsa"}:
+    if model_type in {"deepseek_v2", "deepseek_v3", "glm4_moe", "glm_moe_dsa", "glm5_next"}:
         text.update(
             first_k_dense_replace=1,
             n_routed_experts=2,
@@ -73,10 +75,20 @@ def _small_config(model_type, overrides):
             n_group=1,
             topk_group=1,
         )
-    if model_type in {"deepseek_v2", "deepseek_v3", "glm_moe_dsa"}:
+    if model_type in {"deepseek_v2", "deepseek_v3", "glm_moe_dsa", "glm5_next"}:
         text.update(q_lora_rank=8, kv_lora_rank=8, qk_nope_head_dim=4, qk_rope_head_dim=4, v_head_dim=8)
-    if model_type == "glm_moe_dsa":
+    if model_type in {"glm_moe_dsa", "glm5_next"}:
         text.update(mlp_layer_types=["dense", "sparse"], index_n_heads=2, index_head_dim=8, index_topk=4)
+    if model_type == "glm5_next":
+        text.update(
+            num_key_value_heads=4,
+            qk_rope_head_dim=0,
+            index_kpool=2,
+            layer_types=["linear_attention", "indexed_attention"],
+            linear_num_heads=2,
+            linear_head_dim=8,
+            pad_token_id=0,
+        )
     text.update(overrides)
     if model_type in _MULTIMODAL_MODELS:
         return AutoConfig.for_model(
@@ -101,9 +113,11 @@ def test_native_model_coverage():
     # These entries use custom code, a Miles alias, or a version newer than the pinned Transformers.
     non_native = {
         "deepseek_v32",
+        "deepseek_v41",
         "kimi_k2",
         "kimi_k25",
         "kimi_k3",
+        "mimo_v2",
         "inkling_model",
         "inkling_mm_model",
         "inkling_text",
@@ -136,6 +150,10 @@ def test_native_model_coverage():
     + [
         pytest.param("glm_moe_dsa", {"mlp_layer_types": [kind, kind]}, id=f"glm-dsa-{kind}")
         for kind in ("dense", "sparse")
+    ]
+    + [
+        pytest.param("glm5_next", {"layer_types": [kind, kind]}, id=f"glm5-next-{kind}")
+        for kind in ("linear_attention", "indexed_attention")
     ],
 )
 def test_targets_match_native_hf_model(model_type, overrides):
@@ -214,3 +232,38 @@ def test_remote_config_with_native_class_name():
         HfWeightMapping.from_config(remote_config).parameter_names
         == HfWeightMapping.from_config(config).parameter_names
     )
+
+
+# module leaves of the official Tinker exports in design doc §6.9 (unembed_tokens is HF's lm_head)
+_TINKER_QWEN3_5_4B = {
+    "self_attn.q_proj",
+    "self_attn.k_proj",
+    "self_attn.v_proj",
+    "self_attn.o_proj",
+    "linear_attn.in_proj_q",
+    "linear_attn.in_proj_k",
+    "linear_attn.in_proj_v",
+    "linear_attn.in_proj_z",
+    "linear_attn.out_proj",
+    "mlp.gate_proj",
+    "mlp.up_proj",
+    "mlp.down_proj",
+    "lm_head",
+}
+
+
+@pytest.mark.parametrize("model_type", ["qwen3_5", "qwen3_5_moe"])
+def test_qwen3_5_attn_group_is_official_tinkers(model_type):
+    """Official Qwen3.5 / 3.6 adapters train in_proj_q/k/v/z and out_proj on the GDN layers, never in_proj_b/a."""
+    text = {"layer_types": ["linear_attention", "full_attention"], "shared_expert_intermediate_size": 16}
+    targets = resolve_hf_lora_targets({"model_type": model_type, "text_config": text}, target_modules=["attn"])
+    served = gdn_in_proj_served_targets(targets, targets)
+    gdn = {target.split(".layers.*.")[1] for target in served if ".linear_attn." in target}
+    assert gdn == {f"linear_attn.{leaf}" for leaf in ("in_proj_q", "in_proj_k", "in_proj_v", "in_proj_z", "out_proj")}
+
+
+def test_qwen3_5_dense_default_groups_match_the_official_export():
+    config = {"model_type": "qwen3_5", "text_config": {"layer_types": ["linear_attention", "full_attention"]}}
+    targets = resolve_hf_lora_targets(config, target_modules=["attn", "mlp", "unembed"])
+    served = gdn_in_proj_served_targets(targets, targets)
+    assert {target.split(".layers.*.")[-1] for target in served} == _TINKER_QWEN3_5_4B

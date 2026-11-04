@@ -14,7 +14,9 @@ from miles.utils.workers.env_vars import (
     CELL_INDEX_ENV_VAR,
     NAMESPACE_ENV_VAR,
     POD_INDEX_ENV_VAR,
+    POD_UID_ENV_VAR,
     RELEASE_ENV_VAR,
+    WORKER_METADATA_ENV_VAR,
 )
 from miles.utils.workers.naming import (
     DNS_LABEL_PATTERN,
@@ -34,9 +36,11 @@ _PLATFORM_OWNED_ENV_VARS = [
     "PYTHONPATH",
     CELL_INDEX_ENV_VAR,
     POD_INDEX_ENV_VAR,
+    POD_UID_ENV_VAR,
     BASE_GPU_ID_ENV_VAR,
     NAMESPACE_ENV_VAR,
     RELEASE_ENV_VAR,
+    WORKER_METADATA_ENV_VAR,
 ]
 _ENV_KEYS = {
     "propertyNames": {
@@ -83,6 +87,7 @@ class PoolEntry(ValuesModel):
     ports: list[PortEntry] | None = None
     env: _EnvVars | None = None
     meta: dict[str, str] | None = None
+    annotations: dict[str, str] | None = None
     replicas: Annotated[int, Field(ge=1)] | None = None
     size: Annotated[int, Field(ge=1)] | None = None
     resources: _Resources | None = None
@@ -171,7 +176,9 @@ class Image(ValuesModel):
 
 
 def _assert_one_source(volume: ValuesModel, sources: tuple[str, ...]) -> None:
-    declared = [source for source in sources if getattr(volume, to_snake(source)) is not None]
+    declared = [
+        source for source in sources if getattr(volume, to_snake(source)) is not None
+    ]  # config-access-exempt: attribute selected at runtime from to_snake(source)
     assert len(declared) == 1, (
         f"a volume declares exactly one of {list(sources)}, but this one declares {declared}: a volume with none "
         f"is a mount kubernetes cannot satisfy, and one with several is a values file whose reader has to guess"

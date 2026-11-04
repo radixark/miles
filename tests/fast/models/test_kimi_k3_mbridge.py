@@ -15,13 +15,13 @@ def test_kda_state_stays_fp32_against_the_bridge_dtype(name):
     bridge.config = SimpleNamespace(kimi_linear_num_heads=1)
     weight = torch.tensor([0.1234567], dtype=torch.float32)
 
-    converted = bridge._weight_to_mcore_format(f"decoder.layers.0.self_attention.{name}", [weight])
+    converted = bridge._weight_to_mcore_format(f"decoder.layers.0.self_attention.linear_attn.{name}", [weight])
 
     assert converted.dtype == torch.float32
     torch.testing.assert_close(converted, weight, rtol=0, atol=0)
 
     bridge.make_vocab_size_divisible_by = None
     assert (
-        bridge._weight_to_mcore_format("decoder.layers.0.self_attention.q_proj.weight", [weight]).dtype
+        bridge._weight_to_mcore_format("decoder.layers.0.self_attention.linear_attn.q_proj.weight", [weight]).dtype
         == torch.bfloat16
     )

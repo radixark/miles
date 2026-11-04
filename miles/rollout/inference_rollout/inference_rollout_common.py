@@ -16,14 +16,17 @@ from miles.rollout.base_types import (
     RolloutFnOutput,
     RolloutFnTrainInput,
     RolloutFnTrainOutput,
+    compute_kv_cache_namespace,
 )
 from miles.rollout.generate_hub.single_turn import generate
-from miles.rollout.generate_utils.generate_endpoint_utils import policy_uses_routing_key
+from miles.rollout.generate_utils.generate_endpoint_utils import apply_sample_max_response_len, router_routes_by_key
 from miles.rollout.inference_rollout.compatibility import load_generate_function
 from miles.rollout.rm_hub import async_rm, batched_async_rm
+from miles.utils.async_utils import DynamicLimitSemaphore
 from miles.utils.lifecycle import TrajectoryLifecycle
+from miles.utils.output_store.dropped import record_dropped_samples
 from miles.utils.processing_utils import load_processor, load_tokenizer
-from miles.utils.types import Sample
+from miles.utils.types import Sample, SampleLineage
 
 logger = logging.getLogger(__name__)
 
@@ -37,8 +40,8 @@ class GenerateState:
         )
         self.processor = load_processor(args.hf_checkpoint, trust_remote_code=True)
 
-        self.generate_fn_semaphore = asyncio.Semaphore(
-            args.sglang_server_concurrency * args.rollout_num_gpus // args.rollout_num_gpus_per_engine
+        self.generate_fn_semaphore = DynamicLimitSemaphore(
+            lambda: args.sglang_server_concurrency * max(args.inference_runtime_mut_state.engine_count, 1)
         )
         self.sampling_params: dict[str, Any] = compute_sampling_params(
             args,
@@ -49,8 +52,17 @@ class GenerateState:
         )
 
         self.generate_function = load_generate_function(args.custom_generate_function_path) or generate
+        self.sample_generate_functions: dict[str, Any] = {}
 
         self.reset()
+
+    def generate_function_for(self, path: str | None):
+        """The generate function a sample names, built once per path like the flag's; else the run-wide one."""
+        if path is None:
+            return self.generate_function
+        if path not in self.sample_generate_functions:
+            self.sample_generate_functions[path] = load_generate_function(path) or self.generate_function
+        return self.sample_generate_functions[path]
 
     def reset(self) -> None:
         self.aborted = False
@@ -63,6 +75,7 @@ async def generate_and_rm(
     evaluation: bool = False,
 ) -> Sample | list[Sample]:
     args = state.args
+    input_sample_index = sample.index
 
     # mask previous off-policy generation for partial rollout
     if args.partial_rollout and args.mask_offpolicy_in_partial_rollout and sample.response_length > 0:
@@ -75,13 +88,15 @@ async def generate_and_rm(
             assert sample.reward is not None
         return sample
 
+    sampling_params = apply_sample_max_response_len(sampling_params, sample)
+
     # dashboard lifecycle probe: the semaphore wait is the queue; attempt_end fires before reward
     sink = None if evaluation else TrajectoryLifecycle().sink
     if sink is not None:
         sink.attempt_start(sample)
 
     # generate
-    log_prefix = f"[sample={getattr(sample, 'index', '?')}]"
+    log_prefix = f"[sample={sample.index}]"
     logger.debug(f"{log_prefix} Waiting for semaphore...")
     try:
         async with state.generate_fn_semaphore:
@@ -93,7 +108,7 @@ async def generate_and_rm(
             if sink is not None:
                 sink.gen_start(sample)
             # per-sample override, e.g. an eval dataset naming its own generate function
-            generate_fn = load_generate_function(sample.generate_function_path) or state.generate_function
+            generate_fn = state.generate_function_for(sample.generate_function_path)
             output = await generate_fn(
                 GenerateFnInput(
                     state=state,
@@ -103,6 +118,8 @@ async def generate_and_rm(
                 )
             )
             sample = output.samples
+            if not evaluation:
+                stamp_sample_lineage(sample, source_sample_index=input_sample_index)
             logger.debug(f"{log_prefix} generate_function returned")
     finally:
         if sink is not None:
@@ -115,21 +132,26 @@ async def generate_and_rm(
 
     # TODO: unify the two branches into one if we decide to use list as output type
     # multi samples
-    if isinstance(sample, list):
-        samples = sample
-        if any([sample.status == Sample.Status.ABORTED for sample in samples]):
-            return samples
+    try:
+        if isinstance(sample, list):
+            samples = sample
+            if any([sample.status == Sample.Status.ABORTED for sample in samples]):
+                return samples
 
-        # for multi agent system, the reward of some sample is calculated during generation.
-        samples_need_reward = [sample for sample in samples if sample.reward is None]
-        await batched_async_rm(args, samples_need_reward, inplace_set_reward_field=True)
-        return samples
-    else:
-        if sample.status == Sample.Status.ABORTED:
-            return sample
-        # for multi-turn environment, a reward could be assigned to the agent.
-        if sample.reward is None:
-            sample.reward = await async_rm(args, sample)
+            # for multi agent system, the reward of some sample is calculated during generation.
+            samples_need_reward = [sample for sample in samples if sample.reward is None]
+            await batched_async_rm(args, samples_need_reward, inplace_set_reward_field=True)
+            return samples
+        else:
+            if sample.status == Sample.Status.ABORTED:
+                return sample
+            # for multi-turn environment, a reward could be assigned to the agent.
+            if sample.reward is None:
+                sample.reward = await async_rm(args, sample)
+    except BaseException:
+        # A generate function may return new samples; once their reward fails, nothing else holds their refs.
+        record_dropped_samples([sample])
+        raise
 
     logger.debug(f"{log_prefix} generate_and_rm complete")
     return sample
@@ -147,17 +169,17 @@ async def generate_and_rm_group(
     if state.aborted:
         return group
 
-    if policy_uses_routing_key(args):
+    if router_routes_by_key(args):
         for sample in group:
             if sample.routing_key is None:
                 sample.routing_key = str(uuid.uuid4())
 
-    log_prefix = f"[group indices={[getattr(s, 'index', '?') for s in group]}]"
+    log_prefix = f"[group indices={[s.index for s in group]}]"
     logger.debug(f"{log_prefix} Starting group with {len(group)} samples")
     tasks = []
     for idx, sample in enumerate(group):
         current_sampling_params = sampling_params.copy()
-        if getattr(args, "sglang_enable_deterministic_inference", False):
+        if args.sglang.common_value("enable_deterministic_inference"):
             current_sampling_params["sampling_seed"] = args.rollout_seed + idx
         task = asyncio.create_task(generate_and_rm(state, sample, current_sampling_params, evaluation=evaluation))
         if sample_done_callback is not None:
@@ -167,19 +189,22 @@ async def generate_and_rm_group(
 
     try:
         group = await asyncio.gather(*tasks)
+        logger.debug(f"{log_prefix} [group] All {len(group)} samples completed")
+        if state.aborted:
+            return group
+
+        if args.group_rm:
+            await batched_async_rm(args, group, inplace_set_reward_field=True)
     except BaseException:
         # cancel siblings and let them settle: the group returns only after every
         # sample task is done, so no orphan generation or in-flight credit outlives it
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        finished = [task.result() for task in tasks if not task.cancelled() and task.exception() is None]
+        # A failed group reaches no drop site: hand over the refs its samples hold, filled in place or returned.
+        record_dropped_samples([group, finished])
         raise
-    logger.debug(f"{log_prefix} [group] All {len(group)} samples completed")
-    if state.aborted:
-        return group
-
-    if args.group_rm:
-        await batched_async_rm(args, group, inplace_set_reward_field=True)
 
     return group
 
@@ -222,9 +247,13 @@ class InferenceRolloutFn(BaseRolloutFn):
         from miles.rollout.inference_rollout.inference_rollout_train import generate_rollout_async
 
         output, aborted_samples = await generate_rollout_async(
-            self.state, input.rollout_id, self.data_source.get_samples
+            self.state,
+            input.rollout_id,
+            self.data_source.get_samples,
+            kv_cache_namespace=compute_kv_cache_namespace(self.state.args, input),
         )
-        self.data_source.add_samples(aborted_samples)
+        if aborted_samples:
+            self.data_source.add_samples(aborted_samples)
         return output
 
     async def _call_eval(self, input: RolloutFnEvalInput) -> RolloutFnEvalOutput:
@@ -232,5 +261,18 @@ class InferenceRolloutFn(BaseRolloutFn):
         from miles.rollout.inference_rollout.inference_rollout_eval import run_eval_datasets
 
         state = input.generate_state or self.state
-        results = await run_eval_datasets(state, self.eval_prompt_dataset_cache)
+        results = await run_eval_datasets(
+            state,
+            self.eval_prompt_dataset_cache,
+            kv_cache_namespace=compute_kv_cache_namespace(state.args, input),
+        )
         return RolloutFnEvalOutput(data=results)
+
+
+def stamp_sample_lineage(output: Sample | list[Sample], *, source_sample_index: int) -> None:
+    samples = output if isinstance(output, list) else [output]
+    assert source_sample_index is not None, "Sample lineage requires a source sample index"
+    for output_index, sample in enumerate(samples):
+        sample.lineage = SampleLineage(
+            source_sample_index=source_sample_index, output_index=output_index, output_count=len(samples)
+        )

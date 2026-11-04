@@ -70,7 +70,9 @@ class InklingBridge(Qwen2MoEBridge):
     }
 
     def _get_text_config(self):
-        if hasattr(self.hf_config, "text_config"):
+        if hasattr(
+            self.hf_config, "text_config"
+        ):  # config-access-exempt: HF configs may wrap text_config for multimodal checkpoints
             return self.hf_config.text_config
         return self.hf_config
 
@@ -106,7 +108,9 @@ class InklingBridge(Qwen2MoEBridge):
     def _weight_to_mcore_format(self, mcore_weights_name: str, hf_weights: list[torch.Tensor]) -> torch.Tensor:
         if "self_attention.linear_qkv." in mcore_weights_name and "layer_norm" not in mcore_weights_name:
             assert len(hf_weights) == 4, f"qkvr expects 4 HF tensors, got {len(hf_weights)}"
-            if getattr(self, "dtype", None) is not None:
+            if (
+                getattr(self, "dtype", None) is not None
+            ):  # config-access-exempt: mbridge versions may leave conversion dtype unset
                 hf_weights = [w.to(self.dtype) if w.dtype != self.dtype else w for w in hf_weights]
             return torch.cat(hf_weights, dim=0).contiguous()
 
@@ -115,7 +119,9 @@ class InklingBridge(Qwen2MoEBridge):
             tc = self._get_text_config()
             nr = tc.n_routed_experts
             w = hf_weights[0]
-            if getattr(self, "dtype", None) is not None and w.dtype != self.dtype:
+            if (
+                getattr(self, "dtype", None) is not None and w.dtype != self.dtype
+            ):  # config-access-exempt: mbridge versions may leave conversion dtype unset
                 w = w.to(self.dtype)
             return w[:nr].contiguous()
         if mcore_weights_name.endswith("mlp.router.shared_gate"):
@@ -124,7 +130,9 @@ class InklingBridge(Qwen2MoEBridge):
             nr = tc.n_routed_experts
             ns = tc.n_shared_experts
             w = hf_weights[0]
-            if getattr(self, "dtype", None) is not None and w.dtype != self.dtype:
+            if (
+                getattr(self, "dtype", None) is not None and w.dtype != self.dtype
+            ):  # config-access-exempt: mbridge versions may leave conversion dtype unset
                 w = w.to(self.dtype)
             return w[nr : nr + ns].contiguous()
         if mcore_weights_name.endswith("global_scale"):
@@ -154,12 +162,16 @@ class InklingBridge(Qwen2MoEBridge):
 
         if mcore_weights_name.endswith("mlp.linear_fc1.weight") and len(hf_weights) == 1 and hf_weights[0].dim() == 2:
             w = hf_weights[0]
-            if getattr(self, "dtype", None) is not None and w.dtype != self.dtype:
+            if (
+                getattr(self, "dtype", None) is not None and w.dtype != self.dtype
+            ):  # config-access-exempt: mbridge versions may leave conversion dtype unset
                 w = w.to(self.dtype)
             return _deinterleave_w13(w).contiguous()
         if mcore_weights_name.endswith("mlp.linear_fc2.weight") and len(hf_weights) == 1 and hf_weights[0].dim() == 2:
             w = hf_weights[0]
-            if getattr(self, "dtype", None) is not None and w.dtype != self.dtype:
+            if (
+                getattr(self, "dtype", None) is not None and w.dtype != self.dtype
+            ):  # config-access-exempt: mbridge versions may leave conversion dtype unset
                 w = w.to(self.dtype)
             return w.contiguous()
 
@@ -181,7 +193,9 @@ class InklingBridge(Qwen2MoEBridge):
             tc = self._get_text_config()
             nh = int(tc.num_attention_heads)
             hd = int(tc.head_dim)
-            d_rel = int(getattr(tc, "d_rel", 16) or 16)
+            d_rel = int(
+                getattr(tc, "d_rel", 16) or 16
+            )  # config-access-exempt: HF checkpoints may omit relative dimension
             q_rows = nh * hd
             r_rows = nh * d_rel
             total = mcore_weights.shape[0]
@@ -212,7 +226,9 @@ class InklingBridge(Qwen2MoEBridge):
     def _build_config(self):
         tc = self._get_text_config()
         return self._build_base_config(
-            text_config_key="text_config" if hasattr(self.hf_config, "text_config") else None,
+            text_config_key=(
+                "text_config" if hasattr(self.hf_config, "text_config") else None
+            ),  # config-access-exempt: HF configs may wrap text_config for multimodal checkpoints
             use_cpu_initialization=False,
             num_moe_experts=tc.n_routed_experts,
             moe_router_topk=tc.num_experts_per_tok,

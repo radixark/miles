@@ -17,7 +17,7 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     actor_num_gpus_per_node: int | None = None
     rollout_num_gpus: int | None = None
     no_colocate: bool = False
-    hardware: Literal["auto", "H100", "B200", "B300", "GB200", "GB300"] = "auto"
+    hardware: Literal["auto", "H100", "B200", "B300", "GB200", "GB300", "Rubin"] = "auto"
     enable_eval: bool = True
     extra_args: str = ""
     data_dir: str = "/root/datasets"
@@ -206,7 +206,6 @@ def execute(args: ScriptArgs):
         "--attention-backend flash "
         f"--actor-num-nodes {args.num_nodes} "
         f"--num-gpus-per-node {args.num_gpus_per_node} "
-        "--use-fault-tolerance "
         f"--dump-details {args.output_dir}/{args.run_id}/dump_details "
     )
     if args.no_colocate:
@@ -229,7 +228,7 @@ def execute(args: ScriptArgs):
 
     if args.train_fp8 or args.train_mxfp8:
         match args.hardware:
-            case "B200" | "B300" | "GB200" | "GB300":
+            case "B200" | "B300" | "GB200" | "GB300" | "Rubin":
                 misc_args += (
                     "--transformer-impl transformer_engine "
                     "--bf16 "
@@ -315,7 +314,7 @@ matchers:
             optimizer_args += (
                 "--optimizer-cpu-offload " "--overlap-cpu-optimizer-d2h-h2d " "--use-precision-aware-optimizer "
             )
-        case ("B200" | "B300" | "GB200" | "GB300", 1 | 2 | 4):
+        case ("B200" | "B300" | "GB200" | "GB300", 1 | 2 | 4) | ("Rubin", 1):
             perf_args += (
                 f"--tensor-model-parallel-size {min(4, args.actor_num_gpus_per_node)} "
                 "--sequence-parallel "
@@ -328,6 +327,8 @@ matchers:
             else:
                 perf_args += f"--expert-model-parallel-size {args.num_gpus_per_node if args.train_mxfp8 else 4} "
             sglang_args = "--sglang-mem-fraction-static 0.7 " "--sglang-attention-backend trtllm_mha "
+            if args.hardware == "Rubin":
+                sglang_args += "--sglang-moe-runner-backend triton "
             if args.rollout_fp8:
                 sglang_world_size = 2
                 sglang_attn_tp_size = 2
@@ -387,21 +388,16 @@ matchers:
         sglang_args += "--sglang-kv-cache-dtype fp8_e4m3 "
 
     if args.enable_mis:
-        config_text = f"""
-use_tis: true
-use_rs: {"true" if args.tis_use_rs else "false"}
-tis_level: "token"
-rs_level: "token"
-tis_mode: "truncate"
-tis_lower_bound: 0.5
-tis_upper_bound: 2.0
-rs_lower_bound: null
-rs_upper_bound: null
-rs_veto_threshold: 1.0e-4
-tis_batch_normalize: true
-""".strip()
         misc_args += (
-            f"--custom-config-path {command_utils.encode_pseudo_file(config_text)} "
+            "--use-tis "
+            f"{'--use-rs ' if args.tis_use_rs else ''}"
+            "--tis-level token "
+            "--rs-level token "
+            "--tis-mode truncate "
+            "--tis-lower-bound 0.5 "
+            "--tis-upper-bound 2.0 "
+            "--rs-veto-threshold 1.0e-4 "
+            "--tis-batch-normalize "
             "--custom-tis-function-path examples.infra_features.train_infer_mismatch_helper.mis.compute_mis_weights_with_cp "
         )
 

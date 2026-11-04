@@ -25,6 +25,8 @@ class CaseConfig:
     rollout_num_gpus_per_engine: int
     sglang_attention_backend: str = "fa3"
     attn_implementation: str = "flash_attention_3"
+    # Send the replay arrays through the output store (--use-output-store) instead of inline.
+    use_output_store: bool = False
 
 
 def prepare(case: CaseConfig) -> None:
@@ -83,6 +85,8 @@ def execute(case: CaseConfig, wandb_file: str) -> None:
     )
 
     replay_args = "--use-rollout-routing-replay "
+    if case.use_output_store:
+        replay_args += command_utils.get_output_store_args()
 
     sglang_args = (
         f"--rollout-num-gpus-per-engine {case.rollout_num_gpus_per_engine} "
@@ -93,7 +97,7 @@ def execute(case: CaseConfig, wandb_file: str) -> None:
         f"--attn-implementation {case.attn_implementation} "
     )
 
-    ci_args = "--ci-test "
+    ci_args = "--ci-test --no-enable-sample-ownership-checker "
 
     misc_args = "--actor-num-nodes 1 " f"--actor-num-gpus-per-node {case.num_gpus} " "--colocate "
 

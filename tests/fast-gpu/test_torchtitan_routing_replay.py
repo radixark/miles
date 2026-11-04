@@ -15,7 +15,9 @@ from tests.ci.ci_register import register_cuda_ci
 
 # Needs a GPU only because the shared replay queue hands its entries out on the
 # current CUDA device; the alignment being tested is device-independent.
-register_cuda_ci(est_time=60, suite="stage-b-2-gpu-h200", labels=["torchtitan", "replay"], hardware=["hopper"])
+register_cuda_ci(
+    est_time=60, suite="stage-b-2-gpu-h200", labels=["torchtitan", "replay"], hardware=["hopper"], num_gpus=2
+)
 
 import pytest
 import torch
@@ -37,19 +39,21 @@ class _Router(TokenChoiceTopKRouter):
     """A real router with the attributes its forward reads, and nothing else.
 
     Subclassing the real class matters: install() finds routers by type and
-    rebinds torchtitan's own forward, so the queue is exercised through the code
-    that actually runs in training.
+    swaps the expert selection torchtitan's own forward calls, so the queue is
+    exercised through the code that actually runs in training.
     """
 
     def __init__(self):
         nn.Module.__init__(self)
         self.gate = _Gate()
-        self.score_func = "softmax"
-        self.num_expert_groups = None
+        self.score_func = nn.Softmax(dim=-1)
+        self.num_experts = 8
         self.top_k = 2
         self.route_norm = False
+        self.route_norm_epsilon = 1e-20
         self.route_scale = 1.0
-        self._debug_force_load_balance = False
+        self.aux_loss = None
+        self.register_buffer("tokens_per_expert_E", torch.zeros(8, device="cuda"), persistent=False)
 
 
 class _Part(nn.Module):
@@ -88,7 +92,7 @@ def _queue_microbatches(count):
 
 def test_each_microbatch_replays_its_own_entry(part):
     _queue_microbatches(3)
-    scores = torch.rand(1, 4, 8, device="cuda")
+    scores = torch.rand(4, 8, device="cuda")
 
     with routing_replay.consumption_guard([part], 3):
         for expected in range(3):
@@ -97,7 +101,7 @@ def test_each_microbatch_replays_its_own_entry(part):
 
 def test_the_schedules_metadata_forward_does_not_consume(part):
     _queue_microbatches(2)
-    scores = torch.rand(1, 4, 8, device="cuda")
+    scores = torch.rand(4, 8, device="cuda")
 
     with routing_replay.consumption_guard([part], 2):
         routing_replay.bypass_schedule_initialization([part])
@@ -113,7 +117,7 @@ def test_consecutive_passes_share_one_queue(part):
     """The queues are filled per rollout and read across its optimizer steps, so
     a pass is held to how far it advanced, not to where it ended up."""
     _queue_microbatches(4)
-    scores = torch.rand(1, 4, 8, device="cuda")
+    scores = torch.rand(4, 8, device="cuda")
 
     for step in range(2):
         with routing_replay.consumption_guard([part], 2):
@@ -125,7 +129,7 @@ def test_the_bypass_ends_at_the_first_real_microbatch(part):
     """The probing forward and the backward that follows it both fall through;
     the next forward is microbatch 0 and replays again."""
     _queue_microbatches(2)
-    scores = torch.rand(1, 4, 8, device="cuda")
+    scores = torch.rand(4, 8, device="cuda")
 
     with routing_replay.consumption_guard([part], 2):
         routing_replay.bypass_schedule_initialization([part])
@@ -151,7 +155,7 @@ def test_a_recompute_pass_that_lost_its_place_is_reported(part):
 
 def test_a_stray_forward_is_reported(part):
     _queue_microbatches(3)
-    scores = torch.rand(1, 4, 8, device="cuda")
+    scores = torch.rand(4, 8, device="cuda")
 
     with pytest.raises(RuntimeError, match="advanced 3 times over a pass of 2"):
         with routing_replay.consumption_guard([part], 2):
@@ -167,3 +171,9 @@ def test_the_reference_model_is_left_alone(part):
 
     with routing_replay.consumption_guard([other], 7):
         pass
+
+
+if __name__ == "__main__":
+    import sys
+
+    sys.exit(pytest.main([__file__, "-v"]))

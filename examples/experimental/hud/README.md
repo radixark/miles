@@ -22,7 +22,7 @@ not know which taskset it is running.
 |---|---|
 | `--custom-generate-function-path` | [`rollout.py`](rollout.py) — HUD run → one Miles training sample |
 | `--custom-rm-path` | [`rollout.py`](rollout.py) `reward_func` — the task template's own grade |
-| `--custom-config-path` | [`hud2048_config.yaml`](hud2048_config.yaml) |
+| `--hud-*` arguments | [`run_hud2048.py`](run_hud2048.py) |
 | the agent | [`agent.py`](agent.py) + [`computer_tool.py`](computer_tool.py) |
 | sglang ↔ HUD token contract | [`sglang_compat.py`](sglang_compat.py) |
 
@@ -39,9 +39,8 @@ for provider-native protocols), a token-id bridge to stock sglang
 episode's per-turn token ids into one verified training sequence
 ([`rollout.py`](rollout.py)).
 
-Reward shaping is choosing which task template to train on — the tradeoff, and
-why this recipe trains on `reach_score` with a retuned target, is annotated in
-[`hud2048_config.yaml`](hud2048_config.yaml).
+Reward shaping is choosing which task template to train on. This recipe trains
+on `reach_score` with a retuned target.
 
 ## Running it
 
@@ -90,8 +89,8 @@ directory is byte-identical (mind stray `__pycache__`).
 
 `--env-dir` and `--task-ids` are the change; any HUD env package whose tasks
 are workable through a screen runs on the same files, and the browser starter's
-todo app already does. Sizing lives in `hud2048_config.yaml`, annotated with
-what each number trades against.
+todo app already does. Sizing is declared with the `--hud-*` arguments in
+`run_hud2048.py`.
 
 Keep `--sglang-tool-call-parser` matched to the model: without it, tool calls
 stay unparsed text and every episode ends at turn one.

@@ -22,6 +22,11 @@ You should see log lines like:
 Started fully-async rollout worker
 ```
 
+## On a single GPU
+[`examples/retool_v2`](/examples/retool-v2) runs the same flag colocated with the trainer:
+`--fully-async --num-gpus-per-node 1` trains Qwen3-4B on a multi-turn tool-call workload
+on one GPU, with the engines and the trainer taking turns on it.
+
 ## At a larger scale
 [`examples/experimental/openenv/glm52_tbench2`](https://github.com/radixark/miles/tree/main/examples/experimental/openenv/glm52_tbench2) runs
 the same flag on a frontier-scale agentic workload: GLM-5.2 744B-A40B on terminal-bench-2,

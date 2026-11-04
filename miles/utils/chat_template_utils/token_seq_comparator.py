@@ -109,7 +109,9 @@ class TokenSeqComparator:
         ``special=True``, so they are not collected here.
         """
         ids = set(tokenizer.all_special_ids)
-        decoder = getattr(tokenizer, "added_tokens_decoder", None)
+        decoder = getattr(
+            tokenizer, "added_tokens_decoder", None
+        )  # config-access-exempt: custom tokenizers may omit added-token metadata
         if decoder:
             ids |= {k for k, v in decoder.items() if v.special}
         return ids
@@ -171,6 +173,9 @@ class TokenSeqComparator:
 
         mismatches: list[Mismatch] = []
         for idx, (exp, act) in enumerate(zip(exp_segs, act_segs, strict=True)):
+            # Equal token IDs decode to equal text: nothing to classify or decode.
+            if exp.token_ids == act.token_ids:
+                continue
             is_assistant_content = self._is_assistant_content(exp_segs, idx) and self._is_assistant_content(
                 act_segs, idx
             )

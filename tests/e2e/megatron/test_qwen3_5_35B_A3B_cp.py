@@ -17,6 +17,7 @@ register_cuda_ci(
     labels=["megatron"],
     hardware=["hopper", "blackwell"],
     disabled="Flaky; temporarily disabled to validate PR correctness",
+    num_gpus=8,
 )
 
 MODEL_NAME = "Qwen3.5-35B-A3B"
@@ -39,7 +40,7 @@ def _execute_with_cp(cp_size: int):
     assert NUM_GPUS % cp_size == 0
     ep_size = NUM_GPUS // cp_size
 
-    ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME} " f"--ref-load /root/{MODEL_NAME}_torch_dist "
+    ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME} " f"--ref-load /root/models/{MODEL_NAME}_torch_dist "
 
     rollout_args = (
         "--prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl "

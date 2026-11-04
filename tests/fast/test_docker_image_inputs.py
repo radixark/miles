@@ -18,6 +18,7 @@ def test_dockerfile_and_requirements_are_inputs():
 def test_rocm_dockerfile_is_not_a_cu13_input():
     """pr-test.yml builds the cu13 image only; ROCm has its own pipeline."""
     assert not image_inputs._matches("docker/Dockerfile.rocm")
+    assert not image_inputs._matches("docker/amd/prebuild_aiter_jit.py")
 
 
 def test_source_changes_are_not_image_inputs():

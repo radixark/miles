@@ -6,7 +6,7 @@ import pytest
 from pydantic import TypeAdapter, ValidationError
 
 from miles.utils import object_store
-
+from miles.utils import object_store as _object_store
 from miles.utils.object_store import RayObjectStore, StoreObjectRef, _MooncakeStoreObjectRef, _RayStoreObjectRef
 
 FREED_OBJECT_TIMEOUT_SECONDS = 60.0
@@ -80,22 +80,32 @@ class TestARayReferenceOnTheWire:
 
     def test_removing_a_reference_releases_it_by_hand(self, monkeypatch, ray_local_mode):
         """Cloudpickling a reference pins the object, so reference counting can no longer free it."""
-        import ray
+        from miles.utils import object_store
 
         freed: list[list] = []
-        monkeypatch.setattr(ray._private.internal_api, "free", lambda refs: freed.append(list(refs)))
+        monkeypatch.setattr(object_store, "_ray_free", lambda refs: freed.append(list(refs)))
         restored = _after_json_round_trip(_ray_store().put("payload"))
 
         _ray_store().remove(restored)
 
         assert freed == [[restored.payload]]
 
+    def test_a_ray_without_the_free_api_refuses_to_pretend(self, monkeypatch, ray_local_mode):
+        """ray >= 2.59 cannot release a pinned object, and silently leaking it would hide that."""
+        from miles.utils import object_store
+
+        monkeypatch.setattr(object_store, "_ray_free", None)
+        restored = _after_json_round_trip(_ray_store().put("payload"))
+
+        with pytest.raises(RuntimeError, match="pin ray < 2.59"):
+            _ray_store().remove(restored)
+
     def test_ray_communication_leaves_the_object_to_reference_counting(self, monkeypatch, ray_local_mode):
         """Nothing pins the object on that wire, and a free would destroy it for every other holder."""
-        import ray
+        from miles.utils import object_store
 
         freed: list[list] = []
-        monkeypatch.setattr(ray._private.internal_api, "free", lambda refs: freed.append(list(refs)))
+        monkeypatch.setattr(object_store, "_ray_free", lambda refs: freed.append(list(refs)))
         store = _ray_store(frees_objects=False)
         ref = store.put("payload")
 
@@ -106,6 +116,10 @@ class TestARayReferenceOnTheWire:
 
 
 class TestFreeingARayObjectForReal:
+    pytestmark = pytest.mark.skipif(
+        _object_store._ray_free is None, reason="this ray (>= 2.59) removed the force-free API"
+    )
+
     def test_the_object_is_gone_after_its_reference_is_removed(self, ray_local_mode):
         """The point of the explicit free is that the pinned object really stops occupying the store."""
         import ray

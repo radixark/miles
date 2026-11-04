@@ -20,7 +20,7 @@ from miles.utils.external_utils.command_utils.helm_backend.launcher.observabilit
 )
 from miles.utils.external_utils.miles_workbench.__main__ import app
 
-register_cpu_ci(est_time=600, suite="stage-b-cpu", labels=[])
+register_cpu_ci(est_time=600, suite="stage-b-cpu", labels=["k8s"])
 
 _MISSING_IMAGE = "miles.invalid/there-is-no-such-image:1"
 _POLL_TIMEOUT = 60.0

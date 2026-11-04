@@ -7,11 +7,28 @@ from types import FrameType
 from typing import TextIO
 
 import pytest
-
 from tests.fast.fixtures.generation_fixtures import generation_env
 from tests.fast.fixtures.rollout_fixtures import rollout_env
 
+from miles.utils.audit_utils.config_snapshot.enabled import SNAPSHOT_TESTING_ENABLED
+
 _ = rollout_env, generation_env
+
+
+if SNAPSHOT_TESTING_ENABLED:
+
+    @pytest.fixture(autouse=True)
+    def isolate_config_snapshot_generated_values(monkeypatch: pytest.MonkeyPatch) -> None:
+        """Each test owns an isolated process-local provenance registry."""
+        from miles.utils.audit_utils.config_snapshot.generated_value_registry import (
+            GENERATED_VALUES_ENV_VAR,
+            generated_value_registry,
+        )
+        from miles.utils.test_utils.snapshot import SNAPSHOT_RECORD_DIR_ENV_VAR
+
+        monkeypatch.delenv(SNAPSHOT_RECORD_DIR_ENV_VAR, raising=False)
+        monkeypatch.setattr(generated_value_registry, "_values", [])
+        monkeypatch.delenv(GENERATED_VALUES_ENV_VAR, raising=False)
 
 
 @pytest.fixture(autouse=True)

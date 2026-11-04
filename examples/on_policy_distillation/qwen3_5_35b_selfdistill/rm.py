@@ -33,7 +33,7 @@ from miles.rollout.rm_hub.math_utils import grade_answer_verl
 
 
 def _is_eval_sample(sample) -> bool:
-    md = sample.metadata if isinstance(getattr(sample, "metadata", None), dict) else {}
+    md = sample.metadata if isinstance(sample.metadata, dict) else {}
     return md.get("opd_reward_mode") == "eval_math"
 
 

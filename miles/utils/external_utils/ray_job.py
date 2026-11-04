@@ -15,26 +15,34 @@ from miles.utils.external_utils.command_utils.common import run_shell_command as
 
 
 def run_ray_job(
-    *, entrypoint: str, runtime_env: dict, job_lifetime: Literal["independent", "launcher"] = "independent"
+    *,
+    entrypoint: str,
+    runtime_env: dict,
+    job_lifetime: Literal["independent", "launcher"] = "independent",
+    submission_id: str | None = None,
 ) -> None:
     """Submit and follow a job; launcher-owned jobs stop when the launcher exits."""
     if job_lifetime == "independent":
+        submission_args = f"--submission-id={shlex.quote(submission_id)} " if submission_id else ""
         exec_command_cpu(
             "export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && "
             f"""ray job submit {'' if 'RAY_ADDRESS' in os.environ else '--address="http://127.0.0.1:8265" '}"""
-            f"--runtime-env-json={shlex.quote(json.dumps(runtime_env))} -- {entrypoint}"
+            f"{submission_args}--runtime-env-json={shlex.quote(json.dumps(runtime_env))} -- {entrypoint}"
         )
     elif job_lifetime == "launcher":
         _run_launcher_owned_job(
             address=os.environ.get("RAY_ADDRESS", "http://127.0.0.1:8265"),
             entrypoint=entrypoint,
             runtime_env=runtime_env,
+            submission_id=submission_id,
         )
     else:
         raise ValueError(f"Unknown job lifetime: {job_lifetime}")
 
 
-def _run_launcher_owned_job(*, address: str, entrypoint: str, runtime_env: dict) -> None:
+def _run_launcher_owned_job(
+    *, address: str, entrypoint: str, runtime_env: dict, submission_id: str | None = None
+) -> None:
     runtime_env = {**runtime_env, "env_vars": {**runtime_env.get("env_vars", {}), "PYTHONUNBUFFERED": "1"}}
     previous_no_proxy = os.environ.get("no_proxy")
     os.environ["no_proxy"] = ",".join(
@@ -44,7 +52,7 @@ def _run_launcher_owned_job(*, address: str, entrypoint: str, runtime_env: dict)
         asyncio.run(
             _run_and_stop_job(
                 address=address,
-                submission_id=f"miles-{uuid.uuid4().hex}",
+                submission_id=submission_id or f"miles-{uuid.uuid4().hex}",
                 entrypoint=entrypoint,
                 runtime_env=runtime_env,
             )

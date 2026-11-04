@@ -29,6 +29,8 @@ class CaseConfig:
     use_bridge: bool = False
     use_r3: bool = False
     use_mooncake: bool = False
+    # Send the replay arrays through the output store (--use-output-store) instead of inline.
+    use_output_store: bool = False
     max_tokens_per_gpu: int = 8192
     colocate: bool = True
     rollout_num_gpus: int = None
@@ -43,8 +45,6 @@ class CaseConfig:
         if self.optimizer not in ("adam", "dist_muon"):
             raise ValueError(f"unsupported optimizer: {self.optimizer}")
         # Validation only — topology values are passed explicitly, not inferred.
-        if self.fully_async and self.colocate:
-            raise ValueError("fully_async requires colocate=False: train_async.py rejects colocation")
         if self.num_gpus_per_node % (self.cp_size * self.pp_size) != 0:
             raise ValueError(
                 "num_gpus_per_node must be divisible by cp_size * pp_size: "
@@ -69,10 +69,11 @@ def prepare(case: CaseConfig, *, need_fp8: bool, need_int4: bool, all_bridge: bo
     if need_fp8:
         U.exec_command_cpu("hf download Qwen/Qwen3-30B-A3B-FP8 --local-dir /root/models/Qwen3-30B-A3B-FP8")
     if need_int4:
-        U.exec_command_gpu(
+        U.exec_command_gpu_once(
             f"python tools/convert_hf_to_int4_direct.py "
             f"--model-dir /root/models/{MODEL_NAME} "
-            f"--save-dir /root/models/{MODEL_NAME}-INT4"
+            f"--save-dir /root/models/{MODEL_NAME}-INT4",
+            f"/root/models/{MODEL_NAME}-INT4",
         )
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
     U.hf_download_dataset("zhuzilin/aime-2024")
@@ -99,7 +100,7 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
 
     enable_eval = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "0")))
 
-    ref_load = f"/root/models/{MODEL_NAME}" if case.use_bridge else f"/root/{MODEL_NAME}_torch_dist"
+    ref_load = f"/root/models/{MODEL_NAME}" if case.use_bridge else f"/root/models/{MODEL_NAME}_torch_dist"
     if case.use_int4_rollout:
         ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}-INT4/ " f"--ref-load {ref_load} "
         # Fake QAT swaps in straight-through weight tensors, while TE's fused wgrad
@@ -237,7 +238,9 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
     if case.fully_async:
         misc_args += "--fully-async "
 
-    if case.use_mooncake:
+    if case.use_output_store:
+        misc_args += command_utils.get_output_store_args()
+    elif case.use_mooncake:
         misc_args += command_utils.get_mooncake_object_store_args()
 
     if case.use_deepep:

@@ -1,3 +1,4 @@
+# doc-dev: docs/developer/ci/00-stage.md
 name: CI Job
 
 on:
@@ -14,6 +15,16 @@ on:
         type: string
         required: false
         default: 'radixark/miles:dev'
+      num_gpus:
+        description: 'Exact CUDA-visible device count for a dynamically allocated B200 job.'
+        type: number
+        required: false
+        default: 0
+      timeout_minutes:
+        description: 'Job budget, including GPU admission waiting, setup, execution, and cleanup.'
+        type: number
+        required: false
+        default: 360
       skip_dependency_install:
         type: boolean
         required: false
@@ -24,7 +35,7 @@ on:
         required: false
         default: ''
       plan_already_resolved:
-        description: 'Skip the --list-only preflight when a trusted caller already resolved the execution plan.'
+        description: 'Skip hosted planning when a trusted caller already selected an enabled test at an exact ref.'
         type: boolean
         required: false
         default: false
@@ -35,12 +46,42 @@ on:
         required: false
 
 jobs:
+  plan:
+    if: ${{ !inputs.plan_already_resolved }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      has_tests: ${{ steps.select.outputs.has_tests }}
+      ref: ${{ steps.select.outputs.ref }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Resolve suite plan
+        id: select
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          echo "ref=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          ${{ inputs.execute_command }} --list-only --github-output "$GITHUB_OUTPUT"
+
   run:
+    needs: plan
+    if: |
+      !cancelled() &&
+      (inputs.plan_already_resolved ||
+        (needs.plan.result == 'success' && needs.plan.outputs.has_tests == 'true'))
     # fromJSON parses the input list so `runs-on` receives an actual array.
     # Without this, GitHub treats the string verbatim as one label literal
     # (e.g. the label name '["h100", "8gpu"]' with brackets), which no
     # runner carries, and the job queues forever.
     runs-on: ${{ fromJSON(inputs.runs_on) }}
+    timeout-minutes: ${{ inputs.timeout_minutes }}
     container:
       image: ${{ inputs.container_image }}
       options: >
@@ -64,19 +105,49 @@ jobs:
     env:
       SGLANG_SOURCE_ROOT: /sgl-workspace/sglang/python
       MEGATRON_SOURCE_ROOT: /root/Megatron-LM
+      MILES_TEST_DUMPS_ROOT: /data/miles_ci/dumps
       GITHUB_COMMIT_NAME: ${{ inputs.ref || github.sha }}_${{ github.event.pull_request.number || github.event.inputs.pull_number || 'non-pr' }}
       WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
       NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
       MILES_TEST_ENABLE_INFINITE_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.infinite_run) || 'false' }}
+      # Persist shared JIT caches across job containers; see tests/ci/README.md.
+      SGLANG_CACHE_DIR: /data/miles_ci/jit
+      # DeepGEMM's PID-based subdirectories must not collide across containers.
+      SGLANG_DG_CACHE_DIR: /tmp/deep_gemm
+      TRITON_CACHE_DIR: /data/miles_ci/jit/triton
+      TORCHINDUCTOR_CACHE_DIR: /data/miles_ci/jit/inductor
+      # TileLang 0.1.14 does not key on the headers patched by our image.
+      TILELANG_CACHE_DIR: /tmp/tilelang_cache
+      CUDA_CACHE_PATH: /data/miles_ci/jit/nv
+      FLASHINFER_WORKSPACE_BASE: /data/miles_ci/jit
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ inputs.plan_already_resolved && inputs.ref || needs.plan.outputs.ref }}
+          submodules: true
+
+      # local actions load from the checked-out ref, which may predate them (/rerun-test, release CI)
+      - name: Checkout CI actions
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: .ci-actions
+          sparse-checkout: .github/actions
 
       - name: Configure source paths
         shell: bash
-        run: echo "PYTHONPATH=$GITHUB_WORKSPACE:$SGLANG_SOURCE_ROOT:$MEGATRON_SOURCE_ROOT" >> "$GITHUB_ENV"
+        run: echo "PYTHONPATH=$GITHUB_WORKSPACE:$GITHUB_WORKSPACE/3rdparty/miles-ext-kernels:$SGLANG_SOURCE_ROOT:$MEGATRON_SOURCE_ROOT" >> "$GITHUB_ENV"
+
+      - name: Keep NVSHMEM on NVLink (RoCE-only runners)
+        # NVSHMEM cannot connect over RoCE from this bridge-network container: a NIC
+        # name that matches nothing keeps it off RDMA. See docs/developer/ci/00-stage.md.
+        shell: bash
+        run: |
+          if [ "$(cat /sys/class/infiniband/*/ports/*/link_layer 2>/dev/null | sort -u)" = Ethernet ]; then
+            echo "Every HCA is RoCE: setting NVSHMEM_HCA_LIST"
+            echo "NVSHMEM_HCA_LIST=none_single_node_nvlink_only" >> "$GITHUB_ENV"
+          fi
 
       - name: Cleanup Ray processes
         shell: bash
@@ -110,48 +181,31 @@ jobs:
           nvidia-smi 2>&1 | tail -20 || true
           exit 1
 
+      - name: Verify B200 CUDA partition
+        if: contains(fromJSON(inputs.runs_on), 'b200')
+        env:
+          EXPECTED_GPUS: ${{ inputs.num_gpus || (contains(fromJSON(inputs.runs_on), '4gpu') && 4 || 8) }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import torch
+
+          expected = int(os.environ["EXPECTED_GPUS"])
+          actual = torch.cuda.device_count()
+          assert actual == expected, (
+              f"B200 stage requires {expected} CUDA-visible GPUs, found {actual}; "
+              "fix the runner's CUDA_VISIBLE_DEVICES partition"
+          )
+          PY
+
       - name: Resolve dependency refs
         if: ${{ !inputs.skip_dependency_install }}
         id: resolve-refs
-        shell: bash
-        env:
-          PR_BODY: ${{ github.event.pull_request.body || '' }}
-          INPUT_MEGATRON_PR: ${{ github.event.inputs.ci_megatron_pr || '' }}
-          INPUT_SGLANG_PR: ${{ github.event.inputs.ci_sglang_pr || '' }}
-        run: |
-          MEGATRON_PR="${INPUT_MEGATRON_PR}"
-          SGLANG_PR="${INPUT_SGLANG_PR}"
-          if [ -n "$PR_BODY" ]; then
-            PR_MEGATRON_PR=$(echo "$PR_BODY" | grep -m1 -oP '^ci-megatron-pr:\s+\K\S+' || true)
-            PR_SGLANG_PR=$(echo "$PR_BODY" | grep -m1 -oP '^ci-sglang-pr:\s+\K\S+' || true)
-            [ -z "$MEGATRON_PR" ] && [ -n "$PR_MEGATRON_PR" ] && MEGATRON_PR="$PR_MEGATRON_PR"
-            [ -z "$SGLANG_PR" ] && [ -n "$PR_SGLANG_PR" ] && SGLANG_PR="$PR_SGLANG_PR"
-          fi
-          # Release branches carry release-lock.json (written at branch cut) pinning
-          # the dependency SHAs the release was frozen with. Explicit overrides above
-          # still win; the moving branch heads are only the last resort.
-          if [ -f release-lock.json ]; then
-            LOCK_SGLANG=$(python3 -c "import json; print(json.load(open('release-lock.json'))['sglang_commit'])")
-            LOCK_MEGATRON=$(python3 -c "import json; print(json.load(open('release-lock.json'))['megatron_commit'])")
-            [ -z "$SGLANG_PR" ] && SGLANG_PR="$LOCK_SGLANG"
-            [ -z "$MEGATRON_PR" ] && MEGATRON_PR="$LOCK_MEGATRON"
-            echo "release-lock.json present: sglang=$LOCK_SGLANG megatron=$LOCK_MEGATRON"
-          fi
-          [ -z "$MEGATRON_PR" ] && MEGATRON_PR="miles-main"
-          [ -z "$SGLANG_PR" ] && SGLANG_PR="sglang-miles"
-          resolve_fetch_ref() {
-            local ref="$1"
-            if [[ "$ref" =~ ^#([0-9]+)$ ]]; then
-              echo "refs/pull/${BASH_REMATCH[1]}/head"
-            else
-              echo "$ref"
-            fi
-          }
-          MEGATRON_FETCH=$(resolve_fetch_ref "$MEGATRON_PR")
-          SGLANG_FETCH=$(resolve_fetch_ref "$SGLANG_PR")
-          echo "ci_megatron_pr=$MEGATRON_FETCH" >> $GITHUB_OUTPUT
-          echo "ci_sglang_pr=$SGLANG_FETCH" >> $GITHUB_OUTPUT
-          echo "Resolved: megatron=$MEGATRON_PR -> fetch=$MEGATRON_FETCH, sglang=$SGLANG_PR -> fetch=$SGLANG_FETCH"
+        uses: ./.ci-actions/.github/actions/resolve-dependency-refs
+        with:
+          megatron_ref: ${{ github.event.inputs.ci_megatron_pr || '' }}
+          sglang_ref: ${{ github.event.inputs.ci_sglang_pr || '' }}
+          pr_body: ${{ github.event.pull_request.body || '' }}
 
       - name: Reconcile Miles dependencies
         shell: bash
@@ -171,7 +225,7 @@ jobs:
 
       - name: Install Megatron Bridge override
         if: ${{ !inputs.skip_dependency_install && (github.event.inputs.ci_megatron_bridge_pr != '' || contains(github.event.pull_request.body, 'ci-megatron-bridge-pr:')) }}
-        uses: ./.github/actions/install-megatron-bridge
+        uses: ./.ci-actions/.github/actions/install-megatron-bridge
         with:
           ref: ${{ github.event.inputs.ci_megatron_bridge_pr || '' }}
           pr_body: ${{ github.event.pull_request.body || '' }}
@@ -179,11 +233,6 @@ jobs:
       - name: Verify source resolution
         shell: bash
         run: python tests/ci/verify_source_resolution.py
-
-      - name: Resolve suite plan
-        if: ${{ !inputs.plan_already_resolved }}
-        shell: bash
-        run: ${{ inputs.execute_command }} --list-only
 
       - name: Run tests
         shell: bash

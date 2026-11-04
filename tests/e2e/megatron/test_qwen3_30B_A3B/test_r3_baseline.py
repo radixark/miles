@@ -10,6 +10,7 @@ register_cuda_ci(
     labels=["megatron", "replay"],
     hardware=["hopper", "blackwell"],
     disabled="Outdated and simple.",
+    num_gpus=4,
 )
 register_rocm_ci(
     est_time=1000, suite="nightly-stage-c-4-gpu-mi350", labels=["megatron", "replay"], disabled="Outdated and simple."
@@ -20,6 +21,7 @@ register_ci_gate(metric_key="train/ppo_kl")
 register_ci_gate(metric_key="train/train_rollout_logprob_abs_diff")
 register_ci_gate(metric_key="train/train_rollout_kl")
 register_ci_gate(metric_key="rollout/raw_reward")
+register_ci_gate(metric_key="perf/actor_train_mfu")
 
 CASE = CaseConfig(
     use_deepep=False,

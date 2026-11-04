@@ -85,7 +85,7 @@ then push up until you OOM.
 | `--rollout-max-response-len` | `–` | Max tokens per response. |
 | `--rollout-stop-token-ids` | model default | Stop token IDs. Override when generations don't stop. |
 | `--apply-chat-template` | off | Apply the tokenizer's chat template. |
-| `--rollout-shuffle` | off | Shuffle prompts each rollout. |
+| `--rollout-shuffle` | on | Shuffle prompts once per epoch. `--no-rollout-shuffle` keeps file order. |
 
 ### Optimizer
 
@@ -170,11 +170,12 @@ Sections mirror the launch-script argument groups.
 | Flag | Type | Default | Notes |
 |---|---|---|---|
 | `--prompt-data` | str | – | Path to a single JSONL file. |
+| `--rollout-data-yaml-config` | str | – | YAML of several datasets mixed by weight; replaces `--prompt-data`. See [Mixing Datasets](/user-guide/mixing-datasets). |
 | `--input-key` | str | `input` | JSONL key to `Sample.prompt`. |
 | `--label-key` | str | `None` | JSONL key to `Sample.label`. |
 | `--metadata-key` | str | `metadata` | JSONL key to `Sample.metadata`. |
 | `--apply-chat-template` | flag | off | Apply tokenizer chat template. |
-| `--rollout-shuffle` | flag | off | Shuffle prompts each rollout. |
+| `--rollout-shuffle` | flag | on | Shuffle prompts once per epoch (seeded by `--rollout-seed`). `--no-rollout-shuffle` keeps file order. |
 | `--num-rollout` | int | – | Total rollout iterations. If unset, derived from dataset size. |
 | `--rollout-batch-size` | int | – | Prompts per rollout. |
 | `--n-samples-per-prompt` | int | `1` | Responses per prompt. |
@@ -230,7 +231,7 @@ Sections mirror the launch-script argument groups.
 | `--recompute-method` | enum | Megatron default | `uniform` or `block`. |
 | `--recompute-num-layers` | int | Megatron default | Recompute chunk size. |
 | `--gradient-checkpointing` | flag | off | FSDP equivalent of recompute flags. |
-| `--fsdp-cpu-offload` | flag | off | FSDP: offload params, grads, optimizer state to CPU. |
+| `--optimizer-cpu-offload` | flag | off | FSDP / torchtitan: offload params, grads, optimizer state to CPU (Megatron: its own HybridDeviceOptimizer). `--fsdp-cpu-offload` is the deprecated spelling. |
 | `--fsdp-cpu-backend` | str | `gloo` | FSDP: CPU backend for hybrid offload. |
 | `--dp-replicate-size` | int | `1` | FSDP2 hybrid-shard replica count. |
 | `--attn-implementation` | str | `flash_attention_2` | FSDP only: passed to `transformers`, e.g. `flash_attention_2`, `flash_attention_3`, `sdpa`, `eager`. |
@@ -317,6 +318,7 @@ contract, session behavior, and model-family selection.
 |---|---|---|---|
 | `--custom-generate-function-path` | `<module>.<fn>` | – | Set to `miles.rollout.generate_hub.agentic_tool_call.generate` for the built-in agentic wrapper. |
 | `--custom-agent-function-path` | `<module>.<fn>` | – | Async agent-environment loop. Registered after selecting the built-in agentic wrapper. |
+| `--custom-agent-function-mode` | `subproc` / `inline` | `subproc` | Where each agent call runs: a child process of its own, or the rollout's event loop. See [Where the agent runs](/user-guide/agentic-rollout#where-the-agent-runs). |
 | `--use-session-server` | optional `v1` / `v2` | off | Bare flag (or `v1`) selects the linear append-only server; `v2` selects tree serving. Requires `--hf-checkpoint`. |
 | `--tito-model` | enum | `default` | TITO model family. Named families load their registered fixed template; `default` is best-effort with a checkpoint-native or custom template. |
 | `--max-seq-len` | int | – | Total tokens per session, including prompts, completions, and environment responses. Registered with the agentic wrapper. |
@@ -333,8 +335,8 @@ contract, session behavior, and model-family selection.
 
 | Flag | Type | Default | Notes |
 |---|---|---|---|
-| `--mtp-num-layers` | int | `0` | Number of MTP layers in the checkpoint. |
-| `--enable-mtp-training` | flag | off | Train MTP alongside the policy. |
+| `--mtp-num-layers` | int | – | MTP layers the model has; built only with `--enable-mtp-training`. |
+| `--enable-mtp-training` | flag | off | Build and train the MTP layers alongside the policy (Megatron only). |
 | `--mtp-loss-scaling-factor` | float | `0.2` | Weight of MTP loss. |
 
 ### Fault tolerance
@@ -367,12 +369,15 @@ contract, session behavior, and model-family selection.
 
 | Flag | Type | Default | Notes |
 |---|---|---|---|
-| `--profile-target` | enum+ | `[train_overall]` | Which sub-loop to profile: `train_overall`, `train_actor`, `train_log_probs`. |
-| `--use-pytorch-profiler` | flag | off | FSDP only: enable PyTorch profiler. |
-| `--profile-step-start` | int | `10` | FSDP only: first step to profile. |
-| `--profile-step-end` | int | `12` | FSDP only: last step to profile. |
-| `--memory-snapshot-path` | str | `snapshot.pickle` | FSDP only: memory snapshot output. |
-| `--tensorboard-dir` | str | – | FSDP only: TensorBoard output dir. |
+| `--profile-target` | enum+ | `[train_overall]` | Which loop to profile: `train_overall`, `train_actor`, `train_log_probs` (the last two not on Megatron). |
+| `--use-pytorch-profiler` | flag | off | Enable the PyTorch profiler. This and the rows below are Megatron's flags; FSDP and torchtitan mirror them. |
+| `--profile-step-start` | int | `10` | First step to trace (a rollout step for `train_overall`). |
+| `--profile-step-end` | int | `12` | Tracing stops before this step. |
+| `--profile-ranks` | int+ | `[]` | Global ranks to trace; an empty list traces every rank. Megatron owns the default: `[]` in the Miles images, `[0]` in older upstream releases such as the NPU setup's. |
+| `--pytorch-profiler-collect-callstack` | flag | off | Record Python call stacks (much larger traces). |
+| `--pytorch-profiler-collect-shapes` | flag | off | Record tensor shapes. |
+| `--memory-snapshot-path` | str | `snapshot.pickle` | File name suffix of the `--record-memory-history` snapshot. |
+| `--tensorboard-dir` | str | – | Trace output dir. |
 
 ### Debugging
 

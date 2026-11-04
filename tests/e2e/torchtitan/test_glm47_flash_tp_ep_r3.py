@@ -1,7 +1,9 @@
 from tests.ci.ci_register import register_cuda_ci
 from tests.e2e.torchtitan._common import CaseConfig, execute, prepare
 
-register_cuda_ci(est_time=2400, suite="stage-c-8-gpu-h200", labels=["torchtitan", "replay"], hardware=["hopper"])
+register_cuda_ci(
+    est_time=2400, suite="stage-c-8-gpu-h200", labels=["torchtitan", "replay"], hardware=["hopper"], num_gpus=8
+)
 
 # The first model torchtitan itself does not ship: the flavor lives under
 # miles/backends/torchtitan_utils/models/ and reuses torchtitan's DeepSeek-V3
@@ -24,6 +26,7 @@ CASE = CaseConfig(
     seq_len=16384,
     max_response_len=8192,
     use_r3=True,
+    use_output_store=True,
     mem_fraction_static=0.5,
     extra_args="--sglang-attention-backend triton --sglang-moe-runner-backend triton ",
 )

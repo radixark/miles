@@ -1,6 +1,7 @@
 from typing import Any
 
 import pytest
+from tests.fast.import_isolation_utils import run_with_blocked_imports
 
 from miles.utils import object_store_config
 
@@ -185,3 +186,15 @@ class TestComputeMooncakeInitKwargs:
             "global_segment_size": "2gb",
             "local_buffer_size": "2gb",
         }
+
+
+def test_object_store_configuration_imports_without_ray() -> None:
+    """Launcher configuration can compute Mooncake settings when the Ray runtime is unavailable."""
+    run_with_blocked_imports(
+        blocked_prefixes=("ray",),
+        script="""
+from miles.utils.object_store_config import ObjectStoreBackend, compute_mooncake_init_kwargs_vanilla
+assert ObjectStoreBackend.RAY.value == "ray"
+assert compute_mooncake_init_kwargs_vanilla(host="worker", master_port=5123)["master_server_address"] == "worker:5123"
+""",
+    )

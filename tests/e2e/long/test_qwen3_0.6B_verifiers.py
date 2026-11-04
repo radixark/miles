@@ -9,10 +9,13 @@ from pathlib import Path
 import pytest
 import torch
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
+from tests.e2e.long.verifiers_contract import verify_sdk_contract
 
 from miles.utils.external_utils import command_utils
 
-register_cuda_ci(est_time=300, suite="stage-c-2-gpu-h200", labels=["short"], hardware=["hopper", "blackwell"])
+register_cuda_ci(
+    est_time=300, suite="stage-c-2-gpu-h200", labels=["short"], hardware=["hopper", "blackwell"], num_gpus=2
+)
 register_rocm_ci(est_time=900, suite="nightly-stage-c-2-gpu-mi350", labels=["short"])
 
 MODEL_NAME = "Qwen3-0.6B"
@@ -39,6 +42,13 @@ def prepare():
     U.exec_command_cpu(
         f"{VERIFIERS_VENV}/bin/python -m pip install "
         f"-r {command_utils.repo_base_dir}/examples/experimental/verifiers/requirements.txt"
+    )
+    verify_sdk_contract(
+        execute=U.exec_command_cpu,
+        venv=VERIFIERS_VENV,
+        repo_root=Path(command_utils.repo_base_dir),
+        report_path=RUN_DIR / "sdk-contract.xml",
+        pythonpath=f"{VERIFIERS_SITE_PACKAGES}:{command_utils.repo_base_dir}:{MEGATRON_PATH}:{os.environ.get('PYTHONPATH', '')}",
     )
     # prime pins no upper bound on prime-sandboxes, and 0.3.0 dropped the
     # CommandRequest the pinned prime imports, so the tool env has to cap it.

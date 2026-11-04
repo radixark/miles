@@ -10,14 +10,18 @@ import pytest
 from tests.fast.launch_scripts.py_harness import launcher_hardware_literals
 from tests.fast.utils.command_recorder import patch_helper, record_commands
 
-
 import miles.utils.external_utils.command_utils as command_utils
+from miles.utils.audit_utils.config_snapshot.generated_value_registry import (
+    GENERATED_VALUES_ENV_VAR,
+    generated_value_registry,
+)
 from miles.utils.external_utils.command_utils import base_backend, common
 from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainRequest
 from miles.utils.external_utils.command_utils.ray_backend import command as ray_command
 from miles.utils.external_utils.command_utils.ray_backend.backend import RayCommandBackend
 from miles.utils.external_utils.model_args_utils import load_model_args
 from miles.utils.file_arg_utils import resolve_file_arg
+from miles.utils.test_utils.snapshot import SNAPSHOT_RECORD_DIR_ENV_VAR
 from miles.utils.typer_utils import SCRIPT_ENV_VAR_PREFIX
 
 
@@ -176,16 +180,41 @@ class TestConvertCheckpoint:
         assert "/root/models" not in commands[0]
 
     def test_skips_an_already_released_destination(self, commands, tmp_path):
-        """A tracker file reading 'release' means the conversion already finished."""
+        """A tracker reading 'release' plus the current layout stamp means the conversion already finished."""
         dst = tmp_path / "Qwen3-4B_torch_dist"
         dst.mkdir()
         (dst / "latest_checkpointed_iteration.txt").write_text("release\n")
+        (dst / base_backend.CONVERSION_VERSION_FILE).write_text(base_backend.CONVERSION_VERSION)
 
         _backend().convert_checkpoint(
             model_name="Qwen3-4B", megatron_model_type="qwen3-4B", num_gpus_per_node=8, dir_dst=str(tmp_path)
         )
 
         assert commands == []
+
+    def test_a_fresh_conversion_stamps_the_layout(self, commands, tmp_path):
+        """The stamp the skip path reads is written once the conversion has run."""
+        _backend().convert_checkpoint(
+            model_name="Qwen3-4B", megatron_model_type="qwen3-4B", num_gpus_per_node=8, dir_dst=str(tmp_path)
+        )
+
+        stamp = tmp_path / "Qwen3-4B_torch_dist" / base_backend.CONVERSION_VERSION_FILE
+        assert stamp.read_text() == base_backend.CONVERSION_VERSION
+
+    @pytest.mark.parametrize("stamp_text", [None, "0"], ids=["unstamped", "stale"])
+    def test_reconverts_a_release_written_before_the_current_layout(self, commands, tmp_path, stamp_text):
+        """A cached conversion from before a layout change would load scrambled, so it is redone."""
+        dst = tmp_path / "Qwen3-4B_torch_dist"
+        dst.mkdir()
+        (dst / "latest_checkpointed_iteration.txt").write_text("release\n")
+        if stamp_text is not None:
+            (dst / base_backend.CONVERSION_VERSION_FILE).write_text(stamp_text)
+
+        _backend().convert_checkpoint(
+            model_name="Qwen3-4B", megatron_model_type="qwen3-4B", num_gpus_per_node=8, dir_dst=str(tmp_path)
+        )
+
+        assert len(commands) == 1
 
     def test_reruns_when_the_tracker_holds_an_iteration(self, commands, tmp_path):
         """Only the literal 'release' marker counts as done; an iteration number does not."""
@@ -223,6 +252,29 @@ class TestConvertCheckpoint:
         )
 
         assert "--master-addr" not in commands[0]
+
+
+class TestExecCommandGpuOnce:
+    def test_a_finished_run_is_not_repeated(self, commands, tmp_path):
+        dst = str(tmp_path / "Qwen3-30B-A3B-INT4")
+
+        _backend().exec_command_gpu_once("convert", dst)
+        _backend().exec_command_gpu_once("convert", dst)
+
+        assert commands == [f"rm -rf {dst}", "convert"]
+        assert (tmp_path / "Qwen3-30B-A3B-INT4.done").exists()
+
+    def test_a_failed_run_leaves_no_marker(self, commands, monkeypatch, tmp_path):
+        def fail(self, cmd, capture_output=False, **kwargs):
+            raise RuntimeError("converter died")
+
+        patch_helper(monkeypatch, "exec_command_gpu", fail)
+        dst = str(tmp_path / "Qwen3-30B-A3B-INT4")
+
+        with pytest.raises(RuntimeError):
+            _backend().exec_command_gpu_once("convert", dst)
+
+        assert not (tmp_path / "Qwen3-30B-A3B-INT4.done").exists()
 
 
 class TestRsyncCmd:
@@ -583,6 +635,17 @@ class TestExecuteTrain:
         assert "ray stop --force; " in commands[0]
         assert "ray start --head --node-ip-address 127.0.0.1 --num-gpus 8 --disable-usage-stats" in commands[1]
 
+    def test_the_local_ray_cluster_keeps_worker_ports_out_of_the_ephemeral_range(self, commands, monkeypatch):
+        """On a host whose ephemeral range covers Ray's worker ports, the head starts with kernel-assigned ones."""
+        monkeypatch.setattr(
+            "miles.utils.external_utils.command_utils.ray_backend.backend.ray_worker_port_args",
+            lambda: " --min-worker-port 0 --max-worker-port 0",
+        )
+
+        _backend().execute_train(train_args="", num_gpus_per_node=8, megatron_model_type="qwen3-4B")
+
+        assert "--disable-usage-stats --min-worker-port 0 --max-worker-port 0" in commands[1]
+
     def test_leaves_an_external_ray_cluster_alone(self, commands, monkeypatch):
         """With an external cluster we must neither stop nor start ray."""
         monkeypatch.setenv("MILES_SCRIPT_EXTERNAL_RAY", "1")
@@ -776,15 +839,44 @@ class TestBuildTrainEnvVars:
         )
         return ExecuteTrainRequest(**{**defaults, **overrides})
 
-    def test_keeps_the_backend_vars_where_the_serialized_order_expects_them(self):
+    def test_keeps_the_backend_vars_where_the_serialized_order_expects_them(self, monkeypatch):
         """The ray backend serializes this dict verbatim, so the launch snapshots pin its key order."""
+        monkeypatch.delenv("MILES_UPDATE_SNAPSHOTS", raising=False)
+        monkeypatch.delenv("MILES_SNAPSHOT_RECORD_DIR", raising=False)
         env = common.train_env_vars(
             self._request(),
             {"NCCL_NVLS_ENABLE": "0", "MASTER_ADDR": "10.0.0.1"},
-            config=command_utils.ExecuteTrainConfig(),
+            config=command_utils.ExecuteTrainConfig(run_id="explicit-id"),
         )
 
-        assert list(env) == ["PYTHONUNBUFFERED", "CUDA_DEVICE_MAX_CONNECTIONS", "NCCL_NVLS_ENABLE", "MASTER_ADDR"]
+        assert list(env) == [
+            "PYTHONUNBUFFERED",
+            "CUDA_DEVICE_MAX_CONNECTIONS",
+            "NCCL_NVLS_ENABLE",
+            "MASTER_ADDR",
+        ]
+        assert "MILES_UPDATE_SNAPSHOTS" not in env
+        assert "MILES_SNAPSHOT_RECORD_DIR" not in env
+
+    @pytest.mark.skip(reason="Snapshot testing is disabled by op48-277")
+    def test_generated_run_provenance_reaches_the_worker_environment(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A real generated run ID is passed to workers without changing metadata or backend key order."""
+        monkeypatch.setenv(SNAPSHOT_RECORD_DIR_ENV_VAR, "/snapshot/records")
+        config = command_utils.ExecuteTrainConfig()
+        env = common.train_env_vars(self._request(), {"MASTER_ADDR": "10.0.0.1"}, config=config)
+
+        assert [(value.kind, value.value) for value in generated_value_registry.read()] == [("run_id", config.run_id)]
+        assert json.loads(env[GENERATED_VALUES_ENV_VAR]) == [
+            value.model_dump() for value in generated_value_registry.read()
+        ]
+        assert list(env) == [
+            "PYTHONUNBUFFERED",
+            "MILES_UPDATE_SNAPSHOTS",
+            "MILES_SNAPSHOT_RECORD_DIR",
+            GENERATED_VALUES_ENV_VAR,
+            "CUDA_DEVICE_MAX_CONNECTIONS",
+            "MASTER_ADDR",
+        ]
 
     def test_omits_the_connection_limit_for_fsdp(self):
         """Capping the connections breaks FSDP's computation and communication overlap."""
@@ -916,7 +1008,7 @@ class TestCreateRunId:
 
         assert len(date_part) == 6 and date_part.isdigit()
         assert len(time_part) == 6 and time_part.isdigit()
-        assert len(random_part) == 3 and random_part.isdigit()
+        assert len(random_part) == 4 and set(random_part) <= set(common._RUN_ID_SUFFIX_ALPHABET)
 
     def test_varies_within_the_same_second(self):
         """Runs launched together in one second must not share a wandb group or dump directory."""
@@ -1060,10 +1152,21 @@ class TestDetectHardware:
 
         assert command_utils.detect_hardware() == expected
 
-    def test_rocm_reads_the_device_name(self, monkeypatch):
-        _fake_torch(monkeypatch, capability=(9, 5), machine="x86_64", name="AMD Instinct MI355X", hip="6.4")
+    def test_sm107_is_rubin(self, monkeypatch):
+        _fake_torch(monkeypatch, capability=(10, 7), machine="aarch64")
 
-        assert command_utils.detect_hardware() == "MI355X"
+        assert command_utils.detect_hardware() == "Rubin"
+        assert command_utils.NUM_GPUS_OF_HARDWARE["Rubin"] == 4
+        assert command_utils.GENERATION_HARDWARE["Rubin"] == "Rubin"
+
+    @pytest.mark.parametrize(
+        ("capability", "expected"),
+        [((9, 4), "MI300X"), ((9, 4), "MI325X"), ((9, 5), "MI350X"), ((9, 5), "MI355X")],
+    )
+    def test_rocm_reads_the_device_name(self, monkeypatch, capability, expected):
+        _fake_torch(monkeypatch, capability=capability, machine="x86_64", name=f"AMD Instinct {expected}", hip="6.4")
+
+        assert command_utils.detect_hardware() == expected
 
     def test_an_unrecognized_device_asks_for_an_explicit_hardware(self, monkeypatch):
         """Silently guessing the wrong profile costs a whole run; a launcher flag is one word."""
@@ -1074,7 +1177,7 @@ class TestDetectHardware:
 
     def test_every_detectable_hardware_is_a_table_entry(self, monkeypatch):
         """A detected name the tables do not carry is a KeyError at the first lookup."""
-        for capability in ((9, 0), (10, 0), (10, 3)):
+        for capability in ((9, 0), (10, 0), (10, 3), (10, 7)):
             for machine in ("x86_64", "aarch64"):
                 _fake_torch(monkeypatch, capability=capability, machine=machine)
                 assert command_utils.detect_hardware() in command_utils.NUM_GPUS_OF_HARDWARE
