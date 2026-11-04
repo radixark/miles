@@ -11,7 +11,9 @@ from miles.backends.megatron_utils.lora.native.hf_adapter import export_lora_hf_
 from miles.backends.megatron_utils.lora.native.modules.linear import (
     LoRALinear,
     LoRASplitFC1,
-    NativeSlotAdapters,
+    NativeMultiLoRAAdapter,
+    adapters_hidden,
+    assert_every_adapter_slotted,
     attach_adapter_forward,
     build_adapter,
     iter_adapters,
@@ -99,7 +101,7 @@ class _Chunk(nn.Module):
 def _attached(build, context, base_weight):
     host = _Host(base_weight)
     adapter = build_adapter(lambda: build(host, context), context)
-    attach_adapter_forward(host, adapter, context.lora.scale)
+    attach_adapter_forward(host, adapter)
     return _Chunk(host, adapter)
 
 
@@ -112,7 +114,9 @@ def _single(build, *, rank, alpha, base_weight, seed):
     return chunk
 
 
-def _load_slot(slot_adapters: NativeSlotAdapters, slot: int, single: nn.Module, *, rank: int, alpha: float) -> None:
+def _load_slot(
+    slot_adapters: NativeMultiLoRAAdapter, slot: int, single: nn.Module, *, rank: int, alpha: float
+) -> None:
     slot_adapters.init_slot(slot, rank, alpha)
     with torch.no_grad():
         for (name, slot_param), single_param in zip(
@@ -261,7 +265,21 @@ def test_a_multi_lora_model_is_read_per_slot():
         list(iter_adapters([multi]))
 
 
-def test_single_lora_builds_one_plain_adapter():
-    single = _attached(_column, _context(rank=MAX_RANK), _base_weight())
+def test_an_adapter_outside_the_slots_fails_a_multi_lora_attach():
+    multi = _attached(_column, _context(rank=MAX_RANK, num_slots=NUM_SLOTS), _base_weight())
+    assert_every_adapter_slotted([multi])
+    multi.stray = _column(_Host(_base_weight()), _context(rank=MAX_RANK))
 
-    assert isinstance(single.adapter, LoRALinear)
+    with pytest.raises(AssertionError, match="have none"):
+        assert_every_adapter_slotted([multi])
+
+
+@pytest.mark.parametrize("num_slots", [None, NUM_SLOTS], ids=["single", "multi"])
+def test_hidden_adapters_leave_only_base_parameters(num_slots):
+    chunk = _attached(_column, _context(rank=MAX_RANK, num_slots=num_slots), _base_weight())
+    before = list(chunk.state_dict())
+
+    with adapters_hidden([chunk]):
+        assert list(chunk.state_dict()) == ["host.weight"]
+
+    assert list(chunk.state_dict()) == before

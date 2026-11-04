@@ -246,27 +246,6 @@ def _hide_critic_value_head_from_hf_load(ddp_model):
             setattr(chunk, name, head)
 
 
-@contextmanager
-def _hide_native_lora_adapters_from_hf_load(ddp_model):
-    """mbridge maps every parameter to an HF weight, and the base checkpoint has no adapter weights."""
-    from miles.backends.megatron_utils.lora.native.modules.linear import NativeLoRAAdapter
-
-    adapters = [
-        (parent, name, child)
-        for chunk in unwrap_model(ddp_model)
-        for parent in list(chunk.modules())
-        for name, child in list(parent.named_children())
-        if isinstance(child, NativeLoRAAdapter)
-    ]
-    for parent, name, _ in adapters:
-        delattr(parent, name)
-    try:
-        yield
-    finally:
-        for parent, name, child in adapters:
-            parent.add_module(name, child)
-
-
 def _load_hf_weights_with_mbridge(ddp_model, args, load_path: str) -> None:
     """Raw-mode HF load through mbridge for models Megatron-Bridge lacks; staging copies bypass the memory saver."""
     from contextlib import nullcontext
@@ -275,6 +254,8 @@ def _load_hf_weights_with_mbridge(ddp_model, args, load_path: str) -> None:
 
     import miles_plugins.mbridge  # noqa: F401
     from mbridge import AutoBridge
+
+    from miles.backends.megatron_utils.lora.native.modules.linear import adapters_hidden
 
     if args.offload_train:
         from torch_memory_saver import torch_memory_saver
@@ -292,7 +273,7 @@ def _load_hf_weights_with_mbridge(ddp_model, args, load_path: str) -> None:
     with (
         ModelCompanionInstallationUtils.hide(ddp_model),
         _hide_critic_value_head_from_hf_load(ddp_model),
-        _hide_native_lora_adapters_from_hf_load(ddp_model),
+        adapters_hidden(ddp_model),
         bypass,
     ):
         bridge = AutoBridge.from_pretrained(load_path, trust_remote_code=True)

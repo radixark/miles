@@ -1,15 +1,16 @@
 """Native LoRA's adapter slots: the same probe-built HF layout as Bridge, over native's own export."""
 
 from collections.abc import Iterator, Sequence
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 
 import torch
 
 from miles.backends.megatron_utils.lora.bridge_checkpoint import BridgeAdapterSlots
 from miles.backends.megatron_utils.lora.native.hf_adapter import export_lora_hf_named
 from miles.backends.megatron_utils.lora.native.modules.linear import (
+    adapters_hidden,
     iter_adapters,
-    iter_native_slot_adapters,
+    iter_multi_lora_adapters,
     iter_slot_adapters,
 )
 from miles.backends.megatron_utils.lora.native.modules.lm_head import LoRAOutputHead
@@ -20,7 +21,7 @@ from miles.utils.lora.utils import AdapterSpec
 class NativeAdapterSlots(BridgeAdapterSlots):
     """Native exports grouped experts stacked under sglang's ``experts.w1/w3/w2`` (per-expert or ``[1, ...]``).
 
-    Multi-LoRA slots are ``NativeSlotAdapters``; they cover dense projections and lm_head.
+    Multi-LoRA slots are ``NativeMultiLoRAAdapter``s; they cover dense projections and lm_head.
     """
 
     bf16_adapter_key_style = "sampler"
@@ -63,7 +64,7 @@ class NativeAdapterSlots(BridgeAdapterSlots):
             # pipeline stages hold different layers; offset them as Megatron's own seeding does
             model_parallel_cuda_manual_seed(seed + 100 * parallel_state.get_pipeline_model_parallel_rank())
             with tracker.fork(get_data_parallel_rng_tracker_name()):
-                for slot_adapters in iter_native_slot_adapters(self._model):
+                for slot_adapters in iter_multi_lora_adapters(self._model):
                     slot_adapters.init_slot(slot, lora_rank, lora_alpha)
         finally:
             tracker.set_states(saved_tracker_states)
@@ -71,7 +72,7 @@ class NativeAdapterSlots(BridgeAdapterSlots):
 
     def clear(self, slot: int) -> None:
         assert self._multi_lora, "single LoRA's adapter is built with the model"
-        for slot_adapters in iter_native_slot_adapters(self._model):
+        for slot_adapters in iter_multi_lora_adapters(self._model):
             slot_adapters.clear_slot(slot)
 
     @contextmanager
@@ -83,7 +84,7 @@ class NativeAdapterSlots(BridgeAdapterSlots):
         assert self._multi_lora, "single LoRA routes no tokens"
         # one host sync per forward
         counts = tuple(int(count) for count in torch.as_tensor(token_counts_by_slot).tolist())
-        all_slot_adapters = list(iter_native_slot_adapters(self._model))
+        all_slot_adapters = list(iter_multi_lora_adapters(self._model))
         num_slots = len(all_slot_adapters[0].slots)
         assert len(counts) == num_slots, f"{len(counts)} token counts for {num_slots} slots"
         assert min(counts) >= 0, f"negative token counts {counts}"
@@ -96,8 +97,7 @@ class NativeAdapterSlots(BridgeAdapterSlots):
                 slot_adapters.token_counts_by_slot = None
 
     def adapters_hidden_context(self):
-        # native adapters return no sharded state dict, so the base checkpoint load never sees them
-        return nullcontext()
+        return adapters_hidden(self._model)
 
     def _unexported_elements(self) -> torch.Tensor:
         """head_B's padded vocab rows: the export trims them, so no checkpoint holds them and a load leaves them."""

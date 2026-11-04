@@ -5,6 +5,7 @@ from __future__ import annotations
 import functools
 import math
 from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 import torch
@@ -108,8 +109,11 @@ class NativeLoRAAdapter(nn.Module):
         down = self.project_down(self.prepare_input(x, base_module))
         return self.project_up(self.reduce_down(down))
 
+    def add_delta(self, out: torch.Tensor, delta: torch.Tensor) -> torch.Tensor:
+        return torch.add(out, delta, alpha=self.context.lora.scale)
+
     # The delta in phases, so multi-LoRA slots share the input mapping and the one TP collective after A
-    # (``NativeSlotAdapters``). An adapter whose delta does not split this way overrides ``forward``.
+    # (``NativeMultiLoRAAdapter``). An adapter whose delta does not split this way overrides ``forward``.
     def prepare_input(self, x: torch.Tensor, base_module: nn.Module) -> torch.Tensor:
         """The input A reads: dropout and any TP / SP input mapping."""
         raise NotImplementedError(f"{type(self).__name__} has no per-phase forward")
@@ -532,33 +536,22 @@ def attach_delta_forward(
     module.forward = forward
 
 
-def attach_adapter_forward(module: nn.Module, adapter: NativeLoRAAdapter | NativeSlotAdapters, scale: float) -> None:
-    """Make a single-host adapter's forward the delta of ``module``."""
-    attach_delta_forward(
-        module, adapter, resolve_delta_add(adapter, scale), host_returns_bias=adapter.host_returns_bias
-    )
+def attach_adapter_forward(module: nn.Module, adapter: NativeLoRAAdapter | NativeMultiLoRAAdapter) -> None:
+    """Make a one-host adapter's forward the delta of ``module``."""
+    attach_delta_forward(module, adapter, adapter.add_delta, host_returns_bias=adapter.host_returns_bias)
     adapter.bind_host(module)
-
-
-def resolve_delta_add(
-    adapter: NativeLoRAAdapter | NativeSlotAdapters, scale: float
-) -> Callable[[torch.Tensor, torch.Tensor], torch.Tensor]:
-    """How the adapter's delta joins its host's output: scaled per routed token range for multi-LoRA slots."""
-    if isinstance(adapter, NativeSlotAdapters):
-        return adapter.add_scaled_delta
-    return functools.partial(torch.add, alpha=scale)
 
 
 def build_adapter(
     build: Callable[[], NativeLoRAAdapter], context: AttachContext
-) -> NativeLoRAAdapter | NativeSlotAdapters:
+) -> NativeLoRAAdapter | NativeMultiLoRAAdapter:
     """One adapter for single LoRA; for multi-LoRA, ``context.lora.num_slots`` of them behind token routing."""
     if context.lora.num_slots is None:
         return build()
-    return NativeSlotAdapters([build() for _ in range(context.lora.num_slots)], context)
+    return NativeMultiLoRAAdapter([build() for _ in range(context.lora.num_slots)], context)
 
 
-class NativeSlotAdapters(nn.Module):
+class NativeMultiLoRAAdapter(nn.Module):
     """The multi-LoRA slots of one host: one adapter per slot, each running on its slot's token range.
 
     Tokens arrive sorted by slot (``token_counts_by_slot``, identical across the TP group), so the input
@@ -583,7 +576,7 @@ class NativeSlotAdapters(nn.Module):
             adapter.bind_host(host)
 
     def forward(self, x: torch.Tensor, base_module: nn.Module, *_host_args) -> torch.Tensor:
-        """The unscaled delta, one row per token; ``add_scaled_delta`` applies each slot's scale."""
+        """The unscaled delta, one row per token; ``add_delta`` applies each slot's scale."""
         rows = _token_rows(self.slots[0].prepare_input(x, base_module))
         down = torch.cat(
             [
@@ -599,7 +592,7 @@ class NativeSlotAdapters(nn.Module):
             ]
         )
 
-    def add_scaled_delta(self, out: torch.Tensor, delta: torch.Tensor) -> torch.Tensor:
+    def add_delta(self, out: torch.Tensor, delta: torch.Tensor) -> torch.Tensor:
         out_rows = _token_rows(out)
         counts = self._local_token_counts(len(out_rows))
         summed = [
@@ -694,17 +687,57 @@ def _iter_modules(model_chunks: Sequence[nn.Module]) -> Iterator[nn.Module]:
 def iter_adapters(model_chunks: Sequence[nn.Module]) -> Iterator[NativeLoRAAdapter]:
     """Single LoRA's adapters."""
     for child in _iter_modules(model_chunks):
-        assert not isinstance(child, NativeSlotAdapters), "a multi-LoRA model is read per slot (iter_slot_adapters)"
+        assert not isinstance(
+            child, NativeMultiLoRAAdapter
+        ), "a multi-LoRA model is read per slot (iter_slot_adapters)"
         if isinstance(child, NativeLoRAAdapter):
             yield child
 
 
 def iter_slot_adapters(model_chunks: Sequence[nn.Module], slot: int) -> Iterator[NativeLoRAAdapter]:
-    for slot_adapters in iter_native_slot_adapters(model_chunks):
+    for slot_adapters in iter_multi_lora_adapters(model_chunks):
         yield slot_adapters.slots[slot]
 
 
-def iter_native_slot_adapters(model_chunks: Sequence[nn.Module]) -> Iterator[NativeSlotAdapters]:
+def iter_multi_lora_adapters(model_chunks: Sequence[nn.Module]) -> Iterator[NativeMultiLoRAAdapter]:
     for child in _iter_modules(model_chunks):
-        if isinstance(child, NativeSlotAdapters):
+        if isinstance(child, NativeMultiLoRAAdapter):
             yield child
+
+
+def assert_every_adapter_slotted(model_chunks: Sequence[nn.Module]) -> None:
+    """Under multi-LoRA an adapter outside the slots would add one tenant-blind delta to every tenant's tokens."""
+    slotted = {
+        id(adapter) for slot_adapters in iter_multi_lora_adapters(model_chunks) for adapter in slot_adapters.slots
+    }
+    unslotted = [
+        child.hf_prefix
+        for child in _iter_modules(model_chunks)
+        if isinstance(child, NativeLoRAAdapter) and id(child) not in slotted
+    ]
+    assert (
+        not unslotted
+    ), f"multi-LoRA slots cover dense projections and lm_head; these adapters have none: {unslotted[:4]}"
+
+
+@contextmanager
+def adapters_hidden(model_chunks: Sequence[nn.Module]) -> Iterator[None]:
+    """Detaches every adapter from the model: a base load that maps each parameter to a checkpoint tensor finds none
+    for them."""
+    slotted = {
+        id(adapter) for slot_adapters in iter_multi_lora_adapters(model_chunks) for adapter in slot_adapters.slots
+    }
+    adapters = [
+        (parent, name, child)
+        for parent in list(_iter_modules(model_chunks))
+        for name, child in list(parent.named_children())
+        if isinstance(child, NativeMultiLoRAAdapter)
+        or (isinstance(child, NativeLoRAAdapter) and id(child) not in slotted)
+    ]
+    for parent, name, _ in adapters:
+        delattr(parent, name)
+    try:
+        yield
+    finally:
+        for parent, name, child in adapters:
+            parent.add_module(name, child)

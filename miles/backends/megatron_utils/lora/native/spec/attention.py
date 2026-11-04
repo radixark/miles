@@ -347,7 +347,6 @@ class DeepSeekV41AttentionSpec(AttentionSpecBase):
         hf_prefix = context.naming.block_prefix(layer, weight, [leaf])
         if not context.lora.selects(f"{hf_prefix}{leaf}"):
             return count
-        assert context.lora.num_slots is None, f"multi-LoRA slots have no grouped {leaf} adapter"
         block.lora_o_a_adapter = LoRAGroupedColumnLinear(
             hf_prefix=hf_prefix,
             projection=self.o_group_projection,
@@ -356,7 +355,7 @@ class DeepSeekV41AttentionSpec(AttentionSpecBase):
             in_features=weight.shape[1],
             out_features=weight.shape[0],
         )
-        attach_adapter_forward(block.o_group_matmul, block.lora_o_a_adapter, context.lora.scale)
+        attach_adapter_forward(block.o_group_matmul, block.lora_o_a_adapter)
         return count + 1
 
 

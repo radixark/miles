@@ -192,7 +192,7 @@ def attach_layout(block: nn.Module, layout: ModuleLayout, layer: nn.Module, cont
             continue
         adapter = build_adapter(functools.partial(group.build, block, hf_prefix, context, active), context)
         setattr(block, group.adapter_attr, adapter)
-        attach_adapter_forward(host, adapter, context.lora.scale)
+        attach_adapter_forward(host, adapter)
         count += 1
 
     for binding in layout.singles:
@@ -218,7 +218,7 @@ def attach_layout(block: nn.Module, layout: ModuleLayout, layer: nn.Module, cont
             context,
         )
         setattr(block, binding.adapter_attr, adapter)
-        attach_adapter_forward(host, adapter, context.lora.scale)
+        attach_adapter_forward(host, adapter)
         count += 1
     return count
 

@@ -41,7 +41,7 @@ class LMHeadSpec:
             context,
         )
         model.lora_lm_head_adapter = adapter
-        attach_adapter_forward(output_layer, adapter, context.lora.scale)
+        attach_adapter_forward(output_layer, adapter)
         return 1
 
 
@@ -67,7 +67,7 @@ class InklingLMHeadSpec:
             context,
         )
         model.lora_lm_head_adapter = adapter
-        attach_adapter_forward(output_layer, adapter, context.lora.scale)
+        attach_adapter_forward(output_layer, adapter)
         return 1
 
 

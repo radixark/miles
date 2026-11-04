@@ -67,7 +67,7 @@ class Qwen35GDNSpec:
                 lambda: LoRAGDNInProj(hf_prefix=hf_prefix, gdn=gdn, context=context, projections=active), context
             )
             gdn.lora_in_proj_adapter = adapter
-            attach_projection_delta(gdn, adapter, context.lora.scale)
+            attach_projection_delta(gdn, adapter)
             count += 1
         return count + attach_layout(gdn, self.out_proj_layout, layer, context)
 
