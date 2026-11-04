@@ -27,6 +27,7 @@ from miles.backends.megatron_utils.ft.indep_dp import allreduce_grads_and_losses
 from miles.backends.megatron_utils.local_weight_checksum import dump_local_weight_checksums
 from miles.backends.megatron_utils.lora.native import wrap_model_provider_with_lora
 from miles.backends.megatron_utils.optimizer_state_reset import reset_optimizer_states
+from miles.backends.training_utils.checkpoint.adapter.probed_slots import ProbedAdapterSlots
 from miles.backends.training_utils.data.rollout import DataIterator, get_batch
 from miles.backends.training_utils.data.sampling_mask import get_rollout_sampling_masks
 from miles.backends.training_utils.loss.objective import loss_function
@@ -63,7 +64,6 @@ from .ci_utils import (
     save_model_hashes,
 )
 from .initialize import is_first_replica_megatron_main_rank
-from miles.backends.training_utils.checkpoint.adapter.probed_slots import ProbedAdapterSlots
 from .lora.checkpoint import restore_single_lora, save_single_lora
 from .lora.utils import is_lora_enabled, is_lora_model, patch_param_grad_buffer_for_colocate_mode_lora
 from .model_provider import get_model_provider_func
