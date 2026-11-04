@@ -83,6 +83,7 @@ def save_hf_model(
                 0,
                 single_lora_parametrization(adapter_slots, args),
                 adapter_slots.targets,
+                lora_dropout=args.lora_dropout,
             )
 
     if should_log:

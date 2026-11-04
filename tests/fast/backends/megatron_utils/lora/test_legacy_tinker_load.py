@@ -109,7 +109,7 @@ def gloo():
 def test_a_source_the_weight_conversion_refuses_is_a_mismatch(gloo, tmp_path):
     weights = {f"{Q}.lora_A": torch.zeros(2, 6), f"{K}.lora_A": torch.ones(2, 6)}
     weights |= {f"{m}.lora_B": torch.zeros(4, 2) for m in (Q, K)}
-    write_peft_adapter(tmp_path, weights, UNSHARED, TARGETS)
+    write_peft_adapter(tmp_path, weights, UNSHARED, TARGETS, lora_dropout=0.0)
     shared = replace(UNSHARED, shared_lora_a_groups=((Q, K),))
     mismatch = checkpoint.find_load_mismatch(None, 0, str(tmp_path), shared, TARGETS, load_optimizer=False)
     assert mismatch is not None and "cannot share A" in mismatch
