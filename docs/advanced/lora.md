@@ -439,6 +439,10 @@ SGLang currently rejects combining this layout with fused shared experts.
 `save_state` saves adapter parameters and optimizer state, including FP32 masters.
 It waits for preceding commands but neither steps nor saves pending gradients;
 call it after `optim_step` to save the effect of the accumulated training work.
+A save commits a new adapter directory and then points the name at it, so an
+overwrite that fails keeps the previous checkpoint; one gateway holds a checkpoint
+root at a time. `load_state` adopts the checkpoint's alpha, and a checkpoint saved
+under another adapter layout loads its weights only.
 Sampler saves commit an immutable adapter directory on shared storage, without
 contacting inference engines. Engines load the same frozen base at startup and
 load adapter snapshots from disk on demand. A failed engine load fails sampling
