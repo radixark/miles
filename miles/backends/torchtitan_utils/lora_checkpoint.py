@@ -500,7 +500,7 @@ class TorchtitanLoraCheckpoint:
             "or pass --no-load-optim to load its weights and start the schedule fresh"
         )
         if training_state["step"] != grid_step:
-            # weights only: a fresh schedule after the source's rollout, as for a Megatron dir off the grid
+            # weights only: a fresh schedule that starts after the source's rollout
             self._first_rollout = 0 if iteration is None else iteration + 1
             return self._training_state(iteration)
         load_lr_schedulers(self._trainer.engine.optim.lr_schedulers, training_state["lr_scheduler"])
