@@ -112,12 +112,12 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
             slot
         ), "the gateway and the slot disagree on rank"
         return write_sampler_export(
-            Path(root),
-            name,
-            self.adapter_slots,
-            slot,
-            parametrization,
-            self.adapter_slots.targets,
+            root=Path(root),
+            name=name,
+            members=self.adapter_slots,
+            slot=slot,
+            parametrization=parametrization,
+            targets=self.adapter_slots.targets,
             tenant_digest=tenant_digest,
         )
 

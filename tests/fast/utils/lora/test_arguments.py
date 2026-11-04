@@ -87,8 +87,9 @@ def _validate(args):
     lora_arguments.validate_lora_args_after_megatron(args)
 
 
-def test_only_runs_exporting_hf_snapshots_need_the_hf_lora_layout(monkeypatch):
-    """The adapter slots, which need the layout, are built only for the HF snapshot exports that read them."""
+def test_only_hf_exports_and_multi_lora_need_the_hf_lora_layout(monkeypatch):
+    """The adapter slots, which need the layout, are built only for what reads them: HF snapshot exports and
+    multi-LoRA's sampler exports; a plain --save needs none."""
     _validate(_bridge_args_without_layout(monkeypatch, save="/save"))
     with pytest.raises(AssertionError, match="HF LoRA target layout"):
         _validate(_bridge_args_without_layout(monkeypatch, save_hf="/hf_out"))

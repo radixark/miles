@@ -20,7 +20,6 @@ from miles.backends.training_utils.checkpoint.adapter.key_mapping import (
     is_hf_only_name,
     is_tinker_only_name,
     map_named_tensors_to_hf_keys,
-    map_peft_keys_to_hf_keys,
     map_sampler_keys_to_hf_keys,
     map_tinker_keys_to_hf_keys,
     rename_sampler_experts_to_hf,
@@ -118,7 +117,7 @@ def classify_adapter_source(path: Path, targets: HfLoraTargets, *, load_optimize
     raise ValueError(f"{path} is not a recognized LoRA adapter source")
 
 
-def _collapse_shared_lora_a(
+def collapse_shared_lora_a(
     weights: dict, parametrization: AdapterParametrization, fused_groups: list[tuple[str, ...]]
 ) -> dict:
     """Undo a written expansion: keep the first member's A, after checking every copy matches it.
@@ -178,7 +177,7 @@ class MilesAdapterDirReader:
         weights, fused_groups = _read_peft_tensors(
             self.path, lambda name: map_sampler_keys_to_hf_keys(name, self.targets), self.targets
         )
-        return _collapse_shared_lora_a(weights, self.source.parametrization, fused_groups)
+        return collapse_shared_lora_a(weights, self.source.parametrization, fused_groups)
 
 
 def _check_peft_config(config: dict, path: Path) -> None:
