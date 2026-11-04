@@ -7,21 +7,22 @@ from miles.ray.rollout.output_snapshotter import _RolloutExecutorOutputSnapshott
 from miles.ray.rollout.rollout_executor import RolloutExecutor, compute_rollout_checkpoint_dir
 from miles.rollout import fully_async_rollout
 from miles.rollout.data_source import RolloutDataResumeMismatch
-from miles.rollout.fully_async_data_buffer import DataBufferInput
+from miles.rollout.fully_async_data_buffer import DataBufferInput, DefaultDataBuffer
 from miles.rollout.fully_async_rollout import FullyAsyncRolloutFn, _FullyAsyncRolloutState
 from miles.utils.simple_checkpointer import save_simple_checkpoint
 from miles.utils.types import Sample
 
 
 class _Recorder:
-    def __init__(self, name: str, calls: list[str], *, mismatch: bool = False) -> None:
+    def __init__(self, name: str, calls: list[str], *, mismatch: bool = False, needs_flag: bool = True) -> None:
         self.name = name
         self.calls = calls
         self.mismatch = mismatch
+        self.needs_flag = needs_flag
 
     def load(self, directory: Path) -> None:
         if self.mismatch:
-            raise RolloutDataResumeMismatch("rollout dataset 'math' changed rm_type")
+            raise RolloutDataResumeMismatch("rollout dataset 'math' changed rm_type", needs_flag=self.needs_flag)
         self.calls.append(f"{self.name}.load")
 
     def load_sample_ids(self, directory: Path) -> None:
@@ -37,14 +38,14 @@ class _Recorder:
         pass
 
 
-async def _load(tmp_path: Path, *, reset: bool, mismatch: bool) -> list[str]:
+async def _load(tmp_path: Path, *, reset: bool, mismatch: bool, needs_flag: bool = True) -> list[str]:
     compute_rollout_checkpoint_dir(str(tmp_path), rollout_id=3).mkdir(parents=True)
     calls: list[str] = []
     executor = RolloutExecutor.__new__(RolloutExecutor)
     executor.args = Namespace(rollout_data_reset_on_load=reset)
     executor.use_legacy_rollout_v1 = False
     executor._output_snapshotter = _Recorder("snapshotter", calls)
-    executor.data_source = _Recorder("data_source", calls, mismatch=mismatch)
+    executor.data_source = _Recorder("data_source", calls, mismatch=mismatch, needs_flag=needs_flag)
     executor.generate_rollout = _Recorder("train_fn", calls)
     executor.eval_generate_rollout = _Recorder("eval_fn", calls)
     executor._delete_store_refs = None
@@ -66,8 +67,12 @@ async def test_a_mismatch_without_the_flag_refuses_the_resume(tmp_path: Path) ->
         await _load(tmp_path, reset=False, mismatch=True)
 
 
-async def test_a_mismatch_with_the_flag_resets_the_data_and_drops_what_came_from_it(tmp_path: Path) -> None:
-    assert await _load(tmp_path, reset=True, mismatch=True) == [
+@pytest.mark.parametrize("reset, needs_flag", [(True, True), (False, False)])
+async def test_a_mismatch_with_the_flag_resets_the_data_and_drops_what_came_from_it(
+    tmp_path: Path, reset: bool, needs_flag: bool
+) -> None:
+    """A mix resumed under --prompt-data needs no flag; every other mismatch does."""
+    assert await _load(tmp_path, reset=reset, mismatch=True, needs_flag=needs_flag) == [
         "snapshotter.load",
         "data_source.load_sample_ids",
         "snapshotter.drop_loaded",
@@ -112,8 +117,26 @@ def test_a_fully_async_reset_records_every_saved_group_as_dropped(tmp_path: Path
     )
     rollout_fn = FullyAsyncRolloutFn.__new__(FullyAsyncRolloutFn)
     rollout_fn.args = Namespace()
+    rollout_fn._output = DefaultDataBuffer.__new__(DefaultDataBuffer)
+    rollout_fn._output._args = Namespace()
 
     rollout_fn.drop_saved_in_flight(tmp_path)
 
     assert dropped == [0, 1, 2]
     assert not rollout_fn.__dict__.get("_retry_buffer")
+
+
+def test_a_custom_buffer_drops_its_own_saved_layout(tmp_path: Path) -> None:
+    """Only the buffer knows its saved layout, so the rollout hands the finished groups back to it."""
+    save_simple_checkpoint(
+        directory=tmp_path,
+        data=_FullyAsyncRolloutState(retry_buffer=[], running=[], output={"custom": "layout"}),
+    )
+    handed: list[object] = []
+    rollout_fn = FullyAsyncRolloutFn.__new__(FullyAsyncRolloutFn)
+    rollout_fn.args = Namespace(enable_sample_ownership_checker=False)
+    rollout_fn._output = Namespace(drop_saved_state=lambda state, *, reason: handed.append(state))
+
+    rollout_fn.drop_saved_in_flight(tmp_path)
+
+    assert handed == [{"custom": "layout"}]

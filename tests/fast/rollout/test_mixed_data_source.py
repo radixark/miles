@@ -285,6 +285,17 @@ class TestMixedRolloutDataSource:
         source.load_sample_ids(tmp_path / "ckpt")
         assert (source.sample_index, source.sample_group_index) == (10, 5)
 
+    def test_a_checkpoint_without_data_source_state_is_a_mismatch(self, tmp_path):
+        """A --disable-rollout-global-dataset run saves none, and the flag must be able to move it onto a mix."""
+        source = _make_source(tmp_path, _two_datasets(tmp_path))
+        (tmp_path / "ckpt").mkdir()
+
+        with pytest.raises(data_source.RolloutDataResumeMismatch, match="no data source state") as err:
+            source.load(tmp_path / "ckpt")
+        assert err.value.needs_flag
+        source.load_sample_ids(tmp_path / "ckpt")
+        assert source.sample_index == 0
+
     def test_resume_refuses_a_different_dataset_list(self, tmp_path):
         datasets = _two_datasets(tmp_path)
         _make_source(tmp_path, datasets).save(tmp_path / "ckpt")

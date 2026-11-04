@@ -487,18 +487,19 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
                 self._try_delete_store_refs(list(restored.values()))
 
     def _load_data_source(self, directory: Path) -> bool:
-        """Restore the data source; True when --rollout-data-reset-on-load had to start it over instead.
+        """Restore the data source; True when it had to start over instead.
 
-        Only a checkpoint the current datasets cannot resume is reset, so a run that keeps the flag still resumes
-        its own later checkpoints in place.
+        Only a checkpoint the current data configuration cannot resume is reset, so a run that keeps
+        --rollout-data-reset-on-load still resumes its own later checkpoints in place. A reset the data source
+        marks as needing no flag (a mix resumed under --prompt-data) happens without it.
         """
         try:
             self.data_source.load(directory)
             return False
         except RolloutDataResumeMismatch as mismatch:
-            if not self.args.rollout_data_reset_on_load:
+            if mismatch.needs_flag and not self.args.rollout_data_reset_on_load:
                 raise
-            logger.warning(f"--rollout-data-reset-on-load: every dataset starts over, as {mismatch}")
+            logger.warning(f"The training data starts over, as {mismatch}")
         self.data_source.load_sample_ids(directory)
         return True
 

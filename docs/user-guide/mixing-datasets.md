@@ -79,7 +79,8 @@ model, optimizer, rollout step and sample ids still resume from `--load`, while 
 beginning and the prompt groups and untrained batches drawn from the old datasets are dropped. The reset happens
 only when the checkpoint does not match the current YAML, so the flag can stay in the launch command: later
 resumes from the run's own checkpoints continue in place. The same flag moves a run started with `--prompt-data`
-onto a mix.
+onto a mix. The other way needs no flag: a mix resumed under `--prompt-data` starts that dataset from its first
+prompt, with the same drops and the same sample ids.
 
 Every sample carries `metadata["dataset_name"]`, and the rollout metrics add
 `rollout/dataset/<name>/{episode_raw_reward,response_len/mean,truncated_ratio,num_training_samples}`.
