@@ -654,7 +654,11 @@ class LegacyRankShardLoader:
         self._model, self._optimizer, self._run, self._load_optimizer = model, optimizer, run, load_optimizer
         self._precision_aware = precision_aware
 
-    def __call__(self, path: Path) -> AdapterParametrization:
+    def parametrization(self, path: Path) -> AdapterParametrization:
+        # an old save records alpha in its PEFT pair; load_adapter_dir takes the run's when it records none
+        return replace(self._run, lora_alpha=read_source_lora_alpha(path))
+
+    def load(self, path: Path) -> None:
         shard = _native_adapter_shard(path)
         assert shard is not None, f"{path} has no adapter shard for this rank"
         _load_native_adapter_shard(self._model, shard)
@@ -680,8 +684,6 @@ class LegacyRankShardLoader:
         else:
             # the fp32 masters were built before the adapter load
             self._optimizer.reload_model_params()
-        # an old save records alpha in its PEFT pair; load_adapter_dir takes the run's when it records none
-        return replace(self._run, lora_alpha=read_source_lora_alpha(path))
 
 
 def _read_legacy_training_state(path: Path) -> dict | None:
