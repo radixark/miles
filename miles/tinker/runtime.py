@@ -166,6 +166,17 @@ _IMPORT_JSON_BASE_BYTES = 1 << 20
 _IMPORT_JSON_ENTRY_OVERHEAD_BYTES = 64
 
 
+# MXFP4 keeps a weight as <name>_blocks [..., rows, in / 32, 16] (two 4-bit values a byte) and <name>_scales
+_MXFP4_BLOCKS, _MXFP4_SCALES = "_blocks", "_scales"
+
+
+def _mxfp4_logical_shape(key: str, shape: list[int], dtype: str) -> tuple[int, ...]:
+    """The shape of the weight an MXFP4 container holds, as the base's unquantized copy stores it ([..., in, rows])."""
+    assert dtype == "U8" and len(shape) >= 3, f"{key}: {dtype} {shape} is no MXFP4 block container"
+    *lead, rows, blocks, block_bytes = shape
+    return (*lead, blocks * block_bytes * 2, rows)
+
+
 def _lora_matrices(hf_checkpoint: str, targets: HfLoraTargets) -> Iterator[tuple[str, tuple[int, ...], int]]:
     """(module, shape ``[..., out, in]``, HF-fused components each with its own A) of every base weight a LoRA can
     target; a norm or bias is none."""
@@ -176,7 +187,13 @@ def _lora_matrices(hf_checkpoint: str, targets: HfLoraTargets) -> Iterator[tuple
     for file in files:
         with safe_open(file, framework="pt") as weights:
             for key in weights.keys():
-                if len(shape := weights.get_slice(key).get_shape()) >= 2:
+                if key.endswith(_MXFP4_SCALES):
+                    continue
+                shape = weights.get_slice(key).get_shape()
+                if key.endswith(_MXFP4_BLOCKS):
+                    shape = _mxfp4_logical_shape(key, shape, weights.get_slice(key).get_dtype())
+                    key = key.removesuffix(_MXFP4_BLOCKS)
+                if len(shape) >= 2:
                     module = key.removesuffix(".weight")
                     components = fused_components(module, targets)
                     if components is None and module.endswith(".experts.gate_up_proj"):

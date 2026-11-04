@@ -383,3 +383,39 @@ def test_the_import_bound_counts_an_a_for_each_half_of_a_packed_gate_up(tmp_path
     # fp32, per expert: w1 and w3 each an A [rank, hidden] and a B [ffn, rank]
     exported = 4 * experts * 2 * (rank * hidden + ffn * rank)
     assert max_adapter_bytes(str(tmp_path), rank, targets) >= exported
+
+
+def test_an_mxfp4_copy_of_a_base_bounds_imports_as_its_bf16_copy_does(tmp_path):
+    """MXFP4 stores ``<m>_blocks [E, rows, in / 32, 16]`` (two 4-bit values a byte) and ``<m>_scales``; read as matrices
+    they count E * rows modules and a 16-wide input, so the JSON cap grew to hundreds of MB (gpt-oss)."""
+    from safetensors.torch import save_file
+
+    experts, hidden, rows, layers = 4, 64, 96, 3
+    bf16, mxfp4 = tmp_path / "bf16", tmp_path / "mxfp4"
+    bf16.mkdir()
+    mxfp4.mkdir()
+    prefix = "model.layers.{}.mlp.experts"
+    save_file(
+        {
+            f"{prefix.format(layer)}.{name}": torch.zeros(experts, hidden, rows_out, dtype=torch.bfloat16)
+            for layer in range(layers)
+            for name, rows_out in (("gate_up_proj", rows), ("down_proj", hidden))
+        },
+        bf16 / "model.safetensors",
+    )
+    save_file(
+        {
+            f"{prefix.format(layer)}.{name}_{part}": torch.zeros(
+                (experts, rows_out, hidden // 32, 16) if part == "blocks" else (experts, rows_out, hidden // 32),
+                dtype=torch.uint8,
+            )
+            for layer in range(layers)
+            for name, rows_out in (("gate_up_proj", rows), ("down_proj", hidden))
+            for part in ("blocks", "scales")
+        },
+        mxfp4 / "model.safetensors",
+    )
+    targets = get_hf_lora_targets({"model_type": "qwen3", "num_hidden_layers": 1})
+
+    assert max_adapter_json_bytes(str(mxfp4), targets) == max_adapter_json_bytes(str(bf16), targets)
+    assert max_adapter_bytes(str(mxfp4), 8, targets) == max_adapter_bytes(str(bf16), 8, targets)
