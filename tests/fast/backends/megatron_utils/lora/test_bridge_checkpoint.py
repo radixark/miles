@@ -67,6 +67,8 @@ def _probe(rank, world_size, port):
     flat = torch.cat([p.data.reshape(-1) for p in params])
     assert torch.equal(flat[pieces[f"{K}.lora_B"].local_elements], params[2].data)
     assert torch.equal(flat[pieces[f"{K}.lora_A"].local_elements], params[0].data)
+    # one index per local element stays resident; int64 would double it
+    assert all(p.local_elements.dtype == torch.int32 for p in mapping.pieces)
     dist.destroy_process_group()
 
 
