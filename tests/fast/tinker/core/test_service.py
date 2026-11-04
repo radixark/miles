@@ -1340,6 +1340,28 @@ async def test_an_external_save_is_downloadable_by_its_tenant_only(service):
     assert service.expiry.expires_at(result["path"]) is None
 
 
+async def test_repeated_url_requests_reuse_one_token_and_the_sweeper_drops_expired_ones(service, monkeypatch):
+    model_id = await created_model(service)
+    save = service.submit("tenant", "save_weights_external", _external_payload(model_id, 1, "export"))
+    await await_settled(service, "tenant", save)
+
+    def token():
+        return urls["urls"]["adapter_config.json"].split("/")[-2]
+
+    urls = await service.external_weights_urls("tenant", model_id, "external_weights/export", "http://gateway/")
+    first = token()
+    for _ in range(3):
+        urls = await service.external_weights_urls("tenant", model_id, "external_weights/export", "http://gateway/")
+    assert token() == first and len(service._downloads) == 1, "a client polling for URLs does not grow the table"
+
+    service._drop_expired_downloads(time.time() + 3601)
+    assert not service._downloads and not service._download_tokens
+    with pytest.raises(NotFoundError):
+        await service.download_path(first, "adapter_config.json")
+    urls = await service.external_weights_urls("tenant", model_id, "external_weights/export", "http://gateway/")
+    assert token() != first, "an expired token is never handed out again"
+
+
 async def test_an_encrypted_external_save_keeps_its_owner(service):
     """Only the export's files are encrypted; tenant.json stays readable, so the owner can list and delete it."""
     model_id = await created_model(service)

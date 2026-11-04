@@ -163,6 +163,8 @@ class TinkerService:
         self._expiry_lock = asyncio.Lock()
         # issued download tokens; unguessable, held only in memory, so a restart invalidates every URL
         self._downloads: dict[str, _Download] = {}
+        # one live URL token per checkpoint commit, so repeated requests do not grow the table
+        self._download_tokens: dict[tuple[str, str, str], str] = {}
 
     async def run(self) -> None:
         await self._expire_checkpoints()
@@ -761,9 +763,11 @@ class TinkerService:
             if checkpoint_expires_at <= now:
                 raise NotFoundError(f"checkpoint {tinker_path} has expired")
             expires_at = min(expires_at, checkpoint_expires_at)
-        self._downloads = {t: d for t, d in self._downloads.items() if d.expires_at > now}
-        token = secrets.token_urlsafe(32)
-        self._downloads[token] = _Download(tenant, tinker_path, files["commit_id"], expires_at)
+        key = (tenant, tinker_path, files["commit_id"])
+        token = self._download_tokens.get(key)
+        if token is None:
+            token = self._download_tokens[key] = secrets.token_urlsafe(32)
+        self._downloads[token] = _Download(*key, expires_at)
         return {
             "urls": {f: f"{base_url}api/v1/external_weights/{token}/{f}" for f in files["files"]},
             "expires": datetime.fromtimestamp(expires_at, UTC).isoformat(),
@@ -810,7 +814,14 @@ class TinkerService:
     async def _run_expiry_sweeper(self) -> None:
         while True:
             await asyncio.sleep(_EXPIRY_SWEEP_S)
+            self._drop_expired_downloads(time.time())
             await self._expire_checkpoints()
+
+    def _drop_expired_downloads(self, now: float) -> None:
+        for token, download in list(self._downloads.items()):
+            if download.expires_at <= now:
+                del self._downloads[token]
+                del self._download_tokens[download[:3]]
 
     async def _expire_checkpoints(self) -> None:
         # the trainer lock waits for a whole training call; take it only when there is something to delete
