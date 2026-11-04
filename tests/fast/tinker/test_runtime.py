@@ -228,8 +228,30 @@ def test_lora_groups_come_from_the_recorded_targets():
         "train_mlp": False,
         "train_unembed": True,
     }
-    with pytest.raises(AssertionError, match="in no LoRA group"):
+    with pytest.raises(UserInputError, match="in no LoRA group"):
         classify_lora_groups(("model.layers.0.input_layernorm",), qwen3)
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"model_type": "mimo_v2", "num_hidden_layers": 2, "moe_layer_freq": [0, 1]},
+        {
+            "model_type": "kimi_k2",
+            "num_hidden_layers": 2,
+            "n_routed_experts": 4,
+            "first_k_dense_replace": 1,
+            "n_shared_experts": 0,
+            "q_lora_rank": None,
+        },
+    ],
+    ids=["mimo_v2", "kimi_k2"],
+)
+def test_a_per_expert_familys_stacked_expert_targets_count_as_mlp(config):
+    # the layout names routed experts per expert (experts.*.down_proj); a checkpoint records them stacked
+    layout = get_hf_lora_targets(config)
+    flags = classify_lora_groups(("model.layers.1.mlp.experts.down_proj",), layout)
+    assert flags == {"train_attn": False, "train_mlp": True, "train_unembed": False}
 
 
 def test_a_fused_modules_components_count_as_its_group():
