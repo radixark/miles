@@ -279,10 +279,7 @@ def lock_checkpoint_root(root: Path) -> TextIO:
 
 
 def delete_retired_adapter_dirs(root: Path) -> None:
-    """Remove the commits that commits and deletes retired; safe without the committer's lock.
-
-    A retired dir is never referenced again, and nothing else is ever named ``*.deleting``.
-    """
+    """Remove the dirs commits and deletes retired (``*.deleting``); safe without the committer's lock."""
     root = Path(root)
     if not root.is_dir():
         return
