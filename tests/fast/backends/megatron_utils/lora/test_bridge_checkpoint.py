@@ -1,22 +1,32 @@
 """Bridge row-mapping probe and the run_config.yaml match."""
 
+from dataclasses import replace
 from datetime import timedelta
+from types import SimpleNamespace
 
 import pytest
 import torch
 import torch.distributed as dist
+from megatron.core import dist_checkpointing
+from megatron.core.dist_checkpointing.mapping import ShardedTensor
 from safetensors.torch import save_file
 from tests.fast.dist_utils import init_gloo, run_multiprocess
 
+from miles.backends.megatron_utils.lora import bridge_checkpoint
 from miles.backends.megatron_utils.lora.bridge_checkpoint import (
+    _BRIDGE_BASE_REMEDY,
     BridgeAdapterSlots,
     assert_bridge_run_config_matches,
+    assert_same_base_as_torch_dist,
     bridge_base_model_candidates,
     probe_bridge_row_mapping,
+    torch_dist_base_dir,
 )
+from miles.backends.training_utils.checkpoint.adapter.adapter_dir import HeadRows
 from miles.backends.training_utils.checkpoint.adapter.base_model import assert_same_base_model
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
-from miles.backends.training_utils.checkpoint.adapter.probed_slots import RowMapping
+from miles.backends.training_utils.checkpoint.adapter.probed_slots import HfPiece, RowMapping
+from miles.utils import distributed_utils
 from miles.utils.distributed_utils import init_gloo_group
 from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
 
@@ -78,6 +88,8 @@ def _probe(rank, world_size, port):
     flat = torch.cat([p.data.reshape(-1) for p in params])
     assert torch.equal(flat[pieces[f"{K}.lora_B"].local_elements], params[2].data)
     assert torch.equal(flat[pieces[f"{K}.lora_A"].local_elements], params[0].data)
+    # one index per local element stays resident; int64 would double it
+    assert all(p.local_elements.dtype == torch.int32 for p in mapping.pieces)
     dist.destroy_process_group()
 
 
@@ -352,18 +364,89 @@ def test_the_base_is_bridge_pretrained_checkpoint_not_the_hf_template(tmp_path):
         "tokenizer": {"tokenizer_model": None},
     }
     with pytest.raises(AssertionError, match="another base model"):
-        assert_same_base_model("src", bridge_base_model_candidates(config), template)
+        assert_same_base_model("src", bridge_base_model_candidates(config), template, remedy=_BRIDGE_BASE_REMEDY)
     # a torch_dist base has no HF files: its HF template stands in
     config["checkpoint"]["pretrained_checkpoint"] = str(tmp_path)
-    assert_same_base_model("src", bridge_base_model_candidates(config), template)
+    assert_same_base_model("src", bridge_base_model_candidates(config), template, remedy=_BRIDGE_BASE_REMEDY)
     # Bridge's last fallback
     config["checkpoint"]["hf_source_path"] = None
     config["tokenizer"]["tokenizer_model"] = template
-    assert_same_base_model("src", bridge_base_model_candidates(config), template)
+    assert_same_base_model("src", bridge_base_model_candidates(config), template, remedy=_BRIDGE_BASE_REMEDY)
     # Bridge's template is hf_model_id, absent here: a later candidate that resolves must not stand in for it
     config["model"]["hf_model_id"] = str(tmp_path / "missing")
-    with pytest.raises(AssertionError, match="has no local HF files"):
-        assert_same_base_model("src", bridge_base_model_candidates(config), template)
+    with pytest.raises(
+        AssertionError, match="has no local HF files.*set checkpoint.hf_source_path in the source's run_config.yaml"
+    ):
+        assert_same_base_model("src", bridge_base_model_candidates(config), template, remedy=_BRIDGE_BASE_REMEDY)
+
+
+NORM_KEY, QKV_KEY = "decoder.final_layernorm.weight", "decoder.layers.self_attention.linear_qkv.weight"
+
+
+class _Chunk(torch.nn.Module):
+    """A model chunk: one norm, one projection and one adapter weight, keyed as Megatron shards them."""
+
+    def __init__(self, norm: torch.Tensor):
+        super().__init__()
+        self.norm, self.qkv, self.lora = (torch.nn.Parameter(t) for t in (norm, torch.ones(2, 2), torch.ones(2)))
+
+    def sharded_state_dict(self, metadata=None) -> dict:
+        lora_key = "decoder.layers.self_attention.linear_qkv.adapter.linear_in.weight"
+        return {
+            NORM_KEY: ShardedTensor.from_rank_offsets(NORM_KEY, self.norm.data),
+            "decoder.layers.0.self_attention.linear_qkv.weight": ShardedTensor.from_rank_offsets(
+                QKV_KEY, self.qkv.data
+            ),
+            lora_key: ShardedTensor.from_rank_offsets(lora_key, self.lora.data),
+        }
+
+
+@pytest.fixture()
+def single_rank_gloo(tmp_path, monkeypatch):
+    dist.init_process_group(backend="gloo", init_method=f"file://{tmp_path / 'rendezvous'}", rank=0, world_size=1)
+    monkeypatch.setattr(distributed_utils, "GLOO_GROUP", None)
+    # torch_dist assumes CUDA: it syncs D2H staging copies and broadcasts its status flag on the current device
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda *args: None)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: "cpu")
+    monkeypatch.setattr(
+        bridge_checkpoint, "get_parallel_state", lambda: SimpleNamespace(intra_dp_cp=SimpleNamespace(group=None))
+    )
+    init_gloo_group()
+    try:
+        yield
+    finally:
+        dist.destroy_process_group()
+
+
+def _torch_dist_base(path, norm: torch.Tensor, *, with_norm: bool = True):
+    path.mkdir()
+    state = _Chunk(norm).sharded_state_dict()
+    if not with_norm:
+        del state[NORM_KEY]
+    dist_checkpointing.save({"model": state}, str(path))
+    return path
+
+
+def test_a_torch_dist_base_fine_tuned_after_its_hf_conversion_is_refused(single_rank_gloo, tmp_path):
+    base = torch.randn(4)
+    chunk = _Chunk(base.clone())
+    assert_same_base_as_torch_dist("src", [chunk], _torch_dist_base(tmp_path / "same", base))
+    assert torch.equal(chunk.norm.data, base), "the comparison never writes the model's own weights"
+    with pytest.raises(
+        RuntimeError, match="trained on another base model .* differs in e.g. \\['decoder.final_layernorm"
+    ):
+        assert_same_base_as_torch_dist("src", [chunk], _torch_dist_base(tmp_path / "sft", base + 1))
+    with pytest.raises(RuntimeError, match="cannot be compared with this run's model: it lacks"):
+        assert_same_base_as_torch_dist("src", [chunk], _torch_dist_base(tmp_path / "bare", base, with_norm=False))
+
+
+def test_a_pretrained_checkpoint_resolves_to_its_tracked_torch_dist_iteration(single_rank_gloo, tmp_path):
+    _torch_dist_base(tmp_path / "iter_0000007", torch.ones(4))
+    (tmp_path / "latest_checkpointed_iteration.txt").write_text("7")
+    assert torch_dist_base_dir(str(tmp_path)) == tmp_path / "iter_0000007"
+    assert torch_dist_base_dir(str(tmp_path / "iter_0000007")) == tmp_path / "iter_0000007"
+    assert torch_dist_base_dir(str(tmp_path / "missing")) is None
+    assert torch_dist_base_dir(None) is None
 
 
 GDN = "model.layers.0.linear_attn"
@@ -429,3 +512,53 @@ def _probe_export_fails(rank, world_size, port):
 def test_an_export_failure_on_one_rank_fails_every_rank():
     """The fake export has no collectives; a rank failing inside one of Bridge's still hangs the others."""
     run_multiprocess(_probe_export_fails)
+
+
+def _slots_of(pieces, real_rank):
+    """Multi-LoRA slots whose probe found ``pieces``, padded to max rank 4; the slot's real rank is ``real_rank``."""
+    slots = BridgeAdapterSlots.__new__(BridgeAdapterSlots)
+    slots.row_mapping, slots._specs = RowMapping(pieces, (), ()), {}
+    slots.lora_rank = lambda slot: real_rank
+    return slots
+
+
+def _trim_a_tp_split_rank(rank, world_size, port):
+    init_gloo(rank, world_size, port=port)
+    init_gloo_group()
+    # max rank 4 split over 2 TP ranks: each rank holds 2 rows of A ([rank, in]) and 2 columns of B ([out, rank])
+    a = HfPiece(f"{Q}.lora_A", (4, 3), (2 * rank, 0), torch.arange(6).view(2, 3))
+    b = HfPiece(f"{Q}.lora_B", (5, 4), (0, 2 * rank), torch.arange(6, 16).view(5, 2))
+    flat = torch.arange(16.0)
+
+    slots = _slots_of([a, b], real_rank=3)
+    specs = [(s.key, s.global_shape, s.offsets, s.local_shape) for s in slots.get_local_shard_specs(1)]
+    kept = 2 if rank == 0 else 1
+    assert specs == [(a.key, (3, 3), (2 * rank, 0), (kept, 3)), (b.key, (5, 3), (0, 2 * rank), (5, kept))]
+    piece_a, piece_b = slots.local_pieces(1, [flat])
+    assert torch.equal(piece_a, flat[a.local_elements[:kept]]) and torch.equal(
+        piece_b, flat[b.local_elements[:, :kept]]
+    )
+
+    # real rank 2: rank 1's rows and columns are all padding, so it holds no piece of the slot
+    slots = _slots_of([a, b], real_rank=2)
+    assert (slots.get_local_shard_specs(1) == []) == (rank == 1)
+    assert (slots.local_pieces(1, [flat]) == []) == (rank == 1)
+    dist.destroy_process_group()
+
+
+def test_a_multi_lora_slot_keeps_only_its_real_rank_of_a_tp_split_rank_axis():
+    run_multiprocess(_trim_a_tp_split_rank)
+
+
+def _slots_with_pieces(keys_and_rows, vocab_size):
+    slots = BridgeAdapterSlots.__new__(BridgeAdapterSlots)
+    slots.targets = replace(TARGETS, vocab_size=vocab_size)
+    pieces = [SimpleNamespace(key=key, global_shape=(rows, 2)) for key, rows in keys_and_rows]
+    slots.row_mapping = SimpleNamespace(pieces=pieces)
+    return slots
+
+
+def test_a_trained_head_declares_its_served_rows_and_the_hf_vocab_a_source_may_hold():
+    head_b = f"{TARGETS.unembed[0]}.lora_B"
+    assert _slots_with_pieces([(head_b, 6)], vocab_size=8)._head_rows() == HeadRows(head_b, max_source_rows=8)
+    assert _slots_with_pieces([(f"{K}.lora_B", 4)], vocab_size=8)._head_rows() is None

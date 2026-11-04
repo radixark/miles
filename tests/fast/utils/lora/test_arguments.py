@@ -8,11 +8,10 @@ from types import SimpleNamespace
 import pytest
 import torch
 from safetensors.torch import save_file
-from transformers import AutoConfig, LlamaConfig
+from transformers import AutoConfig, LlamaConfig, PretrainedConfig
 
 from miles.utils.lora import arguments as lora_arguments
 from miles.utils.lora.arguments import (
-    _assert_adapter_layout_defined,
     _resolve_lora_targets,
     _validate_adapter_state_args,
     _validate_rollout_only_adapter,
@@ -80,6 +79,17 @@ _NO_SNAPSHOTS = dict(
 )
 
 
+def _check_layout(monkeypatch, args, hf_config):
+    monkeypatch.setattr(lora_arguments, "load_hf_config", lambda path: hf_config)
+    lora_arguments._assert_adapter_layout_defined(Namespace(**{**vars(args), "hf_checkpoint": "/hf"}))
+
+
+class _MimoConfig(PretrainedConfig):
+    """A family native trains with no HF LoRA layout; transformers ships no MiMo config."""
+
+    model_type = "mimo"
+
+
 @pytest.mark.parametrize(
     "overrides",
     [
@@ -90,27 +100,27 @@ _NO_SNAPSHOTS = dict(
     ],
     ids=["save", "save_hf", "eval_snapshots", "lora_adapter_path"],
 )
-def test_adapter_slots_need_the_families_hf_lora_layout(overrides) -> None:
-    """Native trains glm4, which has no HF LoRA layout; saving or loading its adapter would crash building the slots."""
+def test_adapter_slots_need_the_families_hf_lora_layout(monkeypatch, overrides) -> None:
+    """Native trains mimo, which has no HF LoRA layout; saving or loading its adapter would crash building the slots."""
     args = Namespace(**(_NO_SNAPSHOTS | overrides))
-    with pytest.raises(AssertionError, match="model_type='glm4', which miles does not define"):
-        _assert_adapter_layout_defined(args, AutoConfig.for_model("glm4"))
-    _assert_adapter_layout_defined(args, AutoConfig.for_model("qwen3"))
+    with pytest.raises(AssertionError, match="model_type='mimo', which miles does not define"):
+        _check_layout(monkeypatch, args, _MimoConfig())
+    _check_layout(monkeypatch, args, AutoConfig.for_model("qwen3"))
 
 
-def test_a_rollout_only_run_builds_no_slots_for_any_family() -> None:
+def test_a_rollout_only_run_builds_no_slots_for_any_family(monkeypatch) -> None:
     args = Namespace(**(_NO_SNAPSHOTS | {"lora_adapter_path": "/adapter", "debug_rollout_only": True}))
-    _assert_adapter_layout_defined(args, AutoConfig.for_model("glm4"))
+    _check_layout(monkeypatch, args, _MimoConfig())
 
 
-def test_an_eval_dir_without_eval_snapshots_builds_no_slots() -> None:
+def test_an_eval_dir_without_eval_snapshots_builds_no_slots(monkeypatch) -> None:
     """The actor publishes eval snapshots only under eval_uses_snapshots; validation must not refuse the run."""
     args = Namespace(**(_NO_SNAPSHOTS | {"eval_hf_dir": "/eval"}))
-    _assert_adapter_layout_defined(args, AutoConfig.for_model("glm4"))
+    _check_layout(monkeypatch, args, _MimoConfig())
 
 
-def test_a_run_without_adapter_snapshots_trains_any_family() -> None:
-    _assert_adapter_layout_defined(Namespace(**_NO_SNAPSHOTS), AutoConfig.for_model("glm4"))
+def test_a_run_without_adapter_snapshots_trains_any_family(monkeypatch) -> None:
+    _check_layout(monkeypatch, Namespace(**_NO_SNAPSHOTS), _MimoConfig())
 
 
 def _adapter_state_args(**overrides) -> Namespace:
@@ -278,6 +288,22 @@ def test_rollout_only_skips_the_adapter_checkpoint_checks():
     validate_lora_args_after_megatron(args)
 
 
+@pytest.mark.parametrize(
+    "fault_tolerance", [dict(indep_dp=True), dict(non_persistent_ckpt_type="local")], ids=["peer_heal", "in_memory"]
+)
+def test_lora_refuses_the_checkpoints_that_cannot_carry_its_adapter(fault_tolerance):
+    """save() writes a LoRA adapter to its adapter dir: a healed cell or an in-memory rollback would lose it."""
+    args = Namespace(
+        lora_rank=8,
+        multi_lora=False,
+        megatron_to_hf_mode="raw",
+        debug_rollout_only=False,
+        **{"indep_dp": False, "non_persistent_ckpt_type": None, **fault_tolerance},
+    )
+    with pytest.raises(AssertionError, match="remove 'train' from --ft-components"):
+        validate_lora_args_after_megatron(args)
+
+
 def test_the_adapter_checkpoint_requires_fp32_masters():
     with pytest.raises(AssertionError, match="fp32 masters"):
         _validate_adapter_state_args(_adapter_state_args(main_params_dtype=torch.float16))
@@ -322,18 +348,59 @@ class TestRolloutOnlyAdapter:
             self._validate(tmp_path)
 
 
-def test_multi_lora_bridge_refuses_a_model_without_hf_lora_layout():
-    """Multi-LoRA always builds the adapter slots, which need the layout, even without --save-hf / --save."""
-    args = Namespace(
-        debug_rollout_only=False,
-        multi_lora=True,
-        lora_rank=8,
-        lora_adapter_path=None,
-        save_hf=None,
-        eval_uses_snapshots=False,
-        eval_hf_dir=None,
-        save=None,
-    )
+def _bridge_args_without_layout(monkeypatch, *, multi_lora=False, **overrides):
     hf_config = SimpleNamespace(model_type="gpt2", to_dict=lambda: {"model_type": "gpt2"})
+    monkeypatch.setattr(lora_arguments, "load_hf_config", lambda path: hf_config)
+    monkeypatch.setattr(
+        lora_arguments, "validate_multi_lora_args", lambda args: setattr(args, "multi_lora", multi_lora)
+    )
+    monkeypatch.setattr(lora_arguments, "_resolve_lora_targets", lambda args, config: ["h.0.attn.c_attn"])
+    monkeypatch.setattr(
+        "miles.backends.megatron_utils.lora.target_modules.check_fused_lora_selection", lambda *a, **k: None
+    )
+    fields = dict(
+        train_backend="megatron",
+        megatron_to_hf_mode="bridge",
+        hf_checkpoint="/hf",
+        lora_rank=8,
+        lora_alpha=16.0,
+        lora_adapter_path=None,
+        lora_type="lora",
+        experts_shared_outer_loras=False,
+        lora_adapter_convert_save=None,
+        debug_rollout_only=False,
+        save_hf=None,
+        eval_hf_dir=None,
+        eval_uses_snapshots=False,
+        save=None,
+        indep_dp=False,
+        non_persistent_ckpt_type=None,
+    )
+    return Namespace(**(fields | overrides))
+
+
+def _validate(args):
+    lora_arguments.validate_lora_args(args)
+    lora_arguments.validate_lora_args_after_megatron(args)
+
+
+def test_only_runs_that_read_the_adapter_slots_need_the_hf_lora_layout(monkeypatch):
+    """The adapter slots, which need the layout, are built for HF snapshot exports and the --save adapter dir."""
+    monkeypatch.setattr(lora_arguments, "_validate_adapter_state_args", lambda args: None)
+    _validate(_bridge_args_without_layout(monkeypatch))
+    for reader in (dict(save_hf="/hf_out"), dict(save="/save")):
+        with pytest.raises(AssertionError, match="HF LoRA target layout"):
+            _validate(_bridge_args_without_layout(monkeypatch, **reader))
+
+
+def test_an_eval_hf_dir_without_eval_snapshots_needs_no_layout(monkeypatch):
+    """Only eval snapshots export to --eval-hf-dir; the actor publishes nothing for it otherwise."""
+    _validate(_bridge_args_without_layout(monkeypatch, eval_hf_dir="/eval"))
     with pytest.raises(AssertionError, match="HF LoRA target layout"):
-        _assert_adapter_layout_defined(args, hf_config)
+        _validate(_bridge_args_without_layout(monkeypatch, eval_hf_dir="/eval", eval_uses_snapshots=True))
+
+
+def test_multi_lora_bridge_refuses_a_model_without_hf_lora_layout(monkeypatch):
+    """Multi-LoRA builds the adapter slots its sampler exports read, even without --save-hf / --save."""
+    with pytest.raises(AssertionError, match="HF LoRA target layout"):
+        _validate(_bridge_args_without_layout(monkeypatch, multi_lora=True))

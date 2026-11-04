@@ -16,7 +16,8 @@ from miles.backends.megatron_utils.lora.native.naming import ConverterNaming
 from miles.backends.megatron_utils.lora.native.registry import MODEL_SPECS, resolve_adapter_targets
 from miles.backends.megatron_utils.lora.native.spec.base import AttachContext
 from miles.backends.megatron_utils.lora.native.spec.lm_head import LMHeadSpec
-from miles.utils.lora.hf_lora_targets import resolve_hf_lora_targets
+from miles.backends.training_utils.checkpoint.adapter.adapter_dir import HeadRows
+from miles.utils.lora.hf_lora_targets import get_hf_lora_targets, resolve_hf_lora_targets
 
 HIDDEN, VOCAB, PADDED_VOCAB = 8, 10, 12
 
@@ -292,3 +293,21 @@ def test_specs_without_a_head_adapter_still_refuse_it(model_type, head):
             lora_type="canonical_lora",
             experts_shared_outer_loras=True,
         )
+
+
+def test_native_declares_its_head_rows_under_the_models_own_head_name(monkeypatch):
+    """Inkling's native head is language_model.lm_head; the family's unembed name is lm_head."""
+    import miles.backends.megatron_utils.lora.native.checkpoint as native_checkpoint
+
+    head = LoRAOutputHead.__new__(LoRAOutputHead)
+    nn.Module.__init__(head)
+    head.hf_prefix = "language_model.lm_head."
+    monkeypatch.setattr(native_checkpoint, "iter_adapters", lambda model: [head])
+    slots = native_checkpoint.NativeAdapterSlots.__new__(native_checkpoint.NativeAdapterSlots)
+    slots._model = []
+    slots.targets = dataclasses.replace(
+        get_hf_lora_targets({"model_type": "qwen3", "num_hidden_layers": 1}), vocab_size=16
+    )
+    head_b = "language_model.lm_head.lora_B"
+    slots.row_mapping = SimpleNamespace(pieces=[SimpleNamespace(key=head_b, global_shape=(VOCAB, 2))])
+    assert slots._head_rows() == HeadRows(head_b, max_source_rows=16)

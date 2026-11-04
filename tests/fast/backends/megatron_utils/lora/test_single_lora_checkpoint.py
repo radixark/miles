@@ -1,7 +1,6 @@
 """Bridge single LoRA's --save / --lora-adapter-path glue around the adapter library."""
 
 import json
-import os
 from types import SimpleNamespace
 from unittest.mock import DEFAULT, MagicMock, patch
 
@@ -10,40 +9,24 @@ import torch
 from megatron.core.optimizer import DistributedOptimizer
 from megatron.core.optimizer.cpu_offloading.hybrid_optimizer import HybridDeviceOptimizer
 
+import miles.backends.megatron_utils.lora.checkpoint as lora_checkpoint
 from miles.backends.megatron_utils.lora.checkpoint import (
     DistributedOptimizerMembers,
     LegacyRankShardLoader,
     _distributed_optimizer_step,
     _set_distributed_optimizer_step,
+    _world_slice,
     restore_single_lora,
-    single_lora_parametrization,
 )
+from miles.backends.training_utils.checkpoint.adapter.adapter_dir import HeadRows
 from miles.backends.training_utils.checkpoint.adapter.adapter_state import AdapterState, LocalShardSpec
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
+from miles.backends.training_utils.checkpoint.adapter.parametrization_conversion import (
+    assert_parametrization_matches_run,
+)
 from miles.backends.training_utils.checkpoint.adapter.readers import AdapterSourceKind
 
 _MODULE = "miles.backends.megatron_utils.lora.checkpoint"
-
-
-def _base_model(hf_checkpoint: str) -> str:
-    slots = MagicMock()
-    args = SimpleNamespace(
-        hf_checkpoint=hf_checkpoint, lora_rank=8, lora_alpha=16.0, lora_type="lora", experts_shared_outer_loras=False
-    )
-    single_lora_parametrization(slots, args)
-    return slots.parametrization.call_args.kwargs["base_model"]
-
-
-def test_one_local_model_under_another_path_string_is_the_same_base(tmp_path):
-    model = tmp_path / "model"
-    model.mkdir()
-    (tmp_path / "mount").symlink_to(model)
-    expected = os.path.realpath(model)
-    assert _base_model(str(model)) == _base_model(f"{model}/") == _base_model(str(tmp_path / "mount")) == expected
-
-
-def test_a_hub_id_is_kept():
-    assert _base_model("Qwen/Qwen3-8B") == "Qwen/Qwen3-8B"
 
 
 def _restore(path, *, convert_save=None, megatron_to_hf_mode="bridge", source_alpha=16.0):
@@ -69,6 +52,7 @@ def _restore(path, *, convert_save=None, megatron_to_hf_mode="bridge", source_al
         MegatronBridgeCheckpointLoader=DEFAULT,
         load_adapter_dir=DEFAULT,
         save_and_commit_adapter_dir=DEFAULT,
+        load_hf_config=lambda path: SimpleNamespace(to_dict=lambda: {"model_type": "qwen3"}),
     ) as mocks:
         mocks["load_adapter_dir"].return_value = SimpleNamespace(lora_alpha=source_alpha)
         restored = restore_single_lora(
@@ -144,16 +128,19 @@ def test_an_optimizer_other_than_megatrons_distributed_one_is_refused():
         members._distributed_optimizers()
 
 
-def test_a_restore_keeps_the_state_of_elements_no_checkpoint_holds():
-    """Native head_B's vocab-padding rows are left out of every checkpoint; a restore must not zero them."""
+@pytest.mark.parametrize("leaves_out_elements", [True, False])
+def test_a_restore_keeps_the_state_of_elements_no_checkpoint_holds(leaves_out_elements):
+    """Native head_B's vocab-padding rows are left out of every checkpoint; a restore must not zero them. Without
+    such elements every element is overwritten, so the world state is not gathered."""
     param = torch.zeros(4)
     current = {key: torch.full((4,), value) for key, value in (("param", 1.0), ("exp_avg", 2.0), ("exp_avg_sq", 3.0))}
     buffer = SimpleNamespace(
         param_index_map={param: (0, 4, 0)}, bucket_indices=[(0, 4)], param_dtype="p", grad_dtype="g"
     )
-    loaded = {}
+    loaded, gathered_data = {}, []
 
     def get_parameter_state_dp_zero(use_gloo_comm, empty_data=False):
+        gathered_data.append(not empty_data)
         # Megatron's world tensors start from zeros and are filled only without empty_data
         world = {key: torch.zeros(4) if empty_data else tensor.clone() for key, tensor in current.items()}
         return {0: {("p", "g"): world}, "buckets_coalesced": True}
@@ -164,22 +151,28 @@ def test_a_restore_keeps_the_state_of_elements_no_checkpoint_holds():
     sub.buffers = [buffer]
     sub.get_parameter_state_dp_zero = get_parameter_state_dp_zero
     sub.load_parameter_state_from_dp_zero = loaded.update
-    slots = MagicMock()
+    slots = MagicMock(load_overwrites_every_element=not leaves_out_elements)
     slots.slot_parameters.return_value = [param]
     # element 3 is vocab padding: no piece holds it
-    slots.piece_parameter.return_value = [(0, torch.tensor([0, 1, 2]))]
+    held = torch.tensor([0, 1, 2]) if leaves_out_elements else torch.arange(4)
+    slots.piece_parameter.return_value = [(0, held)]
     members = DistributedOptimizerMembers(slots, SimpleNamespace(chained_optimizers=[sub]), [], precision_aware=False)
-    spec = LocalShardSpec("model.lm_head.lora_B", (4,), (0,), (3,))
-    state = AdapterState([spec], [torch.full((3,), 5.0)], [torch.full((3,), 6.0)], [torch.full((3,), 7.0)], step=9)
+    rows = len(held)
+    spec = LocalShardSpec("model.lm_head.lora_B", (4,), (0,), (rows,))
+    state = AdapterState(
+        [spec], [torch.full((rows,), 5.0)], [torch.full((rows,), 6.0)], [torch.full((rows,), 7.0)], step=9
+    )
     parallel = SimpleNamespace(intra_dp_cp=SimpleNamespace(rank=0), edp=SimpleNamespace(rank=0))
 
     with patch.multiple(_MODULE, get_parallel_state=lambda: parallel, _build_cast_main_to_params_fn=MagicMock()):
         members.import_adapter_state(0, state)
 
+    assert gathered_data == [leaves_out_elements]
     world = loaded[0][("p", "g")]
-    assert world["param"].tolist() == [5.0, 5.0, 5.0, 1.0]
-    assert world["exp_avg"].tolist() == [6.0, 6.0, 6.0, 2.0]
-    assert world["exp_avg_sq"].tolist() == [7.0, 7.0, 7.0, 3.0]
+    kept = [1.0, 2.0, 3.0] if leaves_out_elements else [5.0, 6.0, 7.0]
+    assert world["param"].tolist() == [5.0, 5.0, 5.0, kept[0]]
+    assert world["exp_avg"].tolist() == [6.0, 6.0, 6.0, kept[1]]
+    assert world["exp_avg_sq"].tolist() == [7.0, 7.0, 7.0, kept[2]]
 
 
 def _offloaded_optimizer(*, offloaded: bool) -> tuple[HybridDeviceOptimizer, torch.nn.Parameter, torch.nn.Parameter]:
@@ -209,3 +202,52 @@ def test_restoring_the_step_of_an_offloaded_optimizer_reaches_its_gpu_sub_optimi
     assert hdo.gpu_optimizer.param_groups[0]["step"] == 5
     assert hdo.cpu_optimizers[0].state[host]["step"] == hdo.state[host]["step"] == 5
     assert _distributed_optimizer_step(sub) == 5
+
+
+def test_a_parameters_world_slice_skips_the_earlier_buckets_end_padding():
+    """dp-zero world tensors drop each bucket's end padding; a later bucket's parameter sits after the real elements."""
+    a, b, c = (torch.nn.Parameter(torch.empty(n)) for n in (4, 2, 5))
+    # bucket 0 spans [0, 8) with 6 real elements; bucket 1 spans [8, 16) with 5
+    buffer = SimpleNamespace(
+        param_index_map={a: (0, 4, 0), b: (4, 6, 0), c: (8, 13, 1)},
+        bucket_indices=[(0, 8), (8, 16)],
+        buckets=[SimpleNamespace(numel=8, numel_unpadded=6), SimpleNamespace(numel=8, numel_unpadded=5)],
+        param_dtype=torch.bfloat16,
+        grad_dtype=torch.float32,
+    )
+    # hand-written: a, b, then c, with no padding between them
+    world = torch.tensor([10.0, 11, 12, 13, 20, 21, 30, 31, 32, 33, 34])
+    gathered = {0: {(torch.bfloat16, torch.float32): {"param": world}}}
+    for param, expected in ((a, [10.0, 11, 12, 13]), (b, [20.0, 21]), (c, [30.0, 31, 32, 33, 34])):
+        tensors, start, end = _world_slice(gathered, 0, buffer, param)
+        assert torch.equal(tensors["param"][start:end], torch.tensor(expected))
+
+
+def _recorded_parametrization(monkeypatch, hf_checkpoint, hidden_size=2560):
+    config = {"model_type": "qwen3", "hidden_size": hidden_size, "num_hidden_layers": 36, "vocab_size": 151936}
+    monkeypatch.setattr(lora_checkpoint, "load_hf_config", lambda path: SimpleNamespace(to_dict=lambda: config))
+    slots = SimpleNamespace(
+        slot_spec=lambda slot: None,
+        parametrization=lambda **fields: AdapterParametrization(target_modules=("q",), **fields),
+    )
+    args = SimpleNamespace(
+        hf_checkpoint=hf_checkpoint, lora_rank=8, lora_alpha=16.0, lora_type="lora", experts_shared_outer_loras=False
+    )
+    return lora_checkpoint.single_lora_parametrization(slots, args)
+
+
+def test_an_adapter_saved_under_one_mount_loads_under_another(monkeypatch):
+    saved = _recorded_parametrization(monkeypatch, "/root/models/Qwen3-4B")
+    run = _recorded_parametrization(monkeypatch, "/lustre/models/Qwen3-4B")
+    assert saved.base_model == "/root/models/Qwen3-4B", "the path stays as given, for information"
+    assert_parametrization_matches_run(saved, run, [], load_optimizer=False, has_optimizer_state=False)
+    other = _recorded_parametrization(monkeypatch, "/root/models/Qwen3-4B", hidden_size=4096)
+    with pytest.raises(AssertionError, match="is another model than run base"):
+        assert_parametrization_matches_run(saved, other, [], load_optimizer=False, has_optimizer_state=False)
+
+
+def test_the_members_declare_their_slots_head_rows():
+    head_rows = HeadRows("lm_head.lora_B", max_source_rows=8)
+    slots = SimpleNamespace(head_rows=head_rows, bf16_adapter_key_style="peft")
+    members = DistributedOptimizerMembers(slots, MagicMock(), [], precision_aware=False)
+    assert members.head_rows is head_rows

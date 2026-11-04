@@ -55,9 +55,16 @@ def assert_parametrization_matches_run(
     has_optimizer_state: bool,
 ) -> None:
     """Alpha is not compared: the caller owns it (Tinker adopts the source's, RL compares it to ``--lora-alpha``)."""
-    assert _canonical_base(source.base_model) == _canonical_base(
-        target.base_model
-    ), f"adapter base {source.base_model!r} != run base {target.base_model!r}"
+    if source.base_model_fingerprint is not None and target.base_model_fingerprint is not None:
+        assert source.base_model_fingerprint == target.base_model_fingerprint, (
+            f"adapter base {source.base_model!r} is another model than run base {target.base_model!r} "
+            f"(fingerprints {source.base_model_fingerprint} != {target.base_model_fingerprint})"
+        )
+    else:
+        # a side without a fingerprint recorded only where its base was read from
+        assert _canonical_base(source.base_model) == _canonical_base(
+            target.base_model
+        ), f"adapter base {source.base_model!r} != run base {target.base_model!r}"
     assert source.lora_rank == target.lora_rank, f"adapter rank {source.lora_rank} != run rank {target.lora_rank}"
     missing, extra = set(target.target_modules) - set(source.target_modules), set(source.target_modules) - set(
         target.target_modules

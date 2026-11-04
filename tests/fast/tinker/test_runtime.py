@@ -4,7 +4,10 @@ import httpx
 import pytest
 import torch
 
+from miles.backends.training_utils.checkpoint.adapter.commit import UncommittedAdapterDir
+from miles.backends.training_utils.checkpoint.adapter.commit import tenant_digest as library_digest
 from miles.tinker.core.types import UserInputError
+from miles.tinker.core.utils import tenant_digest as gateway_digest
 from miles.tinker.runtime import (
     MilesBackend,
     _build_train_data,
@@ -228,8 +231,30 @@ def test_lora_groups_come_from_the_recorded_targets():
         "train_mlp": False,
         "train_unembed": True,
     }
-    with pytest.raises(AssertionError, match="in no LoRA group"):
+    with pytest.raises(UserInputError, match="in no LoRA group"):
         classify_lora_groups(("model.layers.0.input_layernorm",), qwen3)
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"model_type": "mimo_v2", "num_hidden_layers": 2, "moe_layer_freq": [0, 1]},
+        {
+            "model_type": "kimi_k2",
+            "num_hidden_layers": 2,
+            "n_routed_experts": 4,
+            "first_k_dense_replace": 1,
+            "n_shared_experts": 0,
+            "q_lora_rank": None,
+        },
+    ],
+    ids=["mimo_v2", "kimi_k2"],
+)
+def test_a_per_expert_familys_stacked_expert_targets_count_as_mlp(config):
+    # the layout names routed experts per expert (experts.*.down_proj); a checkpoint records them stacked
+    layout = get_hf_lora_targets(config)
+    flags = classify_lora_groups(("model.layers.1.mlp.experts.down_proj",), layout)
+    assert flags == {"train_attn": False, "train_mlp": True, "train_unembed": False}
 
 
 def test_a_fused_modules_components_count_as_its_group():
@@ -246,3 +271,29 @@ def test_a_fused_modules_components_count_as_its_group():
     )
     flags = classify_lora_groups(("model.layers.0.linear_attn.in_proj_q",), gdn)
     assert flags == {"train_attn": True, "train_mlp": False, "train_unembed": False}
+
+
+@pytest.mark.parametrize("tenant", ["tenant-a", "", "ключ/with spaces"])
+def test_the_gateway_digests_a_tenant_as_the_library_checks_it(tenant):
+    """Core (stdlib-only) writes the digest the library's ownership check recomputes; the two must agree."""
+    assert gateway_digest(tenant) == library_digest(tenant)
+
+
+class _ExportingTrainer:
+    def __init__(self, results):
+        self.results = results
+
+    async def export_slot(self, **kwargs):
+        return self.results
+
+
+async def test_export_slot_hands_back_the_export_every_rank_agreed_on(tmp_path):
+    written = UncommittedAdapterDir(tmp_path / ".x.c1", "c1")
+    backend = MilesBackend(trainer=_ExportingTrainer([written, written]), router_url="http://router", lora_layout=None)
+    assert await backend.export_slot(0, str(tmp_path), "x", "digest", {}) is written
+
+
+async def test_export_slot_returns_the_first_rank_failure_instead_of_an_export(tmp_path):
+    written, failure = UncommittedAdapterDir(tmp_path / ".x.c1", "c1"), {"error": "rank 1 failed"}
+    backend = MilesBackend(trainer=_ExportingTrainer([written, failure]), router_url="http://router", lora_layout=None)
+    assert await backend.export_slot(0, str(tmp_path), "x", "digest", {}) is failure

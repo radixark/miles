@@ -1,8 +1,12 @@
 """Whether a source adapter was trained on this run's base model, judged from both sides' HF files.
 
-The fingerprint hashes every norm weight and the first layer's attention weights: every family has both, they
-are small, and a full fine-tune changes the norms while a merged LoRA changes the projections. Weights are read from
-the HF files, never from a loaded (possibly quantized) model.
+The check compares every norm weight and the first layer's attention weights that both sides hold unquantized:
+every family has both, they are small, and a full fine-tune changes the norms while a merged LoRA changes the
+projections. Weights are read from the HF files, never from a loaded (possibly quantized) model.
+
+Not detected: a LoRA merged only into MLP or expert weights, or only into layers past the first; against an FP8 or
+MXFP4 copy of the base, only the norms are left to compare. Layer 0's MLP is left out because every rank reads the
+fingerprint, and a dense model's MLP (or a packed-experts tensor) is gigabytes.
 """
 
 import json
@@ -73,13 +77,14 @@ def resolve_hf_dir(name_or_path: str) -> Path | None:
     return hf_dir if any(hf_dir.glob("*.safetensors")) else None
 
 
-def assert_same_base_model(source: str, candidates: Iterable[str], run_hf_checkpoint: str) -> None:
-    """``candidates``: what the source records as its base, best first; the first resolvable one is compared."""
+def assert_same_base_model(source: str, candidates: Iterable[str], run_hf_checkpoint: str, *, remedy: str) -> None:
+    """``candidates``: what the source records as its base, best first; the first resolvable one is compared.
+    ``remedy``: how to give the source's base local HF files."""
     candidates = [c for c in candidates if c]
     hf_dir = next((d for c in candidates if (d := resolve_hf_dir(c)) is not None), None)
     assert hf_dir is not None, (
         f"{source}'s base model ({candidates or 'not recorded'}) has no local HF files to compare with "
-        f"--hf-checkpoint {run_hf_checkpoint}"
+        f"--hf-checkpoint {run_hf_checkpoint}: {remedy}"
     )
     run_dir = resolve_hf_dir(run_hf_checkpoint)
     assert run_dir is not None, f"--hf-checkpoint {run_hf_checkpoint} has no local HF weights to compare with"
