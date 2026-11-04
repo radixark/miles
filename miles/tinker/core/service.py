@@ -594,7 +594,11 @@ class TinkerService:
         if payload["optimizer"]:
             raise UserInputError(f"{payload['path']} loads weights only; load it without optimizer state")
         # the trainer reads only this copy, so the tenant cannot change what it loads after the checks
-        copy_dir = await asyncio.to_thread(self._copy_import, payload["path"], (".json", ".safetensors"))
+        try:
+            copy_dir = await asyncio.to_thread(self._copy_import, payload["path"], (".json", ".safetensors"))
+        except OSError as error:
+            # e.g. a full checkpoint disk: only this load fails, the gateway keeps serving
+            return {"error": f"cannot copy {payload['path']} to load it: {error}", "error_category": "server"}
         try:
             source = await asyncio.to_thread(self._read_import_copy, payload["path"], copy_dir)
             if source["lora_alpha"] is None:
@@ -613,7 +617,11 @@ class TinkerService:
                 parametrization_fields=fields,
             )
         finally:
-            await asyncio.to_thread(shutil.rmtree, copy_dir)
+            try:
+                await asyncio.to_thread(shutil.rmtree, copy_dir)
+            except OSError:
+                # the load stands; the next gateway start removes the copy
+                logger.exception(f"could not remove {copy_dir}")
         if failure is not None:
             return failure
         record.lora_alpha = source["lora_alpha"]

@@ -1764,6 +1764,27 @@ async def test_a_file_import_swapped_after_the_checks_cannot_change_what_the_tra
             await run_task
 
 
+async def test_an_import_that_cannot_be_copied_fails_only_its_load(tmp_path):
+    adapter = tmp_path / "imports" / "adapter"
+    adapter.mkdir(parents=True)
+    (adapter / "adapter_config.json").write_text(json.dumps({"r": 8, "lora_alpha": 32}))
+    service = make_service(tmp_path / "root", import_root=str(tmp_path / "imports"))
+    # stands in for an unwritable or full checkpoint root
+    (tmp_path / "root").mkdir()
+    (tmp_path / "root" / IMPORT_COPIES_DIRNAME).write_text("")
+    run_task = asyncio.create_task(service.run())
+    try:
+        model_id = await created_model(service)
+        payload = {"model_id": model_id, "seq_id": 1, "path": f"file://{adapter}", "optimizer": False}
+        loaded = await await_settled(service, "tenant", service.submit("tenant", "load_state", payload))
+        assert loaded.state == FAILED and loaded.error_category == "server", loaded.error
+        assert not run_task.done(), "the dispatcher survived"
+    finally:
+        run_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await run_task
+
+
 async def test_a_save_pretrained_or_hf_download_dir_is_importable(tmp_path, monkeypatch):
     """Files no reader opens (save_pretrained's README.md, hf download --local-dir's .cache/) are left behind."""
     adapter = tmp_path / "imports" / "adapter"
