@@ -128,7 +128,7 @@ def classify_lora_groups(target_modules, layout: HfLoraTargets) -> dict[str, boo
         )
         hits = [flag for flag, globs in groups.items() if any(matches_lora_target(n, g) for n in names for g in globs)]
         if not hits:
-            # an import or another gateway's checkpoint may come from another model
+            # a checkpoint another gateway wrote may come from another model
             raise UserInputError(f"adapter target {module!r} is in no LoRA group of this model")
         flags.update(dict.fromkeys(hits, True))
     return flags
@@ -213,17 +213,16 @@ class MilesBackend:
 
     async def export_slot(
         self, slot: int, root: str, name: str, tenant_digest: str, parametrization_fields: dict
-    ) -> UncommittedAdapterDir | dict:
-        """The uncommitted export every rank agreed on, or the first worker failure."""
-        return _written_or_failure(
-            await self.trainer.export_slot(
-                slot=slot,
-                root=root,
-                name=name,
-                tenant_digest=tenant_digest,
-                parametrization_fields=parametrization_fields,
-            )
+    ) -> UncommittedAdapterDir:
+        """The uncommitted export every rank agreed on; a worker failure raises out of the trainer call."""
+        results = await self.trainer.export_slot(
+            slot=slot,
+            root=root,
+            name=name,
+            tenant_digest=tenant_digest,
+            parametrization_fields=parametrization_fields,
         )
+        return results[0]
 
     commit_adapter = staticmethod(commit_adapter)
     delete_retired_adapters = staticmethod(delete_retired_adapters)

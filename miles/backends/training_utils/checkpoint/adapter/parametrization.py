@@ -5,11 +5,13 @@ import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+import transformers
+
 PARAMETRIZATION_FILENAME = "adapter_parametrization.json"
 # bumped when a field's meaning changes or a field without a default is added; files from before it are 1
 PARAMETRIZATION_FORMAT_VERSION = 1
 
-# the HF config fields that fix every adapted module's name and shape
+# HF config fields that describe the base's architecture and shapes
 _BASE_IDENTITY_FIELDS = (
     "model_type",
     "vocab_size",
@@ -21,21 +23,39 @@ _BASE_IDENTITY_FIELDS = (
     "num_key_value_heads",
     "head_dim",
     "num_experts",
-    "num_local_experts",
-    "n_routed_experts",
     "tie_word_embeddings",
 )
+# names configs use for the routed expert count
+_EXPERT_COUNT_ALIASES = ("num_experts", "num_local_experts", "n_routed_experts")
 
 
 def base_model_fingerprint(hf_config: dict) -> str:
-    """The base's identity for adapter compatibility, from its HF ``config.json`` (a VL model's ``text_config``).
+    """The base's identity for adapter compatibility, from its HF config as a dict (a VL model's ``text_config``):
+    ``config.json`` as read or ``PretrainedConfig.to_dict()`` give the same value.
 
-    It identifies the architecture and its shapes, not the weights: two fine-tunes of one architecture share it.
+    It summarizes the architecture's sizes, not the weights: two fine-tunes of one architecture share it.
     """
     # a VL wrapper keeps the language model's fields under text_config; a text-only config has no such key
-    text_config = hf_config.get("text_config") or hf_config
+    text_config = _resolved(hf_config.get("text_config") or hf_config)
     fields = {field: text_config[field] for field in _BASE_IDENTITY_FIELDS if field in text_config}
     return hashlib.sha256(json.dumps(fields, sort_keys=True).encode()).hexdigest()[:16]
+
+
+def _resolved(config: dict) -> dict:
+    """The config as its transformers class resolves it: attribute aliases and derived defaults (e.g. head_dim)
+    filled in the same way whether the dict is config.json or a to_dict()."""
+    try:
+        config = transformers.AutoConfig.for_model(**config).to_dict()
+    except ValueError:
+        # a model_type transformers does not know (remote code): only the expert count aliases are resolved
+        config = dict(config)
+    counts = {config[alias] for alias in _EXPERT_COUNT_ALIASES if config.get(alias) is not None}
+    assert len(counts) <= 1, f"conflicting expert counts {counts} in {config.get('model_type')!r}'s config"
+    for alias in _EXPERT_COUNT_ALIASES:
+        config.pop(alias, None)
+    if counts:
+        config["num_experts"] = counts.pop()
+    return config
 
 
 @dataclass(frozen=True)
