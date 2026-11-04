@@ -173,3 +173,21 @@ def test_server_endpoints(tmp_path):
     assert client.get("/api/timeline/heatmap", params={"metric": "nope"}).status_code == 400
     assert client.get("/api/timeline/outliers", params={"criterion": "nope"}).status_code == 400
     assert client.get("/api/timeline/heatmap", params={"x_buckets": 1}).status_code == 400
+
+
+def test_engine_overlay_returns_only_engines_on_the_selected_lanes(tmp_path):
+    """The timeline overlays engine series on its selected lanes only; a
+    1024-engine run returned every engine's series to draw 8 lanes."""
+    dump_dummy_telemetry(tmp_path)
+    client = TestClient(make_app(MetricStore.load(tmp_path / "dashboard"), DumpReader(tmp_path)))
+    meta = client.get("/api/meta").json()
+    t1 = meta["time_range"][1]
+    params = dict(metric="sglang_num_running_reqs", t0=t1 - 3600, t1=t1)
+    all_engines = {s["addr"] for s in client.get("/api/timeline/engine_series", params=params).json()["series"]}
+    lane_b = f"gpu:{GPU_NODE}:2"
+    engines_on_lane_b = {
+        s["addr"]
+        for s in client.get("/api/timeline/engine_series", params=params | dict(lanes=lane_b)).json()["series"]
+    }
+    assert ENGINE_B_NEW in engines_on_lane_b and len(all_engines) > len(engines_on_lane_b)
+    assert all(not addr.endswith(":15000") for addr in engines_on_lane_b), engines_on_lane_b

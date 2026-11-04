@@ -5,6 +5,7 @@ import pytest
 from tests.fast.ray.rollout.conftest import make_args, make_sample, make_samples_grouped
 
 from miles.ray.rollout.metrics import (
+    _compute_dataset_metrics,
     _compute_episode_response_length_metrics,
     _compute_metrics_from_samples,
     _compute_passrate_from_samples,
@@ -152,6 +153,15 @@ class TestComputeZeroStdMetrics:
         assert out[f"zero_std/count_{round(one, 1)}"] == 1
         assert out["zero_std/all_zero_percentage"] == pytest.approx(1 / 3)
         assert out["zero_std/all_one_percentage"] == pytest.approx(1 / 3)
+        assert out["zero_std/percentage"] == pytest.approx(2 / 3)
+
+    @pytest.mark.parametrize("reward", [0.5, 0.0])
+    def test_percentage_counts_every_uniform_group_not_only_binary(self, reward):
+        """Groups uniform at any reward give zero advantage, not only all-0 / all-1."""
+        args = make_args(advantage_estimator="grpo", reward_key=None)
+        samples = make_samples_grouped(2, 2, rewards=[reward, reward, 0.0, 1.0])
+
+        assert _compute_zero_std_metrics(args, samples)["zero_std/percentage"] == pytest.approx(1 / 2)
 
     def test_mixed_numeric_types_and_unequal_group_sizes_count_groups_equally(self):
         args = make_args(advantage_estimator="grpo", reward_key=None)
@@ -201,7 +211,11 @@ class TestComputeZeroStdMetrics:
         args = make_args(advantage_estimator="grpo", reward_key=None)
         samples = make_samples_grouped(2, 4, rewards=[0.0, 0.5, 1.0, 0.7, 0.2, 0.8, 0.3, 0.6])
         out = _compute_zero_std_metrics(args, samples)
-        assert out == {"zero_std/all_zero_percentage": 0.0, "zero_std/all_one_percentage": 0.0}
+        assert out == {
+            "zero_std/all_zero_percentage": 0.0,
+            "zero_std/all_one_percentage": 0.0,
+            "zero_std/percentage": 0.0,
+        }
 
     def test_grpo_zero_std_groups_produce_bucket_counts_and_percentages(self):
         """1 group all-1, 1 group all-0, 1 group mixed → bucket counts plus the
@@ -780,3 +794,60 @@ class TestObservedGpuThroughput:
         else:
             assert "tokens_per_gpu_per_sec" not in metrics
             assert "effective_tokens_per_gpu_per_sec" not in metrics
+
+
+class TestDatasetMetrics:
+    def test_each_mixed_dataset_gets_its_own_reward_length_and_truncation(self):
+        samples = [
+            make_sample(index=0, reward=1.0, response_length=4, metadata={"dataset_name": "math"}),
+            make_sample(index=1, reward=0.0, response_length=8, metadata={"dataset_name": "math"}),
+            make_sample(
+                index=2,
+                reward=0.5,
+                response_length=6,
+                status=Sample.Status.TRUNCATED,
+                metadata={"dataset_name": "agentic"},
+            ),
+        ]
+
+        out = _compute_dataset_metrics(make_args(rollout_data_yaml_config="mix.yaml"), samples)
+
+        assert out["dataset/math/episode_raw_reward"] == pytest.approx(0.5)
+        assert out["dataset/math/response_len/mean"] == pytest.approx(6.0)
+        assert out["dataset/math/truncated_ratio"] == 0.0
+        assert out["dataset/agentic/episode_raw_reward"] == pytest.approx(0.5)
+        assert out["dataset/agentic/truncated_ratio"] == 1.0
+        assert out["dataset/agentic/num_training_samples"] == 1
+
+    @pytest.mark.parametrize("row_dataset_name", [None, "from_the_jsonl", ["unhashable"]])
+    def test_a_single_dataset_run_logs_no_dataset_metrics(self, row_dataset_name):
+        """A row's own dataset_name field must not create metric keys or crash grouping outside a mixed run."""
+        metadata = {} if row_dataset_name is None else {"dataset_name": row_dataset_name}
+        out = _compute_dataset_metrics(make_args(), [make_sample(index=0, metadata=metadata)])
+
+        assert not any(key.startswith("dataset/") for key in out)
+
+    def test_the_training_log_carries_the_dataset_metrics(self, monkeypatch):
+        args = make_args(
+            rollout_data_yaml_config="mix.yaml", advantage_estimator="ppo", ci_test=False, log_passrate=False
+        )
+        samples = make_samples_grouped(1, 2)
+        for sample in samples:
+            sample.metadata = {"dataset_name": "math"}
+        logged = {}
+        monkeypatch.setattr(
+            "miles.ray.rollout.metrics.tracking.log",
+            lambda _args, metrics, **_kwargs: logged.update(metrics),
+        )
+
+        log_rollout_data(0, args, samples, None, 1.0)
+
+        assert logged["rollout/dataset/math/num_training_samples"] == 2
+
+    @pytest.mark.parametrize("row_dataset_name", ["from_the_jsonl", ["unhashable"]])
+    def test_eval_samples_in_a_mixed_run_log_no_dataset_metrics(self, row_dataset_name):
+        """Eval shares the per-sample metrics, but an eval row's dataset_name is its own field, not the mixer's tag."""
+        args = make_args(rollout_data_yaml_config="mix.yaml")
+        out = _compute_metrics_from_samples(args, [make_sample(index=0, metadata={"dataset_name": row_dataset_name})])
+
+        assert not any(key.startswith("dataset/") for key in out)

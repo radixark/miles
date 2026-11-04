@@ -26,13 +26,14 @@ def _adapter(model_type):
     return resolve_arch_adapter(SimpleNamespace(model_type=model_type))
 
 
-def _packed_boundaries(*lengths):
-    """The boundary fields `get_batch` records for documents of these lengths."""
-    cu_seqlens_host = tuple(itertools.accumulate(lengths, initial=0))
+def _packed_boundaries(*lengths, pad=0):
+    """The boundary fields `get_batch` records for documents of these lengths, then its pad segment."""
+    cu_seqlens_host = tuple(itertools.accumulate([*lengths, *([pad] if pad else [])], initial=0))
     return dict(
         cu_seqlens=torch.tensor(cu_seqlens_host, dtype=torch.int32),
         cu_seqlens_host=cu_seqlens_host,
-        max_seqlen=max(lengths),
+        max_seqlen=max(lengths + (pad,)),
+        num_documents=len(lengths),
     )
 
 
@@ -338,7 +339,9 @@ def test_hf_packing_kwargs_match_the_padding_free_collator():
 
     collator = DataCollatorWithFlattening(return_tensors="pt", return_flash_attn_kwargs=True, return_seq_idx=True)
     flattened = collator([{"input_ids": [1, 2, 3]}, {"input_ids": [4, 5]}, {"input_ids": [6, 7, 8, 9]}])
-    kwargs = hf_packing_kwargs(**_packed_boundaries(3, 2, 4))
+    boundaries = _packed_boundaries(3, 2, 4)
+    del boundaries["num_documents"]
+    kwargs = hf_packing_kwargs(**boundaries)
 
     assert set(kwargs) == HF_PACKING_KWARG_NAMES
     for name, value in kwargs.items():
@@ -349,13 +352,96 @@ def test_hf_packing_kwargs_match_the_padding_free_collator():
             assert value == expected, name
 
 
-def test_only_gated_deltanet_archs_pass_packing_kwargs():
+@pytest.mark.parametrize("pad", [0, 1, 7])
+def test_attention_boundaries_are_the_ones_hf_derives_from_position_ids(pad):
+    """True-on-policy's bitwise match relies on HF's own boundaries; a max_length below a segment's length
+    would leave its rows unwritten, as a 7-token pad tail kept as one segment would."""
+    from transformers.modeling_flash_attention_utils import prepare_fa_kwargs_from_position_ids
+
+    from miles.backends.fsdp_utils.adaptations.packing import hf_attention_packing_kwargs
+
+    boundaries = _packed_boundaries(3, 2, pad=pad)
+    del boundaries["max_seqlen"]
+    kwargs = hf_attention_packing_kwargs(**boundaries)
+    position_ids = torch.tensor([[0, 1, 2, 0, 1, *([0] * pad)]])
+    (hf_cu_seqlens, _), (hf_max_length, _) = prepare_fa_kwargs_from_position_ids(position_ids)
+
+    assert kwargs["cu_seq_lens_q"].tolist() == hf_cu_seqlens.tolist()
+    assert type(kwargs["max_length_q"]) is int and kwargs["max_length_q"] == int(hf_max_length) == 3
+
+
+def test_each_arch_passes_the_packing_kwargs_its_modeling_reads():
     boundaries = _packed_boundaries(2, 3)
     for model_type in ("qwen3_5", "qwen3_5_text", "qwen3_5_moe", "qwen3_5_moe_text", "qwen3_next"):
         assert "seq_idx" in _adapter(model_type).packing_kwargs(**boundaries), model_type
+    # stock HF attention: varlen boundaries, max_length an int
+    for model_type in ("glm4_moe_lite", "qwen3", "qwen3_moe", "qwen3_vl"):
+        kwargs = _adapter(model_type).packing_kwargs(**boundaries)
+        assert set(kwargs) == {"cu_seq_lens_q", "cu_seq_lens_k", "max_length_q", "max_length_k"}, model_type
+        assert type(kwargs["max_length_q"]) is int and kwargs["max_length_q"] == 3, model_type
     # NemotronH resets through its own patch; other archs (including remote code) keep their stock inputs.
-    for model_type in ("nemotron_h", "glm4_moe_lite", "qwen3", "qwen3_vl", "some_remote_lm"):
+    for model_type in ("nemotron_h", "some_remote_lm"):
         assert _adapter(model_type).packing_kwargs(**boundaries) == {}, model_type
+
+
+def test_qwen3_attention_receives_the_packed_boundaries(monkeypatch):
+    """Without them HF re-derives the boundaries per layer and hands FlashAttention-4 a tensor max_length."""
+    from transformers import AttentionInterface, Qwen3Config
+    from transformers.models.qwen3.modeling_qwen3 import Qwen3ForCausalLM
+
+    seen = []
+
+    def attention_stand_in(module, query, key, value, attention_mask, scaling=None, **kwargs):
+        seen.append(kwargs)
+        out = torch.nn.functional.scaled_dot_product_attention(query, key, value, scale=scaling, enable_gqa=True)
+        return out.transpose(1, 2), None
+
+    # not a "flash" name, which transformers would resolve to a real FlashAttention kernel
+    monkeypatch.setitem(AttentionInterface._global_mapping, "attention_stand_in", attention_stand_in)
+    cfg = Qwen3Config(
+        vocab_size=64,
+        hidden_size=16,
+        intermediate_size=32,
+        num_hidden_layers=2,
+        num_attention_heads=2,
+        num_key_value_heads=1,
+        head_dim=8,
+    )
+    cfg._attn_implementation = "attention_stand_in"
+    model = Qwen3ForCausalLM(cfg).eval()
+
+    with torch.no_grad():
+        model(
+            input_ids=torch.arange(5).view(1, 5),
+            position_ids=torch.tensor([[0, 1, 2, 0, 1]]),
+            **_adapter("qwen3").packing_kwargs(**_packed_boundaries(3, 2)),
+        )
+
+    assert len(seen) == cfg.num_hidden_layers
+    for kwargs in seen:
+        assert kwargs["cu_seq_lens_q"].tolist() == [0, 3, 5]
+        assert type(kwargs["max_length_q"]) is int and kwargs["max_length_q"] == 3
+
+
+def test_qwen3_vl_keeps_packing_kwargs_out_of_its_vision_tower():
+    """The text rows' packing kwargs must not reach the vision tower."""
+    calls = []
+
+    class Tower(torch.nn.Module):
+        def forward(self, pixels, **kwargs):
+            calls.append(kwargs)
+
+    model = torch.nn.Module()
+    model.model = torch.nn.Module()
+    model.model.visual = Tower()
+    adapter = _adapter("qwen3_vl")
+    adapter.patch_model(model, None)
+    wrapped = model.model.visual.forward
+    adapter.patch_model(model, None)
+    assert model.model.visual.forward is wrapped  # idempotent across the actor and ref model
+
+    model.model.visual(None, grid_thw=1, **adapter.packing_kwargs(**_packed_boundaries(3, 2)))
+    assert calls == [{"grid_thw": 1}]
 
 
 _TINY_QWEN3_5_TEXT = dict(

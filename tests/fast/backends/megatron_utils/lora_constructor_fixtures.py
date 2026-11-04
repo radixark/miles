@@ -22,13 +22,19 @@ class _LoRA(_AdapterConfig):
 
 
 @dataclass(kw_only=True)
-class _CanonicalLoRA(_AdapterConfig):
+class _CanonicalLoRA(_LoRA):
     pass
 
 
 @dataclass(kw_only=True)
 class _MultiLoRA(_AdapterConfig):
     n_adapters: int
+    experts_shared_outer_loras: bool = False
+
+
+@dataclass(kw_only=True)
+class _CanonicalMultiLoRA(_MultiLoRA):
+    pass
 
 
 @dataclass(frozen=True)
@@ -36,6 +42,7 @@ class _BridgeConstructors:
     lora: type[_LoRA] = _LoRA
     canonical_lora: type[_CanonicalLoRA] = _CanonicalLoRA
     multi_lora: type[_MultiLoRA] = _MultiLoRA
+    canonical_multi_lora: type[_CanonicalMultiLoRA] = _CanonicalMultiLoRA
 
 
 @pytest.fixture
@@ -51,6 +58,7 @@ def bridge_constructors(monkeypatch: pytest.MonkeyPatch) -> _BridgeConstructors:
     canonical.CanonicalLoRA = constructors.canonical_lora
     multi = ModuleType("megatron.bridge.peft.multi_lora")
     multi.MultiLoRA = constructors.multi_lora
+    multi.CanonicalMultiLoRA = constructors.canonical_multi_lora
     bridge.peft = peft
     peft.lora = lora
     peft.canonical_lora = canonical

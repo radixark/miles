@@ -100,6 +100,7 @@ class TestFSDPModelInputs:
             "cu_seqlens": torch.tensor(cu_seqlens_host, dtype=torch.int32),
             "cu_seqlens_host": cu_seqlens_host,
             "max_seqlen": 3,
+            "unconcat_tokens": [torch.zeros(3, dtype=torch.long), torch.zeros(2, dtype=torch.long)],
         }
 
         model_args = actor._get_model_inputs_args(batch)
@@ -107,6 +108,25 @@ class TestFSDPModelInputs:
         assert model_args["cu_seq_lens_q"] is batch["cu_seqlens"]
         assert model_args["max_length_q"] == 3
         assert model_args["seq_idx"].tolist() == [[0, 0, 0, 1, 1, 2, 2, 2]]
+
+    def test_stock_hf_attention_gets_every_pad_token_as_its_own_segment(self) -> None:
+        """A 4-token pad tail kept as one segment would exceed max_length 3, leaving its rows unwritten."""
+        actor = object.__new__(actor_module.FSDPTrainRayActor)
+        actor.arch_adapter = resolve_arch_adapter(SimpleNamespace(model_type="qwen3"))
+        cu_seqlens_host = (0, 3, 5, 9)
+        batch = {
+            "tokens": torch.zeros(1, 9, dtype=torch.long),
+            "position_ids": torch.tensor([[0, 1, 2, 0, 1, 0, 0, 0, 0]]),
+            "cu_seqlens": torch.tensor(cu_seqlens_host, dtype=torch.int32),
+            "cu_seqlens_host": cu_seqlens_host,
+            "max_seqlen": 4,
+            "unconcat_tokens": [torch.zeros(3, dtype=torch.long), torch.zeros(2, dtype=torch.long)],
+        }
+
+        model_args = actor._get_model_inputs_args(batch)
+
+        assert model_args["cu_seq_lens_q"].tolist() == [0, 3, 5, 6, 7, 8, 9]
+        assert model_args["max_length_q"] == 3
 
 
 class TestFSDPTrainParallelConfigWiring:

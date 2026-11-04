@@ -13,9 +13,10 @@ from miles.backends.megatron_utils.lora.native.config import LoRAConfig
 from miles.backends.megatron_utils.lora.native.hf_adapter import export_lora_hf_named
 from miles.backends.megatron_utils.lora.native.lora import _attach_layer
 from miles.backends.megatron_utils.lora.native.merge import merge_lora_into_weights
+from miles.backends.megatron_utils.lora.native.modules.linear import iter_adapters
 from miles.backends.megatron_utils.lora.native.registry import MODEL_SPECS
 from miles.backends.megatron_utils.lora.native.spec.base import AttachContext
-from miles.utils.lora.arguments import _native_serving_targets, _resolve_lora_targets
+from miles.utils.lora.arguments import _hf_modules, _native_serving_targets, _resolve_lora_targets
 from miles.utils.lora.utils import get_adapter_target_modules
 
 HIDDEN, RANK = 8, 2
@@ -127,10 +128,14 @@ def _launcher_targets(monkeypatch) -> list[str]:
         parser.add_argument(flag)
     (train_command,) = train_commands
     launch_args, _ = parser.parse_known_args(shlex.split(train_command))
-    launch_args.multi_lora, launch_args.lora_type, launch_args.experts_shared_outer_loras = False, "lora", False
+    launch_args.multi_lora, launch_args.lora_type, launch_args.experts_shared_outer_loras = (
+        False,
+        "canonical_lora",
+        False,
+    )
     hf_config = _hf_config()
     hf_targets = _resolve_lora_targets(launch_args, hf_config)
-    assert _native_serving_targets(launch_args, hf_config, hf_targets) == hf_targets
+    assert _native_serving_targets(launch_args, hf_config, hf_targets, _hf_modules(hf_config)) == hf_targets
     return hf_targets
 
 
@@ -179,7 +184,7 @@ def test_the_launcher_trains_every_projection_native_lora_runs(launcher_targets)
 
 def test_adapters_carry_the_hf_names_the_targets_select(launcher_targets):
     """An adapter named outside the selected namespace is never attached, so the run trains nothing there."""
-    exported = dict(export_lora_hf_named([_model(launcher_targets)]))
+    exported = dict(export_lora_hf_named(iter_adapters([_model(launcher_targets)])))
 
     assert set(get_adapter_target_modules(exported)) == set(launcher_targets)
     assert exported[f"{PREFIX}0.self_attn.forget_gate.f_b_proj.lora_A.weight"].shape == (RANK, 4)
@@ -202,9 +207,11 @@ def test_kv_b_proj_is_rejected_since_the_absorbed_dsa_never_calls_it():
         exclude_modules=None,
         multi_lora=False,
         megatron_to_hf_mode="raw",
-        lora_type="lora",
+        lora_type="canonical_lora",
         experts_shared_outer_loras=False,
     )
     hf_config = _hf_config()
     with pytest.raises(AssertionError, match=r"does not implement adapters for .*kv_b_proj"):
-        _native_serving_targets(launch_args, hf_config, _resolve_lora_targets(launch_args, hf_config))
+        _native_serving_targets(
+            launch_args, hf_config, _resolve_lora_targets(launch_args, hf_config), _hf_modules(hf_config)
+        )

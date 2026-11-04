@@ -635,6 +635,17 @@ class TestExecuteTrain:
         assert "ray stop --force; " in commands[0]
         assert "ray start --head --node-ip-address 127.0.0.1 --num-gpus 8 --disable-usage-stats" in commands[1]
 
+    def test_the_local_ray_cluster_keeps_worker_ports_out_of_the_ephemeral_range(self, commands, monkeypatch):
+        """On a host whose ephemeral range covers Ray's worker ports, the head starts with kernel-assigned ones."""
+        monkeypatch.setattr(
+            "miles.utils.external_utils.command_utils.ray_backend.backend.ray_worker_port_args",
+            lambda: " --min-worker-port 0 --max-worker-port 0",
+        )
+
+        _backend().execute_train(train_args="", num_gpus_per_node=8, megatron_model_type="qwen3-4B")
+
+        assert "--disable-usage-stats --min-worker-port 0 --max-worker-port 0" in commands[1]
+
     def test_leaves_an_external_ray_cluster_alone(self, commands, monkeypatch):
         """With an external cluster we must neither stop nor start ray."""
         monkeypatch.setenv("MILES_SCRIPT_EXTERNAL_RAY", "1")
@@ -997,7 +1008,7 @@ class TestCreateRunId:
 
         assert len(date_part) == 6 and date_part.isdigit()
         assert len(time_part) == 6 and time_part.isdigit()
-        assert len(random_part) == 3 and random_part.isdigit()
+        assert len(random_part) == 4 and set(random_part) <= set(common._RUN_ID_SUFFIX_ALPHABET)
 
     def test_varies_within_the_same_second(self):
         """Runs launched together in one second must not share a wandb group or dump directory."""

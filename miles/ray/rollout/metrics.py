@@ -88,6 +88,8 @@ def log_rollout_data(
 
     log_dict = {**(rollout_extra_metrics or {})}
     log_dict |= dict_add_prefix(_compute_metrics_from_samples(args, samples), "rollout/")
+    # training only: an eval jsonl may carry its own `dataset_name` field
+    log_dict |= dict_add_prefix(_compute_dataset_metrics(args, samples), "rollout/")
     log_dict |= dict_add_prefix(_compute_perf_metrics_from_samples(args, samples, rollout_time), "perf/")
     if args.log_passrate:
         log_dict |= dict_add_prefix(
@@ -333,6 +335,7 @@ def _compute_zero_std_metrics(args, all_samples: list[Sample]):
     if total_groups > 0:
         log_dict["zero_std/all_zero_percentage"] = sum(1 for reward in uniform_rewards if reward == 0) / total_groups
         log_dict["zero_std/all_one_percentage"] = sum(1 for reward in uniform_rewards if reward == 1) / total_groups
+        log_dict["zero_std/percentage"] = len(uniform_rewards) / total_groups
 
     return log_dict
 
@@ -368,6 +371,27 @@ def _compute_prefix_cache_metrics(args, all_samples: list[Sample]):
     metrics["prefix_cache_hit_rate"] = total_cached_tokens / total_prompt_tokens if total_prompt_tokens > 0 else 0.0
     metrics["avg_cached_tokens_per_sample"] = total_cached_tokens / num_samples
     return metrics
+
+
+def _compute_dataset_metrics(args, all_samples: list[Sample]) -> dict[str, float | int]:
+    """Reward, length and truncation per `--rollout-data-yaml-config` dataset."""
+    # only the mixer's own tag counts; a single-dataset row may carry an arbitrary `dataset_name` field
+    if args.rollout_data_yaml_config is None:
+        return {}
+    log_dict = {}
+    samples_of_dataset = group_by(
+        [s for s in all_samples if isinstance(s.metadata, dict) and "dataset_name" in s.metadata],
+        lambda s: s.metadata["dataset_name"],
+    )
+    for name, samples in samples_of_dataset.items():
+        dataset_metrics = _compute_training_sample_metrics(args, samples)
+        dataset_metrics["response_len/mean"] = np.mean([s.effective_response_length for s in samples]).item()
+        # status, not a length cap: a sample stopped by a lower per-sample budget counts too
+        dataset_metrics["truncated_ratio"] = np.mean(
+            [int(s.status == Sample.Status.TRUNCATED) for s in samples]
+        ).item()
+        log_dict |= dict_add_prefix(dataset_metrics, f"dataset/{name}/")
+    return log_dict
 
 
 def _compute_reward_cat_metrics(args, all_samples: list[Sample]):

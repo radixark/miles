@@ -27,7 +27,7 @@ from miles.utils.args.runtime import TrainerConfig
 from miles.utils.hf_utils.config import load_hf_config
 from miles.utils.hf_utils.weight_mapping import HfWeightMapping
 from miles.utils.lora.utils import is_multi_lora_enabled, targets_expert_leaves
-from miles.utils.megatron_bridge_utils import apply_dsa_backend_args
+from miles.utils.megatron_bridge_utils import apply_dsa_backend_args, load_auto_bridge
 
 logger = logging.getLogger(__name__)
 
@@ -153,13 +153,13 @@ def _setup_lora_model_via_bridge(args: TrainerConfig) -> list:
     Returns:
         List of DDP-wrapped model chunks with LoRA applied.
     """
-    from megatron.bridge import AutoBridge
     from megatron.bridge.models.conversion.model_bridge import _megatron_local_name_to_global
+    from megatron.bridge.peft.utils import enable_expert_parallel_grad_sync_in_finalize
     from megatron.bridge.training.config import DistributedDataParallelConfig
     from megatron.bridge.utils.fusions import validate_rope_fusion_compatibility
 
     hf_config = load_hf_config(args.hf_checkpoint)
-    bridge = AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)
+    bridge = load_auto_bridge(args.hf_checkpoint)
     provider = bridge.to_megatron_provider(load_weights=False)
 
     provider.tensor_model_parallel_size = args.backend.tensor_model_parallel_size
@@ -211,9 +211,6 @@ def _setup_lora_model_via_bridge(args: TrainerConfig) -> list:
         _validate_multi_lora_moe_support(args, provider)
 
     create_adapter = create_multi_lora_instance if is_multi_lora_enabled(args) else create_lora_instance
-    assert not (
-        is_multi_lora_enabled(args) and args.lora_type == "canonical_lora"
-    ), "MultiLoRA requires --lora-type lora; it does not implement canonical split adapters"
     model_bridge = bridge._model_bridge
     model_bridge.hf_pretrained = bridge.hf_pretrained
     hf_mapping = HfWeightMapping.from_config(hf_config)
@@ -240,6 +237,7 @@ def _setup_lora_model_via_bridge(args: TrainerConfig) -> list:
         )
         lora = create_adapter(args, target_modules=adapter_targets)
         transformed = lora(model_chunks, training=True)
+        enable_expert_parallel_grad_sync_in_finalize(transformed)
         if is_multi_lora_enabled(args):
             for chunk in transformed:
                 for module in chunk.modules():
@@ -263,8 +261,7 @@ def _setup_lora_model_via_bridge(args: TrainerConfig) -> list:
 
     use_distributed_optimizer = "muon" not in (args.backend.optimizer or "").lower()
     if is_multi_lora_enabled(args):
-        # Per-slot LayerWise optimizers: plain DDP all-reduce keeps full grads on
-        # every rank (whole-param sharding + retained-gradient idempotency).
+        # Per-slot LayerWise optimizers require full parameter gradients.
         use_distributed_optimizer = False
     ddp_config = DistributedDataParallelConfig(
         use_distributed_optimizer=use_distributed_optimizer,

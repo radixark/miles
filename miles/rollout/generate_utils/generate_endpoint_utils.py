@@ -17,6 +17,7 @@ from miles.rollout.generate_utils.sampling_mask import (
     read_sampled_logprobs,
     should_return_sampling_mask,
 )
+from miles.router.backend import make_router_backend
 from miles.utils.lora.utils import LORA_ADAPTER_NAME, lora_rollout_enabled
 from miles.utils.output_store.plan import (
     FIELDS,
@@ -51,19 +52,34 @@ def compute_prompt_ids_from_sample(state, sample, tools=None):
         return state.tokenizer.encode(prompt, add_special_tokens=False)
 
 
-def policy_uses_routing_key(args) -> bool:
-    return args.sglang_router_policy in ("consistent_hashing", "manual")
+def router_routes_by_key(args) -> bool:
+    return make_router_backend(args).routes_by_key(args.sglang.models)
 
 
-def compute_routing_headers(args, sample: Sample) -> dict[str, str] | None:
-    if policy_uses_routing_key(args) and not sample.routing_key:
+def compute_routing_headers(args, sample: Sample) -> dict[str, str]:
+    return make_router_backend(args).routing_headers(sample.routing_key, args.sglang.models)
+
+
+def apply_sample_max_response_len(sampling_params: dict[str, Any], sample: Sample) -> dict[str, Any]:
+    """Return the sampling params with `sample.max_response_len` as `max_new_tokens`.
+
+    The incoming `max_new_tokens` sizes training memory and packing, so a sample may only lower it;
+    a larger value raises instead of being clamped.
+    """
+    if (limit := sample.max_response_len) is None:
+        return sampling_params
+    upper_bound = sampling_params.get("max_new_tokens")
+    if (
+        isinstance(limit, bool)
+        or not isinstance(limit, int)
+        or limit < 1
+        or (upper_bound is not None and limit > upper_bound)
+    ):
         raise ValueError(
-            f"router policy {args.sglang_router_policy} routes by X-SMG-Routing-Key, "
-            f"but sample (index={sample.index}) has no routing_key set"
+            f"sample (index={sample.index}) max_response_len={limit!r} must be an int in [1, {upper_bound}], "
+            "the run's max_new_tokens"
         )
-    if sample.routing_key:
-        return {"X-SMG-Routing-Key": sample.routing_key}
-    return None
+    return {**sampling_params, "max_new_tokens": limit}
 
 
 def compute_request_payload(
