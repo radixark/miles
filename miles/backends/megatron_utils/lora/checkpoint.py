@@ -601,19 +601,6 @@ def save_single_lora(model, optimizer, opt_param_scheduler, adapter_slots: Bridg
     )
 
 
-class _RefusedBridgeCheckpoint:
-    """A Bridge checkpoint's sharded keys exist only in a Bridge model: refused before anything is loaded."""
-
-    def parametrization(self, path: Path) -> AdapterParametrization:
-        raise AssertionError(
-            f"{path} is a Megatron-Bridge checkpoint, which only --megatron-to-hf-mode bridge loads; "
-            "convert it there first with --lora-adapter-convert-save"
-        )
-
-    def load(self, path: Path) -> None:
-        raise AssertionError("unreachable: the parametrization refuses every Bridge checkpoint")
-
-
 def restore_single_lora(
     model, args, *, adapter_slots: BridgeAdapterSlots, optimizer, opt_param_scheduler
 ) -> int | None:
@@ -639,13 +626,11 @@ def restore_single_lora(
             model, optimizer, run, load_optimizer, precision_aware=args.backend.use_precision_aware_optimizer
         )
     }
-    # a Bridge checkpoint's sharded keys exist only in a Bridge model
+    # a Bridge checkpoint's sharded keys exist only in a Bridge model; argument validation refuses it elsewhere
     if args.megatron_to_hf_mode == "bridge":
         in_model_loaders_by_kind[AdapterSourceKind.MEGATRON_BRIDGE_CHECKPOINT] = MegatronBridgeCheckpointLoader(
             model, optimizer, members, run, load_optimizer
         )
-    else:
-        in_model_loaders_by_kind[AdapterSourceKind.MEGATRON_BRIDGE_CHECKPOINT] = _RefusedBridgeCheckpoint()
     source = load_adapter_dir(
         path,
         members,

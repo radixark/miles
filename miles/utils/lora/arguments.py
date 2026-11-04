@@ -76,6 +76,8 @@ def validate_lora_args(args):
     hf_config = load_hf_config(args.hf_checkpoint)
     args.hf_lora_targets = _resolve_lora_targets(args, hf_config)
     args.lora_adapter_targets = list(args.hf_lora_targets)
+    if args.lora_adapter_path is not None and not args.debug_rollout_only:
+        _validate_megatron_bridge_source(args)
     if args.train_backend == "megatron" and args.megatron_to_hf_mode == "bridge":
         from miles.backends.megatron_utils.lora.target_modules import check_fused_lora_selection
 
@@ -119,6 +121,21 @@ def _resolve_lora_alpha(args) -> float:
         source,
     ), f"--lora-alpha {args.lora_alpha} differs from {args.lora_adapter_path}'s {source}; drop the flag to use it"
     return source
+
+
+def _validate_megatron_bridge_source(args) -> None:
+    """A Megatron-Bridge checkpoint's sharded keys exist only in a Bridge model: refused before the model is built."""
+    path = Path(args.lora_adapter_path)
+    # only a DCP source can be one; the alpha resolution above already classified it
+    if not (path / ".metadata").is_file():
+        return
+    kind = classify_adapter_source(path, args.hf_lora_targets, load_optimizer=False)
+    assert kind is not AdapterSourceKind.MEGATRON_BRIDGE_CHECKPOINT or (
+        args.train_backend == "megatron" and args.megatron_to_hf_mode == "bridge"
+    ), (
+        f"{path} is a Megatron-Bridge checkpoint, which only --megatron-to-hf-mode bridge loads; "
+        "convert it there first with --lora-adapter-convert-save"
+    )
 
 
 def _validate_rollout_only_adapter(args) -> None:

@@ -421,3 +421,17 @@ def test_multi_lora_bridge_refuses_a_model_without_hf_lora_layout(monkeypatch):
     """Multi-LoRA builds the adapter slots its sampler exports read, even without --save-hf / --save."""
     with pytest.raises(AssertionError, match="HF LoRA target layout"):
         _validate(_bridge_args_without_layout(monkeypatch, multi_lora=True))
+
+
+def test_a_megatron_bridge_source_is_refused_before_a_raw_model_is_built(tmp_path, monkeypatch):
+    import torch.distributed.checkpoint as dcp
+
+    key = "decoder.layers.0.self_attention.linear_qkv.adapter.linear_in.weight"
+    dcp.save({key: torch.zeros(2)}, checkpoint_id=tmp_path, no_dist=True)
+    (tmp_path / "run_config.yaml").write_text("peft:\n  alpha: 16\n")
+    source = dict(lora_adapter_path=str(tmp_path), debug_skip_weight_update=False)
+    with pytest.raises(AssertionError, match="only --megatron-to-hf-mode bridge loads"):
+        lora_arguments.validate_lora_args(
+            _bridge_args_without_layout(monkeypatch, megatron_to_hf_mode="raw", **source)
+        )
+    lora_arguments.validate_lora_args(_bridge_args_without_layout(monkeypatch, **source))
