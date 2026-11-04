@@ -489,3 +489,10 @@ def test_a_vl_wrapper_has_its_language_models_fingerprint():
     assert base_model_fingerprint({"model_type": "qwen3_vl", "text_config": _QWEN3_4B}) == base_model_fingerprint(
         _QWEN3_4B
     )
+
+
+def test_one_local_base_under_another_path_string_matches(tmp_path):
+    (tmp_path / "model").mkdir()
+    (tmp_path / "link").symlink_to(tmp_path / "model")
+    source, run = _run(base_model=f"{tmp_path}/model/"), _run(base_model=str(tmp_path / "link"))
+    assert_parametrization_matches_run(source, run, [], load_optimizer=False, has_optimizer_state=False)
