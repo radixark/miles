@@ -1,5 +1,6 @@
 """Bridge single LoRA's --save / --lora-adapter-path glue around the adapter library."""
 
+import json
 import os
 from types import SimpleNamespace
 from unittest.mock import DEFAULT, MagicMock, patch
@@ -11,12 +12,14 @@ from megatron.core.optimizer.cpu_offloading.hybrid_optimizer import HybridDevice
 
 from miles.backends.megatron_utils.lora.checkpoint import (
     DistributedOptimizerMembers,
+    LegacyRankShardLoader,
     _distributed_optimizer_step,
     _set_distributed_optimizer_step,
     restore_single_lora,
     single_lora_parametrization,
 )
 from miles.backends.training_utils.checkpoint.adapter.adapter_state import AdapterState, LocalShardSpec
+from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
 from miles.backends.training_utils.checkpoint.adapter.readers import AdapterSourceKind
 
 _MODULE = "miles.backends.megatron_utils.lora.checkpoint"
@@ -43,7 +46,7 @@ def test_a_hub_id_is_kept():
     assert _base_model("Qwen/Qwen3-8B") == "Qwen/Qwen3-8B"
 
 
-def _restore(path, *, convert_save=None, megatron_to_hf_mode="bridge"):
+def _restore(path, *, convert_save=None, megatron_to_hf_mode="bridge", source_alpha=16.0):
     """``restore_single_lora`` with the model-facing pieces mocked; returns (iteration, scheduler, mocks)."""
     args = SimpleNamespace(
         hf_checkpoint="/hf",
@@ -58,21 +61,19 @@ def _restore(path, *, convert_save=None, megatron_to_hf_mode="bridge"):
         backend=SimpleNamespace(no_load_optim=True, no_save_optim=False, use_precision_aware_optimizer=False),
     )
     scheduler = MagicMock()
-    with (
-        patch("miles.backends.megatron_utils.update_weight.hf_weight_iterator.get_hf_weight_iterator"),
-        patch("miles.backends.megatron_utils.lora.native.checkpoint.NativeAdapterSlots"),
-        patch.multiple(
-            _MODULE,
-            get_hf_lora_targets=DEFAULT,
-            load_hf_config=DEFAULT,
-            BridgeAdapterSlots=DEFAULT,
-            DistributedOptimizerMembers=DEFAULT,
-            MegatronBridgeCheckpointLoader=DEFAULT,
-            load_adapter_dir=DEFAULT,
-            save_and_commit_adapter_dir=DEFAULT,
-        ) as mocks,
-    ):
-        iteration = restore_single_lora([], args, optimizer=MagicMock(), opt_param_scheduler=scheduler)
+    slots = MagicMock()
+    slots.parametrization.return_value = SimpleNamespace(lora_alpha=16.0)
+    with patch.multiple(
+        _MODULE,
+        DistributedOptimizerMembers=DEFAULT,
+        MegatronBridgeCheckpointLoader=DEFAULT,
+        load_adapter_dir=DEFAULT,
+        save_and_commit_adapter_dir=DEFAULT,
+    ) as mocks:
+        mocks["load_adapter_dir"].return_value = SimpleNamespace(lora_alpha=source_alpha)
+        iteration = restore_single_lora(
+            [], args, adapter_slots=slots, optimizer=MagicMock(), opt_param_scheduler=scheduler
+        )
     return iteration, scheduler, mocks
 
 
@@ -111,19 +112,27 @@ def test_only_the_bridge_backend_loads_a_megatron_bridge_checkpoint(tmp_path):
         loaders[AdapterSourceKind.MEGATRON_BRIDGE_CHECKPOINT](tmp_path)
 
 
-def test_a_mix_of_distributed_and_plain_optimizers_is_refused():
-    distributed = DistributedOptimizer.__new__(DistributedOptimizer)
-    optimizer = SimpleNamespace(chained_optimizers=[distributed, MagicMock()])
+def test_a_source_trained_with_another_alpha_is_refused_on_the_trainer(tmp_path):
+    # the driver may have resolved --lora-alpha without seeing the path the trainers load
+    with pytest.raises(AssertionError, match="lora_alpha=32.0; this run uses 16.0"):
+        _restore(tmp_path, source_alpha=32.0)
+
+
+def test_an_old_format_save_reports_the_alpha_its_peft_pair_records(tmp_path):
+    (tmp_path / "adapter_config.json").write_text(json.dumps({"lora_alpha": 32.0}))
+    run = AdapterParametrization.__new__(AdapterParametrization)
+    with patch.multiple(
+        _MODULE, _native_adapter_shard=DEFAULT, _load_native_adapter_shard=DEFAULT, replace=DEFAULT
+    ) as m:
+        LegacyRankShardLoader([], MagicMock(), run, load_optimizer=False, precision_aware=False)(tmp_path)
+    assert m["replace"].call_args.kwargs["lora_alpha"] == 32.0
+
+
+def test_an_optimizer_other_than_megatrons_distributed_one_is_refused():
+    optimizer = SimpleNamespace(chained_optimizers=[MagicMock()])
     members = DistributedOptimizerMembers(MagicMock(), optimizer, [], precision_aware=False)
-    with pytest.raises(AssertionError, match="one kind of optimizer"):
+    with pytest.raises(AssertionError, match="--use-distributed-optimizer"):
         members._distributed_optimizers()
-
-
-def test_a_plain_optimizer_is_checkpointed_by_its_replicated_masters():
-    """miles runs SGD without the DistributedOptimizer; its masters are on every rank."""
-    members = DistributedOptimizerMembers.__new__(DistributedOptimizerMembers)
-    members._optimizer = SimpleNamespace(chained_optimizers=[object(), object()])
-    assert members._distributed_optimizers() == []
 
 
 def test_a_restore_keeps_the_state_of_elements_no_checkpoint_holds():

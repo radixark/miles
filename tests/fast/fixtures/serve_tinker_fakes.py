@@ -67,7 +67,13 @@ async def tinker_startup(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[Simpl
     )
     hf_config = SimpleNamespace(max_position_embeddings=4096, vocab_size=128)
     actor_config = SimpleNamespace(role=serve_tinker.ACTOR_ROLE, trainer_id="actor", overrides={}, model_id=None)
-    monkeypatch.setattr(serve_tinker, "load_hf_config", lambda _: SimpleNamespace(get_text_config=lambda: hf_config))
+    monkeypatch.setattr(
+        serve_tinker,
+        "load_hf_config",
+        lambda _: SimpleNamespace(
+            get_text_config=lambda: hf_config, to_dict=lambda: {"model_type": "qwen3", "num_hidden_layers": 1}
+        ),
+    )
     monkeypatch.setattr(serve_tinker.ArgvOrchestratorStartupInfo, "create", lambda _: object())
 
     def init_orchestration(startup_info: object, *, disposer: object) -> object:
