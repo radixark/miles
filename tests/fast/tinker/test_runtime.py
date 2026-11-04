@@ -284,7 +284,34 @@ def test_the_import_bound_is_every_base_weight_targeted_at_the_slot_rank(tmp_pat
 
     # rank 8 on q (6 + 4) and on each of the 3 experts (5 + 2); the norm is no LoRA target
     elements = 8 * (6 + 4) + 3 * 8 * (5 + 2)
-    assert max_adapter_bytes(str(tmp_path), 8) == 4 * elements + (1 << 20) * 9
+    targets = get_hf_lora_targets({"model_type": "qwen3", "num_hidden_layers": 1})
+    assert max_adapter_bytes(str(tmp_path), 8, targets) == 4 * elements + (1 << 20) * 9
+
+
+def test_the_import_bound_counts_one_a_per_component_of_a_fused_matrix(tmp_path):
+    """The export writes in_proj_q / k / v each with its own A; a bound counting the fused matrix's one A refuses
+    the gateway's own max-rank export."""
+    from safetensors.torch import save_file
+
+    hidden, rows, rank = 1 << 15, (2, 2, 3), 64
+    save_file(
+        {"model.layers.0.linear_attn.in_proj_qkv.weight": torch.zeros(sum(rows), hidden)}, tmp_path / "w.safetensors"
+    )
+    targets = get_hf_lora_targets(
+        {
+            "model_type": "qwen3_5_text",
+            "num_hidden_layers": 1,
+            "layer_types": ["linear_attention"],
+            "linear_num_key_heads": 1,
+            "linear_key_head_dim": 2,
+            "linear_num_value_heads": 1,
+            "linear_value_head_dim": 3,
+        }
+    )
+
+    # fp32: each component's A [rank, hidden] and B [rows, rank]
+    exported = 4 * sum(rank * hidden + rows_i * rank for rows_i in rows)
+    assert max_adapter_bytes(str(tmp_path), rank, targets) >= exported
 
 
 @pytest.mark.parametrize("tenant", ["tenant-a", "", "ключ/with spaces"])

@@ -24,6 +24,7 @@ from miles.backends.training_utils.checkpoint.adapter.commit import (
     lock_checkpoint_root,
     resolve_adapter_dir,
 )
+from miles.backends.training_utils.checkpoint.adapter.key_mapping import fused_components
 from miles.backends.training_utils.checkpoint.adapter.parametrization import (
     PARAMETRIZATION_FILENAME,
     read_parametrization,
@@ -148,9 +149,10 @@ IMPORTED_ADAPTER_FILES = (PARAMETRIZATION_FILENAME, "adapter_config.json")
 LOADED_ADAPTER_FILES = (PARAMETRIZATION_FILENAME, *PEFT_FILES)
 
 
-def max_adapter_bytes(hf_checkpoint: str, max_lora_rank: int) -> int:
+def max_adapter_bytes(hf_checkpoint: str, max_lora_rank: int, targets: HfLoraTargets) -> int:
     """The largest fp32 adapter any parametrization of this base can have: every weight ``[..., out, in]`` targeted at
-    ``max_lora_rank``, i.e. ``rank * (in + out)`` elements per matrix, plus a MiB for each file's header and JSON."""
+    ``max_lora_rank``, i.e. ``rank * (n * in + out)`` elements per matrix whose HF-fused module exports ``n``
+    components (each with its own A), plus a MiB for each file's header and JSON."""
     hf_dir = resolve_hf_dir(hf_checkpoint)
     assert hf_dir is not None, f"--hf-checkpoint {hf_checkpoint} has no local weights to bound file:// imports by"
     elements, files = 0, 0
@@ -161,7 +163,9 @@ def max_adapter_bytes(hf_checkpoint: str, max_lora_rank: int) -> int:
                 # a norm or bias is no LoRA target
                 if len(shape := weights.get_slice(key).get_shape()) >= 2:
                     *lead, out_features, in_features = shape
-                    elements += math.prod(lead) * max_lora_rank * (out_features + in_features)
+                    components = fused_components(key.removesuffix(".weight"), targets)
+                    copies_of_a = 1 if components is None else len(components)
+                    elements += math.prod(lead) * max_lora_rank * (out_features + copies_of_a * in_features)
     assert files, f"{hf_dir} holds no .safetensors weights"
     return 4 * elements + IMPORT_JSON_MAX_BYTES * (files + 8)
 
