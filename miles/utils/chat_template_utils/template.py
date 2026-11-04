@@ -172,13 +172,16 @@ def apply_chat_template(
         # the fixed template needs parsed tool-call arguments and handles the
         # thinking-effort line, tool_calls, and the end-sampling token itself;
         # Inkling2 renders no generation prefix (the model emits its own message header)
+        # and, like SGLang's Inkling2 renderer, no inferred function name on tool-call or tool-result headers
+        inkling2 = inkling.is_inkling2(tokenizer)
         return tokenizer.apply_chat_template(
             normalize_tool_arguments(messages, "dict"),
             chat_template=inkling.fixed_chat_template(),
             tokenize=tokenize,
             tools=extract_tool_dicts(tools),
             return_dict=False,
-            add_generation_prompt=add_generation_prompt and not inkling.is_inkling2(tokenizer),
+            add_generation_prompt=add_generation_prompt and not inkling2,
+            tool_name_headers=not inkling2,
             **kwargs,
         )
 

@@ -180,3 +180,27 @@ def test_qwen35_and_qwen36_preserve_family_tool_argument_serialization(family, e
     assert f"<parameter=nothing>\n{expected_nothing}\n</parameter>" in rendered
     assert "<parameter=array>\n[1, 2]\n</parameter>" in rendered
     assert '<parameter=object>\n{"a": 1}\n</parameter>' in rendered
+
+
+# Inkling names the function on tool-call and tool-result headers; Inkling2 (SGLang's renderer) names neither.
+@pytest.mark.parametrize(("tool_name_headers", "header"), [(True, "f"), (False, "")])
+def test_inkling_tool_headers_name_the_function_only_when_enabled(tool_name_headers, header):
+    template_path, _ = resolve_fixed_chat_template(TITOTokenizerType.INKLING)
+    with open(template_path, encoding="utf-8") as template_file:
+        chat_template = template_file.read()
+    rendered = apply_chat_template_from_str(
+        chat_template,
+        [
+            {"role": "user", "content": "call"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"id": "c", "type": "function", "function": {"name": "f", "arguments": {}}}],
+            },
+            {"role": "tool", "tool_call_id": "c", "content": "ok"},
+        ],
+        add_generation_prompt=False,
+        tool_name_headers=tool_name_headers,
+    )
+    assert f"<|message_model|>{header}<|content_invoke_tool_json|>" in rendered
+    assert f"<|message_tool|>{header}<|content_text|>ok" in rendered
