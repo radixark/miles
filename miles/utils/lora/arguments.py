@@ -15,6 +15,7 @@ from miles.backends.training_utils.checkpoint.adapter.readers import (
 from miles.utils.hf_utils.config import load_hf_config
 from miles.utils.hf_utils.weight_mapping import HfWeightMapping
 from miles.utils.lora.hf_lora_targets import (
+    GDN_IN_PROJ_COMPONENTS_BY_MODULE,
     LORA_TARGET_GROUPS,
     exclude_hf_lora_targets,
     expand_hf_lora_targets,
@@ -27,6 +28,7 @@ from miles.utils.lora.hf_lora_targets import (
 )
 from miles.utils.lora.utils import (
     engine_loads_adapter_from_disk,
+    exports_hf_snapshots,
     is_lora_enabled,
     matches_lora_target,
     reads_adapter_slots,
@@ -139,9 +141,7 @@ def _validate_megatron_bridge_source(args) -> None:
 
 
 def _validate_rollout_only_adapter(args) -> None:
-    """With no trainer, the engines load --lora-adapter-path as given. A local source the adapter library
-    recognizes must carry an HF-named PEFT pair; anything else (a hub id, a PEFT dir with adapter_model.bin)
-    is SGLang's to read."""
+    """A local source the library reads must carry an HF-named PEFT pair; anything else goes to SGLang as given."""
     path = Path(args.lora_adapter_path)
     hf_config = load_hf_config(args.hf_checkpoint).to_dict()
     # without the family's layout the library reads no source; SGLang gets it as before
@@ -200,6 +200,9 @@ def validate_lora_args_after_megatron(args):
     validate_native_lora_args(args, hf_modules)
 
 
+_GDN_QKV_COMPONENTS = GDN_IN_PROJ_COMPONENTS_BY_MODULE["in_proj_qkv"]
+
+
 def _validate_adapter_state_args(args) -> None:
     """adapter_state/ holds Adam's fp32 master, fp32 moments and step, gathered whole per DP group over Gloo."""
     if args.save is None and args.lora_adapter_path is None:
@@ -231,13 +234,27 @@ def _validate_adapter_state_args(args) -> None:
 def _assert_adapter_layout_defined(args) -> None:
     """The adapter slots need the family's HF LoRA target layout; runs that build none train any family."""
     # a rollout-only run has no trainer; SGLang reads its adapter
-    if not args.debug_rollout_only and reads_adapter_slots(args, args.save):
+    if args.debug_rollout_only:
+        return
+    if reads_adapter_slots(args, args.save):
         hf_config = load_hf_config(args.hf_checkpoint)
         assert has_hf_lora_targets(hf_config.to_dict()), (
             f"LoRA --save, --save-hf, eval snapshots and --lora-adapter-path need the HF LoRA target layout of "
             f"model_type={hf_config.model_type!r}, which miles does not define (miles/utils/lora/hf_lora_targets.py); "
             "run without them or define the layout"
         )
+    if exports_hf_snapshots(args):
+        _assert_hf_exports_have_peft_form(args)
+
+
+def _assert_hf_exports_have_peft_form(args) -> None:
+    # canonical adapters give each GDN in_proj_qkv component its own lora_A; HF has no module per component
+    components = sorted({target.rpartition(".")[2] for target in args.lora_adapter_targets} & set(_GDN_QKV_COMPONENTS))
+    assert not components, (
+        f"--save-hf and eval snapshots write a PEFT adapter, but canonical_lora's GDN {components} have their own "
+        "lora_A, which no PEFT adapter can name: use --lora-type lora (one shared lora_A per in_proj_qkv), or drop "
+        "--save-hf and eval snapshots"
+    )
 
 
 def _native_serving_targets(args, hf_config, hf_targets: list[str], hf_modules: list[str]) -> list[str] | str:

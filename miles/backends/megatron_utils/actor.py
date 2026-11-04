@@ -58,7 +58,7 @@ from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.logging_utils import rebind_env_reporting
 from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
-from miles.utils.lora.utils import build_lora_config, is_multi_lora_enabled, publishes_snapshots, reads_adapter_slots
+from miles.utils.lora.utils import build_lora_config, exports_hf_snapshots, is_multi_lora_enabled, reads_adapter_slots
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.misc import partition
 from miles.utils.object_store import StoreObjectRef, ValueSpec
@@ -309,7 +309,7 @@ class MegatronTrainRayActor(TrainRayActor):
         args = self.args
         self._init_weight_updater_and_publisher(
             update_weights=not args.debug_train_only,
-            publish_snapshots=publishes_snapshots(args, args.backend.save),
+            publish_snapshots=exports_hf_snapshots(args),
         )
 
     def _init_weight_updater_and_publisher(self, *, update_weights: bool, publish_snapshots: bool) -> None:
@@ -337,8 +337,10 @@ class MegatronTrainRayActor(TrainRayActor):
                 ),
             )
 
-        if publish_snapshots:
-            is_lora = is_lora_enabled(args)
+        is_lora = is_lora_enabled(args)
+        # building the slots probes collectively; build them only for what reads them
+        builds_slots = is_lora and reads_adapter_slots(args, args.backend.save)
+        if publish_snapshots or builds_slots:
             iterator = get_hf_weight_iterator(
                 args,
                 self.model,
@@ -346,9 +348,9 @@ class MegatronTrainRayActor(TrainRayActor):
                 model_name=model_name,
                 quantization_config=None if is_lora else quantization_config,
             )
-            self.snapshot_publisher = SnapshotPublisher(iterator)
-            # building the slots probes collectively; build them only for what reads them
-            if is_lora and reads_adapter_slots(args, args.backend.save):
+            if publish_snapshots:
+                self.snapshot_publisher = SnapshotPublisher(iterator)
+            if builds_slots:
                 self._build_adapter_slots(iterator)
 
     def _build_adapter_slots(self, iterator) -> None:
