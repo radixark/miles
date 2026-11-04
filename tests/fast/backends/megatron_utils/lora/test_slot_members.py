@@ -59,7 +59,6 @@ def test_an_export_reads_only_the_parameters_this_rank_holds():
         slot_parameters=lambda slot: [held, elsewhere],
         local_shard_specs=lambda slot, holds: [SimpleNamespace(local_shape=held.shape)],
         piece_parameter=lambda slot, holds: [(0, torch.arange(2).view(1, 2))],
-        local_pieces=lambda slot, tensors, holds: [torch.cat([t.detach().float().reshape(-1) for t in tensors])[:2]],
     )
     child = SimpleNamespace(
         optimizer=SimpleNamespace(param_groups=[{"step": 1}], state={master: {}}),
