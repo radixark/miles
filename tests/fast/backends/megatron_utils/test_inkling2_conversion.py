@@ -7,7 +7,7 @@ import torch
 pytest.importorskip("mbridge")
 from miles.backends.megatron_utils.megatron_to_hf.inkling2 import (  # noqa: E402
     convert_inkling2_to_hf,
-    load_inkling2_text_config,
+    load_inkling2_config,
 )
 from miles_plugins.mbridge.inkling2 import Inkling2Bridge, dequantize_mxfp8, dequantize_nvfp4  # noqa: E402
 
@@ -36,7 +36,7 @@ def checkpoint(tmp_path):
         },
     }
     (tmp_path / "hf_quant_config.json").write_text(json.dumps(quant))
-    load_inkling2_text_config.cache_clear()
+    load_inkling2_config.cache_clear()
     return str(tmp_path)
 
 

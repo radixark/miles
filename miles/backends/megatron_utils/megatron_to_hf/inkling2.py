@@ -41,9 +41,13 @@ LINEAR_Q_PARTS = ("wq_du", "wr_du", "gate_attn", "attn_sink_proj")
 
 
 @cache
-def load_inkling2_text_config(hf_checkpoint: str) -> dict:
+def load_inkling2_config(hf_checkpoint: str) -> dict:
     with open(f"{hf_checkpoint}/config.json") as f:
-        return json.load(f)["text_config"]
+        return json.load(f)
+
+
+def load_inkling2_text_config(hf_checkpoint: str) -> dict:
+    return load_inkling2_config(hf_checkpoint)["text_config"]
 
 
 def inkling2_quantization_config(hf_checkpoint: str) -> dict:

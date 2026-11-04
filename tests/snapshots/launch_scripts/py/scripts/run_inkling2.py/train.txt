@@ -49,9 +49,9 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --no-load-rng
   --finetune 
   --prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl
+  --apply-chat-template
   --input-key prompt
   --label-key label
-  --apply-chat-template
   --rollout-shuffle
   --rm-type math
   --num-rollout 100

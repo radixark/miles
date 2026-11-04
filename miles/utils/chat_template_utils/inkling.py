@@ -43,6 +43,10 @@ def is_inkling_checkpoint(name_or_path: str) -> bool:
     return _read_model_type(name_or_path) in _MODEL_TYPES
 
 
+def is_inkling2_checkpoint(name_or_path: str) -> bool:
+    return _read_model_type(name_or_path) in _INKLING2_MODEL_TYPES
+
+
 @functools.cache
 def fixed_chat_template() -> str:
     """The bundled Inkling chat template (the checkpoint's, with the upstream fixes)."""

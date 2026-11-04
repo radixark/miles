@@ -22,7 +22,8 @@ Args:
   --model-name   one of the models above
   --train-mode   full | lora
   --model-dir    parent of the HF checkpoint and `<model>_torch_dist`
-  --data-dir     parent of dapo-math-17k
+  --data-dir     parent of dapo-math-17k and geo3k
+  --task         dapo_math (text) | geo3k (images through the frozen vision tower)
 
 Examples:
   python scripts/run_inkling2.py convert --model-name Inkling2-8layer-64e-bf16
@@ -55,6 +56,7 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     run_id: str = command_utils.create_run_id()
     model_name: Literal["Inkling2", "Inkling2-8layer-64e-bf16", "Inkling2-8layer-64e"] = "Inkling2-8layer-64e-bf16"
     train_mode: Literal["full", "lora"] = "full"
+    task: Literal["dapo_math", "geo3k"] = "dapo_math"
     num_rollout: int = 100
     rollout_batch_size: int = 32
     n_samples_per_prompt: int = 8
@@ -139,9 +141,19 @@ def _train_args(args: ScriptArgs) -> str:
         "--megatron-to-hf-mode raw "
         "--no-load-optim --no-load-rng --finetune "
     )
+    match args.task:
+        case "dapo_math":
+            task_args = f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl --apply-chat-template "
+        case "geo3k":
+            # Prompts stay structured messages: the multimodal processor renders them with their images.
+            task_args = (
+                f"--prompt-data {args.data_dir}/geo3k/geo3k_train.jsonl "
+                "--custom-model-provider-path miles_plugins.models.inkling2.model.inkling2_mm_model_provider "
+                "--sglang-enable-multimodal "
+            )
     rollout_args = (
-        f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl "
-        "--input-key prompt --label-key label --apply-chat-template "
+        f"{task_args}"
+        "--input-key prompt --label-key label "
         "--rollout-shuffle --rm-type math "
         f"--num-rollout {args.num_rollout} "
         f"--rollout-batch-size {args.rollout_batch_size} "

@@ -149,12 +149,16 @@ def extract_multimodal_train_inputs(processor_output: Mapping[str, Any]) -> dict
 
 
 def load_processor(name_or_path: str, **kwargs):
-    from miles.utils.chat_template_utils.inkling import is_inkling_checkpoint
+    from miles.utils.chat_template_utils.inkling import is_inkling2_checkpoint, is_inkling_checkpoint
 
     if is_inkling_checkpoint(name_or_path):
         from miles_plugins.models.inkling.mm_processor import InklingTrainProcessor
 
         return InklingTrainProcessor(name_or_path)
+    if is_inkling2_checkpoint(name_or_path):
+        from miles_plugins.models.inkling2.mm_processor import Inkling2TrainProcessor
+
+        return Inkling2TrainProcessor(name_or_path)
 
     try:
         proc = AutoProcessor.from_pretrained(name_or_path, **kwargs)

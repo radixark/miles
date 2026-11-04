@@ -20,6 +20,7 @@ from megatron.core.transformer.transformer_config import TransformerConfig
 
 from miles.backends.megatron_utils.megatron_to_hf.inkling2 import (
     inkling2_quantization_config,
+    load_inkling2_config,
     load_inkling2_text_config,
 )
 from miles_plugins.models.inkling2.layers import (
@@ -183,6 +184,32 @@ class Inkling2GPTModel(GPTModel):
             decoder_input = self.embed_norm(self.embedding(input_ids=input_ids, position_ids=position_ids))
         return super()._preprocess(input_ids, position_ids, decoder_input, *args, **kwargs)
 
+    def forward(
+        self,
+        *args,
+        mm_vision_patches=None,
+        mm_vision_grid_thw=None,
+        mm_vision_positions=None,
+        mm_vision_num_patches=None,
+        **kwargs,
+    ):
+        if mm_vision_patches is not None and self.pre_process:
+            kwargs["decoder_input"] = self._embed_with_images(
+                kwargs["input_ids"], kwargs["position_ids"], mm_vision_patches, mm_vision_grid_thw, mm_vision_positions
+            )
+        return super().forward(*args, **kwargs)
+
+    def _embed_with_images(self, input_ids, position_ids, patches, grid_thw, positions):
+        assert (
+            not self.config.sequence_parallel
+        ), "image positions index the full sequence; sequence parallel splits it"
+        decoder_input = self.embed_norm(self.embedding(input_ids=input_ids, position_ids=position_ids))
+        with torch.no_grad():
+            images = self.__dict__["vision_tower"](patches.to(decoder_input.device, torch.bfloat16), grid_thw.cpu())
+        positions = positions.to(decoder_input.device)
+        # Like the engine, image positions take the raw vision output, without embed_norm.
+        return decoder_input.index_put((positions, torch.zeros_like(positions)), images.to(decoder_input.dtype))
+
     def _scale_logits(self, logits):
         inkling2 = self.config.inkling2
         logits = softcap_logits(logits, inkling2.final_logit_softcapping)
@@ -191,6 +218,22 @@ class Inkling2GPTModel(GPTModel):
         # The engine masks with -inf; a finite minimum gives the same probabilities (exp
         # underflows to 0) and keeps p * log p finite in the entropy metric.
         return logits.masked_fill(padded, torch.finfo(logits.dtype).min)
+
+
+def _frozen_vision_tower(hf_checkpoint: str) -> torch.nn.Module:
+    """The engine's own vision encoder and kernels on the checkpoint's ``model.visual`` weights."""
+    from sglang.srt.models.inkling2_vision import Inkling2VisionEncoder
+
+    from miles_plugins.models.inkling.mm_towers import _load_tower_tensors
+
+    config = load_inkling2_config(hf_checkpoint)
+    with torch.device(torch.cuda.current_device()):
+        tower = Inkling2VisionEncoder(config["vision_config"], config["text_config"]["hidden_size"])
+    weights = {
+        k.removeprefix("visual."): v for k, v in _load_tower_tensors(hf_checkpoint).items() if k.startswith("visual.")
+    }
+    tower.load_state_dict(weights, strict=True)
+    return tower.requires_grad_(False).eval()
 
 
 def inkling2_model_provider(pre_process=True, post_process=True, vp_stage=None, *, args: TrainerConfig):
@@ -208,3 +251,12 @@ def inkling2_model_provider(pre_process=True, post_process=True, vp_stage=None, 
         share_embeddings_and_output_weights=False,
         vp_stage=vp_stage,
     )
+
+
+def inkling2_mm_model_provider(pre_process=True, post_process=True, vp_stage=None, *, args: TrainerConfig):
+    """The text model plus the frozen vision tower, kept outside the module tree so DDP, the
+    optimizer, checkpoints and weight sync never see it (the engine keeps its own copy)."""
+    model = inkling2_model_provider(pre_process, post_process, vp_stage, args=args)
+    if model.pre_process:
+        model.__dict__["vision_tower"] = _frozen_vision_tower(args.hf_checkpoint)
+    return model
