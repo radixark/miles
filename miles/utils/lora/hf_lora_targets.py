@@ -26,6 +26,8 @@ class HfLoraTargets:
     # set when the family's adapters name routed experts packed and stacked (experts.gate_up_proj / down_proj, 3D);
     # the value is how gate and up rows share gate_up_proj
     packed_expert_gate_up_layout: str | None = None
+    # the HF vocab: the most head lora_B rows an HF-shaped source may hold
+    vocab_size: int | None = None
 
 
 @dataclass(frozen=True)
@@ -359,6 +361,7 @@ def get_hf_lora_targets(hf_config: dict) -> HfLoraTargets:
         whole_fused_attention=_prefix_paths(spec.layer_prefix, *spec.build_whole_fused_attention(text_config)),
         tinker_name_renames=spec.tinker_name_renames,
         component_rows_by_fused_module=spec.component_rows_by_fused_module(text_config),
+        vocab_size=text_config.get("vocab_size"),
         packed_expert_gate_up_layout=spec.packed_expert_gate_up_layout,
     )
 

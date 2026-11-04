@@ -14,6 +14,7 @@ import torch
 import torch.distributed as dist
 
 from miles.backends.megatron_utils.lora.utils import adapter_named_parameters
+from miles.backends.training_utils.checkpoint.adapter.adapter_dir import HeadRows
 from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
     LocalShardSpec,
     gloo_group,
@@ -165,6 +166,9 @@ def probe_bridge_row_mapping(
                     for p in pieces
                     if p.key not in a_keys or p.key == held[0]
                 ]
+            # one index per local element stays resident for the run
+            if total < 2**31:
+                pieces = [replace(p, local_elements=p.local_elements.int()) for p in pieces]
             covered = torch.zeros(total, dtype=torch.bool)
             for piece in pieces:
                 covered[piece.local_elements.flatten()] = True
@@ -233,6 +237,15 @@ class BridgeAdapterSlots:
         self._specs: dict[int, list[LocalShardSpec]] = {}
         # every slot has the same layout
         self.row_mapping = probe_bridge_row_mapping(model, self.slot_parameters(0), self._export_probe, targets)
+        self.head_rows = self._head_rows()
+
+    def _head_rows(self) -> HeadRows | None:
+        head_b = f"{self.targets.unembed[0]}.lora_B"
+        if not any(piece.key == head_b for piece in self.row_mapping.pieces):
+            return None
+        served = next(piece.global_shape[0] for piece in self.row_mapping.pieces if piece.key == head_b)
+        assert self.targets.vocab_size is not None, "a trained head needs the HF vocab size"
+        return HeadRows(head_b, max(self.targets.vocab_size, served))
 
     def slot_parameters(self, slot: int) -> list[torch.nn.Parameter]:
         if self._multi_lora:
@@ -351,11 +364,13 @@ class BridgeAdapterSlots:
         lora_alpha: float,
         lora_type: str,
         experts_shared_outer_loras: bool,
+        base_model_fingerprint: str | None,
     ) -> AdapterParametrization:
         """Targets and shared-A groups are the model's (same for every slot); the rest is the caller's."""
         mapping = self.row_mapping
         return AdapterParametrization(
             base_model=base_model,
+            base_model_fingerprint=base_model_fingerprint,
             lora_rank=lora_rank,
             lora_alpha=lora_alpha,
             lora_type=lora_type,

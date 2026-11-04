@@ -57,7 +57,7 @@ from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.logging_utils import rebind_env_reporting
 from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
-from miles.utils.lora.utils import build_lora_config, is_multi_lora_enabled
+from miles.utils.lora.utils import build_lora_config, is_multi_lora_enabled, publishes_snapshots, reads_adapter_slots
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.misc import partition
 from miles.utils.object_store import StoreObjectRef, ValueSpec
@@ -297,11 +297,7 @@ class MegatronTrainRayActor(TrainRayActor):
         args = self.args
         self._init_weight_updater_and_publisher(
             update_weights=not args.debug_train_only,
-            publish_snapshots=(
-                args.save_hf is not None
-                or (args.eval_uses_snapshots and args.eval_hf_dir is not None)
-                or (is_lora_enabled(args) and args.backend.save is not None and args.megatron_to_hf_mode != "raw")
-            ),
+            publish_snapshots=publishes_snapshots(args, args.backend.save),
         )
 
     def _init_weight_updater_and_publisher(self, *, update_weights: bool, publish_snapshots: bool) -> None:
@@ -342,7 +338,8 @@ class MegatronTrainRayActor(TrainRayActor):
             self.snapshot_publisher = SnapshotPublisher(
                 iterator, build_lora_config(args, target_modules=args.lora_adapter_targets) if is_lora else None
             )
-            if is_lora and args.megatron_to_hf_mode == "bridge":
+            # building the slots probes collectively; build them only for what reads them
+            if is_lora and args.megatron_to_hf_mode == "bridge" and reads_adapter_slots(args):
                 self.adapter_slots = BridgeAdapterSlots(
                     self.model,
                     iterator,
