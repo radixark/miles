@@ -4,7 +4,8 @@ The HF layout of every Megatron adapter element (TP / EP shards, the qkv group p
 GDN in_proj, per-expert names) comes from Bridge's own export, run once on index-valued parameters.
 """
 
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import replace
 from typing import Literal
 
@@ -71,21 +72,21 @@ def _stack_experts(key: str, pieces_by_expert: dict[int, list[HfPiece]], num_exp
 
 
 def probe_bridge_row_mapping(
+    model: Sequence[torch.nn.Module],
     params: Sequence[torch.nn.Parameter],
     export_adapter: Callable[[], Iterable[tuple[str, torch.Tensor]]],
     targets: HfLoraTargets,
     map_name: Callable[[str], HfKey] = map_peft_keys_to_hf_keys,
     unexported: torch.Tensor | None = None,
 ) -> RowMapping:
-    """Collective: run ``export_adapter`` (a backend's HF-named export, names mapped by ``map_name``) on
-    index-valued ``params``.
+    """Collective: run ``export_adapter`` (a backend's HF-named export, names mapped by ``map_name``) with
+    index-valued stand-ins registered in ``model`` in place of ``params``.
 
     ``unexported``: offsets of the elements the export leaves out by construction; no checkpoint holds them.
     """
     rank = dist.get_rank()
     total = sum(p.numel() for p in params)
     assert total < _RANK_STRIDE and dist.get_world_size() < 2**53 // _RANK_STRIDE, "the probe encoding overflows"
-    saved = [p.data for p in params]
     pieces, a_sources, modules = [], {}, set()
     per_expert: dict[str, dict[int, list[HfPiece]]] = {}
     num_experts: dict[str, int] = {}
@@ -115,27 +116,25 @@ def probe_bridge_row_mapping(
             for component, part in zip(components, split_fused_lora_b(module, codes, targets), strict=True):
                 pieces.extend(_pieces_of(f"{component}.lora_B", part, rank))
 
+    stand_ins, start = [], 0
+    for param in params:
+        codes = torch.arange(start, start + param.numel(), dtype=torch.float64, device=param.device)
+        stand_ins.append(torch.nn.Parameter((codes + rank * _RANK_STRIDE).view(param.shape), requires_grad=False))
+        start += param.numel()
     error = None
     try:
-        start = 0
-        for param in params:
-            codes = torch.arange(start, start + param.numel(), dtype=torch.float64, device=param.device)
-            param.data = (codes + rank * _RANK_STRIDE).view(param.shape)
-            start += param.numel()
-        # the export is collective: keep consuming it after a rank-local error so no rank is left inside it
-        for name, tensor in export_adapter():
-            if error is None:
-                try:
-                    decode(name, tensor)
-                except Exception as exc:
-                    error = exc
+        with _registered_in_place_of(model, params, stand_ins):
+            # the export is collective: keep consuming it after a rank-local error so no rank is left inside it
+            for name, tensor in export_adapter():
+                if error is None:
+                    try:
+                        decode(name, tensor)
+                    except Exception as exc:
+                        error = exc
     except Exception as exc:
         # an export failure outside Bridge's collectives goes through the rank agreement, so the other ranks fail
         # instead of waiting; a rank failing mid-collective still leaves the others hanging in Bridge's NCCL
         error = exc
-    finally:
-        for param, data in zip(params, saved, strict=True):
-            param.data = data
 
     # every expert's shared A yields the same group
     groups = set()
@@ -182,6 +181,32 @@ def probe_bridge_row_mapping(
     )
 
 
+@contextmanager
+def _registered_in_place_of(
+    model: Sequence[torch.nn.Module], params: Sequence[torch.nn.Parameter], stand_ins: Sequence[torch.nn.Parameter]
+) -> Iterator[None]:
+    """Setting a parameter's ``.data`` to another dtype replaces its grad accumulator, and with it the DDP hook
+    that fills ``main_grad``; the probe registers stand-ins instead and leaves the parameters alone."""
+    stand_in_by_param_id = {id(param): stand_in for param, stand_in in zip(params, stand_ins, strict=True)}
+    registrations = [
+        (module, name, param)
+        for chunk in model
+        for module in chunk.modules()
+        for name, param in module._parameters.items()
+        if param is not None and id(param) in stand_in_by_param_id
+    ]
+    assert {
+        id(param) for _, _, param in registrations
+    } == stand_in_by_param_id.keys(), "a probed parameter is unregistered"
+    for module, name, param in registrations:
+        module._parameters[name] = stand_in_by_param_id[id(param)]
+    try:
+        yield
+    finally:
+        for module, name, param in registrations:
+            module._parameters[name] = param
+
+
 class BridgeAdapterSlots(ProbedAdapterSlots):
     """Checkpoint members of Bridge LoRA; single LoRA is slot 0 of one, multi-LoRA slots are its MultiLoRALinears'.
 
@@ -196,7 +221,7 @@ class BridgeAdapterSlots(ProbedAdapterSlots):
         self._specs: dict[tuple[int, int | None, frozenset[int] | None], list[LocalShardSpec]] = {}
         # every slot has the same layout
         self.row_mapping = probe_bridge_row_mapping(
-            self.slot_parameters(0), self._export_probe, targets, self._map_name, self._unexported_elements()
+            model, self.slot_parameters(0), self._export_probe, targets, self._map_name, self._unexported_elements()
         )
 
     def _map_name(self, name: str) -> HfKey:
