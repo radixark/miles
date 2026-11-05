@@ -2,7 +2,7 @@ from miles.utils import memory_utils
 
 
 def test_clear_memory_can_skip_the_full_garbage_collection(monkeypatch) -> None:
-    """A full gc.collect() costs about a second in a trainer process; a caller that just ran one can skip it."""
+    """A caller can release the cache without forcing a full garbage collection."""
     calls = []
     monkeypatch.setattr(memory_utils.torch.accelerator, "synchronize", lambda: calls.append("synchronize"))
     monkeypatch.setattr(memory_utils.torch.accelerator, "empty_cache", lambda: calls.append("empty_cache"))

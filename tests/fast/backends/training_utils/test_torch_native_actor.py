@@ -282,7 +282,6 @@ class TestPublishedWeightVersion:
         assert result.failed_cell_ids == ()
         assert actor._published_weight_version == expected_version
         actor.weight_updater.update_weights.assert_called_once_with(weight_version=previous_version + 1)
-        # a full garbage collection here costs about a second per step
         assert clear_memory_calls == [{"collect_garbage": False}]
         if expected_version:
             actor.weight_updater.verify_engine_version.assert_called_once_with(

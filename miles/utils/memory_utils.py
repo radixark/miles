@@ -8,8 +8,7 @@ logger = logging.getLogger(__name__)
 
 
 def clear_memory(clear_host_memory: bool = False, collect_garbage: bool = True):
-    """`collect_garbage=False` skips the full `gc.collect()`, which costs about a second in a trainer process however
-    little it finds."""
+    """`collect_garbage=False` synchronizes and empties the cache without forcing a full `gc.collect()`."""
     torch.accelerator.synchronize()
     if collect_garbage:
         gc.collect()
