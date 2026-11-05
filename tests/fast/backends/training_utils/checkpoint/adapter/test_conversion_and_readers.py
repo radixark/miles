@@ -258,6 +258,7 @@ def test_external_export_reads_back_through_the_external_reader(tmp_path, shared
         assert torch.equal(read[f"{module}.lora_A"], weights[f"{source}.lora_A"])
         assert torch.equal(read[f"{module}.lora_B"], weights[f"{module}.lora_B"])
 
+
 def _ssh_identity() -> tuple[pyrage.ssh.Identity, str]:
     key = ed25519.Ed25519PrivateKey.generate()
     private = key.private_bytes(Encoding.PEM, PrivateFormat.OpenSSH, NoEncryption())

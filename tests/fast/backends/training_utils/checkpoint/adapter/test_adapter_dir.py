@@ -287,6 +287,7 @@ def test_a_backend_state_that_does_not_match_the_parametrization_is_refused_at_s
         save_adapter_dir(tmp_path, "w", ExtraKeyMembers(), 0, RUN, tenant_digest=None)
     assert resolve_adapter_dir(tmp_path, "w", tenant=None) is None
 
+
 def _refused_by_an_in_model_loader(path):
     try:
         raise ValueError("base mismatch")
@@ -584,6 +585,7 @@ class PaddedRankMembers(FakeMembers):
 def test_a_padded_rank_is_refused_at_save(tmp_path):
     with pytest.raises(RuntimeError, match="rank 3 != 2"):
         save_adapter_dir(tmp_path, "w", PaddedRankMembers(), 0, RUN, tenant_digest=None)
+
 
 class DataParallelMembers(FakeMembers):
     """Two data-parallel replicas of a two-way row split: ranks 2 and 3 hold non-primary copies of ranks 0 and 1."""

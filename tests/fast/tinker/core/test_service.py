@@ -1363,6 +1363,7 @@ async def test_an_external_save_is_downloadable_by_its_tenant_only(service):
         await service.download_path(token, "adapter_config.json")
     assert service.expiry.expires_at(result["path"]) is None
 
+
 async def test_a_download_token_never_outlives_the_expiry_it_was_issued_with(service, monkeypatch):
     """The URL is the credential: a request after its expiry, before the sweeper runs, must not revive it."""
     model_id = await created_model(service)
@@ -1410,6 +1411,7 @@ async def test_an_encrypted_external_save_keeps_its_owner(service):
         await service.external_weights_urls("mallory", model_id, "external_weights/export", "http://gateway/")
     await service.delete_checkpoint("tenant", model_id, "external_weights/export")
 
+
 async def test_a_failed_external_commit_fails_the_request_not_the_gateway(service, monkeypatch):
     model_id = await created_model(service)
     commit = service.backend.commit_adapter
@@ -1437,6 +1439,7 @@ async def test_a_download_url_does_not_serve_a_resave_under_the_same_name(servic
     assert (await await_settled(service, "tenant", save)).state == DONE
     with pytest.raises(NotFoundError, match="saved again"):
         await service.download_path(token, "adapter_config.json")
+
 
 async def test_a_download_url_expires_with_its_checkpoint(service, monkeypatch):
     model_id = await created_model(service)
@@ -1568,6 +1571,7 @@ async def test_ttl_is_set_removed_and_swept(service, monkeypatch):
     with pytest.raises(NotFoundError):
         await service.delete_checkpoint("tenant", model_id, "weights/ck")
 
+
 async def test_an_expiring_name_relinked_by_an_operator_is_kept_and_the_rest_are_swept(service, tmp_path_factory):
     """The sweep also runs before the dispatcher starts, so an entry it cannot delete must not stop it."""
     model_id = await created_model(service)
@@ -1592,6 +1596,7 @@ async def test_an_expiring_name_relinked_by_an_operator_is_kept_and_the_rest_are
     assert service.expiry.expires_at(paths["outside"]) is not None
     assert service.expiry.expires_at(paths["foreign"]) is not None
 
+
 async def test_trainer_ranks_get_only_the_tenant_digest(service):
     model_id = await created_model(service)
     save = service.submit(
@@ -1615,6 +1620,7 @@ async def test_a_ttl_change_does_not_wait_for_a_training_call(service):
     async with service._trainer_lock:
         await asyncio.wait_for(service.set_checkpoint_ttl("tenant", model_id, "weights/ck", 7200), timeout=1.0)
     assert service.expiry.expires_at(f"tinker://{model_id}/weights/ck") is not None
+
 
 async def test_weights_info_reports_a_sampler_exports_own_groups_not_the_gateways(service):
     model_id = await created_model(service)
