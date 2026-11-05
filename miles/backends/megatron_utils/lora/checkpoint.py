@@ -262,7 +262,7 @@ class DistributedOptimizerMembers:
     def import_adapter_state(self, slot: int, state: AdapterState) -> None:
         """Rank-local: groups the pieces by the parameter this rank leads; the scatter waits for finish."""
         holds = self._holds()
-        # the pieces of each parameter this rank leads; elements no piece holds (vocab padding) keep their state
+        # the pieces of each parameter this rank leads
         pieces_by_param = {i: [] for i in holds}
         for (index, offsets), *pieces in zip(
             self._slots.piece_parameter(0, holds), state.weights, state.exp_avgs, state.exp_avg_sqs, strict=True
@@ -485,8 +485,7 @@ def find_load_mismatch(
     return next((m for m in gathered if m is not None), None)
 
 
-# what the source checks raise for a source the user named: absent, unreadable, malformed or refused; any other
-# AssertionError or ValueError is a bug
+# a source the user named that is absent, unreadable, malformed or refused; any other failure is the gateway's
 _SOURCE_ERRORS = (
     AdapterSourceError,
     FileNotFoundError,
@@ -713,7 +712,7 @@ def restore_single_lora(
         source.lora_alpha == run.lora_alpha
     ), f"{path} was trained with lora_alpha={source.lora_alpha}; this run uses {run.lora_alpha}"
     if optimizer is None:
-        # as main: without an optimizer the weights load, and the run starts over
+        # no optimizer: the run starts over, as on main
         return None
     # an old-format save holds its training state beside the rank shards, whichever reader loaded the weights
     training_state = read_training_state(path) or _read_legacy_training_state(path)

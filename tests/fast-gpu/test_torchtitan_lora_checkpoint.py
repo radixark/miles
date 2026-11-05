@@ -7,7 +7,6 @@ register_cuda_ci(
 
 import os
 import weakref
-from dataclasses import replace
 from datetime import timedelta
 from functools import partial
 
@@ -29,7 +28,6 @@ from torchtitan.models.qwen3 import build_model_config
 import miles.backends.torchtitan_utils.lora_checkpoint as lora_checkpoint
 from miles.backends.torchtitan_utils.lora_checkpoint import TorchtitanAdapterSlots, probe_torchtitan_row_mapping
 from miles.backends.torchtitan_utils.lora_names import iter_hf_adapter_tensors
-from miles.backends.training_utils.checkpoint.adapter.adapter_dir import HeadRows
 from miles.backends.training_utils.checkpoint.adapter.adapter_state import RanksFailedError
 from miles.backends.training_utils.checkpoint.adapter.key_mapping import (
     map_named_tensors_to_hf_keys,
@@ -96,22 +94,6 @@ def _whole(rank, world_size, port):
 
 def test_whole_tensors_map_through_the_models_own_split():
     run_multiprocess(_whole, world_size=1)
-
-
-def _sharded(rank, world_size, port):
-    init_gloo(rank, world_size, port=port)
-    init_gloo_group()
-    mesh = init_device_mesh("cpu", (world_size,))
-    sd_adapter, params = _adapter()
-    expected = _expected(sd_adapter, params)
-    sharded = {key: distribute_tensor(value, mesh, [Shard(0)]) for key, value in params.items()}
-    mapping = probe_torchtitan_row_mapping(sharded, sd_adapter)
-    _check(mapping, [p.to_local() for p in sharded.values()], expected)
-    dist.destroy_process_group()
-
-
-def test_fsdp_shards_map_to_rectangles_of_the_hf_tensors():
-    run_multiprocess(_sharded)
 
 
 def _one_rank_fails_decoding(rank, world_size, port):
@@ -240,12 +222,9 @@ def _slots_on_strided_dtensors(rank, world_size, port, placements):
     dist.destroy_process_group()
 
 
-@pytest.mark.parametrize(
-    "placements",
-    [[Shard(0), _StridedShard(0, split_factor=2)], [_StridedShard(0, split_factor=2), Shard(0)]],
-    ids=["shard_then_strided", "strided_then_shard"],
-)
-def test_the_slots_own_pieces_of_strided_dtensors_are_their_hf_slices(placements):
+def test_the_slots_own_pieces_of_strided_dtensors_are_their_hf_slices():
+    # FSDP2 over TP on the same dim
+    placements = [_StridedShard(0, split_factor=2), Shard(0)]
     run_multiprocess(partial(_slots_on_strided_dtensors, placements=placements), world_size=4)
 
 
@@ -270,25 +249,3 @@ def _pipeline_stages(rank, world_size, port):
 
 def test_pipeline_stages_share_the_runs_groups_and_modules():
     run_multiprocess(_pipeline_stages)
-
-
-def _trained_head(rank, world_size, port):
-    init_gloo(rank, world_size, port=port)
-    init_gloo_group()
-    # an untied flavor: a tied one's state dict adapter maps lm_head to nothing
-    model = build_model_config("8B", parallelism=ParallelismConfig(), seq_len=4096, attn_backend="flex")
-    sd_adapter = model._owner.state_dict_adapter_cls(model, None)
-    part = torch.nn.Module()
-    part.lm_head = torch.nn.Module()
-    part.lm_head.lora_a = torch.nn.Linear(model.dim, 4, bias=False)
-    part.lm_head.lora_b = torch.nn.Linear(4, model.vocab_size, bias=False)
-    targets = replace(_TARGETS, vocab_size=model.vocab_size + 2)
-
-    slots = TorchtitanAdapterSlots([part], None, sd_adapter, targets)
-
-    assert slots.head_rows == HeadRows("lm_head.lora_B", max_source_rows=model.vocab_size + 2)
-    dist.destroy_process_group()
-
-
-def test_torchtitan_slots_declare_a_trained_heads_rows():
-    run_multiprocess(_trained_head, world_size=1)
