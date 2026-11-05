@@ -99,7 +99,9 @@ class ReplicatedGatedDeltaNet(nn.Module):
             norm = miles_ext("gated_rmsnorm", args)
             activation, has_bias = self.output_gate_activation, self.norm.bias is not None
             norm.check_supported(self.head_v_dim, activation, self.norm.weight.dtype, has_bias=has_bias)
-            norm.prebuild()
+            from miles_ext_kernels import cake
+
+            cake.prebuild("gated_rmsnorm")
 
         self.out_proj = nn.Linear(self.value_dim, self.hidden_size, bias=False)
 

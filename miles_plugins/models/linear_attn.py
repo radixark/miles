@@ -463,11 +463,12 @@ class LinearAttention(MegatronModule, ABC):
         self.norm_backend = norm_backend
         if norm_backend == "cake":
             # refuses a sigmoid gate (KDA), rows other than 128, a bias or a non-BF16 weight, then builds the kernels
-            norm = miles_ext("gated_rmsnorm")
-            norm.check_supported(
+            miles_ext("gated_rmsnorm").check_supported(
                 heads.head_v_dim, norm_activation, self.norm.weight.dtype, has_bias=self.norm.bias is not None
             )
-            norm.prebuild()
+            from miles_ext_kernels import cake
+
+            cake.prebuild("gated_rmsnorm")
         self.out_proj = nn.Linear(self.local.value_dim, config.hidden_size, bias=False, device=device, dtype=dtype)
         with get_cuda_rng_tracker().fork():
             config.output_layer_init_method(self.out_proj.weight)

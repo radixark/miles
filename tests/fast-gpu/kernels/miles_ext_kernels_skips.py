@@ -33,6 +33,7 @@ SKIP_ALLOWLIST: dict[str, tuple[str, ...]] = {
         # multi_gpu: a context-parallel case needs a GPU per rank
         "needs {world_size} GPUs, {visible} visible",
     ),
+    "gated_rmsnorm": (),
 }
 
 # One line of pytest's -rs summary: "SKIPPED [2] tests/cake/gdn/test_gdn_kcp_gpu.py:543: <reason>"

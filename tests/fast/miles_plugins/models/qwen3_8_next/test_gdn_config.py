@@ -1,4 +1,3 @@
-import argparse
 import sys
 from types import ModuleType, SimpleNamespace
 from typing import Any
@@ -171,10 +170,8 @@ class TestGdnConfig:
         """--linear-attention-output-norm-backend cake: the kernel package is configured with the run's values, checks
         the norm (the real package refuses this config's sigmoid gate), builds its kernels and runs the norm."""
         calls: list[tuple] = []
-        norm_ext = ModuleType("miles_ext_kernels.gated_rmsnorm")
-        norm_ext.configure = lambda namespace: calls.append(("configure", namespace))
+        norm_ext = ModuleType("miles_ext_kernels.cake.gated_rmsnorm")
         norm_ext.check_supported = lambda *args, **kwargs: calls.append(("check", args, kwargs))
-        norm_ext.prebuild = lambda: calls.append(("prebuild",))
 
         def rmsnorm_silu_gate(x: torch.Tensor, z: torch.Tensor, weight: torch.Tensor, eps: float) -> torch.Tensor:
             calls.append(("run", tuple(x.shape), tuple(z.shape), eps))
@@ -184,8 +181,9 @@ class TestGdnConfig:
         fla = ModuleType("fla.ops.gated_delta_rule")
         fla.chunk_gated_delta_rule = lambda query, key, value, **kwargs: (value, None)
         monkeypatch.setitem(sys.modules, "fla.ops.gated_delta_rule", fla)
-        monkeypatch.setitem(sys.modules, "miles_ext_kernels", ModuleType("miles_ext_kernels"))
-        monkeypatch.setitem(sys.modules, "miles_ext_kernels.gated_rmsnorm", norm_ext)
+        _fake_ext(monkeypatch, "gated_rmsnorm", norm_ext)
+        sys.modules["miles_ext_kernels"].configure = lambda values: calls.append(("configure", values))
+        sys.modules["miles_ext_kernels.cake"].prebuild = lambda op, **params: calls.append(("prebuild", op, params))
         monkeypatch.setattr(gdn, "ShortConvolution", _PassThroughConv, raising=False)
         monkeypatch.setattr(gdn, "FusedRMSNormGated", _WeightedNorm, raising=False)
         monkeypatch.setattr(torch.cuda, "current_device", lambda: "cpu")
@@ -200,9 +198,9 @@ class TestGdnConfig:
         output = layer(torch.randn(1, 3, 4), cu_seqlens=torch.tensor([0, 3], dtype=torch.int32))
 
         assert calls == [
-            ("configure", argparse.Namespace(cake_gated_rmsnorm_variant="det")),
+            ("configure", {"cake_gated_rmsnorm_variant": "det"}),
             ("check", (2, "sigmoid", torch.float32), {"has_bias": False}),
-            ("prebuild",),
+            ("prebuild", "gated_rmsnorm", {}),
             ("run", (3, 2), (3, 2), 1e-5),
         ]
         assert output.shape == (1, 3, 4)
