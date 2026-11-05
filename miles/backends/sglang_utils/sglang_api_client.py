@@ -342,7 +342,11 @@ class SGLangApiClient:
         )
 
     async def update_weights_from_disk(
-        self, model_path: str, load_format: str | None = None, weight_version: str | None = None
+        self,
+        model_path: str,
+        load_format: str | None = None,
+        weight_version: str | None = None,
+        flush_cache: bool | None = None,
     ):
         """Reload weights from *model_path* without restarting the engine.
 
@@ -355,6 +359,8 @@ class SGLangApiClient:
             payload["load_format"] = load_format
         if weight_version is not None:
             payload["weight_version"] = weight_version
+        if flush_cache is not None:
+            payload["flush_cache"] = flush_cache
         return await self._make_request("update_weights_from_disk", payload)
 
     async def init_weights_update_group(

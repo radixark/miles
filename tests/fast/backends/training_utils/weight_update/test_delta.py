@@ -114,7 +114,9 @@ class _DeltaReceiver:
     async def pause_generation(self, *, mode: str) -> None:
         pass
 
-    async def update_weights_from_disk(self, *, model_path: str, weight_version: str) -> dict:
+    async def update_weights_from_disk(
+        self, *, model_path: str, weight_version: str, flush_cache: bool | None = None
+    ) -> dict:
         self.served_versions.append(weight_version)
         return {"success": True}
 
