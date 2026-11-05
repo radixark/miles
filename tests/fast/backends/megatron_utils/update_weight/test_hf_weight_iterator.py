@@ -37,7 +37,9 @@ class TestInklingMultimodalTowers:
     ) -> None:
         """A typed multimodal provider sends frozen towers while text and non-materializing paths remain empty."""
         env = inkling_tower_env
-        args = SimpleNamespace(custom_model_provider_path=provider, hf_checkpoint=str(env.checkpoint))
+        args = SimpleNamespace(
+            custom_model_provider_path=provider, mm_tower_sync=None, hf_checkpoint=str(env.checkpoint)
+        )
 
         units = list(env.module._iter_mm_tower_units(args, materialize=materialize))
 
