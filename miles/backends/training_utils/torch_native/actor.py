@@ -126,6 +126,10 @@ class TorchNativeTrainRayActor(TrainRayActor):
     @timer
     def sleep(self) -> None:
         if self.args.offload_train:
+            if self.args.use_miles_ext_kernels:
+                import miles_ext_kernels
+
+                miles_ext_kernels.release()  # the kernels' workspace pools and cached plans
             self._move_train_state(to_host=True)
 
     @timer
