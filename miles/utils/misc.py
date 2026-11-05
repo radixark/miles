@@ -9,6 +9,7 @@ import ray
 
 from miles.utils.function_registry import load_function
 from miles.utils.http_utils import MILES_HOST_IP_ENV, is_port_available
+from miles.utils.port_range import service_port_range
 
 logger = logging.getLogger(__name__)
 
@@ -52,34 +53,39 @@ def merge_asserting_consistency(a: dict[_K, _V], b: dict[_K, _V]) -> dict[_K, _V
 
 
 async def call_agent_abort_hook(args) -> None:
-    """Invoke the agent plugin's optional abort hook, if it defines one.
+    """Invoke the optional abort hook of every agent function the run can call.
 
     When oversampling collects enough samples, the rollout aborts SGLang, but an
-    external agent loop (driven by ``--custom-agent-function-path``) keeps running
-    and keeps issuing fresh completion requests until it hits its own limit. The
-    agent integration knows how to tell its backend to stop, so we look for a
-    sibling ``abort`` callable in the same module as the configured agent function
-    and call it. Backends that don't expose one are left to drain as before.
+    external agent loop keeps running and keeps issuing fresh completion requests
+    until it hits its own limit. The agent integration knows how to tell its
+    backend to stop, so we look for a sibling ``abort`` callable in the same module
+    as each agent function -- ``--custom-agent-function-path`` and every
+    ``--rollout-data-yaml-config`` dataset's ``custom_agent_function_path`` -- and call it once per
+    distinct (module, config).
+    Backends that don't expose one are left to drain as before.
     """
     from miles.utils.args.custom_view import compute_custom_function_config
 
-    agent_function_path = args.custom_agent_function_path
-    if not agent_function_path:
-        return
+    agent_functions = [args.custom_agent_function_path] if args.custom_agent_function_path else []
+    # resolved at startup and carried by both rollout and orchestrator configs, so abort never rereads the YAML
+    agent_functions += args.rollout_dataset_agent_functions
+    # one abort per (module, config): two agents in one module with different typed configs each get theirs
+    called: list[tuple[str, Any]] = []
+    for agent_function in agent_functions:
+        module_path, _, _ = agent_function.path.rpartition(".")
+        if not module_path or (module_path, agent_function.config) in called:
+            continue
+        called.append((module_path, agent_function.config))
+        try:
+            abort_hook = load_function(f"{module_path}.abort")
+        except (AttributeError, ModuleNotFoundError):
+            continue  # plugin doesn't expose an abort hook; nothing to tear down
 
-    module_path, _, _ = agent_function_path.path.rpartition(".")
-    if not module_path:
-        return
-    try:
-        abort_hook = load_function(f"{module_path}.abort")
-    except (AttributeError, ModuleNotFoundError):
-        return  # plugin doesn't expose an abort hook; nothing to tear down
-
-    try:
-        fn_args = compute_custom_function_config(args, agent_function_path)
-        await abort_hook(fn_args)
-    except Exception as e:
-        logger.warning(f"Agent abort hook {module_path}.abort failed: {e}")
+        try:
+            fn_args = compute_custom_function_config(args, agent_function)
+            await abort_hook(fn_args)
+        except Exception as e:
+            logger.warning(f"Agent abort hook {module_path}.abort failed: {e}")
 
 
 class SingletonMeta(type):
@@ -126,12 +132,15 @@ def get_node_external_ip() -> str | None:
     return os.environ.get(MILES_NODE_EXTERNAL_IP_ENV) or None
 
 
-def get_free_port(start_port=10000, consecutive=1):
+def get_free_port(start_port=10000, consecutive=1, *, port_range: tuple[int, int] | None = None):
     # find the port where port, port + 1, port + 2, ... port + consecutive - 1 are all available,
-    # scanning upwards from start_port and wrapping around once the ports run out
-    highest_start = _MAX_PORT - consecutive + 1
-    assert start_port <= highest_start, f"{start_port=} leaves no room for {consecutive=} ports below {_MAX_PORT}"
-    lowest_start = min(start_port, _MIN_DYNAMIC_PORT)
+    # scanning upwards from start_port and wrapping around once the ports run out;
+    # port_range bounds the scan to an inclusive range that contains start_port
+    lowest_start, highest_port = port_range or (min(start_port, _MIN_DYNAMIC_PORT), _MAX_PORT)
+    highest_start = highest_port - consecutive + 1
+    assert (
+        lowest_start <= start_port <= highest_start
+    ), f"{start_port=} leaves no room for {consecutive=} ports in [{lowest_start}, {highest_port}]"
 
     port = start_port
     for _ in range(highest_start - lowest_start + 1):
@@ -139,7 +148,7 @@ def get_free_port(start_port=10000, consecutive=1):
             return port
         port = port + 1 if port < highest_start else lowest_start
 
-    raise RuntimeError(f"No {consecutive} consecutive free ports in [{lowest_start}, {_MAX_PORT}]")
+    raise RuntimeError(f"No {consecutive} consecutive free ports in [{lowest_start}, {highest_port}]")
 
 
 def get_gpu_uuids(gpu_ids: list[int]) -> list[str | None]:
@@ -182,8 +191,13 @@ class NodeProbeMixin:
         return get_node_external_ip()
 
     @staticmethod
-    def _get_free_port_block(*, start_port: int, count: int) -> int:
-        return get_free_port(start_port=start_port, consecutive=count)
+    def _get_free_port_block(*, start_port: int | None, count: int) -> int:
+        # A cursor that is missing, lies outside this node's service port range, or leaves
+        # no room for the block before the range ends starts over at the range's start.
+        low, high = service_port_range()
+        if start_port is None or not low <= start_port <= high - count + 1:
+            start_port = low
+        return get_free_port(start_port=start_port, consecutive=count, port_range=(low, high))
 
     @staticmethod
     def _to_local_gpu_ids(*, gpu_ids: list[int]) -> list[int]:

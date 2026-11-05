@@ -5,7 +5,13 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from miles.rollout.data_source import DataSource, LegacyRolloutDataSourceWithBuffer, RolloutDataSource
+from miles.rollout.data_source import (
+    DataSource,
+    LegacyRolloutDataSourceWithBuffer,
+    RolloutDataResumeMismatch,
+    RolloutDataSource,
+)
+from miles.utils.simple_checkpointer import save_simple_checkpoint
 from miles.utils.types import Sample
 
 
@@ -94,3 +100,20 @@ def test_legacy_source_rejects_checkpoint_loading(tmp_path: Path) -> None:
     source = LegacyRolloutDataSourceWithBuffer.__new__(LegacyRolloutDataSourceWithBuffer)
     with pytest.raises(NotImplementedError, match="does not support checkpoint loading"):
         source.load(tmp_path)
+
+
+def test_a_mix_checkpoint_starts_the_single_dataset_over_without_the_flag(tmp_path: Path) -> None:
+    """A --rollout-data-yaml-config position means nothing to one dataset, so --prompt-data starts it over."""
+    save_simple_checkpoint(
+        directory=tmp_path,
+        data={"offsets": {"math": 3}, "epoch_ids": {"math": 1}, "sample_group_index": 5, "sample_index": 10},
+    )
+    source = _bare_source(rollout_global_dataset=True)
+
+    with pytest.raises(RolloutDataResumeMismatch, match="--prompt-data dataset starts from its first prompt") as err:
+        source.load(tmp_path)
+    assert not err.value.needs_flag
+
+    source.sample_group_index = source.sample_index = 0
+    source.load_sample_ids(tmp_path)
+    assert (source.sample_group_index, source.sample_index) == (5, 10)
