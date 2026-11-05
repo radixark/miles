@@ -62,8 +62,10 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
             lora_checkpoint.load_slot(self.model, self.slot_optimizers[slot], ckpt_path, load_optimizer)
 
     @with_logs
-    def save_slot(self, slot: int, path: str, metadata: dict | None = None) -> None:
-        lora_checkpoint.save_slot(self.model, self.slot_optimizers[slot], path, metadata=metadata)
+    def save_slot(self, slot: int, path: str, metadata: dict | None = None, include_optimizer: bool = True) -> None:
+        lora_checkpoint.save_slot(
+            self.model, self.slot_optimizers[slot], path, metadata=metadata, include_optimizer=include_optimizer
+        )
 
     @with_logs
     def export_slot(self, slot: int, rank: int, alpha: float, path: str, metadata: dict | None = None) -> None:

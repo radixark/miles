@@ -128,6 +128,7 @@ def run_worker(checkpoint_dir):
     print(f"rank={dist.get_rank()} warmup complete; owned_masters=192; sub_bf16_precision=True", flush=True)
 
     save_slot(model, source, str(checkpoint_dir))
+    save_slot(model, source, f"{checkpoint_dir}-weights", include_optimizer=False)
     resumed = SlotOptimizer(args, model, slot=1)
     load_slot(model, resumed, str(checkpoint_dir), load_optimizer=True)
     assert_same_state(snapshot(model, resumed), saved)
@@ -154,6 +155,11 @@ def run_worker(checkpoint_dir):
     with pytest.raises(AssertionError):
         assert_same_state(snapshot(model, resumed), uninterrupted)
     print(f"rank={dist.get_rank()} negative control: weights-only restart diverges", flush=True)
+
+    resumed = SlotOptimizer(args, model, slot=1)
+    load_slot(model, resumed, f"{checkpoint_dir}-weights", load_optimizer=False)
+    assert_same_state(snapshot(model, resumed)["weights"], saved["weights"])
+    print(f"rank={dist.get_rank()} weights-only checkpoint restores weights", flush=True)
     dist.barrier()
     parallel_state.destroy_model_parallel()
     dist.destroy_process_group()
