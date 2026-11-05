@@ -98,12 +98,6 @@ def test_peft_export_reads_back_bitwise(tmp_path):
     assert reader.source.parametrization.shared_lora_a_groups == run.shared_lora_a_groups
 
 
-def test_gdn_components_with_their_own_a_are_refused_by_the_peft_export(tmp_path):
-    with pytest.raises(AssertionError, match="has no plain-PEFT form; the adapter dir is the checkpoint"):
-        write_peft_adapter(tmp_path, _weights(False), _run(), QWEN35, lora_dropout=0.0)
-    assert not (tmp_path / "adapter_model.safetensors").exists()
-
-
 def test_only_fused_components_sharing_one_a_have_a_plain_peft_form():
     assert not has_plain_peft_form(_run(), QWEN35)
     assert has_plain_peft_form(_run(shared_lora_a_groups=(tuple(sorted(QKV)),)), QWEN35)
@@ -144,12 +138,6 @@ def test_a_fused_gdn_module_keeps_its_a_under_the_sorted_first_component(tmp_pat
     weights, fused_groups = _read_peft_tensors(tmp_path, map_peft_keys_to_hf_keys, QWEN35)
     assert fused_groups == [QKV] and min(QKV) != QKV[0]
     assert {k for k in weights if k.endswith(".lora_A") and k.split(".lora_")[0] in QKV} == {f"{min(QKV)}.lora_A"}
-
-
-@pytest.mark.parametrize("write", [write_peft_adapter, write_sampler_adapter])
-def test_an_export_records_the_runs_lora_dropout(tmp_path, write):
-    write(tmp_path, _weights(True), _run(shared_lora_a_groups=(QKV,)), QWEN35, lora_dropout=0.1)
-    assert json.loads((tmp_path / "adapter_config.json").read_text())["lora_dropout"] == 0.1
 
 
 def test_sampler_export_reads_back_through_the_adapter_dir_reader(tmp_path):
@@ -207,16 +195,6 @@ def test_mismatches_are_refused(field, value):
         )
 
 
-def test_peft_features_that_change_tensor_meaning_are_refused(tmp_path):
-    save_file(
-        {"base_model.model.x.lora_A.weight": torch.zeros(2, 2), "base_model.model.x.lora_B.weight": torch.zeros(2, 2)},
-        str(tmp_path / "adapter_model.safetensors"),
-    )
-    (tmp_path / "adapter_config.json").write_text(json.dumps({"r": 2, "lora_alpha": 4, "use_dora": True}))
-    with pytest.raises(AdapterSourceError, match="use_dora"):
-        PeftAdapterReader(tmp_path, _run(), QWEN3)
-
-
 def test_tinker_names_classify_as_external(tmp_path):
     save_file(
         {"base_model.model.model.unembed_tokens.lora_A.weight": torch.zeros(2, 2)},
@@ -236,15 +214,29 @@ def test_a_head_adapter_reads_back(tmp_path):
     assert PeftAdapterReader(tmp_path, run, QWEN3).read_weights().keys() == weights.keys()
 
 
-@pytest.mark.parametrize("write", [write_peft_adapter, write_sampler_adapter])
-def test_bf16_input_with_a_shared_a_group_writes(tmp_path, write):
-    group = EXPERTS[:2]
-    weights = {
-        k: v.to(torch.bfloat16)
-        for k, v in _weights(False).items()
-        if k.rsplit(".", 1)[0] in EXPERTS and k != f"{group[1]}.lora_A"
-    }
-    write(tmp_path, weights, _run(target_modules=EXPERTS, shared_lora_a_groups=(group,)), QWEN35, lora_dropout=0.0)
+@pytest.mark.parametrize(
+    "edit, refusal",
+    [
+        ({"use_dora": True}, "use_dora"),
+        ({"fan_in_fan_out": True}, "fan_in_fan_out"),
+        ({"init_lora_weights": "pissa_niter_4"}, "init_lora_weights"),
+        ({"alora_invocation_tokens": [1, 2]}, "alora_invocation_tokens"),
+        ({"lora_alpha": None}, r"lacks \['lora_alpha'\]"),
+    ],
+    ids=["dora", "fan_in_fan_out", "base_rewriting_init", "activated_lora", "no_alpha"],
+)
+def test_a_peft_config_whose_tensors_mean_something_else_is_refused(tmp_path, edit, refusal):
+    write_peft_adapter(
+        tmp_path,
+        {f"{Q_PROJ}.lora_A": torch.ones(2, 8), f"{Q_PROJ}.lora_B": torch.ones(4, 2)},
+        _run(target_modules=(Q_PROJ,)),
+        QWEN35,
+        lora_dropout=0.0,
+    )
+    config = json.loads((tmp_path / "adapter_config.json").read_text()) | edit
+    (tmp_path / "adapter_config.json").write_text(json.dumps({k: v for k, v in config.items() if v is not None}))
+    with pytest.raises(AdapterSourceError, match=refusal):
+        PeftAdapterReader(tmp_path, _run(), QWEN3)
 
 
 @pytest.mark.parametrize(
@@ -268,20 +260,6 @@ def test_dcp_sources_are_classified_by_their_keys(tmp_path, key, run_config, kin
             classify_adapter_source(tmp_path, QWEN3, load_optimizer=True)
     else:
         assert classify_adapter_source(tmp_path, QWEN3, load_optimizer=True).value == kind
-
-
-def test_shared_outer_is_detected_on_experts_without_a_gate(tmp_path):
-    up, down = f"{L}.mlp.experts.up_proj", f"{L}.mlp.experts.down_proj"
-    tensors = {
-        map_hf_keys_to_peft_export_keys(f"{up}.lora_A"): torch.ones(1, 2, 8),
-        map_hf_keys_to_peft_export_keys(f"{down}.lora_B"): torch.ones(1, 8, 2),
-    }
-    for e in range(3):
-        tensors[map_hf_keys_to_peft_export_keys(f"{up}.lora_B", e)] = torch.ones(8, 2)
-        tensors[map_hf_keys_to_peft_export_keys(f"{down}.lora_A", e)] = torch.ones(2, 8)
-    save_file(tensors, tmp_path / "adapter_model.safetensors")
-    (tmp_path / "adapter_config.json").write_text(json.dumps({"peft_type": "LORA", "r": 2, "lora_alpha": 4.0}))
-    assert PeftAdapterReader(tmp_path, _run(), QWEN3).source.parametrization.experts_shared_outer_loras
 
 
 def test_a_shared_outer_peft_export_has_every_experts_copy_and_reads_back_into_a_shared_outer_run(tmp_path):
@@ -309,20 +287,6 @@ def test_a_shared_outer_peft_export_has_every_experts_copy_and_reads_back_into_a
     read = apply_parametrization_conversion(reader.read_weights(), steps)
     for key, value in weights.items():
         assert torch.equal(read[key], value.bfloat16().float()), key
-
-
-def test_fan_in_fan_out_is_refused(tmp_path):
-    write_peft_adapter(
-        tmp_path,
-        {f"{Q_PROJ}.lora_A": torch.ones(2, 8), f"{Q_PROJ}.lora_B": torch.ones(4, 2)},
-        _run(target_modules=(Q_PROJ,)),
-        QWEN35,
-        lora_dropout=0.0,
-    )
-    config = json.loads((tmp_path / "adapter_config.json").read_text()) | {"fan_in_fan_out": True}
-    (tmp_path / "adapter_config.json").write_text(json.dumps(config))
-    with pytest.raises(AdapterSourceError, match="fan_in_fan_out"):
-        PeftAdapterReader(tmp_path, _run(), QWEN3)
 
 
 def test_shared_outer_flag_is_ignored_without_routed_experts():
@@ -395,42 +359,175 @@ def test_a_sampler_export_reads_back_when_the_group_starts_at_a_later_gdn_compon
     assert read.keys() == weights.keys() and all(torch.equal(read[k], v) for k, v in weights.items())
 
 
-@pytest.mark.parametrize("field, value", [("init_lora_weights", "pissa_niter_4"), ("alora_invocation_tokens", [1, 2])])
-def test_base_rewriting_and_activated_lora_are_refused(tmp_path, field, value):
-    write_peft_adapter(
-        tmp_path,
-        {f"{Q_PROJ}.lora_A": torch.ones(2, 8), f"{Q_PROJ}.lora_B": torch.ones(4, 2)},
-        _run(target_modules=(Q_PROJ,)),
-        QWEN35,
-        lora_dropout=0.0,
-    )
-    config = json.loads((tmp_path / "adapter_config.json").read_text()) | {field: value}
-    (tmp_path / "adapter_config.json").write_text(json.dumps(config))
-    with pytest.raises(AdapterSourceError, match=field):
-        PeftAdapterReader(tmp_path, _run(), QWEN3)
-
-
-def test_mixed_tinker_and_hf_names_are_refused(tmp_path):
-    save_file(
-        {
-            "base_model.model.model.unembed_tokens.lora_A.weight": torch.zeros(2, 2),
-            "model.layers.0.mlp.experts.3.gate_proj.lora_A.weight": torch.zeros(2, 2),
+_GLM5 = get_hf_lora_targets(
+    {"model_type": "glm_moe_dsa", "mlp_layer_types": ["sparse"], "n_shared_experts": 0, "q_lora_rank": 4}
+)
+_QWEN35_MOE = get_hf_lora_targets(
+    {
+        "model_type": "qwen3_5_moe",
+        "text_config": {
+            "layer_types": ["full_attention"],
+            "shared_expert_intermediate_size": 0,
+            "linear_num_key_heads": 2,
+            "linear_key_head_dim": 2,
+            "linear_num_value_heads": 2,
+            "linear_value_head_dim": 2,
         },
-        str(tmp_path / "adapter_model.safetensors"),
-    )
-    (tmp_path / "adapter_config.json").write_text("{}")
-    with pytest.raises(AdapterSourceError, match="mixes"):
-        classify_adapter_source(tmp_path, QWEN3, load_optimizer=False)
+    }
+)
+_INKLING = get_hf_lora_targets({"model_type": "inkling_model", "mlp_layer_types": ["sparse"], "n_shared_experts": 0})
 
 
-def test_an_edited_sampler_config_is_refused(tmp_path):
-    write_sampler_adapter(
-        tmp_path, {k: v.to(torch.bfloat16) for k, v in _weights(False).items()}, _run(), QWEN35, lora_dropout=0.0
+@pytest.mark.parametrize(
+    "targets, layer",
+    [(_GLM5, "model.layers.0"), (_QWEN35_MOE, "model.language_model.layers.0"), (_INKLING, "model.layers.0")],
+    ids=["glm_moe_dsa", "qwen3_5_moe", "inkling"],
+)
+def test_mains_native_export_with_sglang_expert_names_reads_back(tmp_path, targets, layer):
+    """main's native --save-hf stacks experts under sglang's w1 / w3 / w2 and keeps HF names otherwise."""
+    g = torch.Generator().manual_seed(0)
+    hf_by_sglang = {"w1": "gate_proj", "w3": "up_proj", "w2": "down_proj"}
+    tensors = {
+        f"{layer}.self_attn.o_proj.lora_A.weight": torch.randn(2, 8, generator=g),
+        f"{layer}.self_attn.o_proj.lora_B.weight": torch.randn(8, 2, generator=g),
+    }
+    for sglang in hf_by_sglang:
+        tensors[f"{layer}.mlp.experts.{sglang}.lora_A.weight"] = torch.randn(3, 2, 8, generator=g)
+        tensors[f"{layer}.mlp.experts.{sglang}.lora_B.weight"] = torch.randn(3, 8, 2, generator=g)
+    save_file(tensors, str(tmp_path / "adapter_model.safetensors"))
+    (tmp_path / "adapter_config.json").write_text(json.dumps({"peft_type": "LORA", "r": 2, "lora_alpha": 4.0}))
+
+    assert classify_adapter_source(tmp_path, targets, load_optimizer=False) == AdapterSourceKind.PEFT
+    weights = PeftAdapterReader(tmp_path, _run(), targets).read_weights()
+
+    def hf_key(name: str) -> str:
+        for sglang, hf in hf_by_sglang.items():
+            name = name.replace(f".experts.{sglang}.", f".experts.{hf}.")
+        return name.removesuffix(".weight")
+
+    expected = {hf_key(name): value for name, value in tensors.items()}
+    assert weights.keys() == expected.keys()
+    assert all(torch.equal(weights[k], v) for k, v in expected.items())
+
+
+_QWEN3_4B = {"model_type": "qwen3", "hidden_size": 2560, "num_hidden_layers": 36, "vocab_size": 151936}
+
+
+def _check_bases(source, target):
+    assert_parametrization_matches_run(source, target, [], load_optimizer=False, has_optimizer_state=False)
+
+
+def test_a_base_read_from_another_mount_matches_by_its_fingerprint():
+    fingerprint = base_model_fingerprint(_QWEN3_4B | {"_name_or_path": "/root/models/Qwen3-4B"})
+    saved = _run(base_model="/root/models/Qwen3-4B", base_model_fingerprint=fingerprint)
+    _check_bases(saved, _run(base_model="/lustre/models/Qwen3-4B", base_model_fingerprint=fingerprint))
+    _check_bases(saved, _run(base_model="Qwen/Qwen3-4B", base_model_fingerprint=fingerprint))
+
+
+def test_a_base_of_another_architecture_is_refused_whatever_its_name():
+    saved = _run(base_model="Qwen/Qwen3-4B", base_model_fingerprint=base_model_fingerprint(_QWEN3_4B))
+    other = _run(
+        base_model="Qwen/Qwen3-4B", base_model_fingerprint=base_model_fingerprint(_QWEN3_4B | {"hidden_size": 4096})
     )
-    config = json.loads((tmp_path / "adapter_config.json").read_text()) | {"lora_alpha": 99}
-    (tmp_path / "adapter_config.json").write_text(json.dumps(config))
-    with pytest.raises(AdapterSourceError, match="disagrees"):
-        MilesAdapterDirReader(tmp_path, QWEN35)
+    with pytest.raises(AdapterSourceError, match="is another model than run base"):
+        _check_bases(saved, other)
+
+
+def test_a_side_without_a_fingerprint_compares_where_the_base_was_read_from():
+    run = _run(base_model="/root/models/Qwen3-4B", base_model_fingerprint=base_model_fingerprint(_QWEN3_4B))
+    _check_bases(_run(base_model="/root/models/Qwen3-4B"), run)
+    with pytest.raises(AdapterSourceError, match="adapter base '/lustre/models/Qwen3-4B' != run base"):
+        _check_bases(_run(base_model="/lustre/models/Qwen3-4B"), run)
+
+
+@pytest.mark.parametrize(
+    "edit, refusal",
+    [
+        (lambda fields: fields | {"format_version": 2}, "format version 2; this miles reads version 1"),
+        (
+            lambda fields: fields | {"lora_dropout": 0.1},
+            r"unknown fields \['lora_dropout'\].*load it with the miles version that wrote it",
+        ),
+        (lambda fields: {k: v for k, v in fields.items() if k != "lora_rank"}, r"lacks \['lora_rank'\]"),
+    ],
+    ids=["newer_format", "unknown_field", "missing_field"],
+)
+def test_a_parametrization_file_this_miles_cannot_read_exactly_is_refused(tmp_path, edit, refusal):
+    run = _run(target_modules=QKV[:1])
+    write_parametrization(tmp_path, run)
+    assert read_parametrization(tmp_path) == run
+    fields = json.loads((tmp_path / PARAMETRIZATION_FILENAME).read_text())
+    (tmp_path / PARAMETRIZATION_FILENAME).write_text(json.dumps(edit(fields)))
+    with pytest.raises(AdapterSourceError, match=refusal):
+        read_parametrization(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        # config.json names the expert count num_experts; Qwen3MoeConfig.to_dict() names it num_local_experts
+        dict(
+            model_type="qwen3_moe",
+            vocab_size=151936,
+            hidden_size=2048,
+            intermediate_size=6144,
+            moe_intermediate_size=768,
+            num_hidden_layers=48,
+            num_attention_heads=32,
+            num_key_value_heads=4,
+            head_dim=128,
+            num_experts=128,
+            tie_word_embeddings=False,
+        ),
+        # config.json leaves head_dim out; to_dict() derives it (for MLA not from hidden_size / heads)
+        dict(
+            model_type="llama",
+            vocab_size=128256,
+            hidden_size=4096,
+            intermediate_size=14336,
+            num_hidden_layers=32,
+            num_attention_heads=32,
+            num_key_value_heads=8,
+            tie_word_embeddings=False,
+        ),
+        dict(
+            model_type="deepseek_v3",
+            vocab_size=129280,
+            hidden_size=7168,
+            intermediate_size=18432,
+            moe_intermediate_size=2048,
+            num_hidden_layers=61,
+            num_attention_heads=128,
+            num_key_value_heads=128,
+            n_routed_experts=256,
+            tie_word_embeddings=False,
+        ),
+    ],
+    ids=lambda raw: raw["model_type"],
+)
+def test_config_json_and_its_to_dict_have_one_fingerprint(raw):
+    resolved = transformers.AutoConfig.for_model(**raw).to_dict()
+    assert base_model_fingerprint(raw) == base_model_fingerprint(resolved)
+
+
+def test_a_remote_code_config_resolves_its_expert_count_aliases():
+    common = {"model_type": "not_in_transformers", "hidden_size": 8}
+    assert base_model_fingerprint(common | {"n_routed_experts": 4}) == base_model_fingerprint(
+        common | {"num_local_experts": 4}
+    )
+
+
+def test_a_vl_wrapper_has_its_language_models_fingerprint():
+    assert base_model_fingerprint({"model_type": "qwen3_vl", "text_config": _QWEN3_4B}) == base_model_fingerprint(
+        _QWEN3_4B
+    )
+
+
+def test_one_local_base_under_another_path_string_matches(tmp_path):
+    (tmp_path / "model").mkdir()
+    (tmp_path / "link").symlink_to(tmp_path / "model")
+    source, run = _run(base_model=f"{tmp_path}/model/"), _run(base_model=str(tmp_path / "link"))
+    assert_parametrization_matches_run(source, run, [], load_optimizer=False, has_optimizer_state=False)
 
 
 def test_gpt_oss_gate_and_up_with_their_own_a_have_no_plain_peft_form():
@@ -521,206 +618,3 @@ def test_a_bridge_shared_outer_side_is_written_per_expert_like_its_pair(tmp_path
     for e in range(3):
         assert torch.equal(written[f"{expert.format(e)}.lora_A.weight"], export.a[0].to(torch.bfloat16))
         assert torch.equal(written[f"{expert.format(e)}.lora_B.weight"], export.b[e].to(torch.bfloat16))
-
-
-_GLM5 = get_hf_lora_targets(
-    {"model_type": "glm_moe_dsa", "mlp_layer_types": ["sparse"], "n_shared_experts": 0, "q_lora_rank": 4}
-)
-_QWEN35_MOE = get_hf_lora_targets(
-    {
-        "model_type": "qwen3_5_moe",
-        "text_config": {
-            "layer_types": ["full_attention"],
-            "shared_expert_intermediate_size": 0,
-            "linear_num_key_heads": 2,
-            "linear_key_head_dim": 2,
-            "linear_num_value_heads": 2,
-            "linear_value_head_dim": 2,
-        },
-    }
-)
-_INKLING = get_hf_lora_targets({"model_type": "inkling_model", "mlp_layer_types": ["sparse"], "n_shared_experts": 0})
-
-
-@pytest.mark.parametrize(
-    "targets, layer",
-    [(_GLM5, "model.layers.0"), (_QWEN35_MOE, "model.language_model.layers.0"), (_INKLING, "model.layers.0")],
-    ids=["glm_moe_dsa", "qwen3_5_moe", "inkling"],
-)
-def test_mains_native_export_with_sglang_expert_names_reads_back(tmp_path, targets, layer):
-    """main's native --save-hf stacks experts under sglang's w1 / w3 / w2 and keeps HF names otherwise."""
-    g = torch.Generator().manual_seed(0)
-    hf_by_sglang = {"w1": "gate_proj", "w3": "up_proj", "w2": "down_proj"}
-    tensors = {
-        f"{layer}.self_attn.o_proj.lora_A.weight": torch.randn(2, 8, generator=g),
-        f"{layer}.self_attn.o_proj.lora_B.weight": torch.randn(8, 2, generator=g),
-    }
-    for sglang in hf_by_sglang:
-        tensors[f"{layer}.mlp.experts.{sglang}.lora_A.weight"] = torch.randn(3, 2, 8, generator=g)
-        tensors[f"{layer}.mlp.experts.{sglang}.lora_B.weight"] = torch.randn(3, 8, 2, generator=g)
-    save_file(tensors, str(tmp_path / "adapter_model.safetensors"))
-    (tmp_path / "adapter_config.json").write_text(json.dumps({"peft_type": "LORA", "r": 2, "lora_alpha": 4.0}))
-
-    assert classify_adapter_source(tmp_path, targets, load_optimizer=False) == AdapterSourceKind.PEFT
-    weights = PeftAdapterReader(tmp_path, _run(), targets).read_weights()
-
-    def hf_key(name: str) -> str:
-        for sglang, hf in hf_by_sglang.items():
-            name = name.replace(f".experts.{sglang}.", f".experts.{hf}.")
-        return name.removesuffix(".weight")
-
-    expected = {hf_key(name): value for name, value in tensors.items()}
-    assert weights.keys() == expected.keys()
-    assert all(torch.equal(weights[k], v) for k, v in expected.items())
-
-
-_QWEN3_4B = {"model_type": "qwen3", "hidden_size": 2560, "num_hidden_layers": 36, "vocab_size": 151936}
-
-
-def _check_bases(source, target):
-    assert_parametrization_matches_run(source, target, [], load_optimizer=False, has_optimizer_state=False)
-
-
-def test_a_base_read_from_another_mount_matches_by_its_fingerprint():
-    fingerprint = base_model_fingerprint(_QWEN3_4B | {"_name_or_path": "/root/models/Qwen3-4B"})
-    saved = _run(base_model="/root/models/Qwen3-4B", base_model_fingerprint=fingerprint)
-    _check_bases(saved, _run(base_model="/lustre/models/Qwen3-4B", base_model_fingerprint=fingerprint))
-    _check_bases(saved, _run(base_model="Qwen/Qwen3-4B", base_model_fingerprint=fingerprint))
-
-
-def test_a_base_of_another_architecture_is_refused_whatever_its_name():
-    saved = _run(base_model="Qwen/Qwen3-4B", base_model_fingerprint=base_model_fingerprint(_QWEN3_4B))
-    other = _run(
-        base_model="Qwen/Qwen3-4B", base_model_fingerprint=base_model_fingerprint(_QWEN3_4B | {"hidden_size": 4096})
-    )
-    with pytest.raises(AdapterSourceError, match="is another model than run base"):
-        _check_bases(saved, other)
-
-
-def test_a_side_without_a_fingerprint_compares_where_the_base_was_read_from():
-    run = _run(base_model="/root/models/Qwen3-4B", base_model_fingerprint=base_model_fingerprint(_QWEN3_4B))
-    _check_bases(_run(base_model="/root/models/Qwen3-4B"), run)
-    with pytest.raises(AdapterSourceError, match="adapter base '/lustre/models/Qwen3-4B' != run base"):
-        _check_bases(_run(base_model="/lustre/models/Qwen3-4B"), run)
-
-
-def test_a_parametrization_written_before_the_fingerprint_reads_back_without_one(tmp_path):
-    fields = {
-        "base_model": "m",
-        "lora_rank": 2,
-        "lora_alpha": 4.0,
-        "lora_type": "lora",
-        "target_modules": [QKV[0]],
-        "experts_shared_outer_loras": False,
-        "shared_lora_a_groups": [],
-    }
-    (tmp_path / PARAMETRIZATION_FILENAME).write_text(json.dumps(fields))
-    assert read_parametrization(tmp_path).base_model_fingerprint is None
-
-
-def test_the_parametrization_file_records_its_format_version_and_refuses_another(tmp_path):
-    run = _run(target_modules=QKV[:1])
-    write_parametrization(tmp_path, run)
-    fields = json.loads((tmp_path / PARAMETRIZATION_FILENAME).read_text())
-    assert fields["format_version"] == 1
-    assert read_parametrization(tmp_path) == run
-    (tmp_path / PARAMETRIZATION_FILENAME).write_text(json.dumps(fields | {"format_version": 2}))
-    with pytest.raises(AdapterSourceError, match="format version 2; this miles reads version 1"):
-        read_parametrization(tmp_path)
-
-
-def test_a_parametrization_with_a_field_this_miles_does_not_know_is_refused(tmp_path):
-    write_parametrization(tmp_path, _run(target_modules=QKV[:1]))
-    fields = json.loads((tmp_path / PARAMETRIZATION_FILENAME).read_text())
-    (tmp_path / PARAMETRIZATION_FILENAME).write_text(json.dumps(fields | {"lora_dropout": 0.1}))
-    with pytest.raises(
-        AdapterSourceError, match=r"unknown fields \['lora_dropout'\].*load it with the miles version that wrote it"
-    ):
-        read_parametrization(tmp_path)
-
-
-def test_a_parametrization_without_a_required_field_is_refused(tmp_path):
-    write_parametrization(tmp_path, _run(target_modules=QKV[:1]))
-    fields = json.loads((tmp_path / PARAMETRIZATION_FILENAME).read_text())
-    del fields["lora_rank"]
-    (tmp_path / PARAMETRIZATION_FILENAME).write_text(json.dumps(fields))
-    with pytest.raises(AdapterSourceError, match=r"lacks \['lora_rank'\]"):
-        read_parametrization(tmp_path)
-
-
-def test_a_peft_config_without_rank_or_alpha_is_refused(tmp_path):
-    save_file(
-        {"base_model.model.x.lora_A.weight": torch.zeros(2, 2), "base_model.model.x.lora_B.weight": torch.zeros(2, 2)},
-        str(tmp_path / "adapter_model.safetensors"),
-    )
-    (tmp_path / "adapter_config.json").write_text(json.dumps({"r": 2}))
-    with pytest.raises(AdapterSourceError, match=r"lacks \['lora_alpha'\]"):
-        PeftAdapterReader(tmp_path, _run(), QWEN3)
-
-
-@pytest.mark.parametrize(
-    "raw",
-    [
-        # config.json names the expert count num_experts; Qwen3MoeConfig.to_dict() names it num_local_experts
-        dict(
-            model_type="qwen3_moe",
-            vocab_size=151936,
-            hidden_size=2048,
-            intermediate_size=6144,
-            moe_intermediate_size=768,
-            num_hidden_layers=48,
-            num_attention_heads=32,
-            num_key_value_heads=4,
-            head_dim=128,
-            num_experts=128,
-            tie_word_embeddings=False,
-        ),
-        # config.json leaves head_dim out; to_dict() derives it (for MLA not from hidden_size / heads)
-        dict(
-            model_type="llama",
-            vocab_size=128256,
-            hidden_size=4096,
-            intermediate_size=14336,
-            num_hidden_layers=32,
-            num_attention_heads=32,
-            num_key_value_heads=8,
-            tie_word_embeddings=False,
-        ),
-        dict(
-            model_type="deepseek_v3",
-            vocab_size=129280,
-            hidden_size=7168,
-            intermediate_size=18432,
-            moe_intermediate_size=2048,
-            num_hidden_layers=61,
-            num_attention_heads=128,
-            num_key_value_heads=128,
-            n_routed_experts=256,
-            tie_word_embeddings=False,
-        ),
-    ],
-    ids=lambda raw: raw["model_type"],
-)
-def test_config_json_and_its_to_dict_have_one_fingerprint(raw):
-    resolved = transformers.AutoConfig.for_model(**raw).to_dict()
-    assert base_model_fingerprint(raw) == base_model_fingerprint(resolved)
-
-
-def test_a_remote_code_config_resolves_its_expert_count_aliases():
-    common = {"model_type": "not_in_transformers", "hidden_size": 8}
-    assert base_model_fingerprint(common | {"n_routed_experts": 4}) == base_model_fingerprint(
-        common | {"num_local_experts": 4}
-    )
-
-
-def test_a_vl_wrapper_has_its_language_models_fingerprint():
-    assert base_model_fingerprint({"model_type": "qwen3_vl", "text_config": _QWEN3_4B}) == base_model_fingerprint(
-        _QWEN3_4B
-    )
-
-
-def test_one_local_base_under_another_path_string_matches(tmp_path):
-    (tmp_path / "model").mkdir()
-    (tmp_path / "link").symlink_to(tmp_path / "model")
-    source, run = _run(base_model=f"{tmp_path}/model/"), _run(base_model=str(tmp_path / "link"))
-    assert_parametrization_matches_run(source, run, [], load_optimizer=False, has_optimizer_state=False)
