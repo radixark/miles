@@ -51,6 +51,11 @@ SKIP_ALLOWLIST: dict[str, tuple[str, ...]] = {
         "needs two GPUs",
         "the second GPU is another model",
     ),
+    "gqa": (
+        # multi_gpu: two GPUs of one model and SM count
+        "needs two GPUs",
+        "the two GPUs differ in model or SM count: {models}",
+    ),
 }
 
 # One line of pytest's -rs summary: "SKIPPED [2] tests/cake/gdn/test_gdn_kcp_gpu.py:543: <reason>"

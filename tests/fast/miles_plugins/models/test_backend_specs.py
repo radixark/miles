@@ -125,7 +125,7 @@ def test_the_qwen_full_attention_layers_take_the_cake_core_attention(
         layer_specs=[SimpleNamespace(submodules=SimpleNamespace(self_attention="TE attention")), full_attention]
     )
     cake = ModuleType("miles_plugins.models.cake_full_attention")
-    cake.apply_cake_full_attention = lambda spec: ("cake", spec)
+    cake.apply_cake_full_attention = lambda spec, args: ("cake", spec, args)
     monkeypatch.setitem(sys.modules, "miles_plugins.models.cake_full_attention", cake)
     monkeypatch.setattr(module, "get_gpt_decoder_block_spec", lambda config, **kwargs: block)
     monkeypatch.setattr(module, "get_num_layers_to_build", lambda config, vp_stage: 2)
@@ -137,8 +137,8 @@ def test_the_qwen_full_attention_layers_take_the_cake_core_attention(
 
     assert result.layer_specs[0].submodules.self_attention.module is module.Attention
     if backend == "cake":
-        tag, swapped = result.layer_specs[1]
-        assert tag == "cake" and swapped is full_attention
+        tag, swapped, passed = result.layer_specs[1]
+        assert tag == "cake" and swapped is full_attention and passed is args
     else:
         assert result.layer_specs[1] is full_attention
 
