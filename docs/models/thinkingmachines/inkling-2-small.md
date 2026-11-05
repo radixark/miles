@@ -34,8 +34,9 @@ Use the `radixark/miles:dev` image with the SGLang Inkling 2 Small support from 
 Download the model and the dataset:
 
 ```bash
+cd /root/miles
 hf download thinkingmachines/Inkling-2-Small --local-dir /root/models/Inkling2
-hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/datasets/dapo-math-17k
+python scripts/run_inkling2.py prepare        # DAPO-Math-17k under --data-dir
 ```
 
 ### 3.1 HF → Megatron `torch_dist`, one 8-GPU node
@@ -43,7 +44,6 @@ hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/dataset
 `convert` loads the HF checkpoint through the Inkling 2 Small bridge, which dequantizes the NVFP4 / MXFP8 experts to BF16. It then writes `{model_dir}/Inkling2_torch_dist`, and skips the step if a finished conversion is already there.
 
 ```bash
-cd /root/miles
 python scripts/run_inkling2.py convert --model-name Inkling2 --train-mode lora --num-gpus-per-node 8
 ```
 
@@ -118,7 +118,27 @@ The engines serve the released NVFP4 / MXFP8 experts with W4A4 / W8A8 activation
 
 Full-parameter training fake-quantizes the trained expert weights to their layer's format with a straight-through gradient. Without that, each sync re-quantizes the experts and per-step updates below the NVFP4 / MXFP8 step are lost.
 
-### 5.4 What a healthy run looks like
+### 5.4 Image prompts
+
+`--task geo3k` trains on Geometry3K, whose prompts carry images:
+
+```bash
+python scripts/run_inkling2.py prepare --task geo3k   # downloads and converts once
+python scripts/run_inkling2.py train --model-name Inkling2 --train-mode lora --task geo3k \
+  --num-nodes 1 --num-gpus-per-node 8 --extra-args "--offload-train-target cpu --check-lora-weight-equal"
+```
+
+- **Rendering:** prompts stay structured messages, and SGLang's Inkling 2 Small renderer and image processor build the token ids and vision patches. The trainer therefore sees the same input the engine served.
+- **Vision tower:** the trainer embeds images with SGLang's vision encoder on the checkpoint's `model.visual` weights. The tower is frozen and kept outside the module tree, so DDP, the optimizer, checkpoints and weight sync never see it.
+- **Routing replay:** rows follow the prompt the engine served, in which each image placeholder is the image's whole token run.
+
+At full size the train–rollout gap on image prompts starts at 0.023 (KL 1.6e-3), close to the text recipe.
+
+### 5.5 Agentic rollout (TITO)
+
+Multi-turn agentic rollout uses the Inkling family's TITO tokenizer, `--tito-model inkling` (see [Agentic Rollout](/user-guide/agentic-rollout)). Inkling 2 Small names no function on tool-call and tool-result headers, matching SGLang's renderer. Sessions over the OpenAI and Anthropic APIs, tool calls included, reproduce the engine's tokens exactly (`tito_session_mismatch_rate` 0.0).
+
+### 5.6 What a healthy run looks like
 
 From the two-node GB300 run:
 
@@ -129,7 +149,7 @@ From the two-node GB300 run:
 
 A gap that grows across syncs while entropy is flat means the engine is not serving what the trainer trained: check `--check-lora-weight-equal` and that `--lora-base-cpu-backup` is on.
 
-### 5.5 Notable quirks
+### 5.7 Notable quirks
 
 - Multi-node runs set `NCCL_CUMEM_ENABLE=1`: cross-node NVLink (GB300 MNNVL) needs NCCL's cuMem buffers, and Miles otherwise disables them for the trainer.
 - Some clusters mount `HF_HOME` read-only; point it at a writable directory before launching.
