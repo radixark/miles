@@ -38,6 +38,11 @@ SKIP_ALLOWLIST: dict[str, tuple[str, ...]] = {
         # multi_gpu: the sequence-parallel case runs two ranks
         "needs 2 GPUs",
     ),
+    "dsa": (
+        # multi_gpu: the second-device cases need two GPUs of one compute capability
+        "needs two GPUs",
+        "the two GPUs differ in compute capability",
+    ),
 }
 
 # One line of pytest's -rs summary: "SKIPPED [2] tests/cake/gdn/test_gdn_kcp_gpu.py:543: <reason>"

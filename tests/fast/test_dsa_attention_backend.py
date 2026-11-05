@@ -1,9 +1,10 @@
 """The opt-in Cake DSA kernels: ``--dsa-attention-backend cake`` -> the cake rows of SparseAttentionConfig /
-IndexerConfig -> miles_ext_kernels.dsa through miles.kernels.attention.dsa.cake (CPU: the submodule's kernels are
-stood in for)."""
+IndexerConfig -> miles_ext_kernels.cake.dsa through miles.kernels.attention.dsa.cake (CPU: the submodule's kernels
+are stood in for)."""
 
 import ast
 import importlib
+import inspect
 import sys
 import types
 from argparse import Namespace
@@ -39,7 +40,8 @@ def test_the_measured_default_rows_never_pick_the_cake_kernels():
 
 @pytest.fixture
 def fake_ops(monkeypatch):
-    """A stand-in for miles_ext_kernels.dsa.ops that records how the dispatch calls it (CPU, no kernel build)."""
+    """A stand-in for the op module miles_ext_kernels.cake.dsa that records how the dispatch calls it (CPU, no kernel
+    build)."""
     calls = []
 
     def sparse_attention(q, kv, indices, *, sm_scale, attn_sink, layout, d_v):
@@ -109,37 +111,45 @@ def test_other_indexer_geometries_are_rejected(heads, head_dim):
 
 @pytest.fixture
 def fake_ext_package(monkeypatch):
-    """A stand-in for the miles_ext_kernels.dsa package: records configure() and the device check."""
+    """A stand-in for the miles_ext_kernels package: records configure(), the device check of the op module
+    miles_ext_kernels.cake.dsa and cake.prebuild()."""
     events = []
-    package = types.ModuleType("miles_ext_kernels.dsa")
-    package.configure = lambda args: events.append(("configure", vars(args)))
-    ops = types.ModuleType("miles_ext_kernels.dsa.ops")
+    package = types.ModuleType("miles_ext_kernels")
+    package.configure = lambda values: events.append(("configure", values))
+    cake_package = types.ModuleType("miles_ext_kernels.cake")
+    cake_package.prebuild = lambda op, **model_params: events.append(("prebuild", op, model_params)) or []
+    ops = types.ModuleType("miles_ext_kernels.cake.dsa")
     ops.check_device = lambda device=None: events.append(("check_device",)) or "sm_100a"
-    package.ops = ops
-    monkeypatch.setitem(sys.modules, "miles_ext_kernels", types.ModuleType("miles_ext_kernels"))
-    monkeypatch.setitem(sys.modules, "miles_ext_kernels.dsa", package)
-    monkeypatch.setitem(sys.modules, "miles_ext_kernels.dsa.ops", ops)
+    package.cake, cake_package.dsa = cake_package, ops
+    monkeypatch.setitem(sys.modules, "miles_ext_kernels", package)
+    monkeypatch.setitem(sys.modules, "miles_ext_kernels.cake", cake_package)
+    monkeypatch.setitem(sys.modules, "miles_ext_kernels.cake.dsa", ops)
     return events
 
 
-def test_setup_hands_the_ext_arguments_to_the_kernels_and_checks_the_device(fake_ext_package):
+# GLM-5 on 4 TP ranks: 64 local query heads, the 512-wide latent with its 64-channel RoPE tail, no sink
+_GEOMETRY = dict(heads=64, d_qk=576, d_v=512, attn_sink=False)
+
+
+def test_setup_configures_the_kernels_checks_the_device_and_builds_the_layers_kernels(fake_ext_package):
     args = Namespace(miles_ext_kernels_args={"cake_dsa_variant": "fast", "cake_dsa_lazy_build": False})
 
-    cake.setup(args, index_heads=32, index_head_dim=128)
+    cake.setup(args, **_GEOMETRY, index_heads=32, index_head_dim=128)
     assert fake_ext_package == [
         ("configure", {"cake_dsa_variant": "fast", "cake_dsa_lazy_build": False}),
         ("check_device",),
+        ("prebuild", "dsa", {**_GEOMETRY, "index_heads": 32}),
     ]
 
 
 def test_setup_checks_the_indexer_geometry_before_touching_the_kernels(fake_ext_package):
     with pytest.raises(ValueError, match="this model has 128 heads"):
-        cake.setup(Namespace(miles_ext_kernels_args={}), index_heads=128, index_head_dim=128)
+        cake.setup(Namespace(miles_ext_kernels_args={}), **_GEOMETRY, index_heads=128, index_head_dim=128)
     assert fake_ext_package == []
 
 
 def test_a_missing_submodule_names_the_flag_and_the_checkout(monkeypatch):
-    for name in ("miles_ext_kernels", "miles_ext_kernels.dsa", "miles_ext_kernels.dsa.ops"):
+    for name in ("miles_ext_kernels", "miles_ext_kernels.cake", "miles_ext_kernels.cake.dsa"):
         monkeypatch.setitem(sys.modules, name, None)  # an import of it raises ModuleNotFoundError
     with pytest.raises(ImportError, match="--use-miles-ext-kernels"):
         cake.ops()
@@ -193,11 +203,11 @@ def test_a_wired_spec_sets_the_cake_kernels_up_under_the_cake_backend(spec):
     tree = _tree(_WIRED_SPECS[spec][0])
     builder = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == spec)
     guarded_setups = [
-        node
+        statement.value
         for node in ast.walk(builder)
-        if isinstance(node, ast.If)
-        and ast.unparse(node.test) == "args.dsa_attention_backend == 'cake'"
-        and any(ast.unparse(statement).startswith("cake.setup(args, ") for statement in node.body)
+        if isinstance(node, ast.If) and ast.unparse(node.test) == "args.dsa_attention_backend == 'cake'"
+        for statement in node.body
+        if ast.unparse(statement).startswith("cake.setup(args, ")
     ]
 
     # the layers learn the choice from the spec: a ModuleSpec param (GLM) or the TransformerConfig (DeepSeek-V4)
@@ -209,4 +219,7 @@ def test_a_wired_spec_sets_the_cake_kernels_up_under_the_cake_backend(spec):
     ]
 
     assert len(guarded_setups) == 1
+    # the spec hands over its whole layer geometry, which the kernels are built for
+    geometry = [name for name, p in inspect.signature(cake.setup).parameters.items() if p.kind is p.KEYWORD_ONLY]
+    assert sorted(keyword.arg for keyword in guarded_setups[0].keywords) == sorted(geometry)
     assert len(handed_to_layers) == 1

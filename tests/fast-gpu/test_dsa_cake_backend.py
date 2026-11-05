@@ -9,7 +9,6 @@
   same keys; and the SCORE_ROW_ALIGN padding of unaligned key counts.
 """
 
-import argparse
 import sys
 
 import pytest
@@ -22,7 +21,8 @@ register_cuda_ci(est_time=1200, suite="stage-c-4-gpu-b200", num_gpus=1, labels=[
 if not torch.cuda.is_available() or torch.cuda.get_device_capability() not in {(10, 0), (10, 3), (10, 7)}:
     pytest.skip("the Cake DSA kernels target SM100a / SM103a / SM107a", allow_module_level=True)
 
-import miles_ext_kernels.dsa as ext  # noqa: E402
+import miles_ext_kernels  # noqa: E402
+import miles_ext_kernels.cake.dsa as ext  # noqa: E402
 
 from miles.kernels.attention.dsa import indexer_logits, indexer_logits_sbhd, sparse_attention  # noqa: E402
 from miles.kernels.attention.dsa.indexer import CAKE_INDEXER_CONFIG, SCORE_ROW_ALIGN  # noqa: E402
@@ -39,9 +39,9 @@ SCORE_TOL = 1e-6
 
 @pytest.fixture(params=["det", "fast"])
 def variant(request):
-    ext.configure(argparse.Namespace(cake_dsa_variant=request.param))
+    miles_ext_kernels.configure(cake_dsa_variant=request.param)
     yield request.param
-    ext.configure(argparse.Namespace(cake_dsa_variant="det"))
+    miles_ext_kernels.configure()  # back to the defaults: det
 
 
 def _rel_err(actual, expected):
