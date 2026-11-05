@@ -508,7 +508,7 @@ class LinearAttention(MegatronModule, ABC):
 
 class GatedDeltaNet(LinearAttention):
     """Gated DeltaNet: one softplus-gated decay per value head, through fla's or FlashQLA's chunked
-    kernel, or the Cake one (``cake``, Blackwell SM100a / SM103a, K = V = 128, ``miles_ext_kernels.gdn`` from the
+    kernel, or the Cake one (``cake``, SM100a / SM103a / SM107a, K = V = 128, ``miles_ext_kernels.gdn`` from the
     miles-ext-kernels submodule: ``--cake-gdn-variant`` det, the bit-deterministic kernels, or fast, the fixed-order
     non-deterministic package; its short conv runs on :func:`cake_conv_backend` and its gated output norm on
     :func:`reproducible_rms_norm_gated`, so the whole layer's gradients are reproducible). ``args``, the parsed miles

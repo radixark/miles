@@ -25,7 +25,7 @@ class TrainConfig(BaseConfig):
                 "'cake' is the Cake chunked forward/backward from the miles-ext-kernels submodule: "
                 "--cake-gdn-variant det (bit-deterministic, the only variant with context parallelism) or fast (the "
                 "Cake non-deterministic package, fixed-order; the default outside --deterministic-mode). It requires "
-                "--use-miles-ext-kernels, NVIDIA SM100a/SM103a (Blackwell) and K = V = 128."
+                "--use-miles-ext-kernels, NVIDIA SM100a/SM103a/SM107a (Blackwell, Rubin) and K = V = 128."
             ),
         ),
     ] = "fla"

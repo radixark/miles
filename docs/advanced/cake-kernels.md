@@ -1,10 +1,10 @@
 ---
 title: Cake Training Kernels
-description: Opt-in Cake training kernels for Blackwell from the miles-ext-kernels submodule, one 'cake' backend choice per kernel family.
+description: Opt-in Cake training kernels for Blackwell and Rubin from the miles-ext-kernels submodule, one 'cake' backend choice per kernel family.
 ---
 The miles-ext-kernels submodule (`3rdparty/miles-ext-kernels`, Python package `miles_ext_kernels`) carries Cake
-training kernels for NVIDIA Blackwell (SM100a: B200 / GB200; SM103a: B300 / GB300). Every kernel family is opt-in:
-its backend argument gains a `cake` choice, and every default stays as it was.
+training kernels for NVIDIA Blackwell (SM100a: B200 / GB200; SM103a: B300 / GB300) and Rubin (SM107a: R200). Every
+kernel family is opt-in: its backend argument gains a `cake` choice, and every default stays as it was.
 
 ## Enable
 
@@ -36,6 +36,10 @@ The kernels compile with nvcc on first use, so the first step of a run pays the 
 
 - tvm-ffi libraries go to `${TVM_FFI_CACHE_DIR:-~/.cache/tvm-ffi}/miles_ext_kernels/`;
 - PyTorch extensions go to `TORCH_EXTENSIONS_DIR`.
+
+SM107a needs a CUDA 13.4 or newer nvcc (`CUDA_HOME`, else `nvcc` on `PATH`). An older toolkit, such as the CUDA 13.0
+one of the `radixark/miles:dev` image, builds the SM100a and SM103a kernels only; an SM107a build under it fails
+with an error naming the toolkit it needs.
 
 On multi-node runs, point both at node-local or per-job storage. Concurrent builds on one node share the cache
 through file locks.
