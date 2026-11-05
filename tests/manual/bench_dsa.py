@@ -4,10 +4,11 @@ per TP-local head count and sequence length. One GPU.
     python tests/manual/bench_dsa.py [--topk recorded.pt] [seq_len ...]
 
 Configs: ``default`` (the tuned table), the ``tilelang`` / ``flash_mla`` forwards with default tiling (with the
-TileLang backward), the ``cudnn`` backward, and ``query_block`` (the TileLang backward over the key union of
-64 / heads consecutive queries). Precision is the relative error against an fp32 dense reference (seq_len <= 8k)
-and between the two forwards. Indices are random causal picks, or a model's own top-k [S, topk] int32 recorded
-by tests/manual/dump_dsa_topk.py (``--topk``), which is what the query-block backward's gain depends on.
+TileLang backward), the ``cudnn`` backward, ``query_block_bwd`` (the TileLang backward over the key union of
+64 / heads consecutive queries, FlashMLA forward) and ``query_block`` (the TileLang forward and backward over that
+union). Precision is the relative error against an fp32 dense reference (seq_len <= 8k) and between the two
+forwards. Indices are random causal picks, or a model's own top-k [S, topk] int32 recorded by
+tests/manual/dump_dsa_topk.py (``--topk``), which is what the query-block kernels' gain depends on.
 """
 
 import argparse
@@ -66,7 +67,11 @@ def configs(heads):
     if cudnn_dsa is not None:
         out["cudnn"] = SparseAttentionConfig(backward_backend="cudnn")
     if heads < 64:
-        out["query_block"] = SparseAttentionConfig(backward_stages=1, backward_query_block=64 // heads)
+        block = 64 // heads
+        out["query_block_bwd"] = SparseAttentionConfig(backward_stages=1, backward_query_block=block)
+        out["query_block"] = SparseAttentionConfig(
+            forward_backend="tilelang", forward_query_block=block, backward_stages=1, backward_query_block=block
+        )
     return out
 
 
