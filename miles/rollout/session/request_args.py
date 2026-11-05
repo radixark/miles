@@ -159,6 +159,8 @@ def _cap_max_tokens(request_args: dict[str, Any], remaining: int) -> None:
     # SGLang reads max_completion_tokens before max_tokens, so cap the field it will use.
     key = "max_completion_tokens" if request_args.get("max_completion_tokens") is not None else "max_tokens"
     requested = request_args.get(key)
+    if requested is not None and (isinstance(requested, bool) or not isinstance(requested, (int, float))):
+        raise MessageValidationError(f"{key} must be a number, got {requested!r}")
     request_args[key] = remaining if requested is None else min(requested, remaining)
 
 

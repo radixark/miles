@@ -597,9 +597,6 @@ class TestTruncationAndCompaction:
         assert nodes[1]["parent"] == nodes[0]["id"]
 
 
-# ── additional R3 (non-retract pause modes): request offsets on the tree ──
-
-
 class TestTrajectoryGenerationBudget:
     """max_trajectory_generated_tokens counts the chain a request continues, not the whole tree."""
 
@@ -675,6 +672,9 @@ class TestTrajectoryGenerationBudget:
             f"{router_env.url}/sessions", json={"max_trajectory_generated_tokens": 0}, timeout=5.0
         )
         assert response.status_code == 400
+
+
+# ── additional R3 (non-retract pause modes): request offsets on the tree ──
 
 
 class TestAdditionR3RequestOffsetV2:

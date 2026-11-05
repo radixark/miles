@@ -455,3 +455,18 @@ class TestTrajectoryGenerationBudget:
                 remaining_generated_tokens=100,
             )
             assert {key: prepared.body.get(key) for key in expected} == expected
+
+    @pytest.mark.parametrize(
+        "client_args",
+        [{"max_tokens": "512"}, {"max_completion_tokens": "512"}, {"max_tokens": True}],
+        ids=["max_tokens_str", "max_completion_tokens_str", "max_tokens_bool"],
+    )
+    def test_a_non_numeric_client_cap_is_a_validation_error(self, client_args):
+        with pytest.raises(MessageValidationError, match="must be a number"):
+            prepare_chat_request(
+                client_args,
+                TITOTokenizer(MagicMock()),
+                config=make_session_server_config(),
+                turn_args=None,
+                remaining_generated_tokens=100,
+            )
