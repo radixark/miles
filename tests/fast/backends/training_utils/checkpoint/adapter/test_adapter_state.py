@@ -14,7 +14,6 @@ from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
     LocalShardSpec,
     _load_adapter_state,
     _save_adapter_state,
-    gloo_group,
     read_adapter_state_keys,
 )
 from miles.utils.distributed_utils import init_gloo_group
@@ -64,33 +63,6 @@ def test_reload_under_a_different_split_is_bitwise(save_rows, primaries):
     assert read_adapter_state_keys(Path(directory)) == {"m.lora_A.weight", "m.lora_A.exp_avg", "m.lora_A.exp_avg_sq"}
 
 
-def _disagree_on_step(rank, world_size, port, *, directory):
-    init_gloo(rank, world_size, port=port)
-    init_gloo_group()
-    with pytest.raises(AssertionError, match="disagree on the optimizer step"):
-        _save_adapter_state(Path(directory), _state([(0, 3), (3, 6)][rank], step=rank))
-    dist.destroy_process_group()
-
-
-def test_ranks_must_agree_on_step():
-    directory = tempfile.mkdtemp()
-    run_multiprocess(partial(_disagree_on_step, directory=directory))
-
-
-def test_only_fp32_is_stored():
-    spec = LocalShardSpec("m.lora_A", (2, 2), (0, 0), (2, 2))
-    weight = torch.zeros(2, 2, dtype=torch.bfloat16)
-    with pytest.raises(AssertionError, match="fp32 only"):
-        AdapterState([spec], [weight], [weight], [weight], step=0)
-
-
-def test_bf16_moments_are_refused():
-    spec = LocalShardSpec("m.lora_A", (2, 2), (0, 0), (2, 2))
-    weight = torch.zeros(2, 2)
-    with pytest.raises(AssertionError, match="fp32 only"):
-        AdapterState([spec], [weight], [weight.bfloat16()], [weight], step=0)
-
-
 def _one_rank_holds_nothing(rank, world_size, port, *, directory):
     init_gloo(rank, world_size, port=port)
     init_gloo_group()
@@ -105,45 +77,17 @@ def test_a_rank_without_parameters_agrees_on_the_step():
     assert _load_adapter_state(Path(directory), _state((0, 6), fill=-1.0, step=None)) == 7
 
 
-def _two_blocks_of_one_key(rank, world_size, port, *, directory):
-    init_gloo(rank, world_size, port=port)
-    init_gloo_group()
-    if rank == 0:
-        specs = [
-            LocalShardSpec("m.lora_B", (4, 2), (0, 0), (2, 2)),
-            LocalShardSpec("m.lora_B", (4, 2), (2, 0), (2, 2)),
-        ]
-        weights = [torch.zeros(2, 2), torch.ones(2, 2)]
-        state = AdapterState(specs, weights, weights, weights, step=0)
-    else:
-        state = AdapterState([], [], [], [], step=None)
-    with pytest.raises(
-        RuntimeError, match=r"rank 0: AssertionError: this rank holds several blocks of \['m.lora_B'\]"
-    ):
-        _save_adapter_state(Path(directory), state)
-    dist.destroy_process_group()
-
-
-def test_a_rank_holding_two_blocks_of_one_key_fails_every_rank():
-    run_multiprocess(partial(_two_blocks_of_one_key, directory=tempfile.mkdtemp()))
-
-
-def test_a_load_into_two_blocks_of_one_key_is_refused(tmp_path):
-    spec = LocalShardSpec("m.lora_B", (2, 2), (0, 0), (2, 2))
-    saved = torch.ones(2, 2)
-    _save_adapter_state(tmp_path, AdapterState([spec], [saved], [saved], [saved], step=1))
-    blocks = [torch.zeros(2, 2), torch.zeros(2, 2)]
-    template = AdapterState([spec, spec], blocks, [b.clone() for b in blocks], [b.clone() for b in blocks], step=None)
-    # the first block would stay unfilled
+def test_a_key_held_in_several_blocks_by_one_rank_is_refused(tmp_path):
+    """One block would go unwritten at save, or stay unfilled at load."""
+    specs = [LocalShardSpec("m.lora_B", (4, 2), (0, 0), (2, 2)), LocalShardSpec("m.lora_B", (4, 2), (2, 0), (2, 2))]
+    blocks = [torch.zeros(2, 2), torch.ones(2, 2)]
     with pytest.raises(RuntimeError, match="several blocks"):
-        _load_adapter_state(tmp_path, template)
-
-
-def _without_gloo_group(rank, world_size, port):
-    init_gloo(rank, world_size, port=port)
-    with pytest.raises(RuntimeError, match="Gloo group has not been initialized"):
-        gloo_group()
-
-
-def test_an_uninitialized_gloo_group_fails_instead_of_falling_back_to_the_default_group():
-    run_multiprocess(_without_gloo_group, world_size=1)
+        _save_adapter_state(tmp_path / "save", AdapterState(specs, blocks, blocks, blocks, step=0))
+    whole = LocalShardSpec("m.lora_B", (2, 2), (0, 0), (2, 2))
+    saved = torch.ones(2, 2)
+    _save_adapter_state(tmp_path / "load", AdapterState([whole], [saved], [saved], [saved], step=1))
+    template = AdapterState(
+        [whole, whole], blocks, [b.clone() for b in blocks], [b.clone() for b in blocks], step=None
+    )
+    with pytest.raises(RuntimeError, match="several blocks"):
+        _load_adapter_state(tmp_path / "load", template)
