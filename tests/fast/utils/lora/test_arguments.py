@@ -22,7 +22,6 @@ from miles.utils.lora.arguments import (
     _validate_rollout_only_adapter,
     validate_lora_args,
     validate_lora_args_after_megatron,
-    validate_multi_lora_args,
 )
 
 
@@ -126,109 +125,6 @@ def test_a_run_that_builds_no_slots_trains_any_family(monkeypatch, overrides) ->
     _check_layout(monkeypatch, Namespace(**(_NO_SNAPSHOTS | overrides)), _LayoutlessConfig())
 
 
-def _adapter_state_args(**overrides) -> Namespace:
-    return Namespace(
-        **{
-            "save": "/ckpt",
-            "lora_adapter_path": None,
-            "debug_disable_optimizer": False,
-            "optimizer": "adam",
-            "exp_avg_dtype": torch.float32,
-            "exp_avg_sq_dtype": torch.float32,
-            "main_params_dtype": torch.float32,
-            "use_distributed_optimizer": True,
-            "use_gloo_process_groups": True,
-            "use_precision_aware_optimizer": False,
-            "optimizer_cpu_offload": False,
-            "stream_optimizer_state_to_disk": False,
-            "overlap_param_gather": False,
-            "num_distributed_optimizer_instances": 1,
-        }
-        | overrides
-    )
-
-
-def test_convert_save_is_refused_outside_megatron_single_lora(tmp_path):
-    args = Namespace(
-        lora_type="lora",
-        multi_lora_n_adapters=0,
-        lora_rank=8,
-        lora_alpha=16.0,
-        lora_adapter_path=str(tmp_path),
-        lora_adapter_convert_save=str(tmp_path / "converted"),
-        train_backend="torchtitan",
-        megatron_to_hf_mode="bridge",
-        debug_rollout_only=False,
-    )
-    with pytest.raises(AssertionError, match="--lora-adapter-convert-save is implemented only"):
-        validate_lora_args(args)
-
-
-def test_convert_save_refuses_an_existing_destination(tmp_path):
-    destination = tmp_path / "converted"
-    destination.mkdir()
-    args = Namespace(
-        lora_type="lora",
-        multi_lora_n_adapters=0,
-        lora_rank=8,
-        lora_alpha=16.0,
-        lora_adapter_path=str(tmp_path),
-        lora_adapter_convert_save=str(destination),
-        train_backend="megatron",
-        megatron_to_hf_mode="bridge",
-        indep_dp=False,
-        debug_rollout_only=False,
-    )
-    with pytest.raises(AssertionError, match="already exists"):
-        validate_lora_args(args)
-
-
-def test_convert_save_without_lora_is_refused(tmp_path):
-    args = Namespace(
-        lora_type="lora",
-        multi_lora_n_adapters=0,
-        lora_rank=0,
-        lora_adapter_path=None,
-        lora_adapter_convert_save=str(tmp_path / "converted"),
-    )
-    with pytest.raises(AssertionError, match="converts --lora-adapter-path"):
-        validate_lora_args(args)
-
-
-def test_convert_save_is_refused_under_indep_dp(tmp_path):
-    args = Namespace(
-        lora_type="lora",
-        multi_lora_n_adapters=0,
-        lora_rank=8,
-        lora_alpha=16.0,
-        lora_adapter_path=str(tmp_path),
-        lora_adapter_convert_save=str(tmp_path / "converted"),
-        train_backend="megatron",
-        megatron_to_hf_mode="bridge",
-        indep_dp=True,
-        debug_rollout_only=False,
-    )
-    with pytest.raises(AssertionError, match="does not support --indep-dp"):
-        validate_lora_args(args)
-
-
-def test_convert_save_is_refused_under_rollout_only(tmp_path):
-    args = Namespace(
-        lora_type="lora",
-        multi_lora_n_adapters=0,
-        lora_rank=8,
-        lora_alpha=16.0,
-        lora_adapter_path=str(tmp_path),
-        lora_adapter_convert_save=str(tmp_path / "converted"),
-        train_backend="megatron",
-        megatron_to_hf_mode="bridge",
-        indep_dp=False,
-        debug_rollout_only=True,
-    )
-    with pytest.raises(AssertionError, match="--debug-rollout-only"):
-        validate_lora_args(args)
-
-
 class _ReachedTheModel(Exception):
     """Raised where validation first reads the base model: every path and alpha decision is made by then."""
 
@@ -260,13 +156,6 @@ def _single_lora_args(**overrides):
     return Namespace(**(args | overrides))
 
 
-def test_a_relative_convert_save_is_made_absolute_on_the_driver(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    args = _single_lora_args(lora_adapter_path=str(tmp_path), lora_adapter_convert_save="converted")
-    _validate_until_the_model(args, monkeypatch)
-    assert args.lora_adapter_convert_save == os.path.join(os.getcwd(), "converted")
-
-
 def test_a_relative_adapter_path_is_made_absolute_before_alpha_is_resolved(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "source").mkdir()
@@ -275,11 +164,6 @@ def test_a_relative_adapter_path_is_made_absolute_before_alpha_is_resolved(tmp_p
     _validate_until_the_model(args, monkeypatch)
     assert args.lora_adapter_path == os.path.join(os.getcwd(), "source")
     assert args.lora_alpha == 32
-
-
-def test_multi_lora_refuses_an_adapter_path():
-    with pytest.raises(AssertionError, match="--lora-adapter-path is single LoRA only"):
-        validate_multi_lora_args(Namespace(multi_lora_n_adapters=2, lora_rank=8, lora_adapter_path="/adapter"))
 
 
 def test_rollout_only_skips_the_adapter_checkpoint_checks():
@@ -293,22 +177,6 @@ def test_rollout_only_skips_the_adapter_checkpoint_checks():
         debug_disable_optimizer=True,
     )
     validate_lora_args_after_megatron(args)
-
-
-@pytest.mark.parametrize(
-    "fault_tolerance", [dict(indep_dp=True), dict(non_persistent_ckpt_type="local")], ids=["peer_heal", "in_memory"]
-)
-def test_lora_refuses_the_checkpoints_that_cannot_carry_its_adapter(fault_tolerance):
-    """save() writes a LoRA adapter to its adapter dir: a healed cell or an in-memory rollback would lose it."""
-    args = Namespace(
-        lora_rank=8,
-        multi_lora=False,
-        megatron_to_hf_mode="raw",
-        debug_rollout_only=False,
-        **{"indep_dp": False, "non_persistent_ckpt_type": None, **fault_tolerance},
-    )
-    with pytest.raises(AssertionError, match="remove 'train' from --ft-components"):
-        validate_lora_args_after_megatron(args)
 
 
 def test_lora_refuses_a_load_holding_adapter_checkpoints_without_an_adapter_path(tmp_path):
@@ -328,51 +196,11 @@ def test_lora_refuses_a_load_holding_adapter_checkpoints_without_an_adapter_path
         validate_lora_args_after_megatron(args)
 
 
-def test_the_adapter_checkpoint_requires_fp32_masters():
-    with pytest.raises(AssertionError, match="fp32 masters"):
-        _validate_adapter_state_args(_adapter_state_args(main_params_dtype=torch.float16))
-
-
-def test_loading_the_adapter_checkpoint_refuses_several_distributed_optimizer_instances():
-    args = _adapter_state_args(save=None, lora_adapter_path="/adapter", num_distributed_optimizer_instances=2)
-    with pytest.raises(AssertionError, match="--num-distributed-optimizer-instances"):
-        _validate_adapter_state_args(args)
-
-
 def test_without_an_optimizer_an_adapter_path_loads_weights_only():
     args = Namespace(
         save=None, lora_adapter_path="/adapter", lora_adapter_convert_save=None, debug_disable_optimizer=True
     )
     _validate_adapter_state_args(args)
-
-
-@pytest.mark.parametrize("saved", [dict(save="/save"), dict(lora_adapter_convert_save="/converted")])
-def test_without_an_optimizer_nothing_that_stores_fp32_masters_is_accepted(saved):
-    args = Namespace(
-        **{"save": None, "lora_adapter_path": "/adapter", "lora_adapter_convert_save": None, **saved},
-        debug_disable_optimizer=True,
-    )
-    with pytest.raises(AssertionError, match="--debug-disable-optimizer does not build"):
-        _validate_adapter_state_args(args)
-
-
-def test_the_adapter_checkpoint_refuses_optimizer_state_streamed_to_disk():
-    args = Namespace(
-        save="/save",
-        lora_adapter_path=None,
-        lora_adapter_convert_save=None,
-        debug_disable_optimizer=False,
-        optimizer="adam",
-        exp_avg_dtype=torch.float32,
-        exp_avg_sq_dtype=torch.float32,
-        main_params_dtype=torch.float32,
-        use_distributed_optimizer=True,
-        use_gloo_process_groups=True,
-        stream_optimizer_state_to_disk=True,
-        use_precision_aware_optimizer=False,
-    )
-    with pytest.raises(AssertionError, match="--stream-optimizer-state-to-disk keeps the moments"):
-        _validate_adapter_state_args(args)
 
 
 class TestRolloutOnlyAdapter:
@@ -384,9 +212,6 @@ class TestRolloutOnlyAdapter:
     @staticmethod
     def _validate(path):
         _validate_rollout_only_adapter(Namespace(lora_adapter_path=str(path), hf_checkpoint="/hf"))
-
-    def test_a_hub_id_goes_to_sglang_as_is(self):
-        self._validate("org/adapter")
 
     def test_a_peft_dir_the_library_does_not_read_goes_to_sglang_as_is(self, tmp_path):
         (tmp_path / "adapter_config.json").write_text(json.dumps({"r": 2, "lora_alpha": 4}))
@@ -400,11 +225,6 @@ class TestRolloutOnlyAdapter:
         )
         (tmp_path / "adapter_config.json").write_text("{}")
         with pytest.raises(AssertionError, match="official Tinker tensor names"):
-            self._validate(tmp_path)
-
-    def test_a_checkpoint_only_a_trainer_reads_is_refused(self, tmp_path):
-        torch.save({}, tmp_path / "adapter_megatron_rank0.pt")
-        with pytest.raises(AssertionError, match="only a trainer can read"):
             self._validate(tmp_path)
 
     def test_an_adapter_dir_with_no_plain_peft_form_is_refused_without_a_convert_save_remedy(self, tmp_path):

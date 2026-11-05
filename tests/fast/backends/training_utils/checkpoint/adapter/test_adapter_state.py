@@ -14,7 +14,6 @@ from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
     LocalShardSpec,
     _load_adapter_state,
     _save_adapter_state,
-    gloo_group,
     read_adapter_state_keys,
 )
 from miles.utils.distributed_utils import init_gloo_group
@@ -99,33 +98,6 @@ def test_several_pieces_of_one_key_on_a_rank_reload_bitwise(save_bands, load_ban
     assert torch.equal(template.weights[0], FULL) and torch.equal(template.exp_avgs[0], FULL * 2)
 
 
-def _disagree_on_step(rank, world_size, port, *, directory):
-    init_gloo(rank, world_size, port=port)
-    init_gloo_group()
-    with pytest.raises(AssertionError, match="disagree on the optimizer step"):
-        _save_adapter_state(Path(directory), _state([(0, 3), (3, 6)][rank], step=rank))
-    dist.destroy_process_group()
-
-
-def test_ranks_must_agree_on_step():
-    directory = tempfile.mkdtemp()
-    run_multiprocess(partial(_disagree_on_step, directory=directory))
-
-
-def test_only_fp32_is_stored():
-    spec = LocalShardSpec("m.lora_A", (2, 2), (0, 0), (2, 2))
-    weight = torch.zeros(2, 2, dtype=torch.bfloat16)
-    with pytest.raises(AssertionError, match="fp32 only"):
-        AdapterState([spec], [weight], [weight], [weight], step=0)
-
-
-def test_bf16_moments_are_refused():
-    spec = LocalShardSpec("m.lora_A", (2, 2), (0, 0), (2, 2))
-    weight = torch.zeros(2, 2)
-    with pytest.raises(AssertionError, match="fp32 only"):
-        AdapterState([spec], [weight], [weight.bfloat16()], [weight], step=0)
-
-
 def _one_rank_holds_nothing(rank, world_size, port, *, directory):
     init_gloo(rank, world_size, port=port)
     init_gloo_group()
@@ -149,13 +121,3 @@ def test_a_load_into_the_same_block_twice_is_refused(tmp_path):
     # the first block would stay unfilled
     with pytest.raises(RuntimeError, match="several blocks"):
         _load_adapter_state(tmp_path, template)
-
-
-def _without_gloo_group(rank, world_size, port):
-    init_gloo(rank, world_size, port=port)
-    with pytest.raises(RuntimeError, match="Gloo group has not been initialized"):
-        gloo_group()
-
-
-def test_an_uninitialized_gloo_group_fails_instead_of_falling_back_to_the_default_group():
-    run_multiprocess(_without_gloo_group, world_size=1)

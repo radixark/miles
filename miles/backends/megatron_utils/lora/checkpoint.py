@@ -485,8 +485,7 @@ def find_load_mismatch(
     return next((m for m in gathered if m is not None), None)
 
 
-# what the source checks raise for a source the user named: absent, unreadable, malformed or refused; any other
-# AssertionError or ValueError is a bug
+# a source the user named that is absent, unreadable, malformed or refused; any other failure is the gateway's
 _SOURCE_ERRORS = (
     AdapterSourceError,
     FileNotFoundError,
@@ -703,7 +702,7 @@ def restore_single_lora(
         source.lora_alpha == run.lora_alpha
     ), f"{path} was trained with lora_alpha={source.lora_alpha}; this run uses {run.lora_alpha}"
     if optimizer is None:
-        # as main: without an optimizer the weights load, and the run starts over
+        # no optimizer: the run starts over, as on main
         return None
     # an old-format save holds its training state beside the rank shards, whichever reader loaded the weights
     training_state = read_training_state(path) or _read_legacy_training_state(path)
