@@ -111,9 +111,9 @@ passes `agentic_train_args(..., tito_model="qwen3_vl", session_images=True)`,
 which selects `--use-session-server v2 --multimodal-token-space-processing`, and also passes
 the `--sglang-enable-token-space-processor`, `--shared-media-dir` and
 `--use-miles-router` that session images require. Qwen3-VL clicks on a 0-999 grid while
-computer-1's generic provider reads pixels, so set `HARBOR_AGENT_IMPORT_PATH` to a `Computer1`
-subclass whose provider marks its actions `CoordinateSpace.NORMALIZED_0_999`. Other computer-1
-settings, such as the desktop size, go in `HARBOR_AGENT_KWARGS`.
+computer-1's generic provider reads pixels, so set `HARBOR_CUA_COORDINATE_SPACE=normalized_0_999`,
+which patches that provider to prompt for and rescale a 0-999 grid. Other computer-1 settings,
+such as the desktop size, go in `HARBOR_AGENT_KWARGS`.
 
 ## 5. Optional: run the trials on a CPU box
 

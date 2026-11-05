@@ -22,7 +22,10 @@ harbor = pytest.importorskip("harbor")
 import harbor_agent_function as haf  # noqa: E402
 from harbor.agents.computer_1.computer_1 import Computer1, Computer1Chat, EpisodeLoggingPaths  # noqa: E402
 from harbor.agents.computer_1.providers.base import image_url_part  # noqa: E402
+from harbor.agents.computer_1.providers.generic import GenericJsonProvider  # noqa: E402
+from harbor.agents.computer_1.runtime import DisplayGeometry, normalize_completion_action  # noqa: E402
 from harbor.agents.factory import AgentFactory  # noqa: E402
+from harbor.llms.base import LLMResponse  # noqa: E402
 from harbor.models.agent.name import AgentName  # noqa: E402
 from harbor.models.environment_type import EnvironmentType  # noqa: E402
 from harbor.models.trial.config import TrialConfig  # noqa: E402
@@ -89,6 +92,52 @@ def _computer_1(session_url: str, logs_dir, monkeypatch):
         {"instance_id": "task-1", "agent_name": "computer-1", "max_seq_len": 4096}, session_url, _SESSION_SAMPLING
     )
     return AgentFactory.create_agent_from_config(cfg.agent, logs_dir=logs_dir)
+
+
+@pytest.fixture
+def full_hd_computer_1(tasks_dir, tmp_path, monkeypatch):
+    monkeypatch.setattr(GenericJsonProvider, "from_agent", GenericJsonProvider.__dict__["from_agent"])
+    monkeypatch.setattr(GenericJsonProvider, "parse", GenericJsonProvider.parse)
+    monkeypatch.setattr(haf, "_coordinate_space_applied", False, raising=False)
+    monkeypatch.setenv("HARBOR_AGENT_KWARGS", json.dumps({"desktop_width": 1920, "desktop_height": 1080}))
+
+    def build():
+        haf.apply_coordinate_space()
+        return GenericJsonProvider.from_agent(_computer_1("http://s/sessions/s1/v1", tmp_path, monkeypatch))
+
+    return build
+
+
+def _click(provider, x: int, y: int):
+    reply = json.dumps({"analysis": "", "plan": "", "action": {"type": "click", "x": x, "y": y}})
+    action = provider.parse(LLMResponse(content=reply)).action
+    return normalize_completion_action(action, DisplayGeometry(desktop_width=1920, desktop_height=1080))
+
+
+def test_the_coordinate_space_maps_grid_clicks_onto_the_desktop(full_hd_computer_1, monkeypatch):
+    monkeypatch.setenv("HARBOR_CUA_COORDINATE_SPACE", "normalized_0_999")
+    provider = full_hd_computer_1()
+
+    assert "1000x1000 pixels" in provider.record_text("task")
+    action = _click(provider, 999, 500)
+    assert (action.x, action.y) == (1919, 540)
+
+
+def test_without_a_coordinate_space_clicks_stay_desktop_pixels(full_hd_computer_1, monkeypatch):
+    monkeypatch.delenv("HARBOR_CUA_COORDINATE_SPACE", raising=False)
+    provider = full_hd_computer_1()
+
+    assert "1920x1080 pixels" in provider.record_text("task")
+    action = _click(provider, 999, 500)
+    assert (action.x, action.y) == (999, 500)
+
+
+def test_an_unknown_coordinate_space_stops_the_run(monkeypatch):
+    monkeypatch.setattr(haf, "_coordinate_space_applied", False, raising=False)
+    monkeypatch.setenv("HARBOR_CUA_COORDINATE_SPACE", "pixels")
+
+    with pytest.raises(ValueError, match="normalized_0_999"):
+        haf.apply_coordinate_space()
 
 
 def test_harbor_builds_computer_1_from_the_import_path_with_max_seq_len_set(tasks_dir, tmp_path, monkeypatch):

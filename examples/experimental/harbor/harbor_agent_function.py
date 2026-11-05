@@ -59,6 +59,10 @@ Env vars (read on the rollout worker):
   HARBOR_VERIFIER_IMPORT_PATH / HARBOR_VERIFIER_KWARGS
                          a Harbor verifier class, and its JSON kwargs, run in
                          place of the task's ``tests/``
+  HARBOR_CUA_COORDINATE_SPACE
+                         ``normalized_0_999`` makes Harbor's generic computer
+                         provider prompt for, and rescale, clicks on a 0..999
+                         grid; unset leaves Harbor as it is
 
 Failure semantics: a verdict is returned as-is. A trial the policy cannot have
 failed is discarded with ``InfraAbort``: one that failed before its agent
@@ -138,6 +142,40 @@ def _env_int(var: str) -> int | None:
 
 def _allowed_hosts(var: str) -> list[str]:
     return [host for host in re.split(r"[,\s]+", os.getenv(var, "")) if host]
+
+
+_NORMALIZED_GRID = 1000
+_coordinate_space_applied = False
+
+
+def apply_coordinate_space() -> None:
+    """Patch Harbor's generic computer provider for the coordinate space in ``HARBOR_CUA_COORDINATE_SPACE``."""
+    global _coordinate_space_applied
+    space = os.getenv("HARBOR_CUA_COORDINATE_SPACE", "").strip()
+    if not space or _coordinate_space_applied:
+        return
+    if space != "normalized_0_999":
+        raise ValueError(f"HARBOR_CUA_COORDINATE_SPACE={space!r}; the only supported value is normalized_0_999")
+    from harbor.agents.computer_1.providers.generic import GenericJsonProvider
+    from harbor.agents.computer_1.runtime import CoordinateSpace
+
+    from_agent = GenericJsonProvider.from_agent.__func__
+    parse = GenericJsonProvider.parse
+
+    def from_agent_on_grid(cls, agent):
+        provider = from_agent(cls, agent)
+        provider.desktop_width = provider.desktop_height = _NORMALIZED_GRID
+        return provider
+
+    def parse_on_grid(self, llm_response):
+        step = parse(self, llm_response)
+        if step.action is not None:
+            step.action.source = CoordinateSpace.NORMALIZED_0_999.value
+        return step
+
+    GenericJsonProvider.from_agent = classmethod(from_agent_on_grid)
+    GenericJsonProvider.parse = parse_on_grid
+    _coordinate_space_applied = True
 
 
 def _env_json_object(var: str) -> dict[str, Any]:
@@ -610,6 +648,7 @@ async def run(
     # fail every sample the same way; raising beats training on silent all-zero
     # rewards.
     _ensure_provider_key()
+    apply_coordinate_space()
     config = build_trial_config(metadata, session_url, request_kwargs)
 
     try:

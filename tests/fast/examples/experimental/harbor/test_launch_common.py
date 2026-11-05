@@ -95,6 +95,7 @@ def test_agent_and_verifier_classes_are_forwarded_with_their_kwargs(monkeypatch)
     monkeypatch.setenv("E2B_API_KEY", "e2b_x")
     knobs = {
         "HARBOR_AGENT_IMPORT_PATH": "pkg.agent:MyComputer1",
+        "HARBOR_CUA_COORDINATE_SPACE": "normalized_0_999",
         "HARBOR_AGENT_KWARGS": '{"coordinate_space": "normalized_0_999"}',
         "HARBOR_VERIFIER_IMPORT_PATH": "pkg.verify:HostVerifier",
         "HARBOR_VERIFIER_KWARGS": '{"read_limit_mb": 64}',

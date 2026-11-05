@@ -128,6 +128,7 @@ def harbor_env_vars(args, *, agent_worker: bool = False) -> dict[str, str]:
         "HARBOR_ENV_BUILD_TIMEOUT_MULTIPLIER",
         "HARBOR_AGENT_ALLOWED_HOSTS",
         "HARBOR_AGENT_IMPORT_PATH",
+        "HARBOR_CUA_COORDINATE_SPACE",
         "HARBOR_AGENT_KWARGS",
         "HARBOR_VERIFIER_IMPORT_PATH",
         "HARBOR_VERIFIER_KWARGS",
