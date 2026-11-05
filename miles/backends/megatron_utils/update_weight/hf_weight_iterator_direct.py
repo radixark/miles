@@ -420,9 +420,10 @@ def all_gather_params_async(
     param_infos_and_params: list[tuple[ParamInfo, torch.Tensor]],
 ) -> list[torch.Tensor]:
     """
-    Parallel TP all-gather for multiple params. Loop 1: for each TP param, allocate buffers +
-    dist.all_gather(async_op=True) on expert-TP/regular-TP group (skip expert_bias/non-TP/duplicated).
-    Loop 2: wait all NCCL handles (enables overlap). Loop 3: concat partitions when not already in the final layout.
+    Parallel TP all-gather for multiple params. Loop 1: for each TP param, apply the GLU stride/MoE dim fix
+    (`_check_and_fix_partition`), allocate buffers + dist.all_gather(async_op=True) on expert-TP/regular-TP group
+    (skip expert_bias/non-TP/duplicated). Loop 2: wait all NCCL handles (enables overlap).
+    Loop 3: concat partitions (with the GLU rechunk) when not already in the final layout.
     """
     # Phase 1: Start all async all_gather operations
     gather_tasks = []
@@ -455,7 +456,7 @@ def all_gather_params_async(
                 continue
 
             partition_stride, partition_dim = _check_and_fix_partition(
-                args, info.name, param.partition_stride, param.partition_dim
+                args, info.name, partition_stride=param.partition_stride, partition_dim=param.partition_dim
             )
             if partition_dim == 0 and partition_stride == 1:
                 gathered = torch.empty((tp_size, *param.shape), dtype=param.dtype, device=param.device)
@@ -477,9 +478,9 @@ def all_gather_params_async(
 
     # Phase 3: Process all results after all communications are done
     gathered_params = []
-    for _info, direct_param, handle, param_partitions, partition_dim, partition_stride in gather_tasks:
-        if handle is None or direct_param is not None:
-            # Unsharded, or gathered directly into the final dim-0 layout.
+    for _info, direct_param, _handle, param_partitions, partition_dim, partition_stride in gather_tasks:
+        if direct_param is not None:
+            # Unsharded, or received into views of one dim-0-ordered buffer, so no cat is needed.
             param = direct_param
         else:
             param = _gather_with_stride(param_partitions, partition_dim, partition_stride)
