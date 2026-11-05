@@ -365,12 +365,16 @@ class RolloutRelatedRolloutOnlyConfig(BaseConfig):
             ),
         ),
     ] = None
-    rollout_max_context_len: A[
+    max_seq_len: A[
         int | None,
         Arg(
             help=(
-                "The maximum context size for the inference engine during rollout."
-                "It should no exceed the `max_position_embeddinds` in Huggingface model's `config.json`"
+                "Max tokens in one trajectory: its prompt plus every completion and environment response. "
+                "Each request's max_new_tokens is lowered so the trajectory fits: on /generate a full "
+                "trajectory stops as TRUNCATED, and under the session server a request whose prompt fills "
+                "it gets HTTP 409. Sample assembly truncates to it. A dataset in --rollout-data-yaml-config "
+                "may set a lower max_seq_len, and agent functions receive the sample's value in metadata. "
+                "It should not exceed `max_position_embeddings` in the HuggingFace model's `config.json`."
             )
         ),
     ] = None

@@ -28,6 +28,7 @@ from miles.utils.output_store.plan import (
     store_ref_from_dict,
 )
 from miles.utils.processing_utils import encode_image_for_rollout_engine, extract_multimodal_train_inputs
+from miles.utils.rollout_data_config import lower_limit
 from miles.utils.types import Sample
 
 
@@ -82,6 +83,11 @@ def apply_sample_max_response_len(sampling_params: dict[str, Any], sample: Sampl
     return {**sampling_params, "max_new_tokens": limit}
 
 
+def resolve_max_seq_len(args, sample: Sample) -> int | None:
+    """The sample's trajectory length limit: `--max-seq-len`, or its dataset's lower `max_seq_len`."""
+    return lower_limit(args.max_seq_len, sample.max_seq_len)
+
+
 def compute_request_payload(
     args,
     input_ids: list[int],
@@ -90,11 +96,12 @@ def compute_request_payload(
     *,
     evaluation: bool = False,
     kv_cache_namespace: str | None = None,
+    max_seq_len: int | None = None,
 ) -> tuple[dict[str, Any] | None, Sample.Status | None]:
     sampling_params = deepcopy(sampling_params)
     max_new_tokens = sampling_params.pop("max_new_tokens", args.rollout_max_response_len)
-    if x := args.rollout_max_context_len:
-        max_new_tokens = min(max_new_tokens, x - len(input_ids))
+    if max_seq_len is not None:
+        max_new_tokens = min(max_new_tokens, max_seq_len - len(input_ids))
     if max_new_tokens <= 0:
         return None, Sample.Status.TRUNCATED
 

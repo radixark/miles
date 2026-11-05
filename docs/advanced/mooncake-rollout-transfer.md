@@ -276,7 +276,7 @@ Requirements:
 - An engine buffer (`--output-store-local-buffer-size`, default 16gb) that holds one
   response's arrays. Indexer top-k dominates, about 0.5 MB per token on DeepSeek-V3.2, so
   16gb fits a 32k-token response. A buffer too small for the longest sequence that
-  `--rollout-max-context-len`, or else `--rollout-max-response-len`, allows is rejected at
+  `--max-seq-len`, or else `--rollout-max-response-len`, allows is rejected at
   launch. Under RDMA, each engine pins its whole buffer in
   host memory when it starts.
 - For RDMA engines, `device_name` in `--mooncake-store-init-kwargs`: SGLang reads no

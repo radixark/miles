@@ -562,9 +562,7 @@ def _validate_rollout_data_yaml_config(args) -> None:
         datasets,
         rollout_max_prompt_len=args.rollout_max_prompt_len,
         rollout_max_response_len=args.rollout_max_response_len,
-        max_seq_len=getattr(
-            args, "max_seq_len", None
-        ),  # config-access-exempt: optional length limit registered by custom agent hooks
+        max_seq_len=args.max_seq_len,
     )
     _check_dataset_rewards(args, datasets)
     default_generate = getattr(  # config-access-exempt: still a path string before custom hooks resolve
@@ -1792,21 +1790,15 @@ def miles_validate_args(args):
         args.use_indexer_replay = True
         assert args.context_parallel_size == 1, "indexer replay does not support context parallelism yet"
 
-    if args.eval_max_context_len is None:
-        logger.info(
-            f"args.eval_max_context_len is not set. Use args.rollout_max_context_len {args.rollout_max_context_len} as default value."
-        )
-        args.eval_max_context_len = args.rollout_max_context_len
-
-    if args.rollout_max_context_len is not None:
+    if args.max_seq_len is not None:
         if args.rollout_max_prompt_len is None:
-            args.rollout_max_prompt_len = args.rollout_max_context_len - 1
+            args.rollout_max_prompt_len = args.max_seq_len - 1
             logger.info(
-                f"args.rollout_max_prompt_len is not set. Use args.rollout_max_context_len - 1 ({args.rollout_max_context_len} - 1) as default value so that there is at least one generated token to compute loss."
+                f"args.rollout_max_prompt_len is not set. Use args.max_seq_len - 1 ({args.max_seq_len} - 1) as default value so that there is at least one generated token to compute loss."
             )
         assert (
-            args.rollout_max_prompt_len <= args.rollout_max_context_len - 1
-        ), f"args.rollout_max_prompt_len ({args.rollout_max_prompt_len}) must be smaller than args.rollout_max_context_len ({args.rollout_max_context_len}) so that there is at least one generated token to compute loss."
+            args.rollout_max_prompt_len <= args.max_seq_len - 1
+        ), f"args.rollout_max_prompt_len ({args.rollout_max_prompt_len}) must be smaller than args.max_seq_len ({args.max_seq_len}) so that there is at least one generated token to compute loss."
 
     _validate_rollout_data_yaml_config(args)
 

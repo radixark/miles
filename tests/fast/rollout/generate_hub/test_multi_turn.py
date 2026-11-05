@@ -468,7 +468,7 @@ class TestExitConditions:
 
 class TestRespectMaxContextLen:
     @pytest.mark.parametrize(
-        "generation_env", [{"args_kwargs": {"rollout_max_context_len": SINGLE_TURN_PROMPT_TOKEN_LEN}}], indirect=True
+        "generation_env", [{"args_kwargs": {"max_seq_len": SINGLE_TURN_PROMPT_TOKEN_LEN}}], indirect=True
     )
     def test_prompt_exceeds_max_context_len_returns_truncated(self, variant, generation_env):
         if is_agentic_variant(variant):
@@ -490,7 +490,7 @@ class TestRespectMaxContextLen:
         [
             {
                 "args_kwargs": {
-                    "rollout_max_context_len": len(TwoTurnStub.FIRST_PROMPT_TOKEN_IDS)
+                    "max_seq_len": len(TwoTurnStub.FIRST_PROMPT_TOKEN_IDS)
                     + token_len(TwoTurnStub.FIRST_RESPONSE)
                     + token_len(TwoTurnStub.FIRST_TOOL_RESPONSE)
                 }
@@ -528,11 +528,11 @@ class TestRespectMaxContextLen:
         "generation_env,expected_max_new_tokens",
         [
             (
-                {"args_kwargs": {"rollout_max_context_len": len(TwoTurnStub.SECOND_PROMPT_TOKEN_IDS) + 10}},
+                {"args_kwargs": {"max_seq_len": len(TwoTurnStub.SECOND_PROMPT_TOKEN_IDS) + 10}},
                 10,
             ),
             (
-                {"args_kwargs": {"rollout_max_context_len": len(TwoTurnStub.SECOND_PROMPT_TOKEN_IDS) + 100}},
+                {"args_kwargs": {"max_seq_len": len(TwoTurnStub.SECOND_PROMPT_TOKEN_IDS) + 100}},
                 64,
             ),
         ],
