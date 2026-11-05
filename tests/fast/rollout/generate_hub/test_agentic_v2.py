@@ -190,8 +190,8 @@ async def _failing_agent(**kwargs):
         pytest.param("v2", ["COMPLETED", "TRUNCATED"], ["COMPLETED", "TRUNCATED"], id="v2-after-truncation"),
     ],
 )
-async def test_agent_failure_aborts_samples_unless_policy_truncated(monkeypatch, version, statuses, expected):
-    """A failure with no truncated turn is not the policy's doing, so its samples must not train a default reward."""
+async def test_agent_failure_aborts_samples_unless_length_truncated(monkeypatch, version, statuses, expected):
+    """A failure with no length-truncated sample is not tied to the policy, so its samples must not train a default reward."""
     samples = [Sample(status=Sample.Status[s], response_length=1, tokens=[i]) for i, s in enumerate(statuses)]
     tracer = _Tracer(SamplesReply(samples=samples, session_metadata={}, empty_reason=None))
     _patch_agent(monkeypatch, tracer)

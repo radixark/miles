@@ -82,11 +82,13 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
   `max_seq_len`. Forward only the fields your environment needs.
 - Return a dictionary to merge rewards, reports, or metrics into each output
   sample's metadata, or return `None` when there is nothing to add.
-- Raise when the episode fails. Its samples are then aborted, and training drops
-  their group, unless the collected trajectory is already truncated: a turn hit
-  the response-length cap, or the trajectory exceeds `--max-seq-len`. In that
-  case the policy ended the episode, and the samples still go to the reward
-  model, without the metadata the function did not return.
+- Raise only when the episode cannot be scored for a reason outside the policy,
+  such as an environment, user-simulator, or judge failure; return a reward for
+  a policy failure. A raise aborts the episode's samples, and training drops
+  their group, unless a length limit already cut the trajectory: a turn hit the
+  response-length cap, or the trajectory exceeds `--max-seq-len`. Those samples
+  still go to the reward model, without the metadata the function did not
+  return.
 
 For structured parsing, the payload may use SGLang's
 `ChatCompletionRequest`-compatible fields, which extend the OpenAI format.

@@ -344,8 +344,9 @@ class Sample:
 
         return sample
 
-    def get_reward_value(self, args) -> float:
-        return self.reward if not args.reward_key else self.reward[args.reward_key]
+    def get_reward_value(self, args) -> float | None:
+        # an ABORTED sample skips the reward model and keeps reward=None
+        return self.reward if self.reward is None or not args.reward_key else self.reward[args.reward_key]
 
     @property
     def effective_response_length(self):

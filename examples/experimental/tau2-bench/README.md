@@ -70,8 +70,9 @@ length grows (6k -> 8k tokens) and telecom episodes increasingly loop until
 `TAU2_EPISODE_TIMEOUT_S` (1800 s). A frozen user simulator is the first thing to try.
 
 An agent turn whose thinking exhausts `--rollout-max-response-len` leaves an empty reply,
-which tau2 rejects; the episode scores 0. An episode that fails for any other reason, such
-as a user-simulator or judge API error, is dropped from training instead.
+which tau2 rejects; the episode scores 0. An episode whose tau2 run raises, such as on a
+user-simulator or judge API error, is dropped from training unless a length limit already
+cut it; an episode that times out still scores 0.
 
 ## Env vars
 

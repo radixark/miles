@@ -705,7 +705,11 @@ async def eval_rollout_single_dataset(
     reward_key = args.eval_reward_key or args.reward_key
     return {
         dataset_cfg.name: {
-            "rewards": [sample.reward if not reward_key else sample.reward[reward_key] for sample in data],
+            # an ABORTED sample keeps reward=None, which log_eval_rollout_data counts in none_reward_ratio
+            "rewards": [
+                sample.reward[reward_key] if reward_key and sample.reward is not None else sample.reward
+                for sample in data
+            ],
             "truncated": [sample.status == Sample.Status.TRUNCATED for sample in data],
             "samples": data,
         }

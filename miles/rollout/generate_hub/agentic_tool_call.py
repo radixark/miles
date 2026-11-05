@@ -22,8 +22,8 @@ Agent function contract:
   Returning None means no extra metadata to attach.
   Returning a dict merges it into every sample's metadata, so downstream
   reward models (--custom-rm-path) can read whatever the agent left there.
-  Raising aborts the episode's samples unless the policy ended it by running
-  past a length limit (``_abort_unless_policy_stopped``).
+  Raising aborts the episode's samples, so training drops their group, unless a
+  length limit already cut the trajectory (``_abort_unless_length_truncated``).
 
   Under ``subproc`` (the default) each call runs in a child process of its own:
   its arguments and return value must be picklable, and module-level state lasts
@@ -166,7 +166,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
 
     samples = result.samples
     if agent_failed:
-        _abort_unless_policy_stopped(samples, log_prefix=log_prefix)
+        _abort_unless_length_truncated(samples, log_prefix=log_prefix)
     if collect_spec_metrics:
         for sample in samples:
             sample.metadata.pop(SESSION_ROLLOUT_METRICS_KEY, None)
@@ -204,16 +204,16 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     return GenerateFnOutput(samples=sample)
 
 
-def _abort_unless_policy_stopped(samples: list[Sample], *, log_prefix: str) -> None:
-    """Abort a failed agent's samples unless the policy ended the episode.
+def _abort_unless_length_truncated(samples: list[Sample], *, log_prefix: str) -> None:
+    """Abort a failed agent's samples unless a length limit already cut the trajectory.
 
-    A TRUNCATED trajectory ran past the response-length cap or ``--max-seq-len``, so the
-    failure followed the policy's own cut-off and the reward model still scores it. Otherwise
-    nothing ties the failure to the policy (a user-simulator, judge or tool API error), so the
-    aborted filter drops the group instead of training a reward the episode never earned.
+    A TRUNCATED sample hit the response-length cap or ``--max-seq-len``. The failure may then be
+    the policy's own doing, so the reward model still scores it as before. Otherwise nothing ties
+    the failure to the policy (a user-simulator, judge or tool API error), so the aborted filter
+    drops the group instead of training a reward the episode never earned.
     """
     if any(sample.status == Sample.Status.TRUNCATED for sample in samples):
-        logger.info(f"{log_prefix} Agent function failed after a truncated turn; keeping the samples")
+        logger.info(f"{log_prefix} Agent function failed on a length-truncated trajectory; keeping the samples")
         return
     for sample in samples:
         sample.status = Sample.Status.ABORTED

@@ -782,6 +782,24 @@ class TestEvalMetrics:
         assert payload["eval/gsm8k"] == 0.5
         assert not any(key.startswith("alpha/") for key in payload)
 
+    def test_aborted_sample_under_a_reward_key_is_counted_not_indexed(self, monkeypatch):
+        """An aborted eval sample keeps reward=None, and a reward key must not turn it into a TypeError."""
+        calls: list[dict] = []
+        monkeypatch.setattr(
+            "miles.ray.rollout.metrics.tracking.log", lambda _args, payload, step_key: calls.append(payload)
+        )
+        args = make_args(log_passrate=False, reward_key="score", eval_reward_key="score")
+        samples = [
+            make_sample(index=0, reward=None, status=Sample.Status.ABORTED),
+            make_sample(index=1, reward={"score": 1.0}),
+        ]
+
+        log_eval_rollout_data(0, args, {"agentic": {"rewards": [None, 1.0], "samples": samples}})
+
+        [payload] = calls
+        assert payload["eval/agentic-none_reward_ratio"] == 0.5
+        assert payload["eval/agentic"] == 0.5
+
 
 class TestObservedGpuThroughput:
     @pytest.mark.parametrize("gpu_count", [0, 4])
