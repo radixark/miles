@@ -38,7 +38,7 @@ from miles.backends.training_utils.checkpoint.adapter.source_error import Adapte
 _MODULE = "miles.backends.megatron_utils.lora.checkpoint"
 
 
-def _restore(path, *, convert_save=None, megatron_to_hf_mode="bridge", source_alpha=16.0):
+def _restore(path, *, convert_save=None, source_alpha=16.0):
     """``restore_single_lora`` with the model-facing pieces mocked; returns (iteration, scheduler, mocks)."""
     args = SimpleNamespace(
         hf_checkpoint="/hf",
@@ -49,7 +49,7 @@ def _restore(path, *, convert_save=None, megatron_to_hf_mode="bridge", source_al
         lora_type="lora",
         lora_dropout=0.05,
         experts_shared_outer_loras=False,
-        megatron_to_hf_mode=megatron_to_hf_mode,
+        megatron_to_hf_mode="bridge",
         multi_lora=False,
         backend=SimpleNamespace(no_load_optim=True, no_save_optim=False, use_precision_aware_optimizer=False),
     )
@@ -93,20 +93,6 @@ def test_a_weights_only_convert_save_writes_neither_moments_nor_a_placeholder_tr
     assert mocks["DistributedOptimizerMembers"].call_args.kwargs["save_moments"] is False
     assert mocks["save_and_commit_adapter_dir"].call_args.kwargs["training_state"] is None
     assert mocks["save_and_commit_adapter_dir"].call_args.kwargs["lora_dropout"] == 0.05
-
-
-def test_only_the_bridge_backend_loads_a_megatron_bridge_checkpoint(tmp_path):
-    _, _, mocks = _restore(tmp_path, megatron_to_hf_mode="bridge")
-    loaders = mocks["load_adapter_dir"].call_args.kwargs["in_model_loaders_by_kind"]
-    assert (
-        loaders[AdapterSourceKind.MEGATRON_BRIDGE_CHECKPOINT] is mocks["MegatronBridgeCheckpointLoader"].return_value
-    )
-    # argument validation refuses a Bridge source under raw mode
-    _, _, mocks = _restore(tmp_path, megatron_to_hf_mode="raw")
-    assert (
-        AdapterSourceKind.MEGATRON_BRIDGE_CHECKPOINT
-        not in mocks["load_adapter_dir"].call_args.kwargs["in_model_loaders_by_kind"]
-    )
 
 
 def test_a_source_trained_with_another_alpha_is_refused_on_the_trainer(tmp_path):

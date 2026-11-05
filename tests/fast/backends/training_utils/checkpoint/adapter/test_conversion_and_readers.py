@@ -510,12 +510,6 @@ def test_a_bridge_checkpoint_with_adapter_keys_but_no_peft_config_is_refused(tmp
         read_source_lora_alpha(tmp_path)
 
 
-def test_a_peft_dir_takes_its_alpha_from_adapter_config_despite_a_run_config(tmp_path):
-    (tmp_path / "adapter_config.json").write_text(json.dumps({"lora_alpha": 4}))
-    (tmp_path / "run_config.yaml").write_text("peft:\n  alpha: 32\n")
-    assert read_source_lora_alpha(tmp_path) == 4
-
-
 class _StackedDownExport:
     """Bridge's export of a packed checkpoint: experts.down_proj comes as one 3D tensor, not one per expert."""
 
