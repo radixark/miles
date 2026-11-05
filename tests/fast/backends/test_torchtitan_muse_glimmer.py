@@ -170,12 +170,48 @@ def test_a_bare_gate_proj_target_cannot_reach_the_attention_output_gate(tmp_path
     layout = resolve_hf_lora_targets(hf_config, target_modules=list(LORA_TARGET_GROUPS))
     with pytest.raises(ValueError, match="self_attn.gate_proj"):
         convert_model_config(
-            _model_config(tmp_path), hf_targets=["gate_proj", "up_proj"], layout=layout, rank=8, alpha=16
+            _model_config(tmp_path),
+            hf_targets=["gate_proj", "up_proj"],
+            layout=layout,
+            rank=8,
+            alpha=16,
+            experts_shared_outer=False,
         )
     attention = resolve_hf_lora_targets(hf_config, target_modules=["attn"])
-    convert_model_config(_model_config(tmp_path), hf_targets=attention, layout=layout, rank=8, alpha=16)
+    convert_model_config(
+        _model_config(tmp_path), hf_targets=attention, layout=layout, rank=8, alpha=16, experts_shared_outer=False
+    )
 
 
 def test_the_sequence_may_not_exceed_the_checkpoints_rotary_table(tmp_path):
     with pytest.raises(ValueError, match="max_position_embeddings"):
         _model_config(tmp_path, max_position_embeddings=2048)
+
+
+def test_a_dense_fused_gate_up_adapter_exports_as_two_peft_adapters(tmp_path):
+    """The dense MLP's ``w13`` is one ``[2, F, D]`` Linear whose ``lora_b`` is ``[2, F, r]``, the ranks of a
+    shared-A expert adapter; it must still export as plain gate_proj / up_proj adapters, not as packed experts."""
+    from miles.backends.torchtitan_utils.lora_names import iter_hf_adapter_tensors
+
+    model = _model_config(tmp_path)
+    adapter = type(model)._owner.state_dict_adapter_cls(model, None)
+    hidden, intermediate, rank = _HF_TEXT_CONFIG["hidden_size"], _HF_TEXT_CONFIG["intermediate_size"], 8
+    lora_a = torch.randn(rank, hidden)
+    lora_b = torch.randn(2, intermediate, rank)
+    exported = dict(
+        iter_hf_adapter_tensors(
+            adapter,
+            {"layers.0.feed_forward.w13.lora_a.weight": lora_a, "layers.0.feed_forward.w13.lora_b.weight": lora_b},
+        )
+    )
+
+    prefix = "model.language_model.layers.0.mlp."
+    assert {k: tuple(v.shape) for k, v in exported.items()} == {
+        f"{prefix}gate_proj.lora_A.weight": (rank, hidden),
+        f"{prefix}gate_proj.lora_B.weight": (intermediate, rank),
+        f"{prefix}up_proj.lora_A.weight": (rank, hidden),
+        f"{prefix}up_proj.lora_B.weight": (intermediate, rank),
+    }
+    assert exported[f"{prefix}gate_proj.lora_A.weight"] is lora_a
+    torch.testing.assert_close(exported[f"{prefix}gate_proj.lora_B.weight"], lora_b[0])
+    torch.testing.assert_close(exported[f"{prefix}up_proj.lora_B.weight"], lora_b[1])

@@ -1,7 +1,8 @@
 """LoRA projection groups in the HF model namespace; backend layouts are resolved separately."""
 
 import logging
-from collections.abc import Callable
+import re
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
 from miles.utils.lora.utils import matches_lora_target
@@ -26,6 +27,27 @@ class _HfLoraModelSpec:
     unembed: str = "lm_head"
     unwrap_text_config: bool = False
     default_train_unembed: bool = False
+
+
+_EXPERT_INDEX = re.compile(r"\.experts\.\d+\.")
+
+
+def collapse_hf_expert_modules(modules: Iterable[str]) -> list[str]:
+    """The expert-agnostic HF module names of routed-expert projections, in first-seen order.
+
+    An adapter shared across experts is one tensor with the expert axis inside it, so its name drops the
+    expert index (``experts.3.gate_proj`` -> ``experts.gate_proj``), and a gate/up pair of one fused
+    projection folds into the packed ``gate_up_proj`` the engine's expert buffers use.
+    """
+    collapsed = list(dict.fromkeys(_EXPERT_INDEX.sub(".experts.", module) for module in modules))
+    folded = []
+    for module in collapsed:
+        prefix, _, leaf = module.rpartition(".")
+        if leaf in ("gate_proj", "up_proj") and {f"{prefix}.gate_proj", f"{prefix}.up_proj"} <= set(collapsed):
+            module = f"{prefix}.gate_up_proj"
+        if module not in folded:
+            folded.append(module)
+    return folded
 
 
 def _prefix_paths(prefix, *paths):

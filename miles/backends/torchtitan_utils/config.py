@@ -184,6 +184,7 @@ def build_trainer_config(
             layout=args.hf_lora_layout,
             rank=args.lora_rank,
             alpha=args.lora_alpha,
+            experts_shared_outer=args.experts_shared_outer_loras,
         )
 
     return TitanTrainer.Config(
