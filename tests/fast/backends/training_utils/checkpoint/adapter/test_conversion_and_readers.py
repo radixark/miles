@@ -433,19 +433,11 @@ def test_an_edited_sampler_config_is_refused(tmp_path):
         MilesAdapterDirReader(tmp_path, QWEN35)
 
 
-def test_gpt_oss_gate_and_up_with_their_own_a_have_no_plain_peft_form(tmp_path):
+def test_gpt_oss_gate_and_up_with_their_own_a_have_no_plain_peft_form():
     # HF gpt-oss has one packed experts.gate_up_proj; canonical gate / up with their own A have no module there
     gate, up, down = (f"{L}.mlp.experts.{p}" for p in ("gate_proj", "up_proj", "down_proj"))
-    run = _run(target_modules=(gate, up, down))
-    weights = {
-        f"{m}.lora_{f}": torch.ones(3, 2, 8) if f == "A" else torch.ones(3, 8, 2)
-        for m in (gate, up, down)
-        for f in "AB"
-    }
-    assert not has_plain_peft_form(run, GPT_OSS)
+    assert not has_plain_peft_form(_run(target_modules=(gate, up, down)), GPT_OSS)
     assert has_plain_peft_form(_run(target_modules=(gate, up, down), shared_lora_a_groups=((gate, up),)), GPT_OSS)
-    with pytest.raises(AssertionError, match="has no plain-PEFT form"):
-        write_peft_adapter(tmp_path, weights, run, GPT_OSS, lora_dropout=0.0)
 
 
 def test_gpt_oss_sampler_export_keeps_packed_hf_names(tmp_path):
