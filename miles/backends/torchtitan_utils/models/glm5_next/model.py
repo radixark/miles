@@ -1,4 +1,6 @@
+import functools
 from dataclasses import dataclass
+from typing import Any
 
 import torch
 from torch import nn
@@ -16,6 +18,7 @@ from torchtitan.models.common.feed_forward import DenseFeedForward
 from torchtitan.models.common.flops import get_nparams_and_active_nparams, quadratic_attention_flops_per_token
 from torchtitan.models.common.moe import MoE
 
+from miles.backends.torchtitan_utils.image_embeddings import ImageInputs, image_token_counts, write_image_features
 from miles.backends.torchtitan_utils.models.glm5_next.layers import (
     DSAAttention,
     Glm5NextRMSNorm,
@@ -23,8 +26,17 @@ from miles.backends.torchtitan_utils.models.glm5_next.layers import (
     KimiDeltaAttention,
     update_residual_streams,
 )
-from miles.backends.torchtitan_utils.models.glm5_next.packed_sequence import PackedSequence, build_packed_sequence
+from miles.backends.torchtitan_utils.models.glm5_next.packed_sequence import (
+    ContextParallelLayout,
+    PackedSequence,
+    build_packed_sequence,
+)
 from miles.backends.torchtitan_utils.models.glm5_next.state_dict_adapter import Glm5NextStateDictAdapter
+from miles.backends.torchtitan_utils.models.glm5_next.vision import Glm5NextImageEncoder
+from miles_plugins.models.glm5_next.vision import has_visual_weights
+
+# the image tensors forward takes; they reach every CP rank whole and stay on the host until encoded
+_IMAGE_INPUT_KEYS = ("pixel_values", "image_grid_thw", "image_png", "image_png_lengths")
 
 
 class Glm5NextBlock(Module):
@@ -64,6 +76,7 @@ class Glm5NextModel(Decoder):
     @dataclass(kw_only=True, slots=True)
     class Config(Decoder.Config):
         num_streams: int
+        image_token_id: int | None = None
 
         @property
         def first_full_attention(self) -> None:
@@ -89,6 +102,23 @@ class Glm5NextModel(Decoder):
         self.kda_conv_kernel_size = next(
             (layer.kda.q_conv1d.kernel_size for layer in config.layers if layer.kda), None
         )
+        self.image_token_id = config.image_token_id
+
+    def attach_vision_tower(self, hf_checkpoint: str, *, device: torch.device, dtype: torch.dtype) -> None:
+        """Load the frozen tower on the stage that embeds tokens, if the checkpoint has one. It goes into
+        ``__dict__``, not a submodule, so FSDP, the optimizer, the state-dict adapter and DCP checkpoints
+        never see it."""
+        if self.image_token_id is None or self.tok_embeddings is None or not has_visual_weights(hf_checkpoint):
+            return
+        self.__dict__["_image_encoder"] = Glm5NextImageEncoder(hf_checkpoint, device=device, dtype=dtype)
+
+    def preprocess_inputs(self, input_dict: dict[str, Any], **kwargs: Any):
+        """Decoder's preprocessing without the image tensors: every CP rank needs all images of the
+        sequence (it encodes the ones its slice holds), and they carry no SPMD layout."""
+        images = {key: input_dict.pop(key) for key in _IMAGE_INPUT_KEYS if key in input_dict}
+        inputs, labels, model_kwargs, loss_kwargs = super().preprocess_inputs(input_dict, **kwargs)
+        model_kwargs.update(images)
+        return inputs, labels, model_kwargs, loss_kwargs
 
     def _parallelize(self, parallelism_context: ParallelismContext) -> None:
         for module in self.modules():
@@ -138,6 +168,10 @@ class Glm5NextModel(Decoder):
         *,
         padding_mask: torch.Tensor | None = None,
         aux_loss_denominators: torch.Tensor | None = None,
+        pixel_values: torch.Tensor | None = None,
+        image_grid_thw: torch.Tensor | None = None,
+        image_png: torch.Tensor | None = None,
+        image_png_lengths: torch.Tensor | None = None,
     ) -> torch.Tensor:
         assert positions is not None and positions.ndim == 1, "GLM-5.3-Flash trains on one packed sequence"
         sequence = build_packed_sequence(
@@ -147,6 +181,14 @@ class Glm5NextModel(Decoder):
             x_TND = tokens
         else:
             h_TD = self.tok_embeddings(tokens)
+            if image_grid_thw is not None:
+                images = ImageInputs(
+                    grid_thw=image_grid_thw,
+                    pixel_values=pixel_values,
+                    image_png=image_png,
+                    image_png_lengths=image_png_lengths,
+                )
+                h_TD = self._write_image_features(h_TD, tokens, images, sequence.cp_layout)
             x_TND = h_TD.unsqueeze(-2).expand(*h_TD.shape[:-1], self.num_streams, h_TD.shape[-1]).contiguous()
         for layer in self.layers.values():
             x_TND = layer(x_TND, sequence)
@@ -156,3 +198,22 @@ class Glm5NextModel(Decoder):
         if self._skip_lm_head or self.lm_head is None:
             return h_TD
         return self.lm_head(h_TD)
+
+    def _write_image_features(
+        self, h_TD: torch.Tensor, tokens: torch.Tensor, images: ImageInputs, cp_layout: ContextParallelLayout | None
+    ) -> torch.Tensor:
+        encoder = self.__dict__.get("_image_encoder")
+        if encoder is None:
+            raise RuntimeError(
+                "the batch carries images but no vision tower is attached: the checkpoint has no "
+                "model.visual.* weights, or attach_vision_tower was not called"
+            )
+        return write_image_features(
+            h_TD,
+            tokens,
+            image_token_id=self.image_token_id,
+            tokens_per_image=image_token_counts(images.grid_thw, encoder.merge_size),
+            encode=functools.partial(encoder.encode, images),
+            cp_group=None if cp_layout is None else cp_layout.group,
+            local_indices=None if cp_layout is None else cp_layout.local_indices,
+        )

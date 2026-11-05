@@ -214,3 +214,35 @@ def test_a_checkpoint_without_linear_attention_layers_builds_without_their_confi
         linear_attn_config=None,
     )
     assert [layer.kda for layer in model_config.layers] == [None, None]
+
+
+def test_the_forward_takes_images_as_optional_keywords():
+    import inspect
+
+    from miles.backends.torchtitan_utils.models.glm5_next.model import Glm5NextModel
+
+    parameters = inspect.signature(Glm5NextModel.forward).parameters
+    for name in ("pixel_values", "image_grid_thw", "image_png", "image_png_lengths"):
+        assert parameters[name].default is None
+
+
+def test_preprocessing_hands_images_to_the_forward_unsharded(monkeypatch):
+    from torchtitan.models.common.decoder import Decoder
+
+    from miles.backends.torchtitan_utils.models.glm5_next.model import Glm5NextModel
+
+    seen = {}
+
+    def _decoder_preprocess(self, input_dict, **kwargs):
+        seen.update(input_dict)
+        return input_dict.pop("input"), input_dict.pop("labels"), input_dict, {}
+
+    monkeypatch.setattr(Decoder, "preprocess_inputs", _decoder_preprocess)
+    images = {"pixel_values": torch.zeros(4, 3), "image_grid_thw": torch.tensor([[1, 2, 2]])}
+    tokens = torch.arange(8)
+    inputs, _, model_kwargs, _ = Glm5NextModel.preprocess_inputs(
+        object.__new__(Glm5NextModel), {"input": tokens, "labels": tokens, **images}
+    )
+    assert inputs is tokens
+    assert not set(images) & set(seen)
+    assert all(model_kwargs[key] is value for key, value in images.items())
