@@ -43,6 +43,14 @@ SKIP_ALLOWLIST: dict[str, tuple[str, ...]] = {
         "needs two GPUs",
         "the two GPUs differ in compute capability",
     ),
+    "mhc": (
+        # SM107a serves hidden size 4096 only
+        "hidden 5120 is not served on this device",
+        "hidden 7168 is not served on this device",
+        # multi_gpu: the second-device case needs two GPUs of one model
+        "needs two GPUs",
+        "the second GPU is another model",
+    ),
 }
 
 # One line of pytest's -rs summary: "SKIPPED [2] tests/cake/gdn/test_gdn_kcp_gpu.py:543: <reason>"

@@ -5,9 +5,9 @@
 specs, and :class:`CakeMeanOutputContraction` in place of GLM-5.3's stream-mean head (:func:`apply_mhc_backend`). The
 subclass keeps Megatron's parameters, their initialisation and their names, so checkpoints load unchanged. Its forward
 runs the mapping GEMM, the coefficients and the stream collapse as one Cake prepare call, and its
-``fused_h_res_h_post_bda`` the residual mixing as one finish call (``miles_ext_kernels.mhc``); the backward of the pair
-returns one single-cast ``dX``. ``--cake-mhc-variant`` picks the parameter-gradient summation: ``det`` (fixed order) or
-``fast`` (FP32 atomics in ``dfn``).
+``fused_h_res_h_post_bda`` the residual mixing as one finish call (``miles_ext_kernels.cake.mhc``); the backward of the
+pair returns one single-cast ``dX``. ``--cake-mhc-variant`` picks the parameter-gradient summation: ``det`` (fixed
+order) or ``fast`` (FP32 atomics in ``dfn``).
 
 Numerics against Megatron's module: the coefficients stay FP32, where Megatron casts them to the activation dtype
 before it applies them. GLM-5.3's patched RMS normalisation, ``rsqrt(mean(x^2) + eps)`` with the model's
@@ -27,7 +27,6 @@ CUDA-only (NVIDIA SM100a / SM103a / SM107a, Megatron backend): startup validatio
 
 from __future__ import annotations
 
-import argparse
 import dataclasses
 
 import torch
@@ -47,16 +46,25 @@ PARAMETER_ALIGNMENT_BYTES = 32
 
 
 def mhc_kernels():
-    """The ``miles_ext_kernels.mhc`` kernel package."""
+    """The op module ``miles_ext_kernels.cake.mhc``."""
     try:
-        from miles_ext_kernels import mhc
+        from miles_ext_kernels.cake import mhc
     except ImportError as exc:
         raise ImportError(
-            "--mhc-backend cake runs miles_ext_kernels.mhc from the miles-ext-kernels submodule: pass "
+            "--mhc-backend cake runs miles_ext_kernels.cake.mhc from the miles-ext-kernels submodule: pass "
             "--use-miles-ext-kernels and check the submodule out with "
             "'git submodule update --init 3rdparty/miles-ext-kernels'."
         ) from exc
     return mhc
+
+
+def _prebuild(hidden: int, sinkhorn_iters: int) -> None:
+    """Build every library the connections and the stream-mean head may launch at ``hidden`` and ``sinkhorn_iters`` on
+    the current device, either variant, ahead of the first step; a repeated call builds nothing."""
+    mhc_kernels()  # the clear error when the submodule is missing
+    from miles_ext_kernels import cake
+
+    cake.prebuild("mhc", device=torch.accelerator.current_device_index(), hidden=hidden, sinkhorn_iters=sinkhorn_iters)
 
 
 class CakeHyperConnection(HyperConnectionModule):
@@ -64,8 +72,8 @@ class CakeHyperConnection(HyperConnectionModule):
 
     ``forward`` returns ``(U, handle, None, hidden_states)`` in the slots of ``(aggregated, h_res, h_post, residual)``:
     Megatron's layer hands the prepare ``handle`` and the residual back to ``fused_h_res_h_post_bda``, which mixes the
-    branch output into the four streams. Construction compiles the kernels of the layer's hidden size ahead of the
-    first step (``miles_ext_kernels.mhc.prebuild``).
+    branch output into the four streams. Construction builds the kernels of the layer's hidden size and Sinkhorn
+    iteration count ahead of the first step (``miles_ext_kernels.cake.prebuild``).
     """
 
     def __init__(self, config, layer_number: int):
@@ -77,9 +85,7 @@ class CakeHyperConnection(HyperConnectionModule):
                 f"--mhc-backend cake takes one coefficient epsilon; Megatron's are {self.compute_h_eps} (pre) and "
                 f"{self.sinkhorn_eps} (Sinkhorn)"
             )
-        mhc_kernels().prebuild(
-            torch.accelerator.current_device_index(), self.hidden_size, sinkhorn_iters=self.sinkhorn_iterations
-        )
+        _prebuild(self.hidden_size, self.sinkhorn_iterations)
 
     def forward(self, hidden_states, mhc_recompute_manager=None, output_slot=None):
         if mhc_recompute_manager is not None or output_slot is not None:
@@ -138,17 +144,13 @@ class CakeHyperConnection(HyperConnectionModule):
 
 class CakeMeanOutputContraction(MegatronModule):
     """The plain mean of the block output's streams (GLM-5.3's head) on the Cake head kernels: bit for bit
-    ``HyperConnectionModule.output_contract`` and its gradient. Construction compiles its kernels."""
+    ``HyperConnectionModule.output_contract`` and its gradient. Construction builds the kernels, which the
+    connections' build already covers."""
 
     def __init__(self, config):
         super().__init__(config)
         self.num_streams = config.num_residual_streams
-        mhc_kernels().prebuild(
-            torch.accelerator.current_device_index(),
-            config.hidden_size,
-            sinkhorn_iters=config.mhc_sinkhorn_iterations,
-            head=True,
-        )
+        _prebuild(config.hidden_size, config.mhc_sinkhorn_iterations)
 
     def forward(self, hidden_states):
         s, b, width = hidden_states.shape
@@ -175,8 +177,8 @@ def apply_mhc_backend(block_spec, args, config, *, mean_head: bool = False):
     mean), :class:`CakeMeanOutputContraction` for its ``hc_head_contraction``. Returns ``block_spec``; other backends
     leave it untouched.
 
-    Checks the model's connection shape and the device, and hands the kernel package its parsed arguments
-    (``args.miles_ext_kernels_args``).
+    Checks the model's connection shape and the device, and hands the kernels their parsed arguments
+    (``args.miles_ext_kernels_args``, through ``miles_ext_kernels.configure``).
     """
     if args.mhc_backend != "cake":
         return block_spec
@@ -192,7 +194,9 @@ def apply_mhc_backend(block_spec, args, config, *, mean_head: bool = False):
             f"capability {torch.cuda.get_device_capability(device)}; NVIDIA SM100a / SM103a run {mhc.HIDDEN_SIZES}, "
             f"SM107a 4096); this model has hidden size {config.hidden_size}"
         )
-    mhc.configure(argparse.Namespace(**(args.miles_ext_kernels_args or {})))
+    import miles_ext_kernels
+
+    miles_ext_kernels.configure(args.miles_ext_kernels_args)
     for layer_spec in block_spec.layer_specs:
         submodules = layer_spec.submodules
         submodules.self_attention_hyper_connection = _cake_connection(submodules.self_attention_hyper_connection)
