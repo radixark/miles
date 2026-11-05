@@ -163,7 +163,8 @@ class TestColocatedBaseSend:
         events = []
 
         def complete(stage):
-            # IPC consumers must retain access until both completion and the barrier succeed.
+            # The bucket must stay populated until every send has consumed it; it is cleared only after the
+            # whole transfer succeeds.
             assert len(bucket) == 1
             assert tensor_ref() is not None
             events.append(stage)
