@@ -121,7 +121,9 @@ def _validate_multi_lora_moe_support(args: TrainerConfig, provider) -> None:
     served = {target.rsplit(".", 1)[-1] for target in args.hf_lora_targets}
     if "gate_up_proj" in served:
         served.update(("gate_proj", "up_proj"))
-    expert_pair = {"gate_proj", "up_proj", "down_proj"}
+    expert_pair = {"up_proj", "down_proj"}
+    if provider.gated_linear_unit:
+        expert_pair.add("gate_proj")
     if served & expert_pair:
         assert expert_pair <= served, (
             f"Multi-LoRA on MoE experts requires all of {sorted(expert_pair)} in "
