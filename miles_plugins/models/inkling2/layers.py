@@ -238,7 +238,7 @@ class Inkling2TransformerLayer(TransformerLayer):
 
     The completed blocks travel between layers through Megatron's ``context`` channel as
     [T, 1, n_blocks, hidden]; the embedding is block 0, and a block completes at every
-    layer index divisible by ``n_layers_per_attnres_block``. The last layer returns the
+    layer index divisible by ``n_layers_per_attn_res_block``. The last layer returns the
     output aggregation, which the block's final norm consumes.
     """
 
@@ -296,7 +296,7 @@ class Inkling2TransformerLayer(TransformerLayer):
         del attention_mask, kwargs
         partial = hidden_states
         blocks = list(context.unbind(-2)) if context is not None else []
-        is_boundary = self.layer_idx % self.inkling2.n_layers_per_attnres_block == 0
+        is_boundary = self.layer_idx % self.inkling2.n_layers_per_attn_res_block == 0
 
         attention = self.self_attention(self._attention_input(partial, blocks), packed_seq_params)
         mlp_input = self._mlp_input(partial, blocks, attention, is_boundary)

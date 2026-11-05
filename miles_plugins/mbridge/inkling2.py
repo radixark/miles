@@ -36,7 +36,8 @@ def dequantize_mxfp8(weight, scales) -> torch.Tensor:
     return (weight.float().view(*scales.shape, 32) * exponent.unsqueeze(-1)).flatten(-2).to(torch.bfloat16)
 
 
-@register_model("inkling2_mm_model")
+# older checkpoints declare inkling2_mm_model
+@register_model(["inkling2", "inkling2_mm_model"])
 class Inkling2Bridge(Qwen2MoEBridge):
     _CONFIG_MAPPING = {
         "num_layers": "num_hidden_layers",

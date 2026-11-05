@@ -364,6 +364,13 @@ _HF_LORA_MODELS = {
         unwrap_text_config=True,
         default_train_unembed=True,
     ),
+    "inkling2": _HfLoraModelSpec(
+        _inkling2_targets,
+        layer_prefix="model.llm.layers.*",
+        unembed="model.llm.unembed",
+        unwrap_text_config=True,
+        default_train_unembed=True,
+    ),
     "inkling2_mm_model": _HfLoraModelSpec(
         _inkling2_targets,
         layer_prefix="model.llm.layers.*",

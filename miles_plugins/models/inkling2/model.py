@@ -59,7 +59,7 @@ class Inkling2Config:
     use_value_norm_no_gamma: bool
     log_scaling_n_floor: float
     log_scaling_alpha: float
-    n_layers_per_attnres_block: int
+    n_layers_per_attn_res_block: int
     attn_res_normalize_values: bool
     route_scale: float
     mlp_gate_softcap: float
@@ -74,8 +74,15 @@ class Inkling2Config:
         assert text_cfg["n_shared_experts"] == 0, "Inkling2 shared experts are not implemented"
         assert not text_cfg["pre_norm_pre_affine"] and not text_cfg["final_norm_pre_affine"]
         assert text_cfg["use_gate_bias"]
-        names = cls.__dataclass_fields__.keys() - {"local_layer_ids", "expert_fake_quant"}
-        return cls(local_layer_ids=frozenset(text_cfg["local_layer_ids"]), **{n: text_cfg[n] for n in names})
+        # older checkpoints name the block size n_layers_per_attnres_block
+        block = "n_layers_per_attn_res_block"
+        block_size = text_cfg[block] if block in text_cfg else text_cfg["n_layers_per_attnres_block"]
+        names = cls.__dataclass_fields__.keys() - {"local_layer_ids", "expert_fake_quant", block}
+        return cls(
+            local_layer_ids=frozenset(text_cfg["local_layer_ids"]),
+            n_layers_per_attn_res_block=block_size,
+            **{n: text_cfg[n] for n in names},
+        )
 
 
 def _expert_formats(hf_checkpoint: str, text_cfg: dict) -> tuple[str, ...]:

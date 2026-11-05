@@ -129,6 +129,7 @@ def test_native_model_coverage():
         "inkling_model",
         "inkling_mm_model",
         "inkling_text",
+        "inkling2",
         "inkling2_mm_model",
     }
     assert set(_NATIVE_MODELS) == set(_HF_LORA_MODELS) - non_native

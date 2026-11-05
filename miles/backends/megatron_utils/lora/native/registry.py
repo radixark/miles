@@ -146,6 +146,7 @@ def _build_model_specs() -> dict[str, LoRAArchSpec]:
         HybridGQAGDNAttentionSpec(), has_linear_attention_layers=True, linear_attention=Qwen35GDNSpec()
     )
     inkling = _inkling_arch_spec()
+    inkling2 = _inkling2_arch_spec()
     return {
         "llama": gqa,
         "qwen2": gqa,
@@ -173,7 +174,8 @@ def _build_model_specs() -> dict[str, LoRAArchSpec]:
         "inkling_text": inkling,
         "inkling_model": inkling,
         "inkling_mm_model": inkling,
-        "inkling2_mm_model": _inkling2_arch_spec(),
+        "inkling2": inkling2,
+        "inkling2_mm_model": inkling2,
     }
 
 

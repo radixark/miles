@@ -155,13 +155,18 @@ class TestInklingSpec:
         assert spec.experts is not None and spec.lm_head is not None
 
 
+# Newer checkpoints declare model_type inkling2; older ones inkling2_mm_model.
+@pytest.mark.parametrize("model_type", ["inkling2", "inkling2_mm_model"])
 class TestInkling2Spec:
-    _CONFIG = dict(model_type="inkling2_mm_model", text_config=dict(model_type="inkling2_text", n_shared_experts=0))
+    @staticmethod
+    def _config(model_type):
+        return dict(model_type=model_type, text_config=dict(model_type="inkling2_text", n_shared_experts=0))
 
-    def test_serves_tmls_inkling_schema(self):
+    def test_serves_tmls_inkling_schema(self, model_type):
         """TML's schema: attention without the sink, shared-outer routed experts, the unembed.
         SGLang resolves "all-linear" to embed too, so the targets are explicit."""
-        served = resolve_adapter_targets(self._CONFIG, resolve_hf_lora_targets(self._CONFIG), hf_modules=[])
+        config = self._config(model_type)
+        served = resolve_adapter_targets(config, resolve_hf_lora_targets(config), hf_modules=[])
         assert sorted(served) == sorted(
             [
                 *(
@@ -175,11 +180,11 @@ class TestInkling2Spec:
         )
         with pytest.raises(AssertionError, match="verified adapter layout"):
             resolve_adapter_targets(
-                self._CONFIG, resolve_hf_lora_targets(self._CONFIG, target_modules=["attn", "mlp"]), hf_modules=[]
+                config, resolve_hf_lora_targets(config, target_modules=["attn", "mlp"]), hf_modules=[]
             )
 
-    def test_spec_attaches_the_schema(self):
-        spec = MODEL_SPECS["inkling2_mm_model"]
+    def test_spec_attaches_the_schema(self, model_type):
+        spec = MODEL_SPECS[model_type]
         assert spec.fixed_targets.select_all
         assert spec.attention.supported_targets == {"wq_du", "wk_dv", "wv_dv", "wr_du", "gate_attn", "wo_ud"}
         assert spec.experts is not None

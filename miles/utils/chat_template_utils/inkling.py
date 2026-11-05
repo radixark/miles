@@ -6,8 +6,9 @@ import os
 from typing import Any
 
 _MODEL_TYPES = ("inkling_mm_model", "inkling_mm_model")
-# Inkling2 keeps Inkling's message format but not its multimodal processor.
-_INKLING2_MODEL_TYPES = ("inkling2_mm_model",)
+# Inkling2 keeps Inkling's message format but not its multimodal processor; older checkpoints
+# declare inkling2_mm_model.
+_INKLING2_MODEL_TYPES = ("inkling2", "inkling2_mm_model")
 
 
 @functools.cache
