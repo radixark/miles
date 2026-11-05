@@ -1,6 +1,6 @@
 """--kda-backend cake: the KDA layers of Kimi-K3 (head-sharded KimiDeltaAttention) and GLM-5.3-Flash (Glm5NextKDA)
-on the deterministic Cake kernels of the miles-ext-kernels submodule (miles_ext_kernels.kda), against the same layers
-on fla and the replicated fla reference of linear_attn_reference.py.
+on the deterministic Cake kernels of the miles-ext-kernels submodule (miles_ext_kernels.cake.kda), against the same
+layers on fla and the replicated fla reference of linear_attn_reference.py.
 
 At TP 1 with a ragged packed batch: the cake layer's output, input gradient and every parameter gradient stay within
 TOLERANCE of the fla layer (the cake kernels take a BF16 beta where fla takes FP32; GATE_PARAM_TOLERANCE for the

@@ -30,15 +30,38 @@ class _TEZeroCenteredRMSNorm(te.RMSNorm):
     set_extra_state = nn.Module.set_extra_state
 
 
-def gdn_input_layernorm(kind: str, hidden_size: int, eps: float, params_dtype: torch.dtype, args=None) -> nn.Module:
+def gdn_input_layernorm(
+    kind: str,
+    hidden_size: int,
+    eps: float,
+    params_dtype: torch.dtype,
+    args=None,
+    sequence_parallel: bool | None = None,
+) -> nn.Module:
     """``weight`` holds w of the ``(1 + w)`` scale under every kernel, so checkpoints and conversion see the same
     parameter. ``kind`` 'cake' runs the Cake kernels of the miles-ext-kernels submodule, configured by ``args`` (the
-    parsed miles arguments); the norm refuses a hidden size they do not serve and compiles them when it is built."""
+    parsed miles arguments); the norm refuses a hidden size they do not serve, and their libraries for it are built
+    with the norm (``miles_ext_kernels.cake.prebuild("rmsnorm", hidden_size=...)``). ``sequence_parallel`` goes to the
+    'cake' and 'te' norms, which mark their weight with it when they are built and again in ``reset_parameters()``:
+    a norm built on the meta device gets a new weight from ``to_empty()``, which a mark set after construction would
+    not reach."""
     if kind == "hf":
         return Qwen3NextRMSNorm(hidden_size, eps=eps)
     if kind == "cake":
-        return miles_ext("rmsnorm", args).ZeroCenteredRMSNorm(hidden_size, eps, params_dtype=params_dtype)
-    return _TEZeroCenteredRMSNorm(hidden_size, eps=eps, zero_centered_gamma=True, params_dtype=params_dtype)
+        norm = miles_ext("rmsnorm", args).ZeroCenteredRMSNorm(
+            hidden_size, eps, params_dtype=params_dtype, sequence_parallel=sequence_parallel
+        )
+        from miles_ext_kernels import cake
+
+        cake.prebuild("rmsnorm", hidden_size=hidden_size)
+        return norm
+    return _TEZeroCenteredRMSNorm(
+        hidden_size,
+        eps=eps,
+        zero_centered_gamma=True,
+        params_dtype=params_dtype,
+        sequence_parallel=sequence_parallel,
+    )
 
 
 class Qwen3_5GatedDeltaNet(GatedDeltaNet):
@@ -80,6 +103,7 @@ class Attention(LinearAttentionLayer):
             text_config.rms_norm_eps,
             config.params_dtype,
             args=args,
+            sequence_parallel=config.sequence_parallel,
         )
         super().__init__(config, linear_attn, input_layernorm, pg_collection, allgather_cp=args.allgather_cp)
 

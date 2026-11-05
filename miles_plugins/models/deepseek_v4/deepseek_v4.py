@@ -473,7 +473,16 @@ def get_dsv4_spec(args, config, vp_stage):
     config.miles_dsa_topk_backend = args.miles_dsa_topk_backend
     config.miles_dsa_attention_backend = args.dsa_attention_backend
     if args.dsa_attention_backend == "cake":
-        cake.setup(args, index_heads=config.dsa_indexer_n_heads, index_head_dim=config.dsa_indexer_head_dim)
+        # MQA over the kv_lora_rank latent (its RoPE channels inside it) with a per-head sink, the TP rank's heads
+        cake.setup(
+            args,
+            heads=config.num_attention_heads // config.tensor_model_parallel_size,
+            d_qk=config.kv_lora_rank,
+            d_v=config.kv_lora_rank,
+            attn_sink=True,
+            index_heads=config.dsa_indexer_n_heads,
+            index_head_dim=config.dsa_indexer_head_dim,
+        )
     _orig_get_spec = _eav_specs.get_experimental_attention_variant_module_spec
 
     def _patched_get_spec(config, backend=None):
