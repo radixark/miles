@@ -250,19 +250,14 @@ def _assert_adapter_layout_defined(args) -> None:
             f"model_type={hf_config.model_type!r}, which miles does not define (miles/utils/lora/hf_lora_targets.py); "
             "run without them or define the layout"
         )
-        # only Bridge's --save-hf writes PEFT; native writes sglang's sampler view, which names each component
+        # only Bridge exports each expert's side under one unindexed name
         if exports_hf_snapshots(args) and args.megatron_to_hf_mode == "bridge":
-            _assert_hf_exports_have_peft_form(args, hf_config)
+            _assert_bridge_hf_exports_keep_every_expert(args, hf_config)
 
 
-def _assert_hf_exports_have_peft_form(args, hf_config) -> None:
+def _assert_bridge_hf_exports_keep_every_expert(args, hf_config) -> None:
     targets = get_hf_lora_targets(hf_config.to_dict())
     run = _launch_parametrization(args, hf_config)
-    assert has_plain_peft_form(run, targets), (
-        f"--save-hf and eval snapshots write a PEFT adapter, but under --lora-type {args.lora_type} the components "
-        "of an HF-fused module have their own lora_A, which no PEFT adapter can name: use --lora-type lora (one "
-        "shared lora_A per fused module), or drop --save-hf and eval snapshots"
-    )
     # Bridge exports a packed family's per-expert side under one unindexed name for every expert
     packed_shared_outer = targets.packed_expert_gate_up_layout is not None and args.experts_shared_outer_loras
     assert not (packed_shared_outer and any(".experts." in module for module in run.target_modules)), (
