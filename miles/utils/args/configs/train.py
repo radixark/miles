@@ -14,6 +14,18 @@ class TrainConfig(BaseConfig):
         "megatron"
     )
     qkv_format: A[str, Arg(choices=["thd", "bshd"], help="The qkv layout.")] = "thd"
+    bshd_padding_mode: A[
+        str,
+        Arg(
+            choices=["rollout", "per-sample"],
+            help=(
+                "BSHD padding geometry: 'rollout' preserves the aligned rollout maximum (default); "
+                "'per-sample' opts into each sample's aligned length to reduce padding. "
+                "Changing padded length can change backend numerics, including Qwen3.5 Gated DeltaNet; "
+                "validate log probabilities and gradients on your model/kernel stack before opting in."
+            ),
+        ),
+    ] = "rollout"
     linear_attention_backend: A[
         str,
         Arg(
