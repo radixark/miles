@@ -35,6 +35,17 @@ class _UnsafeQuery(Exception):
     pass
 
 
+class _SqlWork:
+    """Runs the work inline and records which calls asked to drain the other SQL work."""
+
+    def __init__(self, concurrency):
+        self.exclusive_calls = []
+
+    async def execute(self, function, *args, exclusive=False):
+        self.exclusive_calls.append(exclusive)
+        return function(*args)
+
+
 def _recipe_stub() -> dict[str, ModuleType]:
     """The recipe modules the episode imports, reduced to a `CALL <sql>` tool syntax and an `UNSAFE` query."""
     parsing = ModuleType("text_to_sql_recipe.parsing")
@@ -60,6 +71,7 @@ def _recipe_stub() -> dict[str, ModuleType]:
     sqlite_exec.SQLiteInfrastructureError = type("SQLiteInfrastructureError", (Exception,), {})
     sqlite_exec.SQL_TOOL_TERMINAL_ERRORS = (_UnsafeQuery,)
     sqlite_exec.tool_executor = lambda task: None
+    sqlite_exec.SqlWork = _SqlWork
 
     def execute_sql_tool(task, executor, arguments):
         if arguments["query"] == "UNSAFE":
@@ -75,7 +87,11 @@ def _recipe_stub() -> dict[str, ModuleType]:
     modules = {"parsing": parsing, "prompts": prompts, "reward": reward, "sqlite_exec": sqlite_exec, "config": config}
     for name, module in modules.items():
         setattr(package, name, module)
-    package.grading = ModuleType("text_to_sql_recipe.grading")
+    grading = ModuleType("text_to_sql_recipe.grading")
+    grading.GRADING_TIMEOUT_RETRIES = 2
+    grading.numeric_comparison_timed_out = lambda error: str(error) == "numeric budget"
+    package.grading = grading
+    modules["grading"] = grading
     return {"text_to_sql_recipe": package, **{f"text_to_sql_recipe.{k}": v for k, v in modules.items()}}
 
 
@@ -90,19 +106,33 @@ def sql_episode(monkeypatch):
     return module
 
 
-async def _run(sql_episode, monkeypatch, turns: list[str], *, max_context_len: int = 0) -> Sample:
-    """Run one episode whose engine replies with `turns` in order, each sampled up to and including eos."""
+_TURN_TOKEN_CAP = 100
+
+
+async def _run(sql_episode, monkeypatch, turns: list, *, max_context_len: int = 0) -> Sample:
+    """Run one episode whose engine replies with `turns` in order.
+
+    A plain string is a turn sampled up to and including eos; a `(text, "length")` pair is a turn cut at its token
+    limit, before eos.
+    """
     replies = iter(turns)
 
     async def fake_post(url, payload, headers):
-        text = next(replies)
+        text, finish_reason = reply if isinstance(reply := next(replies), tuple) else (reply, "stop")
+        sampled = text + (_EOS if finish_reason == "stop" else "")
         return {
             "text": text,
             "meta_info": {
-                "finish_reason": {"type": "stop"},
-                "output_token_logprobs": [[-0.5, ord(c)] for c in text + _EOS],
+                "finish_reason": {"type": finish_reason},
+                "output_token_logprobs": [[-0.5, ord(c)] for c in sampled],
             },
         }
+
+    def fake_payload(args, tokens, sampling_params, **kwargs):
+        max_new_tokens = sampling_params["max_new_tokens"]
+        if max_context_len:
+            max_new_tokens = min(max_new_tokens, max_context_len - len(tokens))
+        return {"input_ids": tokens, "sampling_params": {"max_new_tokens": max_new_tokens}}, None
 
     monkeypatch.setattr(sql_episode, "post", fake_post)
     args = SimpleNamespace(
@@ -117,15 +147,13 @@ async def _run(sql_episode, monkeypatch, turns: list[str], *, max_context_len: i
         use_output_store=False,
         sglang=SimpleNamespace(common_value=lambda key: None),
     )
-    monkeypatch.setattr(
-        sql_episode,
-        "compute_request_payload",
-        lambda args, tokens, sampling_params, **kwargs: ({"input_ids": tokens}, None),
-    )
+    monkeypatch.setattr(sql_episode, "compute_request_payload", fake_payload)
     sample = Sample(prompt=[{"role": "user", "content": "q"}], metadata={"task": {"id": 1}})
     state = SimpleNamespace(args=args, tokenizer=_CharTokenizer(), processor=None)
     output = await sql_episode.generate(
-        GenerateFnInput(state=state, sample=sample, sampling_params={}, evaluation=False)
+        GenerateFnInput(
+            state=state, sample=sample, sampling_params={"max_new_tokens": _TURN_TOKEN_CAP}, evaluation=False
+        )
     )
     return output.samples
 
@@ -183,3 +211,65 @@ async def test_an_observation_that_would_overflow_the_context_truncates_instead(
 
     assert sample.status == Sample.Status.TRUNCATED
     assert _response(sample) == f"</think>CALL SELECT 1{_EOS}"
+
+
+async def test_a_tool_call_cut_at_the_turn_token_cap_still_runs(sql_episode, monkeypatch):
+    sample = await _run(sql_episode, monkeypatch, [("</think>CALL SELECT 1", "length"), "</think>done"])
+
+    episode = sample.metadata["text_to_sql"]
+    assert episode["tool_calls"] == 1
+    assert episode["final_text"] == "done"
+    assert _response(sample).startswith(f"</think>CALL SELECT 1{_EOS}\n<user>Results for sql:")
+    assert sample.status == Sample.Status.COMPLETED
+
+
+async def test_a_turn_cut_by_the_context_budget_is_not_graded(sql_episode, monkeypatch):
+    sample = await _run(
+        sql_episode, monkeypatch, [("</think><solution>SELECT 1</solution> verify", "length")], max_context_len=60
+    )
+
+    assert sample.metadata["text_to_sql"]["final_text"] == ""
+    assert sample.status == Sample.Status.TRUNCATED
+
+
+async def test_a_timed_out_grade_is_retried_with_the_sql_work_drained(sql_episode, monkeypatch):
+    grades = iter([{"error_category": "timeout"}, {"error_category": "timeout"}, {"grade": "CORRECT"}])
+    monkeypatch.setattr(
+        sql_episode.grading, "grade_with_expected", lambda text, task, expected: next(grades), raising=False
+    )
+
+    grade = await sql_episode._grade("answer", {"id": 1}, expected=None)
+
+    assert grade == {"grade": "CORRECT"}
+    assert sql_episode._SQL_WORK.exclusive_calls == [False, True, True]
+
+
+async def test_a_numeric_comparison_timeout_is_retried_then_raised(sql_episode, monkeypatch):
+    infrastructure_error = sql_episode.sqlite_exec.SQLiteInfrastructureError
+
+    def grade_with_expected(text, task, expected):
+        raise infrastructure_error("numeric budget")
+
+    monkeypatch.setattr(sql_episode.grading, "grade_with_expected", grade_with_expected, raising=False)
+
+    with pytest.raises(infrastructure_error):
+        await sql_episode._grade("answer", {"id": 1}, expected=None)
+    assert len(sql_episode._SQL_WORK.exclusive_calls) == 3
+
+
+async def test_a_failed_gold_query_is_run_again_for_the_next_sample(sql_episode, monkeypatch):
+    runs = []
+
+    def execute_gold(task):
+        runs.append(task["id"])
+        if len(runs) == 1:
+            raise RuntimeError("gold SQL failed")
+        return task, "rows"
+
+    monkeypatch.setattr(sql_episode, "_execute_gold", execute_gold)
+
+    with pytest.raises(RuntimeError):
+        await sql_episode._gold_result({"id": 7})
+    assert await sql_episode._gold_result({"id": 7}) == ({"id": 7}, "rows")
+    assert await sql_episode._gold_result({"id": 7}) == ({"id": 7}, "rows")
+    assert runs == [7, 7]

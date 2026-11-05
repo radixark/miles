@@ -29,8 +29,9 @@ from miles.rollout.generate_utils.tool_call_utils import append_observation_toke
 from miles.utils.http_utils import post
 from miles.utils.types import Sample
 
-# SQLite runs in worker threads; this bounds the tool calls and grading queries in flight together
-_SQL_SLOTS = asyncio.Semaphore(16)
+# SQLite runs in worker threads; this bounds tool calls, grading and gold queries together, and lets a grading
+# retry drain the other work, as the recipe's grading runtime does
+_SQL_WORK = sqlite_exec.SqlWork(16)
 # gold SQL is slow on the largest databases, so each task's result is computed once per process
 _GOLD_RESULTS: dict[str, asyncio.Task] = {}
 
@@ -42,6 +43,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     task = sample.metadata["task"]
     url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}/generate"
     max_tool_turns = args.text_to_sql_max_tool_turns
+    turn_token_cap = input.sampling_params.get("max_new_tokens", args.rollout_max_response_len)
 
     episode = {"turns": [], "final_text": "", "unsafe": False, "tool_calls": 0, "tool_protocol_events": []}
     sample.metadata["text_to_sql"] = episode
@@ -70,7 +72,10 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         message = {"role": "assistant", "content": _visible_text(text)}
         tools_allowed = turn <= max_tool_turns
         reward.observe_tool_calls(episode["tool_protocol_events"], message, turn=turn, tools_allowed=tools_allowed)
-        if finish_reason == "length" or not tools_allowed:
+        if finish_reason == "length" and payload["sampling_params"]["max_new_tokens"] < turn_token_cap:
+            # the context budget cut this turn; the recipe never grades such a turn, so it scores as no answer
+            break
+        if not tools_allowed:
             episode["final_text"] = message["content"].strip()
             break
 
@@ -113,8 +118,7 @@ async def reward_func(args, sample: Sample, **kwargs) -> dict:
         grade = {"grade": "INCORRECT", "error_category": "unsafe_sql", "format_compliant": False}
     else:
         graded_task, expected = await _gold_result(task)
-        async with _SQL_SLOTS:
-            grade = await asyncio.to_thread(grading.grade_with_expected, episode["final_text"], graded_task, expected)
+        grade = await _grade(episode["final_text"], graded_task, expected)
 
     scored = reward.rollout_reward(
         grade,
@@ -164,13 +168,31 @@ def _observation_ids(tokenizer, messages: list[dict], *, last_token_id: int) -> 
     return tokenizer.encode(stop + "\n" + framing, add_special_tokens=False)
 
 
+async def _grade(final_text: str, task: dict, expected) -> dict:
+    """Grade the answer, retrying a timeout with the other SQL work drained, as the recipe's `GradingRuntime` does."""
+    for attempt in range(grading.GRADING_TIMEOUT_RETRIES + 1):
+        last_attempt = attempt == grading.GRADING_TIMEOUT_RETRIES
+        try:
+            grade = await _SQL_WORK.execute(
+                grading.grade_with_expected, final_text, task, expected, exclusive=attempt > 0
+            )
+        except sqlite_exec.SQLiteInfrastructureError as error:
+            if last_attempt or not grading.numeric_comparison_timed_out(error):
+                raise
+            continue
+        if last_attempt or grade.get("error_category") != "timeout":
+            return grade
+
+
+def _run_sql_tool(task: dict, arguments: dict):
+    # building the executor hashes and may snapshot the whole database, so it must stay off the event loop
+    return sqlite_exec.execute_sql_tool(task, sqlite_exec.tool_executor(task), arguments)
+
+
 async def _sql_observation(task: dict, arguments: dict, *, turns_left: int) -> str | None:
     """The user message reporting one SQL call, or None when the query was unsafe."""
     try:
-        async with _SQL_SLOTS:
-            results = await asyncio.to_thread(
-                sqlite_exec.execute_sql_tool, task, sqlite_exec.tool_executor(task), arguments
-            )
+        results = await _SQL_WORK.execute(_run_sql_tool, task, arguments)
     except sqlite_exec.SQLiteInfrastructureError:
         raise
     except sqlite_exec.SQL_TOOL_TERMINAL_ERRORS:
@@ -194,8 +216,16 @@ async def _gold_result(task: dict):
     """The task as graded and its gold result."""
     task_id = str(task["id"])
     if task_id not in _GOLD_RESULTS:
-        _GOLD_RESULTS[task_id] = asyncio.create_task(asyncio.to_thread(_execute_gold, dict(task)))
-    return await _GOLD_RESULTS[task_id]
+        pending = asyncio.create_task(_SQL_WORK.execute(_execute_gold, dict(task)))
+        _GOLD_RESULTS[task_id] = pending
+        pending.add_done_callback(functools.partial(_forget_failed_gold, task_id))
+    return await asyncio.shield(_GOLD_RESULTS[task_id])
+
+
+def _forget_failed_gold(task_id: str, pending: asyncio.Task) -> None:
+    """Drop a failed gold result so the next sample of the task runs the gold query again."""
+    if (pending.cancelled() or pending.exception() is not None) and _GOLD_RESULTS.get(task_id) is pending:
+        del _GOLD_RESULTS[task_id]
 
 
 def _execute_gold(task: dict):

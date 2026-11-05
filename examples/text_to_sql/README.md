@@ -47,8 +47,10 @@ The jump by step 15 is mostly the model learning to think shorter: at step 10, 1
 of episodes still spend a turn's 3,072 tokens thinking and never answer; by step 15 under 2% do. Accuracy is flat after
 step 100, when 70-85% of training groups score 16/16 and carry no GRPO advantage.
 
-This run applied no tool-format penalty: the episode then built its reward settings itself and missed the preset's
-0.05. It now reads them from the recipe preset (`--text-to-sql-recipe`), so a new run applies the penalty.
+This run predates three changes that bring the episode closer to the recipe: the reward terms now come from the
+recipe preset (`--text-to-sql-recipe`; the run applied no tool-format penalty), a turn the context budget cuts is no
+longer graded, and a grade that times out is retried. Gold queries now share the SQL concurrency limit and a failed
+one is retried by the next sample.
 
 ## Reward
 
@@ -56,7 +58,7 @@ This run applied no tool-format penalty: the episode then built its reward setti
 |---|---|
 | correct | 1 |
 | incorrect | 0 |
-| no `<solution>` (including a turn cut at its token cap) | -1 |
+| no `<solution>` (including a turn cut before it, and any turn the context budget cuts) | -1 |
 | unsafe query (anything but a read-only SELECT; ends the rollout) | -1 |
 
 minus 0.1 for each evidence rule the trajectory skips (restate the evidence in the first two turns, check the
@@ -74,3 +76,4 @@ Not ported yet:
 - The VeriEQL equivalence penalty (0.2 off a matching answer VeriEQL refutes).
 - The curriculum: training hints after 16/16 failures, learnability weighting from epoch 2.
 - The re-draft penalty and the repetition / collapse guards.
+- Running every gold query before training. Gold results are computed on first use and cached per rollout process.
