@@ -51,7 +51,11 @@ async def _execute_tool_call(
     else:
         raise TypeError(f"Unsupported tool call type: {type(call)}")
 
-    result = await execute_one(name, params)
+    # A model can emit arguments that parse to a string or a list: answer it like a failed tool, not a crash.
+    if isinstance(params, dict):
+        result = await execute_one(name, params)
+    else:
+        result = f"Error: tool arguments must be a JSON object, got {type(params).__name__}"
     assert isinstance(result, str)
 
     return {"role": "tool", "tool_call_id": tool_call_id, "content": result, "name": name}
