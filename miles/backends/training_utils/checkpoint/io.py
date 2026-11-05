@@ -47,6 +47,8 @@ def write_checkpoint_dir(
 
     write_error = None
     try:
+        # ranks may not share rank 0's view of the path (node-local disks); no-op on a shared one
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
         write_shards(checkpoint_dir)
     except Exception as exc:
         write_error = exc

@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from miles.backends.training_utils.checkpoint import io
 from miles.backends.training_utils.checkpoint.io import write_checkpoint_dir
 
 
@@ -44,3 +45,18 @@ def test_crashed_overwrite_leaves_no_metadata(tmp_path, crash_after_write):
     assert (checkpoint / "value").read_text() == "retry"
     assert (checkpoint / "META.json").exists()
     assert list(tmp_path.iterdir()) == [checkpoint]
+
+
+def test_a_rank_that_does_not_see_rank_0s_directory_creates_its_own(tmp_path, monkeypatch):
+    """On node-local disks rank 0's mkdir is invisible to the other nodes; their first write found no directory."""
+    monkeypatch.setattr(io.dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(io.dist, "get_rank", lambda: 1)
+    monkeypatch.setattr(io.dist, "get_world_size", lambda: 2)
+    monkeypatch.setattr(io.dist, "broadcast_object_list", lambda objects, src, group: None)
+    monkeypatch.setattr(io.dist, "all_gather_object", lambda gathered, obj, group: gathered.__setitem__(1, obj))
+    monkeypatch.setattr(io, "get_gloo_group", lambda: None)
+    checkpoint = tmp_path / "node1" / "iter_0000019"
+
+    write_checkpoint_dir(checkpoint, lambda directory: (directory / "shard_1").write_text("rank 1"))
+
+    assert (checkpoint / "shard_1").read_text() == "rank 1"
