@@ -129,7 +129,7 @@ def _launcher_targets(monkeypatch) -> list[str]:
     launch_args, _ = parser.parse_known_args(shlex.split(train_command))
     launch_args.multi_lora, launch_args.lora_type, launch_args.experts_shared_outer_loras = False, "lora", False
     hf_config = _hf_config()
-    hf_targets = _resolve_lora_targets(launch_args, hf_config)
+    hf_targets = _resolve_lora_targets(launch_args, hf_config, merged_rollout=False)
     assert _native_serving_targets(launch_args, hf_config, hf_targets) == hf_targets
     return hf_targets
 
@@ -207,4 +207,6 @@ def test_kv_b_proj_is_rejected_since_the_absorbed_dsa_never_calls_it():
     )
     hf_config = _hf_config()
     with pytest.raises(AssertionError, match=r"does not implement adapters for .*kv_b_proj"):
-        _native_serving_targets(launch_args, hf_config, _resolve_lora_targets(launch_args, hf_config))
+        _native_serving_targets(
+            launch_args, hf_config, _resolve_lora_targets(launch_args, hf_config, merged_rollout=False)
+        )

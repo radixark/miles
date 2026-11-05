@@ -15,7 +15,7 @@ from miles.utils.lora.hf_lora_targets import (
     resolve_hf_lora_layout,
     resolve_hf_lora_targets,
 )
-from miles.utils.lora.utils import is_lora_enabled, matches_lora_target, targets_expert_leaves
+from miles.utils.lora.utils import is_lora_enabled, lora_merge_for_rollout, matches_lora_target, targets_expert_leaves
 
 logger = logging.getLogger(__name__)
 
@@ -39,10 +39,11 @@ def validate_lora_args(args):
             not args.check_lora_weight_equal
         ), "--lora-merge-for-rollout syncs no adapter; check the merged weights with --check-weight-update-equal"
     hf_config = load_hf_config(args.hf_checkpoint)
-    args.hf_lora_targets = _resolve_lora_targets(args, hf_config)
+    merged_rollout = lora_merge_for_rollout(args)
+    args.hf_lora_targets = _resolve_lora_targets(args, hf_config, merged_rollout=merged_rollout)
     args.lora_adapter_targets = list(args.hf_lora_targets)
     # every HF projection the model's LoRA layout serves; a backend refuses targets that reach past it
-    args.hf_lora_layout = resolve_hf_lora_layout(hf_config.to_dict())
+    args.hf_lora_layout = resolve_hf_lora_layout(hf_config.to_dict(), merged_rollout=merged_rollout)
 
     # Training and serving must agree on shared-outer grouped-expert LoRA (expert_dim=1).
     if args.experts_shared_outer_loras and hasattr(
@@ -84,8 +85,9 @@ def _hf_modules(hf_config) -> list[str]:
     return sorted(name.removesuffix(".weight") for name in HfWeightMapping.from_config(hf_config).parameter_names)
 
 
-def _resolve_lora_targets(args, hf_config) -> list[str]:
-    """Return the final HF targets without changing the CLI selectors in `args`."""
+def _resolve_lora_targets(args, hf_config, *, merged_rollout: bool) -> list[str]:
+    """Return the final HF targets without changing the CLI selectors in `args`; ``merged_rollout`` opens the
+    projections only a merged rollout serves."""
     hf_modules = _hf_modules(hf_config)
     targets = parse_lora_targets(args.target_modules)
     exclusions = parse_lora_targets(args.exclude_modules) or []
@@ -106,7 +108,7 @@ def _resolve_lora_targets(args, hf_config) -> list[str]:
         assert not conflicts, f"Explicit LoRA targets overlap --exclude-modules: {sorted(conflicts)}"
     if targets is None and args.multi_lora:
         targets = list(LORA_TARGET_GROUPS)
-    targets = resolve_hf_lora_targets(hf_config.to_dict(), target_modules=targets)
+    targets = resolve_hf_lora_targets(hf_config.to_dict(), target_modules=targets, merged_rollout=merged_rollout)
     targets = exclude_hf_lora_targets(targets, exclusions)
 
     if all(any(matches_lora_target(module, target) for module in hf_modules) for target in targets + exclusions):
@@ -128,7 +130,7 @@ def _resolve_lora_targets(args, hf_config) -> list[str]:
             explicit_targets=explicit_targets,
         )
     else:
-        layout = get_hf_lora_targets(hf_config.to_dict())
+        layout = get_hf_lora_targets(hf_config.to_dict(), merged_rollout=merged_rollout)
         hf_targets = exclude_hf_lora_targets(expand_hf_lora_targets(targets, layout), exclusions)
     return hf_targets
 

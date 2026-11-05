@@ -27,6 +27,9 @@ class _HfLoraModelSpec:
     unembed: str = "lm_head"
     unwrap_text_config: bool = False
     default_train_unembed: bool = False
+    # MLP projections the engines cannot serve as adapters: part of the layout only when the rollout gets the
+    # base merged with the adapter (--lora-merge-for-rollout)
+    served_merged_only: tuple[str, ...] = ()
 
 
 _EXPERT_INDEX = re.compile(r"\.experts\.\d+\.")
@@ -289,9 +292,13 @@ _HF_LORA_MODELS = {
     "muse_glimmer": _HfLoraModelSpec(
         _dense_targets, layer_prefix="model.language_model.layers.*", unwrap_text_config=True
     ),
-    # attention only: the routed experts are grouped weights, and there are no dense or shared experts
+    # every layer is MoE without dense or shared experts; sglang has no LoRA for the compressed routed
+    # experts, so they train only when the rollout gets the base merged with the adapter
     "muse_spark": _HfLoraModelSpec(
-        lambda config: (_QKVO_ATTENTION, ()), layer_prefix="model.language_model.layers.*", unwrap_text_config=True
+        lambda config: (_QKVO_ATTENTION, ()),
+        layer_prefix="model.language_model.layers.*",
+        unwrap_text_config=True,
+        served_merged_only=_PACKED_EXPERTS,
     ),
     "mimo_v2": _HfLoraModelSpec(_mimo_v2_targets),
     "inkling_text": _HfLoraModelSpec(_inkling_targets, default_train_unembed=True),
@@ -305,12 +312,15 @@ _HF_LORA_MODELS = {
 }
 
 
-def get_hf_lora_targets(hf_config: dict) -> HfLoraTargets:
+def get_hf_lora_targets(hf_config: dict, *, merged_rollout: bool = False) -> HfLoraTargets:
+    """The model's LoRA projection groups; ``merged_rollout`` adds the projections only a merged rollout serves."""
     model_type = hf_config["model_type"]
     assert model_type in _HF_LORA_MODELS, f"HF LoRA target layout is not defined for model_type={model_type!r}"
     spec = _HF_LORA_MODELS[model_type]
     text_config = hf_config["text_config"] if spec.unwrap_text_config else hf_config
     attention, mlp = spec.build_groups(text_config)
+    if merged_rollout:
+        mlp = (*mlp, *spec.served_merged_only)
     return HfLoraTargets(
         attention=_prefix_paths(spec.layer_prefix, *attention),
         mlp=_prefix_paths(spec.layer_prefix, *mlp),
@@ -319,23 +329,25 @@ def get_hf_lora_targets(hf_config: dict) -> HfLoraTargets:
     )
 
 
-def resolve_hf_lora_layout(hf_config: dict) -> list[str] | None:
+def resolve_hf_lora_layout(hf_config: dict, *, merged_rollout: bool = False) -> list[str] | None:
     """Every HF projection the model's LoRA layout serves; None for a model without a layout table, which
     only takes explicit targets."""
     if hf_config["model_type"] not in _HF_LORA_MODELS:
         return None
-    return resolve_hf_lora_targets(hf_config, target_modules=list(LORA_TARGET_GROUPS))
+    return resolve_hf_lora_targets(hf_config, target_modules=list(LORA_TARGET_GROUPS), merged_rollout=merged_rollout)
 
 
-def resolve_hf_lora_targets(hf_config: dict, *, target_modules: list[str] | None = None) -> list[str]:
+def resolve_hf_lora_targets(
+    hf_config: dict, *, target_modules: list[str] | None = None, merged_rollout: bool = False
+) -> list[str]:
     if target_modules is None or target_modules == ["all-linear"]:
-        layout = get_hf_lora_targets(hf_config)
+        layout = get_hf_lora_targets(hf_config, merged_rollout=merged_rollout)
         target_modules = ["attn", "mlp", *(["unembed"] if layout.default_train_unembed else [])]
     assert target_modules and "all-linear" not in target_modules, "Use all-linear alone or provide explicit targets"
     if not any(target in LORA_TARGET_GROUPS for target in target_modules):
         return list(target_modules)
 
-    layout = get_hf_lora_targets(hf_config)
+    layout = get_hf_lora_targets(hf_config, merged_rollout=merged_rollout)
     groups = dict(zip(LORA_TARGET_GROUPS, (layout.attention, layout.mlp, layout.unembed), strict=True))
     targets = [module for target in target_modules for module in groups.get(target, (target,))]
     assert targets, "At least one trainable LoRA module group is required"
