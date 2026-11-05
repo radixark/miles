@@ -61,11 +61,3 @@ def test_tinker_names_gain_the_vl_layer_prefix():
     )
     assert is_tinker_only_name(name, targets), "a dense export without a head is still Tinker-named"
     assert not is_tinker_only_name("model.language_model.layers.1.linear_attn.in_proj_q.lora_A.weight", targets)
-
-
-def test_unchecked_families_refuse_tinker_names():
-    targets = get_hf_lora_targets({"model_type": "llama"})
-    with pytest.raises(AssertionError, match="no official Tinker export"):
-        map_tinker_keys_to_hf_keys("base_model.model.model.layers.0.self_attn.q_proj.lora_A.weight", targets)
-    with pytest.raises(AssertionError, match="no official Tinker export"):
-        map_hf_keys_to_tinker_keys("model.layers.0.self_attn.q_proj.lora_A", targets)

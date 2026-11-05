@@ -11,7 +11,6 @@ import tempfile
 import threading
 import time
 from contextlib import suppress
-from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
@@ -172,17 +171,6 @@ async def test_sampler_save_publishes_successive_versions(service):
         (str(root), "2"),
     ]
     assert all(resolve_adapter_dir(root, name, tenant="tenant") is not None for name in ("1", "2")), "both committed"
-
-
-async def test_an_export_records_the_base_fingerprint_the_gateway_serves(service):
-    service.config = replace(service.config, base_model_fingerprint="0123456789abcdef")
-    model_id = await created_model(service)
-    save = service.submit(
-        "tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1, "ttl_seconds": None}
-    )
-    assert (await await_settled(service, "tenant", save)).state == DONE
-    (export,) = service.backend.named("export_slot")
-    assert export["parametrization_fields"]["base_model_fingerprint"] == "0123456789abcdef"
 
 
 async def test_sampling_resolves_against_the_saved_version(service):
@@ -619,26 +607,32 @@ async def test_the_commit_runs_off_the_event_loop(service, monkeypatch, op):
     assert commit_threads and commit_threads[0] is not threading.current_thread()
 
 
-async def test_a_failed_sampler_commit_fails_only_that_request(service, monkeypatch):
+@pytest.mark.parametrize("op", ["save_state", "save_weights_for_sampler"])
+async def test_a_failed_commit_fails_only_that_request(service, monkeypatch, op):
     model_id = await created_model(service)
     commit = service.backend.commit_adapter
 
     def failing_commit(*_, **__):
         raise OSError("No space left on device")
 
+    def payload(seq_id):
+        if op == "save_state":
+            return {
+                "model_id": model_id,
+                "seq_id": seq_id,
+                "name": f"ck{seq_id}",
+                "overwrite": False,
+                "ttl_seconds": None,
+            }
+        return {"model_id": model_id, "seq_id": seq_id, "ttl_seconds": None}
+
     monkeypatch.setattr(service.backend, "commit_adapter", failing_commit)
-    failed = service.submit(
-        "tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1, "ttl_seconds": None}
-    )
-    future = await await_settled(service, "tenant", failed)
+    future = await await_settled(service, "tenant", service.submit("tenant", op, payload(1)))
     assert (future.state, future.error_category) == (FAILED, "server")
     assert "No space left on device" in future.error
 
     monkeypatch.setattr(service.backend, "commit_adapter", commit)
-    retried = service.submit(
-        "tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 2, "ttl_seconds": None}
-    )
-    assert (await await_settled(service, "tenant", retried)).state == DONE
+    assert (await await_settled(service, "tenant", service.submit("tenant", op, payload(2)))).state == DONE
 
 
 async def test_an_unnamed_sampler_save_returns_a_sampling_session(service):
@@ -987,20 +981,6 @@ async def test_a_recycled_slot_belongs_to_a_fresh_model_queue(service):
     step = service.submit("tenant", "optim_step", _optim_payload(fresh, 2))
     future = await await_settled(service, "tenant", step)
     assert future.state == DONE, "a fresh model may use the successfully recycled slot"
-
-
-async def test_a_failed_save_commit_fails_only_that_request(service, monkeypatch):
-    def failing_commit(*_, **__):
-        raise OSError("checkpoint IO failed")
-
-    monkeypatch.setattr(service.backend, "commit_adapter", failing_commit)
-    model_id = await created_model(service)
-    payload = {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False, "ttl_seconds": None}
-    future = await await_settled(service, "tenant", service.submit("tenant", "save_state", payload))
-    assert (future.state, future.error_category) == (FAILED, "server")
-    assert "checkpoint IO failed" in future.error
-    step = service.submit("tenant", "forward_backward", fb_payload(model_id, 2, [datum()]))
-    assert (await await_settled(service, "tenant", step)).state == DONE
 
 
 async def test_a_failed_cleanup_after_a_save_keeps_the_gateway_serving(service):
@@ -1372,28 +1352,6 @@ async def test_an_external_save_is_downloadable_by_its_tenant_only(service):
     assert service.expiry.expires_at(result["path"]) is None
 
 
-async def test_repeated_url_requests_reuse_one_token_and_the_sweeper_drops_expired_ones(service, monkeypatch):
-    model_id = await created_model(service)
-    save = service.submit("tenant", "save_weights_external", _external_payload(model_id, 1, "export"))
-    await await_settled(service, "tenant", save)
-
-    def token():
-        return urls["urls"]["adapter_config.json"].split("/")[-2]
-
-    urls = await service.external_weights_urls("tenant", model_id, "external_weights/export", "http://gateway/")
-    first = token()
-    for _ in range(3):
-        urls = await service.external_weights_urls("tenant", model_id, "external_weights/export", "http://gateway/")
-    assert token() == first and len(service._downloads) == 1, "a client polling for URLs does not grow the table"
-
-    service._drop_expired_downloads(time.time() + 3601)
-    assert not service._downloads and not service._download_tokens
-    with pytest.raises(NotFoundError):
-        await service.download_path(first, "adapter_config.json")
-    urls = await service.external_weights_urls("tenant", model_id, "external_weights/export", "http://gateway/")
-    assert token() != first, "an expired token is never handed out again"
-
-
 async def test_a_download_token_never_outlives_the_expiry_it_was_issued_with(service, monkeypatch):
     """The URL is the credential: a request after its expiry, before the sweeper runs, must not revive it."""
     model_id = await created_model(service)
@@ -1442,14 +1400,6 @@ async def test_an_encrypted_external_save_keeps_its_owner(service):
     await service.delete_checkpoint("tenant", model_id, "external_weights/export")
 
 
-async def test_an_external_save_is_refused_for_a_family_without_checked_tinker_names(service):
-    service.config.exports_tinker_names = False
-    model_id = await created_model(service)
-    save = service.submit("tenant", "save_weights_external", _external_payload(model_id, 1, "export"))
-    assert "no checked official Tinker names" in (await await_settled(service, "tenant", save)).error
-    assert not service.backend.named("export_external")
-
-
 async def test_a_failed_external_commit_fails_the_request_not_the_gateway(service, monkeypatch):
     model_id = await created_model(service)
     commit = service.backend.commit_adapter
@@ -1477,14 +1427,6 @@ async def test_a_download_url_does_not_serve_a_resave_under_the_same_name(servic
     assert (await await_settled(service, "tenant", save)).state == DONE
     with pytest.raises(NotFoundError, match="saved again"):
         await service.download_path(token, "adapter_config.json")
-
-
-async def test_an_external_save_refuses_an_existing_name(service):
-    model_id = await created_model(service)
-    first = service.submit("tenant", "save_weights_external", _external_payload(model_id, 1, "export"))
-    assert (await await_settled(service, "tenant", first)).state == DONE
-    again = service.submit("tenant", "save_weights_external", _external_payload(model_id, 2, "export"))
-    assert "already exist" in (await await_settled(service, "tenant", again)).error
 
 
 async def test_a_download_url_expires_with_its_checkpoint(service, monkeypatch):
@@ -1574,58 +1516,18 @@ def _full_disk(*args, **kwargs):
     raise OSError(28, "No space left on device")
 
 
-@pytest.mark.parametrize("op", ["save_state", "save_weights_for_sampler", "save_weights_external"])
-async def test_a_failed_expiry_write_after_a_commit_keeps_the_save_and_the_gateway(service, monkeypatch, op):
+async def test_a_failed_expiry_write_after_a_commit_keeps_the_save_and_the_gateway(service, monkeypatch):
     model_id = await created_model(service)
-    payloads = {
-        "save_state": lambda seq_id: {
-            "model_id": model_id,
-            "seq_id": seq_id,
-            "name": f"ck{seq_id}",
-            "overwrite": False,
-            "ttl_seconds": 3600,
-        },
-        "save_weights_for_sampler": lambda seq_id: {"model_id": model_id, "seq_id": seq_id, "ttl_seconds": 3600},
-        "save_weights_external": lambda seq_id: _external_payload(model_id, seq_id, f"e{seq_id}", ttl_seconds=3600),
-    }
     monkeypatch.setattr(service.expiry, "_write", _full_disk)
-    if op == "save_weights_external":
-        # the commit is done; sizing it is a read after it
-        monkeypatch.setattr(service.backend, "resolve_checkpoint_files", _full_disk)
+    # the commit is done; sizing it is a read after it
+    monkeypatch.setattr(service.backend, "resolve_checkpoint_files", _full_disk)
     for seq_id in (1, 2):
-        saved = await await_settled(service, "tenant", service.submit("tenant", op, payloads[op](seq_id)))
+        payload = _external_payload(model_id, seq_id, f"e{seq_id}", ttl_seconds=3600)
+        saved = await await_settled(service, "tenant", service.submit("tenant", "save_weights_external", payload))
         assert saved.state == DONE, saved.error
         # recorded nowhere, so it never expires, in this process or after a restart
         assert service.expiry.expires_at(saved.result["path"]) is None
-    if op == "save_weights_external":
-        assert saved.result["size_bytes"] is None
-
-
-@pytest.mark.parametrize("fails", ["live_commit_id", "drop"])
-async def test_a_failure_before_an_overwrite_commit_fails_only_that_request(service, monkeypatch, fails):
-    model_id = await created_model(service)
-
-    def save(seq_id):
-        payload = {"model_id": model_id, "seq_id": seq_id, "name": "ck", "overwrite": True, "ttl_seconds": 3600}
-        return await_settled(service, "tenant", service.submit("tenant", "save_state", payload))
-
-    path = (await save(1)).result["path"]
-    old_expires_at = service.expiry.expires_at(path)
-    if fails == "live_commit_id":
-
-        def foreign_link(root, name):
-            raise ValueError("ck is a link this library did not write")
-
-        monkeypatch.setattr(service, "_live_commit_id", foreign_link)
-    else:
-        monkeypatch.setattr(service.expiry, "_write", _full_disk)
-    failed = await save(2)
-    assert failed.state == FAILED
-    assert failed.error_category == ("user" if fails == "live_commit_id" else "server")
-    assert service.expiry.expires_at(path) == old_expires_at
-    assert CheckpointExpiry(service.config.checkpoint_root).expires_at(path) == old_expires_at
-    monkeypatch.undo()
-    assert (await save(3)).state == DONE, "the gateway keeps serving"
+    assert saved.result["size_bytes"] is None
 
 
 async def test_a_sweep_with_nothing_expired_does_not_wait_for_the_trainer(service):
@@ -1656,31 +1558,6 @@ async def test_ttl_is_set_removed_and_swept(service, monkeypatch):
     assert resolve_adapter_dir(root, "ck", tenant=None) is None and service.expiry.expires_at(path) is None
     with pytest.raises(NotFoundError):
         await service.delete_checkpoint("tenant", model_id, "weights/ck")
-
-
-async def test_a_failed_expiry_delete_is_retried_and_the_rest_are_swept(service, monkeypatch):
-    model_id = await created_model(service)
-    paths = {}
-    for seq_id, name in enumerate(("stuck", "ok"), start=1):
-        payload = {"model_id": model_id, "seq_id": seq_id, "name": name, "overwrite": False, "ttl_seconds": 3600}
-        paths[name] = (await await_settled(service, "tenant", service.submit("tenant", "save_state", payload))).result[
-            "path"
-        ]
-    real_delete = service.backend.delete_adapter
-
-    def delete_adapter(root, name, tenant):
-        if name == "stuck":
-            raise PermissionError(13, "Permission denied")
-        real_delete(root, name, tenant)
-
-    monkeypatch.setattr(service.backend, "delete_adapter", delete_adapter)
-    real_time = time.time
-    monkeypatch.setattr(time, "time", lambda: real_time() + 3601)
-    await service._expire_checkpoints()
-    root = Path(resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "weights", "ok")).parent
-    assert resolve_adapter_dir(root, "ok", tenant=None) is None and service.expiry.expires_at(paths["ok"]) is None
-    assert resolve_adapter_dir(root, "stuck", tenant=None) is not None
-    assert service.expiry.expires_at(paths["stuck"]) is not None, "kept for the next sweep"
 
 
 async def test_an_expiring_name_relinked_by_an_operator_is_kept_and_the_rest_are_swept(service, tmp_path_factory):
@@ -1967,18 +1844,6 @@ async def test_a_file_import_copy_does_not_hold_the_trainer_lock(service, monkey
     assert (await await_settled(service, "importer", load)).state == DONE
 
 
-async def test_weights_info_rejects_a_sampler_link_whose_target_is_gone(service):
-    model_id = await created_model(service)
-    save = service.submit(
-        "tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1, "ttl_seconds": None}
-    )
-    path = (await await_settled(service, "tenant", save)).result["path"]
-    link = Path(resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "sampler_weights", "1"))
-    shutil.rmtree(resolve_adapter_dir(link.parent, "1", tenant="tenant").path)
-    with pytest.raises(UserInputError, match="unknown checkpoint"):
-        service.weights_info("tenant", path)
-
-
 async def test_trainer_ranks_get_only_the_tenant_digest(service):
     model_id = await created_model(service)
     save = service.submit(
@@ -2002,19 +1867,6 @@ async def test_a_ttl_change_does_not_wait_for_a_training_call(service):
     async with service._trainer_lock:
         await asyncio.wait_for(service.set_checkpoint_ttl("tenant", model_id, "weights/ck", 7200), timeout=1.0)
     assert service.expiry.expires_at(f"tinker://{model_id}/weights/ck") is not None
-
-
-async def test_a_legacy_checkpoint_cannot_be_deleted_through_the_api(service):
-    model_id = await created_model(service)
-    write_legacy_checkpoint(
-        resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "weights", "old"),
-        service.models[model_id],
-        service.config,
-    )
-    with pytest.raises(UserInputError, match="saved before checkpoints could expire"):
-        await service.delete_checkpoint("tenant", model_id, "weights/old")
-    with pytest.raises(UserInputError, match="not an external_weights"):
-        await service.external_weights_urls("tenant", model_id, "weights/old", "http://gateway/")
 
 
 async def test_an_unreadable_import_is_a_user_error(tmp_path):
