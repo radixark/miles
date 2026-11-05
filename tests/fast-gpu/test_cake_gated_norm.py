@@ -1,5 +1,5 @@
 """--linear-attention-output-norm-backend cake: the SiLU-gated output RMSNorm (RMSNorm(x) * w * SiLU(z)) of the GDN
-layers on the Cake kernels of the miles-ext-kernels submodule (miles_ext_kernels.gated_rmsnorm).
+layers on the Cake kernels of the miles-ext-kernels submodule (miles_ext_kernels.cake.gated_rmsnorm).
 
 On ``[T, H, 128]`` rows whose gate is a column slice of a wider projection, as the layer passes them, both variants
 stay within NORM_OVER_FLA times fla's error against a float64 reference (plus ERROR_FLOOR) for the output and every

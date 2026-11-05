@@ -1,4 +1,3 @@
-import argparse
 import importlib
 import sys
 from types import ModuleType, SimpleNamespace
@@ -110,30 +109,107 @@ class TestBackendOwnedSpecs:
         assert args.model_dump() == original
 
 
-def test_a_cake_gdn_input_norm_is_the_kernel_package_norm(monkeypatch: pytest.MonkeyPatch, gdn: ModuleType) -> None:
-    """--linear-attention-input-norm cake: the Qwen3.5 / Qwen3-Next GDN input norm is the package's zero-centred
-    RMSNorm, configured with the run's values, holding the single weight parameter of the te and hf norms."""
-    qwen3_5 = importlib.import_module("miles_plugins.models.qwen3_5")
-    calls: list[tuple] = []
+def _fake_rmsnorm_ext(monkeypatch: pytest.MonkeyPatch, calls: list[tuple]) -> type[torch.nn.Module]:
+    """Stand-ins for ``miles_ext_kernels`` (its ``configure``), ``miles_ext_kernels.cake`` (its ``prebuild``) and the
+    op module ``miles_ext_kernels.cake.rmsnorm`` (its ``ZeroCenteredRMSNorm``), each recording its calls."""
 
     class ZeroCenteredRMSNorm(torch.nn.Module):
-        def __init__(self, hidden_size: int, eps: float, *, params_dtype: torch.dtype) -> None:
+        def __init__(
+            self, hidden_size: int, eps: float, *, params_dtype: torch.dtype, sequence_parallel: bool | None = None
+        ) -> None:
             super().__init__()
-            calls.append(("build", hidden_size, eps, params_dtype))
+            calls.append(("build", hidden_size, eps, params_dtype, sequence_parallel))
             self.weight = torch.nn.Parameter(torch.zeros(hidden_size, dtype=params_dtype))
 
-    package = ModuleType("miles_ext_kernels.rmsnorm")
-    package.configure = lambda namespace: calls.append(("configure", namespace))
-    package.ZeroCenteredRMSNorm = ZeroCenteredRMSNorm
-    monkeypatch.setitem(sys.modules, "miles_ext_kernels", ModuleType("miles_ext_kernels"))
-    monkeypatch.setitem(sys.modules, "miles_ext_kernels.rmsnorm", package)
+    package = ModuleType("miles_ext_kernels")
+    package.configure = lambda values: calls.append(("configure", values))
+    cake = ModuleType("miles_ext_kernels.cake")
+    cake.prebuild = lambda op, **params: calls.append(("prebuild", op, params))
+    rmsnorm = ModuleType("miles_ext_kernels.cake.rmsnorm")
+    rmsnorm.ZeroCenteredRMSNorm = ZeroCenteredRMSNorm
+    package.cake, cake.rmsnorm = cake, rmsnorm
+    for module in (package, cake, rmsnorm):
+        monkeypatch.setitem(sys.modules, module.__name__, module)
+    return ZeroCenteredRMSNorm
+
+
+@pytest.mark.parametrize("sequence_parallel", [None, True])
+def test_a_cake_gdn_input_norm_is_the_kernel_package_norm(
+    monkeypatch: pytest.MonkeyPatch, gdn: ModuleType, sequence_parallel: bool | None
+) -> None:
+    """--linear-attention-input-norm cake: the Qwen3.5 / Qwen3-Next GDN input norm is the package's zero-centred
+    RMSNorm, configured with the run's values, built with the layer's sequence-parallel setting and holding the single
+    weight parameter of the te and hf norms; its libraries for the hidden size are built with it."""
+    qwen3_5 = importlib.import_module("miles_plugins.models.qwen3_5")
+    calls: list[tuple] = []
+    norm_cls = _fake_rmsnorm_ext(monkeypatch, calls)
     args = SimpleNamespace(miles_ext_kernels_args={"cake_rmsnorm_variant": "det"})
 
-    norm = qwen3_5.gdn_input_layernorm("cake", 4096, 1e-6, torch.bfloat16, args=args)
+    norm = qwen3_5.gdn_input_layernorm(
+        "cake", 4096, 1e-6, torch.bfloat16, args=args, sequence_parallel=sequence_parallel
+    )
 
-    assert isinstance(norm, ZeroCenteredRMSNorm)
+    assert isinstance(norm, norm_cls)
     assert list(norm.state_dict()) == ["weight"]
     assert calls == [
-        ("configure", argparse.Namespace(cake_rmsnorm_variant="det")),
-        ("build", 4096, 1e-6, torch.bfloat16),
+        ("configure", {"cake_rmsnorm_variant": "det"}),
+        ("build", 4096, 1e-6, torch.bfloat16, sequence_parallel),
+        ("prebuild", "rmsnorm", {"hidden_size": 4096}),
     ]
+
+
+def test_the_te_gdn_input_norm_is_built_with_the_sequence_parallel_setting(
+    monkeypatch: pytest.MonkeyPatch, gdn: ModuleType
+) -> None:
+    qwen3_5 = importlib.import_module("miles_plugins.models.qwen3_5")
+    built: list[dict[str, Any]] = []
+    monkeypatch.setattr(qwen3_5, "_TEZeroCenteredRMSNorm", lambda hidden_size, **kwargs: built.append(kwargs))
+
+    qwen3_5.gdn_input_layernorm("te", 4096, 1e-6, torch.bfloat16, sequence_parallel=True)
+
+    assert built == [dict(eps=1e-6, zero_centered_gamma=True, params_dtype=torch.bfloat16, sequence_parallel=True)]
+
+
+@pytest.mark.parametrize("sequence_parallel", [False, True])
+def test_the_gdn_layer_builds_its_input_norm_with_its_sequence_parallel_setting(
+    monkeypatch: pytest.MonkeyPatch, gdn: ModuleType, sequence_parallel: bool
+) -> None:
+    """The Qwen3.5 GDN layer hands ``config.sequence_parallel`` to its input norm's constructor."""
+    qwen3_5 = importlib.import_module("miles_plugins.models.qwen3_5")
+    norms: list[dict[str, Any]] = []
+    text_config = SimpleNamespace(linear_conv_kernel_dim=4, rms_norm_eps=1e-6, hidden_act="silu", hidden_size=4096)
+    monkeypatch.setattr(qwen3_5, "load_hf_config", lambda path: text_config)
+    monkeypatch.setattr(qwen3_5, "gdn_heads", lambda config: None)
+    monkeypatch.setattr(qwen3_5.Attention, "core_cls", lambda *args, **kwargs: None)
+    monkeypatch.setattr(qwen3_5, "gdn_input_layernorm", lambda *args, **kwargs: norms.append(kwargs))
+    monkeypatch.setattr(qwen3_5.LinearAttentionLayer, "__init__", lambda self, *args, **kwargs: None)
+    args = SimpleNamespace(
+        hf_checkpoint="checkpoint",
+        linear_attention_backend="fla",
+        linear_attention_input_norm="cake",
+        allgather_cp=False,
+    )
+    config = SimpleNamespace(sequence_parallel=sequence_parallel, params_dtype=torch.bfloat16)
+
+    qwen3_5.Attention(args, config, layer_number=1, pg_collection=SimpleNamespace(tp=None))
+
+    assert norms == [{"args": args, "sequence_parallel": sequence_parallel}]
+
+
+def test_a_cake_gdn_input_norm_built_on_the_meta_device_keeps_its_sequence_parallel_mark(
+    monkeypatch: pytest.MonkeyPatch, gdn: ModuleType
+) -> None:
+    """The real norm, built on the meta device with ``sequence_parallel=True``: after ``to_empty()`` and
+    ``reset_parameters()``, Megatron's rule for sequence-parallel gradients still selects its weight."""
+    pytest.importorskip("miles_ext_kernels.cake.rmsnorm", reason="the miles-ext-kernels submodule is not checked out")
+    from miles_ext_kernels import cake
+
+    qwen3_5 = importlib.import_module("miles_plugins.models.qwen3_5")
+    monkeypatch.setattr(cake, "prebuild", lambda op, **params: [])  # builds for a GPU, which this test has none of
+    with torch.device("meta"):
+        norm = qwen3_5.gdn_input_layernorm("cake", 4096, 1e-6, torch.bfloat16, sequence_parallel=True)
+    norm.to_empty(device="cpu")
+    norm.reset_parameters()
+
+    marked = [name for name, param in norm.named_parameters() if getattr(param, "sequence_parallel", False)]
+    assert marked == ["weight"]

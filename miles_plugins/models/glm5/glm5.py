@@ -764,8 +764,17 @@ def get_glm5_spec(args, config, vp_stage):
     config.index_num_attention_heads = hf_config.index_n_heads
     config.index_head_dim = hf_config.index_head_dim
     if args.dsa_attention_backend == "cake":
-        # the indexer projections are duplicated across TP ranks, so every rank scores all index_n_heads heads
-        cake.setup(args, index_heads=hf_config.index_n_heads, index_head_dim=hf_config.index_head_dim)
+        # the absorbed MLA attends over the kv_lora_rank latent with its RoPE tail, the TP rank's query heads; the
+        # indexer projections are duplicated across TP ranks, so every rank scores all index_n_heads heads
+        cake.setup(
+            args,
+            heads=config.num_attention_heads // config.tensor_model_parallel_size,
+            d_qk=config.kv_lora_rank + config.qk_pos_emb_head_dim,
+            d_v=config.kv_lora_rank,
+            attn_sink=False,
+            index_heads=hf_config.index_n_heads,
+            index_head_dim=hf_config.index_head_dim,
+        )
     config.indexer_rope_interleave = bool(
         getattr(hf_config, "indexer_rope_interleave", False)
     )  # config-access-exempt: HF checkpoints may omit indexer rotary interleaving

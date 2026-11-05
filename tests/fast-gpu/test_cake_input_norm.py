@@ -1,5 +1,5 @@
 """--linear-attention-input-norm cake: the zero-centred input RMSNorm of the GDN layers on the Cake kernels of the
-miles-ext-kernels submodule (miles_ext_kernels.rmsnorm).
+miles-ext-kernels submodule (miles_ext_kernels.cake.rmsnorm).
 
 At the Qwen3.5 widths the kernels serve, both variants match a float64 reference within the bounds the TE norm meets
 (checked here too), and det repeats bit for bit. The cake norm holds the TE norm's single ``weight`` (w of the
