@@ -16,6 +16,7 @@ runs the Cake core attention. On SM103 the Transformer Engine layer runs on its 
 import dataclasses
 import itertools
 import sys
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -43,6 +44,8 @@ pytestmark = pytest.mark.skipif(
     reason="the Cake GQA kernels run on SM100a / SM103a / SM107a",
 )
 
+# the run's miles-ext-kernels values: every call also checks the packed boundaries and max_seqlen_k
+ARGS = SimpleNamespace(miles_ext_kernels_args={"cake_gqa_check_seqlens": True})
 HIDDEN = 1024
 HEAD_DIM = 256
 # three sequences, then the pad that aligns the packed tokens to a multiple of 128 as its own segment
@@ -129,7 +132,7 @@ def _layers(config: TransformerConfig) -> dict[str, torch.nn.Module]:
     )
     te = build_module(te_spec, config=config, layer_number=LAYER_NUMBER)
     cake = build_module(
-        apply_cake_full_attention(layer_spec).submodules.self_attention, config=config, layer_number=LAYER_NUMBER
+        apply_cake_full_attention(layer_spec, ARGS).submodules.self_attention, config=config, layer_number=LAYER_NUMBER
     )
     fp64 = build_module(fp64_spec, config=config, layer_number=LAYER_NUMBER)
     state = te.state_dict()
@@ -192,7 +195,7 @@ def test_the_cake_layer_matches_transformer_engine_against_fp64(heads, groups, m
 
 
 def test_selective_core_attention_recompute_leaves_the_layer_unchanged(megatron_tp1):
-    spec = apply_cake_full_attention(get_gpt_layer_with_transformer_engine_spec(qk_layernorm=True))
+    spec = apply_cake_full_attention(get_gpt_layer_with_transformer_engine_spec(qk_layernorm=True), ARGS)
     spec = spec.submodules.self_attention
     plain = build_module(spec, config=_config(8, 2), layer_number=LAYER_NUMBER)
     recomputed = build_module(
@@ -216,7 +219,7 @@ def test_the_mtp_layer_inherits_the_cake_core_attention(megatron_tp1):
     config = _config(8, 2, mtp_num_layers=1)
     block = get_gpt_decoder_block_spec(config, use_transformer_engine=True)
     # the Qwen3.5 / Qwen3-Next spec swaps every full-attention layer, the decoder's last layer among them
-    block.layer_specs[-1] = apply_cake_full_attention(block.layer_specs[-1])
+    block.layer_specs[-1] = apply_cake_full_attention(block.layer_specs[-1], ARGS)
 
     mtp = get_gpt_mtp_block_spec(config, block, use_transformer_engine=True)
 

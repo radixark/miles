@@ -73,17 +73,21 @@ class Glm5NextKDA(nn.Module):
             # raises: the Cake gated RMSNorm runs a SiLU gate, and this output norm's gate is a sigmoid
             miles_ext("gated_rmsnorm").check_supported(head_dim, "sigmoid", torch.bfloat16)
         if conv_backend == "cake":
-            conv = miles_ext("conv1d")
-            conv.check_supported(3 * self.projection_size, conv_kernel_size, "silu")
-            conv.prebuild(torch.bfloat16)
+            miles_ext("conv1d").check_supported(
+                3 * self.projection_size, conv_kernel_size, "silu", has_bias=self.conv1d.bias is not None
+            )
+            from miles_ext_kernels import cake
+
+            cake.prebuild("conv1d", weight_dtype=torch.bfloat16)
         if kda_backend == "cake":
             if head_dim != 128:
                 raise ValueError(f"--kda-backend cake needs head dimension 128, got {head_dim}")
             self.cake_chunk_kda = kda_kernel("cake")
-            from miles_ext_kernels.kda import prepare
+            from miles_ext_kernels import cake
 
-            # the layer is not head-sharded: it raises above 64 heads, and on a GPU other than SM100a / SM103a / SM107a
-            prepare(num_heads)
+            # every library of the op for this GPU; the layer is not head-sharded: it raises above 64 heads, and on a
+            # GPU other than SM100a / SM103a / SM107a
+            cake.prebuild("kda", num_heads=num_heads)
 
     def forward(self, hidden_states: torch.Tensor, cu_seqlens: torch.Tensor):
         cp_context = build_gdn_cp_context(self, cu_seqlens, hidden_states.device)

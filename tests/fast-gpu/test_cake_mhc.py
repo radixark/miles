@@ -12,10 +12,9 @@ One GLM-5.3 connection (hidden 4096, 4 streams; Megatron's module with GLM-5.3's
 * ``apply_mhc_backend`` with the real kernel package.
 
 The kernels' own suites (both variants against FP64 at the miles hidden sizes, the head, the variant rules) run in
-``3rdparty/miles-ext-kernels/tests/mhc`` through ``tests/fast-gpu/kernels/test_miles_ext_kernels.py``.
+``3rdparty/miles-ext-kernels/tests/cake/mhc`` through ``tests/fast-gpu/kernels/test_miles_ext_kernels.py``.
 """
 
-import argparse
 import sys
 from types import SimpleNamespace
 
@@ -31,11 +30,11 @@ pytestmark = pytest.mark.skipif(
 )
 
 # a missing submodule fails the collection: on the Blackwell runners a skip would hide the coverage
-import miles_ext_kernels.mhc as mhc  # noqa: E402
+import miles_ext_kernels  # noqa: E402
 from megatron.core import tensor_parallel  # noqa: E402
 from megatron.core.transformer.hyper_connection import HyperConnectionModule  # noqa: E402
 from megatron.core.transformer.transformer_config import TransformerConfig  # noqa: E402
-from miles_ext_kernels.mhc import ops  # noqa: E402
+from miles_ext_kernels import cake  # noqa: E402
 
 from miles_plugins.models.cake_hyper_connection import (  # noqa: E402
     CakeHyperConnection,
@@ -90,15 +89,15 @@ def _built(cls, params: dict) -> torch.nn.Module:
 
 
 @pytest.fixture(autouse=True)
-def variant(monkeypatch):
-    """Set the Cake variant of the next calls through the package's configure; restored after the test."""
-    monkeypatch.setattr(ops, "VARIANT", ops.VARIANT)
+def variant():
+    """Set the Cake variant of the next calls through miles_ext_kernels.configure; the defaults after the test."""
 
     def select(name: str) -> None:
-        mhc.configure(argparse.Namespace(cake_mhc_variant=name))
+        miles_ext_kernels.configure(cake_mhc_variant=name)
 
     select("det")
-    return select
+    yield select
+    miles_ext_kernels.configure()
 
 
 @pytest.fixture(scope="module")
@@ -251,7 +250,7 @@ def test_apply_mhc_backend_checks_the_device_and_configures_the_kernels():
     submodules = spec.layer_specs[0].submodules
     assert submodules.self_attention_hyper_connection is submodules.mlp_hyper_connection is CakeHyperConnection
     assert spec.hc_head_contraction.module is CakeMeanOutputContraction
-    assert ops.VARIANT == "fast"
+    assert cake.variant("mhc") == "fast"
     small = SimpleNamespace(num_residual_streams=N, hidden_size=2048, use_fused_mhc=False)
     with pytest.raises(ValueError, match="hidden size 2048"):
         apply_mhc_backend(_block_spec(), args, small)
