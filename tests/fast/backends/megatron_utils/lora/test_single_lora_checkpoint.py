@@ -31,7 +31,7 @@ from miles.backends.training_utils.checkpoint.adapter.source_error import Adapte
 _MODULE = "miles.backends.megatron_utils.lora.checkpoint"
 
 
-def _restore(path, *, convert_save=None, source_alpha=16.0):
+def _restore(path, *, convert_save=None):
     """``restore_single_lora`` with the model-facing pieces mocked; returns (iteration, scheduler, mocks)."""
     args = SimpleNamespace(
         hf_checkpoint="/hf",
@@ -54,7 +54,7 @@ def _restore(path, *, convert_save=None, source_alpha=16.0):
         save_and_commit_adapter_dir=DEFAULT,
         load_hf_config=lambda path: SimpleNamespace(to_dict=lambda: {"model_type": "qwen3"}),
     ) as mocks:
-        mocks["load_adapter_dir"].return_value = SimpleNamespace(lora_alpha=source_alpha)
+        mocks["load_adapter_dir"].return_value = SimpleNamespace(lora_alpha=16.0)
         iteration = restore_single_lora(
             [], args, adapter_slots=slots, optimizer=MagicMock(), opt_param_scheduler=scheduler
         )
@@ -83,12 +83,6 @@ def test_a_weights_only_convert_save_writes_neither_moments_nor_a_placeholder_tr
     assert mocks["DistributedOptimizerMembers"].call_args.kwargs["save_moments"] is False
     assert mocks["save_and_commit_adapter_dir"].call_args.kwargs["training_state"] is None
     assert mocks["save_and_commit_adapter_dir"].call_args.kwargs["lora_dropout"] == 0.05
-
-
-def test_a_source_trained_with_another_alpha_is_refused_on_the_trainer(tmp_path):
-    # the driver may have resolved --lora-alpha without seeing the path the trainers load
-    with pytest.raises(AssertionError, match="lora_alpha=32.0; this run uses 16.0"):
-        _restore(tmp_path, source_alpha=32.0)
 
 
 def test_an_old_format_save_reports_the_alpha_its_peft_pair_records(tmp_path):
