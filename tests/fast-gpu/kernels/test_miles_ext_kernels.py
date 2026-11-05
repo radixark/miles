@@ -1,4 +1,4 @@
-"""The kernel tests of the miles-ext-kernels submodule (3rdparty/miles-ext-kernels/tests/<package>) on Blackwell.
+"""The miles-ext-kernels submodule's kernel tests (3rdparty/miles-ext-kernels/tests/<package>) on Blackwell or Rubin.
 
 The submodule's own CI has no GPU, so its CUDA tests run here, one separate pytest process per kernel package against
 this checkout's submodule. Every collected test must run: on the runners this file is registered for, a skip means a
