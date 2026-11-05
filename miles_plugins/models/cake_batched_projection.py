@@ -10,8 +10,8 @@ cuBLAS). The views the einsums take (a slice of a wider head slot, a split of ``
 place where the kernel's alignment allows, else copied.
 
 :func:`validate_batched_projection_config` rejects at layer construction what the kernel does not run: CUDA graphs,
-non-BF16 parameters, head dimensions that are not multiples of 8. CUDA-only (NVIDIA SM100a / SM103a, Megatron
-backend); the kernel package is imported on the first ``cake`` call.
+non-BF16 parameters, head dimensions that are not multiples of 8. CUDA-only (NVIDIA SM100a / SM103a / SM107a,
+Megatron backend); the kernel package is imported on the first ``cake`` call.
 """
 
 from __future__ import annotations

@@ -120,9 +120,9 @@ class TrainConfig(BaseConfig):
                 "q-absorb and value projections of GLM-5 / DeepSeek-V3.2 and GLM-5.3-Flash, the grouped output "
                 "projection of DeepSeek-V4 / V4.1). 'torch' is torch.einsum. 'cake' is the Cake deterministic GEMM "
                 "from the miles-ext-kernels submodule (bit-identical call to call, not bitwise equal to cuBLAS); it "
-                "requires --use-miles-ext-kernels, NVIDIA SM100a/SM103a (Blackwell), the Megatron backend, "
-                "--megatron-to-hf-mode raw with --dsa-impl / --dsv4-impl miles, BF16 parameters, head dimensions "
-                "that are multiples of 8 and no CUDA graphs."
+                "requires --use-miles-ext-kernels, NVIDIA SM100a/SM103a/SM107a (Blackwell, Rubin), the Megatron "
+                "backend, --megatron-to-hf-mode raw with --dsa-impl / --dsv4-impl miles, BF16 parameters, head "
+                "dimensions that are multiples of 8 and no CUDA graphs."
             ),
         ),
     ] = "torch"
@@ -133,10 +133,10 @@ class TrainConfig(BaseConfig):
             help=(
                 "Backend for the FP32 MoE router gate GEMM of the Megatron backend. 'megatron' is Megatron's "
                 "Router.gating. 'cake' is the Cake FP32 GEMM from the miles-ext-kernels submodule (FP32 logits and "
-                "gradients in a fixed reduction order); it requires --use-miles-ext-kernels, NVIDIA SM100a/SM103a "
-                "(Blackwell), --moe-router-dtype fp32, --disable-bias-linear, BF16 parameters, no CUDA graphs and "
-                "expert counts and hidden sizes that are multiples of 8. Routers that override Router.gating refuse "
-                "it when the model is built."
+                "gradients in a fixed reduction order); it requires --use-miles-ext-kernels, NVIDIA "
+                "SM100a/SM103a/SM107a (Blackwell, Rubin), --moe-router-dtype fp32, --disable-bias-linear, BF16 "
+                "parameters, no CUDA graphs and expert counts and hidden sizes that are multiples of 8. Routers "
+                "that override Router.gating refuse it when the model is built."
             ),
         ),
     ] = "megatron"

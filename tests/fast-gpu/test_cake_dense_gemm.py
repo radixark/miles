@@ -1,5 +1,5 @@
-"""``--batched-projection-gemm-backend cake`` and ``--moe-router-gemm-backend cake`` on Blackwell against torch and
-Megatron, through ``miles_plugins.models.cake_batched_projection``,
+"""``--batched-projection-gemm-backend cake`` and ``--moe-router-gemm-backend cake`` on SM100a / SM103a / SM107a
+against torch and Megatron, through ``miles_plugins.models.cake_batched_projection``,
 ``miles.backends.megatron_utils.cake_router_gemm`` and the real kernel package:
 
 * the MLA q-absorb and value projections of GLM-5 / GLM-5.3 on the views their attention takes (a slice of a wider head
@@ -25,8 +25,8 @@ from tests.ci.ci_register import register_cuda_ci
 register_cuda_ci(est_time=1200, suite="stage-c-4-gpu-b200", labels=["precision"], hardware=["blackwell"], num_gpus=1)
 
 pytestmark = pytest.mark.skipif(
-    not torch.cuda.is_available() or torch.cuda.get_device_capability() not in ((10, 0), (10, 3)),
-    reason="the Cake dense GEMMs run on NVIDIA SM100a / SM103a",
+    not torch.cuda.is_available() or torch.cuda.get_device_capability() not in ((10, 0), (10, 3), (10, 7)),
+    reason="the Cake dense GEMMs run on NVIDIA SM100a / SM103a / SM107a",
 )
 
 # a missing submodule fails the collection: on the Blackwell runners a skip would hide the coverage
