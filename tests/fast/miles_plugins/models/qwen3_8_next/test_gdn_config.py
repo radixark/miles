@@ -1,4 +1,3 @@
-import argparse
 import sys
 from types import ModuleType, SimpleNamespace
 from typing import Any
@@ -44,6 +43,19 @@ def _config() -> SimpleNamespace:
     )
 
 
+def _fake_ext(monkeypatch: pytest.MonkeyPatch, op: str, module: ModuleType, configured: list | None = None) -> None:
+    """Stand-ins for ``miles_ext_kernels`` (its ``configure`` records the values), ``miles_ext_kernels.cake`` (its
+    ``prebuild`` does nothing) and the op module ``miles_ext_kernels.cake.<op>``."""
+    package = ModuleType("miles_ext_kernels")
+    package.configure = (configured if configured is not None else []).append
+    cake = ModuleType("miles_ext_kernels.cake")
+    cake.prebuild = lambda op, **params: []
+    package.cake = cake
+    setattr(cake, op, module)
+    for stub in (package, cake, module):
+        monkeypatch.setitem(sys.modules, stub.__name__, stub)
+
+
 class TestGdnConfig:
     @pytest.mark.parametrize("backend", [None, "fla", "flashqla", "cake"])
     def test_constructor_connects_the_configured_sdk_kernel_without_cuda(
@@ -72,11 +84,9 @@ class TestGdnConfig:
         qla.chunk_gated_delta_rule = qla_kernel
         monkeypatch.setitem(sys.modules, "fla.ops.gated_delta_rule", fla)
         monkeypatch.setitem(sys.modules, "flash_qla", qla)
-        cake = ModuleType("miles_ext_kernels.gdn")
+        cake = ModuleType("miles_ext_kernels.cake.gdn")
         cake.chunk_gated_delta_rule = cake_kernel
-        cake.configure = configured.append
-        monkeypatch.setitem(sys.modules, "miles_ext_kernels", ModuleType("miles_ext_kernels"))
-        monkeypatch.setitem(sys.modules, "miles_ext_kernels.gdn", cake)
+        _fake_ext(monkeypatch, "gdn", cake, configured)
         monkeypatch.setattr(gdn, "ShortConvolution", _CpuSdkModule, raising=False)
         monkeypatch.setattr(gdn, "FusedRMSNormGated", _CpuSdkModule, raising=False)
         monkeypatch.setattr(torch.cuda, "current_device", lambda: "cpu")
@@ -97,7 +107,7 @@ class TestGdnConfig:
         expected = backend or "fla"
         assert calls == [expected]
         assert result == f"{expected}-result"
-        expected_configured = [argparse.Namespace(cake_gdn_recompute_state=True)] if backend == "cake" else []
+        expected_configured = [{"cake_gdn_recompute_state": True}] if backend == "cake" else []
         assert configured == expected_configured
         assert layer.in_proj_qkv.weight.shape == (6, 4)
         assert layer.out_proj.weight.device.type == "cpu"
@@ -121,12 +131,11 @@ class TestGdnConfig:
             calls.append(kwargs)
             return value, None
 
-        for name in ("fla.ops.gated_delta_rule", "flash_qla", "miles_ext_kernels.gdn"):
+        for name in ("fla.ops.gated_delta_rule", "flash_qla", "miles_ext_kernels.cake.gdn"):
             module = ModuleType(name)
             module.chunk_gated_delta_rule = kernel
-            module.configure = lambda args: None
             monkeypatch.setitem(sys.modules, name, module)
-        monkeypatch.setitem(sys.modules, "miles_ext_kernels", ModuleType("miles_ext_kernels"))
+        _fake_ext(monkeypatch, "gdn", sys.modules["miles_ext_kernels.cake.gdn"])
         monkeypatch.setattr(gdn, "ShortConvolution", _PassThroughConv, raising=False)
         monkeypatch.setattr(gdn, "FusedRMSNormGated", _PassThroughNorm, raising=False)
         monkeypatch.setattr(torch.cuda, "current_device", lambda: "cpu")
@@ -161,10 +170,8 @@ class TestGdnConfig:
         """--linear-attention-output-norm-backend cake: the kernel package is configured with the run's values, checks
         the norm (the real package refuses this config's sigmoid gate), builds its kernels and runs the norm."""
         calls: list[tuple] = []
-        norm_ext = ModuleType("miles_ext_kernels.gated_rmsnorm")
-        norm_ext.configure = lambda namespace: calls.append(("configure", namespace))
+        norm_ext = ModuleType("miles_ext_kernels.cake.gated_rmsnorm")
         norm_ext.check_supported = lambda *args, **kwargs: calls.append(("check", args, kwargs))
-        norm_ext.prebuild = lambda: calls.append(("prebuild",))
 
         def rmsnorm_silu_gate(x: torch.Tensor, z: torch.Tensor, weight: torch.Tensor, eps: float) -> torch.Tensor:
             calls.append(("run", tuple(x.shape), tuple(z.shape), eps))
@@ -174,8 +181,9 @@ class TestGdnConfig:
         fla = ModuleType("fla.ops.gated_delta_rule")
         fla.chunk_gated_delta_rule = lambda query, key, value, **kwargs: (value, None)
         monkeypatch.setitem(sys.modules, "fla.ops.gated_delta_rule", fla)
-        monkeypatch.setitem(sys.modules, "miles_ext_kernels", ModuleType("miles_ext_kernels"))
-        monkeypatch.setitem(sys.modules, "miles_ext_kernels.gated_rmsnorm", norm_ext)
+        _fake_ext(monkeypatch, "gated_rmsnorm", norm_ext)
+        sys.modules["miles_ext_kernels"].configure = lambda values: calls.append(("configure", values))
+        sys.modules["miles_ext_kernels.cake"].prebuild = lambda op, **params: calls.append(("prebuild", op, params))
         monkeypatch.setattr(gdn, "ShortConvolution", _PassThroughConv, raising=False)
         monkeypatch.setattr(gdn, "FusedRMSNormGated", _WeightedNorm, raising=False)
         monkeypatch.setattr(torch.cuda, "current_device", lambda: "cpu")
@@ -190,9 +198,9 @@ class TestGdnConfig:
         output = layer(torch.randn(1, 3, 4), cu_seqlens=torch.tensor([0, 3], dtype=torch.int32))
 
         assert calls == [
-            ("configure", argparse.Namespace(cake_gated_rmsnorm_variant="det")),
+            ("configure", {"cake_gated_rmsnorm_variant": "det"}),
             ("check", (2, "sigmoid", torch.float32), {"has_bias": False}),
-            ("prebuild",),
+            ("prebuild", "gated_rmsnorm", {}),
             ("run", (3, 2), (3, 2), 1e-5),
         ]
         assert output.shape == (1, 3, 4)
