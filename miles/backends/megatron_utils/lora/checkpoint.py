@@ -262,7 +262,7 @@ class DistributedOptimizerMembers:
     def import_adapter_state(self, slot: int, state: AdapterState) -> None:
         """Rank-local: groups the pieces by the parameter this rank leads; the scatter waits for finish."""
         holds = self._holds()
-        # the pieces of each parameter this rank leads; elements no piece holds (vocab padding) keep their state
+        # the pieces of each parameter this rank leads
         pieces_by_param = {i: [] for i in holds}
         for (index, offsets), *pieces in zip(
             self._slots.piece_parameter(0, holds), state.weights, state.exp_avgs, state.exp_avg_sqs, strict=True
