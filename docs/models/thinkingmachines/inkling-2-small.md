@@ -47,7 +47,7 @@ python scripts/run_inkling2.py prepare        # DAPO-Math-17k under --data-dir
 python scripts/run_inkling2.py convert --model-name Inkling2 --train-mode lora --num-gpus-per-node 8
 ```
 
-On one B300 node this takes about 28 minutes and writes 1.1 TB, peaking at about 170 GB per GPU while loading.
+The output is 1.1 TB; loading peaks at about 170 GB per GPU.
 
 ### 3.2 Two 4-GPU nodes
 
@@ -57,7 +57,7 @@ Join both nodes in one Ray cluster, `export MILES_SCRIPT_EXTERNAL_RAY=1 MASTER_A
 python scripts/run_inkling2.py convert --model-name Inkling2 --train-mode lora --num-nodes 2 --num-gpus-per-node 4
 ```
 
-A synchronous `torch_dist` save stages each rank's whole shard in host memory by default: 4 × 138 GiB on a 626 GiB GB300 node, which is OOM-killed. `<Megatron-LM PR>` writes each tensor straight from the GPU instead, which keeps host staging under 1 GiB.
+By default, a synchronous `torch_dist` save stages each rank's whole shard in host memory, about 138 GiB per rank here. `<Megatron-LM PR>` writes each tensor straight from the GPU instead, which keeps host staging under 1 GiB.
 
 Each node needs the whole `Inkling2_torch_dist`, so put it on a filesystem both nodes read or copy it to each node.
 
@@ -65,7 +65,7 @@ Each node needs the whole `Inkling2_torch_dist`, so put it on a filesystem both 
 
 The validated recipe is GRPO on DAPO-Math-17k: 32 prompts × 8 samples per step, 4,096-token responses, rank-32 LoRA, lr 5e-5. Adapter checkpoints are written every 20 steps.
 
-One 8-GPU node (B300):
+One 8-GPU node:
 
 ```bash
 python scripts/run_inkling2.py train \
@@ -75,7 +75,7 @@ python scripts/run_inkling2.py train \
   --extra-args "--offload-train-target cpu --check-lora-weight-equal --save /root/shared_data/inkling2-lora --save-interval 20"
 ```
 
-Two 4-GPU nodes (GB300), on the head of the Ray cluster from 3.2:
+Two 4-GPU nodes, on the head of the Ray cluster from 3.2:
 
 ```bash
 python scripts/run_inkling2.py train \
@@ -85,7 +85,7 @@ python scripts/run_inkling2.py train \
   --extra-args "--check-lora-weight-equal --save /scratch/inkling2-lora --save-interval 20"
 ```
 
-The launcher offloads the trainer to local disk under `$SCRATCH` by default. That is the right choice on GB300, where host RAM holds the engines' base backup; on the B300, `--offload-train-target cpu` keeps the trainer in its 3 TB of host RAM instead. On node-local `--save` paths each node holds its own ranks' shards.
+The launcher offloads the trainer to local disk under `$SCRATCH` by default, because host RAM also holds the engines' base backup. With enough host RAM, `--offload-train-target cpu` keeps the trainer in memory instead, as in the one-node command. On node-local `--save` paths each node holds its own ranks' shards.
 
 ## 5. Recipe Configuration
 
@@ -140,7 +140,7 @@ Multi-turn agentic rollout uses the Inkling family's TITO tokenizer, `--tito-mod
 
 ### 5.6 What a healthy run looks like
 
-From the two-node GB300 run:
+From the validated two-node run:
 
 - `train/train_rollout_logprob_abs_diff` 0.018–0.021, flat (0.0202 at step 0)
 - `train/train_rollout_kl` 1.1–1.4e-3, flat
@@ -151,7 +151,7 @@ A gap that grows across syncs while entropy is flat means the engine is not serv
 
 ### 5.7 Notable quirks
 
-- Multi-node runs set `NCCL_CUMEM_ENABLE=1`: cross-node NVLink (GB300 MNNVL) needs NCCL's cuMem buffers, and Miles otherwise disables them for the trainer.
+- Multi-node runs set `NCCL_CUMEM_ENABLE=1`: cross-node NVLink (MNNVL) needs NCCL's cuMem buffers, and Miles otherwise disables them for the trainer.
 - Some clusters mount `HF_HOME` read-only; point it at a writable directory before launching.
 - The model lives in `miles_plugins/models/inkling2/`, the HF ↔ Megatron names in `miles/backends/megatron_utils/megatron_to_hf/inkling2.py` and `miles_plugins/mbridge/inkling2.py`, and the expert encoder for weight sync in `miles/backends/megatron_utils/megatron_to_hf/processors/quantizer_inkling2.py`.
 
