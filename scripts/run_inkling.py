@@ -11,6 +11,8 @@ Supports:
                           attention layer, the full model's pattern); the 4-GPU CI lane.
   - Inkling-Small    42-layer 276B MoE. Verified profile: 4 nodes x 8 GPUs
                           (TP4 SP PP8 EP4, ctx 4096 / response 2048) on H200.
+                          Single node x 8 GPUs (TP4 SP PP2 EP4) serves LoRA only, with
+                          the trainer and the engine offloaded in turn.
                           Full: --lr 5e-5, --rollout-batch-size 64 --global-batch-size 128
                           (reward +0.006/rollout). LoRA: --lr 2e-4 with the same batch
                           shape (reward +0.011/rollout); at the 5e-6 default the
@@ -170,6 +172,17 @@ def _get_parallel_config(args: ScriptArgs) -> str:
             "--sequence-parallel "
             "--pipeline-model-parallel-size 2 "
             "--expert-model-parallel-size 16 "
+            "--expert-tensor-parallel-size 1 "
+        )
+
+    if args.model_name == "Inkling-Small" and total_gpus == 8:
+        # One node, LoRA only: the frozen bf16 weights are 69 GB per GPU; full-parameter
+        # Adam state (3.3 TB) fits neither the GPUs nor the host. 42 = 21 + 21; EP<=TP*DP=4.
+        return (
+            "--tensor-model-parallel-size 4 "
+            "--sequence-parallel "
+            "--pipeline-model-parallel-size 2 "
+            "--expert-model-parallel-size 4 "
             "--expert-tensor-parallel-size 1 "
         )
 
