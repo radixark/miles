@@ -57,6 +57,7 @@ def runtime_args() -> argparse.Namespace:
         expert_tensor_parallel_size=1,
         sequence_parallel=False,
         context_parallel_size=1,
+        cp_comm_type=["p2p"],
         calculate_per_token_loss=True,
         variable_seq_lengths=True,
         attention_softmax_in_fp32=False,

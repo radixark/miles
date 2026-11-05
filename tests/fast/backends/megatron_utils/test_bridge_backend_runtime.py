@@ -36,6 +36,7 @@ def test_bridge_provider_receives_backend_runtime_options_and_preserves_unset_ov
     )
     same_name_fields = set(vars(args.backend)) - {
         "dsa_kernel_backend",
+        "cp_comm_type",
         "decoder_first_pipeline_num_layers",
         "decoder_last_pipeline_num_layers",
         "moe_router_bias_update_rate",
@@ -52,3 +53,13 @@ def test_bridge_provider_receives_backend_runtime_options_and_preserves_unset_ov
     assert provider.moe_router_bias_update_rate == (0.125 if explicit_options else 0.5)
     assert provider.moe_aux_loss_coeff == (0.25 if explicit_options else 0.75)
     assert provider.dsa_kernel_backend == "cudnn"
+
+
+@pytest.mark.parametrize("cp_comm_type, expected", [(["a2a"], "a2a"), (["a2a", "p2p"], ["a2a", "p2p"])])
+def test_bridge_provider_receives_cp_comm_type(cp_comm_type: list[str], expected: str | list[str]) -> None:
+    """A single --cp-comm-type is unwrapped like core_transformer_config_from_args; a per-layer list is kept."""
+    provider = SimpleNamespace(experimental_attention_variant="dsv4_hybrid")
+
+    _apply_bridge_runtime_config(provider, _runtime_args(cp_comm_type=cp_comm_type))
+
+    assert provider.cp_comm_type == expected
