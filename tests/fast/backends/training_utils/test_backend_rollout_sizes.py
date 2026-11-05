@@ -51,6 +51,7 @@ class TestBackendRolloutSizes:
             qkv_format="thd",
             use_dynamic_global_batch_size=dynamic is not None,
             use_dynamic_batch_size=False,
+            multimodal_token_space_processing=False,
         )
         data = {"total_lengths": list(range(8))}
         if dynamic is not None:
@@ -74,6 +75,7 @@ class TestBackendRolloutSizes:
         args = Namespace(
             backend=Namespace(global_batch_size=4, micro_batch_size=3),
             qkv_format="thd",
+            multimodal_token_space_processing=False,
             use_dynamic_global_batch_size=False,
             use_dynamic_batch_size=False,
         )

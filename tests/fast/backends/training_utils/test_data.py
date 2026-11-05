@@ -28,6 +28,7 @@ def _static_args() -> Namespace:
         qkv_format="thd",
         use_dynamic_global_batch_size=False,
         use_dynamic_batch_size=False,
+        multimodal_token_space_processing=False,
         backend=Namespace(global_batch_size=256, micro_batch_size=8),
     )
 
@@ -35,6 +36,7 @@ def _static_args() -> Namespace:
 def _scheduled_args() -> Namespace:
     return Namespace(
         qkv_format="thd",
+        multimodal_token_space_processing=False,
         global_batch_size=256,
         backend=Namespace(global_batch_size=256),
         use_dynamic_global_batch_size=False,
