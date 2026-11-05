@@ -284,6 +284,7 @@ class _FakeMoriEngine:
         self.remote_engines: list[str] = []
         self.batch_writes: list[tuple[str, int]] = []
         self.stuck_remote_engines: set[str] = set()
+        self.raising_remote_engines: set[str] = set()
         # weak, as MoRI's completion handler holds a status by raw pointer
         self.stuck_statuses: list[weakref.ref[_FakeMoriStatus]] = []
         self._next_uid = 0
@@ -330,9 +331,12 @@ class _FakeMoriEngine:
                 target_ptrs.append(remote_desc.data + remote_off)
                 lengths.append(length)
         self.batch_writes.append((remote_key, len(local_descs)))
-        if remote_key in self.stuck_remote_engines:
+        if remote_key in self.stuck_remote_engines | self.raising_remote_engines:
+            # as mori.io's wrapper, which creates the statuses before the native call can raise
             statuses = [_FakeMoriStatus("PROC") for _ in uids]
             self.stuck_statuses += [weakref.ref(status) for status in statuses]
+            if remote_key in self.raising_remote_engines:
+                raise RuntimeError(f"remote engine {remote_key} is not registered")
             return statuses
         ret = self._transfer_engine.batch_transfer_sync_write(remote_key, source_ptrs, target_ptrs, lengths)
         return [_FakeMoriStatus("DONE") if ret == 0 else _FakeMoriStatus("ERR", "ERR_RDMA_OP") for _ in uids]

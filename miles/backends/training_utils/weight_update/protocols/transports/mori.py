@@ -55,9 +55,9 @@ class MoriTransport:
         self._peers: dict[str, tuple[Any, list[_Region]]] = {}
         # replaced, never mutated: write threads read it without a lock
         self._local_regions: list[_Region] = []
-        # the statuses of writes that failed, kept for good: MoRI may still read their source, and completes a status
-        # through a raw pointer
-        self._failed_writes: list[list[Any]] = []
+        # what keeps the statuses of failed writes alive for good (their list, or the exception whose traceback holds
+        # them): MoRI may still read the source, and completes a status through a raw pointer
+        self._failed_writes: list[Any] = []
 
     def connect_peer(self, transfer_engine_info: dict) -> str:
         from mori.io import EngineDesc, MemoryDesc
@@ -130,7 +130,6 @@ class MoriTransport:
             torch.accelerator.synchronize(self.transfer_buffer_device)
 
         locals_, remotes, local_offsets, remote_offsets, sizes = zip(*entries.values(), strict=True)
-        statuses: list[Any] = []
         try:
             statuses = self._engine.batch_write(
                 [local.memory_desc for local in locals_],
@@ -143,11 +142,13 @@ class MoriTransport:
             deadline = time.monotonic() + self._write_timeout
             while any(status.InProgress() for status in statuses) and time.monotonic() < deadline:
                 time.sleep(_POLL_SECONDS)
-        finally:
-            succeeded = bool(statuses) and all(status.Succeeded() for status in statuses)
-            if not succeeded:
-                self._failed_writes.append(statuses)
-        if not succeeded:
+        except BaseException as error:
+            # MoRI's batch_write posts entry by entry and can raise after posting some (a peer a reconnect deregistered,
+            # say); their statuses are then only in its wrapper's frame, which the traceback keeps
+            self._failed_writes.append(error)
+            raise
+        if not all(status.Succeeded() for status in statuses):
+            self._failed_writes.append(statuses)
             running = sum(status.InProgress() for status in statuses)
             reason = (
                 f"{running} of {len(statuses)} batch entries still running after {self._write_timeout}s"

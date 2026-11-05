@@ -170,6 +170,23 @@ def test_a_write_still_running_at_its_timeout_keeps_its_statuses(p2p_sender: Any
     assert [status() is not None for status in p2p_sender.mori_engine.stuck_statuses] == [True]
 
 
+def test_a_batch_that_raises_after_posting_keeps_its_statuses(p2p_sender: Any, mori: Any) -> None:
+    """MoRI posts a batch entry by entry; when a later entry raises, the statuses of those already posted are only in
+    its wrapper's frame."""
+    mori.connect_peer(_info([_block(_BLOCK_ADDRESS, 16)]))
+    buffer = torch.zeros(4)
+    region = mori.register_tensor(buffer)
+    p2p_sender.mori_engine.raising_remote_engines.add(_ENGINE_KEY)
+
+    with pytest.raises(RuntimeError, match="is not registered"):
+        mori.write_shard(_shard({"a": _BLOCK_ADDRESS}), {"a": buffer})
+    gc.collect()
+
+    assert [status() is not None for status in p2p_sender.mori_engine.stuck_statuses] == [True]
+    with pytest.raises(RuntimeError, match="unknown native completion"):
+        mori.unregister_tensor(region)
+
+
 def test_gpu_transfer_buffers_refuse_expandable_segment_memory(
     p2p_sender: Any, p2p_protocol: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
