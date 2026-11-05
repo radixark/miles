@@ -144,8 +144,9 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
         # Initialize LR scheduler
         self.lr_scheduler = get_lr_scheduler(args, self.optimizer)
 
-        self.global_step = 0
-        self.micro_step = 0
+        # Cumulative optimizer steps and training micro-batches per rank; None means unknown on resume.
+        self.global_step: int | None = 0
+        self.micro_step: int | None = 0
 
         checkpoint_payload = checkpoint.load(self)
 
@@ -335,7 +336,7 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
             return model(**model_args).logits
 
     def _step_runner(self) -> LinearStepRunner:
-        return LinearStepRunner(self._forward, self._zero_grad, self._apply_step)
+        return LinearStepRunner(self._forward, self._zero_grad, self._apply_step, on_backward=self._after_backward)
 
     def _before_train(self) -> None:
         if SNAPSHOT_TESTING_ENABLED and not self._config_snapshot_train_recorded:
@@ -366,12 +367,18 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
         with replay_stage, precision_forward_context(self.precision_policy):
             return self.model(**model_args).logits
 
+    def _after_backward(self) -> None:
+        if self.micro_step is not None:
+            self.micro_step += 1
+
     def _zero_grad(self) -> None:
         self.optimizer.zero_grad(set_to_none=True)
 
     def _apply_step(self) -> StepMetrics:
         grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.backend.clip_grad).full_tensor()
         self.optimizer.step()
+        if self.global_step is not None:
+            self.global_step += 1
         self.lr_scheduler.step()
         return StepMetrics(
             grad_norm=float(grad_norm.item()),

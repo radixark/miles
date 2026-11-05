@@ -33,10 +33,13 @@ class LinearStepRunner:
         forward_fn: Callable[[dict], torch.Tensor],
         zero_grad_fn: Callable[[], None] = _forward_only,
         step_fn: Callable[[], StepMetrics] = _forward_only,
+        *,
+        on_backward: Callable[[], None] | None = None,
     ):
         self._forward = forward_fn
         self._zero_grad = zero_grad_fn
         self._step = step_fn
+        self._on_backward = on_backward
 
     def forward_only_step(self, batches, compute: Callable) -> list:
         return [compute(self._forward(batch), batch) for batch in batches]
@@ -46,6 +49,8 @@ class LinearStepRunner:
         for batch in batches:
             loss, log_dict = loss_closure(self._forward(batch), batch)
             loss.backward()
+            if self._on_backward is not None:
+                self._on_backward()
             logs.append(log_dict)
         return logs
 
