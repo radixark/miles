@@ -144,7 +144,7 @@ def compute_advantages_and_returns(
 
     if args.normalize_advantages:
         advantages = normalize_advantages(
-            args, advantages, loss_masks, total_lengths, response_lengths, max_seq_lens, process_group=whiten_group
+            args, advantages, loss_masks, total_lengths, response_lengths, max_seq_lens, whiten_group=whiten_group
         )
 
     rollout_data["advantages"] = advantages
