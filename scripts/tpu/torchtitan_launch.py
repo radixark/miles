@@ -32,6 +32,8 @@ class TitanTpuModel:
     titan_model_name: str
     titan_model_flavor: str
     sglang_args: str = ""
+    # environment assignments for the sglang server, e.g. "NAME=value "
+    sglang_env: str = ""
     train_args: str = ""
 
 
@@ -116,6 +118,7 @@ def serve_sglang(args: ScriptArgs, model: TitanTpuModel) -> None:
     U.exec_command_cpu(
         f"source {args.sglang_env_script} && "
         f"SGLANG_TPU_SHARED_SLICE={_shared_slice(args, rank_offset=NUM_TRAINER_DEVICES)} "
+        f"{model.sglang_env}"
         "python3 -m sglang.launch_server "
         f"--model-path {args.model_dir}/{model.name} "
         "--device tpu "
