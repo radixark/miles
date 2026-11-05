@@ -43,6 +43,14 @@ def _metadata(url: str, session_id: str) -> dict:
     return requests.get(f"{url}/sessions/{session_id}", timeout=5.0).json()["metadata"]
 
 
+def _committed_turn_args(request_args: dict, version: str) -> dict:
+    """What a committed turn's ``turn_args`` holds: the request it sent; v2 leaves out the
+    prompt's ``input_ids``, which its trajectory tree holds."""
+    if version == "v1":
+        return request_args
+    return {key: value for key, value in request_args.items() if key != "input_ids"}
+
+
 def _assert_exported_turn_args(exported: dict, request_args: dict):
     assert "input_ids" not in exported
     assert "messages" not in exported
@@ -309,7 +317,7 @@ class TestTurnArgs:
             original_resolve = TITOTokenizer.resolve_request_args
 
             def resolve(tokenizer, request_args, *, turn_args):
-                assert turn_args == first_request
+                assert turn_args == _committed_turn_args(first_request, version)
                 return original_resolve(tokenizer, request_args, turn_args=turn_args)
 
             with patch.object(TITOTokenizer, "resolve_request_args", new=resolve):
@@ -344,7 +352,7 @@ class TestTurnArgs:
 
             with patch.object(TITOTokenizer, "resolve_request_args", new=resolve):
                 assert self._turn(env, session_id, history).status_code == 200  # retries the third turn
-            assert continued == [sent[1]]
+            assert continued == [_committed_turn_args(sent[1], version)]
             samples = requests.post(f"{env.url}/sessions/{session_id}/samples", json={"max_seq_len": None}, timeout=30)
             assert samples.status_code == 200
 

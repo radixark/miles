@@ -162,23 +162,37 @@ _AGENT_METADATA = {"shared_key": "from-agent", "agent_only": 1, "accumulated_tok
 
 
 async def _make_session(core, records, accumulated) -> str:
+    """Commit the records as one chain, the way ``commit_generation`` does: each node holds its
+    turn's prompt + output with that turn's completion span, and the stored request keeps no
+    ``input_ids``. The last node's snapshot is ``accumulated``, which a test may corrupt."""
     response = await core.create_session()
     sid = json.loads(response.body)["session_id"]
     state = core.registry.sessions[sid]
     parent = None
     for i, record in enumerate(records):
-        last = i == len(records) - 1
+        prompt_ids = record.request["input_ids"]
+        output_ids = [item[1] for item in record.response["choices"][0]["meta_info"]["output_token_logprobs"]]
+        token_ids = list(prompt_ids) + output_ids
+        if i == len(records) - 1 and accumulated is not None:
+            token_ids = list(accumulated)
         parent = state.tree.create_node(
             parent,
             delta_messages=[],
-            token_ids=list(accumulated) if (last and accumulated is not None) else [],
-            completion_span=(0, 0),
+            token_ids=token_ids,
+            completion_span=(len(prompt_ids), len(prompt_ids) + len(output_ids)),
             committed_at=record.timestamp,
             response_id="",
-            record=record,
+            record=_without_input_ids(record),
             finish_reason="",
         )
     return sid
+
+
+def _without_input_ids(record):
+    """The record as a v2 commit stores it: the prompt's input_ids live in the tree."""
+    return record.model_copy(
+        update={"request": {key: value for key, value in record.request.items() if key != "input_ids"}}
+    )
 
 
 async def _collect_via_op(core, sid, *, max_seq_len=None, agent_metadata=None):

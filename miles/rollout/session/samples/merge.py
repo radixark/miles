@@ -41,6 +41,7 @@ def compute_samples_from_openai_records(
     *,
     use_addition_r3: bool = False,
     evaluation: bool = False,
+    prompt_lengths: list[int] | None = None,
 ) -> list[Sample]:
     """Convert per-turn session records into training Samples, aligning each
     turn's output tokens against the TITO accumulated token sequence.
@@ -51,16 +52,23 @@ def compute_samples_from_openai_records(
     tokens the model emitted that the chat template also renders as the next
     turn's delimiter — to avoid double-counting.
 
+    v2 records do not keep their prompt: v2 passes ``prompt_lengths`` instead, and each
+    turn's prompt is that many leading tokens of ``accumulated_token_ids``.
+
     See ``TestTITOTrailingTokenTrim`` in
     ``tests/fast/rollout/session/test_samples.py``
     for a concrete worked example with token-level walkthroughs.
     """
     samples = []
     cursor = 0
+    if prompt_lengths is not None:
+        assert accumulated_token_ids is not None, "prompt_lengths are prefixes of accumulated_token_ids"
 
     for i, record in enumerate(records):
         is_last = i == len(records) - 1
-        prompt_ids = record.request["input_ids"]
+        prompt_ids = (
+            accumulated_token_ids[: prompt_lengths[i]] if prompt_lengths is not None else record.request["input_ids"]
+        )
         output_ids = [t[1] for t in record.response["choices"][0]["meta_info"]["output_token_logprobs"]]
 
         trim_count = 0
@@ -93,7 +101,13 @@ def compute_samples_from_openai_records(
             cursor += matched
 
         sample = _compute_sample_from_openai_record(
-            args, record, tokenizer, trim_count, use_addition_r3=use_addition_r3, evaluation=evaluation
+            args,
+            record,
+            tokenizer,
+            trim_count,
+            use_addition_r3=use_addition_r3,
+            evaluation=evaluation,
+            prompt_token_ids=prompt_ids,
         )
         attach_lifecycle_metadata(sample, record, records[i - 1] if i else None, turn=i + 1)
         if is_last and args.save_debug_trajectory_data is not None:
@@ -121,13 +135,10 @@ def _compute_sample_from_openai_record(
     *,
     use_addition_r3: bool = False,
     evaluation: bool = False,
+    prompt_token_ids: list[int],
 ) -> Sample:
     choice = record.response["choices"][0]
     finish_reason = choice.get("finish_reason")
-
-    prompt_token_ids = record.request.get("input_ids")
-    if prompt_token_ids is None:
-        raise ValueError("input_ids not found in request — the session server should populate it")
 
     output_token_ids = [item[1] for item in choice["meta_info"]["output_token_logprobs"]]
     output_log_probs = [item[0] for item in choice["meta_info"]["output_token_logprobs"]]
@@ -201,13 +212,16 @@ def _compute_sample_from_openai_record(
     return sample
 
 
-def adopt_session_records(merged: Sample, records: list[SessionRecord]) -> None:
+def adopt_session_records(
+    merged: Sample, records: list[SessionRecord], *, prompt_lengths: list[int] | None = None
+) -> None:
     """Complete a merged sample's output store plan from its session's records.
 
     The per-turn plans leave routed experts out: a TITO trim of a turn would cut a row that the
     next turn's incremental object starts after. Like ``merge_samples_with_addition_r3``, they are
     rebuilt from the untrimmed records, each continuing from its ``routed_experts_start_len``. The
     sample also owns every record's object, so objects of turns the merge dropped are deleted with it.
+    ``prompt_lengths`` is as in ``compute_samples_from_openai_records``.
     """
     plan = merged.rollout_store_plan
     if plan is None:
@@ -217,7 +231,8 @@ def adopt_session_records(merged: Sample, records: list[SessionRecord]) -> None:
     if any(record.request.get(RoutedExpertsSegments.request_key) for record in records):
         required = len(merged.tokens) - 1
         rows = RoutedExpertsSegments()
-        for record, choice, ref in zip(records, choices, refs, strict=True):
+        lengths = _prompt_lengths(records, prompt_lengths)
+        for record, choice, ref, prompt_length in zip(records, choices, refs, lengths, strict=True):
             if rows.num_rows() >= required:
                 # The merge stopped early: later records lie past the merged tokens.
                 break
@@ -225,7 +240,7 @@ def adopt_session_records(merged: Sample, records: list[SessionRecord]) -> None:
             turn = StorePlan.from_response(
                 ref,
                 request=record.request,
-                num_tokens=len(record.request["input_ids"]) + num_output,
+                num_tokens=prompt_length + num_output,
                 response_length=num_output,
             )
             rows = rows.append(turn.fields[RoutedExpertsSegments.name])
@@ -239,8 +254,13 @@ def merge_samples_with_addition_r3(
     samples: list[Sample],
     records: list[SessionRecord],
     tokenizer,
+    *,
+    prompt_lengths: list[int] | None = None,
 ) -> Sample:
-    """Merge ordinary fields, then materialize the required append-only R3 prefix."""
+    """Merge ordinary fields, then materialize the required append-only R3 prefix.
+
+    ``prompt_lengths`` is as in ``compute_samples_from_openai_records``.
+    """
     merged = merge_samples(samples, tokenizer)
     if all(record.response["choices"][0]["meta_info"].get("routed_experts") is None for record in records):
         return merged
@@ -248,7 +268,7 @@ def merge_samples_with_addition_r3(
     required_rows = len(merged.tokens) - 1
     covered_rows = 0
     chunks: list[np.ndarray] = []
-    for i, record in enumerate(records):
+    for i, (record, prompt_length) in enumerate(zip(records, _prompt_lengths(records, prompt_lengths), strict=True)):
         if chunks and covered_rows >= required_rows:
             break
 
@@ -263,7 +283,7 @@ def merge_samples_with_addition_r3(
         if start != covered_rows:
             raise ValueError(f"additional R3: record {i} starts at row {start}; expected {covered_rows}")
 
-        end = len(record.request["input_ids"]) + len(choice["meta_info"]["output_token_logprobs"]) - 1
+        end = prompt_length + len(choice["meta_info"]["output_token_logprobs"]) - 1
         if end < start:
             raise ValueError(f"additional R3: record {i} has invalid offsets (start={start}, end={end})")
         delta_rows = end - start
@@ -282,6 +302,11 @@ def merge_samples_with_addition_r3(
         )
     merged.rollout_routed_experts = np.concatenate(chunks)[:required_rows]
     return merged
+
+
+def _prompt_lengths(records: list[SessionRecord], prompt_lengths: list[int] | None) -> list[int]:
+    """Each record's prompt length: given by v2, whose records keep no ``input_ids``, else read from them."""
+    return prompt_lengths if prompt_lengths is not None else [len(record.request["input_ids"]) for record in records]
 
 
 def truncate_samples_by_total_tokens(

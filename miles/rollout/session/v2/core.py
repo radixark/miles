@@ -28,6 +28,7 @@ from miles.rollout.session.v2.session_state import (
     commit_generation,
     prepare_token_ids_and_request_args,
 )
+from miles.rollout.session.v2.tree_trajectory import TrajectoryNode
 from miles.rollout.session.v2.utils import build_leaf_material, tree_metadata
 from miles.utils.function_registry import load_function
 from miles.utils.output_store.plan import StorePlanError
@@ -74,7 +75,7 @@ class SessionCoreV2(SessionCore):
         if mismatch is not None:
             metadata["tito_session_mismatch"] = mismatch
         latest = session.latest()
-        metadata["accumulated_token_ids"] = list(latest.token_ids) if latest is not None else []
+        metadata["accumulated_token_ids"] = latest.token_ids if latest is not None else []
         metadata["max_trim_tokens"] = self.registry.tito_tokenizer.max_trim_tokens
         metadata["tree"] = tree_metadata(session)
         metadata["turn_args"] = filter_turn_args(latest.turn_args) if latest is not None else {}
@@ -86,7 +87,7 @@ class SessionCoreV2(SessionCore):
         session = self.registry.get_session(session_id)
         metadata = self._session_metadata(session_id, session)
         latest = session.latest()
-        records = [node.record for node in latest.path_nodes()] if latest is not None else []
+        records = _records_with_input_ids(latest, metadata["accumulated_token_ids"]) if latest is not None else []
         payload = GetSessionResponse(session_id=session_id, records=records, metadata=metadata)
         return Response(
             content=_render_json(payload.model_dump(mode="json")), status_code=200, media_type=JSON_MEDIA_TYPE
@@ -218,8 +219,10 @@ class SessionCoreV2(SessionCore):
             prompt_token_ids = request_body["input_ids"]
             logger.debug("Using TITO input_ids: %d tokens", len(prompt_token_ids))
 
-            checkpoint_token_ids = attach_parent.token_ids if attach_parent is not None else []
-            self._maybe_request_addition_r3(request_body, checkpoint_token_ids, prompt_token_ids)
+            if self.use_addition_r3:
+                # Materializing the attach node's snapshot is O(context); the helper needs it only for addition R3.
+                checkpoint_token_ids = attach_parent.token_ids if attach_parent is not None else []
+                self._maybe_request_addition_r3(request_body, checkpoint_token_ids, prompt_token_ids)
             _add_session_extra_key(request_body, session)
 
             # orjson: the body carries the whole prompt's input_ids on every turn.
@@ -251,13 +254,17 @@ class SessionCoreV2(SessionCore):
                 logger.debug("Session %s closed during proxy, skipping state update", session_id)
                 return _chat_client_response(result, response, response_intent)
 
+            # The prompt's input_ids are the new node's first completion_span[0] tokens, which the tree
+            # already holds; keeping them here too would store a full-context list per turn. Assembly
+            # and GET /sessions read them from the tree.
+            stored_request = {key: value for key, value in request_body.items() if key != "input_ids"}
             record = SessionRecord(
                 timestamp=time.time(),
                 request_timestamp=request_timestamp,
                 method=method,
                 path="/v1/chat/completions",
                 status_code=result["status_code"],
-                request=request_body,
+                request=stored_request,
                 response=response,
             )
             commit_generation(
@@ -271,11 +278,24 @@ class SessionCoreV2(SessionCore):
                 record=record,
                 response_id=response.get("id", ""),
                 finish_reason=choice.get("finish_reason") or "",
-                turn_args=request_body,
+                turn_args=stored_request,
             )
         # --- lock released ---
 
         return _chat_client_response(result, response, response_intent)
+
+
+def _records_with_input_ids(leaf: TrajectoryNode, leaf_token_ids: list[int]) -> list[SessionRecord]:
+    """The path's records with each request's ``input_ids`` put back, as the chat request sent them.
+
+    Every record's prompt is a prefix of its leaf's snapshot, and list slices share the int objects.
+    """
+    return [
+        node.record.model_copy(
+            update={"request": {**node.record.request, "input_ids": leaf_token_ids[: node.completion_span[0]]}}
+        )
+        for node in leaf.path_nodes()
+    ]
 
 
 def _add_session_extra_key(request_body: dict, session: SessionStateV2) -> None:

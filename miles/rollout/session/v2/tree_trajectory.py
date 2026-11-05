@@ -8,10 +8,15 @@ concurrency, and tokenization live one layer up in ``session_state``.
 from dataclasses import dataclass, field, replace
 from typing import Any
 
+import numpy as np
+
+from miles.rollout.session.errors import TokenizationError
 from miles.rollout.session.types import SessionRecord
 from miles.utils.chat_template_utils.message_matcher_hub import SessionMessageMatcher, strict_message_matches
 
 MAX_NODES = 1024
+
+_INT32 = np.iinfo(np.int32)
 
 
 @dataclass
@@ -19,14 +24,21 @@ class TrajectoryNode:
     """End of one model generation (SessionRecord is 1:1 with the node)."""
 
     delta_messages: list[dict[str, Any]]
-    token_ids: list[int]  # full root->node snapshot
+    # This node's tokens past the reused parent prefix, as a read-only int32 array. Storing deltas keeps a
+    # session's token storage O(final context) instead of one full snapshot per turn.
+    token_delta: np.ndarray
+    # Parent tokens this node's snapshot reuses verbatim: the parent's full length, unless a
+    # max_trim_tokens > 0 template rewrote the parent's trailing tokens at the turn boundary. The rewritten
+    # positions are in this node's delta and replace the parent's tail in this node's snapshot.
+    parent_reuse: int
     completion_span: tuple[int, int]  # this node's sampled completion within token_ids
     seq: int  # per-session logical commit order — THE ordering key
     committed_at: float  # wall clock, decoration only (NTP-unsafe; never order by this)
     response_id: str  # upstream response id: the agent-branch <-> leaf join key
     record: SessionRecord
     finish_reason: str
-    # Full resolved request for this generation, held by reference: read-only once committed.
+    # Full resolved request for this generation except its input_ids (this node's prompt tokens),
+    # held by reference: read-only once committed.
     turn_args: dict[str, Any] = field(default_factory=dict)
     parent: "TrajectoryNode | None" = None
     children: list["TrajectoryNode"] = field(default_factory=list, repr=False)
@@ -34,6 +46,24 @@ class TrajectoryNode:
     @property
     def truncated(self) -> bool:
         return self.finish_reason == "length"
+
+    @property
+    def num_tokens(self) -> int:
+        """Length of the root->node snapshot, without materializing it."""
+        return self.parent_reuse + self.token_delta.size
+
+    @property
+    def token_ids(self) -> list[int]:
+        """The full root->node snapshot, materialized from the path's deltas.
+
+        Each access builds a new list in O(path tokens), so read it once per use. Every node is at least
+        as long as its parent and its delta covers the parent's tail past ``parent_reuse``, so writing
+        the deltas root first leaves each boundary rewrite in place of the tail it replaced.
+        """
+        snapshot = np.empty(self.num_tokens, dtype=np.int32)
+        for node in self.path_nodes():
+            snapshot[node.parent_reuse : node.num_tokens] = node.token_delta
+        return snapshot.tolist()
 
     def path_nodes(self) -> list["TrajectoryNode"]:
         nodes: list[TrajectoryNode] = []
@@ -92,16 +122,34 @@ class SessionTree:
         record: SessionRecord,
         finish_reason: str,
         turn_args: dict[str, Any] | None = None,
+        parent_token_ids: list[int] | None = None,
+        verified_prefix_length: int = 0,
     ) -> TrajectoryNode:
+        """Append a node for the full root->node snapshot ``token_ids``; only its delta is stored.
+
+        A caller that already holds the parent's snapshot passes it as ``parent_token_ids``, together
+        with the prefix length it has checked equal, so only the rest of the parent is compared again.
+        """
         if len(self.nodes) >= MAX_NODES:
             raise ValueError(
                 f"node cap reached ({MAX_NODES}): the session cannot branch or extend "
                 f"further — this almost always means the harness is not replaying "
                 f"history verbatim"
             )
+        parent_reuse = (
+            0
+            if parent is None
+            else _reused_parent_prefix(
+                parent,
+                token_ids,
+                parent_token_ids=parent.token_ids if parent_token_ids is None else parent_token_ids,
+                verified_prefix_length=verified_prefix_length,
+            )
+        )
         node = TrajectoryNode(
             delta_messages=list(delta_messages),
-            token_ids=list(token_ids),
+            token_delta=_int32_token_delta(token_ids[parent_reuse:]),
+            parent_reuse=parent_reuse,
             completion_span=completion_span,
             seq=len(self.nodes),
             committed_at=committed_at,
@@ -158,3 +206,40 @@ class SessionTree:
         if best is None:
             return AttachPoint(node=None, matched_messages=0, best_overlap=best_overlap)
         return AttachPoint(node=best, matched_messages=best_matched, best_overlap=best_overlap)
+
+
+def _reused_parent_prefix(
+    parent: TrajectoryNode,
+    token_ids: list[int],
+    *,
+    parent_token_ids: list[int],
+    verified_prefix_length: int,
+) -> int:
+    """How many of the parent's tokens ``token_ids`` repeats verbatim.
+
+    Assembly and ``GET /sessions`` read every record's prompt as a prefix of its leaf's snapshot.
+    That is exact only while each boundary rewrite stays inside the parent's completion, so a
+    rewrite that reaches the parent's prompt is refused.
+    """
+    parent_length = parent.num_tokens
+    if len(token_ids) < parent_length:
+        raise TokenizationError(f"snapshot shorter than its parent: {len(token_ids)} < {parent_length} tokens")
+    reuse = min(verified_prefix_length, parent_length)
+    while reuse < parent_length and token_ids[reuse] == parent_token_ids[reuse]:
+        reuse += 1
+    if reuse < parent.completion_span[0]:
+        raise TokenizationError(
+            f"boundary rewrite reaches into the parent's prompt: reuses {reuse} tokens, "
+            f"parent prompt has {parent.completion_span[0]}"
+        )
+    return reuse
+
+
+def _int32_token_delta(token_ids: list[int]) -> np.ndarray:
+    """Store token ids as a read-only int32 array, refusing ids outside int32 instead of wrapping them."""
+    wide = np.asarray(token_ids, dtype=np.int64)
+    if wide.size and (wide.min() < _INT32.min or wide.max() > _INT32.max):
+        raise TokenizationError("token id outside int32 storage range")
+    delta = wide.astype(np.int32)
+    delta.setflags(write=False)
+    return delta
