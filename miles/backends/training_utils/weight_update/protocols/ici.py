@@ -70,6 +70,8 @@ class UpdateWeightFromIci(WeightTransferProtocol):
 
     def send_bucket(self, bucket: list[tuple[str, torch.Tensor]]) -> None:
         names = [name for name, _ in bucket]
+        # pack before asking the engine to enter its receives, so a refused dtype cannot strand it there
+        packed = tpu_shared_slice.pack([tensor for _, tensor in bucket])
         futures = []
         if dist.get_rank() == 0:
             # posts the engine's receives; each engine rank reads its paired trainer rank's names from the store
@@ -84,7 +86,6 @@ class UpdateWeightFromIci(WeightTransferProtocol):
                 )
                 for updater in self.cell_updaters_of_cell_id.values()
             ]
-        packed = tpu_shared_slice.pack([tensor for _, tensor in bucket])
         with timer("ici_send"):
             tpu_shared_slice.send(packed, self._engine_slice_rank, names=names)
         with timer("ici_engine_load"):
