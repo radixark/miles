@@ -87,7 +87,7 @@ def policy_loss_function(
         "tis", "ois", "tis_clipfrac" are included when the respective features
         are enabled.
 
-    Per-token inputs are rows of the microbatch's `ResponseLayout` (loss/hub/response_layout.py), so the same
+    Per-token inputs are rows of the microbatch's `ResponseLayout`, so the same
     function scores packed responses and the padded rows of a platform without dynamic shapes.
     """
     parallel_state = get_parallel_state()

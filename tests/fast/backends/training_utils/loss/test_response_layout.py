@@ -1,9 +1,6 @@
-"""Each loss gives the same results on both response layouts (loss/hub/response_layout.py).
+"""Each loss gives the same log-probs, entropy, loss, metrics and gradients on `PackedSlices` and `PaddedRows`.
 
-`PackedSlices` scores packed responses sliced out of the logits; `PaddedRows` scores the padded microbatch's
-rows, the layout of a platform without dynamic shapes. On CPU both run directly, so these tests feed one loss
-function the same packed samples on each layout (the padded side gets extra rows of garbage logits) and compare
-log-probs, entropy, loss, metrics and gradients.
+The padded side gets the same packed samples followed by rows of garbage logits.
 """
 
 from __future__ import annotations

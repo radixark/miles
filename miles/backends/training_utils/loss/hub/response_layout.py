@@ -5,7 +5,7 @@ the layout's `sum_of_sample_mean`; only the layout knows which rows exist. The l
 (`response_layout_type`):
 
 - `PackedSlices`, on a platform with dynamic shapes: the rows are the responses, each sliced out of the packed
-  logits and concatenated, `[sum(R)]` on this CP rank. This is how every loss has always worked.
+  logits and concatenated, `[sum(R)]` on this CP rank.
 - `PaddedRows`, on a platform without dynamic shapes with the torchtitan trainer. TorchTPU compiles every eager
   op per input shape, and RL responses rarely repeat a length, so slicing compiles thousands of programs per
   step. The rows are the `[T]` rows of the padded microbatch, which the trainer rounds to a few lengths:
@@ -176,7 +176,7 @@ def validate_response_layout_args(args: Namespace) -> None:
     if problems:
         raise ValueError(
             f"--loss-type {args.loss_type} on {platforms.current_platform.device_type} scores padded "
-            f"microbatches (loss/hub/response_layout.py), which {' and '.join(problems)}"
+            f"microbatches, which {' and '.join(problems)}"
         )
 
 

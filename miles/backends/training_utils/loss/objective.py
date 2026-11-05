@@ -198,7 +198,7 @@ def loss_function(
     num_tokens = count_loss_tokens(batch["loss_masks"])
     num_samples = len(batch["response_lengths"])
 
-    # built on first use: a loss on padded rows (loss/hub/response_layout.py) reduces with its own row divisors
+    # built on first use: a loss on padded rows reduces with its own row divisors and never needs it
     sum_of_sample_mean = _lazy_reducer(
         lambda: get_sum_of_sample_mean(
             batch["total_lengths"],
