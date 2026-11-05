@@ -16,17 +16,14 @@ from miles.backends.training_utils.parallel import get_parallel_state
 from miles.backends.training_utils.weight_update.snapshot_publisher import SnapshotPublisher
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.hf_utils.config import HF_EXPORT_COMPLETE_MARKER
-from miles.utils.megatron_bridge_utils import patch_megatron_model
+from miles.utils.megatron_bridge_utils import load_auto_bridge, patch_megatron_model
 
 logger = logging.getLogger(__name__)
 
 
 @cache
 def _get_hf_bridge(hf_checkpoint: str):
-    # Local: megatron.bridge is only needed on the bridge export path.
-    from megatron.bridge import AutoBridge
-
-    return AutoBridge.from_hf_pretrained(hf_checkpoint, trust_remote_code=True)
+    return load_auto_bridge(hf_checkpoint)
 
 
 def save_hf_model(

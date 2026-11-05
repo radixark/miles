@@ -33,6 +33,8 @@ def build_checkpoint_metadata(record: ModelRecord, config: GatewayConfig) -> dic
         "base_model": record.base_model,
         "lora_rank": record.lora_rank,
         "lora_alpha": record.lora_alpha,
+        "lora_type": config.lora_type,
+        "experts_shared_outer_loras": config.experts_shared_outer_loras,
         "train_attn": config.trains_attn,
         "train_mlp": config.trains_mlp,
         "train_unembed": config.trains_unembed,
@@ -53,19 +55,21 @@ def read_checkpoint_metadata(checkpoint_dir: str, tenant: str, shown_path: str) 
     return meta
 
 
-def resolve_sampler_checkpoint(checkpoint_root: str, tenant: str, model_path: str, base_model: str) -> tuple[str, str]:
+def resolve_sampler_checkpoint(config: GatewayConfig, tenant: str, model_path: str) -> tuple[str, str]:
     """Return the adapter name and directory so engines can reload evicted snapshots."""
     model_id, kind, name = parse_tinker_path(model_path)
     if kind != "sampler_weights":
         raise UserInputError(
             f"sampling from training checkpoints is not supported: {model_path!r}; use save_weights_for_sampler()"
         )
-    checkpoint_dir = resolve_checkpoint_dir(checkpoint_root, model_id, "sampler_weights", name)
-    meta = read_checkpoint_metadata(checkpoint_dir, tenant, model_path)
-    if meta["base_model"] != base_model:
-        raise UserInputError(
-            f"checkpoint {model_path!r} uses base_model={meta['base_model']!r}; this server serves {base_model!r}"
-        )
+    checkpoint_dir = resolve_checkpoint_dir(config.checkpoint_root, model_id, "sampler_weights", name)
+    # snapshots written before the expert layout was recorded are per-expert
+    meta = {"experts_shared_outer_loras": False, **read_checkpoint_metadata(checkpoint_dir, tenant, model_path)}
+    # the engines serve one base model and one expert layout
+    served = {"base_model": config.base_model, "experts_shared_outer_loras": config.experts_shared_outer_loras}
+    for key, value in served.items():
+        if meta[key] != value:
+            raise UserInputError(f"checkpoint {model_path!r} uses {key}={meta[key]!r}; this server serves {value!r}")
     return f"{model_id}@{name}", checkpoint_dir
 
 

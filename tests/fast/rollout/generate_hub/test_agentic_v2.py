@@ -103,6 +103,15 @@ async def test_success_returns_list_and_forwards_agent_metadata(monkeypatch, eva
     assert tracer.agent_metadata == {"agent_result": "done"}
 
 
+@pytest.mark.parametrize("version", ["v1", "v2"])
+async def test_session_identity_for_penalty_logs_is_owned_by_tracer(monkeypatch, version: str) -> None:
+    sample = Sample(status=Sample.Status.COMPLETED, response_length=1, tokens=[1], metadata={"session_id": "spoofed"})
+    tracer = _Tracer(SamplesReply(samples=[sample], session_metadata={}, empty_reason=None))
+    _patch_agent(monkeypatch, tracer)
+    await agentic_tool_call.generate(_generate_input(use_session_server=version))
+    assert sample.metadata["session_id"] == "sid-1"
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("input_rollout_id", "expected_rollout_id"), [(None, 7), (11, 11)])
 async def test_success_assigns_shared_rollout_id_to_v2_leaves(monkeypatch, input_rollout_id, expected_rollout_id):

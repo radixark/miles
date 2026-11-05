@@ -160,6 +160,8 @@ def _make_args(dump_dir: Path, *, num_prompts: int, n_samples_per_prompt: int) -
         rollout_batch_size=num_prompts,
         n_samples_per_prompt=n_samples_per_prompt,
         reward_key=None,
+        length_penalty_coeff=0.0,
+        length_penalty_min_tokens=1,
         qkv_format="thd",
         rollout_top_logprobs_num=0,
         enable_sample_ownership_checker=False,

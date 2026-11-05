@@ -52,12 +52,6 @@ def result_scenarios() -> dict[str, ResultScenario]:
         error=NotImplementedError,
         message="not supported on the megatron backend",
     )
-    scenarios["megatron_reject_native_lora_non_colocate"] = ResultScenario(
-        backend="megatron",
-        arguments=(*_HF_CHECKPOINT, "--lora-rank", "8"),
-        error=AssertionError,
-        message="native LoRA syncs adapters only to colocated engines",
-    )
     scenarios["fsdp_reject_lora"] = ResultScenario(
         backend="fsdp",
         arguments=("--lora-rank", "8", "--target-modules", "q_proj,v_proj"),

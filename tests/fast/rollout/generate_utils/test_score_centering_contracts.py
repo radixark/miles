@@ -133,20 +133,16 @@ def test_invalid_options_fail_early(field: str, value: object) -> None:
 @pytest.mark.parametrize("session", ["v1", "v2"])
 @pytest.mark.parametrize("top_k", [21, 128])
 def test_large_session_heads_can_use_sglang_router(session: str, top_k: int) -> None:
-    validate_score_centering_args(
-        _args(use_session_server=session, rollout_top_logprobs_num=top_k, use_miles_router=False)
-    )
+    validate_score_centering_args(_args(use_session_server=session, rollout_top_logprobs_num=top_k, router="sglang"))
 
 
 @pytest.mark.parametrize("session", ["v1", "v2"])
 def test_standard_openai_head_size_can_use_sglang_router(session: str) -> None:
-    validate_score_centering_args(
-        _args(use_session_server=session, rollout_top_logprobs_num=20, use_miles_router=False)
-    )
+    validate_score_centering_args(_args(use_session_server=session, rollout_top_logprobs_num=20, router="sglang"))
 
 
 def test_large_native_heads_can_use_sglang_router() -> None:
-    validate_score_centering_args(_args(use_session_server=None, rollout_top_logprobs_num=128, use_miles_router=False))
+    validate_score_centering_args(_args(use_session_server=None, rollout_top_logprobs_num=128, router="sglang"))
 
 
 @pytest.mark.parametrize("session", ["v1", "v2"])
@@ -154,7 +150,7 @@ def test_filtered_session_support_does_not_use_top_logprobs_router_cap(session: 
     validate_score_centering_args(
         _args(
             use_session_server=session,
-            use_miles_router=False,
+            router="sglang",
             rollout_top_logprobs_num=128,
             rollout_top_p=0.9,
             rollout_top_k=64,
@@ -166,7 +162,7 @@ def test_filtered_session_support_does_not_use_top_logprobs_router_cap(session: 
 
 def test_other_losses_do_not_require_score_centering_router() -> None:
     validate_score_centering_args(
-        _args(loss_type="policy_loss", use_session_server="v2", rollout_top_logprobs_num=128, use_miles_router=False)
+        _args(loss_type="policy_loss", use_session_server="v2", rollout_top_logprobs_num=128, router="sglang")
     )
 
 

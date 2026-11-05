@@ -96,6 +96,10 @@ def _serve_session(backend_url: str) -> Iterator[str]:
         session_message_matcher="strict",
         session_sample_picker_path=None,
         session_sample_postprocessor_path=None,
+        router="sglang",
+        sglang_router_policy="manual",
+        router_args=dict(policy=None, prefill_policy=None, decode_policy=None),
+        rollout_external_router_pd=False,
     )
     config = compute_session_server_config(
         args,

@@ -67,6 +67,7 @@ class TestLaunchChecks:
             ({"rollout_external": True}, "external rollout engines"),
             ({"rollout_external_router_pd": True}, "PD disaggregation"),
             ({"custom_convert_samples_to_train_data_path": "my.convert"}, "custom convert function"),
+            ({"custom_async_data_buffer_path": "my.buffer"}, "custom DataBuffer"),
             ({"deploy_component": "trainer"}, "--deploy-component all"),
             ({"debug_rollout_only": True}, "--debug-rollout-only"),
             ({"multimodal_keys": {"image": "images"}}, "--multimodal-keys"),

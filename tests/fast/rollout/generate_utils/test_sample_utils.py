@@ -187,6 +187,17 @@ class TestMergeSamples:
 
         assert merged.trainer_model_id == "policy-a"
 
+    def test_merge_preserves_the_shared_max_response_len(self, mock_tokenizer: MagicMock) -> None:
+        """Merging turns of one sample keeps its per-sample response budget."""
+        a = make_sample(tokens=[1, 2, 10], response_length=1, loss_mask=[1])
+        b = make_sample(tokens=[1, 2, 10, 20, 30], response_length=1, loss_mask=[1])
+        a.max_response_len = 64
+        b.max_response_len = 64
+
+        merged = _merge_sample_pair(a=a, b=b, tokenizer=mock_tokenizer)
+
+        assert merged.max_response_len == 64
+
     def test_merge_rejects_turns_from_different_trainer_models(self, mock_tokenizer: MagicMock) -> None:
         """Merging turns from different trainers rejects the cross-policy trajectory."""
         a = make_sample(tokens=[1, 2, 10], response_length=1, loss_mask=[1])
