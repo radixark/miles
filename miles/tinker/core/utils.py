@@ -8,11 +8,14 @@ from miles.tinker.core.input_validation import validate_checkpoint_metadata, val
 from miles.tinker.core.types import GatewayConfig, ModelRecord, OwnershipError, UserInputError
 
 
+CHECKPOINT_KINDS = ("weights", "sampler_weights", "external_weights")
+
+
 def parse_tinker_path(path: str) -> tuple[str, str, str]:
     if not path.startswith("tinker://"):
         raise UserInputError(f"not a tinker path: {path!r}")
     parts = path.removeprefix("tinker://").split("/")
-    if len(parts) != 3 or parts[1] not in ("weights", "sampler_weights"):
+    if len(parts) != 3 or parts[1] not in CHECKPOINT_KINDS:
         raise UserInputError(f"malformed tinker path: {path!r}")
     for segment in parts:
         validate_checkpoint_segment(segment)
@@ -35,11 +38,16 @@ def build_parametrization_fields(record: ModelRecord, config: GatewayConfig) -> 
         "lora_alpha": record.lora_alpha,
         "lora_type": config.lora_type,
         "experts_shared_outer_loras": config.experts_shared_outer_loras,
+        "base_model_fingerprint": config.base_model_fingerprint,
     }
 
 
+# a checkpoint saved before commits: its owner and settings, written last
+PRE_COMMIT_META_FILENAME = "META.json"
+
+
 def read_checkpoint_metadata(checkpoint_dir: str, tenant: str, shown_path: str) -> dict:
-    meta_file = Path(checkpoint_dir) / "META.json"
+    meta_file = Path(checkpoint_dir) / PRE_COMMIT_META_FILENAME
     if not meta_file.exists():
         raise UserInputError(f"unknown checkpoint {shown_path!r}")
     try:
@@ -52,6 +60,23 @@ def read_checkpoint_metadata(checkpoint_dir: str, tenant: str, shown_path: str) 
     return meta
 
 
+def resolve_sampler_export(
+    checkpoint_dir: str,
+    tenant: str,
+    model_id: str,
+    shown_path: str,
+    resolve_adapter: Callable[[str, str, str, str], dict | None],
+) -> dict | None:
+    """The committed export behind a sampler name, or None for a dir written before commits; a link whose target is
+    gone is an unknown checkpoint."""
+    if not os.path.islink(checkpoint_dir):
+        return None
+    committed = resolve_adapter(os.path.dirname(checkpoint_dir), os.path.basename(checkpoint_dir), tenant, model_id)
+    if committed is None:
+        raise UserInputError(f"unknown checkpoint {shown_path!r}")
+    return committed
+
+
 def resolve_sampler_checkpoint(
     config: GatewayConfig, tenant: str, model_path: str, resolve_adapter: Callable[[str, str, str, str], dict | None]
 ) -> tuple[str, str]:
@@ -62,7 +87,7 @@ def resolve_sampler_checkpoint(
             f"sampling from training checkpoints is not supported: {model_path!r}; use save_weights_for_sampler()"
         )
     checkpoint_dir = resolve_checkpoint_dir(config.checkpoint_root, model_id, "sampler_weights", name)
-    committed = resolve_adapter(str(Path(checkpoint_dir).parent), name, tenant, model_id)
+    committed = resolve_sampler_export(checkpoint_dir, tenant, model_id, model_path, resolve_adapter)
     if committed is None:
         # written before commits existed: a plain directory with META.json, served as it is
         meta = {"experts_shared_outer_loras": False, **read_checkpoint_metadata(checkpoint_dir, tenant, model_path)}

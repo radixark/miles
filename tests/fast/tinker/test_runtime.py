@@ -4,7 +4,9 @@ import httpx
 import pytest
 import torch
 
+from miles.backends.training_utils.checkpoint.adapter.commit import tenant_digest as library_digest
 from miles.tinker.core.types import UserInputError
+from miles.tinker.core.utils import tenant_digest as gateway_digest
 from miles.tinker.runtime import (
     MilesBackend,
     _build_train_data,
@@ -221,6 +223,12 @@ def test_an_aborted_sample_fails_instead_of_passing_as_a_stop():
     assert "abort" in _to_sequence(response)["error"]
 
 
+@pytest.mark.parametrize("tenant", ["tenant-a", "", "ключ/with spaces"])
+def test_the_gateway_digests_a_tenant_as_the_library_checks_it(tenant):
+    """Core (stdlib-only) writes the digest the library's ownership check recomputes; the two must agree."""
+    assert gateway_digest(tenant) == library_digest(tenant)
+
+
 def test_lora_groups_come_from_the_recorded_targets():
     qwen3 = get_hf_lora_targets({"model_type": "qwen3", "num_hidden_layers": 1})
     assert classify_lora_groups(("model.layers.0.self_attn.q_proj", "lm_head"), qwen3) == {
@@ -228,8 +236,30 @@ def test_lora_groups_come_from_the_recorded_targets():
         "train_mlp": False,
         "train_unembed": True,
     }
-    with pytest.raises(AssertionError, match="in no LoRA group"):
+    with pytest.raises(UserInputError, match="in no LoRA group"):
         classify_lora_groups(("model.layers.0.input_layernorm",), qwen3)
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"model_type": "mimo_v2", "num_hidden_layers": 2, "moe_layer_freq": [0, 1]},
+        {
+            "model_type": "kimi_k2",
+            "num_hidden_layers": 2,
+            "n_routed_experts": 4,
+            "first_k_dense_replace": 1,
+            "n_shared_experts": 0,
+            "q_lora_rank": None,
+        },
+    ],
+    ids=["mimo_v2", "kimi_k2"],
+)
+def test_a_per_expert_familys_stacked_expert_targets_count_as_mlp(config):
+    # the layout names routed experts per expert (experts.*.down_proj); a checkpoint records them stacked
+    layout = get_hf_lora_targets(config)
+    flags = classify_lora_groups(("model.layers.1.mlp.experts.down_proj",), layout)
+    assert flags == {"train_attn": False, "train_mlp": True, "train_unembed": False}
 
 
 def test_a_fused_modules_components_count_as_its_group():

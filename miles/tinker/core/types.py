@@ -15,6 +15,7 @@ class CommandOp(str, Enum):
     SAVE_STATE = "save_state"
     LOAD_STATE = "load_state"
     SAVE_WEIGHTS_FOR_SAMPLER = "save_weights_for_sampler"
+    SAVE_WEIGHTS_EXTERNAL = "save_weights_external"
 
     def is_batch(self) -> bool:
         """Batch ops pack into BatchUnits; every other op is a barrier."""
@@ -44,6 +45,10 @@ class UserInputError(Exception):
     """Rejected request content; fails the future with category user."""
 
 
+class NotFoundError(Exception):
+    """A checkpoint, or a download URL's target, that does not exist (any more)."""
+
+
 class OwnershipError(Exception):
     """model/checkpoint does not belong to the caller's tenant."""
 
@@ -54,6 +59,8 @@ class GatewayConfig:
     n_slots: int
     checkpoint_root: str
     vocab_size: int
+    # the model family's official Tinker names were checked; save_weights_external is refused otherwise
+    exports_tinker_names: bool
     max_datums_per_request: int = 1024
     max_tokens_per_datum: int = 32768
     max_tokens_per_sample: int = 32768
@@ -63,10 +70,14 @@ class GatewayConfig:
     lora_alpha: float | None = None  # None: 2 * rank
     lora_type: str = "lora"
     experts_shared_outer_loras: bool = False
+    # the base's architecture fingerprint, recorded in the adapters this gateway commits
+    base_model_fingerprint: str | None = None
     # what the server-wide adapter layout trains; create_model rejects deviations
     trains_attn: bool = True
     trains_mlp: bool = True
     trains_unembed: bool = False
+    # download URLs are built from it; None: from the URL each request arrived at, wrong behind an ingress
+    public_url: str | None = None
     lease_timeout_s: float = 300.0  # sessions stale beyond this lose their sampling, models, and slots
     batch_token_budget: int = 262_144  # packing bound per BatchUnit
 

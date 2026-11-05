@@ -61,7 +61,7 @@ _SCRIPTS_WHOSE_DEFAULTS_ARE_UNSUPPORTED: dict[str, Callable[[Path], dict[str, ob
     "scripts/run_glm5_2_744b_a40b.py": lambda sandbox: _glm_checkpoint(sandbox, "GLM-5.2", 78),
     "scripts/run_inkling.py": lambda sandbox: {"model_name": "Inkling-4layer"},
     # convert_checkpoint locks a file under model_dir, which must be writable while recording
-    "scripts/run_kimi_k3.py": lambda sandbox: {"model_dir": str(sandbox / "models")},
+    "scripts/run_kimi_k3.py": lambda sandbox: {"model_dir": str(sandbox / "models"), "skip_saving": True},
     # test_prepare_waits_for_shared_checkpoint_conversion covers the real cache lock.
     "scripts/run_mimo_v2_6_flash.py": lambda sandbox: {"model_dir": str(sandbox / "models")},
     # Its prepare takes the same lock through run_mimo_v2_6_flash._prepare_checkpoint.

@@ -106,7 +106,7 @@ class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
         return list(self.iter_current_adapter())
 
     def iter_current_adapter(self):
-        """The exposed adapter's HF-named tensors, TP/EP gathered and PP-local, one at a time."""
+        """The exposed adapter's HF-named tensors, TP/EP gathered; Bridge broadcasts every PP stage's adapters to all stages."""
         with megatron_bridge_utils.patch_megatron_model(self.model):
             named_weights = self._bridge.export_adapter_weights(
                 self.model,

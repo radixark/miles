@@ -16,7 +16,7 @@ class _RecordedSlots(BridgeAdapterSlots):
 
     def __init__(self, events: list):
         self._multi_lora, self.num_slots, self._claimed_slots, self.targets = True, 3, set(), None
-        self._events = events
+        self._events, self.head_rows = events, None
 
     def _init_slot(self, slot, lora_rank, lora_alpha, seed):
         self._events.append(("init", slot, lora_alpha))
@@ -29,6 +29,12 @@ class _RecordedSlots(BridgeAdapterSlots):
 
     def parametrization(self, **fields):
         return None
+
+    def global_shapes(self, lora_rank):
+        return {}
+
+
+_SOURCE = {"path": "/ckpt", "load_optimizer": True, "parametrization_fields": {}}
 
 
 @pytest.fixture
@@ -52,7 +58,7 @@ def test_load_state_into_a_created_model_claims_its_slot_again_at_the_sources_al
     monkeypatch.setattr(lora_checkpoint, "find_load_mismatch", lambda *args, **kwargs: None)
 
     assert actor.load_slot(1, 8, 16.0) is None
-    assert actor.load_slot(1, 8, 32.0, ckpt_path="/ckpt", parametrization_fields={}) is None
+    assert actor.load_slot(1, 8, 32.0, source=_SOURCE) is None
     assert events == [("init", 1, 16.0), ("clear", 1), ("init", 1, 32.0), ("load", "/ckpt")]
 
     actor.unload_slot(1)
@@ -65,7 +71,7 @@ def test_a_refused_source_leaves_the_live_slot_and_its_optimizer_alone(actor_and
     actor.load_slot(1, 8, 16.0)
     optimizer = actor.slot_optimizers[1]
 
-    refused = actor.load_slot(1, 8, 32.0, ckpt_path="/ckpt", parametrization_fields={})
+    refused = actor.load_slot(1, 8, 32.0, source=_SOURCE)
 
     assert refused == {"error": "saved with another layout", "error_category": "user"}
     assert events == [("init", 1, 16.0)] and actor.slot_optimizers[1] is optimizer

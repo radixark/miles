@@ -45,6 +45,7 @@ from miles.rollout.generate_utils.openai_endpoint_utils import OpenAIEndpointTra
 from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY
 from miles.utils.function_registry import load_function
 from miles.utils.output_store.dropped import record_dropped_samples
+from miles.utils.rollout_data_config import lower_limit
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
@@ -65,14 +66,17 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         extra_key=input.sample.kv_cache_namespace,
     )
 
-    custom_agent_function: Callable = load_function(input.args.custom_agent_function_path)
-    assert (
-        custom_agent_function is not None
-    ), f"Custom agent function {input.args.custom_agent_function_path} not found"
+    # a mixed dataset may name its own agent and a lower length limit
+    agent_function_path = input.sample.agent_function_path or input.args.custom_agent_function_path
+    custom_agent_function: Callable = load_function(agent_function_path)
+    assert custom_agent_function is not None, f"Custom agent function {agent_function_path} not found"
 
-    max_seq_len = getattr(
-        input.args, "max_seq_len", None
-    )  # config-access-exempt: optional length limit registered by custom agent hooks
+    max_seq_len = lower_limit(
+        getattr(
+            input.args, "max_seq_len", None
+        ),  # config-access-exempt: optional length limit registered by custom agent hooks
+        input.sample.max_seq_len,
+    )
 
     metadata = input.sample.metadata
     if max_seq_len is not None:
@@ -214,6 +218,8 @@ def _add_arguments(parser: argparse.ArgumentParser):
 
 
 generate.add_arguments = _add_arguments
+# reads Sample.agent_function_path / max_seq_len; a wrapper that delegates here may set this too
+generate.reads_sample_agent_fields = True
 
 
 # Process keys to match ChatCompletionRequest input

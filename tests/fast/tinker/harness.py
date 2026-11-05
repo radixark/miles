@@ -7,7 +7,10 @@ from pathlib import Path
 
 import torch
 
-from miles.backends.training_utils.checkpoint.adapter.adapter_exports import write_sampler_adapter
+from miles.backends.training_utils.checkpoint.adapter.adapter_exports import (
+    write_external_adapter,
+    write_sampler_adapter,
+)
 from miles.backends.training_utils.checkpoint.adapter.commit import write_adapter_dir
 from miles.backends.training_utils.checkpoint.adapter.parametrization import (
     AdapterParametrization,
@@ -17,7 +20,14 @@ from miles.backends.training_utils.checkpoint.io import write_checkpoint_dir
 from miles.tinker.core.future import DONE, PENDING, RequestFuture
 from miles.tinker.core.service import TinkerService
 from miles.tinker.core.types import Command, CommandOp, GatewayConfig
-from miles.tinker.runtime import classify_lora_groups, commit_adapter, delete_retired_adapters, resolve_adapter
+from miles.tinker.runtime import (
+    classify_lora_groups,
+    commit_adapter,
+    delete_adapter,
+    delete_retired_adapters,
+    resolve_adapter,
+    resolve_checkpoint_files,
+)
 from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
 
 _TARGETS = get_hf_lora_targets({"model_type": "qwen3", "num_hidden_layers": 1})
@@ -29,6 +39,13 @@ ADAM = {
     "weight_decay": 0.0,
     "grad_clip_norm": 1.0,
 }
+
+
+def _weights(rank: int) -> dict[str, torch.Tensor]:
+    return {
+        "model.layers.0.self_attn.q_proj.lora_A": torch.zeros(rank, 4),
+        "model.layers.0.self_attn.q_proj.lora_B": torch.zeros(4, rank),
+    }
 
 
 def _parametrization(fields: dict, target_modules=("model.layers.0.self_attn.q_proj",)) -> AdapterParametrization:
@@ -78,16 +95,8 @@ class FakeBackend:
     async def trainer_dead(self):
         return self.dead
 
-    async def load_slot(self, slot, rank, alpha, ckpt_path=None, load_optimizer=True, parametrization_fields=None):
-        return self._record(
-            "load_slot",
-            slot=slot,
-            rank=rank,
-            alpha=alpha,
-            ckpt_path=ckpt_path,
-            load_optimizer=load_optimizer,
-            parametrization_fields=parametrization_fields,
-        )
+    async def load_slot(self, slot, rank, alpha, source=None):
+        return self._record("load_slot", slot=slot, rank=rank, alpha=alpha, source=source)
 
     async def unload_slot(self, slot):
         return self._record("unload_slot", slot=slot)
@@ -138,6 +147,32 @@ class FakeBackend:
     commit_adapter = staticmethod(commit_adapter)
     delete_retired_adapters = staticmethod(delete_retired_adapters)
     resolve_adapter = staticmethod(resolve_adapter)
+    resolve_checkpoint_files = staticmethod(resolve_checkpoint_files)
+    delete_adapter = staticmethod(delete_adapter)
+
+    async def export_external(self, slot, root, name, tenant_digest, parametrization_fields, age_recipients):
+        failure = self._record(
+            "export_external",
+            slot=slot,
+            root=root,
+            adapter_name=name,
+            tenant_digest=tenant_digest,
+            parametrization_fields=parametrization_fields,
+            age_recipients=age_recipients,
+        )
+        if failure is not None:
+            return failure
+        parametrization = _parametrization(parametrization_fields)
+        with write_adapter_dir(Path(root), name, tenant_digest=tenant_digest) as written:
+            write_external_adapter(
+                written.path,
+                _weights(parametrization.lora_rank),
+                parametrization,
+                _TARGETS,
+                age_recipients=age_recipients,
+                lora_dropout=0.0,
+            )
+        return written
 
     def lora_groups(self, target_modules):
         return classify_lora_groups(target_modules, _TARGETS)
@@ -151,15 +186,12 @@ class FakeBackend:
             tenant_digest=tenant_digest,
             parametrization_fields=parametrization_fields,
         )
-        if failure is not None:
-            return failure
+        assert failure is None, "a trainer's export_slot raises; it never returns a failure"
         parametrization = _parametrization(parametrization_fields)
-        weights = {
-            "model.layers.0.self_attn.q_proj.lora_A": torch.zeros(parametrization.lora_rank, 4),
-            "model.layers.0.self_attn.q_proj.lora_B": torch.zeros(4, parametrization.lora_rank),
-        }
         with write_adapter_dir(Path(root), name, tenant_digest=tenant_digest) as written:
-            write_sampler_adapter(written.path, weights, parametrization, _TARGETS)
+            write_sampler_adapter(
+                written.path, _weights(parametrization.lora_rank), parametrization, _TARGETS, lora_dropout=0.0
+            )
         return written
 
     async def sample(self, payload, lora_name, lora_path=None):
@@ -175,7 +207,13 @@ class FakeBackend:
 
 
 def make_config(checkpoint_root, **overrides) -> GatewayConfig:
-    defaults = dict(base_model="base", n_slots=2, checkpoint_root=str(checkpoint_root), vocab_size=128000)
+    defaults = dict(
+        base_model="base",
+        n_slots=2,
+        checkpoint_root=str(checkpoint_root),
+        vocab_size=128000,
+        exports_tinker_names=True,
+    )
     return GatewayConfig(**{**defaults, **overrides})
 
 

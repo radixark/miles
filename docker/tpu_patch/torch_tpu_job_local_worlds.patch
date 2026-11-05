@@ -1,0 +1,550 @@
+From 2c9e0d71cd8ce38a4c7ebe245d212dbe69a30e14 Mon Sep 17 00:00:00 2001
+From: Zhichen Zeng <zhichen.zeng@radixark.ai>
+Date: Tue, 3 Nov 2026 13:23:24 -0800
+Subject: [PATCH] Job-local worlds for jobs sharing a TPU slice
+ (TORCH_TPU_JOB_DEVICE_IDS)
+
+Squash of google-pytorch/torch_tpu#6110 (head 36295de10, 4 commits) applied
+on torch_tpu main e8468781a.
+---
+ csrc/common/compilation.cc                  |  22 +++-
+ csrc/common/env_vars.h                      |   6 +
+ csrc/distributed/process_group_tpu.cc       |  38 +++++-
+ csrc/pjrt/BUILD                             |   2 +
+ csrc/pjrt/pjrt_state.cc                     |  31 +++++
+ csrc/pjrt/pjrt_state.h                      |   5 +
+ docs/public_apis.md                         |   1 +
+ src/torch_tpu/_internal/compile/_backend.py |  10 +-
+ tests/BUILD                                 |   1 +
+ tests/api/tt_apis.yaml                      |   1 +
+ tests/distributed/BUILD                     |  30 +++++
+ tests/distributed/job_local_world_test.py   | 131 ++++++++++++++++++++
+ tests/tpu_errors_test.py                    |  32 +++++
+ 13 files changed, 305 insertions(+), 5 deletions(-)
+ create mode 100644 tests/distributed/job_local_world_test.py
+
+diff --git a/csrc/common/compilation.cc b/csrc/common/compilation.cc
+index 63add52d7..b48020eb6 100644
+--- a/csrc/common/compilation.cc
++++ b/csrc/common/compilation.cc
+@@ -346,6 +346,26 @@ static absl::Status SetDefaultDeviceAssignment(
+   // required by Pallas/Mosaic.
+   // LINT.IfChange
+   options.set_num_replicas(1);
++  TT_ASSIGN_OR_RETURN(const xla::PjRtClient* const pjrt_client,
++                      PjrtBackend::GetInstance().GetClient());
++  TT_ASSIGN_OR_RETURN(const std::vector<int64_t> job_device_ids,  // INT_VEC_OK
++                      PjrtBackend::GetInstance().GetJobDeviceIds());
++  // Compared with the slice, not num_devices: a single-process run on a
++  // multi-device host (WORLD_SIZE unset) uses one device of the slice.
++  if (job_device_ids.size() != pjrt_client->devices().size()) {
++    // A job sharing the slice compiles for its own devices only, so its
++    // programs never wait on the other job's processes.
++    const int num_job_devices = job_device_ids.size();
++    options.set_num_partitions(num_job_devices);
++    xla::DeviceAssignment job_da(1, num_job_devices);
++    for (int idx = 0; idx < num_job_devices; ++idx) {
++      job_da(0, idx) = job_device_ids[idx];
++    }
++    options.set_device_assignment(job_da);
++    options.set_use_spmd_partitioning(true);
++    options.set_use_shardy_partitioner(true);
++    return absl::OkStatus();
++  }
+   options.set_num_partitions(num_devices);
+   xla::DeviceAssignment da(1, num_devices);
+   if (num_devices == 1) {
+@@ -353,8 +373,6 @@ static absl::Status SetDefaultDeviceAssignment(
+                         PjrtBackend::GetInstance().GetGlobalDeviceId());
+     da(0, 0) = global_device_id;
+   } else {
+-    TT_ASSIGN_OR_RETURN(const xla::PjRtClient* const pjrt_client,
+-                        PjrtBackend::GetInstance().GetClient());
+     for (int idx = 0; idx < num_devices; ++idx) {
+       da(0, idx) = pjrt_client->devices()[idx]->global_device_id().value();
+     }
+diff --git a/csrc/common/env_vars.h b/csrc/common/env_vars.h
+index c0e0d32df..a7444b253 100644
+--- a/csrc/common/env_vars.h
++++ b/csrc/common/env_vars.h
+@@ -214,6 +214,11 @@ inline constexpr char kTorchTpuSpmdHandshakeStageEnvVar[] =
+ // "default".
+ inline constexpr char kTorchTpuTier2CompilationCacheEnvVar[] =
+     "TORCH_TPU_TIER2_COMPILATION_CACHE";
++// Comma-separated global device ids of this job when several independent jobs
++// share one slice. The job's world, subgroups and compiled programs then span
++// only these devices. Read when first used, so it may be set after startup.
++inline constexpr char kTorchTpuJobDeviceIdsEnvVar[] =
++    "TORCH_TPU_JOB_DEVICE_IDS";
+ // The root path of the tier-3 compilation cache. If not set, the tier-3
+ // compilation cache is disabled.
+ inline constexpr char kTorchTpuTier3CompilationCacheRootEnvVar[] =
+@@ -343,6 +348,7 @@ inline constexpr auto kEnvVarToStage =
+         {kTorchTpuSlicebuilderAddressesEnvVar, SymbolStage::Experimental()},
+         {kTorchTpuSpmdHandshakeStageEnvVar, SymbolStage::Experimental()},
+         {kTorchTpuTier2CompilationCacheEnvVar, SymbolStage::Experimental()},
++        {kTorchTpuJobDeviceIdsEnvVar, SymbolStage::Experimental()},
+         {kTorchTpuTier3CompilationCacheRootEnvVar, SymbolStage::Experimental()},
+         {kTorchTpuTopologyEnvVar, SymbolStage::Experimental()},
+         {kTorchTpuXprofSessionIdEnvVar, SymbolStage::Experimental()},
+diff --git a/csrc/distributed/process_group_tpu.cc b/csrc/distributed/process_group_tpu.cc
+index 94c9a5437..27cc2b200 100644
+--- a/csrc/distributed/process_group_tpu.cc
++++ b/csrc/distributed/process_group_tpu.cc
+@@ -1361,6 +1361,14 @@ absl::StatusOr<NodeLocalStoreConfig> GetNodeLocalStore(int64_t world_size) {
+   if (*local_world_size <= 1) {
+     return NodeLocalStoreConfig{};
+   }
++  TT_ASSIGN_OR_RETURN(const xla::PjRtClient* const pjrt_client,
++                      PjrtBackend::GetInstance().GetClient());
++  if (world_size != static_cast<int64_t>(pjrt_client->devices().size())) {
++    // A job sharing the slice (TORCH_TPU_JOB_DEVICE_IDS) holds only part of
++    // the host's devices, and its local ranks would meet the other job's in
++    // the per-host store.
++    return NodeLocalStoreConfig{};
++  }
+   TT_RET_CHECK(*local_rank >= 0 && *local_rank < *local_world_size,
+                error::kInvalidArgument)
+       << absl::StrFormat(
+@@ -1751,7 +1759,12 @@ ProcessGroupTpu::ProcessGroupTpu(c10::intrusive_ptr<c10d::Store> store,
+   TT_ASSIGN_OR_THROW(const xla::PjRtClient* const pjrt_client,
+                      PjrtBackend::GetInstance().GetClient());
+ 
+-  const int64_t world_size = pjrt_client->devices().size();
++  const int64_t slice_size = pjrt_client->devices().size();
++  TT_ASSIGN_OR_THROW(  // INT_VEC_OK
++      const std::vector<int64_t> job_device_ids,
++      PjrtBackend::GetInstance().GetJobDeviceIds());
++  // The whole slice unless TORCH_TPU_JOB_DEVICE_IDS gives this job a part.
++  const int64_t world_size = job_device_ids.size();
+ 
+   // Addressable device "assigned" to this process/rank:
+   TT_CHECK_THROW(pjrt_client->addressable_devices().size() == 1,
+@@ -1760,6 +1773,29 @@ ProcessGroupTpu::ProcessGroupTpu(c10::intrusive_ptr<c10d::Store> store,
+   addressable_device_id_ =
+       pjrt_client->addressable_devices()[0]->global_device_id().value();
+ 
++  if (world_size != slice_size && group_size == slice_size) {
++    // A slice-wide group of a job sharing the slice: only send/recv between
++    // jobs, so it records peer devices and leaves the job's world untouched.
++    store_->set(absl::StrFormat("p2p_device:%d", rank),
++                std::to_string(addressable_device_id_));
++    std::vector<std::string> keys(size_);
++    for (int64_t i = 0; i < size_; ++i) {
++      keys[i] = absl::StrFormat("p2p_device:%d", i);
++    }
++    auto values = store_->multiGet(keys);
++    member_device_ids_.resize(size_);
++    for (int64_t i = 0; i < size_; ++i) {
++      TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=peers write their device ids
++          absl::SimpleAtoi(
++              std::string_view(reinterpret_cast<const char*>(values[i].data()),
++                               values[i].size()),
++              &member_device_ids_[i]),
++          error::kInternal)
++          << "Failed to parse peer device id of rank " << i;
++    }
++    return;
++  }
++
+   // We support creating "flat" process groups, as well as "2D+ mesh" process
+   // (sub)groups. The (sub)group size must evenly divide the world size, i.e.
+   // the total number of devices.
+diff --git a/csrc/pjrt/BUILD b/csrc/pjrt/BUILD
+index 55575424c..4e33aaa3c 100644
+--- a/csrc/pjrt/BUILD
++++ b/csrc/pjrt/BUILD
+@@ -65,6 +65,7 @@ torch_tpu_cc_library(
+         "//csrc/common:error_utils",
+         "//csrc/common:utils",
+         "//csrc/distributed/slicebuilder:discovery",
++        "@com_google_absl//absl/algorithm:container",
+         "@com_google_absl//absl/base:core_headers",
+         "@com_google_absl//absl/base:no_destructor",
+         "@com_google_absl//absl/base:nullability",
+@@ -73,6 +74,7 @@ torch_tpu_cc_library(
+         "@com_google_absl//absl/log:absl_log",
+         "@com_google_absl//absl/status",
+         "@com_google_absl//absl/status:statusor",
++        "@com_google_absl//absl/strings",
+         "@com_google_absl//absl/synchronization",
+         "@tsl//tsl/profiler/lib:profiler_factory",
+         "@tsl//tsl/profiler/lib:profiler_interface",
+diff --git a/csrc/pjrt/pjrt_state.cc b/csrc/pjrt/pjrt_state.cc
+index 4dcf784bd..5f7f60c91 100644
+--- a/csrc/pjrt/pjrt_state.cc
++++ b/csrc/pjrt/pjrt_state.cc
+@@ -27,6 +27,7 @@
+ #include <variant>
+ #include <vector>
+ 
++#include "absl/algorithm/container.h"
+ #include "absl/base/no_destructor.h"
+ #include "absl/base/nullability.h"
+ #include "absl/container/flat_hash_map.h"
+@@ -34,6 +35,8 @@
+ #include "absl/log/absl_log.h"
+ #include "absl/status/status.h"
+ #include "absl/status/statusor.h"
++#include "absl/strings/numbers.h"
++#include "absl/strings/str_split.h"
+ #include "absl/synchronization/mutex.h"
+ #include "csrc/common/contain.h"
+ #include "csrc/common/device_type.h"
+@@ -372,6 +375,34 @@ absl::StatusOr<int> PjrtBackend::GetGlobalDeviceCount() {
+   return global_device_count_;
+ }
+ 
++absl::StatusOr<std::vector<int64_t>>  // INT_VEC_OK
++PjrtBackend::GetJobDeviceIds() {
++  TT_RETURN_IF_ERROR(EnsureInitialized());
++  absl::ReaderMutexLock lock(mutex_);
++  std::vector<int64_t> device_ids;  // INT_VEC_OK
++  // Read on use, not at startup: a job learns its peers' devices only after
++  // the runtime is up, and sets this before its first compiled program.
++  const char* const job_devices = std::getenv(kTorchTpuJobDeviceIdsEnvVar);
++  if (job_devices == nullptr || *job_devices == '\0') {
++    for (const xla::PjRtDevice* device : client_->devices()) {
++      device_ids.push_back(device->global_device_id().value());
++    }
++  } else {
++    for (std::string_view id : absl::StrSplit(job_devices, ',')) {
++      TT_RET_CHECK(absl::SimpleAtoi(id, &device_ids.emplace_back()),
++                   error::kInvalidArgument)
++          << kTorchTpuJobDeviceIdsEnvVar << " must list device ids, got "
++          << job_devices;
++    }
++    TT_RET_CHECK(absl::c_linear_search(device_ids, global_device_id_),
++                 error::kInvalidArgument)
++        << "this process's device " << global_device_id_ << " is not in "
++        << kTorchTpuJobDeviceIdsEnvVar << "=" << job_devices;
++  }
++  absl::c_sort(device_ids);
++  return device_ids;
++}
++
+ absl::StatusOr<int> PjrtBackend::GetGlobalDeviceId() {
+   TT_RETURN_IF_ERROR(EnsureInitialized());
+   absl::ReaderMutexLock lock(mutex_);
+diff --git a/csrc/pjrt/pjrt_state.h b/csrc/pjrt/pjrt_state.h
+index 8bfbd52ef..d2c17eb77 100644
+--- a/csrc/pjrt/pjrt_state.h
++++ b/csrc/pjrt/pjrt_state.h
+@@ -116,6 +116,11 @@ class PjrtBackend {
+   // if needed.
+   absl::StatusOr<int> GetGlobalDeviceId() ABSL_LOCKS_EXCLUDED(mutex_);
+ 
++  // Returns the global IDs of this job's devices, sorted: every slice device,
++  // or with TORCH_TPU_JOB_DEVICE_IDS only this job's.
++  absl::StatusOr<std::vector<int64_t>> GetJobDeviceIds()  // INT_VEC_OK
++      ABSL_LOCKS_EXCLUDED(mutex_);
++
+   // Returns the PjRt device type.
+   [[nodiscard]] PjRtDeviceType GetDeviceType() ABSL_LOCKS_EXCLUDED(mutex_);
+ 
+diff --git a/docs/public_apis.md b/docs/public_apis.md
+index bd911547b..9c6a75f3c 100644
+--- a/docs/public_apis.md
++++ b/docs/public_apis.md
+@@ -246,6 +246,7 @@ process. Use it at your own risk. Using it triggers a one-time warning.
+ *   `TORCH_TPU_DEFER_AND_FUSE`
+ *   `TORCH_TPU_DEVICES_PER_HOST`
+ *   `TORCH_TPU_ENABLE_DEBUG_CHECKS`
++*   `TORCH_TPU_JOB_DEVICE_IDS`
+ *   `TORCH_TPU_LAUNCH_BLOCKING`
+ *   `TORCH_TPU_PROFILER_OUTPUT_DIR`
+ *   `TORCH_TPU_SLICEBUILDER_ADDRESSES`
+diff --git a/src/torch_tpu/_internal/compile/_backend.py b/src/torch_tpu/_internal/compile/_backend.py
+index ad7ea7998..8aab38e62 100644
+--- a/src/torch_tpu/_internal/compile/_backend.py
++++ b/src/torch_tpu/_internal/compile/_backend.py
+@@ -37,6 +37,7 @@ import dataclasses
+ import functools
+ import hashlib
+ import operator
++import os
+ import pathlib
+ import re
+ import threading
+@@ -284,12 +285,17 @@ def _process_group_cache_key_tag(graph_module: torch.fx.GraphModule) -> str:
+ 
+   Cached executables embed the devices of the groups their collectives use, but
+   graphs name groups by creation order, which does not determine their members.
++  A job sharing the slice (TORCH_TPU_JOB_DEVICE_IDS) also compiles its programs
++  without collectives for its own devices, so its devices tag every key.
+   """
+   groups = process_group_utils.get_process_groups(graph_module)
+-  return ";".join(
++  tags = [
+       f"{name}:{','.join(map(str, device_mesh.get_device_assignment(pg)))}"
+       for name, pg in sorted(groups.items())
+-  )
++  ]
++  if job_devices := os.environ.get("TORCH_TPU_JOB_DEVICE_IDS"):
++    tags.append(f"job:{job_devices}")
++  return ";".join(tags)
+ 
+ 
+ def _layouts_key(
+diff --git a/tests/BUILD b/tests/BUILD
+index f75997b2a..d3018a7f4 100644
+--- a/tests/BUILD
++++ b/tests/BUILD
+@@ -1856,6 +1856,7 @@ torch_tpu_py_test(
+         "//src/torch_tpu/_internal/compile:tpu_torch_compile",
+         "//src/torch_tpu/_internal/distributed",
+         "//src/torch_tpu/_internal/distributed:multiprocessing",
++        "//src/torch_tpu/_internal/distributed:tpu_distributed",
+         "//src/torch_tpu/_internal/dynamism",
+         "//src/torch_tpu/_internal/execution_mode",
+         "//src/torch_tpu/_internal/export",
+diff --git a/tests/api/tt_apis.yaml b/tests/api/tt_apis.yaml
+index d2c597a5d..7b8b68d8e 100644
+--- a/tests/api/tt_apis.yaml
++++ b/tests/api/tt_apis.yaml
+@@ -247,6 +247,7 @@ TORCH_TPU_INTERNAL_SPLIT_RNG_STATE_UPDATE: {category: Environment Variable, defi
+ TORCH_TPU_INTERNAL_STORAGE_AWARE_PLACEHOLDERS: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Internal}
+ TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Internal}
+ TORCH_TPU_INTERNAL_XLA_OPTIONS: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Internal}
++TORCH_TPU_JOB_DEVICE_IDS: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Experimental}
+ TORCH_TPU_LAUNCH_BLOCKING: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Experimental}
+ TORCH_TPU_PROFILER_OUTPUT_DIR: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Experimental}
+ TORCH_TPU_SLICEBUILDER_ADDRESSES: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Experimental}
+diff --git a/tests/distributed/BUILD b/tests/distributed/BUILD
+index ddb8bde55..1a94c9c2c 100644
+--- a/tests/distributed/BUILD
++++ b/tests/distributed/BUILD
+@@ -191,6 +191,36 @@ torch_tpu_py_test(
+     ],
+ )
+ 
++torch_tpu_py_test(
++    name = "job_local_world_test",
++    srcs = ["job_local_world_test.py"],
++    nopresubmit_oss = "TODO(b/568095515): Flaking in GitHub TPU v7 presubmit with START_SESSION failed.",
++    oss_presubmit_tpu_generation = tpu_gen(
++        "v7",
++        reason = "Splits one v7x host into two jobs of 4 devices",
++    ),
++    tags = if_oss(
++        ["exclusive"],
++        [],
++    ) + [
++        "noasan",  # TODO(b/497035517): fix the test in asan mode.
++        "nomsan",  # TODO(b/497035517): fix the test in msan mode.
++        "notsan",  # TODO(b/497035517): fix the test in tsan mode.
++        "ok-to-wait-for-v7x-in-presubmit",
++        "requires-tpu-v7x:4",
++    ],
++    deps = [
++        ":distributed_utils",
++        "//shims/absl_py/testing:absltest",
++        "//shims/torch:pytorch",
++        "//src/torch_tpu",
++        "//src/torch_tpu/_internal/distributed:multiprocessing",
++        "//src/torch_tpu/_internal/distributed:tpu_distributed",
++        "//src/torch_tpu/_internal/utils:test_utils",
++        "@pypi//portpicker",
++    ],
++)
++
+ torch_tpu_py_test(
+     name = "compile_cache_process_groups_test",
+     timeout = "long",
+diff --git a/tests/distributed/job_local_world_test.py b/tests/distributed/job_local_world_test.py
+new file mode 100644
+index 000000000..103b4c5b9
+--- /dev/null
++++ b/tests/distributed/job_local_world_test.py
+@@ -0,0 +1,131 @@
++# Copyright 2026 Google LLC
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++"""Tests two jobs sharing one slice through TORCH_TPU_JOB_DEVICE_IDS.
++
++Slice ranks 0-3 form job 0 and 4-7 job 1. Each job's world spans its own
++devices, so its collectives and compiled programs run while the other job runs
++nothing, and a slice-wide group carries send/recv between the jobs. This is how
++an RL trainer and an inference engine on the two halves of a host exchange
++weights over ICI.
++"""
++
++from datetime import timedelta
++import os
++
++from absl.testing import absltest
++import portpicker
++import torch
++from torch import distributed as dist
++from torch._C._distributed_c10d import PrefixStore
++from torch._inductor.runtime.cache_dir_utils import temporary_cache_dir
++import torch.multiprocessing as mp
++from torch_tpu._internal.distributed import multiprocessing
++from torch_tpu._internal.distributed import tpu_distributed
++from torch_tpu._internal.utils import test_utils as utils
++from tests.distributed import distributed_utils
++
++_SLICE_SIZE = 8
++_JOB_SIZE = _SLICE_SIZE // 2
++_TIMEOUT = timedelta(minutes=5)
++
++
++def _run_two_jobs(store_port: int, cache_dir: str) -> None:
++  slice_rank = int(os.environ["RANK"])
++  job, job_rank = divmod(slice_rank, _JOB_SIZE)
++  # Starts the runtime, which joins the whole slice; nothing is compiled yet.
++  device_id = int(tpu_distributed.global_device_id())
++  slice_store = dist.TCPStore(
++      os.environ["MASTER_ADDR"],
++      store_port,
++      _SLICE_SIZE,
++      slice_rank == 0,
++      _TIMEOUT,
++  )
++  slice_store.set(f"device:{slice_rank}", str(device_id))
++  job_devices = [
++      int(slice_store.get(f"device:{job * _JOB_SIZE + r}"))
++      for r in range(_JOB_SIZE)
++  ]
++  os.environ["TORCH_TPU_JOB_DEVICE_IDS"] = ",".join(map(str, job_devices))
++  p2p = tpu_distributed.create_process_group(
++      PrefixStore("p2p", slice_store), slice_rank, _SLICE_SIZE, _TIMEOUT
++  )
++  dist.init_process_group(
++      "tpu_dist",
++      store=PrefixStore(f"job{job}", slice_store),
++      rank=job_rank,
++      world_size=_JOB_SIZE,
++  )
++  world_backend = dist.group.WORLD._get_backend(torch.device("tpu"))
++  assert sorted(tpu_distributed.rank_to_device_id(world_backend)) == sorted(
++      job_devices
++  )
++
++  @torch.compile(backend="tpu", fullgraph=True, dynamic=False)
++  def scaled(x: torch.Tensor) -> torch.Tensor:
++    return x * 2 + 1
++
++  # Job 1 waits for job 0 to finish its collective and compiled program, so
++  # job 0 cannot depend on job 1 launching anything. Both jobs compile the same
++  # graph into one shared cache: each must get an executable for its devices.
++  if job == 1:
++    slice_store.wait(["job0_done"])
++  x = torch.full((1024,), float(job_rank + 1), device="tpu")
++  dist.all_reduce(x)
++  with torch._inductor.config.patch(fx_graph_cache=True):
++    with temporary_cache_dir(cache_dir):
++      y = scaled(x)
++  utils.assert_close(y.cpu(), torch.full((1024,), 21.0))
++  torch.accelerator.synchronize()
++  dist.barrier()
++  if job == 0 and job_rank == 0:
++    slice_store.set("job0_done", "1")
++
++  # Each job-0 rank sends to its job-1 peer through the slice-wide group.
++  peer = slice_rank + _JOB_SIZE if job == 0 else slice_rank - _JOB_SIZE
++  for tag in range(2):
++    if job == 0:
++      payload = torch.full(
++          (4096,),
++          float(slice_rank * 10 + tag),
++          dtype=torch.bfloat16,
++          device="tpu",
++      )
++      p2p.send([payload], peer, tag).wait()
++    else:
++      payload = torch.empty((4096,), dtype=torch.bfloat16, device="tpu")
++      p2p.recv([payload], peer, tag).wait()
++      utils.assert_close(
++          payload.cpu(),
++          torch.full((4096,), float(peer * 10 + tag), dtype=torch.bfloat16),
++      )
++  torch.accelerator.synchronize()
++  dist.barrier()
++
++
++class JobLocalWorldTest(absltest.TestCase):
++
++  def test_two_jobs_share_one_slice(self) -> None:
++    distributed_utils.dist_run(
++        nproc_per_node=_SLICE_SIZE,
++        fn=_run_two_jobs,
++        store_port=portpicker.pick_unused_port(),
++        cache_dir=self.create_tempdir().full_path,
++    )
++
++
++if __name__ == "__main__":  # We are in the parent process.
++  mp.set_start_method("spawn")
++  multiprocessing.handle_test_main(absltest.main)
+diff --git a/tests/tpu_errors_test.py b/tests/tpu_errors_test.py
+index d7d41a6a4..7e319d22d 100644
+--- a/tests/tpu_errors_test.py
++++ b/tests/tpu_errors_test.py
+@@ -17,6 +17,7 @@
+ import collections
+ from collections.abc import Mapping, Sequence
+ import contextlib
++import datetime
+ import os
+ import re
+ from typing import Any, TypeAlias
+@@ -41,6 +42,7 @@ from torch_tpu._internal.compile import flex_attention as tpu_flex_attention
+ from torch_tpu._internal.compile import tpu_torch_compile
+ from torch_tpu._internal.compile.compiler import StaticCompiler
+ from torch_tpu._internal.distributed import distributed as internal_distributed
++from torch_tpu._internal.distributed import tpu_distributed
+ from torch_tpu._internal.export import export as torch_tpu_export
+ from torch_tpu._internal.pallas import tpu_torch_pallas
+ from torch_tpu._internal.sync import sync
+@@ -114,6 +116,36 @@ def _ensure_ao_ops_registered() -> None:
+ class TpuOnlyErrorTest(et.TpuOnlyErrorTestBase):
+   """Tests error messages on TPU."""
+ 
++  @et.why_tpu_only("TORCH_TPU_JOB_DEVICE_IDS lists TPU devices.")
++  def test_job_device_ids_must_be_device_ids(self):
++    with mock.patch.dict(os.environ, {"TORCH_TPU_JOB_DEVICE_IDS": "0,x"}):
++      with et.assert_raises_message(
++          RuntimeError,
++          tpu=(
++              "create_process_group(): TORCH_TPU_JOB_DEVICE_IDS must list"
++              " device ids, got 0,x"
++          ),
++      ):
++        tpu_distributed.create_process_group(
++            dist.HashStore(), 0, 1, datetime.timedelta(seconds=30)
++        )
++
++  @et.why_tpu_only("TORCH_TPU_JOB_DEVICE_IDS lists TPU devices.")
++  def test_job_device_ids_must_include_this_device(self):
++    device_id = int(tpu_distributed.global_device_id())
++    others = str(device_id + 1)
++    with mock.patch.dict(os.environ, {"TORCH_TPU_JOB_DEVICE_IDS": others}):
++      with et.assert_raises_message(
++          RuntimeError,
++          tpu=(
++              f"create_process_group(): this process's device {device_id} is"
++              f" not in TORCH_TPU_JOB_DEVICE_IDS={others}"
++          ),
++      ):
++        tpu_distributed.create_process_group(
++            dist.HashStore(), 0, 1, datetime.timedelta(seconds=30)
++        )
++
+   @et.why_tpu_only("StaticCompiler buffer donation is TPU-specific.")
+   def test_static_compiler_buffer_donation_runtime_error(self):
+     def double(x):
+-- 
+2.50.1 (Apple Git-155)
+

@@ -12,8 +12,11 @@ import torch.distributed.checkpoint
 from tests.fast.dist_utils import init_gloo, run_multiprocess
 
 from miles.backends.training_utils.checkpoint.adapter.adapter_dir import (
+    HeadRows,
     load_adapter_dir,
     save_adapter_dir,
+    save_and_commit_adapter_dir,
+    write_external_export,
     write_peft_export,
 )
 from miles.backends.training_utils.checkpoint.adapter.adapter_exports import write_peft_adapter
@@ -28,7 +31,8 @@ from miles.backends.training_utils.checkpoint.adapter.commit import (
     tenant_digest,
 )
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
-from miles.backends.training_utils.checkpoint.adapter.readers import AdapterSourceKind
+from miles.backends.training_utils.checkpoint.adapter.readers import AdapterSourceKind, ExternalWeightsReader
+from miles.backends.training_utils.checkpoint.adapter.source_error import AdapterSourceError
 from miles.utils.distributed_utils import init_gloo_group
 from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
 
@@ -44,9 +48,11 @@ FULL = {
 class FakeMembers:
     """B split by rows across ranks (column-parallel), A replicated with rank 0 primary."""
 
+    head_rows = None
+
     def __init__(self, scale: float = 1.0):
         self.rank, self.world = (dist.get_rank(), dist.get_world_size()) if dist.is_initialized() else (0, 1)
-        self.scale, self.imported = scale, None
+        self.scale, self.imported, self.finished = scale, None, False
 
     def get_local_shard_specs(self, slot):
         rows = 4 // self.world
@@ -64,6 +70,10 @@ class FakeMembers:
 
     def import_adapter_state(self, slot, state):
         self.imported = state
+
+    def finish_import_adapter_state(self, slot):
+        assert self.imported is not None, "finish runs after the import"
+        self.finished = True
 
     def export_bf16_adapter(self, slot):
         raise NotImplementedError
@@ -96,7 +106,7 @@ def test_round_trip_with_optimizer_under_a_different_world_size():
 
 
 def test_weights_only_from_peft_upcasts_and_zeroes_moments(tmp_path):
-    write_peft_adapter(tmp_path, {f"{MODULE}.{k}": v for k, v in FULL.items()}, RUN, TARGETS)
+    write_peft_adapter(tmp_path, {f"{MODULE}.{k}": v for k, v in FULL.items()}, RUN, TARGETS, lora_dropout=0.0)
     members = FakeMembers()
     load_adapter_dir(tmp_path, members, 0, RUN, TARGETS, load_optimizer=False)
     state = members.imported
@@ -106,7 +116,7 @@ def test_weights_only_from_peft_upcasts_and_zeroes_moments(tmp_path):
 
 
 def test_a_different_source_alpha_is_returned_for_the_caller_to_adopt(tmp_path):
-    write_peft_adapter(tmp_path, {f"{MODULE}.{k}": v for k, v in FULL.items()}, RUN, TARGETS)
+    write_peft_adapter(tmp_path, {f"{MODULE}.{k}": v for k, v in FULL.items()}, RUN, TARGETS, lora_dropout=0.0)
     run = replace(RUN, lora_alpha=16.0)  # a Tinker session adopts the source's alpha after loading
     assert load_adapter_dir(tmp_path, FakeMembers(), 0, run, TARGETS, load_optimizer=False).lora_alpha == 4.0
 
@@ -171,6 +181,23 @@ def test_a_rank0_prepare_failure_fails_every_rank_instead_of_hanging():
     assert not hung and process.exitcode == 0
 
 
+class InModelLoaderStub:
+    """An in-model source with a fixed parametrization; records what it loads."""
+
+    def __init__(self, parametrization, has_optimizer_state=True):
+        self._parametrization, self._has_optimizer_state, self.loaded = parametrization, has_optimizer_state, []
+
+    def parametrization(self, path):
+        parametrization = self._parametrization(path) if callable(self._parametrization) else self._parametrization
+        return parametrization, self._has_optimizer_state
+
+    def prepare(self, path):
+        return path
+
+    def apply(self, prepared):
+        self.loaded.append(prepared)
+
+
 def test_an_in_model_source_without_alpha_takes_the_runs(tmp_path):
     torch.distributed.checkpoint.save(
         {"model.layers.0.attention.wq.lora_a.weight": torch.zeros(2)}, checkpoint_id=tmp_path, no_dist=True
@@ -182,7 +209,9 @@ def test_an_in_model_source_without_alpha_takes_the_runs(tmp_path):
         RUN,
         TARGETS,
         load_optimizer=True,
-        in_model_loaders_by_kind={AdapterSourceKind.TORCHTITAN_CHECKPOINT: lambda path: replace(RUN, lora_alpha=None)},
+        in_model_loaders_by_kind={
+            AdapterSourceKind.TORCHTITAN_CHECKPOINT: InModelLoaderStub(replace(RUN, lora_alpha=None))
+        },
     )
     assert source.lora_alpha == RUN.lora_alpha
 
@@ -216,10 +245,52 @@ class ExtraKeyMembers(FakeMembers):
         )
 
 
+class VocabPaddingMembers(FakeMembers):
+    """Stores the rows past the vocabulary its head's B is padded to, as native Megatron does."""
+
+    def __init__(self, padding_rows: int = 2):
+        super().__init__()
+        self.padding = LocalShardSpec(f"{MODULE}.lora_B.vocab_padding", (padding_rows, 2), (0, 0), (padding_rows, 2))
+
+    def get_local_shard_specs(self, slot):
+        return [*super().get_local_shard_specs(slot), self.padding]
+
+    def export_adapter_state(self, slot):
+        state = FakeMembers().export_adapter_state(slot)
+        rows = torch.full(self.padding.local_shape, 7.0)
+        return AdapterState(
+            [*state.shard_specs, self.padding],
+            [*state.weights, rows],
+            [*state.exp_avgs, rows * 2],
+            [*state.exp_avg_sqs, rows * 3],
+            step=5,
+        )
+
+
+def test_vocab_padding_resumes_exactly_and_is_zero_for_any_other_run(tmp_path):
+    written = save_adapter_dir(tmp_path, "w", VocabPaddingMembers(), 0, RUN, tenant_digest=None)
+    resumed = VocabPaddingMembers()
+    load_adapter_dir(written.path, resumed, 0, RUN, TARGETS, load_optimizer=True)
+    assert torch.equal(resumed.imported.weights[-1], torch.full((2, 2), 7.0))
+    assert torch.equal(resumed.imported.exp_avgs[-1], torch.full((2, 2), 14.0))
+    # a run padding to another size starts its padding at zero; one without padding ignores the source's
+    repadded = VocabPaddingMembers(padding_rows=3)
+    load_adapter_dir(written.path, repadded, 0, RUN, TARGETS, load_optimizer=True)
+    assert not repadded.imported.weights[-1].any() and not repadded.imported.exp_avgs[-1].any()
+    unpadded = FakeMembers()
+    load_adapter_dir(written.path, unpadded, 0, RUN, TARGETS, load_optimizer=True)
+    assert len(unpadded.imported.weights) == 2
+
+
 def test_a_backend_state_that_does_not_match_the_parametrization_is_refused_at_save(tmp_path):
     with pytest.raises(RuntimeError, match="unexpected .*k_proj"):
         save_adapter_dir(tmp_path, "w", ExtraKeyMembers(), 0, RUN, tenant_digest=None)
     assert resolve_adapter_dir(tmp_path, "w", tenant=None) is None
+
+
+def test_a_backend_state_that_does_not_match_the_parametrization_is_refused_at_external_export(tmp_path):
+    with pytest.raises(RuntimeError, match="unexpected .*k_proj"):
+        write_external_export(tmp_path, "w", ExtraKeyMembers(), 0, RUN, TARGETS, tenant_digest=None, lora_dropout=0.0)
 
 
 def _refused_by_an_in_model_loader(path):
@@ -240,7 +311,9 @@ def _every_rank_refuses_the_same_source(rank, world_size, port, *, root):
             RUN,
             TARGETS,
             load_optimizer=True,
-            in_model_loaders_by_kind={AdapterSourceKind.TORCHTITAN_CHECKPOINT: _refused_by_an_in_model_loader},
+            in_model_loaders_by_kind={
+                AdapterSourceKind.TORCHTITAN_CHECKPOINT: InModelLoaderStub(_refused_by_an_in_model_loader)
+            },
         )
     assert str(refused.value) == "adapter checkpoint failed: rank 0,1,2: ValueError: base mismatch"
     dist.destroy_process_group()
@@ -263,11 +336,102 @@ def _one_rank_cannot_read(rank, world_size, port, *, root):
 
 
 def test_a_load_failure_on_one_rank_fails_every_rank_instead_of_hanging(tmp_path):
-    write_peft_adapter(tmp_path, {f"{MODULE}.{k}": v for k, v in FULL.items()}, RUN, TARGETS)
+    write_peft_adapter(tmp_path, {f"{MODULE}.{k}": v for k, v in FULL.items()}, RUN, TARGETS, lora_dropout=0.0)
     process = (
         __import__("multiprocessing")
         .get_context("spawn")
         .Process(target=run_multiprocess, args=(partial(_one_rank_cannot_read, root=str(tmp_path)),))
+    )
+    process.start()
+    process.join(timeout=60)
+    hung = process.is_alive()
+    process.kill()
+    assert not hung and process.exitcode == 0
+
+
+class OneRankCannotImport(FakeMembers):
+    """Rank 1 fails writing its pieces; finishing the import on any rank would enter a collective."""
+
+    def import_adapter_state(self, slot, state):
+        assert dist.get_rank() != 1, "rank 1 cannot write its pieces"
+        super().import_adapter_state(slot, state)
+
+    def finish_import_adapter_state(self, slot):
+        dist.barrier()
+        super().finish_import_adapter_state(slot)
+
+
+def _one_rank_cannot_import(rank, world_size, port, *, root):
+    init_gloo(rank, world_size, port=port)
+    init_gloo_group()
+    members = OneRankCannotImport()
+    with pytest.raises(RuntimeError, match="adapter checkpoint failed: rank 1: AssertionError: rank 1 cannot write"):
+        load_adapter_dir(Path(root), members, 0, RUN, TARGETS, load_optimizer=False)
+    assert not members.finished, "no rank finishes an import another rank could not write"
+    dist.destroy_process_group()
+
+
+def test_a_rank_local_import_failure_fails_every_rank_before_the_import_collectives(tmp_path):
+    write_peft_adapter(tmp_path, {f"{MODULE}.{k}": v for k, v in FULL.items()}, RUN, TARGETS, lora_dropout=0.0)
+    process = (
+        __import__("multiprocessing")
+        .get_context("spawn")
+        .Process(target=run_multiprocess, args=(partial(_one_rank_cannot_import, root=str(tmp_path)),))
+    )
+    process.start()
+    process.join(timeout=60)
+    hung = process.is_alive()
+    process.kill()
+    assert not hung and process.exitcode == 0
+
+
+def test_an_import_is_finished_after_its_pieces_are_written(tmp_path):
+    write_peft_adapter(tmp_path, {f"{MODULE}.{k}": v for k, v in FULL.items()}, RUN, TARGETS, lora_dropout=0.0)
+    members = FakeMembers()
+    load_adapter_dir(tmp_path, members, 0, RUN, TARGETS, load_optimizer=False)
+    assert members.imported is not None and members.finished
+
+
+class OneRankCannotPrepare(InModelLoaderStub):
+    """Rank 1 fails reading its part of the source; applying it on any rank would enter a collective."""
+
+    def prepare(self, path):
+        assert dist.get_rank() != 1, "rank 1 has no shard"
+        return path
+
+    def apply(self, prepared):
+        dist.barrier()
+        super().apply(prepared)
+
+
+def _one_rank_cannot_prepare_an_in_model_source(rank, world_size, port, *, root):
+    init_gloo(rank, world_size, port=port)
+    init_gloo_group()
+    loader = OneRankCannotPrepare(RUN)
+    with pytest.raises(RuntimeError, match="adapter checkpoint failed: rank 1: AssertionError: rank 1 has no shard"):
+        load_adapter_dir(
+            Path(root),
+            FakeMembers(),
+            0,
+            RUN,
+            TARGETS,
+            load_optimizer=False,
+            in_model_loaders_by_kind={AdapterSourceKind.TORCHTITAN_CHECKPOINT: loader},
+        )
+    assert loader.loaded == [], "no rank applies a source another rank could not prepare"
+    dist.destroy_process_group()
+
+
+def test_a_rank_local_failure_of_an_in_model_source_fails_every_rank_before_its_collectives(tmp_path):
+    torch.distributed.checkpoint.save(
+        {"model.layers.0.attention.wq.lora_a.weight": torch.zeros(2)}, checkpoint_id=tmp_path, no_dist=True
+    )
+    process = (
+        __import__("multiprocessing")
+        .get_context("spawn")
+        .Process(
+            target=run_multiprocess, args=(partial(_one_rank_cannot_prepare_an_in_model_source, root=str(tmp_path)),)
+        )
     )
     process.start()
     process.join(timeout=60)
@@ -281,6 +445,7 @@ def test_an_in_model_source_with_another_parametrization_is_refused(tmp_path):
         {"model.layers.0.attention.wq.lora_a.weight": torch.zeros(2)}, checkpoint_id=tmp_path, no_dist=True
     )
     shared = replace(RUN, target_modules=(MODULE, "m.k_proj"), shared_lora_a_groups=((MODULE, "m.k_proj"),))
+    loader = InModelLoaderStub(shared)
     with pytest.raises(RuntimeError, match="cannot do"):
         load_adapter_dir(
             tmp_path,
@@ -289,8 +454,76 @@ def test_an_in_model_source_with_another_parametrization_is_refused(tmp_path):
             replace(shared, shared_lora_a_groups=()),
             TARGETS,
             load_optimizer=False,
-            in_model_loaders_by_kind={AdapterSourceKind.TORCHTITAN_CHECKPOINT: lambda path: shared},
+            in_model_loaders_by_kind={AdapterSourceKind.TORCHTITAN_CHECKPOINT: loader},
         )
+    assert loader.loaded == [], "a refused source must not touch the model"
+
+
+def test_an_in_model_source_is_loaded_only_after_its_parametrization_is_accepted(tmp_path):
+    torch.distributed.checkpoint.save(
+        {"model.layers.0.attention.wq.lora_a.weight": torch.zeros(2)}, checkpoint_id=tmp_path, no_dist=True
+    )
+    refused = InModelLoaderStub(replace(RUN, lora_rank=RUN.lora_rank + 1))
+    with pytest.raises(RuntimeError, match="adapter rank"):
+        load_adapter_dir(
+            tmp_path,
+            FakeMembers(),
+            0,
+            RUN,
+            TARGETS,
+            load_optimizer=False,
+            in_model_loaders_by_kind={AdapterSourceKind.TORCHTITAN_CHECKPOINT: refused},
+        )
+    assert refused.loaded == [], "a refused source must not touch the model"
+    accepted = InModelLoaderStub(RUN)
+    load_adapter_dir(
+        tmp_path,
+        FakeMembers(),
+        0,
+        RUN,
+        TARGETS,
+        load_optimizer=False,
+        in_model_loaders_by_kind={AdapterSourceKind.TORCHTITAN_CHECKPOINT: accepted},
+    )
+    assert accepted.loaded == [tmp_path]
+
+
+def test_an_in_model_source_without_optimizer_state_is_refused_when_loading_it(tmp_path):
+    torch.distributed.checkpoint.save(
+        {"model.layers.0.attention.wq.lora_a.weight": torch.zeros(2)}, checkpoint_id=tmp_path, no_dist=True
+    )
+    loader = InModelLoaderStub(RUN, has_optimizer_state=False)
+    with pytest.raises(RuntimeError, match="no optimizer state"):
+        load_adapter_dir(
+            tmp_path,
+            FakeMembers(),
+            0,
+            RUN,
+            TARGETS,
+            load_optimizer=True,
+            in_model_loaders_by_kind={AdapterSourceKind.TORCHTITAN_CHECKPOINT: loader},
+        )
+    assert loader.loaded == [], "a refused source must not touch the model"
+    load_adapter_dir(
+        tmp_path,
+        FakeMembers(),
+        0,
+        RUN,
+        TARGETS,
+        load_optimizer=False,
+        in_model_loaders_by_kind={AdapterSourceKind.TORCHTITAN_CHECKPOINT: loader},
+    )
+    assert loader.loaded == [tmp_path]
+
+
+def test_a_refused_source_is_reported_as_a_source_error(tmp_path):
+    written = save_adapter_dir(tmp_path, "w", FakeMembers(), 0, RUN, tenant_digest=None)
+    with pytest.raises(RuntimeError, match="adapter rank 2 != run rank 4") as refused:
+        load_adapter_dir(written.path, FakeMembers(), 0, replace(RUN, lora_rank=4), TARGETS, load_optimizer=False)
+    assert isinstance(refused.value.__cause__, AdapterSourceError)
+    with pytest.raises(RuntimeError) as unrecognized:
+        load_adapter_dir(tmp_path, FakeMembers(), 0, RUN, TARGETS, load_optimizer=False)
+    assert isinstance(unrecognized.value.__cause__, AdapterSourceError)
 
 
 class NoPrimaryAMembers(FakeMembers):
@@ -328,7 +561,7 @@ def _specs_fail_on_one_rank(rank, world_size, port, *, root):
 
 
 def test_a_shard_spec_failure_on_one_rank_fails_every_rank(tmp_path):
-    write_peft_adapter(tmp_path, {f"{MODULE}.{k}": v for k, v in FULL.items()}, RUN, TARGETS)
+    write_peft_adapter(tmp_path, {f"{MODULE}.{k}": v for k, v in FULL.items()}, RUN, TARGETS, lora_dropout=0.0)
     process = (
         __import__("multiprocessing")
         .get_context("spawn")
@@ -357,6 +590,60 @@ class PaddedRankMembers(FakeMembers):
 def test_a_padded_rank_is_refused_at_save(tmp_path):
     with pytest.raises(RuntimeError, match="rank 3 != 2"):
         save_adapter_dir(tmp_path, "w", PaddedRankMembers(), 0, RUN, tenant_digest=None)
+
+
+def _export_external(rank, world_size, port, *, root):
+    init_gloo(rank, world_size, port=port)
+    init_gloo_group()
+    written = write_external_export(
+        Path(root), "x", FakeMembers(scale=1 / 3), 0, RUN, TARGETS, tenant_digest=None, lora_dropout=0.0
+    )
+    if rank == 0:
+        commit_adapter_dir(Path(root), "x", written, overwrite=False)
+    dist.destroy_process_group()
+
+
+def test_the_external_export_is_the_fp32_masters_gathered_across_ranks():
+    """Not the bf16 weights upcast: values bf16 cannot hold come out bitwise."""
+    root = tempfile.mkdtemp()
+    run_multiprocess(partial(_export_external, root=root))
+    committed = resolve_adapter_dir(Path(root), "x", tenant=None)
+    exported = ExternalWeightsReader(committed.path, RUN, TARGETS).read_weights()
+    for factor, full in FULL.items():
+        master = full * (1 / 3)
+        assert not torch.equal(master, master.bfloat16().float()), "the masters must not be bf16-exact"
+        assert torch.equal(exported[f"{MODULE}.{factor}"], master)
+
+
+class DataParallelMembers(FakeMembers):
+    """Two data-parallel replicas of a two-way row split: ranks 2 and 3 hold non-primary copies of ranks 0 and 1."""
+
+    def get_local_shard_specs(self, slot):
+        replica, rows = self.rank // 2, 2
+        return [
+            LocalShardSpec(f"{MODULE}.lora_A", (2, 6), (0, 0), (2, 6), is_primary=self.rank == 0),
+            LocalShardSpec(f"{MODULE}.lora_B", (4, 2), (self.rank % 2 * rows, 0), (rows, 2), is_primary=replica == 0),
+        ]
+
+
+def _export_external_with_replicas(rank, world_size, port, *, root):
+    init_gloo(rank, world_size, port=port)
+    init_gloo_group()
+    written = write_external_export(
+        Path(root), "x", DataParallelMembers(), 0, RUN, TARGETS, tenant_digest=None, lora_dropout=0.0
+    )
+    if rank == 0:
+        commit_adapter_dir(Path(root), "x", written, overwrite=False)
+    dist.destroy_process_group()
+
+
+def test_the_external_export_takes_each_piece_from_its_primary_rank_only():
+    root = tempfile.mkdtemp()
+    run_multiprocess(partial(_export_external_with_replicas, root=root), world_size=4)
+    committed = resolve_adapter_dir(Path(root), "x", tenant=None)
+    exported = ExternalWeightsReader(committed.path, RUN, TARGETS).read_weights()
+    for factor, full in FULL.items():
+        assert torch.equal(exported[f"{MODULE}.{factor}"], full)
 
 
 GDN = "model.layers.0.linear_attn"
@@ -401,7 +688,7 @@ def test_peft_export_of_a_fused_gdn_group_writes_one_a_per_exported_module(tmp_p
     ]
     group = tuple(sorted(f"{GDN}.{c}" for c in components))
     run = AdapterParametrization("m", 4, 8.0, "lora", group, False, shared_lora_a_groups=(group,))
-    write_peft_export(tmp_path, members, 0, run, GDN_TARGETS)
+    write_peft_export(tmp_path, members, 0, run, GDN_TARGETS, lora_dropout=0.0)
     tensors = load_file(str(tmp_path / "adapter_model.safetensors"))
     assert set(tensors) == {f"base_model.model.{GDN}.{m}.lora_{f}.weight" for m in modules for f in "AB"}
     for module, b in members.b.items():
@@ -409,11 +696,52 @@ def test_peft_export_of_a_fused_gdn_group_writes_one_a_per_exported_module(tmp_p
         assert torch.equal(tensors[f"base_model.model.{GDN}.{module}.lora_B.weight"], b.to(torch.bfloat16))
 
 
+class CanonicalGdnMembers:
+    """Bridge's canonical export: each GDN in_proj_qkv component under its own name with its own lora_A."""
+
+    bf16_adapter_key_style = "peft"
+
+    def export_bf16_adapter(self, slot):
+        for component, rows in (("in_proj_q", 2), ("in_proj_k", 2), ("in_proj_v", 3)):
+            yield f"{GDN}.{component}.lora_A.weight", torch.randn(4, 6)
+            yield f"{GDN}.{component}.lora_B.weight", torch.randn(rows, 4)
+
+
+def test_peft_export_refuses_canonical_gdn_components(tmp_path):
+    """HF has only the fused in_proj_qkv: components with their own lora_A have no PEFT name, so the export fails."""
+    components = tuple(f"{GDN}.in_proj_{c}" for c in "kqv")
+    run = AdapterParametrization("m", 4, 8.0, "canonical_lora", components, False)
+    with pytest.raises(RuntimeError, match="has no plain-PEFT form; the adapter dir is the checkpoint"):
+        write_peft_export(tmp_path, CanonicalGdnMembers(), 0, run, GDN_TARGETS, lora_dropout=0.0)
+    assert not (tmp_path / "adapter_model.safetensors").exists()
+
+
+class CanonicalGdnSaveMembers(FakeMembers):
+    """A canonical GDN component's own A and B: a checkpoint no PEFT adapter can name."""
+
+    def get_local_shard_specs(self, slot):
+        return [replace(s, key=s.key.replace(MODULE, f"{GDN}.in_proj_q")) for s in super().get_local_shard_specs(slot)]
+
+    def export_bf16_adapter(self, slot):
+        raise AssertionError("a parametrization with no plain-PEFT form gets no PEFT view")
+
+
+def test_a_save_of_a_parametrization_with_no_plain_peft_form_commits_without_a_peft_view(tmp_path):
+    run = AdapterParametrization("m", 2, 4.0, "canonical_lora", (f"{GDN}.in_proj_q",), False)
+    committed = save_and_commit_adapter_dir(
+        tmp_path, "adapter", CanonicalGdnSaveMembers(), 0, run, GDN_TARGETS, lora_dropout=0.0
+    )
+    assert resolve_adapter_dir(tmp_path, "adapter", tenant=None).path == committed.path
+    assert not (committed.path / "adapter_model.safetensors").exists()
+
+
 HEAD_RUN = AdapterParametrization("m", 2, 4.0, "canonical_lora", ("lm_head",), False)
 
 
 class HeadMembers(FakeMembers):
-    """A head whose run holds the 6 served vocab rows of lora_B; Megatron's vocab padding is not in the spec."""
+    """A head that serves 6 rows of a vocab whose HF export has up to 8."""
+
+    head_rows = HeadRows("lm_head.lora_B", max_source_rows=8)
 
     def get_local_shard_specs(self, slot):
         return [
@@ -422,41 +750,63 @@ class HeadMembers(FakeMembers):
         ]
 
 
-def test_a_head_adapter_over_the_hf_vocab_drops_the_rows_past_the_served_vocab(tmp_path):
-    # e.g. a released Inkling adapter: lora_B has HF vocab_size rows, more than the served vocab
-    head_b = torch.arange(8 * 2, dtype=torch.float32).reshape(8, 2)
-    write_peft_adapter(tmp_path, {"lm_head.lora_A": FULL["lora_A"], "lm_head.lora_B": head_b}, HEAD_RUN, TARGETS)
+@pytest.mark.parametrize("rows", [6, 8])
+def test_a_head_source_over_the_served_vocab_loads_the_served_rows(tmp_path, rows):
+    head_b = torch.arange(rows * 2, dtype=torch.float32).reshape(rows, 2)
+    write_peft_adapter(
+        tmp_path, {"lm_head.lora_A": FULL["lora_A"], "lm_head.lora_B": head_b}, HEAD_RUN, TARGETS, lora_dropout=0.0
+    )
     members = HeadMembers()
     load_adapter_dir(tmp_path, members, 0, HEAD_RUN, TARGETS, load_optimizer=False)
     assert torch.equal(members.imported.weights[1], head_b[:6].to(torch.bfloat16).float())
 
 
-def test_a_head_adapter_with_fewer_rows_than_the_served_vocab_is_refused(tmp_path):
-    head_b = torch.ones(5, 2)
-    write_peft_adapter(tmp_path, {"lm_head.lora_A": FULL["lora_A"], "lm_head.lora_B": head_b}, HEAD_RUN, TARGETS)
-    with pytest.raises(RuntimeError, match=r"lm_head.lora_B: source \(5, 2\) != run \(6, 2\)"):
-        load_adapter_dir(tmp_path, HeadMembers(), 0, HEAD_RUN, TARGETS, load_optimizer=False)
-
-
 INKLING = get_hf_lora_targets({"model_type": "inkling_text", "num_hidden_layers": 1, "mlp_layer_types": ["dense"]})
 
 
+# native names Inkling's head by the model's own path, as its probe does
+INKLING_HEAD = "language_model.lm_head"
+INKLING_HEAD_RUN = replace(HEAD_RUN, target_modules=(INKLING_HEAD,))
+
+
+class InklingHeadMembers(FakeMembers):
+    """Native Inkling's head: 6 served rows of a vocab whose released adapters hold 8."""
+
+    head_rows = HeadRows(f"{INKLING_HEAD}.lora_B", max_source_rows=8)
+
+    def get_local_shard_specs(self, slot):
+        return [
+            LocalShardSpec(f"{INKLING_HEAD}.lora_A", (2, 6), (0, 0), (2, 6)),
+            LocalShardSpec(f"{INKLING_HEAD}.lora_B", (6, 2), (0, 0), (6, 2)),
+        ]
+
+
 def _write_inkling_head_adapter(path):
-    weights = {"lm_head.lora_A": torch.full((2, 6), 3.0), "lm_head.lora_B": torch.full((8, 2), 7.0)}
-    write_peft_adapter(path, weights, HEAD_RUN, INKLING)
+    weights = {f"{INKLING_HEAD}.lora_A": torch.full((2, 6), 3.0), f"{INKLING_HEAD}.lora_B": torch.full((8, 2), 7.0)}
+    write_peft_adapter(path, weights, INKLING_HEAD_RUN, INKLING, lora_dropout=0.0)
 
 
 def test_a_native_warm_start_loads_an_inkling_head_peft_dir(tmp_path):
     _write_inkling_head_adapter(tmp_path)
-    members = HeadMembers()
-    load_adapter_dir(tmp_path, members, 0, HEAD_RUN, INKLING, load_optimizer=False)
+    members = InklingHeadMembers()
+    load_adapter_dir(tmp_path, members, 0, INKLING_HEAD_RUN, INKLING, load_optimizer=False)
     assert torch.equal(members.imported.weights[0], torch.full((2, 6), 3.0))
     assert torch.equal(members.imported.weights[1], torch.full((6, 2), 7.0))
 
 
 def test_a_peft_dir_without_adapter_config_is_refused_with_a_remedy(tmp_path):
-    # main's native loader read such a dir under the run's parametrization; the config is what the load checks
+    # the load checks the adapter's rank, alpha and targets against the run from adapter_config.json
     _write_inkling_head_adapter(tmp_path)
     (tmp_path / "adapter_config.json").unlink()
     with pytest.raises(RuntimeError, match="no adapter_config.json.*save_pretrained"):
-        load_adapter_dir(tmp_path, HeadMembers(), 0, HEAD_RUN, INKLING, load_optimizer=False)
+        load_adapter_dir(tmp_path, InklingHeadMembers(), 0, INKLING_HEAD_RUN, INKLING, load_optimizer=False)
+
+
+@pytest.mark.parametrize("rows", [5, 9])
+def test_a_head_source_outside_the_declared_rows_is_refused(tmp_path, rows):
+    head_b = torch.zeros(rows, 2)
+    write_peft_adapter(
+        tmp_path, {"lm_head.lora_A": FULL["lora_A"], "lm_head.lora_B": head_b}, HEAD_RUN, TARGETS, lora_dropout=0.0
+    )
+    with pytest.raises(RuntimeError, match=f"lm_head.lora_B: the source has {rows} rows; this run serves 6"):
+        load_adapter_dir(tmp_path, HeadMembers(), 0, HEAD_RUN, TARGETS, load_optimizer=False)

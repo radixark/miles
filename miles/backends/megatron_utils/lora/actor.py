@@ -5,7 +5,7 @@ from miles.backends.megatron_utils.actor import MegatronTrainRayActor
 from miles.backends.megatron_utils.lora import checkpoint as lora_checkpoint
 from miles.backends.megatron_utils.lora import model as lora_model
 from miles.backends.megatron_utils.lora.optimizer import SlotOptimizer
-from miles.backends.training_utils.checkpoint.adapter.adapter_dir import write_sampler_export
+from miles.backends.training_utils.checkpoint.adapter.adapter_dir import write_external_export, write_sampler_export
 from miles.backends.training_utils.checkpoint.adapter.commit import UncommittedAdapterDir
 from miles.backends.training_utils.data.rollout import get_rollout_data
 from miles.backends.training_utils.parallel import get_parallel_state
@@ -58,39 +58,35 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
         return result
 
     @with_logs
-    def load_slot(
-        self,
-        slot: int,
-        rank: int,
-        alpha: float,
-        ckpt_path: str | None = None,
-        load_optimizer: bool = True,
-        parametrization_fields: dict | None = None,
-    ) -> dict | None:
-        """A source the slot cannot take is refused before the slot changes, as a user error."""
-        if ckpt_path is not None:
+    def load_slot(self, slot: int, rank: int, alpha: float, source: dict | None = None) -> dict | None:
+        """``source``: ``path``, ``load_optimizer`` and the source's ``parametrization_fields``; None starts the slot
+        fresh. A source the slot cannot take is refused before the slot changes, as a user error."""
+        if source is not None:
+            parametrization = self.adapter_slots.parametrization(**source["parametrization_fields"])
             mismatch = lora_checkpoint.find_load_mismatch(
                 self.model,
                 slot,
-                ckpt_path,
-                self.adapter_slots.parametrization(**parametrization_fields),
+                source["path"],
+                parametrization,
                 self.adapter_slots.targets,
-                load_optimizer,
+                source["load_optimizer"],
+                run_shapes=self.adapter_slots.global_shapes(rank),
+                head_rows=self.adapter_slots.head_rows,
             )
             if mismatch is not None:
                 return {"error": mismatch, "error_category": "user"}
             # load_state lands in the slot create_model claimed; it is claimed again at the source's alpha
             lora_model.unload_slot(self.adapter_slots, self.slot_optimizers.pop(slot))
         self.slot_optimizers[slot] = lora_model.load_slot(self.args, self.model, self.adapter_slots, slot, rank, alpha)
-        if ckpt_path is not None:
+        if source is not None:
             lora_checkpoint.load_slot(
                 self.model,
                 self._checkpoint_members(),
                 self.slot_optimizers[slot],
-                ckpt_path,
-                self.adapter_slots.parametrization(**parametrization_fields),
+                source["path"],
+                parametrization,
                 self.adapter_slots.targets,
-                load_optimizer,
+                source["load_optimizer"],
             )
         return None
 
@@ -122,13 +118,42 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
             slot
         ), "the gateway and the slot disagree on rank"
         return write_sampler_export(
+            root=Path(root),
+            name=name,
+            members=self.adapter_slots,
+            slot=slot,
+            parametrization=parametrization,
+            targets=self.adapter_slots.targets,
+            tenant_digest=tenant_digest,
+            lora_dropout=self.args.lora_dropout,
+        )
+
+    @with_logs
+    def export_external_slot(
+        self,
+        slot: int,
+        root: str,
+        name: str,
+        tenant_digest: str,
+        parametrization_fields: dict,
+        age_recipients: list[str],
+    ) -> UncommittedAdapterDir:
+        """Write the slot's official Tinker export under ``root``, uncommitted; the gateway commits it."""
+        self._heartbeat.bump()
+        parametrization = self.adapter_slots.parametrization(**parametrization_fields)
+        assert parametrization.lora_rank == self.adapter_slots.lora_rank(
+            slot
+        ), "the gateway and the slot disagree on rank"
+        return write_external_export(
             Path(root),
             name,
-            self.adapter_slots,
+            self._checkpoint_members(),
             slot,
             parametrization,
             self.adapter_slots.targets,
             tenant_digest=tenant_digest,
+            age_recipients=age_recipients,
+            lora_dropout=self.args.lora_dropout,
         )
 
     @with_logs

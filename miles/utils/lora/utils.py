@@ -1,4 +1,5 @@
 import json
+import os
 from argparse import Namespace
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
@@ -22,13 +23,17 @@ def is_lora_enabled(args: Namespace) -> bool:
     return args.lora_rank > 0 or args.lora_adapter_path is not None
 
 
-def publishes_snapshots(args: Namespace, save: str | None) -> bool:
-    """The trainer publishes HF snapshots: --save-hf, eval snapshots, and a LoRA --save (``save``, which the
-    trainer config holds under ``backend``)."""
+def exports_hf_snapshots(args: Namespace) -> bool:
+    """The trainer writes HF snapshots: --save-hf and eval snapshots."""
+    return args.save_hf is not None or (args.eval_uses_snapshots and args.eval_hf_dir is not None)
+
+
+def reads_adapter_slots(args: Namespace, save: str | None) -> bool:
+    """HF exports, multi-LoRA sampler exports or a single-LoRA adapter dir (save, --lora-adapter-path) read slots."""
     return (
-        args.save_hf is not None
-        or (args.eval_uses_snapshots and args.eval_hf_dir is not None)
-        or (is_lora_enabled(args) and save is not None)
+        exports_hf_snapshots(args)
+        or is_multi_lora_enabled(args)
+        or (is_lora_enabled(args) and (save is not None or args.lora_adapter_path is not None))
     )
 
 
@@ -72,7 +77,10 @@ def save_adapter_to_disk(out_dir, config: dict, tensors: dict) -> None:
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     (out / "adapter_config.json").write_text(json.dumps(config, indent=2))
-    safetensors.torch.save_file(tensors, str(out / "adapter_model.safetensors"))
+    # engines may read the dir while it is written (an RL --save exports into its committed dir): never a partial file
+    partial = out / "adapter_model.safetensors.partial"
+    safetensors.torch.save_file(tensors, str(partial))
+    os.replace(partial, out / "adapter_model.safetensors")
 
 
 def build_lora_config(args, *, target_modules):

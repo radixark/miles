@@ -140,6 +140,17 @@ def test_a_rank_without_parameters_agrees_on_the_step():
     assert _load_adapter_state(Path(directory), _state((0, 6), fill=-1.0, step=None)) == 7
 
 
+def test_a_load_into_the_same_block_twice_is_refused(tmp_path):
+    spec = LocalShardSpec("m.lora_B", (2, 2), (0, 0), (2, 2))
+    saved = torch.ones(2, 2)
+    _save_adapter_state(tmp_path, AdapterState([spec], [saved], [saved], [saved], step=1))
+    blocks = [torch.zeros(2, 2), torch.zeros(2, 2)]
+    template = AdapterState([spec, spec], blocks, [b.clone() for b in blocks], [b.clone() for b in blocks], step=None)
+    # the first block would stay unfilled
+    with pytest.raises(RuntimeError, match="several blocks"):
+        _load_adapter_state(tmp_path, template)
+
+
 def _without_gloo_group(rank, world_size, port):
     init_gloo(rank, world_size, port=port)
     with pytest.raises(RuntimeError, match="Gloo group has not been initialized"):

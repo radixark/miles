@@ -8,7 +8,7 @@ import math
 import pydantic
 
 import tinker
-from miles.tinker.core.input_validation import validate_save_options
+from miles.tinker.core.input_validation import validate_save_options, validate_ttl_seconds
 from miles.tinker.core.types import LOSS_INPUT_KEYS, UserInputError
 from tinker import types as tinker_types
 from tinker.types.topk_logprobs import MASK_LOGPROB
@@ -23,6 +23,7 @@ REQUEST_TYPES = {
     "save_state": tinker_types.SaveWeightsRequest,
     "load_state": tinker_types.LoadWeightsRequest,
     "save_weights_for_sampler": tinker_types.SaveWeightsForSamplerRequest,
+    "save_weights_external": tinker_types.SaveWeightsExternalRequest,
 }
 
 
@@ -61,6 +62,27 @@ def validate_plain_adam(field: str, value, adam_type) -> None:
         raise UserInputError(
             f"{field} {value.model_dump()} is not supported: this gateway serves only plain Adam ({adam_type.__name__})"
         )
+
+
+# the SDK's documented limit for age_encryption_recipients
+MAX_AGE_RECIPIENTS = 10
+
+
+def validate_age_recipients(recipients: list[str]) -> None:
+    """Refuse a bad recipient before the export, not after the trainer wrote it."""
+    if len(recipients) > MAX_AGE_RECIPIENTS:
+        raise UserInputError(f"at most {MAX_AGE_RECIPIENTS} age recipients, got {len(recipients)}")
+    if not recipients:
+        return
+    # imported here: only encrypted saves need it, and a gateway image installed with --no-deps may lack it
+    import pyrage
+
+    for recipient in recipients:
+        try:
+            # the trainer's export parses it the same way (adapter_exports.parse_age_recipient)
+            (pyrage.ssh if recipient.startswith("ssh-") else pyrage.x25519).Recipient.from_str(recipient)
+        except pyrage.RecipientError as error:
+            raise UserInputError(f"{recipient!r} is not an age recipient (age1... or ssh-...): {error}") from None
 
 
 def validate_create_model(payload: dict) -> None:
@@ -121,7 +143,7 @@ def _decode_command(op: str, payload: dict, decoded: dict) -> tuple[str, dict]:
         return op, decoded | {"adam_params": request.optim_params.model_dump()}
     if op == "save_state":
         validate_save_options(request.ttl_seconds, request.user_metadata)
-        return op, decoded | {"name": request.path, "overwrite": request.overwrite}
+        return op, decoded | {"name": request.path, "overwrite": request.overwrite, "ttl_seconds": request.ttl_seconds}
     if op == "load_state":
         if request.optimizer_config is not None:
             raise UserInputError(
@@ -134,7 +156,12 @@ def _decode_command(op: str, payload: dict, decoded: dict) -> tuple[str, dict]:
         }
     if op == "save_weights_for_sampler":
         validate_save_options(request.ttl_seconds, request.user_metadata)
-        return op, decoded | {"sampler_path": request.path}
+        return op, decoded | {"sampler_path": request.path, "ttl_seconds": request.ttl_seconds}
+    if op == "save_weights_external":
+        validate_ttl_seconds(request.ttl_seconds)
+        recipients = request.age_encryption_recipients or []
+        validate_age_recipients(recipients)
+        return op, decoded | {"name": request.path, "ttl_seconds": request.ttl_seconds, "age_recipients": recipients}
     raise AssertionError(f"unhandled command op {op!r}")
 
 
@@ -257,6 +284,8 @@ def render_result(result: dict) -> dict:
         if "sampling_session_id" in result:
             rendered["sampling_session_id"] = result["sampling_session_id"]
         return rendered
+    if op == "save_weights_external":
+        return {"type": "save_weights_external", "path": result["path"], "size_bytes": result["size_bytes"]}
     if op == "load_state":
         return {"type": "load_weights"}
     if op == "optim_step":

@@ -166,6 +166,10 @@ RUN cd /sgl-workspace/sglang && \
 # SGLang is installed without dependencies, but its Inkling multimodal processor imports numba.
 RUN pip install "numba==0.65.1"
 
+# SGLang pins openai==2.8.0 and imports response types the base image's 2.6.1 lacks
+# (ResponseFunctionShellToolCall); requirements.txt leaves openai unpinned, so it would keep 2.6.1.
+RUN pip install "openai==2.8.0"
+
 RUN pip install uv
 
 RUN python -c "import sglang; import sgl_kernel; print('SGLang + sgl_kernel: OK')"

@@ -139,12 +139,18 @@ cookbook only requires `tinker>=0.35`, so install the SDK pin explicitly. It sup
   [Context window](/examples/multi-lora#context-window)). Outputs are sampled
   tokens with their logprobs, `prompt_logprobs`, and `topk_prompt_logprobs`.
 
-Checkpoint download (`save_weights_external`, `get_external_weights_urls`) is not
-served.
+- Checkpoints: `ttl_seconds` on every save, `set_checkpoint_ttl`, and
+  `delete_checkpoint`. Expired checkpoints are deleted by the gateway.
+- Download: `save_weights_external` (the official Tinker format, F32 from the
+  trainer's fp32 masters, optionally age-encrypted to `age1...` or `ssh-...`
+  recipients) and `get_external_weights_urls`, whose URLs carry no credential,
+  last at most an hour, and stop working once the checkpoint is deleted or the
+  gateway restarts (sign them again). Behind a TLS or path-prefix ingress, set
+  `--tinker-public-url` to the URL clients reach; by default URLs use the one
+  each request arrived at.
 
-Cookbook recipes default to a 7-day checkpoint TTL, which the gateway does not
-serve; pass `ttl_seconds=None`. `rl_loop` also defaults to the `stable_reinforce`
-loss; pass `loss_fn="importance_sampling"` (or `"cispo"`).
+`rl_loop` defaults to the `stable_reinforce` loss; pass
+`loss_fn="importance_sampling"` (or `"cispo"`).
 
 Futures, model leases, and request deduplication live in gateway memory and do
 not survive a restart; saved checkpoints do.
