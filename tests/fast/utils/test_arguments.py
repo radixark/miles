@@ -4176,3 +4176,22 @@ class TestLoRATypeResolution:
         args = self._parse(tmp_path, ["--megatron-to-hf-mode", "raw", "--lora-type", "lora"])
         with pytest.raises(AssertionError, match="--lora-type lora shares one lora_A"):
             validate_lora_args_after_megatron(args)
+
+
+class TestMilesExtKernelsPinsReport:
+    @pytest.mark.parametrize("use_miles_ext_kernels", [True, False])
+    def test_validation_logs_the_pins_report_only_for_ext_kernel_runs(
+        self, use_miles_ext_kernels: bool, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The report records which commit each pinned op ran, so it stays wired into the startup checks."""
+        import miles_ext_kernels
+
+        reports = []
+        monkeypatch.setattr(miles_ext_kernels, "validate_args", lambda args: None)
+        monkeypatch.setattr("miles.utils.arguments.log_miles_ext_kernels_pins", lambda: reports.append(True))
+        args = get_megatron_arg_parser().parse_args(["--num-rollout", "1"] + REQUIRED_ARGS)
+        args.use_miles_ext_kernels = use_miles_ext_kernels
+
+        miles_validate_args(args)
+
+        assert len(reports) == int(use_miles_ext_kernels)
