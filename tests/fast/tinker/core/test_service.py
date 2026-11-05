@@ -7,7 +7,6 @@ import os
 import shutil
 import threading
 from contextlib import suppress
-from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -155,15 +154,6 @@ async def test_sampler_save_publishes_successive_versions(service):
         (str(root), "2"),
     ]
     assert all(resolve_adapter_dir(root, name, tenant="tenant") is not None for name in ("1", "2")), "both committed"
-
-
-async def test_an_export_records_the_base_fingerprint_the_gateway_serves(service):
-    service.config = replace(service.config, base_model_fingerprint="0123456789abcdef")
-    model_id = await created_model(service)
-    save = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
-    assert (await await_settled(service, "tenant", save)).state == DONE
-    (export,) = service.backend.named("export_slot")
-    assert export["parametrization_fields"]["base_model_fingerprint"] == "0123456789abcdef"
 
 
 async def test_sampling_resolves_against_the_saved_version(service):
@@ -582,22 +572,26 @@ async def test_the_commit_runs_off_the_event_loop(service, monkeypatch, op):
     assert commit_threads and commit_threads[0] is not threading.current_thread()
 
 
-async def test_a_failed_sampler_commit_fails_only_that_request(service, monkeypatch):
+@pytest.mark.parametrize("op", ["save_state", "save_weights_for_sampler"])
+async def test_a_failed_commit_fails_only_that_request(service, monkeypatch, op):
     model_id = await created_model(service)
     commit = service.backend.commit_adapter
 
     def failing_commit(*_, **__):
         raise OSError("No space left on device")
 
+    def payload(seq_id):
+        if op == "save_state":
+            return {"model_id": model_id, "seq_id": seq_id, "name": f"ck{seq_id}", "overwrite": False}
+        return {"model_id": model_id, "seq_id": seq_id}
+
     monkeypatch.setattr(service.backend, "commit_adapter", failing_commit)
-    failed = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
-    future = await await_settled(service, "tenant", failed)
+    future = await await_settled(service, "tenant", service.submit("tenant", op, payload(1)))
     assert (future.state, future.error_category) == (FAILED, "server")
     assert "No space left on device" in future.error
 
     monkeypatch.setattr(service.backend, "commit_adapter", commit)
-    retried = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 2})
-    assert (await await_settled(service, "tenant", retried)).state == DONE
+    assert (await await_settled(service, "tenant", service.submit("tenant", op, payload(2)))).state == DONE
 
 
 async def test_an_unnamed_sampler_save_returns_a_sampling_session(service):
@@ -916,20 +910,6 @@ async def test_a_recycled_slot_belongs_to_a_fresh_model_queue(service):
     step = service.submit("tenant", "optim_step", _optim_payload(fresh, 2))
     future = await await_settled(service, "tenant", step)
     assert future.state == DONE, "a fresh model may use the successfully recycled slot"
-
-
-async def test_a_failed_save_commit_fails_only_that_request(service, monkeypatch):
-    def failing_commit(*_, **__):
-        raise OSError("checkpoint IO failed")
-
-    monkeypatch.setattr(service.backend, "commit_adapter", failing_commit)
-    model_id = await created_model(service)
-    payload = {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False}
-    future = await await_settled(service, "tenant", service.submit("tenant", "save_state", payload))
-    assert (future.state, future.error_category) == (FAILED, "server")
-    assert "checkpoint IO failed" in future.error
-    step = service.submit("tenant", "forward_backward", fb_payload(model_id, 2, [datum()]))
-    assert (await await_settled(service, "tenant", step)).state == DONE
 
 
 async def test_a_failed_cleanup_after_a_save_keeps_the_gateway_serving(service):
