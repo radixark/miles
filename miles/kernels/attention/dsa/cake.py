@@ -7,8 +7,8 @@ CAKE_INDEXER_CONFIG, which call :func:`ops`. A plugin spec that builds DSA layer
 
 The sparse attention runs the variant ``--cake-dsa-variant`` selects: ``det`` (bit-identical forward and backward) or
 ``fast`` (FlashInfer's kernels for 64 local query heads without a sink; any other call runs ``det``). The indexer
-scores are always ``det``. CUDA-only (NVIDIA SM100a / SM103a): only the cake rows of the DSA dispatchers reach it, and
-:func:`setup` rejects other devices when the model is built.
+scores are always ``det``. CUDA-only (NVIDIA SM100a / SM103a / SM107a): only the cake rows of the DSA dispatchers
+reach it, and :func:`setup` rejects other devices when the model is built.
 """
 
 import argparse

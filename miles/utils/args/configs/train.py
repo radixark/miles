@@ -156,8 +156,8 @@ class TrainConfig(BaseConfig):
                 "plugin layers (GLM-5 / DeepSeek-V3.2 and GLM-5.3 with --dsa-impl miles, DeepSeek-V4 / V4.1 with "
                 "--dsv4-impl miles) run their sparse attention and indexer scores on the Cake kernels from the "
                 "miles-ext-kernels submodule (--cake-dsa-variant det or fast; the scores are always det). It "
-                "requires --use-miles-ext-kernels, NVIDIA SM100a/SM103a (Blackwell), the Megatron backend, a "
-                "512-wide latent with a 0 or 64 RoPE tail and 8/16/32/64 indexer heads of dimension 128."
+                "requires --use-miles-ext-kernels, NVIDIA SM100a/SM103a/SM107a (Blackwell, Rubin), the Megatron "
+                "backend, a 512-wide latent with a 0 or 64 RoPE tail and 8/16/32/64 indexer heads of dimension 128."
             ),
         ),
     ] = "tilelang"

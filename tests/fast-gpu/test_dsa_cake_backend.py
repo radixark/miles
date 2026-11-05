@@ -1,4 +1,4 @@
-"""``--dsa-attention-backend cake`` through the miles DSA dispatchers on Blackwell (SM100a / SM103a), one GPU.
+"""``--dsa-attention-backend cake`` through the miles DSA dispatchers on SM100a / SM103a / SM107a, one GPU.
 
 * ``sparse_attention(config=CAKE_SPARSE_ATTENTION_CONFIG)`` vs the default per-arch dispatch at the TP-local shapes of
   the four wired models -- GLM-5 / DeepSeek-V3.2 (thd, RoPE tail), DeepSeek-V4 (bshd batch, FP32 sink), GLM-5.3-Flash
@@ -19,8 +19,8 @@ from tests.ci.ci_register import register_cuda_ci
 
 register_cuda_ci(est_time=1200, suite="stage-c-4-gpu-b200", num_gpus=1, labels=["megatron"], hardware=["blackwell"])
 
-if not torch.cuda.is_available() or torch.cuda.get_device_capability() not in {(10, 0), (10, 3)}:
-    pytest.skip("the Cake DSA kernels target SM100a / SM103a", allow_module_level=True)
+if not torch.cuda.is_available() or torch.cuda.get_device_capability() not in {(10, 0), (10, 3), (10, 7)}:
+    pytest.skip("the Cake DSA kernels target SM100a / SM103a / SM107a", allow_module_level=True)
 
 import miles_ext_kernels.dsa as ext  # noqa: E402
 
