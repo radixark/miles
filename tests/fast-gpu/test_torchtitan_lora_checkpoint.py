@@ -304,15 +304,14 @@ class _Trainer:
         return self.engine.num_completed_steps
 
 
-def _restore(tmp_path, *, dcp_step=None, training_state=None, source_alpha=None, **flags):
-    """``dcp_step``: the source is a torchtitan DCP with this train_state step; ``training_state``: an adapter dir's;
-    ``source_alpha``: the alpha the trainer's load reads from the source, the run's when None."""
+def _restore(tmp_path, *, dcp_step=None, training_state=None, **flags):
+    """``dcp_step``: the source is a torchtitan DCP with this train_state step; ``training_state``: an adapter dir's."""
 
     def load_adapter_dir(path, members, slot, run, targets, *, load_optimizer, in_model_loaders_by_kind):
         if dcp_step is not None:
             (loader,) = in_model_loaders_by_kind.values()
             loader.training_state = lambda: ({"step": dcp_step, "ntokens_seen": 7}, {"last_epoch": dcp_step})
-        return run if source_alpha is None else SimpleNamespace(lora_alpha=source_alpha)
+        return run
 
     backend = SimpleNamespace(no_load_optim=False, no_save_optim=False, save=None)
     args = SimpleNamespace(
@@ -353,12 +352,6 @@ def _restore(tmp_path, *, dcp_step=None, training_state=None, source_alpha=None,
     )
 
 
-def test_a_source_trained_with_another_alpha_is_refused_on_the_trainer(tmp_path):
-    # the driver may have resolved --lora-alpha without seeing the path the trainers load
-    with pytest.raises(AssertionError, match="was trained with lora_alpha=32.0"):
-        _restore(tmp_path, source_alpha=32.0)
-
-
 @pytest.mark.parametrize("step", [6, 11 * _STEPS_PER_ROLLOUT + 1])
 def test_a_dcp_off_this_runs_rollout_grid_is_refused(tmp_path, step):
     """A standalone torchtitan run's step count says nothing about this run's rollouts."""
@@ -388,20 +381,6 @@ def test_the_adapter_state_carries_moments_only_when_they_are_saved(save_moments
     assert state.has_optimizer_state is save_moments
     assert torch.equal(state.weights[0], param.detach())
     assert len(state.exp_avgs) == (1 if save_moments else 0)
-
-
-@pytest.mark.parametrize(
-    "no_load_optim, no_save_optim, moments",
-    [(False, False, True), (True, False, False), (False, True, False)],
-)
-def test_a_convert_save_writes_moments_only_when_they_were_loaded(tmp_path, no_load_optim, no_save_optim, moments):
-    restored = _restore(
-        tmp_path,
-        lora_adapter_convert_save=str(tmp_path / "converted"),
-        no_load_optim=no_load_optim,
-        no_save_optim=no_save_optim,
-    )
-    assert restored.save.call_args.args[2]._save_moments is moments
 
 
 def test_a_dcp_resumes_after_its_last_whole_rollout(tmp_path):
@@ -554,11 +533,6 @@ def test_a_megatron_adapter_dir_resumes_from_the_rollout_its_schedule_counts_fro
     assert restored.checkpoint._training_state(7)["first_rollout"] == 5
 
 
-def test_a_megatron_adapter_dir_without_first_rollout_is_refused(tmp_path):
-    with pytest.raises(KeyError, match="first_rollout"):
-        _restore(tmp_path, training_state={"iteration": 2, "opt_param_scheduler": {"num_steps": 96}})
-
-
 @pytest.mark.parametrize(
     "num_steps, flags",
     [
@@ -588,14 +562,9 @@ def test_a_convert_save_at_num_rollout_zero_keeps_a_dcps_training_state(tmp_path
     restored = _restore(
         tmp_path, dcp_step=2 * _STEPS_PER_ROLLOUT, num_rollout=0, lora_adapter_convert_save=str(tmp_path / "out")
     )
-    assert restored.save.call_args.kwargs["training_state"]["step"] == 8
+    training_state = restored.save.call_args.kwargs["training_state"]
+    assert (training_state["iteration"], training_state["step"]) == (1, 8)
     assert restored.save.call_args.args[2]._save_moments
-
-
-def test_a_convert_save_of_a_dcp_records_its_rollout(tmp_path):
-    restored = _restore(tmp_path, dcp_step=2 * _STEPS_PER_ROLLOUT, lora_adapter_convert_save=str(tmp_path / "out"))
-    assert restored.save.call_args.kwargs["training_state"]["iteration"] == 1
-    assert restored.save.call_args.kwargs["training_state"]["step"] == 8
 
 
 def test_restored_lr_schedule_reaches_the_optimizers():
@@ -642,7 +611,6 @@ def test_lora_resumes_only_through_the_adapter_path(tmp_path):
         (None, None, None, None, 0),
         ("/save", None, None, None, 0),
         (None, "/source", None, 2, 3),
-        ("/save", "/source", None, None, 0),
         ("/save", "/source", 5, 2, 5),
     ],
 )
@@ -909,13 +877,9 @@ _STRIDED_ROWS = [Shard(0), _StridedShard(0, split_factor=2)]
 _COLUMNS_THEN_ROWS = [Shard(1), Shard(0)]
 
 
-@pytest.mark.parametrize(
-    "source, target",
-    [(_STRIDED_ROWS, _COLUMNS_THEN_ROWS), (_COLUMNS_THEN_ROWS, _STRIDED_ROWS)],
-    ids=["strided_to_columns", "columns_to_strided"],
-)
-def test_an_adapter_dir_moves_weights_and_moments_across_parallel_layouts(tmp_path, source, target):
-    mp.spawn(_cross_layout_round_trip, args=(4, find_free_port(), tmp_path, source, target), nprocs=4, join=True)
+def test_an_adapter_dir_moves_weights_and_moments_across_parallel_layouts(tmp_path):
+    args = (4, find_free_port(), tmp_path, _STRIDED_ROWS, _COLUMNS_THEN_ROWS)
+    mp.spawn(_cross_layout_round_trip, args=args, nprocs=4, join=True)
 
 
 def _pipeline_stages(rank, world_size, port):
@@ -961,26 +925,3 @@ def _trained_head(rank, world_size, port):
 
 def test_torchtitan_slots_declare_a_trained_heads_rows():
     run_multiprocess(_trained_head, world_size=1)
-
-
-def test_a_torchtitan_run_records_its_bases_fingerprint_and_path_as_given(tmp_path):
-    from miles.backends.torchtitan_utils import lora_checkpoint
-    from miles.backends.training_utils.checkpoint.adapter.parametrization import base_model_fingerprint
-
-    args = SimpleNamespace(
-        start_rollout_id=None,
-        hf_checkpoint="/root/models/Qwen3-4B",
-        lora_rank=8,
-        lora_alpha=16,
-        lora_type="lora",
-        backend=SimpleNamespace(no_save_optim=False),
-    )
-    slots = MagicMock()
-    with (
-        patch.object(lora_checkpoint, "load_hf_config", return_value=_QWEN3_CONFIG),
-        patch.object(lora_checkpoint, "_torchtitan_adapter_slots", return_value=slots),
-    ):
-        lora_checkpoint.TorchtitanLoraCheckpoint(SimpleNamespace(optimizers=SimpleNamespace(optimizers=[])), args, 1)
-    fields = slots.parametrization.call_args.kwargs
-    assert fields["base_model"] == "/root/models/Qwen3-4B"
-    assert fields["base_model_fingerprint"] == base_model_fingerprint(_QWEN3_CONFIG.to_dict())

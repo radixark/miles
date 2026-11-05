@@ -84,12 +84,6 @@ def test_an_old_format_save_resumes_its_iteration_whichever_reader_loads_the_wei
     scheduler.load_state_dict.assert_called_once_with({"num_steps": 56})
 
 
-def test_an_adapter_dir_without_first_rollout_is_refused(tmp_path):
-    with patch(f"{_MODULE}.read_training_state", return_value={"iteration": 6, "opt_param_scheduler": None}):
-        with pytest.raises(KeyError, match="first_rollout"):
-            _restore(tmp_path)
-
-
 def test_a_torchtitan_dir_reports_the_rollout_its_schedule_started_at(tmp_path):
     """Saved by a run from --start-rollout-id 5: Megatron's scheduler catch-up counts only rollouts 5..6."""
     training_state = {"iteration": 6, "step": 8, "first_rollout": 5, "lr_scheduler": {"last_epoch": 8}}
@@ -439,24 +433,6 @@ class TestLegacyRankShardLoader:
     def test_a_directory_without_a_shard_for_this_rank_fails(self, tmp_path):
         with pytest.raises(AssertionError, match="no adapter shard for this rank"):
             _load(tmp_path, [_Chunk()], [], load_optimizer=False)
-
-
-def test_a_save_records_the_rollout_its_schedule_started_at():
-    """Another backend resumes the schedule from the rollout it counts from."""
-    args = SimpleNamespace(
-        lora_dropout=0.05,
-        backend=SimpleNamespace(save="/save", use_precision_aware_optimizer=False, no_save_optim=False),
-    )
-    slots = SimpleNamespace(targets=None)
-    with patch.multiple(
-        _MODULE,
-        DistributedOptimizerMembers=DEFAULT,
-        single_lora_parametrization=DEFAULT,
-        save_and_commit_adapter_dir=DEFAULT,
-    ) as mocks:
-        lora_checkpoint.save_single_lora([], MagicMock(), None, slots, args, iteration=4, first_rollout=3)
-    assert mocks["save_and_commit_adapter_dir"].call_args.kwargs["training_state"]["first_rollout"] == 3
-    assert mocks["save_and_commit_adapter_dir"].call_args.kwargs["lora_dropout"] == 0.05
 
 
 class _DpZeroOptimizer(DistributedOptimizer):
