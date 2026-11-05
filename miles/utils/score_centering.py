@@ -8,6 +8,12 @@ from miles.utils.rollout_topk_logprobs import validate_rollout_topk_logprobs_sam
 
 
 def validate_score_centering_args(args: Namespace) -> None:
+    if not math.isfinite(args.sampler_kl_coef) or args.sampler_kl_coef < 0:
+        raise ValueError("--sampler-kl-coef must be finite and non-negative")
+    if args.sampler_kl_estimator not in ("head_tail", "sampled_k1", "sampled_k3"):
+        raise ValueError("--sampler-kl-estimator must be head_tail, sampled_k1 or sampled_k3")
+    if args.loss_type != "score_centering" and (args.sampler_kl_coef != 0 or args.sampler_kl_estimator != "head_tail"):
+        raise ValueError("Sampler KL requires --loss-type score_centering")
     if args.loss_type != "score_centering":
         return
     if args.rollout_top_logprobs_num <= 0:

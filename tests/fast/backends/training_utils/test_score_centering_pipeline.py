@@ -31,6 +31,60 @@ def single_rank(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+@pytest.mark.parametrize("estimator", ["head_tail", "sampled_k1", "sampled_k3"])
+@pytest.mark.parametrize("mode", ["none", "tis"])
+@pytest.mark.parametrize("zero_advantages", [False, True])
+@pytest.mark.parametrize("per_token", [False, True])
+def test_sampler_kl_adds_independent_masked_loss_and_gradient(
+    single_rank, estimator, mode, zero_advantages, per_token
+):
+    args = _args(score_centering_is=mode, sampler_kl_estimator=estimator)
+    # Unequal response lengths distinguish equal-response from token reduction.
+    batch = dict(
+        unconcat_tokens=[torch.tensor([0, 1, 2]), torch.tensor([1, 0, 3, 2, 4])],
+        total_lengths=[3, 5],
+        response_lengths=[1, 3],
+        loss_masks=[torch.tensor([1]), torch.tensor([1, 1, 0])],
+        rollout_topk_token_ids=[torch.arange(8)[None], torch.arange(8).expand(3, -1)],
+        advantages=[
+            torch.tensor([0.0 if zero_advantages else 0.5]),
+            torch.tensor([0.0 if zero_advantages else -0.5, 0.0 if zero_advantages else -0.5, 0.0]),
+        ],
+    )
+    sampler = torch.tensor([0.1, 0.15, 0.25, 0.1, 0.1, 0.1, 0.1, 0.1]).log().requires_grad_()
+    batch["rollout_topk_log_probs"] = [sampler[None], sampler.expand(3, -1)]
+    batch["rollout_log_probs"] = [
+        sampler[2:3],
+        torch.stack((sampler[3], sampler[2], sampler.new_tensor(float("nan")))),
+    ]
+    logits = torch.randn(1, 8, 10, generator=torch.Generator().manual_seed(7), requires_grad=True)
+    reduce = get_sum_of_sample_mean(
+        batch["total_lengths"], batch["response_lengths"], batch["loss_masks"], calculate_per_token_loss=per_token
+    )
+    func = get_loss_function(args)
+    baseline, baseline_metrics = func(args, batch, logits, reduce)
+    baseline_gradient = torch.autograd.grad(baseline, logits, retain_graph=True)[0]
+    args.sampler_kl_coef = 0.03
+    actual, metrics = func(args, batch, logits, reduce)
+    logp = (logits[0, [1, 4, 5], :8] / args.rollout_temperature).log_softmax(-1)
+    sampled = logp[torch.arange(3), torch.tensor([2, 3, 2])]
+    delta = sampled - sampler.detach()[torch.tensor([2, 3, 2])]
+    if estimator == "head_tail":
+        tokens = (sampler.detach().exp() * (sampler.detach() - logp)).sum(-1)
+    else:
+        tokens = -delta if estimator == "sampled_k1" else delta.expm1() - delta
+    raw = tokens.sum() if per_token else tokens[0] + tokens[1:].mean()
+    expected = baseline + 0.03 * raw
+    gradient, q_gradient = torch.autograd.grad(actual, (logits, sampler), retain_graph=True, allow_unused=True)
+    torch.testing.assert_close(actual, expected)
+    torch.testing.assert_close(gradient, torch.autograd.grad(expected, logits)[0])
+    torch.testing.assert_close(metrics["sampler_kl_weighted_loss"], 0.03 * metrics["sampler_kl_loss"])
+    torch.testing.assert_close(metrics["train_rollout_kl"], baseline_metrics["train_rollout_kl"])
+    assert q_gradient is None and "sampler_kl_loss" not in baseline_metrics
+    if zero_advantages:
+        assert baseline == 0 and baseline_gradient.abs().sum() == 0 and gradient.abs().sum() > 0
+
+
 @pytest.mark.parametrize("mode", ["none", "tis", "mis"])
 @pytest.mark.parametrize("ci_test", [False, True])
 def test_multiturn_wire_dp_split_and_training_gradient(single_rank: None, mode: str, ci_test: bool) -> None:

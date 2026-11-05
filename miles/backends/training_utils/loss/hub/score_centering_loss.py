@@ -18,6 +18,10 @@ from miles.backends.training_utils.loss.hub.score_centering import (
     score_centering_loss,
     selected_log_probs_and_entropy,
 )
+from miles.backends.training_utils.loss.hub.score_centering.sampler_kl import (
+    sampled_sampler_kl_losses,
+    sampler_kl_loss,
+)
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.types import RolloutBatch
 
@@ -183,6 +187,19 @@ def score_centering_loss_function(
         args, batch, entropy, selected[:, 0], rollout, active, sum_of_sample_mean, kl_log_probs
     )
     loss = loss + pg_loss
+    if args.sampler_kl_coef != 0:
+        if args.sampler_kl_estimator == "head_tail":
+            kl_tokens = sampler_kl_loss(selected[:, 1:], head, ids >= 0, active)
+        else:
+            k1, k3 = sampled_sampler_kl_losses(selected[:, 0], rollout, active)
+            kl_tokens = k1 if args.sampler_kl_estimator == "sampled_k1" else k3
+        # Reuse the native reducer; this term is independent of advantages,
+        # SFC/TIS weights and reference KL. Beta is constant, including age zero.
+        sampler_kl = sum_of_sample_mean(kl_tokens)
+        weighted_kl = args.sampler_kl_coef * sampler_kl
+        loss = loss + weighted_kl
+        log["sampler_kl_loss"] = sampler_kl.detach()
+        log["sampler_kl_weighted_loss"] = weighted_kl.detach()
     log.update({key: sum_of_sample_mean(value).detach() for key, value in metrics.as_log_dict().items()})
     log.update(loss=loss.detach(), pg_loss=pg_loss.detach())
     train_log_probs = torch.where(active, selected[:, 0].detach(), 0.0)
