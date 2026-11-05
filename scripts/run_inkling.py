@@ -292,9 +292,12 @@ def _train(args: ScriptArgs):
                     f"--eval-max-response-len {args.rollout_max_response_len} "
                 )
         case "avqa_audio":
+            # Over half of the AVQA groups come back all-right or all-wrong (no advantage), so the
+            # rollout keeps sampling until the batch is made of groups with a reward spread.
             rollout_args += (
                 f"--prompt-data {args.data_dir}/avqa_audio/train.jsonl "
                 "--custom-rm-path examples.avqa_audio.reward.reward_func "
+                "--dynamic-sampling-filter-path miles.rollout.filter_hub.common_filters.apply_reward_nonzero_std_filter "
             )
 
     grpo_args = (
