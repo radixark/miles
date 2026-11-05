@@ -104,10 +104,10 @@ class TrainConfig(BaseConfig):
                 "Backend for the core attention of the head-dim-256 full-attention layers of the Qwen3.5 / "
                 "Qwen3-Next models (their MTP layer too). 'megatron' is Transformer Engine's attention. 'cake' is "
                 "the Cake packed causal GQA forward/backward from the miles-ext-kernels submodule; it requires "
-                "--use-miles-ext-kernels, NVIDIA SM100a/SM103a (Blackwell), the Megatron backend, --qkv-format thd, "
-                "no context parallelism, no attention dropout or --window-size, and an even number of query heads "
-                "per key/value head on each tensor-parallel rank. It sums dQ with FP32 atomic adds, so "
-                "--deterministic-mode rejects it."
+                "--use-miles-ext-kernels, NVIDIA SM100a/SM103a/SM107a (Blackwell, Rubin), the Megatron backend, "
+                "--qkv-format thd, no context parallelism, no attention dropout or --window-size, and an even "
+                "number of query heads per key/value head on each tensor-parallel rank. It sums dQ with FP32 "
+                "atomic adds, so --deterministic-mode rejects it."
             ),
         ),
     ] = "megatron"
