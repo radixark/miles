@@ -23,6 +23,10 @@ def save_simple_checkpoint(directory: Path, data: Any) -> None:
     logger.info(f"Saved checkpoint to {path}")
 
 
+def has_simple_checkpoint(directory: Path) -> bool:
+    return (directory / _STATE_FILENAME).is_file()
+
+
 def load_simple_checkpoint(directory: Path) -> Any:
     path = directory / _STATE_FILENAME
     assert path.is_file(), f"{path} is missing, but the directory holding it is only ever published whole"

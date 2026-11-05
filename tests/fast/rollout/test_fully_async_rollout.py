@@ -51,6 +51,7 @@ class FakeGenerateState(GenerateState):
         self.aborted = False
         self.generate_fn_semaphore = asyncio.Semaphore(2)
         self.generate_function = None
+        self.sample_generate_functions = {}
 
 
 class FakeDataSource:

@@ -1,0 +1,550 @@
+From b7e82e748cd4a2c5deda04da61591eeb187a0d95 Mon Sep 17 00:00:00 2001
+From: Zhichen Zeng <zhichen.zeng@radixark.ai>
+Date: Tue, 3 Nov 2026 13:58:03 -0800
+Subject: [PATCH] [TPU] Receive RL weight updates over ICI from a trainer
+ sharing the slice
+
+Squash of sgl-project/sglang-torchtpu#1884 (head 3d8af9f5ec) on sglang-torchtpu main 92f8c68490.
+---
+ .../model_runner_components/weight_updater.py |  17 +-
+ python/sglang/srt/platforms/interface.py      |  22 ++
+ sglang_tpu/shared_slice.py                    | 198 ++++++++++++++++++
+ sglang_tpu/tpu_platform.py                    |  22 ++
+ .../hardware_backend/tpu/test_shared_slice.py | 177 ++++++++++++++++
+ 5 files changed, 435 insertions(+), 1 deletion(-)
+ create mode 100644 sglang_tpu/shared_slice.py
+ create mode 100644 test/registered/unit/hardware_backend/tpu/test_shared_slice.py
+
+diff --git a/python/sglang/srt/model_executor/model_runner_components/weight_updater.py b/python/sglang/srt/model_executor/model_runner_components/weight_updater.py
+index 5d3439d11b..c74ee3cd72 100644
+--- a/python/sglang/srt/model_executor/model_runner_components/weight_updater.py
++++ b/python/sglang/srt/model_executor/model_runner_components/weight_updater.py
+@@ -16,6 +16,7 @@ from sglang.srt.model_loader.loader import (
+ from sglang.srt.model_loader.utils import set_default_torch_dtype
+ from sglang.srt.model_loader.weight_utils import default_weight_loader
+ from sglang.srt.platforms import current_platform
++from sglang.srt.platforms.interface import WeightUpdateReceiver
+ from sglang.srt.runtime_context import get_model, get_parallel
+ from sglang.srt.utils import (
+     MultiprocessingSerializer,
+@@ -125,6 +126,13 @@ class WeightUpdater:
+             f"rank_offset={rank_offset}, rank={rank}, world_size={world_size}, group_name={group_name}, backend={backend}"
+         )
+ 
++        receiver = current_platform.create_weight_update_receiver(
++            backend, tp_rank=self.tp_rank
++        )
++        if receiver is not None:
++            self._model_update_group[group_name] = receiver
++            return True, f"Succeeded to bind a {backend} weight update receiver."
++
+         try:
+             na = NetworkAddress(master_address, master_port)
+             self._model_update_group[group_name] = init_custom_process_group(
+@@ -144,7 +152,10 @@ class WeightUpdater:
+         try:
+             if group_name in self._model_update_group:
+                 pg = self._model_update_group.pop(group_name)
+-                torch.distributed.destroy_process_group(pg)
++                if isinstance(pg, WeightUpdateReceiver):
++                    pg.close()
++                else:
++                    torch.distributed.destroy_process_group(pg)
+                 return True, "Succeeded to destroy custom process group."
+             else:
+                 return False, "The group to be destroyed does not exist."
+@@ -266,6 +277,10 @@ class WeightUpdater:
+             "Please call `init_weights_update_group` first."
+         )
+ 
++        group = self._model_update_group[group_name]
++        if isinstance(group, WeightUpdateReceiver):
++            return group.receive(names, dtypes, shapes, device=self.device)
++
+         if load_format == "flattened_bucket":
+             return self._receive_bucketed_weights_from_distributed(
+                 names=names, dtypes=dtypes, shapes=shapes, group_name=group_name
+diff --git a/python/sglang/srt/platforms/interface.py b/python/sglang/srt/platforms/interface.py
+index ae9c46ce8d..7b10931060 100644
+--- a/python/sglang/srt/platforms/interface.py
++++ b/python/sglang/srt/platforms/interface.py
+@@ -26,6 +26,22 @@ if TYPE_CHECKING:
+ __all__ = ["SRTPlatform", "PlatformEnum"]
+ 
+ 
++class WeightUpdateReceiver:
++    """Receives online weight updates over a platform transport instead of a torch.distributed broadcast."""
++
++    def receive(
++        self,
++        names: list[str],
++        dtypes: list[str | torch.dtype],
++        shapes: list[list[int]],
++        device: torch.device | str,
++    ) -> list[tuple[str, torch.Tensor]]:
++        raise NotImplementedError
++
++    def close(self) -> None:
++        pass
++
++
+ class SRTPlatform(DeviceMixin):
+     """
+     Base class for SRT hardware platform backends.
+@@ -133,6 +149,12 @@ class SRTPlatform(DeviceMixin):
+ 
+         return MambaPool
+ 
++    def create_weight_update_receiver(
++        self, backend: str, *, tp_rank: int
++    ) -> Optional[WeightUpdateReceiver]:
++        """A receiver for weight-update groups of this ``backend``; None means a torch.distributed group."""
++        return None
++
+     def get_mla_kv_pool_cls(self) -> type:
+         """Return the MLA KV pool class for this platform."""
+         raise NotImplementedError
+diff --git a/sglang_tpu/shared_slice.py b/sglang_tpu/shared_slice.py
+new file mode 100644
+index 0000000000..f908af71a9
+--- /dev/null
++++ b/sglang_tpu/shared_slice.py
+@@ -0,0 +1,198 @@
++# SPDX-License-Identifier: Apache-2.0
++"""Share one TPU slice with an RL trainer, so weights move between them over ICI.
++
++Enabled by SGLANG_TPU_SHARED_SLICE="<slice rank offset>,<slice size>,<store host>:<store port>".
++The trainer and this engine are two jobs of one slice: libtpu builds the slice from the slice-wide
++RANK / WORLD_SIZE, while each job's torch.distributed world keeps its own ranks. Needs a torch_tpu
++build with job-local worlds (TORCH_TPU_JOB_DEVICE_IDS), so neither job waits on the other's
++programs, and a libtpu without the 0.0.49 SparseCore regression (0.0.48 works).
++"""
++
++import json
++import logging
++import math
++import os
++from dataclasses import dataclass
++from datetime import timedelta
++from typing import Optional
++
++import torch
++import torch.distributed as dist
++from torch._C._distributed_c10d import PrefixStore
++
++from sglang.srt.platforms.interface import WeightUpdateReceiver
++
++logger = logging.getLogger(__name__)
++
++ENV_VAR = "SGLANG_TPU_SHARED_SLICE"
++BACKEND_NAME = "tpu_shared_slice"
++TRANSFER_ALIGN_BYTES = 4096
++_TIMEOUT = timedelta(minutes=30)
++
++
++@dataclass(frozen=True)
++class SharedSlice:
++    rank_offset: int
++    size: int
++    store_host: str
++    store_port: int
++
++
++@dataclass(frozen=True)
++class JobRank:
++    rank: int
++    size: int
++
++
++def spec() -> Optional[SharedSlice]:
++    value = os.environ.get(ENV_VAR)
++    if not value:
++        return None
++    offset, size, address = value.split(",")
++    host, port = address.rsplit(":", 1)
++    return SharedSlice(int(offset), int(size), host, int(port))
++
++
++def enter_slice_env(shared: SharedSlice) -> JobRank:
++    """Swap the worker's job RANK / WORLD_SIZE for the slice-wide ones libtpu reads at startup."""
++    job = JobRank(int(os.environ["RANK"]), int(os.environ["WORLD_SIZE"]))
++    os.environ["RANK"] = os.environ["LOCAL_RANK"] = str(shared.rank_offset + job.rank)
++    os.environ["WORLD_SIZE"] = os.environ["LOCAL_WORLD_SIZE"] = str(shared.size)
++    return job
++
++
++class SharedSliceReceiver(WeightUpdateReceiver):
++    """Receives each update bucket from the trainer rank paired with this TP rank."""
++
++    def __init__(
++        self,
++        backend: dist.ProcessGroup,
++        store: dist.Store,
++        src_slice_rank: int,
++        slice_rank: int,
++    ):
++        self._backend = backend
++        self._store = store
++        self._src_slice_rank = src_slice_rank
++        self._slice_rank = slice_rank
++        self._next_tag = 0
++
++    def receive(
++        self,
++        names: list[str],
++        dtypes: list[str | torch.dtype],
++        shapes: list[list[int]],
++        device: torch.device | str,
++    ) -> list[tuple[str, torch.Tensor]]:
++        """Ignores names (trainer rank 0's): the paired rank posts its own, as its experts differ."""
++        dtypes = [_dtype(dtype) for dtype in dtypes]
++        numels = [math.prod(shape) for shape in shapes]
++        regions = packed_regions(numels, dtypes)
++        offset, size = regions[-1]
++        # the trainer packs a bucket into one int16 buffer: many small sends crash libtpu's
++        # CopyToRemoteDevice, single large ones are fine
++        packed = torch.empty((offset + size) // 2, dtype=torch.int16, device=device)
++        # torch_tpu keys a transfer by (src, dst, tag) and never forgets a key: tags must not repeat
++        self._next_tag += 1
++        self._backend.recv([packed], self._src_slice_rank, self._next_tag).wait()
++        # wait() returns once the buffer is announced, not once the data lands; a read waits for it,
++        # and freeing the buffer before that crashes the sender
++        packed[:1].cpu()
++        key = bucket_names_key(self._src_slice_rank, self._slice_rank, self._next_tag)
++        own_names = json.loads(self._store.get(key))
++        self._store.delete_key(key)
++        assert len(own_names) == len(shapes), (len(own_names), len(shapes))
++        return [
++            (
++                name,
++                packed[offset // 2 : (offset + numel * dtype.itemsize) // 2]
++                .view(dtype)
++                .view(shape),
++            )
++            for name, dtype, shape, numel, (offset, _) in zip(
++                own_names, dtypes, shapes, numels, regions
++            )
++        ]
++
++
++def packed_regions(
++    numels: list[int], dtypes: list[torch.dtype]
++) -> list[tuple[int, int]]:
++    """(byte offset, padded byte size) of each tensor in a packed bucket: whole 4 KiB regions.
++
++    The trainer lays its buffer out the same way.
++    """
++    regions, offset = [], 0
++    for numel, dtype in zip(numels, dtypes):
++        blocks = max(1, math.ceil(numel * dtype.itemsize / TRANSFER_ALIGN_BYTES))
++        size = blocks * TRANSFER_ALIGN_BYTES
++        regions.append((offset, size))
++        offset += size
++    return regions
++
++
++def _dtype(dtype: str | torch.dtype) -> torch.dtype:
++    return dtype if isinstance(dtype, torch.dtype) else getattr(torch, dtype)
++
++
++@dataclass
++class _State:
++    backend: Optional[dist.ProcessGroup] = None
++    store: Optional[dist.Store] = None
++    slice_rank: int = -1
++
++
++# a worker process joins the slice once, at backend init, before any weight-update group exists
++_state = _State()
++
++
++def join(shared: SharedSlice, job: JobRank) -> None:
++    """Join the slice and open the slice-wide send/recv backend; restores the job's RANK / WORLD_SIZE.
++
++    Runs before the first TPU program: the job-local world is fixed at the first compile.
++    """
++    from torch_tpu._internal.distributed import tpu_distributed
++
++    slice_rank = shared.rank_offset + job.rank
++    # starts the runtime, which joins the slice
++    device_id = tpu_distributed.global_device_id()
++    store = dist.TCPStore(
++        shared.store_host, shared.store_port, shared.size, slice_rank == 0, _TIMEOUT
++    )
++    store.set(f"device:{slice_rank}", str(device_id))
++    os.environ["TORCH_TPU_JOB_DEVICE_IDS"] = ",".join(
++        store.get(f"device:{shared.rank_offset + rank}").decode()
++        for rank in range(job.size)
++    )
++    _state.backend = tpu_distributed.create_process_group(
++        PrefixStore(BACKEND_NAME, store), slice_rank, shared.size, _TIMEOUT
++    )
++    _state.store, _state.slice_rank = store, slice_rank
++    os.environ["RANK"] = os.environ["LOCAL_RANK"] = str(job.rank)
++    os.environ["WORLD_SIZE"] = os.environ["LOCAL_WORLD_SIZE"] = str(job.size)
++    logger.info(
++        "Joined the shared TPU slice as rank %d of %d (job devices %s)",
++        slice_rank,
++        shared.size,
++        os.environ["TORCH_TPU_JOB_DEVICE_IDS"],
++    )
++
++
++def joined() -> bool:
++    return _state.backend is not None
++
++
++def receiver(tp_rank: int) -> SharedSliceReceiver:
++    """The trainer's rank i (slice rank i) sends to TP rank i."""
++    assert _state.backend is not None, f"{ENV_VAR} is unset or the slice was not joined"
++    return SharedSliceReceiver(
++        _state.backend,
++        _state.store,
++        src_slice_rank=tp_rank,
++        slice_rank=_state.slice_rank,
++    )
++
++
++def bucket_names_key(src_slice_rank: int, dst_slice_rank: int, tag: int) -> str:
++    """Store key under which the trainer posts a bucket's names."""
++    return f"bucket_names:{src_slice_rank}:{dst_slice_rank}:{tag}"
+diff --git a/sglang_tpu/tpu_platform.py b/sglang_tpu/tpu_platform.py
+index 48906e61db..12597d0cad 100644
+--- a/sglang_tpu/tpu_platform.py
++++ b/sglang_tpu/tpu_platform.py
+@@ -1339,6 +1339,13 @@ class TpuSRTPlatform(SRTPlatform):
+                 "TPU GDN/KDA prefix caching requires mamba_chunk_size=64."
+             )
+ 
++    def create_weight_update_receiver(self, backend: str, *, tp_rank: int):
++        from sglang_tpu import shared_slice
++
++        if backend != shared_slice.BACKEND_NAME:
++            return None
++        return shared_slice.receiver(tp_rank)
++
+     def get_mamba_pool_cls(self) -> type:
+         # Hybrid GDN models (Qwen3.5 / Qwen3-Next) store their recurrent state
+         # in a TPU-native, Pallas-kernel-layout pool.
+@@ -1527,6 +1534,13 @@ class TpuSRTPlatform(SRTPlatform):
+                 "TorchTPU backend initialization requires worker WORLD_SIZE. "
+                 "Initialize it from the scheduler worker bootstrap."
+             )
++        from sglang_tpu import shared_slice
++
++        shared = shared_slice.spec()
++        if shared is not None:
++            # libtpu builds the whole slice, trainer included, from these
++            job = shared_slice.enter_slice_env(shared)
++            world_size = os.environ["WORLD_SIZE"]
+ 
+         # Keep c10d_functional collectives inside the compiled graph. torch_tpu
+         # defaults to materializing collective tensors by forcing graph breaks, which
+@@ -1583,6 +1597,8 @@ class TpuSRTPlatform(SRTPlatform):
+             from sglang_tpu.fp8_linear import register_fp8_linear_small_m_op
+ 
+             register_fp8_linear_small_m_op()
++        if shared is not None:
++            shared_slice.join(shared, job)
+         # Set before registering: importing the model registry imports model_runner,
+         # which calls init_backend again on the OOT path.
+         self._backend_initialized = True
+@@ -1677,6 +1693,12 @@ class TpuSRTPlatform(SRTPlatform):
+         return float(total - free)
+ 
+     def get_device(self, device_id: int = 0) -> torch.device:
++        from sglang_tpu import shared_slice
++
++        # a worker on a shared slice sees only its own device, at index 0; joining
++        # started PJRT, so torch_tpu checks the index against that one device
++        if shared_slice.joined():
++            return torch.device("tpu", 0)
+         return torch.device("tpu", device_id)
+ 
+     def set_device(self, device: torch.device) -> None:
+diff --git a/test/registered/unit/hardware_backend/tpu/test_shared_slice.py b/test/registered/unit/hardware_backend/tpu/test_shared_slice.py
+new file mode 100644
+index 0000000000..d1e65804ff
+--- /dev/null
++++ b/test/registered/unit/hardware_backend/tpu/test_shared_slice.py
+@@ -0,0 +1,177 @@
++"""CPU contracts of the ICI weight-update receiver (sglang_tpu.shared_slice)."""
++
++import json
++import os
++import unittest
++from unittest.mock import patch
++
++import torch
++
++from sglang.srt.platforms.interface import SRTPlatform, WeightUpdateReceiver
++from sglang.test.ci.ci_register import register_cpu_ci
++from sglang.test.test_utils import CustomTestCase
++from sglang_tpu import shared_slice
++from sglang_tpu.tpu_platform import TpuSRTPlatform
++
++register_cpu_ci(est_time=5, suite="base-a-test-cpu")
++
++
++def _pack(tensors):
++    """The trainer's packing: int16 words, zero-padded regions."""
++    regions = shared_slice.packed_regions(
++        [t.numel() for t in tensors], [t.dtype for t in tensors]
++    )
++    pieces = []
++    for tensor, (_, size) in zip(tensors, regions):
++        words = tensor.reshape(-1).view(torch.int16)
++        pieces += [words, words.new_zeros(size // 2 - words.numel())]
++    return torch.cat(pieces)
++
++
++class _FakeStore:
++    def __init__(self):
++        self.values = {}
++
++    def set(self, key, value):
++        self.values[key] = value.encode() if isinstance(value, str) else value
++
++    def get(self, key):
++        return self.values[key]
++
++    def delete_key(self, key):
++        del self.values[key]
++
++
++class _FakeBackend:
++    """Delivers queued packed buffers into the receiver's buffer, recording (src, tag)."""
++
++    def __init__(self):
++        self.pending, self.calls = [], []
++
++    def recv(self, buffers, src, tag):
++        self.calls.append((src, tag))
++        [buffer] = buffers
++        buffer.copy_(self.pending.pop(0))
++        return self
++
++    def wait(self):
++        pass
++
++
++class TestPackedRegions(CustomTestCase):
++    def test_regions_are_whole_aligned_blocks(self):
++        regions = shared_slice.packed_regions(
++            [1, 2048, 2049, 0],
++            [torch.float32, torch.bfloat16, torch.bfloat16, torch.float32],
++        )
++        # 4 B -> one block, 4096 B -> one block, 4098 B -> two blocks, empty -> still one block
++        self.assertEqual(
++            regions, [(0, 4096), (4096, 4096), (8192, 8192), (16384, 4096)]
++        )
++
++
++class TestSharedSliceReceiver(CustomTestCase):
++    def test_receive_round_trips_tensors_and_names(self):
++        backend, store = _FakeBackend(), _FakeStore()
++        receiver = shared_slice.SharedSliceReceiver(
++            backend, store, src_slice_rank=1, slice_rank=5
++        )
++        buckets = [
++            [
++                (
++                    "model.layers.0.mlp.experts.4.down_proj.weight",
++                    torch.randn(3, 5, dtype=torch.bfloat16),
++                ),
++                (
++                    "model.layers.0.input_layernorm.weight",
++                    torch.randn(7, dtype=torch.float32),
++                ),
++            ],
++            [("lm_head.weight", torch.randn(2, 4096, dtype=torch.bfloat16))],
++        ]
++        for tag, bucket in enumerate(buckets, start=1):
++            names, tensors = zip(*bucket)
++            backend.pending.append(_pack(list(tensors)))
++            store.set(shared_slice.bucket_names_key(1, 5, tag), json.dumps(list(names)))
++            received = receiver.receive(
++                ["names of trainer rank 0, ignored"] * len(bucket),
++                [str(t.dtype).removeprefix("torch.") for t in tensors],
++                [list(t.shape) for t in tensors],
++                device="cpu",
++            )
++            self.assertEqual([name for name, _ in received], list(names))
++            for (_, got), want in zip(received, tensors):
++                self.assertEqual(got.dtype, want.dtype)
++                self.assertTrue(
++                    torch.equal(got.view(torch.int16), want.view(torch.int16))
++                )
++        # one tag per bucket, never reused, and each bucket's names are consumed
++        self.assertEqual(backend.calls, [(1, 1), (1, 2)])
++        self.assertEqual(store.values, {})
++
++    def test_name_count_must_match_the_bucket(self):
++        backend, store = _FakeBackend(), _FakeStore()
++        receiver = shared_slice.SharedSliceReceiver(
++            backend, store, src_slice_rank=0, slice_rank=4
++        )
++        tensor = torch.zeros(4, dtype=torch.float32)
++        backend.pending.append(_pack([tensor]))
++        store.set(shared_slice.bucket_names_key(0, 4, 1), json.dumps(["a", "b"]))
++        with self.assertRaises(AssertionError):
++            receiver.receive(["a"], ["float32"], [[4]], device="cpu")
++
++
++class TestSliceEnvironment(CustomTestCase):
++    def test_spec_parses_the_env_var(self):
++        with patch.dict(os.environ, {shared_slice.ENV_VAR: "4,8,10.0.0.1:29600"}):
++            self.assertEqual(
++                shared_slice.spec(), shared_slice.SharedSlice(4, 8, "10.0.0.1", 29600)
++            )
++        with patch.dict(os.environ, {shared_slice.ENV_VAR: ""}):
++            self.assertIsNone(shared_slice.spec())
++
++    def test_enter_slice_env_swaps_in_the_slice_ranks(self):
++        env = {
++            "RANK": "2",
++            "WORLD_SIZE": "4",
++            "LOCAL_RANK": "2",
++            "LOCAL_WORLD_SIZE": "4",
++        }
++        with patch.dict(os.environ, env):
++            job = shared_slice.enter_slice_env(shared_slice.SharedSlice(4, 8, "h", 1))
++            self.assertEqual(job, shared_slice.JobRank(rank=2, size=4))
++            self.assertEqual(
++                (
++                    os.environ["RANK"],
++                    os.environ["LOCAL_RANK"],
++                    os.environ["WORLD_SIZE"],
++                    os.environ["LOCAL_WORLD_SIZE"],
++                ),
++                ("6", "6", "8", "8"),
++            )
++
++
++class TestReceiverFactory(CustomTestCase):
++    def test_other_backends_keep_torch_distributed_groups(self):
++        self.assertIsNone(
++            SRTPlatform.create_weight_update_receiver(None, "nccl", tp_rank=0)
++        )
++        self.assertIsNone(
++            TpuSRTPlatform.create_weight_update_receiver(None, "gloo", tp_rank=0)
++        )
++
++    def test_shared_slice_backend_returns_the_receiver(self):
++        with patch.object(
++            shared_slice,
++            "_state",
++            shared_slice._State(backend=object(), store=_FakeStore(), slice_rank=6),
++        ):
++            receiver = TpuSRTPlatform.create_weight_update_receiver(
++                None, shared_slice.BACKEND_NAME, tp_rank=2
++            )
++        self.assertIsInstance(receiver, WeightUpdateReceiver)
++        self.assertEqual((receiver._src_slice_rank, receiver._slice_rank), (2, 6))
++
++
++if __name__ == "__main__":
++    unittest.main()
+-- 
+2.50.1 (Apple Git-155)
+
