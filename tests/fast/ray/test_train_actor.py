@@ -51,6 +51,7 @@ class TestProposeMasterAddrAndPort:
     def test_the_proposal_steps_past_a_port_that_is_already_taken(self, monkeypatch: pytest.MonkeyPatch):
         """A cell rendezvouses on the proposing worker's own node, on a port no other process already holds."""
         monkeypatch.setattr(train_actor, "get_current_node_ip", lambda: "10.0.0.3")
+        monkeypatch.setattr(train_actor, "service_port_range", lambda: (20000, 32767))
 
         with socket.socket() as occupied:
             occupied.bind(("", train_actor.get_free_port(start_port=20500)))

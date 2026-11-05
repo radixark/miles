@@ -1,3 +1,5 @@
+import subprocess
+import sys
 from argparse import Namespace
 
 from transformers import LlamaConfig
@@ -43,3 +45,9 @@ class TestLoraTargetOrdering:
         assert hf_targets == expected
         assert args.target_modules == "all-linear"
         assert args.exclude_modules == "q_proj"
+
+
+def test_lora_arguments_import_no_megatron_to_hf():
+    """megatron_to_hf loads every converter and SGLang's quantization kernels, which probe the GPU on ROCm (#4201)."""
+    code = "import sys, miles.utils.lora.arguments; sys.exit('miles.backends.megatron_utils.megatron_to_hf' in sys.modules)"
+    assert subprocess.run([sys.executable, "-c", code]).returncode == 0

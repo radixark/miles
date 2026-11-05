@@ -57,6 +57,7 @@
        "user-guide/launch-script",
        "user-guide/argument-groups",
        "user-guide/fully-async",
+       "user-guide/mixing-datasets",
        "user-guide/training-backend",
        "user-guide/monitoring",
        "user-guide/customization",
@@ -176,6 +177,7 @@
         "pages": [
          "models/kimi/index",
          "models/kimi/kimi-k3",
+         "models/kimi/kimi-k31",
          "models/kimi/kimi-k2.5",
          "models/kimi/kimi-k2"
         ],
@@ -208,6 +210,8 @@
        },
        "models/gpt-oss/gpt-oss",
        "models/mimo/mimo-v2-6-flash",
+       "models/minimax/minimax-m3",
+       "models/minimax/minimax-m3-1-flash",
        "models/stepfun/step5",
        "models/muse-spark/muse-spark-open",
        "models/reflection/beam"
@@ -252,6 +256,14 @@
       "group": "Cluster & Deployment",
       "pages": [
        "advanced/cluster-backend"
+      ]
+     },
+     {
+      "group": "Algorithm",
+      "pages": [
+       "examples/infra-features/score-centering",
+       "examples/infra-features/train-infer-mismatch-helper",
+       "advanced/algorithms/length-penalties"
       ]
      }
     ]
