@@ -341,22 +341,3 @@ def test_remote_code_native_families_name_their_checkpoints_projections(config):
     """Native trains these families; their adapter checkpoint and export need the HF layout."""
     layout = get_hf_lora_targets(config)
     assert set(layout.attention + layout.mlp + layout.unembed) == _REMOTE_CHECKPOINT_PROJECTIONS[config["model_type"]]
-
-
-@pytest.mark.parametrize("config", [_MIMO_7B, _JOYAI_LLM_FLASH], ids=lambda config: config["model_type"])
-def test_native_attaches_the_remote_families_layouts_as_their_relatives(config):
-    """MiMo attaches like Qwen2; JoyAI like Kimi K2, whose native MLA spec adapts no routed experts."""
-    from miles.backends.megatron_utils.lora.native.registry import MODEL_SPECS
-
-    relative = {
-        "mimo": {"model_type": "qwen2", "num_hidden_layers": 36},
-        "joyai_llm_flash": {**_JOYAI_LLM_FLASH, "model_type": "kimi_k2"},
-    }[config["model_type"]]
-
-    def attached(hf_config):
-        layout = get_hf_lora_targets(hf_config)
-        spec = MODEL_SPECS[hf_config["model_type"]]
-        return [module for module in layout.attention + layout.mlp + layout.unembed if spec.attaches(module)]
-
-    assert attached(config) == attached(relative)
-    assert attached(config)

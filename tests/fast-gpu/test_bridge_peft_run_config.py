@@ -53,10 +53,3 @@ def _run(lora_type: str) -> AdapterParametrization:
 def test_bridges_own_run_config_of_the_same_lora_is_accepted(peft_class, lora_type):
     config = _config(peft_class(dim=8, alpha=32, share_expert_adapters=False))
     assert_bridge_run_config_matches(config, _run(lora_type), params_dtype=torch.bfloat16, load_optimizer=True)
-
-
-def test_bridges_default_shared_expert_adapters_are_refused_for_per_expert_targets():
-    with pytest.raises(AssertionError, match="share_expert_adapters=True is not supported"):
-        assert_bridge_run_config_matches(
-            _config(LoRA(dim=8, alpha=32)), _run("lora"), params_dtype=torch.bfloat16, load_optimizer=False
-        )

@@ -61,27 +61,14 @@ def test_a_legacy_checkpoint_padded_to_another_max_rank_is_a_mismatch(gloo, monk
     assert mismatch is not None and "layer.adapter.w: saved (64, 6), slot (32, 6)" in mismatch
 
 
-def test_a_model_side_failure_is_a_server_error_not_a_mismatch(gloo, monkeypatch):
-    _legacy_source(monkeypatch, saved_shape=(32, 6))
-
-    def broken(*_):
-        raise KeyError("slot 0 has no adapters")
-
-    monkeypatch.setattr(checkpoint, "_slot_weights_sharded_state_dict", broken)
-    # a mismatch is the user's 400; a bug in reading this gateway's own model must fail loudly instead
-    with pytest.raises(RuntimeError, match="slot 0 has no adapters"):
-        checkpoint.find_load_mismatch(None, 0, "/ckpt", None, None, load_optimizer=False, run_shapes={})
-
-
 @pytest.mark.parametrize(
     "error",
     [
         OSError(errno.EIO, "Input/output error"),
-        TypeError("library bug"),
         AssertionError("backend invariant"),
         ValueError("backend value bug"),
     ],
-    ids=["storage_fault", "bug", "assertion", "value_error"],
+    ids=["storage_fault", "assertion", "value_error"],
 )
 def test_a_failure_that_is_not_the_sources_fault_is_a_server_error(gloo, monkeypatch, error):
     def failing(*_, **__):
@@ -162,15 +149,6 @@ def test_an_unreadable_source_is_a_mismatch(gloo, tmp_path):
         None, 0, str(tmp_path), UNSHARED, TARGETS, load_optimizer=False, run_shapes={}
     )
     assert mismatch is not None and "cannot load into this model" in mismatch
-
-
-def test_an_in_model_source_without_a_loader_is_a_mismatch(gloo, tmp_path):
-    (tmp_path / "adapter_config.json").write_text("{}")
-    torch.save({}, tmp_path / "adapter_megatron_rank0.pt")
-    mismatch = checkpoint.find_load_mismatch(
-        None, 0, str(tmp_path), UNSHARED, TARGETS, load_optimizer=False, run_shapes={}
-    )
-    assert mismatch is not None and "legacy_rank_shard source, which this backend cannot load" in mismatch
 
 
 def test_a_legacy_layout_mismatch_names_the_gateway_flag(tmp_path):

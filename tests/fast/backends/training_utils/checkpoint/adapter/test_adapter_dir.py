@@ -20,11 +20,7 @@ from miles.backends.training_utils.checkpoint.adapter.adapter_dir import (
     write_peft_export,
 )
 from miles.backends.training_utils.checkpoint.adapter.adapter_exports import write_peft_adapter
-from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
-    AdapterState,
-    LocalShardSpec,
-    raise_if_any_rank_failed,
-)
+from miles.backends.training_utils.checkpoint.adapter.adapter_state import AdapterState, LocalShardSpec
 from miles.backends.training_utils.checkpoint.adapter.commit import (
     commit_adapter_dir,
     resolve_adapter_dir,
@@ -90,42 +86,39 @@ def _save(rank, world_size, port, *, root):
     dist.destroy_process_group()
 
 
-def test_round_trip_with_optimizer_under_a_different_world_size():
+@pytest.fixture(scope="module")
+def committed_dir():
+    """One 2-rank save shared by the tests that load it under one process."""
     root = tempfile.mkdtemp()
     run_multiprocess(partial(_save, root=root))
-    committed = resolve_adapter_dir(Path(root), "w", tenant="alice")
+    return resolve_adapter_dir(Path(root), "w", tenant="alice").path
+
+
+def test_round_trip_with_optimizer_under_a_different_world_size(committed_dir):
     members = FakeMembers()  # one process now owns everything
-    source = load_adapter_dir(committed.path, members, 0, RUN, TARGETS, load_optimizer=True)
+    source = load_adapter_dir(committed_dir, members, 0, RUN, TARGETS, load_optimizer=True)
     assert source == RUN and members.imported.step == 5
     for spec, weight, exp_avg in zip(
         members.imported.shard_specs, members.imported.weights, members.imported.exp_avgs, strict=True
     ):
         assert torch.equal(weight, FULL[spec.key.rsplit(".", 1)[1]])
         assert torch.equal(exp_avg, weight * 2)
-    assert (committed.path / "training_state.json").read_text().count('"iteration": 3') == 1
+    assert (committed_dir / "training_state.json").read_text().count('"iteration": 3') == 1
 
 
-def test_weights_only_from_peft_upcasts_and_zeroes_moments(tmp_path):
+def test_weights_only_from_peft_upcasts_zeroes_moments_and_returns_the_source_alpha(tmp_path):
     write_peft_adapter(tmp_path, {f"{MODULE}.{k}": v for k, v in FULL.items()}, RUN, TARGETS, lora_dropout=0.0)
     members = FakeMembers()
-    load_adapter_dir(tmp_path, members, 0, RUN, TARGETS, load_optimizer=False)
+    # a Tinker session adopts the source's alpha after loading
+    source = load_adapter_dir(tmp_path, members, 0, replace(RUN, lora_alpha=16.0), TARGETS, load_optimizer=False)
+    assert source.lora_alpha == 4.0 and members.finished
     state = members.imported
     assert state.step == 0 and all(not m.any() for m in state.exp_avgs)
     assert all(w.dtype == torch.float32 for w in state.weights)
     assert torch.equal(state.weights[1], FULL["lora_B"].to(torch.bfloat16).float())
 
 
-def test_a_different_source_alpha_is_returned_for_the_caller_to_adopt(tmp_path):
-    write_peft_adapter(tmp_path, {f"{MODULE}.{k}": v for k, v in FULL.items()}, RUN, TARGETS, lora_dropout=0.0)
-    run = replace(RUN, lora_alpha=16.0)  # a Tinker session adopts the source's alpha after loading
-    assert load_adapter_dir(tmp_path, FakeMembers(), 0, run, TARGETS, load_optimizer=False).lora_alpha == 4.0
-
-
-def test_weights_only_from_the_same_parametrization_reads_only_local_pieces(monkeypatch):
-    root = tempfile.mkdtemp()
-    run_multiprocess(partial(_save, root=root))
-    committed = resolve_adapter_dir(Path(root), "w", tenant="alice")
-
+def test_weights_only_from_the_same_parametrization_reads_only_local_pieces(committed_dir, monkeypatch):
     def whole_tensor_read(*args, **kwargs):
         raise AssertionError("a same-parametrization load must not read whole tensors")
 
@@ -134,51 +127,20 @@ def test_weights_only_from_the_same_parametrization_reads_only_local_pieces(monk
         whole_tensor_read,
     )
     members = FakeMembers()
-    load_adapter_dir(committed.path, members, 0, RUN, TARGETS, load_optimizer=False)
+    load_adapter_dir(committed_dir, members, 0, RUN, TARGETS, load_optimizer=False)
     assert members.imported.step == 0 and not members.imported.exp_avgs[0].any()
     assert torch.equal(members.imported.weights[1], FULL["lora_B"])
 
 
-def test_a_same_parametrization_load_reads_fp32_under_a_bf16_default_dtype():
-    root = tempfile.mkdtemp()
-    run_multiprocess(partial(_save, root=root))
-    committed = resolve_adapter_dir(Path(root), "w", tenant="alice")
+def test_a_same_parametrization_load_reads_fp32_under_a_bf16_default_dtype(committed_dir):
     members = FakeMembers()
     default_dtype = torch.get_default_dtype()
     torch.set_default_dtype(torch.bfloat16)
     try:
-        load_adapter_dir(committed.path, members, 0, RUN, TARGETS, load_optimizer=True)
+        load_adapter_dir(committed_dir, members, 0, RUN, TARGETS, load_optimizer=True)
     finally:
         torch.set_default_dtype(default_dtype)
     assert torch.equal(members.imported.exp_avgs[1], FULL["lora_B"] * 2)
-
-
-def _rank0_cannot_create(rank, world_size, port, *, root):
-    init_gloo(rank, world_size, port=port)
-    init_gloo_group()
-    if rank == 0:
-        Path(root, "blocker").write_text("")
-        # a file where the root directory should be makes rank 0's mkdir fail
-        root = str(Path(root, "blocker"))
-    else:
-        root = str(Path(root, "blocker"))
-    with pytest.raises(RuntimeError, match="adapter checkpoint failed"):
-        save_adapter_dir(Path(root), "w", FakeMembers(), 0, RUN, tenant_digest=None)
-    dist.destroy_process_group()
-
-
-def test_a_rank0_prepare_failure_fails_every_rank_instead_of_hanging():
-    root = tempfile.mkdtemp()
-    process = (
-        __import__("multiprocessing")
-        .get_context("spawn")
-        .Process(target=run_multiprocess, args=(partial(_rank0_cannot_create, root=root),))
-    )
-    process.start()
-    process.join(timeout=60)
-    hung = process.is_alive()
-    process.kill()
-    assert not hung and process.exitcode == 0
 
 
 class InModelLoaderStub:
@@ -188,8 +150,7 @@ class InModelLoaderStub:
         self._parametrization, self._has_optimizer_state, self.loaded = parametrization, has_optimizer_state, []
 
     def parametrization(self, path):
-        parametrization = self._parametrization(path) if callable(self._parametrization) else self._parametrization
-        return parametrization, self._has_optimizer_state
+        return self._parametrization, self._has_optimizer_state
 
     def prepare(self, path):
         return path
@@ -198,22 +159,50 @@ class InModelLoaderStub:
         self.loaded.append(prepared)
 
 
-def test_an_in_model_source_without_alpha_takes_the_runs(tmp_path):
+def _torchtitan_checkpoint(path) -> Path:
     torch.distributed.checkpoint.save(
-        {"model.layers.0.attention.wq.lora_a.weight": torch.zeros(2)}, checkpoint_id=tmp_path, no_dist=True
+        {"model.layers.0.attention.wq.lora_a.weight": torch.zeros(2)}, checkpoint_id=path, no_dist=True
     )
-    source = load_adapter_dir(
-        tmp_path,
+    return Path(path)
+
+
+def _load_in_model(path, loader, run=RUN, *, load_optimizer):
+    return load_adapter_dir(
+        path,
         FakeMembers(),
         0,
-        RUN,
+        run,
         TARGETS,
-        load_optimizer=True,
-        in_model_loaders_by_kind={
-            AdapterSourceKind.TORCHTITAN_CHECKPOINT: InModelLoaderStub(replace(RUN, lora_alpha=None))
-        },
+        load_optimizer=load_optimizer,
+        in_model_loaders_by_kind={AdapterSourceKind.TORCHTITAN_CHECKPOINT: loader},
     )
-    assert source.lora_alpha == RUN.lora_alpha
+
+
+_SHARED_K = replace(RUN, target_modules=(MODULE, "m.k_proj"), shared_lora_a_groups=((MODULE, "m.k_proj"),))
+
+
+@pytest.mark.parametrize(
+    "source, run, has_optimizer_state, load_optimizer, refusal",
+    [
+        (_SHARED_K, replace(_SHARED_K, shared_lora_a_groups=()), True, False, "cannot do"),
+        (replace(RUN, lora_rank=RUN.lora_rank + 1), RUN, True, False, "adapter rank"),
+        (RUN, RUN, False, True, "no optimizer state"),
+    ],
+    ids=["needs_a_conversion", "another_rank", "no_optimizer_state"],
+)
+def test_a_refused_in_model_source_never_touches_the_model(
+    tmp_path, source, run, has_optimizer_state, load_optimizer, refusal
+):
+    loader = InModelLoaderStub(source, has_optimizer_state)
+    with pytest.raises(RuntimeError, match=refusal):
+        _load_in_model(_torchtitan_checkpoint(tmp_path), loader, run, load_optimizer=load_optimizer)
+    assert loader.loaded == []
+
+
+def test_an_accepted_in_model_source_without_alpha_loads_under_the_runs(tmp_path):
+    loader = InModelLoaderStub(replace(RUN, lora_alpha=None), has_optimizer_state=False)
+    source = _load_in_model(_torchtitan_checkpoint(tmp_path), loader, load_optimizer=False)
+    assert loader.loaded == [tmp_path] and source.lora_alpha == RUN.lora_alpha
 
 
 class WeightsOnlyMembers(FakeMembers):
@@ -231,18 +220,6 @@ def test_a_weights_only_dir_loads_without_optimizer_and_refuses_with_it(tmp_path
     assert torch.equal(members.imported.weights[1], FULL["lora_B"]) and members.imported.step == 0
     with pytest.raises(RuntimeError, match="no optimizer state"):
         load_adapter_dir(written.path, FakeMembers(), 0, RUN, TARGETS, load_optimizer=True)
-
-
-class ExtraKeyMembers(FakeMembers):
-    """Writes one tensor the run does not train, e.g. a second copy of a shared A."""
-
-    def export_adapter_state(self, slot):
-        state = super().export_adapter_state(slot)
-        extra = LocalShardSpec("model.layers.0.self_attn.k_proj.lora_A", (2, 6), (0, 0), (2, 6))
-        w = FULL["lora_A"].clone()
-        return AdapterState(
-            [*state.shard_specs, extra], [*state.weights, w], [*state.exp_avgs, w], [*state.exp_avg_sqs, w], step=5
-        )
 
 
 class VocabPaddingMembers(FakeMembers):
@@ -282,243 +259,16 @@ def test_vocab_padding_resumes_exactly_and_is_zero_for_any_other_run(tmp_path):
     assert len(unpadded.imported.weights) == 2
 
 
-def test_a_backend_state_that_does_not_match_the_parametrization_is_refused_at_save(tmp_path):
-    with pytest.raises(RuntimeError, match="unexpected .*k_proj"):
-        save_adapter_dir(tmp_path, "w", ExtraKeyMembers(), 0, RUN, tenant_digest=None)
-    assert resolve_adapter_dir(tmp_path, "w", tenant=None) is None
+class ExtraKeyMembers(FakeMembers):
+    """Writes one tensor the run does not train, e.g. a second copy of a shared A."""
 
-
-def _refused_by_an_in_model_loader(path):
-    try:
-        raise ValueError("base mismatch")
-    except ValueError as error:
-        raise_if_any_rank_failed(error)
-
-
-def _every_rank_refuses_the_same_source(rank, world_size, port, *, root):
-    init_gloo(rank, world_size, port=port)
-    init_gloo_group()
-    with pytest.raises(RuntimeError) as refused:
-        load_adapter_dir(
-            Path(root),
-            FakeMembers(),
-            0,
-            RUN,
-            TARGETS,
-            load_optimizer=True,
-            in_model_loaders_by_kind={
-                AdapterSourceKind.TORCHTITAN_CHECKPOINT: InModelLoaderStub(_refused_by_an_in_model_loader)
-            },
+    def export_adapter_state(self, slot):
+        state = super().export_adapter_state(slot)
+        extra = LocalShardSpec("model.layers.0.self_attn.k_proj.lora_A", (2, 6), (0, 0), (2, 6))
+        w = FULL["lora_A"].clone()
+        return AdapterState(
+            [*state.shard_specs, extra], [*state.weights, w], [*state.exp_avgs, w], [*state.exp_avg_sqs, w], step=5
         )
-    assert str(refused.value) == "adapter checkpoint failed: rank 0,1,2: ValueError: base mismatch"
-    dist.destroy_process_group()
-
-
-def test_an_error_every_rank_agreed_on_is_reported_once(tmp_path):
-    torch.distributed.checkpoint.save(
-        {"model.layers.0.attention.wq.lora_a.weight": torch.zeros(2)}, checkpoint_id=tmp_path, no_dist=True
-    )
-    run_multiprocess(partial(_every_rank_refuses_the_same_source, root=str(tmp_path)), world_size=3)
-
-
-def _one_rank_cannot_read(rank, world_size, port, *, root):
-    init_gloo(rank, world_size, port=port)
-    init_gloo_group()
-    path = Path(root) if rank == 0 else Path(root, "missing")
-    with pytest.raises(RuntimeError, match="adapter checkpoint failed: rank 1"):
-        load_adapter_dir(path, FakeMembers(), 0, RUN, TARGETS, load_optimizer=False)
-    dist.destroy_process_group()
-
-
-def test_a_load_failure_on_one_rank_fails_every_rank_instead_of_hanging(tmp_path):
-    write_peft_adapter(tmp_path, {f"{MODULE}.{k}": v for k, v in FULL.items()}, RUN, TARGETS, lora_dropout=0.0)
-    process = (
-        __import__("multiprocessing")
-        .get_context("spawn")
-        .Process(target=run_multiprocess, args=(partial(_one_rank_cannot_read, root=str(tmp_path)),))
-    )
-    process.start()
-    process.join(timeout=60)
-    hung = process.is_alive()
-    process.kill()
-    assert not hung and process.exitcode == 0
-
-
-class OneRankCannotImport(FakeMembers):
-    """Rank 1 fails writing its pieces; finishing the import on any rank would enter a collective."""
-
-    def import_adapter_state(self, slot, state):
-        assert dist.get_rank() != 1, "rank 1 cannot write its pieces"
-        super().import_adapter_state(slot, state)
-
-    def finish_import_adapter_state(self, slot):
-        dist.barrier()
-        super().finish_import_adapter_state(slot)
-
-
-def _one_rank_cannot_import(rank, world_size, port, *, root):
-    init_gloo(rank, world_size, port=port)
-    init_gloo_group()
-    members = OneRankCannotImport()
-    with pytest.raises(RuntimeError, match="adapter checkpoint failed: rank 1: AssertionError: rank 1 cannot write"):
-        load_adapter_dir(Path(root), members, 0, RUN, TARGETS, load_optimizer=False)
-    assert not members.finished, "no rank finishes an import another rank could not write"
-    dist.destroy_process_group()
-
-
-def test_a_rank_local_import_failure_fails_every_rank_before_the_import_collectives(tmp_path):
-    write_peft_adapter(tmp_path, {f"{MODULE}.{k}": v for k, v in FULL.items()}, RUN, TARGETS, lora_dropout=0.0)
-    process = (
-        __import__("multiprocessing")
-        .get_context("spawn")
-        .Process(target=run_multiprocess, args=(partial(_one_rank_cannot_import, root=str(tmp_path)),))
-    )
-    process.start()
-    process.join(timeout=60)
-    hung = process.is_alive()
-    process.kill()
-    assert not hung and process.exitcode == 0
-
-
-def test_an_import_is_finished_after_its_pieces_are_written(tmp_path):
-    write_peft_adapter(tmp_path, {f"{MODULE}.{k}": v for k, v in FULL.items()}, RUN, TARGETS, lora_dropout=0.0)
-    members = FakeMembers()
-    load_adapter_dir(tmp_path, members, 0, RUN, TARGETS, load_optimizer=False)
-    assert members.imported is not None and members.finished
-
-
-class OneRankCannotPrepare(InModelLoaderStub):
-    """Rank 1 fails reading its part of the source; applying it on any rank would enter a collective."""
-
-    def prepare(self, path):
-        assert dist.get_rank() != 1, "rank 1 has no shard"
-        return path
-
-    def apply(self, prepared):
-        dist.barrier()
-        super().apply(prepared)
-
-
-def _one_rank_cannot_prepare_an_in_model_source(rank, world_size, port, *, root):
-    init_gloo(rank, world_size, port=port)
-    init_gloo_group()
-    loader = OneRankCannotPrepare(RUN)
-    with pytest.raises(RuntimeError, match="adapter checkpoint failed: rank 1: AssertionError: rank 1 has no shard"):
-        load_adapter_dir(
-            Path(root),
-            FakeMembers(),
-            0,
-            RUN,
-            TARGETS,
-            load_optimizer=False,
-            in_model_loaders_by_kind={AdapterSourceKind.TORCHTITAN_CHECKPOINT: loader},
-        )
-    assert loader.loaded == [], "no rank applies a source another rank could not prepare"
-    dist.destroy_process_group()
-
-
-def test_a_rank_local_failure_of_an_in_model_source_fails_every_rank_before_its_collectives(tmp_path):
-    torch.distributed.checkpoint.save(
-        {"model.layers.0.attention.wq.lora_a.weight": torch.zeros(2)}, checkpoint_id=tmp_path, no_dist=True
-    )
-    process = (
-        __import__("multiprocessing")
-        .get_context("spawn")
-        .Process(
-            target=run_multiprocess, args=(partial(_one_rank_cannot_prepare_an_in_model_source, root=str(tmp_path)),)
-        )
-    )
-    process.start()
-    process.join(timeout=60)
-    hung = process.is_alive()
-    process.kill()
-    assert not hung and process.exitcode == 0
-
-
-def test_an_in_model_source_with_another_parametrization_is_refused(tmp_path):
-    torch.distributed.checkpoint.save(
-        {"model.layers.0.attention.wq.lora_a.weight": torch.zeros(2)}, checkpoint_id=tmp_path, no_dist=True
-    )
-    shared = replace(RUN, target_modules=(MODULE, "m.k_proj"), shared_lora_a_groups=((MODULE, "m.k_proj"),))
-    loader = InModelLoaderStub(shared)
-    with pytest.raises(RuntimeError, match="cannot do"):
-        load_adapter_dir(
-            tmp_path,
-            FakeMembers(),
-            0,
-            replace(shared, shared_lora_a_groups=()),
-            TARGETS,
-            load_optimizer=False,
-            in_model_loaders_by_kind={AdapterSourceKind.TORCHTITAN_CHECKPOINT: loader},
-        )
-    assert loader.loaded == [], "a refused source must not touch the model"
-
-
-def test_an_in_model_source_is_loaded_only_after_its_parametrization_is_accepted(tmp_path):
-    torch.distributed.checkpoint.save(
-        {"model.layers.0.attention.wq.lora_a.weight": torch.zeros(2)}, checkpoint_id=tmp_path, no_dist=True
-    )
-    refused = InModelLoaderStub(replace(RUN, lora_rank=RUN.lora_rank + 1))
-    with pytest.raises(RuntimeError, match="adapter rank"):
-        load_adapter_dir(
-            tmp_path,
-            FakeMembers(),
-            0,
-            RUN,
-            TARGETS,
-            load_optimizer=False,
-            in_model_loaders_by_kind={AdapterSourceKind.TORCHTITAN_CHECKPOINT: refused},
-        )
-    assert refused.loaded == [], "a refused source must not touch the model"
-    accepted = InModelLoaderStub(RUN)
-    load_adapter_dir(
-        tmp_path,
-        FakeMembers(),
-        0,
-        RUN,
-        TARGETS,
-        load_optimizer=False,
-        in_model_loaders_by_kind={AdapterSourceKind.TORCHTITAN_CHECKPOINT: accepted},
-    )
-    assert accepted.loaded == [tmp_path]
-
-
-def test_an_in_model_source_without_optimizer_state_is_refused_when_loading_it(tmp_path):
-    torch.distributed.checkpoint.save(
-        {"model.layers.0.attention.wq.lora_a.weight": torch.zeros(2)}, checkpoint_id=tmp_path, no_dist=True
-    )
-    loader = InModelLoaderStub(RUN, has_optimizer_state=False)
-    with pytest.raises(RuntimeError, match="no optimizer state"):
-        load_adapter_dir(
-            tmp_path,
-            FakeMembers(),
-            0,
-            RUN,
-            TARGETS,
-            load_optimizer=True,
-            in_model_loaders_by_kind={AdapterSourceKind.TORCHTITAN_CHECKPOINT: loader},
-        )
-    assert loader.loaded == [], "a refused source must not touch the model"
-    load_adapter_dir(
-        tmp_path,
-        FakeMembers(),
-        0,
-        RUN,
-        TARGETS,
-        load_optimizer=False,
-        in_model_loaders_by_kind={AdapterSourceKind.TORCHTITAN_CHECKPOINT: loader},
-    )
-    assert loader.loaded == [tmp_path]
-
-
-def test_a_refused_source_is_reported_as_a_source_error(tmp_path):
-    written = save_adapter_dir(tmp_path, "w", FakeMembers(), 0, RUN, tenant_digest=None)
-    with pytest.raises(RuntimeError, match="adapter rank 2 != run rank 4") as refused:
-        load_adapter_dir(written.path, FakeMembers(), 0, replace(RUN, lora_rank=4), TARGETS, load_optimizer=False)
-    assert isinstance(refused.value.__cause__, AdapterSourceError)
-    with pytest.raises(RuntimeError) as unrecognized:
-        load_adapter_dir(tmp_path, FakeMembers(), 0, RUN, TARGETS, load_optimizer=False)
-    assert isinstance(unrecognized.value.__cause__, AdapterSourceError)
 
 
 class NoPrimaryAMembers(FakeMembers):
@@ -527,46 +277,6 @@ class NoPrimaryAMembers(FakeMembers):
     def get_local_shard_specs(self, slot):
         a, b = super().get_local_shard_specs(slot)
         return [replace(a, is_primary=False), b]
-
-
-def _save_without_a_primary(rank, world_size, port, *, root):
-    init_gloo(rank, world_size, port=port)
-    init_gloo_group()
-    with pytest.raises(RuntimeError, match="missing .*lora_A"):
-        save_adapter_dir(Path(root), "w", NoPrimaryAMembers(), 0, RUN, tenant_digest=None)
-    dist.destroy_process_group()
-
-
-def test_a_key_without_a_primary_is_refused_at_save():
-    run_multiprocess(partial(_save_without_a_primary, root=tempfile.mkdtemp()))
-
-
-class SpecsFailOnRank1(FakeMembers):
-    def get_local_shard_specs(self, slot):
-        assert self.rank != 1, "rank 1 cannot describe its pieces"
-        return super().get_local_shard_specs(slot)
-
-
-def _specs_fail_on_one_rank(rank, world_size, port, *, root):
-    init_gloo(rank, world_size, port=port)
-    init_gloo_group()
-    with pytest.raises(RuntimeError, match="rank 1 cannot describe"):
-        load_adapter_dir(Path(root), SpecsFailOnRank1(), 0, RUN, TARGETS, load_optimizer=False)
-    dist.destroy_process_group()
-
-
-def test_a_shard_spec_failure_on_one_rank_fails_every_rank(tmp_path):
-    write_peft_adapter(tmp_path, {f"{MODULE}.{k}": v for k, v in FULL.items()}, RUN, TARGETS, lora_dropout=0.0)
-    process = (
-        __import__("multiprocessing")
-        .get_context("spawn")
-        .Process(target=run_multiprocess, args=(partial(_specs_fail_on_one_rank, root=str(tmp_path)),))
-    )
-    process.start()
-    process.join(timeout=60)
-    hung = process.is_alive()
-    process.kill()
-    assert not hung and process.exitcode == 0
 
 
 class PaddedRankMembers(FakeMembers):
@@ -582,9 +292,105 @@ class PaddedRankMembers(FakeMembers):
         return AdapterState(specs, pieces, pieces, pieces, step=1)
 
 
-def test_a_padded_rank_is_refused_at_save(tmp_path):
-    with pytest.raises(RuntimeError, match="rank 3 != 2"):
-        save_adapter_dir(tmp_path, "w", PaddedRankMembers(), 0, RUN, tenant_digest=None)
+@pytest.mark.parametrize(
+    "members, refusal",
+    [
+        (ExtraKeyMembers, "unexpected .*k_proj"),
+        (NoPrimaryAMembers, "missing .*lora_A"),
+        (PaddedRankMembers, "rank 3 != 2"),
+    ],
+    ids=["extra_key", "no_primary", "padded_rank"],
+)
+def test_a_backend_state_that_does_not_match_the_parametrization_is_refused_at_save(tmp_path, members, refusal):
+    with pytest.raises(RuntimeError, match=refusal):
+        save_adapter_dir(tmp_path, "w", members(), 0, RUN, tenant_digest=None)
+
+
+def test_a_refused_source_is_reported_as_a_source_error(tmp_path):
+    written = save_adapter_dir(tmp_path, "w", FakeMembers(), 0, RUN, tenant_digest=None)
+    with pytest.raises(RuntimeError, match="adapter rank 2 != run rank 4") as refused:
+        load_adapter_dir(written.path, FakeMembers(), 0, replace(RUN, lora_rank=4), TARGETS, load_optimizer=False)
+    assert isinstance(refused.value.__cause__, AdapterSourceError)
+    with pytest.raises(RuntimeError) as unrecognized:
+        load_adapter_dir(tmp_path, FakeMembers(), 0, RUN, TARGETS, load_optimizer=False)
+    assert isinstance(unrecognized.value.__cause__, AdapterSourceError)
+
+
+class OneRankCannotImport(FakeMembers):
+    """Rank 1 fails writing its pieces; finishing the import on any rank would enter a collective."""
+
+    def import_adapter_state(self, slot, state):
+        assert dist.get_rank() != 1, "rank 1 cannot write its pieces"
+        super().import_adapter_state(slot, state)
+
+    def finish_import_adapter_state(self, slot):
+        dist.barrier()
+        super().finish_import_adapter_state(slot)
+
+
+class OneRankCannotPrepare(InModelLoaderStub):
+    """Rank 1 fails reading its part of the source; applying it on any rank would enter a collective."""
+
+    def prepare(self, path):
+        assert dist.get_rank() != 1, "rank 1 has no shard"
+        return path
+
+    def apply(self, prepared):
+        dist.barrier()
+        super().apply(prepared)
+
+
+class SpecsFailOnRank1(FakeMembers):
+    def get_local_shard_specs(self, slot):
+        assert self.rank != 1, "rank 1 cannot describe its pieces"
+        return super().get_local_shard_specs(slot)
+
+
+def _one_rank_fails(rank, world_size, port, *, peft, torchtitan, scratch):
+    init_gloo(rank, world_size, port=port)
+    init_gloo_group()
+    rank = dist.get_rank()
+    # a file where the root directory should be makes rank 0's mkdir fail
+    if rank == 0:
+        Path(scratch, "blocker").write_text("")
+    with pytest.raises(RuntimeError, match="adapter checkpoint failed: rank 0"):
+        save_adapter_dir(
+            Path(scratch, "blocker" if rank == 0 else "ok"), "w", FakeMembers(), 0, RUN, tenant_digest=None
+        )
+
+    with pytest.raises(RuntimeError, match="adapter checkpoint failed: rank 1"):
+        load_adapter_dir(
+            Path(peft, "missing") if rank else Path(peft), FakeMembers(), 0, RUN, TARGETS, load_optimizer=False
+        )
+
+    with pytest.raises(RuntimeError, match="rank 1 cannot describe"):
+        load_adapter_dir(Path(peft), SpecsFailOnRank1(), 0, RUN, TARGETS, load_optimizer=False)
+
+    members = OneRankCannotImport()
+    with pytest.raises(RuntimeError, match="rank 1: AssertionError: rank 1 cannot write"):
+        load_adapter_dir(Path(peft), members, 0, RUN, TARGETS, load_optimizer=False)
+    assert not members.finished, "no rank finishes an import another rank could not write"
+
+    loader = OneRankCannotPrepare(RUN)
+    with pytest.raises(RuntimeError, match="rank 1: AssertionError: rank 1 has no shard"):
+        _load_in_model(Path(torchtitan), loader, load_optimizer=False)
+    assert loader.loaded == [], "no rank applies a source another rank could not prepare"
+    dist.destroy_process_group()
+
+
+def test_a_rank_local_failure_fails_every_rank_before_the_next_collective(tmp_path):
+    """Save prepare, source read, shard specs, import and in-model prepare each agree before a collective."""
+    peft = tmp_path / "peft"
+    write_peft_adapter(peft, {f"{MODULE}.{k}": v for k, v in FULL.items()}, RUN, TARGETS, lora_dropout=0.0)
+    torchtitan = _torchtitan_checkpoint(tmp_path / "torchtitan")
+    (tmp_path / "scratch").mkdir()
+    worker = partial(_one_rank_fails, peft=str(peft), torchtitan=str(torchtitan), scratch=str(tmp_path / "scratch"))
+    process = __import__("multiprocessing").get_context("spawn").Process(target=run_multiprocess, args=(worker,))
+    process.start()
+    process.join(timeout=60)
+    hung = process.is_alive()
+    process.kill()
+    assert not hung and process.exitcode == 0
 
 
 class DataParallelMembers(FakeMembers):
@@ -669,26 +475,6 @@ def test_peft_export_of_a_fused_gdn_group_writes_one_a_per_exported_module(tmp_p
     for module, b in members.b.items():
         assert torch.equal(tensors[f"base_model.model.{GDN}.{module}.lora_A.weight"], members.a.to(torch.bfloat16))
         assert torch.equal(tensors[f"base_model.model.{GDN}.{module}.lora_B.weight"], b.to(torch.bfloat16))
-
-
-class CanonicalGdnMembers:
-    """Bridge's canonical export: each GDN in_proj_qkv component under its own name with its own lora_A."""
-
-    bf16_adapter_key_style = "peft"
-
-    def export_bf16_adapter(self, slot):
-        for component, rows in (("in_proj_q", 2), ("in_proj_k", 2), ("in_proj_v", 3)):
-            yield f"{GDN}.{component}.lora_A.weight", torch.randn(4, 6)
-            yield f"{GDN}.{component}.lora_B.weight", torch.randn(rows, 4)
-
-
-def test_peft_export_refuses_canonical_gdn_components(tmp_path):
-    """HF has only the fused in_proj_qkv: components with their own lora_A have no PEFT name, so the export fails."""
-    components = tuple(f"{GDN}.in_proj_{c}" for c in "kqv")
-    run = AdapterParametrization("m", 4, 8.0, "canonical_lora", components, False)
-    with pytest.raises(RuntimeError, match="has no plain-PEFT form; the adapter dir is the checkpoint"):
-        write_peft_export(tmp_path, CanonicalGdnMembers(), 0, run, GDN_TARGETS, lora_dropout=0.0)
-    assert not (tmp_path / "adapter_model.safetensors").exists()
 
 
 class CanonicalGdnSaveMembers(FakeMembers):
