@@ -1,4 +1,3 @@
-import argparse
 import sys
 from types import ModuleType, SimpleNamespace
 from typing import Any
@@ -37,6 +36,19 @@ def _config() -> SimpleNamespace:
     )
 
 
+def _fake_ext(monkeypatch: pytest.MonkeyPatch, op: str, module: ModuleType, configured: list | None = None) -> None:
+    """Stand-ins for ``miles_ext_kernels`` (its ``configure`` records the values), ``miles_ext_kernels.cake`` (its
+    ``prebuild`` does nothing) and the op module ``miles_ext_kernels.cake.<op>``."""
+    package = ModuleType("miles_ext_kernels")
+    package.configure = (configured if configured is not None else []).append
+    cake = ModuleType("miles_ext_kernels.cake")
+    cake.prebuild = lambda op, **params: []
+    package.cake = cake
+    setattr(cake, op, module)
+    for stub in (package, cake, module):
+        monkeypatch.setitem(sys.modules, stub.__name__, stub)
+
+
 class TestGdnConfig:
     @pytest.mark.parametrize("backend", [None, "fla", "flashqla", "cake"])
     def test_constructor_connects_the_configured_sdk_kernel_without_cuda(
@@ -65,11 +77,9 @@ class TestGdnConfig:
         qla.chunk_gated_delta_rule = qla_kernel
         monkeypatch.setitem(sys.modules, "fla.ops.gated_delta_rule", fla)
         monkeypatch.setitem(sys.modules, "flash_qla", qla)
-        cake = ModuleType("miles_ext_kernels.gdn")
+        cake = ModuleType("miles_ext_kernels.cake.gdn")
         cake.chunk_gated_delta_rule = cake_kernel
-        cake.configure = configured.append
-        monkeypatch.setitem(sys.modules, "miles_ext_kernels", ModuleType("miles_ext_kernels"))
-        monkeypatch.setitem(sys.modules, "miles_ext_kernels.gdn", cake)
+        _fake_ext(monkeypatch, "gdn", cake, configured)
         monkeypatch.setattr(gdn, "ShortConvolution", _CpuSdkModule, raising=False)
         monkeypatch.setattr(gdn, "FusedRMSNormGated", _CpuSdkModule, raising=False)
         monkeypatch.setattr(torch.cuda, "current_device", lambda: "cpu")
@@ -87,7 +97,7 @@ class TestGdnConfig:
         expected = backend or "fla"
         assert calls == [expected]
         assert result == f"{expected}-result"
-        expected_configured = [argparse.Namespace(cake_gdn_recompute_state=True)] if backend == "cake" else []
+        expected_configured = [{"cake_gdn_recompute_state": True}] if backend == "cake" else []
         assert configured == expected_configured
         assert layer.in_proj_qkv.weight.shape == (6, 4)
         assert layer.out_proj.weight.device.type == "cpu"
@@ -111,12 +121,11 @@ class TestGdnConfig:
             calls.append(kwargs)
             return value, None
 
-        for name in ("fla.ops.gated_delta_rule", "flash_qla", "miles_ext_kernels.gdn"):
+        for name in ("fla.ops.gated_delta_rule", "flash_qla", "miles_ext_kernels.cake.gdn"):
             module = ModuleType(name)
             module.chunk_gated_delta_rule = kernel
-            module.configure = lambda args: None
             monkeypatch.setitem(sys.modules, name, module)
-        monkeypatch.setitem(sys.modules, "miles_ext_kernels", ModuleType("miles_ext_kernels"))
+        _fake_ext(monkeypatch, "gdn", sys.modules["miles_ext_kernels.cake.gdn"])
         monkeypatch.setattr(gdn, "ShortConvolution", _PassThroughConv, raising=False)
         monkeypatch.setattr(gdn, "FusedRMSNormGated", _PassThroughNorm, raising=False)
         monkeypatch.setattr(torch.cuda, "current_device", lambda: "cpu")
