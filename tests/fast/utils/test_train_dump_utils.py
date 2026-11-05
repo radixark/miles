@@ -1,5 +1,6 @@
 """`save_debug_train_data` must write exactly one file per (dp, cp) shard."""
 
+from concurrent.futures import Future
 from types import SimpleNamespace
 
 import pytest
@@ -43,3 +44,23 @@ def test_only_one_rank_per_shard_writes(tmp_path, monkeypatch, tp_rank, is_pp_la
     train_dump.save_debug_train_data(args, rollout_id=3, rollout_data={"sample_indices": [0]})
 
     assert (tmp_path / "3_5.pt").exists() == writes
+
+
+def test_token_space_inputs_are_left_out_of_the_dump(tmp_path, monkeypatch):
+    """The rebuilt token-space inputs are Futures (unpicklable) and large; the dump keeps every other key."""
+    monkeypatch.setattr(train_dump, "get_parallel_state", lambda: _parallel_state(tp_rank=0, is_pp_last_stage=True))
+    monkeypatch.setattr(torch.distributed, "get_rank", lambda: 0)
+    args = SimpleNamespace(save_debug_train_data=str(tmp_path / "{rollout_id}_{rank}.pt"), qkv_format="thd")
+
+    train_dump.save_debug_train_data(
+        args,
+        rollout_id=0,
+        rollout_data={
+            "tokens": [torch.zeros(1)],
+            "multimodal_train_inputs": [Future()],
+            "mrope_position_ids": [Future()],
+        },
+    )
+
+    saved = torch.load(tmp_path / "0_0.pt", weights_only=False)["rollout_data"]
+    assert set(saved) == {"tokens"}
