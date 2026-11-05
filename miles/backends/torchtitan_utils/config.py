@@ -16,12 +16,14 @@ from torchtitan.distributed.activation_remat import FullActivationRematConfig
 from torchtitan.models.base import BaseModel
 from torchtitan.models.common.attention import FlexInnerAttention, InnerAttention, MLAAttention
 from torchtitan.models.common.attention.cp_attention import AllGatherKVFlexInnerAttention
+from torchtitan.models.common.attention.gdn import InnerGDN
 from torchtitan.models.common.linear import Linear
 from torchtitan.models.common.moe import MoE
 
 from miles import platforms
 from miles.backends.torchtitan_utils import lora
 from miles.backends.torchtitan_utils.components import TiedCheckpointManager
+from miles.backends.torchtitan_utils.document_gated_delta import DocumentGatedDeltaInnerAttention
 from miles.backends.torchtitan_utils.loss import RLLossAdapter
 from miles.backends.torchtitan_utils.sdpa_document_attention import BlockedSdpaInnerAttention
 from miles.backends.torchtitan_utils.trainer import TitanTrainer
@@ -66,7 +68,7 @@ def build_model_config(
     model = builder(args.backend.titan_model_flavor, **kwargs)
     _disable_load_balancing(model)
     if not platforms.current_platform.flex_attention:
-        _replace_flex_attention(model, _document_attention(args.backend.titan_tpu_attention))
+        _replace_inner_attention(model, _document_attention(args.backend.titan_tpu_attention))
     if parallelism.context_parallel_degree > 1:
         model = transform_model_config_(
             model, [ContextParallelTransform(inner_attention_map={FlexInnerAttention: AllGatherKVFlexInnerAttention})]
@@ -83,18 +85,24 @@ def _document_attention(backend: str) -> type[BlockedSdpaInnerAttention]:
     return BlockedSdpaInnerAttention
 
 
-def _replace_flex_attention(model: BaseModel.Config, attention: type[BlockedSdpaInnerAttention]) -> None:
+def _replace_inner_attention(model: BaseModel.Config, attention: type[BlockedSdpaInnerAttention]) -> None:
+    """Swap in inner attentions keyed on document ids, for platforms without sparse FlexAttention or attn_gym."""
+    replacements: dict[type[InnerAttention.Config], type[InnerAttention.Config]] = {
+        FlexInnerAttention.Config: attention.Config,
+        InnerGDN.Config: DocumentGatedDeltaInnerAttention.Config,
+    }
     for layer in model.layers:
         for _, inner, parent, field_name in layer.traverse(InnerAttention.Config, recurse=True):
             # MLA wraps the attention kernel it runs
             if isinstance(inner, MLAAttention.Config):
                 continue
-            if type(inner) is not FlexInnerAttention.Config:
+            replacement = replacements.get(type(inner))
+            if replacement is None:
                 raise ValueError(
-                    f"on {platforms.current_platform.device_type} only document-causal FlexAttention has a "
-                    f"replacement; {type(inner).__qualname__} has none"
+                    f"on {platforms.current_platform.device_type} {type(inner).__qualname__} has no replacement; "
+                    f"only {', '.join(c.__qualname__ for c in replacements)} do"
                 )
-            setattr(parent, field_name, attention.Config())
+            setattr(parent, field_name, replacement())
 
 
 # not FreezeMoERoutingTransform: it also freezes the router gate, which RL trains
