@@ -3,7 +3,7 @@ reference of ``tests/fast-gpu/linear_attn_reference.py``: forward output, input 
 gradient (gathered across TP, summed across CP), plus bit determinism of the cake path (a second identical pass
 reproduces the output and all gradients exactly).  Needs SM100a / SM103a / SM107a GPUs.
 
-The cake kernels are ``miles_ext_kernels.gdn`` from the miles-ext-kernels submodule. This script builds the layer
+The cake kernels are ``miles_ext_kernels.cake.gdn`` from the miles-ext-kernels submodule. This script builds the layer
 directly instead of parsing miles arguments, so it takes no ``--use-miles-ext-kernels``; the package must be
 importable instead (``git submodule update --init 3rdparty/miles-ext-kernels`` and ``3rdparty/miles-ext-kernels``
 on ``PYTHONPATH``, as CI sets it).
@@ -146,9 +146,9 @@ def main() -> int:
     torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
     dist.init_process_group("nccl", timeout=timedelta(seconds=600))
     if args.backend == "cake":
-        from miles_ext_kernels.gdn import SUPPORTED_CAPABILITIES
+        from miles_ext_kernels.cake import ARCH_BY_CAPABILITY
 
-        if torch.cuda.get_device_capability() not in SUPPORTED_CAPABILITIES:
+        if torch.cuda.get_device_capability() not in ARCH_BY_CAPABILITY:
             if rank == 0:
                 print(f"SKIPPED: the cake GDN kernels need SM100a/SM103a/SM107a, got {torch.cuda.get_device_name()}")
             dist.destroy_process_group()

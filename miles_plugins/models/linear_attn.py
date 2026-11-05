@@ -76,8 +76,9 @@ def miles_ext(name: str, args=None) -> ModuleType:
 
 def gdn_kernel(backend: str, args=None):
     """The ``chunk_gated_delta_rule`` of ``backend``. For ``cake``, where the caller has the parsed miles configuration
-    ``args``, the values of the kernel package's own arguments (``args.miles_ext_kernels_args``) go to its
-    ``configure``."""
+    ``args`` (a layer being built), the values of the kernel package's own arguments (``args.miles_ext_kernels_args``)
+    go to ``miles_ext_kernels.configure`` and every library of the op is built for this GPU
+    (``miles_ext_kernels.cake.prebuild("gdn")``), so no training step compiles."""
     if backend == "fla":
         try:
             from fla.ops.gated_delta_rule import chunk_gated_delta_rule
@@ -96,15 +97,18 @@ def gdn_kernel(backend: str, args=None):
 
     if backend == "cake":
         try:
-            from miles_ext_kernels.gdn import chunk_gated_delta_rule, configure
+            import miles_ext_kernels
+            from miles_ext_kernels import cake
+            from miles_ext_kernels.cake.gdn import chunk_gated_delta_rule
         except ImportError as exc:
             raise ImportError(
-                "GDN backend 'cake' runs miles_ext_kernels.gdn from the miles-ext-kernels submodule: pass "
+                "GDN backend 'cake' runs miles_ext_kernels.cake.gdn from the miles-ext-kernels submodule: pass "
                 "--use-miles-ext-kernels and check the submodule out with "
                 "'git submodule update --init 3rdparty/miles-ext-kernels'."
             ) from exc
         if args is not None:
-            configure(argparse.Namespace(**(args.miles_ext_kernels_args or {})))
+            miles_ext_kernels.configure(args.miles_ext_kernels_args)
+            cake.prebuild("gdn")
         return chunk_gated_delta_rule
 
     raise ValueError(f"Unsupported GDN backend: {backend}")
@@ -114,13 +118,13 @@ def gdn_kernel(backend: str, args=None):
 def kda_kernel(backend: str = "fla"):
     """The ``chunk_kda`` of ``backend``. 'fla': on Blackwell its backward runs the Triton dqkg kernel
     (FLA_TILELANG=0), which beats fla's TileLang one there at every tiling; an explicit FLA_TILELANG wins. 'cake': the
-    deterministic Cake kernels of ``miles_ext_kernels.kda`` (from the miles-ext-kernels submodule)."""
+    deterministic Cake kernels of ``miles_ext_kernels.cake.kda`` (from the miles-ext-kernels submodule)."""
     if backend == "cake":
         try:
-            from miles_ext_kernels.kda import chunk_kda
+            from miles_ext_kernels.cake.kda import chunk_kda
         except ImportError as exc:
             raise ImportError(
-                "KDA backend 'cake' runs miles_ext_kernels.kda from the miles-ext-kernels submodule: pass "
+                "KDA backend 'cake' runs miles_ext_kernels.cake.kda from the miles-ext-kernels submodule: pass "
                 "--use-miles-ext-kernels and check the submodule out with "
                 "'git submodule update --init 3rdparty/miles-ext-kernels'."
             ) from exc
@@ -548,13 +552,13 @@ class LinearAttention(MegatronModule, ABC):
 
 class GatedDeltaNet(LinearAttention):
     """Gated DeltaNet: one softplus-gated decay per value head, through fla's or FlashQLA's chunked
-    kernel, or the Cake one (``cake``, SM100a / SM103a / SM107a, K = V = 128, ``miles_ext_kernels.gdn`` from the
-    miles-ext-kernels submodule: ``--cake-gdn-variant`` det, the bit-deterministic kernels, or fast, the fixed-order
+    kernel, or the Cake one (``cake``, SM100a / SM103a / SM107a, K = V = 128, ``miles_ext_kernels.cake.gdn`` from the
+    miles-ext-kernels submodule: ``--cake-gdn-variant`` det, the bit-deterministic kernels, or fast, the
     non-deterministic package; its short conv runs on :func:`cake_conv_backend` and its gated output norm on
-    :func:`reproducible_rms_norm_gated`, so the whole layer's gradients are reproducible). ``args``, the parsed miles
-    arguments, configure the ``cake`` kernels (see :func:`gdn_kernel`); a
-    layer built without them runs det. ``args.linear_attention_conv_backend`` 'cake' runs the short conv on the Cake
-    kernels, with any GDN backend. Models subclass it with their
+    :func:`reproducible_rms_norm_gated`, so the whole layer's gradients are reproducible under det). ``args``, the
+    parsed miles arguments, configure the ``cake`` kernels and build them (see :func:`gdn_kernel`); a
+    process that never configured them runs det. ``args.linear_attention_conv_backend`` 'cake' runs the short conv on
+    the Cake kernels, with any GDN backend. Models subclass it with their
     projections and :meth:`in_proj_sections`; all four projections run as one GEMM whose width is zero-padded
     to a multiple of 8, the row-stride alignment causal-conv1d's channel-last backward requires of the q/k/v
     view."""
@@ -615,9 +619,10 @@ class KimiDeltaAttention(LinearAttention):
     and need no group-major permutation. ``f_a_proj`` is replicated and feeds head-sharded ``f_b_proj``,
     so its weight passes the TP copy op like the norm. The conv weights train in fp32, as Kimi's
     checkpoints store them. ``kda_backend`` 'cake' runs the recurrence on the deterministic Cake kernels of
-    ``miles_ext_kernels.kda`` (1 to 64 heads per rank, SM100a / SM103a / SM107a), whose kernels for this rank's head
-    count are built when the layer is; its short convs then default to :func:`cake_conv_backend` and its gated
-    output norm runs on :func:`reproducible_rms_norm_gated`, so the layer's gradients are reproducible."""
+    ``miles_ext_kernels.cake.kda`` (1 to 64 heads per rank, SM100a / SM103a / SM107a), whose libraries are built when
+    the layer is (``miles_ext_kernels.cake.prebuild("kda", num_heads=...)``); its short convs then default to
+    :func:`cake_conv_backend` and its gated output norm runs on :func:`reproducible_rms_norm_gated`, so the layer's
+    gradients are reproducible."""
 
     dt_bias_per_channel = True
     dt_bias_dtype = torch.float32
@@ -643,11 +648,11 @@ class KimiDeltaAttention(LinearAttention):
         self.reproducible_norm = kda_backend == "cake"
         if kda_backend == "cake":
             kda_kernel("cake")  # the clear ImportError without the submodule
-            from miles_ext_kernels.kda import prepare
+            from miles_ext_kernels import cake
 
-            # More than 64 heads per rank raises here (Kimi-K3's 96 at TP1), as does a GPU other than
-            # SM100a / SM103a / SM107a
-            prepare(self.local.num_v_heads)
+            # Builds every library of the op for this GPU. More than 64 heads per rank raises here (Kimi-K3's 96 at
+            # TP1), as does a GPU other than SM100a / SM103a / SM107a
+            cake.prebuild("kda", num_heads=self.local.num_v_heads)
 
     def _build_projections(self):
         hidden, local = self.config.hidden_size, self.local

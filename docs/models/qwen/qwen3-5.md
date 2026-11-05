@@ -111,7 +111,7 @@ The GDN (gated delta-net) layers run through the head-sharded linear-attention l
 |---|---|---|---|
 | `fla` (default) | flash-linear-attention (Triton) | any | portable reference |
 | `flashqla` | FlashQLA | SM90+ | no context parallelism |
-| `cake` | Cake chunked forward + backward (`miles_ext_kernels.gdn`, from the `3rdparty/miles-ext-kernels` submodule); needs `--use-miles-ext-kernels` | SM100a / SM103a (Blackwell), SM107a (Rubin) | `--cake-gdn-variant det` (bit-deterministic, the only variant with context parallelism through fla's state passing) or `fast` (fixed-order, so also bit-identical run to run; the default outside `--deterministic-mode`); grouped value heads without `repeat_interleave`; `K = V = 128`; the layer's short conv runs on fla's Triton kernels (causal-conv1d's CUDA backward accumulates its weight gradient with atomics) unless `FLA_CONV_BACKEND` says otherwise |
+| `cake` | Cake chunked forward + backward (`miles_ext_kernels.cake.gdn`, from the `3rdparty/miles-ext-kernels` submodule); needs `--use-miles-ext-kernels` | SM100a / SM103a (Blackwell), SM107a (Rubin) | `--cake-gdn-variant det` (bit-deterministic, the only variant with context parallelism through fla's state passing) or `fast` (the non-deterministic package; the default outside `--deterministic-mode`, which rejects it); grouped value heads without `repeat_interleave`; `K = V = 128`; the layer's short conv runs on fla's Triton kernels (causal-conv1d's CUDA backward accumulates its weight gradient with atomics) unless `FLA_CONV_BACKEND` says otherwise |
 
 `cake` runs from the miles-ext-kernels submodule. Check it out and enable it:
 

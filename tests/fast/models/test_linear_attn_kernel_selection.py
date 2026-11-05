@@ -2,7 +2,8 @@
 
 The flashqla equivalence tests need a Hopper (SM90+) GPU with both `fla` and `flash_qla`; they skip otherwise.
 The cake kernels' equivalence with fla and their determinism are tested in the miles-ext-kernels submodule
-(`3rdparty/miles-ext-kernels/tests/gdn`), which `tests/fast-gpu/kernels/test_miles_ext_kernels.py` runs on Blackwell.
+(`3rdparty/miles-ext-kernels/tests/cake/gdn`), which `tests/fast-gpu/kernels/test_miles_ext_kernels.py` runs on
+Blackwell.
 The gradients of the reproducible gated output norm of the cake layers are checked on the CPU against autograd.
 """
 
@@ -25,24 +26,31 @@ def test_unknown_backend_raises_value_error():
 
 def test_cake_backend_routes_to_the_generated_kernels():
     pytest.importorskip("torch")
-    pytest.importorskip("miles_ext_kernels.gdn", reason="the miles-ext-kernels submodule is not checked out")
+    pytest.importorskip("miles_ext_kernels.cake.gdn", reason="the miles-ext-kernels submodule is not checked out")
     fn = linear_attn.gdn_kernel("cake")
-    assert fn.__module__ == "miles_ext_kernels.gdn.ops"
+    assert fn.__module__ == "miles_ext_kernels.cake._impl.gdn.ops"
     assert fn.__name__ == "chunk_gated_delta_rule"
 
 
-def _fake_cake_package(monkeypatch, configured: list) -> None:
-    cake = types.ModuleType("miles_ext_kernels.gdn")
-    cake.chunk_gated_delta_rule = "cake-kernel"
-    cake.configure = configured.append
-    monkeypatch.setitem(sys.modules, "miles_ext_kernels.gdn", cake)
+def _fake_cake_package(monkeypatch, configured: list, prebuilt: list | None = None) -> None:
+    """Stand-ins for ``miles_ext_kernels`` (its ``configure`` records the values), ``miles_ext_kernels.cake`` (its
+    ``prebuild`` records the op) and the op module ``miles_ext_kernels.cake.gdn``."""
+    package = types.ModuleType("miles_ext_kernels")
+    package.configure = configured.append
+    cake = types.ModuleType("miles_ext_kernels.cake")
+    cake.prebuild = lambda op, **params: (prebuilt if prebuilt is not None else []).append((op, params))
+    gdn = types.ModuleType("miles_ext_kernels.cake.gdn")
+    gdn.chunk_gated_delta_rule = "cake-kernel"
+    package.cake, cake.gdn = cake, gdn
+    for module in (package, cake, gdn):
+        monkeypatch.setitem(sys.modules, module.__name__, module)
 
 
 def test_cake_backend_hands_the_kernel_package_its_own_argument_values(monkeypatch):
-    """miles passes the values of the kernel package's own arguments to ``configure`` without knowing their names."""
-    configured = []
-    monkeypatch.setitem(sys.modules, "miles_ext_kernels", types.ModuleType("miles_ext_kernels"))
-    _fake_cake_package(monkeypatch, configured)
+    """miles passes the values of the kernel package's own arguments to ``miles_ext_kernels.configure`` without
+    knowing their names, then builds the op's libraries, where a layer is built (the caller has ``args``)."""
+    configured, prebuilt = [], []
+    _fake_cake_package(monkeypatch, configured, prebuilt)
     fla = types.ModuleType("fla.ops.gated_delta_rule")
     fla.chunk_gated_delta_rule = "fla-kernel"
     monkeypatch.setitem(sys.modules, "fla.ops.gated_delta_rule", fla)
@@ -50,12 +58,13 @@ def test_cake_backend_hands_the_kernel_package_its_own_argument_values(monkeypat
 
     assert linear_attn.gdn_kernel("cake") == "cake-kernel"
     assert linear_attn.gdn_kernel("fla", args=args) == "fla-kernel"
-    assert configured == []
+    assert configured == prebuilt == []
     assert linear_attn.gdn_kernel("cake", args=args) == "cake-kernel"
-    assert configured == [argparse.Namespace(kernel_option=3)]
+    assert configured == [{"kernel_option": 3}]
+    assert prebuilt == [("gdn", {})]
     # a configuration without the flag (no ext arguments) configures the package with its defaults
     assert linear_attn.gdn_kernel("cake", args=types.SimpleNamespace(miles_ext_kernels_args=None)) == "cake-kernel"
-    assert configured[-1] == argparse.Namespace()
+    assert configured[-1] is None
 
 
 @pytest.mark.parametrize(
@@ -72,7 +81,7 @@ def test_the_parsed_ext_arguments_reach_the_cake_kernel_package_through_the_trai
 ):
     """The real path: the submodule's GDN arguments, parsed and validated by miles (an unset variant resolves to
     fast outside deterministic mode), sliced into the trainer's typed configuration and handed by the layer seam to
-    ``miles_ext_kernels.gdn.configure``."""
+    ``miles_ext_kernels.configure``."""
     config = parse_megatron_test_config("--use-miles-ext-kernels", "--linear-attention-backend", "cake", *extra)
     trainer = compute_trainer_config(config, config.raw_megatron.trainers[0])
     configured = []
@@ -82,7 +91,7 @@ def test_the_parsed_ext_arguments_reach_the_cake_kernel_package_through_the_trai
 
     gdn_args = {name: value for name, value in trainer.miles_ext_kernels_args.items() if name.startswith("cake_gdn_")}
     assert gdn_args == {"cake_gdn_variant": variant, "cake_gdn_recompute_state": recompute}
-    assert configured == [argparse.Namespace(**trainer.miles_ext_kernels_args)]
+    assert configured == [trainer.miles_ext_kernels_args]
 
 
 def test_the_gdn_variant_needs_the_cake_backend():
@@ -92,7 +101,8 @@ def test_the_gdn_variant_needs_the_cake_backend():
 
 def test_cake_backend_without_the_submodule_names_the_flag_and_the_checkout(monkeypatch):
     monkeypatch.setitem(sys.modules, "miles_ext_kernels", None)
-    monkeypatch.setitem(sys.modules, "miles_ext_kernels.gdn", None)
+    monkeypatch.setitem(sys.modules, "miles_ext_kernels.cake", None)
+    monkeypatch.setitem(sys.modules, "miles_ext_kernels.cake.gdn", None)
 
     with pytest.raises(ImportError, match="--use-miles-ext-kernels") as excinfo:
         linear_attn.gdn_kernel("cake")
@@ -116,10 +126,11 @@ def test_kda_uses_the_triton_backward_on_blackwell_unless_set(monkeypatch, capab
 
 def test_cake_kda_backend_routes_to_the_kernel_package(monkeypatch):
     linear_attn.kda_kernel.cache_clear()
-    cake = types.ModuleType("miles_ext_kernels.kda")
+    cake = types.ModuleType("miles_ext_kernels.cake.kda")
     cake.chunk_kda = "cake-kda"
     monkeypatch.setitem(sys.modules, "miles_ext_kernels", types.ModuleType("miles_ext_kernels"))
-    monkeypatch.setitem(sys.modules, "miles_ext_kernels.kda", cake)
+    monkeypatch.setitem(sys.modules, "miles_ext_kernels.cake", types.ModuleType("miles_ext_kernels.cake"))
+    monkeypatch.setitem(sys.modules, "miles_ext_kernels.cake.kda", cake)
     try:
         assert linear_attn.kda_kernel("cake") == "cake-kda"
     finally:
@@ -133,7 +144,8 @@ def test_unknown_kda_backend_raises_value_error():
 
 def test_cake_kda_backend_without_the_submodule_names_the_flag(monkeypatch):
     monkeypatch.setitem(sys.modules, "miles_ext_kernels", None)
-    monkeypatch.setitem(sys.modules, "miles_ext_kernels.kda", None)
+    monkeypatch.setitem(sys.modules, "miles_ext_kernels.cake", None)
+    monkeypatch.setitem(sys.modules, "miles_ext_kernels.cake.kda", None)
 
     with pytest.raises(ImportError, match="--use-miles-ext-kernels") as excinfo:
         linear_attn.kda_kernel.__wrapped__("cake")
