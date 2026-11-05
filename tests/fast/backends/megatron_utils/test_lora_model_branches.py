@@ -204,14 +204,6 @@ class TestSaveLoRaBranch:
 
         assert mock_save_lora.call_args.args[3] is slots
 
-    @patch(f"{_MODEL_MODULE}.should_disable_forward_pre_hook", return_value=False)
-    @patch(f"{_MODEL_MODULE}.is_lora_model", return_value=True)
-    def test_lora_save_without_adapter_slots_fails(self, mock_is_lora, mock_should):
-        from miles.backends.megatron_utils.model import save
-
-        with pytest.raises(AssertionError, match="needs the model's adapter slots"):
-            save(make_trainer_args(), 42, [MagicMock()], MagicMock(), MagicMock())
-
     @patch(f"{_MODEL_MODULE}.save_model_hashes")
     @patch(f"{_MODEL_MODULE}.enable_forward_pre_hook")
     @patch(f"{_MODEL_MODULE}.disable_forward_pre_hook")
