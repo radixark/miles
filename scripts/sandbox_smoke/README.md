@@ -14,7 +14,7 @@ This file is the tool's own reference.
 | flag | values | notes |
 | --- | --- | --- |
 | `--connector` | `harbor`, (`openenv` next) | which integration carries the episode |
-| `--backend` | `e2b`, `daytona`, `modal`, ... | passed through; the connector validates |
+| `--backend` | `e2b`, `daytona`, `modal`, `novita`, ... | passed through; the connector validates |
 | `--agent` | `golden` (default), or a harness name | a harness needs `--base-url`: a live session-server URL for full token fidelity, or any OpenAI-compatible endpoint when only the harness↔sandbox plumbing is under test — but never a third-party model API, which cannot sit behind the session server and so proves nothing about the training path |
 | `--benchmark` | `tb2` (default) | Terminal-Bench-2, cloned on first use; `TB2_TASKS_DIR` points at an existing checkout, `--task` overrides the preset `fix-git` instance |
 
