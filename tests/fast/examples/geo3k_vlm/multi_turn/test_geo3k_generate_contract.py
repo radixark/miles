@@ -15,7 +15,11 @@ async def test_generation_uses_caller_state_and_closes_environment_on_every_retu
     """Both exhausted and generated responses retain the caller's sample and close its environment."""
     env = SimpleNamespace(reset=Mock(), close=Mock())
     tokenizer = SimpleNamespace(decode=Mock(return_value="answer"))
-    state = SimpleNamespace(args=SimpleNamespace(partial_rollout=False), tokenizer=tokenizer)
+    state = SimpleNamespace(
+        args=SimpleNamespace(partial_rollout=False, multimodal_token_space_processing=False),
+        tokenizer=tokenizer,
+        processor=None,
+    )
     sample = Sample(prompt="question", tokens=[10], loss_mask=[], rollout_log_probs=[])
     sampling = {"max_new_tokens": 5}
     prepare = Mock(return_value=(None, [], budget, []))
@@ -31,13 +35,14 @@ async def test_generation_uses_caller_state_and_closes_environment_on_every_retu
     assert isinstance(output, GenerateFnOutput)
     assert output.samples is sample
     assert prepare.call_args.args[1] is state
-    assert prepare.call_args.args[3] is not sampling
+    assert prepare.call_args.args[4] is not sampling
     assert sampling == {"max_new_tokens": 5}
     env.reset.assert_called_once_with()
     env.close.assert_called_once_with()
     assert sample.status == Sample.Status.TRUNCATED
     if budget:
-        assert infer.call_args.args[-1] is tokenizer
+        assert infer.call_args.args[1] is sample
+        assert infer.call_args.args[-1] is None
         assert sample.tokens == [10, 20]
         assert sample.loss_mask == [1]
         assert sample.rollout_log_probs == [-0.2]
