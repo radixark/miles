@@ -27,7 +27,7 @@ from miles.backends.megatron_utils.lora.checkpoint import (
 )
 from miles.backends.megatron_utils.lora.native.modules.linear import NativeLoRAAdapter
 from miles.backends.megatron_utils.lora.utils import _adapter_shard_params
-from miles.backends.training_utils.checkpoint.adapter.adapter_state import AdapterState, LocalShardSpec
+from miles.backends.training_utils.checkpoint.adapter.adapter_state import AdapterState
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
 from miles.backends.training_utils.checkpoint.adapter.parametrization_conversion import (
     assert_parametrization_matches_run,
@@ -189,55 +189,6 @@ def test_an_optimizer_other_than_megatrons_distributed_one_is_refused():
     members = DistributedOptimizerMembers(MagicMock(), optimizer, [], precision_aware=False)
     with pytest.raises(AssertionError, match="--use-distributed-optimizer"):
         members._distributed_optimizers()
-
-
-@pytest.mark.parametrize("leaves_out_elements", [True, False])
-def test_a_restore_keeps_the_state_of_elements_no_checkpoint_holds(leaves_out_elements):
-    """Native head_B's vocab-padding rows are left out of every checkpoint; a restore must not zero them. Without
-    such elements every element is overwritten, so the world state is not gathered."""
-    param = torch.zeros(4)
-    current = {key: torch.full((4,), value) for key, value in (("param", 1.0), ("exp_avg", 2.0), ("exp_avg_sq", 3.0))}
-    buffer = SimpleNamespace(
-        param_index_map={param: (0, 4, 0)}, bucket_indices=[(0, 4)], param_dtype="p", grad_dtype="g"
-    )
-    loaded, gathered_data = {}, []
-
-    def get_parameter_state_dp_zero(use_gloo_comm, empty_data=False):
-        gathered_data.append(not empty_data)
-        # Megatron's world tensors start from zeros and are filled only without empty_data
-        world = {key: torch.zeros(4) if empty_data else tensor.clone() for key, tensor in current.items()}
-        return {0: {("p", "g"): world}, "buckets_coalesced": True}
-
-    sub = DistributedOptimizer.__new__(DistributedOptimizer)
-    sub.init_state_fn = None
-    sub.optimizer = SimpleNamespace(param_groups=[])
-    sub.buffers = [buffer]
-    sub.get_parameter_state_dp_zero = get_parameter_state_dp_zero
-    sub.load_parameter_state_from_dp_zero = loaded.update
-    slots = MagicMock(load_overwrites_every_element=not leaves_out_elements)
-    slots.slot_parameters.return_value = [param]
-    # element 3 is vocab padding: no piece holds it
-    held = torch.tensor([0, 1, 2]) if leaves_out_elements else torch.arange(4)
-    slots.piece_parameter.return_value = [(0, held)]
-    members = DistributedOptimizerMembers(slots, SimpleNamespace(chained_optimizers=[sub]), [], precision_aware=False)
-    rows = len(held)
-    spec = LocalShardSpec("model.lm_head.lora_B", (4,), (0,), (rows,))
-    state = AdapterState(
-        [spec], [torch.full((rows,), 5.0)], [torch.full((rows,), 6.0)], [torch.full((rows,), 7.0)], step=9
-    )
-    parallel = SimpleNamespace(intra_dp_cp=SimpleNamespace(rank=0), edp=SimpleNamespace(rank=0))
-
-    with patch.multiple(_MODULE, get_parallel_state=lambda: parallel, _build_cast_main_to_params_fn=MagicMock()):
-        members.import_adapter_state(0, state)
-        assert gathered_data == [], "the import gathers nothing before finish"
-        members.finish_import_adapter_state(0)
-
-    assert gathered_data == [leaves_out_elements]
-    world = loaded[0][("p", "g")]
-    kept = [1.0, 2.0, 3.0] if leaves_out_elements else [5.0, 6.0, 7.0]
-    assert world["param"].tolist() == [5.0, 5.0, 5.0, kept[0]]
-    assert world["exp_avg"].tolist() == [6.0, 6.0, 6.0, kept[1]]
-    assert world["exp_avg_sq"].tolist() == [7.0, 7.0, 7.0, kept[2]]
 
 
 def _offloaded_optimizer(*, offloaded: bool) -> tuple[HybridDeviceOptimizer, torch.nn.Parameter, torch.nn.Parameter]:
@@ -535,7 +486,6 @@ def _expert_dp_round_trip(rank, world_size, port):
     subs = [_DpZeroOptimizer(p, m, g) for p, m, g in zip(params, masters, groups, strict=True)]
     slots = SimpleNamespace(
         bf16_adapter_key_style="peft",
-        load_overwrites_every_element=True,
         slot_parameters=lambda slot: params,
         local_shard_specs=lambda slot, holds: [SimpleNamespace(local_shape=params[i].shape) for i in sorted(holds)],
         piece_parameter=lambda slot, holds: [(i, torch.arange(params[i].numel())) for i in sorted(holds)],
@@ -618,7 +568,10 @@ def test_without_an_optimizer_an_adapter_path_loads_the_weights_and_starts_over(
         piece_parameter=lambda slot, holds: [(0, torch.tensor([3, 0]))],
     )
 
-    def load_adapter_dir(path, members, slot, run, targets, *, in_model_loaders_by_kind, **_):
+    loaded_with = {}
+
+    def load_adapter_dir(path, members, slot, run, targets, *, in_model_loaders_by_kind, **kwargs):
+        loaded_with.update(kwargs)
         # a Bridge checkpoint's load refreshes the optimizer's masters; without one it is refused as unloadable
         assert AdapterSourceKind.MEGATRON_BRIDGE_CHECKPOINT not in in_model_loaders_by_kind
         members.import_adapter_state(
@@ -641,10 +594,11 @@ def test_without_an_optimizer_an_adapter_path_loads_the_weights_and_starts_over(
         lora_adapter_path=str(tmp_path),
         lora_adapter_convert_save=None,
         megatron_to_hf_mode="bridge",
-        backend=SimpleNamespace(no_load_optim=True, no_save_optim=True, use_precision_aware_optimizer=False),
+        backend=SimpleNamespace(no_load_optim=False, no_save_optim=True, use_precision_aware_optimizer=False),
     )
     iteration = restore_single_lora([], args, adapter_slots=slots, optimizer=None, opt_param_scheduler=None)
     assert iteration is None
+    assert loaded_with["load_optimizer"] is False
     assert torch.equal(param, torch.tensor([[7.0, 0.0], [0.0, 5.0]], dtype=torch.bfloat16))
 
 
