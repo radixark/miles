@@ -105,7 +105,9 @@ def step(monkeypatch):
         "_optimizer_steps",
         lambda self, runner, it, n, rollout_id: calls["steps"].append(runner),
     )
-    monkeypatch.setattr(base_module, "compute_advantages_and_returns", lambda args, data: data.update(adv=True))
+    monkeypatch.setattr(
+        base_module, "compute_advantages_and_returns", lambda args, data, **_kwargs: data.update(adv=True)
+    )
     monkeypatch.setattr(base_module, "log_rollout_data", lambda rid, args, data: None)
     monkeypatch.setattr(base_module, "timer", _noop_timer)
     return calls
@@ -221,6 +223,8 @@ def _train_one_dp_rank(rank: int, world_size: int, port: int) -> None:
         patch.setattr(base_module, "get_batch", _cpu_batch)
         patch.setattr(base_module, "aggregate_train_losses", lambda losses: {})
         patch.setattr(base_module, "log_train_step", lambda **kwargs: None)
+        # the gloo ranks have no accelerator to reduce the token counts on
+        patch.setattr(base_module.platforms.current_platform, "current_device", lambda: torch.device("cpu"))
         actor._optimizer_steps(runner, DataIterator(rollout_data, micro_batch_size=1), _NUM_MICROBATCHES, rollout_id=0)
 
     samples_per_rank = [_local_samples(r) for r in range(world_size)]
