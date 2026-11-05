@@ -71,6 +71,11 @@ async def wait_server_healthy(server_url, api_key):
         await asyncio.sleep(2)
 
 
+FLUSH_CACHE_ATTEMPTS = 60
+FLUSH_CACHE_INTERVAL_S = 1
+FLUSH_CACHE_REABORT_EVERY = 10
+
+
 @dataclasses.dataclass(frozen=True)
 class SGLangApiClient:
     server_url: str
@@ -259,10 +264,20 @@ class SGLangApiClient:
             payload,
         )
 
-    async def flush_cache(self):
-        """Flush the cache of the server."""
+    async def flush_cache(self, abort_pending_every: int | None = None):
+        """Flush the cache of the server.
+
+        The engine refuses while a request is still running. With
+        ``abort_pending_every`` set, every that many refusals post
+        ``/abort_request`` with ``abort_all`` again before trying on: a
+        generation the rollout's abort missed, or one issued after it, is
+        otherwise left to run to its own end, which a long turn can stretch
+        past this loop (a 32K-token turn on a 200K-token context at 15 tok/s
+        runs 36 minutes).
+        """
         last_message = None
-        for _ in range(60):
+        aborts = 0
+        for attempt in range(FLUSH_CACHE_ATTEMPTS):
             try:
                 response = await GeneralHttpClientProvider.client().get(
                     f"{self.server_url}/flush_cache", headers=self._headers
@@ -273,9 +288,22 @@ class SGLangApiClient:
             except Exception as e:
                 logger.info(f"Error flushing cache: {e}")
                 last_message = str(e)
-            await asyncio.sleep(1)
+            if abort_pending_every and (attempt + 1) % abort_pending_every == 0:
+                aborts += 1
+                logger.warning(
+                    f"{self.server_url}: cache not flushed after {attempt + 1} attempts "
+                    f"({last_message}); posting abort_all again ({aborts})"
+                )
+                try:
+                    await self.abort_all_requests()
+                except Exception as e:
+                    logger.warning(f"{self.server_url}: abort_all before flush failed: {e}")
+            await asyncio.sleep(FLUSH_CACHE_INTERVAL_S)
         else:
-            raise TimeoutError(f"Timeout while flushing cache: {last_message}")
+            raise TimeoutError(
+                f"Timeout while flushing cache after {FLUSH_CACHE_ATTEMPTS} attempts"
+                f"{f' and {aborts} abort_all posts' if abort_pending_every else ''}: {last_message}"
+            )
 
     async def get_weight_version(self):
         # new sglang change api from /get_weight_version to /model_info
@@ -294,9 +322,21 @@ class SGLangApiClient:
             {"lora_name": lora_name, "config_dict": config_dict, "pinned": pinned},
         )
 
-    async def release_memory_occupation(self, tags: list[str] = None):
-        """Release memory occupation. Available tags: weights, kv_cache."""
-        await self.flush_cache()
+    async def release_memory_occupation(self, tags: list[str] = None, *, abort_running: bool = True):
+        """Release memory occupation. Available tags: weights, kv_cache.
+
+        With ``abort_running`` (the default) it aborts whatever is still running
+        first: offload follows the rollout's abort, and a request that survived
+        it (or arrived after it) would hold the KV cache and fail the flush.
+        Without it nothing is aborted: under ``--fully-async --colocate`` the
+        driver has paused generation with ``retract`` so the requests resume
+        after the train phase, and the engine flushes while paused with those
+        requests waiting."""
+        if abort_running:
+            await self.abort_all_requests()
+            await self.flush_cache(abort_pending_every=FLUSH_CACHE_REABORT_EVERY)
+        else:
+            await self.flush_cache()
         return await self._make_request(
             "release_memory_occupation",
             {"tags": tags},
