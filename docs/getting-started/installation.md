@@ -85,7 +85,17 @@ Confirm Miles imports and the GPUs are visible:
 
 ```bash
 python -c "import miles; print('Miles import OK')"
+python -c "import torch; assert torch.cuda.is_available(); print('GPUs:', torch.cuda.device_count(), 'ROCm:', torch.version.hip); x = torch.ones(1, device='cuda'); print(x + x)"
+```
+
+PyTorch uses the `torch.cuda` API on both CUDA and ROCm. Check the driver with
+the command for your hardware:
+
+```bash
+# NVIDIA
 nvidia-smi
+# AMD (use the tool installed with your ROCm distribution)
+rocm-smi
 ```
 
 If either command fails, see [Debugging](/developer/debug).
