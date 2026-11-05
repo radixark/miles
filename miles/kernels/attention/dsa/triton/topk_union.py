@@ -7,11 +7,13 @@ sorted as (key, query) pairs and deduplicated into an ascending key list, with a
 which queries of the block selected it.
 """
 
+from dataclasses import dataclass
+
 import torch
 import triton
 import triton.language as tl
 
-UNION_PAD = 32  # -1 slots written after each block's keys, so a kernel may read whole 32-key tiles
+UNION_PAD = 64  # -1 slots written after each block's keys, so a kernel may read whole 64-key tiles (the forward's)
 _SENTINEL = tl.constexpr(2**31 - 1)
 
 
@@ -81,3 +83,38 @@ def topk_union(indices: torch.Tensor, query_block: int) -> tuple[torch.Tensor, t
         num_warps=min(32, max(4, cap // 512)),  # the in-register sort wants few elements per thread (H200)
     )
     return union, mask, lengths
+
+
+@dataclass(frozen=True)
+class KeyUnion:
+    """The key unions of an indices tensor [B, S, 1, topk] split into blocks of ``query_block`` consecutive queries:
+    ``keys`` and ``mask`` [B, blocks, 1, cap] and ``lengths`` [B, blocks] as ``topk_union`` lays them out. A short
+    last block is padded with queries that select no key."""
+
+    query_block: int
+    keys: torch.Tensor
+    mask: torch.Tensor
+    lengths: torch.Tensor
+
+    @property
+    def blocks(self) -> int:
+        return self.keys.shape[1]
+
+    def pad_queries(self, t: torch.Tensor) -> torch.Tensor:
+        """Pad a [B, S, ...] tensor with zero rows up to the blocks' queries."""
+        pad = self.blocks * self.query_block - t.shape[1]
+        return torch.nn.functional.pad(t, (0, 0) * (t.ndim - 2) + (0, pad)) if pad else t
+
+
+def query_block_union(indices: torch.Tensor, query_block: int) -> KeyUnion:
+    """The KeyUnion of ``indices`` [B, S, 1, topk] int32 (-1 = padding) for blocks of ``query_block`` queries."""
+    batch, seq_len, kv_group, topk = indices.shape
+    assert kv_group == 1, f"a query block shares one key union, so one KV group, got {kv_group}"
+    pad = -seq_len % query_block
+    if pad:
+        indices = torch.nn.functional.pad(indices, (0, 0, 0, 0, 0, pad), value=-1)
+    blocks = (seq_len + pad) // query_block
+    keys, mask, lengths = topk_union(indices.view(batch * blocks * query_block, topk), query_block)
+    return KeyUnion(
+        query_block, keys.view(batch, blocks, 1, -1), mask.view(batch, blocks, 1, -1), lengths.view(batch, blocks)
+    )

@@ -22,8 +22,9 @@ from miles.kernels.attention.dsa.sparse_attention import (  # noqa: E402
     cudnn_dsa,
     flash_mla_sparse_fwd,
 )
+from miles.kernels.attention.dsa.tilelang.sparse_attention_fwd import sparse_attention_fwd  # noqa: E402
 from miles.kernels.attention.dsa.topk import torch_dsa_topk  # noqa: E402
-from miles.kernels.attention.dsa.triton.topk_union import UNION_PAD, topk_union  # noqa: E402
+from miles.kernels.attention.dsa.triton.topk_union import UNION_PAD, query_block_union, topk_union  # noqa: E402
 
 BACKENDS = ["tilelang"] + (["flash_mla"] if flash_mla_sparse_fwd is not None else [])
 CONFIGS = ["default", *BACKENDS]
@@ -337,30 +338,60 @@ def test_topk_union_matches_reference(query_block, topk, shared):
         assert (union[b, n : n + UNION_PAD] == -1).all() and (mask[b, n : n + UNION_PAD] == 0).all()
 
 
-@pytest.mark.parametrize("query_block, heads", [(8, 8), (4, 16)], ids=["8_queries_x_8_heads", "4_queries_x_16_heads"])
-@pytest.mark.parametrize("d_tail, sink", [(64, False), (0, True)], ids=["glm5", "deepseek_v4"])
-def test_query_block_backward_matches_per_query(query_block, heads, d_tail, sink):
-    """A block of consecutive queries over their key union gives the per-query kernel's gradients, with a
-    sequence that does not fill its last block."""
+def _query_block_inputs(heads, d_tail, sink):
+    """Two sequences that do not fill their last block, with rows without keys inside a block."""
     torch.manual_seed(0)
     batch, seq_len, d_v, seq_len_kv, topk = 2, 131, 512, 300, 64
     q, kv, _, attn_sink = _inputs(batch, seq_len, heads, 1, d_v, d_tail, seq_len_kv, topk, sink)
     indices = _overlapping_rows(batch * seq_len, topk, seq_len_kv, shared=48).view(batch, seq_len, 1, topk)
-    indices[0, :3] = -1  # rows without keys, inside a block
+    indices[0, :3] = -1
+    return q, kv, indices, attn_sink, d_v
+
+
+@pytest.mark.parametrize("query_block, heads", [(8, 8), (4, 16)], ids=["8_queries_x_8_heads", "4_queries_x_16_heads"])
+@pytest.mark.parametrize("d_tail, sink", [(64, False), (0, True)], ids=["glm5", "deepseek_v4"])
+def test_query_block_forward_matches_per_query(query_block, heads, d_tail, sink):
+    """A block of consecutive queries over their key union gives the per-query kernel's output and log-sum-exp
+    (either forward can feed the backward), rows without keys included."""
+    q, kv, indices, attn_sink, d_v = _query_block_inputs(heads, d_tail, sink)
     sm_scale = (d_v + d_tail) ** -0.5
-    grad_out = torch.randn(batch, seq_len, heads, d_v, device="cuda", dtype=torch.float32)
+    out_ref = reference.sparse_attention_ref(q, kv, indices, sm_scale, d_v, attn_sink)
+    out_per_query, lse_per_query = sparse_attention_fwd(q, kv, indices, attn_sink, d_v, sm_scale=sm_scale, threads=256)
+    union = query_block_union(indices, query_block)
+    out, lse = sparse_attention_fwd(q, kv, indices, attn_sink, d_v, sm_scale=sm_scale, threads=256, union=union)
+    assert out.shape == out_per_query.shape and lse.shape == lse_per_query.shape
+    assert torch.isfinite(out).all()
+    assert torch.all(out[0, :3] == 0)
+    assert reference.rel_diff(out_per_query, out) < 1e-5
+    assert torch.allclose(lse, lse_per_query, atol=1e-4, rtol=1e-5)
+    assert reference.rel_diff(out_ref, out) < 1e-3
+
+
+@pytest.mark.parametrize("blocked", ["backward", "forward", "both"])
+@pytest.mark.parametrize("query_block, heads", [(8, 8), (4, 16)], ids=["8_queries_x_8_heads", "4_queries_x_16_heads"])
+@pytest.mark.parametrize("d_tail, sink", [(64, False), (0, True)], ids=["glm5", "deepseek_v4"])
+def test_query_block_backward_matches_per_query(query_block, heads, d_tail, sink, blocked):
+    """A block of consecutive queries over their key union gives the per-query kernels' gradients, whether the
+    backward, the forward or both run the block (then the backward reuses the forward's union)."""
+    q, kv, indices, attn_sink, d_v = _query_block_inputs(heads, d_tail, sink)
+    sm_scale = (d_v + d_tail) ** -0.5
+    grad_out = torch.randn(*q.shape[:3], d_v, device="cuda", dtype=torch.float32)
+    forward_block = query_block if blocked in ("forward", "both") else 1
+    backward_block = query_block if blocked in ("backward", "both") else 1
     grads = {}
-    for block in (1, query_block):
+    for name, (fwd, bwd) in {"per_query": (1, 1), "blocked": (forward_block, backward_block)}.items():
         q_tl, kv_tl = q.clone().requires_grad_(), kv.clone().requires_grad_()
         sink_tl = attn_sink.clone().requires_grad_() if sink else None
-        config = SparseAttentionConfig(forward_backend="tilelang", backward_stages=1, backward_query_block=block)
+        config = SparseAttentionConfig(
+            forward_backend="tilelang", forward_query_block=fwd, backward_stages=1, backward_query_block=bwd
+        )
         out = sparse_attention(q_tl, kv_tl, indices, sm_scale, d_v=d_v, attn_sink=sink_tl, config=config)
         (out.float() * grad_out).sum().backward()
-        grads[block] = (q_tl.grad, kv_tl.grad, sink_tl.grad if sink else None)
-    for per_query, blocked in zip(grads[1], grads[query_block], strict=True):
+        grads[name] = (q_tl.grad, kv_tl.grad, sink_tl.grad if sink else None)
+    for per_query, with_block in zip(grads["per_query"], grads["blocked"], strict=True):
         if per_query is not None:
-            assert torch.isfinite(blocked).all()
-            assert reference.rel_diff(per_query, blocked) < 1e-5
+            assert torch.isfinite(with_block).all()
+            assert reference.rel_diff(per_query, with_block) < 1e-5
 
 
 if __name__ == "__main__":

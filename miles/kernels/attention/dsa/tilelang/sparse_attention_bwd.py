@@ -6,7 +6,7 @@ import tilelang
 import torch
 from tilelang import language as T
 
-from miles.kernels.attention.dsa.triton.topk_union import topk_union
+from miles.kernels.attention.dsa.triton.topk_union import KeyUnion
 
 
 @tilelang.jit(out_idx=[-1])
@@ -309,12 +309,14 @@ def _sparse_attention_bwd_kernel(
     return sparse_mla_bwd_kernel
 
 
-def sparse_attention_bwd(q, kv, o, do, indices, lse, d_v, *, sm_scale, num_stages, split_store, query_block=1):
+def sparse_attention_bwd(
+    q, kv, o, do, indices, lse, d_v, *, sm_scale, num_stages, split_store, union: KeyUnion | None = None
+):
     """Shapes as in sparse_attention_fwd, plus o/do [B, S, H, d_v] and lse [B, S, H].
     Returns dq [B, S, H, d_v + d_tail] bf16, dkv [B, S_kv, G, d_v + d_tail] bf16 and delta [B, S, H] fp32
     (rowsum(o * do), which the caller needs for the attention-sink gradient).
-    ``query_block`` > 1 runs that many consecutive queries per CTA over the union of their keys (one KV
-    group); a short last block is padded with queries that select no key."""
+    ``union`` (the KeyUnion of ``indices``) runs its block of consecutive queries per CTA over the block's key union
+    instead of one query per CTA; the padding queries of a short last block add nothing and their dq is dropped."""
     assert q.is_contiguous() and kv.is_contiguous() and indices.is_contiguous() and lse.is_contiguous()
     B, S, H, dim_plus_tail_dim = q.shape
     _, S_kv, kv_group, _ = kv.shape
@@ -324,23 +326,20 @@ def sparse_attention_bwd(q, kv, o, do, indices, lse, d_v, *, sm_scale, num_stage
     topk = indices.shape[-1]
     assert indices.shape == (B, S, kv_group, topk)
     assert lse.shape == (B, S, H)
-    assert query_block == 1 or kv_group == 1, f"a query block shares one key union, so one KV group, got {kv_group}"
 
     delta = _bwd_preprocess_kernel(H, d_v)(o, do)
     dkv = torch.zeros_like(kv, dtype=torch.float32)
-    if query_block > 1:
-        pad = -S % query_block
-        if pad:  # the padding queries select no key, so their rows add nothing and their dq is dropped
-            q, do = (torch.nn.functional.pad(t, (0, 0, 0, 0, 0, pad)) for t in (q, do))
-            lse, delta = (torch.nn.functional.pad(t, (0, 0, 0, pad)) for t in (lse, delta))
-            indices = torch.nn.functional.pad(indices, (0, 0, 0, 0, 0, pad), value=-1)
-        blocks = (S + pad) // query_block
-        keys, mask, lengths = topk_union(indices.view(B * (S + pad), topk), query_block)
-        keys, mask, lengths = keys.view(B, blocks, 1, -1), mask.view(B, blocks, 1, -1), lengths.view(B, blocks)
-        q, do = q.view(B, blocks, query_block * H, -1), do.view(B, blocks, query_block * H, -1)
-        lse, delta = lse.view(B, blocks, query_block * H), delta.view(B, blocks, query_block * H)
-    else:  # the kernel reads neither the mask nor the lengths
-        keys, mask, lengths = indices, indices, indices.new_empty((B, S))
+    query_block = 1
+    keys, mask, lengths = (
+        indices,
+        indices,
+        indices.new_empty((B, S)),
+    )  # the kernel reads neither the mask nor the lengths
+    if union is not None:
+        query_block = union.query_block
+        keys, mask, lengths = union.keys, union.mask, union.lengths
+        q, do = (union.pad_queries(t).view(B, union.blocks, query_block * H, -1) for t in (q, do))
+        lse, delta = (union.pad_queries(t).view(B, union.blocks, query_block * H) for t in (lse, delta))
     dq = _sparse_attention_bwd_kernel(
         H, d_v, D_tail, keys.shape[-1], kv_group, sm_scale, num_stages, split_store, query_block=query_block
     )(q, kv, do, keys, mask, lengths, lse, delta, dkv)
