@@ -399,7 +399,10 @@ def _compute_reward_cat_metrics(args, all_samples: list[Sample]):
     if reward_cat_key is None:
         return {}
 
-    samples_of_reward_cat = group_by(all_samples, lambda s: s.reward[reward_cat_key])
+    # an ABORTED sample keeps reward=None and has no category; it stays in the denominator
+    samples_of_reward_cat = group_by(
+        [s for s in all_samples if s.reward is not None], lambda s: s.reward[reward_cat_key]
+    )
 
     return {f"error_cat/{reward_cat}": len(s) / len(all_samples) for reward_cat, s in samples_of_reward_cat.items()}
 

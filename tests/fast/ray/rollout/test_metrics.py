@@ -783,15 +783,17 @@ class TestEvalMetrics:
         assert not any(key.startswith("alpha/") for key in payload)
 
     def test_aborted_sample_under_a_reward_key_is_counted_not_indexed(self, monkeypatch):
-        """An aborted eval sample keeps reward=None, and a reward key must not turn it into a TypeError."""
+        """An aborted eval sample keeps reward=None; a reward key or category must not turn it into a TypeError."""
         calls: list[dict] = []
         monkeypatch.setattr(
             "miles.ray.rollout.metrics.tracking.log", lambda _args, payload, step_key: calls.append(payload)
         )
-        args = make_args(log_passrate=False, reward_key="score", eval_reward_key="score")
+        args = make_args(
+            log_passrate=False, reward_key="score", eval_reward_key="score", log_reward_category="category"
+        )
         samples = [
             make_sample(index=0, reward=None, status=Sample.Status.ABORTED),
-            make_sample(index=1, reward={"score": 1.0}),
+            make_sample(index=1, reward={"score": 1.0, "category": "a"}),
         ]
 
         log_eval_rollout_data(0, args, {"agentic": {"rewards": [None, 1.0], "samples": samples}})
@@ -799,6 +801,9 @@ class TestEvalMetrics:
         [payload] = calls
         assert payload["eval/agentic-none_reward_ratio"] == 0.5
         assert payload["eval/agentic"] == 0.5
+        # the aborted sample is skipped, not coerced to 0.0, and counts in the denominator of each category
+        assert payload["eval/agentic/episode_raw_reward"] == 1.0
+        assert payload["eval/agentic/error_cat/a"] == 0.5
 
 
 class TestObservedGpuThroughput:
