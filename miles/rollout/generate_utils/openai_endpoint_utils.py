@@ -73,7 +73,13 @@ class OpenAIEndpointTracer:
             key: value for key, value in (sampling_params or {}).items() if key in CreateSessionRequest.model_fields
         }
         body = CreateSessionRequest.model_validate(
-            {**session_params, "evaluation": evaluation, "extra_key": extra_key}
+            {
+                **session_params,
+                "evaluation": evaluation,
+                "extra_key": extra_key,
+                # the launch budget applies to rollout and evaluation sessions alike
+                "max_trajectory_generated_tokens": args.rollout_max_trajectory_generated_tokens,
+            }
         )
         use_v2 = args.use_session_server == "v2"
         samples_wire_fields = COMPUTED_FIELDS_V2 if use_v2 else COMPUTED_FIELDS

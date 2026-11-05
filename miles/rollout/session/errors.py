@@ -6,6 +6,7 @@ SessionError (base)
 ├── SessionNotFoundError       → 404  session does not exist
 ├── MessageValidationError     → 400  messages structure/content invalid
 ├── TruncatedGenerationError   → 409  extending a length-truncated generation (v2)
+├── GenerationBudgetExhaustedError → 409  the trajectory spent its generation budget
 ├── TokenizationError          → 500  TITO tokenizer / prefix mismatch
 ├── UpstreamResponseError      → 502  SGLang response invalid or unexpected
 ├── UpstreamGenerationAbortedError → 503  SGLang aborted the generation
@@ -39,6 +40,14 @@ class TruncatedGenerationError(SessionError):
     """Raised when a request extends a generation that ended with
     finish_reason='length'; only the v2 tree server raises it (v1 never
     branches)."""
+
+    status_code: int = 409
+
+
+class GenerationBudgetExhaustedError(SessionError):
+    """Raised when a request continues a trajectory whose policy has generated
+    the session's ``max_trajectory_generated_tokens``; like a truncated
+    generation, the trajectory cannot be extended."""
 
     status_code: int = 409
 

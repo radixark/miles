@@ -100,6 +100,18 @@ class RolloutRelatedConfig(BaseConfig):
             )
         ),
     ] = None
+    rollout_max_trajectory_generated_tokens: A[
+        int | None,
+        Arg(
+            help=(
+                "The maximum number of tokens the policy generates along one trajectory of a session-server "
+                "rollout, summed over its turns from the root to the turn being generated; prompt, tool and "
+                "user tokens do not count. Each turn's `max_tokens` is capped at what is left, and a "
+                "trajectory that has spent it cannot be extended (HTTP 409). Unset means no budget; "
+                "--rollout-max-response-len still caps each turn."
+            )
+        ),
+    ] = None
     object_store_backend: A[
         str,
         Arg(

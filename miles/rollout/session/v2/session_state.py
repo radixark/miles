@@ -28,7 +28,7 @@ from typing import Any
 from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.errors import MessageValidationError, TokenizationError, TruncatedGenerationError
 from miles.rollout.session.linear_trajectory import SessionRegistry, assert_pretokenized_prefix
-from miles.rollout.session.request_args import PreparedChatRequest, prepare_chat_request
+from miles.rollout.session.request_args import PreparedChatRequest, prepare_chat_request, remaining_generation_budget
 from miles.rollout.session.store_refs import SessionStoreRefs
 from miles.rollout.session.types import SessionRecord
 from miles.rollout.session.v2.tree_trajectory import AttachPoint, SessionTree, TrajectoryNode
@@ -55,6 +55,8 @@ class SessionStateV2:
     sampling_defaults: dict[str, Any] = field(default_factory=dict)
     sampling_support_replay: bool = False
     extra_key: str | None = None
+    # policy-generated tokens one root->leaf chain may hold in total; None means no budget
+    max_trajectory_generated_tokens: int | None = None
 
     def snapshot(self) -> "SessionStateV2":
         """Capture the committed tree for collection. Caller holds the lock."""
@@ -116,6 +118,10 @@ def prepare_token_ids_and_request_args(
         evaluation=state.evaluation,
         sampling_defaults=state.sampling_defaults,
         sampling_support_replay=state.sampling_support_replay,
+        # only the chain this request continues counts, not the other branches of the tree
+        remaining_generated_tokens=remaining_generation_budget(
+            state.max_trajectory_generated_tokens, parent.path_generated_tokens() if parent is not None else 0
+        ),
     )
     prepared.body["input_ids"] = _render_token_ids(
         parent, request_messages, template_args=prepared.template_args, tito_tokenizer=tito_tokenizer
@@ -232,6 +238,7 @@ class SessionRegistryV2(SessionRegistry):
         sampling_defaults: dict[str, Any] | None = None,
         sampling_support_replay: bool = False,
         extra_key: str | None = None,
+        max_trajectory_generated_tokens: int | None = None,
     ) -> str:
         session_id = uuid.uuid4().hex
         self.sessions[session_id] = SessionStateV2(
@@ -239,6 +246,7 @@ class SessionRegistryV2(SessionRegistry):
             sampling_defaults=dict(sampling_defaults or {}),
             sampling_support_replay=sampling_support_replay,
             extra_key=extra_key,
+            max_trajectory_generated_tokens=max_trajectory_generated_tokens,
         )
         return session_id
 

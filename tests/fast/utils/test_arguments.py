@@ -2388,6 +2388,24 @@ class TestSessionServerPauseGenerationMode:
         with pytest.raises(AssertionError, match="does not support --partial-rollout"):
             miles_validate_args(args)
 
+    @pytest.mark.parametrize("session_server_args", [["--use-session-server"], ["--use-session-server", "v2"]])
+    def test_trajectory_generation_budget_runs_on_the_session_server(self, session_server_args):
+        args = self._parse([*session_server_args, "--rollout-max-trajectory-generated-tokens", "3072"])
+        miles_validate_args(args)
+        assert args.rollout_max_trajectory_generated_tokens == 3072
+
+    @pytest.mark.parametrize(
+        ("extra", "match"),
+        [
+            (["--rollout-max-trajectory-generated-tokens", "3072"], "pass --use-session-server"),
+            (["--use-session-server", "--rollout-max-trajectory-generated-tokens", "0"], "must be positive"),
+        ],
+        ids=["no_session_server", "non_positive"],
+    )
+    def test_trajectory_generation_budget_is_rejected(self, extra, match):
+        with pytest.raises(ValueError, match=match):
+            miles_validate_args(self._parse(extra))
+
     @pytest.mark.parametrize(
         ("extra", "expect_warning"),
         [

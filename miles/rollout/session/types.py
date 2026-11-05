@@ -10,6 +10,8 @@ class CreateSessionRequest(StrictBaseModel):
     temperature: StrictFloat | None = None
     top_p: StrictFloat | None = None
     top_k: StrictInt | None = None
+    # tokens the policy may generate along one trajectory, summed over its turns; not a sampling default
+    max_trajectory_generated_tokens: StrictInt | None = Field(default=None, ge=1)
 
     @field_validator("top_k", mode="before")
     @classmethod

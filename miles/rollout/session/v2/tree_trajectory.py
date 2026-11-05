@@ -47,6 +47,10 @@ class TrajectoryNode:
     def path_messages(self) -> list[dict[str, Any]]:
         return [message for node in self.path_nodes() for message in node.delta_messages]
 
+    def path_generated_tokens(self) -> int:
+        """Tokens the engine generated along the root->node chain; sibling branches do not count."""
+        return sum(node.completion_span[1] - node.completion_span[0] for node in self.path_nodes())
+
 
 @dataclass(frozen=True)
 class AttachPoint:

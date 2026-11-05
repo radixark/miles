@@ -20,7 +20,7 @@ import orjson
 from miles.rollout.generate_utils.rollout_topk_logprobs import configure_rollout_topk_logprobs_request
 from miles.rollout.generate_utils.sampling_mask import validate_sampling_support_request
 from miles.rollout.session.config import SessionServerConfig
-from miles.rollout.session.errors import MessageValidationError
+from miles.rollout.session.errors import GenerationBudgetExhaustedError, MessageValidationError, UpstreamResponseError
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer, extract_template_args
 from miles.utils.lora.utils import LORA_ADAPTER_NAME, lora_rollout_enabled
 from miles.utils.output_store.plan import FIELDS, OUTPUT_STORE_REQUEST_KEY
@@ -76,11 +76,14 @@ def prepare_chat_request(
     evaluation: bool = False,
     sampling_defaults: dict[str, Any] | None = None,
     sampling_support_replay: bool = False,
+    remaining_generated_tokens: int | None = None,
 ) -> PreparedChatRequest:
     """Resolve an owned request using server rules, session defaults, model rules, and prior turn args.
 
     ``turn_args`` is the continued turn's full request; ``None`` starts a root.
     ``sampling_defaults`` are the session's values for sampling fields the client omits.
+    ``remaining_generated_tokens`` is what the continued trajectory's generation budget has left
+    (``remaining_generation_budget``); ``None`` when the session has no budget.
     Client input and recorded history remain unchanged: every field is copied, so rules may
     edit nested values in place, except ``messages``. They are most of the request, no rule
     resolves them, and they become the turn's recorded history, so they are shared read-only.
@@ -112,6 +115,8 @@ def prepare_chat_request(
             request_args["return_sampling_mask"] = True
         else:
             request_args.pop("return_sampling_mask", None)
+    if remaining_generated_tokens is not None:
+        _cap_max_tokens(request_args, remaining_generated_tokens)
     # The launch flag owns the output store, as it owns the replay outputs: a client's value is replaced.
     request_args.pop(OUTPUT_STORE_REQUEST_KEY, None)
     if (
@@ -123,6 +128,38 @@ def prepare_chat_request(
     return PreparedChatRequest(
         body=request_args, template_args=extract_template_args(request_args), response_intent=response_intent
     )
+
+
+def remaining_generation_budget(budget: int | None, generated: int) -> int | None:
+    """Tokens the policy may still generate on a trajectory that has generated *generated*; None without a budget.
+
+    A spent budget closes the trajectory (409), like a generation cut by ``max_tokens``. A trajectory past
+    its budget means the engine ignored the cap the session set on an earlier turn (502).
+    """
+    if budget is None:
+        return None
+    if generated > budget:
+        raise UpstreamResponseError(
+            f"the trajectory generated {generated} tokens, past its max_trajectory_generated_tokens={budget}: "
+            "the engine did not honor the max_tokens the session set"
+        )
+    if generated == budget:
+        raise GenerationBudgetExhaustedError(
+            f"the trajectory has generated its max_trajectory_generated_tokens={budget} and cannot be extended"
+        )
+    return budget - generated
+
+
+def _cap_max_tokens(request_args: dict[str, Any], remaining: int) -> None:
+    """Lower the request's token cap in place to what the trajectory's budget has left.
+
+    The budget wins over a larger client value: the trajectory may not generate past it. A smaller
+    client value stays, so the per-turn cap still applies.
+    """
+    # SGLang reads max_completion_tokens before max_tokens, so cap the field it will use.
+    key = "max_completion_tokens" if request_args.get("max_completion_tokens") is not None else "max_tokens"
+    requested = request_args.get(key)
+    request_args[key] = remaining if requested is None else min(requested, remaining)
 
 
 def apply_session_sampling_defaults(

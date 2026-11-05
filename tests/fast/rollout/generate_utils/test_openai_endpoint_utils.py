@@ -73,6 +73,7 @@ async def test_create_reads_session_server_instance_id_from_args(monkeypatch, cr
         session_server_instances=[SessionServerInstance(addr="127.0.0.1:12345", instance_id="server-instance-123")],
         use_sampling_support_replay=expected_payload.get("top_p", 1.0) < 1.0 or expected_payload.get("top_k", -1) > 0,
         use_session_server=False,
+        rollout_max_trajectory_generated_tokens=None,
         rollout_temperature=expected_payload.get("temperature", 1.0),
         rollout_top_p=expected_payload.get("top_p", 1.0),
         rollout_top_k=expected_payload.get("top_k", -1),
@@ -97,6 +98,7 @@ async def test_create_without_instance_id_on_args(monkeypatch):
         session_server_instances=[SessionServerInstance(addr="127.0.0.1:12345")],
         use_sampling_support_replay=False,
         use_session_server=False,
+        rollout_max_trajectory_generated_tokens=None,
         rollout_temperature=1.0,
     )
     tracer = await OpenAIEndpointTracer.create(args)
@@ -129,6 +131,7 @@ async def test_create_distributes_sessions_across_port_range(monkeypatch):
         session_server_instances=[SessionServerInstance(addr=f"127.0.0.1:{port}") for port in ports],
         use_sampling_support_replay=False,
         use_session_server=False,
+        rollout_max_trajectory_generated_tokens=None,
         rollout_temperature=1.0,
     )
 
@@ -175,6 +178,7 @@ class TestOpenAIEndpointTracerCreate:
             ],
             use_sampling_support_replay=False,
             use_session_server=False,
+            rollout_max_trajectory_generated_tokens=None,
             rollout_temperature=1.0,
         )
         tracer = await OpenAIEndpointTracer.create(args)
@@ -212,12 +216,32 @@ class TestOpenAIEndpointTracerCreate:
                 session_server_instances=[SessionServerInstance(addr="127.0.0.1:12345")],
                 use_sampling_support_replay=False,
                 use_session_server=False,
+                rollout_max_trajectory_generated_tokens=None,
                 rollout_temperature=1.0,
             ),
             extra_key=extra_key,
         )
 
         assert bodies == [expected_body]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("evaluation", [False, True], ids=["rollout", "eval"])
+    async def test_create_posts_the_launch_trajectory_generation_budget(self, monkeypatch, evaluation):
+        """--rollout-max-trajectory-generated-tokens reaches every session, rollout and eval alike."""
+        bodies = self._capture_session_posts(monkeypatch)
+
+        await OpenAIEndpointTracer.create(
+            SimpleNamespace(
+                session_server_instances=[SessionServerInstance(addr="127.0.0.1:12345")],
+                use_sampling_support_replay=False,
+                use_session_server=False,
+                rollout_max_trajectory_generated_tokens=3072,
+                rollout_temperature=1.0,
+            ),
+            evaluation=evaluation,
+        )
+
+        assert bodies == [{"evaluation": evaluation, "max_trajectory_generated_tokens": 3072}]
 
     @pytest.mark.asyncio
     async def test_agent_url_names_the_same_instance_from_outside_the_cluster(self, monkeypatch):
@@ -241,6 +265,7 @@ class TestOpenAIEndpointTracerCreate:
             ],
             use_sampling_support_replay=False,
             use_session_server=False,
+            rollout_max_trajectory_generated_tokens=None,
             rollout_temperature=1.0,
         )
         tracer = await OpenAIEndpointTracer.create(args)
@@ -263,6 +288,7 @@ class TestOpenAIEndpointTracerCreate:
             session_server_instances=[SessionServerInstance(addr="10.0.0.1:5005")],
             use_sampling_support_replay=False,
             use_session_server=False,
+            rollout_max_trajectory_generated_tokens=None,
             rollout_temperature=1.0,
         )
         tracer = await OpenAIEndpointTracer.create(args)
@@ -301,6 +327,7 @@ class TestOpenAIEndpointTracerCreate:
             session_server_instances=[SessionServerInstance(addr="127.0.0.1:12345")],
             use_sampling_support_replay=True,
             use_session_server=False,
+            rollout_max_trajectory_generated_tokens=None,
             rollout_temperature=1.0,
             rollout_top_p=0.95,
             rollout_top_k=32,
@@ -747,6 +774,7 @@ async def test_create_selects_wire_fields_by_session_server_version(monkeypatch)
         return SimpleNamespace(
             session_server_instances=[SessionServerInstance(addr="127.0.0.1:7000")],
             use_session_server=version,
+            rollout_max_trajectory_generated_tokens=None,
             use_sampling_support_replay=top_p < 1.0 or top_k > 0,
             rollout_temperature=1.0,
             rollout_top_p=top_p,

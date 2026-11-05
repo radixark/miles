@@ -216,3 +216,46 @@ class TestRollbackPins:
         records = self._get(router_env.url, session_id)["records"]
         assert len(records) == 2
         assert records[-1]["request"]["messages"][-1] == self.T1_DIFF
+
+
+class TestTrajectoryGenerationBudget:
+    """On v1 the trajectory is the kept checkpoints: a rolled-back turn no longer counts."""
+
+    U1 = {"role": "user", "content": "What is 1+2?"}
+    T1 = {"role": "tool", "content": "tool-result-1", "tool_call_id": "t0"}
+
+    @staticmethod
+    def _budget_session(url: str, budget: int) -> str:
+        response = requests.post(f"{url}/sessions", json={"max_trajectory_generated_tokens": budget}, timeout=5.0)
+        assert response.status_code == 200
+        return response.json()["session_id"]
+
+    def _turn(self, env, session_id: str, messages: list) -> tuple[dict, int, int]:
+        """The assistant message, its generated tokens, and the max_tokens the backend received."""
+        response = _post_chat(env.url, session_id, {"messages": messages})
+        assert response.status_code == 200, response.text
+        body = response.json()
+        return (
+            body["choices"][0]["message"],
+            body["usage"]["completion_tokens"],
+            env.backend.request_log[-1]["max_tokens"],
+        )
+
+    def test_a_retry_is_capped_without_the_turn_it_rolls_back(self, router_env):
+        session_id = self._budget_session(router_env.url, 10_000)
+        a1, n1, cap1 = self._turn(router_env, session_id, [self.U1])
+        _, _, cap2 = self._turn(router_env, session_id, [self.U1, a1, self.T1])
+        _, _, retry_cap = self._turn(router_env, session_id, [self.U1, a1, self.T1])
+        assert (cap1, cap2, retry_cap) == (10_000, 10_000 - n1, 10_000 - n1)
+
+    def test_a_spent_trajectory_cannot_be_extended(self, router_env):
+        probe = self._budget_session(router_env.url, 10_000)
+        _, n1, _ = self._turn(router_env, probe, [self.U1])
+
+        session_id = self._budget_session(router_env.url, n1)
+        a1, _, _ = self._turn(router_env, session_id, [self.U1])
+        extend = _post_chat(router_env.url, session_id, {"messages": [self.U1, a1, self.T1]})
+        assert extend.status_code == 409
+        assert "max_trajectory_generated_tokens" in extend.json()["error"]
+        # the refusal leaves the session as it was: retrying the first turn still works
+        assert _post_chat(router_env.url, session_id, {"messages": [self.U1]}).status_code == 200

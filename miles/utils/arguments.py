@@ -1099,6 +1099,18 @@ def miles_validate_args(args):
         args.use_session_server and args.partial_rollout
     ), "--use-session-server does not support --partial-rollout"
 
+    if args.rollout_max_trajectory_generated_tokens is not None:
+        if not args.use_session_server:
+            raise ValueError(
+                "--rollout-max-trajectory-generated-tokens is enforced by the session server; "
+                "pass --use-session-server"
+            )
+        if args.rollout_max_trajectory_generated_tokens < 1:
+            raise ValueError(
+                "--rollout-max-trajectory-generated-tokens must be positive, "
+                f"got {args.rollout_max_trajectory_generated_tokens}"
+            )
+
     if args.use_session_server == "v2":
         unsupported = [
             flag

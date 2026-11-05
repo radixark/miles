@@ -6,7 +6,7 @@ from typing import Any
 
 from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.errors import MessageValidationError, SessionNotFoundError, TokenizationError
-from miles.rollout.session.request_args import PreparedChatRequest, prepare_chat_request
+from miles.rollout.session.request_args import PreparedChatRequest, prepare_chat_request, remaining_generation_budget
 from miles.rollout.session.store_refs import SessionStoreRefs
 from miles.rollout.session.types import SessionRecord
 from miles.utils.chat_template_utils.message_matcher_hub import (
@@ -89,11 +89,15 @@ class LinearTrajectory:
     records: list[SessionRecord] = field(default_factory=list)
     trajectory_token_ids: list[list[int]] = field(default_factory=list)
     generated_checkpoint_message_ends: list[int] = field(default_factory=list)
+    # tokens the engine generated for each checkpoint's turn, parallel to the checkpoint lists
+    generated_token_counts: list[int] = field(default_factory=list)
     num_assistant: int = 0
     turn_args_history: list[dict[str, Any]] = field(default_factory=list)
     evaluation: bool = False
     sampling_defaults: dict[str, Any] = field(default_factory=dict)
     sampling_support_replay: bool = False
+    # policy-generated tokens the trajectory may hold in total; None means no budget
+    max_trajectory_generated_tokens: int | None = None
 
     def snapshot(self) -> "LinearTrajectory":
         """Copy the mutable containers, sharing committed payloads read-only. Caller holds the lock."""
@@ -103,6 +107,7 @@ class LinearTrajectory:
             records=list(self.records),
             trajectory_token_ids=list(self.trajectory_token_ids),
             generated_checkpoint_message_ends=list(self.generated_checkpoint_message_ends),
+            generated_token_counts=list(self.generated_token_counts),
             turn_args_history=list(self.turn_args_history),
         )
 
@@ -151,6 +156,10 @@ class LinearTrajectory:
             evaluation=self.evaluation,
             sampling_defaults=self.sampling_defaults,
             sampling_support_replay=self.sampling_support_replay,
+            # the request continues checkpoints 0..checkpoint_index; a rolled-back turn no longer counts
+            remaining_generated_tokens=remaining_generation_budget(
+                self.max_trajectory_generated_tokens, sum(self.generated_token_counts[: checkpoint_index + 1])
+            ),
         )
         prepared.body["input_ids"] = self._render_token_ids(
             request_messages,
@@ -251,6 +260,7 @@ class LinearTrajectory:
         self.trajectory_token_ids.append(all_token_ids)
         self.turn_args_history.append(turn_args or {})
         self.generated_checkpoint_message_ends.append(len(request_messages) + 1)
+        self.generated_token_counts.append(len(completion_token_ids))
         self.num_assistant = len(self.generated_checkpoint_message_ends)
 
     def _find_rollback_checkpoint(
@@ -372,6 +382,7 @@ class LinearTrajectory:
         self.turn_args_history = self.turn_args_history[: checkpoint_index + 1]
         self.records = self.records[: checkpoint_index + 1]
         self.generated_checkpoint_message_ends = self.generated_checkpoint_message_ends[: checkpoint_index + 1]
+        self.generated_token_counts = self.generated_token_counts[: checkpoint_index + 1]
         self.num_assistant = len(self.generated_checkpoint_message_ends)
 
 
@@ -405,6 +416,7 @@ class SessionRegistry:
         sampling_defaults: dict[str, Any] | None = None,
         sampling_support_replay: bool = False,
         extra_key: str | None = None,
+        max_trajectory_generated_tokens: int | None = None,
     ) -> str:
         assert extra_key is None, (
             f"session server v1 does not support the KV cache namespace {extra_key!r}; "
@@ -415,6 +427,7 @@ class SessionRegistry:
             evaluation=evaluation,
             sampling_defaults=dict(sampling_defaults or {}),
             sampling_support_replay=sampling_support_replay,
+            max_trajectory_generated_tokens=max_trajectory_generated_tokens,
         )
         return session_id
 

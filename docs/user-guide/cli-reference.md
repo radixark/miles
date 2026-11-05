@@ -188,7 +188,8 @@ Sections mirror the launch-script argument groups.
 
 | Flag | Type | Default | Notes |
 |---|---|---|---|
-| `--rollout-max-response-len` | int | – | Max tokens per response. |
+| `--rollout-max-response-len` | int | – | Max tokens per response; under `--use-session-server`, per turn. |
+| `--rollout-max-trajectory-generated-tokens` | int | – | Under `--use-session-server`: tokens the policy may generate along one trajectory, summed over its turns. Each turn's `max_tokens` is capped at what is left; see [Choose the session behavior](/user-guide/agentic-rollout#choose-the-session-behavior). |
 | `--rollout-temperature` | float | `1.0` | Sampling temperature. |
 | `--rollout-top-p` | float | `1.0` | Top-p truncation. Values below `1` require bounded [sampling-support replay](/advanced/sampling-support-replay). |
 | `--rollout-top-k` | int | `-1` | Top-k truncation (`-1` disables). Positive values enable [sampling-support replay](/advanced/sampling-support-replay). |

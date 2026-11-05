@@ -600,6 +600,83 @@ class TestTruncationAndCompaction:
 # ── additional R3 (non-retract pause modes): request offsets on the tree ──
 
 
+class TestTrajectoryGenerationBudget:
+    """max_trajectory_generated_tokens counts the chain a request continues, not the whole tree."""
+
+    U1 = {"role": "user", "content": "What is 1+2?"}
+    T1 = {"role": "tool", "content": "tool-result-1", "tool_call_id": "t0"}
+    T1_DIFF = {"role": "tool", "content": "tool-result-DIFFERENT", "tool_call_id": "t0"}
+
+    @staticmethod
+    def _budget_session(url: str, budget: int) -> str:
+        response = requests.post(f"{url}/sessions", json={"max_trajectory_generated_tokens": budget}, timeout=5.0)
+        assert response.status_code == 200
+        return response.json()["session_id"]
+
+    def _turn(self, env, session_id: str, messages: list) -> tuple[dict, int, int]:
+        """The assistant message, its generated tokens, and the max_tokens the backend received."""
+        response = _post_chat(env.url, session_id, {"messages": messages})
+        assert response.status_code == 200, response.text
+        body = response.json()
+        return (
+            body["choices"][0]["message"],
+            body["usage"]["completion_tokens"],
+            env.backend.request_log[-1]["max_tokens"],
+        )
+
+    def test_each_turn_is_capped_at_its_chain_remaining_budget(self, router_env):
+        session_id = self._budget_session(router_env.url, 10_000)
+        a1, n1, cap1 = self._turn(router_env, session_id, [self.U1])
+        _, n2, cap2 = self._turn(router_env, session_id, [self.U1, a1, self.T1])
+        assert (cap1, cap2) == (10_000, 10_000 - n1)
+
+        # a sibling of turn 2 continues only turn 1: turn 2's tokens are another branch's
+        _, _, sibling_cap = self._turn(router_env, session_id, [self.U1, a1, self.T1_DIFF])
+        assert sibling_cap == 10_000 - n1
+        # a new root continues nothing
+        _, _, root_cap = self._turn(router_env, session_id, [{"role": "user", "content": "fresh"}])
+        assert root_cap == 10_000
+        assert n2 > 0
+
+    def test_a_chain_that_spent_its_budget_cannot_be_extended(self, router_env):
+        probe = self._budget_session(router_env.url, 10_000)
+        _, n1, _ = self._turn(router_env, probe, [self.U1])
+
+        # the echo backend generates the same n1 tokens again, ending normally exactly at the budget
+        session_id = self._budget_session(router_env.url, n1)
+        a1, _, _ = self._turn(router_env, session_id, [self.U1])
+        extend = _post_chat(router_env.url, session_id, {"messages": [self.U1, a1, self.T1]})
+        assert extend.status_code == 409
+        assert "max_trajectory_generated_tokens" in extend.json()["error"]
+
+        # the spent chain does not block a new root
+        fresh = _post_chat(router_env.url, session_id, {"messages": [{"role": "user", "content": "fresh"}]})
+        assert fresh.status_code == 200
+
+    def test_an_engine_that_ignores_the_cap_fails_the_next_turn(self, router_env):
+        probe = self._budget_session(router_env.url, 10_000)
+        _, n1, _ = self._turn(router_env, probe, [self.U1])
+
+        # the mock backend ignores max_tokens, so turn 1 overruns a budget of n1 - 1
+        session_id = self._budget_session(router_env.url, n1 - 1)
+        a1, _, cap1 = self._turn(router_env, session_id, [self.U1])
+        assert cap1 == n1 - 1
+        extend = _post_chat(router_env.url, session_id, {"messages": [self.U1, a1, self.T1]})
+        assert extend.status_code == 502
+        assert "did not honor" in extend.json()["error"]
+
+    def test_the_budget_is_not_a_sampling_default(self, router_env):
+        session_id = self._budget_session(router_env.url, 10_000)
+        self._turn(router_env, session_id, [self.U1])
+        assert "max_trajectory_generated_tokens" not in router_env.backend.request_log[-1]
+
+    def test_a_non_positive_budget_is_refused(self, router_env):
+        response = requests.post(
+            f"{router_env.url}/sessions", json={"max_trajectory_generated_tokens": 0}, timeout=5.0
+        )
+        assert response.status_code == 400
+
+
 class TestAdditionR3RequestOffsetV2:
     MESSAGES = [{"role": "user", "content": "hi"}]
 

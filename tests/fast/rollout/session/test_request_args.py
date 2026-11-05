@@ -6,13 +6,14 @@ from unittest.mock import MagicMock
 import pytest
 from tests.fast.fixtures.session_fixtures import make_session_server_config
 
-from miles.rollout.session.errors import MessageValidationError
+from miles.rollout.session.errors import GenerationBudgetExhaustedError, MessageValidationError, UpstreamResponseError
 from miles.rollout.session.request_args import (
     ClientResponseIntent,
     apply_session_sampling_defaults,
     filter_turn_args,
     parse_chat_request,
     prepare_chat_request,
+    remaining_generation_budget,
     resolve_request_args_by_config,
 )
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer, extract_template_args
@@ -409,3 +410,48 @@ def test_parse_chat_request_rejects_invalid_json(body):
 def test_parse_chat_request_preserves_unicode_and_empty_body():
     assert parse_chat_request(b"") == {}
     assert parse_chat_request(rb'{"content":"\u4f60\u597d \ud83d\ude00"}') == {"content": "你好 😀"}
+
+
+class TestTrajectoryGenerationBudget:
+    def test_no_budget_leaves_the_request_cap_alone(self):
+        assert remaining_generation_budget(None, 10_000) is None
+        prepared = prepare_chat_request(
+            {"max_tokens": 64}, TITOTokenizer(MagicMock()), config=make_session_server_config(), turn_args=None
+        )
+        assert prepared.body["max_tokens"] == 64
+
+    def test_remaining_is_what_the_budget_has_left(self):
+        assert remaining_generation_budget(3072, 0) == 3072
+        assert remaining_generation_budget(3072, 1000) == 2072
+
+    def test_a_spent_budget_closes_the_trajectory(self):
+        with pytest.raises(GenerationBudgetExhaustedError) as exc_info:
+            remaining_generation_budget(3072, 3072)
+        assert exc_info.value.status_code == 409
+
+    def test_a_trajectory_past_its_budget_is_an_engine_error(self):
+        with pytest.raises(UpstreamResponseError):
+            remaining_generation_budget(3072, 3073)
+
+    @pytest.mark.parametrize(
+        ("client_args", "expected"),
+        [
+            ({}, {"max_tokens": 100}),
+            ({"max_tokens": 4096}, {"max_tokens": 100}),
+            ({"max_tokens": 64}, {"max_tokens": 64}),
+            # SGLang reads max_completion_tokens before max_tokens
+            ({"max_tokens": 64, "max_completion_tokens": 4096}, {"max_tokens": 64, "max_completion_tokens": 100}),
+        ],
+        ids=["unset", "larger_client_cap", "smaller_client_cap", "max_completion_tokens"],
+    )
+    def test_the_turn_cap_is_lowered_to_the_remaining_budget(self, client_args, expected):
+        for evaluation in (False, True):
+            prepared = prepare_chat_request(
+                deepcopy(client_args),
+                TITOTokenizer(MagicMock()),
+                config=make_session_server_config(),
+                turn_args=None,
+                evaluation=evaluation,
+                remaining_generated_tokens=100,
+            )
+            assert {key: prepared.body.get(key) for key in expected} == expected
