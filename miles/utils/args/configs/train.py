@@ -74,8 +74,8 @@ class TrainConfig(BaseConfig):
                 "Backend for the SiLU-gated output RMSNorm (RMSNorm(x) * w * SiLU(z), head dimension 128) of the GDN "
                 "linear-attention layers. 'fla' is flash-linear-attention's kernel. 'cake' is the Cake kernel from "
                 "the miles-ext-kernels submodule (--cake-gated-rmsnorm-variant det or fast); it requires "
-                "--use-miles-ext-kernels and NVIDIA SM100a/SM103a (Blackwell). Layers whose output norm has a "
-                "sigmoid gate (KDA, a sigmoid-gated Qwen3.8-Next config) refuse it when they are built."
+                "--use-miles-ext-kernels and NVIDIA SM100a/SM103a/SM107a (Blackwell, Rubin). Layers whose output "
+                "norm has a sigmoid gate (KDA, a sigmoid-gated Qwen3.8-Next config) refuse it when they are built."
             ),
         ),
     ] = "fla"
