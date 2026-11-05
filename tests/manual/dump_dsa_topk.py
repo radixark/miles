@@ -36,9 +36,12 @@ def main():
         model(ids, use_cache=False)
     out_dir = pathlib.Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    positions = torch.arange(ids.shape[1], device="cuda").view(-1, 1)
     for name, indices in captured.items():
         layer = next(part for part in name.split(".") if part.isdigit())
-        torch.save(indices[0].to(torch.int32).cpu(), out_dir / f"layer{layer}.pt")
+        # HF's top-k on early queries is padded with -inf-scored future keys, which miles marks -1
+        indices = torch.where(indices[0] <= positions, indices[0], -1).to(torch.int32)
+        torch.save(indices.cpu(), out_dir / f"layer{layer}.pt")
         print(f"{name}: {tuple(indices[0].shape)} -> {out_dir / f'layer{layer}.pt'}")
 
 
