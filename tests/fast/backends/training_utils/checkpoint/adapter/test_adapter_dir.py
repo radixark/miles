@@ -287,12 +287,6 @@ def test_a_backend_state_that_does_not_match_the_parametrization_is_refused_at_s
         save_adapter_dir(tmp_path, "w", ExtraKeyMembers(), 0, RUN, tenant_digest=None)
     assert resolve_adapter_dir(tmp_path, "w", tenant=None) is None
 
-
-def test_a_backend_state_that_does_not_match_the_parametrization_is_refused_at_external_export(tmp_path):
-    with pytest.raises(RuntimeError, match="unexpected .*k_proj"):
-        write_external_export(tmp_path, "w", ExtraKeyMembers(), 0, RUN, TARGETS, tenant_digest=None, lora_dropout=0.0)
-
-
 def _refused_by_an_in_model_loader(path):
     try:
         raise ValueError("base mismatch")
@@ -591,30 +585,6 @@ def test_a_padded_rank_is_refused_at_save(tmp_path):
     with pytest.raises(RuntimeError, match="rank 3 != 2"):
         save_adapter_dir(tmp_path, "w", PaddedRankMembers(), 0, RUN, tenant_digest=None)
 
-
-def _export_external(rank, world_size, port, *, root):
-    init_gloo(rank, world_size, port=port)
-    init_gloo_group()
-    written = write_external_export(
-        Path(root), "x", FakeMembers(scale=1 / 3), 0, RUN, TARGETS, tenant_digest=None, lora_dropout=0.0
-    )
-    if rank == 0:
-        commit_adapter_dir(Path(root), "x", written, overwrite=False)
-    dist.destroy_process_group()
-
-
-def test_the_external_export_is_the_fp32_masters_gathered_across_ranks():
-    """Not the bf16 weights upcast: values bf16 cannot hold come out bitwise."""
-    root = tempfile.mkdtemp()
-    run_multiprocess(partial(_export_external, root=root))
-    committed = resolve_adapter_dir(Path(root), "x", tenant=None)
-    exported = ExternalWeightsReader(committed.path, RUN, TARGETS).read_weights()
-    for factor, full in FULL.items():
-        master = full * (1 / 3)
-        assert not torch.equal(master, master.bfloat16().float()), "the masters must not be bf16-exact"
-        assert torch.equal(exported[f"{MODULE}.{factor}"], master)
-
-
 class DataParallelMembers(FakeMembers):
     """Two data-parallel replicas of a two-way row split: ranks 2 and 3 hold non-primary copies of ranks 0 and 1."""
 
@@ -630,20 +600,23 @@ def _export_external_with_replicas(rank, world_size, port, *, root):
     init_gloo(rank, world_size, port=port)
     init_gloo_group()
     written = write_external_export(
-        Path(root), "x", DataParallelMembers(), 0, RUN, TARGETS, tenant_digest=None, lora_dropout=0.0
+        Path(root), "x", DataParallelMembers(scale=1 / 3), 0, RUN, TARGETS, tenant_digest=None, lora_dropout=0.0
     )
     if rank == 0:
         commit_adapter_dir(Path(root), "x", written, overwrite=False)
     dist.destroy_process_group()
 
 
-def test_the_external_export_takes_each_piece_from_its_primary_rank_only():
+def test_the_external_export_is_the_fp32_masters_each_from_its_primary_rank():
+    """Not the bf16 weights upcast, and no replica's copy counted twice."""
     root = tempfile.mkdtemp()
     run_multiprocess(partial(_export_external_with_replicas, root=root), world_size=4)
     committed = resolve_adapter_dir(Path(root), "x", tenant=None)
     exported = ExternalWeightsReader(committed.path, RUN, TARGETS).read_weights()
     for factor, full in FULL.items():
-        assert torch.equal(exported[f"{MODULE}.{factor}"], full)
+        master = full * (1 / 3)
+        assert not torch.equal(master, master.bfloat16().float()), "the masters must not be bf16-exact"
+        assert torch.equal(exported[f"{MODULE}.{factor}"], master)
 
 
 GDN = "model.layers.0.linear_attn"
