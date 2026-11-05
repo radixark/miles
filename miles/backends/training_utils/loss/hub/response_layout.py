@@ -462,10 +462,13 @@ class PaddedRows:
     def forward_log_probs(self, logits, *, with_entropy, use_sampling_mask):
         assert not use_sampling_mask, "validate_response_layout_args refuses sampling-support replay"
         log_probs, entropy = self.score(logits, with_entropy=with_entropy, entropy_requires_grad=False)
-        result = {"log_probs": HostRows(log_probs.detach().to("cpu", non_blocking=True), self)}
+        result = {"log_probs": self._to_host(log_probs)}
         if with_entropy:
-            result["entropy"] = HostRows(entropy.detach().to("cpu", non_blocking=True), self)
+            result["entropy"] = self._to_host(entropy)
         return result
+
+    def _to_host(self, rows: torch.Tensor) -> "HostRows":
+        return HostRows(rows.detach().to("cpu", non_blocking=True), self.row_index, self.response_lengths)
 
     @functools.cached_property
     def _targets(self) -> torch.Tensor:
@@ -508,7 +511,8 @@ class HostRows:
     """`[T]` results on their way to the host; read them only after `finish_forward_pass` synchronized."""
 
     values: torch.Tensor
-    layout: PaddedRows
+    row_index: torch.Tensor
+    response_lengths: list[int]
 
     def per_sample(self) -> list[torch.Tensor]:
-        return self.layout.per_sample(self.values)
+        return list(self.values[self.row_index].split(self.response_lengths))
