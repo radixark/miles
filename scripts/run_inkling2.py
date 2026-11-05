@@ -26,6 +26,7 @@ Args:
   --task         dapo_math (text) | geo3k (images through the frozen vision tower)
 
 Examples:
+  python scripts/run_inkling2.py prepare --task geo3k
   python scripts/run_inkling2.py convert --model-name Inkling2-8layer-64e-bf16
   python scripts/run_inkling2.py train --model-name Inkling2-8layer-64e-bf16 --train-mode full
   # two 4-GPU nodes already joined in one ray cluster
@@ -36,6 +37,7 @@ Examples:
 """
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal
 
 import typer
@@ -191,6 +193,24 @@ def _train_args(args: ScriptArgs) -> str:
         f"{_lora_args(args)} {_sglang_args(args)} {misc_args} "
         f"{command_utils.get_default_wandb_args(__file__, run_id=args.run_id)} {args.extra_args}"
     )
+
+
+@app.command()
+@command_utils.dataclass_cli
+def prepare(args: ScriptArgs):
+    """The --task dataset under --data-dir (geo3k is converted once into structured messages)."""
+    backend = args.create_backend()
+    match args.task:
+        case "dapo_math":
+            backend.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
+        case "geo3k":
+            if Path(f"{args.data_dir}/geo3k/geo3k_train.jsonl").exists():
+                return
+            backend.hf_download_dataset("chenhegu/geo3k_imgurl", data_dir=args.data_dir)
+            backend.exec_command_cpu(
+                f"python {command_utils.repo_base_dir}/tools/convert_geo3k_to_messages.py "
+                f"--src-dir {args.data_dir}/geo3k_imgurl --dst-dir {args.data_dir}/geo3k"
+            )
 
 
 @app.command()
