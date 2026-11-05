@@ -15,6 +15,13 @@ from miles.backends.training_utils.checkpoint.adapter.source_error import Adapte
 ADAPTER_STATE_DIRNAME = "adapter_state"
 STEP_KEY = "optimizer.step"
 _STATE_SUFFIXES = ("weight", "exp_avg", "exp_avg_sq")
+# a head's rows past the vocabulary, which a backend pads its lora_B to (native Megatron): stored so a resume is
+# exact, read only by a run padding to the same size, and never exported or converted
+VOCAB_PADDING_SUFFIX = ".vocab_padding"
+
+
+def is_vocab_padding(key: str) -> bool:
+    return key.endswith(VOCAB_PADDING_SUFFIX)
 
 
 @dataclass(frozen=True)
@@ -224,7 +231,9 @@ def read_adapter_state_keys(directory: Path) -> set[str]:
 
 def assert_adapter_state_keys(directory: Path, run_keys: set[str], *, with_optimizer: bool) -> None:
     """Every key the run trains is stored; nothing else is, except moments a weights-only load leaves unread."""
-    stored = read_adapter_state_keys(directory)
+    # a run without the source's vocab padding ignores it; one without it in the source keeps its own at zero
+    stored = {name for name in read_adapter_state_keys(directory) if not is_vocab_padding(name.rsplit(".", 1)[0])}
+    run_keys = {key for key in run_keys if not is_vocab_padding(key)}
     suffixes = _STATE_SUFFIXES if with_optimizer else ("weight",)
     missing = {f"{key}.{suffix}" for key in run_keys for suffix in suffixes} - stored
     unexpected = stored - {f"{key}.{suffix}" for key in run_keys for suffix in _STATE_SUFFIXES}
@@ -241,7 +250,13 @@ def read_adapter_state_weights(directory: Path) -> dict[str, torch.Tensor]:
     state_dict = {
         name: torch.empty(metadata[name].size, dtype=metadata[name].properties.dtype)
         for name in metadata
-        if name.endswith(".weight")
+        if name.endswith(".weight") and not is_vocab_padding(name.removesuffix(".weight"))
     }
     dcp.load(state_dict, checkpoint_id=directory / ADAPTER_STATE_DIRNAME, no_dist=True)
     return {name.removesuffix(".weight"): tensor for name, tensor in state_dict.items()}
+
+
+def read_adapter_state_shapes(directory: Path) -> dict[str, tuple[int, ...]]:
+    """Global shapes of the stored weights, by HF key."""
+    metadata = dcp.FileSystemReader(directory / ADAPTER_STATE_DIRNAME).read_metadata().state_dict_metadata
+    return {name.removesuffix(".weight"): tuple(metadata[name].size) for name in metadata if name.endswith(".weight")}

@@ -79,7 +79,7 @@ def probe_bridge_row_mapping(
     """Collective: run ``export_adapter`` (a backend's HF-named export, names mapped by ``map_name``) with
     index-valued stand-ins registered in ``model`` in place of ``params``.
 
-    ``unexported``: offsets of the elements the export leaves out by construction; no checkpoint holds them.
+    ``unexported``: offsets of the elements the export leaves out by construction, which the caller stores itself.
     """
     rank = dist.get_rank()
     total = sum(p.numel() for p in params)
@@ -207,8 +207,6 @@ class BridgeAdapterSlots(ProbedAdapterSlots):
         # every slot has the same layout
         row_mapping = probe_bridge_row_mapping(model, self.slot_parameters(0), self._export_probe, targets)
         super().__init__(row_mapping, targets, iterator)
-        # Bridge exports every adapter element
-        self.load_overwrites_every_element = True
 
     def slot_parameters(self, slot: int) -> list[torch.nn.Parameter]:
         if self._multi_lora:

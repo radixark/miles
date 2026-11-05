@@ -1,24 +1,17 @@
 """Native LoRA (N = 1) checkpoint members: the same probe-built HF layout as Bridge, over native's own export."""
 
+from dataclasses import replace
+
 import torch
-import torch.distributed as dist
 
 from miles.backends.megatron_utils.lora.bridge_checkpoint import probe_bridge_row_mapping
 from miles.backends.megatron_utils.lora.native.hf_adapter import export_lora_hf_named
 from miles.backends.megatron_utils.lora.native.modules.linear import iter_adapters
 from miles.backends.megatron_utils.lora.native.modules.lm_head import LoRAOutputHead
 from miles.backends.megatron_utils.lora.utils import adapter_named_parameters
-from miles.backends.training_utils.checkpoint.adapter.adapter_state import gloo_group
+from miles.backends.training_utils.checkpoint.adapter.adapter_state import VOCAB_PADDING_SUFFIX
 from miles.backends.training_utils.checkpoint.adapter.key_mapping import HfKey, map_sampler_keys_to_hf_keys
-from miles.backends.training_utils.checkpoint.adapter.probed_slots import ProbedAdapterSlots
-
-
-def agreed_load_overwrites_every_element(unexported: torch.Tensor | None) -> bool:
-    """Collective: whether a load writes every adapter element on every rank; a dp-zero gather that skips the data
-    also skips its collective, so all ranks must agree."""
-    leaves_out = torch.tensor([int(unexported is not None and unexported.numel() > 0)])
-    dist.all_reduce(leaves_out, op=dist.ReduceOp.MAX, group=gloo_group())
-    return not leaves_out.item()
+from miles.backends.training_utils.checkpoint.adapter.probed_slots import HfPiece, ProbedAdapterSlots
 
 
 class NativeAdapterSlots(ProbedAdapterSlots):
@@ -28,14 +21,19 @@ class NativeAdapterSlots(ProbedAdapterSlots):
 
     def __init__(self, model, iterator, targets):
         """Collective: probes the row mapping now, while nothing else touches the parameters."""
-        # _unexported_elements, slot_parameters, _map_name and _export_probe read these before super().__init__
+        # _vocab_padding_pieces, slot_parameters, _map_name and _export_probe read these before super().__init__
         self._model, self._iterator, self.targets = model, iterator, targets
-        unexported = self._unexported_elements()
+        padding = self._vocab_padding_pieces()
         row_mapping = probe_bridge_row_mapping(
-            model, self.slot_parameters(0), self._export_probe, targets, self._map_name, unexported
+            model,
+            self.slot_parameters(0),
+            self._export_probe,
+            targets,
+            self._map_name,
+            torch.cat([piece.local_elements.flatten() for piece in padding]) if padding else None,
         )
-        super().__init__(row_mapping, targets, iterator)
-        self.load_overwrites_every_element = agreed_load_overwrites_every_element(unexported)
+        # the export trims the vocab padding; adapter_state keeps it, under its own key
+        super().__init__(replace(row_mapping, pieces=[*row_mapping.pieces, *padding]), targets, iterator)
 
     def slot_parameters(self, slot: int) -> list[torch.nn.Parameter]:
         assert slot == 0, "native LoRA has only slot 0"
@@ -50,20 +48,28 @@ class NativeAdapterSlots(ProbedAdapterSlots):
         assert len(heads) <= 1, "a model has one output head"
         return self._map_name(f"{heads[0].hf_prefix}lora_B.weight").key if heads else None
 
-    def _unexported_elements(self) -> torch.Tensor:
-        """head_B's padded vocab rows: the export trims them, so no checkpoint holds them and a load leaves them."""
-        padded_rows = {
-            id(adapter.head_B): adapter.padded_local_rows()
-            for adapter in iter_adapters(self._model)
-            if isinstance(adapter, LoRAOutputHead)
-        }
-        offsets, start = [torch.empty(0, dtype=torch.long)], 0
+    def _vocab_padding_pieces(self) -> list[HfPiece]:
+        """head_B's rows past the served vocab, which the export trims: adapter_state keeps them, so that the rows
+        training moves resume exactly."""
+        heads = {id(a.head_B): a for a in iter_adapters(self._model) if isinstance(a, LoRAOutputHead)}
+        pieces, start = [], 0
         for param in self.slot_parameters(0):
-            if id(param) in padded_rows:
-                rows, row_numel = padded_rows[id(param)], param.shape[1]
-                offsets.append(torch.arange(start + rows.start * row_numel, start + rows.stop * row_numel))
+            head = heads.get(id(param))
+            rows = head.padded_local_rows() if head is not None else None
+            if rows is not None and rows.start < rows.stop:
+                total, first = head.padding_rows()
+                row_numel = param.shape[1]
+                elements = torch.arange(start + rows.start * row_numel, start + rows.stop * row_numel)
+                pieces.append(
+                    HfPiece(
+                        self._head_key() + VOCAB_PADDING_SUFFIX,
+                        (total, row_numel),
+                        (first, 0),
+                        elements.view(rows.stop - rows.start, row_numel),
+                    )
+                )
             start += param.numel()
-        return torch.cat(offsets)
+        return pieces
 
     def _export_probe(self):
         # one adapter at a time: a float64 export gathers every expert factor over EP onto every rank
