@@ -19,6 +19,8 @@ class Platform:
     triton_kernels = True
     # FlexAttention compiles to a block-sparse kernel here
     flex_attention = True
+    # Pallas (JAX) kernels run here through the framework (e.g. --titan-tpu-attention splash)
+    pallas_kernels = False
     # the process group has a rooted reduce
     rooted_reduce = True
     # the --update-weight-transfer-mode values an engine on this platform can receive; None: all of them

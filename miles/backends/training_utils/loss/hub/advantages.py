@@ -1,6 +1,7 @@
 from argparse import Namespace
 
 import torch
+import torch.distributed as dist
 
 from miles.backends.training_utils.data.context_parallel import get_logits_and_tokens_offset_with_cp
 from miles.backends.training_utils.loss.hub.math_utils import (
@@ -112,12 +113,16 @@ def normalize_advantages(
     total_lengths: list[int],
     response_lengths: list[int],
     max_seq_lens: list[int] | None = None,
+    *,
+    process_group: dist.ProcessGroup | None = None,
 ) -> list[torch.Tensor]:
     """Whiten advantages across the DP group using `loss_masks` for weighting.
 
     Under CP > 1 the mask is sliced to this rank's tokens; when the local
     mask is empty the inputs pass through unchanged. Output shapes match
-    `advantages`.
+    `advantages`. `process_group` is the data-parallel group the statistics
+    reduce over; None is the effective DP group, whose backend reduces device
+    tensors (a caller with host-resident advantages passes its gloo group).
     """
     num_samples = len(advantages)
     assert len(loss_masks) == num_samples
@@ -168,12 +173,10 @@ def normalize_advantages(
         assert (
             all_advs.size() == all_masks.size()
         ), f"Shape mismatch before whitening: advantages {all_advs.size()}, masks {all_masks.size()}"
-        dp_group = parallel_state.effective_dp.group
-
         whitened_advs_flat = distributed_masked_whiten(
             all_advs,
             all_masks,
-            process_group=dp_group,
+            process_group=parallel_state.effective_dp.group if process_group is None else process_group,
             shift_mean=True,
         )
         chunk_lengths = [chunk.size(0) for chunk in advantages]

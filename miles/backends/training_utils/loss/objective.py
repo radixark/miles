@@ -1,5 +1,8 @@
 from argparse import Namespace
+from collections.abc import Callable
+
 import torch
+import torch.distributed as dist
 from torch.utils.checkpoint import checkpoint
 
 from miles.backends.training_utils.data.context_parallel import get_local_response_loss_masks, get_sum_of_sample_mean
@@ -16,6 +19,21 @@ from miles.utils.lora.utils import is_multi_lora_enabled
 from miles.utils.types import RolloutBatch
 
 
+def _lazy_reducer(
+    build: Callable[[], Callable[[torch.Tensor], torch.Tensor]]
+) -> Callable[[torch.Tensor], torch.Tensor]:
+    """A reducer that `build`s itself on its first call, so a loss that never reduces with it costs nothing."""
+    reducer: Callable[[torch.Tensor], torch.Tensor] | None = None
+
+    def reduce(x: torch.Tensor) -> torch.Tensor:
+        nonlocal reducer
+        if reducer is None:
+            reducer = build()
+        return reducer(x)
+
+    return reduce
+
+
 def _detach_rollout_tensor_list(rollout_data: RolloutBatch, key: str) -> list[torch.Tensor] | None:
     tensors = rollout_data.get(key)
     if tensors is None:
@@ -29,6 +47,8 @@ def _detach_rollout_tensor_list(rollout_data: RolloutBatch, key: str) -> list[to
 def compute_advantages_and_returns(
     args: Namespace,
     rollout_data: RolloutBatch,
+    *,
+    whiten_group: dist.ProcessGroup | None = None,
 ) -> None:
     """Compute advantages and returns in-place based on `args.advantage_estimator`.
 
@@ -52,6 +72,9 @@ def compute_advantages_and_returns(
             "rewards", "values", "response_lengths", "loss_masks",
             "total_lengths"). Modified in-place to add "advantages" and
             "returns" keys, each mapping to lists of tensors per sample.
+        whiten_group: The data-parallel group `normalize_advantages` reduces
+            over; None is the effective DP group. A trainer that keeps the
+            per-sample tensors on the host passes its gloo group.
     """
     allow_missing_log_probs = args.skip_actor_forward_only and not args.use_rollout_logprobs
     log_probs_key = "rollout_log_probs" if args.use_rollout_logprobs else "log_probs"
@@ -120,7 +143,9 @@ def compute_advantages_and_returns(
         )
 
     if args.normalize_advantages:
-        advantages = normalize_advantages(args, advantages, loss_masks, total_lengths, response_lengths, max_seq_lens)
+        advantages = normalize_advantages(
+            args, advantages, loss_masks, total_lengths, response_lengths, max_seq_lens, process_group=whiten_group
+        )
 
     rollout_data["advantages"] = advantages
     rollout_data["returns"] = returns
@@ -173,14 +198,17 @@ def loss_function(
     num_tokens = count_loss_tokens(batch["loss_masks"])
     num_samples = len(batch["response_lengths"])
 
-    sum_of_sample_mean = get_sum_of_sample_mean(
-        batch["total_lengths"],
-        batch["response_lengths"],
-        batch["loss_masks"],
-        args.backend.calculate_per_token_loss,
-        args.qkv_format,
-        batch.get("max_seq_lens", None),
-        denominators=batch.get("rollout_mask_sums", None),
+    # built on first use: a loss on padded rows (loss/hub/response_layout.py) reduces with its own row divisors
+    sum_of_sample_mean = _lazy_reducer(
+        lambda: get_sum_of_sample_mean(
+            batch["total_lengths"],
+            batch["response_lengths"],
+            batch["loss_masks"],
+            args.backend.calculate_per_token_loss,
+            args.qkv_format,
+            batch.get("max_seq_lens", None),
+            denominators=batch.get("rollout_mask_sums", None),
+        )
     )
 
     func = get_loss_function(args, batch.get("loss_fn"))

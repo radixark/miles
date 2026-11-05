@@ -4,7 +4,11 @@ import torch
 
 from miles import platforms
 from miles.backends.fsdp_utils.arguments import FSDPArgs, build_dataclass_parser, load_args_from_parser
+from miles.backends.training_utils.loss.hub.response_layout import padded_rows_enabled, validate_response_layout_args
 from miles.utils.lora.utils import is_lora_enabled, lora_rollout_enabled
+
+_DOCUMENT_ATTENTION_BACKENDS = ("sdpa_blocks", "splash")
+_FSDP_REDUCE_DTYPES = ("float32", "bfloat16")
 
 
 @dataclass
@@ -24,6 +28,11 @@ class TorchtitanArgs(FSDPArgs):
     # FSDP all-gathers params once per pass and reduce-scatters grads once per step; each rank holds full
     # bf16 params and fp32 grads for the pass
     titan_fsdp_gather_once: bool = False
+    # packed-document attention where FlexAttention is dense (TPU): "sdpa_blocks" (query blocks over SDPA) or
+    # "splash" (the Pallas splash-attention kernel)
+    titan_tpu_attention: str = "sdpa_blocks"
+    # FSDP's gradient reduce dtype: bfloat16 halves the reduce-scatter buffers and bytes
+    titan_fsdp_reduce_dtype: str = "float32"
 
 
 def build_torchtitan_parser(extra_args_provider=None):
@@ -59,9 +68,23 @@ def validate_torchtitan_args(args) -> None:
             "inside the rope kernel"
         )
 
+    if args.titan_fsdp_reduce_dtype not in _FSDP_REDUCE_DTYPES:
+        raise ValueError(
+            f"--titan-fsdp-reduce-dtype {args.titan_fsdp_reduce_dtype!r}: expected one of {_FSDP_REDUCE_DTYPES}"
+        )
+    if args.titan_tpu_attention not in _DOCUMENT_ATTENTION_BACKENDS:
+        raise ValueError(
+            f"--titan-tpu-attention {args.titan_tpu_attention!r}: expected one of {_DOCUMENT_ATTENTION_BACKENDS}"
+        )
     _validate_platform_args(args)
     if args.titan_fsdp_gather_once and args.pipeline_model_parallel_size > 1:
         raise ValueError("--titan-fsdp-gather-once does not apply to the pipeline schedule; drop it under PP")
+    # with gradient sync off until the last microbatch, FSDP accumulates the unsharded gradients in the reduce dtype
+    if args.titan_fsdp_gather_once and args.titan_fsdp_reduce_dtype != "float32":
+        raise ValueError(
+            f"--titan-fsdp-gather-once would accumulate microbatch gradients in --titan-fsdp-reduce-dtype "
+            f"{args.titan_fsdp_reduce_dtype}; use float32 with it"
+        )
     if args.ref_update_interval is not None:
         raise ValueError("--ref-update-interval is not supported by the torchtitan backend")
     if args.fp16:
@@ -89,6 +112,7 @@ def validate_torchtitan_args(args) -> None:
             )
     if is_lora_enabled(args):
         _validate_lora_args(args)
+    validate_response_layout_args(args)
 
 
 def _validate_lora_args(args) -> None:
@@ -120,9 +144,22 @@ def _validate_lora_args(args) -> None:
 
 def _validate_platform_args(args) -> None:
     platform = platforms.current_platform
-    if args.log_probs_backend == "fused" and not platform.triton_kernels:
+    if args.titan_tpu_attention == "splash":
+        if not platform.pallas_kernels:
+            raise ValueError(
+                f"--titan-tpu-attention splash is a Pallas kernel, which {platform.device_type} cannot run"
+            )
+        if args.seq_length % 1024:
+            raise ValueError(
+                f"--titan-tpu-attention splash tiles the sequence in 1024-token blocks; --seq-length {args.seq_length} "
+                "is not a multiple of 1024"
+            )
+    # without Triton, the fused log-prob op is a compiled program of the padded-rows loss layout
+    if args.log_probs_backend == "fused" and not platform.triton_kernels and not padded_rows_enabled(args):
         raise ValueError(
-            f"--log-probs-backend fused is a Triton kernel; on {platform.device_type} use --log-probs-backend torch"
+            f"--log-probs-backend fused on {platform.device_type} scores padded rows "
+            f"(loss/hub/response_layout.py), which --loss-type {args.loss_type} does not use; "
+            "use --log-probs-backend torch"
         )
     # colocate syncs through CUDA IPC, outside the transfer modes
     modes = platform.weight_transfer_modes

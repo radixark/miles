@@ -54,6 +54,8 @@ def _args(**overrides) -> Namespace:
         lora_adapter_path=None,
         lora_train_only=False,
         colocate_memory_peak_device="cpu",
+        titan_tpu_attention="sdpa_blocks",
+        titan_fsdp_reduce_dtype="float32",
         # read by the padded-rows loss layout's startup check on a static-shape platform
         train_backend="torchtitan",
         loss_type="policy_loss",
@@ -98,6 +100,7 @@ _TPU_FACTS = (
     "compile_backend",
     "triton_kernels",
     "flex_attention",
+    "pallas_kernels",
     "rooted_reduce",
     "weight_transfer_modes",
 )
@@ -131,10 +134,30 @@ def test_a_tpu_microbatch_cannot_outgrow_the_largest_length_bucket(monkeypatch, 
         validate_torchtitan_args(_tpu_args(context_parallel_size=2))
 
 
-def test_the_triton_log_prob_kernel_is_refused_on_tpu(monkeypatch, on_tpu):
+def test_the_tpu_fused_log_prob_runs_on_padded_rows_only(monkeypatch, on_tpu):
     monkeypatch.setattr(torch, "__version__", "2.14.0")
-    with pytest.raises(ValueError, match="Triton"):
-        validate_torchtitan_args(_tpu_args(log_probs_backend="fused"))
+    validate_torchtitan_args(_tpu_args(log_probs_backend="fused"))
+    with pytest.raises(ValueError, match="scores padded rows"):
+        validate_torchtitan_args(_tpu_args(log_probs_backend="fused", loss_type="sft_loss"))
+    with pytest.raises(ValueError, match="entropy-coef"):
+        validate_torchtitan_args(_tpu_args(log_probs_backend="fused", entropy_coef=0.01))
+
+
+def test_splash_attention_needs_pallas_kernels_and_whole_1024_token_tiles(monkeypatch, on_tpu):
+    monkeypatch.setattr(torch, "__version__", "2.14.0")
+    with pytest.raises(ValueError, match="multiple of 1024"):
+        validate_torchtitan_args(
+            _tpu_args(titan_tpu_attention="splash", seq_length=3000, rollout_max_context_len=3000)
+        )
+    validate_torchtitan_args(_tpu_args(titan_tpu_attention="splash"))
+    with pytest.raises(ValueError, match="expected one of"):
+        validate_torchtitan_args(_tpu_args(titan_tpu_attention="flash"))
+
+
+def test_splash_attention_is_refused_where_pallas_kernels_do_not_run(monkeypatch):
+    monkeypatch.setattr(torch, "__version__", "2.14.0")
+    with pytest.raises(ValueError, match="Pallas"):
+        validate_torchtitan_args(_args(titan_tpu_attention="splash"))
 
 
 def test_tpu_weights_reach_disaggregated_engines_over_ici_only(monkeypatch, on_tpu):
@@ -358,6 +381,8 @@ def _config_args(**overrides: object) -> Namespace:
         optimizer_cpu_offload=False,
         titan_compile=False,
         titan_fsdp_gather_once=False,
+        titan_tpu_attention="sdpa_blocks",
+        titan_fsdp_reduce_dtype="float32",
         save=None,
         load=None,
     )
@@ -853,3 +878,35 @@ def test_gather_once_reduces_gradients_on_the_last_microbatch_only(monkeypatch, 
         for last in (False, False, True)
     ]
     assert calls == [call for group in per_microbatch for call in group] + [("reshard", None)]
+
+
+def test_the_fsdp_reduce_dtype_reaches_torchtitans_mixed_precision(monkeypatch, tmp_path, single_gpu_dims):
+    from miles.backends.torchtitan_utils.config import build_trainer_config
+
+    monkeypatch.setattr(torch, "__version__", "2.14.0")
+    with pytest.raises(ValueError, match="fsdp-reduce-dtype"):
+        validate_torchtitan_args(_args(titan_fsdp_reduce_dtype="float16"))
+    with pytest.raises(ValueError, match="accumulate microbatch gradients"):
+        validate_torchtitan_args(_args(titan_fsdp_reduce_dtype="bfloat16", titan_fsdp_gather_once=True))
+    validate_torchtitan_args(_args(titan_fsdp_reduce_dtype="bfloat16"))
+    config = build_trainer_config(
+        _config_args(titan_fsdp_reduce_dtype="bfloat16"),
+        hf_assets_path=_checkpoint_dir(tmp_path, tie_word_embeddings=False),
+        lr_total_steps=1,
+        dump_subdir="x",
+    )
+    assert config.training.mixed_precision_reduce == "bfloat16"
+
+
+def test_splash_is_the_document_attention_it_names(tmp_path, single_gpu_dims, on_tpu):
+    pytest.importorskip("torch_tpu.version", reason="the splash kernel needs a real torch_tpu")
+    from miles.backends.torchtitan_utils.config import build_trainer_config
+    from miles.backends.torchtitan_utils.tpu_splash_attention import SplashInnerAttention
+
+    config = build_trainer_config(
+        _config_args(titan_tpu_attention="splash"),
+        hf_assets_path=_checkpoint_dir(tmp_path, tie_word_embeddings=False),
+        lr_total_steps=1,
+        dump_subdir="x",
+    )
+    assert {type(layer.attention.inner_attention) for layer in config.model.layers} == {SplashInnerAttention.Config}

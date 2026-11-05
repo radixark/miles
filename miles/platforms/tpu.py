@@ -13,6 +13,8 @@ class TpuPlatform(Platform):
     triton_kernels = False
     # torch_tpu runs FlexAttention as one dense L x L mask
     flex_attention = False
+    # torch_tpu runs JAX Pallas kernels as torch custom ops
+    pallas_kernels = True
     # tpu_dist has no rooted reduce
     rooted_reduce = False
     # device to device over the slice's ICI links; a TPU engine shares neither NCCL nor CUDA IPC with the trainer

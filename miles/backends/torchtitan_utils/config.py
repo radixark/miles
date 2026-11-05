@@ -66,7 +66,7 @@ def build_model_config(
     model = builder(args.backend.titan_model_flavor, **kwargs)
     _disable_load_balancing(model)
     if not platforms.current_platform.flex_attention:
-        _use_blocked_sdpa_attention(model)
+        _replace_flex_attention(model, _document_attention(args.backend.titan_tpu_attention))
     if parallelism.context_parallel_degree > 1:
         model = transform_model_config_(
             model, [ContextParallelTransform(inner_attention_map={FlexInnerAttention: AllGatherKVFlexInnerAttention})]
@@ -74,7 +74,16 @@ def build_model_config(
     return model
 
 
-def _use_blocked_sdpa_attention(model: BaseModel.Config) -> None:
+def _document_attention(backend: str) -> type[BlockedSdpaInnerAttention]:
+    if backend == "splash":
+        # deferred: the kernel imports jax and torch_tpu, which only the TPU image has
+        from miles.backends.torchtitan_utils.tpu_splash_attention import SplashInnerAttention
+
+        return SplashInnerAttention
+    return BlockedSdpaInnerAttention
+
+
+def _replace_flex_attention(model: BaseModel.Config, attention: type[BlockedSdpaInnerAttention]) -> None:
     for layer in model.layers:
         for _, inner, parent, field_name in layer.traverse(InnerAttention.Config, recurse=True):
             # MLA wraps the attention kernel it runs
@@ -85,7 +94,7 @@ def _use_blocked_sdpa_attention(model: BaseModel.Config) -> None:
                     f"on {platforms.current_platform.device_type} only document-causal FlexAttention has a "
                     f"replacement; {type(inner).__qualname__} has none"
                 )
-            setattr(parent, field_name, BlockedSdpaInnerAttention.Config())
+            setattr(parent, field_name, attention.Config())
 
 
 # not FreezeMoERoutingTransform: it also freezes the router gate, which RL trains
@@ -231,6 +240,7 @@ def build_trainer_config(
         training=TrainingConfig(
             num_tokens_per_microbatch_per_dp_rank=args.backend.seq_length,
             max_context_length=args.backend.seq_length,
+            mixed_precision_reduce=args.backend.titan_fsdp_reduce_dtype,
             steps=max(lr_total_steps, 1),
             enable_cpu_offload=args.backend.optimizer_cpu_offload,
             disable_cuda_graphs=True,
