@@ -11,17 +11,16 @@ from miles.backends.training_utils.data.rollout import DataIterator, get_batch
 
 
 @pytest.mark.parametrize(
-    "cp_size,cp_rank,allgather_cp,offsets",
+    "cp_size,allgather_cp,offsets",
     [
-        (2, 0, False, [0, 8, 16]),
-        (2, 1, False, [0, 8, 16]),
-        (1, 0, False, [0, 5, 12]),
-        (2, 0, True, [0, 5, 12]),
-        (2, 1, True, [0, 5, 12]),
+        (2, False, [0, 8, 16]),
+        (1, False, [0, 5, 12]),
+        (2, True, [0, 5, 12]),
     ],
 )
-def test_thd_multimodal_positions(monkeypatch, cp_size, cp_rank, allgather_cp, offsets):
-    state = SimpleNamespace(cp=SimpleNamespace(size=cp_size, rank=cp_rank), tp=SimpleNamespace(size=1))
+def test_thd_multimodal_positions(monkeypatch, cp_size, allgather_cp, offsets):
+    # Offsets, cu_seqlens and positions do not depend on the CP rank, so rank 0 covers every case.
+    state = SimpleNamespace(cp=SimpleNamespace(size=cp_size, rank=0), tp=SimpleNamespace(size=1))
     monkeypatch.setattr(data_mod, "get_parallel_state", lambda: state)
     monkeypatch.setattr(cp_utils_mod, "get_parallel_state", lambda: state)
     monkeypatch.setattr(data_mod.current_platform, "current_device", lambda: torch.device("cpu"))
