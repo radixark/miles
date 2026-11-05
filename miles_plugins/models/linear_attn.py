@@ -13,7 +13,6 @@ subclass declares the projections under the HF names, plain bf16 linears on shar
 
 from __future__ import annotations
 
-import argparse
 import functools
 import importlib
 import logging
@@ -58,19 +57,21 @@ _ROW_STRIDE_ALIGN = 8
 
 
 def miles_ext(name: str, args=None) -> ModuleType:
-    """The kernel package ``miles_ext_kernels.<name>`` of the miles-ext-kernels submodule, with a clear error when it
+    """The op module ``miles_ext_kernels.cake.<name>`` of the miles-ext-kernels submodule, with a clear error when it
     is not importable. Where the caller has the parsed miles configuration ``args``, the values of the package's own
-    arguments (``args.miles_ext_kernels_args``) go to its ``configure`` first."""
+    arguments (``args.miles_ext_kernels_args``) go to ``miles_ext_kernels.configure`` first."""
     try:
-        module = importlib.import_module(f"miles_ext_kernels.{name}")
+        module = importlib.import_module(f"miles_ext_kernels.cake.{name}")
     except ImportError as exc:
         raise ImportError(
-            f"the 'cake' backend runs miles_ext_kernels.{name} from the miles-ext-kernels submodule: pass "
+            f"the 'cake' backend runs miles_ext_kernels.cake.{name} from the miles-ext-kernels submodule: pass "
             "--use-miles-ext-kernels and check the submodule out with "
             "'git submodule update --init 3rdparty/miles-ext-kernels'."
         ) from exc
     if args is not None:
-        module.configure(argparse.Namespace(**(args.miles_ext_kernels_args or {})))
+        import miles_ext_kernels
+
+        miles_ext_kernels.configure(args.miles_ext_kernels_args)
     return module
 
 
@@ -264,7 +265,7 @@ class _ContiguousGrad(torch.autograd.Function):
 
 def causal_short_conv(x, weight, activation, backend, cu_seqlens=None, cp_context=None):
     """Depthwise causal conv of ``x`` ``[b, s, C]`` with ``weight`` ``[C, K]`` through fla, or the Cake kernels of
-    ``miles_ext_kernels.conv1d`` for ``backend`` 'cake' (SiLU, kernel size 4, one packed sequence, no context
+    ``miles_ext_kernels.cake.conv1d`` for ``backend`` 'cake' (SiLU, kernel size 4, one packed sequence, no context
     parallelism: both checked when the layer is built and at startup). fla indexes with int32, so inputs past 2**31
     elements (long sequences at low TP) run as channel chunks of at most 2**30; the conv is per channel, so this is
     exact. The Cake kernels take any size and copy a strided ``x`` themselves."""
@@ -311,7 +312,7 @@ class ShardedShortConv(nn.Conv1d):
         self.activation = "silu"
         self.backend = backend or short_conv_backend()
         if self.backend == "cake":
-            miles_ext("conv1d").check_supported(channels, kernel_size, self.activation)
+            miles_ext("conv1d").check_supported(channels, kernel_size, self.activation, has_bias=self.bias is not None)
         self.tp_group = tp_group
         set_tensor_model_parallel_attributes(self.weight, True, 0, 1)
 
@@ -435,15 +436,17 @@ class LinearAttention(MegatronModule, ABC):
             )
         mark_param_dtype(self.A_log, torch.float32)
         if conv_backend == "cake":
+            from miles_ext_kernels import cake
+
             # the weight dtype the conv trains in: KDA marks its taps FP32, GDN keeps the params dtype
-            prebuild = miles_ext("conv1d").prebuild
             for module in self.modules():
                 if isinstance(module, ShardedShortConv):
-                    prebuild(
-                        getattr(  # config-access-exempt: only mark_param_dtype sets the forced training dtype
+                    cake.prebuild(
+                        "conv1d",
+                        weight_dtype=getattr(  # config-access-exempt: only mark_param_dtype sets the forced dtype
                             module.weight, FORCED_PARAM_DTYPE_ATTR, None
                         )
-                        or module.weight.dtype
+                        or module.weight.dtype,
                     )
         dt_bias_size = self.local.value_dim if self.dt_bias_per_channel else self.local.num_v_heads
         self.dt_bias = nn.Parameter(torch.ones(dt_bias_size, dtype=self.dt_bias_dtype or dtype, device=device))

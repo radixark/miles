@@ -69,9 +69,12 @@ class Glm5NextKDA(nn.Module):
         self.kda_backend = kda_backend
         self.conv_backend = conv_backend
         if conv_backend == "cake":
-            conv = miles_ext("conv1d")
-            conv.check_supported(3 * self.projection_size, conv_kernel_size, "silu")
-            conv.prebuild(torch.bfloat16)
+            miles_ext("conv1d").check_supported(
+                3 * self.projection_size, conv_kernel_size, "silu", has_bias=self.conv1d.bias is not None
+            )
+            from miles_ext_kernels import cake
+
+            cake.prebuild("conv1d", weight_dtype=torch.bfloat16)
         if kda_backend == "cake":
             if head_dim != 128:
                 raise ValueError(f"--kda-backend cake needs head dimension 128, got {head_dim}")

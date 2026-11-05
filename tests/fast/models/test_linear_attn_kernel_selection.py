@@ -7,7 +7,6 @@ Blackwell.
 The gradients of the reproducible gated output norm of the cake layers are checked on the CPU against autograd.
 """
 
-import argparse
 import os
 import sys
 import types
@@ -33,17 +32,7 @@ def test_cake_backend_routes_to_the_generated_kernels():
 
 
 def _fake_cake_package(monkeypatch, configured: list, prebuilt: list | None = None) -> None:
-    """Stand-ins for ``miles_ext_kernels`` (its ``configure`` records the values), ``miles_ext_kernels.cake`` (its
-    ``prebuild`` records the op) and the op module ``miles_ext_kernels.cake.gdn``."""
-    package = types.ModuleType("miles_ext_kernels")
-    package.configure = configured.append
-    cake = types.ModuleType("miles_ext_kernels.cake")
-    cake.prebuild = lambda op, **params: (prebuilt if prebuilt is not None else []).append((op, params))
-    gdn = types.ModuleType("miles_ext_kernels.cake.gdn")
-    gdn.chunk_gated_delta_rule = "cake-kernel"
-    package.cake, cake.gdn = cake, gdn
-    for module in (package, cake, gdn):
-        monkeypatch.setitem(sys.modules, module.__name__, module)
+    _fake_ext_package(monkeypatch, "gdn", configured, prebuilt, chunk_gated_delta_rule="cake-kernel")
 
 
 def test_cake_backend_hands_the_kernel_package_its_own_argument_values(monkeypatch):
@@ -170,28 +159,40 @@ def test_the_cake_kda_backend_parses_with_its_supported_layout():
     assert config.kda_backend == "cake"
 
 
-def _fake_ext_package(monkeypatch, name: str, **attrs) -> types.ModuleType:
-    module = types.ModuleType(f"miles_ext_kernels.{name}")
+def _fake_ext_package(
+    monkeypatch, name: str, configured: list | None = None, prebuilt: list | None = None, **attrs
+) -> types.ModuleType:
+    """Stand-ins for ``miles_ext_kernels`` (its ``configure`` records the values), ``miles_ext_kernels.cake`` (its
+    ``prebuild`` records the op and its parameters) and the op module ``miles_ext_kernels.cake.<name>`` with
+    ``attrs``."""
+    package = types.ModuleType("miles_ext_kernels")
+    package.configure = (configured if configured is not None else []).append
+    cake = types.ModuleType("miles_ext_kernels.cake")
+    cake.prebuild = lambda op, **params: (prebuilt if prebuilt is not None else []).append((op, params))
+    module = types.ModuleType(f"miles_ext_kernels.cake.{name}")
     for attr, value in attrs.items():
         setattr(module, attr, value)
-    monkeypatch.setitem(sys.modules, "miles_ext_kernels", types.ModuleType("miles_ext_kernels"))
-    monkeypatch.setitem(sys.modules, f"miles_ext_kernels.{name}", module)
+    package.cake = cake
+    setattr(cake, name, module)
+    for stub in (package, cake, module):
+        monkeypatch.setitem(sys.modules, stub.__name__, stub)
     return module
 
 
 def test_miles_ext_configures_the_package_with_its_own_argument_values(monkeypatch):
     configured = []
-    module = _fake_ext_package(monkeypatch, "conv1d", configure=configured.append)
+    module = _fake_ext_package(monkeypatch, "conv1d", configured)
 
     assert linear_attn.miles_ext("conv1d") is module
     assert configured == []
     assert linear_attn.miles_ext("conv1d", types.SimpleNamespace(miles_ext_kernels_args={"x": 1})) is module
-    assert configured == [argparse.Namespace(x=1)]
+    assert configured == [{"x": 1}]
 
 
 def test_miles_ext_without_the_submodule_names_the_flag_and_the_checkout(monkeypatch):
     monkeypatch.setitem(sys.modules, "miles_ext_kernels", None)
-    monkeypatch.setitem(sys.modules, "miles_ext_kernels.conv1d", None)
+    monkeypatch.setitem(sys.modules, "miles_ext_kernels.cake", None)
+    monkeypatch.setitem(sys.modules, "miles_ext_kernels.cake.conv1d", None)
 
     with pytest.raises(ImportError, match="--use-miles-ext-kernels") as excinfo:
         linear_attn.miles_ext("conv1d")
@@ -211,12 +212,12 @@ def test_the_cake_short_conv_runs_the_kernel_package(monkeypatch):
 def test_a_cake_short_conv_checks_its_shape_when_built(monkeypatch):
     torch = pytest.importorskip("torch")
     checked = []
-    _fake_ext_package(monkeypatch, "conv1d", check_supported=lambda *args: checked.append(args))
+    _fake_ext_package(monkeypatch, "conv1d", check_supported=lambda *args, **kwargs: checked.append((args, kwargs)))
 
     conv = linear_attn.ShardedShortConv(16, 4, tp_group=None, device="cpu", dtype=torch.float32, backend="cake")
 
     assert conv.backend == "cake"
-    assert checked == [(16, 4, "silu")]
+    assert checked == [((16, 4, "silu"), {"has_bias": False})]
 
 
 def test_the_cake_short_conv_rejects_context_parallelism_at_startup():

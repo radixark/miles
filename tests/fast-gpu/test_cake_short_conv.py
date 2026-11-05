@@ -1,6 +1,6 @@
 """--linear-attention-conv-backend cake: the head-sharded short conv on the Cake kernels of the miles-ext-kernels
-submodule (miles_ext_kernels.conv1d), in both variants and both weight dtypes (GDN taps train in BF16, KDA taps in
-FP32).
+submodule (miles_ext_kernels.cake.conv1d), in both variants and both weight dtypes (GDN taps train in BF16, KDA taps
+in FP32).
 
 The conv matches a float64 torch reference to BF16 rounding (< 5e-3), det repeats bit for bit, and a GDN and a KDA
 layer at TP 1 whose short conv runs on cake match the same layers on fla's conv.

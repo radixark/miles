@@ -27,6 +27,12 @@ SKIP_ALLOWLIST: dict[str, tuple[str, ...]] = {
         # multi_gpu: a context-parallel group needs a GPU per rank, on one node
         "the {world}-rank groups need {world} GPUs of one node, {visible} visible",
     ),
+    "conv1d": (
+        # the largest case needs 40 GiB of free GPU memory
+        "needs 40 GiB free, {free} GiB available",
+        # multi_gpu: a context-parallel case needs a GPU per rank
+        "needs {world_size} GPUs, {visible} visible",
+    ),
 }
 
 # One line of pytest's -rs summary: "SKIPPED [2] tests/cake/gdn/test_gdn_kcp_gpu.py:543: <reason>"
