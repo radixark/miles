@@ -2120,7 +2120,7 @@ def test_weights_info_copies_only_the_files_it_reads(tmp_path):
 
 
 async def test_a_file_import_load_copies_only_the_files_a_reader_opens(tmp_path, monkeypatch):
-    """Thousands of tiny .json files cost a copy each under the trainer lock and an inode each; none is read."""
+    """Thousands of tiny .json files would cost a copy and an inode each; none is read."""
     adapter = tmp_path / "imports" / "adapter"
     adapter.mkdir(parents=True)
     (adapter / "adapter_config.json").write_text(json.dumps({"r": 8, "lora_alpha": 32}))
