@@ -90,9 +90,9 @@ class TrainConfig(BaseConfig):
                 "Backend for the mHC (manifold-constrained hyper-connection) stream mixing of GLM-5.3-Flash and "
                 "DeepSeek-V4. 'megatron' is Megatron's hyper-connection module. 'cake' is the Cake four-stream "
                 "kernels from the miles-ext-kernels submodule (--cake-mhc-variant det or fast); it requires "
-                "--use-miles-ext-kernels, NVIDIA SM100a/SM103a (Blackwell), the Megatron backend, hidden size "
-                "4096, 5120 or 7168, --hidden-dropout 0, no 'mhc' in --recompute-modules, no CUDA graphs and no "
-                "--overlap-moe-expert-parallel-comm."
+                "--use-miles-ext-kernels, NVIDIA SM100a/SM103a/SM107a (Blackwell, Rubin), the Megatron backend, "
+                "hidden size 4096, 5120 or 7168 (4096 on SM107a), --hidden-dropout 0, no 'mhc' in "
+                "--recompute-modules, no CUDA graphs and no --overlap-moe-expert-parallel-comm."
             ),
         ),
     ] = "megatron"

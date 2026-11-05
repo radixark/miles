@@ -27,19 +27,23 @@ from miles_plugins.models.cake_hyper_connection import (
 
 GLM_SPEC = ["miles_plugins.models.glm5_next.glm5_next", "get_glm5_next_spec"]
 DSV4_SPEC = ["miles_plugins.models.deepseek_v4.deepseek_v4", "get_dsv4_spec"]
+# the hidden sizes of the SM100a / SM103a kernels (SM107a: 4096)
+HIDDEN_SIZES = (4096, 5120, 7168)
 
 
 @pytest.fixture
 def kernels(monkeypatch):
     """A stand-in ``miles_ext_kernels.mhc`` recording what the module hands it, on device 0 of capability 10.0."""
     mhc = types.ModuleType("miles_ext_kernels.mhc")
-    mhc.HIDDEN_SIZES = (4096, 5120, 7168)
-    mhc.device_supported = True
+    mhc.HIDDEN_SIZES = mhc.device_hidden_sizes = HIDDEN_SIZES
     mhc.calls = []
 
     def is_supported(device, hidden):
         mhc.calls.append(("is_supported", device, hidden))
-        return mhc.device_supported and hidden in mhc.HIDDEN_SIZES
+        return hidden in mhc.device_hidden_sizes
+
+    def supported_hidden_sizes(device):
+        return mhc.device_hidden_sizes
 
     def configure(args):
         mhc.calls.append(("configure", args))
@@ -50,7 +54,8 @@ def kernels(monkeypatch):
     def mhc_prepare(*args, **kwargs):
         raise AssertionError("the call should have been refused before reaching the kernels")
 
-    mhc.is_supported, mhc.configure, mhc.prebuild = is_supported, configure, prebuild
+    mhc.is_supported, mhc.supported_hidden_sizes = is_supported, supported_hidden_sizes
+    mhc.configure, mhc.prebuild = configure, prebuild
     mhc.mhc_prepare = mhc.mhc_finish = mhc_prepare
     package = types.ModuleType("miles_ext_kernels")
     package.mhc = mhc
@@ -143,16 +148,17 @@ def test_another_connection_class_is_refused(kernels):
 
 
 @pytest.mark.parametrize(
-    ("config", "device_supported", "match"),
+    ("config", "device_hidden_sizes", "match"),
     [
-        (_config(num_residual_streams=6), True, "runs 4 residual streams, not 6"),
-        (_config(use_fused_mhc=True), True, "--use-fused-mhc"),
-        (_config(hidden_size=2048), True, r"runs the hidden sizes \(4096, 5120, 7168\).*hidden size 2048"),
-        (_config(), False, r"SM100a / SM103a.*compute capability \(10, 0\)"),
+        (_config(num_residual_streams=6), HIDDEN_SIZES, "runs 4 residual streams, not 6"),
+        (_config(use_fused_mhc=True), HIDDEN_SIZES, "--use-fused-mhc"),
+        (_config(hidden_size=2048), HIDDEN_SIZES, r"runs the hidden sizes \(4096, 5120, 7168\).*hidden size 2048"),
+        (_config(hidden_size=5120), (4096,), r"runs the hidden sizes \(4096,\) on this device.*hidden size 5120"),
+        (_config(), (), r"runs the hidden sizes \(\) on this device \(compute capability \(10, 0\)"),
     ],
 )
-def test_the_spec_build_refuses_what_the_kernels_do_not_run(kernels, config, device_supported, match):
-    kernels.device_supported = device_supported
+def test_the_spec_build_refuses_what_the_kernels_do_not_run(kernels, config, device_hidden_sizes, match):
+    kernels.device_hidden_sizes = device_hidden_sizes
     spec = _block_spec()
 
     with pytest.raises(ValueError, match=match):

@@ -20,7 +20,7 @@ recompute arena (``mhc`` in ``--recompute-modules``) and CUDA graphs, Megatron's
 stream, hidden dropout, a branch-output bias, MoE expert-parallel communication overlap, and stream counts or hidden
 sizes the kernels are not built for.
 
-CUDA-only (NVIDIA SM100a / SM103a, Megatron backend): startup validation imports this module only under
+CUDA-only (NVIDIA SM100a / SM103a / SM107a, Megatron backend): startup validation imports this module only under
 ``--mhc-backend cake``, which it ties to ``--train-backend megatron``; the two specs import it to call
 :func:`apply_mhc_backend`, which leaves every other backend's spec untouched.
 """
@@ -188,9 +188,9 @@ def apply_mhc_backend(block_spec, args, config, *, mean_head: bool = False):
     device = torch.accelerator.current_device_index()
     if not mhc.is_supported(device, config.hidden_size):
         raise ValueError(
-            f"--mhc-backend cake runs the hidden sizes {mhc.HIDDEN_SIZES} on NVIDIA SM100a / SM103a (Blackwell); this "
-            f"model has hidden size {config.hidden_size} on a device of compute capability "
-            f"{torch.cuda.get_device_capability(device)}"
+            f"--mhc-backend cake runs the hidden sizes {mhc.supported_hidden_sizes(device)} on this device (compute "
+            f"capability {torch.cuda.get_device_capability(device)}; NVIDIA SM100a / SM103a run {mhc.HIDDEN_SIZES}, "
+            f"SM107a 4096); this model has hidden size {config.hidden_size}"
         )
     mhc.configure(argparse.Namespace(**(args.miles_ext_kernels_args or {})))
     for layer_spec in block_spec.layer_specs:
