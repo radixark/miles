@@ -44,11 +44,11 @@ class TestMegatronSchedulerMutationScope:
 
     @pytest.mark.parametrize("decay_iters", [None, 7])
     def test_no_rollout_builds_no_scheduler(self, decay_iters: int | None) -> None:
-        """A --num-rollout 0 run (e.g. --lora-adapter-convert-save) trains no step, so it has no schedule."""
+        """A --lora-adapter-convert-save run (--num-rollout 0) trains no step, so it has no schedule."""
         flags = ["--num-rollout", "0", "--rollout-batch-size", "4", "--global-batch-size", "4", "--lr", "0.1"]
         if decay_iters is not None:
             flags.extend(["--lr-decay-iters", str(decay_iters)])
-        args = _parsed_trainer(*flags)
+        args = _parsed_trainer(*flags).model_copy(update={"lora_adapter_convert_save": "/tmp/out"})
         optimizer = torch.optim.SGD([torch.nn.Parameter(torch.ones(1))], lr=0.1)
 
         assert get_optimizer_param_scheduler(args=args, optimizer=optimizer) is None
