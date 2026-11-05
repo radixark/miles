@@ -176,6 +176,33 @@ async def test_transport_collection_error_has_no_metrics_owner(monkeypatch):
     assert SESSION_ROLLOUT_METRICS_KEY not in sample.metadata
 
 
+async def _failing_agent(**kwargs):
+    raise RuntimeError("user simulator API failed")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("version", "statuses", "expected"),
+    [
+        pytest.param("v1", ["COMPLETED"], ["ABORTED"], id="v1-unexplained"),
+        pytest.param("v1", ["TRUNCATED"], ["TRUNCATED"], id="v1-after-truncation"),
+        pytest.param("v2", ["COMPLETED", "COMPLETED"], ["ABORTED", "ABORTED"], id="v2-unexplained"),
+        pytest.param("v2", ["COMPLETED", "TRUNCATED"], ["COMPLETED", "TRUNCATED"], id="v2-after-truncation"),
+    ],
+)
+async def test_agent_failure_aborts_samples_unless_policy_truncated(monkeypatch, version, statuses, expected):
+    """A failure with no truncated turn is not the policy's doing, so its samples must not train a default reward."""
+    samples = [Sample(status=Sample.Status[s], response_length=1, tokens=[i]) for i, s in enumerate(statuses)]
+    tracer = _Tracer(SamplesReply(samples=samples, session_metadata={}, empty_reason=None))
+    _patch_agent(monkeypatch, tracer)
+    monkeypatch.setattr(agentic_tool_call, "load_function", lambda path: _failing_agent)
+
+    output = await agentic_tool_call.generate(_generate_input(use_session_server=version))
+
+    outputs = output.samples if isinstance(output.samples, list) else [output.samples]
+    assert [sample.status for sample in outputs] == [Sample.Status[s] for s in expected]
+
+
 @pytest.mark.asyncio
 async def test_v2_replaces_stale_metrics_with_shared_authoritative_carrier(monkeypatch):
     stale = {"session_id": "stale", "metrics": {"agent": "plant"}}

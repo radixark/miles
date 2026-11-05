@@ -22,6 +22,8 @@ Agent function contract:
   Returning None means no extra metadata to attach.
   Returning a dict merges it into every sample's metadata, so downstream
   reward models (--custom-rm-path) can read whatever the agent left there.
+  Raising aborts the episode's samples unless the policy ended it by running
+  past a length limit (``_abort_unless_policy_stopped``).
 
   Under ``subproc`` (the default) each call runs in a child process of its own:
   its arguments and return value must be picklable, and module-level state lasts
@@ -90,6 +92,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     metadata = {**metadata, "session_server_id": tracer.session_server_id}
 
     agent_metadata = None
+    agent_failed = False
     collect_failed = False
     cancelled = False
     t_start = time.monotonic()
@@ -106,6 +109,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         )
         logger.debug(f"{log_prefix} Agent function returned in {time.monotonic()-t_start:.1f}s")
     except Exception as e:
+        agent_failed = True
         logger.warning(f"{log_prefix} Agent function failed: {e}", exc_info=True)
     except BaseException:
         cancelled = True
@@ -161,6 +165,8 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
             raise ValueError("a successful session collect must carry metrics")
 
     samples = result.samples
+    if agent_failed:
+        _abort_unless_policy_stopped(samples, log_prefix=log_prefix)
     if collect_spec_metrics:
         for sample in samples:
             sample.metadata.pop(SESSION_ROLLOUT_METRICS_KEY, None)
@@ -196,6 +202,21 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     (sample,) = samples
     sample.metadata.update(result.session_metadata)
     return GenerateFnOutput(samples=sample)
+
+
+def _abort_unless_policy_stopped(samples: list[Sample], *, log_prefix: str) -> None:
+    """Abort a failed agent's samples unless the policy ended the episode.
+
+    A TRUNCATED trajectory ran past the response-length cap or ``--max-seq-len``, so the
+    failure followed the policy's own cut-off and the reward model still scores it. Otherwise
+    nothing ties the failure to the policy (a user-simulator, judge or tool API error), so the
+    aborted filter drops the group instead of training a reward the episode never earned.
+    """
+    if any(sample.status == Sample.Status.TRUNCATED for sample in samples):
+        logger.info(f"{log_prefix} Agent function failed after a truncated turn; keeping the samples")
+        return
+    for sample in samples:
+        sample.status = Sample.Status.ABORTED
 
 
 def _add_arguments(parser: argparse.ArgumentParser):
