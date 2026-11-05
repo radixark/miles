@@ -1,12 +1,11 @@
 """``--mhc-backend cake`` without a device: the spec swap, the module contract and the startup checks of
 ``miles_plugins.models.cake_hyper_connection``.
 
-The kernel package is a stand-in here. Its numerics and its own argument rules are tested in the miles-ext-kernels
-submodule (``3rdparty/miles-ext-kernels/tests/mhc``), and the module against Megatron's on Blackwell in
+The kernels are a stand-in here. Their numerics and their own argument rules are tested in the miles-ext-kernels
+submodule (``3rdparty/miles-ext-kernels/tests/cake/mhc``), and the module against Megatron's on Blackwell in
 ``tests/fast-gpu/test_cake_mhc.py``.
 """
 
-import argparse
 import sys
 import types
 from types import SimpleNamespace
@@ -33,8 +32,9 @@ HIDDEN_SIZES = (4096, 5120, 7168)
 
 @pytest.fixture
 def kernels(monkeypatch):
-    """A stand-in ``miles_ext_kernels.mhc`` recording what the module hands it, on device 0 of capability 10.0."""
-    mhc = types.ModuleType("miles_ext_kernels.mhc")
+    """A stand-in op module ``miles_ext_kernels.cake.mhc`` recording what the module hands the kernels (with
+    ``miles_ext_kernels.configure`` and ``miles_ext_kernels.cake.prebuild``), on device 0 of capability 10.0."""
+    mhc = types.ModuleType("miles_ext_kernels.cake.mhc")
     mhc.HIDDEN_SIZES = mhc.device_hidden_sizes = HIDDEN_SIZES
     mhc.calls = []
 
@@ -45,22 +45,24 @@ def kernels(monkeypatch):
     def supported_hidden_sizes(device):
         return mhc.device_hidden_sizes
 
-    def configure(args):
-        mhc.calls.append(("configure", args))
+    def configure(values):
+        mhc.calls.append(("configure", values))
 
-    def prebuild(device, hidden, *, sinkhorn_iters, head=False):
-        mhc.calls.append(("prebuild", device, hidden, sinkhorn_iters, head))
+    def prebuild(op, *, device, hidden, sinkhorn_iters):
+        mhc.calls.append(("prebuild", op, device, hidden, sinkhorn_iters))
 
     def mhc_prepare(*args, **kwargs):
         raise AssertionError("the call should have been refused before reaching the kernels")
 
     mhc.is_supported, mhc.supported_hidden_sizes = is_supported, supported_hidden_sizes
-    mhc.configure, mhc.prebuild = configure, prebuild
     mhc.mhc_prepare = mhc.mhc_finish = mhc_prepare
     package = types.ModuleType("miles_ext_kernels")
-    package.mhc = mhc
+    cake_package = types.ModuleType("miles_ext_kernels.cake")
+    package.configure, package.cake = configure, cake_package
+    cake_package.prebuild, cake_package.mhc = prebuild, mhc
     monkeypatch.setitem(sys.modules, "miles_ext_kernels", package)
-    monkeypatch.setitem(sys.modules, "miles_ext_kernels.mhc", mhc)
+    monkeypatch.setitem(sys.modules, "miles_ext_kernels.cake", cake_package)
+    monkeypatch.setitem(sys.modules, "miles_ext_kernels.cake.mhc", mhc)
     monkeypatch.setattr(torch.accelerator, "current_device_index", lambda: 0)
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device=None: (10, 0))
     return mhc
@@ -117,7 +119,7 @@ def test_cake_swaps_both_connections_of_every_layer(kernels, wrapped):
         else:
             assert swapped is CakeHyperConnection
     assert spec.hc_head_contraction == "the model's own head"
-    assert kernels.calls == [("is_supported", 0, 4096), ("configure", argparse.Namespace(cake_mhc_variant="det"))]
+    assert kernels.calls == [("is_supported", 0, 4096), ("configure", {"cake_mhc_variant": "det"})]
 
 
 def test_the_mean_head_is_swapped_only_when_asked_and_a_second_pass_changes_nothing(kernels):
@@ -128,8 +130,8 @@ def test_the_mean_head_is_swapped_only_when_asked_and_a_second_pass_changes_noth
     assert _connections(spec) == [CakeHyperConnection] * 4
     assert isinstance(spec.hc_head_contraction, ModuleSpec)
     assert spec.hc_head_contraction.module is CakeMeanOutputContraction
-    # no ext arguments (a run without --use-miles-ext-kernels values) configures the package's defaults
-    assert ("configure", argparse.Namespace()) in kernels.calls
+    # no ext arguments (a run without --use-miles-ext-kernels values) configures the kernels' defaults
+    assert ("configure", None) in kernels.calls
 
 
 def test_layers_without_a_connection_keep_the_identity(kernels):
@@ -184,15 +186,16 @@ def test_the_cake_module_keeps_megatrons_parameters_and_prebuilds_its_kernels(ke
     assert {name: tuple(p.shape) for name, p in cake.state_dict().items()} == {
         name: tuple(p.shape) for name, p in megatron.state_dict().items()
     }
-    assert ("prebuild", 0, 64, config.mhc_sinkhorn_iterations, False) in kernels.calls
+    assert ("prebuild", "mhc", 0, 64, config.mhc_sinkhorn_iterations) in kernels.calls
 
 
-def test_the_cake_head_prebuilds_the_head_kernels(kernels):
+def test_the_cake_head_prebuilds_the_kernels(kernels):
     config = _transformer_config()
     head = CakeMeanOutputContraction(config)
 
     assert head.num_streams == 4
-    assert kernels.calls == [("prebuild", 0, 64, config.mhc_sinkhorn_iterations, True)]
+    # one build covers the connections and the head: the head asks for the same libraries again
+    assert kernels.calls == [("prebuild", "mhc", 0, 64, config.mhc_sinkhorn_iterations)]
 
 
 def test_the_cake_module_runs_four_streams_only(kernels):

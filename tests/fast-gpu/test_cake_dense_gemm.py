@@ -12,7 +12,7 @@ against torch and Megatron, through ``miles_plugins.models.cake_batched_projecti
     python tests/fast-gpu/test_cake_dense_gemm.py
 
 The kernels' own suites (more shapes, the prepared launches, the prebuild hooks) run in
-``3rdparty/miles-ext-kernels/tests/dense_gemm`` through ``tests/fast-gpu/kernels/test_miles_ext_kernels.py``.
+``3rdparty/miles-ext-kernels/tests/cake/dense_gemm`` through ``tests/fast-gpu/kernels/test_miles_ext_kernels.py``.
 """
 
 import sys
@@ -30,7 +30,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 # a missing submodule fails the collection: on the Blackwell runners a skip would hide the coverage
-import miles_ext_kernels.dense_gemm  # noqa: E402, F401
+import miles_ext_kernels.cake.dense_gemm  # noqa: E402, F401
 from megatron.core.transformer.moe.router import Router  # noqa: E402
 
 from miles.backends.megatron_utils import cake_router_gemm  # noqa: E402
@@ -127,11 +127,21 @@ def test_the_dsv4_grouped_output_projection():
 
 
 def test_the_layer_check_takes_the_mla_shapes_and_refuses_others():
+    """The check where the layers are built, which also builds the projection programs of this GPU."""
     config = SimpleNamespace(cuda_graph_impl="none", params_dtype=torch.bfloat16)
-    for d_in, d_out in ((192, 512), (512, 256), (256, 512), (4096, 1024)):
-        validate_batched_projection_config(config, d_in=d_in, d_out=d_out, backend="cake")
+    for num_heads, d_in, d_out, weight_layout in (
+        (16, 192, 512, "in_out"),
+        (16, 512, 256, "out_in"),
+        (16, 256, 512, "in_out"),
+        (8, 4096, 1024, "out_in"),
+    ):
+        validate_batched_projection_config(
+            config, num_heads=num_heads, d_in=d_in, d_out=d_out, weight_layout=weight_layout, backend="cake"
+        )
     with pytest.raises(ValueError, match="multiple of 8"):
-        validate_batched_projection_config(config, d_in=196, d_out=512, backend="cake")
+        validate_batched_projection_config(
+            config, num_heads=16, d_in=196, d_out=512, weight_layout="in_out", backend="cake"
+        )
 
 
 class _Router(Router):

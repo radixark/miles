@@ -56,9 +56,12 @@ class ReplicatedGatedDeltaNet(nn.Module):
         )
         self.conv_backend = args.linear_attention_conv_backend if args is not None else "fla"
         if self.conv_backend == "cake":
-            conv = miles_ext("conv1d", args)
-            conv.check_supported(self.conv_dim, self.conv_kernel_size, "silu")
-            conv.prebuild(torch.bfloat16)
+            miles_ext("conv1d", args).check_supported(
+                self.conv_dim, self.conv_kernel_size, "silu", has_bias=self.conv1d.bias is not None
+            )
+            from miles_ext_kernels import cake
+
+            cake.prebuild("conv1d", weight_dtype=torch.bfloat16)
 
         # Separate projections for QKV and Z (unlike Qwen3Next which combines QKVZ)
         projection_size_qkv = self.key_dim * 2 + self.value_dim
@@ -96,7 +99,9 @@ class ReplicatedGatedDeltaNet(nn.Module):
             norm = miles_ext("gated_rmsnorm", args)
             activation, has_bias = self.output_gate_activation, self.norm.bias is not None
             norm.check_supported(self.head_v_dim, activation, self.norm.weight.dtype, has_bias=has_bias)
-            norm.prebuild()
+            from miles_ext_kernels import cake
+
+            cake.prebuild("gated_rmsnorm")
 
         self.out_proj = nn.Linear(self.value_dim, self.hidden_size, bias=False)
 

@@ -1,7 +1,7 @@
 import json
 import sys
 from argparse import Namespace
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -554,15 +554,10 @@ def test_a_pipeline_stage_without_mla_layers_streams_past_the_q_lora_group(gathe
         assert list(assemble_atomic_update_groups(kda_only_stage, groups)) == kda_only_stage
 
 
-@pytest.mark.parametrize("cpu_offload", [False, True])
-def test_sleep_and_wake_leave_cpu_offloaded_training_state_on_the_host(monkeypatch, cpu_offload):
-    """Under --optimizer-cpu-offload the shards and moments already live on the host; moving them on wake would pull
-    every one onto the GPU."""
-    pytest.importorskip("torchtitan")
+def _offloading_titan_actor(monkeypatch, moved: list, *, cpu_offload: bool, use_miles_ext_kernels: bool = False):
     from miles.backends.torchtitan_utils import actor as titan_actor
     from miles.backends.training_utils.torch_native import actor as native_actor
 
-    moved: list[bool] = []
     monkeypatch.setattr(native_actor, "move_train_state", lambda *_args, to_host: moved.append(to_host))
     monkeypatch.setattr(titan_actor.dist, "barrier", lambda **_kwargs: None)
     for module in (titan_actor, native_actor):
@@ -570,10 +565,40 @@ def test_sleep_and_wake_leave_cpu_offloaded_training_state_on_the_host(monkeypat
         monkeypatch.setattr(module, "print_memory", lambda *_args, **_kwargs: None)
         monkeypatch.setattr(module, "get_gloo_group", lambda: None)
     actor = titan_actor.TorchtitanTrainRayActor.__new__(titan_actor.TorchtitanTrainRayActor)
-    actor.args = SimpleNamespace(offload_train=True, backend=SimpleNamespace(optimizer_cpu_offload=cpu_offload))
+    actor.args = SimpleNamespace(
+        offload_train=True,
+        use_miles_ext_kernels=use_miles_ext_kernels,
+        backend=SimpleNamespace(optimizer_cpu_offload=cpu_offload),
+    )
     actor.model_parts, actor.optimizers = [], []
+    return actor
+
+
+@pytest.mark.parametrize("cpu_offload", [False, True])
+def test_sleep_and_wake_leave_cpu_offloaded_training_state_on_the_host(monkeypatch, cpu_offload):
+    """Under --optimizer-cpu-offload the shards and moments already live on the host; moving them on wake would pull
+    every one onto the GPU."""
+    pytest.importorskip("torchtitan")
+    moved: list[bool] = []
+    actor = _offloading_titan_actor(monkeypatch, moved, cpu_offload=cpu_offload)
 
     actor.sleep()
     actor.wake_up()
 
     assert moved == ([] if cpu_offload else [True, False])
+
+
+@pytest.mark.parametrize("use_miles_ext_kernels", [False, True])
+def test_sleep_releases_the_ext_kernels_before_the_training_state_moves(monkeypatch, use_miles_ext_kernels):
+    """Under --use-miles-ext-kernels sleep() first frees the kernels' workspace pools and cached plans
+    (``miles_ext_kernels.release()``); without the flag it does not import the package."""
+    pytest.importorskip("torchtitan")
+    order: list = []
+    ext = ModuleType("miles_ext_kernels")
+    ext.release = lambda: order.append("release")
+    monkeypatch.setitem(sys.modules, "miles_ext_kernels", ext if use_miles_ext_kernels else None)
+    actor = _offloading_titan_actor(monkeypatch, order, cpu_offload=False, use_miles_ext_kernels=use_miles_ext_kernels)
+
+    actor.sleep()
+
+    assert order == ["release"] * use_miles_ext_kernels + [True]

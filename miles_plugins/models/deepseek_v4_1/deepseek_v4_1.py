@@ -438,8 +438,10 @@ class DeepSeekV41Attention(MegatronModule):
         # --batched-projection-gemm-backend: the grouped output projection on torch.einsum or the Cake GEMM
         validate_batched_projection_config(
             config,
+            num_heads=self.n_local_groups,
             d_in=self.n_heads * self.head_dim // self.n_groups,
             d_out=self.o_lora_rank,
+            weight_layout="out_in",
             backend=config.miles_batched_projection_gemm_backend,
         )
         self.o_group_matmul = GroupedMatmul(backend=config.miles_batched_projection_gemm_backend)
@@ -651,7 +653,16 @@ def get_dsv41_spec(args, config, vp_stage):
     config.miles_dsa_attention_backend = args.dsa_attention_backend
     config.miles_batched_projection_gemm_backend = args.batched_projection_gemm_backend
     if args.dsa_attention_backend == "cake":
-        cake.setup(args, index_heads=config.dsa_indexer_n_heads, index_head_dim=config.dsa_indexer_head_dim)
+        # MQA over the kv_lora_rank latent (its RoPE channels inside it) with a per-head sink, the TP rank's heads
+        cake.setup(
+            args,
+            heads=config.num_attention_heads // config.tensor_model_parallel_size,
+            d_qk=config.kv_lora_rank,
+            d_v=config.kv_lora_rank,
+            attn_sink=True,
+            index_heads=config.dsa_indexer_n_heads,
+            index_head_dim=config.dsa_indexer_head_dim,
+        )
     _install_patches(config)
 
     _orig_get_spec = _eav_specs.get_experimental_attention_variant_module_spec

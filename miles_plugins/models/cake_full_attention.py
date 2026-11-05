@@ -3,10 +3,11 @@
 
 :class:`CakeGQACoreAttention` subclasses Megatron's ``TEDotProductAttention``: it keeps its constructor and its
 state-dict keys, so checkpoints load under either backend, and runs the packed (``thd``) forward and backward of
-``miles_ext_kernels.gqa`` from the miles-ext-kernels submodule (head dim 256, SM100a / SM103a / SM107a). The
+``miles_ext_kernels.cake.gqa`` from the miles-ext-kernels submodule (head dim 256, SM100a / SM103a / SM107a). The
 projections, the q/k norms, RoPE and the attention output gate stay in Megatron's ``SelfAttention``.
-:func:`apply_cake_full_attention` swaps it into a full-attention layer spec; the MTP layer, which Megatron builds
-from the decoder's last layer spec (a full-attention layer in these models), inherits it.
+:func:`apply_cake_full_attention` swaps it into a full-attention layer spec and hands the kernels the run's values
+(``--cake-gqa-check-seqlens``); the MTP layer, which Megatron builds from the decoder's last layer spec (a
+full-attention layer in these models), inherits it.
 :func:`validate_full_attention_backend` rejects at startup the settings the kernels do not run.
 
 The backend is opt-in: the kernels sum dQ with FP32 atomic adds in a run-dependent order, so the backward is not
@@ -26,11 +27,12 @@ SPEC_MODULES = ("miles_plugins.models.qwen3_5", "miles_plugins.models.qwen3_next
 
 
 def _kernels():
+    """The op module ``miles_ext_kernels.cake.gqa``."""
     try:
-        from miles_ext_kernels import gqa
+        from miles_ext_kernels.cake import gqa
     except ImportError as exc:
         raise ImportError(
-            "--full-attention-backend cake runs miles_ext_kernels.gqa from the miles-ext-kernels submodule: pass "
+            "--full-attention-backend cake runs miles_ext_kernels.cake.gqa from the miles-ext-kernels submodule: pass "
             "--use-miles-ext-kernels and check the submodule out with "
             "'git submodule update --init 3rdparty/miles-ext-kernels'."
         ) from exc
@@ -150,7 +152,9 @@ class CakeGQACoreAttention(TEDotProductAttention):
         if errors:
             raise ValueError("CakeGQACoreAttention does not support " + "; ".join(errors))
         kernels = _kernels()
-        kernels.device_arch()  # RuntimeError on a GPU the kernels are not built for
+        from miles_ext_kernels import cake
+
+        cake.device_arch()  # NotImplementedError on a GPU the kernels are not built for
         super().__init__(
             config,
             layer_number,
@@ -168,7 +172,7 @@ class CakeGQACoreAttention(TEDotProductAttention):
         self.cake_softmax_scale = HEAD_DIM**-0.5 if softmax_scale is None else softmax_scale
         self._varlen_gqa_attention = kernels.varlen_gqa_attention
         # build the libraries at model construction, once per process, rather than inside the first step
-        kernels.prebuild()
+        cake.prebuild("gqa")
 
     def forward(
         self,
@@ -187,6 +191,7 @@ class CakeGQACoreAttention(TEDotProductAttention):
             raise ValueError("--full-attention-backend cake takes no attention bias")
         if packed_seq_params.cu_seqlens_q_padded is not None or packed_seq_params.cu_seqlens_kv_padded is not None:
             raise ValueError("--full-attention-backend cake takes no padded sequence boundaries (cu_seqlens_*_padded)")
+        # max_seqlen_k is a contract: a host int at least every segment's key count, which sizes the backward grid
         out = self._varlen_gqa_attention(
             query,
             key,
@@ -199,14 +204,22 @@ class CakeGQACoreAttention(TEDotProductAttention):
         return out.reshape(out.size(0), -1)
 
 
-def apply_cake_full_attention(layer_spec):
+def apply_cake_full_attention(layer_spec, args):
     """A copy of the transformer-layer spec ``layer_spec`` whose self-attention runs :class:`CakeGQACoreAttention`
-    in place of ``TEDotProductAttention``; ``layer_spec``, which Megatron may share between layers, is unchanged."""
+    in place of ``TEDotProductAttention``; ``layer_spec``, which Megatron may share between layers, is unchanged.
+
+    ``args`` is the miles configuration the spec receives: the kernels get its ``miles_ext_kernels_args`` through
+    ``miles_ext_kernels.configure``.
+    """
     if layer_spec.submodules.self_attention.submodules.core_attention is not TEDotProductAttention:
         raise ValueError(
             "--full-attention-backend cake replaces TEDotProductAttention, but this layer's core attention is "
             f"{layer_spec.submodules.self_attention.submodules.core_attention}"
         )
+    _kernels()  # the clear error when the submodule is missing
+    import miles_ext_kernels
+
+    miles_ext_kernels.configure(args.miles_ext_kernels_args)
     spec = copy.copy(layer_spec)
     spec.submodules = copy.copy(layer_spec.submodules)
     spec.submodules.self_attention = copy.copy(layer_spec.submodules.self_attention)

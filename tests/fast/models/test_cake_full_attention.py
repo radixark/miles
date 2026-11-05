@@ -1,10 +1,11 @@
 """--full-attention-backend cake: the layer-spec swap and the startup validation (CPU).
 
 The numerics of the swapped layer run in tests/fast-gpu/test_cake_full_attention.py, the kernels' own in the
-miles-ext-kernels submodule (3rdparty/miles-ext-kernels/tests/gqa).
+miles-ext-kernels submodule (3rdparty/miles-ext-kernels/tests/cake/gqa).
 """
 
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 
 import pytest
 from megatron.core.extensions.transformer_engine import TEDotProductAttention
@@ -34,10 +35,26 @@ def _layer_spec(core_attention=TEDotProductAttention) -> ModuleSpec:
     )
 
 
-def test_the_swap_replaces_only_the_core_attention_of_a_copy():
-    shared = _layer_spec()
+@pytest.fixture
+def configured(monkeypatch) -> list:
+    """Stand-ins for ``miles_ext_kernels`` (recording its ``configure`` calls) and the op module
+    ``miles_ext_kernels.cake.gqa``."""
+    calls = []
+    package, cake, gqa = (
+        ModuleType(name) for name in ("miles_ext_kernels", "miles_ext_kernels.cake", "miles_ext_kernels.cake.gqa")
+    )
+    package.configure = calls.append
+    package.cake, cake.gqa = cake, gqa
+    for module in (package, cake, gqa):
+        monkeypatch.setitem(sys.modules, module.__name__, module)
+    return calls
 
-    swapped = apply_cake_full_attention(shared)
+
+def test_the_swap_replaces_only_the_core_attention_of_a_copy(configured):
+    shared = _layer_spec()
+    args = SimpleNamespace(miles_ext_kernels_args={"cake_gqa_check_seqlens": True})
+
+    swapped = apply_cake_full_attention(shared, args)
 
     attention = swapped.submodules.self_attention
     assert attention.submodules.core_attention is CakeGQACoreAttention
@@ -47,11 +64,16 @@ def test_the_swap_replaces_only_the_core_attention_of_a_copy():
     assert (swapped.module, swapped.submodules.mlp) == (TransformerLayer, "mlp")
     # Megatron shares one layer spec between layers: the original keeps Transformer Engine's attention
     assert shared.submodules.self_attention.submodules.core_attention is TEDotProductAttention
+    # the kernels get the run's values (--cake-gqa-check-seqlens)
+    assert configured == [{"cake_gqa_check_seqlens": True}]
 
 
-def test_the_swap_rejects_a_layer_without_transformer_engine_attention():
+def test_the_swap_rejects_a_layer_without_transformer_engine_attention(configured):
     with pytest.raises(ValueError, match="replaces TEDotProductAttention"):
-        apply_cake_full_attention(_layer_spec(core_attention="DotProductAttention"))
+        apply_cake_full_attention(
+            _layer_spec(core_attention="DotProductAttention"), SimpleNamespace(miles_ext_kernels_args=None)
+        )
+    assert configured == []
 
 
 def _args(**overrides) -> SimpleNamespace:
@@ -131,6 +153,17 @@ def test_another_training_backend_is_rejected():
 
 
 def test_the_full_parse_runs_the_startup_rules():
-    """parse_args calls validate_full_attention_backend: the test model is not a Qwen3.5 / Qwen3-Next spec."""
+    """parse_args calls validate_full_attention_backend: the test model is not a Qwen3.5 / Qwen3-Next spec. Its heads
+    are ones the kernels run (2 query heads over 1 key/value head of dim 256), so the submodule's own head check, which
+    the parse runs first, passes."""
     with pytest.raises(ValueError, match="--full-attention-backend cake does not support"):
-        parse_megatron_test_config("--use-miles-ext-kernels", "--full-attention-backend", "cake")
+        parse_megatron_test_config(
+            "--use-miles-ext-kernels",
+            "--full-attention-backend",
+            "cake",
+            "--kv-channels",
+            "256",
+            "--group-query-attention",
+            "--num-query-groups",
+            "1",
+        )

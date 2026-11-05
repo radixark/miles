@@ -175,11 +175,18 @@ class DSAMultiLatentAttention(Attention):
         # --batched-projection-gemm-backend: the q-absorb (qk_head_dim -> kv_lora_rank) and value (kv_lora_rank ->
         # v_head_dim) per-head projections on torch.einsum or the Cake deterministic GEMM
         self.batched_projection_backend = batched_projection_backend
-        for d_in, d_out in (
-            (self.config.qk_head_dim, self.config.kv_lora_rank),
-            (self.config.kv_lora_rank, self.config.v_head_dim),
+        for d_in, d_out, weight_layout in (
+            (self.config.qk_head_dim, self.config.kv_lora_rank, "in_out"),
+            (self.config.kv_lora_rank, self.config.v_head_dim, "out_in"),
         ):
-            validate_batched_projection_config(self.config, d_in=d_in, d_out=d_out, backend=batched_projection_backend)
+            validate_batched_projection_config(
+                self.config,
+                num_heads=self.num_attention_heads_per_partition,
+                d_in=d_in,
+                d_out=d_out,
+                weight_layout=weight_layout,
+                backend=batched_projection_backend,
+            )
         indexer_replay_manager.register_to_module(self, "indexer_replay", stream_idx=self.layer_number - 1)
 
         # Cross-layer index sharing (optional). When the HF config provides
@@ -778,8 +785,17 @@ def get_glm5_spec(args, config, vp_stage):
     config.index_num_attention_heads = hf_config.index_n_heads
     config.index_head_dim = hf_config.index_head_dim
     if args.dsa_attention_backend == "cake":
-        # the indexer projections are duplicated across TP ranks, so every rank scores all index_n_heads heads
-        cake.setup(args, index_heads=hf_config.index_n_heads, index_head_dim=hf_config.index_head_dim)
+        # the absorbed MLA attends over the kv_lora_rank latent with its RoPE tail, the TP rank's query heads; the
+        # indexer projections are duplicated across TP ranks, so every rank scores all index_n_heads heads
+        cake.setup(
+            args,
+            heads=config.num_attention_heads // config.tensor_model_parallel_size,
+            d_qk=config.kv_lora_rank + config.qk_pos_emb_head_dim,
+            d_v=config.kv_lora_rank,
+            attn_sink=False,
+            index_heads=hf_config.index_n_heads,
+            index_head_dim=hf_config.index_head_dim,
+        )
     config.indexer_rope_interleave = bool(
         getattr(hf_config, "indexer_rope_interleave", False)
     )  # config-access-exempt: HF checkpoints may omit indexer rotary interleaving

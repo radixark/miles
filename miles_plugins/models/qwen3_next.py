@@ -77,6 +77,6 @@ def get_qwen3_next_spec(args, config, vp_stage):
             from miles_plugins.models.cake_full_attention import apply_cake_full_attention
 
             transformer_layer_spec.layer_specs[layer_id] = apply_cake_full_attention(
-                transformer_layer_spec.layer_specs[layer_id]
+                transformer_layer_spec.layer_specs[layer_id], args
             )
     return transformer_layer_spec

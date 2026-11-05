@@ -2,10 +2,11 @@
 (``--moe-router-gemm-backend cake``).
 
 :func:`install_cake_router_gemm` replaces ``Router.gating`` of every MoE router of a built Megatron model with
-``miles_ext_kernels.dense_gemm.router_gating``. It computes what Megatron's ``RouterGatingLinearFunction`` computes
-under ``--moe-router-dtype fp32`` without a bias: FP32 logits from the BF16 input and weight, and the input and weight
-gradients as FP32 GEMMs rounded to the input's and the weight's dtype. Its reductions run in a fixed order, so the
-logits and both gradients are bit-identical call to call; they are not bitwise equal to Transformer Engine's GEMM.
+``miles_ext_kernels.cake.dense_gemm.router_gating`` and builds its programs. It computes what Megatron's
+``RouterGatingLinearFunction`` computes under ``--moe-router-dtype fp32`` without a bias: FP32 logits from the BF16
+input and weight, and the input and weight gradients as FP32 GEMMs rounded to the input's and the weight's dtype. Its
+reductions run in a fixed order, so the logits and both gradients are bit-identical call to call; they are not bitwise
+equal to Transformer Engine's GEMM.
 Megatron's ``--moe-router-use-torch-mm`` (which miles sets for every run) only selects the GEMM inside
 ``RouterGatingLinearFunction`` (``torch.mm`` of the operands cast to FP32 instead of Transformer Engine's GEMM of the
 BF16 operands); both compute the same FP32 products and sums, and the replaced ``Router.gating`` runs neither.
@@ -13,8 +14,8 @@ BF16 operands); both compute the same FP32 products and sums, and the replaced `
 The router must use Megatron's ``Router.gating`` (``TopKRouter`` and subclasses that do not override it), FP32 router
 dtype, no router bias (``--disable-bias-linear``), BF16 parameters, and no CUDA graphs; :func:`validate_router_config`
 rejects anything else where the model is built. Expert counts and hidden sizes must be multiples of 8. CUDA-only
-(NVIDIA SM100a / SM103a / SM107a, Megatron backend): miles imports Megatron and the kernel package here only when it
-installs the backend.
+(NVIDIA SM100a / SM103a / SM107a, Megatron backend): miles imports Megatron and the kernels here only when it installs
+the backend.
 """
 
 from __future__ import annotations
@@ -28,13 +29,13 @@ logger = logging.getLogger(__name__)
 
 
 def router_kernels():
-    """The ``miles_ext_kernels.dense_gemm`` kernel package."""
+    """The op module ``miles_ext_kernels.cake.dense_gemm``."""
     try:
-        from miles_ext_kernels import dense_gemm
+        from miles_ext_kernels.cake import dense_gemm
     except ImportError as exc:
         raise ImportError(
-            "--moe-router-gemm-backend cake runs miles_ext_kernels.dense_gemm from the miles-ext-kernels submodule: "
-            "pass --use-miles-ext-kernels and check the submodule out with "
+            "--moe-router-gemm-backend cake runs miles_ext_kernels.cake.dense_gemm from the miles-ext-kernels "
+            "submodule: pass --use-miles-ext-kernels and check the submodule out with "
             "'git submodule update --init 3rdparty/miles-ext-kernels'."
         ) from exc
     return dense_gemm
@@ -73,7 +74,8 @@ def install_cake_router_gemm(model: torch.nn.Module) -> int:
 
     A model chunk without MoE layers (a dense pipeline stage) has none. Raises ``NotImplementedError`` for a router
     that overrides ``Router.gating``, whose computation this would replace, and ``ValueError`` for a router
-    configuration the kernels do not reproduce.
+    configuration the kernels do not reproduce. Builds every program the gate GEMMs may run on the current device, at
+    any token count, so no training step compiles.
     """
     from megatron.core.transformer.moe.router import Router
 
@@ -87,6 +89,10 @@ def install_cake_router_gemm(model: torch.nn.Module) -> int:
         validate_router_config(router.config)
     if routers:
         router_kernels()  # fail at build time, not at the first step, when the submodule is missing
+        from miles_ext_kernels import cake
+
+        shapes = {(router.config.num_moe_experts, router.config.hidden_size) for _, router in routers}
+        cake.prebuild("dense_gemm", router=sorted(shapes))
     for _, router in routers:
         router.gating = types.MethodType(_cake_gating, router)
     logger.info("--moe-router-gemm-backend cake: %d MoE routers run the Cake gate GEMM", len(routers))

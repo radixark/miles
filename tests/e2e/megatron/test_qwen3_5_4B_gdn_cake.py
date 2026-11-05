@@ -1,22 +1,22 @@
 """E2E: Qwen3.5-4B full-parameter GRPO with the Cake GDN backend under head-sharded TP.
 
 Runs ``--use-miles-ext-kernels --linear-attention-backend cake --cake-gdn-variant <variant>`` (the Cake chunked GDN
-kernels of the miles-ext-kernels submodule, ``miles_ext_kernels.gdn``) with
+kernels of the miles-ext-kernels submodule, ``miles_ext_kernels.cake.gdn``) with
 ``--tensor-model-parallel-size 2 --sequence-parallel``, so the head-sharded linear-attention layer
 (``miles_plugins/models/linear_attn.py``) runs each rank's key-head groups through the Cake kernels, and the
 Megatron -> HF weight update goes through the group-major ``in_proj_qkv`` / ``conv1d`` converters.
 ``MILES_GDN_CAKE_VARIANT`` pins the variant this run tests: ``det`` (default; the bit-deterministic kernels) or
-``fast`` (the Cake non-deterministic package, whose launches are fixed-order, so it repeats bit for bit too). The
-variant is always passed explicitly, so the run does not depend on the unset default (``fast`` outside
-``--deterministic-mode``). ``MILES_GDN_BACKEND=fla`` runs the same recipe on the FLA backend, without
-``--use-miles-ext-kernels``, for an A/B reference.  Needs SM100a/SM103a/SM107a GPUs and the checked-out
-submodule (``git submodule update --init 3rdparty/miles-ext-kernels``) for the cake backend.
+``fast`` (the Cake non-deterministic package, which does not promise its bits). The variant is always passed
+explicitly, so the run does not depend on the unset default (``fast`` outside ``--deterministic-mode``).
+``MILES_GDN_BACKEND=fla`` runs the same recipe on the FLA backend, without ``--use-miles-ext-kernels``, for an A/B
+reference.  Needs SM100a/SM103a/SM107a GPUs and the checked-out submodule
+(``git submodule update --init 3rdparty/miles-ext-kernels``) for the cake backend.
 
 ``MILES_E2E_MODE`` selects ``live`` (default: rollouts + training), ``record`` (live, additionally dumps every
 rollout batch to ``MILES_E2E_DEBUG_DIR``) or ``replay`` (``--debug-train-only`` on the recorded batches, saving
 the per-step grad norm and the per-rank train data, incl. the trainer log-probs, under ``MILES_E2E_RUN_TAG``).
-Two ``replay`` runs of either cake variant on the same recorded batches must produce bit-identical grad norms and
-log-probs; ``fla`` replays give the non-deterministic reference.
+Two ``replay`` runs of ``det`` on the same recorded batches must produce bit-identical grad norms and log-probs;
+``fla`` replays give the non-deterministic reference.
 
 Paths default to the CI layout (``/root/models``, ``/root/datasets``, ``/root``); set
 ``MILES_E2E_ROOT`` to relocate all three under one directory (out-of-CI runs on scratch storage).
