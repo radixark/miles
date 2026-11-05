@@ -124,7 +124,7 @@ class TrainConfig(BaseConfig):
     ] = False
     # The values of the per-kernel arguments the miles-ext-kernels submodule registers under
     # --use-miles-ext-kernels, by destination name (None without the flag). The submodule owns their names; miles hands
-    # them to the kernel package's configure() where it builds a 'cake' layer.
+    # them to miles_ext_kernels.configure() where it builds a 'cake' layer.
     miles_ext_kernels_args: dict[str, Any] | None = None
     extra_high_precision_layers_hf: A[
         list[str] | tuple[str, ...],

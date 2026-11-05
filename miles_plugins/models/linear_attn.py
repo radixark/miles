@@ -13,7 +13,6 @@ subclass declares the projections under the HF names, plain bf16 linears on shar
 
 from __future__ import annotations
 
-import argparse
 import functools
 import logging
 import os
@@ -57,8 +56,9 @@ _ROW_STRIDE_ALIGN = 8
 
 def gdn_kernel(backend: str, args=None):
     """The ``chunk_gated_delta_rule`` of ``backend``. For ``cake``, where the caller has the parsed miles configuration
-    ``args``, the values of the kernel package's own arguments (``args.miles_ext_kernels_args``) go to its
-    ``configure``."""
+    ``args`` (a layer being built), the values of the kernel package's own arguments (``args.miles_ext_kernels_args``)
+    go to ``miles_ext_kernels.configure`` and every library of the op is built for this GPU
+    (``miles_ext_kernels.cake.prebuild("gdn")``), so no training step compiles."""
     if backend == "fla":
         try:
             from fla.ops.gated_delta_rule import chunk_gated_delta_rule
@@ -77,15 +77,18 @@ def gdn_kernel(backend: str, args=None):
 
     if backend == "cake":
         try:
-            from miles_ext_kernels.gdn import chunk_gated_delta_rule, configure
+            import miles_ext_kernels
+            from miles_ext_kernels import cake
+            from miles_ext_kernels.cake.gdn import chunk_gated_delta_rule
         except ImportError as exc:
             raise ImportError(
-                "GDN backend 'cake' runs miles_ext_kernels.gdn from the miles-ext-kernels submodule: pass "
+                "GDN backend 'cake' runs miles_ext_kernels.cake.gdn from the miles-ext-kernels submodule: pass "
                 "--use-miles-ext-kernels and check the submodule out with "
                 "'git submodule update --init 3rdparty/miles-ext-kernels'."
             ) from exc
         if args is not None:
-            configure(argparse.Namespace(**(args.miles_ext_kernels_args or {})))
+            miles_ext_kernels.configure(args.miles_ext_kernels_args)
+            cake.prebuild("gdn")
         return chunk_gated_delta_rule
 
     raise ValueError(f"Unsupported GDN backend: {backend}")
@@ -474,12 +477,12 @@ class LinearAttention(MegatronModule, ABC):
 
 class GatedDeltaNet(LinearAttention):
     """Gated DeltaNet: one softplus-gated decay per value head, through fla's or FlashQLA's chunked
-    kernel, or the Cake one (``cake``, SM100a / SM103a / SM107a, K = V = 128, ``miles_ext_kernels.gdn`` from the
-    miles-ext-kernels submodule: ``--cake-gdn-variant`` det, the bit-deterministic kernels, or fast, the fixed-order
+    kernel, or the Cake one (``cake``, SM100a / SM103a / SM107a, K = V = 128, ``miles_ext_kernels.cake.gdn`` from the
+    miles-ext-kernels submodule: ``--cake-gdn-variant`` det, the bit-deterministic kernels, or fast, the
     non-deterministic package; its short conv runs on :func:`cake_conv_backend` and its gated output norm on
-    :func:`reproducible_rms_norm_gated`, so the whole layer's gradients are reproducible). ``args``, the parsed miles
-    arguments, configure the ``cake`` kernels (see :func:`gdn_kernel`); a
-    layer built without them runs det. Models subclass it with their
+    :func:`reproducible_rms_norm_gated`, so the whole layer's gradients are reproducible under det). ``args``, the
+    parsed miles arguments, configure the ``cake`` kernels and build them (see :func:`gdn_kernel`); a
+    process that never configured them runs det. Models subclass it with their
     projections and :meth:`in_proj_sections`; all four projections run as one GEMM whose width is zero-padded
     to a multiple of 8, the row-stride alignment causal-conv1d's channel-last backward requires of the q/k/v
     view."""
