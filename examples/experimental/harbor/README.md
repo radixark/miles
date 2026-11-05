@@ -113,7 +113,11 @@ the `--sglang-enable-token-space-processor`, `--shared-media-dir` and
 `--use-miles-router` that session images require. Qwen3-VL clicks on a 0-999 grid while
 computer-1's generic provider reads pixels, so set `HARBOR_CUA_COORDINATE_SPACE=normalized_0_999`,
 which patches that provider to prompt for and rescale a 0-999 grid. Other computer-1 settings,
-such as the desktop size, go in `HARBOR_AGENT_KWARGS`.
+such as the desktop size, go in `HARBOR_AGENT_KWARGS`. computer-1 starts its own Xvfb, XFCE
+and Chromium; to drive a desktop the task image already runs on `:1` instead, set
+`HARBOR_CUA_DESKTOP=existing`, with `HARBOR_CUA_SETTLE_SEC`, `HARBOR_CUA_SCREENSHOT_SIZE` and
+`HARBOR_CUA_KEEP_SCREENSHOTS` as `harbor_agent_function.py`'s header describes. The image needs
+ImageMagick's `import` and `convert` and `xdotool` on its PATH.
 
 On B300, also pass `--sglang-mm-feature-transport cuda_ipc`. SGLang picks it by default only on Hopper, and
 without it every call's pixels are copied through host memory on the engine's tokenizer event loop, the loop
