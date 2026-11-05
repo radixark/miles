@@ -20,8 +20,8 @@ speculative decoding, sampling-support replay, and LoRA training and serving.
 
   <Card title="Cake Training Kernels" icon="microchip" href="/advanced/cake-kernels">
 
-    Opt-in Blackwell training kernels from the miles-ext-kernels submodule, in
-    deterministic and fast variants.
+    Opt-in Blackwell and Rubin training kernels from the miles-ext-kernels
+    submodule, in deterministic and fast variants.
 
   </Card>
 
