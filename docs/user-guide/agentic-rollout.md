@@ -166,7 +166,15 @@ Use `{"evaluation": true}` in `POST /sessions` for evaluation; omitting it defau
 
 `temperature`, `top_p`, and `top_k` in `POST /sessions` provide defaults for omitted or `null` chat fields. Training requests must match the registered temperature or receive HTTP 400; eval temperature and `top_p`/`top_k` remain overridable. The agentic generator registers the sample's resolved values automatically.
 
-`max_trajectory_generated_tokens` in `POST /sessions` caps the tokens the policy generates along one trajectory, summed over its turns. Prompt, tool and user tokens do not count. Each turn's `max_tokens` (`max_completion_tokens` when the client sets it) is lowered to what the trajectory has left; a smaller client value still applies, and a non-numeric one is refused with HTTP 400. Once the trajectory has spent the budget, a request that continues it receives HTTP 409, the same status v2 returns for extending a generation cut at `max_tokens`. A trajectory found past its budget means the engine ignored the cap, and the next request on it fails with HTTP 502. On v1 the trajectory is the kept checkpoints, so a rolled-back turn no longer counts; on v2 it is the chain from the root to the node the request continues, so sibling branches do not count against each other. The agentic generator registers `--rollout-max-trajectory-generated-tokens` for both rollout and evaluation sessions. The reward stays the environment's: an agent ends the episode on the 409 and scores it as its environment scores a run that stopped early.
+To bound what the policy generates over a whole episode, not only per turn, set `--rollout-max-trajectory-generated-tokens`. The agentic generator registers it on every session, rollout and evaluation alike; a client that opens its own sessions passes `max_trajectory_generated_tokens` (an integer of at least 1) in `POST /sessions`. Every token the policy generates counts, reasoning included, summed over one trajectory's turns; prompt, tool, and user tokens do not. A turn that v1 rolls back for a retry stops counting, and each v2 branch counts only the turns on its own path from the root.
+
+Each turn generates at most the smaller of its own `max_tokens` (`max_completion_tokens` when set) and what the trajectory has left, so `--rollout-max-response-len` still caps each turn. A turn cut by the budget ends with `finish_reason="length"`. With a budget set, the agent must handle these responses:
+
+| Response | Cause | Agent action |
+|---|---|---|
+| HTTP 409 | The request continues a trajectory that has spent its budget. v2 returns the same status for extending any `finish_reason="length"` turn. | End the episode and let the environment score it as a run that stopped early. |
+| HTTP 400 | `max_tokens` or `max_completion_tokens` is not a JSON number. | Send a number. |
+| HTTP 502 | The trajectory is past its budget because the engine ignored the cap. | Fail the episode; it is an engine fault, not a policy result. |
 
 Evaluation forces `return_sampling_mask`, `return_routed_experts`, and `return_indexer_topk` off and ignores `routed_experts_start_len`. TITO, logprobs, and sample collection still apply; engine-internal capture may remain enabled.
 
