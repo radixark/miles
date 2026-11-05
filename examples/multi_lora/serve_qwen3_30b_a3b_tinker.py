@@ -1,5 +1,6 @@
 """Prepare Qwen3-30B-A3B and serve the Tinker gateway on separate training and sampling GPUs."""
 
+import os
 from dataclasses import dataclass, field
 
 import typer
@@ -18,6 +19,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     model_dir: str = "/root/models"
     save_dir: str | None = None
     megatron_path: str = "/root/Megatron-LM"
+    # bridge: Megatron-Bridge adapters on the HF checkpoint; raw: native adapters on its torch_dist conversion
+    megatron_to_hf_mode: str = "bridge"
 
     num_gpus_per_node: int = 8
     actor_num_gpus: int = 4
@@ -42,15 +45,36 @@ class ScriptArgs(U.ExecuteTrainConfig):
             self.save_dir = f"{self.output_dir}/checkpoints"
         if self.hf_checkpoint is None:
             self.hf_checkpoint = f"{self.model_dir}/Qwen3-30B-A3B"
+        assert self.megatron_to_hf_mode in (
+            "bridge",
+            "raw",
+        ), f"unknown --megatron-to-hf-mode {self.megatron_to_hf_mode}"
+
+    @property
+    def torch_dist(self) -> str:
+        return f"{self.model_dir}/{os.path.basename(self.hf_checkpoint.rstrip('/'))}_torch_dist"
 
 
 @app.command()
 @U.dataclass_cli
 def prepare(args: ScriptArgs):
-    """Download the Qwen3-30B-A3B checkpoint. Run once per node before serving."""
+    """Download the Qwen3-30B-A3B checkpoint (raw: and convert it to torch_dist). Run once per node before serving."""
     backend = args.create_backend()
     backend.exec_command_cpu(f"mkdir -p {args.model_dir}")
     backend.exec_command_cpu(f"hf download Qwen/Qwen3-30B-A3B --local-dir {args.model_dir}/Qwen3-30B-A3B")
+    if args.megatron_to_hf_mode == "raw":
+        backend.convert_checkpoint(
+            model_name=os.path.basename(args.hf_checkpoint.rstrip("/")),
+            megatron_model_type=args.model_type,
+            num_gpus_per_node=min(args.num_gpus_per_node, 4),
+            dir_dst=args.model_dir,
+            hf_checkpoint=args.hf_checkpoint,
+            megatron_path=args.megatron_path,
+            extra_args=(
+                "--tensor-model-parallel-size 1 --pipeline-model-parallel-size 1 "
+                "--expert-model-parallel-size 1 --expert-tensor-parallel-size 1 --context-parallel-size 1 "
+            ),
+        )
 
 
 @app.command()
@@ -62,7 +86,9 @@ def serve(args: ScriptArgs):
         f"{args.n_adapters} adapter slots, port {args.tinker_port}"
     )
 
-    ckpt_args = f"--hf-checkpoint {args.hf_checkpoint} --megatron-to-hf-mode bridge "
+    ckpt_args = f"--hf-checkpoint {args.hf_checkpoint} --megatron-to-hf-mode {args.megatron_to_hf_mode} "
+    if args.megatron_to_hf_mode == "raw":
+        ckpt_args += f"--load {args.torch_dist} --no-load-optim --no-load-rng --finetune "
 
     lora_args = (
         f"--lora-rank {args.lora_rank} --lora-alpha {args.lora_alpha} --lora-dropout 0.0 "
