@@ -227,7 +227,6 @@ class PackedSlices:
         return results
 
     def rows(self, per_sample, *, fill=0):
-        del fill  # every row is a response row
         return torch.cat([value.to(self.device) for value in per_sample], dim=0)
 
     def rows_at_positions(self, side, *, fill=0):
@@ -255,7 +254,6 @@ class PackedSlices:
         return torch.cat(result["log_probs"], dim=0), entropy
 
     def map_logit_rows(self, logits, fn, side=None, *, side_fill=0):
-        del side_fill  # every row is a response row
         args, batch = self.args, self.batch
         results: dict[str, list[torch.Tensor]] = {}
         chunks = _iter_response_chunks(
@@ -371,7 +369,6 @@ class PaddedRows:
 
     @classmethod
     def build(cls, args, batch, logits, sum_of_sample_mean=None) -> "PaddedRows":
-        del sum_of_sample_mean  # the dispatcher's lazy packed-row reducer; rows reduce with `_mean_denominators`
         assert logits.dim() == 3 and logits.size(0) == 1, f"thd logits are [1, T, V], got {logits.shape}"
         response_lengths = batch["response_lengths"]
         num_rows = logits.size(1)
