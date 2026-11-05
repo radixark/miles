@@ -387,13 +387,14 @@ def test_update_weights_only_uses_temporary_process_groups_when_asleep(actor_mod
     worker.weight_updater.receiver_pool.assert_called_once_with("rollout")
 
 
-def _lifecycle_worker(actor_module, monkeypatch, asleep):
+def _lifecycle_worker(actor_module, monkeypatch, asleep, **arg_values):
     worker = object.__new__(actor_module.MegatronTrainRayActor)
     worker._config_snapshot_train_recorded = True
     worker.args = make_trainer_args(
         offload_train=True,
         rematerialize_param_from_master_weight=False,
         clear_quantized_weight_workspaces_on_offload=False,
+        **arg_values,
     )
     worker._asleep = asleep
     worker._grad_buffer_paused = False
@@ -417,6 +418,27 @@ def test_sleep_is_idempotent(actor_module, monkeypatch):
 
     assert saver.pause.call_count == 1
     assert worker._asleep is True
+
+
+@pytest.mark.parametrize("use_miles_ext_kernels", [False, True])
+def test_sleep_releases_the_ext_kernels_before_the_memory_is_cleared_and_paused(
+    actor_module, monkeypatch, use_miles_ext_kernels
+):
+    """Under --use-miles-ext-kernels sleep() first frees the kernels' workspace pools and cached plans
+    (``miles_ext_kernels.release()``); without the flag it does not import the package."""
+    worker, saver, _ = _lifecycle_worker(
+        actor_module, monkeypatch, asleep=False, use_miles_ext_kernels=use_miles_ext_kernels
+    )
+    order: list[str] = []
+    ext = ModuleType("miles_ext_kernels")
+    ext.release = lambda: order.append("release")
+    monkeypatch.setitem(sys.modules, "miles_ext_kernels", ext if use_miles_ext_kernels else None)
+    monkeypatch.setattr(actor_module, "clear_memory", lambda **_kwargs: order.append("clear_memory"))
+    saver.pause.side_effect = lambda **_kwargs: order.append("pause")
+
+    worker.sleep()
+
+    assert order == ["release"] * use_miles_ext_kernels + ["clear_memory", "pause"]
 
 
 def test_wake_up_when_resident_skips_resume_but_restores_groups(actor_module, monkeypatch):
