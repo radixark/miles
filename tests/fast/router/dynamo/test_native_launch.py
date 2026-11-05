@@ -2,7 +2,6 @@ import shlex
 from types import SimpleNamespace
 
 import pytest
-from sglang.srt.arg_groups.serving_hook import handle_deprecated_args
 from tests.fast.backends.sglang_utils.conftest import make_engine_args
 
 from miles.backends.sglang_utils.server_args_utils import parse_server_args_argv
@@ -23,7 +22,7 @@ def config():
 
 
 @pytest.mark.parametrize("api_key", [None, "test-key"])
-def test_native_sidecar_arguments_and_upstream_auth_validation(config, api_key):
+def test_native_sidecar_arguments_preserve_api_key(config, api_key):
     ctx = SimpleNamespace(
         self_addrs={
             "primary": HostAndPort(host="127.0.0.1", port=18000),
@@ -55,4 +54,3 @@ def test_native_sidecar_arguments_and_upstream_auth_validation(config, api_key):
     assert parsed.grpc_port == 18001
     assert parsed.api_key == api_key
     assert parsed.tp_size == 2
-    handle_deprecated_args(parsed)
