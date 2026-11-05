@@ -4336,6 +4336,8 @@ class TestMultimodalTokenSpaceProcessingArgs:
         args = SimpleNamespace(
             multimodal_token_space_processing=True,
             rollout_external_engine_addrs=external_engines,
+            trainer_mm_processor_worker_num=1,
+            trainer_mm_io_worker_num=0,
             hf_checkpoint="/ckpt",
         )
         sglang = make_sglang_config(**{**self._SUPPORTED, **engine_overrides})
@@ -4345,7 +4347,11 @@ class TestMultimodalTokenSpaceProcessingArgs:
 
     def test_supported_settings_pass(self):
         args = SimpleNamespace(
-            multimodal_token_space_processing=True, rollout_external_engine_addrs=None, hf_checkpoint="/ckpt"
+            multimodal_token_space_processing=True,
+            rollout_external_engine_addrs=None,
+            trainer_mm_processor_worker_num=1,
+            trainer_mm_io_worker_num=0,
+            hf_checkpoint="/ckpt",
         )
 
         _check_multimodal_token_space_processing_args(args, sglang=make_sglang_config(**self._SUPPORTED))
