@@ -84,10 +84,10 @@ def test_mixed_dataset_uses_processor_only_for_structured_prompts(tmp_path) -> N
 
 def test_length_filter_uses_saved_media_with_rendered_prompts() -> None:
     text_samples = [Sample(prompt="short text"), Sample(prompt="long text")]
-    images = [object()]
+    short_images, long_images = [object()], [object()]
     multimodal_samples = [
-        Sample(prompt="<image> short", multimodal_inputs={"images": images}),
-        Sample(prompt="<image> long", multimodal_inputs={"images": images}),
+        Sample(prompt="<image> short", multimodal_inputs={"images": short_images}),
+        Sample(prompt="<image> long", multimodal_inputs={"images": long_images}),
     ]
     tokenizer = Mock(return_value={"input_ids": [[1] * 4, [1] * 5]})
     processed = []
@@ -102,7 +102,7 @@ def test_length_filter_uses_saved_media_with_rendered_prompts() -> None:
     assert samples == [text_samples[0], multimodal_samples[0]]
     tokenizer.assert_called_once_with(["short text", "long text"], add_special_tokens=False)
     assert [text for text, _ in processed] == ["<image> short", "<image> long"]
-    assert all(media is images for _, media in processed)
+    assert all(media is expected for (_, media), expected in zip(processed, [short_images, long_images], strict=True))
 
 
 def _ref(payload: Any) -> StoreObjectRef:
