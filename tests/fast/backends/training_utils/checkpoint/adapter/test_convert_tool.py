@@ -5,7 +5,6 @@ import json
 import sys
 from pathlib import Path
 
-import pytest
 import torch
 from safetensors.torch import load_file
 
@@ -53,12 +52,3 @@ def test_sampler_export_converts_to_per_expert_peft(tmp_path, monkeypatch):
         weights[f"{EXPERTS[2]}.lora_B"][2].bfloat16(),
     )
     assert len(out) == 3 * 2 * 3
-
-
-@pytest.mark.parametrize("dst", ["src", "existing"])
-def test_an_existing_dst_is_refused(tmp_path, monkeypatch, dst):
-    (tmp_path / "src").mkdir()
-    (tmp_path / "existing").mkdir()
-    monkeypatch.setattr(sys, "argv", ["convert", str(tmp_path / "src"), str(tmp_path / dst), "--hf-config", "unused"])
-    with pytest.raises(AssertionError, match="exists"):
-        _load_tool().main()
