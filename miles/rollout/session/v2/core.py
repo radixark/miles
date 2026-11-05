@@ -286,9 +286,10 @@ class SessionCoreV2(SessionCore):
 
 
 def _records_with_input_ids(leaf: TrajectoryNode, leaf_token_ids: list[int]) -> list[SessionRecord]:
-    """The path's records with each request's ``input_ids`` put back, as the chat request sent them.
+    """The path's records with each request's ``input_ids`` put back as its last key.
 
-    Every record's prompt is a prefix of its leaf's snapshot, and list slices share the int objects.
+    The values are what the chat request sent: every record's prompt is a prefix of its leaf's
+    snapshot. List slices share the int objects.
     """
     return [
         node.record.model_copy(

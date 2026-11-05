@@ -240,11 +240,36 @@ def test_sibling_rewrites_each_keep_their_own_view():
     assert [node.token_delta.tolist() for node in tree.nodes] == [[1, 2, 3, 9], [70, 5, 6], [80, 7, 8]]
 
 
+def test_snapshot_shorter_than_its_parent_keeps_every_view():
+    """The prefix check tolerates up to max_trim_tokens fewer tokens than the parent: the shorter
+    snapshot drops the parent's tail, and a descendant growing past it again overwrites that tail."""
+    tree = SessionTree()
+    parent = _create(tree, None, [1, 2, 3, 9], (3, 4))
+    shorter = _create(tree, parent, [1, 2, 3], (3, 3))
+    grown = _create(tree, shorter, [1, 2, 3, 5, 6], (4, 5))
+
+    assert (shorter.parent_reuse, shorter.num_tokens) == (3, 3)
+    assert parent.token_ids == [1, 2, 3, 9]
+    assert shorter.token_ids == [1, 2, 3]
+    assert grown.token_ids == [1, 2, 3, 5, 6]
+
+
+def test_rewrite_into_an_earlier_turns_prompt_is_refused():
+    """A rewrite can stay clear of its parent's prompt and still reach an earlier, longer prompt on
+    the path; that turn's record would then be served a prompt it never sent."""
+    tree = SessionTree()
+    first = _create(tree, None, [1, 2, 3, 4, 5], (4, 5))
+    second = _create(tree, first, [1, 2, 3, 4, 5, 6], (3, 6))
+    with pytest.raises(TokenizationError, match="earlier turn's prompt"):
+        _create(tree, second, [1, 2, 3, 9, 5, 6, 7], (6, 7))
+    assert len(tree.nodes) == 2 and not second.children
+
+
 @pytest.mark.parametrize(
     ("token_ids", "match"),
     [
-        ([1, 2, 7, 9, 5], "reaches into the parent's prompt"),
-        ([1, 2, 3], "shorter than its parent"),
+        ([1, 2, 7, 9, 5], "earlier turn's prompt"),
+        ([1, 2], "earlier turn's prompt"),
         ([1, 2, 3, 9, 2**31], "outside int32"),
     ],
 )
@@ -254,3 +279,12 @@ def test_snapshots_that_break_the_storage_contract_are_refused(token_ids, match)
     with pytest.raises(TokenizationError, match=match):
         _create(tree, parent, token_ids, (len(token_ids) - 1, len(token_ids)))
     assert len(tree.nodes) == 1 and not parent.children
+
+
+def test_nodes_compare_without_their_token_arrays():
+    """Twin retries with equal messages compare by their other fields instead of raising on arrays."""
+    tree = SessionTree()
+    parent = _create(tree, None, [1, 2, 3, 9], (3, 4))
+    twins = [_create(tree, parent, [1, 2, 3, 9, 5, 6], (5, 6)) for _ in range(2)]
+    assert twins[0] != twins[1]
+    assert parent.children.index(twins[1]) == 1

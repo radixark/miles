@@ -25,8 +25,9 @@ class TrajectoryNode:
 
     delta_messages: list[dict[str, Any]]
     # This node's tokens past the reused parent prefix, as a read-only int32 array. Storing deltas keeps a
-    # session's token storage O(final context) instead of one full snapshot per turn.
-    token_delta: np.ndarray
+    # session's token storage O(final context) instead of one full snapshot per turn. Left out of __eq__:
+    # comparing arrays is elementwise, so a generated __eq__ would raise instead of returning a bool.
+    token_delta: np.ndarray = field(compare=False)
     # Parent tokens this node's snapshot reuses verbatim: the parent's full length, unless a
     # max_trim_tokens > 0 template rewrote the parent's trailing tokens at the turn boundary. The rewritten
     # positions are in this node's delta and replace the parent's tail in this node's snapshot.
@@ -56,14 +57,16 @@ class TrajectoryNode:
     def token_ids(self) -> list[int]:
         """The full root->node snapshot, materialized from the path's deltas.
 
-        Each access builds a new list in O(path tokens), so read it once per use. Every node is at least
-        as long as its parent and its delta covers the parent's tail past ``parent_reuse``, so writing
-        the deltas root first leaves each boundary rewrite in place of the tail it replaced.
+        Each access builds a new list in O(path tokens), so read it once per use. Each delta starts at or
+        below its parent's length and runs to its node's own length, so after writing the deltas root
+        first, every position below a node's length holds that node's token: a boundary rewrite replaces
+        the tail it rewrote, and an ancestor's tail past a shorter descendant is cut off by the slice.
         """
-        snapshot = np.empty(self.num_tokens, dtype=np.int32)
-        for node in self.path_nodes():
+        nodes = self.path_nodes()
+        snapshot = np.empty(max(node.num_tokens for node in nodes), dtype=np.int32)
+        for node in nodes:
             snapshot[node.parent_reuse : node.num_tokens] = node.token_delta
-        return snapshot.tolist()
+        return snapshot[: self.num_tokens].tolist()
 
     def path_nodes(self) -> list["TrajectoryNode"]:
         nodes: list[TrajectoryNode] = []
@@ -218,19 +221,18 @@ def _reused_parent_prefix(
     """How many of the parent's tokens ``token_ids`` repeats verbatim.
 
     Assembly and ``GET /sessions`` read every record's prompt as a prefix of its leaf's snapshot.
-    That is exact only while each boundary rewrite stays inside the parent's completion, so a
-    rewrite that reaches the parent's prompt is refused.
+    That is exact only while no boundary rewrite reaches the prompt of any turn on the path, so such
+    a rewrite is refused.
     """
-    parent_length = parent.num_tokens
-    if len(token_ids) < parent_length:
-        raise TokenizationError(f"snapshot shorter than its parent: {len(token_ids)} < {parent_length} tokens")
-    reuse = min(verified_prefix_length, parent_length)
-    while reuse < parent_length and token_ids[reuse] == parent_token_ids[reuse]:
+    limit = min(len(token_ids), parent.num_tokens)
+    reuse = min(verified_prefix_length, limit)
+    while reuse < limit and token_ids[reuse] == parent_token_ids[reuse]:
         reuse += 1
-    if reuse < parent.completion_span[0]:
+    prompt_length = max(node.completion_span[0] for node in parent.path_nodes())
+    if reuse < prompt_length:
         raise TokenizationError(
-            f"boundary rewrite reaches into the parent's prompt: reuses {reuse} tokens, "
-            f"parent prompt has {parent.completion_span[0]}"
+            f"boundary rewrite reaches into an earlier turn's prompt: reuses {reuse} tokens, "
+            f"the longest earlier prompt has {prompt_length}"
         )
     return reuse
 
