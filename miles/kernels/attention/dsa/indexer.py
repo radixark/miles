@@ -10,8 +10,9 @@ IndexerConfig picks: measured rows live in _TUNED, keyed by (arch major, heads).
 SCORE_ROW_ALIGN columns so the canonical top-k can read them with aligned vector loads.
 
 CAKE_INDEXER_CONFIG (--dsa-attention-backend cake) scores with the deterministic Cake kernels of the
-miles-ext-kernels submodule (miles.kernels.attention.dsa.cake; SM100a / SM103a, 8 / 16 / 32 / 64 heads, head dim 128),
-one launch for a whole sbhd batch. _default_config never selects it; the gathered-score backward stays TileLang.
+miles-ext-kernels submodule (miles.kernels.attention.dsa.cake; SM100a / SM103a / SM107a, 8 / 16 / 32 / 64 heads, head
+dim 128), one launch for a whole sbhd batch. _default_config never selects it; the gathered-score backward stays
+TileLang.
 """
 
 from dataclasses import dataclass

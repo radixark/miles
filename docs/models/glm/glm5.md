@@ -48,7 +48,7 @@ The fused cuDNN indexer supports CP1, single-sequence CP batches, and complete m
 
 `--miles-dsa-topk-backend` selects top-k for both implementations and is accepted by conversion, training, and the standalone `run_megatron` debug worker. The default `canonical` returns the exact top-k with ties at the k-th score kept by the smaller key (the rule of SGLang's DSA top-k) in ascending key order; native Megatron DSA runs it as its exact `torch` top-k, and `torch` keeps the previous Miles selector. This runtime selection does not change the checkpoint layout. The W4A16 test keeps `flashinfer` and `SGLANG_DSA_TOPK_FLASHINFER_TIE_BREAK=large`, preserving its top-k backend and tie policy when selecting native Megatron DSA.
 
-On Blackwell (SM100a / SM103a), `--use-miles-ext-kernels --dsa-attention-backend cake` runs the `--dsa-impl miles` sparse attention and indexer scores on the Cake kernels; see [Cake Training Kernels](/advanced/cake-kernels) for the variants and limits.
+On Blackwell (SM100a / SM103a) and Rubin (SM107a), `--use-miles-ext-kernels --dsa-attention-backend cake` runs the `--dsa-impl miles` sparse attention and indexer scores on the Cake kernels; see [Cake Training Kernels](/advanced/cake-kernels) for the variants and limits.
 
 Native DSA defaults to `--dsa-indexer-loss-coeff 0` and freezes its indexer parameters, because native top-k selection runs without gradients when the auxiliary objective is disabled. This excludes unused parameters from DDP and optimizer weight decay. A positive native loss coefficient keeps the indexer trainable and requires explicitly selecting the reference implementation with `--dsa-kernel-backend none` or `--attention-backend unfused` when using an external top-k backend.
 

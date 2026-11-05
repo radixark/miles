@@ -13,8 +13,9 @@ is a SparseAttentionConfig: measured rows live in _TUNED, keyed by (CUDA major o
 callers may pass their own.
 
 CAKE_SPARSE_ATTENTION_CONFIG (--dsa-attention-backend cake) opts into the Cake kernels of the miles-ext-kernels
-submodule (miles.kernels.attention.dsa.cake; SM100a / SM103a, single latent group, d_v = 512): forward and backward
-both run there, deterministic or in the fast variant as --cake-dsa-variant selects. _default_config never selects it.
+submodule (miles.kernels.attention.dsa.cake; SM100a / SM103a / SM107a, single latent group, d_v = 512): forward and
+backward both run there, deterministic or in the fast variant as --cake-dsa-variant selects. _default_config never
+selects it.
 """
 
 from dataclasses import dataclass, replace
