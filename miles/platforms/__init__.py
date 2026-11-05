@@ -19,6 +19,8 @@ class Platform:
     nvml_numa_affinity = True
     # the rollout engines' KV cache dtype when --sglang-kv-cache-dtype is left at "auto"; None keeps the engine's choice
     rollout_kv_cache_dtype: str | None = None
+    # p2p host transfer buffers go on 2 MiB pages: AMD AI NICs (as on MI355X nodes) run out of registered 4 KiB pages
+    pin_host_buffers_on_huge_pages = torch.version.hip is not None
 
     def bind_device_before_process_group(self, local_rank: int) -> None:
         torch.cuda.set_device(f"cuda:{local_rank}")

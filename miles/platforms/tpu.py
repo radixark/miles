@@ -14,6 +14,7 @@ class TpuPlatform(Platform):
     # sglang-torchtpu turns "auto" into an fp8 KV cache without scales, which skews rollout logprobs against the
     # bf16 trainer; fp8 stays available through --sglang-kv-cache-dtype fp8_e4m3
     rollout_kv_cache_dtype = "bfloat16"
+    pin_host_buffers_on_huge_pages = False
 
     def bind_device_before_process_group(self, local_rank: int) -> None:
         # touching the device before init_process_group breaks the multi-process rendezvous
