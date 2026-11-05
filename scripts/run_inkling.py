@@ -292,7 +292,10 @@ def _train(args: ScriptArgs):
                     f"--eval-max-response-len {args.rollout_max_response_len} "
                 )
         case "avqa_audio":
-            rollout_args += f"--prompt-data {args.data_dir}/avqa_audio/train.jsonl " "--rm-type gpqa "
+            rollout_args += (
+                f"--prompt-data {args.data_dir}/avqa_audio/train.jsonl "
+                "--custom-rm-path examples.avqa_audio.reward.reward_func "
+            )
 
     grpo_args = (
         "--advantage-estimator grpo "
