@@ -4,14 +4,15 @@ GEMM of the miles-ext-kernels submodule (``--batched-projection-gemm-backend {to
 :func:`project_heads` is the q-absorb product ``torch.einsum("thd,hdm->thm", q, w_kc)`` (``weight_layout="in_out"``)
 and the value product ``torch.einsum("thm,hdm->thd", o, w_vc)`` (``"out_in"``) of the GLM-5 / GLM-5.3 attention.
 :func:`grouped_matmul` is DeepSeek-V4's grouped output projection ``torch.einsum("bsgd,grd->bsgr", x, w)``. Under
-``cake`` both run ``miles_ext_kernels.dense_gemm.batched_projection``: BF16 operands, FP32 accumulation, one rounding,
-and a fixed reduction order, so the output and both gradients are bit-identical call to call (not bitwise equal to
-cuBLAS). The views the einsums take (a slice of a wider head slot, a split of ``linear_kv_up_proj.weight``) are read in
-place where the kernel's alignment allows, else copied.
+``cake`` both run ``miles_ext_kernels.cake.dense_gemm.batched_projection``: BF16 operands, FP32 accumulation, one
+rounding, and a fixed reduction order, so the output and both gradients are bit-identical call to call (not bitwise
+equal to cuBLAS). The views the einsums take (a slice of a wider head slot, a split of ``linear_kv_up_proj.weight``)
+are read in place where the kernel's alignment allows, else copied.
 
-:func:`validate_batched_projection_config` rejects at layer construction what the kernel does not run: CUDA graphs,
-non-BF16 parameters, head dimensions that are not multiples of 8. CUDA-only (NVIDIA SM100a / SM103a / SM107a,
-Megatron backend); the kernel package is imported on the first ``cake`` call.
+:func:`validate_batched_projection_config` rejects at layer construction what the kernel does not run (CUDA graphs,
+non-BF16 parameters, head dimensions that are not multiples of 8) and builds the kernel's programs there, so no
+training step compiles. CUDA-only (NVIDIA SM100a / SM103a / SM107a, Megatron backend); the kernels are imported only
+under ``cake``.
 """
 
 from __future__ import annotations
@@ -23,12 +24,12 @@ _EQUATIONS = {"in_out": "thd,hdm->thm", "out_in": "thm,hdm->thd"}
 
 
 def projection_kernels():
-    """The ``miles_ext_kernels.dense_gemm`` kernel package."""
+    """The op module ``miles_ext_kernels.cake.dense_gemm``."""
     try:
-        from miles_ext_kernels import dense_gemm
+        from miles_ext_kernels.cake import dense_gemm
     except ImportError as exc:
         raise ImportError(
-            "--batched-projection-gemm-backend cake runs miles_ext_kernels.dense_gemm from the miles-ext-kernels "
+            "--batched-projection-gemm-backend cake runs miles_ext_kernels.cake.dense_gemm from the miles-ext-kernels "
             "submodule: pass --use-miles-ext-kernels and check the submodule out with "
             "'git submodule update --init 3rdparty/miles-ext-kernels'."
         ) from exc
@@ -40,9 +41,13 @@ def _check_backend(backend: str) -> None:
         raise ValueError(f"batched projection backend must be one of {BACKENDS}, got {backend!r}")
 
 
-def validate_batched_projection_config(config, *, d_in: int, d_out: int, backend: str) -> None:
+def validate_batched_projection_config(
+    config, *, num_heads: int, d_in: int, d_out: int, weight_layout: str, backend: str
+) -> None:
     """Raise ``ValueError`` when ``backend`` is ``cake`` and the layer's Megatron ``config`` or its per-head projection
-    ``d_in -> d_out`` is one the Cake kernel does not run. Call it where the layer is built."""
+    (``num_heads`` heads of ``d_in -> d_out``, ``weight_layout`` as in :func:`project_heads`) is one the Cake kernel
+    does not run; else, under ``cake``, build every program the projection may run on the current device, at any token
+    count (``miles_ext_kernels.cake.prebuild``). Call it where the layer is built."""
     _check_backend(backend)
     if backend != "cake":
         return
@@ -56,6 +61,9 @@ def validate_batched_projection_config(config, *, d_in: int, d_out: int, backend
             f"--batched-projection-gemm-backend cake takes BF16 weights; the parameters are {config.params_dtype}"
         )
     projection_kernels().check_projection_dims(d_in, d_out)
+    from miles_ext_kernels import cake
+
+    cake.prebuild("dense_gemm", projections=[(num_heads, d_in, d_out, weight_layout)])
 
 
 def project_heads(x: torch.Tensor, weight: torch.Tensor, *, weight_layout: str, backend: str) -> torch.Tensor:

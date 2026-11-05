@@ -192,8 +192,10 @@ class DeepSeekV4Attention(MegatronModule):
         self.batched_projection_backend = config.miles_batched_projection_gemm_backend
         validate_batched_projection_config(
             config,
+            num_heads=self.n_local_groups,
             d_in=self.n_heads * self.head_dim // self.n_groups,
             d_out=self.o_lora_rank,
+            weight_layout="out_in",
             backend=self.batched_projection_backend,
         )
 

@@ -56,6 +56,15 @@ SKIP_ALLOWLIST: dict[str, tuple[str, ...]] = {
         "needs two GPUs",
         "the two GPUs differ in model or SM count: {models}",
     ),
+    "dense_gemm": (
+        # fast's known accuracy misses come from the fast tables of 148-SM SM103a parts; other parts run other programs
+        "the known accuracy misses of fast are on 148-SM sm_103a parts",
+        # a part whose fast tables pick no weight-gradient program of their own for the tested shapes
+        "fast runs no program of its own for these shapes on {arch} with {sm_count} SMs",
+        # multi_gpu: two devices of one part
+        "two CUDA devices required",
+        "two devices of one SM100a / SM103a / SM107a part required",
+    ),
 }
 
 # One line of pytest's -rs summary: "SKIPPED [2] tests/cake/gdn/test_gdn_kcp_gpu.py:543: <reason>"

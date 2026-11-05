@@ -438,8 +438,10 @@ class DeepSeekV41Attention(MegatronModule):
         # --batched-projection-gemm-backend: the grouped output projection on torch.einsum or the Cake GEMM
         validate_batched_projection_config(
             config,
+            num_heads=self.n_local_groups,
             d_in=self.n_heads * self.head_dim // self.n_groups,
             d_out=self.o_lora_rank,
+            weight_layout="out_in",
             backend=config.miles_batched_projection_gemm_backend,
         )
         self.o_group_matmul = GroupedMatmul(backend=config.miles_batched_projection_gemm_backend)

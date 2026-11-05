@@ -2,8 +2,8 @@
 startup checks and the router installation of ``miles_plugins.models.cake_batched_projection`` and
 ``miles.backends.megatron_utils.cake_router_gemm``.
 
-The kernel package is a stand-in here. Its numerics and argument rules are tested in the miles-ext-kernels submodule
-(``3rdparty/miles-ext-kernels/tests/dense_gemm``), and these modules against torch / Megatron on Blackwell in
+The kernels are a stand-in here. Their numerics and argument rules are tested in the miles-ext-kernels submodule
+(``3rdparty/miles-ext-kernels/tests/cake/dense_gemm``), and these modules against torch / Megatron on Blackwell in
 ``tests/fast-gpu/test_cake_dense_gemm.py``.
 """
 
@@ -23,9 +23,10 @@ from miles_plugins.models import cake_batched_projection
 
 @pytest.fixture
 def kernels(monkeypatch):
-    """A stand-in ``miles_ext_kernels.dense_gemm`` computing with torch on the host and recording its calls."""
+    """A stand-in op module ``miles_ext_kernels.cake.dense_gemm`` computing with torch on the host, and
+    ``miles_ext_kernels.cake.prebuild``, recording their calls."""
     calls = []
-    dense_gemm = types.ModuleType("miles_ext_kernels.dense_gemm")
+    dense_gemm = types.ModuleType("miles_ext_kernels.cake.dense_gemm")
 
     def batched_projection(x, weight, *, weight_layout):
         calls.append(("batched_projection", weight_layout, tuple(x.shape), tuple(weight.shape)))
@@ -45,15 +46,18 @@ def kernels(monkeypatch):
     dense_gemm.check_projection_dims = check_projection_dims
     dense_gemm.router_gating = router_gating
     package = types.ModuleType("miles_ext_kernels")
-    package.dense_gemm = dense_gemm
-    monkeypatch.setitem(sys.modules, "miles_ext_kernels", package)
-    monkeypatch.setitem(sys.modules, "miles_ext_kernels.dense_gemm", dense_gemm)
+    cake = types.ModuleType("miles_ext_kernels.cake")
+    cake.prebuild = lambda op, **model_params: calls.append(("prebuild", op, model_params)) or []
+    package.cake, cake.dense_gemm = cake, dense_gemm
+    for module in (package, cake, dense_gemm):
+        monkeypatch.setitem(sys.modules, module.__name__, module)
     return calls
 
 
 @pytest.fixture
 def no_kernels(monkeypatch):
-    monkeypatch.setitem(sys.modules, "miles_ext_kernels", None)
+    for name in ("miles_ext_kernels", "miles_ext_kernels.cake", "miles_ext_kernels.cake.dense_gemm"):
+        monkeypatch.setitem(sys.modules, name, None)  # an import of it raises ModuleNotFoundError
 
 
 def _config(**overrides):
@@ -112,14 +116,26 @@ def test_an_unknown_backend_or_layout_is_refused(kernels):
 def test_the_torch_backend_checks_nothing(no_kernels):
     config = _config(cuda_graph_impl="local", params_dtype=torch.float32)
 
-    cake_batched_projection.validate_batched_projection_config(config, d_in=3, d_out=5, backend="torch")
+    cake_batched_projection.validate_batched_projection_config(
+        config, num_heads=4, d_in=3, d_out=5, weight_layout="in_out", backend="torch"
+    )
 
 
-def test_the_cake_backend_accepts_the_mla_projections(kernels):
-    for d_in, d_out in ((192, 512), (512, 256), (4096, 1024)):
-        cake_batched_projection.validate_batched_projection_config(_config(), d_in=d_in, d_out=d_out, backend="cake")
+def test_the_cake_backend_accepts_the_mla_projections_and_builds_their_programs(kernels):
+    # GLM-5's q-absorb and value projections, DeepSeek-V4's grouped output projection
+    for num_heads, d_in, d_out, weight_layout in (
+        (32, 192, 512, "in_out"),
+        (32, 512, 256, "out_in"),
+        (16, 4096, 1024, "out_in"),
+    ):
+        cake_batched_projection.validate_batched_projection_config(
+            _config(), num_heads=num_heads, d_in=d_in, d_out=d_out, weight_layout=weight_layout, backend="cake"
+        )
 
-    assert ("check_projection_dims", 4096, 1024) in kernels
+    assert kernels[-2:] == [
+        ("check_projection_dims", 4096, 1024),
+        ("prebuild", "dense_gemm", {"projections": [(16, 4096, 1024, "out_in")]}),
+    ]
 
 
 @pytest.mark.parametrize(
@@ -133,8 +149,9 @@ def test_the_cake_backend_accepts_the_mla_projections(kernels):
 def test_the_cake_backend_refuses_what_the_kernel_does_not_run(kernels, overrides, dims, match):
     with pytest.raises(ValueError, match=match):
         cake_batched_projection.validate_batched_projection_config(
-            _config(**overrides), d_in=dims[0], d_out=dims[1], backend="cake"
+            _config(**overrides), num_heads=32, d_in=dims[0], d_out=dims[1], weight_layout="in_out", backend="cake"
         )
+    assert not [call for call in kernels if call[0] == "prebuild"]
 
 
 def test_a_missing_submodule_names_the_flag_that_needs_it(no_kernels):
@@ -202,11 +219,14 @@ def test_every_router_setting_the_kernels_do_not_reproduce_is_listed():
     assert "BF16 parameters" in message and "multiples of 8" in message
 
 
-def test_install_rebinds_the_gating_of_every_router(kernels):
+def test_install_rebinds_the_gating_of_every_router_and_builds_its_programs(kernels):
     config = _config(num_moe_experts=16, hidden_size=32)
     routers = [_Router(config), _Router(config)]
 
     assert cake_router_gemm.install_cake_router_gemm(_model(*routers)) == 2
+
+    # one build for the routers' one shape, before any gating runs
+    assert kernels == [("prebuild", "dense_gemm", {"router": [(16, 32)]})]
 
     for router in routers:
         assert router.gating.__func__ is cake_router_gemm._cake_gating and router.gating.__self__ is router
@@ -231,6 +251,7 @@ def test_install_checks_every_router_config_before_rebinding_any(kernels):
         cake_router_gemm.install_cake_router_gemm(_model(good, bad))
 
     assert "gating" not in vars(good)
+    assert kernels == []
 
 
 def test_a_missing_submodule_fails_at_install(no_kernels):

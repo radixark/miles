@@ -175,11 +175,18 @@ class DSAMultiLatentAttention(Attention):
         # --batched-projection-gemm-backend: the q-absorb (qk_head_dim -> kv_lora_rank) and value (kv_lora_rank ->
         # v_head_dim) per-head projections on torch.einsum or the Cake deterministic GEMM
         self.batched_projection_backend = batched_projection_backend
-        for d_in, d_out in (
-            (self.config.qk_head_dim, self.config.kv_lora_rank),
-            (self.config.kv_lora_rank, self.config.v_head_dim),
+        for d_in, d_out, weight_layout in (
+            (self.config.qk_head_dim, self.config.kv_lora_rank, "in_out"),
+            (self.config.kv_lora_rank, self.config.v_head_dim, "out_in"),
         ):
-            validate_batched_projection_config(self.config, d_in=d_in, d_out=d_out, backend=batched_projection_backend)
+            validate_batched_projection_config(
+                self.config,
+                num_heads=self.num_attention_heads_per_partition,
+                d_in=d_in,
+                d_out=d_out,
+                weight_layout=weight_layout,
+                backend=batched_projection_backend,
+            )
         indexer_replay_manager.register_to_module(self, "indexer_replay", stream_idx=self.layer_number - 1)
 
         # Cross-layer index sharing (optional). When the HF config provides
