@@ -11,9 +11,11 @@ the trainer sees exactly the tokens the engine sampled.
 
 import argparse
 import asyncio
+import dataclasses
+import functools
 from copy import deepcopy
 
-from text_to_sql_recipe import grading, parsing, prompts, reward, sqlite_exec
+from text_to_sql_recipe import config, grading, parsing, prompts, reward, sqlite_exec
 from text_to_sql_recipe.config import RewardConfig
 
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
@@ -26,10 +28,6 @@ from miles.rollout.generate_utils.generate_endpoint_utils import (
 from miles.rollout.generate_utils.tool_call_utils import append_observation_tokens
 from miles.utils.http_utils import post
 from miles.utils.types import Sample
-
-_TRAIN_REWARD = RewardConfig(verifier="none", redraft_penalty=0.0)
-# evaluation scores the outcome only, as the recipe's evaluation does
-_EVAL_REWARD = RewardConfig(verifier="none", process_penalty_weight=0.0, redraft_penalty=0.0)
 
 # SQLite runs in worker threads; this bounds the tool calls and grading queries in flight together
 _SQL_SLOTS = asyncio.Semaphore(16)
@@ -103,6 +101,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
 
 def _add_arguments(parser: argparse.ArgumentParser):
     parser.add_argument("--text-to-sql-max-tool-turns", type=int, default=5)
+    parser.add_argument("--text-to-sql-recipe", type=str, default="qwen3.6-35b-a3b")
 
 
 generate.add_arguments = _add_arguments
@@ -119,7 +118,7 @@ async def reward_func(args, sample: Sample, **kwargs) -> dict:
 
     scored = reward.rollout_reward(
         grade,
-        _EVAL_REWARD if sample.metadata["evaluation"] else _TRAIN_REWARD,
+        _reward_config(args.text_to_sql_recipe, evaluation=sample.metadata["evaluation"]),
         task=task,
         messages=[{"role": "assistant", "content": text} for text in episode["turns"]],
         prompt_message_count=0,
@@ -137,6 +136,16 @@ async def reward_func(args, sample: Sample, **kwargs) -> dict:
         "process_penalty": scored.metrics["process_penalty"],
         "invalid_tool_calls": scored.metrics["tool_protocol/invalid_calls"],
     }
+
+
+@functools.cache
+def _reward_config(recipe: str, *, evaluation: bool) -> RewardConfig:
+    """The recipe preset's reward terms, without the VeriEQL verifier and re-draft guard this example does not port."""
+    train = dataclasses.replace(config.load(recipe).reward, verifier="none", redraft_penalty=0.0)
+    if not evaluation:
+        return train
+    # evaluation scores the outcome only, as the recipe's evaluation does
+    return dataclasses.replace(train, process_penalty_weight=0.0, tool_format_penalty=0.0)
 
 
 def _visible_text(text: str) -> str:

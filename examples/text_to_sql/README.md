@@ -47,6 +47,9 @@ The jump by step 15 is mostly the model learning to think shorter: at step 10, 1
 of episodes still spend a turn's 3,072 tokens thinking and never answer; by step 15 under 2% do. Accuracy is flat after
 step 100, when 70-85% of training groups score 16/16 and carry no GRPO advantage.
 
+This run applied no tool-format penalty: the episode then built its reward settings itself and missed the preset's
+0.05. It now reads them from the recipe preset (`--text-to-sql-recipe`), so a new run applies the penalty.
+
 ## Reward
 
 | Outcome | Reward |
@@ -57,7 +60,9 @@ step 100, when 70-85% of training groups score 16/16 and carry no GRPO advantage
 | unsafe query (anything but a read-only SELECT; ends the rollout) | -1 |
 
 minus 0.1 for each evidence rule the trajectory skips (restate the evidence in the first two turns, check the
-answer against it in the answer turn), minus 0.05 per invalid tool call up to 0.2. Evaluation scores `correct` only.
+answer against it in the answer turn), minus 0.05 per invalid tool call up to 0.2. The terms are the recipe preset's
+(`--text-to-sql-recipe`, default `qwen3.6-35b-a3b`), less the parts not ported below. Evaluation scores `correct`
+only.
 
 ## Differences from the recipe
 
