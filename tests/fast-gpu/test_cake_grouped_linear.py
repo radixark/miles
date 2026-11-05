@@ -4,14 +4,13 @@ expert-parallel rank (8 of its 64 experts, hidden 2048, expert width 1536), over
 one-row one. The output and both gradients within BF16 bounds of a per-group FP32 reference, as torch's; ``det``
 bitwise run to run; ``fast`` with ``det``'s output and input-gradient bits.
 
-The kernels' own suites (more layer shapes, the unordered 512-wide k tail, the deterministic-mode fallback, the
-prebuild hook) run in ``3rdparty/miles-ext-kernels/tests/moe_grouped_gemm`` through
+The kernels' own suites (more layer shapes, the unordered 512-wide k tail, ``fast`` running ``det`` under torch's
+deterministic algorithms, the prebuild hook) run in ``3rdparty/miles-ext-kernels/tests/cake/moe_grouped_gemm`` through
 ``tests/fast-gpu/kernels/test_miles_ext_kernels.py``.
 
     python tests/fast-gpu/test_cake_grouped_linear.py
 """
 
-import argparse
 import sys
 
 import pytest
@@ -32,7 +31,8 @@ pytestmark = pytest.mark.skipif(
 )
 
 # a missing torchtitan or submodule fails the collection: on the Blackwell runners a skip would hide the coverage
-import miles_ext_kernels.moe_grouped_gemm as moe_grouped_gemm  # noqa: E402
+import miles_ext_kernels  # noqa: E402
+from miles_ext_kernels import cake  # noqa: E402
 from torchtitan.models.common.linear import GroupedLinear  # noqa: E402
 
 from miles.backends.torchtitan_utils.cake_grouped_linear import CakeGroupedLinear  # noqa: E402
@@ -49,8 +49,7 @@ PROJECTIONS = {
 
 @pytest.fixture(scope="module", autouse=True)
 def _programs():
-    for variant in ("det", "fast"):
-        moe_grouped_gemm.prebuild(variant=variant)
+    cake.prebuild("moe_grouped_gemm")  # both variants
 
 
 @pytest.fixture(autouse=True)
@@ -109,7 +108,7 @@ def _reference(weight, x, grad):
 
 
 def _configure(variant: str) -> None:
-    moe_grouped_gemm.configure(argparse.Namespace(cake_moe_grouped_gemm_variant=variant))
+    miles_ext_kernels.configure(cake_moe_grouped_gemm_variant=variant)
 
 
 @pytest.mark.parametrize("proj", list(PROJECTIONS))

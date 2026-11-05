@@ -65,6 +65,11 @@ SKIP_ALLOWLIST: dict[str, tuple[str, ...]] = {
         "two CUDA devices required",
         "two devices of one SM100a / SM103a / SM107a part required",
     ),
+    "moe_grouped_gemm": (
+        # multi_gpu: two GPUs of one architecture
+        "needs two GPUs",
+        "needs two GPUs of one architecture",
+    ),
 }
 
 # One line of pytest's -rs summary: "SKIPPED [2] tests/cake/gdn/test_gdn_kcp_gpu.py:543: <reason>"

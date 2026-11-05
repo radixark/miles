@@ -5,20 +5,19 @@
 gate / up projection ``w13`` and the down projection ``w2``) with :class:`CakeGroupedLinear.Config` before the model is
 built. The subclass keeps the parameter, its shape, initialisation and name, so checkpoints load unchanged; only its
 ``_grouped_mm`` (``torch._grouped_mm(x, w.transpose(-2, -1), offs=offsets)``) runs
-``miles_ext_kernels.moe_grouped_gemm.grouped_mm`` instead: BF16 operands, FP32 accumulation, one rounding.
+``miles_ext_kernels.cake.moe_grouped_gemm.grouped_mm`` instead: BF16 operands, FP32 accumulation, one rounding.
 ``--cake-moe-grouped-gemm-variant`` picks ``det`` (every reduction in a fixed order: bit-identical forward and
 gradients) or ``fast`` (the same forward and input gradient, a weight gradient that may add part of its tiles in a
 run-dependent order). It is not bitwise equal to ``torch._grouped_mm``.
 
 Rejected where the model config is converted: grouped linears that are already quantized or adapted (a subclass of
-``GroupedLinear``), grouped linears outside ``RoutedExperts``, and expert widths that are not multiples of 256.
-CUDA-only (NVIDIA SM100a / SM103a / SM107a, torchtitan backend); the kernel package is imported only under the
-``cake`` backend.
+``GroupedLinear``), grouped linears outside ``RoutedExperts``, expert widths that are not multiples of 256, and a
+rank's expert weights too large for the kernels' 32-bit element offsets. CUDA-only (NVIDIA SM100a / SM103a / SM107a,
+torchtitan backend); the kernels are imported only under the ``cake`` backend.
 """
 
 from __future__ import annotations
 
-import argparse
 import dataclasses
 import logging
 from typing import Any
@@ -32,12 +31,12 @@ logger = logging.getLogger(__name__)
 
 
 def grouped_gemm_kernels():
-    """The ``miles_ext_kernels.moe_grouped_gemm`` kernel package."""
+    """The op module ``miles_ext_kernels.cake.moe_grouped_gemm``."""
     try:
-        from miles_ext_kernels import moe_grouped_gemm
+        from miles_ext_kernels.cake import moe_grouped_gemm
     except ImportError as exc:
         raise ImportError(
-            "--moe-grouped-gemm-backend cake runs miles_ext_kernels.moe_grouped_gemm from the miles-ext-kernels "
+            "--moe-grouped-gemm-backend cake runs miles_ext_kernels.cake.moe_grouped_gemm from the miles-ext-kernels "
             "submodule: pass --use-miles-ext-kernels and check the submodule out with "
             "'git submodule update --init 3rdparty/miles-ext-kernels'."
         ) from exc
@@ -72,14 +71,22 @@ def _cake_config(config: GroupedLinear.Config) -> CakeGroupedLinear.Config:
 
 
 def convert_model_config(
-    model_config: BaseModel.Config, *, backend: str, miles_ext_kernels_args: dict[str, Any] | None
+    model_config: BaseModel.Config,
+    *,
+    backend: str,
+    miles_ext_kernels_args: dict[str, Any] | None,
+    expert_parallel_degree: int,
 ) -> BaseModel.Config:
     """``model_config`` with its routed-expert grouped linears on the Cake kernels under ``backend == "cake"``, else
-    unchanged. Hands the kernel package's own arguments (``miles_ext_kernels_args``) to its ``configure``."""
+    unchanged. Hands the kernels their own arguments (``miles_ext_kernels_args``) through
+    ``miles_ext_kernels.configure``, and checks the expert weights one rank holds (the experts split over
+    ``expert_parallel_degree`` ranks)."""
     if backend != "cake":
         return model_config
     kernels = grouped_gemm_kernels()
-    kernels.configure(argparse.Namespace(**(miles_ext_kernels_args or {})))
+    import miles_ext_kernels
+
+    miles_ext_kernels.configure(miles_ext_kernels_args)
     found = 0
     for fqn, config, parent, attr in model_config.traverse(GroupedLinear.Config):
         found += 1
@@ -95,7 +102,11 @@ def convert_model_config(
                 f"--moe-grouped-gemm-backend cake converts the grouped linears of RoutedExperts; {fqn} is not one"
             )
         try:
-            kernels.check_grouped_dims(config.out_features * config.num_linears, config.in_features)
+            kernels.check_grouped_dims(
+                config.out_features * config.num_linears,
+                config.in_features,
+                num_groups=config.group_size // expert_parallel_degree,
+            )
         except ValueError as exc:
             raise ValueError(f"--moe-grouped-gemm-backend cake cannot run {fqn}: {exc}") from exc
         setattr(parent, attr, _cake_config(config))
@@ -108,9 +119,12 @@ def convert_model_config(
 
 
 def prebuild(*, backend: str) -> None:
-    """Compile the Cake grouped GEMM programs of the configured variant for the current device ahead of the first
-    step, in parallel (each rank of a node finds the libraries the first one built)."""
+    """Build the Cake grouped GEMM programs of both variants for the current device ahead of the first step, in
+    parallel (each rank of a node finds the libraries the first one built); one build serves every expert shape."""
     if backend != "cake":
         return
-    paths = grouped_gemm_kernels().prebuild()
+    grouped_gemm_kernels()
+    from miles_ext_kernels import cake
+
+    paths = cake.prebuild("moe_grouped_gemm")
     logger.info("--moe-grouped-gemm-backend cake: %d grouped GEMM libraries ready", len(paths))

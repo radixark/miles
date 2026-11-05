@@ -3,8 +3,7 @@ dense GEMMs of the miles-ext-kernels submodule: ``--batched-projection-gemm-back
 projections of the DSA layers) and ``--moe-router-gemm-backend cake`` (the FP32 gate GEMM of the MoE routers). Needs
 SM100a / SM103a GPUs and the checked-out submodule.
 
-``--dsa-attention-backend cake`` is not on: its ``det`` kernels build through torch's C++ extensions on first use,
-which CI does not cache across jobs.
+``--dsa-attention-backend cake`` is not on here: this test covers the dense GEMMs.
 """
 
 import dataclasses

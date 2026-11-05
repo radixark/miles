@@ -1,9 +1,9 @@
 """``--moe-grouped-gemm-backend cake`` without a device: the model-config conversion of the torchtitan backend and the
 grouped matmul of ``CakeGroupedLinear``.
 
-The kernel package is a stand-in here. Its numerics and argument rules are tested in the miles-ext-kernels submodule
-(``3rdparty/miles-ext-kernels/tests/moe_grouped_gemm``), and ``CakeGroupedLinear`` against ``torch._grouped_mm`` on
-Blackwell in ``tests/fast-gpu/test_cake_grouped_linear.py``.
+The kernels are a stand-in here. Their numerics and argument rules are tested in the miles-ext-kernels submodule
+(``3rdparty/miles-ext-kernels/tests/cake/moe_grouped_gemm``), and ``CakeGroupedLinear`` against
+``torch._grouped_mm`` on Blackwell in ``tests/fast-gpu/test_cake_grouped_linear.py``.
 """
 
 import dataclasses
@@ -30,25 +30,32 @@ DENSE = dict(titan_model_name="qwen3", titan_model_flavor="0.6B")
 
 @pytest.fixture
 def kernels(monkeypatch):
-    """A stand-in ``miles_ext_kernels.moe_grouped_gemm`` recording its calls."""
+    """A stand-in op module ``miles_ext_kernels.cake.moe_grouped_gemm``, with ``miles_ext_kernels.configure`` and
+    ``miles_ext_kernels.cake.prebuild``, recording their calls."""
     calls = []
-    package = types.ModuleType("miles_ext_kernels.moe_grouped_gemm")
+    op = types.ModuleType("miles_ext_kernels.cake.moe_grouped_gemm")
 
-    def check_grouped_dims(n, k):
+    def check_grouped_dims(n, k, *, num_groups=None):
+        calls.append(("check_grouped_dims", n, k, num_groups))
         if n % 256 or k % 256:
             raise ValueError(f"N = {n} and K = {k} must be multiples of 256")
 
-    package.configure = lambda args: calls.append(("configure", vars(args)))
-    package.check_grouped_dims = check_grouped_dims
-    package.grouped_mm = lambda x, w, offs: (
-        calls.append(("grouped_mm", x, w, offs)) or x.new_zeros(x.shape[0], w.shape[1])
-    )
-    package.prebuild = lambda: calls.append(("prebuild",)) or []
-    parent = types.ModuleType("miles_ext_kernels")
-    parent.moe_grouped_gemm = package
-    monkeypatch.setitem(sys.modules, "miles_ext_kernels", parent)
-    monkeypatch.setitem(sys.modules, package.__name__, package)
+    op.check_grouped_dims = check_grouped_dims
+    op.grouped_mm = lambda x, w, offs: calls.append(("grouped_mm", x, w, offs)) or x.new_zeros(x.shape[0], w.shape[1])
+    package = types.ModuleType("miles_ext_kernels")
+    package.configure = lambda values: calls.append(("configure", values))
+    cake = types.ModuleType("miles_ext_kernels.cake")
+    cake.prebuild = lambda name: calls.append(("prebuild", name)) or []
+    package.cake, cake.moe_grouped_gemm = cake, op
+    for module in (package, cake, op):
+        monkeypatch.setitem(sys.modules, module.__name__, module)
     return calls
+
+
+@pytest.fixture
+def no_kernels(monkeypatch):
+    for name in ("miles_ext_kernels", "miles_ext_kernels.cake", "miles_ext_kernels.cake.moe_grouped_gemm"):
+        monkeypatch.setitem(sys.modules, name, None)  # an import of it raises ModuleNotFoundError
 
 
 def _model_config(backend: str, model=GLM_FLASH, ext_args=None):
@@ -62,8 +69,7 @@ def _grouped_linears(model_config):
     return [(fqn, config, parent) for fqn, config, parent, _ in model_config.traverse(GroupedLinear.Config)]
 
 
-def test_the_torch_backend_keeps_torchtitan_grouped_linears(monkeypatch):
-    monkeypatch.setitem(sys.modules, "miles_ext_kernels", None)  # the kernel package is never imported
+def test_the_torch_backend_keeps_torchtitan_grouped_linears(no_kernels):  # the kernels are never imported
 
     linears = _grouped_linears(_model_config("torch"))
 
@@ -87,7 +93,9 @@ def test_every_routed_expert_projection_keeps_its_fields(kernels):
     before = _grouped_linears(model_config)
 
     after = _grouped_linears(
-        cake_grouped_linear.convert_model_config(model_config, backend="cake", miles_ext_kernels_args=None)
+        cake_grouped_linear.convert_model_config(
+            model_config, backend="cake", miles_ext_kernels_args=None, expert_parallel_degree=1
+        )
     )
 
     assert [fqn for fqn, _, _ in after] == [fqn for fqn, _, _ in before]
@@ -101,7 +109,9 @@ def test_every_routed_expert_projection_keeps_its_fields(kernels):
 def test_the_conversion_is_idempotent(kernels):
     model_config = _model_config("cake")
 
-    again = cake_grouped_linear.convert_model_config(model_config, backend="cake", miles_ext_kernels_args=None)
+    again = cake_grouped_linear.convert_model_config(
+        model_config, backend="cake", miles_ext_kernels_args=None, expert_parallel_degree=1
+    )
 
     assert {type(config) for _, config, _ in _grouped_linears(again)} == {CakeGroupedLinear.Config}
 
@@ -117,7 +127,26 @@ def test_expert_widths_the_kernels_do_not_serve_are_refused_with_the_projection(
     config.in_features = 2000
 
     with pytest.raises(ValueError, match=f"cannot run {fqn}: .*multiples of 256"):
-        cake_grouped_linear.convert_model_config(model_config, backend="cake", miles_ext_kernels_args=None)
+        cake_grouped_linear.convert_model_config(
+            model_config, backend="cake", miles_ext_kernels_args=None, expert_parallel_degree=1
+        )
+
+
+@pytest.mark.parametrize("expert_parallel_degree", [1, 4])
+def test_the_expert_weights_of_one_rank_are_checked(kernels, expert_parallel_degree):
+    """The 32-bit offset bound of the weight gradient covers the experts one expert-parallel rank holds."""
+    model_config = _model_config("torch")
+
+    cake_grouped_linear.convert_model_config(
+        model_config, backend="cake", miles_ext_kernels_args=None, expert_parallel_degree=expert_parallel_degree
+    )
+
+    checks = [call for call in kernels if call[0] == "check_grouped_dims"]
+    linears = _grouped_linears(model_config)
+    assert len(checks) == len(linears)
+    for (_, n, k, num_groups), (fqn, config, _) in zip(checks, linears, strict=True):
+        assert (n, k) == (config.out_features * config.num_linears, config.in_features), fqn
+        assert num_groups == config.group_size // expert_parallel_degree, fqn
 
 
 class _AdaptedGroupedLinear(GroupedLinear):
@@ -132,7 +161,9 @@ def test_a_quantized_or_adapted_grouped_linear_is_refused(kernels):
     parent.w2 = _AdaptedGroupedLinear.Config(**_init_fields(parent.w2))
 
     with pytest.raises(NotImplementedError, match="_AdaptedGroupedLinear"):
-        cake_grouped_linear.convert_model_config(model_config, backend="cake", miles_ext_kernels_args=None)
+        cake_grouped_linear.convert_model_config(
+            model_config, backend="cake", miles_ext_kernels_args=None, expert_parallel_degree=1
+        )
 
 
 def test_the_grouped_matmul_hands_the_kernels_bf16_weights_in_torch_grouped_mm_form(kernels):
@@ -154,11 +185,9 @@ def test_the_grouped_matmul_hands_the_kernels_bf16_weights_in_torch_grouped_mm_f
 def test_prebuild_runs_only_for_the_cake_backend(kernels, backend, builds):
     cake_grouped_linear.prebuild(backend=backend)
 
-    assert kernels.count(("prebuild",)) == builds
+    assert kernels.count(("prebuild", "moe_grouped_gemm")) == builds
 
 
-def test_a_missing_submodule_names_the_flag_that_needs_it(monkeypatch):
-    monkeypatch.setitem(sys.modules, "miles_ext_kernels", None)
-
+def test_a_missing_submodule_names_the_flag_that_needs_it(no_kernels):
     with pytest.raises(ImportError, match="--moe-grouped-gemm-backend cake .*--use-miles-ext-kernels"):
         _model_config("cake")

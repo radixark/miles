@@ -63,7 +63,10 @@ def build_model_config(
     model = builder(args.backend.titan_model_flavor, **kwargs)
     _disable_load_balancing(model)
     model = cake_grouped_linear.convert_model_config(
-        model, backend=args.moe_grouped_gemm_backend, miles_ext_kernels_args=args.miles_ext_kernels_args
+        model,
+        backend=args.moe_grouped_gemm_backend,
+        miles_ext_kernels_args=args.miles_ext_kernels_args,
+        expert_parallel_degree=parallelism.expert_parallel_degree,
     )
     if parallelism.context_parallel_degree > 1:
         model = transform_model_config_(
