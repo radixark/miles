@@ -7,7 +7,6 @@ from miles.rollout.generate_utils.generate_endpoint_utils import (
     compute_prompt_ids_from_sample,
     compute_request_payload,
     compute_routing_headers,
-    resolve_max_seq_len,
     update_sample_from_response,
 )
 from miles.utils.http_utils import post
@@ -42,7 +41,6 @@ async def generate(input: GenerateFnInput, url: str | None = None) -> GenerateFn
         multimodal_inputs=sample.multimodal_inputs,
         evaluation=input.evaluation,
         kv_cache_namespace=sample.kv_cache_namespace,
-        max_seq_len=resolve_max_seq_len(args, sample),
     )
     if payload is None:
         sample.status = halt_status

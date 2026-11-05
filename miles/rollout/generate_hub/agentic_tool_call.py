@@ -41,11 +41,11 @@ from sglang.srt.entrypoints.openai.protocol import ChatCompletionRequest
 from miles.dashboard.hooks import push_sandbox_reports
 from miles.rollout.agentic.agent_function import AGENT_FUNCTION_MODES, call_agent_function
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
-from miles.rollout.generate_utils.generate_endpoint_utils import resolve_max_seq_len
 from miles.rollout.generate_utils.openai_endpoint_utils import OpenAIEndpointTracer
 from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY
 from miles.utils.function_registry import load_function
 from miles.utils.output_store.dropped import record_dropped_samples
+from miles.utils.rollout_data_config import lower_limit
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
@@ -60,7 +60,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     use_v2 = input.args.use_session_server == "v2"
     collect_spec_metrics = use_v2 and input.args.sglang.common_value("speculative_algorithm") is not None
     # a mixed dataset may name a lower length limit; the session refuses a turn whose prompt fills it
-    max_seq_len = resolve_max_seq_len(input.args, input.sample)
+    max_seq_len = lower_limit(input.args.max_seq_len, input.sample.max_seq_len)
     tracer = await OpenAIEndpointTracer.create(
         input.args,
         evaluation=input.evaluation,

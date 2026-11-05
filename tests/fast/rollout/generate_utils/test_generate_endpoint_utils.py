@@ -10,6 +10,7 @@ from miles.utils.output_store.plan import OUTPUT_STORE_REQUEST_KEY, StorePlanErr
 def _make_args() -> SimpleNamespace:
     return SimpleNamespace(
         rollout_max_response_len=16,
+        max_seq_len=None,
         use_rollout_routing_replay=False,
         use_rollout_indexer_replay=False,
         use_sampling_support_replay=False,

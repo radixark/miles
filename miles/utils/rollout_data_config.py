@@ -21,7 +21,7 @@ datasets:
 ``samples_per_step`` values are weights: each request for N prompts is split across the datasets in
 proportion to them. Per-dataset length limits may only lower the run-wide ``--rollout-max-prompt-len`` /
 ``--rollout-max-response-len``, which training memory and packing are sized from, and ``max_seq_len`` may only
-lower the agentic ``--max-seq-len``.
+lower ``--max-seq-len``.
 """
 
 import re

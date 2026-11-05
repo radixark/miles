@@ -313,8 +313,8 @@ class TestDatasetHookSettings:
         assert args.rollout_dataset_functions["test3947.typed_generate"].config.typed_marker == 7
         assert view.typed_marker == 7
 
-    def test_a_dataset_max_seq_len_above_the_agentic_limit_fails_at_startup(self):
-        """--max-seq-len is registered by the dataset's agentic generate function itself, then bounds the dataset."""
+    def test_a_dataset_max_seq_len_above_the_run_limit_fails_at_startup(self):
+        """--max-seq-len bounds an agentic dataset's max_seq_len."""
         document = _with_dataset(
             custom_generate_function_path="miles.rollout.generate_hub.agentic_tool_call.generate", max_seq_len=70000
         )

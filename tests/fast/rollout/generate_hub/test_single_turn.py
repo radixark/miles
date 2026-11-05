@@ -447,7 +447,7 @@ class TestBoundaryConditions:
         )
 
     @pytest.mark.parametrize("generation_env", [{"args_kwargs": {"max_seq_len": 5}}], indirect=True)
-    def test_prompt_exceeds_max_context_len_returns_truncated(self, variant, generation_env):
+    def test_prompt_exceeds_max_seq_len_returns_truncated(self, variant, generation_env):
         if variant == "old_sglang_rollout":
             pytest.skip("old_sglang_rollout does not support max_seq_len")
         result = _run_generate(variant, generation_env)

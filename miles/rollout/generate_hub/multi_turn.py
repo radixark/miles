@@ -11,7 +11,6 @@ from miles.rollout.generate_utils.generate_endpoint_utils import (
     compute_prompt_ids_from_sample,
     compute_request_payload,
     compute_routing_headers,
-    resolve_max_seq_len,
     update_sample_from_response,
 )
 from miles.rollout.generate_utils.tool_call_utils import (
@@ -48,7 +47,6 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     prompt_tokens_ids = compute_prompt_ids_from_sample(input.state, sample, tools=tool_specs)
 
     sample.tokens = prompt_tokens_ids.copy()
-    max_seq_len = resolve_max_seq_len(args, sample)
 
     for _turn in range(args.generate_max_turns):
         # ----------------------- Call inference endpoint -------------------------
@@ -59,7 +57,6 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
             input.sampling_params,
             evaluation=input.evaluation,
             kv_cache_namespace=sample.kv_cache_namespace,
-            max_seq_len=max_seq_len,
         )
         if payload is None:
             sample.status = halt_status
