@@ -98,13 +98,13 @@ def gdn_kernel(backend: str, args=None):
 def kda_kernel(backend: str = "fla"):
     """The ``chunk_kda`` of ``backend``. 'fla': on Blackwell its backward runs the Triton dqkg kernel
     (FLA_TILELANG=0), which beats fla's TileLang one there at every tiling; an explicit FLA_TILELANG wins. 'cake': the
-    deterministic Cake kernels of ``miles_ext_kernels.kda`` (from the miles-ext-kernels submodule)."""
+    deterministic Cake kernels of ``miles_ext_kernels.cake.kda`` (from the miles-ext-kernels submodule)."""
     if backend == "cake":
         try:
-            from miles_ext_kernels.kda import chunk_kda
+            from miles_ext_kernels.cake.kda import chunk_kda
         except ImportError as exc:
             raise ImportError(
-                "KDA backend 'cake' runs miles_ext_kernels.kda from the miles-ext-kernels submodule: pass "
+                "KDA backend 'cake' runs miles_ext_kernels.cake.kda from the miles-ext-kernels submodule: pass "
                 "--use-miles-ext-kernels and check the submodule out with "
                 "'git submodule update --init 3rdparty/miles-ext-kernels'."
             ) from exc
@@ -573,9 +573,10 @@ class KimiDeltaAttention(LinearAttention):
     and need no group-major permutation. ``f_a_proj`` is replicated and feeds head-sharded ``f_b_proj``,
     so its weight passes the TP copy op like the norm. The conv weights train in fp32, as Kimi's
     checkpoints store them. ``kda_backend`` 'cake' runs the recurrence on the deterministic Cake kernels of
-    ``miles_ext_kernels.kda`` (1 to 64 heads per rank, SM100a / SM103a / SM107a), whose kernels for this rank's head
-    count are built when the layer is; its short convs then run on :func:`cake_conv_backend` and its gated output
-    norm on :func:`reproducible_rms_norm_gated`, so the layer's gradients are reproducible."""
+    ``miles_ext_kernels.cake.kda`` (1 to 64 heads per rank, SM100a / SM103a / SM107a), whose libraries are built when
+    the layer is (``miles_ext_kernels.cake.prebuild("kda", num_heads=...)``); its short convs then run on
+    :func:`cake_conv_backend` and its gated output norm on :func:`reproducible_rms_norm_gated`, so the layer's
+    gradients are reproducible."""
 
     dt_bias_per_channel = True
     dt_bias_dtype = torch.float32
@@ -592,11 +593,11 @@ class KimiDeltaAttention(LinearAttention):
         self.reproducible_norm = kda_backend == "cake"
         if kda_backend == "cake":
             kda_kernel("cake")  # the clear ImportError without the submodule
-            from miles_ext_kernels.kda import prepare
+            from miles_ext_kernels import cake
 
-            # More than 64 heads per rank raises here (Kimi-K3's 96 at TP1), as does a GPU other than
-            # SM100a / SM103a / SM107a
-            prepare(self.local.num_v_heads)
+            # Builds every library of the op for this GPU. More than 64 heads per rank raises here (Kimi-K3's 96 at
+            # TP1), as does a GPU other than SM100a / SM103a / SM107a
+            cake.prebuild("kda", num_heads=self.local.num_v_heads)
 
     def _build_projections(self):
         hidden, local = self.config.hidden_size, self.local

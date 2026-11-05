@@ -125,10 +125,11 @@ def test_kda_uses_the_triton_backward_on_blackwell_unless_set(monkeypatch, capab
 
 def test_cake_kda_backend_routes_to_the_kernel_package(monkeypatch):
     linear_attn.kda_kernel.cache_clear()
-    cake = types.ModuleType("miles_ext_kernels.kda")
+    cake = types.ModuleType("miles_ext_kernels.cake.kda")
     cake.chunk_kda = "cake-kda"
     monkeypatch.setitem(sys.modules, "miles_ext_kernels", types.ModuleType("miles_ext_kernels"))
-    monkeypatch.setitem(sys.modules, "miles_ext_kernels.kda", cake)
+    monkeypatch.setitem(sys.modules, "miles_ext_kernels.cake", types.ModuleType("miles_ext_kernels.cake"))
+    monkeypatch.setitem(sys.modules, "miles_ext_kernels.cake.kda", cake)
     try:
         assert linear_attn.kda_kernel("cake") == "cake-kda"
     finally:
@@ -142,7 +143,8 @@ def test_unknown_kda_backend_raises_value_error():
 
 def test_cake_kda_backend_without_the_submodule_names_the_flag(monkeypatch):
     monkeypatch.setitem(sys.modules, "miles_ext_kernels", None)
-    monkeypatch.setitem(sys.modules, "miles_ext_kernels.kda", None)
+    monkeypatch.setitem(sys.modules, "miles_ext_kernels.cake", None)
+    monkeypatch.setitem(sys.modules, "miles_ext_kernels.cake.kda", None)
 
     with pytest.raises(ImportError, match="--use-miles-ext-kernels") as excinfo:
         linear_attn.kda_kernel.__wrapped__("cake")

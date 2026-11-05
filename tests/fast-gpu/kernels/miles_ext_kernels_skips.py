@@ -23,6 +23,10 @@ SKIP_ALLOWLIST: dict[str, tuple[str, ...]] = {
         "capability {major}.{minor}, {sm_count} SMs): the launch of one known PyTorch kernel left no LaunchKernel "
         "event either, so launches and synchronisations cannot be counted here",
     ),
+    "kda": (
+        # multi_gpu: a context-parallel group needs a GPU per rank, on one node
+        "the {world}-rank groups need {world} GPUs of one node, {visible} visible",
+    ),
 }
 
 # One line of pytest's -rs summary: "SKIPPED [2] tests/cake/gdn/test_gdn_kcp_gpu.py:543: <reason>"
