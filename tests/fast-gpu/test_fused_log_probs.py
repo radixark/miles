@@ -11,6 +11,7 @@ register_cuda_ci(
 register_rocm_ci(est_time=120, suite="nightly-stage-c-2-gpu-mi350", labels=["precision"])
 
 import os
+import subprocess
 
 import pytest
 import torch
@@ -25,10 +26,21 @@ _WORLD_SIZE = 2
 
 
 def _reference(logits, rows, targets, temperature, vocab_size=None):
-    """log_softmax over the first ``vocab_size`` columns (all of them by default)."""
+    """log_softmax over the first ``vocab_size`` columns (all of them by default); a ``-1`` target scores 0."""
     log_softmax = torch.log_softmax(logits.index_select(0, rows)[:, :vocab_size].float() / temperature, dim=-1)
-    log_probs = log_softmax.gather(1, targets.unsqueeze(1)).squeeze(1)
+    index = targets.reshape(targets.size(0), -1)
+    log_probs = torch.where(index >= 0, log_softmax.gather(1, index.clamp(min=0)), 0.0).view(targets.shape)
     return log_probs, -(log_softmax.exp() * log_softmax).sum(dim=-1)
+
+
+def _k_targets(rows, n_targets, vocab, seed):
+    """``[R, K]`` targets as score centering builds them: a sampled token repeated among its
+    candidates, and ``-1`` padding for rows with fewer candidates."""
+    gen = torch.Generator(device="cuda").manual_seed(seed)
+    targets = torch.randint(0, vocab, (rows.numel(), n_targets), device="cuda", generator=gen)
+    targets[:, -1] = targets[:, 0]
+    targets[::3, 1:3] = -1
+    return targets
 
 
 def _inputs(n_rows, vocab, dtype, device, seed=0):
@@ -119,6 +131,39 @@ def test_true_vocab_bound_excludes_the_padding_columns(inplace_backward):
     torch.testing.assert_close(entropy, ref_entropy.detach(), rtol=1e-5, atol=5e-5)
     torch.testing.assert_close(leaf.grad.float(), ref_leaf.grad.float(), rtol=1e-2, atol=1e-3)
     assert (leaf.grad[:, vocab_size:] == 0).all()
+
+
+@pytest.mark.parametrize("inplace_backward", [True, False])
+def test_k_targets_per_row_match_log_softmax(inplace_backward):
+    """Each row scores K targets; a repeated token gets the sum of its gradients and a ``-1`` none."""
+    width, vocab_size = 129_280, 129_280 - 1_000
+    logits, rows, _ = _inputs(300, width, torch.bfloat16, "cuda", seed=26)
+    targets = _k_targets(rows, 9, vocab_size, seed=27)
+    gen = torch.Generator(device="cuda").manual_seed(28)
+    g = torch.randn(targets.shape, device="cuda", generator=gen)
+    c = torch.randn(rows.numel(), device="cuda", generator=gen)
+
+    ref_leaf = logits.clone().requires_grad_(True)
+    ref_log_probs, ref_entropy = _reference(ref_leaf, rows, targets, 0.8, vocab_size)
+    ((ref_log_probs * g).sum() + (ref_entropy * c).sum()).backward()
+
+    leaf = logits.clone().requires_grad_(True)
+    log_probs, entropy = fused_log_probs_and_entropy(
+        leaf * 1,
+        rows,
+        targets,
+        tp_group=None,
+        vocab_size=vocab_size,
+        temperature=0.8,
+        with_entropy=True,
+        inplace_backward=inplace_backward,
+    )
+    ((log_probs * g).sum() + (entropy * c).sum()).backward()
+
+    assert log_probs.shape == targets.shape
+    torch.testing.assert_close(log_probs, ref_log_probs.detach(), rtol=1e-5, atol=2e-5)
+    torch.testing.assert_close(entropy, ref_entropy.detach(), rtol=1e-5, atol=5e-5)
+    torch.testing.assert_close(leaf.grad.float(), ref_leaf.grad.float(), rtol=1e-2, atol=1e-3)
 
 
 @pytest.fixture
@@ -266,6 +311,22 @@ def test_every_row_scored_matches_log_softmax():
     torch.testing.assert_close(leaf.grad, ref_leaf.grad, rtol=1e-5, atol=1e-5)
 
 
+@pytest.mark.parametrize("inplace_backward", [True, False])
+def test_the_op_never_syncs_with_the_host(inplace_backward):
+    """Forward and backward stay queued behind the model; a host sync would stall the stream."""
+    logits, rows, targets = _inputs(64, 50_001, torch.bfloat16, "cuda")  # some rows unscored
+    leaf = logits.clone().requires_grad_(True)
+    torch.cuda.synchronize()
+    torch.cuda.set_sync_debug_mode("error")
+    try:
+        log_probs, entropy = fused_log_probs_and_entropy(
+            leaf * 1, rows, targets, tp_group=None, with_entropy=True, inplace_backward=inplace_backward
+        )
+        (log_probs.sum() + entropy.sum()).backward()
+    finally:
+        torch.cuda.set_sync_debug_mode(0)
+
+
 def test_no_rows_still_gives_the_logits_a_gradient():
     """A rank that scores nothing must still backprop through the model, or CP collectives hang."""
     leaf = torch.randn(5, 50_001, device="cuda", requires_grad=True)
@@ -273,6 +334,24 @@ def test_no_rows_still_gives_the_logits_a_gradient():
     log_probs, _ = fused_log_probs_and_entropy(leaf * 1, empty, empty, tp_group=None, inplace_backward=True)
     log_probs.sum().backward()
     assert leaf.grad is not None and (leaf.grad == 0).all()
+
+
+@pytest.mark.parametrize("target", [-2, 4_000], ids=["below_the_padding_id", "past_the_vocabulary"])
+def test_a_target_outside_the_vocabulary_fails(target):
+    """No shard holds such a target, so without the check it would score a plausible -log S. The check
+    is a device-side assert, which leaves the CUDA context unusable, so it runs in its own process."""
+    script = (
+        "import torch\n"
+        "from miles.backends.training_utils.loss.hub.fused_log_probs import fused_log_probs_and_entropy\n"
+        "logits = torch.randn(4, 4096, device='cuda')\n"
+        "rows = torch.arange(4, device='cuda')\n"
+        f"targets = torch.tensor([1, 2, 3, {target}], device='cuda')\n"
+        "fused_log_probs_and_entropy(logits, rows, targets, tp_group=None, vocab_size=3_000)\n"
+        "torch.cuda.synchronize()\n"
+    )
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=300)
+    assert result.returncode != 0, result.stdout
+    assert "device-side assert" in result.stderr, result.stderr[-2000:]
 
 
 def test_cpu_logits_are_rejected():
@@ -339,7 +418,7 @@ def test_the_op_holds_no_vocab_sized_buffer(nccl_world):
     assert extra["torch"] > 2 * logits_bytes
 
 
-def _tp_worker(rank: int, world_size: int, port: int, padding: int) -> None:
+def _tp_worker(rank: int, world_size: int, port: int, padding: int, n_targets: int) -> None:
     os.environ["MASTER_ADDR"] = "localhost"
     os.environ["MASTER_PORT"] = str(port)
     torch.cuda.set_device(rank)
@@ -348,10 +427,13 @@ def _tp_worker(rank: int, world_size: int, port: int, padding: int) -> None:
         vocab = 129_280
         vocab_size = vocab - padding
         logits, rows, _ = _inputs(300, vocab, torch.bfloat16, "cuda", seed=5)
-        targets = torch.randint(
-            0, vocab_size, (rows.numel(),), device="cuda", generator=torch.Generator(device="cuda").manual_seed(8)
-        )
-        g = torch.randn(rows.numel(), device="cuda", generator=torch.Generator(device="cuda").manual_seed(6))
+        if n_targets == 1:
+            targets = torch.randint(
+                0, vocab_size, (rows.numel(),), device="cuda", generator=torch.Generator(device="cuda").manual_seed(8)
+            )
+        else:
+            targets = _k_targets(rows, n_targets, vocab_size, seed=8)
+        g = torch.randn(targets.shape, device="cuda", generator=torch.Generator(device="cuda").manual_seed(6))
         c = torch.randn(rows.numel(), device="cuda", generator=torch.Generator(device="cuda").manual_seed(7))
         full = logits.clone().requires_grad_(True)
         ref_log_probs, ref_entropy = _reference(full, rows, targets, 0.9, vocab_size)
@@ -381,11 +463,12 @@ def _tp_worker(rank: int, world_size: int, port: int, padding: int) -> None:
 
 
 # Vocab padding at the end of the last shard: none, part of the last shard, and the whole last shard.
+@pytest.mark.parametrize("n_targets", [1, 9])
 @pytest.mark.parametrize("padding", [0, 1_000, 129_280 // _WORLD_SIZE], ids=["none", "partial", "whole_shard"])
-def test_vocab_shards_over_nccl_combine_like_the_full_vocab(padding):
+def test_vocab_shards_over_nccl_combine_like_the_full_vocab(padding, n_targets):
     if torch.cuda.device_count() < _WORLD_SIZE:
         raise RuntimeError(f"requires {_WORLD_SIZE} GPUs, found {torch.cuda.device_count()}")
-    mp.spawn(_tp_worker, args=(_WORLD_SIZE, find_free_port(), padding), nprocs=_WORLD_SIZE, join=True)
+    mp.spawn(_tp_worker, args=(_WORLD_SIZE, find_free_port(), padding, n_targets), nprocs=_WORLD_SIZE, join=True)
 
 
 if __name__ == "__main__":
