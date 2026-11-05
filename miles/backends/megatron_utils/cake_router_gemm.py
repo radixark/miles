@@ -13,8 +13,8 @@ BF16 operands); both compute the same FP32 products and sums, and the replaced `
 The router must use Megatron's ``Router.gating`` (``TopKRouter`` and subclasses that do not override it), FP32 router
 dtype, no router bias (``--disable-bias-linear``), BF16 parameters, and no CUDA graphs; :func:`validate_router_config`
 rejects anything else where the model is built. Expert counts and hidden sizes must be multiples of 8. CUDA-only
-(NVIDIA SM100a / SM103a, Megatron backend): miles imports Megatron and the kernel package here only when it installs
-the backend.
+(NVIDIA SM100a / SM103a / SM107a, Megatron backend): miles imports Megatron and the kernel package here only when it
+installs the backend.
 """
 
 from __future__ import annotations

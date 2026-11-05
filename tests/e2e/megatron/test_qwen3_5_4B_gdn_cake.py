@@ -9,7 +9,7 @@ Megatron -> HF weight update goes through the group-major ``in_proj_qkv`` / ``co
 ``fast`` (the Cake non-deterministic package, whose launches are fixed-order, so it repeats bit for bit too). The
 variant is always passed explicitly, so the run does not depend on the unset default (``fast`` outside
 ``--deterministic-mode``). ``MILES_GDN_BACKEND=fla`` runs the same recipe on the FLA backend, without
-``--use-miles-ext-kernels``, for an A/B reference.  Needs Blackwell (SM100a/SM103a) GPUs and the checked-out
+``--use-miles-ext-kernels``, for an A/B reference.  Needs SM100a/SM103a/SM107a GPUs and the checked-out
 submodule (``git submodule update --init 3rdparty/miles-ext-kernels``) for the cake backend.
 
 ``MILES_E2E_MODE`` selects ``live`` (default: rollouts + training), ``record`` (live, additionally dumps every

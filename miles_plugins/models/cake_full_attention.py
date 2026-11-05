@@ -3,8 +3,8 @@
 
 :class:`CakeGQACoreAttention` subclasses Megatron's ``TEDotProductAttention``: it keeps its constructor and its
 state-dict keys, so checkpoints load under either backend, and runs the packed (``thd``) forward and backward of
-``miles_ext_kernels.gqa`` from the miles-ext-kernels submodule (head dim 256, SM100a / SM103a). The projections, the
-q/k norms, RoPE and the attention output gate stay in Megatron's ``SelfAttention``.
+``miles_ext_kernels.gqa`` from the miles-ext-kernels submodule (head dim 256, SM100a / SM103a / SM107a). The
+projections, the q/k norms, RoPE and the attention output gate stay in Megatron's ``SelfAttention``.
 :func:`apply_cake_full_attention` swaps it into a full-attention layer spec; the MTP layer, which Megatron builds
 from the decoder's last layer spec (a full-attention layer in these models), inherits it.
 :func:`validate_full_attention_backend` rejects at startup the settings the kernels do not run.
