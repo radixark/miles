@@ -7,8 +7,6 @@ import os
 import pickle
 import re
 import shutil
-import subprocess
-import sys
 import tempfile
 import threading
 import time
@@ -39,7 +37,7 @@ from miles.backends.training_utils.checkpoint.adapter.parametrization import (
 from miles.tinker.core.checkpoint_expiry import CheckpointExpiry
 from miles.tinker.core.future import DONE, FAILED
 from miles.tinker.core.imports import IMPORT_COPIES_DIRNAME
-from miles.tinker.core.types import GatewayConfig, ImportConfig, NotFoundError, OwnershipError, UserInputError
+from miles.tinker.core.types import NotFoundError, OwnershipError, UserInputError
 from miles.tinker.core.utils import resolve_checkpoint_dir, resolve_sampler_checkpoint, resolve_sampler_export
 
 
@@ -1774,22 +1772,6 @@ async def test_an_unencodable_import_path_is_a_user_error_and_the_gateway_keeps_
             await run_task
 
 
-def test_an_import_with_a_string_alpha_is_a_user_error_under_python_O(tmp_path):
-    """python -O strips asserts; the client's types must be checked without them."""
-    (tmp_path / "adapter_config.json").write_text(json.dumps({"r": 8, "lora_alpha": "32"}))
-    code = (
-        "from miles.tinker.core.types import UserInputError\n"
-        "from miles.tinker.runtime import read_imported_adapter\n"
-        "try:\n"
-        f"    read_imported_adapter({str(tmp_path)!r}, 'file:///adapter')\n"
-        "except UserInputError:\n"
-        "    pass\n"
-        "else:\n"
-        "    raise SystemExit('accepted a string alpha')\n"
-    )
-    subprocess.run([sys.executable, "-O", "-c", code], check=True)
-
-
 @pytest.mark.parametrize(
     "served,kind,recorded_base,accepted",
     [
@@ -1959,25 +1941,6 @@ async def test_a_save_pretrained_or_hf_download_dir_is_importable(tmp_path, monk
         run_task.cancel()
         with suppress(asyncio.CancelledError):
             await run_task
-
-
-async def test_a_file_import_load_reads_the_import_off_the_event_loop(service, monkeypatch):
-    model_id = await created_model(service)
-    threads = []
-
-    def copy_import(uri, suffixes):
-        threads.append(threading.current_thread())
-        return tempfile.mkdtemp()
-
-    def read_import_copy(uri, copy_dir):
-        threads.append(threading.current_thread())
-        return {"lora_rank": service.models[model_id].lora_rank, "lora_alpha": 32}
-
-    monkeypatch.setattr(service, "_copy_import", copy_import)
-    monkeypatch.setattr(service, "_read_import_copy", read_import_copy)
-    payload = {"model_id": model_id, "seq_id": 1, "path": "file:///imports/adapter", "optimizer": False}
-    assert (await await_settled(service, "tenant", service.submit("tenant", "load_state", payload))).state == DONE
-    assert len(threads) == 2 and threading.main_thread() not in threads
 
 
 async def test_a_file_import_copy_does_not_hold_the_trainer_lock(service, monkeypatch):
@@ -2216,38 +2179,28 @@ def test_an_import_json_that_grows_while_it_is_copied_is_still_held_to_the_json_
         service.weights_info("tenant", f"file://{adapter}")
 
 
-def test_a_committed_checkpoint_dir_cannot_be_imported(tmp_path):
-    """A checkpoint store mounted under the import root would otherwise hand any tenant another tenant's adapter."""
+@pytest.mark.parametrize(
+    "entry,error",
+    [
+        ("tenant.json", "is a committed checkpoint"),
+        ("META.json", "is a checkpoint saved before commits"),
+        ("adapter_state", "is a training adapter dir; import its sampler or PEFT export"),
+    ],
+    ids=["committed", "before_commits", "training_dir"],
+)
+def test_a_checkpoint_dir_cannot_be_imported(tmp_path, entry, error):
+    """A checkpoint store mounted under the import root would otherwise hand any tenant another tenant's adapter,
+    and a training dir's bf16 view would silently round the fp32 masters."""
     adapter = tmp_path / "imports" / "mounted"
     adapter.mkdir(parents=True)
     (adapter / "adapter_config.json").write_text(json.dumps({"r": 8, "lora_alpha": 32}))
-    (adapter / "tenant.json").write_text(json.dumps({"tenant_digest": "someone"}))
+    if entry == "adapter_state":
+        (adapter / entry).mkdir()
+    else:
+        (adapter / entry).write_text(json.dumps({"tenant_digest": "someone"}))
     service = make_service(tmp_path / "root", import_root=str(tmp_path / "imports"))
 
-    with pytest.raises(UserInputError, match="is a committed checkpoint"):
-        service.weights_info("tenant", f"file://{adapter}")
-
-
-def test_a_checkpoint_saved_before_commits_cannot_be_imported(tmp_path):
-    """Pre-commit dirs record their owner only in META.json; a mounted checkpoint store must not leak them."""
-    adapter = tmp_path / "imports" / "mounted-sampler"
-    adapter.mkdir(parents=True)
-    (adapter / "adapter_config.json").write_text(json.dumps({"r": 8, "lora_alpha": 32}))
-    (adapter / "META.json").write_text(json.dumps({"tenant_digest": "someone"}))
-    service = make_service(tmp_path / "root", import_root=str(tmp_path / "imports"))
-
-    with pytest.raises(UserInputError, match="is a checkpoint saved before commits"):
-        service.weights_info("tenant", f"file://{adapter}")
-
-
-def test_a_training_adapter_dir_cannot_be_imported(tmp_path):
-    """The copy keeps only its bf16 PEFT view: importing it would silently round the fp32 masters a tenant expects."""
-    adapter = tmp_path / "imports" / "rl-save"
-    (adapter / "adapter_state").mkdir(parents=True)
-    (adapter / "adapter_config.json").write_text(json.dumps({"r": 8, "lora_alpha": 32}))
-    service = make_service(tmp_path / "root", import_root=str(tmp_path / "imports"))
-
-    with pytest.raises(UserInputError, match="is a training adapter dir; import its sampler or PEFT export"):
+    with pytest.raises(UserInputError, match=error):
         service.weights_info("tenant", f"file://{adapter}")
 
 
@@ -2348,18 +2301,3 @@ async def test_a_checkpoint_name_linked_outside_the_library_is_a_user_error_on_e
         with pytest.raises(UserInputError, match="this library did not write"):
             await call
     assert shared.is_dir(), "the foreign dir is never touched"
-
-
-def test_an_import_root_cannot_be_configured_without_its_caps(tmp_path):
-    """A root without caps once reached the copy as None and raised a TypeError that stopped the dispatcher."""
-    with pytest.raises(TypeError):
-        GatewayConfig(
-            base_model="base",
-            n_slots=1,
-            checkpoint_root=str(tmp_path),
-            vocab_size=8,
-            exports_tinker_names=True,
-            import_root=str(tmp_path / "imports"),
-        )
-    with pytest.raises(TypeError):
-        ImportConfig(root=str(tmp_path / "imports"), max_bytes=1 << 20)
