@@ -75,6 +75,20 @@ PROVIDER_CREDENTIALS = {
         "forward": ("MODAL_PROFILE", "MODAL_ENVIRONMENT", "OPENENV_MODAL_APP"),
         "target": ("MODAL_ENVIRONMENT", "workspace environment", "the profile's default"),
     },
+    "novita": {
+        "provider": "Novita",
+        "key_env_vars": ("NOVITA_API_KEY",),
+        "file_env_var": "NOVITA_API_KEY_FILE",
+        "arg_attr": "novita_api_key_file",
+        "default_path": "~/.config/novita/api_key",
+        "provision_hint": "mkdir -p ~/.config/novita && echo <key> > ~/.config/novita/api_key",
+        "sdk": "novita_sandbox",
+        "sdk_hint": "pip install -e '<miles>[novita]'",
+        "sdk_min_version": "2.0.7",
+        # region (NOVITA_DOMAIN) and endpoint overrides, read by the SDK itself
+        "forward": ("NOVITA_DOMAIN", "NOVITA_API_URL", "NOVITA_SANDBOX_URL"),
+        "target": ("NOVITA_DOMAIN", "region domain", "us-phx-1.sandbox.novita.ai (default)"),
+    },
 }
 
 
@@ -189,7 +203,8 @@ def preflight_sdk(module: str, install_hint: str, min_version: str | None = None
         return
     try:
         # Looking the distribution up by the module name assumes the two match,
-        # which holds for every backend that sets a floor today (e2b).
+        # which holds for every backend that sets a floor today (e2b, modal, and
+        # novita_sandbox, whose dist-info is found under the module name too).
         installed = importlib.metadata.version(module)
     except importlib.metadata.PackageNotFoundError:
         # Importable but no dist-info (a vendored copy): the version cannot be
