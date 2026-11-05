@@ -64,6 +64,7 @@ def _serve_router(extra_args: dict | None = None):
             "lora_rank": 0,
             "lora_adapter_path": None,
             "lora_train_only": False,
+            "lora_merge_for_rollout": False,
             "use_session_server": "v2",
             "session_message_matcher": "strict",
             "session_server_instance_id": uuid.uuid4().hex,

@@ -31,6 +31,7 @@ class SessionServerConfig(FrozenStrictBaseModel):
     lora_rank: int
     lora_adapter_path: str | None
     lora_train_only: bool
+    lora_merge_for_rollout: bool
     use_session_server: bool | str | None
     session_message_matcher: str
     pause_generation_mode: str | None
@@ -68,6 +69,7 @@ def compute_session_server_config(
         lora_rank=args.lora_rank,
         lora_adapter_path=args.lora_adapter_path,
         lora_train_only=args.lora_train_only,
+        lora_merge_for_rollout=args.lora_merge_for_rollout,
         use_session_server=args.use_session_server,
         session_message_matcher=args.session_message_matcher,
         pause_generation_mode=args.pause_generation_mode,

@@ -82,6 +82,17 @@ class LoraConfig(BaseConfig):
             )
         ),
     ] = False
+    lora_merge_for_rollout: A[
+        bool,
+        Arg(
+            help=(
+                "Every weight sync sends the base merged with the adapter, "
+                "W + (alpha / rank) * B @ A, as ordinary weights, so the rollout engines serve "
+                "the trained policy without SGLang LoRA support (e.g. Muse Spark's routed "
+                "experts). torchtitan backend only."
+            )
+        ),
+    ] = False
     experts_shared_outer_loras: A[
         bool,
         Arg(

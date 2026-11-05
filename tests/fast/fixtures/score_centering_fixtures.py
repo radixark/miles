@@ -34,6 +34,7 @@ def _args(**overrides: object) -> Namespace:
         lora_rank=0,
         lora_adapter_path=None,
         lora_train_only=False,
+        lora_merge_for_rollout=False,
         custom_convert_samples_to_train_data_path=None,
         use_output_store=False,
         opd_log_prob_top_k=0,

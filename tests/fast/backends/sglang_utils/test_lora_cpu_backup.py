@@ -28,6 +28,7 @@ class TestLoraCpuBackup:
             lora_rank=rank,
             lora_adapter_path=adapter,
             lora_train_only=train_only,
+            lora_merge_for_rollout=False,
             colocate=colocate,
             lora_base_cpu_backup=backup,
         )

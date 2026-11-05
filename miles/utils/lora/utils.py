@@ -22,13 +22,19 @@ def is_lora_enabled(args: Namespace) -> bool:
     return args.lora_rank > 0 or args.lora_adapter_path is not None
 
 
+def lora_merge_for_rollout(args: Namespace) -> bool:
+    """LoRA enabled and the weight sync sends the base merged with the adapter (--lora-merge-for-rollout)."""
+    return is_lora_enabled(args) and args.lora_merge_for_rollout
+
+
 def lora_rollout_enabled(args: Namespace) -> bool:
-    """LoRA enabled AND the rollout side participates; false under --lora-train-only.
+    """LoRA enabled AND the rollout side serves the adapter; false under --lora-train-only and
+    --lora-merge-for-rollout.
 
     Gates everything rollout-facing: SGLang's ``enable_lora``, the per-request
     ``lora_path``, and the adapter weight sync. Training-side LoRA is unaffected.
     """
-    return is_lora_enabled(args) and not args.lora_train_only
+    return is_lora_enabled(args) and not args.lora_train_only and not lora_merge_for_rollout(args)
 
 
 def engine_loads_adapter_from_disk(args: Namespace) -> bool:

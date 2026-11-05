@@ -5,10 +5,13 @@ register_cuda_ci(
     est_time=20, suite="stage-b-2-gpu-h200", labels=["torchtitan", "lora"], hardware=["hopper"], num_gpus=2
 )
 
+import copy
+import itertools
 import sys
 
 import pytest
 import torch
+import torch.nn as nn
 
 # the package applies the torch 2.14 backports torchtitan needs at import, so it must load first
 import miles.backends.torchtitan_utils  # noqa: F401
@@ -20,6 +23,7 @@ from torchtitan.models.common.linear import Linear
 from torchtitan.models.qwen3 import build_model_config
 
 from miles.backends.torchtitan_utils.lora import convert_model_config
+from miles.backends.torchtitan_utils.lora_merge import merged_host_weights
 from miles.backends.torchtitan_utils.lora_names import iter_hf_adapter_tensors
 from miles.utils.lora.hf_lora_targets import LORA_TARGET_GROUPS, resolve_hf_lora_targets
 
@@ -153,3 +157,59 @@ def test_fused_adapters_export_as_one_peft_adapter_per_hf_projection():
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+def _adapted(projection_config):
+    """A built projection with both LoRA factors randomized (lora_b is zero at init)."""
+    module = projection_config.build()
+    for factor in (module.lora_a, module.lora_b):
+        nn.init.normal_(factor.weight, std=0.1)
+    return module
+
+
+def _merged(module):
+    """The merged full weight, back on the module's device (the export gathers to the accelerator)."""
+    (merged,) = merged_host_weights([nn.ModuleDict({"proj": module})], scaling=_SCALING).values()
+    return merged().to(module.weight.device)
+
+
+def _explicit_merge(module):
+    """W + scaling * B @ A written out per expert and per fused projection, with 2-D matmuls in float64."""
+    weight, lora_a, lora_b = (t.double() for t in (module.weight, module.lora_a.weight, module.lora_b.weight))
+    merged = weight.clone()
+    for index in itertools.product(*(range(n) for n in weight.shape[:-2])):
+        # a per-expert factor leads with the expert axis; a shared B still carries the fused axis
+        a_index, b_index = index[: lora_a.dim() - 2], index[len(index) - (lora_b.dim() - 2) :]
+        merged[index] += _SCALING * lora_b[b_index] @ lora_a[a_index]
+    return merged
+
+
+_SCALING = 16 / 8
+# the fp32 merge against its float64 reference: rank-8 contractions stay within a few fp32 ulps
+_FP32_MATMUL = dict(rtol=1e-5, atol=1e-5)
+_FP32_REORDERED_SUMS = dict(rtol=1e-4, atol=1e-4)
+
+
+def test_the_merged_weight_is_the_adapted_projection():
+    """W + (alpha / rank) * B @ A in the host's own layout (--lora-merge-for-rollout sends these to the engines):
+    a fused qkv, a row-parallel wo, a dense w2, and both shared-outer expert projections."""
+    dense = _convert(_qwen3("debugmodel"), _QWEN3_ALL_LINEAR).layers[0]
+    for config in (dense.attention.qkv_linear.wqkv, dense.attention.wo, dense.feed_forward.w2):
+        module = _adapted(config)
+        base = module.weight.detach().clone()
+        torch.testing.assert_close(_merged(module).double(), _explicit_merge(module), **_FP32_MATMUL)
+        torch.testing.assert_close(module.weight, base)  # the frozen base is not merged in place
+        # the adapted forward adds scaling * B @ (A @ x) after the base matmul, the merged one sums first
+        plain = copy.deepcopy(module)
+        with torch.no_grad():
+            plain.weight.copy_(_merged(module))
+            plain.lora_b.weight.zero_()
+        x = torch.randn(5, module.in_features)
+        torch.testing.assert_close(plain(x), module(x), **_FP32_REORDERED_SUMS)
+
+    all_linear = resolve_hf_lora_targets(_QWEN3_MOE_HF_CONFIG)
+    moe = _convert(_qwen3("debugmodel_moe"), all_linear, _QWEN3_MOE_HF_CONFIG, experts_shared_outer=True)
+    experts = moe.layers[0].feed_forward.routed_experts
+    for config in (experts.w13, experts.w2):
+        module = _adapted(config)
+        torch.testing.assert_close(_merged(module).double(), _explicit_merge(module), **_FP32_MATMUL)

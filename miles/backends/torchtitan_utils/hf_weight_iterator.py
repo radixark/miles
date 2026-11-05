@@ -11,6 +11,7 @@ import torch.distributed as dist
 
 from miles.backends.fsdp_utils.dtensor import gather_full_param
 from miles.backends.torchtitan_utils import lora_names
+from miles.backends.torchtitan_utils.lora_merge import merged_host_weights
 from miles.backends.torchtitan_utils.lora_names import ROUTED_EXPERTS
 from miles.backends.training_utils.weight_update.hf_weight_iterator import HfWeightIteratorBase
 from miles.backends.training_utils.weight_update.hf_weight_iterator.atomic_groups import get_hf_atomic_update_groups
@@ -19,6 +20,7 @@ from miles.backends.training_utils.weight_update.hf_weight_iterator.checkpoint_t
 )
 from miles.platforms import current_platform
 from miles.utils.hf_utils.config import hf_text_config, load_hf_config
+from miles.utils.lora.utils import lora_merge_for_rollout
 
 
 class TitanHfWeightIterator(HfWeightIteratorBase):
@@ -32,9 +34,12 @@ class TitanHfWeightIterator(HfWeightIteratorBase):
             getattr(text_config, "q_lora_rank", None)
             or None  # config-access-exempt: HF models without query LoRA omit q_lora_rank
         )
+        self._merge_scaling = self.args.lora_alpha / self.args.lora_rank if lora_merge_for_rollout(self.args) else None
 
     def _iter_hf_param_units(self, weights, *, materialize):
-        for name, tensor in hf_weights(self.model, complete_across_pp=self.placement.gather_pp):
+        for name, tensor in hf_weights(
+            self.model, complete_across_pp=self.placement.gather_pp, merge_scaling=self._merge_scaling
+        ):
             if materialize:
                 yield [(name, self._to_engine_dtype(name, tensor))]
         yield from iter_checkpoint_tower_units(self.args.hf_checkpoint, materialize=materialize)
@@ -58,7 +63,11 @@ class TitanHfWeightIterator(HfWeightIteratorBase):
                 yield [(name, tensor)]
 
 
-def hf_weights(trainer, *, complete_across_pp: bool = True) -> Iterator[tuple[str, torch.Tensor]]:
+def hf_weights(
+    trainer, *, complete_across_pp: bool = True, merge_scaling: float | None = None
+) -> Iterator[tuple[str, torch.Tensor]]:
+    """The base weights as HF tensors; with ``merge_scaling``, every adapted projection carries its
+    LoRA update merged in (--lora-merge-for-rollout)."""
     # FSDP2 CPU offload keeps the shards on the host; gather_full_param moves one tensor at a time
     offloaded = (
         not trainer.config.training.enable_cpu_offload
@@ -68,7 +77,7 @@ def hf_weights(trainer, *, complete_across_pp: bool = True) -> Iterator[tuple[st
         for part in trainer.model_parts:
             part.to(current_platform.current_device())
     try:
-        yield from _hf_weights_on_device(trainer, complete_across_pp=complete_across_pp)
+        yield from _hf_weights_on_device(trainer, complete_across_pp=complete_across_pp, merge_scaling=merge_scaling)
     finally:
         if offloaded:
             for part in trainer.model_parts:
@@ -100,21 +109,31 @@ def _stage_process_groups(stage_ranks: tuple[tuple[int, ...], ...]) -> tuple:
     return tuple(dist.new_group(list(ranks)) for ranks in stage_ranks)
 
 
-def _hf_weights_on_device(trainer, *, complete_across_pp: bool) -> Iterator[tuple[str, torch.Tensor]]:
+def _hf_weights_on_device(
+    trainer, *, complete_across_pp: bool, merge_scaling: float | None
+) -> Iterator[tuple[str, torch.Tensor]]:
     sd_adapter = _state_dict_adapter(trainer)
     state = {
         k: v for part in trainer.model_parts for k, v in part.state_dict().items() if not lora_names.is_adapter_key(k)
     }
+    merged = merged_host_weights(trainer.model_parts, scaling=merge_scaling) if merge_scaling is not None else {}
     layout = _StageLayout.from_trainer(trainer, complete_across_pp=complete_across_pp)
 
-    dense = {k: v for k, v in state.items() if ROUTED_EXPERTS not in k}
+    dense = {k: v for k, v in state.items() if ROUTED_EXPERTS not in k and k not in merged}
     yield from layout.stream(sd_adapter.to_hf(dense))
 
-    mine = sorted(k for k in state if ROUTED_EXPERTS in k)
+    # the grouped experts and the merged projections are gathered and converted one at a time; every rank
+    # walks the same key list, because each stream call is a collective
+    mine = sorted(k for k in state if ROUTED_EXPERTS in k or k in merged)
     everyone: list = [None] * layout.world
     dist.all_gather_object(everyone, mine)
     for key in sorted(set().union(*everyone)):
-        yield from layout.stream(sd_adapter.to_hf({key: gather_full_param(state[key])}) if key in state else {})
+        if key not in state:
+            yield from layout.stream({})
+        elif key in merged:
+            yield from layout.stream(sd_adapter.to_hf({key: merged[key]()}))
+        else:
+            yield from layout.stream(sd_adapter.to_hf({key: gather_full_param(state[key])}))
 
 
 @dataclass(frozen=True)

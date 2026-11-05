@@ -235,6 +235,7 @@ def _native_run_args(tmp_path, model_type, **overrides):
         hf_checkpoint=str(tmp_path),
         lora_rank=8,
         lora_train_only=False,
+        lora_merge_for_rollout=False,
         colocate=True,
         overlap_param_gather=False,
         moe_shared_expert_overlap=False,

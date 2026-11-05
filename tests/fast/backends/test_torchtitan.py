@@ -42,6 +42,7 @@ def _args(**overrides) -> Namespace:
         lora_dropout=0.0,
         lora_adapter_path=None,
         lora_train_only=False,
+        lora_merge_for_rollout=False,
         colocate_memory_peak_device="cpu",
     )
     return Namespace(**{**base, **overrides})
@@ -123,6 +124,7 @@ def test_lora_targets_bypass_megatrons_native_spec(monkeypatch):
         hf_checkpoint="/hf",
         lora_rank=8,
         lora_adapter_path=None,
+        lora_merge_for_rollout=False,
         lora_type="lora",
         target_modules="q_proj",
         exclude_modules=None,
