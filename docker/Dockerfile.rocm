@@ -163,8 +163,9 @@ RUN cd /sgl-workspace/sglang && \
     pip install -e radix_transfer_plugins --no-deps && \
     python3 -c "import radix_transfer_plugins.stashes.token_output"
 
-# SGLang is installed without dependencies, but its Inkling multimodal processor imports numba.
-RUN pip install "numba==0.65.1"
+# SGLang is installed without dependencies, but its Inkling multimodal processor imports numba,
+# and serving Inkling needs tml-renderers, pinned to SGLang's version.
+RUN pip install "numba==0.65.1" "tml-renderers==0.1.0"
 
 # SGLang pins openai==2.8.0 and imports response types the base image's 2.6.1 lacks
 # (ResponseFunctionShellToolCall); requirements.txt leaves openai unpinned, so it would keep 2.6.1.
