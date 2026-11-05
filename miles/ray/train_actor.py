@@ -114,10 +114,10 @@ class TrainRayActor(NodeProbeMixin):
         # os.environ.pop("CUDA_VISIBLE_DEVICES", None)
         # os.environ["LOCAL_RANK"] = str(ray.get_gpu_ids()[0])
         os.environ["LOCAL_RANK"] = str(get_local_gpu_id())
-        if (shared_slice := tpu_shared_slice.spec()) is not None:
+        if args.update_weight_transfer_mode == "ici":
             # at construction, not in init(): the engine sharing the slice cannot finish starting (and be
             # discovered) until the trainer joins it, and init() runs after discovery
-            tpu_shared_slice.join(shared_slice, job_rank=self._rank, job_size=self._world_size)
+            tpu_shared_slice.join(tpu_shared_slice.spec(), job_rank=self._rank, job_size=self._world_size)
 
         configure_logger(
             args,
