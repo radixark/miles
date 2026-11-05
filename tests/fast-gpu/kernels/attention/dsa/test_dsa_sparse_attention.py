@@ -23,6 +23,7 @@ from miles.kernels.attention.dsa.sparse_attention import (  # noqa: E402
     flash_mla_sparse_fwd,
 )
 from miles.kernels.attention.dsa.topk import torch_dsa_topk  # noqa: E402
+from miles.kernels.attention.dsa.triton.topk_union import UNION_PAD, topk_union  # noqa: E402
 
 BACKENDS = ["tilelang"] + (["flash_mla"] if flash_mla_sparse_fwd is not None else [])
 CONFIGS = ["default", *BACKENDS]
@@ -297,6 +298,68 @@ def test_packed_sequences_end_to_end(segments, heads, d_tail, topk, sink, backen
     assert reference.rel_diff(kv_ref.grad, kv_tl.grad) < 0.05
     if sink:
         assert reference.rel_diff(sink_ref.grad, sink_tl.grad) < 0.05
+
+
+def _overlapping_rows(rows, topk, seq_len_kv, shared, seed=0):
+    """Like an indexer's picks: ``shared`` keys of a window that slides every 4 rows, the rest at random,
+    in torch.topk's unsorted order."""
+    g = torch.Generator(device="cuda").manual_seed(seed)
+    window = torch.arange(shared, device="cuda").view(1, -1) + torch.arange(rows, device="cuda").view(-1, 1) // 4
+    scores = torch.rand(rows, seq_len_kv, device="cuda", generator=g)
+    scores[torch.arange(rows, device="cuda").view(-1, 1), window] = -1  # never pick a window key twice
+    return torch.cat([window, scores.topk(topk - shared, dim=-1).indices], dim=-1).int()
+
+
+def _union_reference(indices, query_block):
+    unions, masks = [], []
+    for block in indices.view(-1, query_block, indices.shape[-1]).tolist():
+        keys = sorted({k for row in block for k in row if k >= 0})
+        unions.append(keys)
+        masks.append([sum(1 << q for q, row in enumerate(block) if k in row) for k in keys])
+    return unions, masks
+
+
+@pytest.mark.parametrize("query_block", [2, 8])
+@pytest.mark.parametrize("topk,shared", [(64, 48), (96, 0)], ids=["overlapping", "disjoint"])
+def test_topk_union_matches_reference(query_block, topk, shared):
+    """Each block lists its distinct keys ascending, with the bit of every row that picked the key, its
+    length, and -1 / 0 padding after it; padded rows and an empty block included."""
+    indices = _overlapping_rows(64, topk, 1000, shared)
+    indices[5, 10:] = -1
+    indices[16 : 16 + query_block] = -1
+    union, mask, lengths = topk_union(indices, query_block)
+    ref_unions, ref_masks = _union_reference(indices, query_block)
+    assert lengths.tolist() == [len(keys) for keys in ref_unions]
+    for b, (keys, bits) in enumerate(zip(ref_unions, ref_masks, strict=True)):
+        n = len(keys)
+        assert union[b, :n].tolist() == keys
+        assert mask[b, :n].tolist() == bits
+        assert (union[b, n : n + UNION_PAD] == -1).all() and (mask[b, n : n + UNION_PAD] == 0).all()
+
+
+@pytest.mark.parametrize("query_block, heads", [(8, 8), (4, 16)], ids=["8_queries_x_8_heads", "4_queries_x_16_heads"])
+@pytest.mark.parametrize("d_tail, sink", [(64, False), (0, True)], ids=["glm5", "deepseek_v4"])
+def test_query_block_backward_matches_per_query(query_block, heads, d_tail, sink):
+    """A block of consecutive queries over their key union gives the per-query kernel's gradients."""
+    torch.manual_seed(0)
+    batch, seq_len, d_v, seq_len_kv, topk = 2, 128, 512, 300, 64
+    q, kv, _, attn_sink = _inputs(batch, seq_len, heads, 1, d_v, d_tail, seq_len_kv, topk, sink)
+    indices = _overlapping_rows(batch * seq_len, topk, seq_len_kv, shared=48).view(batch, seq_len, 1, topk)
+    indices[0, :3] = -1  # rows without keys, inside a block
+    sm_scale = (d_v + d_tail) ** -0.5
+    grad_out = torch.randn(batch, seq_len, heads, d_v, device="cuda", dtype=torch.float32)
+    grads = {}
+    for block in (1, query_block):
+        q_tl, kv_tl = q.clone().requires_grad_(), kv.clone().requires_grad_()
+        sink_tl = attn_sink.clone().requires_grad_() if sink else None
+        config = SparseAttentionConfig(forward_backend="tilelang", backward_stages=1, backward_query_block=block)
+        out = sparse_attention(q_tl, kv_tl, indices, sm_scale, d_v=d_v, attn_sink=sink_tl, config=config)
+        (out.float() * grad_out).sum().backward()
+        grads[block] = (q_tl.grad, kv_tl.grad, sink_tl.grad if sink else None)
+    for per_query, blocked in zip(grads[1], grads[query_block], strict=True):
+        if per_query is not None:
+            assert torch.isfinite(blocked).all()
+            assert reference.rel_diff(per_query, blocked) < 1e-5
 
 
 if __name__ == "__main__":
