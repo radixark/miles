@@ -12,6 +12,7 @@ from pydantic import TypeAdapter
 from sglang.srt.entrypoints.openai.protocol import Tool
 from sglang.srt.function_call.core_types import ToolCallItem
 from sglang.srt.function_call.function_call_parser import FunctionCallParser
+from sglang.srt.plugins import load_plugins
 
 from miles.rollout.generate_utils.rollout_topk_logprobs import pad_rollout_topk_logprobs
 from miles.rollout.generate_utils.sampling_mask import append_forced_sampling_tokens
@@ -21,6 +22,8 @@ _DUMMY_USER = {"role": "user", "content": "dummy"}
 
 
 def create_tool_call_parser(tool_specs, tool_call_parser):
+    # Rollout workers do not pass through SGLang's server startup.
+    load_plugins()
     return FunctionCallParser(
         tools=TypeAdapter(list[Tool]).validate_python(tool_specs),
         tool_call_parser=tool_call_parser,
