@@ -20,6 +20,7 @@ Env vars:
   TAU2_USER_LLM            user-simulator litellm model (default: the rollout router)
   TAU2_USER_API_BASE       user-simulator endpoint override
   TAU2_JUDGE_LLM           NL-assertion judge litellm model (default: the rollout router)
+  TAU2_JUDGE_API_BASE      judge endpoint override
   TAU2_COMMUNICATE_SCORER  substring (default, tau2's original matcher) | semantic
                            (tau2 >= 2.0 default: an OpenAI judge, needs OPENAI_API_KEY)
   TAU2_MAX_STEPS           tau2 orchestrator step cap (default: 100)
@@ -112,7 +113,12 @@ async def run(
                 task_id,
                 agent_llm_args,
                 _side_llm(metadata, os.getenv("TAU2_USER_LLM"), os.getenv("TAU2_USER_API_BASE")),
-                _side_llm(metadata, os.getenv("TAU2_JUDGE_LLM"), None, response_format={"type": "json_object"}),
+                _side_llm(
+                    metadata,
+                    os.getenv("TAU2_JUDGE_LLM"),
+                    os.getenv("TAU2_JUDGE_API_BASE"),
+                    response_format={"type": "json_object"},
+                ),
             ),
             timeout=timeout_s,
         )

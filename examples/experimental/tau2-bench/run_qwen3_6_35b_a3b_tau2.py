@@ -32,6 +32,7 @@ Usage:
   python run_qwen3_6_35b_a3b_tau2.py train --mode debug_rollout_only --num-rollout 1
 """
 
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -43,10 +44,13 @@ from miles.utils.external_utils import command_utils
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
+logger = logging.getLogger(__name__)
+
 _FORWARDED_ENV = (
     "TAU2_USER_LLM",
     "TAU2_USER_API_BASE",
     "TAU2_JUDGE_LLM",
+    "TAU2_JUDGE_API_BASE",
     "TAU2_MAX_STEPS",
     "TAU2_EPISODE_TIMEOUT_S",
     "TAU2_COMMUNICATE_SCORER",
@@ -187,6 +191,19 @@ def _train(args: ScriptArgs):
         f"{ckpt_args} {rollout_args} {eval_args} {grpo_args} {optimizer_args} "
         f"{perf_args} {sglang_args} {agent_args} {misc_args} {wandb_args} {args.extra_args} "
     )
+
+    policy_roles = [
+        role
+        for role, key in (("user simulator", "TAU2_USER_LLM"), ("judge", "TAU2_JUDGE_LLM"))
+        if key not in os.environ
+    ]
+    if policy_roles:
+        logger.warning(
+            f"The policy also plays the tau2 {' and '.join(policy_roles)}, so it moves with every weight sync and "
+            "pass rates are not comparable across steps or with the leaderboard. Set TAU2_USER_LLM / "
+            "TAU2_JUDGE_LLM to a fixed external model (the leaderboard uses gpt-4.1) or a frozen copy of the "
+            "initial weights."
+        )
 
     U.execute_train(
         train_args=train_args,

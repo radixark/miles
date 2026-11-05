@@ -4,6 +4,13 @@ Agentic RL and evaluation on [tau2-bench](https://github.com/sierra-research/tau
 (airline / retail / telecom). The sibling `../tau-bench` example targets the original
 tau-bench (`tau_bench` package, retail + airline only) and does not run tau2.
 
+> **By default the policy also plays the user simulator and retail's NL-assertion judge.**
+> Both then move with every weight sync, so pass rates are not comparable across steps or
+> with the leaderboard, and retail's reward is graded by the model being trained. The
+> launcher logs a warning when `TAU2_USER_LLM` / `TAU2_JUDGE_LLM` are unset. For
+> comparable numbers point them at a fixed external model (the leaderboard uses `gpt-4.1`)
+> or a frozen copy of the initial weights (`TAU2_USER_API_BASE` / `TAU2_JUDGE_API_BASE`).
+
 | File | Role |
 |---|---|
 | `tau2_agent_function.py` | one tau2 simulation per sample (`--custom-agent-function-path`) |
@@ -56,7 +63,8 @@ domain's test split (20 / 40 / 40 tasks), averaged over 4 samples per task at te
 
 ## Measured
 
-100 steps with the launcher defaults on 8x H200 (about 36 h, evals included):
+100 steps with the launcher defaults on 8x H200 (about 36 h, evals included), with the
+policy as user simulator and judge:
 
 | step | airline | retail | telecom |
 |---|---|---|---|
@@ -77,7 +85,7 @@ which tau2 rejects; the episode scores 0.
 | Variable | Default |
 |---|---|
 | `TAU2_USER_LLM` / `TAU2_USER_API_BASE` | the rollout router (policy model) |
-| `TAU2_JUDGE_LLM` | the rollout router (policy model) |
+| `TAU2_JUDGE_LLM` / `TAU2_JUDGE_API_BASE` | the rollout router (policy model) |
 | `TAU2_COMMUNICATE_SCORER` | `substring` |
 | `TAU2_MAX_STEPS` | 100 |
 | `TAU2_EPISODE_TIMEOUT_S` | 1800 |
