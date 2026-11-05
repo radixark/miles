@@ -62,7 +62,7 @@ class TrainConfig(BaseConfig):
                 "linear-attention layers. 'fla' is flash-linear-attention's kernel. 'cake' is the Cake kernel from "
                 "the miles-ext-kernels submodule (--cake-conv1d-variant det or fast, "
                 "--cake-conv1d-silu-grad-preactivation bf16 or fp32); it requires --use-miles-ext-kernels, no "
-                "context parallelism and NVIDIA SM100a/SM103a (Blackwell)."
+                "context parallelism and NVIDIA SM100a/SM103a/SM107a (Blackwell, Rubin)."
             ),
         ),
     ] = "fla"

@@ -29,8 +29,8 @@ from linear_attn_reference import ReplicatedGDN, ReplicatedKDA, build_layer, pac
 register_cuda_ci(est_time=600, suite="stage-c-4-gpu-b200", labels=["precision"], hardware=["blackwell"], num_gpus=1)
 
 pytestmark = pytest.mark.skipif(
-    not torch.cuda.is_available() or torch.cuda.get_device_capability() not in ((10, 0), (10, 3)),
-    reason="the Cake short-conv kernels run on SM100a / SM103a",
+    not torch.cuda.is_available() or torch.cuda.get_device_capability() not in ((10, 0), (10, 3), (10, 7)),
+    reason="the Cake short-conv kernels run on SM100a / SM103a / SM107a",
 )
 
 TOKENS, CHANNELS = 2048, 768
