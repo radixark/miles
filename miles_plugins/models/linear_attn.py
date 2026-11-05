@@ -570,9 +570,9 @@ class KimiDeltaAttention(LinearAttention):
     and need no group-major permutation. ``f_a_proj`` is replicated and feeds head-sharded ``f_b_proj``,
     so its weight passes the TP copy op like the norm. The conv weights train in fp32, as Kimi's
     checkpoints store them. ``kda_backend`` 'cake' runs the recurrence on the deterministic Cake kernels of
-    ``miles_ext_kernels.kda`` (1 to 64 heads per rank, SM100a / SM103a), whose kernels for this rank's head count are
-    built when the layer is; its short convs then run on :func:`cake_conv_backend` and its gated output norm on
-    :func:`reproducible_rms_norm_gated`, so the layer's gradients are reproducible."""
+    ``miles_ext_kernels.kda`` (1 to 64 heads per rank, SM100a / SM103a / SM107a), whose kernels for this rank's head
+    count are built when the layer is; its short convs then run on :func:`cake_conv_backend` and its gated output
+    norm on :func:`reproducible_rms_norm_gated`, so the layer's gradients are reproducible."""
 
     dt_bias_per_channel = True
     dt_bias_dtype = torch.float32
@@ -591,7 +591,8 @@ class KimiDeltaAttention(LinearAttention):
             kda_kernel("cake")  # the clear ImportError without the submodule
             from miles_ext_kernels.kda import prepare
 
-            # More than 64 heads per rank raises here (Kimi-K3's 96 at TP1), as does a GPU other than SM100a / SM103a
+            # More than 64 heads per rank raises here (Kimi-K3's 96 at TP1), as does a GPU other than
+            # SM100a / SM103a / SM107a
             prepare(self.local.num_v_heads)
 
     def _build_projections(self):

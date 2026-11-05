@@ -49,7 +49,7 @@ class TrainConfig(BaseConfig):
                 "'fla' (flash-linear-attention) is portable. 'cake' is the deterministic Cake chunked "
                 "forward/backward from the miles-ext-kernels submodule (raw forget gate and q/k L2 norm in the "
                 "kernels, BF16 beta, 1 to 64 heads per rank); it requires --use-miles-ext-kernels, --train-backend "
-                "megatron, --qkv-format thd, no context parallelism and NVIDIA SM100a/SM103a (Blackwell)."
+                "megatron, --qkv-format thd, no context parallelism and NVIDIA SM100a/SM103a/SM107a (Blackwell, Rubin)."
             ),
         ),
     ] = "fla"
