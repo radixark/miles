@@ -121,7 +121,6 @@ def test_a_distributed_optimizer_import_scatters_only_in_finish(monkeypatch):
     slots = SimpleNamespace(
         slot_parameters=lambda slot: [param],
         piece_parameter=lambda slot, holds: [(0, torch.arange(2))],
-        load_overwrites_every_element=True,
         bf16_adapter_key_style=None,
     )
     calls = []
