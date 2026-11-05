@@ -252,8 +252,7 @@ def find_load_mismatch(
     return next((m for m in gathered if m is not None), None)
 
 
-# what the source checks raise for a source the user named: absent, unreadable, malformed or refused; any other
-# AssertionError or ValueError is a bug
+# a source the user named that is absent, unreadable, malformed or refused; any other failure is the gateway's
 _SOURCE_ERRORS = (
     AdapterSourceError,
     FileNotFoundError,
