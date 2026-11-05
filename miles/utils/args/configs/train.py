@@ -25,7 +25,7 @@ class TrainConfig(BaseConfig):
                 "'cake' is the Cake chunked forward/backward from the miles-ext-kernels submodule: "
                 "--cake-gdn-variant det (bit-deterministic, the only variant with context parallelism) or fast (the "
                 "Cake non-deterministic package, fixed-order; the default outside --deterministic-mode). It requires "
-                "--use-miles-ext-kernels, NVIDIA SM100a/SM103a (Blackwell) and K = V = 128."
+                "--use-miles-ext-kernels, NVIDIA SM100a/SM103a/SM107a (Blackwell, Rubin) and K = V = 128."
             ),
         ),
     ] = "fla"
@@ -38,8 +38,8 @@ class TrainConfig(BaseConfig):
                 "either way. 'te' is Transformer Engine's fused kernel; 'hf' is the eager HF Qwen3NextRMSNorm "
                 "these layers used before, kept to reproduce its numerics (same math, slower). 'cake' is the Cake "
                 "fused RMSNorm from the miles-ext-kernels submodule (--cake-rmsnorm-variant det or fast); it "
-                "requires --use-miles-ext-kernels, NVIDIA SM100a/SM103a (Blackwell) and a hidden size the kernels "
-                "serve; the layer refuses others when it is built (for example Qwen3.5-4B's 2560)."
+                "requires --use-miles-ext-kernels, NVIDIA SM100a/SM103a/SM107a (Blackwell, Rubin) and a hidden size "
+                "the kernels serve; the layer refuses others when it is built (for example Qwen3.5-4B's 2560)."
             ),
         ),
     ] = "te"
@@ -52,7 +52,7 @@ class TrainConfig(BaseConfig):
                 "'fla' (flash-linear-attention) is portable. 'cake' is the deterministic Cake chunked "
                 "forward/backward from the miles-ext-kernels submodule (raw forget gate and q/k L2 norm in the "
                 "kernels, BF16 beta, 1 to 64 heads per rank); it requires --use-miles-ext-kernels, --train-backend "
-                "megatron, --qkv-format thd, no context parallelism and NVIDIA SM100a/SM103a (Blackwell)."
+                "megatron, --qkv-format thd, no context parallelism and NVIDIA SM100a/SM103a/SM107a (Blackwell, Rubin)."
             ),
         ),
     ] = "fla"
@@ -65,7 +65,7 @@ class TrainConfig(BaseConfig):
                 "linear-attention layers. 'fla' is flash-linear-attention's kernel. 'cake' is the Cake kernel from "
                 "the miles-ext-kernels submodule (--cake-conv1d-variant det or fast, "
                 "--cake-conv1d-silu-grad-preactivation bf16 or fp32); it requires --use-miles-ext-kernels, no "
-                "context parallelism and NVIDIA SM100a/SM103a (Blackwell)."
+                "context parallelism and NVIDIA SM100a/SM103a/SM107a (Blackwell, Rubin)."
             ),
         ),
     ] = "fla"
@@ -77,8 +77,8 @@ class TrainConfig(BaseConfig):
                 "Backend for the SiLU-gated output RMSNorm (RMSNorm(x) * w * SiLU(z), head dimension 128) of the GDN "
                 "linear-attention layers. 'fla' is flash-linear-attention's kernel. 'cake' is the Cake kernel from "
                 "the miles-ext-kernels submodule (--cake-gated-rmsnorm-variant det or fast); it requires "
-                "--use-miles-ext-kernels and NVIDIA SM100a/SM103a (Blackwell). Layers whose output norm has a "
-                "sigmoid gate (KDA, a sigmoid-gated Qwen3.8-Next config) refuse it when they are built."
+                "--use-miles-ext-kernels and NVIDIA SM100a/SM103a/SM107a (Blackwell, Rubin). Layers whose output "
+                "norm has a sigmoid gate (KDA, a sigmoid-gated Qwen3.8-Next config) refuse it when they are built."
             ),
         ),
     ] = "fla"
