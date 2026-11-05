@@ -136,12 +136,11 @@ def _default_config(q, kv, topk: int, d_v: int) -> SparseAttentionConfig:
         and kv.shape[2] == 1
         and q.shape[2] > 1
     )
+    if config.backward_query_block > 1 and kv.shape[2] != 1:  # a block shares one key union, so one KV group
+        config = replace(config, backward_backend="cudnn", backward_query_block=1)
     is_short_topk = topk <= _SHORT_TOPK and (arch_key, heads_bucket) in _TILELANG_BACKWARD_SHORT_TOPK
     if config.backward_backend == "cudnn" and (is_short_topk or not cudnn_supported):
         config = replace(config, backward_backend="tilelang")
-    query_block_supported = kv.shape[2] == 1 and q.shape[1] % config.backward_query_block == 0
-    if config.backward_query_block > 1 and (config.backward_backend != "tilelang" or not query_block_supported):
-        config = replace(config, backward_query_block=1)
     return config
 
 

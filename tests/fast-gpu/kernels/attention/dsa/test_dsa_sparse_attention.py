@@ -340,9 +340,10 @@ def test_topk_union_matches_reference(query_block, topk, shared):
 @pytest.mark.parametrize("query_block, heads", [(8, 8), (4, 16)], ids=["8_queries_x_8_heads", "4_queries_x_16_heads"])
 @pytest.mark.parametrize("d_tail, sink", [(64, False), (0, True)], ids=["glm5", "deepseek_v4"])
 def test_query_block_backward_matches_per_query(query_block, heads, d_tail, sink):
-    """A block of consecutive queries over their key union gives the per-query kernel's gradients."""
+    """A block of consecutive queries over their key union gives the per-query kernel's gradients, with a
+    sequence that does not fill its last block."""
     torch.manual_seed(0)
-    batch, seq_len, d_v, seq_len_kv, topk = 2, 128, 512, 300, 64
+    batch, seq_len, d_v, seq_len_kv, topk = 2, 131, 512, 300, 64
     q, kv, _, attn_sink = _inputs(batch, seq_len, heads, 1, d_v, d_tail, seq_len_kv, topk, sink)
     indices = _overlapping_rows(batch * seq_len, topk, seq_len_kv, shared=48).view(batch, seq_len, 1, topk)
     indices[0, :3] = -1  # rows without keys, inside a block

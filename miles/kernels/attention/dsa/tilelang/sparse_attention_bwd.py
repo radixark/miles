@@ -314,7 +314,7 @@ def sparse_attention_bwd(q, kv, o, do, indices, lse, d_v, *, sm_scale, num_stage
     Returns dq [B, S, H, d_v + d_tail] bf16, dkv [B, S_kv, G, d_v + d_tail] bf16 and delta [B, S, H] fp32
     (rowsum(o * do), which the caller needs for the attention-sink gradient).
     ``query_block`` > 1 runs that many consecutive queries per CTA over the union of their keys (one KV
-    group, S a multiple of the block)."""
+    group); a short last block is padded with queries that select no key."""
     assert q.is_contiguous() and kv.is_contiguous() and indices.is_contiguous() and lse.is_contiguous()
     B, S, H, dim_plus_tail_dim = q.shape
     _, S_kv, kv_group, _ = kv.shape
@@ -324,15 +324,18 @@ def sparse_attention_bwd(q, kv, o, do, indices, lse, d_v, *, sm_scale, num_stage
     topk = indices.shape[-1]
     assert indices.shape == (B, S, kv_group, topk)
     assert lse.shape == (B, S, H)
-    assert S % query_block == 0 and (query_block == 1 or kv_group == 1), (
-        f"a query block of {query_block} needs seq_len {S} to be a multiple of it and one KV group, got {kv_group}"
-    )
+    assert query_block == 1 or kv_group == 1, f"a query block shares one key union, so one KV group, got {kv_group}"
 
     delta = _bwd_preprocess_kernel(H, d_v)(o, do)
     dkv = torch.zeros_like(kv, dtype=torch.float32)
     if query_block > 1:
-        blocks = S // query_block
-        keys, mask, lengths = topk_union(indices.view(B * S, topk), query_block)
+        pad = -S % query_block
+        if pad:  # the padding queries select no key, so their rows add nothing and their dq is dropped
+            q, do = (torch.nn.functional.pad(t, (0, 0, 0, 0, 0, pad)) for t in (q, do))
+            lse, delta = (torch.nn.functional.pad(t, (0, 0, 0, pad)) for t in (lse, delta))
+            indices = torch.nn.functional.pad(indices, (0, 0, 0, 0, 0, pad), value=-1)
+        blocks = (S + pad) // query_block
+        keys, mask, lengths = topk_union(indices.view(B * (S + pad), topk), query_block)
         keys, mask, lengths = keys.view(B, blocks, 1, -1), mask.view(B, blocks, 1, -1), lengths.view(B, blocks)
         q, do = q.view(B, blocks, query_block * H, -1), do.view(B, blocks, query_block * H, -1)
         lse, delta = lse.view(B, blocks, query_block * H), delta.view(B, blocks, query_block * H)
@@ -342,4 +345,4 @@ def sparse_attention_bwd(q, kv, o, do, indices, lse, d_v, *, sm_scale, num_stage
         H, d_v, D_tail, keys.shape[-1], kv_group, sm_scale, num_stages, split_store, query_block=query_block
     )(q, kv, do, keys, mask, lengths, lse, delta, dkv)
     dkv = _bwd_postprocess_kernel(d_v, D_tail, kv_group)(dkv)
-    return dq.view(B, S, H, dim_plus_tail_dim), dkv, delta.view(B, S, H)
+    return dq.view(B, -1, H, dim_plus_tail_dim)[:, :S], dkv, delta.view(B, -1, H)[:, :S]
