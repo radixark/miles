@@ -17,7 +17,8 @@ git submodule update --init 3rdparty/miles-ext-kernels
 - Every `cake` choice requires `--use-miles-ext-kernels`. The flag also registers the kernel package's own
   arguments (`--cake-<family>-...`), which the package validates at startup.
 - The miles Ray launcher puts the submodule on the job's `PYTHONPATH` for runs that pass the flag, and the CUDA
-  images install it. A launch outside both needs `3rdparty/miles-ext-kernels` on `PYTHONPATH` on every node.
+  images other than `radixark/miles:dev-rubin` install it. A launch outside both needs `3rdparty/miles-ext-kernels`
+  on `PYTHONPATH` on every node.
 
 ## Variants
 
