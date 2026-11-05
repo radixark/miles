@@ -27,8 +27,8 @@ register_cuda_ci(
 )
 
 pytestmark = pytest.mark.skipif(
-    not torch.cuda.is_available() or torch.cuda.get_device_capability() not in ((10, 0), (10, 3)),
-    reason="the Cake MoE grouped GEMM runs on NVIDIA SM100a / SM103a",
+    not torch.cuda.is_available() or torch.cuda.get_device_capability() not in ((10, 0), (10, 3), (10, 7)),
+    reason="the Cake MoE grouped GEMM runs on NVIDIA SM100a / SM103a / SM107a",
 )
 
 # a missing torchtitan or submodule fails the collection: on the Blackwell runners a skip would hide the coverage

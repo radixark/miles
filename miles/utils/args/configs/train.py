@@ -148,8 +148,8 @@ class TrainConfig(BaseConfig):
                 "Backend for the routed-expert grouped GEMMs (the fused gate / up and the down projections) of "
                 "--train-backend torchtitan. 'torch' is torch._grouped_mm. 'cake' is the Cake grouped GEMM from the "
                 "miles-ext-kernels submodule (--cake-moe-grouped-gemm-variant det or fast); it requires "
-                "--use-miles-ext-kernels, NVIDIA SM100a/SM103a (Blackwell), the torchtitan backend and expert widths "
-                "that are multiples of 256."
+                "--use-miles-ext-kernels, NVIDIA SM100a/SM103a/SM107a (Blackwell, Rubin), the torchtitan backend "
+                "and expert widths that are multiples of 256."
             ),
         ),
     ] = "torch"

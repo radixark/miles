@@ -12,8 +12,8 @@ run-dependent order). It is not bitwise equal to ``torch._grouped_mm``.
 
 Rejected where the model config is converted: grouped linears that are already quantized or adapted (a subclass of
 ``GroupedLinear``), grouped linears outside ``RoutedExperts``, and expert widths that are not multiples of 256.
-CUDA-only (NVIDIA SM100a / SM103a, torchtitan backend); the kernel package is imported only under the ``cake``
-backend.
+CUDA-only (NVIDIA SM100a / SM103a / SM107a, torchtitan backend); the kernel package is imported only under the
+``cake`` backend.
 """
 
 from __future__ import annotations

@@ -13,7 +13,7 @@ kernels sum dQ with atomics, so ``replay`` runs of this test are not bit-identic
 
 Not here: ``--linear-attention-input-norm cake`` (the Cake RMSNorm does not serve Qwen3.5-4B's hidden size 2560), and
 the families of other models. The other ``MILES_E2E_*`` knobs and the paths are those of the GDN test. Needs
-Blackwell (SM100a / SM103a) GPUs and the checked-out submodule.
+SM100a / SM103a / SM107a GPUs and the checked-out submodule.
 """
 
 import os
