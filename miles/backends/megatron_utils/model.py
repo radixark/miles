@@ -169,7 +169,7 @@ def setup_model_and_optimizer(
     lora_attached = is_multi_lora_enabled(args) or (is_lora_enabled(args) and role == "actor")
     # Multi-LoRA and single-LoRA (actor, bridge) both build via the bridge helper,
     # which picks the adapter type internally.
-    if is_multi_lora_enabled(args) or (lora_attached and args.megatron_to_hf_mode == "bridge"):
+    if lora_attached and args.megatron_to_hf_mode == "bridge":
         model = _setup_lora_model_via_bridge(args)
         enforce_marked_param_dtypes(model)
     else:
@@ -299,8 +299,8 @@ def forward_only(
 ) -> dict[str, list[torch.Tensor]]:
     """Run forward passes only and collect non-loss outputs (e.g., logprobs).
 
-    The model is put into evaluation mode, a forward-only pipeline pass is
-    executed, and relevant outputs are aggregated and returned.
+    Runs a forward-only pipeline pass (in train mode unless the model has
+    dropout) and aggregates and returns the relevant outputs.
 
     Args:
         f: Post-forward callback used to compute and package outputs to collect.
@@ -389,9 +389,11 @@ def forward_only(
 
         return output_tensor, partial(f, **callback_kwargs)
 
-    # Turn on evaluation mode which disables dropout.
-    for model_module in model:
-        model_module.eval()
+    # eval() switches off dropout but also selects inference kernels (TE attention), so the log probs
+    # would come from a different function than the training forward; call it only for dropout
+    if config.hidden_dropout or config.attention_dropout or args.lora_dropout:
+        for model_module in model:
+            model_module.eval()
 
     if (x := args.custom_megatron_before_log_prob_hook_path) is not None:
         from miles.utils.args.custom_view import compute_custom_function_config
@@ -743,7 +745,7 @@ def setup_train_iteration_config(args, model, optimizer, disable_optimizer):
         param_sync_funcs = [model_chunk.start_param_sync for model_chunk in model]
         config.param_sync_func = param_sync_funcs[0] if len(model) == 1 else param_sync_funcs
     finalize = finalize_model_grads
-    if is_multi_lora_enabled(args) or (is_lora_enabled(args) and args.megatron_to_hf_mode == "bridge"):
+    if is_lora_enabled(args) and args.megatron_to_hf_mode == "bridge":
         # Bridge expert adapters sum their EP-replicated grads in finalize; other runs need no Bridge
         from megatron.bridge.peft.utils import finalize_model_grads_with_expert_adapter_sync as finalize
     config.finalize_model_grads_func = partial(finalize_model_grads_with_empty_cache, finalize=finalize)

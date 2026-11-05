@@ -34,13 +34,15 @@ class LoraConfig(BaseConfig):
         ),
     ] = "xavier"
     lora_type: A[
-        str,
+        str | None,
         Arg(
             choices=["lora", "canonical_lora"],
-            help="LoRA variant to use: 'lora' (standard) or 'canonical_lora' (independent Q/K/V and gate/up) "
-            "(default: lora; canonical_lora for serve_tinker.py)",
+            help=(
+                "LoRA variant: 'lora' shares one lora_A across a fused projection, 'canonical_lora' gives each "
+                "projection its own (default: canonical_lora on native raw mode and serve_tinker.py, lora otherwise)"
+            ),
         ),
-    ] = "lora"
+    ] = None
     # TODO: Remove this temporary override after separating CLI input types from normalized config types.
     target_modules: A[
         str | list[str] | None,
@@ -100,9 +102,9 @@ class LoraConfig(BaseConfig):
         bool,
         Arg(
             help=(
-                "Verify the megatron->sglang LoRA adapter weight-sync on the colocated "
-                "(from_tensors) path: on every sync the trainer ships a per-tensor sha256 "
-                "manifest of the adapter it sends, and each rollout engine hashes the "
+                "Verify the megatron->sglang LoRA adapter weight sync: on every sync each "
+                "sender ships a per-tensor sha256 manifest of the adapter tensors it sends, "
+                "and each rollout engine hashes the "
                 "tensors it received and fails the load on any mismatch/missing/extra "
                 "name. The LoRA analogue of --check-weight-update-equal, which only "
                 "covers base weights."

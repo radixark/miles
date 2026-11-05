@@ -9,6 +9,7 @@ import torch.distributed as dist
 from tqdm import tqdm
 
 from miles.backends.megatron_utils.lora.native import export_lora_hf_named
+from miles.backends.megatron_utils.lora.native.modules.linear import iter_adapters
 from miles.backends.megatron_utils.megatron_to_hf import convert_to_hf
 from miles.backends.megatron_utils.named_weights import named_params_and_buffers
 from miles.backends.megatron_utils.sglang import monkey_patch_torch_reductions
@@ -129,7 +130,7 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
 
     def _export_pp_local_lora(self, adapter):
         assert adapter is None, "multi-LoRA export requires --megatron-to-hf-mode bridge"
-        return export_lora_hf_named(self.model)
+        return export_lora_hf_named(iter_adapters(self.model))
 
     def _convert_to_hf_param_units(self, named_params: Sequence[tuple[str, torch.Tensor]]):
         for name, param in named_params:

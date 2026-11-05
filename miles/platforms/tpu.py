@@ -11,6 +11,9 @@ class TpuPlatform(Platform):
     # the tpu compile backend takes static shapes only
     dynamic_shapes = False
     nvml_numa_affinity = False
+    # sglang-torchtpu turns "auto" into an fp8 KV cache without scales, which skews rollout logprobs against the
+    # bf16 trainer; fp8 stays available through --sglang-kv-cache-dtype fp8_e4m3
+    rollout_kv_cache_dtype = "bfloat16"
 
     def bind_device_before_process_group(self, local_rank: int) -> None:
         # touching the device before init_process_group breaks the multi-process rendezvous

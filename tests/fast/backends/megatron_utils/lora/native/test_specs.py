@@ -48,7 +48,7 @@ class TestArchitectureGuards:
 
 def resolve_adapter_targets(hf_config, targets, *, hf_modules):
     return _resolve_adapter_targets(
-        hf_config, targets, hf_modules=hf_modules, lora_type="lora", experts_shared_outer_loras=True
+        hf_config, targets, hf_modules=hf_modules, lora_type="canonical_lora", experts_shared_outer_loras=True
     )
 
 
@@ -103,7 +103,7 @@ class TestResolveAdapterTargets:
         [
             ("qwen3_moe", "model.layers.*.mlp.experts.gate_up_proj"),
             ("kimi_k2", "model.layers.*.mlp.experts.*.gate_proj"),
-            ("qwen3_5", "model.language_model.layers.*.linear_attn.in_proj_qkv"),
+            ("qwen3_next", "model.layers.*.linear_attn.in_proj_qkvz"),
         ],
     )
     def test_unimplemented_projections_fail_closed(self, model_type, target):
@@ -115,13 +115,14 @@ class TestResolveAdapterTargets:
         with pytest.raises(AssertionError, match=r"layers\.1\.mlp\.experts\.3\.gate_proj"):
             resolve_adapter_targets({"model_type": "qwen3"}, ["gate_proj", "up_proj"], hf_modules=modules)
 
-    def test_canonical_lora_is_bridge_only(self):
-        with pytest.raises(AssertionError, match="canonical_lora"):
+    def test_shared_a_lora_is_refused(self):
+        """Native gives every HF projection its own lora_A, so a request for Bridge's shared-A lora is refused."""
+        with pytest.raises(AssertionError, match="--lora-type lora shares one lora_A"):
             _resolve_adapter_targets(
                 {"model_type": "qwen3"},
                 ["q_proj"],
                 hf_modules=_qwen3_modules(),
-                lora_type="canonical_lora",
+                lora_type="lora",
                 experts_shared_outer_loras=False,
             )
 
@@ -229,6 +230,10 @@ class TestAttachWalk:
         assert GQAAttentionSpec().attach(mixer, None, named(self._context(None), "model.layers.0.self_attn.")) == 0
 
 
+# a glob target such as ``*head`` reaches the head only through the HF module list
+_HF_MODULES = ["model.embed_tokens", "model.layers.0.self_attn.q_proj", "lm_head"]
+
+
 def _native_run_args(tmp_path, model_type, **overrides):
     (tmp_path / "config.json").write_text(json.dumps({"model_type": model_type}))
     defaults = dict(
@@ -240,6 +245,13 @@ def _native_run_args(tmp_path, model_type, **overrides):
         moe_shared_expert_overlap=False,
         overlap_grad_reduce=False,
         expert_tensor_parallel_size=1,
+        hf_lora_targets=[],
+        enable_mtp_training=False,
+        untie_embeddings_and_output_weights=False,
+        save_hf=None,
+        eval_uses_snapshots=False,
+        eval_hf_dir=None,
+        vocab_size=32,
     )
     return SimpleNamespace(**(defaults | overrides))
 
@@ -247,7 +259,6 @@ def _native_run_args(tmp_path, model_type, **overrides):
 @pytest.mark.parametrize(
     "override, message",
     [
-        ({"colocate": False}, "colocated"),
         ({"overlap_param_gather": True}, "overlap-param-gather"),
         ({"moe_shared_expert_overlap": True}, "moe-shared-expert-overlap"),
         ({"overlap_grad_reduce": True}, "overlap-grad-reduce"),
@@ -256,14 +267,44 @@ def _native_run_args(tmp_path, model_type, **overrides):
 )
 def test_native_run_contract_rejects_unvalidated_configs(tmp_path, override, message):
     with pytest.raises(AssertionError, match=message):
-        validate_native_lora_args(_native_run_args(tmp_path, "kimi_k3", **override))
+        validate_native_lora_args(_native_run_args(tmp_path, "kimi_k3", **override), _HF_MODULES)
 
 
 def test_native_run_contract_accepts_its_validated_configs(tmp_path):
-    validate_native_lora_args(_native_run_args(tmp_path, "kimi_k3"))
-    validate_native_lora_args(_native_run_args(tmp_path, "kimi_k3", colocate=False, lora_train_only=True))
+    validate_native_lora_args(_native_run_args(tmp_path, "kimi_k3"), _HF_MODULES)
+    validate_native_lora_args(_native_run_args(tmp_path, "kimi_k3", colocate=False), _HF_MODULES)
+    validate_native_lora_args(_native_run_args(tmp_path, "kimi_k3", colocate=False, lora_train_only=True), _HF_MODULES)
     # expert TP only matters for specs whose routed experts carry adapters
-    validate_native_lora_args(_native_run_args(tmp_path, "qwen3_moe", expert_tensor_parallel_size=2))
+    validate_native_lora_args(_native_run_args(tmp_path, "qwen3_moe", expert_tensor_parallel_size=2), _HF_MODULES)
+
+
+@pytest.mark.parametrize(
+    "override, message",
+    [
+        ({"enable_mtp_training": True}, "enable-mtp-training"),
+        ({"save_hf": "/out/{rollout_id}"}, "tied lm_head adapter cannot be merged"),
+        ({"eval_uses_snapshots": True, "eval_hf_dir": "/eval"}, "tied lm_head adapter cannot be merged"),
+        ({"vocab_size": None}, "--vocab-size"),
+    ],
+)
+@pytest.mark.parametrize("head_target", ["lm_head", "*head"])
+def test_native_run_contract_rejects_head_adapter_configs(tmp_path, override, message, head_target):
+    with pytest.raises(AssertionError, match=message):
+        validate_native_lora_args(
+            _native_run_args(tmp_path, "qwen3", hf_lora_targets=[head_target], **override), _HF_MODULES
+        )
+
+
+def test_native_run_contract_accepts_merged_export_without_a_tied_head(tmp_path):
+    validate_native_lora_args(
+        _native_run_args(tmp_path, "qwen3", hf_lora_targets=["q_proj"], save_hf="/out"), _HF_MODULES
+    )
+    validate_native_lora_args(
+        _native_run_args(
+            tmp_path, "qwen3", hf_lora_targets=["lm_head"], save_hf="/out", untie_embeddings_and_output_weights=True
+        ),
+        _HF_MODULES,
+    )
 
 
 def test_inkling_head_export_rows_follow_sglangs_served_vocab(tmp_path):
@@ -276,3 +317,66 @@ def test_inkling_head_export_rows_follow_sglangs_served_vocab(tmp_path):
     assert _read_unpadded_vocab_size(str(tmp_path)) is None
     with pytest.raises(FileNotFoundError):
         _read_unpadded_vocab_size(str(tmp_path / "missing"))
+
+
+_GDN35 = "model.language_model.layers.*.linear_attn."
+
+
+def _qwen3_5_resolve(targets):
+    return _resolve_adapter_targets(
+        {"model_type": "qwen3_5"}, targets, hf_modules=[], lora_type="canonical_lora", experts_shared_outer_loras=False
+    )
+
+
+class TestQwen35GDNTargets:
+    def test_canonical_serves_the_in_proj_components(self):
+        """SGLang stacks in_proj_q/k/v/z and in_proj_b/a, each with its own A."""
+        targets = [f"{_GDN35}{leaf}" for leaf in ("in_proj_qkv", "in_proj_z", "in_proj_b", "in_proj_a", "out_proj")]
+        assert _qwen3_5_resolve(targets) == [
+            f"{_GDN35}{leaf}"
+            for leaf in ("in_proj_q", "in_proj_k", "in_proj_v", "in_proj_z", "in_proj_b", "in_proj_a", "out_proj")
+        ]
+
+    def test_the_attn_group_is_attachable(self):
+        """The attn group covers the GDN layers too."""
+        config = {"model_type": "qwen3_5", "text_config": {"layer_types": ["linear_attention", "full_attention"]}}
+        targets = resolve_hf_lora_targets(config, target_modules=["attn"])
+        served = _qwen3_5_resolve(targets)
+        assert f"{_GDN35}in_proj_q" in served and f"{_GDN35}in_proj_qkv" not in served
+
+    def test_concrete_modules_are_checked_per_layer(self):
+        """With the model's module list, groups are checked on each layer's selected modules, not per selector."""
+        modules = [
+            f"model.language_model.layers.{layer}.linear_attn.{leaf}"
+            for layer in range(2)
+            for leaf in ("in_proj_qkv", "in_proj_z", "in_proj_b", "in_proj_a", "out_proj")
+        ]
+
+        def resolve(targets):
+            return _resolve_adapter_targets(
+                {"model_type": "qwen3_5"},
+                targets,
+                hf_modules=modules,
+                lora_type="canonical_lora",
+                experts_shared_outer_loras=False,
+            )
+
+        # a leaf selector and a scoped one complete the group only once both reach the same layer
+        assert resolve(["in_proj_qkv", f"{_GDN35}in_proj_z"]) == [
+            "in_proj_q",
+            "in_proj_k",
+            "in_proj_v",
+            f"{_GDN35}in_proj_z",
+        ]
+        with pytest.raises(
+            AssertionError, match=r"selected together in model\.language_model\.layers\.0\.linear_attn "
+        ):
+            resolve(["model.language_model.layers.0.linear_attn.in_proj_qkv", f"{_GDN35}in_proj_z".replace("*", "1")])
+
+    @pytest.mark.parametrize(
+        "leaves", [("in_proj_qkv",), ("in_proj_z",), ("in_proj_b",), ("in_proj_qkv", "in_proj_z", "in_proj_a")]
+    )
+    def test_a_partial_stacked_group_is_rejected(self, leaves):
+        """SGLang stacks the components only as complete q/k/v/z and b/a groups."""
+        with pytest.raises(AssertionError, match="selected together"):
+            _qwen3_5_resolve([f"{_GDN35}{leaf}" for leaf in leaves])
