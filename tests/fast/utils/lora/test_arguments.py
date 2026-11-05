@@ -116,19 +116,14 @@ def test_adapter_slots_need_the_families_hf_lora_layout(monkeypatch, overrides) 
     _check_layout(monkeypatch, args, AutoConfig.for_model("qwen3"))
 
 
-def test_a_rollout_only_run_builds_no_slots_for_any_family(monkeypatch) -> None:
-    args = Namespace(**(_NO_SNAPSHOTS | {"lora_adapter_path": "/adapter", "debug_rollout_only": True}))
-    _check_layout(monkeypatch, args, _LayoutlessConfig())
-
-
-def test_an_eval_dir_without_eval_snapshots_builds_no_slots(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    "overrides",
+    [{}, {"lora_adapter_path": "/adapter", "debug_rollout_only": True}, {"eval_hf_dir": "/eval"}],
+    ids=["no_snapshots", "rollout_only", "eval_dir_without_eval_snapshots"],
+)
+def test_a_run_that_builds_no_slots_trains_any_family(monkeypatch, overrides) -> None:
     """The actor publishes eval snapshots only under eval_uses_snapshots; validation must not refuse the run."""
-    args = Namespace(**(_NO_SNAPSHOTS | {"eval_hf_dir": "/eval"}))
-    _check_layout(monkeypatch, args, _LayoutlessConfig())
-
-
-def test_a_run_without_adapter_snapshots_trains_any_family(monkeypatch) -> None:
-    _check_layout(monkeypatch, Namespace(**_NO_SNAPSHOTS), _LayoutlessConfig())
+    _check_layout(monkeypatch, Namespace(**(_NO_SNAPSHOTS | overrides)), _LayoutlessConfig())
 
 
 def _adapter_state_args(**overrides) -> Namespace:

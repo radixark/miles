@@ -298,54 +298,10 @@ class _SharedOuterNativeSlots:
 def test_native_shared_outer_save_hf_writes_the_stacked_adapter_sglang_serves(
     _parallel_state, _write_dir, _is_lora, _named_weights, _merge, tmp_path
 ):
-    """A per-expert 2D PEFT export has no name for the shared ``[1, ...]`` side; sglang loads the stacked one."""
+    """A per-expert 2D PEFT export has no name for the shared ``[1, ...]`` side; sglang loads the stacked one, with
+    the run's rank, alpha and dropout as main wrote them."""
     from safetensors.torch import load_file
 
-    from miles.backends.megatron_utils.hf_export import save_hf_model
-
-    args = Namespace(
-        megatron_to_hf_mode="raw",
-        hf_checkpoint=_hf_dir(tmp_path),
-        save_hf=None,
-        lora_rank=2,
-        lora_alpha=4.0,
-        lora_type="lora",
-        lora_dropout=0.0,
-        experts_shared_outer_loras=True,
-    )
-
-    save_hf_model(
-        args,
-        0,
-        [MagicMock()],
-        publisher=MagicMock(),
-        adapter_slots=_SharedOuterNativeSlots(),
-        path=tmp_path,
-        raise_on_error=True,
-    )
-
-    tensors = load_file(tmp_path / "adapter" / "adapter_model.safetensors")
-    experts = _SharedOuterNativeSlots.experts
-    assert {name: tuple(t.shape) for name, t in tensors.items()} == {
-        f"{experts}.w1.lora_A.weight": (1, 2, 8),
-        f"{experts}.w1.lora_B.weight": (4, 6, 2),
-        f"{experts}.w3.lora_A.weight": (1, 2, 8),
-        f"{experts}.w3.lora_B.weight": (4, 6, 2),
-        f"{experts}.w2.lora_A.weight": (4, 2, 6),
-        f"{experts}.w2.lora_B.weight": (1, 8, 2),
-    }
-
-
-@patch(f"{_HF_EXPORT_MODULE}.merge_lora_into_weights")
-@patch(f"{_HF_EXPORT_MODULE}.named_params_and_buffers", return_value=[])
-@patch(f"{_HF_EXPORT_MODULE}.is_lora_model", return_value=True)
-@patch(f"{_HF_EXPORT_MODULE}.write_checkpoint_dir", side_effect=lambda path, write, **_kwargs: write(path))
-@patch(f"{_HF_EXPORT_MODULE}.get_parallel_state")
-def test_native_save_hf_adapter_config_carries_mains_fields(
-    _parallel_state, _write_dir, _is_lora, _named_weights, _merge, tmp_path
-):
-    """The run's rank, alpha and dropout, as main wrote them; target_modules name HF modules, which sglang
-    normalizes."""
     from miles.backends.megatron_utils.hf_export import save_hf_model
 
     args = Namespace(
@@ -369,9 +325,19 @@ def test_native_save_hf_adapter_config_carries_mains_fields(
         raise_on_error=True,
     )
 
-    config = json.loads((tmp_path / "adapter" / "adapter_config.json").read_text())
+    tensors = load_file(tmp_path / "adapter" / "adapter_model.safetensors")
     experts = _SharedOuterNativeSlots.experts
+    assert {name: tuple(t.shape) for name, t in tensors.items()} == {
+        f"{experts}.w1.lora_A.weight": (1, 2, 8),
+        f"{experts}.w1.lora_B.weight": (4, 6, 2),
+        f"{experts}.w3.lora_A.weight": (1, 2, 8),
+        f"{experts}.w3.lora_B.weight": (4, 6, 2),
+        f"{experts}.w2.lora_A.weight": (4, 2, 6),
+        f"{experts}.w2.lora_B.weight": (1, 8, 2),
+    }
+    config = json.loads((tmp_path / "adapter" / "adapter_config.json").read_text())
     assert (config["r"], config["lora_alpha"], config["lora_dropout"]) == (2, 4.0, 0.05)
+    # HF module names, which sglang normalizes
     assert config["target_modules"] == [f"{experts}.{leaf}" for leaf in ("down_proj", "gate_proj", "up_proj")]
 
 
