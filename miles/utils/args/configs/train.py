@@ -38,8 +38,8 @@ class TrainConfig(BaseConfig):
                 "either way. 'te' is Transformer Engine's fused kernel; 'hf' is the eager HF Qwen3NextRMSNorm "
                 "these layers used before, kept to reproduce its numerics (same math, slower). 'cake' is the Cake "
                 "fused RMSNorm from the miles-ext-kernels submodule (--cake-rmsnorm-variant det or fast); it "
-                "requires --use-miles-ext-kernels, NVIDIA SM100a/SM103a (Blackwell) and a hidden size the kernels "
-                "serve; the layer refuses others when it is built (for example Qwen3.5-4B's 2560)."
+                "requires --use-miles-ext-kernels, NVIDIA SM100a/SM103a/SM107a (Blackwell, Rubin) and a hidden size "
+                "the kernels serve; the layer refuses others when it is built (for example Qwen3.5-4B's 2560)."
             ),
         ),
     ] = "te"
