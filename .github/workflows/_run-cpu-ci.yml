@@ -91,6 +91,7 @@ jobs:
           UV_SYSTEM_PYTHON: "1"
         run: |
           uv pip install -r requirements.txt -r tests/ci/requirements-ci-cpu.txt
+          uv pip install -e ./sglang/radix_transfer_plugins --no-deps
 
       - name: Install Megatron Bridge override
         if: ${{ github.event.inputs.ci_megatron_bridge_pr != '' || contains(github.event.pull_request.body, 'ci-megatron-bridge-pr:') }}
