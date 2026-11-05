@@ -285,13 +285,19 @@ class SessionCore:
         return Response(content=_render_json(body), status_code=200, media_type=JSON_MEDIA_TYPE)
 
     async def create_session(
-        self, *, evaluation: bool = False, sampling_defaults: dict | None = None, extra_key: str | None = None
+        self,
+        *,
+        evaluation: bool = False,
+        sampling_defaults: dict | None = None,
+        extra_key: str | None = None,
+        max_seq_len: int | None = None,
     ) -> Response:
         session_id = self.registry.create_session(
             evaluation=evaluation,
             sampling_defaults=sampling_defaults,
             sampling_support_replay=not evaluation and self.config.use_sampling_support_replay,
             extra_key=extra_key,
+            max_seq_len=max_seq_len,
         )
         return Response(content=_render_json({"session_id": session_id}), status_code=200, media_type=JSON_MEDIA_TYPE)
 

@@ -6,13 +6,14 @@ from unittest.mock import MagicMock
 import pytest
 from tests.fast.fixtures.session_fixtures import make_session_server_config
 
-from miles.rollout.session.errors import MessageValidationError
+from miles.rollout.session.errors import MaxSeqLenReachedError, MessageValidationError
 from miles.rollout.session.request_args import (
     ClientResponseIntent,
     apply_session_sampling_defaults,
     filter_turn_args,
     parse_chat_request,
     prepare_chat_request,
+    refuse_prompt_filling_max_seq_len,
     resolve_request_args_by_config,
 )
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer, extract_template_args
@@ -409,3 +410,17 @@ def test_parse_chat_request_rejects_invalid_json(body):
 def test_parse_chat_request_preserves_unicode_and_empty_body():
     assert parse_chat_request(b"") == {}
     assert parse_chat_request(rb'{"content":"\u4f60\u597d \ud83d\ude00"}') == {"content": "你好 😀"}
+
+
+class TestRefusePromptFillingMaxSeqLen:
+    @pytest.mark.parametrize(
+        ("max_seq_len", "prompt_tokens"), [(None, 10**9), (1000, 999)], ids=["no_limit", "room_left"]
+    )
+    def test_a_prompt_below_the_limit_passes(self, max_seq_len, prompt_tokens):
+        refuse_prompt_filling_max_seq_len(max_seq_len=max_seq_len, prompt_tokens=prompt_tokens)
+
+    @pytest.mark.parametrize("prompt_tokens", [1000, 1001])
+    def test_a_prompt_that_fills_it_is_refused_with_409(self, prompt_tokens):
+        with pytest.raises(MaxSeqLenReachedError) as exc_info:
+            refuse_prompt_filling_max_seq_len(max_seq_len=1000, prompt_tokens=prompt_tokens)
+        assert exc_info.value.status_code == 409

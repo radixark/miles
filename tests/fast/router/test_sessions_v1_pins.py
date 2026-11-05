@@ -216,3 +216,35 @@ class TestRollbackPins:
         records = self._get(router_env.url, session_id)["records"]
         assert len(records) == 2
         assert records[-1]["request"]["messages"][-1] == self.T1_DIFF
+
+
+class TestMaxSeqLen:
+    """A prompt that fills max_seq_len is refused before the session changes; max_tokens is left to the client."""
+
+    U1 = {"role": "user", "content": "What is 1+2?"}
+    T1 = {"role": "tool", "content": "tool-result-1", "tool_call_id": "t0"}
+
+    @staticmethod
+    def _session(url: str, max_seq_len: int) -> str:
+        response = requests.post(f"{url}/sessions", json={"max_seq_len": max_seq_len}, timeout=5.0)
+        assert response.status_code == 200
+        return response.json()["session_id"]
+
+    def test_a_prompt_that_fills_it_is_refused_and_leaves_the_session(self, router_env):
+        probe = self._session(router_env.url, 10_000)
+        first = _post_chat(router_env.url, probe, {"messages": [self.U1]})
+        a1 = first.json()["choices"][0]["message"]
+        assert _post_chat(router_env.url, probe, {"messages": [self.U1, a1, self.T1]}).status_code == 200
+        turn2_prompt = len(router_env.backend.request_log[-1]["input_ids"])
+
+        session_id = self._session(router_env.url, turn2_prompt)
+        first = _post_chat(router_env.url, session_id, {"messages": [self.U1]})
+        assert router_env.backend.request_log[-1].get("max_tokens") is None
+        a1 = first.json()["choices"][0]["message"]
+        backend_requests = len(router_env.backend.request_log)
+        extend = _post_chat(router_env.url, session_id, {"messages": [self.U1, a1, self.T1]})
+        assert extend.status_code == 409
+        assert "max_seq_len" in extend.json()["error"]
+        assert len(router_env.backend.request_log) == backend_requests
+        # the refusal leaves the session as it was: retrying the first turn still works
+        assert _post_chat(router_env.url, session_id, {"messages": [self.U1]}).status_code == 200

@@ -20,7 +20,7 @@ import orjson
 from miles.rollout.generate_utils.rollout_topk_logprobs import configure_rollout_topk_logprobs_request
 from miles.rollout.generate_utils.sampling_mask import validate_sampling_support_request
 from miles.rollout.session.config import SessionServerConfig
-from miles.rollout.session.errors import MessageValidationError
+from miles.rollout.session.errors import MaxSeqLenReachedError, MessageValidationError
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer, extract_template_args
 from miles.utils.lora.utils import LORA_ADAPTER_NAME, lora_rollout_enabled
 from miles.utils.output_store.plan import FIELDS, OUTPUT_STORE_REQUEST_KEY
@@ -123,6 +123,20 @@ def prepare_chat_request(
     return PreparedChatRequest(
         body=request_args, template_args=extract_template_args(request_args), response_intent=response_intent
     )
+
+
+def refuse_prompt_filling_max_seq_len(*, max_seq_len: int | None, prompt_tokens: int) -> None:
+    """Raise 409 when the rendered prompt already fills *max_seq_len*; None means no limit.
+
+    ``max_seq_len`` is the sequence length a training sample keeps, so the trajectory cannot be extended
+    past it. The request's ``max_tokens`` is left to the client: the last turn may still run past the limit,
+    and sample assembly truncates it.
+    """
+    if max_seq_len is not None and prompt_tokens >= max_seq_len:
+        raise MaxSeqLenReachedError(
+            f"the prompt has {prompt_tokens} tokens, filling the session's max_seq_len={max_seq_len}: "
+            "the trajectory cannot be extended"
+        )
 
 
 def apply_session_sampling_defaults(

@@ -6,7 +6,11 @@ from typing import Any
 
 from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.errors import MessageValidationError, SessionNotFoundError, TokenizationError
-from miles.rollout.session.request_args import PreparedChatRequest, prepare_chat_request
+from miles.rollout.session.request_args import (
+    PreparedChatRequest,
+    prepare_chat_request,
+    refuse_prompt_filling_max_seq_len,
+)
 from miles.rollout.session.store_refs import SessionStoreRefs
 from miles.rollout.session.types import SessionRecord
 from miles.utils.chat_template_utils.message_matcher_hub import (
@@ -94,6 +98,8 @@ class LinearTrajectory:
     evaluation: bool = False
     sampling_defaults: dict[str, Any] = field(default_factory=dict)
     sampling_support_replay: bool = False
+    # the sequence length a training sample keeps: a prompt that fills it is refused; None means no limit
+    max_seq_len: int | None = None
 
     def snapshot(self) -> "LinearTrajectory":
         """Copy the mutable containers, sharing committed payloads read-only. Caller holds the lock."""
@@ -132,10 +138,12 @@ class LinearTrajectory:
         In order: select the checkpoint *client_args*'s messages continue
         (``_find_rollback_checkpoint``); decide the request args
         (``request_args.prepare_chat_request``, which may raise a 400); render
-        the prompt with those template args; then roll back to the checkpoint
+        the prompt with those template args and refuse it if it fills
+        ``max_seq_len`` (``request_args.refuse_prompt_filling_max_seq_len``,
+        which may raise a 409); then roll back to the checkpoint
         (``_rollback_to_checkpoint``). The args come before the render because
-        they change the token ids. Both steps precede rollback so a validation
-        or rendering error leaves session state unchanged.
+        they change the token ids. All steps precede rollback so a validation,
+        rendering or length error leaves session state unchanged.
 
         The caller must hold `self.lock`.
         """
@@ -159,6 +167,7 @@ class LinearTrajectory:
             tito_tokenizer=tito_tokenizer,
             message_matcher=matcher,
         )
+        refuse_prompt_filling_max_seq_len(max_seq_len=self.max_seq_len, prompt_tokens=len(prepared.body["input_ids"]))
         self._rollback_to_checkpoint(checkpoint_index)
         return prepared
 
@@ -405,6 +414,7 @@ class SessionRegistry:
         sampling_defaults: dict[str, Any] | None = None,
         sampling_support_replay: bool = False,
         extra_key: str | None = None,
+        max_seq_len: int | None = None,
     ) -> str:
         assert extra_key is None, (
             f"session server v1 does not support the KV cache namespace {extra_key!r}; "
@@ -415,6 +425,7 @@ class SessionRegistry:
             evaluation=evaluation,
             sampling_defaults=dict(sampling_defaults or {}),
             sampling_support_replay=sampling_support_replay,
+            max_seq_len=max_seq_len,
         )
         return session_id
 

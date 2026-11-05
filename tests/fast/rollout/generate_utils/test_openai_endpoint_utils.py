@@ -220,6 +220,23 @@ class TestOpenAIEndpointTracerCreate:
         assert bodies == [expected_body]
 
     @pytest.mark.asyncio
+    async def test_create_posts_the_sample_max_seq_len(self, monkeypatch):
+        """The resolved max_seq_len reaches the session, which refuses a turn whose prompt fills it."""
+        bodies = self._capture_session_posts(monkeypatch)
+
+        await OpenAIEndpointTracer.create(
+            SimpleNamespace(
+                session_server_instances=[SessionServerInstance(addr="127.0.0.1:12345")],
+                use_sampling_support_replay=False,
+                use_session_server=False,
+                rollout_temperature=1.0,
+            ),
+            max_seq_len=32768,
+        )
+
+        assert bodies == [{"evaluation": False, "max_seq_len": 32768}]
+
+    @pytest.mark.asyncio
     async def test_agent_url_names_the_same_instance_from_outside_the_cluster(self, monkeypatch):
         """The agent's URL and the driver's URL are the chosen record's two views of one
         instance, so a session is never opened on one instance and dialed on another."""

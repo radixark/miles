@@ -166,6 +166,8 @@ Use `{"evaluation": true}` in `POST /sessions` for evaluation; omitting it defau
 
 `temperature`, `top_p`, and `top_k` in `POST /sessions` provide defaults for omitted or `null` chat fields. Training requests must match the registered temperature or receive HTTP 400; eval temperature and `top_p`/`top_k` remain overridable. The agentic generator registers the sample's resolved values automatically.
 
+`max_seq_len` in `POST /sessions` is the sequence length a training sample keeps. The session does not lower a turn's `max_tokens` for it. A request whose prompt already fills it, for example after a long tool response, receives HTTP 409 before it reaches the engine, and the trajectory stays as it was. An agent that does not handle the 409 fails the episode, and the generator treats it like any other failed agent call; an agent that should finish on its own can catch it (`openai.ConflictError` in the OpenAI SDK) and end the episode. Sample assembly still truncates the trajectory to `max_seq_len`, so the last turn may run past it by up to one response. The agentic generator registers the sample's resolved `--max-seq-len`.
+
 Evaluation forces `return_sampling_mask`, `return_routed_experts`, and `return_indexer_topk` off and ignores `routed_experts_start_len`. TITO, logprobs, and sample collection still apply; engine-internal capture may remain enabled.
 
 History handling depends on the selected server version:
@@ -192,8 +194,9 @@ replay, every pause mode except `retract` requests only additional R3 rows.
 `retract` returns full R3 data on every turn and emits a warning because the
 payloads can become very large.
 
-Set `--max-seq-len` to cap the context length. Miles also includes this value in the
-metadata passed to your agent so an external environment can stop early.
+Set `--max-seq-len` to bound the trajectory; the session server refuses a turn whose prompt
+fills it (see [Choose the session behavior](#choose-the-session-behavior)). Miles also includes this
+value in the metadata passed to your agent so an agent or external environment can stop before it.
 
 ### Pick your `--tito-model`
 

@@ -74,9 +74,10 @@ def _session_metadata(spec_info=None):
 def _patch_agent(monkeypatch, tracer) -> list[str | None]:
     extra_keys: list[str | None] = []
 
-    async def fake_create(args, *, evaluation=False, sampling_params=None, extra_key=None):
+    async def fake_create(args, *, evaluation=False, sampling_params=None, extra_key=None, max_seq_len=None):
         tracer.evaluation = evaluation
         tracer.sampling_params = sampling_params
+        tracer.max_seq_len = max_seq_len
         extra_keys.append(extra_key)
         return tracer
 
@@ -110,6 +111,23 @@ async def test_session_identity_for_penalty_logs_is_owned_by_tracer(monkeypatch,
     _patch_agent(monkeypatch, tracer)
     await agentic_tool_call.generate(_generate_input(use_session_server=version))
     assert sample.metadata["session_id"] == "sid-1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("launch", "dataset", "expected"), [(None, None, None), (4096, None, 4096), (4096, 1024, 1024), (None, 1024, 1024)]
+)
+async def test_session_is_created_with_the_resolved_max_seq_len(monkeypatch, launch, dataset, expected):
+    """The session refuses a turn whose prompt fills the same max_seq_len that sample assembly truncates to."""
+    sample = Sample(status=Sample.Status.COMPLETED, response_length=1, tokens=[1])
+    tracer = _Tracer(SamplesReply(samples=[sample], session_metadata={}, empty_reason=None))
+    _patch_agent(monkeypatch, tracer)
+    generate_input = _generate_input(max_seq_len=launch)
+    generate_input.sample.max_seq_len = dataset
+
+    await agentic_tool_call.generate(generate_input)
+
+    assert tracer.max_seq_len == expected
 
 
 @pytest.mark.asyncio
@@ -240,7 +258,7 @@ class TestSessionServerInstancesValidation:
         """generate() raises the documented AssertionError when session_server_instances is null or empty, without creating a tracer."""
         created_for: list[object] = []
 
-        async def fake_create(args, *, evaluation=False, sampling_params=None, extra_key=None):
+        async def fake_create(args, *, evaluation=False, sampling_params=None, extra_key=None, max_seq_len=None):
             created_for.append(args)
             return _empty_tracer()
 
