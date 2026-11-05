@@ -78,7 +78,7 @@ class Glm5NextKDA(nn.Module):
             self.cake_chunk_kda = kda_kernel("cake")
             from miles_ext_kernels.kda import prepare
 
-            # this layer is not head-sharded: it raises above 64 heads, and on a GPU other than SM100a / SM103a
+            # the layer is not head-sharded: it raises above 64 heads, and on a GPU other than SM100a / SM103a / SM107a
             prepare(num_heads)
 
     def forward(self, hidden_states: torch.Tensor, cu_seqlens: torch.Tensor):

@@ -1,7 +1,7 @@
 """Head-sharded GDN with the deterministic ``cake`` backend under TP, CP and TP x CP against the replicated fla
 reference of ``tests/fast-gpu/linear_attn_reference.py``: forward output, input gradient and every parameter
 gradient (gathered across TP, summed across CP), plus bit determinism of the cake path (a second identical pass
-reproduces the output and all gradients exactly).  Needs Blackwell (SM100a / SM103a) GPUs.
+reproduces the output and all gradients exactly).  Needs SM100a / SM103a / SM107a GPUs.
 
 The cake kernels are ``miles_ext_kernels.gdn`` from the miles-ext-kernels submodule. This script builds the layer
 directly instead of parsing miles arguments, so it takes no ``--use-miles-ext-kernels``; the package must be
@@ -150,7 +150,7 @@ def main() -> int:
 
         if torch.cuda.get_device_capability() not in SUPPORTED_CAPABILITIES:
             if rank == 0:
-                print(f"SKIPPED: the cake GDN kernels need an SM100a / SM103a GPU, got {torch.cuda.get_device_name()}")
+                print(f"SKIPPED: the cake GDN kernels need SM100a/SM103a/SM107a, got {torch.cuda.get_device_name()}")
             dist.destroy_process_group()
             return 0
     if args.tp is not None:

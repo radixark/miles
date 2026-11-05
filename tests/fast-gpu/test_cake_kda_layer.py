@@ -28,8 +28,8 @@ from linear_attn_reference import KDA_LOWER_BOUND, ReplicatedKDA, build_layer, p
 register_cuda_ci(est_time=900, suite="stage-c-4-gpu-b200", labels=["precision"], hardware=["blackwell"], num_gpus=1)
 
 pytestmark = pytest.mark.skipif(
-    not torch.cuda.is_available() or torch.cuda.get_device_capability() not in ((10, 0), (10, 3)),
-    reason="the Cake KDA kernels run on SM100a / SM103a",
+    not torch.cuda.is_available() or torch.cuda.get_device_capability() not in ((10, 0), (10, 3), (10, 7)),
+    reason="the Cake KDA kernels run on SM100a / SM103a / SM107a",
 )
 
 HIDDEN = 512
