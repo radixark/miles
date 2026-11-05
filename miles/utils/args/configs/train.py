@@ -109,6 +109,15 @@ class TrainConfig(BaseConfig):
             ),
         ),
     ] = "tilelang"
+    use_miles_ext_kernels: A[
+        bool,
+        Arg(
+            help=(
+                "Enable the kernels of the miles-ext-kernels submodule (3rdparty/miles-ext-kernels) and "
+                "register their arguments. Required by every 'cake' backend."
+            )
+        ),
+    ] = False
     extra_high_precision_layers_hf: A[
         list[str] | tuple[str, ...],
         Arg(

@@ -7,7 +7,6 @@ import pytest
 import torch
 import torch.nn as nn
 
-from miles.backends.megatron_utils.lora import bridge_checkpoint
 from miles.backends.megatron_utils.lora.native import checkpoint as native_checkpoint
 from miles.backends.megatron_utils.lora.native.config import LoRAConfig
 from miles.backends.megatron_utils.lora.native.hf_adapter import export_lora_hf_named
@@ -26,6 +25,7 @@ from miles.backends.megatron_utils.lora.native.modules.linear import (
 from miles.backends.megatron_utils.lora.native.modules.lm_head import LoRAOutputHead
 from miles.backends.megatron_utils.lora.native.spec.base import AttachContext, ProjectionSpec, ShardLayout
 from miles.backends.megatron_utils.lora.slots import slice_lora_to_rank
+from miles.backends.training_utils.checkpoint.adapter.probed_slots import RowMapping
 
 HIDDEN, OUT, MAX_RANK, NUM_SLOTS = 8, 6, 4, 3
 
@@ -380,7 +380,11 @@ def test_a_sequence_parallel_replicated_adapter_runs_on_its_shard():
 def _routed(monkeypatch):
     """``NativeAdapterSlots`` without its collective probe; its slot draws need the CUDA RNG tracker."""
     multi = _attached(_column, _context(rank=MAX_RANK, num_slots=NUM_SLOTS), _base_weight())
-    monkeypatch.setattr(bridge_checkpoint, "probe_bridge_row_mapping", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        native_checkpoint,
+        "probe_bridge_row_mapping",
+        lambda *args, **kwargs: RowMapping(pieces=[], shared_lora_a_groups=(), target_modules=()),
+    )
     monkeypatch.setattr(
         native_checkpoint.NativeAdapterSlots,
         "_init_slot",

@@ -8,6 +8,7 @@ import pytest
 import torch
 from tests.ci.ci_register import register_cpu_ci
 
+from miles.backends.torchtitan_utils import arguments
 from miles.backends.torchtitan_utils import parallel as tp
 from miles.backends.torchtitan_utils.args_namespace import TorchtitanArgsNamespace
 from miles.backends.torchtitan_utils.arguments import validate_torchtitan_args
@@ -29,6 +30,9 @@ def _args(**overrides) -> Namespace:
         rollout_max_response_len=4096,
         ref_update_interval=None,
         save_debug_train_data=None,
+        ci_test=False,
+        use_routing_replay=False,
+        use_rollout_routing_replay=False,
         optimizer_cpu_offload=False,
         stream_optimizer_state_to_disk=False,
         stream_optimizer_state_moment_dtype="fp32",
@@ -79,6 +83,28 @@ def test_unsupported_flags_are_rejected_rather_than_ignored(monkeypatch):
         validate_torchtitan_args(_args(save_debug_train_data="/tmp/dump"))
 
 
+def test_the_replay_checker_is_refused_where_blocks_compile_fullgraph(monkeypatch):
+    """The checker syncs to the host from inside a block; a static-shape platform compiles blocks fullgraph."""
+    monkeypatch.setattr(torch, "__version__", "2.14.0")
+    monkeypatch.setattr(arguments.current_platform, "dynamic_shapes", False)
+    rollout_replay = dict(use_routing_replay=True, use_rollout_routing_replay=True)
+    validate_torchtitan_args(_args(**rollout_replay))
+    with pytest.raises(ValueError, match="ci-test"):
+        validate_torchtitan_args(_args(ci_test=True, **rollout_replay))
+    monkeypatch.setattr(arguments.current_platform, "dynamic_shapes", True)
+    validate_torchtitan_args(_args(ci_test=True, **rollout_replay))
+
+
+def test_recording_routes_in_a_compiled_block_is_refused_without_dynamic_shapes(monkeypatch):
+    """Recording appends to the queue inside the block, so every microbatch recompiles on a static-shape platform."""
+    monkeypatch.setattr(torch, "__version__", "2.14.0")
+    monkeypatch.setattr(arguments.current_platform, "dynamic_shapes", False)
+    with pytest.raises(ValueError, match="use-rollout-routing-replay"):
+        validate_torchtitan_args(_args(use_routing_replay=True))
+    monkeypatch.setattr(arguments.current_platform, "dynamic_shapes", True)
+    validate_torchtitan_args(_args(use_routing_replay=True))
+
+
 def test_lora_flags_torchtitan_cannot_honor_are_rejected(monkeypatch):
     monkeypatch.setattr(torch, "__version__", "2.14.0")
     validate_torchtitan_args(_args(lora_rank=8))
@@ -90,8 +116,6 @@ def test_lora_flags_torchtitan_cannot_honor_are_rejected(monkeypatch):
         validate_torchtitan_args(_args(lora_rank=8, lora_A_init_method="xavier"))
     with pytest.raises(ValueError, match="no dropout"):
         validate_torchtitan_args(_args(lora_rank=8, lora_dropout=0.05))
-    with pytest.raises(ValueError, match="--lora-adapter-path"):
-        validate_torchtitan_args(_args(lora_rank=8, lora_adapter_path="/adapter"))
     with pytest.raises(ValueError, match="grad buffers"):
         validate_torchtitan_args(_args(lora_rank=8, colocate_memory_peak_device="gpu"))
     validate_torchtitan_args(_args(lora_rank=8, colocate_memory_peak_device="gpu", lora_train_only=True))

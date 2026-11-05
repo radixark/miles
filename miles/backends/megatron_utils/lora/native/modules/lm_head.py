@@ -42,12 +42,6 @@ class LoRAOutputHead(PhasedLoRAAdapter):
         self.register_parameter(
             "head_B", new_lora_parameter(reference, (vocab_local, context.lora.rank), init="zero", partition_dim=0)
         )
-        padded = self.padded_local_rows()
-        if padded.start < padded.stop:
-            # the loss softmaxes over the padded vocab, but no checkpoint holds these rows: keep them at init
-            self.head_B.register_hook(
-                lambda grad: grad.index_fill(0, torch.arange(padded.start, padded.stop, device=grad.device), 0)
-            )
 
     def prepare_input(self, x: torch.Tensor, base_module: nn.Module) -> torch.Tensor:
         scaled = x / self.mup if self.mup else x
@@ -103,6 +97,15 @@ class LoRAOutputHead(PhasedLoRAAdapter):
         vocab_local = self.head_B.shape[0]
         served = self._served_rows(vocab_local * self.context.tp_size)
         return slice(min(max(served - self.tp_rank * vocab_local, 0), vocab_local), vocab_local)
+
+    def padding_rows(self) -> tuple[int, int]:
+        """Megatron's padding rows over every TP rank, and where this rank's first one sits among them."""
+        vocab_local = self.head_B.shape[0]
+        served = self._served_rows(vocab_local * self.context.tp_size)
+        return (
+            vocab_local * self.context.tp_size - served,
+            self.tp_rank * vocab_local + self.padded_local_rows().start - served,
+        )
 
     def _served_rows(self, padded_rows: int) -> int:
         return min(self.unpadded_vocab_size or padded_rows, padded_rows)

@@ -10,9 +10,18 @@ from torch.distributed._shard.metadata import ShardMetadata
 from torch.distributed._shard.sharded_tensor import Shard, ShardedTensor, ShardedTensorMetadata
 from torch.distributed._shard.sharded_tensor.metadata import TensorProperties
 
+from miles.backends.training_utils.checkpoint.adapter.source_error import AdapterSourceError
+
 ADAPTER_STATE_DIRNAME = "adapter_state"
 STEP_KEY = "optimizer.step"
 _STATE_SUFFIXES = ("weight", "exp_avg", "exp_avg_sq")
+# a head's rows past the vocabulary, which a backend pads its lora_B to (native Megatron): stored so a resume is
+# exact, read only by a run padding to the same size, and never exported or converted
+VOCAB_PADDING_SUFFIX = ".vocab_padding"
+
+
+def is_vocab_padding(key: str) -> bool:
+    return key.endswith(VOCAB_PADDING_SUFFIX)
 
 
 @dataclass(frozen=True)
@@ -156,6 +165,10 @@ def _sharded(specs: list[LocalShardSpec], tensors: list[torch.Tensor]) -> Sharde
 
 
 def _state_dict(state: AdapterState, *, for_save: bool) -> dict:
+    boxes = [(spec.key, spec.offsets) for spec in state.shard_specs]
+    # a key's blocks become one ShardedTensor's shards: the same box twice is one shard a load fills only once
+    duplicated = sorted({key for key, offsets in boxes if boxes.count((key, offsets)) > 1})
+    assert not duplicated, f"this rank holds several blocks of {duplicated} at the same offsets"
     distributed = dist.is_initialized()
     state_dict = {}
     for suffix, tensors in state.tensors_by_suffix().items():
@@ -218,14 +231,17 @@ def read_adapter_state_keys(directory: Path) -> set[str]:
 
 def assert_adapter_state_keys(directory: Path, run_keys: set[str], *, with_optimizer: bool) -> None:
     """Every key the run trains is stored; nothing else is, except moments a weights-only load leaves unread."""
-    stored = read_adapter_state_keys(directory)
+    # a run without the source's vocab padding ignores it; one without it in the source keeps its own at zero
+    stored = {name for name in read_adapter_state_keys(directory) if not is_vocab_padding(name.rsplit(".", 1)[0])}
+    run_keys = {key for key in run_keys if not is_vocab_padding(key)}
     suffixes = _STATE_SUFFIXES if with_optimizer else ("weight",)
     missing = {f"{key}.{suffix}" for key in run_keys for suffix in suffixes} - stored
     unexpected = stored - {f"{key}.{suffix}" for key in run_keys for suffix in _STATE_SUFFIXES}
-    assert not missing and not unexpected, (
-        f"{directory}: adapter_state/ does not match the run: "
-        f"missing {sorted(missing)[:8]}, unexpected {sorted(unexpected)[:8]}"
-    )
+    if missing or unexpected:
+        raise AdapterSourceError(
+            f"{directory}: adapter_state/ does not match the run: "
+            f"missing {sorted(missing)[:8]}, unexpected {sorted(unexpected)[:8]}"
+        )
 
 
 def read_adapter_state_weights(directory: Path) -> dict[str, torch.Tensor]:
@@ -234,7 +250,13 @@ def read_adapter_state_weights(directory: Path) -> dict[str, torch.Tensor]:
     state_dict = {
         name: torch.empty(metadata[name].size, dtype=metadata[name].properties.dtype)
         for name in metadata
-        if name.endswith(".weight")
+        if name.endswith(".weight") and not is_vocab_padding(name.removesuffix(".weight"))
     }
     dcp.load(state_dict, checkpoint_id=directory / ADAPTER_STATE_DIRNAME, no_dist=True)
     return {name.removesuffix(".weight"): tensor for name, tensor in state_dict.items()}
+
+
+def read_adapter_state_shapes(directory: Path) -> dict[str, tuple[int, ...]]:
+    """Global shapes of the stored weights, by HF key."""
+    metadata = dcp.FileSystemReader(directory / ADAPTER_STATE_DIRNAME).read_metadata().state_dict_metadata
+    return {name.removesuffix(".weight"): tuple(metadata[name].size) for name in metadata if name.endswith(".weight")}

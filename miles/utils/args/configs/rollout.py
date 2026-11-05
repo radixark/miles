@@ -10,6 +10,8 @@ from miles.utils.object_store_config import ObjectStoreBackend
 # rollout
 class RolloutRelatedConfig(BaseConfig):
     custom_agent_function_path: A[CustomFunctionConfig | None, Arg()] = None
+    # agent functions --rollout-data-yaml-config datasets name, resolved at startup; abort fans out to them
+    rollout_dataset_agent_functions: list[CustomFunctionConfig] = []
     use_sampling_support_replay: bool
     rollout_sampling_logprobs_mode: Literal["selected", "support"]
     rollout_top_logprobs_num: A[int, Arg()] = 0
@@ -347,6 +349,8 @@ class RolloutRelatedConfig(BaseConfig):
 
 
 class RolloutRelatedRolloutOnlyConfig(BaseConfig):
+    # hooks named by --rollout-data-yaml-config datasets, resolved at startup and keyed by path; not a flag
+    rollout_dataset_functions: dict[str, CustomFunctionConfig] = {}
     namespaced_radix_cache: A[
         bool | None,
         Arg(

@@ -1,22 +1,30 @@
 """The save / load flow, written once; backends only provide their checkpoint members."""
 
 import json
-from collections.abc import Callable, Iterable, Mapping
-from dataclasses import replace
+import logging
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
 import torch
 
-from miles.backends.training_utils.checkpoint.adapter.adapter_exports import write_peft_adapter, write_sampler_adapter
+from miles.backends.training_utils.checkpoint.adapter.adapter_exports import (
+    has_plain_peft_form,
+    write_external_adapter,
+    write_peft_adapter,
+    write_sampler_adapter,
+)
 from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
     AdapterState,
     LocalShardSpec,
     _save_adapter_state,
     assert_adapter_state_keys,
     gloo_group,
+    is_vocab_padding,
     raise_if_any_rank_failed,
+    read_adapter_state_shapes,
 )
 from miles.backends.training_utils.checkpoint.adapter.commit import (
     CommittedAdapterDir,
@@ -44,28 +52,71 @@ from miles.backends.training_utils.checkpoint.adapter.readers import (
     ExternalWeightsReader,
     MilesAdapterDirReader,
     PeftAdapterReader,
-    _collapse_shared_lora_a,
     classify_adapter_source,
+    collapse_shared_lora_a,
 )
+from miles.backends.training_utils.checkpoint.adapter.source_error import AdapterSourceError
 from miles.utils.lora.hf_lora_targets import HfLoraTargets
 
 TRAINING_STATE_FILENAME = "training_state.json"
 
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class HeadRows:
+    """The head's lora_B, whose rows follow a vocabulary: a source may hold more rows than the run trains (an HF
+    export over ``vocab_size``, a backend's padding), and the run keeps its first ones, as its exports trim the rest.
+    """
+
+    key: str  # the HF key adapter_state/ holds it under, e.g. "lm_head.lora_B"
+    max_source_rows: int
+
+
+class InModelLoader(Protocol):
+    """A source a backend reads straight into its model, in the run's own parametrization.
+
+    Every rank calls each step; ``load_adapter_dir`` agrees across ranks after each. A step that enters a collective
+    agrees its own rank-local failures before it (``raise_if_any_rank_failed``), so one rank never fails alone while
+    the others wait inside it.
+    """
+
+    # reads and checks the source without changing the model, so a refused source leaves the model as it was;
+    # returns the source's parametrization and whether it holds optimizer state
+    def parametrization(self, path: Path) -> tuple[AdapterParametrization, bool]: ...
+
+    # every read and check left before the model is written; returns what apply needs
+    def prepare(self, path: Path) -> Any: ...
+
+    # writes the prepared source into the model
+    def apply(self, prepared: Any) -> None: ...
+
 
 class AdapterCheckpointMembers(Protocol):
-    """The checkpoint members every backend's AdapterSlots implements; they never touch files."""
+    """The checkpoint members every backend's AdapterSlots implements; they never touch files.
 
-    # the names export_bf16_adapter yields: HF module paths or sglang's (experts.w1/w3/w2)
+    The library agrees across ranks after each member it calls. A member that enters a collective agrees its own
+    rank-local failures before it (``raise_if_any_rank_failed``), so one rank never fails alone while the others wait
+    inside it.
+    """
+
+    # naming of export_bf16_adapter's names; picks the mapper to HF keys
     bf16_adapter_key_style: Literal["peft", "sampler"]
+    # the trained head's lora_B, or None when the adapter has no head
+    head_rows: HeadRows | None
 
     def export_bf16_adapter(self, slot: int) -> Iterable[tuple[str, torch.Tensor]]:
-        """Collective; whole bf16 tensors on rank 0, nothing elsewhere."""
+        """Collective; whole tensors on rank 0, nothing elsewhere. Any float dtype; the exports cast to bf16."""
 
     def get_local_shard_specs(self, slot: int) -> list[LocalShardSpec]: ...
 
     def export_adapter_state(self, slot: int) -> AdapterState: ...
 
+    # rank-local, no collectives: the library agrees across ranks after it, before finish_import_adapter_state
     def import_adapter_state(self, slot: int, state: AdapterState) -> None: ...
+
+    # the collectives that complete an import (e.g. syncing params from the written masters); every rank calls it
+    def finish_import_adapter_state(self, slot: int) -> None: ...
 
 
 def save_adapter_dir(
@@ -89,7 +140,7 @@ def save_adapter_dir(
         # agree before any collective, so one rank's failure cannot leave the others waiting in it
         raise_if_any_rank_failed(error)
         # DCP writes primary pieces only; replicas cannot stand in for a missing primary
-        keys = _all_ranks_keys([s for s in state.shard_specs if s.is_primary])
+        keys = _all_ranks_keys([s for s in state.shard_specs if s.is_primary and not is_vocab_padding(s.key)])
         try:
             _assert_real_rank(state.shard_specs, parametrization.lora_rank)
             expected = parametrization.adapter_state_keys()
@@ -124,19 +175,33 @@ def _assert_real_rank(specs: list[LocalShardSpec], lora_rank: int) -> None:
         ), f"{spec.key}: rank {spec.global_shape[rank_axis]} != {lora_rank}"
 
 
+def _hf_key_mapper(members: AdapterCheckpointMembers, targets: HfLoraTargets):
+    return {
+        "peft": map_peft_keys_to_hf_keys,
+        "sampler": partial(map_sampler_keys_to_hf_keys, targets=targets),
+    }[members.bf16_adapter_key_style]
+
+
 def _hf_keyed_bf16_adapter(
     named_tensors: list[tuple[str, torch.Tensor]],
     members: AdapterCheckpointMembers,
     parametrization: AdapterParametrization,
     targets: HfLoraTargets,
 ) -> dict[str, torch.Tensor]:
-    map_name = {
-        "peft": map_peft_keys_to_hf_keys,
-        "sampler": partial(map_sampler_keys_to_hf_keys, targets=targets),
-    }[members.bf16_adapter_key_style]
-    weights, fused_groups = map_named_tensors_to_hf_keys(named_tensors, map_name, targets)
+    weights, fused_groups = map_named_tensors_to_hf_keys(named_tensors, _hf_key_mapper(members, targets), targets)
     # the export names a shared A once per module; the writers expect it once per group
-    return _collapse_shared_lora_a(weights, parametrization, fused_groups)
+    return collapse_shared_lora_a(weights, parametrization, fused_groups)
+
+
+def _stacked_expert_keys(named_tensors: list[tuple[str, torch.Tensor]], map_name) -> frozenset[str]:
+    """The HF keys the export names as one stacked experts tensor: the base checkpoint's packed form. A shared-outer
+    side also comes unindexed, as ``[1, ...]``; it is one tensor for every expert, not a stack, so it is left out."""
+    keys = set()
+    for name, tensor in named_tensors:
+        hf_key = map_name(name)
+        if hf_key.expert_index is None and ".experts." in hf_key.key and tensor.dim() == 3 and tensor.shape[0] > 1:
+            keys.add(hf_key.key)
+    return frozenset(keys)
 
 
 def _is_writer() -> bool:
@@ -149,15 +214,62 @@ def write_peft_export(
     slot: int,
     parametrization: AdapterParametrization,
     targets: HfLoraTargets,
+    *,
+    lora_dropout: float,
 ) -> None:
     """All ranks call; rank 0 writes ``slot``'s bf16 PEFT export into ``directory``."""
+    _write_bf16_export(
+        directory,
+        members,
+        slot,
+        parametrization,
+        targets,
+        lambda *view, stacked_keys: write_peft_adapter(*view, stacked_keys=stacked_keys, lora_dropout=lora_dropout),
+    )
+
+
+def write_sampler_view(
+    directory: Path,
+    members: AdapterCheckpointMembers,
+    slot: int,
+    parametrization: AdapterParametrization,
+    targets: HfLoraTargets,
+    *,
+    lora_dropout: float,
+) -> None:
+    """All ranks call; rank 0 writes ``slot``'s bf16 sampler export into ``directory``, outside any commit."""
+    # the sampler layout keeps every expert stacked
+    _write_bf16_export(
+        directory,
+        members,
+        slot,
+        parametrization,
+        targets,
+        lambda *view, stacked_keys: write_sampler_adapter(*view, lora_dropout=lora_dropout),
+    )
+
+
+def _write_bf16_export(
+    directory: Path,
+    members: AdapterCheckpointMembers,
+    slot: int,
+    parametrization: AdapterParametrization,
+    targets: HfLoraTargets,
+    write: Callable[..., None],
+) -> None:
     error = None
     try:
         # the gathered adapter leaves the GPU before rank 0 splits and copies it
         named_tensors = [(key, tensor.cpu()) for key, tensor in members.export_bf16_adapter(slot)]
         if _is_writer():
             weights = _hf_keyed_bf16_adapter(named_tensors, members, parametrization, targets)
-            write_peft_adapter(directory, weights, parametrization, targets)
+            # Bridge names experts as its checkpoint stores them; native always stacks them, so the family decides
+            stacked_keys = (
+                _stacked_expert_keys(named_tensors, _hf_key_mapper(members, targets))
+                if members.bf16_adapter_key_style == "peft"
+                else None
+            )
+            write(directory, weights, parametrization, targets, stacked_keys=stacked_keys)
     except Exception as exc:
         error = exc
     raise_if_any_rank_failed(error)
@@ -172,10 +284,12 @@ def save_and_commit_adapter_dir(
     targets: HfLoraTargets,
     *,
     training_state: dict | None = None,
+    lora_dropout: float,
 ) -> CommittedAdapterDir:
     """RL's ``--save``: all ranks write, rank 0 commits over any earlier save of ``name``, then the PEFT export.
 
-    A failed PEFT export fails every rank but keeps the committed checkpoint; its view can be rebuilt offline.
+    A failed PEFT export fails every rank but keeps the committed checkpoint; its view can be rebuilt offline. A
+    parametrization with no plain-PEFT form gets no PEFT view: the adapter dir is the checkpoint.
     """
     written = save_adapter_dir(
         root, name, members, slot, parametrization, tenant_digest=None, training_state=training_state
@@ -187,7 +301,10 @@ def save_and_commit_adapter_dir(
         except Exception as exc:
             error = exc
     raise_if_any_rank_failed(error)
-    write_peft_export(written.path, members, slot, parametrization, targets)
+    if has_plain_peft_form(parametrization, targets):
+        write_peft_export(written.path, members, slot, parametrization, targets, lora_dropout=lora_dropout)
+    elif _is_writer():
+        logger.info(f"{written.path}: no PEFT view, as this parametrization has no plain-PEFT form")
     if _is_writer():
         delete_retired_adapter_dirs(root)
     return CommittedAdapterDir(written.path, written.commit_id)
@@ -202,6 +319,7 @@ def write_sampler_export(
     targets: HfLoraTargets,
     *,
     tenant_digest: str | None,
+    lora_dropout: float,
 ) -> UncommittedAdapterDir:
     """All ranks call; rank 0 writes ``slot``'s bf16 sampler export. The caller's committer then commits it."""
     with write_adapter_dir(root, name, tenant_digest=tenant_digest) as written:
@@ -209,12 +327,85 @@ def write_sampler_export(
         named_tensors = [(key, tensor.cpu()) for key, tensor in members.export_bf16_adapter(slot)]
         if _is_writer():
             weights = _hf_keyed_bf16_adapter(named_tensors, members, parametrization, targets)
-            write_sampler_adapter(written.path, weights, parametrization, targets)
+            write_sampler_adapter(written.path, weights, parametrization, targets, lora_dropout=lora_dropout)
     return written
 
 
+def write_external_export(
+    root: Path,
+    name: str,
+    members: AdapterCheckpointMembers,
+    slot: int,
+    parametrization: AdapterParametrization,
+    targets: HfLoraTargets,
+    *,
+    tenant_digest: str | None,
+    age_recipients: Sequence[str] = (),
+    lora_dropout: float,
+) -> UncommittedAdapterDir:
+    """All ranks call; rank 0 writes ``slot``'s external export from the fp32 masters (no parametrization: it is a
+    download, not a checkpoint). The caller's committer then commits it."""
+    with write_adapter_dir(root, name, tenant_digest=tenant_digest) as written:
+        state, error = None, None
+        try:
+            state = members.export_adapter_state(slot)
+        except Exception as exc:
+            error = exc
+        # agree before the gather, so one rank's failure cannot leave the others waiting in it
+        raise_if_any_rank_failed(error)
+        weights = _gather_whole_weights(state)
+        # rank 0's own pieces are in ``weights`` now; the export would otherwise hold them twice
+        del state
+        if _is_writer():
+            keys, expected = set(weights), parametrization.adapter_state_keys()
+            assert keys == expected, (
+                f"the backend's adapter state does not match the parametrization: "
+                f"missing {sorted(expected - keys)[:8]}, unexpected {sorted(keys - expected)[:8]}"
+            )
+            write_external_adapter(
+                written.path,
+                weights,
+                parametrization,
+                targets,
+                age_recipients=age_recipients,
+                lora_dropout=lora_dropout,
+            )
+    return written
+
+
+def _gather_whole_weights(state: AdapterState) -> dict[str, torch.Tensor] | None:
+    """Collective: each key's whole fp32 weight, assembled on rank 0 from the primary pieces; None elsewhere."""
+    pieces = [(s, w.cpu()) for s, w in zip(state.shard_specs, state.weights, strict=True) if s.is_primary]
+    specs_by_rank = [[spec for spec, _ in pieces]]
+    if torch.distributed.is_initialized():
+        # only the specs go through gather_object, which pads every rank's payload to the largest one
+        specs_by_rank = [None] * torch.distributed.get_world_size() if _is_writer() else None
+        torch.distributed.gather_object([spec for spec, _ in pieces], specs_by_rank, dst=0, group=gloo_group())
+    if not _is_writer():
+        for _, piece in pieces:
+            torch.distributed.send(piece.float().contiguous(), dst=0, group=gloo_group())
+        return None
+    whole, filled = {}, {}
+    # pieces arrive one at a time, so rank 0 holds the whole adapter plus one received piece
+    for rank, specs in enumerate(specs_by_rank):
+        for index, spec in enumerate(specs):
+            if rank == 0:
+                piece = pieces[index][1]
+            else:
+                piece = torch.empty(spec.local_shape, dtype=torch.float32)
+                torch.distributed.recv(piece, src=rank, group=gloo_group())
+            full = whole.setdefault(spec.key, torch.empty(spec.global_shape, dtype=torch.float32))
+            full[tuple(slice(o, o + n) for o, n in zip(spec.offsets, spec.local_shape, strict=True))] = piece
+            filled[spec.key] = filled.get(spec.key, 0) + piece.numel()
+    # primary pieces never overlap, so a tensor is whole exactly when they cover all of its elements
+    partial_keys = sorted(key for key, tensor in whole.items() if filled[key] != tensor.numel())
+    assert not partial_keys, f"the primary pieces do not cover {partial_keys[:8]}"
+    return whole
+
+
 def _slice(full: torch.Tensor, spec: LocalShardSpec) -> torch.Tensor:
-    assert tuple(full.shape) == spec.global_shape, f"{spec.key}: source {tuple(full.shape)} != run {spec.global_shape}"
+    if tuple(full.shape) != spec.global_shape:
+        raise AdapterSourceError(f"{spec.key}: source {tuple(full.shape)} != run {spec.global_shape}")
     return full[tuple(slice(o, o + n) for o, n in zip(spec.offsets, spec.local_shape, strict=True))].clone()
 
 
@@ -226,23 +417,54 @@ def _with_zero_moments(specs: list[LocalShardSpec], pieces: list[torch.Tensor]) 
 
 def _assert_has_keys(weights: dict[str, torch.Tensor], keys: set[str]) -> None:
     missing = keys - set(weights)
-    assert not missing, f"the source lacks tensors the run trains: {sorted(missing)}"
+    if missing:
+        raise AdapterSourceError(f"the source lacks tensors the run trains: {sorted(missing)}")
 
 
-def _weights_only_state(
-    weights: dict[str, torch.Tensor], specs: list[LocalShardSpec], targets: HfLoraTargets
-) -> AdapterState:
-    _assert_has_keys(weights, {s.key for s in specs})
-    head_b = f"{targets.unembed[0]}.lora_B"
-    return _with_zero_moments(
-        specs,
-        [_slice(_served_rows(weights[s.key], s) if s.key == head_b else weights[s.key], s).float() for s in specs],
+def _zero_filled(specs: list[LocalShardSpec], loaded: AdapterState) -> AdapterState:
+    """``loaded`` (pieces of ``specs``) with zeros for the pieces it left unread, and zero moments if it read none."""
+    index = {id(s): i for i, s in enumerate(loaded.shard_specs)}
+
+    def aligned(tensors: list[torch.Tensor]) -> list[torch.Tensor]:
+        return [tensors[index[id(s)]] if id(s) in index else torch.zeros(s.local_shape) for s in specs]
+
+    if not loaded.has_optimizer_state:
+        return _with_zero_moments(specs, aligned(loaded.weights))
+    return AdapterState(
+        specs, aligned(loaded.weights), aligned(loaded.exp_avgs), aligned(loaded.exp_avg_sqs), step=loaded.step
     )
 
 
-def _served_rows(head_b: torch.Tensor, spec: LocalShardSpec) -> torch.Tensor:
-    # the run holds the served vocab; rows past it (HF vocab_size, Megatron padding) stay at init, as exports trim them
-    return head_b[: spec.global_shape[0]]
+def _weights_only_state(
+    weights: dict[str, torch.Tensor], specs: list[LocalShardSpec], head_rows: HeadRows | None
+) -> AdapterState:
+    _assert_has_keys(weights, {s.key for s in specs if not is_vocab_padding(s.key)})
+    # no export or conversion carries vocab padding: it stays zero, as at init
+    return _with_zero_moments(
+        specs,
+        [
+            (
+                torch.zeros(s.local_shape)
+                if is_vocab_padding(s.key)
+                else _slice(_served_rows(weights[s.key], s, head_rows), s).float()
+            )
+            for s in specs
+        ],
+    )
+
+
+def _served_rows(full: torch.Tensor, spec: LocalShardSpec, head_rows: HeadRows | None) -> torch.Tensor:
+    if head_rows is None or spec.key != head_rows.key:
+        return full
+    _assert_head_rows(spec.key, full.shape[0], spec.global_shape[0], head_rows)
+    return full[: spec.global_shape[0]]
+
+
+def _assert_head_rows(key: str, rows: int, served: int, head_rows: HeadRows) -> None:
+    if not served <= rows <= head_rows.max_source_rows:
+        raise AdapterSourceError(
+            f"{key}: the source has {rows} rows; this run serves {served} and reads up to {head_rows.max_source_rows}"
+        )
 
 
 def _with_run_alpha_if_unknown(source: AdapterParametrization, run: AdapterParametrization) -> AdapterParametrization:
@@ -275,11 +497,19 @@ def _reads_adapter_state_pieces(reader, steps) -> bool:
 
 
 def check_adapter_source(
-    path: Path, run: AdapterParametrization, targets: HfLoraTargets, *, load_optimizer: bool
+    path: Path,
+    run: AdapterParametrization,
+    targets: HfLoraTargets,
+    *,
+    load_optimizer: bool,
+    run_shapes: dict[str, tuple[int, ...]] | None = None,
+    head_rows: HeadRows | None = None,
 ) -> AdapterSourceKind:
     """Rank-local dry run of every check ``load_adapter_dir`` makes on the files of a source it reads itself.
 
     Raises what that load would; an in-model source is returned unchecked, its loader's checks are the backend's.
+    ``run_shapes``: the whole shape of each HF-keyed tensor this rank loads, checked on a source read as weights;
+    ``head_rows``: the members' head, whose source may hold more rows than the run serves, as the load reads it.
     """
     kind = classify_adapter_source(path, targets, load_optimizer=load_optimizer)
     if kind.is_read_into_model():
@@ -288,7 +518,18 @@ def check_adapter_source(
     if _reads_adapter_state_pieces(reader, steps):
         assert_adapter_state_keys(path, run.adapter_state_keys(), with_optimizer=load_optimizer)
     else:
-        _assert_has_keys(apply_parametrization_conversion(reader.read_weights(), steps), run.adapter_state_keys())
+        weights = apply_parametrization_conversion(reader.read_weights(), steps)
+        _assert_has_keys(weights, run.adapter_state_keys())
+        if run_shapes is not None:
+            if head_rows is not None and head_rows.key in run_shapes:
+                source, run_shape = tuple(weights[head_rows.key].shape), run_shapes[head_rows.key]
+                _assert_head_rows(head_rows.key, source[0], run_shape[0], head_rows)
+                run_shapes = {**run_shapes, head_rows.key: (source[0], *run_shape[1:])}
+            differing = [
+                f"{k}: {tuple(weights[k].shape)} != {s}" for k, s in run_shapes.items() if tuple(weights[k].shape) != s
+            ]
+            if differing:
+                raise AdapterSourceError(f"tensor shapes differ from this model's, e.g. {differing[:3]}")
     return kind
 
 
@@ -300,32 +541,49 @@ def load_adapter_dir(
     targets: HfLoraTargets,
     *,
     load_optimizer: bool,
-    in_model_loaders_by_kind: Mapping[AdapterSourceKind, Callable[[Path], AdapterParametrization]] | None = None,
+    in_model_loaders_by_kind: Mapping[AdapterSourceKind, InModelLoader] | None = None,
 ) -> AdapterParametrization:
     """Load any recognized source into ``slot``; returns the source parametrization.
 
-    All ranks call. A failure on one rank fails every rank before the next collective.
+    All ranks call. A failure on one rank fails every rank before the next collective, provided a backend's in-model
+    loader agrees its own failures before each collective it enters (see ``InModelLoader``).
     Alpha is not checked here: the caller owns it (Tinker adopts the source's, RL compares it to ``--lora-alpha``).
+
+    A source that needs conversion (PEFT, external weights, another parametrization) is read whole on every rank:
+    about 6 bytes of host memory per source element for a bf16 file (its tensors and their fp32 upcast), e.g.
+    ~41 GB per rank and ~330 GB per 8-rank node for a rank-16 adapter on every DeepSeek-V3 expert.
     """
     kind, error = None, None
     try:
         kind = classify_adapter_source(path, targets, load_optimizer=load_optimizer)
-        assert not kind.is_read_into_model() or (
-            in_model_loaders_by_kind is not None and kind in in_model_loaders_by_kind
-        ), f"{path} is a {kind.value} source, which this backend cannot load"
+        if kind.is_read_into_model() and (in_model_loaders_by_kind is None or kind not in in_model_loaders_by_kind):
+            raise AdapterSourceError(f"{path} is a {kind.value} source, which this backend cannot load")
     except Exception as exc:
         error = exc
     raise_if_any_rank_failed(error)
     if kind.is_read_into_model():
-        source = None
+        loader, source = in_model_loaders_by_kind[kind], None
         try:
-            source = _with_run_alpha_if_unknown(in_model_loaders_by_kind[kind](path), run)
+            source, has_optimizer_state = loader.parametrization(path)
+            source = _with_run_alpha_if_unknown(source, run)
             steps = plan_parametrization_conversion(source, run, source_dtype=torch.float32)
             # an in-model loader reads straight into the run's parametrization; it cannot convert
-            assert not steps, f"{path} needs {steps} to match the run, which an in-model loader cannot do"
+            if steps:
+                raise AdapterSourceError(f"{path} needs {steps} to match the run, which an in-model loader cannot do")
             assert_parametrization_matches_run(
-                source, run, steps, load_optimizer=load_optimizer, has_optimizer_state=True
+                source, run, steps, load_optimizer=load_optimizer, has_optimizer_state=has_optimizer_state
             )
+        except Exception as exc:
+            error = exc
+        raise_if_any_rank_failed(error)
+        prepared = None
+        try:
+            prepared = loader.prepare(path)
+        except Exception as exc:
+            error = exc
+        raise_if_any_rank_failed(error)
+        try:
+            loader.apply(prepared)
         except Exception as exc:
             error = exc
         raise_if_any_rank_failed(error)
@@ -347,25 +605,33 @@ def load_adapter_dir(
             error = exc
         raise_if_any_rank_failed(error)
         # same parametrization: every rank reads only its own pieces, and moments only when it loads them
-        weights = [torch.empty(s.local_shape, dtype=torch.float32) for s in specs]
+        stored_shapes = read_adapter_state_shapes(path)
+        # vocab padding of another size, or none in the source, stays zero, as at init
+        read = [s for s in specs if not is_vocab_padding(s.key) or stored_shapes.get(s.key) == s.global_shape]
+        weights = [torch.empty(s.local_shape, dtype=torch.float32) for s in read]
         moments = (
-            [[torch.empty(s.local_shape, dtype=torch.float32) for s in specs] for _ in range(2)]
+            [[torch.empty(s.local_shape, dtype=torch.float32) for s in read] for _ in range(2)]
             if load_optimizer
             else [[], []]
         )
-        state = AdapterState(specs, weights, *moments, step=None, has_optimizer_state=load_optimizer)
-        state.step = reader.load_state(state)
-        if not load_optimizer:
-            state = _with_zero_moments(specs, state.weights)
+        loaded = AdapterState(read, weights, *moments, step=None, has_optimizer_state=load_optimizer)
+        loaded.step = reader.load_state(loaded)
+        state = _zero_filled(specs, loaded)
     else:
         state = None
         try:
-            state = _weights_only_state(apply_parametrization_conversion(reader.read_weights(), steps), specs, targets)
+            weights = apply_parametrization_conversion(reader.read_weights(), steps)
+            state = _weights_only_state(weights, specs, members.head_rows)
         except Exception as exc:
             error = exc
         raise_if_any_rank_failed(error)
     try:
         members.import_adapter_state(slot, state)
+    except Exception as exc:
+        error = exc
+    raise_if_any_rank_failed(error)
+    try:
+        members.finish_import_adapter_state(slot)
     except Exception as exc:
         error = exc
     raise_if_any_rank_failed(error)

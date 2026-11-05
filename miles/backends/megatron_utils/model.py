@@ -65,6 +65,7 @@ from .ci_utils import (
 from .initialize import is_first_replica_megatron_main_rank
 from .lora.bridge_checkpoint import BridgeAdapterSlots
 from .lora.checkpoint import restore_single_lora, save_single_lora
+from .lora.native.checkpoint import NativeAdapterSlots
 from .lora.utils import is_lora_enabled, is_lora_model, patch_param_grad_buffer_for_colocate_mode_lora
 from .model_provider import get_model_provider_func
 from .parallel import get_packed_seq_params
@@ -92,15 +93,15 @@ def get_optimizer_param_scheduler(args: TrainerConfig, optimizer: MegatronOptimi
         optimizer (MegatronOptimizer): Megatron optimizer bound to the model.
 
     Returns:
-        OptimizerParamScheduler: Initialized scheduler bound to ``optimizer``.
+        OptimizerParamScheduler | None: None when the run trains no step.
     """
     # Iteration-based training.
     with args.backend.mutable():
         args.backend.train_iters = (
             args.num_rollout * args.rollout_batch_size * args.n_samples_per_prompt // args.backend.global_batch_size
         )
-        # a run that trains no step (--num-rollout 0) has no schedule, and a loaded one passes through untouched
-        if args.backend.train_iters == 0:
+        # a convert-save (--num-rollout 0) trains no step: no schedule, and a loaded one passes through untouched
+        if args.backend.train_iters == 0 and args.lora_adapter_convert_save is not None:
             return None
         if args.backend.lr_decay_iters is None:
             args.backend.lr_decay_iters = args.backend.train_iters
@@ -933,7 +934,8 @@ def save(
     checkpointing_context: dict | None = None,
     non_persistent_ckpt: bool = False,
     *,
-    adapter_slots: BridgeAdapterSlots | None = None,
+    adapter_slots: BridgeAdapterSlots | NativeAdapterSlots | None = None,
+    schedule_first_rollout: int | None = None,
 ) -> None:
     """Persist a training checkpoint safely with forward hooks disabled.
 
@@ -954,7 +956,8 @@ def save(
 
     if is_lora_model(model):
         assert adapter_slots is not None, "a LoRA --save needs the model's adapter slots"
-        save_single_lora(model, optimizer, opt_param_scheduler, adapter_slots, args, iteration)
+        assert schedule_first_rollout is not None, "a LoRA --save records the rollout its schedule counts from"
+        save_single_lora(model, optimizer, opt_param_scheduler, adapter_slots, args, iteration, schedule_first_rollout)
     else:
         save_checkpoint(
             iteration,
@@ -1020,6 +1023,9 @@ def build_model_and_optimizer(
 class LoadCheckpointOutput:
     loaded_rollout_id: int
     start_rollout_id: int
+    # the rollout the LR schedule counts from: --start-rollout-id less the rollouts it completed, else a restored
+    # adapter's, else 0
+    schedule_first_rollout: int
 
 
 def load_model_state(
@@ -1031,7 +1037,7 @@ def load_model_state(
     role: str,
     checkpointing_context: dict | None,
     resume_from_ckpt: bool,
-    adapter_slots: BridgeAdapterSlots | None = None,
+    adapter_slots: BridgeAdapterSlots | NativeAdapterSlots | None = None,
 ) -> LoadCheckpointOutput:
     if is_multi_lora_enabled(args):
         # Hide adapter params so the bridge's conversion-task walk doesn't see them
@@ -1072,15 +1078,16 @@ def load_model_state(
         restored_trained_iteration = not args.backend.finetune
         scheduler_restored = False
 
-    adapter_iteration = None
+    adapter_iteration, adapter_first_rollout = None, 0
     if is_lora_enabled(args) and role == "actor" and args.lora_adapter_path is not None:
-        adapter_iteration = restore_single_lora(
+        restored = restore_single_lora(
             model, args, adapter_slots=adapter_slots, optimizer=optimizer, opt_param_scheduler=opt_param_scheduler
         )
+        adapter_iteration, adapter_first_rollout = restored.iteration, restored.first_rollout
         if adapter_iteration is not None:
             iteration = adapter_iteration
             restored_trained_iteration = True
-            scheduler_restored = True
+            scheduler_restored = restored.scheduler_restored
 
     check_peak_gpu_memory_after_load(args)
     clear_memory()
@@ -1088,7 +1095,25 @@ def load_model_state(
     check_model_hashes(args, model, iteration)
 
     if opt_param_scheduler is not None and not scheduler_restored:
-        opt_param_scheduler.step(increment=iteration * args.backend.global_batch_size)
+        if adapter_iteration is not None:
+            # the scheduler counts trained samples: a rollout trains whole global batches and trims the rest
+            rollout_samples = args.rollout_batch_size * args.n_samples_per_prompt
+            if args.use_dynamic_global_batch_size:
+                # one step on the rollout rounded down to the DP size
+                batch_size = get_parallel_state().effective_dp.size
+            else:
+                batch_size = args.backend.global_batch_size
+            # an adapter's iteration is its last completed rollout; its run trained from its first rollout on
+            increment = (adapter_iteration + 1 - adapter_first_rollout) * (rollout_samples // batch_size * batch_size)
+        else:
+            increment = iteration * args.backend.global_batch_size
+        opt_param_scheduler.step(increment=increment)
+
+    schedule_first_rollout = adapter_first_rollout
+    if args.start_rollout_id is not None:
+        # the run starts at --start-rollout-id, not after the restored rollout: the schedule's origin moves with it
+        completed_rollouts = 0 if adapter_iteration is None else adapter_iteration + 1 - adapter_first_rollout
+        schedule_first_rollout = args.start_rollout_id - completed_rollouts
 
     if not restored_trained_iteration:
         assert iteration == 0, f"Weight initialization returned a trained iteration: {iteration}"
@@ -1098,4 +1123,6 @@ def load_model_state(
     else:
         start_rollout_id = 0
 
-    return LoadCheckpointOutput(loaded_rollout_id=iteration, start_rollout_id=start_rollout_id)
+    return LoadCheckpointOutput(
+        loaded_rollout_id=iteration, start_rollout_id=start_rollout_id, schedule_first_rollout=schedule_first_rollout
+    )

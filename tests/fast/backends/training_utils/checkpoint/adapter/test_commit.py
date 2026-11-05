@@ -54,10 +54,11 @@ def test_refuses_to_overwrite_when_asked_not_to(tmp_path):
     assert sorted(p.name for p in tmp_path.iterdir()) == sorted(["w", first.path.name]), "the refused write is removed"
 
 
-def test_refuses_to_overwrite_a_regular_file(tmp_path):
+@pytest.mark.parametrize("overwrite", [False, True])
+def test_refuses_to_overwrite_a_regular_file(tmp_path, overwrite):
     (tmp_path / "w").write_text("user file")
     with pytest.raises(FileExistsError):
-        _save(tmp_path, "w", "2", overwrite=False)
+        _save(tmp_path, "w", "2", overwrite=overwrite)
     assert (tmp_path / "w").read_text() == "user file"
 
 
@@ -78,6 +79,18 @@ def test_a_failed_write_is_never_visible_and_leaves_nothing(tmp_path):
             raise OSError("disk full")
     assert resolve_adapter_dir(tmp_path, "w", tenant=None) is None
     assert list(tmp_path.iterdir()) == [], "a retry under a new name must not leave the failed write behind"
+
+
+def test_a_commit_failing_before_the_link_swap_removes_what_it_wrote(tmp_path, monkeypatch):
+    first = _save(tmp_path, "w", "1")
+
+    def fail(src, dst):
+        raise OSError("link swap failed")
+
+    monkeypatch.setattr(os, "replace", fail)
+    with pytest.raises(OSError, match="link swap failed"):
+        _save(tmp_path, "w", "2")
+    assert sorted(p.name for p in tmp_path.iterdir()) == sorted(["w", first.path.name]), "no orphan dir or link"
 
 
 def test_a_failed_prepare_leaves_nothing(tmp_path):
@@ -252,3 +265,15 @@ def test_committing_a_dir_this_process_cannot_see_is_a_storage_error(tmp_path):
     written = UncommittedAdapterDir(tmp_path / ".w.0123456789abcdef", "0123456789abcdef")
     with pytest.raises(FileNotFoundError, match="does not exist"):
         commit_adapter_dir(tmp_path, "w", written, overwrite=False)
+
+
+def test_one_committer_per_root_a_commit_removes_another_in_flight_write_of_the_name(tmp_path):
+    """Only the root's single committer writes and commits; a second writer of the same name in flight is
+    unreferenced to recovery, so the commit removes it and that write fails instead of committing."""
+    with pytest.raises(RuntimeError, match="No such file or directory"):
+        with write_adapter_dir(tmp_path, "w") as in_flight:
+            (in_flight.path / "payload").write_text("in flight")
+            committed = _save(tmp_path, "w", "committed")
+            assert not in_flight.path.exists()
+    assert sorted(p.name for p in tmp_path.iterdir()) == sorted(["w", committed.path.name])
+    assert (resolve_adapter_dir(tmp_path, "w", tenant="alice").path / "payload").read_text() == "committed"

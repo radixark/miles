@@ -1,6 +1,9 @@
 """JSON decoding validates datum inputs and renders SDK result shapes."""
 
+import pyrage
 import pytest
+from cryptography.hazmat.primitives.asymmetric import ed25519
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from miles.tinker.core.types import UserInputError
 from miles.tinker.server.encoding import (
@@ -187,3 +190,36 @@ class TestRenderResult:
         assert rendered["loss_fn_output_type"] == "ArrayRecord"
         assert rendered["metrics"] == {"loss:sum": 2.0}
         assert rendered["loss_fn_outputs"][0]["logprobs"] == {"dtype": "float32", "shape": [2], "data": [0.1, 0.2]}
+
+
+_RECIPIENT = str(pyrage.x25519.Identity.generate().to_public())
+_SSH_RECIPIENT = (
+    ed25519.Ed25519PrivateKey.generate().public_key().public_bytes(Encoding.OpenSSH, PublicFormat.OpenSSH).decode()
+)
+
+
+@pytest.mark.parametrize(
+    "recipients,error",
+    [
+        (["ssh-ed25519 AAA"], "not an age recipient"),
+        (["age1notbech32"], "not an age recipient"),
+        ([_RECIPIENT] * 11, "at most 10"),
+    ],
+)
+def test_bad_age_recipients_are_refused_at_decode(recipients, error):
+    payload = {"model_id": "m", "seq_id": 1, "path": "export", "age_encryption_recipients": recipients}
+    _, decoded = decode_command("save_weights_external", payload)
+    assert error in decoded["validation_error"]
+    _, decoded = decode_command("save_weights_external", payload | {"age_encryption_recipients": [_RECIPIENT] * 10})
+    assert "validation_error" not in decoded and decoded["age_recipients"] == [_RECIPIENT] * 10
+
+
+def test_x25519_and_ssh_age_recipients_are_accepted():
+    payload = {
+        "model_id": "m",
+        "seq_id": 1,
+        "path": "export",
+        "age_encryption_recipients": [_RECIPIENT, _SSH_RECIPIENT],
+    }
+    _, decoded = decode_command("save_weights_external", payload)
+    assert "validation_error" not in decoded and decoded["age_recipients"] == [_RECIPIENT, _SSH_RECIPIENT]

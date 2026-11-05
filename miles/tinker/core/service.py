@@ -5,12 +5,16 @@ The trainer lock serializes trainer calls across dispatch, model creation, and l
 import asyncio
 import logging
 import os
+import secrets
 import time
 import uuid
+from datetime import UTC, datetime
 from typing import NamedTuple
 
+from miles.tinker.core.checkpoint_expiry import CheckpointExpiry
 from miles.tinker.core.future import RequestFuture, RequestFutureStore
 from miles.tinker.core.input_validation import (
+    MIN_TTL_S,
     validate_batch_payload,
     validate_checkpoint_segment,
     validate_model_config,
@@ -24,6 +28,7 @@ from miles.tinker.core.types import (
     CommandOp,
     GatewayConfig,
     ModelRecord,
+    NotFoundError,
     OwnershipError,
     SamplingSessionRecord,
     SessionRecord,
@@ -35,6 +40,7 @@ from miles.tinker.core.utils import (
     read_checkpoint_metadata,
     resolve_checkpoint_dir,
     resolve_sampler_checkpoint,
+    resolve_sampler_export,
     tenant_digest,
 )
 
@@ -48,6 +54,21 @@ class _EndedSession(NamedTuple):
     tenant: str
     lease_expired: bool
     ended_at: float
+
+
+class _Download(NamedTuple):
+    tenant: str
+    tinker_path: str
+    # a re-save under the same name after a delete is another checkpoint, which this URL must not serve
+    commit_id: str
+    expires_at: float
+
+
+# as official Tinker: a download URL lives an hour, and never past its checkpoint's expiry
+_DOWNLOAD_URL_TTL_S = 3600
+# a TTL set after a URL was signed can shorten the checkpoint's life to no less than this, so no URL outlives it
+assert _DOWNLOAD_URL_TTL_S <= MIN_TTL_S
+_EXPIRY_SWEEP_S = 60
 
 
 class TinkerService:
@@ -74,10 +95,21 @@ class TinkerService:
         self._close_reasons: dict[str, str] = {}
         # ended sessions, kept a lease long and at least the SDK's retry window so a retried finish is answered
         self._ended_sessions: dict[str, _EndedSession] = {}
+        self.expiry = CheckpointExpiry(config.checkpoint_root)
+        # serializes expiry changes with each other and with deletes; never held across a training call, so a TTL
+        # change does not wait for one
+        self._expiry_lock = asyncio.Lock()
+        # issued download tokens; unguessable, held only in memory, so a restart invalidates every URL
+        self._downloads: dict[str, _Download] = {}
+        # the token handed out per checkpoint commit, so repeated requests reuse it; a replaced one lives to its expiry
+        self._download_tokens: dict[tuple[str, str, str], str] = {}
 
     async def run(self) -> None:
+        await self._expire_checkpoints()
         sweep_task = asyncio.create_task(self._run_lease_sweeper())
         sweep_task.add_done_callback(self._observe_background_task)
+        expiry_task = asyncio.create_task(self._run_expiry_sweeper())
+        expiry_task.add_done_callback(self._observe_background_task)
         try:
             while True:
                 if self._background_error is not None:
@@ -106,7 +138,7 @@ class TinkerService:
                 await self._wake.wait()
                 self._wake.clear()
         finally:
-            tasks = [sweep_task, *self._create_tasks, *(task for task, _ in self._sample_tasks.values())]
+            tasks = [sweep_task, expiry_task, *self._create_tasks, *(task for task, _ in self._sample_tasks.values())]
             for task in tasks:
                 task.cancel()
             # Cleanup failures must not replace the error that stopped the dispatcher.
@@ -316,6 +348,8 @@ class TinkerService:
             return [await self._load_state(record, payload)]
         if barrier.op == CommandOp.SAVE_WEIGHTS_FOR_SAMPLER:
             return [await self._save_weights_for_sampler(record, payload)]
+        if barrier.op == CommandOp.SAVE_WEIGHTS_EXTERNAL:
+            return [await self._save_weights_external(record, payload)]
         raise UserInputError(f"unknown barrier op {barrier.op!r}")
 
     async def _step_optimizers(self, entries: list) -> list[dict]:
@@ -364,17 +398,56 @@ class TinkerService:
         )
         if isinstance(written, dict):
             return written
-        # the commit's recovery walk and fsyncs hit shared storage; keep the event loop serving
+        tinker_path = f"tinker://{record.model_id}/weights/{name}"
+        # a TTL change between the drop and the new expiry would land on the wrong commit
+        async with self._expiry_lock:
+            old_expires_at = self.expiry.expires_at(tinker_path) if payload["overwrite"] else None
+            try:
+                if old_expires_at is not None:
+                    old_commit_id = await asyncio.to_thread(self._live_commit_id, root, name)
+                    # a crash between the commit and the new TTL must not leave the new commit the old one's expiry
+                    await asyncio.to_thread(self.expiry.drop, tinker_path)
+                # the commit's recovery walk and fsyncs hit shared storage; keep the event loop serving
+                await asyncio.to_thread(
+                    self.backend.commit_adapter, root, name, written, overwrite=payload["overwrite"]
+                )
+            except Exception as error:
+                # the commit can fail before or after its link swap; only the old commit keeps the old expiry. An
+                # entry still present means the drop never happened
+                if old_expires_at is not None and self.expiry.expires_at(tinker_path) is None:
+                    try:
+                        if await asyncio.to_thread(self._live_commit_id, root, name) == old_commit_id:
+                            await asyncio.to_thread(self.expiry.restore, tinker_path, old_expires_at)
+                    except (OSError, ValueError):
+                        # the save fails either way; the old commit then only no longer expires
+                        logger.exception(f"could not restore the expiry of {tinker_path}")
+                if isinstance(error, ValueError):
+                    # the commit refuses to replace a link it did not write (e.g. an operator's link to a shared
+                    # adapter)
+                    raise UserInputError(f"cannot commit checkpoint {name!r}: {error}") from None
+                if not isinstance(error, OSError):
+                    raise
+                # a storage failure loses only this save; the trainer and other tenants are unaffected
+                return {"error": f"cannot commit checkpoint {name!r}: {error}", "error_category": "server"}
+            self._delete_retired_outside_the_lock(root)
+            await self._set_expiry_after_commit_locked(tinker_path, payload["ttl_seconds"])
+        return {"op": "save_state", "path": tinker_path}
+
+    async def _set_expiry_after_commit(self, tinker_path: str, ttl_seconds: int | None) -> None:
+        async with self._expiry_lock:
+            await self._set_expiry_after_commit_locked(tinker_path, ttl_seconds)
+
+    async def _set_expiry_after_commit_locked(self, tinker_path: str, ttl_seconds: int | None) -> None:
         try:
-            await asyncio.to_thread(self.backend.commit_adapter, root, name, written, overwrite=payload["overwrite"])
-        except ValueError as error:
-            # the commit refuses to replace a link it did not write (e.g. an operator's link to a shared adapter)
-            raise UserInputError(f"cannot commit checkpoint {name!r}: {error}") from None
-        except OSError as error:
-            # a storage failure loses only this save; the trainer and other tenants are unaffected
-            return {"error": f"cannot commit checkpoint {name!r}: {error}", "error_category": "server"}
-        self._delete_retired_outside_the_lock(root)
-        return {"op": "save_state", "path": f"tinker://{record.model_id}/weights/{name}"}
+            # two fsyncs on shared storage
+            await asyncio.to_thread(self.expiry.set, tinker_path, ttl_seconds, time.time())
+        except OSError:
+            # failing the request would hide a committed save; without its entry it only does not expire
+            logger.exception(f"could not record the expiry of {tinker_path}; it does not expire")
+
+    def _live_commit_id(self, root: str, name: str) -> str | None:
+        files = self.backend.resolve_checkpoint_files(root, name, None)
+        return None if files is None else files["commit_id"]
 
     def _delete_retired_outside_the_lock(self, root: str) -> None:
         task = asyncio.create_task(self._delete_retired(root))
@@ -393,7 +466,7 @@ class TinkerService:
     async def _load_state(self, record: ModelRecord, payload: dict) -> dict:
         source_id, kind, name = parse_tinker_path(payload["path"])
         if kind != "weights":
-            raise UserInputError("cannot load sampler weights into a training model; use a save_state checkpoint")
+            raise UserInputError(f"cannot load {kind} into a training model; use a save_state checkpoint")
         checkpoint_dir = resolve_checkpoint_dir(self.config.checkpoint_root, source_id, kind, name)
         source_tenant = payload.get("weights_access_token")
         if source_tenant is None:
@@ -418,9 +491,11 @@ class TinkerService:
             record.slot,
             record.lora_rank,
             source["lora_alpha"],
-            ckpt_path=os.path.realpath(ckpt_path),
-            load_optimizer=payload["optimizer"],
-            parametrization_fields=fields,
+            source={
+                "path": os.path.realpath(ckpt_path),
+                "load_optimizer": payload["optimizer"],
+                "parametrization_fields": fields,
+            },
         )
         if failure is not None:
             return failure
@@ -447,8 +522,6 @@ class TinkerService:
             tenant_digest=tenant_digest(record.tenant),
             parametrization_fields=build_parametrization_fields(record, self.config),
         )
-        if isinstance(written, dict):
-            return written
         # the commit's recovery walk and fsyncs hit shared storage; keep the event loop serving
         try:
             await asyncio.to_thread(self.backend.commit_adapter, root, version, written, overwrite=False)
@@ -462,6 +535,7 @@ class TinkerService:
             "op": "save_weights_for_sampler",
             "path": f"tinker://{record.model_id}/sampler_weights/{version}",
         }
+        await self._set_expiry_after_commit(result["path"], payload["ttl_seconds"])
         if payload.get("sampler_path") is None:
             # unnamed saves return a sampling session bound to the new version
             result["sampling_session_id"] = self._new_sampling_session(
@@ -469,11 +543,175 @@ class TinkerService:
             )
         return result
 
+    async def _save_weights_external(self, record: ModelRecord, payload: dict) -> dict:
+        """The official Tinker export of the adapter, for download (get_external_weights_urls)."""
+        if not self.config.exports_tinker_names:
+            raise UserInputError(
+                "this model family has no checked official Tinker names; save_weights_external is unsupported"
+            )
+        name = payload["name"]
+        validate_checkpoint_segment(name)
+        path = resolve_checkpoint_dir(self.config.checkpoint_root, record.model_id, "external_weights", name)
+        if os.path.lexists(path):
+            raise UserInputError(f"external weights {name!r} already exist; save under a new name")
+        root = os.path.dirname(path)
+        written = await self.backend.export_external(
+            slot=record.slot,
+            root=root,
+            name=name,
+            tenant_digest=tenant_digest(record.tenant),
+            parametrization_fields=build_parametrization_fields(record, self.config),
+            age_recipients=payload["age_recipients"],
+        )
+        if isinstance(written, dict):
+            return written
+        try:
+            await asyncio.to_thread(self.backend.commit_adapter, root, name, written, overwrite=False)
+        except OSError as error:
+            # e.g. a full disk: the trainer is healthy, so only this save fails
+            return {"error": f"could not commit external weights {name!r}: {error}", "error_category": "server"}
+        tinker_path = f"tinker://{record.model_id}/external_weights/{name}"
+        await self._set_expiry_after_commit(tinker_path, payload["ttl_seconds"])
+        try:
+            size = await asyncio.to_thread(self._checkpoint_size, root, name, record.tenant)
+        except OSError:
+            # the export is committed; the SDK takes an unknown size
+            logger.exception(f"could not size {tinker_path}")
+            size = None
+        return {"op": "save_weights_external", "path": tinker_path, "size_bytes": size}
+
+    def _checkpoint_size(self, root: str, name: str, tenant: str) -> int:
+        files = self.backend.resolve_checkpoint_files(root, name, tenant)
+        return sum(os.path.getsize(os.path.join(files["path"], f)) for f in files["files"])
+
+    def _owned_checkpoint(self, tenant: str, model_id: str, checkpoint_id: str) -> tuple[str, str, str, dict]:
+        """(tinker path, its adapter root, name, its files) of a committed checkpoint ``tenant`` owns."""
+        tinker_path = f"tinker://{model_id}/{checkpoint_id}"
+        _, kind, name = parse_tinker_path(tinker_path)
+        root = os.path.dirname(resolve_checkpoint_dir(self.config.checkpoint_root, model_id, kind, name))
+        try:
+            files = self.backend.resolve_checkpoint_files(root, name, tenant)
+        except ValueError as error:
+            # a name linked to a dir this gateway did not write (resolve_adapter_dir refuses it)
+            raise UserInputError(str(error)) from None
+        if files is None:
+            if os.path.isdir(os.path.join(root, name)):
+                raise UserInputError(
+                    f"checkpoint {tinker_path} was saved before checkpoints could expire or be deleted through the API"
+                )
+            raise NotFoundError(f"checkpoint {tinker_path} does not exist")
+        return tinker_path, root, name, files
+
+    async def external_weights_urls(self, tenant: str, model_id: str, checkpoint_id: str, base_url: str) -> dict:
+        """Download URLs that carry no credential, bound to this tenant, the checkpoint and an expiry."""
+        if not checkpoint_id.startswith("external_weights/"):
+            raise UserInputError(f"tinker://{model_id}/{checkpoint_id} is not an external_weights checkpoint")
+        tinker_path, _, _, files = await asyncio.to_thread(self._owned_checkpoint, tenant, model_id, checkpoint_id)
+        now = time.time()
+        expires_at = now + _DOWNLOAD_URL_TTL_S
+        if (checkpoint_expires_at := self.expiry.expires_at(tinker_path)) is not None:
+            # expired, and only not yet swept
+            if checkpoint_expires_at <= now:
+                raise NotFoundError(f"checkpoint {tinker_path} has expired")
+            expires_at = min(expires_at, checkpoint_expires_at)
+        key = (tenant, tinker_path, files["commit_id"])
+        # a token keeps the expiry it was issued with; reuse it while it has half the life a new one would get, so a
+        # token capped by its checkpoint's expiry is reused too
+        live = self._downloads.get(self._download_tokens.get(key))
+        if live is not None and live.expires_at - now >= (expires_at - now) / 2:
+            token, expires_at = self._download_tokens[key], live.expires_at
+        else:
+            token = self._download_tokens[key] = secrets.token_urlsafe(32)
+            self._downloads[token] = _Download(*key, expires_at)
+        return {
+            "urls": {f: f"{base_url}api/v1/external_weights/{token}/{f}" for f in files["files"]},
+            "expires": datetime.fromtimestamp(expires_at, UTC).isoformat(),
+        }
+
+    async def download_path(self, token: str, filename: str) -> str:
+        """The file a download URL names; gone once the URL expires or the checkpoint is deleted."""
+        download = self._downloads.get(token)
+        if download is None or download.expires_at <= time.time():
+            raise NotFoundError("unknown or expired download URL")
+        model_id, kind, name = parse_tinker_path(download.tinker_path)
+        try:
+            _, _, _, files = await asyncio.to_thread(
+                self._owned_checkpoint, download.tenant, model_id, f"{kind}/{name}"
+            )
+        except NotFoundError:
+            raise NotFoundError(f"{download.tinker_path} was deleted") from None
+        if files["commit_id"] != download.commit_id:
+            raise NotFoundError(f"{download.tinker_path} was deleted and saved again; sign a new URL")
+        if filename not in files["files"]:
+            raise NotFoundError(f"{download.tinker_path} has no file {filename!r}")
+        return os.path.join(files["path"], filename)
+
+    async def set_checkpoint_ttl(self, tenant: str, model_id: str, checkpoint_id: str, ttl_seconds) -> None:
+        # with deletes, so a TTL never outlives its checkpoint onto a later save of the same name
+        async with self._expiry_lock:
+            tinker_path, _, _, _ = await asyncio.to_thread(self._owned_checkpoint, tenant, model_id, checkpoint_id)
+            await asyncio.to_thread(self.expiry.set, tinker_path, ttl_seconds, time.time())
+
+    async def delete_checkpoint(self, tenant: str, model_id: str, checkpoint_id: str) -> None:
+        async with self._trainer_lock, self._expiry_lock:
+            tinker_path, root, name, _ = await asyncio.to_thread(
+                self._owned_checkpoint, tenant, model_id, checkpoint_id
+            )
+            await self._delete_checkpoint(tinker_path, root, name, tenant)
+
+    async def _delete_checkpoint(self, tinker_path: str, root: str, name: str, tenant: str | None) -> None:
+        """Requires the trainer and expiry locks; ``tenant`` None skips the ownership check (expiry)."""
+        await asyncio.to_thread(self.backend.delete_adapter, root, name, tenant)
+        await asyncio.to_thread(self.expiry.drop, tinker_path)
+        self._delete_retired_outside_the_lock(root)
+        logger.info(f"deleted checkpoint {tinker_path}")
+
+    async def _run_expiry_sweeper(self) -> None:
+        while True:
+            await asyncio.sleep(_EXPIRY_SWEEP_S)
+            self._drop_expired_downloads(time.time())
+            await self._expire_checkpoints()
+
+    def _drop_expired_downloads(self, now: float) -> None:
+        for token, download in list(self._downloads.items()):
+            if download.expires_at <= now:
+                del self._downloads[token]
+                # the key may already name a newer token
+                if self._download_tokens.get(download[:3]) == token:
+                    del self._download_tokens[download[:3]]
+
+    async def _expire_checkpoints(self) -> None:
+        # the trainer lock waits for a whole training call; take it only when there is something to delete
+        if not self.expiry.expired(time.time()):
+            return
+        async with self._trainer_lock, self._expiry_lock:
+            for tinker_path in self.expiry.expired(time.time()):
+                model_id, kind, name = parse_tinker_path(tinker_path)
+                try:
+                    root = os.path.dirname(resolve_checkpoint_dir(self.config.checkpoint_root, model_id, kind, name))
+                    if await asyncio.to_thread(self.backend.resolve_checkpoint_files, root, name, None) is None:
+                        # deleted by hand, or never committed: nothing to remove
+                        await asyncio.to_thread(self.expiry.drop, tinker_path)
+                    else:
+                        await self._delete_checkpoint(tinker_path, root, name, None)
+                except (OSError, ValueError, AssertionError):
+                    # one undeletable checkpoint (unwritable, or its name relinked out of the root or to a dir the
+                    # library did not write) must not cut off every tenant or every restart; its entry stays
+                    logger.exception(f"could not delete expired checkpoint {tinker_path}; retrying next sweep")
+
     def weights_info(self, tenant: str, tinker_path: str) -> dict:
         """What the SDK needs to rebuild a training client from a checkpoint."""
         model_id, kind, name = parse_tinker_path(tinker_path)
+        if kind == "external_weights":
+            raise UserInputError(f"{tinker_path} is a download; create a training client from a weights checkpoint")
         checkpoint_dir = resolve_checkpoint_dir(self.config.checkpoint_root, model_id, kind, name)
-        committed = self.backend.resolve_adapter(os.path.dirname(checkpoint_dir), name, tenant, model_id)
+        if kind == "sampler_weights":
+            committed = resolve_sampler_export(
+                checkpoint_dir, tenant, model_id, tinker_path, self.backend.resolve_adapter
+            )
+        else:
+            # a training checkpoint's link may point at a legacy dir an interrupted overwrite adopted
+            committed = self.backend.resolve_adapter(os.path.dirname(checkpoint_dir), name, tenant, model_id)
         if committed is not None:
             parametrization = committed["parametrization"]
             # an adapter dir records targets, not group flags; any gateway or import may have written it

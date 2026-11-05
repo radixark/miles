@@ -16,7 +16,8 @@ from miles.backends.megatron_utils.lora.native.naming import ConverterNaming
 from miles.backends.megatron_utils.lora.native.registry import MODEL_SPECS, resolve_adapter_targets
 from miles.backends.megatron_utils.lora.native.spec.base import AttachContext
 from miles.backends.megatron_utils.lora.native.spec.lm_head import LMHeadSpec
-from miles.utils.lora.hf_lora_targets import resolve_hf_lora_targets
+from miles.backends.training_utils.checkpoint.adapter.adapter_dir import HeadRows
+from miles.utils.lora.hf_lora_targets import get_hf_lora_targets, resolve_hf_lora_targets
 
 HIDDEN, VOCAB, PADDED_VOCAB = 8, 10, 12
 
@@ -111,7 +112,10 @@ def test_export_trims_megatrons_vocab_padding():
 
 
 @pytest.mark.parametrize("tp_rank, padded", [(0, slice(6, 6)), (1, slice(4, 6))])
-def test_padded_local_rows_are_the_rows_the_export_trims(tp_rank, padded):
+def test_the_vocab_padding_the_export_trims_is_kept_in_its_own_piece(monkeypatch, tp_rank, padded):
+    """The padding rows train (the loss softmaxes over the padded vocab), so adapter_state keeps them for a resume."""
+    import miles.backends.megatron_utils.lora.native.checkpoint as native_checkpoint
+
     context = dataclasses.replace(_context(("lm_head",)), tp_size=2, tp_rank=tp_rank)
     head = LoRAOutputHead(
         hf_prefix="lm_head.",
@@ -121,17 +125,21 @@ def test_padded_local_rows_are_the_rows_the_export_trims(tp_rank, padded):
         unpadded_vocab_size=VOCAB,
     )
     assert head.padded_local_rows() == padded
+    monkeypatch.setattr(native_checkpoint, "iter_adapters", lambda model: [head])
+    slots = native_checkpoint.NativeAdapterSlots.__new__(native_checkpoint.NativeAdapterSlots)
+    slots._model, slots._multi_lora = [], False
+    monkeypatch.setattr(slots, "slot_parameters", lambda slot: [head.head_A, head.head_B])
+    monkeypatch.setattr(slots, "_map_name", lambda name: SimpleNamespace(key=name.removesuffix(".weight")))
 
+    pieces = slots._vocab_padding_pieces()
 
-def test_megatrons_vocab_padding_gets_no_gradient():
-    """The loss softmaxes over the padded vocab, but no checkpoint holds the padded rows, so they must not train."""
-    model = _attached(tied=False)
-    adapter = model.lora_lm_head_adapter
-
-    torch.log_softmax(model(torch.tensor([1, 4, 7])), dim=-1)[:, 3].sum().backward()
-
-    assert adapter.head_B.grad[:VOCAB].any()
-    assert not adapter.head_B.grad[VOCAB:].any()
+    if padded.start == padded.stop:
+        assert pieces == []
+        return
+    (piece,) = pieces
+    assert (piece.key, piece.global_shape, piece.offsets) == ("lm_head.lora_B.vocab_padding", (2, 2), (0, 0))
+    flat = torch.cat([head.head_A.detach().flatten(), head.head_B.detach().flatten()])
+    assert torch.equal(flat[piece.local_elements], head.head_B.detach()[padded])
 
 
 def test_a_converter_naming_the_head_otherwise_fails():
@@ -292,3 +300,21 @@ def test_specs_without_a_head_adapter_still_refuse_it(model_type, head):
             lora_type="canonical_lora",
             experts_shared_outer_loras=True,
         )
+
+
+def test_native_declares_its_head_rows_under_the_models_own_head_name(monkeypatch):
+    """Inkling's native head is language_model.lm_head; the family's unembed name is lm_head."""
+    import miles.backends.megatron_utils.lora.native.checkpoint as native_checkpoint
+
+    head = LoRAOutputHead.__new__(LoRAOutputHead)
+    nn.Module.__init__(head)
+    head.hf_prefix = "language_model.lm_head."
+    monkeypatch.setattr(native_checkpoint, "iter_adapters", lambda model: [head])
+    slots = native_checkpoint.NativeAdapterSlots.__new__(native_checkpoint.NativeAdapterSlots)
+    slots._model = []
+    slots.targets = dataclasses.replace(
+        get_hf_lora_targets({"model_type": "qwen3", "num_hidden_layers": 1}), vocab_size=16
+    )
+    head_b = "language_model.lm_head.lora_B"
+    slots.row_mapping = SimpleNamespace(pieces=[SimpleNamespace(key=head_b, global_shape=(VOCAB, 2))])
+    assert slots._head_rows() == HeadRows(head_b, max_source_rows=16)

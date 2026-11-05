@@ -26,6 +26,8 @@ class HfLoraTargets:
     # set when the family's adapters name routed experts packed and stacked (experts.gate_up_proj / down_proj, 3D);
     # the value is how gate and up rows share gate_up_proj
     packed_expert_gate_up_layout: str | None = None
+    # the HF vocab: the most head lora_B rows an HF-shaped source may hold
+    vocab_size: int | None = None
 
 
 @dataclass(frozen=True)
@@ -158,6 +160,11 @@ def _kimi_k3_targets(config):
     return attention, tuple(mlp)
 
 
+def _glm4_targets(config):
+    # HF GLM-4 keeps gate / up fused in one dense gate_up_proj
+    return _QKVO_ATTENTION, _prefix_paths("mlp", "gate_up_proj", "down_proj")
+
+
 def _glm4_moe_targets(config):
     return _QKVO_ATTENTION, _deepseek_mlp_targets(config)
 
@@ -272,6 +279,8 @@ def _mimo_v2_targets(config):
 _HF_LORA_MODELS = {
     "llama": _HfLoraModelSpec(_dense_targets),
     "qwen2": _HfLoraModelSpec(_dense_targets),
+    # MiMo-7B: a Qwen2 body; its MTP layers sit under model.mtp_layers
+    "mimo": _HfLoraModelSpec(_dense_targets),
     "qwen3": _HfLoraModelSpec(_dense_targets, tinker_name_renames=_TINKER_RENAMES),
     "qwen3_moe": _HfLoraModelSpec(_qwen3_moe_targets, tinker_name_renames=_TINKER_RENAMES),
     "qwen3_next": _HfLoraModelSpec(_qwen3_next_targets),
@@ -311,6 +320,8 @@ _HF_LORA_MODELS = {
     "deepseek_v32": _HfLoraModelSpec(_deepseek_targets),
     "deepseek_v41": _HfLoraModelSpec(_deepseek_v41_targets, layer_prefix="layers.*", unembed="head"),
     "kimi_k2": _HfLoraModelSpec(_kimi_targets),
+    # JoyAI-LLM-Flash ships the remote DeepSeek-V3 code Kimi K2 does: per-expert modules, a leading dense layer
+    "joyai_llm_flash": _HfLoraModelSpec(_kimi_targets),
     "kimi_k25": _HfLoraModelSpec(
         _kimi_targets,
         layer_prefix="language_model.model.layers.*",
@@ -323,7 +334,10 @@ _HF_LORA_MODELS = {
         unembed="language_model.lm_head",
         unwrap_text_config=True,
     ),
+    "glm4": _HfLoraModelSpec(_glm4_targets),
     "glm4_moe": _HfLoraModelSpec(_glm4_moe_targets),
+    # GLM-4.7-Flash: MLA attention with dense / sparse MLPs chosen per layer, as GLM-5's DSA stack
+    "glm4_moe_lite": _HfLoraModelSpec(_glm_dsa_targets),
     "glm_moe_dsa": _HfLoraModelSpec(_glm_dsa_targets),
     "glm5_next": _HfLoraModelSpec(
         _glm5_next_targets, layer_prefix="model.language_model.layers.*", unwrap_text_config=True
@@ -359,6 +373,7 @@ def get_hf_lora_targets(hf_config: dict) -> HfLoraTargets:
         whole_fused_attention=_prefix_paths(spec.layer_prefix, *spec.build_whole_fused_attention(text_config)),
         tinker_name_renames=spec.tinker_name_renames,
         component_rows_by_fused_module=spec.component_rows_by_fused_module(text_config),
+        vocab_size=text_config.get("vocab_size"),
         packed_expert_gate_up_layout=spec.packed_expert_gate_up_layout,
     )
 

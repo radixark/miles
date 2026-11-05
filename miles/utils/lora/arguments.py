@@ -7,6 +7,12 @@ import torch
 
 from miles.backends.megatron_utils.lora.native import resolve_adapter_targets, validate_native_lora_args
 from miles.backends.sglang_utils.arguments import sglang_attention_dp_enabled
+from miles.backends.training_utils.checkpoint.adapter.adapter_exports import has_plain_peft_form
+from miles.backends.training_utils.checkpoint.adapter.key_mapping import fused_components
+from miles.backends.training_utils.checkpoint.adapter.parametrization import (
+    AdapterParametrization,
+    read_parametrization,
+)
 from miles.backends.training_utils.checkpoint.adapter.readers import (
     AdapterSourceKind,
     classify_adapter_source,
@@ -27,9 +33,10 @@ from miles.utils.lora.hf_lora_targets import (
 )
 from miles.utils.lora.utils import (
     engine_loads_adapter_from_disk,
+    exports_hf_snapshots,
     is_lora_enabled,
     matches_lora_target,
-    publishes_snapshots,
+    reads_adapter_slots,
     targets_expert_leaves,
 )
 
@@ -48,15 +55,11 @@ def validate_lora_args(args):
     ), "--lora-adapter-convert-save converts --lora-adapter-path"
     if not is_lora_enabled(args):
         return
-    # the trainer actors load it from their own working directory, which need not be the driver's that resolves
-    # alpha; only engines alone may be given a hub id
+    # trainers resolve relative paths from their own cwd; rollout-only keeps the string so a hub id reaches SGLang
     if args.lora_adapter_path is not None and not args.debug_rollout_only:
         args.lora_adapter_path = os.path.abspath(args.lora_adapter_path)
     args.lora_alpha = _resolve_lora_alpha(args)
     if args.lora_adapter_convert_save is not None:
-        assert (
-            args.train_backend == "megatron" and not args.multi_lora
-        ), "--lora-adapter-convert-save is implemented only for single LoRA on --train-backend megatron"
         # every cell loads the source and its rank 0 would commit into the same destination
         assert not args.indep_dp, "--lora-adapter-convert-save does not support --indep-dp (or train fault tolerance)"
         # the trainer actors write it from their own working directory, which need not be the driver's
@@ -77,6 +80,8 @@ def validate_lora_args(args):
     hf_config = load_hf_config(args.hf_checkpoint)
     args.hf_lora_targets = _resolve_lora_targets(args, hf_config)
     args.lora_adapter_targets = list(args.hf_lora_targets)
+    if args.lora_adapter_path is not None and not args.debug_rollout_only:
+        _validate_megatron_bridge_source(args)
     if args.train_backend == "megatron" and args.megatron_to_hf_mode == "bridge":
         from miles.backends.megatron_utils.lora.target_modules import check_fused_lora_selection
 
@@ -106,21 +111,6 @@ def validate_lora_args(args):
         )
 
 
-def _assert_adapter_layout_defined(args, hf_config) -> None:
-    """Megatron builds the adapter slots, which need the family's HF LoRA target layout, to publish snapshots
-    (--save-hf, eval snapshots, --save), to restore --lora-adapter-path, and always under multi-LoRA; runs without
-    them train any family."""
-    # a rollout-only run has no trainer; SGLang reads its adapter
-    builds_slots = not args.debug_rollout_only and (
-        publishes_snapshots(args, args.save) or args.lora_adapter_path is not None or args.multi_lora
-    )
-    assert not builds_slots or has_hf_lora_targets(hf_config.to_dict()), (
-        f"LoRA --save, --save-hf, eval snapshots and --lora-adapter-path need the HF LoRA target layout of "
-        f"model_type={hf_config.model_type!r}, which miles does not define (miles/utils/lora/hf_lora_targets.py); "
-        "run without them or define the layout"
-    )
-
-
 def _resolve_lora_alpha(args) -> float:
     """The source adapter owns alpha when there is one; --lora-alpha may only repeat it."""
     # a hub id is no local source: SGLang, not miles, reads its alpha
@@ -137,17 +127,31 @@ def _resolve_lora_alpha(args) -> float:
     return source
 
 
+def _validate_megatron_bridge_source(args) -> None:
+    """A Megatron-Bridge checkpoint's sharded keys exist only in a Bridge model: refused before the model is built."""
+    path = Path(args.lora_adapter_path)
+    # only a DCP source can be one
+    if not (path / ".metadata").is_file():
+        return
+    kind = classify_adapter_source(path, args.hf_lora_targets, load_optimizer=False)
+    assert kind is not AdapterSourceKind.MEGATRON_BRIDGE_CHECKPOINT or (
+        args.train_backend == "megatron" and args.megatron_to_hf_mode == "bridge"
+    ), (
+        f"{path} is a Megatron-Bridge checkpoint, which only --megatron-to-hf-mode bridge loads; "
+        "convert it there first with --lora-adapter-convert-save"
+    )
+
+
 def _validate_rollout_only_adapter(args) -> None:
-    """With no trainer, the engines load --lora-adapter-path as given. A local source the adapter library
-    recognizes must carry an HF-named PEFT pair; anything else (a hub id, a PEFT dir with adapter_model.bin)
-    is SGLang's to read."""
+    """A local source the library reads must carry an HF-named PEFT pair; anything else goes to SGLang as given."""
     path = Path(args.lora_adapter_path)
     hf_config = load_hf_config(args.hf_checkpoint).to_dict()
     # without the family's layout the library reads no source; SGLang gets it as before
     if not path.is_dir() or not has_hf_lora_targets(hf_config):
         return
+    targets = get_hf_lora_targets(hf_config)
     try:
-        kind = classify_adapter_source(path, get_hf_lora_targets(hf_config), load_optimizer=False)
+        kind = classify_adapter_source(path, targets, load_optimizer=False)
     except ValueError:
         # not a source the library reads
         return
@@ -159,9 +163,18 @@ def _validate_rollout_only_adapter(args) -> None:
         f"{path} uses official Tinker tensor names, which need a conversion that rollout-only does not do; "
         "convert it first with --lora-adapter-convert-save"
     )
+    # a sampler export holds the engines' own form whatever the parametrization
+    has_export = (path / "adapter_model.safetensors").is_file()
+    # any other such adapter dir never gets a PEFT export, converted or not
     assert (
-        path / "adapter_model.safetensors"
-    ).is_file(), f"{path} has no PEFT export for the engines to load; write one first with --lora-adapter-convert-save"
+        has_export or kind != AdapterSourceKind.ADAPTER_DIR or has_plain_peft_form(read_parametrization(path), targets)
+    ), (
+        f"{path} has no plain-PEFT form (fused-module components with their own lora_A), so rollout-only cannot "
+        "serve it to the engines"
+    )
+    assert (
+        has_export
+    ), f"{path} has no PEFT export for the engines to load; write one first with --lora-adapter-convert-save"
 
 
 def _default_lora_type(args) -> str:
@@ -176,14 +189,26 @@ def _default_lora_type(args) -> str:
 
 
 def validate_lora_args_after_megatron(args):
-    """Checks that read Megatron's resolved args; for native (raw-mode) LoRA also the targets its spec serves
-    (e.g. the expert TP size it defaults from TP)."""
+    """Checks that need Megatron's resolved args or the resolved eval-snapshot setting: Bridge LoRA's HF-export
+    layout, and the targets native (raw-mode) LoRA's spec serves."""
+    # save() writes a LoRA model to its adapter dir, never into the in-memory checkpoint a heal or rollback restores
+    if is_lora_enabled(args) and not args.multi_lora and not args.debug_rollout_only:
+        assert not args.indep_dp and args.non_persistent_ckpt_type != "local", (
+            "LoRA does not support train fault tolerance (--indep-dp / in-memory checkpoints): a healed or rolled-back "
+            "cell would lose the adapter; remove 'train' from --ft-components and resume from a saved iter_N/adapter "
+            "with --lora-adapter-path"
+        )
+        # without --lora-adapter-path the run would start from the base model and overwrite those adapters
+        assert args.lora_adapter_path is not None or not (args.load and any(Path(args.load).glob("iter_*/adapter"))), (
+            f"--load {args.load} holds LoRA adapter checkpoints (iter_*/adapter): resume one with "
+            "--lora-adapter-path, or point --load elsewhere"
+        )
     # rollout-only builds no optimizer and saves nothing
     if is_lora_enabled(args) and not args.multi_lora and not args.debug_rollout_only:
         _validate_adapter_state_args(args)
-    if is_lora_enabled(args) and not args.debug_rollout_only:
-        # after miles_validate_args: the actor's predicate reads eval_uses_snapshots, resolved there
-        _assert_adapter_layout_defined(args, load_hf_config(args.hf_checkpoint))
+    # after miles_validate_args: the actor's predicate reads eval_uses_snapshots, resolved there
+    if is_lora_enabled(args):
+        _assert_adapter_layout_defined(args)
     if not (is_lora_enabled(args) and args.megatron_to_hf_mode == "raw"):
         return
     hf_config = load_hf_config(args.hf_checkpoint)
@@ -196,10 +221,13 @@ def _validate_adapter_state_args(args) -> None:
     """adapter_state/ holds Adam's fp32 master, fp32 moments and step, gathered whole per DP group over Gloo."""
     if args.save is None and args.lora_adapter_path is None:
         return
-    assert not args.debug_disable_optimizer, (
-        "--save / --lora-adapter-path store and load the adapter's fp32 optimizer masters, which "
+    assert not args.debug_disable_optimizer or (args.save is None and args.lora_adapter_convert_save is None), (
+        "--save / --lora-adapter-convert-save store the adapter's fp32 optimizer masters, which "
         "--debug-disable-optimizer does not build; drop one of them"
     )
+    if args.debug_disable_optimizer:
+        # --lora-adapter-path then loads the adapter's weights only, as into a model without an optimizer
+        return
     assert args.optimizer == "adam", f"--save / --lora-adapter-path store Adam state; got --optimizer {args.optimizer}"
     assert args.exp_avg_dtype == args.exp_avg_sq_dtype == torch.float32, "the adapter checkpoint stores fp32 moments"
     assert args.main_params_dtype == torch.float32, "the adapter checkpoint stores fp32 masters"
@@ -207,6 +235,10 @@ def _validate_adapter_state_args(args) -> None:
         args.use_distributed_optimizer
     ), "the adapter checkpoint gathers optimizer state from the distributed optimizer"
     assert args.use_gloo_process_groups, "the adapter checkpoint gathers optimizer state over Gloo"
+    assert not args.stream_optimizer_state_to_disk, (
+        "--save / --lora-adapter-path gather the fp32 masters and moments from the distributed optimizer, but "
+        "--stream-optimizer-state-to-disk keeps the moments in its own store and defers the masters"
+    )
     # TE FusedAdam keeps the master as an int16 remainder unless the optimizer runs on the host
     assert (
         not args.use_precision_aware_optimizer or args.optimizer_cpu_offload
@@ -218,6 +250,60 @@ def _validate_adapter_state_args(args) -> None:
         assert (
             args.num_distributed_optimizer_instances == 1
         ), "--lora-adapter-path cannot be combined with --num-distributed-optimizer-instances > 1"
+
+
+def _assert_adapter_layout_defined(args) -> None:
+    """The adapter slots need the family's HF LoRA target layout; runs that build none train any family."""
+    # a rollout-only run has no trainer; SGLang reads its adapter
+    if args.debug_rollout_only:
+        return
+    if reads_adapter_slots(args, args.save):
+        hf_config = load_hf_config(args.hf_checkpoint)
+        assert has_hf_lora_targets(hf_config.to_dict()), (
+            f"LoRA --save, --save-hf, eval snapshots and --lora-adapter-path need the HF LoRA target layout of "
+            f"model_type={hf_config.model_type!r}, which miles does not define (miles/utils/lora/hf_lora_targets.py); "
+            "run without them or define the layout"
+        )
+        # only Bridge exports each expert's side under one unindexed name
+        if exports_hf_snapshots(args) and args.megatron_to_hf_mode == "bridge":
+            _assert_bridge_hf_exports_keep_every_expert(args, hf_config)
+
+
+def _assert_bridge_hf_exports_keep_every_expert(args, hf_config) -> None:
+    targets = get_hf_lora_targets(hf_config.to_dict())
+    run = _launch_parametrization(args, hf_config)
+    # Bridge exports a packed family's per-expert side under one unindexed name for every expert
+    packed_shared_outer = targets.packed_expert_gate_up_layout is not None and args.experts_shared_outer_loras
+    assert not (packed_shared_outer and any(".experts." in module for module in run.target_modules)), (
+        "--save-hf and eval snapshots of a packed-expert family's --experts-shared-outer-loras adapter would keep "
+        "only the last expert's per-expert side: drop --experts-shared-outer-loras, or --save-hf and eval snapshots"
+    )
+
+
+def _launch_parametrization(args, hf_config) -> AdapterParametrization:
+    """The run's parametrization as Bridge will build it, from the HF modules the targets select (wildcards resolved):
+    canonical_lora gives each component of an HF-fused module its own lora_A, lora one shared per module."""
+    targets = get_hf_lora_targets(hf_config.to_dict())
+    modules, groups = [], []
+    for module in _hf_modules(hf_config):
+        if not any(matches_lora_target(module, target) for target in args.hf_lora_targets):
+            continue
+        components = fused_components(module, targets)
+        if components is None:
+            modules.append(module)
+            continue
+        modules.extend(components)
+        if args.lora_type != "canonical_lora":
+            groups.append(tuple(sorted(components)))
+    return AdapterParametrization(
+        base_model=args.hf_checkpoint,
+        lora_rank=args.lora_rank,
+        lora_alpha=args.lora_alpha,
+        lora_type=args.lora_type,
+        target_modules=tuple(modules),
+        experts_shared_outer_loras=args.experts_shared_outer_loras,
+        shared_lora_a_groups=tuple(groups),
+    )
 
 
 def _native_serving_targets(args, hf_config, hf_targets: list[str], hf_modules: list[str]) -> list[str] | str:

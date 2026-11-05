@@ -1,0 +1,303 @@
+From c4f40f39a4b698b73df150ff9a585ed98f795f51 Mon Sep 17 00:00:00 2001
+From: joeywan-google <joeywan@google.com>
+Date: Tue, 3 Nov 2026 13:58:03 -0800
+Subject: [PATCH] [TPU] Fix cross-chip TP all-gather in compiled graphs by
+ gathering through the all-reduce (#1700)
+
+Squash of sgl-project/sglang-torchtpu#1851 (head a95c19c2e4) on sglang-torchtpu main 92f8c68490.
+---
+ sglang_tpu/all_gather_via_all_reduce.py       |  66 ++++++++
+ sglang_tpu/hooks/__init__.py                  |   6 +
+ sglang_tpu/hooks/all_gather_via_all_reduce.py |  27 ++++
+ .../tpu/test_all_gather_via_all_reduce.py     | 148 ++++++++++++++++++
+ 4 files changed, 247 insertions(+)
+ create mode 100644 sglang_tpu/all_gather_via_all_reduce.py
+ create mode 100644 sglang_tpu/hooks/all_gather_via_all_reduce.py
+ create mode 100644 test/registered/unit/hardware_backend/tpu/test_all_gather_via_all_reduce.py
+
+diff --git a/sglang_tpu/all_gather_via_all_reduce.py b/sglang_tpu/all_gather_via_all_reduce.py
+new file mode 100644
+index 0000000000..96f5a2c3f6
+--- /dev/null
++++ b/sglang_tpu/all_gather_via_all_reduce.py
+@@ -0,0 +1,66 @@
++# SPDX-License-Identifier: Apache-2.0
++"""TP all-gather built from the in-place all-reduce, for compiled TPU graphs.
++
++Under the Dynamo tracer, ``GroupCoordinator.all_gather_into_tensor`` lowers to
++the ``reg_all_gather_into_tensor`` custom op. On a TP group that spans more than
++one chip (tpu7x TP >= 4), the compiled program returns wrong blocks for the
++cross-chip peers: every rank keeps its own block (and its same-chip neighbour's),
++while the other blocks hold unrelated data. The LM head's vocabulary gather then
++mixes in garbage logits for most of the vocabulary
++(sgl-project/sglang-torchtpu#1700). The in-place all-reduce custom op that every
++decoder layer already uses compiles correctly, so the gather is rebuilt from it:
++each rank writes its block into a zero ``[world, *block]`` buffer at its own
++index and the group sums the buffers. Adding zero leaves every value unchanged,
++so the result equals a correct all-gather; the only bit-level difference is that
++a -0.0 element comes back as +0.0.
++
++The hook keys on ``torch.compiler.is_compiling()``, which both TPU tracers set
++while tracing (the direct tracer sets ``torch.compiler._is_compiling_flag`` in
++``sglang_tpu/compilation/direct_compile.py``). So compiled graphs from either
++tracer use this path, and eager calls keep the native all-gather. The direct
++tracer did not show the defect, and the rewrite is value-preserving there too.
++"""
++
++from __future__ import annotations
++
++from typing import Any, Callable
++
++import torch
++
++
++def gather_blocks_via_all_reduce(group: Any, block: torch.Tensor) -> torch.Tensor:
++    """Concatenates every rank's ``block`` along dim 0, using one all-reduce.
++
++    Args:
++      group: A ``GroupCoordinator``-like object with ``world_size``,
++        ``rank_in_group`` and an ``all_reduce(tensor) -> tensor`` that sums over
++        the group.
++      block: This rank's block. Every rank passes the same shape and dtype.
++
++    Returns:
++      A ``[world_size * block.shape[0], *block.shape[1:]]`` tensor, equal to what
++      ``all_gather_into_tensor`` writes into its output.
++    """
++    world_size = group.world_size
++    blocks = block.new_zeros((world_size, *block.shape))
++    blocks[group.rank_in_group] = block
++    blocks = group.all_reduce(blocks)
++    return blocks.reshape(world_size * block.shape[0], *block.shape[1:])
++
++
++def all_gather_into_tensor_around(
++    original: Callable[..., Any],
++    group: Any,
++    output: torch.Tensor,
++    input: torch.Tensor,  # noqa: A002 - mirrors GroupCoordinator's signature
++) -> None:
++    """AROUND hook for ``GroupCoordinator.all_gather_into_tensor``.
++
++    Only traced calls (``torch.compiler.is_compiling()``, set by both TPU
++    tracers) on a multi-rank group take the all-reduce path; eager calls and
++    single-rank groups call the original collective.
++    """
++    if not torch.compiler.is_compiling() or group.world_size == 1:
++        return original(group, output, input)
++    output.copy_(gather_blocks_via_all_reduce(group, input).view(output.shape))
++    return None
+diff --git a/sglang_tpu/hooks/__init__.py b/sglang_tpu/hooks/__init__.py
+index 6905f25c6e..2387678b47 100644
+--- a/sglang_tpu/hooks/__init__.py
++++ b/sglang_tpu/hooks/__init__.py
+@@ -11,6 +11,7 @@ from __future__ import annotations
+ import logging
+ 
+ from sglang.srt.plugins.hook_registry import HookType
++from sglang_tpu.hooks.all_gather_via_all_reduce import all_gather_into_tensor
+ from sglang_tpu.hooks.attn_residual import register_attn_residual_ops
+ from sglang_tpu.hooks.attn_tp import device_supports_input_scattered
+ from sglang_tpu.hooks.cpu_pinning import bind_rank_cpu_set, pin_scheduler_main_thread
+@@ -258,6 +259,11 @@ HOOKS: list[tuple] = [
+         twolevel_all_reduce,
+         HookType.AROUND,
+     ),
++    (
++        "sglang.srt.distributed.parallel_state.GroupCoordinator.all_gather_into_tensor",
++        all_gather_into_tensor,
++        HookType.AROUND,
++    ),
+     (
+         "sglang.srt.models.kimi_k3.merged_moe_all_reduce",
+         twolevel_merged_moe_all_reduce,
+diff --git a/sglang_tpu/hooks/all_gather_via_all_reduce.py b/sglang_tpu/hooks/all_gather_via_all_reduce.py
+new file mode 100644
+index 0000000000..4e801008cd
+--- /dev/null
++++ b/sglang_tpu/hooks/all_gather_via_all_reduce.py
+@@ -0,0 +1,27 @@
++# SPDX-License-Identifier: Apache-2.0
++"""All-gather through the in-place all-reduce in compiled TPU graphs.
++
++all_gather_into_tensor
++  Why: under the Dynamo tracer the reg_all_gather_into_tensor custom op returns
++       wrong blocks from cross-chip peers on a TP group wider than one chip
++       (tpu7x TP >= 4). The LM head's vocabulary gather then corrupts most of
++       the logits, which shows up as a wrong first token after prefill
++       (sgl-project/sglang-torchtpu#1700). The in-place all-reduce compiles
++       correctly.
++  How: AROUND GroupCoordinator.all_gather_into_tensor; while a graph is traced
++       (torch.compiler.is_compiling(), set by both the Dynamo and the direct
++       tracer), the gather is rebuilt from one all-reduce over a zero-padded
++       [world, *block] buffer (sglang_tpu.all_gather_via_all_reduce). Eager
++       calls use the original.
++  Upstream PR or issue: sgl-project/sglang-torchtpu#1700 (TorchTPU compiled
++       all_gather_into_tensor across chips).
++  Remove when: the compiled all_gather_into_tensor returns the same blocks as
++       eager on a cross-chip TP group, checked with the first-token sweep in
++       #1700 at TP 8.
++"""
++
++from sglang_tpu.all_gather_via_all_reduce import (
++    all_gather_into_tensor_around as all_gather_into_tensor,
++)
++
++__all__ = ["all_gather_into_tensor"]
+diff --git a/test/registered/unit/hardware_backend/tpu/test_all_gather_via_all_reduce.py b/test/registered/unit/hardware_backend/tpu/test_all_gather_via_all_reduce.py
+new file mode 100644
+index 0000000000..fecb5aebcc
+--- /dev/null
++++ b/test/registered/unit/hardware_backend/tpu/test_all_gather_via_all_reduce.py
+@@ -0,0 +1,148 @@
++"""CPU contract for the all-reduce-based TP all-gather (sgl-project/sglang-torchtpu#1700).
++
++The TPU hook rebuilds GroupCoordinator.all_gather_into_tensor from the in-place
++all-reduce while a graph is traced. These tests simulate a TP group on CPU and
++check that the result equals the concatenation a correct all-gather writes
++(bit-identical except that -0.0 becomes +0.0), and that eager calls keep the
++native collective.
++"""
++
++import unittest
++from unittest import mock
++
++import torch
++
++from sglang.test.ci.ci_register import register_cpu_ci
++from sglang.test.test_utils import CustomTestCase
++from sglang_tpu import all_gather_via_all_reduce as agar
++
++register_cpu_ci(est_time=5, suite="base-a-test-cpu")
++
++
++class _SimulatedGroup:
++    """One rank of a simulated TP group whose all_reduce sums every rank's buffer.
++
++    Each rank's contribution is the zero-padded buffer the helper would build on
++    that rank, so the sum is what a real all-reduce returns to every rank.
++    """
++
++    def __init__(self, blocks: list[torch.Tensor], rank: int):
++        self._blocks = blocks
++        self.world_size = len(blocks)
++        self.rank_in_group = rank
++        self.reduced_shapes: list[tuple[int, ...]] = []
++
++    def all_reduce(self, tensor: torch.Tensor) -> torch.Tensor:
++        self.reduced_shapes.append(tuple(tensor.shape))
++        # This rank wrote only its own slot; the other slots are still zero.
++        for other in range(self.world_size):
++            if other != self.rank_in_group:
++                assert torch.count_nonzero(tensor[other]) == 0
++        total = torch.zeros_like(tensor)
++        for other, block in enumerate(self._blocks):
++            contribution = torch.zeros_like(tensor)
++            contribution[other] = block
++            total += contribution
++        return total
++
++
++def _blocks(world_size: int, shape: tuple[int, ...], dtype: torch.dtype):
++    generator = torch.Generator().manual_seed(world_size * 1000 + shape[-1])
++    return [
++        (torch.randn(shape, generator=generator) * 8).to(dtype)
++        for _ in range(world_size)
++    ]
++
++
++class TestGatherBlocksViaAllReduce(CustomTestCase):
++    def test_matches_concatenation_bit_exactly(self):
++        # Shard widths include 18992 (Qwen3 vocabulary 151936 / 8) and 37984
++        # (/ 4), neither a multiple of 128.
++        cases = [
++            (2, (8, 75968), torch.bfloat16),
++            (4, (8, 37984), torch.bfloat16),
++            (8, (8, 18992), torch.bfloat16),
++            (8, (32, 18992), torch.float32),
++            (8, (3, 5, 7), torch.float16),
++        ]
++        for world_size, shape, dtype in cases:
++            blocks = _blocks(world_size, shape, dtype)
++            expected = torch.cat(blocks, dim=0)
++            for rank in range(world_size):
++                with self.subTest(
++                    world=world_size, shape=shape, dtype=dtype, rank=rank
++                ):
++                    group = _SimulatedGroup(blocks, rank)
++                    got = agar.gather_blocks_via_all_reduce(group, blocks[rank])
++                    self.assertEqual(got.dtype, dtype)
++                    self.assertEqual(
++                        tuple(got.shape), (world_size * shape[0], *shape[1:])
++                    )
++                    self.assertTrue(torch.equal(got, expected))
++                    self.assertEqual(group.reduced_shapes, [(world_size, *shape)])
++
++    def test_preserves_non_finite_values(self):
++        blocks = [
++            torch.tensor([[float("inf"), -1.0]]),
++            torch.tensor([[float("-inf"), 2.0]]),
++        ]
++        got = agar.gather_blocks_via_all_reduce(_SimulatedGroup(blocks, 1), blocks[1])
++        self.assertTrue(
++            torch.equal(got, torch.tensor([[float("inf"), -1.0], [float("-inf"), 2.0]]))
++        )
++
++    def test_negative_zero_keeps_its_value_but_not_its_sign_bit(self):
++        blocks = [torch.tensor([[-0.0, 1.0]]), torch.tensor([[3.0, -0.0]])]
++
++        got = agar.gather_blocks_via_all_reduce(_SimulatedGroup(blocks, 0), blocks[0])
++
++        self.assertEqual(got.tolist(), [[0.0, 1.0], [3.0, 0.0]])
++        self.assertFalse(torch.signbit(got).any())
++
++
++class TestAllGatherIntoTensorAround(CustomTestCase):
++    def test_compiled_call_writes_the_gather_into_output(self):
++        blocks = _blocks(8, (8, 18992), torch.bfloat16)
++        group = _SimulatedGroup(blocks, 3)
++        output = torch.empty(64, 18992, dtype=torch.bfloat16)
++        original = mock.Mock()
++        with mock.patch.object(torch.compiler, "is_compiling", return_value=True):
++            agar.all_gather_into_tensor_around(original, group, output, blocks[3])
++        original.assert_not_called()
++        self.assertTrue(torch.equal(output, torch.cat(blocks, dim=0)))
++
++    def test_eager_call_uses_the_native_collective(self):
++        group = mock.Mock(world_size=8)
++        output = torch.empty(16, 4)
++        block = torch.ones(2, 4)
++        original = mock.Mock(return_value=None)
++        with mock.patch.object(torch.compiler, "is_compiling", return_value=False):
++            agar.all_gather_into_tensor_around(original, group, output, block)
++        original.assert_called_once_with(group, output, block)
++        group.all_reduce.assert_not_called()
++
++    def test_single_rank_group_uses_the_native_collective(self):
++        group = mock.Mock(world_size=1)
++        output = torch.empty(2, 4)
++        block = torch.ones(2, 4)
++        original = mock.Mock(return_value=None)
++        with mock.patch.object(torch.compiler, "is_compiling", return_value=True):
++            agar.all_gather_into_tensor_around(original, group, output, block)
++        original.assert_called_once_with(group, output, block)
++
++
++class TestHookRegistration(CustomTestCase):
++    def test_hook_targets_group_coordinator_all_gather_into_tensor(self):
++        from sglang_tpu.hooks import HOOKS
++
++        target = (
++            "sglang.srt.distributed.parallel_state."
++            "GroupCoordinator.all_gather_into_tensor"
++        )
++        entries = [entry for entry in HOOKS if entry[0] == target]
++        self.assertEqual(len(entries), 1)
++        self.assertIs(entries[0][1], agar.all_gather_into_tensor_around)
++
++
++if __name__ == "__main__":
++    unittest.main()
+-- 
+2.50.1 (Apple Git-155)
+

@@ -2,12 +2,17 @@
 
 import asyncio
 import hashlib
+import json
 import os
 import shutil
 import threading
+import time
 from contextlib import suppress
+from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 
+import pyrage
 import pytest
 from tests.fast.tinker.harness import (
     ADAM,
@@ -20,10 +25,12 @@ from tests.fast.tinker.harness import (
     write_legacy_checkpoint,
 )
 
+import miles.tinker.core.service as service_module
 from miles.backends.training_utils.checkpoint.adapter.commit import _adopt_pre_commit_dir, resolve_adapter_dir
+from miles.tinker.core.checkpoint_expiry import CheckpointExpiry
 from miles.tinker.core.future import DONE, FAILED
-from miles.tinker.core.types import OwnershipError, UserInputError
-from miles.tinker.core.utils import resolve_checkpoint_dir, resolve_sampler_checkpoint
+from miles.tinker.core.types import NotFoundError, OwnershipError, UserInputError
+from miles.tinker.core.utils import resolve_checkpoint_dir, resolve_sampler_checkpoint, resolve_sampler_export
 
 
 def _optim_payload(model_id: str, seq_id: int) -> dict:
@@ -125,7 +132,9 @@ async def test_optim_step_returns_the_slot_grad_norm(service):
 async def test_save_then_load_roundtrip_paths(service):
     model_id = await created_model(service)
     save = service.submit(
-        "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": "ckpt", "overwrite": False}
+        "tenant",
+        "save_state",
+        {"model_id": model_id, "seq_id": 1, "name": "ckpt", "overwrite": False, "ttl_seconds": None},
     )
     saved_path = (await await_settled(service, "tenant", save)).result["path"]
     assert saved_path == f"tinker://{model_id}/weights/ckpt"
@@ -135,16 +144,18 @@ async def test_save_then_load_roundtrip_paths(service):
     )
     assert (await await_settled(service, "tenant", load)).state == DONE
     weights_only = service.backend.named("load_slot")[-1]
-    assert weights_only["load_optimizer"] is False
+    assert weights_only["source"]["load_optimizer"] is False
     checkpoint = Path(service.config.checkpoint_root) / model_id / "weights" / "ckpt"
     # the trainer reads the commit the name pointed at when the load was scheduled
-    assert weights_only["ckpt_path"] == str(checkpoint.resolve()) and checkpoint.is_symlink()
+    assert weights_only["source"]["path"] == str(checkpoint.resolve()) and checkpoint.is_symlink()
 
 
 async def test_sampler_save_publishes_successive_versions(service):
     model_id = await created_model(service)
     for seq_id in (1, 2):
-        request_id = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": seq_id})
+        request_id = service.submit(
+            "tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": seq_id, "ttl_seconds": None}
+        )
         future = await await_settled(service, "tenant", request_id)
         assert future.result["path"] == f"tinker://{model_id}/sampler_weights/{seq_id}"
     root = Path(resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "sampler_weights", "1")).parent
@@ -155,9 +166,22 @@ async def test_sampler_save_publishes_successive_versions(service):
     assert all(resolve_adapter_dir(root, name, tenant="tenant") is not None for name in ("1", "2")), "both committed"
 
 
+async def test_an_export_records_the_base_fingerprint_the_gateway_serves(service):
+    service.config = replace(service.config, base_model_fingerprint="0123456789abcdef")
+    model_id = await created_model(service)
+    save = service.submit(
+        "tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1, "ttl_seconds": None}
+    )
+    assert (await await_settled(service, "tenant", save)).state == DONE
+    (export,) = service.backend.named("export_slot")
+    assert export["parametrization_fields"]["base_model_fingerprint"] == "0123456789abcdef"
+
+
 async def test_sampling_resolves_against_the_saved_version(service):
     model_id = await created_model(service)
-    save = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
+    save = service.submit(
+        "tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1, "ttl_seconds": None}
+    )
     sampler_path = (await await_settled(service, "tenant", save)).result["path"]
 
     request_id, sequence_ids = service.submit_sample(
@@ -236,7 +260,9 @@ async def test_a_short_inference_window_does_not_shrink_the_training_window(serv
 
 async def test_sampler_requests_carry_the_published_checkpoint_path(service):
     model_id = await created_model(service)
-    request_id = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
+    request_id = service.submit(
+        "tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1, "ttl_seconds": None}
+    )
     path = (await await_settled(service, "tenant", request_id)).result["path"]
 
     link = Path(resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "sampler_weights", "1"))
@@ -262,7 +288,9 @@ async def test_sampler_requests_carry_the_published_checkpoint_path(service):
 
 async def test_sample_failure_preserves_the_snapshot_and_training_model_queue(service):
     model_id = await created_model(service)
-    request_id = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
+    request_id = service.submit(
+        "tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1, "ttl_seconds": None}
+    )
     future = await await_settled(service, "tenant", request_id)
     assert future.result["path"] == f"tinker://{model_id}/sampler_weights/1"
 
@@ -322,7 +350,9 @@ async def test_a_fresh_heartbeat_keeps_the_model(service):
 async def test_traversal_checkpoint_names_are_rejected(service, name):
     model_id = await created_model(service)
     request_id = service.submit(
-        "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": name, "overwrite": False}
+        "tenant",
+        "save_state",
+        {"model_id": model_id, "seq_id": 1, "name": name, "overwrite": False, "ttl_seconds": None},
     )
     future = await await_settled(service, "tenant", request_id)
     assert (future.state, future.error_category) == (FAILED, "user")
@@ -366,7 +396,7 @@ async def test_expired_result_on_resubmit_fails_instead_of_410(service, monkeypa
 
 async def test_save_state_refuses_to_overwrite_unless_asked(service):
     model_id = await created_model(service)
-    payload = {"model_id": model_id, "name": "ckpt", "overwrite": False}
+    payload = {"model_id": model_id, "name": "ckpt", "overwrite": False, "ttl_seconds": None}
     first = service.submit("tenant", "save_state", payload | {"seq_id": 1})
     assert (await await_settled(service, "tenant", first)).state == DONE
 
@@ -375,7 +405,7 @@ async def test_save_state_refuses_to_overwrite_unless_asked(service):
     assert (future.state, future.error_category) == (FAILED, "user")
     assert "overwrite" in future.error
 
-    replace = service.submit("tenant", "save_state", payload | {"seq_id": 3, "overwrite": True})
+    replace = service.submit("tenant", "save_state", payload | {"seq_id": 3, "overwrite": True, "ttl_seconds": None})
     assert (await await_settled(service, "tenant", replace)).state == DONE
 
 
@@ -383,7 +413,9 @@ async def test_checkpoints_outlive_the_lease(service):
     session_id = service.create_session("tenant")
     model_id = await created_model(service, session_id=session_id)
     save = service.submit(
-        "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": "kept", "overwrite": False}
+        "tenant",
+        "save_state",
+        {"model_id": model_id, "seq_id": 1, "name": "kept", "overwrite": False, "ttl_seconds": None},
     )
     path = (await await_settled(service, "tenant", save)).result["path"]
 
@@ -400,7 +432,9 @@ async def test_checkpoints_outlive_the_lease(service):
 async def test_a_foreign_tenants_checkpoint_does_not_load(service):
     model_id = await created_model(service)
     save = service.submit(
-        "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": "mine", "overwrite": False}
+        "tenant",
+        "save_state",
+        {"model_id": model_id, "seq_id": 1, "name": "mine", "overwrite": False, "ttl_seconds": None},
     )
     path = (await await_settled(service, "tenant", save)).result["path"]
 
@@ -452,7 +486,9 @@ async def test_a_nonfinite_step_reports_the_skip(service):
 
 async def test_num_samples_is_capped(service):
     model_id = await created_model(service)
-    version = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
+    version = service.submit(
+        "tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1, "ttl_seconds": None}
+    )
     path = (await await_settled(service, "tenant", version)).result["path"]
     with pytest.raises(UserInputError):
         service.submit_sample(
@@ -532,7 +568,9 @@ async def test_unsupported_lora_configs_are_rejected(service):
 async def test_sampler_paths_resolve_independently_of_the_lease(service, expire_lease):
     session_id = service.create_session("tenant")
     model_id = await created_model(service, session_id=session_id)
-    save = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
+    save = service.submit(
+        "tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1, "ttl_seconds": None}
+    )
     path = (await await_settled(service, "tenant", save)).result["path"]
 
     if expire_lease:
@@ -565,8 +603,10 @@ async def test_the_commit_runs_off_the_event_loop(service, monkeypatch, op):
         commit(root, name, written, overwrite)
 
     monkeypatch.setattr(service.backend, "commit_adapter", recording_commit)
-    payload = {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False}
-    save = service.submit("tenant", op, payload if op == "save_state" else {"model_id": model_id, "seq_id": 1})
+    payload = {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False, "ttl_seconds": None}
+    save = service.submit(
+        "tenant", op, payload if op == "save_state" else {"model_id": model_id, "seq_id": 1, "ttl_seconds": None}
+    )
     assert (await await_settled(service, "tenant", save)).state == DONE
     assert commit_threads and commit_threads[0] is not threading.current_thread()
 
@@ -579,27 +619,35 @@ async def test_a_failed_sampler_commit_fails_only_that_request(service, monkeypa
         raise OSError("No space left on device")
 
     monkeypatch.setattr(service.backend, "commit_adapter", failing_commit)
-    failed = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
+    failed = service.submit(
+        "tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1, "ttl_seconds": None}
+    )
     future = await await_settled(service, "tenant", failed)
     assert (future.state, future.error_category) == (FAILED, "server")
     assert "No space left on device" in future.error
 
     monkeypatch.setattr(service.backend, "commit_adapter", commit)
-    retried = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 2})
+    retried = service.submit(
+        "tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 2, "ttl_seconds": None}
+    )
     assert (await await_settled(service, "tenant", retried)).state == DONE
 
 
 async def test_an_unnamed_sampler_save_returns_a_sampling_session(service):
     model_id = await created_model(service)
     unnamed = service.submit(
-        "tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1, "sampler_path": None}
+        "tenant",
+        "save_weights_for_sampler",
+        {"model_id": model_id, "seq_id": 1, "sampler_path": None, "ttl_seconds": None},
     )
     result = (await await_settled(service, "tenant", unnamed)).result
     session = service.sampling_sessions[result["sampling_session_id"]]
     assert (session.tenant, session.model_path) == ("tenant", result["path"])
 
     named = service.submit(
-        "tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 2, "sampler_path": "ckpt"}
+        "tenant",
+        "save_weights_for_sampler",
+        {"model_id": model_id, "seq_id": 2, "sampler_path": "ckpt", "ttl_seconds": None},
     )
     assert "sampling_session_id" not in (await await_settled(service, "tenant", named)).result
 
@@ -607,7 +655,9 @@ async def test_an_unnamed_sampler_save_returns_a_sampling_session(service):
 async def test_weights_info_reads_the_checkpoint_not_the_lease(service):
     model_id = await created_model(service)
     save = service.submit(
-        "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False}
+        "tenant",
+        "save_state",
+        {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False, "ttl_seconds": None},
     )
     path = (await await_settled(service, "tenant", save)).result["path"]
     del service.models[model_id]
@@ -630,7 +680,9 @@ async def test_weights_info_reports_the_checkpoints_groups_not_the_gateways(serv
 
     model_id = await created_model(service)
     save = service.submit(
-        "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False}
+        "tenant",
+        "save_state",
+        {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False, "ttl_seconds": None},
     )
     path = (await await_settled(service, "tenant", save)).result["path"]
     # an attn-only adapter, as another gateway or an import would have written it
@@ -707,7 +759,9 @@ async def test_a_failed_unload_keeps_the_slot_out_of_the_free_pool(service):
 async def test_a_named_sampler_save_uses_the_name_and_rejects_reuse(service):
     model_id = await created_model(service)
     save = service.submit(
-        "tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1, "sampler_path": "v1"}
+        "tenant",
+        "save_weights_for_sampler",
+        {"model_id": model_id, "seq_id": 1, "sampler_path": "v1", "ttl_seconds": None},
     )
     result = (await await_settled(service, "tenant", save)).result
     assert result["path"] == f"tinker://{model_id}/sampler_weights/v1"
@@ -728,7 +782,9 @@ async def test_a_named_sampler_save_uses_the_name_and_rejects_reuse(service):
     assert service.backend.named("sample")[0]["lora_name"].startswith(f"{model_id}@v1@")
 
     reuse = service.submit(
-        "tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 2, "sampler_path": "v1"}
+        "tenant",
+        "save_weights_for_sampler",
+        {"model_id": model_id, "seq_id": 2, "sampler_path": "v1", "ttl_seconds": None},
     )
     future = await await_settled(service, "tenant", reuse)
     assert future.state == FAILED and "already exist" in future.error, "saved versions are immutable"
@@ -739,7 +795,9 @@ async def test_a_checkpoint_stores_a_digest_not_the_credential(service):
 
     model_id = await created_model(service)
     saved = service.submit(
-        "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False}
+        "tenant",
+        "save_state",
+        {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False, "ttl_seconds": None},
     )
     await await_settled(service, "tenant", saved)
     link = Path(resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "weights", "ck"))
@@ -755,7 +813,9 @@ async def test_a_checkpoint_of_another_base_or_rank_does_not_load(service, field
 
     model_id = await created_model(service)
     saved = service.submit(
-        "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False}
+        "tenant",
+        "save_state",
+        {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False, "ttl_seconds": None},
     )
     path = (await await_settled(service, "tenant", saved)).result["path"]
     parametrization = Path(resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "weights", "ck")).resolve()
@@ -776,7 +836,9 @@ async def test_a_refused_load_leaves_the_model_usable(service, refused_by):
 
     model_id = await created_model(service)
     saved = service.submit(
-        "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False}
+        "tenant",
+        "save_state",
+        {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False, "ttl_seconds": None},
     )
     path = (await await_settled(service, "tenant", saved)).result["path"]
     if refused_by == "gateway":
@@ -792,7 +854,9 @@ async def test_a_refused_load_leaves_the_model_usable(service, refused_by):
     future = await await_settled(service, "tenant", loaded)
     assert (future.state, future.error_category) == (FAILED, "user")
     saved = service.submit(
-        "tenant", "save_state", {"model_id": model_id, "seq_id": 3, "name": "after", "overwrite": False}
+        "tenant",
+        "save_state",
+        {"model_id": model_id, "seq_id": 3, "name": "after", "overwrite": False, "ttl_seconds": None},
     )
     assert (await await_settled(service, "tenant", saved)).state == DONE
 
@@ -802,7 +866,9 @@ async def test_a_loaded_adapter_keeps_its_own_alpha(service):
 
     model_id = await created_model(service)
     saved = service.submit(
-        "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False}
+        "tenant",
+        "save_state",
+        {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False, "ttl_seconds": None},
     )
     path = (await await_settled(service, "tenant", saved)).result["path"]
     parametrization = Path(resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "weights", "ck")).resolve()
@@ -814,7 +880,7 @@ async def test_a_loaded_adapter_keeps_its_own_alpha(service):
     )
     assert (await await_settled(service, "tenant", loaded)).state == DONE
     load = service.backend.named("load_slot")[-1]
-    assert load["alpha"] == load["parametrization_fields"]["lora_alpha"] == 99.0
+    assert load["alpha"] == load["source"]["parametrization_fields"]["lora_alpha"] == 99.0
     assert service.models[model_id].lora_alpha == 99.0, "the tenant record adopts the source's alpha"
 
 
@@ -829,7 +895,7 @@ async def test_a_checkpoint_saved_before_commits_loads_through_the_legacy_path(s
         {"model_id": model_id, "seq_id": 1, "path": f"tinker://{model_id}/weights/old", "optimizer": True},
     )
     assert (await await_settled(service, "tenant", loaded)).state == DONE
-    assert service.backend.named("load_slot")[-1]["ckpt_path"] == str(Path(legacy).resolve())
+    assert service.backend.named("load_slot")[-1]["source"]["path"] == str(Path(legacy).resolve())
 
 
 async def test_an_overwrite_interrupted_after_adopting_a_legacy_dir_keeps_it_loadable(service):
@@ -846,14 +912,20 @@ async def test_an_overwrite_interrupted_after_adopting_a_legacy_dir_keeps_it_loa
         "tenant", "load_state", {"model_id": model_id, "seq_id": 1, "path": path, "optimizer": True}
     )
     assert (await await_settled(service, "tenant", loaded)).state == DONE
-    assert service.backend.named("load_slot")[-1]["ckpt_path"] == str(Path(legacy).resolve())
+    assert service.backend.named("load_slot")[-1]["source"]["path"] == str(Path(legacy).resolve())
+    with pytest.raises(UserInputError, match="saved before checkpoints could expire"):
+        await service.set_checkpoint_ttl("tenant", model_id, "weights/old", 7200)
+    with pytest.raises(UserInputError, match="saved before checkpoints could expire"):
+        await service.delete_checkpoint("tenant", model_id, "weights/old")
 
 
 async def test_an_overwritten_checkpoint_leaves_no_old_commit(service):
     model_id = await created_model(service)
     for seq_id in (1, 2):
         saved = service.submit(
-            "tenant", "save_state", {"model_id": model_id, "seq_id": seq_id, "name": "ck", "overwrite": True}
+            "tenant",
+            "save_state",
+            {"model_id": model_id, "seq_id": seq_id, "name": "ck", "overwrite": True, "ttl_seconds": None},
         )
         assert (await await_settled(service, "tenant", saved)).state == DONE
     await asyncio.gather(*service._cleanup_tasks)
@@ -876,7 +948,9 @@ async def test_overlapping_cleanups_run_one_at_a_time(service, monkeypatch):
     monkeypatch.setattr(service.backend, "delete_retired_adapters", blocking_delete)
     for seq_id in (1, 2):
         saved = service.submit(
-            "tenant", "save_state", {"model_id": model_id, "seq_id": seq_id, "name": "ck", "overwrite": True}
+            "tenant",
+            "save_state",
+            {"model_id": model_id, "seq_id": seq_id, "name": "ck", "overwrite": True, "ttl_seconds": None},
         )
         assert (await await_settled(service, "tenant", saved)).state == DONE
     await asyncio.sleep(0.1)
@@ -913,7 +987,7 @@ async def test_a_failed_save_commit_fails_only_that_request(service, monkeypatch
 
     monkeypatch.setattr(service.backend, "commit_adapter", failing_commit)
     model_id = await created_model(service)
-    payload = {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False}
+    payload = {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False, "ttl_seconds": None}
     future = await await_settled(service, "tenant", service.submit("tenant", "save_state", payload))
     assert (future.state, future.error_category) == (FAILED, "server")
     assert "checkpoint IO failed" in future.error
@@ -928,7 +1002,7 @@ async def test_a_failed_cleanup_after_a_save_keeps_the_gateway_serving(service):
     service.backend.delete_retired_adapters = failing_delete
     model_id = await created_model(service)
     for seq_id in (1, 2):
-        payload = {"model_id": model_id, "seq_id": seq_id, "name": "ck", "overwrite": True}
+        payload = {"model_id": model_id, "seq_id": seq_id, "name": "ck", "overwrite": True, "ttl_seconds": None}
         assert (await await_settled(service, "tenant", service.submit("tenant", "save_state", payload))).state == DONE
         await asyncio.gather(*service._cleanup_tasks)
 
@@ -948,7 +1022,9 @@ async def test_a_stopping_dispatcher_waits_for_pending_cleanups(tmp_path):
     try:
         model_id = await created_model(gateway)
         saved = gateway.submit(
-            "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False}
+            "tenant",
+            "save_state",
+            {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False, "ttl_seconds": None},
         )
         assert (await await_settled(gateway, "tenant", saved)).state == DONE
         gateway.backend.fail_on["optim_step"] = RuntimeError("fatal execution failure")
@@ -970,10 +1046,10 @@ async def test_an_overwrite_onto_a_foreign_link_is_a_user_error(service, tmp_pat
     weights = Path(resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "weights", "ck")).parent
     weights.mkdir(parents=True)
     (weights / "ck").symlink_to(tmp_path / "shared_adapter")
-    payload = {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": True}
+    payload = {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": True, "ttl_seconds": None}
     failed = await await_settled(service, "tenant", service.submit("tenant", "save_state", payload))
     assert failed.state == FAILED and "did not write" in failed.error
-    payload = {"model_id": model_id, "seq_id": 2, "name": "other", "overwrite": False}
+    payload = {"model_id": model_id, "seq_id": 2, "name": "other", "overwrite": False, "ttl_seconds": None}
     assert (await await_settled(service, "tenant", service.submit("tenant", "save_state", payload))).state == DONE
 
 
@@ -990,10 +1066,14 @@ async def test_an_unknown_failure_stops_the_dispatcher(tmp_path, source):
         model_id = await created_model(gateway)
         if source == "export":
             gateway.backend.fail_on["export_slot"] = error
-            gateway.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
+            gateway.submit(
+                "tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1, "ttl_seconds": None}
+            )
         elif source == "load":
             saved = gateway.submit(
-                "tenant", "save_state", {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False}
+                "tenant",
+                "save_state",
+                {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False, "ttl_seconds": None},
             )
             path = (await await_settled(gateway, "tenant", saved)).result["path"]
             gateway.backend.fail_on["load_slot"] = error
@@ -1069,7 +1149,9 @@ async def test_a_retried_sampling_session_returns_the_same_id(service):
 
 async def test_a_retried_sample_does_not_sample_again(service):
     model_id = await created_model(service)
-    save = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
+    save = service.submit(
+        "tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1, "ttl_seconds": None}
+    )
     path = (await await_settled(service, "tenant", save)).result["path"]
     sampling_session_id = service.create_sampling_session(
         "tenant", {"session_id": service.create_session("tenant"), "sampling_session_seq_id": 1, "model_path": path}
@@ -1170,10 +1252,32 @@ async def test_a_sampler_dir_written_before_commits_still_resolves(service):
     )
 
 
+async def test_a_sampler_name_resolves_to_a_commit_a_dir_before_commits_or_nothing(service):
+    """weights_info and engine reloads share one resolution: a link whose target is gone is an unknown checkpoint."""
+    model_id = await created_model(service)
+    save = service.submit(
+        "tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1, "ttl_seconds": None}
+    )
+    path = (await await_settled(service, "tenant", save)).result["path"]
+    link = resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "sampler_weights", "1")
+    assert resolve_sampler_export(link, "tenant", model_id, path, service.backend.resolve_adapter) is not None
+    legacy = resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "sampler_weights", "old")
+    os.makedirs(legacy)
+    assert resolve_sampler_export(legacy, "tenant", model_id, path, service.backend.resolve_adapter) is None
+
+    shutil.rmtree(resolve_adapter_dir(Path(link).parent, "1", tenant=None).path)
+    with pytest.raises(UserInputError, match="unknown checkpoint"):
+        service.weights_info("tenant", path)
+    with pytest.raises(UserInputError, match="unknown checkpoint"):
+        resolve_sampler_checkpoint(service.config, "tenant", path, service.backend.resolve_adapter)
+
+
 @pytest.mark.parametrize("filename", ["tenant.json", "adapter_parametrization.json"])
 async def test_a_truncated_sampler_commit_file_is_a_user_error(service, filename):
     model_id = await created_model(service)
-    save = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
+    save = service.submit(
+        "tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1, "ttl_seconds": None}
+    )
     path = (await await_settled(service, "tenant", save)).result["path"]
     root = Path(resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "sampler_weights", "1")).parent
     commit_file = resolve_adapter_dir(root, "1", tenant=None).path / filename
@@ -1189,7 +1293,9 @@ async def test_a_truncated_sampler_commit_file_is_a_user_error(service, filename
 )
 async def test_a_sampler_commit_file_of_the_wrong_schema_is_a_user_error(service, filename, content):
     model_id = await created_model(service)
-    save = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
+    save = service.submit(
+        "tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1, "ttl_seconds": None}
+    )
     path = (await await_settled(service, "tenant", save)).result["path"]
     root = Path(resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "sampler_weights", "1")).parent
     (resolve_adapter_dir(root, "1", tenant=None).path / filename).write_text(content)
@@ -1201,7 +1307,9 @@ async def test_a_sampler_commit_file_of_the_wrong_schema_is_a_user_error(service
 
 async def test_another_tenants_sampler_export_does_not_resolve(service):
     model_id = await created_model(service)
-    save = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
+    save = service.submit(
+        "tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1, "ttl_seconds": None}
+    )
     path = (await await_settled(service, "tenant", save)).result["path"]
     with pytest.raises(OwnershipError):
         resolve_sampler_checkpoint(service.config, "mallory", path, service.backend.resolve_adapter)
@@ -1212,9 +1320,391 @@ async def test_another_tenants_sampler_export_does_not_resolve(service):
     )
 
 
+def _external_payload(model_id: str, seq_id: int, name: str, **overrides) -> dict:
+    return {
+        "model_id": model_id,
+        "seq_id": seq_id,
+        "name": name,
+        "ttl_seconds": None,
+        "age_recipients": [],
+    } | overrides
+
+
+async def test_an_external_save_is_downloadable_by_its_tenant_only(service):
+    model_id = await created_model(service)
+    save = service.submit(
+        "tenant", "save_weights_external", _external_payload(model_id, 1, "export", ttl_seconds=7200)
+    )
+    result = (await await_settled(service, "tenant", save)).result
+    assert result["path"] == f"tinker://{model_id}/external_weights/export" and result["size_bytes"] > 0
+    assert service.expiry.expires_at(result["path"]) is not None
+
+    urls = await service.external_weights_urls("tenant", model_id, "external_weights/export", "http://gateway/")
+    assert sorted(urls["urls"]) == ["adapter_config.json", "adapter_model.safetensors"], "tenant.json stays private"
+    token = urls["urls"]["adapter_config.json"].split("/")[-2]
+    assert json.loads(Path(await service.download_path(token, "adapter_config.json")).read_text())["r"] == 8
+    with pytest.raises(NotFoundError):
+        await service.download_path(token, "tenant.json")
+    with pytest.raises(NotFoundError):
+        await service.download_path("forged", "adapter_config.json")
+    with pytest.raises(OwnershipError):
+        await service.external_weights_urls("mallory", model_id, "external_weights/export", "http://gateway/")
+    save = service.submit(
+        "tenant",
+        "save_state",
+        {"model_id": model_id, "seq_id": 2, "name": "ck", "overwrite": False, "ttl_seconds": None},
+    )
+    await await_settled(service, "tenant", save)
+    with pytest.raises(UserInputError, match="not an external_weights"):
+        await service.external_weights_urls("tenant", model_id, "weights/ck", "http://gateway/")
+
+    await service.delete_checkpoint("tenant", model_id, "external_weights/export")
+    with pytest.raises(NotFoundError, match="deleted"):
+        await service.download_path(token, "adapter_config.json")
+    assert service.expiry.expires_at(result["path"]) is None
+
+
+async def test_repeated_url_requests_reuse_one_token_and_the_sweeper_drops_expired_ones(service, monkeypatch):
+    model_id = await created_model(service)
+    save = service.submit("tenant", "save_weights_external", _external_payload(model_id, 1, "export"))
+    await await_settled(service, "tenant", save)
+
+    def token():
+        return urls["urls"]["adapter_config.json"].split("/")[-2]
+
+    urls = await service.external_weights_urls("tenant", model_id, "external_weights/export", "http://gateway/")
+    first = token()
+    for _ in range(3):
+        urls = await service.external_weights_urls("tenant", model_id, "external_weights/export", "http://gateway/")
+    assert token() == first and len(service._downloads) == 1, "a client polling for URLs does not grow the table"
+
+    service._drop_expired_downloads(time.time() + 3601)
+    assert not service._downloads and not service._download_tokens
+    with pytest.raises(NotFoundError):
+        await service.download_path(first, "adapter_config.json")
+    urls = await service.external_weights_urls("tenant", model_id, "external_weights/export", "http://gateway/")
+    assert token() != first, "an expired token is never handed out again"
+
+
+async def test_a_download_token_never_outlives_the_expiry_it_was_issued_with(service, monkeypatch):
+    """The URL is the credential: a request after its expiry, before the sweeper runs, must not revive it."""
+    model_id = await created_model(service)
+    save = service.submit("tenant", "save_weights_external", _external_payload(model_id, 1, "export"))
+    await await_settled(service, "tenant", save)
+    now = [time.time()]
+    monkeypatch.setattr(service_module.time, "time", lambda: now[0])
+
+    def token(urls):
+        return urls["urls"]["adapter_config.json"].split("/")[-2]
+
+    first = await service.external_weights_urls("tenant", model_id, "external_weights/export", "http://gateway/")
+    reported = datetime.fromisoformat(first["expires"]).timestamp()
+    now[0] += 3601
+    with pytest.raises(NotFoundError):
+        await service.download_path(token(first), "adapter_config.json")
+    again = await service.external_weights_urls("tenant", model_id, "external_weights/export", "http://gateway/")
+    assert token(again) != token(first), "an expired token is never handed out again, swept or not"
+    with pytest.raises(NotFoundError):
+        await service.download_path(token(first), "adapter_config.json")
+    assert service._downloads[token(again)].expires_at > now[0]
+    # a reused token keeps the expiry it was issued with
+    now[0] += 10
+    reused = await service.external_weights_urls("tenant", model_id, "external_weights/export", "http://gateway/")
+    assert token(reused) == token(again) and reused["expires"] == again["expires"]
+    # the table never lets a token live past what its response reported
+    issued = datetime.fromisoformat(again["expires"]).timestamp()
+    assert service._downloads[token(again)].expires_at == pytest.approx(issued, abs=1e-5)
+    assert service._downloads.get(token(first)) is None or service._downloads[
+        token(first)
+    ].expires_at == pytest.approx(reported, abs=1e-5)
+
+
+async def test_an_encrypted_external_save_keeps_its_owner(service):
+    """Only the export's files are encrypted; tenant.json stays readable, so the owner can list and delete it."""
+    model_id = await created_model(service)
+    recipient = str(pyrage.x25519.Identity.generate().to_public())
+    save = service.submit(
+        "tenant", "save_weights_external", _external_payload(model_id, 1, "export", age_recipients=[recipient])
+    )
+    assert (await await_settled(service, "tenant", save)).state == DONE
+    urls = await service.external_weights_urls("tenant", model_id, "external_weights/export", "http://gateway/")
+    assert sorted(urls["urls"]) == ["adapter_config.json.age", "adapter_model.safetensors.age"]
+    with pytest.raises(OwnershipError):
+        await service.external_weights_urls("mallory", model_id, "external_weights/export", "http://gateway/")
+    await service.delete_checkpoint("tenant", model_id, "external_weights/export")
+
+
+async def test_an_external_save_is_refused_for_a_family_without_checked_tinker_names(service):
+    service.config.exports_tinker_names = False
+    model_id = await created_model(service)
+    save = service.submit("tenant", "save_weights_external", _external_payload(model_id, 1, "export"))
+    assert "no checked official Tinker names" in (await await_settled(service, "tenant", save)).error
+    assert not service.backend.named("export_external")
+
+
+async def test_a_failed_external_commit_fails_the_request_not_the_gateway(service, monkeypatch):
+    model_id = await created_model(service)
+    commit = service.backend.commit_adapter
+
+    def full_disk(*args, **kwargs):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(service.backend, "commit_adapter", full_disk)
+    save = service.submit("tenant", "save_weights_external", _external_payload(model_id, 1, "export"))
+    settled = await await_settled(service, "tenant", save)
+    assert settled.state == FAILED and "No space left" in settled.error
+    monkeypatch.setattr(service.backend, "commit_adapter", commit)
+    save = service.submit("tenant", "save_weights_external", _external_payload(model_id, 2, "export"))
+    assert (await await_settled(service, "tenant", save)).state == DONE, "the gateway keeps serving"
+
+
+async def test_a_download_url_does_not_serve_a_resave_under_the_same_name(service):
+    model_id = await created_model(service)
+    save = service.submit("tenant", "save_weights_external", _external_payload(model_id, 1, "export"))
+    assert (await await_settled(service, "tenant", save)).state == DONE
+    urls = await service.external_weights_urls("tenant", model_id, "external_weights/export", "http://gateway/")
+    token = urls["urls"]["adapter_config.json"].split("/")[-2]
+    await service.delete_checkpoint("tenant", model_id, "external_weights/export")
+    save = service.submit("tenant", "save_weights_external", _external_payload(model_id, 2, "export"))
+    assert (await await_settled(service, "tenant", save)).state == DONE
+    with pytest.raises(NotFoundError, match="saved again"):
+        await service.download_path(token, "adapter_config.json")
+
+
+async def test_an_external_save_refuses_an_existing_name(service):
+    model_id = await created_model(service)
+    first = service.submit("tenant", "save_weights_external", _external_payload(model_id, 1, "export"))
+    assert (await await_settled(service, "tenant", first)).state == DONE
+    again = service.submit("tenant", "save_weights_external", _external_payload(model_id, 2, "export"))
+    assert "already exist" in (await await_settled(service, "tenant", again)).error
+
+
+async def test_a_download_url_expires_with_its_checkpoint(service, monkeypatch):
+    model_id = await created_model(service)
+    save = service.submit(
+        "tenant", "save_weights_external", _external_payload(model_id, 1, "export", ttl_seconds=3600)
+    )
+    await await_settled(service, "tenant", save)
+    real_time = time.time
+    # signed with half an hour of the checkpoint left, less than a URL's hour
+    monkeypatch.setattr(time, "time", lambda: real_time() + 1800)
+    urls = await service.external_weights_urls("tenant", model_id, "external_weights/export", "http://gateway/")
+    token = urls["urls"]["adapter_config.json"].split("/")[-2]
+    monkeypatch.setattr(time, "time", lambda: real_time() + 3601)
+    with pytest.raises(NotFoundError, match="expired"):
+        await service.download_path(token, "adapter_config.json")
+    with pytest.raises(NotFoundError, match="has expired"):
+        await service.external_weights_urls("tenant", model_id, "external_weights/export", "http://gateway/")
+
+
+async def test_repeated_url_requests_reuse_one_token_near_the_checkpoints_expiry(service, monkeypatch):
+    model_id = await created_model(service)
+    save = service.submit(
+        "tenant", "save_weights_external", _external_payload(model_id, 1, "export", ttl_seconds=3600)
+    )
+    await await_settled(service, "tenant", save)
+    real_time = time.time
+    # a quarter hour of the checkpoint left caps every token below half a URL's hour
+    monkeypatch.setattr(time, "time", lambda: real_time() + 2700)
+    tokens = set()
+    for _ in range(3):
+        urls = await service.external_weights_urls("tenant", model_id, "external_weights/export", "http://gateway/")
+        tokens.add(urls["urls"]["adapter_config.json"].split("/")[-2])
+    assert len(tokens) == 1 and len(service._downloads) == 1, "a client polling for URLs does not grow the table"
+
+
+async def test_an_overwrite_that_crashes_before_its_ttl_does_not_inherit_the_old_expiry(service, monkeypatch):
+    model_id = await created_model(service)
+    save = service.submit(
+        "tenant",
+        "save_state",
+        {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False, "ttl_seconds": 3600},
+    )
+    path = (await await_settled(service, "tenant", save)).result["path"]
+    root = Path(resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "weights", "ck")).parent
+    old_commit = resolve_adapter_dir(root, "ck", tenant=None).commit_id
+
+    def crash(*args):
+        raise RuntimeError("crashed after the commit")
+
+    monkeypatch.setattr(service.expiry, "set", crash)
+    with pytest.raises(RuntimeError, match="crashed after the commit"):
+        await service._save_state(
+            service.models[model_id], {"seq_id": 2, "name": "ck", "overwrite": True, "ttl_seconds": None}
+        )
+    assert resolve_adapter_dir(root, "ck", tenant=None).commit_id != old_commit, "the overwrite committed"
+    assert CheckpointExpiry(service.config.checkpoint_root).expires_at(path) is None
+
+
+@pytest.mark.parametrize("swapped", [False, True], ids=["before_the_swap", "after_the_swap"])
+async def test_a_failed_overwrite_commit_keeps_the_old_expiry_only_on_the_old_commit(service, monkeypatch, swapped):
+    model_id = await created_model(service)
+    save = service.submit(
+        "tenant",
+        "save_state",
+        {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False, "ttl_seconds": 3600},
+    )
+    path = (await await_settled(service, "tenant", save)).result["path"]
+    old_expires_at = service.expiry.expires_at(path)
+    commit = service.backend.commit_adapter
+
+    def failing_commit(root, name, written, overwrite):
+        if swapped:
+            commit(root, name, written, overwrite=overwrite)
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(service.backend, "commit_adapter", failing_commit)
+    failed = await service._save_state(
+        service.models[model_id], {"seq_id": 2, "name": "ck", "overwrite": True, "ttl_seconds": None}
+    )
+    assert failed["error_category"] == "server" and "No space left" in failed["error"]
+    expected = None if swapped else old_expires_at
+    assert CheckpointExpiry(service.config.checkpoint_root).expires_at(path) == expected
+
+
+def _full_disk(*args, **kwargs):
+    raise OSError(28, "No space left on device")
+
+
+@pytest.mark.parametrize("op", ["save_state", "save_weights_for_sampler", "save_weights_external"])
+async def test_a_failed_expiry_write_after_a_commit_keeps_the_save_and_the_gateway(service, monkeypatch, op):
+    model_id = await created_model(service)
+    payloads = {
+        "save_state": lambda seq_id: {
+            "model_id": model_id,
+            "seq_id": seq_id,
+            "name": f"ck{seq_id}",
+            "overwrite": False,
+            "ttl_seconds": 3600,
+        },
+        "save_weights_for_sampler": lambda seq_id: {"model_id": model_id, "seq_id": seq_id, "ttl_seconds": 3600},
+        "save_weights_external": lambda seq_id: _external_payload(model_id, seq_id, f"e{seq_id}", ttl_seconds=3600),
+    }
+    monkeypatch.setattr(service.expiry, "_write", _full_disk)
+    if op == "save_weights_external":
+        # the commit is done; sizing it is a read after it
+        monkeypatch.setattr(service.backend, "resolve_checkpoint_files", _full_disk)
+    for seq_id in (1, 2):
+        saved = await await_settled(service, "tenant", service.submit("tenant", op, payloads[op](seq_id)))
+        assert saved.state == DONE, saved.error
+        # recorded nowhere, so it never expires, in this process or after a restart
+        assert service.expiry.expires_at(saved.result["path"]) is None
+    if op == "save_weights_external":
+        assert saved.result["size_bytes"] is None
+
+
+@pytest.mark.parametrize("fails", ["live_commit_id", "drop"])
+async def test_a_failure_before_an_overwrite_commit_fails_only_that_request(service, monkeypatch, fails):
+    model_id = await created_model(service)
+
+    def save(seq_id):
+        payload = {"model_id": model_id, "seq_id": seq_id, "name": "ck", "overwrite": True, "ttl_seconds": 3600}
+        return await_settled(service, "tenant", service.submit("tenant", "save_state", payload))
+
+    path = (await save(1)).result["path"]
+    old_expires_at = service.expiry.expires_at(path)
+    if fails == "live_commit_id":
+
+        def foreign_link(root, name):
+            raise ValueError("ck is a link this library did not write")
+
+        monkeypatch.setattr(service, "_live_commit_id", foreign_link)
+    else:
+        monkeypatch.setattr(service.expiry, "_write", _full_disk)
+    failed = await save(2)
+    assert failed.state == FAILED
+    assert failed.error_category == ("user" if fails == "live_commit_id" else "server")
+    assert service.expiry.expires_at(path) == old_expires_at
+    assert CheckpointExpiry(service.config.checkpoint_root).expires_at(path) == old_expires_at
+    monkeypatch.undo()
+    assert (await save(3)).state == DONE, "the gateway keeps serving"
+
+
+async def test_a_sweep_with_nothing_expired_does_not_wait_for_the_trainer(service):
+    async with service._trainer_lock:
+        await asyncio.wait_for(service._expire_checkpoints(), timeout=1.0)
+
+
+async def test_ttl_is_set_removed_and_swept(service, monkeypatch):
+    model_id = await created_model(service)
+    save = service.submit(
+        "tenant",
+        "save_state",
+        {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False, "ttl_seconds": 3600},
+    )
+    path = (await await_settled(service, "tenant", save)).result["path"]
+    await service.set_checkpoint_ttl("tenant", model_id, "weights/ck", None)
+    assert service.expiry.expires_at(path) is None
+    with pytest.raises(UserInputError, match="ttl_seconds"):
+        await service.set_checkpoint_ttl("tenant", model_id, "weights/ck", 60)
+    with pytest.raises(OwnershipError):
+        await service.set_checkpoint_ttl("mallory", model_id, "weights/ck", 7200)
+    await service.set_checkpoint_ttl("tenant", model_id, "weights/ck", 7200)
+
+    real_time = time.time
+    monkeypatch.setattr(time, "time", lambda: real_time() + 7201)
+    await service._expire_checkpoints()
+    root = Path(resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "weights", "ck")).parent
+    assert resolve_adapter_dir(root, "ck", tenant=None) is None and service.expiry.expires_at(path) is None
+    with pytest.raises(NotFoundError):
+        await service.delete_checkpoint("tenant", model_id, "weights/ck")
+
+
+async def test_a_failed_expiry_delete_is_retried_and_the_rest_are_swept(service, monkeypatch):
+    model_id = await created_model(service)
+    paths = {}
+    for seq_id, name in enumerate(("stuck", "ok"), start=1):
+        payload = {"model_id": model_id, "seq_id": seq_id, "name": name, "overwrite": False, "ttl_seconds": 3600}
+        paths[name] = (await await_settled(service, "tenant", service.submit("tenant", "save_state", payload))).result[
+            "path"
+        ]
+    real_delete = service.backend.delete_adapter
+
+    def delete_adapter(root, name, tenant):
+        if name == "stuck":
+            raise PermissionError(13, "Permission denied")
+        real_delete(root, name, tenant)
+
+    monkeypatch.setattr(service.backend, "delete_adapter", delete_adapter)
+    real_time = time.time
+    monkeypatch.setattr(time, "time", lambda: real_time() + 3601)
+    await service._expire_checkpoints()
+    root = Path(resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "weights", "ok")).parent
+    assert resolve_adapter_dir(root, "ok", tenant=None) is None and service.expiry.expires_at(paths["ok"]) is None
+    assert resolve_adapter_dir(root, "stuck", tenant=None) is not None
+    assert service.expiry.expires_at(paths["stuck"]) is not None, "kept for the next sweep"
+
+
+async def test_an_expiring_name_relinked_by_an_operator_is_kept_and_the_rest_are_swept(service, tmp_path_factory):
+    """The sweep also runs before the dispatcher starts, so an entry it cannot delete must not stop it."""
+    model_id = await created_model(service)
+    paths = {}
+    for seq_id, name in enumerate(("outside", "foreign", "ok"), start=1):
+        payload = {"model_id": model_id, "seq_id": seq_id, "name": name, "overwrite": False, "ttl_seconds": 3600}
+        settled = await await_settled(service, "tenant", service.submit("tenant", "save_state", payload))
+        paths[name] = settled.result["path"]
+    root = Path(resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "weights", "ok")).parent
+    # e.g. a shared adapter: out of the checkpoint root, or in it but not written by the library
+    shared = tmp_path_factory.mktemp("shared")
+    (root / "shared.adapter").mkdir()
+    for name, target in (("outside", shared), ("foreign", root / "shared.adapter")):
+        (root / name).unlink()
+        (root / name).symlink_to(target)
+    real_time = time.time
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(time, "time", lambda: real_time() + 3601)
+        await service._expire_checkpoints()
+    assert resolve_adapter_dir(root, "ok", tenant=None) is None and service.expiry.expires_at(paths["ok"]) is None
+    assert shared.is_dir() and (root / "shared.adapter").is_dir()
+    assert service.expiry.expires_at(paths["outside"]) is not None
+    assert service.expiry.expires_at(paths["foreign"]) is not None
+
+
 async def test_weights_info_rejects_a_sampler_link_whose_target_is_gone(service):
     model_id = await created_model(service)
-    save = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
+    save = service.submit(
+        "tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1, "ttl_seconds": None}
+    )
     path = (await await_settled(service, "tenant", save)).result["path"]
     link = Path(resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "sampler_weights", "1"))
     shutil.rmtree(resolve_adapter_dir(link.parent, "1", tenant="tenant").path)
@@ -1223,9 +1713,81 @@ async def test_weights_info_rejects_a_sampler_link_whose_target_is_gone(service)
 
 
 async def test_trainer_ranks_get_only_the_tenant_digest(service):
-    """The API key is the tenant's credential; it must not travel to trainer processes."""
     model_id = await created_model(service)
-    save = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
+    save = service.submit(
+        "tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1, "ttl_seconds": None}
+    )
     assert (await await_settled(service, "tenant", save)).state == DONE
     (export,) = service.backend.named("export_slot")
     assert export["tenant_digest"] == hashlib.sha256(b"tenant").hexdigest()
+
+
+async def test_a_ttl_change_does_not_wait_for_a_training_call(service):
+    """The TTL is serialized with deletes, which the design requires, not with the trainer."""
+    model_id = await created_model(service)
+    save = service.submit(
+        "tenant",
+        "save_state",
+        {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False, "ttl_seconds": None},
+    )
+    assert (await await_settled(service, "tenant", save)).state == DONE
+    # a training call in progress
+    async with service._trainer_lock:
+        await asyncio.wait_for(service.set_checkpoint_ttl("tenant", model_id, "weights/ck", 7200), timeout=1.0)
+    assert service.expiry.expires_at(f"tinker://{model_id}/weights/ck") is not None
+
+
+async def test_a_legacy_checkpoint_cannot_be_deleted_through_the_api(service):
+    model_id = await created_model(service)
+    write_legacy_checkpoint(
+        resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "weights", "old"),
+        service.models[model_id],
+        service.config,
+    )
+    with pytest.raises(UserInputError, match="saved before checkpoints could expire"):
+        await service.delete_checkpoint("tenant", model_id, "weights/old")
+    with pytest.raises(UserInputError, match="not an external_weights"):
+        await service.external_weights_urls("tenant", model_id, "weights/old", "http://gateway/")
+
+
+async def test_weights_info_reports_a_sampler_exports_own_groups_not_the_gateways(service):
+    model_id = await created_model(service)
+    save = service.submit(
+        "tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1, "ttl_seconds": None}
+    )
+    path = (await await_settled(service, "tenant", save)).result["path"]
+    root = Path(resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "sampler_weights", "1")).parent
+    # an mlp-only export, as another gateway would have written it
+    parametrization = resolve_adapter_dir(root, "1", tenant=None).path / "adapter_parametrization.json"
+    fields = json.loads(parametrization.read_text())
+    fields["target_modules"] = ["model.layers.0.mlp.gate_proj"]
+    parametrization.write_text(json.dumps(fields))
+    assert service.config.trains_attn
+
+    info = service.weights_info("tenant", path)
+
+    assert (info["train_attn"], info["train_mlp"], info["train_unembed"]) == (False, True, False)
+
+
+async def test_a_checkpoint_name_linked_outside_the_library_is_a_user_error_on_every_api(service, tmp_path):
+    """A foreign link under a checkpoint name answers 4xx on delete, TTL, URLs and download, not 500 (SDK retries 5xx)."""
+    model_id = await created_model(service)
+    save = service.submit("tenant", "save_weights_external", _external_payload(model_id, 1, "export"))
+    await await_settled(service, "tenant", save)
+    urls = await service.external_weights_urls("tenant", model_id, "external_weights/export", "http://gateway/")
+    token = urls["urls"]["adapter_config.json"].split("/")[-2]
+    link = Path(resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "external_weights", "export"))
+    shared = tmp_path / "shared-adapter"
+    shared.mkdir()
+    link.unlink()
+    link.symlink_to(shared)
+
+    for call in (
+        service.delete_checkpoint("tenant", model_id, "external_weights/export"),
+        service.set_checkpoint_ttl("tenant", model_id, "external_weights/export", 7200),
+        service.external_weights_urls("tenant", model_id, "external_weights/export", "http://gateway/"),
+        service.download_path(token, "adapter_config.json"),
+    ):
+        with pytest.raises(UserInputError, match="this library did not write"):
+            await call
+    assert shared.is_dir(), "the foreign dir is never touched"

@@ -7,6 +7,7 @@ from pathlib import Path
 
 import torch
 import torch.distributed.checkpoint as dcp
+import yaml
 
 from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
     ADAPTER_STATE_DIRNAME,
@@ -29,6 +30,7 @@ from miles.backends.training_utils.checkpoint.adapter.parametrization import (
     AdapterParametrization,
     read_parametrization,
 )
+from miles.backends.training_utils.checkpoint.adapter.source_error import AdapterSourceError, require_fields
 from miles.utils.lora.hf_lora_targets import HfLoraTargets
 
 _PEFT_FILES = ("adapter_config.json", "adapter_model.safetensors")
@@ -91,14 +93,7 @@ def classify_adapter_source(path: Path, targets: HfLoraTargets, *, load_optimize
     if (path / PARAMETRIZATION_FILENAME).is_file():
         return AdapterSourceKind.ADAPTER_DIR
     if (path / ".metadata").is_file():
-        if (path / "META.json").is_file():
-            return AdapterSourceKind.LEGACY_TINKER_CHECKPOINT
-        keys = list(dcp.FileSystemReader(path).read_metadata().state_dict_metadata)
-        if (path / "run_config.yaml").is_file() and any(".adapter." in k for k in keys):
-            return AdapterSourceKind.MEGATRON_BRIDGE_CHECKPOINT
-        if any(".lora_a." in k or ".lora_b." in k for k in keys):
-            return AdapterSourceKind.TORCHTITAN_CHECKPOINT
-        raise ValueError(f"{path} is a DCP checkpoint with neither Megatron-Bridge nor torchtitan LoRA keys")
+        return _dcp_source_kind(path)
     if any(path.glob("adapter_megatron_rank*.pt")) or any(path.glob("adapter_megatron_tp*_pp*.pt")):
         if not load_optimizer and _has_peft_files(path):
             return AdapterSourceKind.PEFT
@@ -111,29 +106,51 @@ def classify_adapter_source(path: Path, targets: HfLoraTargets, *, load_optimize
             is_tinker_only_name(rename_sampler_experts_to_hf(n, targets), targets) for n in names
         ):
             hf_only = [n for n in names if is_hf_only_name(n, targets)]
-            assert not hf_only, f"{path} mixes official Tinker and HF names, e.g. {hf_only[:3]}"
+            if hf_only:
+                raise AdapterSourceError(f"{path} mixes official Tinker and HF names, e.g. {hf_only[:3]}")
             return AdapterSourceKind.EXTERNAL_WEIGHTS
         return AdapterSourceKind.PEFT
     if (path / "adapter_model.safetensors").is_file():
-        raise ValueError(
+        raise AdapterSourceError(
             f"{path} has adapter_model.safetensors but no adapter_config.json, which the load needs to check the "
             "adapter's rank, alpha, target modules and PEFT features against the run; write it next to the weights "
             "(PEFT's save_pretrained writes both)"
         )
-    raise ValueError(f"{path} is not a recognized LoRA adapter source")
+    raise AdapterSourceError(f"{path} is not a recognized LoRA adapter source")
+
+
+def _dcp_source_kind(path: Path) -> AdapterSourceKind:
+    if (path / "META.json").is_file():
+        return AdapterSourceKind.LEGACY_TINKER_CHECKPOINT
+    keys = list(dcp.FileSystemReader(path).read_metadata().state_dict_metadata)
+    if (path / "run_config.yaml").is_file() and any(".adapter." in k for k in keys):
+        return AdapterSourceKind.MEGATRON_BRIDGE_CHECKPOINT
+    if any(".lora_a." in k or ".lora_b." in k for k in keys):
+        return AdapterSourceKind.TORCHTITAN_CHECKPOINT
+    raise AdapterSourceError(f"{path} is a DCP checkpoint with neither Megatron-Bridge nor torchtitan LoRA keys")
 
 
 def read_source_lora_alpha(path: Path) -> float | None:
     """The alpha a source records, read without the model; None for a source that records none (torchtitan)."""
     if (path / PARAMETRIZATION_FILENAME).is_file():
         return read_parametrization(path).lora_alpha
+    # a DCP source's alpha is in the file of the kind it classifies as (a legacy Tinker dir may hold a stray
+    # run_config.yaml)
+    if (path / ".metadata").is_file():
+        kind = _dcp_source_kind(path)
+        if kind is AdapterSourceKind.MEGATRON_BRIDGE_CHECKPOINT:
+            peft = yaml.safe_load((path / "run_config.yaml").read_text())["peft"]
+            assert peft is not None, f"{path} holds Megatron-Bridge adapter keys but its run_config.yaml has no peft"
+            return float(peft["alpha"])
+        if kind is AdapterSourceKind.TORCHTITAN_CHECKPOINT:
+            return None
     for name in ("META.json", "adapter_config.json"):
         if (path / name).is_file():
             return json.loads((path / name).read_text())["lora_alpha"]
     return None
 
 
-def _collapse_shared_lora_a(
+def collapse_shared_lora_a(
     weights: dict, parametrization: AdapterParametrization, fused_groups: list[tuple[str, ...]]
 ) -> dict:
     """Undo a written expansion: keep the first member's A, after checking every copy matches it.
@@ -146,9 +163,8 @@ def _collapse_shared_lora_a(
         for member in group[1:]:
             if member in read_without_a:
                 continue
-            assert torch.equal(
-                weights.pop(f"{member}.lora_A"), first
-            ), f"{member}.lora_A differs inside a shared-A group"
+            if not torch.equal(weights.pop(f"{member}.lora_A"), first):
+                raise AdapterSourceError(f"{member}.lora_A differs inside a shared-A group")
     return weights
 
 
@@ -169,11 +185,10 @@ class MilesAdapterDirReader:
         parametrization = read_parametrization(self.path)
         if not has_state:
             config = json.loads((self.path / "adapter_config.json").read_text())
+            require_fields(config, ("r", "lora_alpha"), self.path / "adapter_config.json")
             # adapter_config.json is derived from the parametrization; a mismatch means the export was edited
-            assert (config["r"], config["lora_alpha"]) == (
-                parametrization.lora_rank,
-                parametrization.lora_alpha,
-            ), f"{self.path}: adapter_config.json disagrees with {PARAMETRIZATION_FILENAME}"
+            if (config["r"], config["lora_alpha"]) != (parametrization.lora_rank, parametrization.lora_alpha):
+                raise AdapterSourceError(f"{self.path}: adapter_config.json disagrees with {PARAMETRIZATION_FILENAME}")
         self.source = AdapterSource(
             AdapterSourceKind.ADAPTER_DIR,
             parametrization,
@@ -193,7 +208,7 @@ class MilesAdapterDirReader:
         weights, fused_groups = _read_peft_tensors(
             self.path, lambda name: map_sampler_keys_to_hf_keys(name, self.targets), self.targets
         )
-        return _collapse_shared_lora_a(weights, self.source.parametrization, fused_groups)
+        return collapse_shared_lora_a(weights, self.source.parametrization, fused_groups)
 
 
 def _check_peft_config(config: dict, path: Path) -> None:
@@ -201,7 +216,10 @@ def _check_peft_config(config: dict, path: Path) -> None:
     init = config.get("init_lora_weights")
     if isinstance(init, str) and init.startswith(_BASE_REWRITING_INITS):
         used.append(f"init_lora_weights={init}")
-    assert not used, f"{path}: PEFT features {used} change what the tensors mean; only plain LoRA can be read"
+    if used:
+        raise AdapterSourceError(
+            f"{path}: PEFT features {used} change what the tensors mean; only plain LoRA can be read"
+        )
 
 
 class PeftAdapterReader:
@@ -213,7 +231,9 @@ class PeftAdapterReader:
     def __init__(self, path: Path, run: AdapterParametrization, targets: HfLoraTargets):
         self.path, self.targets = Path(path), targets
         config = json.loads((self.path / "adapter_config.json").read_text())
-        assert config.get("peft_type", "LORA") == "LORA", f"{self.path}: {config['peft_type']} is not LoRA"
+        if config.get("peft_type", "LORA") != "LORA":
+            raise AdapterSourceError(f"{self.path}: {config['peft_type']} is not LoRA")
+        require_fields(config, ("r", "lora_alpha"), self.path / "adapter_config.json")
         _check_peft_config(config, self.path)
         self._weights, self._fused_groups = _read_peft_tensors(self.path, self._map_name, targets)
         modules = sorted({k.rsplit(".", 1)[0] for k in self._weights if k.endswith(".lora_B")})
