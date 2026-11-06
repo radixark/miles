@@ -315,9 +315,13 @@ def write_sampler_export(
     return written
 
 
-def _slice(full: torch.Tensor, spec: LocalShardSpec) -> torch.Tensor:
+def _assert_source_shape(full: torch.Tensor, spec: LocalShardSpec) -> None:
     if tuple(full.shape) != spec.global_shape:
         raise AdapterSourceError(f"{spec.key}: source {tuple(full.shape)} != run {spec.global_shape}")
+
+
+def _slice(full: torch.Tensor, spec: LocalShardSpec) -> torch.Tensor:
+    _assert_source_shape(full, spec)
     return full[tuple(slice(o, o + n) for o, n in zip(spec.offsets, spec.local_shape, strict=True))].clone()
 
 
@@ -347,22 +351,59 @@ def _zero_filled(specs: list[LocalShardSpec], loaded: AdapterState) -> AdapterSt
     )
 
 
-def _weights_only_state(
+def _is_rank0() -> bool:
+    return not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0
+
+
+def _broadcast_from_rank0(value):
+    if not torch.distributed.is_initialized():
+        return value
+    box = [value]
+    torch.distributed.broadcast_object_list(box, src=0, group=gloo_group())
+    return box[0]
+
+
+def _assert_pieces_readable(
     weights: dict[str, torch.Tensor], specs: list[LocalShardSpec], head_rows: HeadRows | None
-) -> AdapterState:
+) -> None:
     _assert_has_keys(weights, {s.key for s in specs if not is_vocab_padding(s.key)})
+    for s in specs:
+        if not is_vocab_padding(s.key):
+            _assert_source_shape(_served_rows(weights[s.key], s, head_rows), s)
+
+
+def _scatter_weights_only_state(
+    weights: dict[str, torch.Tensor] | None, specs: list[LocalShardSpec], head_rows: HeadRows | None
+) -> AdapterState:
+    """Collective: each rank's pieces of the source rank 0 read and converted, sent to it point-to-point."""
+    specs_by_rank = [specs]
+    if torch.distributed.is_initialized():
+        # only the specs go through gather_object, which pads every rank's payload to the largest one
+        specs_by_rank = [None] * torch.distributed.get_world_size() if _is_rank0() else None
+        torch.distributed.gather_object(specs, specs_by_rank, dst=0, group=gloo_group())
+    with agreed_step():
+        if _is_rank0():
+            for rank_specs in specs_by_rank:
+                _assert_pieces_readable(weights, rank_specs, head_rows)
     # no export or conversion carries vocab padding: it stays zero, as at init
-    return _with_zero_moments(
-        specs,
-        [
-            (
-                torch.zeros(s.local_shape)
-                if is_vocab_padding(s.key)
-                else _slice(_served_rows(weights[s.key], s, head_rows), s).float()
-            )
-            for s in specs
-        ],
-    )
+    if not _is_rank0():
+        pieces = [torch.zeros(s.local_shape) for s in specs]
+        for spec, piece in zip(specs, pieces, strict=True):
+            if not is_vocab_padding(spec.key):
+                torch.distributed.recv(piece, src=0, group=gloo_group())
+        return _with_zero_moments(specs, pieces)
+    own = []
+    for rank, rank_specs in enumerate(specs_by_rank):
+        for spec in rank_specs:
+            if is_vocab_padding(spec.key):
+                piece = torch.zeros(spec.local_shape)
+            else:
+                piece = _slice(_served_rows(weights[spec.key], spec, head_rows), spec).float().contiguous()
+                if rank != 0:
+                    torch.distributed.send(piece, dst=rank, group=gloo_group())
+            if rank == 0:
+                own.append(piece)
+    return _with_zero_moments(specs, own)
 
 
 def _served_rows(full: torch.Tensor, spec: LocalShardSpec, head_rows: HeadRows | None) -> torch.Tensor:
@@ -406,22 +447,35 @@ def _reads_adapter_state_pieces(reader, steps) -> bool:
     return isinstance(reader, MilesAdapterDirReader) and reader.has_adapter_state() and not steps
 
 
+@dataclass(frozen=True)
+class CheckedSource:
+    """What ``check_adapter_source`` opened; ``load_adapter_dir`` takes it instead of reading the source again."""
+
+    kind: AdapterSourceKind
+    reader: Any = None
+    source: AdapterParametrization | None = None
+    steps: list | None = None
+    # the converted tensors of a source read as weights
+    weights: dict[str, torch.Tensor] | None = None
+
+
 def check_adapter_source(
     path: Path, run: AdapterParametrization, targets: HfLoraTargets, *, load_optimizer: bool
-) -> AdapterSourceKind:
+) -> CheckedSource:
     """Rank-local dry run of every check ``load_adapter_dir`` makes on the files of a source it reads itself.
 
     Raises what that load would; an in-model source is returned unchecked, its loader's checks are the backend's.
     """
     kind = classify_adapter_source(path, targets, load_optimizer=load_optimizer)
     if kind.is_read_into_model():
-        return kind
-    reader, _, steps = _open_source(path, kind, run, targets, load_optimizer=load_optimizer)
+        return CheckedSource(kind)
+    reader, source, steps = _open_source(path, kind, run, targets, load_optimizer=load_optimizer)
     if _reads_adapter_state_pieces(reader, steps):
         assert_adapter_state_keys(path, run.adapter_state_keys(), with_optimizer=load_optimizer)
-    else:
-        _assert_has_keys(apply_parametrization_conversion(reader.read_weights(), steps), run.adapter_state_keys())
-    return kind
+        return CheckedSource(kind, reader, source, steps)
+    weights = apply_parametrization_conversion(reader.read_weights(), steps)
+    _assert_has_keys(weights, run.adapter_state_keys())
+    return CheckedSource(kind, reader, source, steps, weights)
 
 
 def load_adapter_dir(
@@ -433,16 +487,19 @@ def load_adapter_dir(
     *,
     load_optimizer: bool,
     in_model_loaders_by_kind: Mapping[AdapterSourceKind, InModelLoader] | None = None,
+    checked: CheckedSource | None = None,
 ) -> AdapterParametrization:
     """Load any recognized source into ``slot``; returns the source parametrization.
+
+    ``checked``: rank 0's ``check_adapter_source`` of the same source and run, read instead of the source.
 
     All ranks call. A failure on one rank fails every rank before the next collective, provided a backend's in-model
     loader agrees its own failures before each collective it enters (see ``InModelLoader``).
     Alpha is not checked here: the caller owns it (Tinker adopts the source's, RL compares it to ``--lora-alpha``).
 
-    A source that needs conversion (PEFT, external weights, another parametrization) is read whole on every rank:
-    about 6 bytes of host memory per source element for a bf16 file (its tensors and their fp32 upcast), e.g.
-    ~41 GB per rank and ~330 GB per 8-rank node for a rank-16 adapter on every DeepSeek-V3 expert.
+    A source that needs conversion (PEFT, external weights, another parametrization) is read and converted once, on
+    rank 0, which sends every rank its pieces: rank 0 holds about 6 bytes per source element for a bf16 file (its
+    tensors and their fp32 upcast), e.g. ~41 GB for a rank-16 adapter on every DeepSeek-V3 expert.
     """
     with agreed_step():
         kind = classify_adapter_source(path, targets, load_optimizer=load_optimizer)
@@ -468,9 +525,16 @@ def load_adapter_dir(
 
     with agreed_step():
         specs = members.get_local_shard_specs(slot)
-        reader, source, steps = _open_source(path, kind, run, targets, load_optimizer=load_optimizer)
+        # PEFT and external readers load every tensor, so only rank 0 opens such a source; an adapter dir's
+        # metadata is cheap, and every rank reads its own pieces of adapter_state/
+        reader, source, steps = None, None, None
+        if checked is not None and _is_rank0():
+            reader, source, steps = checked.reader, checked.source, checked.steps
+        elif kind == AdapterSourceKind.ADAPTER_DIR or _is_rank0():
+            reader, source, steps = _open_source(path, kind, run, targets, load_optimizer=load_optimizer)
+    source, reads_pieces = _broadcast_from_rank0((source, _reads_adapter_state_pieces(reader, steps)))
 
-    if _reads_adapter_state_pieces(reader, steps):
+    if reads_pieces:
         run_keys = _all_ranks_keys(specs)
         with agreed_step():
             assert_adapter_state_keys(path, run_keys, with_optimizer=load_optimizer)
@@ -489,8 +553,12 @@ def load_adapter_dir(
         state = _zero_filled(specs, loaded)
     else:
         with agreed_step():
-            weights = apply_parametrization_conversion(reader.read_weights(), steps)
-            state = _weights_only_state(weights, specs, members.head_rows)
+            weights = None
+            if checked is not None and _is_rank0():
+                weights = checked.weights
+            elif _is_rank0():
+                weights = apply_parametrization_conversion(reader.read_weights(), steps)
+        state = _scatter_weights_only_state(weights, specs, members.head_rows)
     with agreed_step():
         members.import_adapter_state(slot, state)
     with agreed_step():
