@@ -5,7 +5,6 @@ fp32 master (a Float16 child's ``fp32_from_float16_groups``) and its Adam state;
 """
 
 import json
-import re
 from collections.abc import Iterable, Sequence
 from dataclasses import asdict, replace
 from pathlib import Path
@@ -22,14 +21,16 @@ from megatron.core.utils import unwrap_model
 from safetensors import SafetensorError
 
 from miles.backends.megatron_utils.lora.bridge_adapter_slots import BridgeAdapterSlots
+from miles.backends.megatron_utils.lora.bridge_checkpoint_loader import MegatronBridgeCheckpointLoader
 from miles.backends.megatron_utils.lora.native.checkpoint import NativeAdapterSlots
 from miles.backends.megatron_utils.lora.optimizer import SlotOptimizer
 from miles.backends.megatron_utils.lora.utils import (
+    OPTIMIZER_KEY,
     _distributed_optimizers,
-    _init_zero_hdo_state,
     _load_training_state,
     _native_adapter_shard,
     _read_native_adapter_shard,
+    _zero_init_empty_hdo_states,
 )
 from miles.backends.megatron_utils.rematerialize_utils import _build_cast_main_to_params_fn
 from miles.backends.training_utils.checkpoint.adapter.adapter_dir import (
@@ -57,8 +58,6 @@ from miles.utils.hf_utils.config import load_hf_config
 
 _WEIGHTS_KEY = "adapter_weights"
 _OPTIM_KEY = "adapter_optimizer"
-# a ChainedOptimizer prefixes each child's keys with chained_<i>.
-_LEGACY_OPTIMIZER_KEY = re.compile(r"(chained_\d+\.)?optimizer\.")
 
 
 class LayerWiseSlotMembers:
@@ -214,8 +213,8 @@ class DistributedOptimizerMembers:
             # a never-stepped optimizer has no Adam state yet (zero moments); this fills only empty states
             if sub.init_state_fn is not None:
                 sub.init_state_fn(sub.optimizer, sub.config)
-            elif isinstance(sub.optimizer, HybridDeviceOptimizer) and not sub.optimizer.state:
-                _init_zero_hdo_state(sub.optimizer)
+            else:
+                _zero_init_empty_hdo_states([sub])
             gathered = sub.get_parameter_state_dp_zero(use_gloo_comm=True)
             if (step := _distributed_optimizer_step(sub)) is not None:
                 steps.add(step)
@@ -276,8 +275,8 @@ class DistributedOptimizerMembers:
         for sub in self._distributed_optimizers():
             if sub.init_state_fn is not None:
                 sub.init_state_fn(sub.optimizer, sub.config)
-            elif isinstance(sub.optimizer, HybridDeviceOptimizer) and not sub.optimizer.state:
-                _init_zero_hdo_state(sub.optimizer)
+            else:
+                _zero_init_empty_hdo_states([sub])
             # every element is in a piece, so the gather skips the data it would overwrite
             gathered = sub.get_parameter_state_dp_zero(use_gloo_comm=True, empty_data=True)
             if gathered is not None:
@@ -453,7 +452,7 @@ def check_load_source(
             saved = {
                 k: tuple(metadata.size)
                 for k, metadata in state_dict_metadata.items()
-                if ".adapter." in k and "_extra_state" not in k and not _LEGACY_OPTIMIZER_KEY.match(k)
+                if ".adapter." in k and "_extra_state" not in k and not OPTIMIZER_KEY.match(k)
             }
         elif kind.is_read_into_model():
             # load_adapter_source refuses it only after the slot reset
@@ -544,7 +543,7 @@ class LegacyTinkerCheckpointLoader:
 
 def _assert_has_legacy_optimizer_state(path: Path, state_dict_metadata: Iterable[str]) -> None:
     # main always saved it; a weights-only load reads the saved masters too (see _load_legacy_slot)
-    if not any(_LEGACY_OPTIMIZER_KEY.match(k) for k in state_dict_metadata):
+    if not any(OPTIMIZER_KEY.match(k) for k in state_dict_metadata):
         raise AdapterSourceError(f"{path} holds no optimizer state, which every legacy slot load reads")
 
 
@@ -685,9 +684,17 @@ def restore_single_lora(
     )
     run = single_lora_parametrization(slots, args)
     path = Path(args.lora_adapter_path)
-    legacy = LegacyRankShardLoader(
-        model, optimizer, run, load_optimizer, precision_aware=args.backend.use_precision_aware_optimizer
-    )
+    in_model_loaders_by_kind = {
+        AdapterSourceKind.LEGACY_RANK_SHARD: LegacyRankShardLoader(
+            model, optimizer, run, load_optimizer, precision_aware=args.backend.use_precision_aware_optimizer
+        )
+    }
+    # a Bridge checkpoint's sharded keys exist only in a Bridge model, and its load refreshes the optimizer's masters;
+    # elsewhere load_adapter_source refuses it as a kind this backend cannot load
+    if args.megatron_to_hf_mode == "bridge" and optimizer is not None:
+        in_model_loaders_by_kind[AdapterSourceKind.MEGATRON_BRIDGE_CHECKPOINT] = MegatronBridgeCheckpointLoader(
+            model, optimizer, members, run, load_optimizer
+        )
     source = load_adapter_source(
         path,
         members,
@@ -695,7 +702,7 @@ def restore_single_lora(
         run,
         targets,
         load_optimizer=load_optimizer,
-        in_model_loaders_by_kind={AdapterSourceKind.LEGACY_RANK_SHARD: legacy},
+        in_model_loaders_by_kind=in_model_loaders_by_kind,
     )
     # the driver resolved --lora-alpha from its own view of the path, which a trainer may see differently
     assert (
@@ -758,10 +765,7 @@ class LegacyRankShardLoader:
             param.data.copy_(tensor.to(device=param.device))
         if state is not None:
             subs = _distributed_optimizers(self._optimizer)
-            for sub in subs:
-                # on an empty HDO state Megatron's load_state_dict would run dummy_step, a real Adam step
-                if isinstance(sub.optimizer, HybridDeviceOptimizer) and not sub.optimizer.state:
-                    _init_zero_hdo_state(sub.optimizer)
+            _zero_init_empty_hdo_states(subs)
             self._optimizer.load_state_dict(state["optimizer"])
             for sub, parameter_state in zip(subs, state["parameter_state"], strict=True):
                 sub.load_parameter_state_from_dp_reshardable(parameter_state)

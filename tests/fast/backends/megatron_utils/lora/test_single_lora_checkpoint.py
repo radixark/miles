@@ -31,6 +31,7 @@ from miles.backends.training_utils.checkpoint.adapter.parametrization import Ada
 from miles.backends.training_utils.checkpoint.adapter.parametrization_conversion import (
     assert_parametrization_matches_run,
 )
+from miles.backends.training_utils.checkpoint.adapter.readers import AdapterSourceKind
 from miles.backends.training_utils.checkpoint.adapter.source_error import AdapterSourceError
 
 _MODULE = "miles.backends.megatron_utils.lora.checkpoint"
@@ -57,6 +58,7 @@ def _restore(path, *, convert_save=None):
     with patch.multiple(
         _MODULE,
         DistributedOptimizerMembers=DEFAULT,
+        MegatronBridgeCheckpointLoader=DEFAULT,
         load_adapter_source=DEFAULT,
         save_and_commit_adapter_dir=DEFAULT,
         load_hf_config=lambda path: SimpleNamespace(to_dict=lambda: {"model_type": "qwen3"}),
@@ -562,8 +564,10 @@ def test_without_an_optimizer_an_adapter_path_loads_the_weights_and_starts_over(
 
     loaded_with = {}
 
-    def load_adapter_source(path, members, slot, run, targets, **kwargs):
+    def load_adapter_source(path, members, slot, run, targets, *, in_model_loaders_by_kind, **kwargs):
         loaded_with.update(kwargs)
+        # a Bridge checkpoint's load refreshes the optimizer's masters; without one it is refused as unloadable
+        assert AdapterSourceKind.MEGATRON_BRIDGE_CHECKPOINT not in in_model_loaders_by_kind
         members.import_adapter_state(
             0,
             AdapterState(
@@ -583,6 +587,7 @@ def test_without_an_optimizer_an_adapter_path_loads_the_weights_and_starts_over(
     args = SimpleNamespace(
         lora_adapter_path=str(tmp_path),
         lora_adapter_convert_save=None,
+        megatron_to_hf_mode="bridge",
         backend=SimpleNamespace(no_load_optim=False, no_save_optim=True, use_precision_aware_optimizer=False),
     )
     iteration = restore_single_lora([], args, adapter_slots=slots, optimizer=None, opt_param_scheduler=None)

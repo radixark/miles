@@ -1,15 +1,30 @@
 import inspect
+from dataclasses import replace
 from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
 import torch
 import torch.distributed as dist
+from megatron.core import dist_checkpointing
+from megatron.core.dist_checkpointing.mapping import ShardedTensor
+from safetensors.torch import save_file
 from tests.fast.dist_utils import init_gloo, run_multiprocess
 
+from miles.backends.megatron_utils.lora import bridge_checkpoint_loader
 from miles.backends.megatron_utils.lora.bridge_adapter_slots import BridgeAdapterSlots, probe_bridge_row_mapping
+from miles.backends.megatron_utils.lora.bridge_checkpoint_loader import (
+    _BRIDGE_BASE_REMEDY,
+    assert_bridge_run_config_matches,
+    assert_same_base_as_torch_dist,
+    bridge_base_model_candidates,
+    torch_dist_base_dir,
+)
+from miles.backends.training_utils.checkpoint.adapter.base_model_check import assert_same_base_model
+from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
 from miles.backends.training_utils.checkpoint.adapter.probed_slots import HfPiece, RowMapping
 from miles.tinker.core.utils import build_parametrization_fields
+from miles.utils import distributed_utils
 from miles.utils.distributed_utils import init_gloo_group
 from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
 
@@ -256,6 +271,223 @@ def test_every_process_gathers_shard_specs_for_each_slot():
     run_multiprocess(_specs_of_two_slots, world_size=3)
 
 
+def _run(**overrides) -> AdapterParametrization:
+    fields = dict(
+        base_model="base",
+        lora_rank=8,
+        lora_alpha=16.0,
+        lora_type="lora",
+        target_modules=("model.layers.0.self_attn.q_proj", "model.layers.0.mlp.experts.down_proj"),
+        experts_shared_outer_loras=False,
+    )
+    return AdapterParametrization(**(fields | overrides))
+
+
+FP32 = {"_target_": "torch.float32", "_call_": False}
+
+
+# the peft fields each Bridge class writes: CanonicalLoRA has no lora_dtype or a2a_experimental
+_BRIDGE_PEFT_BY_CLASS = {
+    "lora": {"_target_": "megatron.bridge.peft.lora.LoRA", "lora_dtype": None, "a2a_experimental": False},
+    "canonical_lora": {"_target_": "megatron.bridge.peft.canonical_lora.CanonicalLoRA"},
+}
+
+
+def _bridge_config(peft_class: str = "lora", **peft) -> dict:
+    return {
+        "peft": {"dim": 8, "alpha": 32, "dropout": 0.0, "exclude_modules": [], "share_expert_adapters": False}
+        | _BRIDGE_PEFT_BY_CLASS[peft_class]
+        | peft,
+        "optimizer": {
+            "optimizer": "adam",
+            "use_distributed_optimizer": True,
+            "use_precision_aware_optimizer": False,
+        }
+        | {field: FP32 for field in ("main_params_dtype", "exp_avg_dtype", "exp_avg_sq_dtype")},
+        "checkpoint": {"save_optim": True},
+        "model": {"moe_grouped_gemm": True},
+    }
+
+
+@pytest.mark.parametrize("lora_type", ["lora", "canonical_lora"])
+def test_a_bridge_run_config_of_the_same_lora_is_accepted(lora_type):
+    assert_bridge_run_config_matches(
+        _bridge_config(lora_type), _run(lora_type=lora_type), params_dtype=torch.bfloat16, load_optimizer=True
+    )
+
+
+def test_a_canonical_lora_source_is_refused_by_a_lora_run():
+    with pytest.raises(AssertionError, match="lora_type='canonical_lora'"):
+        assert_bridge_run_config_matches(
+            _bridge_config("canonical_lora"), _run(), params_dtype=torch.bfloat16, load_optimizer=True
+        )
+
+
+@pytest.mark.parametrize(
+    "section, fields, match",
+    [
+        ("peft", {"_target_": "megatron.bridge.peft.dora.DoRA"}, "neither LoRA nor CanonicalLoRA"),
+        ("peft", {"dim": 16}, "lora_rank=16"),
+        ("peft", {"share_expert_adapters": True}, "share_expert_adapters"),
+        ("peft", {"lora_dtype": {"_target_": "torch.float32", "_call_": False}}, "lora_dtype"),
+        ("peft", {"normalize_moe_lora": True}, "normalize_moe_lora"),
+        ("optimizer", {"main_params_dtype": {"_target_": "torch.float16", "_call_": False}}, "main_params_dtype"),
+    ],
+    ids=[
+        "dora",
+        "rank",
+        "shared_expert_adapters",
+        "lora_dtype",
+        "normalize_moe_lora",
+        "main_params_dtype",
+    ],
+)
+def test_an_unsupported_bridge_run_config_is_refused(section, fields, match):
+    config = _bridge_config()
+    config[section] |= fields
+    with pytest.raises(AssertionError, match=match):
+        assert_bridge_run_config_matches(config, _run(), params_dtype=torch.bfloat16, load_optimizer=True)
+
+
+def test_share_expert_adapters_defaults_to_bridge_behaviour_and_matters_only_for_per_expert_adapters():
+    config = _bridge_config()
+    del config["peft"]["share_expert_adapters"]
+    with pytest.raises(AssertionError, match="share_expert_adapters"):
+        assert_bridge_run_config_matches(config, _run(), params_dtype=torch.bfloat16, load_optimizer=False)
+    dense = _run(target_modules=("model.layers.0.self_attn.q_proj",))
+    assert_bridge_run_config_matches(config, dense, params_dtype=torch.bfloat16, load_optimizer=False)
+
+
+def test_share_expert_adapters_is_accepted_for_sequential_experts():
+    # Bridge gives each SequentialMLP local expert its own adapter whatever share_expert_adapters says
+    config = _bridge_config(share_expert_adapters=True)
+    config["model"]["moe_grouped_gemm"] = False
+    assert_bridge_run_config_matches(config, _run(), params_dtype=torch.bfloat16, load_optimizer=False)
+
+
+def test_adam_state_needs_a_distributed_fp32_adam_source():
+    config = _bridge_config()
+    config["optimizer"]["use_distributed_optimizer"] = False
+    assert_bridge_run_config_matches(config, _run(), params_dtype=torch.bfloat16, load_optimizer=False)
+    with pytest.raises(AssertionError, match="--no-load-optim"):
+        assert_bridge_run_config_matches(config, _run(), params_dtype=torch.bfloat16, load_optimizer=True)
+    config = _bridge_config()
+    config["optimizer"]["exp_avg_dtype"] = {"_target_": "torch.bfloat16", "_call_": False}
+    with pytest.raises(AssertionError, match="exp_avg_dtype must be fp32"):
+        assert_bridge_run_config_matches(config, _run(), params_dtype=torch.bfloat16, load_optimizer=True)
+
+
+def test_the_base_is_bridge_pretrained_checkpoint_not_the_hf_template(tmp_path):
+    def hf_dir(name, norm):
+        (tmp_path / name).mkdir()
+        save_file({"model.norm.weight": norm}, tmp_path / name / "model.safetensors")
+        return str(tmp_path / name)
+
+    template, sft = hf_dir("template", torch.ones(4)), hf_dir("sft", torch.ones(4) * 2)
+    config = {
+        "checkpoint": {"pretrained_checkpoint": sft, "hf_source_path": template},
+        "model": {},
+        "tokenizer": {"tokenizer_model": None},
+    }
+    with pytest.raises(AssertionError, match="another base model"):
+        assert_same_base_model("src", bridge_base_model_candidates(config), template, remedy=_BRIDGE_BASE_REMEDY)
+    # a torch_dist base has no HF files: its HF template stands in
+    config["checkpoint"]["pretrained_checkpoint"] = str(tmp_path)
+    assert_same_base_model("src", bridge_base_model_candidates(config), template, remedy=_BRIDGE_BASE_REMEDY)
+    # Bridge's last fallback
+    config["checkpoint"]["hf_source_path"] = None
+    config["tokenizer"]["tokenizer_model"] = template
+    assert_same_base_model("src", bridge_base_model_candidates(config), template, remedy=_BRIDGE_BASE_REMEDY)
+    # Bridge's template is hf_model_id, absent here: a later candidate that resolves must not stand in for it
+    config["model"]["hf_model_id"] = str(tmp_path / "missing")
+    with pytest.raises(
+        AssertionError, match="has no local HF files.*set checkpoint.hf_source_path in the source's run_config.yaml"
+    ):
+        assert_same_base_model("src", bridge_base_model_candidates(config), template, remedy=_BRIDGE_BASE_REMEDY)
+
+
+NORM_KEY, QKV_KEY = "decoder.final_layernorm.weight", "decoder.layers.self_attention.linear_qkv.weight"
+
+
+class _Chunk(torch.nn.Module):
+    """A model chunk: one norm, one projection and one adapter weight, keyed as Megatron shards them."""
+
+    def __init__(self, norm: torch.Tensor, qkv: torch.Tensor | None = None):
+        super().__init__()
+        qkv = torch.ones(2, 2) if qkv is None else qkv
+        self.norm, self.qkv, self.lora = (torch.nn.Parameter(t) for t in (norm, qkv, torch.ones(2)))
+
+    def sharded_state_dict(self, metadata=None) -> dict:
+        lora_key = "decoder.layers.self_attention.linear_qkv.adapter.linear_in.weight"
+        return {
+            NORM_KEY: ShardedTensor.from_rank_offsets(NORM_KEY, self.norm.data),
+            "decoder.layers.0.self_attention.linear_qkv.weight": ShardedTensor.from_rank_offsets(
+                QKV_KEY, self.qkv.data
+            ),
+            lora_key: ShardedTensor.from_rank_offsets(lora_key, self.lora.data),
+        }
+
+
+@pytest.fixture()
+def single_rank_gloo(tmp_path, monkeypatch):
+    dist.init_process_group(backend="gloo", init_method=f"file://{tmp_path / 'rendezvous'}", rank=0, world_size=1)
+    monkeypatch.setattr(distributed_utils, "GLOO_GROUP", None)
+    # torch_dist assumes CUDA: it syncs D2H staging copies and broadcasts its status flag on the current device
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda *args: None)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: "cpu")
+    monkeypatch.setattr(
+        bridge_checkpoint_loader,
+        "get_parallel_state",
+        lambda: SimpleNamespace(intra_dp_cp=SimpleNamespace(group=None)),
+    )
+    init_gloo_group()
+    try:
+        yield
+    finally:
+        dist.destroy_process_group()
+
+
+def _torch_dist_base(path, norm: torch.Tensor, *, with_norm: bool = True, qkv: torch.Tensor | None = None):
+    path.mkdir()
+    state = _Chunk(norm, qkv).sharded_state_dict()
+    if not with_norm:
+        del state[NORM_KEY]
+    dist_checkpointing.save({"model": state}, str(path))
+    return path
+
+
+def test_a_torch_dist_base_fine_tuned_after_its_hf_conversion_is_refused(single_rank_gloo, tmp_path):
+    base = torch.randn(4)
+    chunk = _Chunk(base.clone())
+    assert_same_base_as_torch_dist("src", [chunk], _torch_dist_base(tmp_path / "same", base))
+    assert torch.equal(chunk.norm.data, base), "the comparison never writes the model's own weights"
+    with pytest.raises(
+        RuntimeError, match="trained on another base model .* differs in e.g. \\['decoder.final_layernorm"
+    ):
+        assert_same_base_as_torch_dist("src", [chunk], _torch_dist_base(tmp_path / "sft", base + 1))
+    with pytest.raises(RuntimeError, match="cannot be compared with this run's model: it lacks"):
+        assert_same_base_as_torch_dist("src", [chunk], _torch_dist_base(tmp_path / "bare", base, with_norm=False))
+
+
+def test_a_torch_dist_base_with_a_merged_lora_is_refused(single_rank_gloo, tmp_path):
+    norm = torch.randn(4)
+    with pytest.raises(
+        RuntimeError, match="trained on another base model .* differs in e.g. \\['decoder.layers.0.self"
+    ):
+        assert_same_base_as_torch_dist(
+            "src", [_Chunk(norm.clone())], _torch_dist_base(tmp_path / "merged", norm, qkv=torch.ones(2, 2) + 1)
+        )
+
+
+def test_a_pretrained_checkpoint_resolves_to_its_tracked_torch_dist_iteration(single_rank_gloo, tmp_path):
+    _torch_dist_base(tmp_path / "iter_0000007", torch.ones(4))
+    (tmp_path / "latest_checkpointed_iteration.txt").write_text("7")
+    assert torch_dist_base_dir(str(tmp_path)) == tmp_path / "iter_0000007"
+    assert torch_dist_base_dir(str(tmp_path / "iter_0000007")) == tmp_path / "iter_0000007"
+    assert torch_dist_base_dir(str(tmp_path / "missing")) is None
+    assert torch_dist_base_dir(None) is None
+
+
 GDN = "model.layers.0.linear_attn"
 GDN_TARGETS = get_hf_lora_targets(
     {
@@ -355,6 +587,86 @@ def _trim_a_tp_split_rank(rank, world_size, port):
 
 def test_a_multi_lora_slot_keeps_only_its_real_rank_of_a_tp_split_rank_axis():
     run_multiprocess(_trim_a_tp_split_rank)
+
+
+def _offloaded_optimizer():
+    """One DistributedOptimizer over an empty HybridDeviceOptimizer state; dummy steps land in the returned list."""
+    from megatron.core.optimizer import ChainedOptimizer, DistributedOptimizer
+    from megatron.core.optimizer.cpu_offloading.hybrid_optimizer import HybridDeviceOptimizer
+
+    param = torch.nn.Parameter(torch.zeros(2))
+    hdo = HybridDeviceOptimizer.__new__(HybridDeviceOptimizer)
+    hdo.state, hdo.param_groups, hdo.param_to_inner_param = {}, [{"params": [param]}], {param: torch.ones(2)}
+    stepped = []
+    hdo.dummy_step = lambda: stepped.append(True)
+    sub = DistributedOptimizer.__new__(DistributedOptimizer)
+    sub.optimizer = hdo
+
+    class Chained(ChainedOptimizer):
+        param_groups = []
+
+        def state_dict(self):
+            return {}
+
+        def load_state_dict(self, state):
+            # what DistributedOptimizer.load_state_dict does before reading the state
+            if len(hdo.state) == 0:
+                hdo.dummy_step()
+
+        def sharded_state_dict(self, model_sharded_state_dict, is_loading=False, metadata=None):
+            # what DistributedOptimizer.sharded_state_dict does when it builds the state to load
+            if is_loading:
+                self.load_state_dict(self.state_dict())
+            return {}
+
+    chained = Chained.__new__(Chained)
+    chained.chained_optimizers = [sub]
+    return chained, hdo, param, stepped
+
+
+def _checked_loader(optimizer, members, monkeypatch, *, load_optimizer=True, keys=()):
+    """A loader over an empty model with a stubbed source read."""
+    run = AdapterParametrization("base", 4, 8.0, "lora", ("model.layers.0.self_attn.q_proj",), False)
+    loader = bridge_checkpoint_loader.MegatronBridgeCheckpointLoader([], optimizer, members, run, load_optimizer)
+    monkeypatch.setattr(bridge_checkpoint_loader, "unwrap_model", lambda model: [])
+    monkeypatch.setattr(
+        loader, "_read_and_check_source", lambda path, chunks: ({"peft": {"alpha": 16}}, {}, [], [], None)
+    )
+    metadata = SimpleNamespace(state_dict_metadata=dict.fromkeys(keys))
+    monkeypatch.setattr(
+        bridge_checkpoint_loader.dcp, "FileSystemReader", lambda path: SimpleNamespace(read_metadata=lambda: metadata)
+    )
+    monkeypatch.setattr(bridge_checkpoint_loader.dist_checkpointing, "load", lambda state, path: {"optimizer": {}})
+    return loader, run
+
+
+def test_an_offloaded_optimizer_is_never_dummy_stepped_from_parametrization_to_load(
+    single_rank_gloo, tmp_path, monkeypatch
+):
+    """Building the optimizer's state to load runs Megatron's load_state_dict, which dummy-steps an empty
+    HybridDeviceOptimizer state: a real Adam step on random gradients, before any source state lands."""
+    optimizer, hdo, param, stepped = _offloaded_optimizer()
+    loader, _ = _checked_loader(optimizer, SimpleNamespace(export_adapter_state=lambda slot: None), monkeypatch)
+
+    loader.parametrization(tmp_path)
+    assert not stepped and not hdo.state, "checking the source must not touch the optimizer"
+    loader.apply(loader.prepare(tmp_path))
+
+    assert not stepped, "the empty HDO state must be zero-initialized, not dummy-stepped"
+    assert torch.equal(hdo.state[param]["master_param"], torch.ones(2)) and int(hdo.state[param]["step"]) == 0
+
+
+@pytest.mark.parametrize(
+    "keys, has_optimizer_state",
+    [(["optimizer.distributed.exp_avg"], True), (["chained_0.optimizer.step"], True), ([], False)],
+    ids=["optimizer", "chained-optimizer", "weights-only"],
+)
+def test_a_bridge_checkpoint_reports_whether_it_holds_optimizer_state(
+    single_rank_gloo, tmp_path, monkeypatch, keys, has_optimizer_state
+):
+    """load_adapter_source refuses a source without it unless --no-load-optim."""
+    loader, run = _checked_loader(None, None, monkeypatch, keys=keys)
+    assert loader.parametrization(tmp_path) == (replace(run, lora_alpha=16.0), has_optimizer_state)
 
 
 def test_the_gateways_parametrization_fields_are_the_slots_keyword_arguments():
