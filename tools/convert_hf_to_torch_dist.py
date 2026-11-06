@@ -11,7 +11,7 @@ from megatron.training.checkpointing import get_checkpoint_tracker_filename, sav
 from megatron.training.training import get_model
 
 from miles.backends.megatron_utils.arguments import set_default_megatron_args
-from miles.backends.megatron_utils.checkpoint import create_mbridge_loader, publish_as_release
+from miles.backends.megatron_utils.checkpoint import create_mbridge_for_model, publish_as_release
 from miles.backends.megatron_utils.fp32_param_utils import enforce_marked_param_dtypes
 from miles.backends.megatron_utils.initialize import init
 from miles.backends.megatron_utils.megatron_config import MegatronArgsNamespace
@@ -166,7 +166,7 @@ def main():
 
     # Load model
     hf_model_path = args.hf_checkpoint
-    bridge = create_mbridge_loader(model, hf_model_path)
+    bridge = create_mbridge_for_model(model, hf_model_path)
 
     with ModelCompanionInstallationUtils.hide(model):
         bridge.load_weights(model, hf_model_path, memory_efficient=True)

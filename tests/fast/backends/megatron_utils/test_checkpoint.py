@@ -201,24 +201,24 @@ class TestDeepSeekCheckpointCompatibility:
 
 
 @pytest.mark.parametrize("model_vocab_rows", [12, 10], ids=["megatron-padded", "built-unpadded"])
-def test_mbridge_loader_pads_the_hf_vocab_to_the_built_models_rows(monkeypatch, model_vocab_rows):
-    """mbridge pads embedding rows only to a size it learns from its own provider, which miles never calls."""
-    import sys
-    from types import ModuleType
+def test_mbridge_pads_the_hf_embedding_to_the_built_models_rows(tmp_path, monkeypatch, model_vocab_rows):
+    """mbridge learns the vocab rows only from its own model provider, which miles never calls."""
+    import transformers
+    from mbridge.core.parallel_states import ParallelStates
 
-    class _AutoBridge:
-        @staticmethod
-        def from_pretrained(path, trust_remote_code, make_vocab_size_divisible_by=None):
-            text_config = SimpleNamespace(vocab_size=10)
-            return SimpleNamespace(
-                hf_config=SimpleNamespace(get_text_config=lambda: text_config),
-                make_vocab_size_divisible_by=make_vocab_size_divisible_by,
-            )
+    monkeypatch.setattr(ParallelStates, "get_parallel_state", classmethod(lambda cls: cls()))
+    transformers.Qwen3Config(
+        vocab_size=10,
+        hidden_size=4,
+        intermediate_size=8,
+        num_hidden_layers=1,
+        num_attention_heads=2,
+        num_key_value_heads=1,
+        head_dim=2,
+    ).save_pretrained(tmp_path)
 
-    monkeypatch.setitem(sys.modules, "mbridge", SimpleNamespace(AutoBridge=_AutoBridge))
-    monkeypatch.setitem(sys.modules, "miles_plugins.mbridge", ModuleType("miles_plugins.mbridge"))
+    bridge = checkpoint.create_mbridge_for_model([SimpleNamespace(vocab_size=model_vocab_rows)], str(tmp_path))
+    rows = bridge._weight_to_mcore_format("embedding.word_embeddings.weight", [torch.ones(10, 4)])
 
-    bridge = checkpoint.create_mbridge_loader([SimpleNamespace(vocab_size=model_vocab_rows)], "/hf")
-
-    assert bridge.make_vocab_size_divisible_by is not None, "mbridge skips padding without it"
-    assert (bridge.vocab_size, bridge.padded_vocab_size) == (10, model_vocab_rows)
+    assert rows.shape == (model_vocab_rows, 4)
+    assert not rows[10:].any(), "padding rows are zero"
