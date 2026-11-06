@@ -15,7 +15,9 @@ from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
     _save_adapter_state,
     agreed_step,
     assert_adapter_state_keys,
+    broadcast_from_rank0,
     gloo_group,
+    is_rank0,
     is_vocab_padding,
     read_adapter_state_shapes,
 )
@@ -129,7 +131,7 @@ def save_adapter_dir(
                 f"missing {sorted(expected - keys)[:8]}, unexpected {sorted(keys - expected)[:8]}"
             )
         _save_adapter_state(written.path, state)
-        if torch.distributed.is_initialized() and torch.distributed.get_rank() != 0:
+        if not is_rank0():
             return written
         if training_state is not None:
             (written.path / TRAINING_STATE_FILENAME).write_text(json.dumps(training_state, indent=2))
@@ -170,10 +172,6 @@ def _stacked_expert_keys(named_tensors: list[tuple[str, torch.Tensor]], map_name
         if hf_key.expert_index is None and ".experts." in hf_key.key and tensor.dim() == 3 and tensor.shape[0] > 1:
             keys.add(hf_key.key)
     return frozenset(keys)
-
-
-def _is_writer() -> bool:
-    return not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0
 
 
 def write_peft_export(
@@ -228,7 +226,7 @@ def _write_bf16_export(
     with agreed_step():
         # the gathered adapter leaves the GPU before rank 0 splits and copies it
         named_tensors = [(key, tensor.cpu()) for key, tensor in members.export_bf16_adapter(slot)]
-        if _is_writer():
+        if is_rank0():
             weights = _hf_keyed_bf16_adapter(named_tensors, members, parametrization, targets)
             write(
                 directory,
@@ -252,11 +250,7 @@ def write_sampler_export(
 ) -> UncommittedAdapterDir:
     """All ranks call; rank 0 writes ``slot``'s bf16 sampler export. The caller's committer then commits it."""
     with write_adapter_dir(root, name, tenant_digest=tenant_digest) as written:
-        # the gathered adapter leaves the GPU before rank 0 splits and copies it
-        named_tensors = [(key, tensor.cpu()) for key, tensor in members.export_bf16_adapter(slot)]
-        if _is_writer():
-            weights = _hf_keyed_bf16_adapter(named_tensors, members, parametrization, targets)
-            write_sampler_adapter(written.path, weights, parametrization, targets, lora_dropout=lora_dropout)
+        write_sampler_view(written.path, members, slot, parametrization, targets, lora_dropout=lora_dropout)
     return written
 
 
@@ -296,18 +290,6 @@ def _zero_filled(specs: list[LocalShardSpec], loaded: AdapterState) -> AdapterSt
     )
 
 
-def _is_rank0() -> bool:
-    return not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0
-
-
-def _broadcast_from_rank0(value):
-    if not torch.distributed.is_initialized():
-        return value
-    box = [value]
-    torch.distributed.broadcast_object_list(box, src=0, group=gloo_group())
-    return box[0]
-
-
 def _assert_pieces_readable(
     weights: dict[str, torch.Tensor], specs: list[LocalShardSpec], head_rows: HeadRows | None
 ) -> None:
@@ -324,14 +306,14 @@ def _scatter_weights_only_state(
     specs_by_rank = [specs]
     if torch.distributed.is_initialized():
         # only the specs go through gather_object, which pads every rank's payload to the largest one
-        specs_by_rank = [None] * torch.distributed.get_world_size() if _is_rank0() else None
+        specs_by_rank = [None] * torch.distributed.get_world_size() if is_rank0() else None
         torch.distributed.gather_object(specs, specs_by_rank, dst=0, group=gloo_group())
     with agreed_step():
-        if _is_rank0():
+        if is_rank0():
             for rank_specs in specs_by_rank:
                 _assert_pieces_readable(weights, rank_specs, head_rows)
     # no export or conversion carries vocab padding: it stays zero, as at init
-    if not _is_rank0():
+    if not is_rank0():
         pieces = [torch.zeros(s.local_shape) for s in specs]
         for spec, piece in zip(specs, pieces, strict=True):
             if not is_vocab_padding(spec.key):
@@ -473,11 +455,11 @@ def load_adapter_dir(
         # PEFT and external readers load every tensor, so only rank 0 opens such a source; an adapter dir's
         # metadata is cheap, and every rank reads its own pieces of adapter_state/
         reader, source, steps = None, None, None
-        if checked is not None and _is_rank0():
+        if checked is not None and is_rank0():
             reader, source, steps = checked.reader, checked.source, checked.steps
-        elif kind == AdapterSourceKind.ADAPTER_DIR or _is_rank0():
+        elif kind == AdapterSourceKind.ADAPTER_DIR or is_rank0():
             reader, source, steps = _open_source(path, kind, run, targets, load_optimizer=load_optimizer)
-    source, reads_pieces = _broadcast_from_rank0((source, _reads_adapter_state_pieces(reader, steps)))
+    source, reads_pieces = broadcast_from_rank0((source, _reads_adapter_state_pieces(reader, steps)))
 
     if reads_pieces:
         run_keys = _all_ranks_keys(specs)
@@ -499,9 +481,9 @@ def load_adapter_dir(
     else:
         with agreed_step():
             weights = None
-            if checked is not None and _is_rank0():
+            if checked is not None and is_rank0():
                 weights = checked.weights
-            elif _is_rank0():
+            elif is_rank0():
                 weights = apply_parametrization_conversion(reader.read_weights(), steps)
         state = _scatter_weights_only_state(weights, specs, members.head_rows)
     with agreed_step():
