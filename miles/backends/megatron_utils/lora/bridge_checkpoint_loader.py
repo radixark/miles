@@ -170,8 +170,8 @@ class MegatronBridgeCheckpointLoader:
         """Collective: every check against the source, reading it only; ``apply`` then loads what it requested."""
         chunks = unwrap_model(self._model)
         names = ["model"] if len(chunks) == 1 else [f"model{i}" for i in range(len(chunks))]
-        config, metadata, model_state_dicts, adapter, base_dir = self._read_source(path, chunks)
-        self._check_torch_dist_base(path, chunks, base_dir)
+        config, metadata, model_state_dicts, adapter, base_dir = self._read_and_check_source(path, chunks)
+        self._assert_same_torch_dist_base(path, chunks, base_dir)
         has_optimizer_state = self._check_adapter_keys(path, adapter)
         self._checked = (path, names, chunks, model_state_dicts, adapter, metadata)
         return replace(self._run, lora_alpha=float(config["peft"]["alpha"])), has_optimizer_state
@@ -190,7 +190,7 @@ class MegatronBridgeCheckpointLoader:
         # collective; asserts each bf16 adapter parameter is its fp32 master
         self._members.export_adapter_state(0)
 
-    def _read_source(self, path: Path, chunks):
+    def _read_and_check_source(self, path: Path, chunks):
         """Collective: the source's run_config.yaml checked against this run, its content metadata, and this run's
         sharded state dicts with their adapter subsets."""
         with agree_on_failure_context():
@@ -215,7 +215,7 @@ class MegatronBridgeCheckpointLoader:
             ]
         return config, metadata, model_state_dicts, adapter, base_dir
 
-    def _check_torch_dist_base(self, path: Path, chunks, base_dir: Path | None) -> None:
+    def _assert_same_torch_dist_base(self, path: Path, chunks, base_dir: Path | None) -> None:
         """Collective: compares the model with a torch_dist pretrained_checkpoint every rank sees."""
         # a base visible on some nodes only would leave the others outside the collective load
         base_dirs = [None] * dist.get_world_size()

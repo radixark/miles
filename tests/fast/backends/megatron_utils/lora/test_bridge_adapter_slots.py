@@ -629,7 +629,9 @@ def _checked_loader(optimizer, members, monkeypatch, *, load_optimizer=True, key
     run = AdapterParametrization("base", 4, 8.0, "lora", ("model.layers.0.self_attn.q_proj",), False)
     loader = bridge_checkpoint_loader.MegatronBridgeCheckpointLoader([], optimizer, members, run, load_optimizer)
     monkeypatch.setattr(bridge_checkpoint_loader, "unwrap_model", lambda model: [])
-    monkeypatch.setattr(loader, "_read_source", lambda path, chunks: ({"peft": {"alpha": 16}}, {}, [], [], None))
+    monkeypatch.setattr(
+        loader, "_read_and_check_source", lambda path, chunks: ({"peft": {"alpha": 16}}, {}, [], [], None)
+    )
     metadata = SimpleNamespace(state_dict_metadata=dict.fromkeys(keys))
     monkeypatch.setattr(
         bridge_checkpoint_loader.dcp, "FileSystemReader", lambda path: SimpleNamespace(read_metadata=lambda: metadata)
