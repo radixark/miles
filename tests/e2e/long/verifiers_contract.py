@@ -1,3 +1,4 @@
+import os
 import shlex
 from collections.abc import Callable
 from pathlib import Path
@@ -13,11 +14,14 @@ def verify_sdk_contract(
     pythonpath: str,
 ) -> None:
     test_file = repo_root / "tests/fast/examples/experimental/verifiers/test_verifiers_rollout.py"
+    # The contract needs no GPU, so it runs with the GPUs hidden, except on ROCm: importing SGLang there
+    # reads device 0's architecture to pick its FP8 type, and fails with "No CUDA GPUs are available".
+    hide_gpus = [] if os.getenv("MILES_HARDWARE_PLATFORM") == "rocm" else ["CUDA_VISIBLE_DEVICES="]
     execute(
         shlex.join(
             [
                 "env",
-                "CUDA_VISIBLE_DEVICES=",
+                *hide_gpus,
                 f"VIRTUAL_ENV={venv}",
                 f"PYTHONPATH={pythonpath}",
                 "uv",
