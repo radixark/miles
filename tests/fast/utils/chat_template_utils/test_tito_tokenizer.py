@@ -1369,6 +1369,7 @@ class TestParserBinding:
             (TITOTokenizerType.DEEPSEEKV32, "deepseek-v3", "deepseekv32"),
             (TITOTokenizerType.DEEPSEEKV4, "deepseek-v4", "deepseekv4"),
             (TITOTokenizerType.INKLING, None, None),
+            (TITOTokenizerType.MUSE_SPARK, "muse", "muse"),
             (TITOTokenizerType.DEFAULT, None, None),
         ],
     )

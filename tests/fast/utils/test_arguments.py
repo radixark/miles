@@ -2703,6 +2703,13 @@ class TestTitoFixedTemplateConfiguration:
         assert args.chat_template_path.endswith("/qwen3_fixed.jinja")
         assert args.apply_chat_template_kwargs == {"clear_thinking": False}
 
+    def test_muse_spark_resolves_family(self):
+        args = self._parse(["--use-session-server", "--tito-model", "muse_spark"])
+        miles_validate_args(args)
+        assert args.chat_template_path.endswith("/muse_spark_fixed.jinja")
+        assert args.sglang_chat_template == args.chat_template_path
+        assert args.apply_chat_template_kwargs == {}
+
     @pytest.mark.parametrize(
         ("family", "template"),
         [("qwen35", "qwen3.5_fixed.jinja"), ("qwen36", "qwen3.6_fixed.jinja")],
