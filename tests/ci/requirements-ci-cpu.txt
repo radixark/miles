@@ -1,5 +1,4 @@
-# SGLang runtime imports reached by the hosted CPU suite. GPU images get these from their SGLang base image;
-# docker/Dockerfile.rocm and the ROCm CI install add the ones its v0.5.22 base lacks.
+# SGLang runtime imports reached by the hosted CPU suite. GPU and ROCm images get these from their SGLang base image.
 compressed-tensors==0.17.1
 cryptography==50.0.2  # SSH keys for the age-recipient tests (Tinker external weights)
 deepseek-recipe==0.2.0
