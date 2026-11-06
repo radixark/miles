@@ -216,7 +216,12 @@ class TitanTrainer(Configurable):
                 self.engine.pp_schedule.eval(**self._pipeline_microbatches(prepared))
             else:
                 for inputs, labels, model_kwargs, _ in prepared:
-                    self.loss_fn(self.model_parts[0](inputs, **model_kwargs), labels)
+                    # the training forward's path: torch.compile guards on grad mode, so a no-grad forward
+                    # compiles (and autotunes) flex_attention again, and FullAC wraps blocks only under grad;
+                    # either makes these log-probs differ from training's in the last bits (ppo_kl != 0)
+                    with torch.enable_grad():
+                        pred = self.model_parts[0](inputs, **model_kwargs)
+                    self.loss_fn(pred.detach(), labels)
         return self.loss_fn.collect() if self.has_last_stage() else []
 
     def zero_grad(self) -> None:
