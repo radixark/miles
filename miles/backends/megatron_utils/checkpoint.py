@@ -258,9 +258,9 @@ def create_mbridge_for_model(model, hf_path: str):
     # mbridge sets these only in its own model provider
     bridge.vocab_size = bridge.hf_config.get_text_config().vocab_size
     bridge.padded_vocab_size = model_vocab_rows
-    assert model_vocab_rows >= bridge.vocab_size, (
-        f"the model was built with fewer vocab rows ({model_vocab_rows}) than {hf_path} holds ({bridge.vocab_size})"
-    )
+    assert (
+        model_vocab_rows >= bridge.vocab_size
+    ), f"the model was built with fewer vocab rows ({model_vocab_rows}) than {hf_path} holds ({bridge.vocab_size})"
     return bridge
 
 
