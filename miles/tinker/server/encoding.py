@@ -79,7 +79,7 @@ def validate_age_recipients(recipients: list[str]) -> None:
 
     for recipient in recipients:
         try:
-            # the trainer's export parses it the same way (adapter_exports.parse_age_recipient)
+            # the trainer's export parses it the same way (adapter_exports.write_external_adapter)
             (pyrage.ssh if recipient.startswith("ssh-") else pyrage.x25519).Recipient.from_str(recipient)
         except pyrage.RecipientError as error:
             raise UserInputError(f"{recipient!r} is not an age recipient (age1... or ssh-...): {error}") from None

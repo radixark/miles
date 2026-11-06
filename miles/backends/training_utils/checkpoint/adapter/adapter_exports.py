@@ -4,7 +4,6 @@ import json
 from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import safetensors.torch
 import torch
@@ -28,8 +27,6 @@ from miles.backends.training_utils.checkpoint.adapter.parametrization_conversion
 from miles.utils.lora.hf_lora_targets import HfLoraTargets
 from miles.utils.lora.utils import get_adapter_target_modules, save_adapter_to_disk
 
-if TYPE_CHECKING:
-    import pyrage
 
 
 def _components_without_plain_peft_form(parametrization: AdapterParametrization, targets: HfLoraTargets) -> list[str]:
@@ -204,7 +201,10 @@ def write_external_adapter(
     # lazy: every run imports this module, and prebuilt images may lack pyrage
     import pyrage
 
-    recipients = [parse_age_recipient(r) for r in age_encryption_recipients]
+    # the SDK documents both native age (age1...) and SSH (ssh-...) public keys
+    recipients = [
+        (pyrage.ssh if r.startswith("ssh-") else pyrage.x25519).Recipient.from_str(r) for r in age_encryption_recipients
+    ]
     # encrypted in memory, one file at a time: no plaintext ever reaches the disk
     Path(directory).mkdir(parents=True, exist_ok=True)
     for name, plaintext in (
@@ -213,11 +213,3 @@ def write_external_adapter(
     ):
         (Path(directory) / f"{name}.age").write_bytes(pyrage.encrypt(plaintext(), recipients))
 
-
-def parse_age_recipient(recipient: str) -> "pyrage.x25519.Recipient | pyrage.ssh.Recipient":
-    """The SDK documents both native age (age1...) and SSH (ssh-...) public keys."""
-    import pyrage
-
-    if recipient.startswith("ssh-"):
-        return pyrage.ssh.Recipient.from_str(recipient)
-    return pyrage.x25519.Recipient.from_str(recipient)
