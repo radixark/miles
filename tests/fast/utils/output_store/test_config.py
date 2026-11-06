@@ -102,7 +102,7 @@ class TestLaunchChecks:
             "rollout_max_response_len": 16385,
             "use_session_server": "v1",
         }
-        # The session refuses only a prompt that fills max_seq_len, so a 16384-token prompt may get a
+        # An agent that stops once its prompt fills max_seq_len may still send a 16384-token prompt and get a
         # 16385-token response: 32768 rows, under the 16gb default and over 15gb.
         launch.check(make_args(**dsa))
         with pytest.raises(ValueError, match="cannot hold the 16374562816 bytes of indexer top-k"):

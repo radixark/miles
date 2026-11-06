@@ -277,8 +277,9 @@ Requirements:
   response's arrays. Indexer top-k dominates, about 0.5 MB per token on DeepSeek-V3.2, so
   16gb fits a 32k-token response. A buffer too small for the longest sequence the
   length flags allow is rejected at launch: `--max-seq-len` on `/generate`, one
-  `--rollout-max-response-len` response more under the session server, which does not
-  cap a turn to it, or else `--rollout-max-response-len`. Under RDMA, each engine pins its whole buffer in
+  `--rollout-max-response-len` response more under the session server, where an agent
+  that stops at `--max-seq-len` can still get a full response past it, or else
+  `--rollout-max-response-len`. Under RDMA, each engine pins its whole buffer in
   host memory when it starts.
 - For RDMA engines, `device_name` in `--mooncake-store-init-kwargs`: SGLang reads no
   `MOONCAKE_*` variable.

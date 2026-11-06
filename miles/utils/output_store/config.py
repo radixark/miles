@@ -214,8 +214,9 @@ def output_store_reader(args: argparse.Namespace) -> Callable | None:
 def _max_indexer_topk_bytes(args: argparse.Namespace) -> int | None:
     """Bytes of the indexer top-k of the longest sequence the length flags allow, or None if unknown.
 
-    /generate caps every request at --max-seq-len. The session server only refuses a turn whose prompt fills
-    --max-seq-len, so a turn may add a full --rollout-max-response-len response to a prompt one token short of it.
+    /generate caps every request at --max-seq-len. Under the session server the agent decides when to stop; one
+    that stops once its prompt fills --max-seq-len sends at most a prompt one token short of it plus a full
+    --rollout-max-response-len response.
     Without --max-seq-len, a response cut at --rollout-max-response-len after a prompt of
     --rollout-max-prompt-len tokens, or of one when that is unset, is the longest sequence known at launch.
     Only this field is sized at launch: on DeepSeek-V3.2 it takes about 0.5 MB per token, routed experts take
