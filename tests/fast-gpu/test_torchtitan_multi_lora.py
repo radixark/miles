@@ -86,7 +86,11 @@ def test_canonical_gives_each_hf_projection_of_a_fused_one_its_own_adapter():
     qkv, w13, wo = (_layer(converted, p).build() for p in _PROJECTIONS)
     attention = _qwen3().layers[0].attention
     head_dim, n_heads, n_kv = attention.head_dim, attention.n_heads, attention.n_kv_heads
-    assert [b.weight.shape[0] for b in qkv.lora_slots[0].lora_b] == [n_heads * head_dim, n_kv * head_dim, n_kv * head_dim]
+    assert [b.weight.shape[0] for b in qkv.lora_slots[0].lora_b] == [
+        n_heads * head_dim,
+        n_kv * head_dim,
+        n_kv * head_dim,
+    ]
     assert [b.weight.shape for b in w13.lora_slots[1].lora_b] == [(w13.out_features, _MAX_RANK)] * 2
     assert len(qkv.lora_slots[0].lora_a) == 3 and len(w13.lora_slots[0].lora_a) == 2
     # an unfused projection has one adapter either way
@@ -181,7 +185,9 @@ def test_a_canonical_slot_equals_its_hf_projections_fused_by_the_model(projectio
     x = torch.randn(7, multi.in_features, dtype=torch.float64)
     multi.token_counts_by_slot = (0, 7)
     with torch.no_grad():
-        expected = torch.nn.functional.linear(x, (multi.weight + alpha / rank * delta.view(multi.weight.shape)).flatten(0, -2))
+        expected = torch.nn.functional.linear(
+            x, (multi.weight + alpha / rank * delta.view(multi.weight.shape)).flatten(0, -2)
+        )
     torch.testing.assert_close(multi(x).detach().flatten(1), expected, rtol=0, atol=1e-12)
 
 

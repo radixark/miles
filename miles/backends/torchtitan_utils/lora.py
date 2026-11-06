@@ -26,7 +26,9 @@ def convert_model_config(
     ``canonical_lora`` (multi-LoRA only) gives each HF projection of a fused one its own A.
     """
     assert lora_type in ("lora", "canonical_lora"), f"unknown --lora-type {lora_type}"
-    assert num_slots is not None or lora_type == "lora", "torchtitan single LoRA shares one lora_A per fused projection"
+    assert (
+        num_slots is not None or lora_type == "lora"
+    ), "torchtitan single LoRA shares one lora_A per fused projection"
     sd_adapter = model_config._owner.state_dict_adapter_cls(model_config, None)
     hf_names_by_projection = {
         fqn: hf_export_names(sd_adapter, fqn, _weight_shape(cfg))

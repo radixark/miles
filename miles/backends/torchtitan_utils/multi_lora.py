@@ -209,7 +209,11 @@ def convert_to_slots(
         # LoRATransform's class is (_LoRALinearMixin, parent class)
         base_cls = owner.__bases__[1]
         packing = _packing(fqn, cfg, parent, attr) if canonical and fqn in fused_projections else None
-        values = {f.name: getattr(cfg, f.name) for f in fields(cfg) if f.init and f.name != "alpha"}
+        values = {
+            f.name: getattr(cfg, f.name)  # config-access-exempt: copies every init field, as LoRATransform does
+            for f in fields(cfg)
+            if f.init and f.name != "alpha"
+        }
         new_cfg = get_multi_lora_linear(base_cls).Config(**values, num_slots=num_slots, packing=packing)
         if isinstance(parent, list):
             parent[attr] = new_cfg
@@ -222,9 +226,7 @@ def _packing(fqn: str, cfg: Linear.Config, parent, attr) -> ComponentPacking:
     if cfg.num_linears > 1:
         return ComponentPacking("stacked", cfg.num_linears)
     if isinstance(parent, QKVLinear.Config) and attr == "wqkv":
-        return ComponentPacking(
-            "qkv", 3, heads_per_kv=parent.n_heads // parent.n_kv_heads, head_dim=parent.head_dim
-        )
+        return ComponentPacking("qkv", 3, heads_per_kv=parent.n_heads // parent.n_kv_heads, head_dim=parent.head_dim)
     raise ValueError(f"canonical LoRA does not know how {fqn} fuses its HF projections")
 
 
