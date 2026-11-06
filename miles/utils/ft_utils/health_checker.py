@@ -14,6 +14,8 @@ from miles.utils.tracking_utils.structured_log import log_structured
 
 logger = logging.getLogger(__name__)
 
+_ACTIVENESS_POLL_SECONDS: float = 1.0
+
 
 class SimpleHealthCheckerConfig(StrictBaseModel):
     interval: float
@@ -208,7 +210,16 @@ class SimpleHealthChecker(BaseHealthChecker):
                 else:
                     self._publish_result(success=success)
 
-            await self._clock.sleep(self._config.interval)
+            await self._wait_for_next_round(active_and_epoch)
+
+    async def _wait_for_next_round(self, seen: ActiveAndEpoch) -> None:
+        # Activeness is pulled, so poll it: status reads Unknown from any pause or resume until the
+        # next verdict, which must not wait out a whole interval (a weight update may come sooner).
+        deadline = self._clock.time() + self._config.interval
+        while (remaining := deadline - self._clock.time()) > 0:
+            await self._clock.sleep(min(remaining, _ACTIVENESS_POLL_SECONDS))
+            if self._get_activeness() != seen:
+                return
 
     async def _run_probe(self) -> bool:
         self._probe_task = asyncio.create_task(self._check_fn())
