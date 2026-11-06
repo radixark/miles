@@ -105,7 +105,7 @@ def make_args(**overrides) -> Namespace:
         rollout_batch_size=2,
         n_samples_per_prompt=N_SAMPLES_PER_PROMPT,
         max_weight_staleness=None,
-        async_staleness_admission=False,
+        async_submit_within_staleness=False,
         async_max_concurrent_samples=None,
         async_data_buffer_capacity_factor=1000.0,
         async_unused_samples_handler="drop",
@@ -1861,7 +1861,7 @@ class TestStalenessAdmission:
             rollout_batch_size=2,
             async_max_concurrent_samples=64,
             max_weight_staleness=max_weight_staleness,
-            async_staleness_admission=True,
+            async_submit_within_staleness=True,
         )
         fn = make_fn(monkeypatch, args, source)
         try:
@@ -1890,7 +1890,7 @@ class TestStalenessAdmission:
         args = make_args(
             rollout_batch_size=1,
             max_weight_staleness=0,
-            async_staleness_admission=True,
+            async_submit_within_staleness=True,
             async_unused_samples_handler=handler,
         )
         fn = make_fn(monkeypatch, args, FakeDataSource(), generate=generate_stale_once)
@@ -1906,7 +1906,7 @@ class TestStalenessAdmission:
         args = make_args(
             custom_async_data_buffer_path=f"{__name__}.WedgedBuffer",
             max_weight_staleness=1,
-            async_staleness_admission=True,
+            async_submit_within_staleness=True,
         )
         with pytest.raises(AssertionError, match="admits"):
             make_fn(monkeypatch, args, FakeDataSource())

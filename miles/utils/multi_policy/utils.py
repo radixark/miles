@@ -129,8 +129,8 @@ def validate_multi_policy_args(args, *, megatron_config: MegatronConfig) -> None
         "multi policy training does not support --async-unused-samples-handler retry: one generate call feeds "
         "every policy, so recycling its prompts for one of them regenerates the data of all the others"
     )
-    assert not args.async_staleness_admission, (
-        "multi policy training does not support --async-staleness-admission: one producer feeds every policy, "
+    assert not args.async_submit_within_staleness, (
+        "multi policy training does not support --async-submit-within-staleness: one producer feeds every policy, "
         "while each policy trains at its own pace"
     )
     assert (

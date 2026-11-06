@@ -95,8 +95,8 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         default_buffer_cls = DefaultMultiDataBuffer if self.args.raw_megatron.is_multi_policy else DefaultDataBuffer
         buffer_cls = load_function(self.args.custom_async_data_buffer_path) or default_buffer_cls
         assert (
-            not self.args.async_staleness_admission or buffer_cls.admits is not DataBuffer.admits
-        ), f"--async-staleness-admission requires {buffer_cls.__name__} to implement admits()"
+            not self.args.async_submit_within_staleness or buffer_cls.admits is not DataBuffer.admits
+        ), f"--async-submit-within-staleness requires {buffer_cls.__name__} to implement admits()"
         self._output: DataBuffer = buffer_cls(
             DataBufferConstructorInput(args=self.args, unused_handler_fn=self._handle_unused)
         )

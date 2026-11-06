@@ -511,7 +511,7 @@ class RolloutRelatedRolloutOnlyConfig(BaseConfig):
             )
         ),
     ] = None
-    async_staleness_admission: A[
+    async_submit_within_staleness: A[
         bool,
         Arg(
             help=(

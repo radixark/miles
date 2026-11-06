@@ -316,7 +316,7 @@ class DefaultDataBuffer(DataBuffer):
                 self._buffer.append(entry)
 
     def admits(self, *, in_flight: int) -> bool:
-        if not self._args.async_staleness_admission:
+        if not self._args.async_submit_within_staleness:
             return True
         # get() hands out groups in completion order, one weight version per call, so a group that enters the
         # buffer is trained at most max_weight_staleness versions later.
