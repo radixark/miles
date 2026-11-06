@@ -139,7 +139,7 @@ def _optim_config(args: TrainerConfig) -> Optim.Config:
 def _checkpointer_config(args: TrainerConfig, *, dump_subdir: str, with_lora: bool) -> TiedCheckpointManager.Config:
     resume_from = _latest_step_dir(args.backend.load, dump_subdir) if args.backend.load else None
     if with_lora:
-        _refuse_lora_resume_through_checkpointer(args, dump_subdir, resume_from)
+        _assert_lora_not_resumed_by_checkpointer(args, dump_subdir, resume_from)
         resume_from = None
     if resume_from is None:
         return TiedCheckpointManager.Config(
@@ -153,7 +153,7 @@ def _checkpointer_config(args: TrainerConfig, *, dump_subdir: str, with_lora: bo
     )
 
 
-def _refuse_lora_resume_through_checkpointer(args: TrainerConfig, dump_subdir: str, load_step: str | None) -> None:
+def _assert_lora_not_resumed_by_checkpointer(args: TrainerConfig, dump_subdir: str, load_step: str | None) -> None:
     # torchtitan's checkpointer resumes from the latest step dir under --save whatever initial_load_path says
     save_step = args.backend.save and _latest_step_dir(args.backend.save, dump_subdir)
     if save_step:
