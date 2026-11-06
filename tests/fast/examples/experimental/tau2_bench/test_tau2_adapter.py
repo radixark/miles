@@ -1,8 +1,8 @@
 """Offline tests for the tau2-bench adapter's episode classification (no tau2, no engine).
 
-``tau2_agent_function.run`` records how an episode ended in the metadata it
-returns; ``tau2_generate.generate`` turns that into the sample status. The
-``tau2`` package is faked in ``sys.modules`` so these run where it is not
+``tau2_agent_function.run`` records in the metadata it returns whether the
+episode is valid; ``tau2_generate.generate`` turns that into the sample status.
+The ``tau2`` package is faked in ``sys.modules`` so these run where it is not
 installed, and the simulation itself is replaced per test.
 """
 
@@ -44,13 +44,12 @@ def _load_example(monkeypatch: pytest.MonkeyPatch, filename: str):
     return module
 
 
-class _PolicyCallError(Exception):
-    """The shape litellm gives an HTTP error: the status code and the model name of the call."""
+class _EndpointError(Exception):
+    """The shape litellm gives an HTTP error from the policy, the user simulator or the judge."""
 
-    def __init__(self, status_code: int, model: str):
+    def __init__(self, status_code: int):
         super().__init__(f"Error code: {status_code}")
         self.status_code = status_code
-        self.model = model
 
 
 # the generate wrapper adds the router URL the user simulator and the judge default to
@@ -62,10 +61,8 @@ _METADATA = {
 }
 
 
-def _run(module, simulate):
-    monkeypatch_target = module._run_simulation.__name__
-    assert monkeypatch_target == "_run_simulation"
-    module._run_simulation = simulate
+def _run(monkeypatch: pytest.MonkeyPatch, module, simulate):
+    monkeypatch.setattr(module, "_run_simulation", simulate)
     return asyncio.run(module.run("http://127.0.0.1:1/sessions/s", prompt="retail/7", metadata=dict(_METADATA)))
 
 
@@ -78,7 +75,7 @@ class TestRun:
             messages=[None] * 12,
         )
 
-        result = _run(module, lambda *args: simulation)
+        result = _run(monkeypatch, module, lambda *args: simulation)
 
         assert result == {
             "reward": 1.0,
@@ -89,39 +86,23 @@ class TestRun:
             "tau2_num_messages": 12,
         }
 
-    def test_the_sessions_409_on_a_policy_turn_is_a_cut_off_episode(self, monkeypatch):
-        """The session refused the next policy turn: its prompt already fills --max-seq-len."""
-        module = _load_example(monkeypatch, "tau2_agent_function.py")
-
-        def simulate(*args):
-            raise _PolicyCallError(409, "policy")
-
-        result = _run(module, simulate)
-
-        assert result == {
-            "reward": 0.0,
-            "tau2_domain": "retail",
-            "tau2_task_id": "7",
-            "tau2_episode_valid": True,
-            "tau2_termination_reason": "max_seq_len",
-        }
-
     @pytest.mark.parametrize(
         "exc",
         [
-            _PolicyCallError(409, "gpt-4.1"),  # a 409 from the user simulator or the judge, not the session
-            _PolicyCallError(502, "policy"),  # the engine behind the session
-            RuntimeError("sandbox gone"),
+            _EndpointError(400),  # the judge's model is not served, or the engine refuses the prompt length
+            _EndpointError(502),  # the engine behind the session
+            ValueError("AssistantMessage must have either content or tool_calls"),  # tau2 rejecting an empty reply
+            RuntimeError("The agent process exited with code 1"),
         ],
-        ids=["side_409", "policy_502", "other"],
+        ids=["endpoint_400", "policy_502", "tau2_value_error", "agent_process"],
     )
-    def test_any_other_failure_invalidates_the_episode(self, monkeypatch, exc):
+    def test_anything_raised_invalidates_the_episode(self, monkeypatch, exc):
         module = _load_example(monkeypatch, "tau2_agent_function.py")
 
         def simulate(*args):
             raise exc
 
-        result = _run(module, simulate)
+        result = _run(monkeypatch, module, simulate)
 
         assert result == {"reward": 0.0, "tau2_domain": "retail", "tau2_task_id": "7", "tau2_episode_valid": False}
 
@@ -135,22 +116,11 @@ class TestRun:
             time.sleep(0.5)
             return SimpleNamespace(reward_info=SimpleNamespace(reward=1.0))
 
-        result = _run(module, simulate)
+        result = _run(monkeypatch, module, simulate)
 
         assert result["tau2_termination_reason"] == "episode_timeout"
         assert result["tau2_episode_valid"] is True
         assert result["reward"] == 0.0
-
-    def test_the_real_litellm_exception_for_the_sessions_409_is_recognized(self, monkeypatch):
-        """litellm maps an HTTP 409 to APIError; the model name tells the policy call from the others."""
-        litellm = pytest.importorskip("litellm")
-        module = _load_example(monkeypatch, "tau2_agent_function.py")
-
-        def exc(model: str):
-            return litellm.APIError(status_code=409, message="Error code: 409", llm_provider="openai", model=model)
-
-        assert module.is_max_seq_len_refusal(exc("policy"))
-        assert not module.is_max_seq_len_refusal(exc("gpt-4.1"))
 
 
 class TestGenerate:
@@ -182,14 +152,10 @@ class TestGenerate:
                 {"tau2_episode_valid": True, "tau2_termination_reason": "user_stop"},
                 Sample.Status.COMPLETED,
             ),
+            # the episode ran past --max-seq-len: sample assembly cut it, the reward is still tau2's
             (
                 Sample.Status.TRUNCATED,
-                {"tau2_episode_valid": True, "tau2_termination_reason": "user_stop"},
-                Sample.Status.TRUNCATED,
-            ),
-            (
-                Sample.Status.COMPLETED,
-                {"tau2_episode_valid": True, "tau2_termination_reason": "max_seq_len"},
+                {"tau2_episode_valid": True, "tau2_termination_reason": "user_stop", "reward": 1.0},
                 Sample.Status.TRUNCATED,
             ),
             (
@@ -206,8 +172,7 @@ class TestGenerate:
         ],
         ids=[
             "scored",
-            "scored_length_cut",
-            "max_seq_len",
+            "scored_past_max_seq_len",
             "episode_timeout",
             "invalid",
             "invalid_length_cut",
@@ -223,11 +188,11 @@ class TestGenerate:
         assert sample.status == expected
 
     def test_every_leaf_of_a_v2_session_is_classified(self, monkeypatch):
-        cut_off = self._sample(
-            Sample.Status.COMPLETED, {"tau2_episode_valid": True, "tau2_termination_reason": "max_seq_len"}
+        scored = self._sample(
+            Sample.Status.COMPLETED, {"tau2_episode_valid": True, "tau2_termination_reason": "user_stop"}
         )
         invalid = self._sample(Sample.Status.COMPLETED, {"tau2_episode_valid": False})
 
-        self._generate(monkeypatch, [cut_off, invalid])
+        self._generate(monkeypatch, [scored, invalid])
 
-        assert (cut_off.status, invalid.status) == (Sample.Status.TRUNCATED, Sample.Status.ABORTED)
+        assert (scored.status, invalid.status) == (Sample.Status.COMPLETED, Sample.Status.ABORTED)

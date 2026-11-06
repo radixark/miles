@@ -3,15 +3,9 @@
 ``generate`` is ``miles.rollout.generate_hub.agentic_tool_call.generate`` with the
 rollout router's OpenAI endpoint added to the sample metadata, so the tau2 user
 simulator can run on the policy engines without going through the traced session,
-and with the sample status set from how ``tau2_agent_function.run`` says the
-episode ended (the generic generate keeps a failed episode as a scored sample):
-
-- ``tau2_episode_valid`` False (the episode raised, or the agent process never
-  reported): ``ABORTED``, so the group is dropped;
-- ``tau2_termination_reason == "max_seq_len"`` (the session refused the next turn,
-  HTTP 409 from ``--max-seq-len``): ``TRUNCATED`` with reward 0, which
-  ``--rollout-sample-filter-path mask_truncated_zero_reward`` leaves out of the loss;
-- otherwise the status the session assembled.
+and with an invalid episode (``tau2_episode_valid`` False: the simulation raised, or the
+agent process never reported) marked ``ABORTED`` so its group is dropped; the generic
+generate would keep it as a scored sample. See the README's "Episode outcomes".
 
 The reward is computed by the tau2 evaluator inside the episode and stored in
 ``sample.metadata["reward"]`` by ``tau2_agent_function.run``.
@@ -33,8 +27,6 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
             continue
         if not sample.metadata.get("tau2_episode_valid"):
             sample.status = Sample.Status.ABORTED
-        elif sample.metadata.get("tau2_termination_reason") == "max_seq_len":
-            sample.status = Sample.Status.TRUNCATED
     return output
 
 

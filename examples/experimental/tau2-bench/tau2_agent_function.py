@@ -9,15 +9,12 @@ turn is recorded as token ids + logprobs + loss masks, while tau2 keeps owning
 the user simulator, the user-side tools (telecom), the stop conditions and the
 evaluator. The evaluator's reward is returned and lands in ``sample.metadata``.
 
-How an episode ends is recorded in the returned metadata so ``tau2_generate.generate``
-can set the sample status (``Sample.Status`` is decided there, not here):
-
-- the evaluator scored it: ``tau2_termination_reason`` is tau2's own reason;
-- the session refused a policy turn because its prompt already fills ``--max-seq-len``
-  (HTTP 409, see ``miles.rollout.session.errors.MaxSeqLenReachedError``): the episode is
-  cut off, ``tau2_termination_reason`` is ``"max_seq_len"`` and the reward is 0;
-- anything else raised (user simulator or judge endpoint down, engine 5xx, ...): the
-  episode is invalid, ``tau2_episode_valid`` is False and the sample is dropped.
+Whether the episode is valid is recorded in the returned metadata so
+``tau2_generate.generate`` can set the sample status: a scored episode carries tau2's own
+``tau2_termination_reason``; anything the simulation raised (user simulator or judge endpoint
+down, engine 5xx, ...) makes it invalid, ``tau2_episode_valid`` is False and the sample is
+dropped. ``--max-seq-len`` does not stop the episode: it runs to its natural end and sample
+assembly truncates it (see the README's "Episode outcomes").
 
 The user simulator and the NL-assertion judge (retail rewards are DB x
 NL_ASSERTION) are reached at ``metadata["tau2_user_api_base"]``, which
@@ -54,19 +51,6 @@ from miles.rollout.agentic.session import openai_session_url
 logger = logging.getLogger(__name__)
 
 _POLICY_MODEL = "openai/policy"
-_POLICY_MODEL_NAME = _POLICY_MODEL.split("/", 1)[1]
-
-
-def is_max_seq_len_refusal(exc: BaseException) -> bool:
-    """Whether *exc* is the session refusing a policy turn whose prompt fills ``max_seq_len``.
-
-    The session answers HTTP 409 (``MaxSeqLenReachedError``); litellm raises it as
-    ``litellm.APIError`` with the status code and the model name of the call, so a 409 from
-    the user simulator or the judge (a different model) is not mistaken for it.
-    """
-    return (
-        getattr(exc, "status_code", None) == 409 and getattr(exc, "model", None) == _POLICY_MODEL_NAME
-    )  # config-access-exempt: attributes of a litellm exception, which plain exceptions lack
 
 
 def _side_llm(
@@ -149,9 +133,6 @@ async def run(
         logger.error(f"tau2 {domain}/{task_id} timed out after {timeout_s:.0f}s")
         return {**result, "tau2_termination_reason": "episode_timeout"}
     except Exception as exc:
-        if is_max_seq_len_refusal(exc):
-            logger.info(f"tau2 {domain}/{task_id} cut off: the session refused a turn, its prompt fills max_seq_len")
-            return {**result, "tau2_termination_reason": "max_seq_len"}
         logger.error(f"tau2 {domain}/{task_id} failed: {exc!r}", exc_info=True)
         return {**result, "tau2_episode_valid": False}
 
