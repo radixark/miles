@@ -53,7 +53,7 @@ def make_parallel_state(is_pp_last_stage: bool = True) -> ParallelState:
 
     # The fused vocab-parallel CE needs a real group object; use the 1-rank
     # world group when the test initialized one.
-    tp_group = dist.group.WORLD if dist.is_initialized() else None
+    tp_group = dist.group.WORLD if dist.is_initialized() and dist.get_world_size() == 1 else None
     state = ParallelState(
         intra_dp=_trivial_group(),
         intra_dp_cp=_trivial_group(),

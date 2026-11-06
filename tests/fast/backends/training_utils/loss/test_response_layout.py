@@ -5,6 +5,7 @@ The padded side gets the same packed samples followed by rows of garbage logits.
 
 from __future__ import annotations
 
+import dataclasses
 import itertools
 import logging
 import re
@@ -14,6 +15,7 @@ import numpy as np
 import pytest
 import torch
 import torch.distributed as dist
+from tests.fast.dist_utils import init_gloo, run_multiprocess
 
 from miles.backends.training_utils.data.context_parallel import get_sum_of_sample_mean
 from miles.backends.training_utils.loss.hub import advantages, response_layout
@@ -26,6 +28,7 @@ from miles.backends.training_utils.loss.hub.response_layout import (
     validate_response_layout_args,
 )
 from miles.backends.training_utils.loss.hub.score_centering_loss import score_centering_loss_function
+from miles.backends.training_utils.parallel import GroupInfo, get_parallel_state, set_parallel_state
 
 from .loss_test_utils import make_args, make_batch, make_inputs, make_parallel_state
 
@@ -361,7 +364,7 @@ def test_a_static_shape_platform_refuses_what_padded_rows_cannot_score(static_sh
 def test_a_supported_run_and_every_dynamic_shape_run_pass_startup(static_shapes, monkeypatch, caplog):
     with caplog.at_level(logging.WARNING, logger=response_layout.__name__):
         validate_response_layout_args(_startup_args())
-        validate_response_layout_args(_startup_args(context_parallel_size=2))  # the loss sees all-gathered logits
+        validate_response_layout_args(_startup_args(context_parallel_size=2))  # PaddedRows gathers the CP rows
         assert not caplog.records
         validate_response_layout_args(_startup_args(loss_type="sft_loss", use_tis=True))  # not on the layout
         assert "per-sample loss path" in caplog.text
@@ -369,3 +372,48 @@ def test_a_supported_run_and_every_dynamic_shape_run_pass_startup(static_shapes,
         monkeypatch.setattr(response_layout.platforms.current_platform, "dynamic_shapes", True)
         validate_response_layout_args(_startup_args(loss_type="sft_loss", use_tis=True))
         assert not caplog.records
+
+
+def _cp_worker(rank: int, world_size: int, port: int) -> None:
+    init_gloo(rank, world_size, port=port)
+    response_layout.padded_rows_enabled = lambda args: True
+    args = _args()
+    inputs = _inputs(args)
+    # the vocab is not split: each rank is its own TP group
+    own_group, _ = dist.new_subgroups_by_enumeration([[r] for r in range(world_size)])
+    set_parallel_state(dataclasses.replace(get_parallel_state(), tp=GroupInfo(rank=0, size=1, group=own_group)))
+
+    full = _padded(inputs["policy_logits"]).requires_grad_(True)
+    batch = _batch(inputs, "policy_loss")
+    want_loss, want_metrics = policy_loss_function(args, batch, full, _reducer(args, batch))
+    want_loss.backward()
+    want_log_probs = PaddedRows.build(args, batch, full).forward_log_probs(
+        full.detach(), with_entropy=True, use_sampling_mask=False
+    )
+
+    rows = slice(rank * PADDED_ROWS // world_size, (rank + 1) * PADDED_ROWS // world_size)
+    shard = full.detach()[:, rows].clone().requires_grad_(True)
+    batch = {**_batch(inputs, "policy_loss"), "logit_row_group": dist.group.WORLD}
+    got_loss, got_metrics = policy_loss_function(args, batch, shard, _reducer(args, batch))
+    got_loss.backward()
+    got_log_probs = PaddedRows.build(args, batch, shard).forward_log_probs(
+        shard.detach(), with_entropy=True, use_sampling_mask=False
+    )
+
+    torch.testing.assert_close(got_loss, want_loss, rtol=1e-6, atol=1e-7)
+    assert set(got_metrics) == set(want_metrics)
+    for key, want in want_metrics.items():
+        torch.testing.assert_close(got_metrics[key], want, rtol=1e-5, atol=1e-6, msg=key)
+    # every rank computes the whole loss, so the gather's backward hands each rank its rows' gradient world_size
+    # times; the torchtitan trainer divides the loss by the CP size
+    torch.testing.assert_close(shard.grad, world_size * full.grad[:, rows], rtol=1e-5, atol=1e-8)
+    (want_log_probs,) = PaddedRows.finish_forward_pass([want_log_probs])
+    (got_log_probs,) = PaddedRows.finish_forward_pass([got_log_probs])
+    for key in ("log_probs", "entropy"):
+        for got, want in zip(got_log_probs[key], want_log_probs[key], strict=True):
+            torch.testing.assert_close(got, want, rtol=0, atol=0)
+
+
+def test_padded_rows_on_a_cp_share_of_the_logits_match_the_whole_logits():
+    """Four CP ranks (32 rows each): the last response straddles the third boundary, the fourth rank ends in padding."""
+    run_multiprocess(_cp_worker, world_size=4)
