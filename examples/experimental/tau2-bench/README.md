@@ -14,7 +14,7 @@ tau-bench (`tau_bench` package, retail + airline only) and does not run tau2.
 | File | Role |
 |---|---|
 | `tau2_agent_function.py` | one tau2 simulation per sample (`--custom-agent-function-path`) |
-| `tau2_generate.py` | generate wrapper that hands the router URL to the user simulator, plus the reward hook |
+| `tau2_generate.py` | generate wrapper that hands the router URL to the user simulator and sets the sample status from how the episode ended, plus the reward hook |
 | `make_tau2_data.py` | writes `<domain>_<split>.jsonl` and `all_train.jsonl` (178 train tasks) |
 | `run_qwen3_6_35b_a3b_tau2.py` | full-parameter GRPO launcher, Qwen3.6-35B-A3B on 8x H200 |
 
@@ -79,6 +79,26 @@ length grows (6k -> 8k tokens) and telecom episodes increasingly loop until
 
 An agent turn whose thinking exhausts `--rollout-max-response-len` leaves an empty reply,
 which tau2 rejects; the episode scores 0.
+
+## Episode outcomes
+
+miles' agentic generate collects whatever the session recorded, whether or not the episode
+finished, so the example decides the sample status itself: `tau2_agent_function.run` records
+how the episode ended in the sample metadata and `tau2_generate.generate` sets
+`Sample.Status` from it.
+
+| How the episode ended | Metadata | Status | Effect |
+|---|---|---|---|
+| tau2 finished it (user stop, agent stop, step cap, protocol error, ...) | `tau2_termination_reason` = tau2's reason, `reward` = the evaluator's | as the session assembled it | trains |
+| the session refused a policy turn because its prompt already fills `--max-seq-len` (HTTP 409, `MaxSeqLenReachedError`) | `tau2_termination_reason: "max_seq_len"`, `reward: 0` | `TRUNCATED` | trains with reward 0 and counts in `truncated_ratio`; `--rollout-sample-filter-path miles.rollout.filter_hub.sample_filters.mask_truncated_zero_reward` leaves it out of the loss |
+| `TAU2_EPISODE_TIMEOUT_S` elapsed | `tau2_termination_reason: "episode_timeout"`, `reward: 0` | as the session assembled it | trains |
+| anything else raised (user simulator or judge endpoint, engine 5xx, ...) | `tau2_episode_valid: false` | `ABORTED` | the whole group is dropped before training |
+
+The session refuses the turn before it reaches the engine, so the trajectory keeps the turns
+before it; the last one may run past `--max-seq-len` by up to one response, and sample
+assembly truncates it. litellm raises the 409 as `litellm.APIError` with `status_code=409`
+and `model="policy"`, which is how the adapter tells it from a 409 of the user simulator or
+the judge.
 
 ## Env vars
 
