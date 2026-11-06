@@ -1023,7 +1023,7 @@ def miles_validate_args(args):
 
     validate_length_penalty_args(args)
     mode = args.update_weight_transfer_mode
-    if mode not in ("broadcast", "broadcast_packed", "p2p", "disk-delta"):
+    if mode not in ("broadcast", "broadcast_packed", "p2p", "disk-delta", "ici"):
         raise ValueError(f"Unknown --update-weight-transfer-mode {mode!r}")
     if mode == "broadcast_packed" and (args.train_backend != "megatron" or args.colocate):
         raise ValueError("broadcast_packed requires Megatron non-colocated weight transfer")
@@ -1474,6 +1474,28 @@ def miles_validate_args(args):
                 "--update-weight-transfer-mode=disk-delta cannot resume from a training checkpoint: "
                 f"Requested --load={args.requested_load}."
             )
+
+    if args.update_weight_transfer_mode == "ici":
+        assert (
+            args.train_backend == "torchtitan"
+        ), "ICI weight transfer is implemented for the torchtitan trainer only."
+        assert not args.colocate, "ICI weight transfer needs the engine on its own devices of the shared slice."
+        assert args.prefill_num_servers is None, "ICI weight transfer pairs the trainer with one engine; PD runs two."
+        assert args.lora_rank <= 0, "LoRA weight sync is not supported for ICI weight transfer."
+        assert (
+            not args.use_critic
+        ), "ICI weight transfer joins one trainer job to the slice; a critic would be a second."
+        assert not args.use_fault_tolerance, "ICI weight transfer cannot reconnect a restarted engine to the slice."
+        hf_config = load_hf_config(args.hf_checkpoint).get_text_config()
+        is_moe = any(
+            getattr(hf_config, name, None)  # config-access-exempt: model families name the expert count differently
+            for name in ("n_routed_experts", "num_experts", "num_local_experts")
+        )
+        # trainer rank i sends only its own experts, so engine rank i must own exactly those
+        assert not is_moe or args.sglang_ep_size == args.rollout_num_gpus_per_engine, (
+            f"ICI weight transfer of a MoE model needs --sglang-ep-size {args.rollout_num_gpus_per_engine} (one EP "
+            f"rank per engine device), got {args.sglang_ep_size}; other expert splits would keep stale experts."
+        )
 
     if args.colocate:
         if args.offload_train is None:
