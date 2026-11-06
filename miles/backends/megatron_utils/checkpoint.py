@@ -253,7 +253,9 @@ def create_mbridge_loader(model, hf_path: str):
 
     # mbridge learns the vocab padding only from its own model provider; the built model holds it
     padded_vocab_size = unwrap_model(model)[0].vocab_size
-    bridge = AutoBridge.from_pretrained(hf_path, trust_remote_code=True, make_vocab_size_divisible_by=padded_vocab_size)
+    bridge = AutoBridge.from_pretrained(
+        hf_path, trust_remote_code=True, make_vocab_size_divisible_by=padded_vocab_size
+    )
     bridge.vocab_size = bridge.hf_config.get_text_config().vocab_size
     bridge.padded_vocab_size = padded_vocab_size
     return bridge
