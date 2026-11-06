@@ -133,6 +133,14 @@ class _GatherLog:
             buffer.copy_(tensor)
         return _Done()
 
+    def all_gather_into_tensor(
+        self, output: torch.Tensor, tensor: torch.Tensor, *, group: str, async_op: bool
+    ) -> "_Done":
+        self.log.append(("gather", group))
+        for chunk in output.view(-1, *tensor.shape):
+            chunk.copy_(tensor)
+        return _Done()
+
     def get_rank(self) -> int:
         return 0
 
@@ -212,6 +220,12 @@ def test_tp_gather_layout_and_storage_after_all_handles_complete(
 
         return SimpleNamespace(wait=wait)
 
+    def all_gather_into_tensor(output, tensor, *, group, async_op):
+        # Rank r's shard lands in the r-th dim-0 block of the one output tensor.
+        handle = all_gather(list(output.view(-1, *tensor.shape)), tensor, group=group, async_op=async_op)
+        gather_buffers[-1] = [output]
+        return handle
+
     original_cat = torch.cat
 
     def cat(*args, **kwargs):
@@ -219,6 +233,7 @@ def test_tp_gather_layout_and_storage_after_all_handles_complete(
         return original_cat(*args, **kwargs)
 
     monkeypatch.setattr(gather_log, "all_gather", all_gather)
+    monkeypatch.setattr(gather_log, "all_gather_into_tensor", all_gather_into_tensor)
     monkeypatch.setattr(torch, "cat", cat)
     params = []
     for index in range(2):
@@ -238,6 +253,9 @@ def test_tp_gather_layout_and_storage_after_all_handles_complete(
     for index, (result, buffers) in enumerate(zip(gathered, gather_buffers, strict=True)):
         torch.testing.assert_close(result, torch.tensor(expected, dtype=torch.float32) + index * 100)
         assert result.is_contiguous()
+        if direct:
+            # One in-place gather into the result itself; per-rank receive buffers would make NCCL stage a copy.
+            assert len(buffers) == 1 and buffers[0] is result
         for buffer in buffers:
             assert (result.untyped_storage().data_ptr() == buffer.untyped_storage().data_ptr()) == direct
 
