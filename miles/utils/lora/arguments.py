@@ -185,8 +185,7 @@ def validate_lora_args_after_megatron(args):
             f"--load {args.load} holds LoRA adapter checkpoints (iter_*/adapter): resume one with "
             "--lora-adapter-path, or point --load elsewhere"
         )
-    # rollout-only builds no optimizer and saves nothing
-    if is_lora_enabled(args) and not args.multi_lora and not args.debug_rollout_only:
+        # rollout-only builds no optimizer and saves nothing
         _validate_adapter_state_args(args)
     # after miles_validate_args: the actor's predicate reads eval_uses_snapshots, resolved there
     if is_lora_enabled(args):
