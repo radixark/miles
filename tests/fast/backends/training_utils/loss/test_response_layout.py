@@ -348,7 +348,6 @@ def test_a_static_shape_platform_pads_the_losses_written_on_the_layout(static_sh
     [
         (dict(use_tis=True), "--use-tis"),
         (dict(loss_type="score_centering", use_sampling_support_replay=True), "--use-sampling-support-replay"),
-        (dict(context_parallel_size=2), "--context-parallel-size 1"),
         (dict(advantage_estimator="gspo"), "--advantage-estimator"),
         (dict(log_probs_backend="fused"), "--log-probs-backend fused"),
     ],
@@ -362,6 +361,7 @@ def test_a_static_shape_platform_refuses_what_padded_rows_cannot_score(static_sh
 def test_a_supported_run_and_every_dynamic_shape_run_pass_startup(static_shapes, monkeypatch, caplog):
     with caplog.at_level(logging.WARNING, logger=response_layout.__name__):
         validate_response_layout_args(_startup_args())
+        validate_response_layout_args(_startup_args(context_parallel_size=2))  # the loss sees all-gathered logits
         assert not caplog.records
         validate_response_layout_args(_startup_args(loss_type="sft_loss", use_tis=True))  # not on the layout
         assert "per-sample loss path" in caplog.text
