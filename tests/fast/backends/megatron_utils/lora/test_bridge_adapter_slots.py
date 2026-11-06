@@ -12,7 +12,7 @@ from safetensors.torch import save_file
 from tests.fast.dist_utils import init_gloo, run_multiprocess
 
 from miles.backends.megatron_utils.lora import bridge_peft_checkpoint
-from miles.backends.megatron_utils.lora.bridge_checkpoint import BridgeAdapterSlots, probe_bridge_row_mapping
+from miles.backends.megatron_utils.lora.bridge_adapter_slots import BridgeAdapterSlots, probe_bridge_row_mapping
 from miles.backends.megatron_utils.lora.bridge_peft_checkpoint import (
     _BRIDGE_BASE_REMEDY,
     assert_bridge_run_config_matches,
@@ -660,7 +660,7 @@ def test_an_offloaded_optimizer_is_never_dummy_stepped_from_parametrization_to_l
 def test_a_bridge_checkpoint_reports_whether_it_holds_optimizer_state(
     single_rank_gloo, tmp_path, monkeypatch, keys, has_optimizer_state
 ):
-    """load_adapter_dir refuses a source without it unless --no-load-optim."""
+    """load_adapter_source refuses a source without it unless --no-load-optim."""
     loader, run = _checked_loader(None, None, monkeypatch, keys=keys)
     assert loader.parametrization(tmp_path) == (replace(run, lora_alpha=16.0), has_optimizer_state)
 
