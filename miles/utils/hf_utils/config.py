@@ -140,6 +140,11 @@ def load_hf_config(
     return config
 
 
+def hf_text_config(hf_config):
+    """The decoder's config: a multimodal checkpoint nests it under ``text_config``, a text one is it."""
+    return hf_config.get_text_config()
+
+
 def is_dsa(hf_config) -> bool:
     return getattr(hf_config, "model_type", None) in (
         "deepseek_v32",
