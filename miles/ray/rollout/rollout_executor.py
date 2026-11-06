@@ -169,7 +169,9 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
     # -------------------------- lifecycle -----------------------------
 
     async def dispose(self) -> None:
-        if self._disposed:
+        # an executor whose init never completed holds nothing of what init creates (the driver may dispose it
+        # after a startup failure elsewhere)
+        if self._disposed or not self._init_once.is_initialized():
             return
         self._disposed = True
 

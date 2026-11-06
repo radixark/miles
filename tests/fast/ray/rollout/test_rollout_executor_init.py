@@ -77,3 +77,19 @@ class TestInitRunsExactlyOnce:
         """An executor process the previous script initialized is about to be replaced, not re-initialized."""
         with pytest.raises(AssertionError, match="stale worker"):
             await _inited_executor().init()
+
+
+async def test_disposing_an_executor_that_never_initialized_is_a_no_op() -> None:
+    """The driver may dispose it after a startup failure elsewhere, before its init created anything to dispose."""
+    executor = RolloutExecutor(
+        args=make_args(),
+        router_providers=[],
+        session_server_provider=None,
+        inference_controller_provider=FakeInferenceTopologyProvider(
+            InferenceRuntimeImmutState(engine_count=1, gpu_count=1)
+        ),
+    )
+
+    await executor.dispose()
+
+    assert executor._init_once.state is InitState.NOT_INITED

@@ -29,6 +29,7 @@ from miles.ray.specs.train import (
 from miles.ray.train.init_request import TrainerControllerInitRequest
 from miles.ray.train_actor import WeightUpdateOutput
 from miles.utils.args.runtime import OrchestratorConfig
+from miles.utils.async_utils import Disposer, eager_create_task
 from miles.utils.audit_utils.checksum_utils import (
     ChecksumCollectionFailure,
     InferenceEngineChecksumSnapshot,
@@ -232,9 +233,63 @@ async def create_training_model(
     return TrainerInfo(handle=handle, restored_rollout_id=restored_rollout_id, start_rollout_id=start_rollout_id)
 
 
+async def create_components(
+    args: OrchestratorConfig,
+    *,
+    capability: BackendCapability,
+    trainer_handles: dict[str, BaseWorkerHandle],
+    disposer: Disposer,
+) -> tuple["RolloutComponents", BaseWorkerHandle, BaseWorkerHandle | None]:
+    """The rollout components and the training models.
+
+    Without --compile-warmup the rollout components come first, as they always did. With it, and external engines,
+    the trainers initialize, and compile their first step, while the engines start: they share no device with the
+    trainers. The rollout components still come first for engines miles launches (a colocated trainer initializes
+    under them), for a run sized by --num-epoch (its LR schedules need the dataset size the executor reads) and for
+    a hot restart (the takeover of the surviving inference controller waits for idle trainers).
+    """
+    overlap = args.compile_warmup and args.rollout_external and args.num_rollout is not None
+    if overlap:
+        # a fresh start takes the workers once the executor's gate passes (create_rollout_components passes it
+        # again), so the disposer may hold them while the trainers initialize alongside
+        rollout_executor = create_rollout_executor_handle(capability=capability)
+        await wait_until_worker_not_initialized(rollout_executor)
+        inference_controller = create_inference_controller_handle(capability=capability)
+        overlap = not await inference_controller.is_initialized()
+    if not overlap:
+        components = await create_rollout_components(args, capability=capability, trainer_handles=trainer_handles)
+        disposer.add(components.inference_controller, components.rollout_executor)
+        actor_model, critic_model = await _init_training_models(args, handles=trainer_handles)
+    else:
+        disposer.add(inference_controller, rollout_executor)
+        rollout = await eager_create_task(
+            create_rollout_components(args, capability=capability, trainer_handles=trainer_handles)
+        )
+        trainers = await eager_create_task(_init_training_models(args, handles=trainer_handles))
+        # the first failure surfaces at once; the other side is cancelled
+        done, pending = await asyncio.wait({rollout, trainers}, return_when=asyncio.FIRST_EXCEPTION)
+        if failed := [task for task in done if not task.cancelled() and task.exception() is not None]:
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+            raise failed[0].exception()
+        components, (actor_model, critic_model) = rollout.result(), trainers.result()
+    disposer.add(critic_model, actor_model)
+    await attach_trainers_to_rollout(args, components.rollout_executor, actor_model)
+    return components, actor_model, critic_model
+
+
+async def attach_trainers_to_rollout(
+    args: OrchestratorConfig, rollout_executor: BaseWorkerHandle, actor_model: BaseWorkerHandle
+) -> None:
+    await rollout_executor.set_train_parallel_config(await actor_model.get_train_parallel_config())
+    if args.start_rollout_id > 0:
+        await rollout_executor.load(args.start_rollout_id - 1, load=args.load)
+
+
 # TODO: move (when reorganizing files)
-async def create_training_models(
-    args: OrchestratorConfig, rollout_executor: BaseWorkerHandle, *, handles: dict[str, BaseWorkerHandle]
+async def _init_training_models(
+    args: OrchestratorConfig, *, handles: dict[str, BaseWorkerHandle]
 ) -> tuple[BaseWorkerHandle, BaseWorkerHandle | None]:
     trainer_configs = compute_trainer_configs(args)
     resumed = await take_over_trainers(args, handles=handles)
@@ -269,11 +324,6 @@ async def create_training_models(
         ), f"a run without --use-critic needs no critic, but the trainer configs are {trainer_configs}"
 
     args.start_rollout_id = actor_info.start_rollout_id
-
-    await rollout_executor.set_train_parallel_config(await actor_info.handle.get_train_parallel_config())
-    if args.start_rollout_id > 0:
-        await rollout_executor.load(args.start_rollout_id - 1, load=args.load)
-
     return actor_info.handle, critic_info.handle if critic_info is not None else None
 
 

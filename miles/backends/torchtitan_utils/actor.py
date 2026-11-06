@@ -1,4 +1,5 @@
 import logging
+import time
 from contextlib import contextmanager
 
 import torch
@@ -7,8 +8,10 @@ import torch.distributed as dist
 from miles.backends.megatron_utils.checkpoint_request import MegatronCkptLoadConfig
 from miles.backends.torchtitan_utils import compat
 from miles.backends.torchtitan_utils.args_namespace import TorchtitanArgsNamespace
+from miles.backends.torchtitan_utils.compile_warmup import warmup_rollout_data, warmup_sample_lengths
 from miles.backends.torchtitan_utils.config import build_trainer_config
 from miles.backends.torchtitan_utils.hf_weight_iterator import TitanHfWeightIterator
+from miles.backends.torchtitan_utils.length_buckets import fixed_shape_length_buckets
 from miles.backends.torchtitan_utils.lora_checkpoint import TorchtitanLoraCheckpoint
 from miles.backends.torchtitan_utils.optimizer_state_on_disk import setup_adam_state_on_disk
 from miles.backends.torchtitan_utils.parallel import create_titan_parallel_state, parallelism_context_from_config
@@ -120,6 +123,9 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
 
         self.weight_updater = self._build_weight_updater(self.trainer, TitanHfWeightIterator.build)
 
+        if args.compile_warmup:
+            self._compile_warmup()
+
         clear_memory()
         if args.offload_train:
             self.sleep()
@@ -136,6 +142,27 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
         clear_memory()
         dist.barrier(group=get_gloo_group())
         print_memory(f"after releasing the GPU cache for {where}")
+
+    def _compile_warmup(self) -> None:
+        """Compile the first step's programs on a synthetic batch per length bucket, before the engines are up."""
+        args = self.args
+        state = get_parallel_state()
+        pad_size = state.tp.size * args.data_pad_size_multiplier  # as get_batch pads a packed microbatch
+        seconds_per_bucket = {}
+        for bucket in sorted(fixed_shape_length_buckets(args.backend.seq_length)):
+            lengths = warmup_sample_lengths(
+                bucket=bucket,
+                pad_size=pad_size,
+                max_tokens_per_gpu=args.max_tokens_per_gpu,
+                num_samples=args.backend.global_batch_size // state.effective_dp.size,
+            )
+            if lengths is None:
+                continue
+            start = time.monotonic()
+            self._compile_warmup_passes(warmup_rollout_data(lengths))
+            seconds_per_bucket[bucket] = round(time.monotonic() - start, 1)
+        assert seconds_per_bucket, f"--compile-warmup warmed no length bucket of {args.backend.seq_length}"
+        logger.info(f"Compiled the first step's programs; seconds per length bucket: {seconds_per_bucket}")
 
     def _step_runner(self):
         return self.trainer.step_runner()

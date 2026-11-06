@@ -11,6 +11,7 @@ Args:
   --sglang-env-script: sglang-torchtpu's environment script, sourced before the server starts.
   --slice-port-base: first of the 9 local ports the shared slice uses (8 slice builders, 1 store).
   --compile-cache-dir: keeps the trainer's compiled programs across runs; one directory per torch_tpu build.
+  --no-compile-warmup: compile the first step's programs in step 0 instead of while the engine starts.
   --extra-args: more train.py flags, appended last.
 
 Examples:
