@@ -566,7 +566,7 @@ def _slots_of(pieces, real_rank):
     return slots
 
 
-def test_global_shapes_leave_out_the_vocab_padding_no_source_holds():
+def test_global_shapes_leave_out_the_vocab_padding():
     """Only the TP rank holding padded head rows has the piece; an imported source would be checked for it."""
     head_b = HfPiece("lm_head.lora_B", (10, 4), (5, 0), torch.arange(20).view(5, 4))
     padding = HfPiece("lm_head.lora_B.vocab_padding", (2, 4), (0, 0), torch.arange(20, 28).view(2, 4))
