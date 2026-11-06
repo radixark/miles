@@ -123,6 +123,8 @@ def on_tpu(monkeypatch):
     spec.loader.exec_module(module)
     for fact in _TPU_FACTS:
         monkeypatch.setattr(platforms.current_platform, fact, getattr(module.TpuPlatform, fact))
+    # TPU trainers sync weights over ICI, which needs the slice they share with the engine
+    monkeypatch.setenv("MILES_TPU_SHARED_SLICE", "0,8,localhost:29600")
 
 
 def _tpu_args(**overrides) -> Namespace:
