@@ -119,6 +119,12 @@ Both runner containers can see all eight host GPUs through `/dev/dri`. Each runn
 
 **External MI350 nightly.** Miles declares `nightly-stage-c-2-gpu-mi350`, `nightly-stage-c-4-gpu-mi350`, and `nightly-stage-c-8-gpu-mi350` in `CI_SUITES` for the external nightly, and keeps the unprefixed `stage-c-4-gpu-mi350` for its own `pr-test-rocm.yml`. The three prefixed suites are run by the external [`sgl-project/sglang` ROCm 10 nightly workflow](https://github.com/sgl-project/sglang/blob/main/.github/workflows/nightly-test-amd-miles-rocm10.yml).
 
+## TPU contract job
+
+`tpu-contract.yml` is outside the stage inventory: it runs `tests/fast/backends/tpu` on a hosted CPU runner
+against sglang-torchtpu (the commit `docker/Dockerfile.tpu` pins on PRs, `main` daily). Those files skip in
+`stage-a-cpu`, which has the CUDA sglang instead.
+
 ## Assumptions
 
 - Suite-to-stage mappings are maintained manually across `run_suite.py`, the Miles workflows, and the external MI350 nightly workflow.

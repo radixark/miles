@@ -1,0 +1,91 @@
+# miles' TPU path against the sglang-torchtpu APIs it calls, on a hosted CPU runner (no TPU needed).
+# PRs test the sglang-torchtpu commit docker/Dockerfile.tpu pins; the daily run tests sglang-torchtpu main,
+# so an upstream breaking change shows up before the pin moves. It runs tests/fast/backends/tpu, whose files skip
+# in the regular CPU lane (no sglang_tpu there).
+name: TPU contract (sglang-torchtpu, CPU)
+
+on:
+  pull_request:
+    # the tests scan every server arg miles reads, so any miles file can break the contract
+    paths:
+      - "miles/**"
+      - "scripts/tpu/**"
+      - "requirements.txt"
+      - "tests/ci/requirements-ci-cpu.txt"
+      - "docker/Dockerfile.tpu"
+      - "tests/fast/backends/tpu/**"
+      - ".github/workflows/tpu-contract.yml"
+  schedule:
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+
+# the scheduled run executes sglang-torchtpu main, so the job gets a read-only token and writes no cache
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout miles
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: false
+
+      # PRs test the pin; the scheduled and manual runs test main through a literal ref, never one computed at run time
+      - name: Read the pinned sglang-torchtpu commit
+        if: github.event_name == 'pull_request'
+        id: pin
+        shell: bash
+        # an empty ref would check out sglang-torchtpu's default branch instead of the pin
+        run: |
+          commit=$(sed -n 's/^ARG SGLANG_TPU_COMMIT=//p' docker/Dockerfile.tpu)
+          [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || { echo "no 40-hex ARG SGLANG_TPU_COMMIT in docker/Dockerfile.tpu: '$commit'"; exit 1; }
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout sglang-torchtpu at the pin
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@v4
+        with:
+          repository: sgl-project/sglang-torchtpu
+          ref: ${{ steps.pin.outputs.commit }}
+          path: sglang-torchtpu
+          persist-credentials: false
+
+      - name: Checkout sglang-torchtpu main
+        if: github.event_name != 'pull_request'
+        uses: actions/checkout@v4
+        with:
+          repository: sgl-project/sglang-torchtpu
+          ref: main
+          path: sglang-torchtpu
+          persist-credentials: false
+
+      - name: Install dependencies
+        shell: bash
+        env:
+          UV_SYSTEM_PYTHON: "1"
+        # miles' pins, which docker/Dockerfile.tpu installs over the engine's; the request structs and routes
+        # checked here do not depend on the engine's own pins
+        run: |
+          uv pip install -r requirements.txt -r tests/ci/requirements-ci-cpu.txt uvloop soundfile
+          echo "PYTHONPATH=$GITHUB_WORKSPACE:$GITHUB_WORKSPACE/sglang-torchtpu/python:$GITHUB_WORKSPACE/sglang-torchtpu" >> "$GITHUB_ENV"
+
+      - name: Run the contract tests
+        shell: bash
+        env:
+          SGLANG_BUILD_RUST_EXTS: none
+        run: |
+          python -c 'import sglang, sglang_tpu; print(sglang.__file__, sglang_tpu.__file__)'
+          python -m pytest -q tests/fast/backends/tpu
