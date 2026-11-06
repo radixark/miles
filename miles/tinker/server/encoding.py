@@ -161,7 +161,11 @@ def _decode_command(op: str, payload: dict, decoded: dict) -> tuple[str, dict]:
         validate_ttl_seconds(request.ttl_seconds)
         recipients = request.age_encryption_recipients or []
         validate_age_recipients(recipients)
-        return op, decoded | {"name": request.path, "ttl_seconds": request.ttl_seconds, "age_encryption_recipients": recipients}
+        return op, decoded | {
+            "name": request.path,
+            "ttl_seconds": request.ttl_seconds,
+            "age_encryption_recipients": recipients,
+        }
     raise AssertionError(f"unhandled command op {op!r}")
 
 

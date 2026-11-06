@@ -274,7 +274,12 @@ def test_an_encrypted_external_export_never_writes_plaintext(tmp_path, monkeypat
 
     monkeypatch.setattr(pyrage, "encrypt", encrypt)
     write_external_adapter(
-        tmp_path / "age", _weights(False), _run(), QWEN35, age_encryption_recipients=[str(identity.to_public())], lora_dropout=0.0
+        tmp_path / "age",
+        _weights(False),
+        _run(),
+        QWEN35,
+        age_encryption_recipients=[str(identity.to_public())],
+        lora_dropout=0.0,
     )
 
 

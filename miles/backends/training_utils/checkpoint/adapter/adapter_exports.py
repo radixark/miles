@@ -28,7 +28,6 @@ from miles.utils.lora.hf_lora_targets import HfLoraTargets
 from miles.utils.lora.utils import get_adapter_target_modules, save_adapter_to_disk
 
 
-
 def _components_without_plain_peft_form(parametrization: AdapterParametrization, targets: HfLoraTargets) -> list[str]:
     """Targeted components of an HF-fused module that do not share one A with every component of that module."""
     lonely = []
@@ -176,7 +175,8 @@ def write_external_adapter(
 ) -> None:
     """The official Tinker export: F32 under Tinker names, experts stacked 3D as the parametrization has them
     (``[1, ...]`` on a shared-outer side), and every module its own copy of a shared A (no re-fusing: Tinker trains
-    the components apart). With ``age_encryption_recipients`` both files are age-encrypted to them and named ``<file>.age``."""
+    the components apart). With ``age_encryption_recipients`` both files are age-encrypted to them and named ``<file>.age``.
+    """
     tensors = {}
     shared_copies = {member: group[0] for group in parametrization.shared_lora_a_groups for member in group[1:]}
     for module in parametrization.target_modules:
@@ -203,7 +203,8 @@ def write_external_adapter(
 
     # the SDK documents both native age (age1...) and SSH (ssh-...) public keys
     recipients = [
-        (pyrage.ssh if r.startswith("ssh-") else pyrage.x25519).Recipient.from_str(r) for r in age_encryption_recipients
+        (pyrage.ssh if r.startswith("ssh-") else pyrage.x25519).Recipient.from_str(r)
+        for r in age_encryption_recipients
     ]
     # encrypted in memory, one file at a time: no plaintext ever reaches the disk
     Path(directory).mkdir(parents=True, exist_ok=True)
@@ -212,4 +213,3 @@ def write_external_adapter(
         ("adapter_model.safetensors", lambda: safetensors.torch.save(tensors)),
     ):
         (Path(directory) / f"{name}.age").write_bytes(pyrage.encrypt(plaintext(), recipients))
-

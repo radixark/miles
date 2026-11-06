@@ -149,7 +149,9 @@ class FakeBackend:
     resolve_checkpoint_files = staticmethod(resolve_checkpoint_files)
     delete_adapter = staticmethod(delete_adapter)
 
-    async def export_external(self, slot, root, name, tenant_digest, parametrization_fields, age_encryption_recipients):
+    async def export_external(
+        self, slot, root, name, tenant_digest, parametrization_fields, age_encryption_recipients
+    ):
         failure = self._record(
             "export_external",
             slot=slot,
