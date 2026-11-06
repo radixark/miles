@@ -14,7 +14,7 @@ Miles ships a native Megatron recipe for **Inkling**, Thinking Machines Lab's 97
 
 ## Fastest path to train
 
-Inkling needs 16 nodes of 4× GB300 and the `radixark/miles:inkling` image:
+Inkling needs 16 nodes of 4× GB300 and the `radixark/miles:latest` image:
 
 ```bash
 cd /root/miles

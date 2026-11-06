@@ -22,6 +22,7 @@ class _EnvironmentType(str, enum.Enum):
     DAYTONA = "daytona"
     E2B = "e2b"
     MODAL = "modal"
+    NOVITA = "novita"
 
 
 def _record(name):

@@ -3,6 +3,8 @@ from dataclasses import dataclass
 import torch
 
 from miles.backends.fsdp_utils.arguments import FSDPArgs, build_dataclass_parser, load_args_from_parser
+from miles.backends.training_utils.loss.hub.response_layout import validate_response_layout_args
+from miles.platforms import current_platform
 from miles.utils.lora.utils import is_lora_enabled, lora_rollout_enabled
 
 
@@ -66,6 +68,16 @@ def validate_torchtitan_args(args) -> None:
         )
     if args.save_debug_train_data is not None:
         raise ValueError("--save-debug-train-data is not wired up for the torchtitan backend")
+    if args.use_routing_replay and not args.use_rollout_routing_replay and not current_platform.dynamic_shapes:
+        raise ValueError(
+            "--use-routing-replay without --use-rollout-routing-replay records the ids inside a compiled block, which "
+            "recompiles every microbatch on a static-shape platform. Use --use-rollout-routing-replay."
+        )
+    if args.ci_test and args.use_routing_replay and not current_platform.dynamic_shapes:
+        raise ValueError(
+            "--ci-test with --use-routing-replay: the replay checker syncs to the host from inside a block, which a "
+            "static-shape platform compiles fullgraph. Drop --ci-test or run the check on a dynamic-shape platform."
+        )
     if args.stream_optimizer_state_to_disk:
         if not args.optimizer_cpu_offload:
             raise ValueError(
@@ -79,6 +91,7 @@ def validate_torchtitan_args(args) -> None:
             )
     if is_lora_enabled(args):
         _validate_lora_args(args)
+    validate_response_layout_args(args)
 
 
 def _validate_lora_args(args) -> None:
