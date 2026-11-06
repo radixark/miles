@@ -22,7 +22,7 @@ from miles.backends.megatron_utils.lora.utils import (
 )
 from miles.backends.training_utils.checkpoint.adapter.adapter_dir import AdapterCheckpointMembers
 from miles.backends.training_utils.checkpoint.adapter.adapter_state import agree_on_failure_context, gloo_group
-from miles.backends.training_utils.checkpoint.adapter.base_model import assert_same_base_model
+from miles.backends.training_utils.checkpoint.adapter.base_model_check import assert_same_base_model
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
 from miles.backends.training_utils.parallel import get_parallel_state
 

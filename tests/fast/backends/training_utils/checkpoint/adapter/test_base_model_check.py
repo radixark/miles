@@ -5,7 +5,7 @@ import pytest
 import torch
 from safetensors.torch import save_file
 
-from miles.backends.training_utils.checkpoint.adapter.base_model import (
+from miles.backends.training_utils.checkpoint.adapter.base_model_check import (
     assert_same_base_model,
     hf_fingerprint_tensors,
     is_fingerprint_tensor,

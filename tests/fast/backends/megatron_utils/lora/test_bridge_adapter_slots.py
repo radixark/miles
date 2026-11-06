@@ -20,7 +20,7 @@ from miles.backends.megatron_utils.lora.bridge_peft_checkpoint import (
     bridge_base_model_candidates,
     torch_dist_base_dir,
 )
-from miles.backends.training_utils.checkpoint.adapter.base_model import assert_same_base_model
+from miles.backends.training_utils.checkpoint.adapter.base_model_check import assert_same_base_model
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
 from miles.backends.training_utils.checkpoint.adapter.probed_slots import HfPiece, RowMapping
 from miles.tinker.core.utils import build_parametrization_fields
