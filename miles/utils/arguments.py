@@ -24,7 +24,6 @@ from miles.backends.sglang_utils.sglang_config import SglangConfig
 from miles.backends.sglang_utils.sglang_scaling_config import SglangScalingConfig
 from miles.backends.torchtitan_utils.args_namespace import TorchtitanArgsNamespace
 from miles.backends.training_utils.data.token_space_media_process import RolloutEngineProcessorArgs
-from miles.dashboard.args import validate_dashboard_args
 from miles.ray.specs.train import external_trainer_controller_addrs
 from miles.rollout.checkpoint_eval import is_checkpoint_eval_fn
 from miles.rollout.reward_shaping import validate_length_penalty_args
@@ -1159,7 +1158,6 @@ def miles_validate_args(args):
             "Without --colocate, --rollout-routed-expert-format mxfp4 supports only the packed transfer mode, "
             f"not {mode!r}; use --update-weight-transfer-mode broadcast_packed."
         )
-    validate_dashboard_args(args)
     validate_miles_ext_kernels_args(args)
 
     args.ft_components = _resolve_ft_components(args)
@@ -1969,9 +1967,6 @@ def miles_validate_args(args):
     ).value
 
     if ClusterBackend(args.cluster_backend) == ClusterBackend.KUBERNETES:
-        assert (
-            not args.use_miles_dashboard
-        ), "--use-miles-dashboard creates a Ray actor, which --cluster-backend kubernetes has no Ray cluster for"
         assert (
             not args.use_distributed_post
         ), "--use-distributed-post reads ray.nodes(), which --cluster-backend kubernetes has no Ray cluster for"
