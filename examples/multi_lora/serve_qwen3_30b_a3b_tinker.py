@@ -1,6 +1,7 @@
 """Prepare Qwen3-30B-A3B and serve the Tinker gateway on separate training and sampling GPUs."""
 
 from dataclasses import dataclass, field
+from typing import Literal
 
 import typer
 
@@ -19,7 +20,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     save_dir: str | None = None
     megatron_path: str = "/root/Megatron-LM"
     # bridge: Megatron-Bridge LoRA; raw: miles-native LoRA, dense models only (not this default MoE)
-    megatron_to_hf_mode: str = "bridge"
+    megatron_to_hf_mode: Literal["bridge", "raw"] = "bridge"
 
     num_gpus_per_node: int = 8
     actor_num_gpus: int = 4
