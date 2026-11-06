@@ -38,7 +38,7 @@ _MODULE = "miles.backends.megatron_utils.lora.checkpoint"
 
 
 def _restore(path, *, convert_save=None):
-    """``restore_single_lora`` with the model-facing pieces mocked; returns (iteration, scheduler, mocks)."""
+    """``restore_single_lora`` with the model-facing pieces mocked; returns (its result, scheduler, mocks)."""
     args = SimpleNamespace(
         hf_checkpoint="/hf",
         lora_adapter_path=str(path),
@@ -64,10 +64,10 @@ def _restore(path, *, convert_save=None):
         load_hf_config=lambda path: SimpleNamespace(to_dict=lambda: {"model_type": "qwen3"}),
     ) as mocks:
         mocks["load_adapter_source"].return_value = SimpleNamespace(lora_alpha=16.0)
-        iteration = restore_single_lora(
+        restored = restore_single_lora(
             [], args, adapter_slots=slots, optimizer=MagicMock(), opt_param_scheduler=scheduler
         )
-    return iteration, scheduler, mocks
+    return restored, scheduler, mocks
 
 
 def test_an_old_format_save_resumes_its_iteration_whichever_reader_loads_the_weights(tmp_path):
@@ -76,13 +76,24 @@ def test_an_old_format_save_resumes_its_iteration_whichever_reader_loads_the_wei
         {"iteration": 7, "optimizer": None, "parameter_state": None, "opt_param_scheduler": {"num_steps": 56}},
         tmp_path / "training_state_rank0.pt",
     )
-    iteration, scheduler, _ = _restore(tmp_path)
-    assert iteration == 7
+    restored, scheduler, mocks = _restore(tmp_path, convert_save=str(tmp_path / "converted"))
+    # it predates first_rollout: its schedule is taken to count from rollout 0, and a convert-save records that
+    assert restored == (7, True, 0)
+    assert mocks["save_and_commit_adapter_dir"].call_args.kwargs["training_state"]["first_rollout"] == 0
     scheduler.load_state_dict.assert_called_once_with({"num_steps": 56})
 
 
+def test_a_torchtitan_dir_reports_the_rollout_its_schedule_started_at(tmp_path):
+    """Saved by a run from --start-rollout-id 5: Megatron's scheduler catch-up counts only rollouts 5..6."""
+    training_state = {"iteration": 6, "step": 8, "first_rollout": 5, "lr_scheduler": {"last_epoch": 8}}
+    with patch(f"{_MODULE}.read_training_state", return_value=training_state):
+        restored, scheduler, _ = _restore(tmp_path)
+    assert restored == (6, False, 5)
+    scheduler.load_state_dict.assert_not_called()
+
+
 def test_a_source_without_training_state_restarts_at_rollout_0(tmp_path):
-    iteration, scheduler, _ = _restore(tmp_path)
+    (iteration, _, _), scheduler, _ = _restore(tmp_path)
     assert iteration is None
     scheduler.load_state_dict.assert_not_called()
 
@@ -590,8 +601,8 @@ def test_without_an_optimizer_an_adapter_path_loads_the_weights_and_starts_over(
         megatron_to_hf_mode="bridge",
         backend=SimpleNamespace(no_load_optim=False, no_save_optim=True, use_precision_aware_optimizer=False),
     )
-    iteration = restore_single_lora([], args, adapter_slots=slots, optimizer=None, opt_param_scheduler=None)
-    assert iteration is None
+    restored = restore_single_lora([], args, adapter_slots=slots, optimizer=None, opt_param_scheduler=None)
+    assert restored == (None, False, 0)
     assert loaded_with["load_optimizer"] is False
     assert torch.equal(param, torch.tensor([[7.0, 0.0], [0.0, 5.0]], dtype=torch.bfloat16))
 

@@ -56,9 +56,6 @@ def validate_lora_args(args):
         args.lora_adapter_path = os.path.abspath(args.lora_adapter_path)
     args.lora_alpha = _resolve_lora_alpha(args)
     if args.lora_adapter_convert_save is not None:
-        assert (
-            args.train_backend == "megatron" and not args.multi_lora
-        ), "--lora-adapter-convert-save is implemented only for single LoRA on --train-backend megatron"
         # every cell loads the source and its rank 0 would commit into the same destination
         assert not args.indep_dp, "--lora-adapter-convert-save does not support --indep-dp (or train fault tolerance)"
         # the trainer actors write it from their own working directory, which need not be the driver's

@@ -8,6 +8,7 @@ import json
 from collections.abc import Iterable, Sequence
 from dataclasses import asdict, replace
 from pathlib import Path
+from typing import NamedTuple
 
 import torch
 import torch.distributed as dist
@@ -633,7 +634,13 @@ def single_lora_parametrization(
 
 
 def save_single_lora(
-    model, optimizer, opt_param_scheduler, adapter_slots: BridgeAdapterSlots | NativeAdapterSlots, args, iteration: int
+    model,
+    optimizer,
+    opt_param_scheduler,
+    adapter_slots: BridgeAdapterSlots | NativeAdapterSlots,
+    args,
+    iteration: int,
+    first_rollout: int,
 ):
     """``{save}/iter_N/adapter``: adapter state, training state and the PEFT export, committed by rank 0."""
     members = DistributedOptimizerMembers(
@@ -645,6 +652,9 @@ def save_single_lora(
     )
     training_state = {
         "iteration": iteration,
+        # another backend resumes the schedule from it: Megatron's scheduler counts samples, which a skipped step or
+        # a dynamic global batch decouples from rollouts
+        "first_rollout": first_rollout,
         "opt_param_scheduler": opt_param_scheduler.state_dict() if opt_param_scheduler is not None else None,
     }
     save_and_commit_adapter_dir(
@@ -659,10 +669,19 @@ def save_single_lora(
     )
 
 
+class AdapterRestore(NamedTuple):
+    # the saved iteration; None when the source records no training state
+    iteration: int | None
+    scheduler_restored: bool
+    # the rollout the saving run's schedule started at
+    first_rollout: int
+
+
 def restore_single_lora(
     model, args, *, adapter_slots: BridgeAdapterSlots | NativeAdapterSlots, optimizer, opt_param_scheduler
-) -> int | None:
-    """``--lora-adapter-path`` from any recognized source; returns the saved iteration when the source has one.
+) -> AdapterRestore:
+    """``--lora-adapter-path`` from any recognized source; returns the saved iteration when the source has one,
+    whether it restored the scheduler, and the rollout the saving run's schedule started at.
 
     ``--lora-adapter-convert-save`` then commits the loaded state there in the adapter format.
     """
@@ -710,7 +729,7 @@ def restore_single_lora(
     ), f"{path} was trained with lora_alpha={source.lora_alpha}; this run uses {run.lora_alpha}"
     if optimizer is None:
         # no optimizer: the run starts over, as on main
-        return None
+        return AdapterRestore(None, False, 0)
     # an old-format save holds its training state beside the rank shards, whichever reader loaded the weights
     training_state = read_training_state(path) or _read_legacy_training_state(path)
     if args.lora_adapter_convert_save is not None:
@@ -726,10 +745,12 @@ def restore_single_lora(
             lora_dropout=args.lora_dropout,
         )
     if training_state is None:
-        return None
-    if opt_param_scheduler is not None and training_state["opt_param_scheduler"] is not None:
-        opt_param_scheduler.load_state_dict(training_state["opt_param_scheduler"])
-    return training_state["iteration"]
+        return AdapterRestore(None, False, 0)
+    # a torchtitan run's training state has its own scheduler state, not Megatron's
+    scheduler_state = training_state.get("opt_param_scheduler")
+    if opt_param_scheduler is not None and scheduler_state is not None:
+        opt_param_scheduler.load_state_dict(scheduler_state)
+    return AdapterRestore(training_state["iteration"], scheduler_state is not None, training_state["first_rollout"])
 
 
 class LegacyRankShardLoader:
@@ -791,4 +812,5 @@ def _read_legacy_training_state(path: Path) -> dict | None:
         return None
     # optimizer state dicts hold non-tensor objects (step counts, param group metadata)
     state = torch.load(state_file, map_location="cpu", weights_only=False)
-    return {"iteration": state["iteration"], "opt_param_scheduler": state["opt_param_scheduler"]}
+    # it predates first_rollout: its schedule is taken to count from rollout 0
+    return {"iteration": state["iteration"], "first_rollout": 0, "opt_param_scheduler": state["opt_param_scheduler"]}
