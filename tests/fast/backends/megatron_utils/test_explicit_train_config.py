@@ -40,7 +40,7 @@ class TestExplicitTrainConfig:
         monkeypatch.setattr(model_module, "get_args", _reject_global_config, raising=False)
         env = train_one_step_env
 
-        _, grad_norm, outcome = model_module.train_one_step(
+        _, grad_norm, outcome, _ = model_module.train_one_step(
             args=env.args,
             rollout_id=2,
             step_id=0,

@@ -585,8 +585,11 @@ def train_one_step(
     num_rollouts: int,
     witness_info: WitnessInfo | None,
     attempt: int,
-) -> tuple[dict[str, float], float, TrainStepOutcome]:
-    """Run pipeline forward/backward, then step the optimizer and scheduler when gradients are valid."""
+) -> tuple[dict[str, float], float, TrainStepOutcome, bool]:
+    """Run pipeline forward/backward, then step the optimizer and scheduler when gradients are valid.
+
+    The last element says whether the optimizer stepped.
+    """
     parallel_state = get_parallel_state()
     dumper_phase_util = DumperMegatronUtil(args, model, DumperPhase.FWD_BWD, rollout_id=rollout_id)
     disable_optimizer = args.debug_disable_optimizer or optimizer is None
@@ -674,10 +677,10 @@ def train_one_step(
     if outcome == TrainStepOutcome.NORMAL:
         dumper_phase_util.finalize(model)
 
-    if not disable_optimizer and valid_step:
+    stepped = not disable_optimizer and valid_step
+    if stepped:
         update_successful, grad_norm, num_zeros_in_grad = optimizer.step()
         assert update_successful
-        ModelCompanionWeightVersionUtils.bump_weight_version(model)
         opt_param_scheduler.step(increment=num_rollouts)
 
     if args.enable_sample_ownership_checker:
@@ -713,9 +716,9 @@ def train_one_step(
                 if parallel_state.indep_dp.size > 1
                 else aggregate_train_losses(losses_reduced, metric_num_rollouts)
             )
-            return loss_reduced, grad_norm, outcome
+            return loss_reduced, grad_norm, outcome, stepped
 
-    return {}, grad_norm, outcome
+    return {}, grad_norm, outcome, stepped
 
 
 def finalize_model_grads_with_empty_cache(*args, finalize=finalize_model_grads, **kwargs):
@@ -826,11 +829,12 @@ def train(
     if parallel_state.indep_dp.size > 1:
         assert num_steps_per_rollout == 1, "indep_dp is incompatible with num_steps_per_rollout>1 currently"
 
+    weights_changed = False
     # Run training iterations till done.
     for step_id in range(num_steps_per_rollout):
 
         # Run training step.
-        loss_dict, grad_norm, train_step_outcome = train_one_step(
+        loss_dict, grad_norm, train_step_outcome, stepped = train_one_step(
             args,
             rollout_id,
             step_id,
@@ -843,6 +847,7 @@ def train(
             witness_info=witness_info,
             attempt=attempt,
         )
+        weights_changed |= stepped
 
         if step_id == 0:
             # Enable forward pre-hook after training step has successfully run. All subsequent
@@ -917,6 +922,11 @@ def train(
                     role=role,
                     rank=parallel_state.effective_dp.rank,
                 )
+
+    # One version per rollout, however many optimizer steps it took: a version gap, such as
+    # --max-weight-staleness, then counts trained rollouts.
+    if weights_changed:
+        ModelCompanionWeightVersionUtils.bump_weight_version(model)
 
     # Close out pre-hooks if using distributed optimizer and overlapped param gather.
     if pre_hook_enabled:
