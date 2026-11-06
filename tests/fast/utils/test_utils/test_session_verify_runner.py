@@ -41,6 +41,7 @@ def _build_args(**overrides) -> str:
         "n_samples_per_prompt": 4,
         "session_verify_cycles": 3,
         "tool_call_failure_mode": "rollback",
+        "session_verify_parse_failure": True,
         "sglang_reasoning_parser": "qwen3",
         "sglang_tool_call_parser": "qwen25",
         "sglang_context_length": None,
@@ -64,6 +65,11 @@ def test_namespace_to_train_args_allows_model_specific_rollout_max_response_len(
     train_args = _build_args(rollout_max_response_len=16384)
 
     assert "--rollout-max-response-len 16384" in train_args
+
+
+def test_namespace_to_train_args_passes_parse_failure_off_only():
+    assert "parse-failure" not in _build_args()
+    assert "--no-session-verify-parse-failure" in _build_args(session_verify_parse_failure=False)
 
 
 def test_namespace_to_train_args_keeps_ci_test_enabled_for_fsdp_debug_rollout():
@@ -149,11 +155,11 @@ def test_namespace_to_train_args_emits_cuda_graph_max_batch_size():
 
 
 def test_action_table_uses_requested_cycle_count(capsys):
-    _print_action_table(["assistant", "system", "tool", "user"], cycles=1)
+    _print_action_table(["assistant", "system", "tool", "user"], cycles=1, parse_failure=True)
 
     output = capsys.readouterr().out
     assert output.count(". tool_result") == 2
-    assert "9. " not in output
+    assert "10. " not in output
 
 
 def test_namespace_to_train_args_omits_prefill_cuda_graph_backend_by_default():
@@ -555,6 +561,7 @@ def test_cli_parser_adapts_typed_config_to_mutable_runner_namespace(
             "2",
             "--tool-call-failure-mode",
             "append_user",
+            "--no-session-verify-parse-failure",
             "--no-enable-sample-ownership-checker",
             "--assistant-text-threshold",
             str(threshold),
@@ -572,12 +579,14 @@ def test_cli_parser_adapts_typed_config_to_mutable_runner_namespace(
     assert args.rollout_batch_size == 2
     assert args.session_verify_cycles == 2
     assert args.tool_call_failure_mode == "append_user"
+    assert args.session_verify_parse_failure is False
     args.hf_checkpoint = "/root/models/local"
     args.sglang_reasoning_parser = "qwen3"
     train_args = namespace_to_train_args(args)
     assert "--hf-checkpoint /root/models/local" in train_args
     assert "--session-verify-cycles 2" in train_args
     assert "--tool-call-failure-mode append_user" in train_args
+    assert "--no-session-verify-parse-failure" in train_args
     assert "--sglang-reasoning-parser qwen3" in train_args
     assert "--no-enable-sample-ownership-checker" in train_args
     assert "assistant-text-threshold" not in train_args

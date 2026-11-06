@@ -8,6 +8,7 @@ model family) and ``scripts/tools/verify_session_tito_tokenizer.py``.
 
 from __future__ import annotations
 
+import argparse
 import json
 import logging
 import os
@@ -80,6 +81,9 @@ class DriverAction(Enum):
     SYSTEM_REMINDER = "system_reminder"
     ASSISTANT_INPUT = "assistant_input"
     ROLLBACK = "rollback"
+    # A user turn whose reply runs with tool-call parsing off, so a call the
+    # model emits stays in content as when SGLang's parser fails on it.
+    PARSE_FAILURE = "parse_failure"
     FORCE_FINAL = "force_final"
 
 
@@ -88,6 +92,7 @@ _U = DriverAction.USER_FOLLOWUP
 _S = DriverAction.SYSTEM_REMINDER
 _A = DriverAction.ASSISTANT_INPUT
 _R = DriverAction.ROLLBACK
+_P = DriverAction.PARSE_FAILURE
 _F = DriverAction.FORCE_FINAL
 
 
@@ -137,6 +142,9 @@ _FORBIDDEN_MISMATCH_TYPES: frozenset[str] = frozenset(
 # (pytest via ``run_session_verify``).  Smaller-context models with a 4K
 # response budget should drop to 2 to avoid context overflow.
 DEFAULT_CYCLES = 3
+# Override per call: ``--no-session-verify-parse-failure`` (CLI) or
+# ``parse_failure_step=False`` (per-model e2e config).
+DEFAULT_PARSE_FAILURE = True
 _MAX_INCOMPLETE_TURN_RETRIES = 2
 _RETRY_SEED_STRIDE = 1_000_000
 
@@ -162,6 +170,7 @@ def _build_cycle(role_surface: frozenset[str]) -> list[DriverAction]:
 # English-only on purpose: matches the production agentic flows tokenization
 # and tool-call parsing are tuned against.
 USER_FOLLOWUP_TEXT = "Now check the weather in Shanghai."
+PARSE_FAILURE_USER_TEXT = "Now check the weather in Hangzhou."
 SYSTEM_REMINDER_TEXT = "Note: from now on, answer in a single sentence; skip all pleasantries."
 ASSISTANT_INPUT_TEXTS = (
     "The earlier Beijing weather result was 22 degrees Celsius and sunny.",
@@ -169,6 +178,9 @@ ASSISTANT_INPUT_TEXTS = (
 )
 ASSISTANT_INPUT_FOLLOWUP_TEXT = "Summarize the two weather results above in one sentence without calling a tool."
 FORCE_FINAL_TEXT = "Please summarize all results inside <final_answer>...</final_answer> tags."
+# SGLang skips its tool-call parser for tool_choice "none". A real parse failure
+# runs with parsing on, where SGLang keeps special tokens, so keep them here too.
+PARSE_FAILURE_REQUEST_ARGS = {"tool_choice": "none", "skip_special_tokens": False}
 
 TOOLS = [
     {
@@ -208,7 +220,9 @@ INITIAL_SYSTEM_PROMPT = (
 INITIAL_USER_PROMPT = "What's the weather in Beijing?"
 
 
-def select_schedule(allowed_roles, *, cycles: int = DEFAULT_CYCLES) -> list[DriverAction]:
+def select_schedule(
+    allowed_roles, *, cycles: int = DEFAULT_CYCLES, parse_failure: bool = DEFAULT_PARSE_FAILURE
+) -> list[DriverAction]:
     """Build a schedule from the selected FixedTemplate capability."""
     key = frozenset(allowed_roles)
     invalid = key - set(VALID_APPEND_ROLES)
@@ -223,7 +237,8 @@ def select_schedule(allowed_roles, *, cycles: int = DEFAULT_CYCLES) -> list[Driv
     # which cycle-repeat alone never produces.
     schedule = list(cycle) + [_R] + cycle * (cycles - 1)
     if "user" in key:
-        schedule.append(_F)
+        # With PARSE_FAILURE, FORCE_FINAL follows a reply SGLang returned with tool-call parsing off.
+        schedule += [_P, _F] if parse_failure else [_F]
     # Keep injected assistants after every rollback: they are prompt messages,
     # not generated checkpoints, so rollback across them is a separate contract.
     if "assistant" in key:
@@ -288,7 +303,8 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
         raise ValueError("session_verify_agent.run_agent requires tito_model in metadata")
     allowed_roles = fixed_template_append_roles(tito_model)
     cycles = metadata.get("session_verify_cycles", DEFAULT_CYCLES)
-    schedule = select_schedule(allowed_roles, cycles=cycles)
+    parse_failure = metadata.get("session_verify_parse_failure", DEFAULT_PARSE_FAILURE)
+    schedule = select_schedule(allowed_roles, cycles=cycles, parse_failure=parse_failure)
 
     failure_mode = ToolCallFailureMode(metadata.get("tool_call_failure_mode", DEFAULT_TOOL_CALL_FAILURE_MODE))
     # APPEND_USER injects a user message, so the fixed template must support it.
@@ -390,6 +406,11 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
                 counters["user_count"] += 1
                 events.append("append_user")
 
+            elif action is DriverAction.PARSE_FAILURE:
+                messages.append({"role": "user", "content": PARSE_FAILURE_USER_TEXT})
+                counters["user_count"] += 1
+                events.append("parse_failure")
+
             elif action is DriverAction.SYSTEM_REMINDER:
                 messages.append({"role": "system", "content": SYSTEM_REMINDER_TEXT})
                 counters["system_count"] += 1
@@ -424,8 +445,13 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
             else:
                 raise AssertionError(f"Unknown DriverAction {action!r}")
 
-            resp = await _chat_complete(client, base_url, messages, rk, label=label)
+            step_kwargs = {**rk, **PARSE_FAILURE_REQUEST_ARGS} if action is DriverAction.PARSE_FAILURE else rk
+            resp = await _chat_complete(client, base_url, messages, step_kwargs, label=label)
             assistant = resp["choices"][0]["message"]
+            if action is DriverAction.PARSE_FAILURE and assistant.get("tool_calls"):
+                raise AssertionError(
+                    f"{label}: tool_choice='none' still returned tool_calls={assistant['tool_calls']}"
+                )
             messages.append(assistant)
             counters["tool_call_count"] += len(assistant.get("tool_calls") or [])
 
@@ -499,7 +525,8 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     """Custom-generate wrapper that asserts driver-action coverage.
 
     - Per-sample: every sample must contain ``rollback``, plus ``append_user``
-      / ``append_system`` / ``append_assistant`` when those roles are allowed.
+      when ``user`` is allowed (and ``parse_failure`` unless that step is off),
+      and ``append_system`` / ``append_assistant`` when those roles are allowed.
     - Cross-sample: at least one sample must contain ``append_tool``
       (model-dependent on emitting a tool_call).
     """
@@ -511,10 +538,14 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     failure_mode = getattr(
         input.args, "tool_call_failure_mode", DEFAULT_TOOL_CALL_FAILURE_MODE
     )  # config-access-exempt: optional custom session-verification hook argument
+    parse_failure = getattr(
+        input.args, "session_verify_parse_failure", DEFAULT_PARSE_FAILURE
+    )  # config-access-exempt: optional custom session-verification hook argument
     # Sample.metadata is mutable even when the outer dataclass is frozen.
     input.sample.metadata["tito_model"] = tito_model
     input.sample.metadata["session_verify_cycles"] = cycles
     input.sample.metadata["tool_call_failure_mode"] = failure_mode
+    input.sample.metadata["session_verify_parse_failure"] = parse_failure
 
     output = await _base_generate(input)
 
@@ -529,6 +560,8 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     required_per_sample = ["rollback"]
     if "user" in allowed_roles:
         required_per_sample.append("append_user")
+        if parse_failure:
+            required_per_sample.append("parse_failure")
     if "system" in allowed_roles:
         required_per_sample.append("append_system")
     if "assistant" in allowed_roles:
@@ -580,6 +613,15 @@ def _add_arguments(parser):
         "re-inferences.  'append_tool' splices a sentinel tool message (only "
         "works on lenient templates).  'append_user' splices a user message "
         "with the same failure text — requires the fixed template to support 'user'.",
+    )
+    parser.add_argument(
+        "--session-verify-parse-failure",
+        action=argparse.BooleanOptionalAction,
+        default=DEFAULT_PARSE_FAILURE,
+        help="Add a user turn whose reply runs with tool_choice 'none', so a tool "
+        "call stays unparsed in content as when SGLang's parser fails on it.  "
+        "Needs the 'user' role.  Turn off for families where tool_choice 'none' "
+        "does not reproduce their real parse failure.",
     )
 
 

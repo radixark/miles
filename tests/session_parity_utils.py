@@ -48,11 +48,12 @@ _EXPECTED_AGENT_METADATA = {
         "append_system",
         "rollback",
         "rollback",
+        "parse_failure",
         "force_final",
         "append_assistant",
     ],
     "rollback_count": 2,
-    "user_count": 2,
+    "user_count": 3,
     "system_count": 1,
     "assistant_input_count": 2,
     "tool_result_count": 2,
@@ -168,8 +169,8 @@ def assert_agentic_retry_trajectory_parity(v1: SessionParityRun, v2: SessionPari
     assert v2.empty_reason is None
     assert len(v1.samples) == 1
     assert len(v2.samples) == 1
-    assert len(v1.pre_collect["records"]) == 7
-    assert len(v2.pre_collect["records"]) == 7
+    assert len(v1.pre_collect["records"]) == 8
+    assert len(v2.pre_collect["records"]) == 8
     _assert_weather_tool_round_trip(v1.pre_collect)
     _assert_weather_tool_round_trip(v2.pre_collect)
 
@@ -184,18 +185,19 @@ def assert_agentic_retry_trajectory_parity(v1: SessionParityRun, v2: SessionPari
         (6, 3),
         (7, 6),
         (8, 7),
+        (9, 8),
     ]
     assert [(leaf["node_id"], leaf["path_node_ids"]) for leaf in tree["leaves"]] == [
         (4, [0, 1, 2, 3, 4]),
         (5, [0, 1, 2, 3, 5]),
-        (8, [0, 1, 2, 3, 6, 7, 8]),
+        (9, [0, 1, 2, 3, 6, 7, 8, 9]),
     ]
 
     selected_leaf = v2.samples[0].metadata["leaf"]
-    assert selected_leaf["node_id"] == 8
-    assert selected_leaf["parent"] == 7
-    assert selected_leaf["path_node_ids"] == [0, 1, 2, 3, 6, 7, 8]
-    assert selected_leaf["response_id"] == tree["nodes"][8]["response_id"]
+    assert selected_leaf["node_id"] == 9
+    assert selected_leaf["parent"] == 8
+    assert selected_leaf["path_node_ids"] == [0, 1, 2, 3, 6, 7, 8, 9]
+    assert selected_leaf["response_id"] == tree["nodes"][9]["response_id"]
     assert v2.session_metadata["agent"] == _EXPECTED_AGENT_METADATA
     for key, value in _EXPECTED_AGENT_METADATA.items():
         assert v1.samples[0].metadata[key] == value

@@ -13,6 +13,8 @@ from miles.utils.test_utils.session_verify_agent import (
     ASSISTANT_INPUT_FOLLOWUP_TEXT,
     ASSISTANT_INPUT_TEXTS,
     FORCE_FINAL_TEXT,
+    PARSE_FAILURE_REQUEST_ARGS,
+    PARSE_FAILURE_USER_TEXT,
     DriverAction,
     fixed_template_append_roles,
     run_agent,
@@ -72,7 +74,7 @@ def test_assistant_input_appends_two_text_messages_then_user(monkeypatch):
     monkeypatch.setattr(
         session_verify_agent,
         "select_schedule",
-        lambda allowed_roles, *, cycles: [DriverAction.ASSISTANT_INPUT],
+        lambda allowed_roles, *, cycles, parse_failure: [DriverAction.ASSISTANT_INPUT],
     )
 
     result = asyncio.run(
@@ -180,7 +182,7 @@ def test_assistant_input_generated_response_is_rolled_back_and_regenerated(monke
     monkeypatch.setattr(
         session_verify_agent,
         "select_schedule",
-        lambda allowed_roles, *, cycles: [DriverAction.ASSISTANT_INPUT, DriverAction.ROLLBACK],
+        lambda allowed_roles, *, cycles, parse_failure: [DriverAction.ASSISTANT_INPUT, DriverAction.ROLLBACK],
     )
 
     result = asyncio.run(
@@ -235,7 +237,7 @@ def test_unanswered_tool_call_is_answered_before_force_final(monkeypatch):
     monkeypatch.setattr(
         session_verify_agent,
         "select_schedule",
-        lambda allowed_roles, *, cycles: [DriverAction.TOOL_RESULT, DriverAction.FORCE_FINAL],
+        lambda allowed_roles, *, cycles, parse_failure: [DriverAction.TOOL_RESULT, DriverAction.FORCE_FINAL],
     )
 
     result = asyncio.run(
@@ -263,6 +265,93 @@ def test_unanswered_tool_call_is_answered_before_force_final(monkeypatch):
     assert result["tool_result_count"] == 2
 
 
+def test_schedule_places_parse_failure_right_before_force_final():
+    schedule = select_schedule(VALID_APPEND_ROLES, cycles=2)
+
+    assert schedule.count(DriverAction.PARSE_FAILURE) == 1
+    force_final = schedule.index(DriverAction.FORCE_FINAL)
+    assert schedule[force_final - 1] is DriverAction.PARSE_FAILURE
+
+
+def test_schedule_with_parse_failure_off_keeps_force_final_only():
+    schedule = select_schedule(VALID_APPEND_ROLES, cycles=2, parse_failure=False)
+
+    assert DriverAction.PARSE_FAILURE not in schedule
+    assert schedule.count(DriverAction.FORCE_FINAL) == 1
+
+
+def test_schedule_without_user_role_has_no_parse_failure():
+    schedule = select_schedule(("tool",), cycles=1)
+
+    assert DriverAction.PARSE_FAILURE not in schedule
+    assert DriverAction.FORCE_FINAL not in schedule
+
+
+def _run_parse_failure_schedule(monkeypatch, parse_failure_reply):
+    calls = []
+
+    class FakeAsyncClient:
+        def __init__(self, *, timeout):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    async def fake_chat(client, base_url, messages, request_kwargs, *, label):
+        calls.append((deepcopy(messages), dict(request_kwargs)))
+        if messages[-1]["content"] == PARSE_FAILURE_USER_TEXT:
+            return {"choices": [{"message": parse_failure_reply}]}
+        return {"choices": [{"message": {"role": "assistant", "content": "Beijing is sunny."}}]}
+
+    monkeypatch.setattr(session_verify_agent.httpx, "AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr(session_verify_agent, "_chat", fake_chat)
+    monkeypatch.setattr(
+        session_verify_agent,
+        "select_schedule",
+        lambda allowed_roles, *, cycles, parse_failure: [DriverAction.PARSE_FAILURE, DriverAction.FORCE_FINAL],
+    )
+    result = asyncio.run(
+        run_agent(
+            "http://session",
+            prompt=None,
+            request_kwargs={"temperature": 1.0},
+            metadata={"tito_model": "qwen3"},
+        )
+    )
+    return calls, result
+
+
+def test_parse_failure_reply_is_unparsed_and_followed_by_user(monkeypatch):
+    raw_call = '<tool_call>\n{"name": "get_weather", "arguments": {"location": "Hangzhou"}}\n</tool_call>'
+    unparsed = {"role": "assistant", "content": raw_call}
+
+    calls, result = _run_parse_failure_schedule(monkeypatch, unparsed)
+
+    (_, initial_kwargs), (_, parse_failure_kwargs), (force_final_messages, force_final_kwargs) = calls
+    assert parse_failure_kwargs == {"temperature": 1.0, **PARSE_FAILURE_REQUEST_ARGS}
+    assert initial_kwargs == force_final_kwargs == {"temperature": 1.0}
+    assert force_final_messages[-3:] == [
+        {"role": "user", "content": PARSE_FAILURE_USER_TEXT},
+        unparsed,
+        {"role": "user", "content": FORCE_FINAL_TEXT},
+    ]
+    assert result["driver_events"] == ["initial", "parse_failure", "force_final"]
+
+
+def test_parse_failure_rejects_a_reply_with_parsed_tool_calls(monkeypatch):
+    parsed = {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [{"id": "call_0", "type": "function", "function": {"name": "get_weather", "arguments": "{}"}}],
+    }
+
+    with pytest.raises(AssertionError, match="tool_choice='none' still returned tool_calls"):
+        _run_parse_failure_schedule(monkeypatch, parsed)
+
+
 def _qwen3_verified_sample(mismatches):
     return Sample(
         metadata={
@@ -270,6 +359,7 @@ def _qwen3_verified_sample(mismatches):
                 "initial",
                 "append_tool",
                 "append_user",
+                "parse_failure",
                 "append_system",
                 "append_assistant",
                 "rollback",
@@ -277,6 +367,36 @@ def _qwen3_verified_sample(mismatches):
             "tito_session_mismatch": mismatches,
         }
     )
+
+
+@pytest.mark.parametrize("parse_failure", [True, False])
+def test_generate_requires_parse_failure_event_only_when_the_step_is_on(monkeypatch, parse_failure):
+    monkeypatch.delenv("MILES_SESSION_VERIFY_METRICS_PATH", raising=False)
+    sample = _qwen3_verified_sample([])
+    sample.metadata["driver_events"].remove("parse_failure")
+    seen_metadata = []
+
+    async def fake_base_generate(input):
+        seen_metadata.append(dict(input.sample.metadata))
+        return GenerateFnOutput(samples=[sample])
+
+    monkeypatch.setattr(session_verify_agent, "_base_generate", fake_base_generate)
+    input_value = SimpleNamespace(
+        sample=Sample(),
+        args=SimpleNamespace(
+            tito_model="qwen3",
+            session_verify_cycles=3,
+            tool_call_failure_mode="rollback",
+            session_verify_parse_failure=parse_failure,
+        ),
+    )
+
+    if parse_failure:
+        with pytest.raises(AssertionError, match=r"missing required driver events \['parse_failure'\]"):
+            asyncio.run(session_verify_agent.generate(input_value))
+    else:
+        assert asyncio.run(session_verify_agent.generate(input_value)).samples == [sample]
+    assert seen_metadata[0]["session_verify_parse_failure"] is parse_failure
 
 
 def test_generate_records_hard_mismatch_without_dropping_sample(monkeypatch, tmp_path):

@@ -26,6 +26,7 @@ from miles.utils.test_utils.session_verify_agent import (
     ASSISTANT_INPUT_FOLLOWUP_TEXT,
     FORCE_FINAL_TEXT,
     MOCK_TOOL_RESULTS,
+    PARSE_FAILURE_USER_TEXT,
     SYSTEM_REMINDER_TEXT,
     USER_FOLLOWUP_TEXT,
     build_initial_messages,
@@ -34,7 +35,7 @@ from miles.utils.types import Sample
 
 _MODEL = "Qwen/Qwen3-0.6B"
 _BATCH_SIZE = 16
-_REQUESTS_PER_TRAJECTORY = 9
+_REQUESTS_PER_TRAJECTORY = 10
 _AGENT_RESPONSES = {
     "initial": ProcessResult(
         'I will check Beijing.\n<tool_call>\n{"name": "get_weather", '
@@ -58,6 +59,11 @@ _AGENT_RESPONSES = {
         "I will answer in one sentence.",
         meta_info=ProcessResultMetaInfo(weight_version="w4"),
     ),
+    "hangzhou_call": ProcessResult(
+        'I will check Hangzhou.\n<tool_call>\n{"name": "get_weather", '
+        '"arguments": {"location": "Hangzhou"}}\n</tool_call>',
+        meta_info=ProcessResultMetaInfo(weight_version="w5"),
+    ),
     "force_final": ProcessResult(
         "<final_answer>Beijing is sunny and Shanghai is cloudy.</final_answer>",
         meta_info=ProcessResultMetaInfo(weight_version="w7"),
@@ -67,7 +73,7 @@ _AGENT_RESPONSES = {
         meta_info=ProcessResultMetaInfo(weight_version="w8"),
     ),
 }
-_SELECTED_WEIGHT_VERSIONS = ["w0", "w1", "w2", "w3", "w4", "w7", "w8"]
+_SELECTED_WEIGHT_VERSIONS = ["w0", "w1", "w2", "w3", "w4", "w5", "w7", "w8"]
 _SHARED_PREFIX_VERSION = "p0"
 
 
@@ -217,6 +223,8 @@ def _process_agent_prompt(prompt: str) -> ProcessResult:
         return _AGENT_RESPONSES["assistant_input"]
     if FORCE_FINAL_TEXT in prompt:
         return _AGENT_RESPONSES["force_final"]
+    if PARSE_FAILURE_USER_TEXT in prompt:
+        return _AGENT_RESPONSES["hangzhou_call"]
     if SYSTEM_REMINDER_TEXT in prompt:
         return _AGENT_RESPONSES["rollback_retry"]
     if MOCK_TOOL_RESULTS[1] in prompt:
