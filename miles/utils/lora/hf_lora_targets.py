@@ -19,6 +19,15 @@ class HfLoraTargets:
     default_train_unembed: bool = False
     # attention targets added when the backend shares one lora_A across a fused projection (--lora-type lora)
     whole_fused_attention: tuple[str, ...] = ()
+    # (official Tinker name fragment, HF fragment) pairs; empty when no official export of the family was checked
+    tinker_name_renames: tuple[tuple[str, str], ...] = ()
+    # HF-fused module leaf -> its components' output rows, in HF row order
+    component_rows_by_fused_module: tuple[tuple[str, tuple[int, ...]], ...] = ()
+    # set when the family's adapters name routed experts packed and stacked (experts.gate_up_proj / down_proj, 3D);
+    # the value is how gate and up rows share gate_up_proj
+    packed_expert_gate_up_layout: str | None = None
+    # the HF vocab: the most head lora_B rows an HF-shaped source may hold
+    vocab_size: int | None = None
 
 
 @dataclass(frozen=True)
@@ -29,6 +38,18 @@ class _HfLoraModelSpec:
     unwrap_text_config: bool = False
     default_train_unembed: bool = False
     build_whole_fused_attention: Callable[[dict], tuple[str, ...]] = lambda config: ()
+    tinker_name_renames: tuple[tuple[str, str], ...] = ()
+    component_rows_by_fused_module: Callable[[dict], tuple[tuple[str, tuple[int, ...]], ...]] = lambda config: ()
+    packed_expert_gate_up_layout: str | None = None
+
+
+# official Tinker exports (checked against SDK 0.36 exports): HF names except the head and the stacked 3D experts
+_TINKER_RENAMES = (
+    (".experts.w1", ".experts.gate_proj"),
+    (".experts.w3", ".experts.up_proj"),
+    (".experts.w2", ".experts.down_proj"),
+)
+_GPT_OSS_TINKER_RENAMES = (*_TINKER_RENAMES, (".attn.", ".self_attn."))
 
 
 def _prefix_paths(prefix, *paths):
@@ -139,6 +160,11 @@ def _kimi_k3_targets(config):
     return attention, tuple(mlp)
 
 
+def _glm4_targets(config):
+    # HF GLM-4 keeps gate / up fused in one dense gate_up_proj
+    return _QKVO_ATTENTION, _prefix_paths("mlp", "gate_up_proj", "down_proj")
+
+
 def _glm4_moe_targets(config):
     return _QKVO_ATTENTION, _deepseek_mlp_targets(config)
 
@@ -210,6 +236,11 @@ def _qwen3_5_whole_fused_attention(config):
     return _GDN_35_WHOLE_FUSED if "linear_attention" in config["layer_types"] else ()
 
 
+def _gdn_35_component_rows(config):
+    qk = config["linear_num_key_heads"] * config["linear_key_head_dim"]
+    return (("in_proj_qkv", (qk, qk, config["linear_num_value_heads"] * config["linear_value_head_dim"])),)
+
+
 def _qwen3_5_moe_targets(config):
     mlp = _PACKED_EXPERTS
     if config["shared_expert_intermediate_size"]:
@@ -248,31 +279,49 @@ def _mimo_v2_targets(config):
 _HF_LORA_MODELS = {
     "llama": _HfLoraModelSpec(_dense_targets),
     "qwen2": _HfLoraModelSpec(_dense_targets),
-    "qwen3": _HfLoraModelSpec(_dense_targets),
-    "qwen3_moe": _HfLoraModelSpec(_qwen3_moe_targets),
+    # MiMo-7B: a Qwen2 body; its MTP layers sit under model.mtp_layers
+    "mimo": _HfLoraModelSpec(_dense_targets),
+    "qwen3": _HfLoraModelSpec(_dense_targets, tinker_name_renames=_TINKER_RENAMES),
+    "qwen3_moe": _HfLoraModelSpec(_qwen3_moe_targets, tinker_name_renames=_TINKER_RENAMES),
     "qwen3_next": _HfLoraModelSpec(_qwen3_next_targets),
-    "qwen3_5_text": _HfLoraModelSpec(_qwen3_5_targets, build_whole_fused_attention=_qwen3_5_whole_fused_attention),
+    "qwen3_5_text": _HfLoraModelSpec(
+        _qwen3_5_targets,
+        build_whole_fused_attention=_qwen3_5_whole_fused_attention,
+        tinker_name_renames=_TINKER_RENAMES,
+        component_rows_by_fused_module=_gdn_35_component_rows,
+    ),
     "qwen3_5_moe_text": _HfLoraModelSpec(
-        _qwen3_5_moe_targets, build_whole_fused_attention=_qwen3_5_whole_fused_attention
+        _qwen3_5_moe_targets,
+        build_whole_fused_attention=_qwen3_5_whole_fused_attention,
+        tinker_name_renames=_TINKER_RENAMES,
+        component_rows_by_fused_module=_gdn_35_component_rows,
     ),
     "qwen3_5": _HfLoraModelSpec(
         _qwen3_5_targets,
         layer_prefix="model.language_model.layers.*",
         unwrap_text_config=True,
         build_whole_fused_attention=_qwen3_5_whole_fused_attention,
+        tinker_name_renames=_TINKER_RENAMES,
+        component_rows_by_fused_module=_gdn_35_component_rows,
     ),
     "qwen3_5_moe": _HfLoraModelSpec(
         _qwen3_5_moe_targets,
         layer_prefix="model.language_model.layers.*",
         unwrap_text_config=True,
         build_whole_fused_attention=_qwen3_5_whole_fused_attention,
+        tinker_name_renames=_TINKER_RENAMES,
+        component_rows_by_fused_module=_gdn_35_component_rows,
     ),
-    "gpt_oss": _HfLoraModelSpec(_gpt_oss_targets),
+    "gpt_oss": _HfLoraModelSpec(
+        _gpt_oss_targets, tinker_name_renames=_GPT_OSS_TINKER_RENAMES, packed_expert_gate_up_layout="interleaved"
+    ),
     "deepseek_v2": _HfLoraModelSpec(_deepseek_targets),
     "deepseek_v3": _HfLoraModelSpec(_deepseek_targets),
     "deepseek_v32": _HfLoraModelSpec(_deepseek_targets),
     "deepseek_v41": _HfLoraModelSpec(_deepseek_v41_targets, layer_prefix="layers.*", unembed="head"),
     "kimi_k2": _HfLoraModelSpec(_kimi_targets),
+    # JoyAI-LLM-Flash ships the remote DeepSeek-V3 code Kimi K2 does: per-expert modules, a leading dense layer
+    "joyai_llm_flash": _HfLoraModelSpec(_kimi_targets),
     "kimi_k25": _HfLoraModelSpec(
         _kimi_targets,
         layer_prefix="language_model.model.layers.*",
@@ -285,7 +334,10 @@ _HF_LORA_MODELS = {
         unembed="language_model.lm_head",
         unwrap_text_config=True,
     ),
+    "glm4": _HfLoraModelSpec(_glm4_targets),
     "glm4_moe": _HfLoraModelSpec(_glm4_moe_targets),
+    # GLM-4.7-Flash: MLA attention with dense / sparse MLPs chosen per layer, as GLM-5's DSA stack
+    "glm4_moe_lite": _HfLoraModelSpec(_glm_dsa_targets),
     "glm_moe_dsa": _HfLoraModelSpec(_glm_dsa_targets),
     "glm5_next": _HfLoraModelSpec(
         _glm5_next_targets, layer_prefix="model.language_model.layers.*", unwrap_text_config=True
@@ -302,6 +354,11 @@ _HF_LORA_MODELS = {
 }
 
 
+def has_hf_lora_targets(hf_config: dict) -> bool:
+    """Explicit --target-modules train any family; the adapter checkpoint and export need its layout."""
+    return hf_config["model_type"] in _HF_LORA_MODELS
+
+
 def get_hf_lora_targets(hf_config: dict) -> HfLoraTargets:
     model_type = hf_config["model_type"]
     assert model_type in _HF_LORA_MODELS, f"HF LoRA target layout is not defined for model_type={model_type!r}"
@@ -314,6 +371,10 @@ def get_hf_lora_targets(hf_config: dict) -> HfLoraTargets:
         unembed=(spec.unembed,),
         default_train_unembed=spec.default_train_unembed,
         whole_fused_attention=_prefix_paths(spec.layer_prefix, *spec.build_whole_fused_attention(text_config)),
+        tinker_name_renames=spec.tinker_name_renames,
+        component_rows_by_fused_module=spec.component_rows_by_fused_module(text_config),
+        vocab_size=text_config.get("vocab_size"),
+        packed_expert_gate_up_layout=spec.packed_expert_gate_up_layout,
     )
 
 

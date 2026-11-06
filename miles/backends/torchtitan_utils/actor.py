@@ -9,6 +9,7 @@ from miles.backends.torchtitan_utils import cake_grouped_linear, compat
 from miles.backends.torchtitan_utils.args_namespace import TorchtitanArgsNamespace
 from miles.backends.torchtitan_utils.config import build_trainer_config
 from miles.backends.torchtitan_utils.hf_weight_iterator import TitanHfWeightIterator
+from miles.backends.torchtitan_utils.lora_checkpoint import TorchtitanLoraCheckpoint
 from miles.backends.torchtitan_utils.optimizer_state_on_disk import setup_adam_state_on_disk
 from miles.backends.torchtitan_utils.parallel import create_titan_parallel_state, parallelism_context_from_config
 from miles.backends.torchtitan_utils.routing_replay import install as install_routing_replay
@@ -101,9 +102,17 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
             init_tracking(args, primary=False)
 
         self.trainer.engine.load_checkpoint()
+        iteration = None
+        # only saves and --lora-adapter-path use it, and building it probes the layout collectively
+        if is_lora_enabled(args) and (args.backend.save is not None or args.lora_adapter_path is not None):
+            self._lora_checkpoint = TorchtitanLoraCheckpoint(self.trainer, args, _steps_per_rollout(args))
+            if args.lora_adapter_path is not None:
+                iteration = self._lora_checkpoint.restore()
+        # after the restore, which may set the step
+        start_rollout_id = self.trainer.step // _steps_per_rollout(args) if iteration is None else iteration + 1
+        # after the restore: setup keeps the moments it wrote
         if args.stream_optimizer_state_to_disk:
             setup_adam_state_on_disk(self.optimizers, state_dir_root=optimizer_state_dir_root(args))
-        start_rollout_id = self.trainer.step // _steps_per_rollout(args)
 
         if with_ref:
             self.ref_runner = self._build_ref_runner(args)
@@ -158,4 +167,7 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
             torch.accelerator.empty_cache()
 
     def _save_checkpoint(self, rollout_id: int) -> None:
-        self.trainer.engine.save_checkpoint(last_step=True)
+        if is_lora_enabled(self.args):
+            self._lora_checkpoint.save(rollout_id)
+        else:
+            self.trainer.engine.save_checkpoint(last_step=True)

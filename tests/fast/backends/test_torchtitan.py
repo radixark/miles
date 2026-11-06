@@ -129,8 +129,6 @@ def test_lora_flags_torchtitan_cannot_honor_are_rejected(monkeypatch):
         validate_torchtitan_args(_args(lora_rank=8, lora_A_init_method="xavier"))
     with pytest.raises(ValueError, match="no dropout"):
         validate_torchtitan_args(_args(lora_rank=8, lora_dropout=0.05))
-    with pytest.raises(ValueError, match="--lora-adapter-path"):
-        validate_torchtitan_args(_args(lora_rank=8, lora_adapter_path="/adapter"))
     with pytest.raises(ValueError, match="grad buffers"):
         validate_torchtitan_args(_args(lora_rank=8, colocate_memory_peak_device="gpu"))
     validate_torchtitan_args(_args(lora_rank=8, colocate_memory_peak_device="gpu", lora_train_only=True))
@@ -202,7 +200,9 @@ def test_lora_targets_bypass_megatrons_native_spec(monkeypatch):
         megatron_to_hf_mode="raw",
         hf_checkpoint="/hf",
         lora_rank=8,
+        lora_alpha=None,
         lora_adapter_path=None,
+        lora_adapter_convert_save=None,
         lora_type="lora",
         target_modules="q_proj",
         exclude_modules=None,
