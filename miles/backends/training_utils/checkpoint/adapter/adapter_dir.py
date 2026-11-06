@@ -277,13 +277,9 @@ def save_and_commit_adapter_dir(
     written = save_adapter_dir(
         root, name, members, slot, parametrization, tenant_digest=None, training_state=training_state
     )
-    error = None
-    if _is_writer():
-        try:
+    with agreed_step():
+        if _is_writer():
             commit_adapter_dir(root, name, written, overwrite=True)
-        except Exception as exc:
-            error = exc
-    raise_if_any_rank_failed(error)
     if has_plain_peft_form(parametrization, targets):
         write_peft_export(written.path, members, slot, parametrization, targets, lora_dropout=lora_dropout)
     elif _is_writer():
