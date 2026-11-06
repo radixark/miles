@@ -199,7 +199,7 @@ class MilesAdapterDirReader:
         return _collapse_shared_lora_a(weights, self.source.parametrization, fused_groups)
 
 
-def _check_peft_config(config: dict, path: Path) -> None:
+def _assert_plain_lora_peft_config(config: dict, path: Path) -> None:
     used = [k for k in _PEFT_CONFIG_MUST_BE_EMPTY if config.get(k)]  # absent and empty both mean unused
     init = config.get("init_lora_weights")
     if isinstance(init, str) and init.startswith(_BASE_REWRITING_INITS):
@@ -228,7 +228,7 @@ class PeftAdapterReader:
         if config.get("peft_type", "LORA") != "LORA":
             raise AdapterSourceError(f"{self.path}: {config['peft_type']} is not LoRA")
         require_fields(config, ("r", "lora_alpha"), self.path / "adapter_config.json")
-        _check_peft_config(config, self.path)
+        _assert_plain_lora_peft_config(config, self.path)
         self._weights, self._fused_groups = _read_peft_tensors(self.path, self._map_name, targets)
         modules = sorted({k.rsplit(".", 1)[0] for k in self._weights if k.endswith(".lora_B")})
         shared_outer = any(".experts." in k and v.dim() == 3 and v.shape[0] == 1 for k, v in self._weights.items())
