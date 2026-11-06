@@ -6,22 +6,43 @@ from torchtitan.config.transform.apply import transform_model_config_
 from torchtitan.models.base import BaseModel
 from torchtitan.models.common.linear import Linear
 
+from miles.backends.torchtitan_utils import multi_lora
 from miles.backends.torchtitan_utils.lora_names import hf_export_names
 from miles.utils.lora.utils import matches_lora_target
 
 
 def convert_model_config(
-    model_config: BaseModel.Config, *, hf_targets: list[str], rank: int, alpha: float
+    model_config: BaseModel.Config,
+    *,
+    hf_targets: list[str],
+    rank: int,
+    alpha: float,
+    num_slots: int | None = None,
+    lora_type: str = "lora",
 ) -> BaseModel.Config:
-    """``model_config`` with LoRA on exactly the Linear projections ``hf_targets`` name."""
+    """``model_config`` with LoRA on exactly the Linear projections ``hf_targets`` name.
+
+    ``num_slots``: multi-LoRA, ``num_slots`` adapters per projection at max rank ``rank``; ``lora_type``
+    ``canonical_lora`` (multi-LoRA only) gives each HF projection of a fused one its own A.
+    """
+    assert lora_type in ("lora", "canonical_lora"), f"unknown --lora-type {lora_type}"
+    assert num_slots is not None or lora_type == "lora", "torchtitan single LoRA shares one lora_A per fused projection"
     sd_adapter = model_config._owner.state_dict_adapter_cls(model_config, None)
     hf_names_by_projection = {
         fqn: hf_export_names(sd_adapter, fqn, _weight_shape(cfg))
         for fqn, cfg, _, _ in model_config.traverse(Linear.Config)
     }
     target_modules = _target_modules(hf_names_by_projection, hf_targets)
-    return transform_model_config_(
+    converted = transform_model_config_(
         model_config, [LoRATransform(rank=rank, alpha=alpha, target_modules=sorted(target_modules))]
+    )
+    if num_slots is None:
+        return converted
+    return multi_lora.convert_to_slots(
+        converted,
+        num_slots=num_slots,
+        canonical=lora_type == "canonical_lora",
+        fused_projections={fqn for fqn, names in hf_names_by_projection.items() if len(names) > 1},
     )
 
 

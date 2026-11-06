@@ -11,6 +11,7 @@ one ``step`` per parameter.
 """
 
 from collections.abc import Mapping
+from contextlib import nullcontext
 from dataclasses import replace
 from pathlib import Path
 
@@ -21,7 +22,12 @@ from torch.distributed.tensor import DTensor
 from torch.optim.lr_scheduler import _update_param_group_val
 
 from miles.backends.torchtitan_utils.hf_weight_iterator import TitanHfWeightIterator
-from miles.backends.torchtitan_utils.lora_names import is_adapter_key, iter_hf_adapter_tensors, split_adapter_key
+from miles.backends.torchtitan_utils.lora_names import (
+    ComponentPacking,
+    is_adapter_key,
+    iter_hf_adapter_tensors,
+    split_adapter_key,
+)
 from miles.backends.training_utils.checkpoint.adapter.adapter_dir import (
     HeadRows,
     load_adapter_dir,
@@ -52,9 +58,11 @@ from miles.backends.training_utils.checkpoint.adapter.probed_slots import (
     rectangles,
 )
 from miles.backends.training_utils.checkpoint.adapter.readers import AdapterSourceKind
+from miles.backends.training_utils.checkpoint.adapter.slot_compute_members import SlotComputeMembers
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.utils.hf_utils.config import load_hf_config
 from miles.utils.lora.hf_lora_targets import HfLoraTargets, get_hf_lora_targets
+from miles.utils.lora.utils import AdapterSpec
 
 
 # a placed code is rank * _RANK_STRIDE + the element's offset in the rank's concatenated local shards
@@ -75,9 +83,11 @@ def _local_codes(param: torch.Tensor, start: int) -> torch.Tensor:
     return torch.where(placed // _RANK_STRIDE == rank, placed % _RANK_STRIDE, -1)
 
 
-def probe_torchtitan_row_mapping(params: Mapping[str, torch.Tensor], sd_adapter) -> RowMapping:
+def probe_torchtitan_row_mapping(
+    params: Mapping[str, torch.Tensor], sd_adapter, packings: Mapping[str, ComponentPacking] | None = None
+) -> RowMapping:
     """Collective. ``params``: the adapter parameters by titan key, in the order their local shards are
-    concatenated."""
+    concatenated; ``packings``: the canonical projections' (``iter_hf_adapter_tensors``)."""
     starts, total = {}, 0
     for key, param in params.items():
         starts[key] = total
@@ -91,7 +101,7 @@ def probe_torchtitan_row_mapping(params: Mapping[str, torch.Tensor], sd_adapter)
         codes = {key: _local_codes(params[key], starts[key]) for key in keys}
         if error is None:
             try:
-                found = _probe_local(codes, sd_adapter)
+                found = _probe_local(codes, sd_adapter, packings)
             except Exception as exc:
                 error = exc
             else:
@@ -107,11 +117,11 @@ def probe_torchtitan_row_mapping(params: Mapping[str, torch.Tensor], sd_adapter)
 
 
 def _probe_local(
-    codes_by_key: Mapping[str, torch.Tensor], sd_adapter
+    codes_by_key: Mapping[str, torch.Tensor], sd_adapter, packings: Mapping[str, ComponentPacking] | None
 ) -> tuple[list[HfPiece], list[tuple[str, ...]], set[str]]:
     """Rank-local: the pieces of this rank's placed codes, named by the export itself (iter_hf_adapter_tensors)."""
     pieces, modules, a_by_source = [], set(), {}
-    for name, codes in iter_hf_adapter_tensors(sd_adapter, codes_by_key):
+    for name, codes in iter_hf_adapter_tensors(sd_adapter, codes_by_key, packings):
         module, factor = name.removesuffix(".weight").rsplit(".", 1)
         modules.add(module)
         if factor == "lora_A":
@@ -138,26 +148,82 @@ def _pieces_of(hf_key: str, codes: torch.Tensor) -> list[HfPiece]:
     ]
 
 
-class TorchtitanAdapterSlots(ProbedAdapterSlots):
-    """Single-LoRA checkpoint members of the torchtitan backend; ``slot_parameters`` are the local shards."""
+class TorchtitanAdapterSlots(SlotComputeMembers, ProbedAdapterSlots):
+    """Adapter slots of the torchtitan backend; single LoRA is slot 0 of one, multi-LoRA slots are its
+    ``multi_lora`` projections'. ``slot_parameters`` are the local shards.
+
+    Multi-LoRA slots are padded to the max rank; a slot's HF tensors have its real rank. Every slot has slot 0's
+    layout.
+    """
 
     bf16_adapter_key_style = "peft"
 
-    def __init__(self, model_parts, iterator, sd_adapter, targets: HfLoraTargets):
+    def __init__(self, model_parts, iterator, sd_adapter, targets: HfLoraTargets, *, multi_lora: bool = False):
         """Collective: probes the row mapping."""
-        self._params = {
-            key: param for part in model_parts for key, param in part.named_parameters() if is_adapter_key(key)
-        }
-        super().__init__(probe_torchtitan_row_mapping(self._params, sd_adapter), targets, iterator)
+        self._model_parts, self._multi_lora = model_parts, multi_lora
+        if multi_lora:
+            from miles.backends.torchtitan_utils.multi_lora import slot_adapter_parameters
+
+            self._params, packings = slot_adapter_parameters(model_parts, 0)
+        else:
+            self._params, packings = {
+                key: param for part in model_parts for key, param in part.named_parameters() if is_adapter_key(key)
+            }, None
+        super().__init__(probe_torchtitan_row_mapping(self._params, sd_adapter, packings), targets, iterator)
+        if multi_lora:
+            self._count_slots()
+            # clear re-draws from a stream every rank advances alike
+            self._clear_generator = torch.Generator(device=torch.accelerator.current_accelerator()).manual_seed(0)
 
     @property
     def parameters(self) -> dict[str, torch.nn.Parameter]:
-        """The adapter parameters (DTensors under FSDP) by titan key, in ``slot_parameters`` order."""
+        """The adapter parameters (DTensors under FSDP) by titan key, in ``slot_parameters`` order; slot 0's for
+        multi-LoRA."""
         return self._params
 
     def slot_parameters(self, slot: int) -> list[torch.Tensor]:
-        assert slot == 0, "the torchtitan backend trains a single LoRA adapter"
+        if self._multi_lora:
+            from miles.backends.torchtitan_utils.multi_lora import slot_adapter_parameters
+
+            self._assert_slot(slot)
+            return [_local(p) for p in slot_adapter_parameters(self._model_parts, slot)[0].values()]
+        assert slot == 0, "single LoRA has only slot 0"
         return [_local(p) for p in self._params.values()]
+
+    def slot_spec(self, slot: int) -> AdapterSpec | None:
+        if not self._multi_lora:
+            return None
+        self._assert_slot(slot)
+        module = next(module for _, module in self._modules())
+        return AdapterSpec(slot=slot, rank=module.lora_ranks_by_slot[slot], alpha=module.lora_alphas_by_slot[slot])
+
+    def adapters_hidden_context(self):
+        # the HF base load maps only the base keys and loads non-strictly, so it never touches the adapters
+        return nullcontext()
+
+    def _modules(self):
+        from miles.backends.torchtitan_utils.multi_lora import multi_lora_modules
+
+        return multi_lora_modules(self._model_parts)
+
+    def _local_num_slots(self) -> int:
+        return next((len(module.lora_slots) for _, module in self._modules()), 0)
+
+    def _init_slot(self, slot: int, lora_rank: int, lora_alpha: float, seed: int | None) -> None:
+        if seed is not None:
+            generator = torch.Generator(device=torch.accelerator.current_accelerator()).manual_seed(seed)
+            for _, module in self._modules():
+                module.redraw_slot(slot, generator)
+        for _, module in self._modules():
+            module.init_slot(slot, lora_rank, lora_alpha)
+
+    def _clear_slot(self, slot: int) -> None:
+        for _, module in self._modules():
+            module.clear_slot(slot, self._clear_generator)
+
+    def _install_routing(self, counts: tuple[int, ...]) -> None:
+        for _, module in self._modules():
+            module.token_counts_by_slot = counts
 
 
 def _local(tensor: torch.Tensor) -> torch.Tensor:
