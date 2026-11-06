@@ -39,7 +39,7 @@ def _write(path, rank_in_tensors=2):
 
 
 def _mismatch(path):
-    return checkpoint.find_load_mismatch(None, 0, str(path), RUN, TARGETS, False, run_shapes=RUN_SHAPES)
+    return checkpoint.check_load_source(None, 0, str(path), RUN, TARGETS, False, run_shapes=RUN_SHAPES)[0]
 
 
 def test_a_fitting_adapter_loads(tmp_path):

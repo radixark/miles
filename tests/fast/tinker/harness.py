@@ -136,8 +136,7 @@ class FakeBackend:
             tenant_digest=tenant_digest,
             parametrization_fields=parametrization_fields,
         )
-        if failure is not None:
-            return failure
+        assert failure is None, "a trainer's save_slot raises; it never returns a failure"
         with write_adapter_dir(Path(root), name, tenant_digest=tenant_digest) as written:
             # the default gateway layout trains attn and mlp
             targets = ("model.layers.0.self_attn.q_proj", "model.layers.0.mlp.gate_proj")
@@ -160,8 +159,7 @@ class FakeBackend:
             parametrization_fields=parametrization_fields,
             age_recipients=age_recipients,
         )
-        if failure is not None:
-            return failure
+        assert failure is None, "a trainer's export_external_slot raises; it never returns a failure"
         parametrization = _parametrization(parametrization_fields)
         with write_adapter_dir(Path(root), name, tenant_digest=tenant_digest) as written:
             write_external_adapter(

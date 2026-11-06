@@ -5,7 +5,11 @@ from miles.backends.megatron_utils.actor import MegatronTrainRayActor
 from miles.backends.megatron_utils.lora import checkpoint as lora_checkpoint
 from miles.backends.megatron_utils.lora import model as lora_model
 from miles.backends.megatron_utils.lora.optimizer import SlotOptimizer
-from miles.backends.training_utils.checkpoint.adapter.adapter_dir import write_external_export, write_sampler_export
+from miles.backends.training_utils.checkpoint.adapter.adapter_dir import (
+    save_adapter_dir,
+    save_sampler_export,
+    write_external_export,
+)
 from miles.backends.training_utils.checkpoint.adapter.commit import UncommittedAdapterDir
 from miles.backends.training_utils.data.rollout import get_rollout_data
 from miles.backends.training_utils.parallel import get_parallel_state
@@ -92,13 +96,13 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
         self, slot: int, root: str, name: str, tenant_digest: str, parametrization_fields: dict
     ) -> UncommittedAdapterDir:
         """Write the slot's adapter state under ``root``, uncommitted; the gateway commits it."""
-        return lora_checkpoint.save_slot(
+        return save_adapter_dir(
+            Path(root),
+            name,
             self._checkpoint_members(),
             slot,
-            root,
-            name,
-            tenant_digest,
             self.adapter_slots.parametrization(**parametrization_fields),
+            tenant_digest=tenant_digest,
         )
 
     def _checkpoint_members(self) -> "lora_checkpoint.LayerWiseSlotMembers":
@@ -114,7 +118,7 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
         assert parametrization.lora_rank == self.adapter_slots.lora_rank(
             slot
         ), "the gateway and the slot disagree on rank"
-        return write_sampler_export(
+        return save_sampler_export(
             root=Path(root),
             name=name,
             members=self.adapter_slots,

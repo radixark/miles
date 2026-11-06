@@ -1,4 +1,4 @@
-"""``save_adapter_dir`` -> commit -> ``load_adapter_dir`` restores weights, moments and step under a new split."""
+"""``save_adapter_dir`` -> commit -> ``load_adapter_source`` restores weights, moments and step under a new split."""
 
 import tempfile
 from dataclasses import replace
@@ -14,7 +14,7 @@ from tests.fast.dist_utils import init_gloo, run_multiprocess
 from miles.backends.training_utils.checkpoint.adapter import adapter_dir
 from miles.backends.training_utils.checkpoint.adapter.adapter_dir import (
     HeadRows,
-    load_adapter_dir,
+    load_adapter_source,
     save_adapter_dir,
     save_and_commit_adapter_dir,
     write_external_export,
@@ -97,7 +97,7 @@ def committed_dir():
 
 def test_round_trip_with_optimizer_under_a_different_world_size(committed_dir):
     members = FakeMembers()  # one process now owns everything
-    source = load_adapter_dir(committed_dir, members, 0, RUN, TARGETS, load_optimizer=True)
+    source = load_adapter_source(committed_dir, members, 0, RUN, TARGETS, load_optimizer=True)
     assert source == RUN and members.imported.step == 5
     for spec, weight, exp_avg in zip(
         members.imported.shard_specs, members.imported.weights, members.imported.exp_avgs, strict=True
@@ -111,7 +111,7 @@ def test_weights_only_from_peft_upcasts_zeroes_moments_and_returns_the_source_al
     write_peft_adapter(tmp_path, {f"{MODULE}.{k}": v for k, v in FULL.items()}, RUN, TARGETS, lora_dropout=0.0)
     members = FakeMembers()
     # a Tinker session adopts the source's alpha after loading
-    source = load_adapter_dir(tmp_path, members, 0, replace(RUN, lora_alpha=16.0), TARGETS, load_optimizer=False)
+    source = load_adapter_source(tmp_path, members, 0, replace(RUN, lora_alpha=16.0), TARGETS, load_optimizer=False)
     assert source.lora_alpha == 4.0 and members.finished
     state = members.imported
     assert state.step == 0 and all(not m.any() for m in state.exp_avgs)
@@ -128,7 +128,7 @@ def test_weights_only_from_the_same_parametrization_reads_only_local_pieces(comm
         whole_tensor_read,
     )
     members = FakeMembers()
-    load_adapter_dir(committed_dir, members, 0, RUN, TARGETS, load_optimizer=False)
+    load_adapter_source(committed_dir, members, 0, RUN, TARGETS, load_optimizer=False)
     assert members.imported.step == 0 and not members.imported.exp_avgs[0].any()
     assert torch.equal(members.imported.weights[1], FULL["lora_B"])
 
@@ -138,7 +138,7 @@ def test_a_same_parametrization_load_reads_fp32_under_a_bf16_default_dtype(commi
     default_dtype = torch.get_default_dtype()
     torch.set_default_dtype(torch.bfloat16)
     try:
-        load_adapter_dir(committed_dir, members, 0, RUN, TARGETS, load_optimizer=True)
+        load_adapter_source(committed_dir, members, 0, RUN, TARGETS, load_optimizer=True)
     finally:
         torch.set_default_dtype(default_dtype)
     assert torch.equal(members.imported.exp_avgs[1], FULL["lora_B"] * 2)
@@ -168,7 +168,7 @@ def _torchtitan_checkpoint(path) -> Path:
 
 
 def _load_in_model(path, loader, run=RUN, *, load_optimizer):
-    return load_adapter_dir(
+    return load_adapter_source(
         path,
         FakeMembers(),
         0,
@@ -217,10 +217,10 @@ class WeightsOnlyMembers(FakeMembers):
 def test_a_weights_only_dir_loads_without_optimizer_and_refuses_with_it(tmp_path):
     written = save_adapter_dir(tmp_path, "w", WeightsOnlyMembers(), 0, RUN, tenant_digest=None)
     members = FakeMembers()
-    load_adapter_dir(written.path, members, 0, RUN, TARGETS, load_optimizer=False)
+    load_adapter_source(written.path, members, 0, RUN, TARGETS, load_optimizer=False)
     assert torch.equal(members.imported.weights[1], FULL["lora_B"]) and members.imported.step == 0
     with pytest.raises(RuntimeError, match="no optimizer state"):
-        load_adapter_dir(written.path, FakeMembers(), 0, RUN, TARGETS, load_optimizer=True)
+        load_adapter_source(written.path, FakeMembers(), 0, RUN, TARGETS, load_optimizer=True)
 
 
 class VocabPaddingMembers(FakeMembers):
@@ -248,15 +248,15 @@ class VocabPaddingMembers(FakeMembers):
 def test_vocab_padding_resumes_exactly_and_is_zero_for_any_other_run(tmp_path):
     written = save_adapter_dir(tmp_path, "w", VocabPaddingMembers(), 0, RUN, tenant_digest=None)
     resumed = VocabPaddingMembers()
-    load_adapter_dir(written.path, resumed, 0, RUN, TARGETS, load_optimizer=True)
+    load_adapter_source(written.path, resumed, 0, RUN, TARGETS, load_optimizer=True)
     assert torch.equal(resumed.imported.weights[-1], torch.full((2, 2), 7.0))
     assert torch.equal(resumed.imported.exp_avgs[-1], torch.full((2, 2), 14.0))
     # a run padding to another size starts its padding at zero; one without padding ignores the source's
     repadded = VocabPaddingMembers(padding_rows=3)
-    load_adapter_dir(written.path, repadded, 0, RUN, TARGETS, load_optimizer=True)
+    load_adapter_source(written.path, repadded, 0, RUN, TARGETS, load_optimizer=True)
     assert not repadded.imported.weights[-1].any() and not repadded.imported.exp_avgs[-1].any()
     unpadded = FakeMembers()
-    load_adapter_dir(written.path, unpadded, 0, RUN, TARGETS, load_optimizer=True)
+    load_adapter_source(written.path, unpadded, 0, RUN, TARGETS, load_optimizer=True)
     assert len(unpadded.imported.weights) == 2
 
 
@@ -310,10 +310,10 @@ def test_a_backend_state_that_does_not_match_the_parametrization_is_refused_at_s
 def test_a_refused_source_is_reported_as_a_source_error(tmp_path):
     written = save_adapter_dir(tmp_path, "w", FakeMembers(), 0, RUN, tenant_digest=None)
     with pytest.raises(RuntimeError, match="adapter rank 2 != run rank 4") as refused:
-        load_adapter_dir(written.path, FakeMembers(), 0, replace(RUN, lora_rank=4), TARGETS, load_optimizer=False)
+        load_adapter_source(written.path, FakeMembers(), 0, replace(RUN, lora_rank=4), TARGETS, load_optimizer=False)
     assert isinstance(refused.value.__cause__, AdapterSourceError)
     with pytest.raises(RuntimeError) as unrecognized:
-        load_adapter_dir(tmp_path, FakeMembers(), 0, RUN, TARGETS, load_optimizer=False)
+        load_adapter_source(tmp_path, FakeMembers(), 0, RUN, TARGETS, load_optimizer=False)
     assert isinstance(unrecognized.value.__cause__, AdapterSourceError)
 
 
@@ -360,7 +360,7 @@ def _one_rank_fails(rank, world_size, port, *, peft, torchtitan, scratch):
 
     adapter_dir.PeftAdapterReader = CountingReader
     members = FakeMembers()
-    load_adapter_dir(Path(peft), members, 0, RUN, TARGETS, load_optimizer=False)
+    load_adapter_source(Path(peft), members, 0, RUN, TARGETS, load_optimizer=False)
     assert opened == ([0] if rank == 0 else []), "a source that needs conversion is read on rank 0 only"
     expected = [FULL["lora_A"], FULL["lora_B"][rank * 2 : rank * 2 + 2]]
     for got, want in zip(members.imported.weights, expected, strict=True):
@@ -374,16 +374,16 @@ def _one_rank_fails(rank, world_size, port, *, peft, torchtitan, scratch):
         )
 
     with pytest.raises(RuntimeError, match="adapter checkpoint failed: rank 1"):
-        load_adapter_dir(
+        load_adapter_source(
             Path(peft, "missing") if rank else Path(peft), FakeMembers(), 0, RUN, TARGETS, load_optimizer=False
         )
 
     with pytest.raises(RuntimeError, match="rank 1 cannot describe"):
-        load_adapter_dir(Path(peft), SpecsFailOnRank1(), 0, RUN, TARGETS, load_optimizer=False)
+        load_adapter_source(Path(peft), SpecsFailOnRank1(), 0, RUN, TARGETS, load_optimizer=False)
 
     members = OneRankCannotImport()
     with pytest.raises(RuntimeError, match="rank 1: AssertionError: rank 1 cannot write"):
-        load_adapter_dir(Path(peft), members, 0, RUN, TARGETS, load_optimizer=False)
+        load_adapter_source(Path(peft), members, 0, RUN, TARGETS, load_optimizer=False)
     assert not members.finished, "no rank finishes an import another rank could not write"
 
     loader = OneRankCannotPrepare(RUN)
@@ -534,7 +534,7 @@ def test_a_head_source_over_the_served_vocab_loads_the_served_rows(tmp_path, row
         tmp_path, {"lm_head.lora_A": FULL["lora_A"], "lm_head.lora_B": head_b}, HEAD_RUN, TARGETS, lora_dropout=0.0
     )
     members = HeadMembers()
-    load_adapter_dir(tmp_path, members, 0, HEAD_RUN, TARGETS, load_optimizer=False)
+    load_adapter_source(tmp_path, members, 0, HEAD_RUN, TARGETS, load_optimizer=False)
     assert torch.equal(members.imported.weights[1], head_b[:6].to(torch.bfloat16).float())
 
 
@@ -566,7 +566,7 @@ def _write_inkling_head_adapter(path):
 def test_a_native_warm_start_loads_an_inkling_head_peft_dir(tmp_path):
     _write_inkling_head_adapter(tmp_path)
     members = InklingHeadMembers()
-    load_adapter_dir(tmp_path, members, 0, INKLING_HEAD_RUN, INKLING, load_optimizer=False)
+    load_adapter_source(tmp_path, members, 0, INKLING_HEAD_RUN, INKLING, load_optimizer=False)
     assert torch.equal(members.imported.weights[0], torch.full((2, 6), 3.0))
     assert torch.equal(members.imported.weights[1], torch.full((6, 2), 7.0))
 
@@ -576,7 +576,7 @@ def test_a_peft_dir_without_adapter_config_is_refused_with_a_remedy(tmp_path):
     _write_inkling_head_adapter(tmp_path)
     (tmp_path / "adapter_config.json").unlink()
     with pytest.raises(RuntimeError, match="no adapter_config.json.*save_pretrained"):
-        load_adapter_dir(tmp_path, InklingHeadMembers(), 0, INKLING_HEAD_RUN, INKLING, load_optimizer=False)
+        load_adapter_source(tmp_path, InklingHeadMembers(), 0, INKLING_HEAD_RUN, INKLING, load_optimizer=False)
 
 
 @pytest.mark.parametrize("rows", [5, 9])
@@ -586,4 +586,4 @@ def test_a_head_source_outside_the_declared_rows_is_refused(tmp_path, rows):
         tmp_path, {"lm_head.lora_A": FULL["lora_A"], "lm_head.lora_B": head_b}, HEAD_RUN, TARGETS, lora_dropout=0.0
     )
     with pytest.raises(RuntimeError, match=f"lm_head.lora_B: the source has {rows} rows; this run serves 6"):
-        load_adapter_dir(tmp_path, HeadMembers(), 0, HEAD_RUN, TARGETS, load_optimizer=False)
+        load_adapter_source(tmp_path, HeadMembers(), 0, HEAD_RUN, TARGETS, load_optimizer=False)
