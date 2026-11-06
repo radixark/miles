@@ -109,6 +109,10 @@ class TestLaunchChecks:
             launch.check(make_args(**dsa, output_store_local_buffer_size="15gb"))
         # /generate caps every request at max_seq_len: 16384 rows fit.
         launch.check(make_args(**{**dsa, "use_session_server": None}, output_store_local_buffer_size="15gb"))
+        # Without a response limit the session check is still sized, from max_seq_len alone.
+        no_response_limit = {**dsa, "max_seq_len": 32769, "rollout_max_response_len": None}
+        with pytest.raises(ValueError, match="cannot hold the 16374562816 bytes of indexer top-k"):
+            launch.check(make_args(**no_response_limit, output_store_local_buffer_size="15gb"))
 
     def test_without_max_seq_len_the_response_length_bounds_the_indexer_top_k(self, launch):
         dsa = {

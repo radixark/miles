@@ -216,7 +216,8 @@ def _max_indexer_topk_bytes(args: argparse.Namespace) -> int | None:
 
     /generate caps every request at --max-seq-len. Under the session server the agent decides when to stop; one
     that stops once its prompt fills --max-seq-len sends at most a prompt one token short of it plus a full
-    --rollout-max-response-len response; an agent that ignores the limit can send more, which no launch check sees.
+    --rollout-max-response-len response, or a prompt of --max-seq-len when that is unset; an agent that ignores the
+    limit can send more, which no launch check sees.
     Without --max-seq-len, a response cut at --rollout-max-response-len after a prompt of
     --rollout-max-prompt-len tokens, or of one when that is unset, is the longest sequence known at launch.
     Only this field is sized at launch: on DeepSeek-V3.2 it takes about 0.5 MB per token, routed experts take
@@ -227,10 +228,10 @@ def _max_indexer_topk_bytes(args: argparse.Namespace) -> int | None:
     streams, width = args.rollout_indexer_topk_num_streams, args.rollout_indexer_topk_width
     if not (streams and width):
         return None
-    if args.max_seq_len is not None and not args.use_session_server:
+    if args.max_seq_len is not None:
         num_tokens = args.max_seq_len
-    elif args.max_seq_len is not None and args.rollout_max_response_len is not None:
-        num_tokens = args.max_seq_len - 1 + args.rollout_max_response_len
+        if args.use_session_server and args.rollout_max_response_len is not None:
+            num_tokens += args.rollout_max_response_len - 1
     elif args.rollout_max_response_len is not None:
         num_tokens = (args.rollout_max_prompt_len or 1) + args.rollout_max_response_len
     else:
