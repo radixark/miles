@@ -3,7 +3,8 @@ from dataclasses import dataclass
 import torch
 
 from miles.backends.fsdp_utils.arguments import FSDPArgs, build_dataclass_parser, load_args_from_parser
-from miles.platforms import current_platform
+from miles.backends.training_utils.loss.hub.response_layout import validate_response_layout_args
+from miles.platforms import current_platform, tpu_shared_slice
 from miles.utils.lora.utils import is_lora_enabled, lora_rollout_enabled
 
 
@@ -53,6 +54,11 @@ def validate_torchtitan_args(args) -> None:
             "inside the rope kernel"
         )
 
+    if args.update_weight_transfer_mode == "ici" and tpu_shared_slice.spec() is None:
+        raise ValueError(
+            f"--update-weight-transfer-mode ici needs {tpu_shared_slice.ENV_VAR} on the trainer, naming the slice "
+            "it shares with the engine"
+        )
     if args.ref_update_interval is not None:
         raise ValueError("--ref-update-interval is not supported by the torchtitan backend")
     if args.fp16:
@@ -90,6 +96,7 @@ def validate_torchtitan_args(args) -> None:
             )
     if is_lora_enabled(args):
         _validate_lora_args(args)
+    validate_response_layout_args(args)
 
 
 def _validate_lora_args(args) -> None:
