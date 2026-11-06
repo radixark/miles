@@ -76,17 +76,25 @@ updates and LZ4-Zstd for initial sync to retain DE coverage. It forwards the has
 and sorting controls and checks each publication's manifest and phase-specific codec.
 
 The five-layer test is dedicated to GPU delta: it prepares checkpoints and data,
-performs the required initial sync, then runs four rollouts to exercise three learned
-publications with deterministic rewards. The change gate excludes the startup
-publication, so startup-only changes cannot satisfy it. It takes no CLI options:
+performs the required initial sync, then runs five rollouts with deterministic
+rewards. Four GPUs train and two TP2/DP1/EP1 engines use the remaining four GPUs.
+Attention, routed experts and BF16 shared experts use TP2. DCP2 uses TRT-LLM DSA
+prefill/decode with replicated Q projection, covering its derived Q/K weights.
+GPU-delta supports DCP groups contained within attention TP; pipeline parallelism
+and prefill context parallelism remain unsupported. The test checks every TP rank's
+warm apply, including zero new Triton compilations. Its 300 ms gate covers both
+rank scheduler pause and each engine's combined apply/resume interval, including
+all-TP acknowledgement before admission reopens. The change gate excludes the
+startup publication, so startup-only changes cannot satisfy it. It takes no CLI options:
 
 ```bash
 python tests/e2e/megatron/test_glm5_2_744b_a40b_5layer_nvfp4_w4a16.py
 ```
 
-Publications use `/root/shared_data/<run_id>/gpu_delta`. The test enables rollout
-fault tolerance, restarts one engine before publication 3, and saves Megatron
-checkpoints with delta companions. Attention FP8 conversion remains disabled.
+Publications use `/root/delta-updates/<run_id>/gpu_delta`. The test saves Megatron
+checkpoints with delta companions. It does not enable rollout fault tolerance or
+exercise engine restart: Miles currently requires partial-target P2P updates for
+that mode. Attention FP8 conversion remains disabled.
 
 ## Startup delta
 
@@ -145,15 +153,17 @@ captured target and compression batches; it performs no second model export or
 payload gather. Compressed recovery bytes stay on their owners until needed.
 Training resumes after activation and this background work have both drained.
 
-Existing Miles rollout fault tolerance recreates failed engines from the HF
-checkpoint between weight updates. On the next update, healthy engines receive
-the rolling delta while fresh engines use the base-relative payload. Both use the
+For a fresh engine initialized from the HF checkpoint between successful updates,
+the next update supplies a base-relative payload; existing engines receive
+the rolling delta. Both use the
 same update endpoint and negotiated participant identities. Recovery keeps the
 receiver cache for later updates. The normal update RPC returns only after all
 engines resume, then commits the rolling
 baseline. This requires live trainer snapshots and the same canonical plan.
 An in-flight activation error follows the existing Miles failure path; GPU delta
 does not retry an uncertain XOR or add a separate trainer recovery mechanism.
+Miles rollout fault tolerance currently requires partial-target P2P updates;
+GPU-delta does not enable that mode.
 
 On an ordinary Megatron save, the stable target is captured and compressed ahead
 of the next weight sync, which reuses that capture. A final save also produces a
