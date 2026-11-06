@@ -120,8 +120,8 @@ def filter_long_prompt(origin_samples: list[Sample], tokenizer, processor, max_l
             from miles.utils.processing_utils import call_processor
 
             for sample in multimodal:
-                # sample.prompt is the rendered template string, so its media cannot be re-extracted from it; use
-                # what Dataset extracted from the message list.
+                # sample.prompt may be the rendered template string, which no longer carries its media; use what
+                # Dataset extracted from the message list.
                 processor_output = call_processor(processor, sample.prompt, sample.multimodal_inputs)
                 input_ids = processor_output["input_ids"][0]
                 if len(input_ids) <= max_length:
