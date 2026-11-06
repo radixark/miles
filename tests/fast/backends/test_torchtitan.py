@@ -667,6 +667,23 @@ def test_the_loss_adapter_undoes_the_summed_dp_and_cp_gradients():
     assert adapter.collect() == [{"seen": True}]
 
 
+def test_under_cp_a_layout_that_scores_row_shards_gets_this_ranks_logits_and_the_cp_group():
+    pytest.importorskip("torchtitan")
+    from miles.backends.torchtitan_utils.loss import RLLossAdapter
+
+    adapter = RLLossAdapter(RLLossAdapter.Config())
+    adapter.set_context_parallel(SimpleNamespace(get_group=lambda: "cp-group"), gather_logits=False)
+    seen = {}
+
+    def closure(pred, batch):
+        seen.update(shape=tuple(pred.shape), group=batch["logit_row_group"])
+        return pred.sum(), {}
+
+    adapter.arm([{"tokens": torch.zeros(1)}], closure, is_training=True)
+    adapter(torch.ones(3, 5), torch.zeros(3, dtype=torch.long))
+    assert seen == {"shape": (1, 3, 5), "group": "cp-group"}
+
+
 def test_resume_reads_from_load_and_writes_to_save(tmp_path, single_gpu_dims):
     pytest.importorskip("torchtitan")
     from miles.backends.torchtitan_utils.config import build_trainer_config

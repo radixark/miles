@@ -18,10 +18,11 @@ class RLLossAdapter(BaseLoss):
         self._is_training = True
         self._results: dict[int, object] = {}
         self._cp_mesh = None
+        self._gather_cp_logits = True
         self._grad_scale = 1.0
 
-    def set_context_parallel(self, mesh) -> None:
-        self._cp_mesh = mesh
+    def set_context_parallel(self, mesh, *, gather_logits: bool) -> None:
+        self._cp_mesh, self._gather_cp_logits = mesh, gather_logits
 
     def set_gradient_scale(self, scale: float) -> None:
         self._grad_scale = scale
@@ -37,12 +38,15 @@ class RLLossAdapter(BaseLoss):
         return [self._results[i] for i in range(len(self._batches))]
 
     def __call__(self, pred, target, **kwargs):
-        if self._cp_mesh is not None:
-            pred = all_gather_single_autograd(pred, 0, self._cp_mesh.get_group())
-        pred = pred.unsqueeze(0)
-
         index = int(target.flatten()[0])
         batch = self._batches[index]
+        if self._cp_mesh is not None:
+            if self._gather_cp_logits:
+                pred = all_gather_single_autograd(pred, 0, self._cp_mesh.get_group())
+            else:
+                # the layout scores this rank's rows and gathers only their per-row results
+                batch = {**batch, "logit_row_group": self._cp_mesh.get_group()}
+        pred = pred.unsqueeze(0)
         if self._is_training:
             loss, log_dict = self._closure(pred, batch)
             self._results[index] = log_dict
