@@ -102,7 +102,8 @@ def copy_import(
     """Copy a file:// import's adapter files, opened beneath the import root without following symlinks, into a
     gateway-owned dir under the checkpoint root; returns that dir."""
     root = os.path.normpath(import_root)
-    copy_dir = os.path.join(checkpoint_root, IMPORT_COPIES_DIRNAME, uuid.uuid4().hex)
+    # trainer ranks open the copy, and may not share the gateway's working directory
+    copy_dir = os.path.join(os.path.realpath(checkpoint_root), IMPORT_COPIES_DIRNAME, uuid.uuid4().hex)
     os.makedirs(copy_dir)
     try:
         path = os.path.normpath(uri.removeprefix("file://"))
