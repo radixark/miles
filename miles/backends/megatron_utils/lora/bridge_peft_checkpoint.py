@@ -114,7 +114,7 @@ def torch_dist_base_dir(pretrained_checkpoint: str | None) -> Path | None:
     return root if dist_checkpointing.check_is_distributed_checkpoint(str(root)) else None
 
 
-def _is_base_fingerprint(key: str, tensor) -> bool:
+def _is_base_check_tensor(key: str, tensor) -> bool:
     # a full fine-tune changes the norms, a merged LoRA the projections; a chunk's layer 0 is its first local layer
     return (
         isinstance(tensor, ShardedTensor)
@@ -135,7 +135,7 @@ def assert_same_base_as_torch_dist(source: str, chunks, base_dir: Path) -> None:
         metadata["dp_cp_group"] = get_parallel_state().intra_dp_cp.group
         for index, chunk in enumerate(chunks):
             compared = {
-                k: t for k, t in chunk.sharded_state_dict(metadata=metadata).items() if _is_base_fingerprint(k, t)
+                k: t for k, t in chunk.sharded_state_dict(metadata=metadata).items() if _is_base_check_tensor(k, t)
             }
             held |= {(index, k): t.data for k, t in compared.items()}
             # loading writes into the requested tensors: empty copies, never the model's own parameters
