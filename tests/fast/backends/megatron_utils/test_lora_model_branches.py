@@ -5,9 +5,15 @@ route to LoRA-specific code paths depending on configuration — without GPU.
 """
 
 from argparse import Namespace
+from collections.abc import Iterator
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from tests.fast.fixtures.args_fixtures import make_trainer_args, make_trainer_config
+import pytest
+import torch
+import torch.distributed as dist
+from tests.fast.fixtures.args_fixtures import make_trainer_args, make_trainer_config, replace_config_values
 
 # ---------------------------------------------------------------------------
 # _ensure_model_list
@@ -172,6 +178,83 @@ class TestSetupModelAndOptimizerLoraBranch:
         mock_lora_setup.assert_not_called()
         mock_wrap.assert_called_once_with(mock_provider.return_value, args)
         assert mock_get_model.call_args.args[0] is mock_wrap.return_value
+
+    @pytest.mark.parametrize(
+        "lora_rank,multi_lora,role,mode,frozen",
+        [
+            pytest.param(32, False, "actor", "bridge", True, id="bridge-lora"),
+            pytest.param(32, False, "actor", "raw", True, id="native-lora"),
+            pytest.param(32, True, "actor", "bridge", True, id="multi-lora"),
+            pytest.param(32, False, "critic", "bridge", False, id="lora-critic"),
+            pytest.param(0, False, "actor", "bridge", False, id="full-weights"),
+        ],
+    )
+    @patch("miles.backends.megatron_utils.lora.optimizer.validate_multi_lora_optimizer_args")
+    @patch(f"{_MODEL_MODULE}.get_optimizer_param_scheduler")
+    @patch(f"{_MODEL_MODULE}.get_megatron_optimizer")
+    @patch(f"{_MODEL_MODULE}.get_model")
+    @patch(f"{_MODEL_MODULE}.get_model_provider_func")
+    @patch(f"{_MODEL_MODULE}.wrap_model_provider_with_lora")
+    @patch(f"{_MODEL_MODULE}._setup_lora_model_via_bridge")
+    def test_lora_freezes_every_router_expert_bias(
+        self,
+        mock_lora_setup,
+        _wrap,
+        _provider,
+        mock_get_model,
+        _opt,
+        _sched,
+        _validate,
+        lora_rank,
+        multi_lora,
+        role,
+        mode,
+        frozen,
+    ):
+        """The adapter does not carry the expert bias, so any LoRA build must stop Megatron updating it."""
+        from miles.backends.megatron_utils.model import setup_model_and_optimizer
+
+        biased, unbiased = _Router(num_experts=4), _Router(num_experts=None)
+        mock_lora_setup.return_value = mock_get_model.return_value = [torch.nn.ModuleList([biased, unbiased])]
+        args = self._make_args(lora_rank=lora_rank, role=role, mode=mode)
+        args = replace_config_values(args, offload_train=False, multi_lora=multi_lora)
+
+        setup_model_and_optimizer(args, role=role)
+
+        assert (biased.frozen_expert_bias, unbiased.frozen_expert_bias) == (frozen, False)
+
+
+class _Router(torch.nn.Module):
+    """Holds the expert-bias state of Megatron's TopKRouter, which finalize_model_grads updates unless frozen."""
+
+    def __init__(self, num_experts: int | None) -> None:
+        super().__init__()
+        self.register_buffer("expert_bias", None if num_experts is None else torch.zeros(num_experts))
+        self.local_tokens_per_expert = None if num_experts is None else torch.arange(num_experts, dtype=torch.float)
+        self.frozen_expert_bias = False
+
+
+@pytest.fixture()
+def single_rank_gloo(tmp_path: Path) -> Iterator[dist.ProcessGroup]:
+    dist.init_process_group(backend="gloo", init_method=f"file://{tmp_path / 'rendezvous'}", rank=0, world_size=1)
+    try:
+        yield dist.group.WORLD
+    finally:
+        dist.destroy_process_group()
+
+
+def test_megatron_skips_the_bias_update_of_a_frozen_router(single_rank_gloo: dist.ProcessGroup) -> None:
+    """frozen_expert_bias is the flag Megatron's per-step expert-bias update honors."""
+    from megatron.core.distributed.finalize_model_grads import _update_router_expert_bias
+
+    frozen, live = _Router(num_experts=4), _Router(num_experts=4)
+    frozen.frozen_expert_bias = True
+    config = SimpleNamespace(moe_router_bias_update_rate=1e-3)
+
+    _update_router_expert_bias([torch.nn.ModuleList([frozen, live])], config, tp_dp_cp_group=single_rank_gloo)
+
+    assert torch.equal(frozen.expert_bias, torch.zeros(4))
+    assert not torch.equal(live.expert_bias, torch.zeros(4))
 
 
 # ---------------------------------------------------------------------------

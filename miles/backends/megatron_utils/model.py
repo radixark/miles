@@ -65,6 +65,7 @@ from .ci_utils import (
 )
 from .initialize import is_first_replica_megatron_main_rank
 from .lora.utils import (
+    freeze_router_expert_bias,
     is_lora_enabled,
     is_lora_model,
     patch_param_grad_buffer_for_colocate_mode_lora,
@@ -182,6 +183,8 @@ def setup_model_and_optimizer(
             model = get_model(provider_func, ModelType.encoder_or_decoder)
     for model_chunk in model:
         model_chunk.lora_attached = lora_attached
+    if lora_attached:
+        freeze_router_expert_bias(model)
 
     if args.debug_disable_optimizer:
         if is_first_replica_megatron_main_rank():

@@ -81,6 +81,21 @@ def is_lora_model(model: Sequence[torch.nn.Module]) -> bool:
     return model[0].lora_attached
 
 
+def freeze_router_expert_bias(model: Sequence[torch.nn.Module]) -> None:
+    """Exclude every MoE router from Megatron's per-step expert-bias update: the adapter does not carry
+    the bias, so the rollout engine keeps routing with the checkpoint's."""
+    routers = [
+        module
+        for chunk in model
+        for module in chunk.modules()
+        if getattr(module, "expert_bias", None) is not None  # config-access-exempt: only MoE routers own expert_bias
+    ]
+    for router in routers:
+        router.frozen_expert_bias = True
+    if routers:
+        logger.info(f"[lora] froze the expert bias of {len(routers)} MoE routers: adapters do not export it")
+
+
 def adapter_named_parameters(model: Sequence[torch.nn.Module]) -> list[dict[str, torch.nn.Parameter]]:
     """Every adapter parameter of each model chunk, found by the module that owns it: a native adapter,
     or what a Bridge ``AdapterWrapper`` holds besides the base module it wraps.
