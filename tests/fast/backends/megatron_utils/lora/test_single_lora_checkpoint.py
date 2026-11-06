@@ -2,6 +2,7 @@
 
 import json
 import multiprocessing
+from dataclasses import replace
 from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,10 +11,12 @@ from unittest.mock import DEFAULT, MagicMock, patch
 import pytest
 import torch
 import torch.distributed as dist
+from megatron.core.optimizer import DistributedOptimizer
 from megatron.core.optimizer.cpu_offloading.hybrid_optimizer import HybridDeviceOptimizer
 from tests.fast.dist_utils import init_gloo, run_multiprocess
 
 import miles.backends.megatron_utils.lora.checkpoint as lora_checkpoint
+import miles.backends.megatron_utils.lora.utils as lora_utils
 from miles.backends.megatron_utils.lora.checkpoint import (
     LegacyRankShardLoader,
     _distributed_optimizer_step,
@@ -21,6 +24,8 @@ from miles.backends.megatron_utils.lora.checkpoint import (
     _world_slice,
     restore_single_lora,
 )
+from miles.backends.megatron_utils.lora.native.modules.linear import NativeLoRAAdapter
+from miles.backends.megatron_utils.lora.utils import _adapter_shard_params
 from miles.backends.training_utils.checkpoint.adapter.adapter_state import AdapterState
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
 from miles.backends.training_utils.checkpoint.adapter.parametrization_conversion import (
@@ -42,6 +47,8 @@ def _restore(path, *, convert_save=None):
         lora_type="lora",
         lora_dropout=0.05,
         experts_shared_outer_loras=False,
+        megatron_to_hf_mode="bridge",
+        multi_lora=False,
         backend=SimpleNamespace(no_load_optim=True, no_save_optim=False, use_precision_aware_optimizer=False),
     )
     scheduler = MagicMock()
@@ -225,7 +232,169 @@ def test_an_adapter_saved_under_one_mount_loads_under_another(monkeypatch):
         assert_parametrization_matches_run(saved, other, [], load_optimizer=False, has_optimizer_state=False)
 
 
-class _DpZeroOptimizer(lora_checkpoint.DistributedOptimizer):
+RUN = AdapterParametrization("m", 1, 2.0, "lora", ("model.layers.0.self_attn.q_proj",), False)
+
+
+class _Adapter(NativeLoRAAdapter):
+    def __init__(self):
+        super().__init__("model.layers.0.self_attn.q_proj.", (), tp_rank=0)
+        self.lora_A = torch.nn.Parameter(torch.zeros(1, 2))
+        self.lora_B = torch.nn.Parameter(torch.zeros(2, 1))
+
+    def export_plan(self, gather):
+        return []
+
+
+class _Chunk(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.base = torch.nn.Linear(2, 2)
+        self.adapter = _Adapter()
+        self.param_syncs = 0
+
+    def start_param_sync(self, force_sync):
+        self.param_syncs += 1
+
+
+def _save_old_format(path, chunks, **training_state):
+    """The old-format files a rank wrote: its adapter shard and, optionally, its training state."""
+    torch.save(
+        {name: param.detach().cpu() for name, param in _adapter_shard_params(chunks).items()},
+        path / "adapter_megatron_rank0.pt",
+    )
+    if training_state:
+        state = {"iteration": 5, "optimizer": {"step": 7}, "opt_param_scheduler": {"lr": 0.5}} | training_state
+        torch.save(state, path / "training_state_rank0.pt")
+
+
+def _random_chunks(n):
+    chunks = [_Chunk() for _ in range(n)]
+    for chunk in chunks:
+        for param in chunk.adapter.parameters():
+            param.data.copy_(torch.randn_like(param))
+    return chunks
+
+
+def _optimizer(calls):
+    return SimpleNamespace(
+        load_state_dict=lambda state: calls.append(("load_state_dict", state)),
+        reload_model_params=lambda: calls.append(("reload_model_params", None)),
+    )
+
+
+def _load(path, chunks, calls, *, load_optimizer):
+    loader = LegacyRankShardLoader(chunks, _optimizer(calls), RUN, load_optimizer, precision_aware=False)
+    parametrization, has_optimizer_state = loader.parametrization(path)
+    # load_adapter_source's check between reading the parametrization and preparing
+    assert_parametrization_matches_run(
+        parametrization, RUN, [], load_optimizer=load_optimizer, has_optimizer_state=has_optimizer_state
+    )
+    loader.apply(loader.prepare(path))
+    return parametrization
+
+
+class TestLegacyRankShardLoader:
+    """LegacyRankShardLoader reads a single-LoRA ``--save`` written before the adapter format (adapter_megatron_rank*.pt) into the model."""
+
+    @pytest.fixture(autouse=True)
+    def _single_rank(self, monkeypatch):
+        monkeypatch.setattr(
+            lora_utils,
+            "get_parallel_state",
+            lambda: SimpleNamespace(tp=SimpleNamespace(rank=0), pp=SimpleNamespace(rank=0)),
+        )
+
+    def test_virtual_pipeline_chunks_restore_their_own_adapters_bitwise(self, tmp_path):
+        saved = _random_chunks(2)
+        _save_old_format(tmp_path, saved)
+        restored, calls = [_Chunk(), _Chunk()], []
+
+        # the old save records no alpha; load_adapter_source falls back to the run's
+        assert _load(tmp_path, restored, calls, load_optimizer=False) == replace(RUN, lora_alpha=None)
+
+        for before, after in zip(saved, restored, strict=True):
+            for a, b in zip(before.adapter.parameters(), after.adapter.parameters(), strict=True):
+                assert torch.equal(a, b)
+        # the fp32 masters were built before the adapter load; without the refresh the first step reverts it
+        assert calls == [("reload_model_params", None)]
+
+    def test_a_full_checkpoint_hands_the_saved_optimizer_and_parameter_state_over_unchanged(
+        self, tmp_path, monkeypatch
+    ):
+        """The old path loaded optimizer.state_dict() and each DistributedOptimizer's reshardable parameter state."""
+        calls, casts = [], []
+        parameter_state = {"per_bucket_numel": {}, 0: {torch.float32: [[{"param": torch.randn(2), "padding": False}]]}}
+        distributed = SimpleNamespace(
+            optimizer=object(),
+            load_parameter_state_from_dp_reshardable=lambda state: calls.append(("parameter", state)),
+        )
+        monkeypatch.setattr(lora_checkpoint, "_distributed_optimizers", lambda _optimizer: [distributed])
+        monkeypatch.setattr(
+            lora_checkpoint,
+            "_build_cast_main_to_params_fn",
+            lambda _optimizer, precision_aware: lambda: casts.append(1),
+        )
+        saved = _random_chunks(1)
+        _save_old_format(tmp_path, saved, parameter_state=[parameter_state])
+        restored = [_Chunk()]
+
+        _load(tmp_path, restored, calls, load_optimizer=True)
+
+        assert [name for name, _ in calls] == ["load_state_dict", "parameter"]
+        assert calls[0][1] == {"step": 7}
+        assert torch.equal(
+            calls[1][1][0][torch.float32][0][0]["param"], parameter_state[0][torch.float32][0][0]["param"]
+        )
+        # the loaded masters, not the shard's bf16 weights, become the model's parameters on every rank
+        assert casts == [1] and restored[0].param_syncs == 1
+        for a, b in zip(saved[0].adapter.parameters(), restored[0].adapter.parameters(), strict=True):
+            assert torch.equal(a, b)
+
+    @pytest.mark.parametrize(
+        "training_state",
+        [{}, {"optimizer": None, "parameter_state": None}, {"optimizer": {"step": 7}}],
+        ids=["no-training-state", "saved-with-no-save-optim", "pre-parameter-state-format"],
+    )
+    def test_an_unrestorable_optimizer_fails_unless_no_load_optim(self, tmp_path, monkeypatch, training_state):
+        monkeypatch.setattr(lora_checkpoint, "_distributed_optimizers", lambda _optimizer: [])
+        _save_old_format(tmp_path, _random_chunks(1), **training_state)
+
+        with pytest.raises(AdapterSourceError, match=r"no optimizer state; load weights only \(--no-load-optim\)"):
+            _load(tmp_path, [_Chunk()], [], load_optimizer=True)
+        _load(tmp_path, [_Chunk()], [], load_optimizer=False)
+
+    def test_a_shard_that_does_not_match_the_adapter_fails(self, tmp_path):
+        """A silently partial load resumes training on a half-initialized adapter."""
+        torch.save(
+            {"adapter.lora_A": torch.ones(1, 2), "stale_lora_C": torch.ones(1)}, tmp_path / "adapter_megatron_rank0.pt"
+        )
+
+        with pytest.raises(RuntimeError, match=r"missing=\['adapter.lora_B'\], unexpected=\['stale_lora_C'\]"):
+            _load(tmp_path, [_Chunk()], [], load_optimizer=False)
+
+    def test_a_shard_tensor_of_another_shape_fails(self, tmp_path):
+        """copy_ would broadcast a shared-outer [1, ...] into a per-expert [E, ...] parameter without a word."""
+        torch.save(
+            {"adapter.lora_A": torch.ones(1, 2), "adapter.lora_B": torch.ones(1, 1)},
+            tmp_path / "adapter_megatron_rank0.pt",
+        )
+
+        with pytest.raises(RuntimeError, match=r"adapter.lora_B: saved \(1, 1\) != parameter \(2, 1\)"):
+            _load(tmp_path, [_Chunk()], [], load_optimizer=False)
+
+    def test_shards_saved_under_another_layout_fail(self, tmp_path):
+        """Falling through to fresh adapter weights would hide a resharding mistake."""
+        torch.save({"adapter.lora_A": torch.ones(1, 2)}, tmp_path / "adapter_megatron_rank1.pt")
+
+        with pytest.raises(AssertionError, match="none for global rank 0"):
+            _load(tmp_path, [_Chunk()], [], load_optimizer=False)
+
+    def test_a_directory_without_a_shard_for_this_rank_fails(self, tmp_path):
+        with pytest.raises(AssertionError, match="no adapter shard for this rank"):
+            _load(tmp_path, [_Chunk()], [], load_optimizer=False)
+
+
+class _DpZeroOptimizer(DistributedOptimizer):
     """A DistributedOptimizer's dp-zero gather and scatter over one parameter, on the gloo group Megatron gives it."""
 
     def __init__(self, param, master, group):
@@ -286,6 +455,7 @@ def _expert_dp_round_trip(rank, world_size, port):
     groups = [optimizer_groups["intra_dp_cp_group_gloo"], optimizer_groups["intra_expt_dp_group_gloo"]]
     subs = [_DpZeroOptimizer(p, m, g) for p, m, g in zip(params, masters, groups, strict=True)]
     slots = SimpleNamespace(
+        bf16_adapter_key_style="peft",
         slot_parameters=lambda slot: params,
         local_shard_specs=lambda slot, holds: [SimpleNamespace(local_shape=params[i].shape) for i in sorted(holds)],
         piece_parameter=lambda slot, holds: [(i, torch.arange(params[i].numel())) for i in sorted(holds)],
@@ -347,6 +517,7 @@ def test_an_export_reads_only_the_parameters_this_rank_leads(monkeypatch):
     expert = _DpZeroOptimizer(elsewhere, torch.zeros(3, 4), SimpleNamespace(rank=lambda: 1))
     params = [led, elsewhere]
     slots = SimpleNamespace(
+        bf16_adapter_key_style="peft",
         slot_parameters=lambda slot: params,
         local_shard_specs=lambda slot, holds: [SimpleNamespace(local_shape=led.shape)],
         piece_parameter=lambda slot, holds: [(0, torch.arange(2))],
@@ -368,6 +539,7 @@ def test_an_export_of_masters_holding_nan_saves_them(monkeypatch):
     )
     dense = _DpZeroOptimizer(param, master, SimpleNamespace(rank=lambda: 0))
     slots = SimpleNamespace(
+        bf16_adapter_key_style="peft",
         slot_parameters=lambda slot: [param],
         local_shard_specs=lambda slot, holds: [SimpleNamespace(local_shape=param.shape)],
         piece_parameter=lambda slot, holds: [(0, torch.arange(2))],
@@ -382,6 +554,7 @@ def test_an_export_of_masters_holding_nan_saves_them(monkeypatch):
 def test_without_an_optimizer_an_adapter_path_loads_the_weights_and_starts_over(tmp_path, monkeypatch):
     param = torch.nn.Parameter(torch.zeros(2, 2, dtype=torch.bfloat16))
     slots = SimpleNamespace(
+        bf16_adapter_key_style="peft",
         targets=None,
         slot_parameters=lambda slot: [param],
         piece_parameter=lambda slot, holds: [(0, torch.tensor([3, 0]))],

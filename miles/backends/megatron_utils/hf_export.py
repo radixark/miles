@@ -72,18 +72,18 @@ def save_hf_model(
                     f"HF export to {path} produced no weight files — the megatron "
                     f"bridge likely has no mapping for this model architecture."
                 )
-        if is_lora_model(model) and args.megatron_to_hf_mode == "raw":
-            publisher.write_adapter(None, checkpoint_dir / "adapter")
-        elif is_lora_model(model):
-            assert adapter_slots is not None, "a Bridge LoRA export needs the model's adapter slots"
+        if is_lora_model(model):
+            assert adapter_slots is not None, "a LoRA export needs the model's adapter slots"
             parametrization = single_lora_parametrization(adapter_slots, args)
-            # a fused module whose components have their own A has no PEFT name; sglang's names, as main wrote, do
-            write = (
-                write_peft_export
-                if has_plain_peft_form(parametrization, adapter_slots.targets)
-                else write_sampler_export
+            # native keeps sglang's stacked expert layout; a fused module whose components have their own A has no
+            # PEFT name, and sglang's names, as main wrote, do
+            write_export = (
+                write_sampler_export
+                if adapter_slots.bf16_adapter_key_style == "sampler"
+                or not has_plain_peft_form(parametrization, adapter_slots.targets)
+                else write_peft_export
             )
-            write(
+            write_export(
                 checkpoint_dir / "adapter",
                 adapter_slots,
                 0,

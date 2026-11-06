@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 from safetensors.torch import save_file
-from transformers import LlamaConfig
+from transformers import AutoConfig, LlamaConfig, PretrainedConfig
 
 from miles.backends.training_utils.checkpoint.adapter.parametrization import (
     AdapterParametrization,
@@ -69,6 +69,60 @@ def test_lora_arguments_import_no_megatron_to_hf():
     """megatron_to_hf loads every converter and SGLang's quantization kernels, which probe the GPU on ROCm (#4201)."""
     code = "import sys, miles.utils.lora.arguments; sys.exit('miles.backends.megatron_utils.megatron_to_hf' in sys.modules)"
     assert subprocess.run([sys.executable, "-c", code]).returncode == 0
+
+
+_NO_SNAPSHOTS = dict(
+    megatron_to_hf_mode="raw",
+    save_hf=None,
+    eval_hf_dir=None,
+    eval_uses_snapshots=False,
+    save=None,
+    lora_rank=8,
+    lora_adapter_path=None,
+    debug_rollout_only=False,
+    multi_lora=False,
+    lora_adapter_targets=[],
+)
+
+
+def _check_layout(monkeypatch, args, hf_config):
+    monkeypatch.setattr(lora_arguments, "load_hf_config", lambda path: hf_config)
+    lora_arguments._assert_adapter_layout_defined(Namespace(**{**vars(args), "hf_checkpoint": "/hf"}))
+
+
+class _LayoutlessConfig(PretrainedConfig):
+    """A family native trains with no HF LoRA layout: no published checkpoint names qwen3_6."""
+
+    model_type = "qwen3_6"
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"save": "/ckpt"},
+        {"save_hf": "/hf/{rollout_id}"},
+        {"eval_hf_dir": "/eval", "eval_uses_snapshots": True},
+        {"lora_adapter_path": "/adapter"},
+    ],
+    ids=["save", "save_hf", "eval_snapshots", "lora_adapter_path"],
+)
+def test_adapter_slots_need_the_families_hf_lora_layout(monkeypatch, overrides) -> None:
+    """Native trains qwen3_6, which has no HF LoRA layout; saving or loading its adapter would crash building the
+    slots."""
+    args = Namespace(**(_NO_SNAPSHOTS | overrides))
+    with pytest.raises(AssertionError, match="model_type='qwen3_6', which miles does not define"):
+        _check_layout(monkeypatch, args, _LayoutlessConfig())
+    _check_layout(monkeypatch, args, AutoConfig.for_model("qwen3"))
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [{}, {"lora_adapter_path": "/adapter", "debug_rollout_only": True}, {"eval_hf_dir": "/eval"}],
+    ids=["no_snapshots", "rollout_only", "eval_dir_without_eval_snapshots"],
+)
+def test_a_run_that_builds_no_slots_trains_any_family(monkeypatch, overrides) -> None:
+    """The actor publishes eval snapshots only under eval_uses_snapshots; validation must not refuse the run."""
+    _check_layout(monkeypatch, Namespace(**(_NO_SNAPSHOTS | overrides)), _LayoutlessConfig())
 
 
 class _ReachedTheModel(Exception):
@@ -318,6 +372,7 @@ def _gpt_oss_export_args(monkeypatch, **overrides):
     monkeypatch.setattr(lora_arguments, "load_hf_config", lambda path: config)
     fields = dict(
         hf_checkpoint="/hf",
+        megatron_to_hf_mode="bridge",
         lora_type="lora",
         hf_lora_targets=["gate_up_proj", "down_proj"],
         lora_rank=4,
@@ -328,6 +383,7 @@ def _gpt_oss_export_args(monkeypatch, **overrides):
         eval_uses_snapshots=False,
         multi_lora=False,
         save=None,
+        debug_rollout_only=False,
         lora_adapter_path=None,
     )
     return Namespace(**(fields | overrides))

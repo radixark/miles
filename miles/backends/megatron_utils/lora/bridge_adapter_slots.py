@@ -8,6 +8,7 @@ import bisect
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
+from itertools import groupby
 from typing import Literal
 
 import torch
@@ -21,6 +22,7 @@ from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
     raise_if_any_rank_failed,
 )
 from miles.backends.training_utils.checkpoint.adapter.key_mapping import (
+    HfKey,
     fused_components,
     map_peft_keys_to_hf_keys,
     split_fused_lora_b,
@@ -53,36 +55,63 @@ class BridgeRowMapping:
     target_modules: tuple[str, ...]
 
 
-def _rectangle(name: str, mine: torch.Tensor) -> tuple[slice, ...]:
-    positions = mine.nonzero()
-    low, high = positions.min(0).values.tolist(), (positions.max(0).values + 1).tolist()
-    box = tuple(slice(lo, hi) for lo, hi in zip(low, high, strict=True))
-    assert mine[box].all(), f"{name}: this rank's elements are not one rectangle"
-    return box
+def _rectangles(name: str, mine: torch.Tensor, box: tuple[slice, ...] | None = None) -> list[tuple[slice, ...]]:
+    """``mine``'s elements inside ``box`` as rectangles, split at empty hyperplanes: an export that concatenates
+    separately gathered shards (e.g. gate and up, or several shared experts) gives a rank several bands of a tensor."""
+    if box is None:
+        positions = mine.nonzero()
+        low, high = positions.min(0).values.tolist(), (positions.max(0).values + 1).tolist()
+        box = tuple(slice(lo, hi) for lo, hi in zip(low, high, strict=True))
+    inside = mine[box]
+    if inside.all():
+        return [box]
+    for dim in range(inside.dim()):
+        occupied = inside.movedim(dim, 0).reshape(inside.shape[dim], -1).any(1).tolist()
+        if all(occupied):
+            continue
+        runs = [list(run) for is_mine, run in groupby(range(len(occupied)), key=occupied.__getitem__) if is_mine]
+        origin = box[dim].start
+        return [
+            rectangle
+            for run in runs
+            for rectangle in _rectangles(
+                name, mine, (*box[:dim], slice(origin + run[0], origin + run[-1] + 1), *box[dim + 1 :])
+            )
+        ]
+    raise AssertionError(f"{name}: this rank's elements are not a union of rectangles split at empty hyperplanes")
 
 
-def _piece(key: str, codes: torch.Tensor, rank: int) -> _HfPiece | None:
+def _pieces_of(key: str, codes: torch.Tensor, rank: int) -> list[_HfPiece]:
     mine = codes // _RANK_STRIDE == rank
     if not mine.any():
-        return None
-    box = _rectangle(key, mine)
-    return _HfPiece(key, tuple(codes.shape), tuple(s.start for s in box), (codes[box] % _RANK_STRIDE).cpu())
+        return []
+    return [
+        _HfPiece(key, tuple(codes.shape), tuple(s.start for s in box), (codes[box] % _RANK_STRIDE).cpu())
+        for box in _rectangles(key, mine)
+    ]
 
 
-def _stack_experts(key: str, pieces_by_expert: dict[int, _HfPiece], num_experts: int) -> _HfPiece:
+def _stack_experts(key: str, pieces_by_expert: dict[int, list[_HfPiece]], num_experts: int) -> list[_HfPiece]:
     experts = sorted(pieces_by_expert)
     assert experts == list(range(experts[0], experts[-1] + 1)), f"{key}: this rank's experts are not contiguous"
     first = pieces_by_expert[experts[0]]
     assert all(
-        p.offsets == first.offsets and p.local_elements.shape == first.local_elements.shape
-        for p in pieces_by_expert.values()
+        len(pieces) == len(first)
+        and all(
+            p.offsets == f.offsets and p.local_elements.shape == f.local_elements.shape
+            for p, f in zip(pieces, first, strict=True)
+        )
+        for pieces in pieces_by_expert.values()
     ), f"{key}: this rank holds different rectangles of different experts"
-    return _HfPiece(
-        key,
-        (num_experts, *first.global_shape),
-        (experts[0], *first.offsets),
-        torch.stack([pieces_by_expert[e].local_elements for e in experts]),
-    )
+    return [
+        _HfPiece(
+            key,
+            (num_experts, *piece.global_shape),
+            (experts[0], *piece.offsets),
+            torch.stack([pieces_by_expert[e][j].local_elements for e in experts]),
+        )
+        for j, piece in enumerate(first)
+    ]
 
 
 def probe_bridge_row_mapping(
@@ -90,20 +119,25 @@ def probe_bridge_row_mapping(
     params: Sequence[torch.nn.Parameter],
     export_adapter: Callable[[], Iterable[tuple[str, torch.Tensor]]],
     targets: HfLoraTargets,
+    map_name: Callable[[str], HfKey] = map_peft_keys_to_hf_keys,
+    unexported: torch.Tensor | None = None,
 ) -> BridgeRowMapping:
-    """Collective: run ``export_adapter`` (Bridge's PEFT-named export) with index-valued stand-ins registered in
-    ``model`` in place of ``params``."""
+    """Collective: run ``export_adapter`` (a backend's HF-named export, names mapped by ``map_name``) with
+    index-valued stand-ins registered in ``model`` in place of ``params``.
+
+    ``unexported``: offsets of the elements the export leaves out by construction, which the caller stores itself.
+    """
     rank = dist.get_rank()
     total = sum(p.numel() for p in params)
     assert total < _RANK_STRIDE and dist.get_world_size() < 2**53 // _RANK_STRIDE, "the probe encoding overflows"
     pieces, a_sources, modules = [], {}, set()
-    per_expert: dict[str, dict[int, _HfPiece]] = {}
+    per_expert: dict[str, dict[int, list[_HfPiece]]] = {}
     num_experts: dict[str, int] = {}
 
     def decode(name: str, tensor: torch.Tensor) -> None:
         assert tensor.dtype == torch.float64, f"{name}: the export changed the probe's dtype to {tensor.dtype}"
         codes = tensor.long()
-        hf_key = map_peft_keys_to_hf_keys(name)
+        hf_key = map_name(name)
         module, factor = hf_key.key.rsplit(".", 1)
         components = fused_components(module, targets)
         if factor == "lora_A":
@@ -112,18 +146,18 @@ def probe_bridge_row_mapping(
             a_sources.setdefault(source, []).append(module if components is None else components)
         if hf_key.expert_index is not None:
             num_experts[hf_key.key] = max(num_experts.get(hf_key.key, 0), hf_key.expert_index + 1)
-            if (piece := _piece(hf_key.key, codes, rank)) is not None:
-                per_expert.setdefault(hf_key.key, {})[hf_key.expert_index] = piece
+            if expert_pieces := _pieces_of(hf_key.key, codes, rank):
+                per_expert.setdefault(hf_key.key, {})[hf_key.expert_index] = expert_pieces
             modules.add(module)
         elif components is None:
-            pieces.append(_piece(hf_key.key, codes, rank))
+            pieces.extend(_pieces_of(hf_key.key, codes, rank))
             modules.add(module)
         elif factor == "lora_A":
-            pieces.append(_piece(f"{components[0]}.lora_A", codes, rank))
+            pieces.extend(_pieces_of(f"{components[0]}.lora_A", codes, rank))
             modules.update(components)
         else:
             for component, part in zip(components, split_fused_lora_b(module, codes, targets), strict=True):
-                pieces.append(_piece(f"{component}.lora_B", part, rank))
+                pieces.extend(_pieces_of(f"{component}.lora_B", part, rank))
 
     stand_ins, start = [], 0
     for param in params:
@@ -153,8 +187,11 @@ def probe_bridge_row_mapping(
                 flat = [m for member in members for m in ((member,) if isinstance(member, str) else member)]
                 if len(flat) > 1:
                     groups.add(tuple(sorted(flat)))
-            pieces = [p for p in pieces if p is not None]
-            pieces += [_stack_experts(key, by_expert, num_experts[key]) for key, by_expert in per_expert.items()]
+            pieces += [
+                piece
+                for key, by_expert in per_expert.items()
+                for piece in _stack_experts(key, by_expert, num_experts[key])
+            ]
             # a group's A pieces are copies of one parameter; the library stores it once, under the group's first
             # member, which a fused module's A need not have been decoded under
             for group in groups:
@@ -175,7 +212,10 @@ def probe_bridge_row_mapping(
             covered = torch.zeros(total, dtype=torch.bool)
             for piece in pieces:
                 covered[piece.local_elements.flatten()] = True
-            assert covered.all(), f"Bridge's export does not reach {int((~covered).sum())} of this rank's elements"
+            if unexported is not None:
+                assert not covered[unexported].any(), "the export reaches elements declared unexported"
+                covered[unexported] = True
+            assert covered.all(), f"the export does not reach {int((~covered).sum())} of this rank's elements"
         except Exception as exc:
             error = exc
     raise_if_any_rank_failed(error)
@@ -232,23 +272,43 @@ class BridgeAdapterSlots:
     Multi-LoRA slots are padded to ``max_rank``; a slot's HF tensors have its real rank.
     """
 
-    bf16_adapter_key_style: Literal["peft"] = "peft"
+    bf16_adapter_key_style: Literal["peft", "sampler"] = "peft"
 
     def __init__(self, model, iterator, targets: HfLoraTargets, *, multi_lora: bool):
         """Collective: probes the row mapping now, while nothing else touches the parameters."""
         self._model, self._iterator, self.targets, self._multi_lora = model, iterator, targets, multi_lora
         self._specs: dict[int, list[LocalShardSpec]] = {}
+        padding = self._vocab_padding_pieces()
         # every slot has the same layout
-        self.row_mapping = probe_bridge_row_mapping(model, self.slot_parameters(0), self._export_probe, targets)
+        row_mapping = probe_bridge_row_mapping(
+            model,
+            self.slot_parameters(0),
+            self._export_probe,
+            targets,
+            self._map_name,
+            torch.cat([piece.local_elements.flatten() for piece in padding]) if padding else None,
+        )
+        # the export trims the vocab padding; adapter_state keeps it, under its own key
+        self.row_mapping = replace(row_mapping, pieces=[*row_mapping.pieces, *padding])
         self.head_rows = self._head_rows()
 
+    def _head_key(self) -> str | None:
+        return f"{self.targets.unembed[0]}.lora_B"
+
     def _head_rows(self) -> HeadRows | None:
-        head_b = f"{self.targets.unembed[0]}.lora_B"
-        if not any(piece.key == head_b for piece in self.row_mapping.pieces):
+        head_b = self._head_key()
+        if head_b is None or not any(piece.key == head_b for piece in self.row_mapping.pieces):
             return None
         served = next(piece.global_shape[0] for piece in self.row_mapping.pieces if piece.key == head_b)
         assert self.targets.vocab_size is not None, "a trained head needs the HF vocab size"
         return HeadRows(head_b, max(self.targets.vocab_size, served))
+
+    def _map_name(self, name: str) -> HfKey:
+        return map_peft_keys_to_hf_keys(name)
+
+    def _vocab_padding_pieces(self) -> list[_HfPiece]:
+        # Bridge exports every adapter element
+        return []
 
     def slot_parameters(self, slot: int) -> list[torch.nn.Parameter]:
         if self._multi_lora:

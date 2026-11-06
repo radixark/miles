@@ -503,6 +503,47 @@ def test_a_head_source_over_the_served_vocab_loads_the_served_rows(tmp_path, row
     assert torch.equal(members.imported.weights[1], head_b[:6].to(torch.bfloat16).float())
 
 
+INKLING = get_hf_lora_targets({"model_type": "inkling_text", "num_hidden_layers": 1, "mlp_layer_types": ["dense"]})
+
+
+# native names Inkling's head by the model's own path, as its probe does
+INKLING_HEAD = "language_model.lm_head"
+INKLING_HEAD_RUN = replace(HEAD_RUN, target_modules=(INKLING_HEAD,))
+
+
+class InklingHeadMembers(FakeMembers):
+    """Native Inkling's head: 6 served rows of a vocab whose released adapters hold 8."""
+
+    head_rows = HeadRows(f"{INKLING_HEAD}.lora_B", max_source_rows=8)
+
+    def get_local_shard_specs(self, slot):
+        return [
+            LocalShardSpec(f"{INKLING_HEAD}.lora_A", (2, 6), (0, 0), (2, 6)),
+            LocalShardSpec(f"{INKLING_HEAD}.lora_B", (6, 2), (0, 0), (6, 2)),
+        ]
+
+
+def _write_inkling_head_adapter(path):
+    weights = {f"{INKLING_HEAD}.lora_A": torch.full((2, 6), 3.0), f"{INKLING_HEAD}.lora_B": torch.full((8, 2), 7.0)}
+    write_peft_adapter(path, weights, INKLING_HEAD_RUN, INKLING, lora_dropout=0.0)
+
+
+def test_a_native_warm_start_loads_an_inkling_head_peft_dir(tmp_path):
+    _write_inkling_head_adapter(tmp_path)
+    members = InklingHeadMembers()
+    load_adapter_source(tmp_path, members, 0, INKLING_HEAD_RUN, INKLING, load_optimizer=False)
+    assert torch.equal(members.imported.weights[0], torch.full((2, 6), 3.0))
+    assert torch.equal(members.imported.weights[1], torch.full((6, 2), 7.0))
+
+
+def test_a_peft_dir_without_adapter_config_is_refused_with_a_remedy(tmp_path):
+    # the load checks the adapter's rank, alpha and targets against the run from adapter_config.json
+    _write_inkling_head_adapter(tmp_path)
+    (tmp_path / "adapter_config.json").unlink()
+    with pytest.raises(RuntimeError, match="no adapter_config.json.*save_pretrained"):
+        load_adapter_source(tmp_path, InklingHeadMembers(), 0, INKLING_HEAD_RUN, INKLING, load_optimizer=False)
+
+
 @pytest.mark.parametrize("rows", [5, 9])
 def test_a_head_source_outside_the_declared_rows_is_refused(tmp_path, rows):
     head_b = torch.zeros(rows, 2)

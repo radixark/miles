@@ -17,7 +17,6 @@ from megatron.core import dist_checkpointing
 from megatron.core.dist_checkpointing.dict_utils import nested_values
 from megatron.core.dist_checkpointing.mapping import apply_factories
 from megatron.core.distributed import DistributedDataParallel as DDP
-from megatron.core.optimizer import DistributedOptimizer
 from megatron.core.optimizer.cpu_offloading.hybrid_optimizer import HybridDeviceOptimizer
 from megatron.core.utils import unwrap_model
 from safetensors import SafetensorError
@@ -25,6 +24,8 @@ from safetensors import SafetensorError
 from miles.backends.megatron_utils.lora.bridge_adapter_slots import BridgeAdapterSlots
 from miles.backends.megatron_utils.lora.optimizer import SlotOptimizer
 from miles.backends.megatron_utils.lora.utils import (
+    _distributed_optimizers,
+    _init_zero_hdo_state,
     _load_training_state,
     _native_adapter_shard,
     _read_native_adapter_shard,
@@ -161,20 +162,12 @@ class LayerWiseSlotMembers:
         self._optimizers[slot].allgather_params()
 
 
-def _distributed_optimizers(optimizer) -> list:
-    subs = optimizer.chained_optimizers
-    # another optimizer's state would be silently left out of the checkpoint
-    assert all(
-        isinstance(sub, DistributedOptimizer) for sub in subs
-    ), f"the adapter checkpoint needs --use-distributed-optimizer; got {[type(sub).__name__ for sub in subs]}"
-    return subs
-
-
 class DistributedOptimizerMembers:
-    """Bridge single LoRA's checkpoint members: each DP group's rank 0 gathers / scatters whole fp32 masters and
-    moments over Gloo."""
+    """Checkpoint members of single LoRA (slot 0, Bridge or native) trained by Megatron's DistributedOptimizer.
 
-    bf16_adapter_key_style = "peft"
+    Each DP group's rank 0 gathers whole parameters' fp32 masters and moments over Gloo and writes them; on import
+    it scatters them back, and every rank re-casts its bf16 shard and all-gathers the parameters.
+    """
 
     def __init__(
         self,
@@ -187,6 +180,8 @@ class DistributedOptimizerMembers:
     ):
         self._slots, self._optimizer, self._model = adapter_slots, optimizer, model
         self._precision_aware, self._save_moments = precision_aware, save_moments
+        # the export is the slots'; native's names its experts like sglang
+        self.bf16_adapter_key_style = adapter_slots.bf16_adapter_key_style
 
     @property
     def head_rows(self) -> HeadRows | None:
@@ -262,34 +257,35 @@ class DistributedOptimizerMembers:
         return AdapterState(specs, weights, pieces("exp_avg"), pieces("exp_avg_sq"), step=step)
 
     def import_adapter_state(self, slot: int, state: AdapterState) -> None:
-        """Rank-local: assembles the whole tensors of the parameters this rank leads; the scatter waits for finish."""
+        """Rank-local: groups the pieces by the parameter this rank leads; the scatter waits for finish."""
         holds = self._holds()
-        params = self._slots.slot_parameters(0)
-        # whole tensors of the parameters this rank leads; DP rank 0 holds every element of them
-        whole = {i: {k: torch.zeros(params[i].shape) for k in _STATE_KEYS} for i in holds}
+        # the pieces of each parameter this rank leads
+        pieces_by_param = {i: [] for i in holds}
         for (index, offsets), *pieces in zip(
             self._slots.piece_parameter(0, holds), state.weights, state.exp_avgs, state.exp_avg_sqs, strict=True
         ):
-            for key, piece in zip(_STATE_KEYS, pieces, strict=True):
-                whole[index][key].view(-1)[offsets.flatten()] = piece.flatten().cpu()
-        self._imported = whole, state.step
+            pieces_by_param[index].append((offsets.flatten(), pieces))
+        self._imported = pieces_by_param, state.step
 
     def finish_import_adapter_state(self, slot: int) -> None:
-        """Every rank scatters the leaders' whole tensors over DP, then re-casts and syncs the bf16 parameters."""
-        whole, step = self._imported
+        """Every rank scatters the leaders' pieces over DP, then re-casts and syncs the bf16 parameters."""
+        pieces_by_param, step = self._imported
         del self._imported
         index_of = {id(p): i for i, p in enumerate(self._slots.slot_parameters(0))}
         for sub in self._distributed_optimizers():
             if sub.init_state_fn is not None:
                 sub.init_state_fn(sub.optimizer, sub.config)
-            # every element is overwritten below, so nothing is gathered
+            elif isinstance(sub.optimizer, HybridDeviceOptimizer) and not sub.optimizer.state:
+                _init_zero_hdo_state(sub.optimizer)
+            # every element is in a piece, so the gather skips the data it would overwrite
             gathered = sub.get_parameter_state_dp_zero(use_gloo_comm=True, empty_data=True)
             if gathered is not None:
                 for buffer_index, buffer in enumerate(sub.buffers):
                     for param in buffer.param_index_map:
                         world, start, end = _world_slice(gathered, buffer_index, buffer, param)
-                        for key in _STATE_KEYS:
-                            world[key][start:end] = whole[index_of[id(param)]][key].flatten()
+                        for offsets, pieces in pieces_by_param[index_of[id(param)]]:
+                            for key, piece in zip(_STATE_KEYS, pieces, strict=True):
+                                world[key][start:end][offsets] = piece.flatten().cpu()
                 del gathered["buckets_coalesced"]
             sub.load_parameter_state_from_dp_zero(gathered)
             _set_distributed_optimizer_step(sub, step)
@@ -302,10 +298,9 @@ class ModelWeightMembers:
     """Bridge single LoRA without an optimizer (--debug-disable-optimizer): every rank loads the weights of the
     pieces it holds straight into its bf16 parameters."""
 
-    bf16_adapter_key_style = "peft"
-
     def __init__(self, adapter_slots: BridgeAdapterSlots):
         self._slots = adapter_slots
+        self.bf16_adapter_key_style = adapter_slots.bf16_adapter_key_style
 
     @property
     def head_rows(self) -> HeadRows | None:
@@ -369,22 +364,6 @@ def _distributed_optimizer_step(sub) -> int | None:
             steps |= {int(group.get("step", 0)) for group in optimizer.param_groups if group["params"]}
     assert len(steps) <= 1, f"the Adam optimizers of one DistributedOptimizer disagree on the step: {steps}"
     return steps.pop() if steps else None
-
-
-def _init_zero_hdo_state(hdo: HybridDeviceOptimizer) -> None:
-    """The state a never-stepped HDO is equivalent to: its fp32 master, zero moments, step 0.
-
-    Megatron's own dummy_step would take a real Adam step on random gradients.
-    """
-    for group in hdo.param_groups:
-        for param in group["params"]:
-            master = hdo.param_to_inner_param[param]
-            hdo.state[param] = {
-                "step": torch.tensor(0.0),
-                "exp_avg": torch.zeros_like(master),
-                "exp_avg_sq": torch.zeros_like(master),
-                "master_param": master,
-            }
 
 
 def _set_distributed_optimizer_step(sub, step: int) -> None:
@@ -629,6 +608,15 @@ def _load_legacy_slot(shells: dict, slot_optimizer: SlotOptimizer, path: str, lo
         for child in slot_optimizer.chained_optimizers:
             child._copy_main_params_to_model_params()
     slot_optimizer.allgather_params()
+
+
+def build_adapter_slots(args, model, iterator, targets) -> BridgeAdapterSlots:
+    """Collective: the run's adapter checkpoint view, Bridge's (single or multi-LoRA) or native's."""
+    if args.megatron_to_hf_mode == "raw":
+        from miles.backends.megatron_utils.lora.native.checkpoint import NativeAdapterSlots
+
+        return NativeAdapterSlots(model, iterator, targets)
+    return BridgeAdapterSlots(model, iterator, targets, multi_lora=args.multi_lora)
 
 
 def single_lora_parametrization(adapter_slots: BridgeAdapterSlots, args) -> AdapterParametrization:

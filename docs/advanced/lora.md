@@ -144,8 +144,8 @@ Ordinary LoRA also accepts specific HF targets mixed with group names, such as
 | `--lora-type` | per backend | `lora` shares one `lora_A` across each fused projection; `canonical_lora` gives Q/K/V, gate/up and the Qwen3.5 / 3.6 GDN `in_proj` components their own. Native gives every projection its spec declares its own `lora_A`, so it defaults to and accepts only `canonical_lora`; `serve_tinker.py` defaults to `canonical_lora`; Bridge otherwise defaults to `lora`; torchtitan fuses q/k/v and gate/up, so it defaults to and accepts only `lora`. The gpt-oss MoE LoRA CI test trains both expert layouts with `canonical_lora`. |
 | `--target-modules` | none | Uses HF model defaults when omitted. Accepts `all-linear`, `attn/mlp/unembed` groups, HF leaf names or scoped HF paths; Bridge also accepts Megatron selectors. |
 | `--exclude-modules` | none | Comma-separated HF leaf names or scoped HF paths removed after selection; Bridge also accepts Megatron selectors. |
-| `--lora-adapter-path` | none | Warm-start/resume path. Also provide the matching positive rank and target modules. Bridge single LoRA reads an adapter dir (any parallel layout; with optimizer state unless `--no-load-optim`), an HF PEFT pair (weights only, needs `--no-load-optim`) or miles' older per-rank shards (same parallel layout). Inkling native has its own HF adapter loader. |
-| `--lora-adapter-convert-save` | none | Bridge single LoRA only: commit `--lora-adapter-path`, as loaded, to this path as an adapter dir. With `--num-rollout 0` it converts a source rollout-only cannot serve (older per-rank shards, official Tinker-named weights). |
+| `--lora-adapter-path` | none | Warm-start/resume path. Also provide the matching positive rank and target modules. Single LoRA (Bridge or native) reads an adapter dir (any parallel layout; with optimizer state unless `--no-load-optim`), an HF PEFT pair, including miles' older native `--save-hf` export (sglang expert names) (weights only, needs `--no-load-optim`), or miles' older per-rank shards (same parallel layout). |
+| `--lora-adapter-convert-save` | none | Single LoRA (Bridge or native) only: commit `--lora-adapter-path`, as loaded, to this path as an adapter dir. With `--num-rollout 0` it converts a source rollout-only cannot serve (older per-rank shards, official Tinker-named weights). |
 | `--lora-base-cpu-backup` | off | Colocated mode only: keep a CPU mirror of the frozen SGLang base and avoid re-sending base weights. This trades host RAM for faster and more reliable pause/resume. |
 | `--lora-train-only` | off | Train the adapter while keeping ordinary rollout engines on the frozen base policy. |
 | `--experts-shared-outer-loras` | off | Use shared outer factors for grouped MoE experts. This layout is not checkpoint-compatible with per-expert LoRA. |
@@ -161,12 +161,12 @@ hybrid attention. Vision towers, routers, norms, and GDN convolutions are exclud
 
 | Model layout | Attention | MLP | Ordinary LoRA default |
 |---|---|---|---|
-| Llama, Qwen2/2.5, Qwen3 | Q/K/V/O | Dense gate/up/down | Attention + MLP |
+| Llama, Qwen2/2.5, Qwen3, MiMo | Q/K/V/O | Dense gate/up/down | Attention + MLP |
 | Qwen3 MoE | Q/K/V/O | Routed experts; dense layers when configured | Attention + MLP |
 | Qwen3-Next | Q/K/V/O + GDN qkvz/ba/out | Routed + shared experts; configured dense layers | Attention + MLP |
 | Qwen3.5/3.6, text and multimodal | Q/K/V/O + GDN qkv/z/b/a/out | Dense or packed routed + shared experts | Attention + MLP |
 | GPT-OSS | Q/K/V/O | Packed gate_up/down experts | Attention + MLP |
-| DeepSeek V2/V3, Kimi K2/K2.5 | MLA | Dense + routed + shared experts as configured | Attention + MLP |
+| DeepSeek V2/V3, Kimi K2/K2.5, JoyAI-LLM-Flash | MLA | Dense + routed + shared experts as configured | Attention + MLP |
 | DeepSeek V3.2, GLM-5/5.1/5.2 | MLA + DSA indexer | Dense + routed + shared experts as configured | Attention + MLP, excluding indexer |
 | GLM-4 MoE | Q/K/V/O | Dense + routed + shared experts as configured | Attention + MLP |
 | Inkling | Q/K/V/R/O | Dense + packed routed + shared expert projections | Attention + MLP + output head |
@@ -302,9 +302,9 @@ alternative aligned-expert path.
   does not yet have a dedicated LoRA-SFT E2E test. Shared actor/critic PPO with
   Bridge LoRA is untested: the critic is always built as a full model without
   adapters.
-- **Checkpoints.** Bridge single LoRA saves `{save}/iter_N/adapter` as an adapter
-  dir: whole fp32 masters, Adam moments and step (resumable under any parallel
-  layout), the iteration and scheduler state, and an HF PEFT
+- **Checkpoints.** Single LoRA (Bridge or native) saves `{save}/iter_N/adapter`
+  as an adapter dir: whole fp32 masters, Adam moments and step (resumable under
+  any parallel layout; masters only with `--no-save-optim`), the iteration and scheduler state, and an HF PEFT
   `adapter_model.safetensors` plus `adapter_config.json` export. A failed PEFT
   export fails the save; the committed checkpoint is kept. `{save}/iter_N/adapter`
   is a symlink to the hidden dir `{save}/iter_N/.adapter.<commit_id>/`, so copy it
@@ -312,13 +312,11 @@ alternative aligned-expert path.
   `--optimizer adam` with fp32 masters and moments, the distributed optimizer with
   Gloo process groups, and neither train fault tolerance (`--indep-dp` / in-memory
   checkpoints) nor `--stream-optimizer-state-to-disk`; other settings are refused at
-  launch. Raw mode saves native
-  per-rank shards, optimizer/scheduler state and a rank-sharded adapter config
-  without HF export; exact resume expects the same TP/PP topology. `--save-hf`
-  exports a merged model and an HF adapter without native training shards; native
-  LoRA merges each adapter into its host weights before the ordinary base-weight
-  conversion, so the merged model uses the same converters as full-model exports.
-  Native LoRA imports HF adapters through `--lora-adapter-path`.
+  launch. `--save-hf` exports a
+  merged model and an HF adapter; native LoRA merges each adapter into its host
+  weights before the ordinary base-weight conversion, so the merged model uses the
+  same converters as full-model exports. Both need the family's HF LoRA target
+  layout in `miles/utils/lora/hf_lora_targets.py`.
 - **Weight synchronization.** Colocated IPC and remote NCCL broadcast both ship
   adapter tensors at each configured update boundary without merging them into
   the base. `--check-lora-weight-equal` verifies them with SHA-256.

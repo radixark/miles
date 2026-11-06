@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import json
 from pathlib import Path
 
 import torch
@@ -48,7 +49,7 @@ def write_legacy_checkpoint(path: str, record, config: GatewayConfig) -> None:
         "train_mlp": config.trains_mlp,
         "train_unembed": config.trains_unembed,
     }
-    write_checkpoint_dir(path, lambda _: None, metadata=metadata)
+    write_checkpoint_dir(path, lambda directory: (directory / "META.json").write_text(json.dumps(metadata)))
 
 
 class FakeBackend:

@@ -9,8 +9,12 @@ from argparse import Namespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+import torch
 
 from tests.fast.fixtures.args_fixtures import make_trainer_args, make_trainer_config
+
+from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
+from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
 
 # ---------------------------------------------------------------------------
 # _ensure_model_list
@@ -187,7 +191,7 @@ class TestSaveLoRaBranch:
     @patch(f"{_MODEL_MODULE}.enable_forward_pre_hook")
     @patch(f"{_MODEL_MODULE}.disable_forward_pre_hook")
     @patch(f"{_MODEL_MODULE}.should_disable_forward_pre_hook", return_value=False)
-    @patch(f"{_MODEL_MODULE}.save_checkpoint_with_lora")
+    @patch(f"{_MODEL_MODULE}.save_single_lora")
     @patch(f"{_MODEL_MODULE}.is_lora_model", return_value=True)
     def test_lora_model_calls_lora_save(
         self, mock_is_lora, mock_save_lora, mock_should, mock_disable, mock_enable, mock_save_hashes
@@ -195,9 +199,10 @@ class TestSaveLoRaBranch:
         from miles.backends.megatron_utils.model import save
 
         model = [MagicMock()]
-        save(make_trainer_args(), 42, model, MagicMock(), MagicMock())
+        slots = MagicMock()
+        save(make_trainer_args(), 42, model, MagicMock(), MagicMock(), adapter_slots=slots)
 
-        mock_save_lora.assert_called_once()
+        assert mock_save_lora.call_args.args[3] is slots
 
     @patch(f"{_MODEL_MODULE}.save_model_hashes")
     @patch(f"{_MODEL_MODULE}.enable_forward_pre_hook")
@@ -224,6 +229,7 @@ _HF_EXPORT_MODULE = "miles.backends.megatron_utils.hf_export"
 
 
 class TestSaveHfModelRawLoRA:
+    @patch(f"{_HF_EXPORT_MODULE}.write_sampler_export")
     @patch(f"{_HF_EXPORT_MODULE}._get_hf_bridge")
     @patch(f"{_HF_EXPORT_MODULE}.merge_lora_into_weights")
     @patch(f"{_HF_EXPORT_MODULE}.named_params_and_buffers")
@@ -231,21 +237,108 @@ class TestSaveHfModelRawLoRA:
     @patch(f"{_HF_EXPORT_MODULE}.write_checkpoint_dir", side_effect=lambda path, write, **_kwargs: write(path))
     @patch(f"{_HF_EXPORT_MODULE}.get_parallel_state")
     def test_raw_lora_writes_merged_weights_and_the_adapter(
-        self, _parallel_state, _write_dir, _is_lora, named_weights, merge, get_bridge, tmp_path
+        self, _parallel_state, _write_dir, _is_lora, named_weights, merge, get_bridge, sampler_view, tmp_path
     ):
         from miles.backends.megatron_utils.hf_export import save_hf_model
 
         named_weights.return_value = [("decoder.w", MagicMock())]
         publisher = MagicMock()
         model = [MagicMock()]
-        args = Namespace(megatron_to_hf_mode="raw", hf_checkpoint="/hf", save_hf=None)
+        slots = MagicMock(bf16_adapter_key_style="sampler")
+        args = Namespace(
+            megatron_to_hf_mode="raw",
+            hf_checkpoint=_hf_dir(tmp_path),
+            save_hf=None,
+            lora_rank=8,
+            lora_alpha=16.0,
+            lora_type="canonical_lora",
+            lora_dropout=0.05,
+            experts_shared_outer_loras=False,
+        )
 
-        save_hf_model(args, 0, model, publisher=publisher, adapter_slots=None, path=tmp_path, raise_on_error=True)
+        save_hf_model(args, 0, model, publisher=publisher, adapter_slots=slots, path=tmp_path, raise_on_error=True)
 
         merge.assert_called_once_with(model, dict(named_weights.return_value))
-        publisher.write_model.assert_called_once_with(tmp_path, weights=merge.return_value, hf_checkpoint="/hf")
-        publisher.write_adapter.assert_called_once_with(None, tmp_path / "adapter")
+        publisher.write_model.assert_called_once_with(
+            tmp_path, weights=merge.return_value, hf_checkpoint=args.hf_checkpoint
+        )
+        sampler_view.assert_called_once_with(
+            tmp_path / "adapter", slots, 0, slots.parametrization.return_value, slots.targets, lora_dropout=0.05
+        )
         get_bridge.assert_not_called()
+
+
+class _SharedOuterNativeSlots:
+    """Native's export of shared-outer experts: sglang's stacked names, the shared side ``[1, ...]``."""
+
+    bf16_adapter_key_style = "sampler"
+    targets = get_hf_lora_targets({"model_type": "qwen3_moe", "num_hidden_layers": 1, "num_experts": 4})
+    experts = "model.layers.0.mlp.experts"
+
+    def slot_spec(self, slot):
+        return None
+
+    def parametrization(self, **fields):
+        modules = tuple(f"{self.experts}.{leaf}" for leaf in ("gate_proj", "up_proj", "down_proj"))
+        return AdapterParametrization(**fields, target_modules=modules)
+
+    def export_bf16_adapter(self, slot):
+        for leaf, out_features in (("w1", 6), ("w3", 6)):
+            yield f"{self.experts}.{leaf}.lora_A.weight", torch.ones(1, 2, 8)
+            yield f"{self.experts}.{leaf}.lora_B.weight", torch.ones(4, out_features, 2)
+        yield f"{self.experts}.w2.lora_A.weight", torch.ones(4, 2, 6)
+        yield f"{self.experts}.w2.lora_B.weight", torch.ones(1, 8, 2)
+
+
+@patch(f"{_HF_EXPORT_MODULE}.merge_lora_into_weights")
+@patch(f"{_HF_EXPORT_MODULE}.named_params_and_buffers", return_value=[])
+@patch(f"{_HF_EXPORT_MODULE}.is_lora_model", return_value=True)
+@patch(f"{_HF_EXPORT_MODULE}.write_checkpoint_dir", side_effect=lambda path, write, **_kwargs: write(path))
+@patch(f"{_HF_EXPORT_MODULE}.get_parallel_state")
+def test_native_shared_outer_save_hf_writes_the_stacked_adapter_sglang_serves(
+    _parallel_state, _write_dir, _is_lora, _named_weights, _merge, tmp_path
+):
+    """A per-expert 2D PEFT export has no name for the shared ``[1, ...]`` side; sglang loads the stacked one, with
+    the run's rank, alpha and dropout as main wrote them."""
+    from safetensors.torch import load_file
+
+    from miles.backends.megatron_utils.hf_export import save_hf_model
+
+    args = Namespace(
+        megatron_to_hf_mode="raw",
+        hf_checkpoint=_hf_dir(tmp_path),
+        save_hf=None,
+        lora_rank=2,
+        lora_alpha=4.0,
+        lora_type="lora",
+        lora_dropout=0.05,
+        experts_shared_outer_loras=True,
+    )
+
+    save_hf_model(
+        args,
+        0,
+        [MagicMock()],
+        publisher=MagicMock(),
+        adapter_slots=_SharedOuterNativeSlots(),
+        path=tmp_path,
+        raise_on_error=True,
+    )
+
+    tensors = load_file(tmp_path / "adapter" / "adapter_model.safetensors")
+    experts = _SharedOuterNativeSlots.experts
+    assert {name: tuple(t.shape) for name, t in tensors.items()} == {
+        f"{experts}.w1.lora_A.weight": (1, 2, 8),
+        f"{experts}.w1.lora_B.weight": (4, 6, 2),
+        f"{experts}.w3.lora_A.weight": (1, 2, 8),
+        f"{experts}.w3.lora_B.weight": (4, 6, 2),
+        f"{experts}.w2.lora_A.weight": (4, 2, 6),
+        f"{experts}.w2.lora_B.weight": (1, 8, 2),
+    }
+    config = json.loads((tmp_path / "adapter" / "adapter_config.json").read_text())
+    assert (config["r"], config["lora_alpha"], config["lora_dropout"]) == (2, 4.0, 0.05)
+    # HF module names, which sglang normalizes
+    assert config["target_modules"] == [f"{experts}.{leaf}" for leaf in ("down_proj", "gate_proj", "up_proj")]
 
 
 def _hf_dir(tmp_path) -> str:
@@ -317,7 +410,6 @@ class TestSaveHfModelBridgeLoRA:
             args, 0, [MagicMock()], publisher=publisher, adapter_slots=slots, path=tmp_path, raise_on_error=True
         )
 
-        publisher.write_adapter.assert_not_called()
         slots.slot_spec.assert_called_once_with(0)
         slots.parametrization.assert_called_once_with(
             base_model=args.hf_checkpoint,

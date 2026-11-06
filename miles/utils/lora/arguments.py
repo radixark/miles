@@ -56,10 +56,9 @@ def validate_lora_args(args):
         args.lora_adapter_path = os.path.abspath(args.lora_adapter_path)
     args.lora_alpha = _resolve_lora_alpha(args)
     if args.lora_adapter_convert_save is not None:
-        assert args.train_backend == "megatron" and args.megatron_to_hf_mode == "bridge" and not args.multi_lora, (
-            "--lora-adapter-convert-save is implemented only for single LoRA on --train-backend megatron "
-            "--megatron-to-hf-mode bridge"
-        )
+        assert (
+            args.train_backend == "megatron" and not args.multi_lora
+        ), "--lora-adapter-convert-save is implemented only for single LoRA on --train-backend megatron"
         # every cell loads the source and its rank 0 would commit into the same destination
         assert not args.indep_dp, "--lora-adapter-convert-save does not support --indep-dp (or train fault tolerance)"
         # the trainer actors write it from their own working directory, which need not be the driver's
@@ -186,16 +185,10 @@ def validate_lora_args_after_megatron(args):
             f"--load {args.load} holds LoRA adapter checkpoints (iter_*/adapter): resume one with "
             "--lora-adapter-path, or point --load elsewhere"
         )
-    # rollout-only builds no optimizer and saves nothing
-    if (
-        is_lora_enabled(args)
-        and not args.multi_lora
-        and args.megatron_to_hf_mode == "bridge"
-        and not args.debug_rollout_only
-    ):
+        # rollout-only builds no optimizer and saves nothing
         _validate_adapter_state_args(args)
-    # rollout-only builds no trainer, so no adapter slots
-    if is_lora_enabled(args) and args.megatron_to_hf_mode == "bridge" and not args.debug_rollout_only:
+    # after miles_validate_args: the actor's predicate reads eval_uses_snapshots, resolved there
+    if is_lora_enabled(args):
         _assert_adapter_layout_defined(args)
     if not (is_lora_enabled(args) and args.megatron_to_hf_mode == "raw"):
         return
@@ -241,15 +234,19 @@ def _validate_adapter_state_args(args) -> None:
 
 
 def _assert_adapter_layout_defined(args) -> None:
-    # the actor builds the adapter slots, which need the layout, for whatever reads them; eval_uses_snapshots is
-    # resolved only after validate_lora_args
+    """The adapter slots need the family's HF LoRA target layout; runs that build none train any family."""
+    # a rollout-only run has no trainer; SGLang reads its adapter
+    if args.debug_rollout_only:
+        return
     if reads_adapter_slots(args, args.save):
         hf_config = load_hf_config(args.hf_checkpoint)
         assert has_hf_lora_targets(hf_config.to_dict()), (
-            f"Bridge LoRA snapshots and checkpoints need the HF LoRA target layout of model_type="
-            f"{hf_config.model_type!r}, which miles does not define"
+            f"LoRA --save, --save-hf, eval snapshots and --lora-adapter-path need the HF LoRA target layout of "
+            f"model_type={hf_config.model_type!r}, which miles does not define (miles/utils/lora/hf_lora_targets.py); "
+            "run without them or define the layout"
         )
-        if exports_hf_snapshots(args):
+        # only Bridge exports each expert's side under one unindexed name
+        if exports_hf_snapshots(args) and args.megatron_to_hf_mode == "bridge":
             _assert_bridge_hf_exports_keep_every_expert(args, hf_config)
 
 

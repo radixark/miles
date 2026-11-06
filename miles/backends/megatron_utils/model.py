@@ -42,7 +42,6 @@ from miles.backends.training_utils.model_companion import (
     SampleIdentityExtractor,
 )
 from miles.backends.training_utils.types import TrainStepOutcome
-from miles.backends.training_utils.weight_update.snapshot_publisher import SnapshotPublisher
 from miles.utils.args.runtime import TrainerConfig
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.audit_utils.witness.module import witness_dump_and_clear_stale
@@ -56,7 +55,7 @@ from miles.utils.types import SampleLineage
 
 from ...utils.misc import filter_keys
 from ..training_utils.parallel import get_parallel_state
-from .checkpoint import load_checkpoint, save_checkpoint, save_checkpoint_with_lora
+from .checkpoint import load_checkpoint, save_checkpoint
 from .ci_utils import (
     check_model_hashes,
     check_peak_gpu_memory_after_load,
@@ -66,12 +65,7 @@ from .ci_utils import (
 from .initialize import is_first_replica_megatron_main_rank
 from .lora.bridge_adapter_slots import BridgeAdapterSlots
 from .lora.checkpoint import restore_single_lora, save_single_lora
-from .lora.utils import (
-    is_lora_enabled,
-    is_lora_model,
-    patch_param_grad_buffer_for_colocate_mode_lora,
-    restore_lora_adapter,
-)
+from .lora.utils import is_lora_enabled, is_lora_model, patch_param_grad_buffer_for_colocate_mode_lora
 from .model_provider import get_model_provider_func
 from .parallel import get_packed_seq_params
 
@@ -939,7 +933,6 @@ def save(
     checkpointing_context: dict | None = None,
     non_persistent_ckpt: bool = False,
     *,
-    snapshot_publisher: SnapshotPublisher | None = None,
     adapter_slots: BridgeAdapterSlots | None = None,
 ) -> None:
     """Persist a training checkpoint safely with forward hooks disabled.
@@ -959,12 +952,9 @@ def save(
     if should_disable_forward_pre_hook(args):
         disable_forward_pre_hook(model)
 
-    if is_lora_model(model) and args.megatron_to_hf_mode == "bridge":
+    if is_lora_model(model):
+        assert adapter_slots is not None, "a LoRA --save needs the model's adapter slots"
         save_single_lora(model, optimizer, opt_param_scheduler, adapter_slots, args, iteration)
-    elif is_lora_model(model):
-        save_checkpoint_with_lora(
-            iteration, model, optimizer, opt_param_scheduler, args=args, publisher=snapshot_publisher
-        )
     else:
         save_checkpoint(
             iteration,
@@ -1084,14 +1074,9 @@ def load_model_state(
 
     adapter_iteration = None
     if is_lora_enabled(args) and role == "actor" and args.lora_adapter_path is not None:
-        if args.megatron_to_hf_mode == "bridge":
-            adapter_iteration = restore_single_lora(
-                model, args, adapter_slots=adapter_slots, optimizer=optimizer, opt_param_scheduler=opt_param_scheduler
-            )
-        else:
-            adapter_iteration = restore_lora_adapter(
-                model, args, optimizer=optimizer, opt_param_scheduler=opt_param_scheduler
-            )
+        adapter_iteration = restore_single_lora(
+            model, args, adapter_slots=adapter_slots, optimizer=optimizer, opt_param_scheduler=opt_param_scheduler
+        )
         if adapter_iteration is not None:
             iteration = adapter_iteration
             restored_trained_iteration = True

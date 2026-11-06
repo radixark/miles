@@ -1,0 +1,56 @@
+"""Native LoRA (N = 1) checkpoint members: the same probe-built HF layout as Bridge, over native's own export."""
+
+import torch
+
+from miles.backends.megatron_utils.lora.bridge_adapter_slots import BridgeAdapterSlots, _HfPiece
+from miles.backends.megatron_utils.lora.native.hf_adapter import export_lora_hf_named
+from miles.backends.megatron_utils.lora.native.modules.linear import iter_adapters
+from miles.backends.megatron_utils.lora.native.modules.lm_head import LoRAOutputHead
+from miles.backends.training_utils.checkpoint.adapter.adapter_state import VOCAB_PADDING_SUFFIX
+from miles.backends.training_utils.checkpoint.adapter.key_mapping import HfKey, map_sampler_keys_to_hf_keys
+
+
+class NativeAdapterSlots(BridgeAdapterSlots):
+    """Native exports grouped experts stacked under sglang's ``experts.w1/w3/w2`` (per-expert or ``[1, ...]``)."""
+
+    bf16_adapter_key_style = "sampler"
+
+    def __init__(self, model, iterator, targets):
+        super().__init__(model, iterator, targets, multi_lora=False)
+
+    def _map_name(self, name: str) -> HfKey:
+        return map_sampler_keys_to_hf_keys(name, self.targets)
+
+    def _head_key(self) -> str | None:
+        # native names the head by the model's own module path (e.g. language_model.lm_head), not the family's
+        heads = [adapter for adapter in iter_adapters(self._model) if isinstance(adapter, LoRAOutputHead)]
+        assert len(heads) <= 1, "a model has one output head"
+        return self._map_name(f"{heads[0].hf_prefix}lora_B.weight").key if heads else None
+
+    def _vocab_padding_pieces(self) -> list[_HfPiece]:
+        """head_B's rows past the served vocab, which the export trims: adapter_state keeps them, so that the rows
+        training moves resume exactly."""
+        heads = {id(a.head_B): a for a in iter_adapters(self._model) if isinstance(a, LoRAOutputHead)}
+        pieces, start = [], 0
+        for param in self.slot_parameters(0):
+            head = heads.get(id(param))
+            rows = head.padded_local_rows() if head is not None else None
+            if rows is not None and rows.start < rows.stop:
+                total, first = head.padding_rows()
+                row_numel = param.shape[1]
+                elements = torch.arange(start + rows.start * row_numel, start + rows.stop * row_numel)
+                pieces.append(
+                    _HfPiece(
+                        self._head_key() + VOCAB_PADDING_SUFFIX,
+                        (total, row_numel),
+                        (first, 0),
+                        elements.view(rows.stop - rows.start, row_numel),
+                    )
+                )
+            start += param.numel()
+        return pieces
+
+    def _export_probe(self):
+        # one adapter at a time: a float64 export gathers every expert factor over EP onto every rank
+        for adapter in iter_adapters(self._model):
+            yield from export_lora_hf_named([adapter], dtype=torch.float64)

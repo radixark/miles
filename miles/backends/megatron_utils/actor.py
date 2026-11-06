@@ -12,6 +12,7 @@ from torch_memory_saver import torch_memory_saver
 from miles.backends.megatron_utils.checkpoint_request import MegatronCkptLoadConfig
 from miles.backends.megatron_utils.hf_export import save_hf_model
 from miles.backends.megatron_utils.lora.bridge_adapter_slots import BridgeAdapterSlots
+from miles.backends.megatron_utils.lora.checkpoint import build_adapter_slots
 from miles.backends.megatron_utils.lora.utils import is_lora_enabled, lora_rollout_enabled
 from miles.backends.megatron_utils.megatron_config import has_megatron_checkpoint
 from miles.backends.megatron_utils.megatron_to_hf import converter_model_name
@@ -271,7 +272,7 @@ class MegatronTrainRayActor(TrainRayActor):
             with self.args.backend.mutable():
                 self.args.backend.vocab_size = self.tokenizer.vocab_size
 
-        if is_lora_enabled(args) and args.megatron_to_hf_mode == "bridge" and args.lora_adapter_path is not None:
+        if is_lora_enabled(args) and args.lora_adapter_path is not None:
             self._build_adapter_slots(
                 get_hf_weight_iterator(
                     args,
@@ -338,9 +339,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         is_lora = is_lora_enabled(args)
         # building the slots probes collectively; build them only for what reads them
-        builds_slots = (
-            is_lora and args.megatron_to_hf_mode == "bridge" and reads_adapter_slots(args, args.backend.save)
-        )
+        builds_slots = is_lora and reads_adapter_slots(args, args.backend.save)
         if publish_snapshots or builds_slots:
             iterator = get_hf_weight_iterator(
                 args,
@@ -350,20 +349,15 @@ class MegatronTrainRayActor(TrainRayActor):
                 quantization_config=None if is_lora else quantization_config,
             )
             if publish_snapshots:
-                self.snapshot_publisher = SnapshotPublisher(
-                    iterator, build_lora_config(args, target_modules=args.lora_adapter_targets) if is_lora else None
-                )
+                self.snapshot_publisher = SnapshotPublisher(iterator)
             if builds_slots:
                 self._build_adapter_slots(iterator)
 
     def _build_adapter_slots(self, iterator) -> None:
         # each build probes by exporting the whole adapter in float64; the restore and every save share one
         if self.adapter_slots is None:
-            self.adapter_slots = BridgeAdapterSlots(
-                self.model,
-                iterator,
-                get_hf_lora_targets(self.hf_config.to_dict()),
-                multi_lora=is_multi_lora_enabled(self.args),
+            self.adapter_slots = build_adapter_slots(
+                self.args, self.model, iterator, get_hf_lora_targets(self.hf_config.to_dict())
             )
 
     def _clear_quantized_weight_workspaces(self) -> None:
@@ -952,7 +946,6 @@ class MegatronTrainRayActor(TrainRayActor):
             self.model,
             self.optimizer,
             self.opt_param_scheduler,
-            snapshot_publisher=self.snapshot_publisher,
             adapter_slots=self.adapter_slots,
         )
 

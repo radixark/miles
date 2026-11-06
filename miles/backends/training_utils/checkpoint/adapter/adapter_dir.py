@@ -4,6 +4,7 @@ import json
 import logging
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
+from functools import partial
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
@@ -36,6 +37,7 @@ from miles.backends.training_utils.checkpoint.adapter.commit import (
 from miles.backends.training_utils.checkpoint.adapter.key_mapping import (
     map_named_tensors_to_hf_keys,
     map_peft_keys_to_hf_keys,
+    map_sampler_keys_to_hf_keys,
 )
 from miles.backends.training_utils.checkpoint.adapter.parametrization import (
     AdapterParametrization,
@@ -100,7 +102,7 @@ class AdapterCheckpointMembers(Protocol):
     """
 
     # naming of export_bf16_adapter's names; picks the mapper to HF keys
-    bf16_adapter_key_style: Literal["peft"]
+    bf16_adapter_key_style: Literal["peft", "sampler"]
     # the trained head's lora_B, or None when the adapter has no head
     head_rows: HeadRows | None
 
@@ -167,8 +169,11 @@ def _assert_real_rank(specs: list[LocalShardSpec], lora_rank: int) -> None:
         ), f"{spec.key}: rank {spec.global_shape[rank_axis]} != {lora_rank}"
 
 
-def _hf_key_mapper(members: AdapterCheckpointMembers):
-    return {"peft": map_peft_keys_to_hf_keys}[members.bf16_adapter_key_style]
+def _hf_key_mapper(members: AdapterCheckpointMembers, targets: HfLoraTargets):
+    return {
+        "peft": map_peft_keys_to_hf_keys,
+        "sampler": partial(map_sampler_keys_to_hf_keys, targets=targets),
+    }[members.bf16_adapter_key_style]
 
 
 def _hf_keyed_bf16_adapter(
@@ -177,7 +182,7 @@ def _hf_keyed_bf16_adapter(
     parametrization: AdapterParametrization,
     targets: HfLoraTargets,
 ) -> dict[str, torch.Tensor]:
-    weights, fused_groups = map_named_tensors_to_hf_keys(named_tensors, _hf_key_mapper(members), targets)
+    weights, fused_groups = map_named_tensors_to_hf_keys(named_tensors, _hf_key_mapper(members, targets), targets)
     # the export names a shared A once per module; the writers expect it once per group
     return collapse_shared_lora_a(weights, parametrization, fused_groups)
 
@@ -247,13 +252,13 @@ def _write_bf16_export(
         named_tensors = [(key, tensor.cpu()) for key, tensor in members.export_bf16_adapter(slot)]
         if is_rank0():
             weights = _hf_keyed_bf16_adapter(named_tensors, members, parametrization, targets)
-            write(
-                directory,
-                weights,
-                parametrization,
-                targets,
-                stacked_keys=_stacked_expert_keys(named_tensors, _hf_key_mapper(members)),
+            # Bridge names experts as its checkpoint stores them; native always stacks them, so the family decides
+            stacked_keys = (
+                _stacked_expert_keys(named_tensors, _hf_key_mapper(members, targets))
+                if members.bf16_adapter_key_style == "peft"
+                else None
             )
+            write(directory, weights, parametrization, targets, stacked_keys=stacked_keys)
 
 
 def save_and_commit_adapter_dir(

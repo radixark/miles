@@ -113,12 +113,15 @@ def test_an_import_without_a_step_drops_the_groups_step():
 def test_a_distributed_optimizer_import_scatters_only_in_finish(monkeypatch):
     param = torch.zeros(2, dtype=torch.bfloat16)
     slots = SimpleNamespace(
-        slot_parameters=lambda slot: [param], piece_parameter=lambda slot, holds: [(0, torch.arange(2))]
+        slot_parameters=lambda slot: [param],
+        piece_parameter=lambda slot, holds: [(0, torch.arange(2))],
+        bf16_adapter_key_style=None,
     )
     calls = []
     world = {key: torch.zeros(2) for key in ("param", "exp_avg", "exp_avg_sq")}
     sub = SimpleNamespace(
         init_state_fn=None,
+        optimizer=None,
         buffers=[SimpleNamespace(param_index_map={param: None})],
         get_parameter_state_dp_zero=lambda **kwargs: calls.append("gather") or {0: world, "buckets_coalesced": None},
         load_parameter_state_from_dp_zero=lambda gathered: calls.append("scatter"),
