@@ -7,6 +7,8 @@ from pathlib import Path
 
 import torch
 import torch.distributed.checkpoint as dcp
+from safetensors import safe_open
+from safetensors.torch import load_file
 
 from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
     ADAPTER_STATE_DIRNAME,
@@ -79,8 +81,6 @@ def _has_peft_files(path: Path) -> bool:
 
 
 def _safetensors_names(path: Path) -> list[str]:
-    from safetensors import safe_open
-
     with safe_open(str(path / "adapter_model.safetensors"), "pt") as f:
         return list(f.keys())
 
@@ -139,8 +139,6 @@ def _read_peft_tensors(
     path: Path, map_name, targets: HfLoraTargets
 ) -> tuple[dict[str, torch.Tensor], list[tuple[str, ...]]]:
     """HF-keyed whole tensors; per-expert 2D stacks to 3D, an HF-fused module splits into components sharing A."""
-    from safetensors.torch import load_file
-
     per_expert: dict[str, dict[int, torch.Tensor]] = {}
     weights, fused_groups = {}, []
     for name, value in load_file(str(path / "adapter_model.safetensors")).items():
