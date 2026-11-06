@@ -9,17 +9,15 @@ from tests.ci.ci_register import register_cuda_ci
 register_cuda_ci(
     est_time=30,
     suite="stage-b-2-gpu-h200",
-    labels=["lora", "miles-plugin"],
+    labels=["ckpt", "lora", "miles-plugin"],
     hardware=["hopper", "blackwell"],
     num_gpus=1,
 )
 
-pytest.importorskip("mbridge")
+import transformers
+from mbridge.core.parallel_states import ParallelStates
 
-import transformers  # noqa: E402
-from mbridge.core.parallel_states import ParallelStates  # noqa: E402
-
-from miles.backends.megatron_utils.checkpoint import create_mbridge_for_model  # noqa: E402
+from miles.backends.megatron_utils.checkpoint import create_mbridge_for_model
 
 HF_VOCAB = 10
 

@@ -253,14 +253,14 @@ def create_mbridge_for_model(model, hf_path: str):
 
     # the built model's rows, not Megatron's padded_vocab_size: Inkling builds unpadded
     model_vocab_rows = unwrap_model(model)[0].vocab_size
-    # any non-None value turns on mbridge's pad on load; its own formula maps the row count to itself
+    # any non-None value turns on mbridge's pad on load
     bridge = AutoBridge.from_pretrained(hf_path, trust_remote_code=True, make_vocab_size_divisible_by=model_vocab_rows)
-    # mbridge sets these only in its own model provider
-    bridge.vocab_size = bridge.hf_config.get_text_config().vocab_size
-    bridge.padded_vocab_size = model_vocab_rows
+    hf_vocab_size = bridge.hf_config.get_text_config().vocab_size
     assert (
-        model_vocab_rows >= bridge.vocab_size
-    ), f"the model was built with fewer vocab rows ({model_vocab_rows}) than {hf_path} holds ({bridge.vocab_size})"
+        model_vocab_rows >= hf_vocab_size
+    ), f"the model was built with fewer vocab rows ({model_vocab_rows}) than {hf_path} holds ({hf_vocab_size})"
+    # mbridge sets these only in its own model provider
+    bridge.vocab_size, bridge.padded_vocab_size = hf_vocab_size, model_vocab_rows
     return bridge
 
 
