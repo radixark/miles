@@ -24,15 +24,19 @@ from miles.backends.torchtitan_utils.hf_weight_iterator import TitanHfWeightIter
 from miles.backends.torchtitan_utils.lora_names import is_adapter_key, iter_hf_adapter_tensors, split_adapter_key
 from miles.backends.training_utils.checkpoint.adapter.adapter_dir import (
     HeadRows,
-    load_adapter_dir,
+    load_adapter_source,
     read_training_state,
     save_and_commit_adapter_dir,
 )
-from miles.backends.training_utils.checkpoint.adapter.adapter_state import AdapterState, agreed_step, gloo_group
-from miles.backends.training_utils.checkpoint.adapter.base_model import (
+from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
+    AdapterState,
+    agree_on_failure_context,
+    gloo_group,
+)
+from miles.backends.training_utils.checkpoint.adapter.base_model_check import (
     assert_same_base_tensors,
-    hf_fingerprint_tensors,
-    is_fingerprint_tensor,
+    is_base_check_tensor,
+    read_base_check_tensors,
     resolve_hf_dir,
 )
 from miles.backends.training_utils.checkpoint.adapter.parametrization import (
@@ -262,16 +266,16 @@ class TorchtitanCheckpointLoader:
         # (path, metadata) once parametrization accepted a source
         self._checked: tuple[Path, dict] | None = None
 
-    def _base_fingerprint_tensors(self, path: Path, metadata) -> dict[str, torch.Tensor]:
+    def _base_check_tensors(self, path: Path, metadata) -> dict[str, torch.Tensor]:
         """The DCP's fingerprint tensors under their HF names (only what the titan model holds, e.g. no MTP)."""
         fqns = set()
-        with agreed_step():
+        with agree_on_failure_context():
             for part in self._model_parts:
                 for fqn, param in part.named_parameters():
                     candidate = "norm" in fqn or fqn.startswith("layers.0.attention.")
                     if candidate and split_adapter_key(fqn) is None and fqn in metadata:
                         hf_names = self._sd_adapter.to_hf({fqn: torch.empty(param.shape, device="meta")})
-                        if any(is_fingerprint_tensor(name) for name in hf_names):
+                        if any(is_base_check_tensor(name) for name in hf_names):
                             fqns.add(fqn)
         # pipeline stages hold different layers; every rank reads them all
         gathered = [None] * dist.get_world_size()
@@ -281,14 +285,14 @@ class TorchtitanCheckpointLoader:
             for fqn in set().union(*gathered)
         }
         dcp.load(tensors, checkpoint_id=path, no_dist=True)
-        return {name: t for name, t in self._sd_adapter.to_hf(tensors).items() if is_fingerprint_tensor(name)}
+        return {name: t for name, t in self._sd_adapter.to_hf(tensors).items() if is_base_check_tensor(name)}
 
     def parametrization(self, path: Path) -> tuple[AdapterParametrization, bool]:
         """Collective: every check against the source, reading it only; ``apply`` then loads it."""
-        with agreed_step():
+        with agree_on_failure_context():
             metadata = dcp.FileSystemReader(path).read_metadata().state_dict_metadata
         params = self._slots.parameters
-        with agreed_step():
+        with agree_on_failure_context():
             saved = {k for k in metadata if is_adapter_key(k)}
             expected = [None] * dist.get_world_size()
             dist.all_gather_object(expected, {k: tuple(p.shape) for k, p in params.items()}, group=gloo_group())
@@ -307,7 +311,7 @@ class TorchtitanCheckpointLoader:
                 for key in expected
                 for name in ("exp_avg", "exp_avg_sq", "step")
             )
-            # without it load_adapter_dir refuses the load unless --no-load-optim
+            # without it load_adapter_source refuses the load unless --no-load-optim
             if self._load_optimizer and has_optimizer_state:
                 for key in params:
                     for name in ("exp_avg", "exp_avg_sq"):
@@ -316,13 +320,13 @@ class TorchtitanCheckpointLoader:
                             dtype == torch.float32
                         ), f"{path}: {key}'s {name} is {dtype}; only fp32 moments resume exactly"
         # agreed before the collective dcp.load in apply: e.g. one node's HF cache may lack --hf-checkpoint
-        with agreed_step():
-            source_tensors = self._base_fingerprint_tensors(path, metadata)
+        with agree_on_failure_context():
+            source_tensors = self._base_check_tensors(path, metadata)
             hf_dir = resolve_hf_dir(self._run.base_model)
             assert (
                 hf_dir is not None
             ), f"--hf-checkpoint {self._run.base_model} has no local HF weights to compare {path} with"
-            assert_same_base_tensors(str(path), source_tensors, hf_fingerprint_tensors(hf_dir), self._run.base_model)
+            assert_same_base_tensors(str(path), source_tensors, read_base_check_tensors(hf_dir), self._run.base_model)
         self._checked = (path, metadata)
         return replace(self._run, lora_alpha=None), has_optimizer_state
 
@@ -439,7 +443,7 @@ class TorchtitanLoraCheckpoint:
             self.run,
             load_optimizer,
         )
-        source = load_adapter_dir(
+        source = load_adapter_source(
             path,
             self.members,
             0,

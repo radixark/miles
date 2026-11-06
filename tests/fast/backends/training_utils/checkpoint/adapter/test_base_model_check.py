@@ -5,10 +5,10 @@ import pytest
 import torch
 from safetensors.torch import save_file
 
-from miles.backends.training_utils.checkpoint.adapter.base_model import (
+from miles.backends.training_utils.checkpoint.adapter.base_model_check import (
     assert_same_base_model,
-    hf_fingerprint_tensors,
-    is_fingerprint_tensor,
+    is_base_check_tensor,
+    read_base_check_tensors,
 )
 
 NORM, O_PROJ = "model.norm.weight", "model.layers.0.self_attn.o_proj.weight"
@@ -43,21 +43,21 @@ def test_a_merged_lora_is_another_base(tmp_path):
     ],
 )
 def test_the_first_layers_attention_weights_count_under_any_prefix(name, is_fingerprint):
-    assert is_fingerprint_tensor(name) == is_fingerprint
+    assert is_base_check_tensor(name) == is_fingerprint
 
 
 def test_other_layers_linear_weights_and_the_base_dtype_do_not_count(tmp_path):
     norm = torch.randn(4).bfloat16()
     a = _hf_dir(tmp_path / "a", **{NORM: norm, "model.layers.0.mlp.down_proj.weight": torch.randn(4, 4)})
     b = _hf_dir(tmp_path / "b", **{NORM: norm.float(), "model.layers.0.mlp.down_proj.weight": torch.randn(4, 4)})
-    assert hf_fingerprint_tensors(tmp_path / "a").keys() == {NORM}
+    assert read_base_check_tensors(tmp_path / "a").keys() == {NORM}
     assert_same_base_model("src", [a], b, remedy="")
 
 
 def test_a_quantized_copy_of_the_base_compares_by_its_unquantized_tensors(tmp_path):
     base = _hf_dir(tmp_path / "bf16", **{NORM: torch.ones(4), O_PROJ: torch.ones(4, 4)})
     fp8 = _hf_dir(tmp_path / "fp8", **{NORM: torch.ones(4), O_PROJ: torch.ones(4, 4).to(torch.float8_e4m3fn)})
-    assert hf_fingerprint_tensors(tmp_path / "fp8").keys() == {NORM}
+    assert read_base_check_tensors(tmp_path / "fp8").keys() == {NORM}
     assert_same_base_model("src", [base], fp8, remedy="")
 
 

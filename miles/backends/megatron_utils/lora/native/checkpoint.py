@@ -4,7 +4,7 @@ from dataclasses import replace
 
 import torch
 
-from miles.backends.megatron_utils.lora.bridge_checkpoint import probe_bridge_row_mapping
+from miles.backends.megatron_utils.lora.bridge_adapter_slots import probe_bridge_row_mapping
 from miles.backends.megatron_utils.lora.native.hf_adapter import export_lora_hf_named
 from miles.backends.megatron_utils.lora.native.modules.linear import iter_adapters
 from miles.backends.megatron_utils.lora.native.modules.lm_head import LoRAOutputHead

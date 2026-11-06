@@ -1314,7 +1314,7 @@ def _external_payload(model_id: str, seq_id: int, name: str, **overrides) -> dic
         "seq_id": seq_id,
         "name": name,
         "ttl_seconds": None,
-        "age_recipients": [],
+        "age_encryption_recipients": [],
     } | overrides
 
 
@@ -1390,7 +1390,9 @@ async def test_an_encrypted_external_save_keeps_its_owner(service):
     model_id = await created_model(service)
     recipient = str(pyrage.x25519.Identity.generate().to_public())
     save = service.submit(
-        "tenant", "save_weights_external", _external_payload(model_id, 1, "export", age_recipients=[recipient])
+        "tenant",
+        "save_weights_external",
+        _external_payload(model_id, 1, "export", age_encryption_recipients=[recipient]),
     )
     assert (await await_settled(service, "tenant", save)).state == DONE
     urls = await service.external_weights_urls("tenant", model_id, "external_weights/export", "http://gateway/")

@@ -422,8 +422,6 @@ class TinkerService:
             tenant_digest=tenant_digest(record.tenant),
             parametrization_fields=build_parametrization_fields(record, self.config),
         )
-        if isinstance(written, dict):
-            return written
         tinker_path = f"tinker://{record.model_id}/weights/{name}"
         # an overwrite's old expiry names the old commit, so it never deletes this one, whether or not the commit lands
         try:
@@ -682,10 +680,8 @@ class TinkerService:
             name=name,
             tenant_digest=tenant_digest(record.tenant),
             parametrization_fields=build_parametrization_fields(record, self.config),
-            age_recipients=payload["age_recipients"],
+            age_encryption_recipients=payload["age_encryption_recipients"],
         )
-        if isinstance(written, dict):
-            return written
         try:
             await asyncio.to_thread(self.backend.commit_adapter, root, name, written, overwrite=False)
         except OSError as error:

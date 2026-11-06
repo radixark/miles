@@ -11,8 +11,9 @@ def _lora_actor_module(monkeypatch, *, model=None, checkpoint=None):
         "miles.backends.megatron_utils.lora": {"checkpoint": checkpoint, "model": model},
         "miles.backends.megatron_utils.lora.optimizer": {"SlotOptimizer": object},
         "miles.backends.training_utils.checkpoint.adapter.adapter_dir": {
-            "write_external_export": None,
-            "write_sampler_export": None,
+            "save_adapter_dir": None,
+            "save_sampler_export": None,
+            "save_external_export": None,
         },
         "miles.backends.training_utils.checkpoint.adapter.commit": {"UncommittedAdapterDir": object},
         "miles.backends.training_utils.data.rollout": {
