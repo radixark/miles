@@ -18,6 +18,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     model_dir: str = "/root/models"
     save_dir: str | None = None
     megatron_path: str = "/root/Megatron-LM"
+    # bridge: Megatron-Bridge LoRA; raw: miles-native LoRA
+    megatron_to_hf_mode: str = "bridge"
 
     num_gpus_per_node: int = 8
     actor_num_gpus: int = 4
@@ -62,7 +64,7 @@ def serve(args: ScriptArgs):
         f"{args.n_adapters} adapter slots, port {args.tinker_port}"
     )
 
-    ckpt_args = f"--hf-checkpoint {args.hf_checkpoint} --megatron-to-hf-mode bridge "
+    ckpt_args = f"--hf-checkpoint {args.hf_checkpoint} --megatron-to-hf-mode {args.megatron_to_hf_mode} "
 
     lora_args = (
         f"--lora-rank {args.lora_rank} --lora-alpha {args.lora_alpha} --lora-dropout 0.0 "
