@@ -1053,7 +1053,7 @@ def miles_validate_args(args):
 
     validate_length_penalty_args(args)
     mode = args.update_weight_transfer_mode
-    if mode not in ("broadcast", "broadcast_packed", "p2p", "disk-delta", "ici"):
+    if mode not in ("broadcast", "broadcast_packed", "p2p", "disk-delta", "ici", "modelexpress"):
         raise ValueError(f"Unknown --update-weight-transfer-mode {mode!r}")
     if mode == "broadcast_packed" and (args.train_backend != "megatron" or args.colocate):
         raise ValueError("broadcast_packed requires Megatron non-colocated weight transfer")
@@ -1458,6 +1458,17 @@ def miles_validate_args(args):
         args.check_weight_update_selector = weight_update_selector(
             speculative_algorithm=args.sglang_speculative_algorithm, enable_mtp_training=args.enable_mtp_training
         )
+
+    if args.update_weight_transfer_mode == "modelexpress":
+        if not isinstance(args.modelexpress_config, dict):
+            raise ValueError("--modelexpress-config must be a JSON object")
+        if (
+            args.train_backend != "megatron"
+            or args.colocate
+            or args.lora_rank > 0
+            or args.pause_generation_mode == "in_place"
+        ):
+            raise ValueError("ModelExpress requires Megatron, no LoRA/colocation, and abort/retract pausing")
 
     # always true on offload for colocate at the moment.
     assert (
