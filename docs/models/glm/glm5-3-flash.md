@@ -142,3 +142,10 @@ export MILES_SCRIPT_EXTERNAL_RAY=1   # after `ray start` on every node
 python scripts/run_glm5_3_flash_lora.py train --model-name GLM-5.3-Flash \
   --num-nodes 3 --num-gpus-per-node 8
 ```
+
+## 7. Cake Kernels
+
+Opt-in Blackwell and Rubin kernels of the miles-ext-kernels submodule for this model (setup, variants and limits in
+[Cake Training Kernels](/advanced/cake-kernels)):
+
+- `--kda-backend cake`: the KDA layers (64 heads, not head-sharded; no context parallelism).

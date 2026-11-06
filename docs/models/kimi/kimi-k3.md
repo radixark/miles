@@ -184,6 +184,9 @@ weight sync, the adapter export is leaking and the run will die later rather tha
 - Weight conversion for K3 lives in
   `miles/backends/megatron_utils/megatron_to_hf/kimi_k3.py`, and the model itself in
   `miles_plugins/models/kimi_k3/`.
+- `--use-miles-ext-kernels --kda-backend cake` runs the KDA layers on the deterministic Cake kernels on
+  Blackwell or Rubin; it needs tensor parallelism of at least 2 (64 KDA heads per rank at most) and no context
+  parallelism, so the CP2 full recipe keeps `fla`. See [Cake Training Kernels](/advanced/cake-kernels).
 
 ## 6. Pairs Well With
 

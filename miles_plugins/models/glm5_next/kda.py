@@ -14,6 +14,7 @@ except ImportError:
 
 from miles_plugins.models.cp_utils import build_gdn_cp_context
 from miles_plugins.models.hf_attention import HuggingfaceAttention
+from miles_plugins.models.linear_attn import kda_kernel
 
 
 def _get_text_config(hf_config):
@@ -32,10 +33,13 @@ class Glm5NextKDA(nn.Module):
         conv_kernel_size: int,
         gate_lower_bound: float,
         rms_norm_eps: float,
+        kda_backend: str = "fla",
     ):
         super().__init__()
         if ShortConvolution is None or chunk_kda is None:
             raise ImportError("GLM-5.3 KDA requires flash-linear-attention >= 0.4.2 (fla.ops.kda).")
+        if kda_backend not in ("fla", "cake"):
+            raise ValueError(f"Unsupported KDA backend: {kda_backend}")
         self.hidden_size = hidden_size
         self.num_heads = num_heads
         self.head_dim = head_dim
@@ -61,6 +65,16 @@ class Glm5NextKDA(nn.Module):
         self.dt_bias = mark_keep_in_fp32(nn.Parameter(torch.zeros(self.projection_size, dtype=torch.float32)))
         self.o_norm = FusedRMSNormGated(head_dim, eps=rms_norm_eps, activation="sigmoid")
         self.o_proj = nn.Linear(self.projection_size, hidden_size, bias=False)
+        self.kda_backend = kda_backend
+        if kda_backend == "cake":
+            if head_dim != 128:
+                raise ValueError(f"--kda-backend cake needs head dimension 128, got {head_dim}")
+            self.cake_chunk_kda = kda_kernel("cake")
+            from miles_ext_kernels import cake
+
+            # every library of the op for this GPU; the layer is not head-sharded: it raises above 64 heads, and on a
+            # GPU other than SM100a / SM103a / SM107a
+            cake.prebuild("kda", num_heads=num_heads)
 
     def forward(self, hidden_states: torch.Tensor, cu_seqlens: torch.Tensor):
         cp_context = build_gdn_cp_context(self, cu_seqlens, hidden_states.device)
@@ -80,14 +94,45 @@ class Glm5NextKDA(nn.Module):
         key = key.unflatten(-1, (self.num_heads, self.head_dim))
         value = value.unflatten(-1, (self.num_heads, self.head_dim))
 
-        beta = torch.sigmoid(self.b_proj(hidden_states).float())
-        forget = self.f_b_proj(self.f_a_proj(hidden_states))
-        g = fused_kda_gate(
-            forget.unflatten(-1, (self.num_heads, self.head_dim)),
-            self.A_log,
-            self.dt_bias,
-            lower_bound=self.gate_lower_bound,
+        beta_logits = self.b_proj(hidden_states)
+        forget = self.f_b_proj(self.f_a_proj(hidden_states)).unflatten(-1, (self.num_heads, self.head_dim))
+        if self.kda_backend == "cake":
+            core_attn_out = self._cake_kda(query, key, value, forget, beta_logits, cu_seqlens, cp_context)
+        else:
+            core_attn_out = self._fla_kda(query, key, value, forget, beta_logits, cu_seqlens, cp_context)
+
+        norm_gate = self.g_b_proj(self.g_a_proj(hidden_states))
+        out_shape = core_attn_out.shape
+        core_attn_out = self.o_norm(
+            core_attn_out.reshape(-1, self.head_dim),
+            norm_gate.reshape(-1, self.head_dim),
         )
+        core_attn_out = core_attn_out.reshape(out_shape[0], out_shape[1], -1)
+        return self.o_proj(core_attn_out)
+
+    def _cake_kda(self, query, key, value, forget, beta_logits, cu_seqlens, cp_context):
+        """The Cake kernels in raw-gate mode: they activate the forget gate themselves (no fused_kda_gate) and take
+        a BF16 beta. q / k stay the strided split views of the conv output; v is made contiguous."""
+        if cp_context is not None:
+            raise NotImplementedError("--kda-backend cake does not support context parallelism yet.")
+        assert query.shape[0] == 1, "--kda-backend cake takes one packed sequence (--qkv-format thd)"
+        return self.cake_chunk_kda(
+            query,
+            key,
+            value.contiguous(),
+            g=forget,
+            beta=beta_logits.float().sigmoid().to(torch.bfloat16),
+            A_log=self.A_log,
+            dt_bias=self.dt_bias,
+            lower_bound=self.gate_lower_bound,
+            cu_seqlens=cu_seqlens,
+            use_gate_in_kernel=True,
+            use_qk_l2norm_in_kernel=True,
+        )
+
+    def _fla_kda(self, query, key, value, forget, beta_logits, cu_seqlens, cp_context):
+        beta = torch.sigmoid(beta_logits.float())
+        g = fused_kda_gate(forget, self.A_log, self.dt_bias, lower_bound=self.gate_lower_bound)
 
         if cp_context is not None:
             core_attn_out, _ = chunk_kda(
@@ -112,15 +157,7 @@ class Glm5NextKDA(nn.Module):
                 use_qk_l2norm_in_kernel=True,
                 cu_seqlens=cu_seqlens,
             )
-
-        norm_gate = self.g_b_proj(self.g_a_proj(hidden_states))
-        out_shape = core_attn_out.shape
-        core_attn_out = self.o_norm(
-            core_attn_out.reshape(-1, self.head_dim),
-            norm_gate.reshape(-1, self.head_dim),
-        )
-        core_attn_out = core_attn_out.reshape(out_shape[0], out_shape[1], -1)
-        return self.o_proj(core_attn_out)
+        return core_attn_out
 
 
 class Glm5NextKDAAttention(HuggingfaceAttention):
@@ -148,6 +185,7 @@ class Glm5NextKDAAttention(HuggingfaceAttention):
             conv_kernel_size=text_config.linear_conv_kernel_dim,
             gate_lower_bound=text_config.linear_lower_bound,
             rms_norm_eps=text_config.rms_norm_eps,
+            kda_backend=args.kda_backend,
         )
 
     def hf_forward(self, hidden_states, packed_seq_params):
