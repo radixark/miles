@@ -229,10 +229,11 @@ def test_a_static_shape_platform_compiles_static_graphs_for_every_pass_and_bucke
 
         monkeypatch.setattr(platforms.current_platform, "dynamic_shapes", False)
         configure_fixed_shape_compile(seq_len=8192, num_passes=2)
-        assert torch._dynamo.config.recompile_limit == 2 * 4  # buckets 1024, 2048, 4096, 8192
+        # buckets 1024, 2048, 4096, 8192, and two block variants (dense and MoE) per class
+        assert torch._dynamo.config.recompile_limit == 2 * 2 * 4
         assert not torch._dynamo.config.automatic_dynamic_shapes
         configure_fixed_shape_compile(seq_len=8192, num_passes=3)
-        assert torch._dynamo.config.recompile_limit == 3 * 4
+        assert torch._dynamo.config.recompile_limit == 2 * 3 * 4
 
 
 def test_context_parallelism_is_rejected_for_qwen3_5(monkeypatch):

@@ -34,7 +34,9 @@ def configure_fixed_shape_compile(*, seq_len: int, num_passes: int) -> None:
         return
     # a second length would otherwise make dynamo mark the dimension dynamic, which the backend rejects
     torch._dynamo.config.automatic_dynamic_shapes = False
-    num_graphs = num_passes * len(fixed_shape_length_buckets(seq_len))
+    # blocks of one class share a forward, and a class can guard on a per-block flag (DeepSeek-V3-style dense first
+    # layers before MoE ones), so each class may hold two graphs per pass and bucket
+    num_graphs = 2 * num_passes * len(fixed_shape_length_buckets(seq_len))
     torch._dynamo.config.recompile_limit = max(torch._dynamo.config.recompile_limit, num_graphs)
 
 
