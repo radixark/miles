@@ -260,9 +260,13 @@ def write_sampler_export(
     return written
 
 
-def _slice(full: torch.Tensor, spec: LocalShardSpec) -> torch.Tensor:
+def _assert_source_shape(full: torch.Tensor, spec: LocalShardSpec) -> None:
     if tuple(full.shape) != spec.global_shape:
         raise AdapterSourceError(f"{spec.key}: source {tuple(full.shape)} != run {spec.global_shape}")
+
+
+def _slice(full: torch.Tensor, spec: LocalShardSpec) -> torch.Tensor:
+    _assert_source_shape(full, spec)
     return full[tuple(slice(o, o + n) for o, n in zip(spec.offsets, spec.local_shape, strict=True))].clone()
 
 
@@ -292,22 +296,59 @@ def _zero_filled(specs: list[LocalShardSpec], loaded: AdapterState) -> AdapterSt
     )
 
 
-def _weights_only_state(
+def _is_rank0() -> bool:
+    return not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0
+
+
+def _broadcast_from_rank0(value):
+    if not torch.distributed.is_initialized():
+        return value
+    box = [value]
+    torch.distributed.broadcast_object_list(box, src=0, group=gloo_group())
+    return box[0]
+
+
+def _assert_pieces_readable(
     weights: dict[str, torch.Tensor], specs: list[LocalShardSpec], head_rows: HeadRows | None
-) -> AdapterState:
+) -> None:
     _assert_has_keys(weights, {s.key for s in specs if not is_vocab_padding(s.key)})
+    for s in specs:
+        if not is_vocab_padding(s.key):
+            _assert_source_shape(_served_rows(weights[s.key], s, head_rows), s)
+
+
+def _scatter_weights_only_state(
+    weights: dict[str, torch.Tensor] | None, specs: list[LocalShardSpec], head_rows: HeadRows | None
+) -> AdapterState:
+    """Collective: each rank's pieces of the source rank 0 read and converted, sent to it point-to-point."""
+    specs_by_rank = [specs]
+    if torch.distributed.is_initialized():
+        # only the specs go through gather_object, which pads every rank's payload to the largest one
+        specs_by_rank = [None] * torch.distributed.get_world_size() if _is_rank0() else None
+        torch.distributed.gather_object(specs, specs_by_rank, dst=0, group=gloo_group())
+    with agreed_step():
+        if _is_rank0():
+            for rank_specs in specs_by_rank:
+                _assert_pieces_readable(weights, rank_specs, head_rows)
     # no export or conversion carries vocab padding: it stays zero, as at init
-    return _with_zero_moments(
-        specs,
-        [
-            (
-                torch.zeros(s.local_shape)
-                if is_vocab_padding(s.key)
-                else _slice(_served_rows(weights[s.key], s, head_rows), s).float()
-            )
-            for s in specs
-        ],
-    )
+    if not _is_rank0():
+        pieces = [torch.zeros(s.local_shape) for s in specs]
+        for spec, piece in zip(specs, pieces, strict=True):
+            if not is_vocab_padding(spec.key):
+                torch.distributed.recv(piece, src=0, group=gloo_group())
+        return _with_zero_moments(specs, pieces)
+    own = []
+    for rank, rank_specs in enumerate(specs_by_rank):
+        for spec in rank_specs:
+            if is_vocab_padding(spec.key):
+                piece = torch.zeros(spec.local_shape)
+            else:
+                piece = _slice(_served_rows(weights[spec.key], spec, head_rows), spec).float().contiguous()
+                if rank != 0:
+                    torch.distributed.send(piece, dst=rank, group=gloo_group())
+            if rank == 0:
+                own.append(piece)
+    return _with_zero_moments(specs, own)
 
 
 def _served_rows(full: torch.Tensor, spec: LocalShardSpec, head_rows: HeadRows | None) -> torch.Tensor:
@@ -385,9 +426,9 @@ def load_adapter_dir(
     loader agrees its own failures before each collective it enters (see ``InModelLoader``).
     Alpha is not checked here: the caller owns it (Tinker adopts the source's, RL compares it to ``--lora-alpha``).
 
-    A source that needs conversion (PEFT, external weights, another parametrization) is read whole on every rank:
-    about 6 bytes of host memory per source element for a bf16 file (its tensors and their fp32 upcast), e.g.
-    ~41 GB per rank and ~330 GB per 8-rank node for a rank-16 adapter on every DeepSeek-V3 expert.
+    A source that needs conversion (PEFT, external weights, another parametrization) is read and converted once, on
+    rank 0, which sends every rank its pieces: rank 0 holds about 6 bytes per source element for a bf16 file (its
+    tensors and their fp32 upcast), e.g. ~41 GB for a rank-16 adapter on every DeepSeek-V3 expert.
     """
     with agreed_step():
         kind = classify_adapter_source(path, targets, load_optimizer=load_optimizer)
@@ -413,9 +454,14 @@ def load_adapter_dir(
 
     with agreed_step():
         specs = members.get_local_shard_specs(slot)
-        reader, source, steps = _open_source(path, kind, run, targets, load_optimizer=load_optimizer)
+        # PEFT and external readers load every tensor, so only rank 0 opens such a source; an adapter dir's
+        # metadata is cheap, and every rank reads its own pieces of adapter_state/
+        reader, source, steps = None, None, None
+        if kind == AdapterSourceKind.ADAPTER_DIR or _is_rank0():
+            reader, source, steps = _open_source(path, kind, run, targets, load_optimizer=load_optimizer)
+    source, reads_pieces = _broadcast_from_rank0((source, _reads_adapter_state_pieces(reader, steps)))
 
-    if _reads_adapter_state_pieces(reader, steps):
+    if reads_pieces:
         run_keys = _all_ranks_keys(specs)
         with agreed_step():
             assert_adapter_state_keys(path, run_keys, with_optimizer=load_optimizer)
@@ -434,8 +480,8 @@ def load_adapter_dir(
         state = _zero_filled(specs, loaded)
     else:
         with agreed_step():
-            weights = apply_parametrization_conversion(reader.read_weights(), steps)
-            state = _weights_only_state(weights, specs, members.head_rows)
+            weights = apply_parametrization_conversion(reader.read_weights(), steps) if _is_rank0() else None
+        state = _scatter_weights_only_state(weights, specs, members.head_rows)
     with agreed_step():
         members.import_adapter_state(slot, state)
     with agreed_step():
