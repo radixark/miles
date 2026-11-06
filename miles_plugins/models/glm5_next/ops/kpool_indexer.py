@@ -13,7 +13,10 @@ def kpool_select_topk(
     index_topk: int,
     kpool: int,
     query_token_ids: torch.Tensor | None = None,
+    indexer_config=None,
 ) -> torch.Tensor:
+    """``indexer_config`` picks the pool-score kernels (``CAKE_INDEXER_CONFIG`` under --dsa-attention-backend cake);
+    None keeps the measured default."""
     num_tokens = index_q.shape[0]
     device = index_q.device
     token_ids = torch.arange(num_tokens, device=device) if query_token_ids is None else query_token_ids
@@ -35,6 +38,7 @@ def kpool_select_topk(
                 head_weights,
                 pool_base.to(torch.int32),
                 (pool_base + eligible_pools).to(torch.int32),
+                config=indexer_config,
             )
     else:
         pool_logits = torch.full((num_tokens, 1), float("-inf"), dtype=torch.float32, device=device)

@@ -189,6 +189,9 @@ class KimiK3Bridge(LinearAttentionBridgeMixin, DeepseekV3Bridge):
         config.kimi_linear_head_dim = hf_config.linear_attn_config["head_dim"]
         config.kimi_linear_conv_kernel_size = hf_config.linear_attn_config["short_conv_kernel_size"]
         config.kimi_kda_gate_lower_bound = hf_config.linear_attn_config["gate_lower_bound"]
+        config.kimi_kda_backend = "fla"
+        config.kimi_linear_conv_backend = None
+        config.kimi_linear_norm_backend = "fla"
         config.kimi_attn_res_block_size = hf_config.attn_res_block_size
         return config
 

@@ -8,6 +8,7 @@ from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.transformer_config import TransformerConfig
 
 from miles.kernels.attention.dsa import indexer_logits_sbhd
+from miles.kernels.attention.dsa.indexer import CAKE_INDEXER_CONFIG
 from miles.kernels.attention.dsa.topk import get_dsa_topk_fn
 from miles.utils.replay_base import indexer_replay_manager
 from miles_plugins.models.deepseek_v4.ops.compressor import DeepSeekV4Compressor
@@ -37,6 +38,7 @@ class V4Indexer(MegatronModule):
         self.index_head_dim = config.dsa_indexer_head_dim
         self.index_topk = config.dsa_indexer_topk
         self.topk_backend = config.miles_dsa_topk_backend
+        self.indexer_config = CAKE_INDEXER_CONFIG if config.miles_dsa_attention_backend == "cake" else None
         self.rope_head_dim = config.qk_pos_emb_head_dim
         self.compress_ratio = 4
         self.use_fp8_qat = config.fp8 is not None
@@ -175,6 +177,7 @@ class V4Indexer(MegatronModule):
             index_topk=self.index_topk,
             topk_fn=topk_fn,
             clean_logits=self.topk_backend != "canonical",
+            indexer_config=self.indexer_config,
         )
 
 
@@ -189,7 +192,9 @@ def start_row_exchange(q, weights, thd_layout, cp_group, *, balance: bool) -> Ro
     return send_rows_to_scorers(tensors, plan, cp_group)
 
 
-def topk_for_local_rows(exchange, k, thd_layout, *, compress_ratio, index_topk, topk_fn, clean_logits):
+def topk_for_local_rows(
+    exchange, k, thd_layout, *, compress_ratio, index_topk, topk_fn, clean_logits, indexer_config=None
+):
     """The top-k picks for this rank's rows, in local order, scored on the rank ``exchange`` sent them to."""
     q, weights = exchange.wait()
     topk_indices = indexer_topk(
@@ -202,12 +207,15 @@ def topk_for_local_rows(exchange, k, thd_layout, *, compress_ratio, index_topk, 
         index_topk=index_topk,
         topk_fn=topk_fn,
         clean_logits=clean_logits,
+        indexer_config=indexer_config,
     )
     # [batch, rows, topk]: the picks go back along the row dim
     return exchange.return_to_owners(topk_indices, dim=1)
 
 
-def indexer_topk(q, k, weights, positions, thd_layout, *, compress_ratio, index_topk, topk_fn, clean_logits):
+def indexer_topk(
+    q, k, weights, positions, thd_layout, *, compress_ratio, index_topk, topk_fn, clean_logits, indexer_config=None
+):
     """Score the query rows at global stream ``positions`` against their visible compressed keys.
 
     Args:
@@ -217,6 +225,8 @@ def indexer_topk(q, k, weights, positions, thd_layout, *, compress_ratio, index_
         positions: [rows] global stream positions of the rows
         thd_layout: packed-stream layout, or None when unpacked
         clean_logits: write -inf outside each row's keys, which a top-k that reads the whole row needs
+        indexer_config: the score kernels (``CAKE_INDEXER_CONFIG`` under --dsa-attention-backend cake, which always
+            writes -inf there); None keeps the measured default
 
     Returns:
         [batch, rows, min(index_topk, n_kv)] int32 compressed-key indices
@@ -231,7 +241,7 @@ def indexer_topk(q, k, weights, positions, thd_layout, *, compress_ratio, index_
         cu_ks, cu_ke = compress_bounds_at_positions(
             thd_layout.cu_seqlens, thd_layout.cu_seqlens_compressed, positions, ratio=compress_ratio
         )
-    index_scores = indexer_logits_sbhd(q, k, weights, cu_ks, cu_ke, clean_logits=clean_logits)
+    index_scores = indexer_logits_sbhd(q, k, weights, cu_ks, cu_ke, clean_logits=clean_logits, config=indexer_config)
     bsz, rows, n_kv = index_scores.shape
     topk_count = min(index_topk, n_kv)
     # flattened to [n_tokens, n_kv], the record/replay convention shared with the MoE seam

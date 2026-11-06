@@ -138,6 +138,7 @@ The launcher exposes these as flags:
 - `--sglang-config {low-latency, balanced}` — `low-latency` (default) runs TP-8 engines with PD; `balanced` is the GLM-5.2 cookbook serving shape: one 4-GPU engine per node with dp-attention + DeepEP. `balanced` is incompatible with PD and requires GPUs per node divisible by 4.
 - `--use-deepep` (default `True`) — enables Megatron-side DeepEP (`--moe-enable-deepep --moe-token-dispatcher-type flex`); falls back to `alltoall`. On GB300 you must pass `--no-megatron-use-deepep` (known Megatron DeepEP failure; the launcher asserts).
 - On B200/GB300 (without `balanced` or FP8 + DeepEP) the launcher pins `--sglang-moe-runner-backend`: `flashinfer_trtllm_routed` for FP8 rollout, `triton` for BF16.
+- `--use-miles-ext-kernels --dsa-attention-backend cake` (raw path, `--dsa-impl miles`) runs the DSA sparse attention and indexer scores on the Cake kernels; see [Cake Training Kernels](/advanced/cake-kernels).
 
 ## 6. Pairs Well With
 

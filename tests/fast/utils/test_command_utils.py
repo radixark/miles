@@ -616,6 +616,26 @@ class TestExecuteTrain:
         assert runtime_env["env_vars"]["PYTHONPATH"] == expected
         assert runtime_env["env_vars"]["QUOTED_VALUE"] == "it's preserved"
 
+    @pytest.mark.parametrize("use_miles_ext_kernels", [False, True])
+    def test_puts_the_miles_ext_kernels_submodule_on_the_ray_runtime_path_under_its_flag(
+        self, commands, monkeypatch, use_miles_ext_kernels
+    ):
+        """--use-miles-ext-kernels imports the submodule's package in the driver and in every Ray worker."""
+        monkeypatch.setenv("PYTHONPATH", "/existing")
+        monkeypatch.setenv("MILES_SCRIPT_EXTERNAL_RAY", "1")
+
+        _backend().execute_train(
+            train_args="--use-miles-ext-kernels" if use_miles_ext_kernels else "",
+            num_gpus_per_node=1,
+            megatron_model_type="qwen3-4B",
+            megatron_path="/megatron",
+        )
+
+        entries = [str(command_utils.repo_base_dir), "/megatron"]
+        if use_miles_ext_kernels:
+            entries.append(str(command_utils.repo_base_dir / "3rdparty" / "miles-ext-kernels"))
+        assert _runtime_env(_submit(commands))["PYTHONPATH"] == os.pathsep.join([*entries, "/existing"])
+
     def test_rejects_fsdp_with_a_megatron_model_type(self, commands):
         """FSDP runs have no megatron model config, so a model type means the launcher is confused."""
         with pytest.raises(AssertionError):
