@@ -6,7 +6,7 @@ from dataclasses import replace
 
 import torch
 
-from miles.backends.megatron_utils.lora.bridge_checkpoint import SlotComputeMembers, probe_bridge_row_mapping
+from miles.backends.megatron_utils.lora.bridge_checkpoint import probe_bridge_row_mapping
 from miles.backends.megatron_utils.lora.native.hf_adapter import export_lora_hf_named
 from miles.backends.megatron_utils.lora.native.modules.linear import (
     adapters_hidden_context,
@@ -19,6 +19,7 @@ from miles.backends.megatron_utils.lora.utils import adapter_named_parameters
 from miles.backends.training_utils.checkpoint.adapter.adapter_state import VOCAB_PADDING_SUFFIX
 from miles.backends.training_utils.checkpoint.adapter.key_mapping import HfKey, map_sampler_keys_to_hf_keys
 from miles.backends.training_utils.checkpoint.adapter.probed_slots import HfPiece, ProbedAdapterSlots
+from miles.backends.training_utils.checkpoint.adapter.slot_compute_members import SlotComputeMembers
 from miles.utils.lora.utils import AdapterSpec
 
 
