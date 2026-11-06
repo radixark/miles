@@ -262,7 +262,7 @@ class MilesBackend:
         name: str,
         tenant_digest: str,
         parametrization_fields: dict,
-        age_recipients: list[str],
+        age_encryption_recipients: list[str],
     ) -> UncommittedAdapterDir:
         worker_results = await self.trainer.export_external_slot(
             slot=slot,
@@ -270,7 +270,7 @@ class MilesBackend:
             name=name,
             tenant_digest=tenant_digest,
             parametrization_fields=parametrization_fields,
-            age_recipients=age_recipients,
+            age_encryption_recipients=age_encryption_recipients,
         )
         return worker_results[0]
 

@@ -149,7 +149,7 @@ class FakeBackend:
     resolve_checkpoint_files = staticmethod(resolve_checkpoint_files)
     delete_adapter = staticmethod(delete_adapter)
 
-    async def export_external(self, slot, root, name, tenant_digest, parametrization_fields, age_recipients):
+    async def export_external(self, slot, root, name, tenant_digest, parametrization_fields, age_encryption_recipients):
         failure = self._record(
             "export_external",
             slot=slot,
@@ -157,7 +157,7 @@ class FakeBackend:
             adapter_name=name,
             tenant_digest=tenant_digest,
             parametrization_fields=parametrization_fields,
-            age_recipients=age_recipients,
+            age_encryption_recipients=age_encryption_recipients,
         )
         assert failure is None, "a trainer's export_external_slot raises; it never returns a failure"
         parametrization = _parametrization(parametrization_fields)
@@ -167,7 +167,7 @@ class FakeBackend:
                 _weights(parametrization.lora_rank),
                 parametrization,
                 _TARGETS,
-                age_recipients=age_recipients,
+                age_encryption_recipients=age_encryption_recipients,
                 lora_dropout=0.0,
             )
         return written

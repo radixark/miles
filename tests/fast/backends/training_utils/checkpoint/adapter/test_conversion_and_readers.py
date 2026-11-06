@@ -253,7 +253,7 @@ def test_an_encrypted_external_export_decrypts_to_the_plain_one(tmp_path, key_ty
         recipient = str(identity.to_public())
     write_external_adapter(tmp_path / "plain", _weights(False), _run(), QWEN35, lora_dropout=0.0)
     write_external_adapter(
-        tmp_path / "age", _weights(False), _run(), QWEN35, age_recipients=[recipient], lora_dropout=0.0
+        tmp_path / "age", _weights(False), _run(), QWEN35, age_encryption_recipients=[recipient], lora_dropout=0.0
     )
     assert sorted(p.name for p in (tmp_path / "age").iterdir()) == [
         "adapter_config.json.age",
@@ -274,7 +274,7 @@ def test_an_encrypted_external_export_never_writes_plaintext(tmp_path, monkeypat
 
     monkeypatch.setattr(pyrage, "encrypt", encrypt)
     write_external_adapter(
-        tmp_path / "age", _weights(False), _run(), QWEN35, age_recipients=[str(identity.to_public())], lora_dropout=0.0
+        tmp_path / "age", _weights(False), _run(), QWEN35, age_encryption_recipients=[str(identity.to_public())], lora_dropout=0.0
     )
 
 

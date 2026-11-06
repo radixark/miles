@@ -319,7 +319,7 @@ def save_external_export(
     targets: HfLoraTargets,
     *,
     tenant_digest: str | None,
-    age_recipients: Sequence[str] = (),
+    age_encryption_recipients: Sequence[str] = (),
     lora_dropout: float,
 ) -> UncommittedAdapterDir:
     """All ranks call; rank 0 writes ``slot``'s external export from the fp32 masters (no parametrization: it is a
@@ -342,7 +342,7 @@ def save_external_export(
                 weights,
                 parametrization,
                 targets,
-                age_recipients=age_recipients,
+                age_encryption_recipients=age_encryption_recipients,
                 lora_dropout=lora_dropout,
             )
     return written

@@ -175,11 +175,11 @@ def write_external_adapter(
     targets: HfLoraTargets,
     *,
     lora_dropout: float,
-    age_recipients: Sequence[str] = (),
+    age_encryption_recipients: Sequence[str] = (),
 ) -> None:
     """The official Tinker export: F32 under Tinker names, experts stacked 3D as the parametrization has them
     (``[1, ...]`` on a shared-outer side), and every module its own copy of a shared A (no re-fusing: Tinker trains
-    the components apart). With ``age_recipients`` both files are age-encrypted to them and named ``<file>.age``."""
+    the components apart). With ``age_encryption_recipients`` both files are age-encrypted to them and named ``<file>.age``."""
     tensors = {}
     shared_copies = {member: group[0] for group in parametrization.shared_lora_a_groups for member in group[1:]}
     for module in parametrization.target_modules:
@@ -197,14 +197,14 @@ def write_external_adapter(
         "target_parameters": None,
         "base_model_name_or_path": None,
     }
-    if not age_recipients:
+    if not age_encryption_recipients:
         save_adapter_to_disk(directory, config, tensors)
         return
 
     # lazy: every run imports this module, and prebuilt images may lack pyrage
     import pyrage
 
-    recipients = [parse_age_recipient(r) for r in age_recipients]
+    recipients = [parse_age_recipient(r) for r in age_encryption_recipients]
     # encrypted in memory, one file at a time: no plaintext ever reaches the disk
     Path(directory).mkdir(parents=True, exist_ok=True)
     for name, plaintext in (

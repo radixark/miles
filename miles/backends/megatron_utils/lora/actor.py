@@ -137,7 +137,7 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
         name: str,
         tenant_digest: str,
         parametrization_fields: dict,
-        age_recipients: list[str],
+        age_encryption_recipients: list[str],
     ) -> UncommittedAdapterDir:
         """Write the slot's official Tinker export under ``root``, uncommitted; the gateway commits it."""
         self._heartbeat.bump()
@@ -153,7 +153,7 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
             parametrization,
             self.adapter_slots.targets,
             tenant_digest=tenant_digest,
-            age_recipients=age_recipients,
+            age_encryption_recipients=age_encryption_recipients,
             lora_dropout=self.args.lora_dropout,
         )
 

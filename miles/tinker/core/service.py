@@ -531,7 +531,7 @@ class TinkerService:
             name=name,
             tenant_digest=tenant_digest(record.tenant),
             parametrization_fields=build_parametrization_fields(record, self.config),
-            age_recipients=payload["age_recipients"],
+            age_encryption_recipients=payload["age_encryption_recipients"],
         )
         try:
             await asyncio.to_thread(self.backend.commit_adapter, root, name, written, overwrite=False)
