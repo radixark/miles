@@ -339,8 +339,16 @@ class TestQwen35GDNTargets:
 
     def test_the_attn_group_is_attachable(self):
         """The attn group covers the GDN layers too."""
-        config = {"model_type": "qwen3_5", "text_config": {"layer_types": ["linear_attention", "full_attention"]}}
-        targets = resolve_hf_lora_targets(config, target_modules=["attn"])
+        text_config = {
+            "layer_types": ["linear_attention", "full_attention"],
+            "linear_num_key_heads": 2,
+            "linear_key_head_dim": 2,
+            "linear_num_value_heads": 4,
+            "linear_value_head_dim": 2,
+        }
+        targets = resolve_hf_lora_targets(
+            {"model_type": "qwen3_5", "text_config": text_config}, target_modules=["attn"]
+        )
         served = _qwen3_5_resolve(targets)
         assert f"{_GDN35}in_proj_q" in served and f"{_GDN35}in_proj_qkv" not in served
 
