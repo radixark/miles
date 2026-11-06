@@ -22,7 +22,7 @@ from miles.backends.training_utils.data.token_space_media_process import (
 from miles.backends.training_utils.types import TrainStepOutput
 from miles.platforms import current_platform, tpu_shared_slice
 from miles.ray.rollout.inference_controller import UpdatableEngines
-from miles.utils import object_store
+from miles.utils import object_store, observers
 from miles.utils.args.runtime import TrainerConfig
 from miles.utils.audit_utils.config_snapshot.enabled import SNAPSHOT_TESTING_ENABLED
 from miles.utils.audit_utils.process_identity import TrainProcessIdentity
@@ -72,6 +72,13 @@ class WeightUpdateOutput:
         ), f"a cell failed under more than one trainer cell: {failed_cell_ids}"
         [weight_version] = weight_versions or {None}
         return cls(weight_version=weight_version, failed_cell_ids=tuple(failed_cell_ids))
+
+
+def _held_gpu_ids() -> list[int]:
+    # a train rank in a Kubernetes pod runs outside any Ray worker, on the pod GPU of its index
+    if CELL_INDEX_ENV_VAR in os.environ:
+        return [read_worker_in_pod_index(os.environ)]
+    return ray.get_gpu_ids()
 
 
 def get_local_gpu_id():
@@ -138,6 +145,7 @@ class TrainRayActor(NodeProbeMixin):
 
         object_store.init_instance(args)
         self.output_store_read = output_store_reader(args)
+        observers.start_process("train", rank=rank, gpus=_held_gpu_ids)
 
     @functools.cached_property
     def _model_flops(self) -> ModelFlops | None:

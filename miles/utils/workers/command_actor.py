@@ -3,6 +3,7 @@ import os
 import subprocess
 import threading
 
+from miles.utils import observers
 from miles.utils.misc import NodeProbeMixin
 from miles.utils.test_utils.fault_injector.actions.base import FaultHookResources
 from miles.utils.test_utils.fault_injector.controller import FaultHookCommand, fault_hook_controller
@@ -17,8 +18,10 @@ class CommandActor(NodeProbeMixin):
         self._process: subprocess.Popen | None = None
         self._shutting_down = False
 
-    def run(self, cmd: str, envs: dict[str, str]) -> None:
+    def run(self, cmd: str, envs: dict[str, str], gpu_ids: list[int]) -> None:
+        """``gpu_ids`` are the physical GPUs the command runs on, which it may not see through CUDA_VISIBLE_DEVICES."""
         assert self._process is None, "CommandActor.run can only be called once"
+        observers.start_process("command", gpus=lambda: gpu_ids)
 
         logger.info(f"CommandActor launches subprocess cmd={cmd!r} env_names={sorted(envs)}")
         self._process = process_utils.launch_bound_subprocess(["/bin/sh", "-c", cmd], envs=envs)
@@ -32,6 +35,9 @@ class CommandActor(NodeProbeMixin):
 
         self._shutting_down = True
         process_utils.terminate_process_tree(self._process)
+
+    def report_process_end(self) -> None:
+        observers.Observers().end_process()
 
     def kill_subprocess(self) -> None:
         assert self._process is not None, "CommandActor has no subprocess to kill"
