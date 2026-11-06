@@ -188,7 +188,7 @@ Common entries:
 | Colocation | `--colocate` |
 | Numerics pinned by the recipe | `--attention-dropout 0.0`, `--hidden-dropout 0.0`, `--attention-softmax-in-fp32`, `--accumulate-allreduce-grads-in-fp32` |
 | Attention kernel | `--attention-backend` |
-| Observability | `--use-miles-dashboard`, `--dump-details` |
+| Observability | `--dump-details` |
 
 Under `--colocate` the actor and the engines share the same GPUs and take turns, so
 `--rollout-num-gpus` is ignored; see

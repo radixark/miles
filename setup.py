@@ -18,6 +18,7 @@ setup(
         "miles.utils.chat_template_utils.templates": ["*.jinja"],
     },
     install_requires=_fetch_requirements("requirements.txt"),
+    entry_points={"miles.observers": ["miles_dashboard = miles.dashboard.observer:DashboardObserver"]},
     extras_require={
         "fsdp": [
             "torch>=2.0",

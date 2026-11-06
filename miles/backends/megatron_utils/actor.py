@@ -39,7 +39,6 @@ from miles.backends.training_utils.types import TrainStepOutput
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.snapshot_publisher import SnapshotPublisher
 from miles.backends.training_utils.weight_update.updater import WeightUpdater
-from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.rollout.inference_controller import UpdatableEngines
 from miles.ray.specs.train import compute_trainer_pool_id
 from miles.ray.train_actor import TrainRayActor, WeightUpdateOutput
@@ -176,8 +175,6 @@ class MegatronTrainRayActor(TrainRayActor):
 
         if self._is_first_replica_megatron_main_rank:
             init_tracking(args, primary=False)
-
-        dashboard_hooks.register_train_actor(args)
 
         unsupported = {"train_actor", "train_log_probs"} & set(args.profile_target)
         if unsupported and args.backend.use_pytorch_profiler:

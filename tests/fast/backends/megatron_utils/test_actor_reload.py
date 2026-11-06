@@ -262,7 +262,6 @@ def test_peer_recovery_does_not_inherit_startup_checkpoint_selection(actor_modul
     monkeypatch.setattr(actor_module, "routing_replay_manager", Mock())
     monkeypatch.setattr(actor_module.dist, "barrier", Mock())
     monkeypatch.setattr(actor_module.fault_hook_controller, "configure", Mock())
-    monkeypatch.setattr(actor_module.dashboard_hooks, "register_train_actor", Mock())
     monkeypatch.setattr(actor_module, "is_first_replica_megatron_main_rank", lambda: False)
     monkeypatch.setattr(actor_module, "get_parallel_state", lambda: parallel_state)
     monkeypatch.setattr(actor_module, "recv_ckpt", Mock(return_value=manager))
