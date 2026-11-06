@@ -1,5 +1,6 @@
 """``adapter_state/``: fp32 adapter weights, Adam moments and step as plain DCP, keyed by HF module path."""
 
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -103,6 +104,17 @@ def raise_if_any_rank_failed(error: BaseException | None) -> None:
         raise RanksFailedError(message) from error
 
 
+@contextmanager
+def agreed_step():
+    """Every rank leaves together: a failure on any rank raises ``RanksFailedError`` on all of them."""
+    error = None
+    try:
+        yield
+    except Exception as exc:
+        error = exc
+    raise_if_any_rank_failed(error)
+
+
 def _agree_on_step(step: int | None) -> int:
     steps = [step]
     if dist.is_initialized():
@@ -163,12 +175,8 @@ def _state_dict(state: AdapterState, *, for_save: bool) -> dict:
 
 
 def _agreed_state_dict(state: AdapterState, *, for_save: bool) -> dict:
-    state_dict, error = None, None
-    try:
+    with agreed_step():
         state_dict = _state_dict(state, for_save=for_save)
-    except Exception as exc:
-        error = exc
-    raise_if_any_rank_failed(error)
     return state_dict
 
 
