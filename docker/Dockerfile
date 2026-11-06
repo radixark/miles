@@ -250,10 +250,13 @@ RUN bash /tmp/install-kube-tools.sh "${TARGETARCH}" && rm -f /tmp/install-kube-t
 # ====================================== Install main package ============================================
 
 ARG MILES_COMMIT=main
+# 3rdparty/miles-ext-kernels: the kernels behind --use-miles-ext-kernels, importable without PYTHONPATH changes
 RUN git clone https://github.com/radixark/miles.git /root/miles && \
     cd /root/miles && \
     git checkout ${MILES_COMMIT} && \
-    pip install -e . --no-deps
+    git submodule update --init --recursive && \
+    pip install -e . --no-deps && \
+    pip install -e 3rdparty/miles-ext-kernels --no-deps
 
 # int4 fake-quant extension (source: miles/kernels/quant/int4_fake)
 RUN pip install /tmp/wheels/fake_int4_quant_cuda-*.whl

@@ -13,7 +13,7 @@ from fla.ops.kda import chunk_kda
 from megatron.core.process_groups_config import ProcessGroupCollection
 
 from miles.backends.megatron_utils.megatron_to_hf.linear_attn_layout import LinearAttnHeads, qkv_flat_to_group_major
-from miles_plugins.models.linear_attn import KimiDeltaAttention, LinearAttentionLayer
+from miles_plugins.models.linear_attn import KimiDeltaAttention, LinearAttentionLayer, miles_ext
 from miles_plugins.models.qwen3_5 import Qwen3_5GatedDeltaNet
 from miles_plugins.models.qwen3_next import Qwen3NextGatedDeltaNet
 
@@ -173,15 +173,31 @@ def gather(local: torch.Tensor, dim: int, group) -> torch.Tensor:
     return torch.cat(parts, dim=dim)
 
 
-def build_layer(ref, config, allgather_cp: bool = True) -> LinearAttentionLayer:
-    """A head-sharded layer holding this TP rank's shard of ``ref``'s weights, identity input norm."""
+def build_layer(ref, config, allgather_cp: bool = True, backend: str = "fla", args=None) -> LinearAttentionLayer:
+    """A head-sharded layer holding this TP rank's shard of ``ref``'s weights, identity input norm; ``backend``
+    picks the GDN or KDA kernel of the sharded core (the reference always runs fla). ``args`` (the miles
+    configuration fields the layers read: the ``linear_attention_*_backend`` choices and ``miles_ext_kernels_args``)
+    select the Cake short conv / output norm; the KDA core takes them as its constructor arguments."""
     pg = ProcessGroupCollection.use_mpu_process_groups(required_pgs=["tp", "cp"])
     tp = pg.tp
     if isinstance(ref, ReplicatedKDA):
-        core = KimiDeltaAttention(config, ref.heads, CONV, EPS, tp, gate_lower_bound=KDA_LOWER_BOUND)
+        conv_backend = "cake" if args is not None and args.linear_attention_conv_backend == "cake" else None
+        if conv_backend == "cake":
+            miles_ext("conv1d", args)
+        core = KimiDeltaAttention(
+            config,
+            ref.heads,
+            CONV,
+            EPS,
+            tp,
+            gate_lower_bound=KDA_LOWER_BOUND,
+            kda_backend=backend,
+            conv_backend=conv_backend,
+            norm_backend=args.linear_attention_output_norm_backend if args is not None else "fla",
+        )
     else:
         core_cls = Qwen3_5GatedDeltaNet if ref.family == "qwen3_5" else Qwen3NextGatedDeltaNet
-        core = core_cls(config, ref.heads, CONV, EPS, tp)
+        core = core_cls(config, ref.heads, CONV, EPS, tp, backend=backend, args=args)
     with torch.no_grad():
         for name, full in sharded_projections(ref).items():
             getattr(core, name).weight.copy_(shard(full, 0, tp))
