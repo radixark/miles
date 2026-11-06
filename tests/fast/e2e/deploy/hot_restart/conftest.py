@@ -57,5 +57,4 @@ def recorded_rollout_generations(tmp_path: Path) -> list[str]:
         directory.mkdir()
         for rollout_id in rollout_ids:
             (directory / f"{rollout_id}.pt").touch()
-    (tmp_path / "dashboard_columns").mkdir()
     return [str(tmp_path / f"generation_{generation}" / "{rollout_id}.pt") for generation in range(2)]

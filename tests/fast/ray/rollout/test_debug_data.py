@@ -60,7 +60,7 @@ class TestRoundTrip:
         assert (tmp_path / "rollout_verifier_7.pt").exists()
 
     def test_policy_key_is_applied_to_every_debug_artifact(self, tmp_path: Path):
-        """Policy keys keep trajectory and dashboard sidecars distinct for the same rollout."""
+        """Policy keys keep the trajectory sidecars distinct for the same rollout."""
         args = make_args(
             save_debug_rollout_data=str(tmp_path / "rollout_data" / "rollout_{rollout_id}.pt"),
             save_debug_trajectory_data=str(tmp_path / "trajectories" / "rollout_{rollout_id}.jsonl"),
@@ -77,8 +77,6 @@ class TestRoundTrip:
 
         assert (tmp_path / "trajectories" / "rollout_solver_7.jsonl").exists()
         assert (tmp_path / "trajectories" / "rollout_verifier_7.jsonl").exists()
-        assert (tmp_path / "dashboard_columns" / "rollout_solver_7.parquet").exists()
-        assert (tmp_path / "dashboard_columns" / "rollout_verifier_7.parquet").exists()
 
     def test_metadata_round_trip(self, tmp_path: Path):
         """Metadata passed to save comes back verbatim from load."""

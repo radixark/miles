@@ -16,8 +16,10 @@ surfacing as corruption.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import threading
 import time
 from collections import OrderedDict, defaultdict
 from dataclasses import dataclass
@@ -420,6 +422,7 @@ class DumpReader:
         self._trajectory_cache: OrderedDict[tuple[int, bool], dict[SampleKey, dict]] = OrderedDict()
         self._tokenizer = None
         self._tokenizer_loaded = False
+        self._columns_locks: dict[str, threading.Lock] = {}
 
     def rollout_ids(self) -> RolloutIds:
         ids = RolloutIds(train=[], eval=[])
@@ -652,9 +655,8 @@ class DumpReader:
 
     # -------------------------- token-view point reads ----------------------
 
-    # rollout-side per-token columns; the parquet mirror is written by
-    # save_dashboard_columns at dump time and lazily rebuilt here for runs
-    # that predate it (a schema mismatch also triggers the rebuild)
+    # rollout-side per-token columns; the parquet mirror is built under
+    # cache_dir on first read and rebuilt when its .pt or these columns change
     ROLLOUT_COLUMNS: ClassVar[tuple[str, ...]] = (
         "sample_index",
         "response_length",
@@ -664,17 +666,27 @@ class DumpReader:
         "rollout_log_probs",
     )
 
+    def _columns_mirror_path(self, source: Path) -> Path:
+        # one --cache-dir can serve several dumps
+        dump_key = hashlib.sha256(str(source.resolve()).encode()).hexdigest()[:12]
+        return self.cache_dir / "columns" / f"rollout_{source.stem}.{dump_key}.parquet"
+
     def _rollout_columns(
         self, rollout_id: int, sample_index: int, *, sample_occurrence: int, evaluation: bool
     ) -> dict:
-        stem = ("eval_" if evaluation else "") + str(rollout_id)
-        path = self.dump_dir / "dashboard_columns" / f"rollout_{stem}.parquet"
-        if not path.exists() or set(pl.read_parquet_schema(path)) != set(self.ROLLOUT_COLUMNS):
-            from miles.ray.rollout.debug_data import save_dashboard_columns
-
-            name = f"eval_{rollout_id}.pt" if evaluation else f"{rollout_id}.pt"
-            pack = self._torch_load(self.rollout_dir / name)
-            save_dashboard_columns([Sample.from_dict(data) for data in pack["samples"]], path)
+        source = self.rollout_dir / (f"eval_{rollout_id}.pt" if evaluation else f"{rollout_id}.pt")
+        path = self._columns_mirror_path(source)
+        stamp_path = path.with_suffix(".source.json")
+        # a rerun can rewrite the .pt
+        stamp = {"mtime": source.stat().st_mtime, "columns": list(self.ROLLOUT_COLUMNS)}
+        # concurrent request handlers: build each step's mirror once, without holding up other steps
+        with self._columns_locks.setdefault(path.name, threading.Lock()):
+            if not path.exists() or _read_stamp(stamp_path) != stamp:
+                pack = self._torch_load(source)
+                save_dashboard_columns([Sample.from_dict(data) for data in pack["samples"]], path)
+                tmp = stamp_path.with_suffix(f".{os.getpid()}.tmp")
+                tmp.write_text(json.dumps(stamp))
+                tmp.replace(stamp_path)
         frame = pl.scan_parquet(path).filter(pl.col("sample_index") == sample_index).collect()
         if not 0 <= sample_occurrence < len(frame):
             raise KeyError(
@@ -919,3 +931,42 @@ def _max(values: torch.Tensor | None) -> float | None:
 
 def _std(values: torch.Tensor | None) -> float | None:
     return None if values is None else float(values.std())
+
+
+def _read_stamp(path: Path) -> dict | None:
+    # missing, or cut short by an interrupted write: either way the mirror is rebuilt
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def save_dashboard_columns(samples: list[Sample], path: Path) -> None:
+    """Point-read mirror of the per-token rollout columns (parquet, one row
+    per sample) so the dashboard token view never full-loads the .pt."""
+    schema = dict(
+        sample_index=pl.Int32,
+        response_length=pl.Int32,
+        total_length=pl.Int32,
+        tokens=pl.List(pl.Int32),
+        loss_mask=pl.List(pl.Int8),
+        rollout_log_probs=pl.List(pl.Float32),
+    )
+    frame = pl.DataFrame(
+        [
+            dict(
+                sample_index=sample.index,
+                response_length=sample.response_length,
+                total_length=len(sample.tokens),
+                tokens=list(sample.tokens),
+                loss_mask=sample.loss_mask,
+                rollout_log_probs=sample.rollout_log_probs,
+            )
+            for sample in samples
+        ],
+        schema=schema,
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(f".{os.getpid()}.tmp")
+    frame.write_parquet(tmp, row_group_size=8)
+    tmp.replace(path)
