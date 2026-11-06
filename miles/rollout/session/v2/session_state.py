@@ -59,7 +59,7 @@ class SessionStateV2:
     sampling_defaults: dict[str, Any] = field(default_factory=dict)
     sampling_support_replay: bool = False
     extra_key: str | None = None
-    # the sequence length a training sample keeps: a prompt that fills it is refused; None means no limit
+    # the session's prompt length limit: a prompt that fills it is refused; None means no limit
     max_seq_len: int | None = None
 
     def snapshot(self) -> "SessionStateV2":

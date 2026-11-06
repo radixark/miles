@@ -129,9 +129,9 @@ def prepare_chat_request(
 def refuse_prompt_filling_max_seq_len(*, max_seq_len: int | None, prompt_tokens: int) -> None:
     """Raise 409 when the rendered prompt already fills *max_seq_len*; None means no limit.
 
-    ``max_seq_len`` is the sequence length a training sample keeps, so the trajectory cannot be extended
-    past it. The request's ``max_tokens`` is left to the client: the last turn may still run past the limit,
-    and sample assembly truncates it.
+    A prompt that fills ``max_seq_len`` leaves no room for a completion. The request's ``max_tokens`` is left
+    to the client: the last turn may still run past the limit, and collection truncates it to the limit the
+    collector passes.
     """
     if max_seq_len is not None and prompt_tokens >= max_seq_len:
         raise MaxSeqLenReachedError(

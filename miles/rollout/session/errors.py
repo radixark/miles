@@ -46,8 +46,8 @@ class TruncatedGenerationError(SessionError):
 
 class MaxSeqLenReachedError(SessionError):
     """Raised when a request's prompt already fills the session's
-    ``max_seq_len``, the sequence length a training sample keeps; the request
-    is refused before it reaches the engine and the trajectory is unchanged."""
+    ``max_seq_len``; the request is refused before it reaches the engine and
+    the trajectory is unchanged."""
 
     status_code: int = 409
 
