@@ -1731,6 +1731,17 @@ async def test_file_imports_stay_under_the_import_root_and_load_weights_only(tmp
         ):
             assert error in (await load(model_id, path, optimizer=error == "weights only", seq_id=seq_id)).error
         assert not any(copies.iterdir()), "a refused import left its copy"
+        # seq 6 never arrives, so both imports stay queued: each copy can reach max_bytes
+        for seq_id in (7, 8):
+            payload = {"model_id": model_id, "seq_id": seq_id, "path": f"file://{adapter}", "optimizer": False}
+            service.submit("tenant", "load_state", payload)
+        await asyncio.sleep(0.2)
+        assert len(list(copies.iterdir())) == 1, "a model staged two import copies at once"
+        async with service._trainer_lock:
+            await service._close_model(model_id, "closed", "user")
+        await asyncio.gather(*service._create_tasks)
+        await asyncio.gather(*service._cleanup_tasks)
+        assert not any(copies.iterdir()), "a closed model's queued import kept its copy"
     finally:
         run_task.cancel()
         with suppress(asyncio.CancelledError):

@@ -257,6 +257,10 @@ class TinkerService:
         self._close_reasons[model_id] = error
         while len(self._close_reasons) > 4 * self.config.n_slots:
             self._close_reasons.pop(next(iter(self._close_reasons)))
+        model_queue = self.scheduler.model_queue(model_id)
+        for command in [*(pending.command for pending in model_queue.queue), *model_queue.pending_by_seq.values()]:
+            if "copy_dir" in command.payload.get("staged_import", {}):
+                self._release_staged_import(record, command.payload["staged_import"])
         self.scheduler.remove_model_queue(model_id)
         for request_id in [record.create_request_id, *record.request_id_by_seq.values()]:
             if self.futures.get(request_id, record.tenant) is not None:
@@ -570,23 +574,30 @@ class TinkerService:
     async def _stage_import_then_submit(self, record: ModelRecord, model_queue, command: Command) -> None:
         """Copy and check a file:// import without the trainer lock, then queue its load; a failure is the
         request's own and never reaches the trainer."""
+        await record.staged_import_slot.acquire()
+        staged = {}
         try:
-            command.payload["staged_import"] = await self._stage_import(record, command.payload)
+            staged = await self._stage_import(record, command.payload)
         except UserInputError as error:
             command.validation_error = str(error)
         except Exception as error:
             # a background task's error stops the dispatcher; this one is only this request's
             logger.exception(f"could not stage {command.payload['path']}")
-            command.payload["staged_import"] = _staged_failure(
-                f"cannot stage {command.payload['path']}: {type(error).__name__}: {error}"
-            )
-        if self.models.get(record.model_id) is not record:
-            # closed while copying; its future already failed
-            if "copy_dir" in command.payload.get("staged_import", {}):
-                self._remove_import_copy(command.payload["staged_import"]["copy_dir"])
-            return
+            staged = _staged_failure(f"cannot stage {command.payload['path']}: {type(error).__name__}: {error}")
+        command.payload["staged_import"] = staged
+        # closed while copying (its future already failed), or nothing staged to hold
+        if self.models.get(record.model_id) is not record or "copy_dir" not in staged:
+            self._release_staged_import(record, staged)
+            if self.models.get(record.model_id) is not record:
+                return
         model_queue.submit(command)
         self._wake.set()
+
+    def _release_staged_import(self, record: ModelRecord, staged: dict) -> None:
+        """Remove a staged copy, if any, and let the model stage its next import."""
+        if "copy_dir" in staged:
+            self._remove_import_copy(staged.pop("copy_dir"))
+        record.staged_import_slot.release()
 
     async def _stage_import(self, record: ModelRecord, payload: dict) -> dict:
         """An adapter from under --tinker-import-root; it has no Adam state this gateway could resume."""
@@ -640,7 +651,7 @@ class TinkerService:
                 source={"path": staged["copy_dir"], "load_optimizer": False, "parametrization_fields": fields},
             )
         finally:
-            self._remove_import_copy(staged["copy_dir"])
+            self._release_staged_import(record, staged)
         if failure is not None:
             return failure
         record.lora_alpha = source["lora_alpha"]
