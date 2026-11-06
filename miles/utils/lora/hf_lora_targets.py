@@ -23,6 +23,11 @@ class HfLoraTargets:
     tinker_name_renames: tuple[tuple[str, str], ...] = ()
     # HF-fused module leaf -> its components' output rows, in HF row order
     component_rows_by_fused_module: tuple[tuple[str, tuple[int, ...]], ...] = ()
+    # set when the family's adapters name routed experts packed and stacked (experts.gate_up_proj / down_proj, 3D);
+    # the value is how gate and up rows share gate_up_proj
+    packed_expert_gate_up_layout: str | None = None
+    # the HF vocab: the most head lora_B rows an HF-shaped source may hold
+    vocab_size: int | None = None
 
 
 @dataclass(frozen=True)
@@ -35,6 +40,7 @@ class _HfLoraModelSpec:
     build_whole_fused_attention: Callable[[dict], tuple[str, ...]] = lambda config: ()
     tinker_name_renames: tuple[tuple[str, str], ...] = ()
     component_rows_by_fused_module: Callable[[dict], tuple[tuple[str, tuple[int, ...]], ...]] = lambda config: ()
+    packed_expert_gate_up_layout: str | None = None
 
 
 # official Tinker exports (checked against SDK 0.36 exports): HF names except the head and the stacked 3D experts
@@ -299,7 +305,9 @@ _HF_LORA_MODELS = {
         tinker_name_renames=_TINKER_RENAMES,
         component_rows_by_fused_module=_gdn_35_component_rows,
     ),
-    "gpt_oss": _HfLoraModelSpec(_gpt_oss_targets, tinker_name_renames=_GPT_OSS_TINKER_RENAMES),
+    "gpt_oss": _HfLoraModelSpec(
+        _gpt_oss_targets, tinker_name_renames=_GPT_OSS_TINKER_RENAMES, packed_expert_gate_up_layout="interleaved"
+    ),
     "deepseek_v2": _HfLoraModelSpec(_deepseek_targets),
     "deepseek_v3": _HfLoraModelSpec(_deepseek_targets),
     "deepseek_v32": _HfLoraModelSpec(_deepseek_targets),
@@ -334,6 +342,11 @@ _HF_LORA_MODELS = {
 }
 
 
+def has_hf_lora_targets(hf_config: dict) -> bool:
+    """Explicit --target-modules train any family; the adapter checkpoint and export need its layout."""
+    return hf_config["model_type"] in _HF_LORA_MODELS
+
+
 def get_hf_lora_targets(hf_config: dict) -> HfLoraTargets:
     model_type = hf_config["model_type"]
     assert model_type in _HF_LORA_MODELS, f"HF LoRA target layout is not defined for model_type={model_type!r}"
@@ -348,6 +361,8 @@ def get_hf_lora_targets(hf_config: dict) -> HfLoraTargets:
         whole_fused_attention=_prefix_paths(spec.layer_prefix, *spec.build_whole_fused_attention(text_config)),
         tinker_name_renames=spec.tinker_name_renames,
         component_rows_by_fused_module=spec.component_rows_by_fused_module(text_config),
+        vocab_size=text_config.get("vocab_size"),
+        packed_expert_gate_up_layout=spec.packed_expert_gate_up_layout,
     )
 
 

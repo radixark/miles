@@ -14,6 +14,7 @@ from miles.backends.training_utils.checkpoint.adapter.adapter_dir import save_ad
 from miles.backends.training_utils.checkpoint.adapter.adapter_exports import write_sampler_adapter
 from miles.backends.training_utils.checkpoint.adapter.commit import commit_adapter_dir, resolve_adapter_dir
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
+from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
 
 EXPERTS = tuple(f"model.layers.0.mlp.experts.{p}" for p in ("gate_proj", "up_proj", "down_proj"))
 
@@ -31,7 +32,9 @@ def test_sampler_export_converts_to_per_expert_peft(tmp_path, monkeypatch):
     weights = {
         f"{m}.lora_{f}": torch.randn(3, 2, 8) if f == "A" else torch.randn(3, 8, 2) for m in EXPERTS for f in "AB"
     }
-    write_sampler_adapter(tmp_path / "src", weights, run, lora_dropout=0.0)
+    write_sampler_adapter(
+        tmp_path / "src", weights, run, get_hf_lora_targets({"model_type": "qwen3"}), lora_dropout=0.0
+    )
     config = tmp_path / "config.json"
     config.write_text(
         json.dumps(

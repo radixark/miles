@@ -21,6 +21,7 @@ from miles.backends.training_utils.checkpoint.adapter.key_mapping import (
     HfKey,
     is_hf_only_name,
     is_tinker_only_name,
+    map_named_tensors_to_hf_keys,
     map_sampler_keys_to_hf_keys,
     map_tinker_keys_to_hf_keys,
     rename_sampler_experts_to_hf,
@@ -31,7 +32,7 @@ from miles.backends.training_utils.checkpoint.adapter.parametrization import (
     read_parametrization,
 )
 from miles.backends.training_utils.checkpoint.adapter.source_error import AdapterSourceError, require_fields
-from miles.utils.lora.hf_lora_targets import GDN_IN_PROJ_COMPONENTS_BY_MODULE, HfLoraTargets
+from miles.utils.lora.hf_lora_targets import HfLoraTargets
 
 _PEFT_FILES = ("adapter_config.json", "adapter_model.safetensors")
 # PEFT features that change what a tensor means; an adapter using them cannot be read as plain LoRA
@@ -117,7 +118,7 @@ def classify_adapter_source(path: Path, targets: HfLoraTargets, *, load_optimize
     raise AdapterSourceError(f"{path} is not a recognized LoRA adapter source")
 
 
-def _collapse_shared_lora_a(
+def collapse_shared_lora_a(
     weights: dict, parametrization: AdapterParametrization, fused_groups: list[tuple[str, ...]]
 ) -> dict:
     """Undo a written expansion: keep the first member's A, after checking every copy matches it.
@@ -138,31 +139,7 @@ def _collapse_shared_lora_a(
 def _read_peft_tensors(
     path: Path, map_name, targets: HfLoraTargets
 ) -> tuple[dict[str, torch.Tensor], list[tuple[str, ...]]]:
-    """HF-keyed whole tensors; per-expert 2D stacks to 3D, an HF-fused module splits into components sharing A."""
-    per_expert: dict[str, dict[int, torch.Tensor]] = {}
-    weights, fused_groups = {}, []
-    for name, value in load_file(str(path / "adapter_model.safetensors")).items():
-        hf_key = map_name(name)
-        if hf_key.expert_index is not None:
-            per_expert.setdefault(hf_key.key, {})[hf_key.expert_index] = value
-            continue
-        module, factor = hf_key.key.rsplit(".", 1)
-        components = _fused_components(module)
-        if components is None:
-            weights[hf_key.key] = value
-        elif factor == "lora_A":
-            # under the sorted first component, where a shared-A group keeps its A
-            weights[f"{min(components)}.lora_A"] = value
-            fused_groups.append(components)
-        else:
-            rows = dict(targets.component_rows_by_fused_module)[module.rpartition(".")[2]]
-            for component, part in zip(components, value.split(rows), strict=True):
-                weights[f"{component}.lora_B"] = part.clone()
-    for key, experts in per_expert.items():
-        if sorted(experts) != list(range(len(experts))):
-            raise AdapterSourceError(f"{key}: expert indices are not 0..E-1")
-        weights[key] = torch.stack([experts[i] for i in range(len(experts))])
-    return weights, fused_groups
+    return map_named_tensors_to_hf_keys(load_file(str(path / "adapter_model.safetensors")).items(), map_name, targets)
 
 
 class MilesAdapterDirReader:
@@ -196,7 +173,7 @@ class MilesAdapterDirReader:
         weights, fused_groups = _read_peft_tensors(
             self.path, lambda name: map_sampler_keys_to_hf_keys(name, self.targets), self.targets
         )
-        return _collapse_shared_lora_a(weights, self.source.parametrization, fused_groups)
+        return collapse_shared_lora_a(weights, self.source.parametrization, fused_groups)
 
 
 def _assert_plain_lora_peft_config(config: dict, path: Path) -> None:
@@ -208,14 +185,6 @@ def _assert_plain_lora_peft_config(config: dict, path: Path) -> None:
         raise AdapterSourceError(
             f"{path}: PEFT features {used} change what the tensors mean; only plain LoRA can be read"
         )
-
-
-def _fused_components(module: str) -> tuple[str, ...] | None:
-    parent, _, leaf = module.rpartition(".")
-    components = GDN_IN_PROJ_COMPONENTS_BY_MODULE.get(leaf)
-    if not parent or components is None or len(components) == 1:
-        return None
-    return tuple(f"{parent}.{c}" for c in components)
 
 
 class PeftAdapterReader:

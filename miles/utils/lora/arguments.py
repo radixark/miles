@@ -12,10 +12,11 @@ from miles.utils.lora.hf_lora_targets import (
     expand_packed_hf_lora_targets,
     gdn_in_proj_served_targets,
     get_hf_lora_targets,
+    has_hf_lora_targets,
     parse_lora_targets,
     resolve_hf_lora_targets,
 )
-from miles.utils.lora.utils import is_lora_enabled, matches_lora_target, targets_expert_leaves
+from miles.utils.lora.utils import exports_hf_snapshots, is_lora_enabled, matches_lora_target, targets_expert_leaves
 
 logger = logging.getLogger(__name__)
 
@@ -75,14 +76,42 @@ def _default_lora_type(args) -> str:
 
 
 def validate_lora_args_after_megatron(args):
-    """Megatron's native (raw-mode) LoRA: the targets its spec serves, and the run checks that read
-    Megatron's resolved args (e.g. the expert TP size it defaults from TP)."""
+    """Checks that need Megatron's resolved args or the resolved eval-snapshot setting: Bridge LoRA's HF-export
+    layout, and the targets native (raw-mode) LoRA's spec serves."""
+    if is_lora_enabled(args) and args.megatron_to_hf_mode == "bridge":
+        _assert_adapter_layout_defined(args)
     if not (is_lora_enabled(args) and args.megatron_to_hf_mode == "raw"):
         return
     hf_config = load_hf_config(args.hf_checkpoint)
     hf_modules = _hf_modules(hf_config)
     args.lora_adapter_targets = _native_serving_targets(args, hf_config, args.hf_lora_targets, hf_modules)
     validate_native_lora_args(args, hf_modules)
+
+
+def _assert_adapter_layout_defined(args) -> None:
+    # the actor builds the adapter slots, which need the layout, for HF exports; eval_uses_snapshots is resolved
+    # only after validate_lora_args
+    if exports_hf_snapshots(args):
+        hf_config = load_hf_config(args.hf_checkpoint)
+        assert has_hf_lora_targets(hf_config.to_dict()), (
+            f"Bridge LoRA snapshots and checkpoints need the HF LoRA target layout of model_type="
+            f"{hf_config.model_type!r}, which miles does not define"
+        )
+        _assert_bridge_hf_exports_keep_every_expert(args, hf_config)
+
+
+def _assert_bridge_hf_exports_keep_every_expert(args, hf_config) -> None:
+    targets = get_hf_lora_targets(hf_config.to_dict())
+    adapts_experts = any(
+        ".experts." in module and any(matches_lora_target(module, target) for target in args.hf_lora_targets)
+        for module in _hf_modules(hf_config)
+    )
+    # Bridge exports a packed family's per-expert side under one unindexed name for every expert
+    packed_shared_outer = targets.packed_expert_gate_up_layout is not None and args.experts_shared_outer_loras
+    assert not (packed_shared_outer and adapts_experts), (
+        "--save-hf and eval snapshots of a packed-expert family's --experts-shared-outer-loras adapter would keep "
+        "only the last expert's per-expert side: drop --experts-shared-outer-loras, or --save-hf and eval snapshots"
+    )
 
 
 def _native_serving_targets(args, hf_config, hf_targets: list[str], hf_modules: list[str]) -> list[str] | str:

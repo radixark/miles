@@ -5,14 +5,18 @@ with LoRA enabled (rank=32, all-linear) to validate:
   - LoRA model setup via Bridge
   - LoRA weight sync to SGLang rollout engines
   - LoRA checkpoint save (native + HF PEFT format)
+  - --save-hf writes a PEFT adapter through the adapter slots' probe
   - Training completes without errors
 
 Requires: 2 GPUs, Qwen2.5-0.5B-Instruct model, GSM8K dataset.
 Triggered by label: run-ci-lora
 """
 
+import glob
 import os
+import shutil
 
+from safetensors import safe_open
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 from miles.utils.external_utils import command_utils
@@ -28,6 +32,7 @@ ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "1")))
 MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"
 NUM_GPUS = 2
+SAVE_HF_DIR = "/root/checkpoints/lora-qwen2.5-0.5B-ci-hf"
 
 
 def prepare():
@@ -100,7 +105,11 @@ def execute():
 
     ci_args = "--ci-test --no-enable-sample-ownership-checker "
 
-    save_args = "--save-interval 2 " "--save /root/checkpoints/lora-qwen2.5-0.5B-ci "
+    save_args = (
+        "--save-interval 2 "
+        "--save /root/checkpoints/lora-qwen2.5-0.5B-ci "
+        f"--save-hf {SAVE_HF_DIR}/rollout_{{rollout_id}} "
+    )
 
     misc_args = (
         "--attention-dropout 0.0 "
@@ -137,8 +146,21 @@ def execute():
     )
 
 
+def verify_hf_adapter():
+    # a periodic --save-hf only logs its failure and removes the dir, so the run passing proves nothing
+    adapter_dirs = glob.glob(f"{SAVE_HF_DIR}/*/adapter")
+    assert adapter_dirs, f"--save-hf wrote no adapter under {SAVE_HF_DIR}"
+    for adapter_dir in adapter_dirs:
+        assert os.path.isfile(f"{adapter_dir}/adapter_config.json"), adapter_dir
+        with safe_open(f"{adapter_dir}/adapter_model.safetensors", framework="pt") as f:
+            keys = list(f.keys())
+        assert keys and all(key.startswith("base_model.model.") for key in keys), keys[:4]
+
+
 if __name__ == "__main__":
     prepare()
     for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
         os.environ.pop(proxy_var, None)
+    shutil.rmtree(SAVE_HF_DIR, ignore_errors=True)
     execute()
+    verify_hf_adapter()

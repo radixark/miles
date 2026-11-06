@@ -22,6 +22,19 @@ def is_lora_enabled(args: Namespace) -> bool:
     return args.lora_rank > 0 or args.lora_adapter_path is not None
 
 
+def exports_hf_snapshots(args: Namespace) -> bool:
+    """The trainer writes HF snapshots: --save-hf and eval snapshots."""
+    return args.save_hf is not None or (args.eval_uses_snapshots and args.eval_hf_dir is not None)
+
+
+def publishes_snapshots(args: Namespace, save: str | None) -> bool:
+    """The trainer publishes HF snapshots: HF exports and a Bridge LoRA --save (``save``, which the trainer config
+    holds under ``backend``)."""
+    return exports_hf_snapshots(args) or (
+        is_lora_enabled(args) and save is not None and args.megatron_to_hf_mode != "raw"
+    )
+
+
 def lora_rollout_enabled(args: Namespace) -> bool:
     """LoRA enabled AND the rollout side participates; false under --lora-train-only.
 

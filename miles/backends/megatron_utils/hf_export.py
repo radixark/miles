@@ -8,9 +8,12 @@ from pathlib import Path
 import torch
 from megatron.core.distributed import DistributedDataParallel as DDP
 
+from miles.backends.megatron_utils.lora.bridge_adapter_slots import BridgeAdapterSlots
 from miles.backends.megatron_utils.lora.native.merge import merge_lora_into_weights
 from miles.backends.megatron_utils.lora.utils import is_lora_model
 from miles.backends.megatron_utils.named_weights import named_params_and_buffers
+from miles.backends.training_utils.checkpoint.adapter.adapter_dir import write_peft_export, write_sampler_export
+from miles.backends.training_utils.checkpoint.adapter.adapter_exports import has_plain_peft_form
 from miles.backends.training_utils.checkpoint.io import write_checkpoint_dir
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.backends.training_utils.weight_update.snapshot_publisher import SnapshotPublisher
@@ -32,6 +35,7 @@ def save_hf_model(
     model: Sequence[DDP],
     *,
     publisher: SnapshotPublisher,
+    adapter_slots: BridgeAdapterSlots | None,
     path: str | Path | None = None,
     raise_on_error: bool = False,
 ) -> None:
@@ -67,8 +71,33 @@ def save_hf_model(
                     f"HF export to {path} produced no weight files — the megatron "
                     f"bridge likely has no mapping for this model architecture."
                 )
-        if is_lora_model(model):
+        if is_lora_model(model) and args.megatron_to_hf_mode == "raw":
             publisher.write_adapter(None, checkpoint_dir / "adapter")
+        elif is_lora_model(model):
+            assert adapter_slots is not None, "a Bridge LoRA export needs the model's adapter slots"
+            # multi-LoRA exports slot 0 at its own rank and alpha, not the run's
+            spec = adapter_slots.slot_spec(0)
+            parametrization = adapter_slots.parametrization(
+                base_model=args.hf_checkpoint,
+                lora_rank=args.lora_rank if spec is None else spec.rank,
+                lora_alpha=args.lora_alpha if spec is None else spec.alpha,
+                lora_type=args.lora_type,
+                experts_shared_outer_loras=args.experts_shared_outer_loras,
+            )
+            # a fused module whose components have their own A has no PEFT name; sglang's names, as main wrote, do
+            write = (
+                write_peft_export
+                if has_plain_peft_form(parametrization, adapter_slots.targets)
+                else write_sampler_export
+            )
+            write(
+                checkpoint_dir / "adapter",
+                adapter_slots,
+                0,
+                parametrization,
+                adapter_slots.targets,
+                lora_dropout=args.lora_dropout,
+            )
 
     if should_log:
         logger.info(f"Saving model in HuggingFace format to {path}")

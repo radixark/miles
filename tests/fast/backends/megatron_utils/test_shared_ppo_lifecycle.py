@@ -330,6 +330,7 @@ def test_force_sync_save_overlaps_hf_export_with_async_checkpoint(actor_module, 
     worker.optimizer = object()
     worker.opt_param_scheduler = object()
     worker.snapshot_publisher = object()
+    worker.adapter_slots = None
     events = []
 
     monkeypatch.setattr(actor_module, "save", lambda *_args, **_kwargs: events.append("save"))

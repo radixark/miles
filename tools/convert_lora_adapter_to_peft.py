@@ -34,7 +34,9 @@ def main() -> None:
     config = args.src / "adapter_config.json"
     lora_dropout = json.loads(config.read_text())["lora_dropout"] if config.is_file() else args.lora_dropout
     assert lora_dropout is not None, f"{args.src} records no lora_dropout; pass --lora-dropout"
-    write_peft_adapter(args.dst, reader.read_weights(), reader.source.parametrization, lora_dropout=lora_dropout)
+    write_peft_adapter(
+        args.dst, reader.read_weights(), reader.source.parametrization, targets, lora_dropout=lora_dropout
+    )
 
 
 if __name__ == "__main__":

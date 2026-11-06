@@ -1,13 +1,14 @@
 """The save / load flow, written once; backends only provide their checkpoint members."""
 
 import json
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 import torch
 
+from miles.backends.training_utils.checkpoint.adapter.adapter_exports import write_peft_adapter, write_sampler_adapter
 from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
     AdapterState,
     LocalShardSpec,
@@ -21,6 +22,10 @@ from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
     read_adapter_state_shapes,
 )
 from miles.backends.training_utils.checkpoint.adapter.commit import UncommittedAdapterDir, write_adapter_dir
+from miles.backends.training_utils.checkpoint.adapter.key_mapping import (
+    map_named_tensors_to_hf_keys,
+    map_peft_keys_to_hf_keys,
+)
 from miles.backends.training_utils.checkpoint.adapter.parametrization import (
     AdapterParametrization,
     write_parametrization,
@@ -36,6 +41,7 @@ from miles.backends.training_utils.checkpoint.adapter.readers import (
     MilesAdapterDirReader,
     PeftAdapterReader,
     classify_adapter_source,
+    collapse_shared_lora_a,
 )
 from miles.backends.training_utils.checkpoint.adapter.source_error import AdapterSourceError
 from miles.utils.lora.hf_lora_targets import HfLoraTargets
@@ -80,10 +86,13 @@ class AdapterCheckpointMembers(Protocol):
     inside it.
     """
 
+    # naming of export_bf16_adapter's names; picks the mapper to HF keys
+    bf16_adapter_key_style: Literal["peft"]
     # the trained head's lora_B, or None when the adapter has no head
     head_rows: HeadRows | None
 
-    def export_bf16_adapter(self, slot: int) -> Iterable[tuple[str, torch.Tensor]]: ...
+    def export_bf16_adapter(self, slot: int) -> Iterable[tuple[str, torch.Tensor]]:
+        """Collective; whole bf16 tensors on rank 0, nothing elsewhere."""
 
     def get_local_shard_specs(self, slot: int) -> list[LocalShardSpec]: ...
 
@@ -137,6 +146,83 @@ def _assert_real_rank(specs: list[LocalShardSpec], lora_rank: int) -> None:
         assert (
             spec.global_shape[rank_axis] == lora_rank
         ), f"{spec.key}: rank {spec.global_shape[rank_axis]} != {lora_rank}"
+
+
+def _stacked_expert_keys(named_tensors: list[tuple[str, torch.Tensor]], map_name) -> frozenset[str]:
+    """The HF keys the export names as one stacked experts tensor: the base checkpoint's packed form. A shared-outer
+    side also comes unindexed, as ``[1, ...]``; it is one tensor for every expert, not a stack, so it is left out."""
+    keys = set()
+    for name, tensor in named_tensors:
+        hf_key = map_name(name)
+        if hf_key.expert_index is None and ".experts." in hf_key.key and tensor.dim() == 3 and tensor.shape[0] > 1:
+            keys.add(hf_key.key)
+    return frozenset(keys)
+
+
+def write_peft_export(
+    directory: Path,
+    members: AdapterCheckpointMembers,
+    slot: int,
+    parametrization: AdapterParametrization,
+    targets: HfLoraTargets,
+    *,
+    lora_dropout: float,
+) -> None:
+    """All ranks call; rank 0 writes ``slot``'s bf16 PEFT export into ``directory``."""
+    _write_bf16_export(
+        directory,
+        members,
+        slot,
+        parametrization,
+        targets,
+        lambda *view, stacked_keys: write_peft_adapter(*view, stacked_keys=stacked_keys, lora_dropout=lora_dropout),
+    )
+
+
+def write_sampler_export(
+    directory: Path,
+    members: AdapterCheckpointMembers,
+    slot: int,
+    parametrization: AdapterParametrization,
+    targets: HfLoraTargets,
+    *,
+    lora_dropout: float,
+) -> None:
+    """All ranks call; rank 0 writes ``slot``'s bf16 sampler export into ``directory``, outside any commit."""
+    # the sampler layout keeps every expert stacked
+    _write_bf16_export(
+        directory,
+        members,
+        slot,
+        parametrization,
+        targets,
+        lambda *view, stacked_keys: write_sampler_adapter(*view, lora_dropout=lora_dropout),
+    )
+
+
+def _write_bf16_export(
+    directory: Path,
+    members: AdapterCheckpointMembers,
+    slot: int,
+    parametrization: AdapterParametrization,
+    targets: HfLoraTargets,
+    write: Callable[..., None],
+) -> None:
+    with agree_on_failure_context():
+        # the gathered adapter leaves the GPU before rank 0 splits and copies it
+        named_tensors = [(name, tensor.cpu()) for name, tensor in members.export_bf16_adapter(slot)]
+        if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
+            map_name = {"peft": map_peft_keys_to_hf_keys}[members.bf16_adapter_key_style]
+            weights, fused_groups = map_named_tensors_to_hf_keys(named_tensors, map_name, targets)
+            # the export names a shared A once per module; the writers expect it once per group
+            weights = collapse_shared_lora_a(weights, parametrization, fused_groups)
+            write(
+                directory,
+                weights,
+                parametrization,
+                targets,
+                stacked_keys=_stacked_expert_keys(named_tensors, map_name),
+            )
 
 
 def _assert_source_shape(full: torch.Tensor, spec: LocalShardSpec) -> None:
