@@ -1,18 +1,20 @@
 import errno
 from dataclasses import replace
+from functools import partial
 from types import SimpleNamespace
 
 import pytest
 import torch
 import torch.distributed as dist
-from tests.fast.dist_utils import find_free_port, init_gloo
+from tests.fast.dist_utils import find_free_port, init_gloo, run_multiprocess
 
 from miles.backends.megatron_utils.lora import checkpoint
-from miles.backends.training_utils.checkpoint.adapter.adapter_dir import HeadRows
+from miles.backends.training_utils.checkpoint.adapter.adapter_dir import CheckedSource, HeadRows
 from miles.backends.training_utils.checkpoint.adapter.adapter_exports import write_peft_adapter
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
 from miles.backends.training_utils.checkpoint.adapter.readers import AdapterSourceKind
 from miles.backends.training_utils.checkpoint.adapter.source_error import AdapterSourceError
+from miles.utils import distributed_utils
 from miles.utils.distributed_utils import init_gloo_group
 from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
 
@@ -30,7 +32,7 @@ def _legacy_metadata(saved_shape, *, with_optimizer=True):
 
 def _legacy_source(monkeypatch, saved_shape, *, with_optimizer=True):
     monkeypatch.setattr(
-        checkpoint, "check_adapter_source", lambda *_, **__: AdapterSourceKind.LEGACY_TINKER_CHECKPOINT
+        checkpoint, "check_adapter_source", lambda *_, **__: CheckedSource(AdapterSourceKind.LEGACY_TINKER_CHECKPOINT)
     )
     monkeypatch.setattr(checkpoint, "_read_legacy_meta", lambda *_: {})
     metadata = _legacy_metadata(saved_shape, with_optimizer=with_optimizer)
@@ -79,16 +81,33 @@ def test_a_failure_that_is_not_the_sources_fault_is_a_server_error(gloo, monkeyp
         checkpoint.find_load_mismatch(None, 0, "/ckpt", None, None, load_optimizer=False, run_shapes={})
 
 
-def test_a_missing_source_is_the_users_mismatch(gloo, tmp_path):
-    mismatch = checkpoint.find_load_mismatch(
-        None, 0, str(tmp_path / "absent"), UNSHARED, TARGETS, load_optimizer=False, run_shapes={}
-    )
+def _check_missing_source(rank, world_size, port, *, path):
+    init_gloo(rank, world_size, port=port)
+    init_gloo_group()
+    checked_on = []
+    check = checkpoint.check_adapter_source
+
+    def counting_check(*args, **kwargs):
+        checked_on.append(rank)
+        return check(*args, **kwargs)
+
+    checkpoint.check_adapter_source = counting_check
+    mismatch = checkpoint.find_load_mismatch(None, 0, path, UNSHARED, TARGETS, load_optimizer=False, run_shapes={})
+    assert checked_on == ([0] if rank == 0 else []), "only rank 0 reads the source"
     assert mismatch is not None and "cannot load into this model" in mismatch
+    dist.destroy_process_group()
+
+
+def test_a_missing_source_is_the_users_mismatch_on_every_rank(tmp_path):
+    """Rank 0 reads and classifies the source; every rank returns its verdict."""
+    run_multiprocess(partial(_check_missing_source, path=str(tmp_path / "absent")))
 
 
 @pytest.fixture
-def gloo():
+def gloo(monkeypatch):
     init_gloo(0, 1, port=find_free_port())
+    # the cached group belongs to the previous test's destroyed process group
+    monkeypatch.setattr(distributed_utils, "GLOO_GROUP", None)
     init_gloo_group()
     yield
     dist.destroy_process_group()
@@ -160,7 +179,7 @@ def test_a_legacy_layout_mismatch_names_the_gateway_flag(tmp_path):
 
 def test_a_legacy_meta_without_a_required_field_is_the_users_mismatch(gloo, tmp_path, monkeypatch):
     monkeypatch.setattr(
-        checkpoint, "check_adapter_source", lambda *_, **__: AdapterSourceKind.LEGACY_TINKER_CHECKPOINT
+        checkpoint, "check_adapter_source", lambda *_, **__: CheckedSource(AdapterSourceKind.LEGACY_TINKER_CHECKPOINT)
     )
     (tmp_path / "META.json").write_text('{"base_model": "m", "lora_alpha": 4.0}')
     mismatch = checkpoint.find_load_mismatch(

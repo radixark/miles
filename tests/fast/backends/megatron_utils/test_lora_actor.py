@@ -38,7 +38,7 @@ def _lora_actor_module(monkeypatch, *, model=None, checkpoint=None):
 def test_a_source_the_slot_cannot_take_is_a_user_error_and_leaves_the_slot_alone(monkeypatch):
     loaded = []
     checkpoint = SimpleNamespace(
-        find_load_mismatch=lambda *args, **shapes: "rank 4 != 8",
+        check_load_source=lambda *args, **shapes: ("rank 4 != 8", None),
         load_slot=lambda *args: loaded.append("checkpoint"),
     )
     model = SimpleNamespace(load_slot=lambda *args: loaded.append("model"))
