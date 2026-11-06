@@ -13,7 +13,7 @@ FROM lmsysorg/sglang:${SGLANG_TPU_IMAGE_TAG}
 
 ARG SGLANG_TPU_REPO=sgl-project/sglang-torchtpu
 # sglang-torchtpu main (2026-11-06); swap the commit for a release image tag once one ships.
-ARG SGLANG_TPU_COMMIT=e28b6f6a188de843584528557d4967ae9101a3c3
+ARG SGLANG_TPU_COMMIT=108d775ea43d29f713fb486a496a46fe4e1682e6
 ARG TORCH_VERSION=2.14.1
 ARG TORCHVISION_VERSION=0.29.1
 # the triton torch 2.14 pairs with; torchtitan imports triton unconditionally
