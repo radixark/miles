@@ -18,7 +18,7 @@ from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
     AdapterState,
     LocalShardSpec,
     _save_adapter_state,
-    agreed_step,
+    agree_on_failure_context,
     assert_adapter_state_keys,
     broadcast_from_rank0,
     gloo_group,
@@ -75,8 +75,8 @@ class HeadRows:
 class InModelLoader(Protocol):
     """A source a backend reads straight into its model, in the run's own parametrization.
 
-    Every rank calls each step; ``load_adapter_dir`` agrees across ranks after each. A step that enters a collective
-    agrees its own rank-local failures before it (``agreed_step``), so one rank never fails alone while
+    Every rank calls each step; ``load_adapter_source`` agrees across ranks after each. A step that enters a collective
+    agrees its own rank-local failures before it (``agree_on_failure_context``), so one rank never fails alone while
     the others wait inside it.
     """
 
@@ -95,7 +95,7 @@ class AdapterCheckpointMembers(Protocol):
     """The checkpoint members every backend's AdapterSlots implements; they never touch files.
 
     The library agrees across ranks after each member it calls. A member that enters a collective agrees its own
-    rank-local failures before it (``agreed_step``), so one rank never fails alone while the others wait
+    rank-local failures before it (``agree_on_failure_context``), so one rank never fails alone while the others wait
     inside it.
     """
 
@@ -132,11 +132,11 @@ def save_adapter_dir(
     assert parametrization.lora_alpha is not None, "lora_alpha must be resolved before an adapter dir is saved"
     with write_adapter_dir(root, name, tenant_digest=tenant_digest) as written:
         # agree before any collective, so one rank's failure cannot leave the others waiting in it
-        with agreed_step():
+        with agree_on_failure_context():
             state = members.export_adapter_state(slot)
         # DCP writes primary pieces only; replicas cannot stand in for a missing primary
         keys = _all_ranks_keys([s for s in state.shard_specs if s.is_primary and not is_vocab_padding(s.key)])
-        with agreed_step():
+        with agree_on_failure_context():
             _assert_real_rank(state.shard_specs, parametrization.lora_rank)
             expected = parametrization.adapter_state_keys()
             assert keys == expected, (
@@ -213,7 +213,7 @@ def write_peft_export(
     )
 
 
-def write_sampler_view(
+def write_sampler_export(
     directory: Path,
     members: AdapterCheckpointMembers,
     slot: int,
@@ -242,7 +242,7 @@ def _write_bf16_export(
     targets: HfLoraTargets,
     write: Callable[..., None],
 ) -> None:
-    with agreed_step():
+    with agree_on_failure_context():
         # the gathered adapter leaves the GPU before rank 0 splits and copies it
         named_tensors = [(key, tensor.cpu()) for key, tensor in members.export_bf16_adapter(slot)]
         if is_rank0():
@@ -275,7 +275,7 @@ def save_and_commit_adapter_dir(
     written = save_adapter_dir(
         root, name, members, slot, parametrization, tenant_digest=None, training_state=training_state
     )
-    with agreed_step():
+    with agree_on_failure_context():
         if is_rank0():
             commit_adapter_dir(root, name, written, overwrite=True)
     if has_plain_peft_form(parametrization, targets):
@@ -287,7 +287,7 @@ def save_and_commit_adapter_dir(
     return CommittedAdapterDir(written.path, written.commit_id)
 
 
-def write_sampler_export(
+def save_sampler_export(
     root: Path,
     name: str,
     members: AdapterCheckpointMembers,
@@ -300,7 +300,7 @@ def write_sampler_export(
 ) -> UncommittedAdapterDir:
     """All ranks call; rank 0 writes ``slot``'s bf16 sampler export. The caller's committer then commits it."""
     with write_adapter_dir(root, name, tenant_digest=tenant_digest) as written:
-        write_sampler_view(written.path, members, slot, parametrization, targets, lora_dropout=lora_dropout)
+        write_sampler_export(written.path, members, slot, parametrization, targets, lora_dropout=lora_dropout)
     return written
 
 
@@ -358,7 +358,7 @@ def _scatter_weights_only_state(
         # only the specs go through gather_object, which pads every rank's payload to the largest one
         specs_by_rank = [None] * torch.distributed.get_world_size() if is_rank0() else None
         torch.distributed.gather_object(specs, specs_by_rank, dst=0, group=gloo_group())
-    with agreed_step():
+    with agree_on_failure_context():
         if is_rank0():
             for rank_specs in specs_by_rank:
                 _assert_pieces_readable(weights, rank_specs, head_rows)
@@ -426,7 +426,7 @@ def _reads_adapter_state_pieces(reader, steps) -> bool:
 
 @dataclass(frozen=True)
 class CheckedSource:
-    """What ``check_adapter_source`` opened; ``load_adapter_dir`` takes it instead of reading the source again."""
+    """What ``check_adapter_source`` opened; ``load_adapter_source`` takes it instead of reading the source again."""
 
     kind: AdapterSourceKind
     reader: Any = None
@@ -439,7 +439,7 @@ class CheckedSource:
 def check_adapter_source(
     path: Path, run: AdapterParametrization, targets: HfLoraTargets, *, load_optimizer: bool
 ) -> CheckedSource:
-    """Rank-local dry run of every check ``load_adapter_dir`` makes on the files of a source it reads itself.
+    """Rank-local dry run of every check ``load_adapter_source`` makes on the files of a source it reads itself.
 
     Raises what that load would; an in-model source is returned unchecked, its loader's checks are the backend's.
     """
@@ -455,7 +455,7 @@ def check_adapter_source(
     return CheckedSource(kind, reader, source, steps, weights)
 
 
-def load_adapter_dir(
+def load_adapter_source(
     path: Path,
     members: AdapterCheckpointMembers,
     slot: int,
@@ -478,13 +478,13 @@ def load_adapter_dir(
     rank 0, which sends every rank its pieces: rank 0 holds about 6 bytes per source element for a bf16 file (its
     tensors and their fp32 upcast), e.g. ~41 GB for a rank-16 adapter on every DeepSeek-V3 expert.
     """
-    with agreed_step():
+    with agree_on_failure_context():
         kind = classify_adapter_source(path, targets, load_optimizer=load_optimizer)
         if kind.is_read_into_model() and (in_model_loaders_by_kind is None or kind not in in_model_loaders_by_kind):
             raise AdapterSourceError(f"{path} is a {kind.value} source, which this backend cannot load")
     if kind.is_read_into_model():
         loader = in_model_loaders_by_kind[kind]
-        with agreed_step():
+        with agree_on_failure_context():
             source, has_optimizer_state = loader.parametrization(path)
             source = _with_run_alpha_if_unknown(source, run)
             steps = plan_parametrization_conversion(source, run, source_dtype=torch.float32)
@@ -494,13 +494,13 @@ def load_adapter_dir(
             assert_parametrization_matches_run(
                 source, run, steps, load_optimizer=load_optimizer, has_optimizer_state=has_optimizer_state
             )
-        with agreed_step():
+        with agree_on_failure_context():
             prepared = loader.prepare(path)
-        with agreed_step():
+        with agree_on_failure_context():
             loader.apply(prepared)
         return source
 
-    with agreed_step():
+    with agree_on_failure_context():
         specs = members.get_local_shard_specs(slot)
         # PEFT and external readers load every tensor, so only rank 0 opens such a source; an adapter dir's
         # metadata is cheap, and every rank reads its own pieces of adapter_state/
@@ -513,7 +513,7 @@ def load_adapter_dir(
 
     if reads_pieces:
         run_keys = _all_ranks_keys(specs)
-        with agreed_step():
+        with agree_on_failure_context():
             assert_adapter_state_keys(path, run_keys, with_optimizer=load_optimizer)
         # same parametrization: every rank reads only its own pieces, and moments only when it loads them
         stored_shapes = read_adapter_state_shapes(path)
@@ -529,16 +529,16 @@ def load_adapter_dir(
         loaded.step = reader.load_state(loaded)
         state = _zero_filled(specs, loaded)
     else:
-        with agreed_step():
+        with agree_on_failure_context():
             weights = None
             if checked is not None and is_rank0():
                 weights = checked.weights
             elif is_rank0():
                 weights = apply_parametrization_conversion(reader.read_weights(), steps)
         state = _scatter_weights_only_state(weights, specs, members.head_rows)
-    with agreed_step():
+    with agree_on_failure_context():
         members.import_adapter_state(slot, state)
-    with agreed_step():
+    with agree_on_failure_context():
         members.finish_import_adapter_state(slot)
     return source
 

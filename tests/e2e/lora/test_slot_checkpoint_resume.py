@@ -22,7 +22,7 @@ from megatron.core.transformer.transformer_config import TransformerConfig
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from torch.utils._pytree import tree_flatten, tree_map
 
-from miles.backends.megatron_utils.lora.bridge_checkpoint import BridgeAdapterSlots
+from miles.backends.megatron_utils.lora.bridge_adapter_slots import BridgeAdapterSlots
 from miles.backends.megatron_utils.lora.checkpoint import LayerWiseSlotMembers, load_slot
 from miles.backends.megatron_utils.lora.optimizer import SlotOptimizer, adapter_slot_parameters, step_slot_optimizers
 from miles.backends.training_utils.checkpoint.adapter.adapter_dir import save_adapter_dir

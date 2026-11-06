@@ -170,7 +170,7 @@ def _one_rank_cannot_list_its_ownership(rank, world_size, port):
         members.get_local_shard_specs(0)
     except Exception as exc:
         error = exc
-    # what load_adapter_dir does after get_local_shard_specs
+    # what load_adapter_source does after get_local_shard_specs
     with pytest.raises(RuntimeError, match="rank 1: KeyError"):
         raise_if_any_rank_failed(error)
     dist.destroy_process_group()

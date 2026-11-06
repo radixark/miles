@@ -22,7 +22,7 @@ from megatron.core.optimizer.cpu_offloading.hybrid_optimizer import HybridDevice
 from megatron.core.utils import unwrap_model
 from safetensors import SafetensorError
 
-from miles.backends.megatron_utils.lora.bridge_checkpoint import BridgeAdapterSlots
+from miles.backends.megatron_utils.lora.bridge_adapter_slots import BridgeAdapterSlots
 from miles.backends.megatron_utils.lora.optimizer import SlotOptimizer
 from miles.backends.megatron_utils.lora.utils import (
     _load_training_state,
@@ -34,13 +34,13 @@ from miles.backends.training_utils.checkpoint.adapter.adapter_dir import (
     CheckedSource,
     HeadRows,
     check_adapter_source,
-    load_adapter_dir,
+    load_adapter_source,
     read_training_state,
     save_and_commit_adapter_dir,
 )
 from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
     AdapterState,
-    agreed_step,
+    agree_on_failure_context,
     gloo_group,
     raise_if_any_rank_failed,
 )
@@ -90,7 +90,7 @@ class LayerWiseSlotMembers:
     def _holds(self, slot: int) -> tuple[dict[int, tuple[torch.Tensor, dict, dict]], list]:
         """``_owned(slot)`` and this rank's shard specs, agreed by every rank first."""
         # the specs gather over Gloo: a rank that cannot list its ownership must not leave the others there
-        with agreed_step():
+        with agree_on_failure_context():
             owned = self._owned(slot)
         return owned, self._slots.local_shard_specs(slot, frozenset(owned))
 
@@ -418,7 +418,7 @@ def load_slot(
 ) -> AdapterParametrization:
     """Any recognized source; a checkpoint written before the adapter format goes through the legacy loader."""
     legacy = LegacyTinkerCheckpointLoader(model, slot_optimizer, run, load_optimizer)
-    return load_adapter_dir(
+    return load_adapter_source(
         Path(path),
         members,
         slot_optimizer.slot,
@@ -476,7 +476,7 @@ def check_load_source(
                 if ".adapter." in k and "_extra_state" not in k and not _LEGACY_OPTIMIZER_KEY.match(k)
             }
         elif kind.is_read_into_model():
-            # load_adapter_dir refuses it only after the slot reset
+            # load_adapter_source refuses it only after the slot reset
             mismatch = f"{path} is a {kind.value} source, which this backend cannot load"
     except _SOURCE_ERRORS as error:
         mismatch = f"{path} cannot load into this model: {error}"
@@ -551,7 +551,7 @@ class LegacyTinkerCheckpointLoader:
 
     def prepare(self, path: Path) -> tuple[Path, dict]:
         # the optimizer shells gather over the default group: a rank without slot tensors must not leave the others there
-        with agreed_step():
+        with agree_on_failure_context():
             weights = _slot_weights_sharded_state_dict(self._model, self._optimizer.slot)
         shells = {_WEIGHTS_KEY: weights, _OPTIM_KEY: self._optimizer.sharded_state(weights, is_loading=True)}
         _canonicalize_slot_keys(shells, self._optimizer.slot)
@@ -620,7 +620,7 @@ def _canonicalize_slot_keys(tree: dict, slot: int) -> dict:
 
 def _load_legacy_slot(shells: dict, slot_optimizer: SlotOptimizer, path: str, load_optimizer: bool) -> None:
     loaded = dist_checkpointing.load(shells, path)
-    with agreed_step():
+    with agree_on_failure_context():
         slot_optimizer.load_sharded_state(loaded[_OPTIM_KEY])
         if not load_optimizer:
             slot_optimizer.reset_adam_state()
@@ -697,7 +697,7 @@ def restore_single_lora(
     legacy = LegacyRankShardLoader(
         model, optimizer, run, load_optimizer, precision_aware=args.backend.use_precision_aware_optimizer
     )
-    source = load_adapter_dir(
+    source = load_adapter_source(
         path,
         members,
         0,
@@ -745,7 +745,7 @@ class LegacyRankShardLoader:
     def parametrization(self, path: Path) -> tuple[AdapterParametrization, bool]:
         state = _load_training_state(path)
         has_optimizer_state = state is not None and state["optimizer"] is not None and "parameter_state" in state
-        # an old save records alpha in its PEFT pair; load_adapter_dir takes the run's when it records none
+        # an old save records alpha in its PEFT pair; load_adapter_source takes the run's when it records none
         return replace(self._run, lora_alpha=read_source_lora_alpha(path)), has_optimizer_state
 
     def prepare(self, path: Path) -> tuple[list, dict | None]:
