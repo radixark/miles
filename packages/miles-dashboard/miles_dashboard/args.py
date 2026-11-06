@@ -6,9 +6,9 @@ import logging
 import os
 from typing import Any
 
-from miles.dashboard.collector import CollectorConfig
-from miles.dashboard.sglang_scraper import DEFAULT_METRIC_WHITELIST
 from miles.utils.observers import RunRefusedError
+from miles_dashboard.collector import CollectorConfig
+from miles_dashboard.sglang_scraper import DEFAULT_METRIC_WHITELIST
 
 logger = logging.getLogger(__name__)
 

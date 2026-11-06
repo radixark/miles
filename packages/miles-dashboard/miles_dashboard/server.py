@@ -28,10 +28,10 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from miles.dashboard.advisory import DEFAULT_LOW_MFU, compute_advisories, mfu_summary
-from miles.dashboard.dump_reader import STEP_AGGREGATE_METRICS, DumpReader, DumpStillWriting
-from miles.dashboard.sandbox_health import SNAPSHOT_FILENAME, read_snapshot, sandbox_summary
-from miles.dashboard.store import MetricStore, Stream
+from miles_dashboard.advisory import DEFAULT_LOW_MFU, compute_advisories, mfu_summary
+from miles_dashboard.dump_reader import STEP_AGGREGATE_METRICS, DumpReader, DumpStillWriting
+from miles_dashboard.sandbox_health import SNAPSHOT_FILENAME, read_snapshot, sandbox_summary
+from miles_dashboard.store import MetricStore, Stream
 
 DUMP_METRIC_PREFIX = "dump/"
 

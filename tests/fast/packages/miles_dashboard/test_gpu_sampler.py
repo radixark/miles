@@ -4,9 +4,9 @@ import time
 
 import pytest
 
-from miles.dashboard import gpu_sampler as gpu_sampler_module
-from miles.dashboard.gpu_sampler import GpuSampler
-from miles.dashboard.store import GpuProcessSample, GpuSample
+from miles_dashboard import gpu_sampler as gpu_sampler_module
+from miles_dashboard.gpu_sampler import GpuSampler
+from miles_dashboard.store import GpuProcessSample, GpuSample
 
 
 class FakeNvml:

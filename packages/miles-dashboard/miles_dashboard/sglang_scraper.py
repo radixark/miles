@@ -22,8 +22,8 @@ import time
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 
-from miles.dashboard.store import EngineSample
 from miles.utils.logging_utils import RateLimitedWarner
+from miles_dashboard.store import EngineSample
 
 logger = logging.getLogger(__name__)
 

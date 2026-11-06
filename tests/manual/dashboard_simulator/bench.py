@@ -18,9 +18,9 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 
-from miles.dashboard.collector import CollectorConfig, DashboardCollector
-from miles.dashboard.sglang_scraper import SglangScraper
-from miles.dashboard.store import GpuSample, MetricStore, Stream
+from miles_dashboard.collector import CollectorConfig, DashboardCollector
+from miles_dashboard.sglang_scraper import SglangScraper
+from miles_dashboard.store import GpuSample, MetricStore, Stream
 
 _TIMEOUT_S = 1800
 _DEFAULT_LANE_COUNT = 8  # views_timeline.js DEFAULT_LANES
@@ -30,10 +30,10 @@ _ADVISORY_REFRESH_S = 30.0  # views_timeline.js ADVISORY_REFRESH_MS
 
 @contextmanager
 def serve(dump_details: Path, *, port: int, follow: bool):
-    """A ``miles.dashboard.serve`` process with a fresh summary cache; yields (pid, startup_s)."""
+    """A ``miles_dashboard.serve`` process with a fresh summary cache; yields (pid, startup_s)."""
     cache_dir = Path(tempfile.mkdtemp(prefix="dashboard_simulator_cache_"))
     command = [
-        sys.executable, "-m", "miles.dashboard.serve", "--dump-details", str(dump_details),
+        sys.executable, "-m", "miles_dashboard.serve", "--dump-details", str(dump_details),
         "--port", str(port), "--cache-dir", str(cache_dir),
     ]  # fmt: skip
     # a file, not a pipe: nothing reads stderr while the server runs, and a full pipe would block its writes

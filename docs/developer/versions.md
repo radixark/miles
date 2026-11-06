@@ -11,6 +11,7 @@ version problem or land a bump.
 | Tree | Comes from | Installed as | Lives at |
 |---|---|---|---|
 | Miles | this repository | `pip install -e . --no-deps` | `/root/miles` |
+| Miles dashboard plugin | `packages/miles-dashboard` in this repository | `pip install -e packages/miles-dashboard --no-deps` | `/root/miles/packages/miles-dashboard` |
 | SGLang | the `sglang-miles` branch of [`sgl-project/sglang`](https://github.com/sgl-project/sglang), on top of the `lmsysorg/sglang:<tag>` base image | `pip install -e "python[all]" --no-deps` | `/sgl-workspace/sglang` |
 | Megatron-LM | the `miles-main` branch of [`radixark/Megatron-LM`](https://github.com/radixark/Megatron-LM) | `pip install -e .` | `/root/Megatron-LM` |
 

@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from itertools import pairwise
 from statistics import median
 
-from miles.dashboard.store import MetricStore, Stream
+from miles_dashboard.store import MetricStore, Stream
 
 # an open phase this much beyond its own median closed duration is a stall,
 # not a slow interval (with a floor so short phases don't false-positive)
