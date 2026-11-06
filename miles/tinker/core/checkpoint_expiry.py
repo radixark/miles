@@ -1,7 +1,7 @@
-"""When saved checkpoints expire: the gateway-private ``checkpoint_root/checkpoint_expiry.json`` (tinker path ->
-expires_at, unix seconds). Only the gateway, under its expiry lock, reads and rewrites it; a checkpoint never
-carries its own expiry, so one that crashed between commit and this write never expires (it is never deleted by
-mistake)."""
+"""When saved checkpoints expire: the gateway-private ``checkpoint_root/checkpoint_expiry.json``.
+
+A checkpoint does not carry its own expiry, so one that crashed between its commit and this write never expires
+rather than being deleted by mistake."""
 
 import json
 import os

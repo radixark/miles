@@ -44,8 +44,7 @@ def assert_bridge_run_config_matches(
     peft = config["peft"]
     lora_type = _BRIDGE_LORA_TYPES.get(peft["_target_"])
     assert lora_type is not None, f"Megatron-Bridge PEFT {peft['_target_']} is neither LoRA nor CanonicalLoRA"
-    # .get: a field newer than the Bridge that wrote the config is absent and takes the dataclass default, which is
-    # Bridge's behaviour before the field (experts_shared_outer_loras, share_expert_adapters, normalize_moe_lora)
+    # .get: a field newer than the writing Bridge defaults to Bridge's behaviour before it
     source = {
         "lora_type": lora_type,
         "lora_rank": peft["dim"],
@@ -93,8 +92,7 @@ def bridge_base_model_candidates(config: dict) -> tuple[str | None, str | None]:
     """The source's base candidates, best first: pretrained_checkpoint, then the HF template Bridge's
     _resolve_hf_source picks."""
     checkpoint = config["checkpoint"]
-    # hf_source_path and hf_model_id are newer than some Bridge configs; Bridge takes the first non-empty one even
-    # when it is no HF dir here, so a later one would compare a model Bridge never used
+    # Bridge's precedence: the first non-empty one, even when it is no HF dir here
     template = (
         checkpoint.get("hf_source_path")
         or config["model"].get("hf_model_id")

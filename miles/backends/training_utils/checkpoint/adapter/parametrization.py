@@ -11,7 +11,7 @@ import transformers
 from miles.backends.training_utils.checkpoint.adapter.source_error import AdapterSourceError, require_fields
 
 PARAMETRIZATION_FILENAME = "adapter_parametrization.json"
-# bumped when a field's meaning changes or a field without a default is added; files from before it are 1
+# bumped when a field's meaning changes or a field without a default is added; a file without it is 1
 PARAMETRIZATION_FORMAT_VERSION = 1
 
 # HF config fields that describe the base's architecture and shapes
@@ -75,7 +75,7 @@ class AdapterParametrization:
     experts_shared_outer_loras: bool
     # members of each group share one lora_A; adapter_state/ stores it under the first member
     shared_lora_a_groups: tuple[tuple[str, ...], ...] = ()
-    # None when written before the fingerprint, or by a writer that does not record it
+    # None from a writer that does not record it
     base_model_fingerprint: str | None = None
 
     def __post_init__(self):

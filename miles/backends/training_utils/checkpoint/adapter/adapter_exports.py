@@ -190,8 +190,7 @@ def write_external_adapter(
             tensors[map_hf_keys_to_tinker_keys(f"{module}.{factor}", targets)] = (
                 tensor.clone() if factor == "lora_A" and module in shared_copies else tensor
             )
-    # as the official export writes it: the training run, not the file, names the base and the adapted modules (an
-    # explicit list of HF leaves would not match the Tinker-named expert tensors)
+    # as the official export: an HF leaf list would not match the Tinker-named experts
     config = _adapter_config(parametrization, (), lora_dropout) | {
         "target_modules": "all-linear",
         "modules_to_save": None,
@@ -202,12 +201,11 @@ def write_external_adapter(
         save_adapter_to_disk(directory, config, tensors)
         return
 
-    # imported here: every run imports this module, and a prebuilt image installed with --no-deps may lack pyrage
+    # lazy: every run imports this module, and prebuilt images may lack pyrage
     import pyrage
 
     recipients = [parse_age_recipient(r) for r in age_recipients]
-    # encrypted in memory: no plaintext reaches the disk, where a crash, snapshot or backup could keep it; one file at
-    # a time, so the adapter's plaintext and ciphertext are the only extra copies alive
+    # encrypted in memory, one file at a time: no plaintext ever reaches the disk
     Path(directory).mkdir(parents=True, exist_ok=True)
     for name, plaintext in (
         ("adapter_config.json", lambda: json.dumps(config, indent=2).encode()),
