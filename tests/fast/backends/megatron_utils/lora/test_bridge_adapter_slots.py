@@ -7,12 +7,8 @@ import torch
 import torch.distributed as dist
 from tests.fast.dist_utils import init_gloo, run_multiprocess
 
-from miles.backends.megatron_utils.lora.bridge_adapter_slots import (
-    BridgeAdapterSlots,
-    BridgeRowMapping,
-    _HfPiece,
-    probe_bridge_row_mapping,
-)
+from miles.backends.megatron_utils.lora.bridge_adapter_slots import BridgeAdapterSlots, probe_bridge_row_mapping
+from miles.backends.training_utils.checkpoint.adapter.probed_slots import HfPiece, RowMapping
 from miles.tinker.core.utils import build_parametrization_fields
 from miles.utils.distributed_utils import init_gloo_group
 from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
@@ -250,7 +246,7 @@ def _specs_of_two_slots(rank, world_size, port):
     init_gloo_group()
     slots = BridgeAdapterSlots.__new__(BridgeAdapterSlots)
     slots._specs, slots._multi_lora, slots.slot_parameters = {}, False, lambda slot: []
-    slots.row_mapping = BridgeRowMapping(pieces=[], shared_lora_a_groups=(), target_modules=())
+    slots.row_mapping = RowMapping(pieces=[], shared_lora_a_groups=(), target_modules=())
     for slot in (0, 1):
         assert slots.local_shard_specs(slot, frozenset(_HOLDS[rank][slot])) == []
     dist.destroy_process_group()
@@ -328,7 +324,7 @@ def test_an_export_failure_on_one_rank_fails_every_rank():
 def _slots_of(pieces, real_rank):
     """Multi-LoRA slots whose probe found ``pieces``, padded to max rank 4; the slot's real rank is ``real_rank``."""
     slots = BridgeAdapterSlots.__new__(BridgeAdapterSlots)
-    slots.row_mapping, slots._specs = BridgeRowMapping(pieces, (), ()), {}
+    slots.row_mapping, slots._specs = RowMapping(pieces, (), ()), {}
     slots.lora_rank = lambda slot: real_rank
     return slots
 
@@ -337,8 +333,8 @@ def _trim_a_tp_split_rank(rank, world_size, port):
     init_gloo(rank, world_size, port=port)
     init_gloo_group()
     # max rank 4 split over 2 TP ranks: each rank holds 2 rows of A ([rank, in]) and 2 columns of B ([out, rank])
-    a = _HfPiece(f"{Q}.lora_A", (4, 3), (2 * rank, 0), torch.arange(6).view(2, 3))
-    b = _HfPiece(f"{Q}.lora_B", (5, 4), (0, 2 * rank), torch.arange(6, 16).view(5, 2))
+    a = HfPiece(f"{Q}.lora_A", (4, 3), (2 * rank, 0), torch.arange(6).view(2, 3))
+    b = HfPiece(f"{Q}.lora_B", (5, 4), (0, 2 * rank), torch.arange(6, 16).view(5, 2))
     flat = torch.arange(16.0)
 
     slots = _slots_of([a, b], real_rank=3)

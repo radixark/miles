@@ -13,6 +13,7 @@ from miles.backends.megatron_utils.checkpoint_request import MegatronCkptLoadCon
 from miles.backends.megatron_utils.hf_export import save_hf_model
 from miles.backends.megatron_utils.lora.bridge_adapter_slots import BridgeAdapterSlots
 from miles.backends.megatron_utils.lora.checkpoint import build_adapter_slots
+from miles.backends.megatron_utils.lora.native.checkpoint import NativeAdapterSlots
 from miles.backends.megatron_utils.lora.utils import is_lora_enabled, lora_rollout_enabled
 from miles.backends.megatron_utils.megatron_config import has_megatron_checkpoint
 from miles.backends.megatron_utils.megatron_to_hf import converter_model_name
@@ -145,7 +146,7 @@ class MegatronTrainRayActor(TrainRayActor):
         assert ckpt_load_config is not None, "Megatron initialization requires checkpoint load inputs"
         self.weight_updater: WeightUpdater | None = None
         self.snapshot_publisher: SnapshotPublisher | None = None
-        self.adapter_slots: BridgeAdapterSlots | None = None
+        self.adapter_slots: BridgeAdapterSlots | NativeAdapterSlots | None = None
         monkey_patch_torch_dist()
 
         self._last_rollout_id: int | None = None
