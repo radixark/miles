@@ -56,7 +56,7 @@ class HeadRows:
 class InModelLoader(Protocol):
     """A source a backend reads straight into its model, in the run's own parametrization.
 
-    Every rank calls each step; ``load_adapter_dir`` agrees across ranks after each. A step that enters a collective
+    Every rank calls each step; ``load_adapter_source`` agrees across ranks after each. A step that enters a collective
     agrees its own rank-local failures before it (``agree_on_failure_context``), so one rank never fails alone while
     the others wait inside it.
     """
@@ -233,7 +233,7 @@ def _with_run_alpha_if_unknown(source: AdapterParametrization, run: AdapterParam
     return replace(source, lora_alpha=run.lora_alpha)
 
 
-def load_adapter_dir(
+def load_adapter_source(
     path: Path,
     members: AdapterCheckpointMembers,
     slot: int,
