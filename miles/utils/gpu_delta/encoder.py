@@ -198,7 +198,7 @@ class GpuBatchEncoder:
     modify either input concurrently. Compact inner-codec HBM survives batches
     until ``finish_device`` returns the final pinned wire bytes. Inner frames
     are configurable; outer Zstd chunks stay at 1 MiB. The receiver checks
-    actual encoded and decoded sizes against its DE limit.
+    actual encoded and decoded sizes against its codec/backend limit.
     """
 
     def __init__(self, device: torch.device, codec: str, frame_bytes: int = FRAME_BYTES):
@@ -313,7 +313,7 @@ class GpuBatchEncoder:
         """Optionally Zstd-wrap, then pack all owner tensors into one pinned slab."""
         started, transfer = time.monotonic(), {}
         wrapped = self.outer_compressor is not None
-        # Plain LZ4 already has aligned inner arenas; preserve them intact.
+        # Unwrapped codecs already have aligned inner arenas; preserve them intact.
         # Wrapped codecs split only within natural tensor boundaries.
         groups = [
             (list(item.payload.split(FRAME_BYTES)) if wrapped else [item.payload]) if item.payload is not None else []

@@ -7,12 +7,11 @@ Requires CUDA, nvCOMP 6, zstandard, python-snappy and lz4. No model is loaded.
 import json
 from pathlib import Path
 
-import lz4.block
 import numpy as np
 import pytest
-import snappy
 import torch
 import zstandard
+from tests.manual.gpu_delta.test_gpu_delta_nvcomp import decode
 
 from miles.utils.gpu_delta import encoder as gpu_delta_encoder
 from miles.utils.gpu_delta.publication import CODECS, FRAME_BYTES, PublicationWriter, seal_publication, sha256
@@ -28,18 +27,14 @@ def _decode(frames, payload, outer, old, codec):
         assert len(decoded) == frame["decoded_bytes"]
         begin = frame["decoded_offset"]
         arena[begin : begin + len(decoded)] = decoded
-    if outer is not None and codec == "lz4":
+    if outer is not None and CODECS[codec][1] is None:
         assert outer["frames"] == [] and outer["encoded_bytes"] == outer["decoded_bytes"] == len(payload)
         arena[:] = payload
     target = old.copy()
     for frame in frames:
         start, size = frame["encoded_offset"], frame["encoded_bytes"]
         encoded = bytes(arena[start : start + size])
-        raw = (
-            lz4.block.decompress(encoded, uncompressed_size=frame["decoded_bytes"])
-            if codec in ("lz4-zstd", "lz4")
-            else snappy.decompress(encoded)
-        )
+        raw = decode(CODECS[codec][0], encoded, frame["decoded_bytes"])
         assert len(raw) == frame["decoded_bytes"]
         begin = frame["decoded_offset"]
         target[begin : begin + len(raw)] ^= np.frombuffer(raw, dtype=np.uint8)
@@ -170,7 +165,12 @@ def test_tiled_xor_counts_each_wire_frame_and_partial_tile_exactly():
 
 @pytest.mark.parametrize(
     "codec,stage",
-    [(codec, stage) for codec in CODECS for stage in ("inner", "outer") if stage == "inner" or codec != "lz4"],
+    [
+        (codec, stage)
+        for codec in CODECS
+        for stage in ("inner", "outer")
+        if stage == "inner" or CODECS[codec][1] is not None
+    ],
 )
 def test_failed_batch_status_drains_stream_and_keeps_snapshots(stage, codec, monkeypatch):
     encoder = gpu_delta_encoder.GpuBatchEncoder(torch.device("cuda", torch.cuda.current_device()), codec=codec)
@@ -239,7 +239,7 @@ def test_owner_wide_finalization_roundtrip_only_transfers_final_bytes(frame_byte
     inner = encoder.encode_device(snapshots[:2]) + encoder.encode_device(snapshots[2:])
     assert copies == []
     results = encoder.finish_device(inner)
-    if codec == "lz4":
+    if CODECS[codec][1] is None:
         assert encoder.outer_compressor is None and not outer_calls
         assert (
             encoder.finalization_metrics["outer_zstd_frames"]
@@ -297,17 +297,13 @@ def _replay(publication, state, codec):
                 decoded = zstandard.ZstdDecompressor().decompress(data, max_output_size=chunk["decoded_bytes"])
                 assert len(decoded) == chunk["decoded_bytes"]
                 arena[chunk["decoded_offset"] : chunk["decoded_offset"] + len(decoded)] = decoded
-        if outer and codec == "lz4":
+        if outer and CODECS[codec][1] is None:
             assert outer["frames"] == [] and outer["encoded_bytes"] == outer["decoded_bytes"]
             start = outer["encoded_offset"]
             arena[:] = payloads[outer["file"]][start : start + outer["encoded_bytes"]]
         for frame in tensor["frames"]:
             encoded = arena[frame["encoded_offset"] : frame["encoded_offset"] + frame["encoded_bytes"]]
-            raw = (
-                lz4.block.decompress(bytes(encoded), uncompressed_size=frame["decoded_bytes"])
-                if codec in ("lz4-zstd", "lz4")
-                else snappy.decompress(bytes(encoded))
-            )
+            raw = decode(CODECS[codec][0], bytes(encoded), frame["decoded_bytes"])
             assert len(raw) == frame["decoded_bytes"]
             start = frame["decoded_offset"]
             mask[start : start + frame["decoded_bytes"]] = np.frombuffer(raw, dtype=np.uint8)

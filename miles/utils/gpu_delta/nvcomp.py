@@ -23,6 +23,16 @@ class _LZ4Options(ctypes.Structure):
     _fields_ = [("data_type", ctypes.c_int), ("bitshuffle_mode", ctypes.c_int), ("reserved", ctypes.c_char * 56)]
 
 
+class _BitcompOptions(ctypes.Structure):
+    _fields_ = [
+        ("algorithm", ctypes.c_int),
+        ("data_type", ctypes.c_int),
+        ("delta", ctypes.c_double),
+        ("mode", ctypes.c_int),
+        ("reserved", ctypes.c_char * 44),
+    ]
+
+
 class _Alignments(ctypes.Structure):
     _fields_ = [("input", ctypes.c_size_t), ("output", ctypes.c_size_t), ("temp", ctypes.c_size_t)]
 
@@ -46,8 +56,8 @@ class NvcompCompressor:
     """
 
     def __init__(self, codec: str, device: torch.device):
-        if codec not in ("zstd", "snappy", "lz4"):
-            raise ValueError("GPU delta compression requires zstd, snappy or lz4")
+        if codec not in ("zstd", "snappy", "lz4", "bitcomp"):
+            raise ValueError("GPU delta compression requires zstd, snappy, lz4 or bitcomp")
         self.codec, self.device = codec, torch.device(device)
         if self.device.type != "cuda" or self.device.index is None:
             raise ValueError("GPU delta compressor requires an explicit CUDA device")
@@ -62,9 +72,15 @@ class NvcompCompressor:
             "snappy": ("Snappy", _Options),
             "lz4": ("LZ4", _LZ4Options),
             "zstd": ("Zstd", _Options),
+            "bitcomp": ("Bitcomp", _BitcompOptions),
         }[codec]
         pointer, size = ctypes.c_void_p, ctypes.c_size_t
         self._options = options()
+        if codec == "bitcomp":
+            # Sparse, U8, lossless. XOR payloads are bytes, never floating-point values.
+            self._options.algorithm = 1
+            self._options.data_type = 1  # NVCOMP_TYPE_UCHAR
+            self._options.mode = 0  # BITCOMP_LOSSLESS; delta remains zero.
         self._bound = self._bind("GetMaxOutputChunkSize", [size, options, ctypes.POINTER(size)])
         self._temporary = self._bind("GetTempSize", [size, size, options, ctypes.POINTER(size), size, pointer])
         align = self._bind("GetRequiredAlignments", [options, ctypes.POINTER(_Alignments)])
