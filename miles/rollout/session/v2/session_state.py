@@ -28,11 +28,7 @@ from typing import Any
 from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.errors import MessageValidationError, TokenizationError, TruncatedGenerationError
 from miles.rollout.session.linear_trajectory import SessionRegistry, assert_pretokenized_prefix
-from miles.rollout.session.request_args import (
-    PreparedChatRequest,
-    prepare_chat_request,
-    refuse_prompt_filling_max_seq_len,
-)
+from miles.rollout.session.request_args import PreparedChatRequest, prepare_chat_request
 from miles.rollout.session.store_refs import SessionStoreRefs
 from miles.rollout.session.types import SessionRecord
 from miles.rollout.session.v2.tree_trajectory import AttachPoint, SessionTree, TrajectoryNode
@@ -59,8 +55,6 @@ class SessionStateV2:
     sampling_defaults: dict[str, Any] = field(default_factory=dict)
     sampling_support_replay: bool = False
     extra_key: str | None = None
-    # the session's prompt length limit: a prompt that fills it is refused; None means no limit
-    max_seq_len: int | None = None
 
     def snapshot(self) -> "SessionStateV2":
         """Capture the committed tree for collection. Caller holds the lock."""
@@ -111,9 +105,7 @@ def prepare_token_ids_and_request_args(
     tito_tokenizer: TITOTokenizer,
     message_matcher: SessionMessageMatcher | None = None,
 ) -> tuple[PreparedChatRequest, TrajectoryNode | None]:
-    """Return the prepared request with `body["input_ids"]` and its parent for `commit_generation`.
-
-    A prompt that fills ``max_seq_len`` raises the 409 before anything is committed."""
+    """Return the prepared request with `body["input_ids"]` and its parent for `commit_generation`."""
     request_messages = client_args.get("messages", [])
     parent = attach_point_for_request(state, request_messages, message_matcher=message_matcher).node
     prepared = prepare_chat_request(
@@ -128,7 +120,6 @@ def prepare_token_ids_and_request_args(
     prepared.body["input_ids"] = _render_token_ids(
         parent, request_messages, template_args=prepared.template_args, tito_tokenizer=tito_tokenizer
     )
-    refuse_prompt_filling_max_seq_len(max_seq_len=state.max_seq_len, prompt_tokens=len(prepared.body["input_ids"]))
     return prepared, parent
 
 
@@ -241,7 +232,6 @@ class SessionRegistryV2(SessionRegistry):
         sampling_defaults: dict[str, Any] | None = None,
         sampling_support_replay: bool = False,
         extra_key: str | None = None,
-        max_seq_len: int | None = None,
     ) -> str:
         session_id = uuid.uuid4().hex
         self.sessions[session_id] = SessionStateV2(
@@ -249,7 +239,6 @@ class SessionRegistryV2(SessionRegistry):
             sampling_defaults=dict(sampling_defaults or {}),
             sampling_support_replay=sampling_support_replay,
             extra_key=extra_key,
-            max_seq_len=max_seq_len,
         )
         return session_id
 

@@ -189,7 +189,7 @@ Sections mirror the launch-script argument groups.
 | Flag | Type | Default | Notes |
 |---|---|---|---|
 | `--rollout-max-response-len` | int | – | Max tokens per response. |
-| `--max-seq-len` | int | – | Total tokens per session, including prompts, completions, and environment responses. The session server refuses a turn once its prompt fills it (HTTP 409) and truncates the trajectory to it during sample assembly; see [Choose the session behavior](/user-guide/agentic-rollout#choose-the-session-behavior). On `/generate`, each request's `max_new_tokens` is capped to fit it, and a request with no room left stops the sample as `TRUNCATED`. Defaults `--rollout-max-prompt-len` to one less. |
+| `--max-seq-len` | int | – | Total tokens per session, including prompts, completions, and environment responses. Sample assembly truncates each collected trajectory to it, and the agent receives it in `metadata`; Miles does not stop the agent at it (see [Choose the session behavior](/user-guide/agentic-rollout#choose-the-session-behavior)). On `/generate`, each request's `max_new_tokens` is capped to fit it, and a request with no room left stops the sample as `TRUNCATED`. Defaults `--rollout-max-prompt-len` to one less. |
 | `--rollout-temperature` | float | `1.0` | Sampling temperature. |
 | `--rollout-top-p` | float | `1.0` | Top-p truncation. Values below `1` require bounded [sampling-support replay](/advanced/sampling-support-replay). |
 | `--rollout-top-k` | int | `-1` | Top-k truncation (`-1` disables). Positive values enable [sampling-support replay](/advanced/sampling-support-replay). |

@@ -597,50 +597,6 @@ class TestTruncationAndCompaction:
         assert nodes[1]["parent"] == nodes[0]["id"]
 
 
-class TestMaxSeqLen:
-    """A prompt that fills max_seq_len closes its chain with 409; max_tokens is left to the client."""
-
-    U1 = {"role": "user", "content": "What is 1+2?"}
-    T1 = {"role": "tool", "content": "tool-result-1", "tool_call_id": "t0"}
-
-    @staticmethod
-    def _session(url: str, max_seq_len: int) -> str:
-        response = requests.post(f"{url}/sessions", json={"max_seq_len": max_seq_len}, timeout=5.0)
-        assert response.status_code == 200
-        return response.json()["session_id"]
-
-    def _turn(self, env, session_id: str, messages: list) -> tuple[dict, dict]:
-        """The assistant message and the request the backend received."""
-        response = _post_chat(env.url, session_id, {"messages": messages})
-        assert response.status_code == 200, response.text
-        return response.json()["choices"][0]["message"], env.backend.request_log[-1]
-
-    def test_a_prompt_that_fills_it_is_refused_before_the_backend(self, router_env):
-        probe = self._session(router_env.url, 10_000)
-        a1, _ = self._turn(router_env, probe, [self.U1])
-        _, sent2 = self._turn(router_env, probe, [self.U1, a1, self.T1])
-
-        # the echo backend repeats turn 1, so turn 2's prompt is exactly max_seq_len tokens
-        session_id = self._session(router_env.url, len(sent2["input_ids"]))
-        a1, sent1 = self._turn(router_env, session_id, [self.U1])
-        assert sent1.get("max_tokens") is None and "max_seq_len" not in sent1
-        before = requests.get(f"{router_env.url}/sessions/{session_id}", timeout=5.0).json()
-        backend_requests = len(router_env.backend.request_log)
-        extend = _post_chat(router_env.url, session_id, {"messages": [self.U1, a1, self.T1]})
-        assert extend.status_code == 409
-        assert "max_seq_len" in extend.json()["error"]
-        assert len(router_env.backend.request_log) == backend_requests
-        assert requests.get(f"{router_env.url}/sessions/{session_id}", timeout=5.0).json() == before
-
-        # a new root still fits
-        fresh = _post_chat(router_env.url, session_id, {"messages": [{"role": "user", "content": "fresh"}]})
-        assert fresh.status_code == 200
-
-    def test_a_non_positive_max_seq_len_is_refused(self, router_env):
-        response = requests.post(f"{router_env.url}/sessions", json={"max_seq_len": 0}, timeout=5.0)
-        assert response.status_code == 400
-
-
 # ── additional R3 (non-retract pause modes): request offsets on the tree ──
 
 

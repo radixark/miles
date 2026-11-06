@@ -166,8 +166,6 @@ Use `{"evaluation": true}` in `POST /sessions` for evaluation; omitting it defau
 
 `temperature`, `top_p`, and `top_k` in `POST /sessions` provide defaults for omitted or `null` chat fields. Training requests must match the registered temperature or receive HTTP 400; eval temperature and `top_p`/`top_k` remain overridable. The agentic generator registers the sample's resolved values automatically.
 
-`max_seq_len` in `POST /sessions` is the limit the session enforces on prompts: a request whose prompt already fills it gets HTTP 409 before it reaches the engine, and the trajectory stays as it was. The session does not lower `max_tokens`, so the last turn may run past the limit by up to one response; collection truncates the trajectory to the `max_seq_len` given to `POST /sessions/{id}/samples`. What the 409 (`openai.ConflictError` in the OpenAI SDK) means is the agent's call: `workplace_agent.py` and `openenv_agent_function.py` catch it as a length stop and still score the episode; an agent that lets it raise fails like any other agent call. The agentic generator passes the sample's resolved `--max-seq-len` to both.
-
 Evaluation forces `return_sampling_mask`, `return_routed_experts`, and `return_indexer_topk` off and ignores `routed_experts_start_len`. TITO, logprobs, and sample collection still apply; engine-internal capture may remain enabled.
 
 History handling depends on the selected server version:
@@ -194,9 +192,16 @@ replay, every pause mode except `retract` requests only additional R3 rows.
 `retract` returns full R3 data on every turn and emits a warning because the
 payloads can become very large.
 
-Set `--max-seq-len` to bound the trajectory; the session server refuses a turn whose prompt
-fills it (see [Choose the session behavior](#choose-the-session-behavior)). Miles also includes this
-value in the metadata passed to your agent so an agent or external environment can stop before it.
+The session server leaves the harness's control flow alone. It never lowers a turn's
+`max_tokens`, refuses a turn for its length, or cuts a turn short: how long an episode runs
+is the harness's decision. A request the session cannot serve, such as one that sets a TITO
+control field, fails loud with an HTTP error.
+
+`--max-seq-len` follows this rule. Miles passes it to your agent as
+`metadata["max_seq_len"]` and truncates each collected trajectory to it after the episode,
+so samples fit training memory. It does not stop the agent: a harness that reads the value
+can end the episode there, and one that does not runs on past it. The agentic generator
+logs a warning once when the limit is set.
 
 ### Pick your `--tito-model`
 

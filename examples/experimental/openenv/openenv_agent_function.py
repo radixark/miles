@@ -53,7 +53,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from openai import AsyncOpenAI, ConflictError
+from openai import AsyncOpenAI
 
 from miles.rollout.agentic.session import openai_session_url
 
@@ -283,17 +283,11 @@ async def multi_turn(
         turns = 0
         end_reason = "max_turns"
         while turns < max_turns:
-            t0 = time.monotonic()
-            try:
-                completion = await policy.chat.completions.create(
-                    model=model_name, messages=convo, extra_body=request_kwargs
-                )
-            except ConflictError:
-                # The session server answers 409 to a prompt that fills --max-seq-len: stop as a length cut
-                # and still score. Any 409 stops this way, also one from the API eval_tbench2_via_api calls.
-                end_reason = "length"
-                break
             turns += 1
+            t0 = time.monotonic()
+            completion = await policy.chat.completions.create(
+                model=model_name, messages=convo, extra_body=request_kwargs
+            )
             gen_times.append(time.monotonic() - t0)
             choice = completion.choices[0]
             message = choice.message
