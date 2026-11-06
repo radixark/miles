@@ -321,6 +321,7 @@ contract, session behavior, and model-family selection.
 | `--custom-agent-function-mode` | `subproc` / `inline` | `subproc` | Where each agent call runs: a child process of its own, or the rollout's event loop. See [Where the agent runs](/user-guide/agentic-rollout#where-the-agent-runs). |
 | `--use-session-server` | optional `v1` / `v2` | off | Bare flag (or `v1`) selects the linear append-only server; `v2` selects tree serving. Requires `--hf-checkpoint`. |
 | `--tito-model` | enum | `default` | TITO model family. Named families load their registered fixed template; `default` is best-effort with a checkpoint-native or custom template. |
+| `--allow-stop-token-replace` / `--no-allow-stop-token-replace` | bool | family default | Whether the session server may replace the sampled stop token with the first token of the appended render (GLM stopping at `<\|observation\|>` before a non-tool message). Allowed replacements log a warning; otherwise the request gets HTTP 400. Allowed by default only for `glm47` and `glm53`. Allowing it cannot be combined with `--sglang-enable-streaming-session`. |
 | `--max-seq-len` | int | – | Total tokens per session, including prompts, completions, and environment responses. Registered with the agentic wrapper. |
 | `--session-server-ip` | str | router IP | Session-server bind address. |
 | `--session-server-external-host` | str | – | Host that peers outside the cluster reach every session server on. Keeps the session servers on the head node. Leave unset when each node sets `MILES_NODE_EXTERNAL_IP`. |
