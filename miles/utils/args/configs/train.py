@@ -94,6 +94,15 @@ class TrainConfig(BaseConfig):
             help="The method to convert megatron weights to hugging face weights for SGLang.",
         ),
     ] = "raw"
+    dsv4_mxfp4_qat: A[
+        bool,
+        Arg(
+            help=(
+                "Fake-quantize DeepSeek V4 routed-expert weights to MXFP4 during Megatron forwards. "
+                "The trainable parameters and optimizer states retain their configured precision."
+            )
+        ),
+    ] = False
     dsa_attention_backend: A[
         str,
         Arg(

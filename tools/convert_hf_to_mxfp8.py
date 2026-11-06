@@ -21,7 +21,6 @@ import torch
 from sglang.srt.layers.quantization.fp8_utils import block_quant_dequant
 from tqdm import tqdm
 
-from miles.utils.hf_rollout_schema import create_mxfp8_rollout_schema
 from miles.utils.mxfp8 import MXFP8_GROUP_SIZE, MXFP8_SKIP_WEIGHT_SUBSTRINGS, MXFP8_SOURCE_FP8_DTYPES
 from miles.utils.mxfp8 import mxfp8_quantize as quantize_mxfp8
 from miles.utils.mxfp8 import should_use_mxfp8
@@ -349,17 +348,7 @@ def main() -> None:
         default=(),
         help="Extra substrings for weight names to skip quantization (e.g. .shared_experts.).",
     )
-    parser.add_argument(
-        "--metadata-only",
-        action="store_true",
-        help="Write a weightless MXFP8 rollout schema (config + tokenizer) instead of converting weights.",
-    )
     args, _ = parser.parse_known_args()
-
-    if args.metadata_only:
-        schema = create_mxfp8_rollout_schema(args.model_dir, args.save_dir)
-        print(f"Created metadata-only MXFP8 rollout schema at {schema}")
-        return
 
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is not available, cannot run MXFP8 quantization.")
