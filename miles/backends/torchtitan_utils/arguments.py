@@ -3,6 +3,7 @@ from dataclasses import dataclass
 import torch
 
 from miles.backends.fsdp_utils.arguments import FSDPArgs, build_dataclass_parser, load_args_from_parser
+from miles.backends.training_utils.loss.hub.response_layout import validate_response_layout_args
 from miles.platforms import current_platform
 from miles.utils.lora.utils import is_lora_enabled, lora_rollout_enabled
 
@@ -90,6 +91,7 @@ def validate_torchtitan_args(args) -> None:
             )
     if is_lora_enabled(args):
         _validate_lora_args(args)
+    validate_response_layout_args(args)
 
 
 def _validate_lora_args(args) -> None:
