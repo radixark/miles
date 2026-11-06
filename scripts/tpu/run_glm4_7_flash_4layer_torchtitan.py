@@ -4,7 +4,8 @@ The checkpoint is GLM-4.7-Flash cut to its first 4 decoder layers (1 dense, 3 Mo
 the MLA + MoE stack trains on one host with Adam on the device. sglang serves it with TP 4 + EP 4 on the MLA Pallas
 backend on devices 4-7 and the trainer runs on devices 0-3 (scripts/tpu/torchtitan_launch.py), with every expert on
 each rank (EP 1).
-Run `prepare` once, then `sglang` in its own shell (it stays in the foreground); once it reports healthy, run `train`.
+Run `prepare` once, then `sglang` in its own shell (it stays in the foreground), then `train`: sglang reports
+healthy only once `train` joins.
 scripts/tpu/README.md describes the environment both expect.
 
 Args:
@@ -41,6 +42,8 @@ MODEL = TitanTpuModel(
     titan_model_name="glm4_moe_lite",
     titan_model_flavor=f"{_NUM_LAYERS}layer",
     sglang_args="--ep-size 4 --attention-backend pallas_tpu_mla ",
+    # ICI sends each engine rank its own experts, so the trainer must know the engine runs one EP rank per device
+    train_args="--sglang-ep-size 4 ",
 )
 
 app = typer.Typer()

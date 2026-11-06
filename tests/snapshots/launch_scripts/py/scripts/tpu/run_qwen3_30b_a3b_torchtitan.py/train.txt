@@ -83,7 +83,8 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --distributed-backend tpu_dist
   --use-dynamic-batch-size
   --max-tokens-per-gpu 8192
-  --optimizer-cpu-offload 
+  --optimizer-cpu-offload
+  --sglang-ep-size 4 
   --actor-num-nodes 1
   --actor-num-gpus-per-node 4
   --num-gpus-per-node 4   

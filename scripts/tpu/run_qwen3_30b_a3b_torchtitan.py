@@ -5,7 +5,8 @@ sglang serves the policy with TP 4 + EP 4 on devices 4-7 and the trainer runs on
 over 4) live on the host (`--optimizer-cpu-offload`), so each trainer process holds ~120 GB of host RAM. The trainer
 keeps every expert on each rank (EP 1): torchtitan's all-to-all dispatcher syncs its splits to the host, which a
 compiled TPU program cannot.
-Run `sglang` in its own shell (it stays in the foreground), wait for it to report healthy, then run `train`.
+Run `sglang` in its own shell (it stays in the foreground), then `train`: sglang reports healthy only once `train`
+joins.
 scripts/tpu/README.md describes the environment both expect.
 
 Args:
@@ -39,7 +40,8 @@ MODEL = TitanTpuModel(
     titan_model_name="qwen3",
     titan_model_flavor="30B-A3B",
     sglang_args="--ep-size 4 ",
-    train_args="--optimizer-cpu-offload ",
+    # ICI sends each engine rank its own experts, so the trainer must know the engine runs one EP rank per device
+    train_args="--optimizer-cpu-offload --sglang-ep-size 4 ",
 )
 
 app = typer.Typer()
