@@ -392,22 +392,35 @@ def _reads_adapter_state_pieces(reader, steps) -> bool:
     return isinstance(reader, MilesAdapterDirReader) and reader.has_adapter_state() and not steps
 
 
+@dataclass(frozen=True)
+class CheckedSource:
+    """What ``check_adapter_source`` opened; ``load_adapter_dir`` takes it instead of reading the source again."""
+
+    kind: AdapterSourceKind
+    reader: Any = None
+    source: AdapterParametrization | None = None
+    steps: list | None = None
+    # the converted tensors of a source read as weights
+    weights: dict[str, torch.Tensor] | None = None
+
+
 def check_adapter_source(
     path: Path, run: AdapterParametrization, targets: HfLoraTargets, *, load_optimizer: bool
-) -> AdapterSourceKind:
+) -> CheckedSource:
     """Rank-local dry run of every check ``load_adapter_dir`` makes on the files of a source it reads itself.
 
     Raises what that load would; an in-model source is returned unchecked, its loader's checks are the backend's.
     """
     kind = classify_adapter_source(path, targets, load_optimizer=load_optimizer)
     if kind.is_read_into_model():
-        return kind
-    reader, _, steps = _open_source(path, kind, run, targets, load_optimizer=load_optimizer)
+        return CheckedSource(kind)
+    reader, source, steps = _open_source(path, kind, run, targets, load_optimizer=load_optimizer)
     if _reads_adapter_state_pieces(reader, steps):
         assert_adapter_state_keys(path, run.adapter_state_keys(), with_optimizer=load_optimizer)
-    else:
-        _assert_has_keys(apply_parametrization_conversion(reader.read_weights(), steps), run.adapter_state_keys())
-    return kind
+        return CheckedSource(kind, reader, source, steps)
+    weights = apply_parametrization_conversion(reader.read_weights(), steps)
+    _assert_has_keys(weights, run.adapter_state_keys())
+    return CheckedSource(kind, reader, source, steps, weights)
 
 
 def load_adapter_dir(
@@ -419,8 +432,11 @@ def load_adapter_dir(
     *,
     load_optimizer: bool,
     in_model_loaders_by_kind: Mapping[AdapterSourceKind, InModelLoader] | None = None,
+    checked: CheckedSource | None = None,
 ) -> AdapterParametrization:
     """Load any recognized source into ``slot``; returns the source parametrization.
+
+    ``checked``: rank 0's ``check_adapter_source`` of the same source and run, read instead of the source.
 
     All ranks call. A failure on one rank fails every rank before the next collective, provided a backend's in-model
     loader agrees its own failures before each collective it enters (see ``InModelLoader``).
@@ -457,7 +473,9 @@ def load_adapter_dir(
         # PEFT and external readers load every tensor, so only rank 0 opens such a source; an adapter dir's
         # metadata is cheap, and every rank reads its own pieces of adapter_state/
         reader, source, steps = None, None, None
-        if kind == AdapterSourceKind.ADAPTER_DIR or _is_rank0():
+        if checked is not None and _is_rank0():
+            reader, source, steps = checked.reader, checked.source, checked.steps
+        elif kind == AdapterSourceKind.ADAPTER_DIR or _is_rank0():
             reader, source, steps = _open_source(path, kind, run, targets, load_optimizer=load_optimizer)
     source, reads_pieces = _broadcast_from_rank0((source, _reads_adapter_state_pieces(reader, steps)))
 
@@ -480,7 +498,11 @@ def load_adapter_dir(
         state = _zero_filled(specs, loaded)
     else:
         with agreed_step():
-            weights = apply_parametrization_conversion(reader.read_weights(), steps) if _is_rank0() else None
+            weights = None
+            if checked is not None and _is_rank0():
+                weights = checked.weights
+            elif _is_rank0():
+                weights = apply_parametrization_conversion(reader.read_weights(), steps)
         state = _scatter_weights_only_state(weights, specs, members.head_rows)
     with agreed_step():
         members.import_adapter_state(slot, state)

@@ -23,6 +23,7 @@ from safetensors import SafetensorError
 from miles.backends.megatron_utils.lora.bridge_checkpoint import BridgeAdapterSlots
 from miles.backends.megatron_utils.lora.optimizer import SlotOptimizer
 from miles.backends.training_utils.checkpoint.adapter.adapter_dir import (
+    CheckedSource,
     HeadRows,
     check_adapter_source,
     load_adapter_dir,
@@ -171,6 +172,7 @@ def load_slot(
     run: AdapterParametrization,
     targets,
     load_optimizer: bool,
+    checked: CheckedSource | None = None,
 ) -> AdapterParametrization:
     """Any recognized source; a checkpoint written before the adapter format goes through the legacy loader."""
     legacy = LegacyTinkerCheckpointLoader(model, slot_optimizer, run, load_optimizer)
@@ -182,6 +184,7 @@ def load_slot(
         targets,
         load_optimizer=load_optimizer,
         in_model_loaders_by_kind={AdapterSourceKind.LEGACY_TINKER_CHECKPOINT: legacy},
+        checked=checked,
     )
 
 
@@ -193,17 +196,45 @@ def find_load_mismatch(
     targets,
     load_optimizer: bool,
 ) -> str | None:
-    """Collective: why ``path`` cannot load into ``slot`` (every rank gets the same answer), or None.
+    """Collective: why ``path`` cannot load into ``slot`` (every rank gets the same answer), or None."""
+    return check_load_source(model, slot, path, run, targets, load_optimizer)[0]
+
+
+def check_load_source(
+    model: Sequence[DDP],
+    slot: int,
+    path: str,
+    run: AdapterParametrization,
+    targets,
+    load_optimizer: bool,
+) -> tuple[str | None, CheckedSource | None]:
+    """Collective: why ``path`` cannot load into ``slot`` (every rank gets the same answer) or None, and on rank 0
+    the checked source, which ``load_slot`` reads instead of reading the source again.
 
     A legacy checkpoint records no adapter layout in META.json, so its tensor keys are compared with the slot's,
     e.g. one fused GDN in_proj adapter saved before the canonical in_proj_q/k/v/z split.
     """
     path = Path(path)
-    mismatch, saved, server_error = None, None, None
+    checked, verdict, server_error = None, (None, None), None
     # a source the user named that is missing, malformed or refused is theirs; raised after the slot reset, it kills
-    # the trainer cell
+    # the trainer cell. Only rank 0 reads it, so only rank 0 can tell the user's fault from the gateway's
+    if dist.get_rank() == 0:
+        try:
+            checked = check_adapter_source(path, run, targets, load_optimizer=load_optimizer)
+            verdict = (checked.kind, None)
+        except _SOURCE_ERRORS as error:
+            verdict = (None, f"{path} cannot load into this model: {error}")
+        except Exception as error:
+            # storage faults (EIO, ESTALE) and bugs are the gateway's
+            server_error = error
+    raise_if_any_rank_failed(server_error)
+    verdict = [verdict]
+    dist.broadcast_object_list(verdict, src=0, group=gloo_group())
+    kind, mismatch = verdict[0]
+    if mismatch is not None:
+        return mismatch, None
+    saved = None
     try:
-        kind = check_adapter_source(path, run, targets, load_optimizer=load_optimizer)
         if kind == AdapterSourceKind.LEGACY_TINKER_CHECKPOINT:
             _read_legacy_meta(path, run)
             state_dict_metadata = dcp.FileSystemReader(path).read_metadata().state_dict_metadata
@@ -246,7 +277,8 @@ def find_load_mismatch(
             )
     gathered = [None] * dist.get_world_size()
     dist.all_gather_object(gathered, mismatch, group=gloo_group())
-    return next((m for m in gathered if m is not None), None)
+    mismatch = next((m for m in gathered if m is not None), None)
+    return mismatch, (None if mismatch is not None else checked)
 
 
 # a source the user named that is absent, unreadable, malformed or refused; any other failure is the gateway's
