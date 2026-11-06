@@ -32,6 +32,12 @@ class TitanTpuModel:
     titan_model_name: str
     titan_model_flavor: str
     sglang_args: str = ""
+    # environment assignments for the sglang server, e.g. "NAME=value "
+    sglang_env: str = ""
+    # how rollouts are prompted and scored
+    rollout_args: str = "--rm-type deepscaler "
+    # the eval set, <data-dir>/<eval_data>/<eval_data>.jsonl
+    eval_data: str = "aime-2024"
     train_args: str = ""
 
 
@@ -116,6 +122,7 @@ def serve_sglang(args: ScriptArgs, model: TitanTpuModel) -> None:
     U.exec_command_cpu(
         f"source {args.sglang_env_script} && "
         f"SGLANG_TPU_SHARED_SLICE={_shared_slice(args, rank_offset=NUM_TRAINER_DEVICES)} "
+        f"{model.sglang_env}"
         "python3 -m sglang.launch_server "
         f"--model-path {args.model_dir}/{model.name} "
         "--device tpu "
@@ -136,14 +143,21 @@ def serve_sglang(args: ScriptArgs, model: TitanTpuModel) -> None:
     )
 
 
-def prepare_model_and_data(args: ScriptArgs, model_commands: Sequence[str]) -> None:
-    """Make the checkpoint with `model_commands` (each skips what is already there), then fetch the datasets."""
+def prepare_model_and_data(
+    args: ScriptArgs, model_commands: Sequence[str], dataset_commands: Sequence[str] = ()
+) -> None:
+    """Make the checkpoint with `model_commands`, fetch the datasets, then derive any with `dataset_commands`.
+
+    Each command skips what is already there.
+    """
     U = args.create_backend()
     U.exec_command_cpu(f"mkdir -p {args.model_dir} {args.data_dir}")
     for command in model_commands:
         U.exec_command_cpu(command)
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
     U.hf_download_dataset("zhuzilin/aime-2024", data_dir=args.data_dir)
+    for command in dataset_commands:
+        U.exec_command_cpu(command)
 
 
 def _trainer_env(args: ScriptArgs) -> dict[str, str]:
@@ -173,7 +187,7 @@ def execute_train(args: ScriptArgs, model: TitanTpuModel, *, launcher_file: str)
         "--label-key label "
         "--apply-chat-template "
         "--rollout-shuffle "
-        "--rm-type deepscaler "
+        f"{model.rollout_args}"
         f"--num-rollout {recipe.num_rollout} "
         f"--rollout-batch-size {recipe.rollout_batch_size} "
         f"--n-samples-per-prompt {recipe.n_samples_per_prompt} "
@@ -186,7 +200,7 @@ def execute_train(args: ScriptArgs, model: TitanTpuModel, *, launcher_file: str)
     if recipe.enable_eval:
         eval_args = (
             "--eval-interval 10 "
-            f"--eval-prompt-data aime {args.data_dir}/aime-2024/aime-2024.jsonl "
+            f"--eval-prompt-data aime {args.data_dir}/{model.eval_data}/{model.eval_data}.jsonl "
             "--n-samples-per-eval-prompt 4 "
             f"--eval-max-response-len {recipe.max_response_len} "
             "--eval-top-p 1 "
