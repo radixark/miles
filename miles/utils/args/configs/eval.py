@@ -28,6 +28,16 @@ class EvalConfig(BaseConfig):
             )
         ),
     ] = None
+    eval_source_path: A[
+        CustomFunctionConfig | None,
+        Arg(
+            help=(
+                "Path to a function (args) -> list[dict] returning the evaluation datasets, "
+                "each entry shaped as one item of `eval.datasets` in --eval-config. It is called once "
+                "while the arguments are validated, and replaces --eval-config and --eval-prompt-data."
+            )
+        ),
+    ] = None
     skip_eval_before_train: A[bool, Arg(help="Whether to skip evaluation before training.")] = False
 
     # The following keys are used to override the rollout version during eval.
