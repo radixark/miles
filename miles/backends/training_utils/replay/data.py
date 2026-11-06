@@ -2,7 +2,7 @@ from typing import Protocol
 
 import torch
 
-from miles.backends.training_utils.data.context_parallel import slice_with_cp
+from miles.backends.training_utils.data.context_parallel import CPLayout, take_ranges
 from miles.backends.training_utils.parallel import get_parallel_state
 
 
@@ -83,48 +83,41 @@ def fill_replay_data(
         for a, b in zip(replay_data, tokens, strict=False):
             assert a.shape[0] == b.shape[0] - 1, f"{a.shape}, {b.shape}"
 
-        # Pad replay data to align with the token batch's final token. The padded token is masked from loss.
-        # TODO: fuse this padding with the following slice_with_cp to reduce memory copy.
-        replay_data = [pad_func(r, 1) for r in replay_data]
-        # TODO: maybe extract a common process function for here and get_batch?
+        # Row p replays token p. The final token has no row, so it is padded like the CP padding; the
+        # padded positions are masked from loss.
+        max_seq_len = batch["max_seq_lens"][0] if qkv_format == "bshd" else None
+        pad_size = None if qkv_format == "bshd" else parallel_state.tp.size * args.data_pad_size_multiplier
+        layout = CPLayout.build(
+            qkv_format=qkv_format,
+            allgather_cp=args.allgather_cp,
+            cp_rank=parallel_state.cp.rank,
+            cp_size=parallel_state.cp.size,
+            max_seq_len=max_seq_len,
+            pad_size=pad_size,
+        )
+        local_ranges = layout.local_ranges([t.size(0) for t in tokens])
+        replay_data = [take_ranges(r, ranges, pad_func) for r, ranges in zip(replay_data, local_ranges, strict=True)]
 
-        cp_size = parallel_state.cp.size
-        cp_rank = parallel_state.cp.rank
         if qkv_format == "bshd":
-            max_seqlen = batch["max_seq_lens"][0]
-            if args.allgather_cp and cp_size > 1:
-                assert max_seqlen % cp_size == 0, f"max_seqlen {max_seqlen} must be divisible by cp_size {cp_size}"
-                local_len = max_seqlen // cp_size
-                start = cp_rank * local_len
-                replay_data = [pad_func(r, max_seqlen - r.size(0))[start : start + local_len] for r in replay_data]
-            else:
-                replay_data = [slice_with_cp(r, pad_func, qkv_format, max_seqlen) for r in replay_data]
             replay_data = torch.stack(replay_data, dim=0)
             batch_size, seqlen, num_layers, topk = replay_data.shape
             if sequence_first:
                 replay_data = replay_data.transpose(0, 1)
             replay_data = replay_data.reshape(batch_size * seqlen, num_layers, topk)
+        elif layout.per_pack:
+            # The ranges already cover this rank's piece of the padded concatenation.
+            replay_data = torch.cat(replay_data, dim=0)
         else:
-            pad_size = parallel_state.tp.size * args.data_pad_size_multiplier
-            if args.allgather_cp and cp_size > 1:
-                replay_data = torch.cat(replay_data, dim=0)
-                global_pad_size = cp_size * pad_size
-                pad = (global_pad_size - replay_data.size(0) % global_pad_size) % global_pad_size
-                if pad != 0:
-                    replay_data = pad_func(replay_data, pad)
-                replay_data = replay_data.chunk(cp_size, dim=0)[cp_rank]
-            else:
-                replay_data = [slice_with_cp(r, pad_func, qkv_format) for r in replay_data]
-                if indices_are_token_positions:
-                    # map indices to thd format
-                    offset = 0
-                    for i, r in enumerate(replay_data):
-                        replay_data[i] = torch.where(r != -1, r + offset, r)
-                        offset += r.shape[0]
-                replay_data = torch.cat(replay_data, dim=0)
-                pad = (pad_size - replay_data.size(0) % pad_size) % pad_size
-                if pad != 0:
-                    replay_data = pad_func(replay_data, pad)
+            if indices_are_token_positions:
+                # map indices to thd format
+                offset = 0
+                for i, r in enumerate(replay_data):
+                    replay_data[i] = torch.where(r != -1, r + offset, r)
+                    offset += r.shape[0]
+            replay_data = torch.cat(replay_data, dim=0)
+            pad = (pad_size - replay_data.size(0) % pad_size) % pad_size
+            if pad != 0:
+                replay_data = pad_func(replay_data, pad)
 
         # sequence_parallel is Megatron-only; FSDP has tp_size == 1 so the slice is a no-op there.
         if args.train_backend == "megatron" and args.backend.sequence_parallel and if_sp_region:
