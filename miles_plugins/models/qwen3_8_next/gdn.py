@@ -15,7 +15,7 @@ except ImportError:
 from miles.backends.megatron_utils.fp32_param_utils import mark_param_dtype
 from miles_plugins.models.cp_utils import build_gdn_cp_context
 from miles_plugins.models.hf_attention import HuggingfaceAttention
-from miles_plugins.models.linear_attn import gdn_kernel
+from miles_plugins.models.linear_attn import gdn_kernel, miles_ext
 from miles_plugins.models.qwen3_5 import _get_text_config
 
 
@@ -30,7 +30,7 @@ class ReplicatedGatedDeltaNet(nn.Module):
     def __init__(self, config, layer_idx: int, args=None):
         super().__init__()
         self.gdn_backend = args.linear_attention_backend if args is not None else "fla"
-        self.chunk_gated_delta_rule = gdn_kernel(self.gdn_backend)
+        self.chunk_gated_delta_rule = gdn_kernel(self.gdn_backend, args=args)
         self.hidden_size = config.hidden_size
         self.num_v_heads = config.linear_num_value_heads
         self.num_k_heads = config.linear_num_key_heads
@@ -54,6 +54,14 @@ class ReplicatedGatedDeltaNet(nn.Module):
             bias=False,
             kernel_size=self.conv_kernel_size,
         )
+        self.conv_backend = args.linear_attention_conv_backend if args is not None else "fla"
+        if self.conv_backend == "cake":
+            miles_ext("conv1d", args).check_supported(
+                self.conv_dim, self.conv_kernel_size, "silu", has_bias=self.conv1d.bias is not None
+            )
+            from miles_ext_kernels import cake
+
+            cake.prebuild("conv1d", weight_dtype=torch.bfloat16)
 
         # Separate projections for QKV and Z (unlike Qwen3Next which combines QKVZ)
         projection_size_qkv = self.key_dim * 2 + self.value_dim
@@ -85,6 +93,16 @@ class ReplicatedGatedDeltaNet(nn.Module):
             dtype=config.dtype if config.dtype is not None else torch.get_current_dtype(),
         )
 
+        self.norm_backend = args.linear_attention_output_norm_backend if args is not None else "fla"
+        if self.norm_backend == "cake":
+            # the Cake kernels run a SiLU gate: a sigmoid output gate (output_gate_type) is refused here
+            norm = miles_ext("gated_rmsnorm", args)
+            activation, has_bias = self.output_gate_activation, self.norm.bias is not None
+            norm.check_supported(self.head_v_dim, activation, self.norm.weight.dtype, has_bias=has_bias)
+            from miles_ext_kernels import cake
+
+            cake.prebuild("gated_rmsnorm")
+
         self.out_proj = nn.Linear(self.value_dim, self.hidden_size, bias=False)
 
     def forward(
@@ -104,12 +122,17 @@ class ReplicatedGatedDeltaNet(nn.Module):
         a = self.in_proj_a(hidden_states)
 
         # Convolution on the flat QKV (pass cp_context for boundary handling)
-        conv_cu_seqlens = cp_context.cu_seqlens if cp_context is not None else cu_seqlens
-        mixed_qkv, _ = self.conv1d(
-            x=mixed_qkv,
-            cu_seqlens=conv_cu_seqlens,
-            cp_context=cp_context,
-        )
+        if self.conv_backend == "cake":
+            if cp_context is not None:
+                raise NotImplementedError("--linear-attention-conv-backend cake does not support context parallelism")
+            mixed_qkv = miles_ext("conv1d").causal_conv1d(mixed_qkv, self.conv1d.weight[:, 0], cu_seqlens)
+        else:
+            conv_cu_seqlens = cp_context.cu_seqlens if cp_context is not None else cu_seqlens
+            mixed_qkv, _ = self.conv1d(
+                x=mixed_qkv,
+                cu_seqlens=conv_cu_seqlens,
+                cp_context=cp_context,
+            )
 
         # Split into Q, K, V (flat split, matching HF layout)
         query, key, value = torch.split(
@@ -129,9 +152,9 @@ class ReplicatedGatedDeltaNet(nn.Module):
             key = key.repeat_interleave(self.num_v_heads // self.num_k_heads, dim=2)
 
         if cp_context is not None:
-            if self.gdn_backend != "fla":
+            if self.gdn_backend not in ("fla", "cake"):
                 raise NotImplementedError(
-                    f"GDN context parallelism requires the 'fla' backend, got {self.gdn_backend!r}."
+                    f"GDN context parallelism requires the 'fla' or 'cake' backend, got {self.gdn_backend!r}."
                 )
             core_attn_out, _ = self.chunk_gated_delta_rule(
                 query,
@@ -166,7 +189,12 @@ class ReplicatedGatedDeltaNet(nn.Module):
         # reshape input data into 2D tensor
         core_attn_out = core_attn_out.reshape(-1, core_attn_out.shape[-1])
         z = z.reshape(-1, z.shape[-1])
-        core_attn_out = self.norm(core_attn_out, z)
+        if self.norm_backend == "cake":
+            core_attn_out = miles_ext("gated_rmsnorm").rmsnorm_silu_gate(
+                core_attn_out, z, self.norm.weight, self.layer_norm_epsilon
+            )
+        else:
+            core_attn_out = self.norm(core_attn_out, z)
         core_attn_out = core_attn_out.reshape(z_shape_og)
         core_attn_out = core_attn_out.reshape(batch_size, seq_len, -1)
 

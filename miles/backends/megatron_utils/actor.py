@@ -507,6 +507,10 @@ class MegatronTrainRayActor(TrainRayActor):
             return
 
         self._clear_quantized_weight_workspaces()
+        if self.args.use_miles_ext_kernels:
+            import miles_ext_kernels
+
+            miles_ext_kernels.release()  # the kernels' workspace pools and cached plans
         clear_memory(clear_host_memory=True)
         print_memory("before offload model")
         should_log_cpu_memory = is_first_replica_megatron_main_rank() and self._last_rollout_id is not None

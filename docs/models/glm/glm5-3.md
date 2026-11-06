@@ -42,7 +42,7 @@ FP8 rollout works as it does for GLM-5.2: training stays BF16 and SGLang serves 
 
 ## 4. Recipe Configuration
 
-Every setting comes from the GLM-5.2 LoRA launcher unchanged: parallelism, DSA kernel backend (`--dsa-attention-backend`), LoRA targets, algorithm, and rollout flags. See [LoRA](/advanced/lora) for the GLM-5.2 Bridge LoRA details and validation results, and [GLM-5.2](/models/glm/glm5-2) for the DSA constraint that every pipeline stage must start on an indexer-computing layer.
+Every setting comes from the GLM-5.2 LoRA launcher unchanged: parallelism, DSA kernel backend (`--dsa-attention-backend`), LoRA targets, algorithm, and rollout flags. See [LoRA](/advanced/lora) for the GLM-5.2 Bridge LoRA details and validation results, and [GLM-5.2](/models/glm/glm5-2) for the DSA constraint that every pipeline stage must start on an indexer-computing layer. The Cake DSA kernels (`--dsa-attention-backend cake`, [Cake Training Kernels](/advanced/cake-kernels)) need the raw path without multi-LoRA, so they do not apply to this Bridge LoRA recipe.
 
 ## 5. Pairs Well With
 
