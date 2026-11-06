@@ -2,12 +2,26 @@ name: Wheel smoke
 
 # The built wheel, installed without Megatron, must import and parse args for FSDP and torchtitan.
 # SGLang stays a source tree on PYTHONPATH until a hosted sglang-miles wheel exists.
+# release-wheel.yml calls this on the tagged commit and publishes the dist it checked.
 
 on:
   push:
     branches: [main]
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
+  workflow_call:
+    inputs:
+      commit:
+        # not named ref: CodeQL reads an input called ref as a pull request head
+        description: 'Tag or commit to build (defaults to the triggering one)'
+        required: false
+        type: string
+        default: ''
+      version:
+        description: 'Exact release version to stamp into setup.py before the build (rc and post tags share its base version)'
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -19,6 +33,8 @@ jobs:
     steps:
       - name: Checkout miles
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit }}
 
       - name: Resolve dependency refs
         id: resolve-refs
@@ -42,9 +58,25 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v5
 
+      - name: Stamp the release version
+        if: inputs.version != ''
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          BASE_VERSION=$(echo "$VERSION" | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+')
+          grep -q "version=\"${BASE_VERSION}\"" setup.py \
+            || { echo "::error::setup.py does not carry version=\"${BASE_VERSION}\""; grep -n 'version="' setup.py; exit 1; }
+          sed -i "s/version=\"${BASE_VERSION}\"/version=\"${VERSION}\"/" setup.py
+
       - name: Build the sdist and the wheel from it
         shell: bash
         run: uv build --out-dir "$RUNNER_TEMP/dist" .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: miles-dist
+          path: ${{ runner.temp }}/dist
 
       - name: Install the wheel into a clean environment
         shell: bash
