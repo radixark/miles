@@ -90,20 +90,21 @@ def iter_local_response_rows(
     slot_start = 0  # first local row of the sample's slot, without CP or under zigzag CP
     seq_start = 0  # first global token of the sample, under all-gather CP
     for i, (tokens, total_length, response_length) in enumerate(
-        zip(unconcat_tokens, total_lengths, response_lengths, strict=False)
+        zip(unconcat_tokens, total_lengths, response_lengths, strict=True)
     ):
         max_seq_len = max_seq_lens[i] if max_seq_lens is not None else None
         if cp.size == 1:
-            if qkv_format == "bshd":
-                slot_start = max_seq_len * i
+            # bshd gives each sample its own padded slot; thd packs the samples back to back
+            sample_start = max_seq_len * i if qkv_format == "bshd" else slot_start
             sample_rows = _response_rows_without_cp(
                 tokens,
-                slot_start=slot_start,
+                slot_start=sample_start,
                 total_length=total_length,
                 response_length=response_length,
                 include_response_indices=include_response_indices,
             )
-            slot_start += total_length
+            if qkv_format == "thd":
+                slot_start += total_length
         elif allgather_cp:
             # thd splits the concatenated samples into one contiguous piece per rank; bshd splits
             # each padded sample on its own, so every sample has a piece of max_seq_len // cp rows
@@ -348,58 +349,27 @@ def all_gather_with_cp(
     qkv_format: str = "thd",
     max_seq_len: int | None = None,
 ) -> torch.Tensor:
-    """
-    Gather tensors across all ranks in the context parallel group.
-    The first dimension of the output tensor will be the `response_length`.
+    """This rank's zigzag share of a per-response tensor, gathered over the CP group to the full response.
+
+    A share of log-probs comes from the logits on every rank, an empty one too, so every rank runs
+    the backward all-reduce; a share of rollout data needs no gradient anywhere.
     """
     parallel_state = get_parallel_state()
-    cp_group = parallel_state.cp.group
-    cp_size = parallel_state.cp.size
-
-    if cp_size == 1:
+    if parallel_state.cp.size == 1:
         return tensor
-
-    _, _, logits_offset, _ = get_logits_and_tokens_offset_with_cp(
+    _, _, _, tokens_offset = get_logits_and_tokens_offset_with_cp(
         total_length, response_length, qkv_format, max_seq_len
     )
-
     prompt_length = total_length - response_length
-
-    chunk_0 = tensor[: logits_offset[0][1] - logits_offset[0][0]]
-    chunk_1 = tensor[logits_offset[0][1] - logits_offset[0][0] :]
-    assert chunk_1.shape[0] == logits_offset[1][1] - logits_offset[1][0]
-
-    def zero(len: int) -> torch.Tensor:
-        return torch.zeros(
-            [len] + list(tensor.shape[1:]),
-            dtype=tensor.dtype,
-            device=tensor.device,
-            requires_grad=True,
-        )
-
-    # logprob should be within the range of [prompt_length - 1, total_length - 1]
-    if chunk_0.shape[0] == 0 and chunk_1.shape[0] == 0:
-        # all empty
-        full_tensor = zero(response_length)
-    elif chunk_0.shape[0] != 0 and chunk_1.shape[0] == 0:
-        # only first chunk
-        left = zero(logits_offset[0][0] - (prompt_length - 1))
-        right = zero(total_length - 1 - logits_offset[0][1])
-        full_tensor = torch.cat([left, chunk_0, right], dim=0)
-    elif chunk_0.shape[0] == 0 and chunk_1.shape[0] != 0:
-        # only second chunk
-        left = zero(logits_offset[1][0] - (prompt_length - 1))
-        right = zero(total_length - 1 - logits_offset[1][1])
-        full_tensor = torch.cat([left, chunk_1, right], dim=0)
-    else:
-        left = zero(logits_offset[0][0] - (prompt_length - 1))
-        mid = zero(logits_offset[1][0] - logits_offset[0][1])
-        right = zero(total_length - 1 - logits_offset[1][1])
-        full_tensor = torch.cat([left, chunk_0, mid, chunk_1, right], dim=0)
-
-    assert full_tensor.shape[0] == response_length, f"Expected {response_length}, got {full_tensor.shape}"
-    full_tensor = dist.nn.all_reduce(full_tensor, group=cp_group)
-    return full_tensor
+    positions = torch.cat(
+        [
+            torch.arange(start - prompt_length, end - prompt_length, device=tensor.device)
+            for start, end in tokens_offset
+        ]
+    )
+    assert positions.numel() == tensor.size(0), f"{positions.numel()} positions vs {tensor.size(0)} values"
+    zeros = tensor.new_zeros((response_length, *tensor.shape[1:]))
+    return dist.nn.all_reduce(zeros.index_copy(0, positions, tensor), group=parallel_state.cp.group)
 
 
 def slice_with_cp(
@@ -522,24 +492,11 @@ def allgather_cp_redistribute(
             logit_global_start = sample_start + prompt_length - 1
             logit_global_end = sample_start + total_length - 1
 
-            s = max(logit_global_start, chunk_start)
-            e = min(logit_global_end, chunk_end)
-
-            if e <= s:
-                # This rank has no response logprobs for this sample
-                full_resp = (
-                    torch.zeros(
-                        (response_length, *value.shape[1:]),
-                        dtype=value.dtype,
-                        device=value.device,
-                        requires_grad=True,
-                    )
-                    + value.sum() * 0
-                )
-            else:
-                resp_start = s - logit_global_start
-                resp_end = e - logit_global_start
-                full_resp = F.pad(value, (0, 0) * (value.ndim - 1) + (resp_start, response_length - resp_end))
+            # this rank's rows of the response, clamped into it: a rank holding none gets an empty range
+            start = min(max(logit_global_start, chunk_start), logit_global_end)
+            end = max(min(logit_global_end, chunk_end), start)
+            pad = (start - logit_global_start, logit_global_end - end)
+            full_resp = F.pad(value, (0, 0) * (value.ndim - 1) + pad)
 
             assert full_resp.size(0) == response_length, f"Expected {response_length}, got {full_resp.size(0)}"
             full_resps.append(full_resp)
