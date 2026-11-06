@@ -13,7 +13,7 @@ from transformers.models.qwen3_next.modeling_qwen3_next import Qwen3NextRMSNorm
 
 from miles.backends.megatron_utils.megatron_to_hf.linear_attn_layout import gdn_heads
 from miles.utils.hf_utils.config import load_hf_config
-from miles_plugins.models.linear_attn import GatedDeltaNet, LinearAttentionLayer
+from miles_plugins.models.linear_attn import GatedDeltaNet, LinearAttentionLayer, miles_ext
 
 
 def _get_text_config(hf_config):
@@ -30,12 +30,38 @@ class _TEZeroCenteredRMSNorm(te.RMSNorm):
     set_extra_state = nn.Module.set_extra_state
 
 
-def gdn_input_layernorm(kind: str, hidden_size: int, eps: float, params_dtype: torch.dtype) -> nn.Module:
-    """``weight`` holds w of the ``(1 + w)`` scale under either kernel, so checkpoints and conversion see the same
-    parameter."""
+def gdn_input_layernorm(
+    kind: str,
+    hidden_size: int,
+    eps: float,
+    params_dtype: torch.dtype,
+    args=None,
+    sequence_parallel: bool | None = None,
+) -> nn.Module:
+    """``weight`` holds w of the ``(1 + w)`` scale under every kernel, so checkpoints and conversion see the same
+    parameter. ``kind`` 'cake' runs the Cake kernels of the miles-ext-kernels submodule, configured by ``args`` (the
+    parsed miles arguments); the norm refuses a hidden size they do not serve, and their libraries for it are built
+    with the norm (``miles_ext_kernels.cake.prebuild("rmsnorm", hidden_size=...)``). ``sequence_parallel`` goes to the
+    'cake' and 'te' norms, which mark their weight with it when they are built and again in ``reset_parameters()``:
+    a norm built on the meta device gets a new weight from ``to_empty()``, which a mark set after construction would
+    not reach."""
     if kind == "hf":
         return Qwen3NextRMSNorm(hidden_size, eps=eps)
-    return _TEZeroCenteredRMSNorm(hidden_size, eps=eps, zero_centered_gamma=True, params_dtype=params_dtype)
+    if kind == "cake":
+        norm = miles_ext("rmsnorm", args).ZeroCenteredRMSNorm(
+            hidden_size, eps, params_dtype=params_dtype, sequence_parallel=sequence_parallel
+        )
+        from miles_ext_kernels import cake
+
+        cake.prebuild("rmsnorm", hidden_size=hidden_size)
+        return norm
+    return _TEZeroCenteredRMSNorm(
+        hidden_size,
+        eps=eps,
+        zero_centered_gamma=True,
+        params_dtype=params_dtype,
+        sequence_parallel=sequence_parallel,
+    )
 
 
 class Qwen3_5GatedDeltaNet(GatedDeltaNet):
@@ -69,9 +95,15 @@ class Attention(LinearAttentionLayer):
             tp_group=pg_collection.tp,
             backend=args.linear_attention_backend,
             norm_activation=text_config.hidden_act,
+            args=args,
         )
         input_layernorm = gdn_input_layernorm(
-            args.linear_attention_input_norm, text_config.hidden_size, text_config.rms_norm_eps, config.params_dtype
+            args.linear_attention_input_norm,
+            text_config.hidden_size,
+            text_config.rms_norm_eps,
+            config.params_dtype,
+            args=args,
+            sequence_parallel=config.sequence_parallel,
         )
         super().__init__(config, linear_attn, input_layernorm, pg_collection, allgather_cp=args.allgather_cp)
 
@@ -116,4 +148,11 @@ def get_qwen3_5_spec(args, config, vp_stage):
                 params={"args": args},
             )
             transformer_layer_spec.layer_specs[layer_id] = layer_specs
+        elif args.full_attention_backend == "cake":
+            # local import: the module subclasses Transformer Engine's attention, which only the cake backend needs
+            from miles_plugins.models.cake_full_attention import apply_cake_full_attention
+
+            transformer_layer_spec.layer_specs[layer_id] = apply_cake_full_attention(
+                transformer_layer_spec.layer_specs[layer_id], args
+            )
     return transformer_layer_spec

@@ -10,6 +10,7 @@ import torch
 from tests.ci.ci_register import register_cpu_ci
 from torch import nn
 
+from miles_plugins.models.cake_batched_projection import project_heads
 from miles_plugins.models.normalization import rms_norm
 
 register_cpu_ci(est_time=2, suite="stage-a-cpu", labels=[])
@@ -28,6 +29,7 @@ def project_queries(monkeypatch):
     namespace = {
         "torch": torch,
         "rms_norm": rms_norm,
+        "project_heads": project_heads,
         "parallel_state": SimpleNamespace(
             get_context_parallel_group=lambda: None,
             get_context_parallel_world_size=lambda: 1,
@@ -104,6 +106,7 @@ def test_indexer_receives_normalized_query_without_attention_gradients(project_q
         q_head_dim=4,
         skip_topk=False,
         wq_b=project_indexer,
+        batched_projection_backend="torch",
     )
 
     class RotaryEmbedding:

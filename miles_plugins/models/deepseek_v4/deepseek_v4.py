@@ -23,7 +23,10 @@ from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.transformer.utils import make_sharded_tensors_for_checkpoint
 
-from miles.kernels.attention.dsa import sparse_attention
+from miles.kernels.attention.dsa import cake, sparse_attention
+from miles.kernels.attention.dsa.sparse_attention import CAKE_SPARSE_ATTENTION_CONFIG
+from miles_plugins.models.cake_batched_projection import grouped_matmul, validate_batched_projection_config
+from miles_plugins.models.cake_hyper_connection import apply_mhc_backend
 from miles_plugins.models.deepseek_v4.ops.compressor import DeepSeekV4Compressor
 from miles_plugins.models.deepseek_v4.ops.cp_utils import (
     all_gather_cp,
@@ -32,7 +35,6 @@ from miles_plugins.models.deepseek_v4.ops.cp_utils import (
     get_q_positions_for_cp,
     get_window_topk_idxs_cp,
 )
-from miles_plugins.models.deepseek_v4.ops.grouped_matmul import grouped_matmul
 from miles_plugins.models.deepseek_v4.ops.qat import fp8_simulate_qat
 from miles_plugins.models.deepseek_v4.ops.rope import apply_rotary_emb, wrapped_precompute_freqs_cis
 from miles_plugins.models.deepseek_v4.ops.thd_utils import (
@@ -184,6 +186,18 @@ class DeepSeekV4Attention(MegatronModule):
         )
         self.softmax_scale = self.head_dim**-0.5
         self.sequence_parallel = config.sequence_parallel
+        use_cake = config.miles_dsa_attention_backend == "cake"
+        self.attention_config = CAKE_SPARSE_ATTENTION_CONFIG if use_cake else None
+        # --batched-projection-gemm-backend: the grouped output projection on torch.einsum or the Cake GEMM
+        self.batched_projection_backend = config.miles_batched_projection_gemm_backend
+        validate_batched_projection_config(
+            config,
+            num_heads=self.n_local_groups,
+            d_in=self.n_heads * self.head_dim // self.n_groups,
+            d_out=self.o_lora_rank,
+            weight_layout="out_in",
+            backend=self.batched_projection_backend,
+        )
 
         if self.compress_ratio:
             self.core_attention.compressor = DeepSeekV4Compressor(
@@ -201,6 +215,11 @@ class DeepSeekV4Attention(MegatronModule):
                         config=config, pg_collection=pg_collection, layer_id=layer_id
                     )
                 else:
+                    if use_cake:
+                        raise ValueError(
+                            "--dsa-attention-backend cake scores the DeepSeek-V4 indexer in V4Indexer; "
+                            f"unset V4_INDEXER_IMPL (got {indexer_impl!r})."
+                        )
                     if topk_backend not in ("canonical", "torch"):
                         raise ValueError(
                             "DeepSeek V4 miles DSA topk backend is only supported with V4_INDEXER_IMPL=tilelang; "
@@ -419,11 +438,16 @@ class DeepSeekV4Attention(MegatronModule):
             topk_idxs.unsqueeze(2),
             self.softmax_scale,
             attn_sink=self.core_attention.attn_sink,
+            config=self.attention_config,
         )
 
         o = torch.cat((o[..., :-rd], apply_rotary_emb(o[..., -rd:].clone(), freqs_cis, inverse=True)), dim=-1)
 
-        o = grouped_matmul(o.view(bsz, seqlen_local, self.n_local_groups, -1), self.linear_o_group_proj)
+        o = grouped_matmul(
+            o.view(bsz, seqlen_local, self.n_local_groups, -1),
+            self.linear_o_group_proj,
+            backend=self.batched_projection_backend,
+        )
         x, _ = self.linear_proj(o.flatten(2))
 
         output = einops.rearrange(x, "b s d -> s b d")
@@ -457,9 +481,23 @@ def get_dsv4_spec(args, config, vp_stage):
     Usage: --spec miles_plugins.models.deepseek_v4.deepseek_v4 get_dsv4_spec
     """
     if args.dsv4_impl == "megatron":
-        return get_transformer_block_with_experimental_attention_variant_spec(config, vp_stage=vp_stage)
+        block_spec = get_transformer_block_with_experimental_attention_variant_spec(config, vp_stage=vp_stage)
+        return apply_mhc_backend(block_spec, args, config)
 
     config.miles_dsa_topk_backend = args.miles_dsa_topk_backend
+    config.miles_dsa_attention_backend = args.dsa_attention_backend
+    config.miles_batched_projection_gemm_backend = args.batched_projection_gemm_backend
+    if args.dsa_attention_backend == "cake":
+        # MQA over the kv_lora_rank latent (its RoPE channels inside it) with a per-head sink, the TP rank's heads
+        cake.setup(
+            args,
+            heads=config.num_attention_heads // config.tensor_model_parallel_size,
+            d_qk=config.kv_lora_rank,
+            d_v=config.kv_lora_rank,
+            attn_sink=True,
+            index_heads=config.dsa_indexer_n_heads,
+            index_head_dim=config.dsa_indexer_head_dim,
+        )
     _orig_get_spec = _eav_specs.get_experimental_attention_variant_module_spec
 
     def _patched_get_spec(config, backend=None):
@@ -469,6 +507,8 @@ def get_dsv4_spec(args, config, vp_stage):
 
     _eav_specs.get_experimental_attention_variant_module_spec = _patched_get_spec
     try:
-        return get_transformer_block_with_experimental_attention_variant_spec(config, vp_stage=vp_stage)
+        block_spec = get_transformer_block_with_experimental_attention_variant_spec(config, vp_stage=vp_stage)
     finally:
         _eav_specs.get_experimental_attention_variant_module_spec = _orig_get_spec
+    # --mhc-backend cake: the Cake hyper connections (DeepSeek-V4 keeps its own head)
+    return apply_mhc_backend(block_spec, args, config)

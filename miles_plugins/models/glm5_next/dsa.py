@@ -9,6 +9,7 @@ from megatron.core.transformer.moe.moe_utils import RouterGatingLinearFunction
 from miles.kernels.attention.dsa import sparse_attention
 from miles.kernels.attention.dsa.kpool import build_pooled_keys, pool_boundaries
 from miles.utils.replay_base import indexer_replay_manager
+from miles_plugins.models.cake_batched_projection import project_heads
 from miles_plugins.models.glm5.glm5 import DSAMLASelfAttention
 from miles_plugins.models.glm5_next.ops.kpool_indexer import kpool_select_topk
 
@@ -24,6 +25,8 @@ class Glm5NextDSAAttention(DSAMLASelfAttention):
         layer_number: int,
         attn_mask_type=AttnMaskType.padding,
         topk_backend: str = "torch",
+        dsa_attention_backend: str = "tilelang",
+        batched_projection_backend: str = "torch",
         is_mtp_layer: bool = False,
         cp_comm_type: str | None = None,
         model_comm_pgs=None,
@@ -37,6 +40,8 @@ class Glm5NextDSAAttention(DSAMLASelfAttention):
             layer_number=layer_number,
             attn_mask_type=attn_mask_type,
             topk_backend=topk_backend,
+            dsa_attention_backend=dsa_attention_backend,
+            batched_projection_backend=batched_projection_backend,
             is_mtp_layer=is_mtp_layer,
             cp_comm_type=cp_comm_type,
             model_comm_pgs=model_comm_pgs,
@@ -92,7 +97,7 @@ class Glm5NextDSAAttention(DSAMLASelfAttention):
             (-1, self.config.qk_head_dim + self.config.v_head_dim),
         ).split([self.config.qk_head_dim, self.config.v_head_dim], dim=1)
 
-        query = torch.einsum("thd,hdm->thm", q, w_kc)
+        query = project_heads(q, w_kc, weight_layout="in_out", backend=self.batched_projection_backend)
 
         kv_compressed = torch.nn.functional.rms_norm(
             kv_compressed.float(),
@@ -163,6 +168,7 @@ class Glm5NextDSAAttention(DSAMLASelfAttention):
             pool_cu_seqlens=pool_cu_seqlens,
             index_topk=self.index_topk,
             kpool=self.index_kpool,
+            indexer_config=self.indexer_config,
         )
 
     def forward(
@@ -200,14 +206,18 @@ class Glm5NextDSAAttention(DSAMLASelfAttention):
         query = F.pad(query, (0, _SPARSE_MLA_TAIL_DIM)).contiguous()
         key = F.pad(key, (0, _SPARSE_MLA_TAIL_DIM)).contiguous()
 
+        # the cake backend serves the zero tail too: its det and fast kernels run the padded 576-wide rows
         core_attn_out = sparse_attention(
             query.unsqueeze(0),
             key.unsqueeze(0),
             topk_indices.unsqueeze(0),
             self.softmax_scale,
             d_v=self.config.kv_lora_rank,
+            config=self.attention_config,
         ).squeeze(0)
-        core_attn_out = torch.einsum("thm,hdm->thd", core_attn_out, w_vc)
+        core_attn_out = project_heads(
+            core_attn_out, w_vc, weight_layout="out_in", backend=self.batched_projection_backend
+        )
         core_attn_out = core_attn_out.reshape(core_attn_out.size(0), 1, -1)
 
         output, bias = self.linear_proj(core_attn_out)
