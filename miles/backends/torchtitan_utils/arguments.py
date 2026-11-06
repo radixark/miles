@@ -169,10 +169,10 @@ def _validate_platform_args(args) -> None:
             f"the splash attention kernel works in {FLASH_ATTENTION_BLOCK}-token blocks and the largest length bucket "
             "is --seq-length"
         )
-    if args.context_parallel_size != 1:
+    if FLASH_ATTENTION_BLOCK % args.context_parallel_size:
         raise ValueError(
-            f"--context-parallel-size {args.context_parallel_size} is not supported on {platform.device_type}: "
-            "its length buckets do not align microbatches to the CP shards"
+            f"--context-parallel-size {args.context_parallel_size} must divide {FLASH_ATTENTION_BLOCK}: every length "
+            "bucket is a whole number of attention blocks, and each bucket shards evenly across the CP ranks"
         )
     if args.expert_model_parallel_size != 1:
         raise ValueError(

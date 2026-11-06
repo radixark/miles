@@ -154,10 +154,16 @@ def test_tpu_sequence_length_is_a_whole_number_of_attention_blocks(monkeypatch, 
     validate_torchtitan_args(_tpu_args(seq_length=8192))
 
 
-def test_tpu_refuses_context_and_expert_parallelism(monkeypatch, on_tpu):
+def test_tpu_context_parallelism_needs_buckets_that_shard_evenly(monkeypatch, on_tpu):
     monkeypatch.setattr(torch, "__version__", "2.14.0")
-    with pytest.raises(ValueError, match="context-parallel-size 2"):
-        validate_torchtitan_args(_tpu_args(context_parallel_size=2))
+    validate_torchtitan_args(_tpu_args(context_parallel_size=2))
+    # 3 divides --seq-length 3072 but not its 1024-token bucket
+    with pytest.raises(ValueError, match="context-parallel-size 3 must divide 1024"):
+        validate_torchtitan_args(_tpu_args(context_parallel_size=3, seq_length=3072, max_seq_len=3072))
+
+
+def test_tpu_refuses_expert_parallelism(monkeypatch, on_tpu):
+    monkeypatch.setattr(torch, "__version__", "2.14.0")
     with pytest.raises(ValueError, match="expert-model-parallel-size 2"):
         validate_torchtitan_args(_tpu_args(expert_model_parallel_size=2))
 
@@ -561,6 +567,25 @@ def test_context_parallelism_swaps_in_the_all_gather_kv_attention(tmp_path, monk
     assert config.parallelism.context_parallel_load_balancer is None
     inner = {type(layer.attention.inner_attention) for layer in config.model.layers}
     assert inner == {AllGatherKVFlexInnerAttention.Config}
+
+
+def test_tpu_context_parallelism_shards_heads_around_the_flash_attention(on_tpu):
+    """Without sparse flex attention, CP runs Ulysses around the TPU kernel, which then sees the whole sequence."""
+    pytest.importorskip("torchtitan")
+    from torchtitan.config.parallelism import ParallelismConfig
+
+    from miles.backends.torchtitan_utils.config import UlyssesTpuFlashInnerAttention, build_model_config
+
+    # qwen3 0.6B: 16 query heads, 8 key/value heads
+    model = build_model_config(_config_args(), parallelism=ParallelismConfig(context_parallel_degree=8))
+    assert {type(layer.attention.inner_attention) for layer in model.layers} == {UlyssesTpuFlashInnerAttention.Config}
+    with pytest.raises(ValueError, match="16 query and 8 key/value heads do not divide by 16"):
+        build_model_config(_config_args(), parallelism=ParallelismConfig(context_parallel_degree=16))
+    # each rank holds a tensor-parallel share of the heads
+    with pytest.raises(ValueError, match="2 TP x 8 CP ranks"):
+        build_model_config(
+            _config_args(), parallelism=ParallelismConfig(context_parallel_degree=8, tensor_parallel_degree=2)
+        )
 
 
 class _Mesh:
