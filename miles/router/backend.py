@@ -16,7 +16,7 @@ from miles.backends.sglang_utils.router_args_utils import (
 from miles.router.config import compute_miles_router_config
 from miles.utils.http_utils import resolve_ip
 from miles.utils.workers.argv_utils import config_to_argv
-from miles.utils.workers.worker_spec import LaunchCommandContext
+from miles.utils.workers.worker_spec import LaunchCommandContext, WorkerLaunchContext
 
 if TYPE_CHECKING:
     # sglang_config imports the sglang arguments module, which reads the router backend
@@ -43,6 +43,9 @@ class RouterBackend(ABC):
 
     def __init__(self, args: Namespace) -> None:
         self.args = args
+
+    def env_var(self, ctx: WorkerLaunchContext) -> dict[str, str]:
+        return {}
 
     def launch_argv(
         self, ctx: LaunchCommandContext, *, model_cfg: "ModelConfig", interpreter_prefix: list[str]
@@ -137,5 +140,4 @@ _BACKEND_CLASSES: dict[RouterKind, type[RouterBackend]] = {
 
 
 def make_router_backend(args: Namespace) -> RouterBackend:
-    kind = RouterKind.MILES if args.use_miles_router else RouterKind.SGLANG
-    return _BACKEND_CLASSES[kind](args)
+    return _BACKEND_CLASSES[RouterKind(args.router)](args)

@@ -3,6 +3,8 @@ from dataclasses import dataclass
 import torch
 
 from miles.backends.fsdp_utils.arguments import FSDPArgs, build_dataclass_parser, load_args_from_parser
+from miles.backends.training_utils.loss.hub.response_layout import validate_response_layout_args
+from miles.platforms import current_platform, tpu_shared_slice
 from miles.utils.lora.utils import is_lora_enabled, lora_rollout_enabled
 
 
@@ -21,8 +23,8 @@ class TorchtitanArgs(FSDPArgs):
 
 def build_torchtitan_parser(extra_args_provider=None):
     parser = build_dataclass_parser(TorchtitanArgs, "torchtitan Training (miles)", extra_args_provider)
-    # torchtitan's LoRA gives each projection its own lora_A, initialized kaiming_uniform_(a=sqrt(5))
-    parser.set_defaults(lora_type="canonical_lora", lora_A_init_method="kaiming")
+    # torchtitan's LoRA initializes lora_A kaiming_uniform_(a=sqrt(5)); --lora-type defaults in validate_lora_args
+    parser.set_defaults(lora_A_init_method="kaiming")
     return parser
 
 
@@ -32,8 +34,8 @@ def load_torchtitan_args(extra_args_provider=None):
 
 def validate_torchtitan_args(args) -> None:
     torch_version = tuple(int(part) for part in torch.__version__.split(".")[:2])
-    if torch_version < (2, 13):
-        raise ValueError(f"the torchtitan backend needs torch>=2.13; this environment runs {torch.__version__}")
+    if torch_version < (2, 14):
+        raise ValueError(f"the torchtitan backend needs torch>=2.14; this environment runs {torch.__version__}")
     if args.context_parallel_size != 1 and args.titan_model_name == "qwen3_5":
         raise ValueError("torchtitan does not support context parallelism for qwen3_5")
 
@@ -52,6 +54,11 @@ def validate_torchtitan_args(args) -> None:
             "inside the rope kernel"
         )
 
+    if args.update_weight_transfer_mode == "ici" and tpu_shared_slice.spec() is None:
+        raise ValueError(
+            f"--update-weight-transfer-mode ici needs {tpu_shared_slice.ENV_VAR} on the trainer, naming the slice "
+            "it shares with the engine"
+        )
     if args.ref_update_interval is not None:
         raise ValueError("--ref-update-interval is not supported by the torchtitan backend")
     if args.fp16:
@@ -66,6 +73,16 @@ def validate_torchtitan_args(args) -> None:
         )
     if args.save_debug_train_data is not None:
         raise ValueError("--save-debug-train-data is not wired up for the torchtitan backend")
+    if args.use_routing_replay and not args.use_rollout_routing_replay and not current_platform.dynamic_shapes:
+        raise ValueError(
+            "--use-routing-replay without --use-rollout-routing-replay records the ids inside a compiled block, which "
+            "recompiles every microbatch on a static-shape platform. Use --use-rollout-routing-replay."
+        )
+    if args.ci_test and args.use_routing_replay and not current_platform.dynamic_shapes:
+        raise ValueError(
+            "--ci-test with --use-routing-replay: the replay checker syncs to the host from inside a block, which a "
+            "static-shape platform compiles fullgraph. Drop --ci-test or run the check on a dynamic-shape platform."
+        )
     if args.stream_optimizer_state_to_disk:
         if not args.optimizer_cpu_offload:
             raise ValueError(
@@ -79,6 +96,7 @@ def validate_torchtitan_args(args) -> None:
             )
     if is_lora_enabled(args):
         _validate_lora_args(args)
+    validate_response_layout_args(args)
 
 
 def _validate_lora_args(args) -> None:
@@ -87,10 +105,10 @@ def _validate_lora_args(args) -> None:
             f"torchtitan LoRA is validated on --titan-model-name qwen3 only; {args.titan_model_name} builds "
             "projections whose module paths or HF names the LoRA target mapping does not handle yet"
         )
-    if args.lora_type != "canonical_lora":
+    if args.lora_type != "lora":
         raise ValueError(
-            "torchtitan gives q/k/v and gate/up their own lora_A, which is --lora-type canonical_lora; "
-            f"--lora-type {args.lora_type} shares one lora_A across each fused projection on megatron"
+            "torchtitan fuses q/k/v and gate/up and shares one lora_A across each, which is --lora-type lora; "
+            f"--lora-type {args.lora_type} gives each projection its own lora_A"
         )
     if args.lora_A_init_method != "kaiming":
         raise ValueError(

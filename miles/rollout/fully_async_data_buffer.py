@@ -130,6 +130,10 @@ class DataBuffer(ABC):
         """
         return True
 
+    def drop_saved_state(self, state: Any, *, reason: str) -> None:
+        """Instead of ``load_state_dict``: record the saved groups as dropped, e.g. after a data source reset."""
+        raise NotImplementedError(f"{type(self).__name__} must implement drop_saved_state() for a data reset")
+
 
 # ============================= one policy buffer ==============================
 
@@ -319,6 +323,11 @@ class DefaultDataBuffer(DataBuffer):
         window = self._args.max_weight_staleness + int(self._get_pending)
         return len(self._buffer) + in_flight < window * self._args.rollout_batch_size
 
+    def drop_saved_state(self, state: list[DataBufferInput], *, reason: str) -> None:
+        record_dropped_samples([[entry.prompt_group, entry.group] for entry in state])
+        samples = [sample for entry in state for sample in entry.prompt_group]
+        SampleOwnershipRecorder.log_dropped_samples(args=self._args, samples=samples, reason=reason)
+
     def get_metrics(self, trainer_model_id: str | None = None) -> dict[str, float]:
         prefix = "rollout/fully_async/"
         metrics = {
@@ -400,6 +409,9 @@ class DefaultMultiDataBuffer(DataBuffer):
         return []
 
     def load_state_dict(self, state: Any) -> None:
+        logger.warning(MULTI_POLICY_CHECKPOINT_UNSUPPORTED)
+
+    def drop_saved_state(self, state: Any, *, reason: str) -> None:
         logger.warning(MULTI_POLICY_CHECKPOINT_UNSUPPORTED)
 
     def _inner_of(self, trainer_model_id: str | None) -> DataBuffer:

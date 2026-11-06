@@ -3,7 +3,7 @@ default_language_version:
 
 # The vendored upstream module stays byte-diffable against its source; keep
 # formatters and linters away so upstream-tracking diffs remain minimal.
-exclude: '^miles/utils/chat_template_utils/templates/encoding_dsv32\.py$'
+exclude: '^miles/utils/chat_template_utils/templates/encoding_dsv(32|4|41)\.py$'
 
 ci:
   autofix_prs: true

@@ -106,6 +106,7 @@ support that SGLang can serve LoRA for, within the constraints below. Models wit
 
 The trainer rejects a multi-LoRA launch that breaks any of these constraints:
 
+- `--megatron-to-hf-mode bridge`: the adapter slots are Megatron-Bridge adapters.
 - Separate training and sampling GPUs: no `--colocate` and no `--offload-train`,
   because each adapter's gradients stay in GPU buffers between calls.
 - `--pipeline-model-parallel-size 1` and `--qkv-format thd`.
@@ -117,11 +118,13 @@ The trainer rejects a multi-LoRA launch that breaks any of these constraints:
 
 ## Tinker compatibility
 
-The gateway implements the `tinker==0.26.2` wire schema; pin that SDK version on
-the client. It supports:
+The gateway implements the `tinker==0.36.0` wire schema and rejects clients on
+any other SDK version when they connect, patch releases included; pin that
+version on the client, with `tinker-cookbook==0.5.9` for the cookbook. The
+cookbook only requires `tinker>=0.35`, so install the SDK pin explicitly. It supports:
 
 - Training: `forward`, `forward_backward`, `optim_step`, `save_state`,
-  `load_state`, and `save_weights_for_sampler`.
+  `load_state`, and `save_weights_for_sampler`, with the Adam optimizer only.
 - Losses: `cross_entropy`, `importance_sampling`, `ppo`, `cispo`, and `dro`, with
   1-D per-token inputs. 2-D soft targets are not supported.
 - LoRA targets: the `attn`, `mlp`, and `unembed` groups, matching the SDK's
@@ -129,7 +132,15 @@ the client. It supports:
   groups at launch; client flags must match them.
 - Sampling: only from `save_weights_for_sampler()` paths, within one context
   window shared by training and inference (see
-  [Context window](/examples/multi-lora#context-window)).
+  [Context window](/examples/multi-lora#context-window)). Outputs are sampled
+  tokens with their logprobs, `prompt_logprobs`, and `topk_prompt_logprobs`.
+
+Checkpoint download (`save_weights_external`, `get_external_weights_urls`) is not
+served.
+
+Cookbook recipes default to a 7-day checkpoint TTL, which the gateway does not
+serve; pass `ttl_seconds=None`. `rl_loop` also defaults to the `stable_reinforce`
+loss; pass `loss_fn="importance_sampling"` (or `"cispo"`).
 
 Futures, model leases, and request deduplication live in gateway memory and do
 not survive a restart; saved checkpoints do.
@@ -139,7 +150,7 @@ not survive a restart; saved checkpoints do.
 1. Launch the [Qwen3-30B-A3B gateway](/examples/multi-lora) on one 8-GPU node and
    run its single- and multi-tenant smoke checks.
 2. Point a Tinker client or a `tinker-cookbook` recipe at the gateway URL, with
-   `tinker==0.26.2`.
+   `tinker==0.36.0` and `tinker-cookbook==0.5.9`.
 3. For agentic RL with your own sandbox or harness, use the
    [tinker_agent client](/examples/multi-lora/tinker-agent), or the
    [Harbor integration](/examples/multi-lora/harbor-tinker) for Harbor tasks.

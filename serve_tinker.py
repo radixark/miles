@@ -9,11 +9,12 @@ from miles.ray.rollout.router_manager import resolve_router_addrs
 from miles.ray.specs.inference import compute_router_providers, create_inference_controller_handle
 from miles.ray.specs.train import ACTOR_ROLE, compute_trainer_configs
 from miles.ray.train.init_request import TrainerControllerInitRequest
-from miles.tinker.arguments import configure_tinker_args
+from miles.tinker.arguments import configure_tinker_args, validate_tinker_args
 from miles.tinker.core.service import TinkerService
 from miles.tinker.core.types import GatewayConfig
 from miles.tinker.runtime import MilesBackend
 from miles.tinker.server.app import build_app
+from miles.tinker.server.encoding import assert_installed_sdk_version
 from miles.utils.args.trainer_utils import compute_trainer_ckpt_load_config
 from miles.utils.arguments import parse_args
 from miles.utils.async_utils import Disposer, with_disposer
@@ -25,14 +26,14 @@ logger = logging.getLogger(__name__)
 
 
 async def serve(args, *, disposer: Disposer):
+    assert_installed_sdk_version()
     assert args.multi_lora, "serve_tinker requires --multi-lora-n-adapters > 0"
+    validate_tinker_args(args)
     trainer_configs = compute_trainer_configs(args)
     [actor_config] = [config for config in trainer_configs if config.role == ACTOR_ROLE]
     ckpt_load_config = compute_trainer_ckpt_load_config(args, actor_config)
     assert ckpt_load_config is not None
     assert ckpt_load_config.load == args.hf_checkpoint, "Tinker trainers and engines must load the same frozen HF base"
-    checkpoint_root = args.tinker_checkpoint_root or (args.save and f"{args.save}/tinker")
-    assert checkpoint_root, "set --tinker-checkpoint-root (or --save to derive <save>/tinker)"
     hf_config = load_hf_config(args.hf_checkpoint).get_text_config()
     max_tokens_per_datum = hf_config.max_position_embeddings
     if args.max_tokens_per_gpu is not None:
@@ -73,11 +74,13 @@ async def serve(args, *, disposer: Disposer):
     config = GatewayConfig(
         base_model=args.tinker_base_model or args.hf_checkpoint,
         n_slots=args.multi_lora_n_adapters,
-        checkpoint_root=checkpoint_root,
+        checkpoint_root=args.tinker_checkpoint_root,
         vocab_size=hf_config.vocab_size,
         max_tokens_per_datum=max_tokens_per_datum,
         max_tokens_per_sample=max_tokens_per_sample,
         lora_alpha=args.lora_alpha,
+        lora_type=args.lora_type,
+        experts_shared_outer_loras=args.experts_shared_outer_loras,
         max_lora_rank=args.lora_rank,
         trains_attn="attn" in args.tinker_lora_groups,
         trains_mlp="mlp" in args.tinker_lora_groups,

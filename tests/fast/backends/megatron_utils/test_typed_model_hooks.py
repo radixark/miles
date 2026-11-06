@@ -57,7 +57,7 @@ class TestTypedModelHooks:
         hook = _hook()
         args = make_trainer_config(custom_megatron_before_log_prob_hook_path=hook, dumper_enable=False)
         chunk = torch.nn.Linear(1, 1)
-        chunk.config = SimpleNamespace()
+        chunk.config = SimpleNamespace(hidden_dropout=0.1, attention_dropout=0.1)
         models = [chunk]
 
         def callback(view: ImmutableNamespace, received: list[torch.nn.Module], prefix: str) -> None:
@@ -72,6 +72,28 @@ class TestTypedModelHooks:
             model_module.forward_only(
                 lambda *args, **kwargs: {}, args, models, [], [], rollout_id=7, store_prefix="reference_"
             )
+
+    @pytest.mark.parametrize(
+        ("hidden_dropout", "attention_dropout", "lora_dropout", "training"),
+        [(0.0, 0.0, 0.0, True), (0.1, 0.0, 0.0, False), (0.0, 0.1, 0.0, False), (0.0, 0.0, 0.1, False)],
+    )
+    def test_log_prob_forward_leaves_train_mode_only_for_dropout(
+        self, hidden_dropout: float, attention_dropout: float, lora_dropout: float, training: bool
+    ) -> None:
+        """eval() also swaps kernels (TE attention), so the log-prob forward uses it only when the model has dropout."""
+        hook = _hook()
+        args = make_trainer_config(
+            custom_megatron_before_log_prob_hook_path=hook, dumper_enable=False, lora_dropout=lora_dropout
+        )
+        chunk = torch.nn.Linear(1, 1)
+        chunk.config = SimpleNamespace(hidden_dropout=hidden_dropout, attention_dropout=attention_dropout)
+
+        def callback(view: ImmutableNamespace, received: list[torch.nn.Module], prefix: str) -> None:
+            assert chunk.training is training
+            raise _HookReached
+
+        with function_registry.temporary(hook.path, callback), pytest.raises(_HookReached):
+            model_module.forward_only(lambda *args, **kwargs: {}, args, [chunk], [], [], rollout_id=7)
 
     def test_initialization_hook_receives_flat_custom_fields_after_tokenizer_setup(
         self, monkeypatch: pytest.MonkeyPatch

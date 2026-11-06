@@ -1,11 +1,11 @@
 """Shared bridge for the DeepSeek official-encoder families (V3.2, V4, V4.1).
 
-None of the families ships a jinja chat_template: V4 and V4.1 render through
-sglang's ``encoding_dsv4`` / ``encoding_dsv41``, while V3.2 uses miles' vendored
-``templates.encoding_dsv32``.  Both modules share one calling convention,
-and miles' ``apply_chat_template`` routes any matching tokenizer here.  Each
-family is one ``DeepSeekFamily`` instance wrapping its encoder module;
-everything else is shared.
+None of the families ships a jinja chat_template: each renders through miles'
+vendored official encoder (``templates.encoding_dsv32`` / ``encoding_dsv4`` /
+``encoding_dsv41``).  The modules share one calling convention, and miles'
+``apply_chat_template`` routes any matching tokenizer here.  Each family is one
+``DeepSeekFamily`` instance wrapping its encoder module; everything else is
+shared.
 """
 
 from __future__ import annotations
@@ -17,10 +17,9 @@ import os
 from collections.abc import Callable
 from typing import Any
 
-from sglang.srt.entrypoints.openai import chat_encoding, encoding_dsv4, encoding_dsv41
 from sglang.srt.entrypoints.openai.protocol import Tool
 
-from miles.utils.chat_template_utils.templates import encoding_dsv32
+from miles.utils.chat_template_utils.templates import encoding_dsv4, encoding_dsv32, encoding_dsv41
 
 _ASSISTANT_SP_TOKEN = "<｜Assistant｜>"
 
@@ -51,9 +50,10 @@ def _inject_tools_into_system(
     """Put *tools* in the system message, where ``encode_messages`` reads them.
 
     The encoder serializes each tool dict verbatim into ``<functions>``, so they
-    must round-trip through the same pydantic payload sglang's ``serving_chat``
-    builds (``Tool.model_dump()`` fills defaults / orders fields; V4.1 keeps
-    only the fields the client sent) or the token ids drift from what sglang serves.
+    must round-trip through the payload the encoder is paired with or the token
+    ids drift: V3.2 uses ``Tool.model_dump()`` as sglang's dsv32 serving path
+    does, V4 keeps the v0.5.22 payload (``dsv4_tool_payload``), and V4.1 keeps
+    only the fields the client sent (``dsv41_tool_payload``).
     """
     out = copy.deepcopy(messages)
     if not out or out[0].get("role") != "system":
@@ -97,7 +97,7 @@ class DeepSeekFamily:
         add_generation_prompt: bool = True,
         **kwargs: Any,
     ) -> str:
-        """Render *messages* into this family's prompt via sglang ``encode_messages``.
+        """Render *messages* into this family's prompt via its encoder's ``encode_messages``.
 
         Tool_call ``arguments`` must already be JSON strings; *tools*, if given, are
         injected into the system message (see ``_inject_tools_into_system``).  The
@@ -133,8 +133,32 @@ class DeepSeekV32Family(DeepSeekFamily):
         return None
 
 
+def dsv4_tool_payload(tool: Tool) -> dict[str, Any]:
+    """The tool dict sglang v0.5.22's ``Tool.model_dump()`` gave the V4 encoder.
+
+    v0.5.23 keeps the client's key order and drops an unset ``strict``
+    (sgl-project/sglang#46133); V4 renders the dict verbatim, so rebuild the
+    declared field order with ``strict`` defaulting to False.
+    """
+    payload = tool.model_dump()
+    function = payload["function"]
+    declared = {
+        "description": function.get("description"),
+        "name": function["name"],
+        "parameters": function.get("parameters"),
+        "strict": bool(function.get("strict", False)),
+    }
+    if "defer_loading" in function:
+        declared["defer_loading"] = function["defer_loading"]
+    payload["function"] = declared
+    return payload
+
+
 class DeepSeekV4Family(DeepSeekFamily):
     template = encoding_dsv4
+
+    def _inject_tools(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return _inject_tools_into_system(messages, tools, dsv4_tool_payload)
 
     def _generation_prompt_suffix(self, tail_role: str | None, thinking_token: str) -> str | None:
         if tail_role in {"user", "developer", "tool"}:
@@ -142,25 +166,72 @@ class DeepSeekV4Family(DeepSeekFamily):
         return None
 
 
+def parse_dsv41_reasoning_effort(value: Any) -> str | int | None:
+    """Map an API ``reasoning_effort`` onto what the V4.1 encoder accepts.
+
+    An int budget only reaches here through ``chat_template_kwargs``; None
+    means unsupported, and the caller applies its default.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if 1 <= value <= 100 else None
+    if isinstance(value, float):
+        return max(1, round(value * 100)) if 0.0 <= value <= 0.99 else None
+    if value in encoding_dsv41.REASONING_EFFORT_MAPPINGS:
+        return value
+    return None
+
+
+_OPENAI_FUNCTION_FIELD_ORDER = ("name", "description", "parameters")
+
+
+def dsv41_tool_payload(tool: Tool) -> dict[str, Any]:
+    """The tool dict the V4.1 encoder renders verbatim into the prompt.
+
+    Only fields the client sent, in the OpenAI field order; pydantic would
+    otherwise add defaults (strict=false) and reorder keys by declaration.
+    """
+    payload = tool.model_dump(exclude_unset=True, exclude_none=True)
+    function = dict(payload.get("function") or {})
+    ordered = {k: function.pop(k) for k in _OPENAI_FUNCTION_FIELD_ORDER if k in function}
+    ordered.update(function)
+    payload["function"] = ordered
+    return payload
+
+
+def default_dsv41_reasoning_effort_from_env(raw: str | None) -> str | int:
+    """Parse ``SGLANG_DSV41_REASONING_EFFORT``; raises so a bad value fails at boot."""
+    if raw is None or not raw.strip():
+        return encoding_dsv41.DEFAULT_REASONING_EFFORT
+    value: Any = int(raw) if raw.strip().isdigit() else raw.strip()
+    effort = parse_dsv41_reasoning_effort(value)
+    if effort is None:
+        raise ValueError(
+            f"Invalid SGLANG_DSV41_REASONING_EFFORT={raw!r}; expected one of "
+            f"{list(encoding_dsv41.REASONING_EFFORT_MAPPINGS)} or an integer in [1, 100]"
+        )
+    return effort
+
+
 class DeepSeekV41Family(DeepSeekV4Family):
-    """V4.1 mirrors sglang's ``serving_chat`` dsv41 branch: tools keep only the
-    fields the client sent, ``reasoning_effort`` always reaches the encoder (the
-    server default comes from ``SGLANG_DSV41_REASONING_EFFORT``), and a
-    mid-conversation system message also opens an assistant turn."""
+    """V4.1 keeps the rendering of sglang's ``serving_chat`` dsv41 branch from
+    before v0.5.23 moved it to deepseek-recipe: tools keep only the fields the
+    client sent, ``reasoning_effort`` always reaches the encoder (the default
+    comes from ``SGLANG_DSV41_REASONING_EFFORT``), and a mid-conversation system
+    message also opens an assistant turn."""
 
     template = encoding_dsv41
 
     def _build_encode_config(self, kwargs: dict) -> dict:
         kwargs = super()._build_encode_config(kwargs)
-        default = chat_encoding.default_dsv41_reasoning_effort_from_env(
-            os.environ.get("SGLANG_DSV41_REASONING_EFFORT", "high")
-        )
-        effort = chat_encoding.parse_dsv41_reasoning_effort(kwargs.get("reasoning_effort"))
+        default = default_dsv41_reasoning_effort_from_env(os.environ.get("SGLANG_DSV41_REASONING_EFFORT", "high"))
+        effort = parse_dsv41_reasoning_effort(kwargs.get("reasoning_effort"))
         kwargs["reasoning_effort"] = default if effort is None else effort
         return kwargs
 
     def _inject_tools(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        return _inject_tools_into_system(messages, tools, chat_encoding.dsv41_tool_payload)
+        return _inject_tools_into_system(messages, tools, dsv41_tool_payload)
 
     def _generation_prompt_suffix(self, tail_role: str | None, thinking_token: str) -> str | None:
         if tail_role in {"user", "developer", "tool", "system"}:

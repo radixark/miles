@@ -22,10 +22,10 @@ setup(
         "fsdp": [
             "torch>=2.0",
         ],
-        # torchtitan 0.3.0 needs torch>=2.13 but does not declare torch
+        # torchtitan 0.4.0 targets torch 2.15 but does not declare torch; miles backports what it needs onto 2.14
         "torchtitan": [
-            "torch>=2.13",
-            "torchtitan==0.3.0",
+            "torch>=2.14",
+            "torchtitan==0.4.0",
         ],
         "mlflow": [
             "mlflow>=2.0",
@@ -46,6 +46,11 @@ setup(
         ],
         "modal": [
             "modal>=1.5.5",
+        ],
+        # the openenv novita sandbox backend, imported only when that backend is
+        # selected; 2.0.7 is the release the recipe was written against
+        "novita": [
+            "novita-sandbox>=2.0.7",
         ],
     },
     # sglang needs 3.11; nvidia-resiliency-ext 0.6 has no 3.13 wheel

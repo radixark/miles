@@ -118,6 +118,8 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     sglang_mem_fraction_static: float = 0.5
     # sglang's own default (csgmv) crashes the DSA MoE-LoRA rollout under dp-attention
     sglang_lora_backend: str = "triton"
+    # fold the shared expert into the routed FusedMoE: serves MoE at engine EP=1, per-expert LoRA only
+    sglang_shared_experts_fusion: bool = False
     # serve from a pre-converted _fp8 ckpt (fits engine=8 / 1 node); train stays bf16
     fp8_rollout: bool = False
     # rollout-side fp8 checkpoint; defaults to <hf_checkpoint>_fp8 (e.g. GLM-5.2_fp8).
@@ -258,15 +260,18 @@ def _train(args: ScriptArgs):
         _decode = "flashmla_kv" if _fp8_full else "flashmla_sparse"
         _cg = 256 if _fp8_full else 64
         _kv = "--sglang-kv-cache-dtype fp8_e4m3 " if _fp8_full else ""
+        # sglang fuses the shared expert only at EP=1
+        _ep = 1 if args.sglang_shared_experts_fusion else _eng
+        _fusion = "" if args.sglang_shared_experts_fusion else "--sglang-disable-shared-experts-fusion "
         sglang_args = (
             f"--rollout-num-gpus-per-engine {_eng} --sglang-mem-fraction-static {args.sglang_mem_fraction_static} "
-            f"--sglang-enable-dp-attention --sglang-ep-size {_eng} --sglang-dp-size {_eng} "
+            f"--sglang-enable-dp-attention --sglang-ep-size {_ep} --sglang-dp-size {_eng} "
             "--sglang-moe-dense-tp-size 1 --sglang-enable-dp-lm-head "
             f"--sglang-attention-backend nsa --sglang-dsa-decode-backend {_decode} "
             f"--sglang-dsa-prefill-backend flashmla_sparse --sglang-page-size 64 {_kv}"
             f"--sglang-cuda-graph-max-bs-decode {_cg} --sglang-max-running-requests 512 "
             f"--sglang-chunked-prefill-size {2048 * _eng} --sglang-watchdog-timeout 3600 "
-            "--sglang-moe-runner-backend triton --sglang-disable-shared-experts-fusion "
+            f"--sglang-moe-runner-backend triton {_fusion}"
             # required: without it sglang miscounts the gate_up slices -> engine-init crash
             f"--sglang-max-lora-rank {args.lora_rank} "
             f"--sglang-lora-backend {args.sglang_lora_backend} "

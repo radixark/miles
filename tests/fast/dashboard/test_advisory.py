@@ -132,7 +132,9 @@ def _imbalanced(tmp_path, args: dict) -> str:
 
 def test_dp_imbalance_names_the_knob_that_applies(tmp_path):
     assert "--router-dp-aware" in _imbalanced(tmp_path / "a", {})
-    assert "--sglang-load-balance-method" in _imbalanced(tmp_path / "b", {"use_miles_router": True})
+    assert "--sglang-load-balance-method" in _imbalanced(tmp_path / "b", {"router": "miles"})
+    # runs recorded before --router
+    assert "--sglang-load-balance-method" in _imbalanced(tmp_path / "b2", {"use_miles_router": True})
     assert "--router-policy (cache_aware)" in _imbalanced(
         tmp_path / "c", {"router_dp_aware": True, "router_policy": "cache_aware"}
     )
