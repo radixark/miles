@@ -38,7 +38,14 @@ def prepare():
     U.exec_command_cpu(f"mkdir -p {MODEL_DIR} {RUN_DIR}")
     U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir {MODEL_DIR}/{MODEL_NAME}")
     U.exec_command_cpu(f"uv venv --clear --seed --python {sys.executable} --system-site-packages {VERIFIERS_VENV}")
-    (VERIFIERS_SITE_PACKAGES / "launcher-site.pth").write_text("\n".join(site.getsitepackages()) + "\n")
+    launcher_site = site.getsitepackages()
+    pth_lines = list(launcher_site)
+    # --system-site-packages exposes the base interpreter's packages. When the launcher itself runs
+    # from a venv (the ROCm image's /opt/venv), its site-packages arrive only through this file, and
+    # a bare path line skips the .pth files there, which is how the editable SGLang install is found.
+    if sys.prefix != sys.base_prefix:
+        pth_lines += [f"import site; site.addsitedir({path!r})" for path in launcher_site]
+    (VERIFIERS_SITE_PACKAGES / "launcher-site.pth").write_text("\n".join(pth_lines) + "\n")
     U.exec_command_cpu(
         f"{VERIFIERS_VENV}/bin/python -m pip install "
         f"-r {command_utils.repo_base_dir}/examples/experimental/verifiers/requirements.txt"

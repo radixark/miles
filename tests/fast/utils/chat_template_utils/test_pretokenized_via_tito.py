@@ -15,7 +15,7 @@ register_cpu_ci(est_time=120, suite="stage-b-cpu", labels=["rollout"])
 
 
 from miles.utils.chat_template_utils import TITOTokenizerType, resolve_fixed_chat_template
-from miles.utils.chat_template_utils.tito_tokenizer import Qwen3TITOTokenizer
+from miles.utils.chat_template_utils.tito_tokenizer import GLM47TITOTokenizer, Qwen3TITOTokenizer
 from miles.utils.test_utils.chat_template_verify import run_all_checks_via_tito, verify_append_only_via_tito_instance
 from miles.utils.test_utils.mock_trajectories import SingleToolTrajectory
 
@@ -79,6 +79,27 @@ def test_via_tito_pass_on_registered_families(family, model_id):
         f"got {len(failures)} FAIL(s) out of {len(results)}:\n"
         + "\n".join(f"  [{r.case_name}] {r.error}" for r in failures[:5])
     )
+
+
+@pytest.mark.parametrize(
+    "family,model_id",
+    [
+        pytest.param(TITOTokenizerType.GLM47, "zai-org/GLM-4.7-Flash", id="glm47"),
+        pytest.param(TITOTokenizerType.GLM53, "zai-org/GLM-5.3", id="glm53"),
+    ],
+)
+def test_via_tito_glm_never_replaces_a_stop_token(monkeypatch, family, model_id):
+    """The verifier trims the boundary token before merging, so it passes even with stop-token replacement off."""
+    monkeypatch.setattr(GLM47TITOTokenizer, "allow_stop_token_replace", False)
+    tokenizer, extra_kwargs = _setup_tokenizer_with_registered_template(model_id, family)
+    results = run_all_checks_via_tito(
+        tokenizer,
+        family,
+        thinking="on" if family == TITOTokenizerType.GLM53 else "both",
+        extra_template_kwargs=extra_kwargs,
+    )
+    failures = [r for r in results if not r.passed]
+    assert results and not failures, "\n".join(f"  [{r.case_name}] {r.error}" for r in failures[:5])
 
 
 # ---------------------------------------------------------------------------
