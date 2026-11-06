@@ -375,7 +375,9 @@ class RolloutRelatedRolloutOnlyConfig(BaseConfig):
                 "409 to a turn whose prompt fills it, without lowering max_tokens, and truncates the samples "
                 "it collects to it. An agentic dataset in --rollout-data-yaml-config may set a lower "
                 "max_seq_len, which agent functions receive in metadata. "
-                "It should not exceed `max_position_embeddings` in the HuggingFace model's `config.json`."
+                "It should not exceed `max_position_embeddings` in the HuggingFace model's `config.json`; "
+                "under the session server the engine context must also fit one --rollout-max-response-len "
+                "response past it."
             )
         ),
     ] = None

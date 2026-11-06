@@ -113,8 +113,8 @@ def check_output_store_args(args: argparse.Namespace, *, sglang: SglangConfig, m
             (
                 indexer_topk_bytes is not None and indexer_topk_bytes > buffer_bytes,
                 f"--output-store-local-buffer-size {args.output_store_local_buffer_size} cannot hold the "
-                f"{indexer_topk_bytes} bytes of indexer top-k that the longest sequence the --rollout-max-*-len "
-                "flags allow stores",
+                f"{indexer_topk_bytes} bytes of indexer top-k that the longest sequence --max-seq-len or the "
+                "--rollout-max-*-len flags allow stores",
             ),
             *(
                 (value is not None, f"{flag} is not supported: saved output store refs do not outlive their run")
@@ -214,6 +214,8 @@ def output_store_reader(args: argparse.Namespace) -> Callable | None:
 def _max_indexer_topk_bytes(args: argparse.Namespace) -> int | None:
     """Bytes of the indexer top-k of the longest sequence the length flags allow, or None if unknown.
 
+    /generate caps every request at --max-seq-len. The session server only refuses a turn whose prompt fills
+    --max-seq-len, so a turn may add a full --rollout-max-response-len response to a prompt one token short of it.
     Without --max-seq-len, a response cut at --rollout-max-response-len after a prompt of
     --rollout-max-prompt-len tokens, or of one when that is unset, is the longest sequence known at launch.
     Only this field is sized at launch: on DeepSeek-V3.2 it takes about 0.5 MB per token, routed experts take
@@ -224,8 +226,10 @@ def _max_indexer_topk_bytes(args: argparse.Namespace) -> int | None:
     streams, width = args.rollout_indexer_topk_num_streams, args.rollout_indexer_topk_width
     if not (streams and width):
         return None
-    if args.max_seq_len is not None:
+    if args.max_seq_len is not None and not args.use_session_server:
         num_tokens = args.max_seq_len
+    elif args.max_seq_len is not None and args.rollout_max_response_len is not None:
+        num_tokens = args.max_seq_len - 1 + args.rollout_max_response_len
     elif args.rollout_max_response_len is not None:
         num_tokens = (args.rollout_max_prompt_len or 1) + args.rollout_max_response_len
     else:
