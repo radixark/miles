@@ -474,6 +474,36 @@ def test_session_verify_metrics_keeps_assistant_text_soft(tmp_path):
         assert_session_verify_metrics(str(metrics_path), assistant_text_threshold=0.0)
 
 
+def test_session_verify_metrics_reports_first_assistant_text_example(tmp_path):
+    metrics_path = tmp_path / "metrics.jsonl"
+    _write_metrics(
+        metrics_path,
+        [
+            {"driver_events": ["append_tool"], "had_assistant_mismatch": False},
+            {
+                "driver_events": ["append_tool"],
+                "had_assistant_mismatch": True,
+                "assistant_mismatch_example": {
+                    "segment_index": 3,
+                    "expected_text": "Sunny.\n",
+                    "actual_text": "Sunny.",
+                },
+            },
+            {
+                "driver_events": ["append_tool"],
+                "had_assistant_mismatch": True,
+                "assistant_mismatch_example": {"segment_index": 5, "expected_text": "b", "actual_text": "c"},
+            },
+        ],
+    )
+
+    with pytest.raises(AssertionError, match="ratio 2/3=0.667 exceeds threshold 0.5") as excinfo:
+        assert_session_verify_metrics(str(metrics_path), assistant_text_threshold=0.5)
+    assert "'segment_index': 3" in str(excinfo.value)
+    assert "'expected_text': 'Sunny.\\n'" in str(excinfo.value)
+    assert "'segment_index': 5" not in str(excinfo.value)
+
+
 @pytest.mark.parametrize("failure_phase", ["execute_train", "post_gate"])
 def test_run_session_verify_preserves_sidecar_on_failure(monkeypatch, tmp_path, failure_phase):
     """A failed session verification preserves metrics beside the temporary sidecar."""
