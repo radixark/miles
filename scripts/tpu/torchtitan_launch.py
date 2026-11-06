@@ -64,6 +64,8 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     sglang_env_script: str = "/sgl-workspace/sglang/benchmark/tpu/common_env.sh"
     slice_port_base: int = 30100
     extra_args: str = ""
+    # the engine shares this host's TPU session, so a run must not SIGKILL anything holding a TPU
+    graceful_ray_stop: bool = True
 
 
 # sglang's TPU scheduling flags, with scoped VMEM at the v7x maximum and the associative-scan emitter off
