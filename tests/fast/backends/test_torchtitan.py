@@ -21,6 +21,9 @@ register_cpu_ci(est_time=20, suite="stage-a-cpu", labels=[])
 
 def _args(**overrides) -> Namespace:
     base = dict(
+        # validate_response_layout_args reads these on a platform without dynamic shapes
+        train_backend="torchtitan",
+        loss_type="sft_loss",
         titan_model_name="qwen3",
         seq_length=8192,
         pipeline_model_parallel_size=1,
@@ -33,6 +36,7 @@ def _args(**overrides) -> Namespace:
         ci_test=False,
         use_routing_replay=False,
         use_rollout_routing_replay=False,
+        update_weight_transfer_mode="broadcast",
         optimizer_cpu_offload=False,
         stream_optimizer_state_to_disk=False,
         stream_optimizer_state_moment_dtype="fp32",
@@ -58,6 +62,15 @@ def test_the_backend_needs_torch_214(monkeypatch):
         validate_torchtitan_args(_args())
     monkeypatch.setattr(torch, "__version__", "2.14.0")
     validate_torchtitan_args(_args())
+
+
+def test_ici_weight_sync_needs_the_shared_slice_env(monkeypatch):
+    monkeypatch.setattr(torch, "__version__", "2.14.0")
+    monkeypatch.delenv("MILES_TPU_SHARED_SLICE", raising=False)
+    with pytest.raises(ValueError, match="MILES_TPU_SHARED_SLICE"):
+        validate_torchtitan_args(_args(update_weight_transfer_mode="ici"))
+    monkeypatch.setenv("MILES_TPU_SHARED_SLICE", "0,8,localhost:29600")
+    validate_torchtitan_args(_args(update_weight_transfer_mode="ici"))
 
 
 def test_the_sequence_must_cover_the_rotary_tables(monkeypatch):
@@ -116,8 +129,6 @@ def test_lora_flags_torchtitan_cannot_honor_are_rejected(monkeypatch):
         validate_torchtitan_args(_args(lora_rank=8, lora_A_init_method="xavier"))
     with pytest.raises(ValueError, match="no dropout"):
         validate_torchtitan_args(_args(lora_rank=8, lora_dropout=0.05))
-    with pytest.raises(ValueError, match="--lora-adapter-path"):
-        validate_torchtitan_args(_args(lora_rank=8, lora_adapter_path="/adapter"))
     with pytest.raises(ValueError, match="grad buffers"):
         validate_torchtitan_args(_args(lora_rank=8, colocate_memory_peak_device="gpu"))
     validate_torchtitan_args(_args(lora_rank=8, colocate_memory_peak_device="gpu", lora_train_only=True))
@@ -189,7 +200,9 @@ def test_lora_targets_bypass_megatrons_native_spec(monkeypatch):
         megatron_to_hf_mode="raw",
         hf_checkpoint="/hf",
         lora_rank=8,
+        lora_alpha=None,
         lora_adapter_path=None,
+        lora_adapter_convert_save=None,
         lora_type="lora",
         target_modules="q_proj",
         exclude_modules=None,

@@ -196,7 +196,7 @@ def _initialize_with_scheduler(*, iteration: int = 100, **overrides) -> MagicMoc
         model,
         optimizer,
         opt_param_scheduler,
-        LoadCheckpointOutput(loaded_rollout_id=iteration, start_rollout_id=iteration + 1),
+        LoadCheckpointOutput(loaded_rollout_id=iteration, start_rollout_id=iteration + 1, schedule_first_rollout=0),
     )
     return opt_param_scheduler
 
@@ -233,13 +233,18 @@ def _load_model_state_with(
     iteration: int,
     restored_trained_iteration: bool | None = None,
     adapter_iteration: int | None = None,
+    adapter_scheduler_restored: bool = True,
+    adapter_first_rollout: int = 0,
+    opt_param_scheduler=None,
     lora_adapter_path: str | None = None,
     write_tracker: bool = True,
     ckpt_step: int | None = None,
     exit_on_missing_checkpoint: bool = False,
     resume_from_ckpt: bool,
     megatron_to_hf_mode: str = "core",
+    **trainer_values,
 ) -> "LoadCheckpointOutput":
+    from miles.backends.megatron_utils.lora.checkpoint import AdapterRestore
     from miles.backends.megatron_utils.model import load_model_state
 
     load_dir = tmp_path / "ckpt"
@@ -257,7 +262,10 @@ def _load_model_state_with(
             )
         )
         stack.enter_context(
-            patch("miles.backends.megatron_utils.model.restore_lora_adapter", return_value=adapter_iteration)
+            patch(
+                "miles.backends.megatron_utils.model.restore_single_lora",
+                return_value=AdapterRestore(adapter_iteration, adapter_scheduler_restored, adapter_first_rollout),
+            )
         )
         _patch_initialize_side_effects(stack)
         return load_model_state(
@@ -271,10 +279,11 @@ def _load_model_state_with(
                 load=str(load_dir),
                 ckpt_step=ckpt_step,
                 exit_on_missing_checkpoint=exit_on_missing_checkpoint,
+                **trainer_values,
             ),
             model=[_FakeModelChunk()],
             optimizer=None,
-            opt_param_scheduler=None,
+            opt_param_scheduler=opt_param_scheduler,
             role="actor",
             checkpointing_context=None,
             resume_from_ckpt=resume_from_ckpt,
@@ -384,6 +393,72 @@ class TestALoraAdapterThatCarriesItsOwnIteration:
     def test_adapter_weights_without_training_state_start_at_rollout_zero(self, tmp_path: Path) -> None:
         """An HF adapter or shards saved without training state carry no iteration to continue from."""
         assert self._start(tmp_path, adapter_iteration=None).start_rollout_id == 0
+
+    @pytest.mark.parametrize("dynamic", [False, True])
+    def test_an_adapter_without_megatron_scheduler_state_steps_the_scheduler_past_its_rollout(
+        self, tmp_path: Path, dynamic: bool
+    ) -> None:
+        """A torchtitan-written adapter dir has an iteration but no Megatron scheduler state; the scheduler counts
+        trained samples, and rollouts 0..100 each trained 16 of their 20 (global batch 8, or dynamic on DP 8)."""
+        scheduler = MagicMock()
+        with patch(
+            "miles.backends.megatron_utils.model.get_parallel_state",
+            return_value=types.SimpleNamespace(effective_dp=types.SimpleNamespace(size=8)),
+        ):
+            _load_model_state_with(
+                tmp_path=tmp_path,
+                finetune=True,
+                iteration=0,
+                adapter_iteration=100,
+                adapter_scheduler_restored=False,
+                opt_param_scheduler=scheduler,
+                lora_adapter_path=str(tmp_path / "adapter"),
+                resume_from_ckpt=False,
+                rollout_batch_size=5,
+                n_samples_per_prompt=4,
+                use_dynamic_global_batch_size=dynamic,
+            )
+        scheduler.step.assert_called_once_with(increment=101 * 16)
+
+    def test_an_adapter_from_a_run_started_at_a_later_rollout_steps_the_scheduler_past_its_trained_rollouts(
+        self, tmp_path: Path
+    ) -> None:
+        """A torchtitan run from --start-rollout-id 5 saved iteration 6 after training rollouts 5 and 6 alone."""
+        scheduler = MagicMock()
+        _load_model_state_with(
+            tmp_path=tmp_path,
+            finetune=True,
+            iteration=0,
+            adapter_iteration=6,
+            adapter_scheduler_restored=False,
+            adapter_first_rollout=5,
+            opt_param_scheduler=scheduler,
+            lora_adapter_path=str(tmp_path / "adapter"),
+            resume_from_ckpt=False,
+            rollout_batch_size=5,
+            n_samples_per_prompt=4,
+        )
+        scheduler.step.assert_called_once_with(increment=2 * 16)
+
+    @pytest.mark.parametrize(
+        "adapter_iteration, adapter_first_rollout, schedule_first_rollout",
+        # a fresh adapter: the schedule starts at rollout 20; a source that trained rollouts 5 and 6: 18 = 20 - 2
+        [(None, 0, 20), (6, 5, 18)],
+    )
+    def test_start_rollout_id_moves_the_rollout_a_save_counts_its_schedule_from(
+        self, tmp_path: Path, adapter_iteration, adapter_first_rollout, schedule_first_rollout
+    ) -> None:
+        output = _load_model_state_with(
+            tmp_path=tmp_path,
+            finetune=True,
+            iteration=0,
+            adapter_iteration=adapter_iteration,
+            adapter_first_rollout=adapter_first_rollout,
+            lora_adapter_path=str(tmp_path / "adapter"),
+            resume_from_ckpt=False,
+            start_rollout_id=20,
+        )
+        assert output.schedule_first_rollout == schedule_first_rollout
 
 
 class TestCheckpointSourceRequirement:
