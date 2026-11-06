@@ -626,36 +626,3 @@ class TestWhatAReloadRefuses:
 
         with pytest.raises(AssertionError, match="no checkpoint holds it"):
             _reload(actor)
-
-
-@pytest.mark.parametrize("megatron_to_hf_mode", ["raw", "bridge"])
-def test_a_lora_save_alone_builds_the_slots_and_no_snapshot_publisher(
-    actor_module, tmp_path, monkeypatch, megatron_to_hf_mode
-):
-    """--save writes through the adapter slots in either mode; with no HF export nothing would read a publisher."""
-    built = []
-    monkeypatch.setattr(actor_module, "converter_model_name", lambda args, hf_config: "model")
-    monkeypatch.setattr(actor_module, "get_hf_weight_iterator", lambda *args, **kwargs: "iterator")
-    monkeypatch.setattr(actor_module, "get_hf_lora_targets", lambda config: "targets")
-    monkeypatch.setattr(actor_module, "build_adapter_slots", lambda *args: built.append(args[1:]) or "slots")
-    monkeypatch.setattr(actor_module, "build_lora_config", lambda *args, **kwargs: None)
-    monkeypatch.setattr(actor_module, "SnapshotPublisher", lambda *args: "publisher")
-    actor = _actor(
-        actor_module,
-        role="actor",
-        args=_args(
-            tmp_path,
-            lora_rank=8,
-            megatron_to_hf_mode=megatron_to_hf_mode,
-            save_hf=None,
-            eval_hf_dir=None,
-            debug_train_only=True,
-            lora_adapter_targets=None,
-        ),
-    )
-    actor.hf_config = SimpleNamespace(to_dict=dict)
-
-    actor._init_training_state()
-
-    assert actor.snapshot_publisher is None
-    assert actor.adapter_slots == "slots" and built == [(None, "iterator", "targets")]

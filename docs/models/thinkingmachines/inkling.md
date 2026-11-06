@@ -26,7 +26,7 @@ description: Launch recipe for Inkling (975 B), Thinking Machines' multimodal Mo
 
 ```bash
 # Pull the image
-docker pull radixark/miles:inkling
+docker pull radixark/miles:latest
 
 # Full-parameter GRPO on 16 nodes x 4 GB300, inside the container
 cd /root/miles
