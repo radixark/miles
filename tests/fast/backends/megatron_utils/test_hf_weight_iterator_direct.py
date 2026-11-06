@@ -335,36 +335,100 @@ class TestExpertParallelGatherFaultHook:
 
 
 class TestExpertBatchConversion:
-    @pytest.mark.parametrize("quantization_config", [{"quant_method": "nvfp4"}, {"quant_algo": "NVFP4"}])
-    def test_nvfp4_preserves_source_order_and_gate_up_units(self, direct_module, monkeypatch, quantization_config):
+    @pytest.mark.parametrize("policy", ["ignore", "exclude_modules", "regex"])
+    def test_nvfp4_preserves_units_and_exclusions(self, direct_module, monkeypatch, policy):
+        import miles.utils.nvfp4 as nvfp4
+
         convert_experts = direct_module.convert_experts_to_hf
-        args = Namespace(backend=Namespace(vocab_size=16, kv_channels=16, num_attention_heads=1, num_query_groups=1))
-        source_names = [
-            "module.module.decoder.layers.0.mlp.experts.linear_fc1.weight2",
-            "module.module.decoder.layers.0.mlp.experts.linear_fc2.weight7",
-            "module.module.decoder.layers.0.mlp.experts.linear_fc1.weight0",
+        processor = convert_experts.__globals__["quantize_expert_params_nvfp4"]
+        args = Namespace(
+            extra_high_precision_layers_megatron=("linear_fc2.weight6",),
+            backend=Namespace(
+                vocab_size=16,
+                kv_channels=16,
+                num_attention_heads=1,
+                num_query_groups=1,
+                first_last_layers_bf16=True,
+                num_layers=4,
+                num_layers_at_start_in_bf16=1,
+                num_layers_at_end_in_bf16=1,
+            ),
+        )
+        sources = [(2, 2, 1), (1, 4, 1), (1, 0, 1), (1, 1, 1), (1, 3, 0), (2, 6, 1), (1, 5, 3)]
+        named_params = [
+            (
+                f"module.module.decoder.layers.{layer}.mlp.experts.linear_fc{fc}.weight{expert}",
+                torch.full((4, 32), expert + 1, dtype=torch.float32),
+            )
+            for fc, expert, layer in sources
         ]
-        weights = [torch.arange(64).reshape(4, 16) + offset for offset in (0, 100, 200)]
-        observed = []
+        config = {"quant_method": "nvfp4"}
+        config["ignore" if policy == "regex" else policy] = (
+            r"re:model\.layers\.1\.mlp\.experts\.1\." if policy == "regex" else "model.layers.1.mlp.experts.1"
+        )
+        calls = []
 
-        def quantize_batch(actual_args, converted_units, actual_config):
-            assert actual_args is args
-            assert actual_config is quantization_config
-            observed.append(converted_units)
-            return [unit for _, unit in converted_units]
+        def quantize_batch(weights):
+            # Sentinel outputs expose expert mixups; GPU tests cover numerical equality.
+            calls.append([weight[0, 0].item() for weight in weights])
+            return [
+                (
+                    torch.zeros((weight.shape[0], 16), dtype=torch.uint8),
+                    torch.zeros((weight.shape[0], 2), dtype=torch.float8_e4m3fn),
+                    weight[0, 0].clone(),
+                )
+                for weight in weights
+            ]
 
-        monkeypatch.setitem(convert_experts.__globals__, "quantize_expert_params_nvfp4", quantize_batch)
-        units = convert_experts(args, "DeepseekV3", zip(source_names, weights, strict=True), quantization_config)
+        monkeypatch.setattr(nvfp4, "nvfp4_quantize_1d_batch", quantize_batch)
+        monkeypatch.setitem(processor.__globals__, "nvfp4_quantize_1d_batch", quantize_batch)
+        original = [direct_module.convert_to_hf(args, "DeepseekV3", name, weight) for name, weight in named_params]
+        units = convert_experts(args, "DeepseekV3", iter(named_params), config)
 
-        assert len(observed) == 1
-        assert [name for name, _ in observed[0]] == source_names
-        assert [[name for name, _ in unit] for unit in units] == [
-            [f"model.layers.0.mlp.experts.2.{part}_proj.weight" for part in ("gate", "up")],
-            ["model.layers.0.mlp.experts.7.down_proj.weight"],
-            [f"model.layers.0.mlp.experts.0.{part}_proj.weight" for part in ("gate", "up")],
-        ]
-        for source, unit in zip(weights, units, strict=True):
-            torch.testing.assert_close(torch.cat([tensor for _, tensor in unit]), source)
+        assert sorted(marker for batch in calls for marker in batch) == [1, 3, 5]
+        assert any(len(batch) > 1 for batch in calls)
+        assert len(units) == len(original)
+        for index, (unit, source) in enumerate(zip(units, original, strict=True)):
+            if index < 3:
+                assert [name for name, _ in unit] == [
+                    name.replace(".weight", suffix)
+                    for name, _ in source
+                    for suffix in (".weight", ".weight_scale", ".weight_scale_2")
+                ]
+                for name, scale in unit:
+                    if name.endswith("weight_scale_2"):
+                        assert scale.item() == sources[index][1] + 1
+            else:
+                assert [name for name, _ in unit] == [name for name, _ in source]
+                assert all(
+                    weight.data_ptr() == source_weight.data_ptr()
+                    for (_, weight), (_, source_weight) in zip(unit, source, strict=True)
+                )
+
+    @pytest.mark.parametrize("case", ["missing", "duplicate", "ignore_half"])
+    def test_nvfp4_rejects_incomplete_or_duplicate_pairs_before_quantizing(self, direct_module, monkeypatch, case):
+        processor = direct_module.convert_experts_to_hf.__globals__["quantize_expert_params_nvfp4"]
+        source_name = "module.module.decoder.layers.1.mlp.experts.linear_fc1.weight0"
+        params = [(f"model.layers.1.mlp.experts.0.{part}_proj.weight", torch.ones((2, 32))) for part in ("gate", "up")]
+        config = {"quant_method": "nvfp4"}
+        if case == "missing":
+            params.pop()
+        elif case == "duplicate":
+            params.append(params[0])
+        else:
+            config["ignore"] = [params[1][0]]
+        monkeypatch.setitem(
+            processor.__globals__,
+            "nvfp4_quantize_1d_pair_batch",
+            lambda _: pytest.fail("Invalid pairs reached quantization"),
+        )
+
+        with pytest.raises(ValueError, match="NVFP4 requires"):
+            processor(
+                Namespace(extra_high_precision_layers_megatron=(), backend=Namespace()),
+                [(source_name, params)],
+                config,
+            )
 
     @pytest.mark.parametrize("method", [None, "fp8", "mxfp8", "compressed-tensors"])
     def test_other_formats_keep_the_existing_conversion_contract(self, direct_module, monkeypatch, method):

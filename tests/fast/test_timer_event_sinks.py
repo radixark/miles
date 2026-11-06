@@ -77,14 +77,14 @@ def test_sink_with_begin_hears_starts():
         timer.reset()
 
 
-def test_accumulate_sums_host_time_without_per_call_notifications(fresh_timer, monkeypatch, caplog):
+def test_accumulate_sums_time_without_notifications_even_when_work_fails(fresh_timer, monkeypatch, caplog):
     clock = iter((1.0, 1.25, 4.0, 4.5))
     monkeypatch.setattr("miles.utils.timer.perf_counter", lambda: next(clock))
     events = []
     fresh_timer.event_sinks.append(lambda *event: events.append(event))
 
-    with fresh_timer.accumulate("quantization"):
-        pass
+    with pytest.raises(RuntimeError, match="quantization failed"), fresh_timer.accumulate("quantization"):
+        raise RuntimeError("quantization failed")
     with fresh_timer.accumulate("quantization"):
         pass
 
@@ -92,17 +92,6 @@ def test_accumulate_sums_host_time_without_per_call_notifications(fresh_timer, m
     assert fresh_timer.start_time == {}
     assert events == []
     assert caplog.records == []
-
-
-def test_accumulate_records_failed_work_without_leaving_an_open_timer(fresh_timer, monkeypatch):
-    clock = iter((1.0, 1.5))
-    monkeypatch.setattr("miles.utils.timer.perf_counter", lambda: next(clock))
-
-    with pytest.raises(RuntimeError, match="quantization failed"), fresh_timer.accumulate("quantization"):
-        raise RuntimeError("quantization failed")
-
-    assert fresh_timer.log_dict() == {"quantization": 0.5}
-    assert fresh_timer.start_time == {}
 
 
 @pytest.mark.parametrize("active_parent", [None, "save_model", "update_weights"])
