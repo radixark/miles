@@ -1,6 +1,6 @@
 """Write release-lock.json for a release branch cut.
 
-Usage: write_release_lock.py <branch> <sglang_sha> <megatron_sha> <ci_image_tag> <fp_cu130_x86> <fp_cu130_arm64>
+Usage: write_release_lock.py <branch> <sglang_sha> <sglang_wheel> <megatron_sha> <ci_image_tag> <fp_cu130_x86> <fp_cu130_arm64>
 """
 
 import json
@@ -8,7 +8,7 @@ import sys
 
 
 def main() -> int:
-    branch, sglang, megatron, image, fp_x86, fp_arm = sys.argv[1:]
+    branch, sglang, sglang_wheel, megatron, image, fp_x86, fp_arm = sys.argv[1:]
     assert len(sglang) == 40 and len(megatron) == 40, "failed to resolve dependency SHAs"
     json.dump(
         {
@@ -16,6 +16,8 @@ def main() -> int:
             "sglang_repo": "sgl-project/sglang",
             "sglang_branch": "sglang-miles",
             "sglang_commit": sglang,
+            # the miles wheel built from this branch depends on exactly this sglang build (setup.py)
+            "sglang_wheel": sglang_wheel,
             "megatron_repo": "radixark/Megatron-LM",
             "megatron_branch": "miles-main",
             "megatron_commit": megatron,
