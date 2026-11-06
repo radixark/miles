@@ -1,7 +1,6 @@
 import asyncio
 import weakref
 from argparse import Namespace
-from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -149,48 +148,46 @@ class TestConnect:
 
 
 class TestColocatedBaseSend:
-    @pytest.mark.parametrize("failure_at", [None, "wait", "check", "barrier"])
-    def test_bucket_storage_is_released_after_all_ipc_consumers_finish(self, failure_at) -> None:
+    @pytest.mark.parametrize("use_distribute", [False, True])
+    def test_bucket_storage_is_released_after_all_ipc_consumers_finish(self, use_distribute) -> None:
         protocol = UpdateWeightFromTensor.__new__(UpdateWeightFromTensor)
-        protocol.use_distribute = False
+        protocol.use_distribute = use_distribute
+        protocol._is_distributed_src_rank = use_distribute
+        protocol.group_name = "miles-colocate"
+        protocol._model_update_groups = MagicMock(name="model_update_groups")
+        protocol.distributed_rollout_engines = [MagicMock(name="remote_engine")]
         protocol._ipc_engine = MagicMock()
         protocol._ipc_gather_src = 0
         protocol._ipc_gather_group = MagicMock(name="ipc_group")
         protocol._selector = "all"
         future = MagicMock(name="engine_future")
+        remote_future = MagicMock(name="remote_engine_future")
         bucket = [("weight", torch.zeros(1))]
         tensor_ref = weakref.ref(bucket[0][1])
+        remote_bucket_sizes = []
         events = []
 
-        def complete(stage):
-            # The bucket must stay populated until every send has consumed it; it is cleared only after the
-            # whole transfer succeeds.
-            assert len(bucket) == 1
-            assert tensor_ref() is not None
-            events.append(stage)
-            if failure_at == stage:
-                raise RuntimeError(stage)
-            return [{"success": True}]
+        def send_to_remote_engines(group_name, groups, engines, named_tensors, *, selector):
+            # Remote engines read the bucket itself, so it must still be populated when this send starts.
+            remote_bucket_sizes.append(len(named_tensors))
+            return [remote_future]
 
         with (
             patch(f"{_TENSOR_MODULE}._send_to_colocated_engine", return_value=([future], object())),
-            patch(f"{_TENSOR_MODULE}.async_utils.wait_futures", side_effect=lambda _: complete("wait")) as wait,
+            patch(f"{_TENSOR_MODULE}.update_weights_from_distributed", side_effect=send_to_remote_engines),
             patch(
-                f"{_TENSOR_MODULE}.check_weight_sync_results", side_effect=lambda *a, **kw: complete("check")
-            ) as check,
-            patch(f"{_TENSOR_MODULE}.dist.barrier", side_effect=lambda **kw: complete("barrier")) as barrier,
-            pytest.raises(RuntimeError, match=failure_at) if failure_at else nullcontext(),
+                f"{_TENSOR_MODULE}.async_utils.wait_futures",
+                side_effect=lambda futures: events.append("wait") or [{"success": True}],
+            ) as wait,
+            patch(f"{_TENSOR_MODULE}.check_weight_sync_results") as check,
+            patch(f"{_TENSOR_MODULE}.dist.barrier", side_effect=lambda **kw: events.append("barrier")) as barrier,
         ):
             protocol.send_bucket(bucket)
 
-        wait.assert_called_once_with([future])
-        if failure_at:
-            assert events == ["wait", "check", "barrier"][: ["wait", "check", "barrier"].index(failure_at) + 1]
-            assert len(bucket) == 1
-            assert tensor_ref() is not None
-            return
-
-        assert events == ["wait", "check", "barrier"]
+        # Every rank owns storage the gathered IPC handles reference, so the barrier must follow the engine import.
+        assert events == ["wait", "barrier"]
+        assert remote_bucket_sizes == ([1] if use_distribute else [])
+        wait.assert_called_once_with([future, remote_future] if use_distribute else [future])
         check.assert_called_once_with([{"success": True}], is_lora=False)
         barrier.assert_called_once_with(group=protocol._ipc_gather_group)
         assert bucket == []
