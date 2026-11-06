@@ -2,7 +2,7 @@
 
 import json
 import logging
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
@@ -12,6 +12,7 @@ import torch
 
 from miles.backends.training_utils.checkpoint.adapter.adapter_exports import (
     has_plain_peft_form,
+    write_external_adapter,
     write_peft_adapter,
     write_sampler_adapter,
 )
@@ -309,6 +310,74 @@ def save_sampler_export(
     return written
 
 
+def save_external_export(
+    root: Path,
+    name: str,
+    members: AdapterCheckpointMembers,
+    slot: int,
+    parametrization: AdapterParametrization,
+    targets: HfLoraTargets,
+    *,
+    tenant_digest: str | None,
+    age_encryption_recipients: Sequence[str] = (),
+    lora_dropout: float,
+) -> UncommittedAdapterDir:
+    """All ranks call; rank 0 writes ``slot``'s external export from the fp32 masters (no parametrization: it is a
+    download, not a checkpoint). The caller's committer then commits it."""
+    with write_adapter_dir(root, name, tenant_digest=tenant_digest) as written:
+        # agree before the gather, so one rank's failure cannot leave the others waiting in it
+        with agree_on_failure_context():
+            state = members.export_adapter_state(slot)
+        weights = _gather_whole_weights(state)
+        # rank 0's own pieces are in ``weights`` now; the export would otherwise hold them twice
+        del state
+        if is_rank0():
+            keys, expected = set(weights), parametrization.adapter_state_keys()
+            assert keys == expected, (
+                f"the backend's adapter state does not match the parametrization: "
+                f"missing {sorted(expected - keys)[:8]}, unexpected {sorted(keys - expected)[:8]}"
+            )
+            write_external_adapter(
+                written.path,
+                weights,
+                parametrization,
+                targets,
+                age_encryption_recipients=age_encryption_recipients,
+                lora_dropout=lora_dropout,
+            )
+    return written
+
+
+def _gather_whole_weights(state: AdapterState) -> dict[str, torch.Tensor] | None:
+    """Collective: each key's whole fp32 weight, assembled on rank 0 from the primary pieces; None elsewhere."""
+    pieces = [(s, w.cpu()) for s, w in zip(state.shard_specs, state.weights, strict=True) if s.is_primary]
+    specs_by_rank = [[spec for spec, _ in pieces]]
+    if torch.distributed.is_initialized():
+        # only the specs go through gather_object, which pads every rank's payload to the largest one
+        specs_by_rank = [None] * torch.distributed.get_world_size() if is_rank0() else None
+        torch.distributed.gather_object([spec for spec, _ in pieces], specs_by_rank, dst=0, group=gloo_group())
+    if not is_rank0():
+        for _, piece in pieces:
+            torch.distributed.send(piece.float().contiguous(), dst=0, group=gloo_group())
+        return None
+    whole, filled = {}, {}
+    # pieces arrive one at a time, so rank 0 holds the whole adapter plus one received piece
+    for rank, specs in enumerate(specs_by_rank):
+        for index, spec in enumerate(specs):
+            if rank == 0:
+                piece = pieces[index][1]
+            else:
+                piece = torch.empty(spec.local_shape, dtype=torch.float32)
+                torch.distributed.recv(piece, src=rank, group=gloo_group())
+            full = whole.setdefault(spec.key, torch.empty(spec.global_shape, dtype=torch.float32))
+            full[tuple(slice(o, o + n) for o, n in zip(spec.offsets, spec.local_shape, strict=True))] = piece
+            filled[spec.key] = filled.get(spec.key, 0) + piece.numel()
+    # primary pieces never overlap, so a tensor is whole exactly when they cover all of its elements
+    partial_keys = sorted(key for key, tensor in whole.items() if filled[key] != tensor.numel())
+    assert not partial_keys, f"the primary pieces do not cover {partial_keys[:8]}"
+    return whole
+
+
 def _assert_source_shape(full: torch.Tensor, spec: LocalShardSpec) -> None:
     if tuple(full.shape) != spec.global_shape:
         raise AdapterSourceError(f"{spec.key}: source {tuple(full.shape)} != run {spec.global_shape}")
@@ -391,13 +460,15 @@ def _scatter_weights_only_state(
 def _served_rows(full: torch.Tensor, spec: LocalShardSpec, head_rows: HeadRows | None) -> torch.Tensor:
     if head_rows is None or spec.key != head_rows.key:
         return full
-    rows, served = full.shape[0], spec.global_shape[0]
+    _assert_head_rows(spec.key, full.shape[0], spec.global_shape[0], head_rows)
+    return full[: spec.global_shape[0]]
+
+
+def _assert_head_rows(key: str, rows: int, served: int, head_rows: HeadRows) -> None:
     if not served <= rows <= head_rows.max_source_rows:
         raise AdapterSourceError(
-            f"{spec.key}: the source has {rows} rows; this run serves {served} and reads up to "
-            f"{head_rows.max_source_rows}"
+            f"{key}: the source has {rows} rows; this run serves {served} and reads up to {head_rows.max_source_rows}"
         )
-    return full[:served]
 
 
 def _with_run_alpha_if_unknown(source: AdapterParametrization, run: AdapterParametrization) -> AdapterParametrization:
@@ -442,11 +513,19 @@ class CheckedSource:
 
 
 def check_adapter_source(
-    path: Path, run: AdapterParametrization, targets: HfLoraTargets, *, load_optimizer: bool
+    path: Path,
+    run: AdapterParametrization,
+    targets: HfLoraTargets,
+    *,
+    load_optimizer: bool,
+    run_shapes: dict[str, tuple[int, ...]] | None = None,
+    head_rows: HeadRows | None = None,
 ) -> CheckedSource:
     """Rank-local dry run of every check ``load_adapter_source`` makes on the files of a source it reads itself.
 
     Raises what that load would; an in-model source is returned unchecked, its loader's checks are the backend's.
+    ``run_shapes``: the whole shape of each HF-keyed tensor this rank loads, checked on a source read as weights;
+    ``head_rows``: the members' head, whose source may hold more rows than the run serves, as the load reads it.
     """
     kind = classify_adapter_source(path, targets, load_optimizer=load_optimizer)
     if kind.is_read_into_model():
@@ -457,6 +536,16 @@ def check_adapter_source(
         return CheckedSource(kind, reader, source, steps)
     weights = apply_parametrization_conversion(reader.read_weights(), steps)
     _assert_has_keys(weights, run.adapter_state_keys())
+    if run_shapes is not None:
+        if head_rows is not None and head_rows.key in run_shapes:
+            source_rows, run_shape = weights[head_rows.key].shape[0], run_shapes[head_rows.key]
+            _assert_head_rows(head_rows.key, source_rows, run_shape[0], head_rows)
+            run_shapes = {**run_shapes, head_rows.key: (source_rows, *run_shape[1:])}
+        differing = [
+            f"{k}: {tuple(weights[k].shape)} != {s}" for k, s in run_shapes.items() if tuple(weights[k].shape) != s
+        ]
+        if differing:
+            raise AdapterSourceError(f"tensor shapes differ from this model's, e.g. {differing[:3]}")
     return CheckedSource(kind, reader, source, steps, weights)
 
 

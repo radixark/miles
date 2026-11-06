@@ -7,10 +7,12 @@ from typing import TextIO
 
 import httpx
 
+from miles.backends.training_utils.checkpoint.adapter.commit import TENANT_FILENAME
 from miles.backends.training_utils.checkpoint.adapter.commit import OwnershipError as AdapterOwnershipError
 from miles.backends.training_utils.checkpoint.adapter.commit import (
     UncommittedAdapterDir,
     commit_adapter_dir,
+    delete_adapter_dir,
     delete_retired_adapter_dirs,
     delete_unreferenced_adapter_dirs,
     format_sglang_lora_name,
@@ -23,6 +25,7 @@ from miles.backends.training_utils.checkpoint.adapter.parametrization import (
 )
 from miles.ray.rollout.train_data_conversion import ROLLOUT_DATA_VALUE_SPEC
 from miles.tinker.core.types import OwnershipError, UserInputError
+from miles.tinker.core.utils import PRE_COMMIT_META_FILENAME
 from miles.utils import object_store
 from miles.utils.http_utils import post
 from miles.utils.lora.hf_lora_targets import GDN_IN_PROJ_COMPONENTS_BY_MODULE, HfLoraTargets
@@ -80,11 +83,17 @@ def take_checkpoint_root(checkpoint_root: str) -> TextIO:
     return lock
 
 
-def resolve_adapter(root: str, name: str, tenant: str, model_id: str) -> dict | None:
-    """A committed adapter's physical dir, sglang name and parametrization; None for a dir written before commits."""
+def _is_pre_commit_dir(root: str, name: str) -> bool:
     checkpoint_dir = Path(root) / name
     # by content, not by link: an overwrite interrupted after adopting a pre-commit dir leaves <name> linked to it
-    if (checkpoint_dir / "META.json").is_file() and not (checkpoint_dir / PARAMETRIZATION_FILENAME).is_file():
+    return (checkpoint_dir / PRE_COMMIT_META_FILENAME).is_file() and not (
+        checkpoint_dir / PARAMETRIZATION_FILENAME
+    ).is_file()
+
+
+def resolve_adapter(root: str, name: str, tenant: str, model_id: str) -> dict | None:
+    """A committed adapter's physical dir, sglang name and parametrization; None for a dir written before commits."""
+    if _is_pre_commit_dir(root, name):
         return None
     try:
         committed = resolve_adapter_dir(Path(root), name, tenant=tenant)
@@ -101,6 +110,29 @@ def resolve_adapter(root: str, name: str, tenant: str, model_id: str) -> dict | 
         "lora_name": format_sglang_lora_name(model_id, name, committed.commit_id),
         "parametrization": asdict(parametrization),
     }
+
+
+def resolve_checkpoint_files(root: str, name: str, tenant: str | None) -> dict | None:
+    """A committed checkpoint's physical dir, commit id and the files a client may download (not the
+    gateway-private tenant.json); None when it does not exist or was written before commits. ``tenant`` None skips
+    the ownership check."""
+    if _is_pre_commit_dir(root, name):
+        return None
+    try:
+        committed = resolve_adapter_dir(Path(root), name, tenant=tenant)
+    except AdapterOwnershipError as error:
+        raise OwnershipError(f"checkpoint {name!r} does not belong to this tenant") from error
+    if committed is None:
+        return None
+    files = sorted(p.name for p in committed.path.iterdir() if p.is_file() and p.name != TENANT_FILENAME)
+    return {"path": str(committed.path), "commit_id": committed.commit_id, "files": files}
+
+
+def delete_adapter(root: str, name: str, tenant: str | None) -> None:
+    try:
+        delete_adapter_dir(Path(root), name, tenant=tenant)
+    except AdapterOwnershipError as error:
+        raise OwnershipError(f"checkpoint {name!r} does not belong to this tenant") from error
 
 
 # a fused HF module's adapter is recorded under its components' leaves
@@ -223,9 +255,30 @@ class MilesBackend:
         )
         return results[0]
 
+    async def export_external(
+        self,
+        slot: int,
+        root: str,
+        name: str,
+        tenant_digest: str,
+        parametrization_fields: dict,
+        age_encryption_recipients: list[str],
+    ) -> UncommittedAdapterDir:
+        worker_results = await self.trainer.export_external_slot(
+            slot=slot,
+            root=root,
+            name=name,
+            tenant_digest=tenant_digest,
+            parametrization_fields=parametrization_fields,
+            age_encryption_recipients=age_encryption_recipients,
+        )
+        return worker_results[0]
+
     commit_adapter = staticmethod(commit_adapter)
     delete_retired_adapters = staticmethod(delete_retired_adapters)
     resolve_adapter = staticmethod(resolve_adapter)
+    resolve_checkpoint_files = staticmethod(resolve_checkpoint_files)
+    delete_adapter = staticmethod(delete_adapter)
 
     # -------- sampling --------
 

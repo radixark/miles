@@ -117,9 +117,20 @@ def validate_checkpoint_segment(segment: str) -> None:
         raise UserInputError(f"invalid checkpoint path segment {segment!r}")
 
 
+# the SDK's range for ttl_seconds
+MIN_TTL_S = 3600
+MAX_TTL_S = 10 * 365 * 24 * 3600
+
+
+def validate_ttl_seconds(ttl_seconds) -> None:
+    if ttl_seconds is not None and not (type(ttl_seconds) is int and MIN_TTL_S <= ttl_seconds <= MAX_TTL_S):
+        raise UserInputError(
+            f"ttl_seconds must be an integer between {MIN_TTL_S} and {MAX_TTL_S}, got {ttl_seconds!r}"
+        )
+
+
 def validate_save_options(ttl_seconds: int | None, user_metadata: dict | None) -> None:
-    if ttl_seconds is not None:
-        raise UserInputError("ttl_seconds is not supported: checkpoints on this gateway do not expire")
+    validate_ttl_seconds(ttl_seconds)
     if user_metadata is not None:
         raise UserInputError("user_metadata is not supported by this gateway")
 

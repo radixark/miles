@@ -417,20 +417,28 @@ def check_load_source(
     run: AdapterParametrization,
     targets,
     load_optimizer: bool,
+    run_shapes: dict[str, tuple[int, ...]],
+    head_rows: HeadRows | None = None,
 ) -> tuple[str | None, CheckedSource | None]:
     """Collective: why ``path`` cannot load into ``slot`` (every rank gets the same answer) or None, and on rank 0
     the checked source, which ``load_slot`` reads instead of reading the source again.
 
     A legacy checkpoint records no adapter layout in META.json, so its tensor keys are compared with the slot's,
     e.g. one fused GDN in_proj adapter saved before the canonical in_proj_q/k/v/z split.
+    ``run_shapes``: the whole shape of each HF-keyed tensor this rank loads.
     """
     path = Path(path)
     checked, verdict, server_error = None, (None, None), None
     # a source the user named that is missing, malformed or refused is theirs; raised after the slot reset, it kills
     # the trainer cell. Only rank 0 reads it, so only rank 0 can tell the user's fault from the gateway's
+    shapes_by_rank = [None] * dist.get_world_size() if dist.get_rank() == 0 else None
+    dist.gather_object(run_shapes, shapes_by_rank, dst=0, group=gloo_group())
     if dist.get_rank() == 0:
         try:
-            checked = check_adapter_source(path, run, targets, load_optimizer=load_optimizer)
+            all_shapes = {key: shape for shapes in shapes_by_rank for key, shape in shapes.items()}
+            checked = check_adapter_source(
+                path, run, targets, load_optimizer=load_optimizer, run_shapes=all_shapes, head_rows=head_rows
+            )
             verdict = (checked.kind, None)
         except _SOURCE_ERRORS as error:
             verdict = (None, f"{path} cannot load into this model: {error}")

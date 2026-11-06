@@ -77,11 +77,14 @@ async def serve(args, *, disposer: Disposer):
     await trainer.init(trainer_request)
     disposer.add(trainer)
 
+    lora_layout = get_hf_lora_targets(full_hf_config.to_dict())
     config = GatewayConfig(
         base_model=args.tinker_base_model or args.hf_checkpoint,
         n_slots=args.multi_lora_n_adapters,
         checkpoint_root=args.tinker_checkpoint_root,
+        public_url=args.tinker_public_url,
         vocab_size=hf_config.vocab_size,
+        exports_tinker_names=bool(lora_layout.tinker_name_renames),
         max_tokens_per_datum=max_tokens_per_datum,
         max_tokens_per_sample=max_tokens_per_sample,
         lora_alpha=args.lora_alpha,
@@ -100,7 +103,6 @@ async def serve(args, *, disposer: Disposer):
         * args.raw_megatron.base_args["pipeline_model_parallel_size"]
         * args.raw_megatron.base_args["context_parallel_size"]
     )
-    lora_layout = get_hf_lora_targets(full_hf_config.to_dict())
     service = TinkerService(MilesBackend(trainer, router_url, lora_layout, dp_size=dp_size), config)
 
     server = uvicorn.Server(

@@ -8,11 +8,14 @@ from miles.tinker.core.input_validation import validate_checkpoint_metadata, val
 from miles.tinker.core.types import GatewayConfig, ModelRecord, OwnershipError, UserInputError
 
 
+CHECKPOINT_KINDS = ("weights", "sampler_weights", "external_weights")
+
+
 def parse_tinker_path(path: str) -> tuple[str, str, str]:
     if not path.startswith("tinker://"):
         raise UserInputError(f"not a tinker path: {path!r}")
     parts = path.removeprefix("tinker://").split("/")
-    if len(parts) != 3 or parts[1] not in ("weights", "sampler_weights"):
+    if len(parts) != 3 or parts[1] not in CHECKPOINT_KINDS:
         raise UserInputError(f"malformed tinker path: {path!r}")
     for segment in parts:
         validate_checkpoint_segment(segment)
@@ -39,8 +42,12 @@ def build_parametrization_fields(record: ModelRecord, config: GatewayConfig) -> 
     }
 
 
+# a checkpoint saved before commits: its owner and settings, written last
+PRE_COMMIT_META_FILENAME = "META.json"
+
+
 def read_checkpoint_metadata(checkpoint_dir: str, tenant: str, shown_path: str) -> dict:
-    meta_file = Path(checkpoint_dir) / "META.json"
+    meta_file = Path(checkpoint_dir) / PRE_COMMIT_META_FILENAME
     if not meta_file.exists():
         raise UserInputError(f"unknown checkpoint {shown_path!r}")
     try:

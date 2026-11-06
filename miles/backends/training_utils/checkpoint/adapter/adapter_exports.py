@@ -1,8 +1,11 @@
-"""PEFT and sampler exports, written from whole HF-keyed tensors on one process."""
+"""PEFT, sampler and external (official Tinker) exports, written from whole HF-keyed tensors on one process."""
 
+import json
+from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
 
+import safetensors.torch
 import torch
 
 from miles.backends.training_utils.checkpoint.adapter.key_mapping import (
@@ -11,6 +14,7 @@ from miles.backends.training_utils.checkpoint.adapter.key_mapping import (
     fused_leaves,
     map_hf_keys_to_peft_export_keys,
     map_hf_keys_to_peft_keys,
+    map_hf_keys_to_tinker_keys,
 )
 from miles.backends.training_utils.checkpoint.adapter.parametrization import (
     AdapterParametrization,
@@ -158,3 +162,54 @@ def write_sampler_adapter(
     hf_names = [map_hf_keys_to_peft_keys(key) for key in expanded]
     save_adapter_to_disk(directory, _adapter_config(parametrization, hf_names, lora_dropout), tensors)
     write_parametrization(Path(directory), parametrization)
+
+
+def write_external_adapter(
+    directory: Path,
+    weights: dict[str, torch.Tensor],
+    parametrization: AdapterParametrization,
+    targets: HfLoraTargets,
+    *,
+    lora_dropout: float,
+    age_encryption_recipients: Sequence[str] = (),
+) -> None:
+    """The official Tinker export: F32 under Tinker names, experts stacked 3D as the parametrization has them
+    (``[1, ...]`` on a shared-outer side), and every module its own copy of a shared A (no re-fusing: Tinker trains
+    the components apart). With ``age_encryption_recipients`` both files are age-encrypted to them and named ``<file>.age``.
+    """
+    tensors = {}
+    shared_copies = {member: group[0] for group in parametrization.shared_lora_a_groups for member in group[1:]}
+    for module in parametrization.target_modules:
+        for factor in ("lora_A", "lora_B"):
+            source = f"{shared_copies.get(module, module)}.lora_A" if factor == "lora_A" else f"{module}.lora_B"
+            tensor = weights[source].float()
+            # safetensors refuses two names on one storage: only a shared A's later members get their own copy
+            tensors[map_hf_keys_to_tinker_keys(f"{module}.{factor}", targets)] = (
+                tensor.clone() if factor == "lora_A" and module in shared_copies else tensor
+            )
+    # as the official export: an HF leaf list would not match the Tinker-named experts
+    config = _adapter_config(parametrization, (), lora_dropout) | {
+        "target_modules": "all-linear",
+        "modules_to_save": None,
+        "target_parameters": None,
+        "base_model_name_or_path": None,
+    }
+    if not age_encryption_recipients:
+        save_adapter_to_disk(directory, config, tensors)
+        return
+
+    # lazy: every run imports this module, and prebuilt images may lack pyrage
+    import pyrage
+
+    # the SDK documents both native age (age1...) and SSH (ssh-...) public keys
+    recipients = [
+        (pyrage.ssh if r.startswith("ssh-") else pyrage.x25519).Recipient.from_str(r)
+        for r in age_encryption_recipients
+    ]
+    # encrypted in memory, one file at a time: no plaintext ever reaches the disk
+    Path(directory).mkdir(parents=True, exist_ok=True)
+    for name, plaintext in (
+        ("adapter_config.json", lambda: json.dumps(config, indent=2).encode()),
+        ("adapter_model.safetensors", lambda: safetensors.torch.save(tensors)),
+    ):
+        (Path(directory) / f"{name}.age").write_bytes(pyrage.encrypt(plaintext(), recipients))

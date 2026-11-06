@@ -3,14 +3,18 @@
 import json
 from dataclasses import replace
 
+import pyrage
 import pytest
 import torch
 import transformers
+from cryptography.hazmat.primitives.asymmetric import ed25519
+from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat, PublicFormat
 from safetensors.torch import load_file, save_file
 
 from miles.backends.training_utils.checkpoint.adapter.adapter_dir import save_sampler_export, write_peft_export
 from miles.backends.training_utils.checkpoint.adapter.adapter_exports import (
     has_plain_peft_form,
+    write_external_adapter,
     write_peft_adapter,
     write_sampler_adapter,
 )
@@ -33,6 +37,7 @@ from miles.backends.training_utils.checkpoint.adapter.parametrization_conversion
 )
 from miles.backends.training_utils.checkpoint.adapter.readers import (
     AdapterSourceKind,
+    ExternalWeightsReader,
     MilesAdapterDirReader,
     PeftAdapterReader,
     _read_peft_tensors,
@@ -204,6 +209,78 @@ def test_mismatches_are_refused(field, value):
         assert_parametrization_matches_run(
             _run(**{field: value}), _run(), [], load_optimizer=False, has_optimizer_state=False
         )
+
+
+@pytest.mark.parametrize("shared_qkv", [False, True], ids=["canonical", "fused_gdn"])
+def test_external_export_reads_back_through_the_external_reader(tmp_path, shared_qkv):
+    # experts' Tinker names are sglang's too; Tinker's head name is what marks the export as Tinker's
+    run = _run(target_modules=(*QKV, *EXPERTS, "lm_head"), shared_lora_a_groups=(QKV,) if shared_qkv else ())
+    weights = _weights(shared_qkv) | {"lm_head.lora_A": torch.randn(2, 8), "lm_head.lora_B": torch.randn(16, 2)}
+    write_external_adapter(tmp_path, weights, run, QWEN35, lora_dropout=0.0)
+    tensors = load_file(str(tmp_path / "adapter_model.safetensors"))
+    assert all(t.dtype == torch.float32 for t in tensors.values())
+    assert any(".experts.w1." in name for name in tensors), "gated experts take Tinker's names"
+    assert classify_adapter_source(tmp_path, QWEN35, load_optimizer=False) == AdapterSourceKind.EXTERNAL_WEIGHTS
+    config = json.loads((tmp_path / "adapter_config.json").read_text())
+    official = {
+        "base_model_name_or_path": None,
+        "target_modules": "all-linear",
+        "modules_to_save": None,
+        "target_parameters": None,
+    }
+    assert {key: config[key] for key in official} == official, "as the official export"
+    read = ExternalWeightsReader(tmp_path, run, QWEN35).read_weights()
+    for module in run.target_modules:
+        # each member carries its own copy of a shared A
+        source = run.shared_lora_a_groups[0][0] if shared_qkv and module in QKV else module
+        assert torch.equal(read[f"{module}.lora_A"], weights[f"{source}.lora_A"])
+        assert torch.equal(read[f"{module}.lora_B"], weights[f"{module}.lora_B"])
+
+
+def _ssh_identity() -> tuple[pyrage.ssh.Identity, str]:
+    key = ed25519.Ed25519PrivateKey.generate()
+    private = key.private_bytes(Encoding.PEM, PrivateFormat.OpenSSH, NoEncryption())
+    public = key.public_key().public_bytes(Encoding.OpenSSH, PublicFormat.OpenSSH).decode()
+    return pyrage.ssh.Identity.from_buffer(private), public
+
+
+@pytest.mark.parametrize("key_type", ["x25519", "ssh"])
+def test_an_encrypted_external_export_decrypts_to_the_plain_one(tmp_path, key_type):
+    if key_type == "ssh":
+        identity, recipient = _ssh_identity()
+    else:
+        identity = pyrage.x25519.Identity.generate()
+        recipient = str(identity.to_public())
+    write_external_adapter(tmp_path / "plain", _weights(False), _run(), QWEN35, lora_dropout=0.0)
+    write_external_adapter(
+        tmp_path / "age", _weights(False), _run(), QWEN35, age_encryption_recipients=[recipient], lora_dropout=0.0
+    )
+    assert sorted(p.name for p in (tmp_path / "age").iterdir()) == [
+        "adapter_config.json.age",
+        "adapter_model.safetensors.age",
+    ]
+    for name in ("adapter_config.json", "adapter_model.safetensors"):
+        decrypted = pyrage.decrypt((tmp_path / "age" / f"{name}.age").read_bytes(), [identity])
+        assert decrypted == (tmp_path / "plain" / name).read_bytes()
+
+
+def test_an_encrypted_external_export_never_writes_plaintext(tmp_path, monkeypatch):
+    identity = pyrage.x25519.Identity.generate()
+    real_encrypt = pyrage.encrypt
+
+    def encrypt(data, recipients):
+        assert not [p.name for p in (tmp_path / "age").glob("*") if p.suffix != ".age"], "plaintext on disk"
+        return real_encrypt(data, recipients)
+
+    monkeypatch.setattr(pyrage, "encrypt", encrypt)
+    write_external_adapter(
+        tmp_path / "age",
+        _weights(False),
+        _run(),
+        QWEN35,
+        age_encryption_recipients=[str(identity.to_public())],
+        lora_dropout=0.0,
+    )
 
 
 def test_tinker_names_classify_as_external(tmp_path):
