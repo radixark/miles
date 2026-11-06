@@ -25,6 +25,8 @@ from dataclasses import dataclass
 from typing import ClassVar, Protocol
 
 import torch
+import torch.distributed as dist
+from torch.distributed._functional_collectives import all_gather_single_autograd
 
 from miles import platforms
 from miles.backends.training_utils.data.context_parallel import (
@@ -50,8 +52,8 @@ logger = logging.getLogger(__name__)
 ROW_CHUNKS = 8
 _PADDED_ROWS_LOSS_TYPES = ("policy_loss", "score_centering")
 _PADDED_ROWS_ADVANTAGE_ESTIMATORS = ("grpo", "reinforce_plus_plus", "reinforce_plus_plus_baseline")
-# what PaddedRows assumes about the run: without PP every padded row is a whole packed sample (the torchtitan
-# trainer all-gathers the logits of its CP ranks before the loss)
+# what PaddedRows assumes about the run: without PP every padded row is a whole packed sample (under CP, PaddedRows
+# all-gathers the per-row results of the CP ranks' shares)
 _PADDED_ROWS_REQUIREMENTS: dict[str, Callable[[Namespace], bool]] = {
     "--qkv-format thd": lambda args: args.qkv_format == "thd",
     "--pipeline-model-parallel-size 1": lambda args: args.pipeline_model_parallel_size == 1,
@@ -84,6 +86,8 @@ class ResponseLayout(Protocol):
 
     # where get_rollout_data puts per-sample tensors; None is the accelerator
     sample_device: ClassVar[torch.device | None]
+    # scores a CP rank's share of the logit rows (the microbatch's "logit_row_group") and gathers only the results
+    scores_logit_row_shards: ClassVar[bool]
     device: torch.device
     chunk_size: int  # rows a log-prob call scores at a time; -1 is a whole response
 
@@ -205,6 +209,7 @@ class PackedSlices:
 
     # get_rollout_data puts per-sample tensors on the accelerator
     sample_device: ClassVar[torch.device | None] = None
+    scores_logit_row_shards: ClassVar[bool] = False
 
     @classmethod
     def build(cls, args, batch, logits, sum_of_sample_mean=None) -> "PackedSlices":
@@ -355,6 +360,10 @@ class PaddedRows:
     Row t predicts packed token t + 1, so the response of sample i fills rows
     `[end_i - response_i - 1, end_i - 1)`, where `end_i` is the sample's end in the packed microbatch
     (`get_batch`'s `cu_seqlens_host`).
+
+    Under context parallelism the logits are this rank's contiguous `[1, T / cp, V]` share of the rows, and the
+    microbatch names the CP group (`logit_row_group`): the vocab-wide work stays on the share, and only its per-row
+    results are all-gathered, so no rank holds `[T, V]` logits.
     """
 
     args: Namespace
@@ -363,15 +372,18 @@ class PaddedRows:
     row_index: torch.Tensor  # [sum(R)] int64 on the host: the row of every response token, in sample order
     response_lengths: list[int]
     num_rows: int
+    row_group: dist.ProcessGroup | None  # the ranks holding the other shares of the logit rows
 
     # the padded path keeps per-sample tensors on the host until a microbatch lays them out on its rows
     sample_device: ClassVar[torch.device | None] = torch.device("cpu")
+    scores_logit_row_shards: ClassVar[bool] = True
 
     @classmethod
     def build(cls, args, batch, logits, sum_of_sample_mean=None) -> "PaddedRows":
         assert logits.dim() == 3 and logits.size(0) == 1, f"thd logits are [1, T, V], got {logits.shape}"
         response_lengths = batch["response_lengths"]
-        num_rows = logits.size(1)
+        row_group = batch.get("logit_row_group")
+        num_rows = logits.size(1) * (1 if row_group is None else row_group.size())
         # the packer's sample ends; a trailing entry, when present, closes the microbatch's padding
         ends = batch["cu_seqlens_host"][1 : len(response_lengths) + 1]
         if ends and ends[-1] > num_rows:
@@ -381,7 +393,7 @@ class PaddedRows:
         )
         if row_index.numel() and row_index[0] < 0:
             raise ValueError("the first sample of a microbatch needs at least one prompt token")
-        return cls(args, batch, logits.device, row_index, list(response_lengths), num_rows)
+        return cls(args, batch, logits.device, row_index, list(response_lengths), num_rows, row_group)
 
     @staticmethod
     def finish_forward_pass(results: list[dict]) -> list[dict]:
@@ -397,7 +409,8 @@ class PaddedRows:
     def chunk_size(self) -> int:
         # A fixed number of chunks, not a fixed size: each chunk all-reduces over TP, and on torch_tpu every rank
         # must issue the same number of collectives, while data-parallel ranks pad to different buckets.
-        return -(-self.num_rows // ROW_CHUNKS)
+        num_local_rows = self._local_rows.stop - self._local_rows.start
+        return -(-num_local_rows // ROW_CHUNKS)
 
     def rows(self, per_sample, *, fill=0):
         """Host per-sample `[R_i, ...]` values -> `[T, ...]` rows on the device (`fill` elsewhere), in one copy."""
@@ -418,7 +431,7 @@ class PaddedRows:
     def score(self, logits, *, with_entropy, entropy_requires_grad):
         log_probs, entropy = calculate_log_probs_and_entropy(
             logits.squeeze(0),
-            self._targets,
+            self._targets[self._local_rows],
             get_parallel_state().tp.group,
             with_entropy=with_entropy,
             entropy_requires_grad=entropy_requires_grad,
@@ -427,11 +440,12 @@ class PaddedRows:
             temperature=self.args.rollout_temperature,
             debug_unified_grad_fused_logprob=self.args.debug_unified_grad_fused_logprob,
         )
-        return log_probs.squeeze(-1), entropy
+        return self._gather_rows(log_probs.squeeze(-1)), None if entropy is None else self._gather_rows(entropy)
 
     def map_logit_rows(self, logits, fn, side=None, *, side_fill=0):
-        extra = None if side is None else self.rows_at_positions(side, fill=side_fill)
-        return fn(logits.squeeze(0), self._targets, extra)
+        extra = None if side is None else self.rows_at_positions(side, fill=side_fill)[self._local_rows]
+        results = fn(logits.squeeze(0), self._targets[self._local_rows], extra)
+        return {name: self._gather_rows(rows) for name, rows in results.items()}
 
     def sum_of_sample_mean(self, x):
         return (x * self._loss_masks / self._denominators).sum()
@@ -463,6 +477,21 @@ class PaddedRows:
         if with_entropy:
             result["entropy"] = self._to_host(entropy)
         return result
+
+    @functools.cached_property
+    def _local_rows(self) -> slice:
+        """The rows this rank's logits hold."""
+        if self.row_group is None:
+            return slice(0, self.num_rows)
+        size = self.num_rows // self.row_group.size()
+        start = dist.get_rank(self.row_group) * size
+        return slice(start, start + size)
+
+    def _gather_rows(self, rows: torch.Tensor) -> torch.Tensor:
+        """This rank's per-row results -> all `[T, ...]` rows; the backward sums the CP ranks' gradients."""
+        if self.row_group is None:
+            return rows
+        return all_gather_single_autograd(rows.contiguous(), 0, self.row_group)
 
     def _to_host(self, rows: torch.Tensor) -> "HostRows":
         return HostRows(rows.detach().to("cpu", non_blocking=True), self.row_index, self.response_lengths)
