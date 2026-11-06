@@ -8,17 +8,17 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from miles.dashboard import observer as dashboard_observer
-from miles.dashboard import sandbox_health
-from miles.dashboard.observer import (
+from miles.utils import observers
+from miles.utils.misc import SingletonMeta
+from miles_dashboard import observer as dashboard_observer
+from miles_dashboard import sandbox_health
+from miles_dashboard.observer import (
     BATCH_MAX_EVENTS,
     END_PROCESS_TIMEOUT_SECONDS,
     SHUTDOWN_TIMEOUT_SECONDS,
     DashboardObserver,
 )
-from miles.dashboard.store import EngineInfo, MetricStore, PhaseEvent, Role, Stream, TrajectoryEvent
-from miles.utils import observers
-from miles.utils.misc import SingletonMeta
+from miles_dashboard.store import EngineInfo, MetricStore, PhaseEvent, Role, Stream, TrajectoryEvent
 
 TRAIN_RANK = dict(role="train", node="10.0.0.3", rank=7, gpus=[3])
 ROLLOUT_MANAGER = dict(role="rollout_manager", node="10.0.0.5", rank=-1, gpus=[])
@@ -69,7 +69,7 @@ def test_a_run_the_dashboard_cannot_serve_is_refused_before_it_starts(monkeypatc
     """Turning the dashboard on without ``--dump-details`` must stop the run, not let it train without telemetry."""
     monkeypatch.setenv("MILES_DASHBOARD", "1")
     installed = [
-        EntryPoint("miles_dashboard", "miles.dashboard.observer:DashboardObserver", observers.ENTRY_POINT_GROUP)
+        EntryPoint("miles_dashboard", "miles_dashboard.observer:DashboardObserver", observers.ENTRY_POINT_GROUP)
     ]
     monkeypatch.setattr(observers, "entry_points", lambda group: installed)
     SingletonMeta._instances.pop(observers.Observers, None)

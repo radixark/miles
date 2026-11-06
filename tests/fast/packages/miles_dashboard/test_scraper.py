@@ -4,8 +4,8 @@ from pathlib import Path
 import pytest
 from prometheus_client.parser import text_string_to_metric_families
 
-from miles.dashboard.sglang_scraper import DEFAULT_METRIC_WHITELIST, SglangScraper
-from miles.dashboard.store import EngineSample
+from miles_dashboard.sglang_scraper import DEFAULT_METRIC_WHITELIST, SglangScraper
+from miles_dashboard.store import EngineSample
 
 FIXTURES = Path(__file__).parent / "fixtures"
 DIRECT_TEXT = (FIXTURES / "engine_metrics_direct.txt").read_text()

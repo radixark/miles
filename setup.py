@@ -14,11 +14,9 @@ setup(
     packages=find_packages(include=["miles*", "miles_plugins*"]),
     include_package_data=True,
     package_data={
-        "miles.dashboard": ["static/*"],
         "miles.utils.chat_template_utils.templates": ["*.jinja"],
     },
     install_requires=_fetch_requirements("requirements.txt"),
-    entry_points={"miles.observers": ["miles_dashboard = miles.dashboard.observer:DashboardObserver"]},
     extras_require={
         "fsdp": [
             "torch>=2.0",
@@ -30,13 +28,6 @@ setup(
         ],
         "mlflow": [
             "mlflow>=2.0",
-        ],
-        # standalone offline serving; the training image already has these via
-        # sglang, and polars is a base requirement (used by the collector)
-        "dashboard": [
-            "fastapi>=0.135",
-            "uvicorn>=0.41",
-            "prometheus_client>=0.24",
         ],
         # the openenv e2b sandbox backend, imported only when that backend is
         # selected. 2.12 is the first release that sends the template name in

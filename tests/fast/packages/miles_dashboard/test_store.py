@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from miles.dashboard.store import (
+from miles_dashboard.store import (
     DataBufferSample,
     EngineInfo,
     EngineSample,

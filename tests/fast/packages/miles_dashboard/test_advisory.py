@@ -1,8 +1,8 @@
 from dataclasses import replace
 
 
-from miles.dashboard.advisory import compute_advisories
-from miles.dashboard.store import (
+from miles_dashboard.advisory import compute_advisories
+from miles_dashboard.store import (
     EngineSample,
     GpuSample,
     Meta,

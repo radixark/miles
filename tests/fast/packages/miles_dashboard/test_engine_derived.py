@@ -7,8 +7,8 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-import miles.dashboard.store as store_module
-from miles.dashboard.store import EngineSample, Meta, MetricStore, _ThinnedEngineSeries
+import miles_dashboard.store as store_module
+from miles_dashboard.store import EngineSample, Meta, MetricStore, _ThinnedEngineSeries
 
 
 def make_store(tmp_path: Path, samples: list[EngineSample]) -> MetricStore:
