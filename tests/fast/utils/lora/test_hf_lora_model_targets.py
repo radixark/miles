@@ -252,10 +252,18 @@ _TINKER_QWEN3_5_4B = {
 }
 
 
+_GDN_HEADS = {
+    "linear_num_key_heads": 2,
+    "linear_key_head_dim": 2,
+    "linear_num_value_heads": 4,
+    "linear_value_head_dim": 2,
+}
+
+
 @pytest.mark.parametrize("model_type", ["qwen3_5", "qwen3_5_moe"])
 def test_qwen3_5_attn_group_is_official_tinkers(model_type):
     """Official Qwen3.5 / 3.6 adapters train in_proj_q/k/v/z and out_proj on the GDN layers, never in_proj_b/a."""
-    text = {"layer_types": ["linear_attention", "full_attention"], "shared_expert_intermediate_size": 16}
+    text = {"layer_types": ["linear_attention", "full_attention"], "shared_expert_intermediate_size": 16, **_GDN_HEADS}
     targets = resolve_hf_lora_targets({"model_type": model_type, "text_config": text}, target_modules=["attn"])
     served = gdn_in_proj_served_targets(targets, targets)
     gdn = {target.split(".layers.*.")[1] for target in served if ".linear_attn." in target}
@@ -263,7 +271,10 @@ def test_qwen3_5_attn_group_is_official_tinkers(model_type):
 
 
 def test_qwen3_5_dense_default_groups_match_the_official_export():
-    config = {"model_type": "qwen3_5", "text_config": {"layer_types": ["linear_attention", "full_attention"]}}
+    config = {
+        "model_type": "qwen3_5",
+        "text_config": {"layer_types": ["linear_attention", "full_attention"], **_GDN_HEADS},
+    }
     targets = resolve_hf_lora_targets(config, target_modules=["attn", "mlp", "unembed"])
     served = gdn_in_proj_served_targets(targets, targets)
     assert {target.split(".layers.*.")[-1] for target in served} == _TINKER_QWEN3_5_4B
