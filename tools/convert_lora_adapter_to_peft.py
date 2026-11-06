@@ -18,6 +18,9 @@ def main() -> None:
     parser.add_argument("src", type=Path)
     parser.add_argument("dst", type=Path)
     parser.add_argument("--hf-config", type=Path, required=True, help="the base model's config.json")
+    parser.add_argument(
+        "--lora-dropout", type=float, help="the training run's dropout; required when src holds no export of its own"
+    )
     args = parser.parse_args()
     # in place, the PEFT tensors would replace the ones sglang serves from src
     assert not args.dst.exists(), f"{args.dst} exists; pass a new directory"
@@ -27,8 +30,10 @@ def main() -> None:
         kind == AdapterSourceKind.ADAPTER_DIR
     ), f"{args.src} is a {kind.value} source; load it in a training run and save it in the miles format first"
     reader = MilesAdapterDirReader(args.src, targets)
-    # the training run's dropout, which the source's own export recorded
-    lora_dropout = json.loads((args.src / "adapter_config.json").read_text())["lora_dropout"]
+    # a sampler export records the training run's dropout; a training dir records none
+    config = args.src / "adapter_config.json"
+    lora_dropout = json.loads(config.read_text())["lora_dropout"] if config.is_file() else args.lora_dropout
+    assert lora_dropout is not None, f"{args.src} records no lora_dropout; pass --lora-dropout"
     write_peft_adapter(args.dst, reader.read_weights(), reader.source.parametrization, lora_dropout=lora_dropout)
 
 
