@@ -229,7 +229,9 @@ class UpdateWeightFromModelExpressDelta(WeightTransferProtocol):
                 result[0] = action()
             except Exception as error:  # noqa: BLE001 - broadcast failures to peers.
                 original_error = error
-                result[1] = "\n".join([str(error), *getattr(error, "__notes__", [])])
+                result[1] = "\n".join(
+                    [str(error), *getattr(error, "__notes__", [])]
+                )  # config-access-exempt: exceptions define __notes__ only after add_note()
         dist.broadcast_object_list(result, src=0, group=get_gloo_group())
         if result[1] is not None:
             raise RuntimeError(f"ModelExpress control operation failed: {result[1]}") from original_error

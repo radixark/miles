@@ -202,7 +202,7 @@ def _compute_server_args(
                 "the trainer will skip per-step base weight sync."
             )
 
-    if getattr(args, "update_weight_transfer_mode", "broadcast") == "modelexpress":
+    if args.update_weight_transfer_mode == "modelexpress":
         kwargs["modelexpress_config"] = json.dumps(args.modelexpress_config)
 
     # Last, so a per-group override wins over every args-derived default above.
