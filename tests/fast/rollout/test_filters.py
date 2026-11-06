@@ -14,6 +14,7 @@ from miles.rollout.filter_hub.common_filters import (
     apply_missing_reward_filter,
     apply_preput_filters,
     apply_reward_nonzero_std_filter,
+    apply_reward_not_all_zero_filter,
     group_staleness,
     group_weight_version_stats,
 )
@@ -118,6 +119,28 @@ def test_iter_samples_preserves_flat_and_mixed_nested_order():
 
     assert list(iter_samples(samples)) == samples
     assert list(iter_samples([samples[0], samples[1:3], samples[3]])) == samples
+
+
+@pytest.mark.parametrize("rewards", [[0.0, 0.0], [1.0, 1.0], [0.0, 1.0], [0.5, 0.5], [-1.0, 1.0], [0.0, 1e-12]])
+@pytest.mark.parametrize("reward_key", [None, "score"])
+def test_reward_not_all_zero_filter(rewards, reward_key) -> None:
+    args = Namespace(reward_key=reward_key, length_penalty_coeff=0.1, length_penalty_min_tokens=1)
+    samples = [make_sample(reward={"score": r} if reward_key else r) for r in rewards]
+    for sample, length in zip(samples, [10, 100], strict=True):
+        sample.response_length = length
+    # Exercise the same pre-training filter chain with nested agentic samples.
+    result = apply_preput_filters(args, apply_reward_not_all_zero_filter, [samples[:1], samples[1]])
+    assert result == FilterOutput(
+        keep=any(reward != 0 for reward in rewards),
+        reason="all_zero_reward" if all(reward == 0 for reward in rewards) else None,
+    )
+
+
+def test_reward_not_all_zero_filter_preserves_missing_reward_guard() -> None:
+    result = apply_preput_filters(
+        Namespace(reward_key=None), apply_reward_not_all_zero_filter, [make_sample(reward=None)]
+    )
+    assert result == FilterOutput(keep=False, reason="group_has_missing_reward")
 
 
 @pytest.mark.parametrize(

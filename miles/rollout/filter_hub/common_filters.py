@@ -93,6 +93,15 @@ def apply_missing_reward_filter(args: Namespace, samples: Group, **kwargs) -> Fi
     return FilterOutput(keep=True)
 
 
+def apply_reward_not_all_zero_filter(args: Namespace, samples: Group, **kwargs) -> FilterOutput:
+    """Reject groups whose raw rewards are all zero, before length shaping.
+
+    Keep all-success groups so length penalties can still provide a learning signal.
+    """
+    all_zero = all(sample.get_reward_value(args) == 0 for sample in iter_samples(samples))
+    return FilterOutput(keep=not all_zero, reason="all_zero_reward" if all_zero else None)
+
+
 def apply_reward_nonzero_std_filter(args, samples: list[Sample | list[Sample]], **kwargs):
     flat_samples = list(iter_samples(samples))
     rewards = [sample.get_reward_value(args) for sample in flat_samples]

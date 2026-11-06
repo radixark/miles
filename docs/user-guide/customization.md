@@ -172,6 +172,11 @@ def filter_function(args, samples: list[Sample], **kwargs) -> FilterOutput:
 
 **Stock implementation:** `miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std`.
 
+To drop only groups whose raw rewards are all zero, use
+`--dynamic-sampling-filter-path miles.rollout.filter_hub.common_filters.apply_reward_not_all_zero_filter`.
+This checks the selected `--reward-key` before length penalties and keeps all-success
+groups, whose different response lengths can still provide a learning signal.
+
 ### `--buffer-filter-path`
 
 Pops samples from the rollout buffer at dequeue time. The default is
