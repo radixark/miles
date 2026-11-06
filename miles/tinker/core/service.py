@@ -12,7 +12,6 @@ from typing import NamedTuple
 from miles.tinker.core.future import RequestFuture, RequestFutureStore
 from miles.tinker.core.input_validation import (
     validate_batch_payload,
-    validate_checkpoint_compatibility,
     validate_checkpoint_segment,
     validate_model_config,
     validate_sample_payload,
@@ -31,7 +30,6 @@ from miles.tinker.core.types import (
     UserInputError,
 )
 from miles.tinker.core.utils import (
-    build_checkpoint_metadata,
     build_parametrization_fields,
     parse_tinker_path,
     read_checkpoint_metadata,
@@ -67,6 +65,9 @@ class TinkerService:
         self._trainer_lock = asyncio.Lock()
         self._sample_tasks: dict[str, tuple] = {}  # request_id -> (task, session_id)
         self._create_tasks: set = set()
+        self._cleanup_tasks: set = set()
+        # two cleanups would race on the same .deleting dirs
+        self._cleanup_lock = asyncio.Lock()
         self._arrival_counter = 0
         self._batch_counter = 0
         self._background_error: BaseException | None = None
@@ -110,7 +111,8 @@ class TinkerService:
             for task in tasks:
                 task.cancel()
             # Cleanup failures must not replace the error that stopped the dispatcher.
-            await asyncio.gather(*tasks, return_exceptions=True)
+            # awaited, not cancelled: a cancelled to_thread rmtree would outlive the root lock
+            await asyncio.gather(*tasks, *self._cleanup_tasks, return_exceptions=True)
 
     def _observe_background_task(self, task: asyncio.Task) -> None:
         if not task.cancelled() and (error := task.exception()) is not None:
@@ -334,7 +336,7 @@ class TinkerService:
     async def _finish_request(self, model_queue, pending, outcome: dict) -> None:
         if "error" in outcome:
             category = outcome.get("error_category", "server")
-            if pending.command.op.requires_model_close_on_failure():
+            if pending.command.op.requires_model_close_on_failure(category):
                 await self._close_model(
                     model_queue.model_id,
                     f"model training failed ({outcome['error']}); create a new model and restore from a checkpoint",
@@ -351,34 +353,80 @@ class TinkerService:
         name = payload["name"] or f"checkpoint-{payload['seq_id']:06d}"
         validate_checkpoint_segment(name)
         checkpoint_dir = resolve_checkpoint_dir(self.config.checkpoint_root, record.model_id, "weights", name)
-        if not payload["overwrite"] and os.path.exists(checkpoint_dir):
+        if not payload["overwrite"] and os.path.lexists(checkpoint_dir):
             raise UserInputError(f"checkpoint {name!r} already exists; pass overwrite=True to replace it")
-        failure = await self.backend.save_slot(
-            record.slot, checkpoint_dir, metadata=build_checkpoint_metadata(record, self.config)
+        root = os.path.dirname(checkpoint_dir)
+        written = await self.backend.save_slot(
+            slot=record.slot,
+            root=root,
+            name=name,
+            tenant_digest=tenant_digest(record.tenant),
+            parametrization_fields=build_parametrization_fields(record, self.config),
         )
-        if failure is not None:
-            return failure
+        # the commit's recovery walk and fsyncs hit shared storage; keep the event loop serving
+        try:
+            await asyncio.to_thread(self.backend.commit_adapter, root, name, written, overwrite=payload["overwrite"])
+        except ValueError as error:
+            # the commit refuses to replace a link it did not write (e.g. an operator's link to a shared adapter)
+            raise UserInputError(f"cannot commit checkpoint {name!r}: {error}") from None
+        except OSError as error:
+            # a storage failure loses only this save; the trainer and other tenants are unaffected
+            return {"error": f"cannot commit checkpoint {name!r}: {error}", "error_category": "server"}
+        self._delete_retired_outside_the_lock(root)
         return {"op": "save_state", "path": f"tinker://{record.model_id}/weights/{name}"}
+
+    def _delete_retired_outside_the_lock(self, root: str) -> None:
+        task = asyncio.create_task(self._delete_retired(root))
+        self._cleanup_tasks.add(task)
+        task.add_done_callback(self._cleanup_tasks.discard)
+        task.add_done_callback(self._observe_background_task)
+
+    async def _delete_retired(self, root: str) -> None:
+        async with self._cleanup_lock:
+            try:
+                await asyncio.to_thread(self.backend.delete_retired_adapters, root)
+            except OSError:
+                # best effort after a committed save: the .deleting dirs go on the next pass or at startup
+                logger.exception(f"could not delete retired adapter dirs under {root}")
 
     async def _load_state(self, record: ModelRecord, payload: dict) -> dict:
         source_id, kind, name = parse_tinker_path(payload["path"])
         if kind != "weights":
             raise UserInputError("cannot load sampler weights into a training model; use a save_state checkpoint")
-        checkpoint_dir = os.path.realpath(resolve_checkpoint_dir(self.config.checkpoint_root, source_id, kind, name))
+        checkpoint_dir = resolve_checkpoint_dir(self.config.checkpoint_root, source_id, kind, name)
         source_tenant = payload.get("weights_access_token")
         if source_tenant is None:
             source_tenant = record.tenant
-        meta = read_checkpoint_metadata(checkpoint_dir, source_tenant, payload["path"])
-        validate_checkpoint_compatibility(meta, record, self.config, payload["path"])
+        committed = self.backend.resolve_adapter(os.path.dirname(checkpoint_dir), name, source_tenant, source_id)
+        if committed is None:
+            # saved before commits: torch_dist with META.json, which the trainer's legacy loader reads
+            source, ckpt_path = (
+                read_checkpoint_metadata(checkpoint_dir, source_tenant, payload["path"]),
+                checkpoint_dir,
+            )
+        else:
+            source, ckpt_path = committed["parametrization"], committed["path"]
+        # the trainer checks the rest of the parametrization against the model
+        for key, expected in (("base_model", record.base_model), ("lora_rank", record.lora_rank)):
+            if source[key] != expected:
+                raise UserInputError(
+                    f"checkpoint {payload['path']!r} has {key}={source[key]!r}; this model has {expected!r}"
+                )
+        fields = build_parametrization_fields(record, self.config) | {"lora_alpha": source["lora_alpha"]}
         failure = await self.backend.load_slot(
             record.slot,
             record.lora_rank,
-            record.lora_alpha,
-            ckpt_path=checkpoint_dir,
-            load_optimizer=payload["optimizer"],
+            source["lora_alpha"],
+            source={
+                "path": os.path.realpath(ckpt_path),
+                "load_optimizer": payload["optimizer"],
+                "parametrization_fields": fields,
+            },
         )
         if failure is not None:
             return failure
+        # the tenant record owns alpha; the SDK cannot set it, so a loaded adapter keeps its own
+        record.lora_alpha = source["lora_alpha"]
         return {"op": "load_state"}
 
     async def _save_weights_for_sampler(self, record: ModelRecord, payload: dict) -> dict:
@@ -402,7 +450,10 @@ class TinkerService:
         )
         # the commit's recovery walk and fsyncs hit shared storage; keep the event loop serving
         try:
-            await asyncio.to_thread(self.backend.commit_adapter, root, version, written)
+            await asyncio.to_thread(self.backend.commit_adapter, root, version, written, overwrite=False)
+        except ValueError as error:
+            # the commit refuses to replace a link it did not write (e.g. an operator's link to a shared adapter)
+            raise UserInputError(f"cannot commit sampler weights {version!r}: {error}") from None
         except OSError as error:
             # a storage failure loses only this export; the trainer and other tenants are unaffected
             return {"error": f"cannot commit sampler weights {version!r}: {error}", "error_category": "server"}
@@ -421,14 +472,16 @@ class TinkerService:
         """What the SDK needs to rebuild a training client from a checkpoint."""
         model_id, kind, name = parse_tinker_path(tinker_path)
         checkpoint_dir = resolve_checkpoint_dir(self.config.checkpoint_root, model_id, kind, name)
-        committed = None
         if kind == "sampler_weights":
             committed = resolve_sampler_export(
                 checkpoint_dir, tenant, model_id, tinker_path, self.backend.resolve_adapter
             )
+        else:
+            # a training checkpoint's link may point at a legacy dir an interrupted overwrite adopted
+            committed = self.backend.resolve_adapter(os.path.dirname(checkpoint_dir), name, tenant, model_id)
         if committed is not None:
             parametrization = committed["parametrization"]
-            # an export records targets, not group flags; another gateway may have written it
+            # an adapter dir records targets, not group flags; any gateway or import may have written it
             return {
                 "base_model": parametrization["base_model"],
                 "is_lora": True,

@@ -3,6 +3,7 @@
 import asyncio
 from dataclasses import asdict
 from pathlib import Path
+from typing import TextIO
 
 import httpx
 
@@ -10,10 +11,16 @@ from miles.backends.training_utils.checkpoint.adapter.commit import OwnershipErr
 from miles.backends.training_utils.checkpoint.adapter.commit import (
     UncommittedAdapterDir,
     commit_adapter_dir,
+    delete_retired_adapter_dirs,
+    delete_unreferenced_adapter_dirs,
     format_sglang_lora_name,
+    lock_checkpoint_root,
     resolve_adapter_dir,
 )
-from miles.backends.training_utils.checkpoint.adapter.parametrization import read_parametrization
+from miles.backends.training_utils.checkpoint.adapter.parametrization import (
+    PARAMETRIZATION_FILENAME,
+    read_parametrization,
+)
 from miles.ray.rollout.train_data_conversion import ROLLOUT_DATA_VALUE_SPEC
 from miles.tinker.core.types import OwnershipError, UserInputError
 from miles.utils import object_store
@@ -55,13 +62,30 @@ def _build_train_data(slot_datums: list) -> dict:
     return train_data
 
 
-def commit_adapter(root: str, name: str, written: UncommittedAdapterDir) -> None:
+def commit_adapter(root: str, name: str, written: UncommittedAdapterDir, overwrite: bool) -> None:
     """The gateway is the committer of every adapter dir under its checkpoint root."""
-    commit_adapter_dir(Path(root), name, written, overwrite=False)
+    commit_adapter_dir(Path(root), name, written, overwrite=overwrite)
+
+
+def delete_retired_adapters(root: str) -> None:
+    delete_retired_adapter_dirs(Path(root))
+
+
+def take_checkpoint_root(checkpoint_root: str) -> TextIO:
+    """Lock the root for this gateway, then recover every adapter root under it (``<model_id>/<kind>``)."""
+    lock = lock_checkpoint_root(Path(checkpoint_root))
+    for adapter_root in Path(checkpoint_root).glob("*/*"):
+        if adapter_root.is_dir():
+            delete_unreferenced_adapter_dirs(adapter_root)
+    return lock
 
 
 def resolve_adapter(root: str, name: str, tenant: str, model_id: str) -> dict | None:
     """A committed adapter's physical dir, sglang name and parametrization; None for a dir written before commits."""
+    checkpoint_dir = Path(root) / name
+    # by content, not by link: an overwrite interrupted after adopting a pre-commit dir leaves <name> linked to it
+    if (checkpoint_dir / "META.json").is_file() and not (checkpoint_dir / PARAMETRIZATION_FILENAME).is_file():
+        return None
     try:
         committed = resolve_adapter_dir(Path(root), name, tenant=tenant)
         if committed is None:
@@ -123,12 +147,8 @@ class MilesBackend:
     async def trainer_dead(self) -> bool:
         return await self.trainer.has_errored_cell()
 
-    async def load_slot(
-        self, slot: int, rank: int, alpha: float, ckpt_path: str | None = None, load_optimizer: bool = True
-    ) -> dict | None:
-        return _slot_failure(
-            await self.trainer.load_slot(slot, rank, alpha, ckpt_path=ckpt_path, load_optimizer=load_optimizer)
-        )
+    async def load_slot(self, slot: int, rank: int, alpha: float, source: dict | None = None) -> dict | None:
+        return _slot_failure(await self.trainer.load_slot(slot, rank, alpha, source=source))
 
     async def unload_slot(self, slot: int) -> dict | None:
         return _slot_failure(await self.trainer.unload_slot(slot))
@@ -177,8 +197,18 @@ class MilesBackend:
         worker_results = await self.trainer.optim_step(adam_params_by_slot=adam_params_by_slot)
         return worker_results[0]
 
-    async def save_slot(self, slot: int, path: str, metadata: dict | None = None) -> dict | None:
-        return _slot_failure(await self.trainer.save_slot(slot=slot, path=path, metadata=metadata))
+    async def save_slot(
+        self, slot: int, root: str, name: str, tenant_digest: str, parametrization_fields: dict
+    ) -> UncommittedAdapterDir:
+        """The uncommitted state every rank agreed on; a failed save raises."""
+        worker_results = await self.trainer.save_slot(
+            slot=slot,
+            root=root,
+            name=name,
+            tenant_digest=tenant_digest,
+            parametrization_fields=parametrization_fields,
+        )
+        return worker_results[0]
 
     async def export_slot(
         self, slot: int, root: str, name: str, tenant_digest: str, parametrization_fields: dict
@@ -194,6 +224,7 @@ class MilesBackend:
         return results[0]
 
     commit_adapter = staticmethod(commit_adapter)
+    delete_retired_adapters = staticmethod(delete_retired_adapters)
     resolve_adapter = staticmethod(resolve_adapter)
 
     # -------- sampling --------

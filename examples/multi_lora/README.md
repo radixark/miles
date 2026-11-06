@@ -121,10 +121,13 @@ gateway commits the link after all ranks finish writing.
 Existing sampler versions cannot be overwritten. Saving between `forward_backward`
 and `optim_step` neither applies nor discards pending gradients.
 
-Training checkpoint saves and loads are serialized within the gateway. Overwriting
-deletes the previous checkpoint before writing the new one; a failed overwrite does
-not preserve the previous checkpoint. Checkpoints are ordinary directories;
-overwriting does not retain hidden versions.
+Training checkpoint saves and loads are serialized within the gateway, and one
+gateway holds a checkpoint root at a time (an `flock` on the root). That needs a filesystem that
+enforces `flock` across hosts: NFS mounted `nolock` and Lustre with `localflock` lock only within one host,
+so two gateways on different hosts could both hold the root. A save writes a
+new commit and then points the name at it; an overwrite retires the previous commit
+only after the new one is committed, so a failed overwrite keeps the previous
+checkpoint. A load adopts the alpha the checkpoint was trained with.
 
 ### Adapter layout
 
@@ -133,7 +136,11 @@ matching PEFT and the Tinker cookbook; it is the default for `serve_tinker.py`.
 `--lora-type lora` keeps one adapter for each fused QKV or gate/up linear.
 It can be combined with `--experts-shared-outer-loras`: expert gate and up then each
 have their own A matrix shared across experts; their B matrices remain per expert.
-These settings are fixed for the gateway, and training checkpoints must use the same layout.
+Saving and loading such slots in the committed checkpoint format has not been verified on GPU yet.
+These settings are fixed for the gateway. A training checkpoint saved under another layout loads its
+weights only, converted to this gateway's layout where that is exact: a shared factor splits, but
+per-component or per-expert factors become shared only when they are equal. Its optimizer state, and
+a checkpoint saved before commits, need the same layout.
 Canonical Q/K/V needs every TP rank to hold whole KV heads (`num_query_groups >= tensor_model_parallel_size`),
 and canonical gate/up needs separate HF gate and up tensors in dense MLPs; a model or layout outside that fails at
 startup, so launch it with `--lora-type lora`.

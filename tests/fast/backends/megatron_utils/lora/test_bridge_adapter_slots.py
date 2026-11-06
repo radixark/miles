@@ -1,4 +1,5 @@
 import inspect
+from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -159,6 +160,27 @@ def _probe_experts(rank, world_size, port):
 
 def test_probe_stacks_ep_split_experts_and_stores_a_shared_expert_a_once():
     run_multiprocess(_probe_experts)
+
+
+# process -> slot -> parameter indices it holds; process 0 holds the same in both slots, its peers do not
+_HOLDS = [{0: {0}, 1: {0}}, {0: {1}, 1: {2}}, {0: {2}, 1: {1}}]
+
+
+def _specs_of_two_slots(rank, world_size, port):
+    dist.init_process_group(
+        "gloo", init_method=f"tcp://localhost:{port}", rank=rank, world_size=world_size, timeout=timedelta(seconds=10)
+    )
+    init_gloo_group()
+    slots = BridgeAdapterSlots.__new__(BridgeAdapterSlots)
+    slots._specs, slots._multi_lora, slots.slot_parameters = {}, False, lambda slot: []
+    slots.row_mapping = BridgeRowMapping(pieces=[], shared_lora_a_groups=(), target_modules=())
+    for slot in (0, 1):
+        assert slots.local_shard_specs(slot, frozenset(_HOLDS[rank][slot])) == []
+    dist.destroy_process_group()
+
+
+def test_every_process_gathers_shard_specs_for_each_slot():
+    run_multiprocess(_specs_of_two_slots, world_size=3)
 
 
 GDN = "model.layers.0.linear_attn"

@@ -13,7 +13,7 @@ from miles.ray.train.init_request import TrainerControllerInitRequest
 from miles.tinker.arguments import configure_tinker_args, validate_tinker_args
 from miles.tinker.core.service import TinkerService
 from miles.tinker.core.types import GatewayConfig
-from miles.tinker.runtime import MilesBackend
+from miles.tinker.runtime import MilesBackend, take_checkpoint_root
 from miles.tinker.server.app import build_app
 from miles.tinker.server.encoding import assert_installed_sdk_version
 from miles.utils.args.trainer_utils import compute_trainer_ckpt_load_config
@@ -53,6 +53,9 @@ async def serve(args, *, disposer: Disposer):
     # SGLang rejects inputs with len >= min(context_len - 1, kv_capacity - 1) - 5, assuming the KV pool
     # exceeds one context; a sequence sampled up to the window must still be accepted as a scoring prompt.
     max_tokens_per_sample = min(max_tokens_per_datum, engine_context_length - 7)
+    # a second gateway on this root fails here, not after the trainer and engines start; released after they stop
+    checkpoint_root_lock = take_checkpoint_root(args.tinker_checkpoint_root)
+    disposer.add(checkpoint_root_lock.close)
     capability = init_orchestration_script(ArgvOrchestratorStartupInfo.create(args), disposer=disposer)
     trainer_request = TrainerControllerInitRequest(
         num_rollout=args.num_rollout,
