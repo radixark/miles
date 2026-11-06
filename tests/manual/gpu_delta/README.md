@@ -80,8 +80,10 @@ performs the required initial sync, then runs five rollouts with deterministic
 rewards. Four GPUs train and two TP2/DP1/EP1 engines use the remaining four GPUs.
 Attention, routed experts and BF16 shared experts use TP2. DCP2 uses TRT-LLM DSA
 prefill/decode with replicated Q projection, covering its derived Q/K weights.
-GPU-delta supports DCP groups contained within attention TP; pipeline parallelism
-and prefill context parallelism remain unsupported. The test checks every TP rank's
+GPU-delta supports DCP groups contained within attention TP and plain prefill CP.
+Pipeline parallelism and CP's optional decode-attention-TP weight-slice cache remain
+unsupported. This test keeps TP2/DCP2; prefill CP has unit coverage only.
+The test checks every TP rank's
 warm apply, including zero new Triton compilations. Its 300 ms gate covers both
 rank scheduler pause and each engine's combined apply/resume interval, including
 all-TP acknowledgement before admission reopens. The change gate excludes the
