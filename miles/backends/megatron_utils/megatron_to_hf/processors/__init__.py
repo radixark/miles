@@ -1,3 +1,5 @@
+from miles.utils.timer import Timer
+
 from .padding_remover import remove_padding
 from .quantizer_compressed_tensors import quantize_params_compressed_tensors
 from .quantizer_fp8 import quantize_params_fp8
@@ -17,14 +19,20 @@ __all__ = [
 def quantize_params(args, megatron_name, converted_named_params, quantization_config, packed_weight_basenames=None):
     if quantization_config is None:
         return converted_named_params
-    elif quantization_config["quant_method"] == "fp8":
-        return quantize_params_fp8(args, megatron_name, converted_named_params, quantization_config)
-    elif quantization_config["quant_method"] == "mxfp8":
-        return quantize_params_mxfp8(args, megatron_name, converted_named_params, quantization_config)
-    elif quantization_config.get("quant_algo") == "NVFP4" or quantization_config["quant_method"] == "nvfp4":
-        return quantize_params_nvfp4(args, megatron_name, converted_named_params, quantization_config)
-    elif quantization_config["quant_method"] == "compressed-tensors":
-        assert (
-            packed_weight_basenames is not None
-        ), "compressed-tensors quantization needs the checkpoint's packed weight names"
-        return quantize_params_compressed_tensors(converted_named_params, quantization_config, packed_weight_basenames)
+    # Aggregate host-side quantization work; HF conversion and communication are
+    # outside this boundary, and CUDA completion is not forced per parameter.
+    # The parent excludes other callers such as HF snapshot export.
+    with Timer().accumulate("update_weights_quantization", parent="update_weights"):
+        if quantization_config["quant_method"] == "fp8":
+            return quantize_params_fp8(args, megatron_name, converted_named_params, quantization_config)
+        elif quantization_config["quant_method"] == "mxfp8":
+            return quantize_params_mxfp8(args, megatron_name, converted_named_params, quantization_config)
+        elif quantization_config.get("quant_algo") == "NVFP4" or quantization_config["quant_method"] == "nvfp4":
+            return quantize_params_nvfp4(args, megatron_name, converted_named_params, quantization_config)
+        elif quantization_config["quant_method"] == "compressed-tensors":
+            assert (
+                packed_weight_basenames is not None
+            ), "compressed-tensors quantization needs the checkpoint's packed weight names"
+            return quantize_params_compressed_tensors(
+                converted_named_params, quantization_config, packed_weight_basenames
+            )

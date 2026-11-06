@@ -1,7 +1,7 @@
 import logging
 from contextlib import contextmanager
 from functools import wraps
-from time import time
+from time import perf_counter, time
 
 import torch.distributed
 
@@ -51,6 +51,23 @@ class Timer(metaclass=SingletonMeta):
 
     def add(self, name, elapsed_time):
         self.timers[name] = self.timers.get(name, 0) + elapsed_time
+
+    @contextmanager
+    def accumulate(self, name, *, parent=None):
+        """Accumulate host seconds without per-call logs, events or device sync.
+
+        Use for frequent short operations whose aggregate belongs in perf metrics.
+        CUDA work can remain queued when the operation returns. If parent is
+        specified, record only calls entered while that timer is active.
+        """
+        if parent is not None and parent not in self.start_time:
+            yield
+            return
+        started = perf_counter()
+        try:
+            yield
+        finally:
+            self.add(name, perf_counter() - started)
 
     def log_dict(self):
         return self.timers

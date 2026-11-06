@@ -3,7 +3,14 @@ from functools import lru_cache
 
 import torch
 
-from miles.utils.nvfp4 import NVFP4_GROUP_SIZE, nvfp4_quantize_1d, nvfp4_quantize_1d_pair
+from miles.utils.nvfp4 import (
+    NVFP4_GROUP_SIZE,
+    nvfp4_quantize_1d,
+    nvfp4_quantize_1d_batch,
+    nvfp4_quantize_1d_pair,
+    nvfp4_quantize_1d_pair_batch,
+)
+from miles.utils.timer import Timer
 
 GATED_PAIR_SUFFIXES = {
     ".gate_proj.weight": "gate",
@@ -51,6 +58,13 @@ def _is_ignored(name: str, ignore_rules: list[str], literal_rules: frozenset[str
 
 
 def quantize_params_nvfp4(args, megatron_name, converted_named_params, quantization_config):
+    _validate_nvfp4_config(args, quantization_config)
+    if _is_nvfp4_expert(args, megatron_name):
+        return _quantize_moe_params(converted_named_params, _get_ignore_rules(quantization_config))
+    return converted_named_params
+
+
+def _validate_nvfp4_config(args, quantization_config):
     assert quantization_config is not None
     assert quantization_config.get("quant_algo") == "NVFP4" or quantization_config.get("quant_method") == "nvfp4"
     if bool(
@@ -58,18 +72,18 @@ def quantize_params_nvfp4(args, megatron_name, converted_named_params, quantizat
     ):  # config-access-exempt: FP4 option names differ across Megatron versions
         raise NotImplementedError("fp4-param-gather is unsupported for Miles NVFP4 checkpoint export.")
 
+
+def _is_nvfp4_expert(args, megatron_name):
     if args.extra_high_precision_layers_megatron:
         for layer_name in args.extra_high_precision_layers_megatron:
             if layer_name in megatron_name:
-                return converted_named_params
-
-    ignore_rules = _get_ignore_rules(quantization_config)
+                return False
 
     # Only the main language decoder is eligible; MTP and modality towers stay in high precision.
     decoder_layers_pattern = r"(?:module\.)*(?:language_model\.)?decoder\.layers\.(\d+)\.(.+)"
     match = re.match(decoder_layers_pattern, megatron_name)
     if not match:
-        return converted_named_params
+        return False
     layer_idx, rest = match.groups()
 
     # Skip quantization for BF16 tail of main decoder layers.
@@ -86,7 +100,7 @@ def quantize_params_nvfp4(args, megatron_name, converted_named_params, quantizat
         head_end_idx = num_layers_at_start_in_bf16
         tail_start_idx = num_layers - num_layers_at_end_in_bf16
         if int(layer_idx) < head_end_idx or int(layer_idx) >= tail_start_idx:
-            return converted_named_params
+            return False
 
     # routed experts
     expert_pattern = r"mlp.experts\.(.+)\.weight(\d+)"
@@ -97,22 +111,93 @@ def quantize_params_nvfp4(args, megatron_name, converted_named_params, quantizat
             "linear_fc1",
             "linear_fc2",
         ]:
-            return _quantize_moe_params(converted_named_params, ignore_rules)
+            return True
 
-    # for other parameters, we just return the original converted_named_params
-    return converted_named_params
+    return False
+
+
+def quantize_expert_params_nvfp4(args, converted_units, quantization_config):
+    """Quantize one bounded expert batch while retaining each source's HF unit."""
+    # This path bypasses quantize_params, so accumulate its host time once here.
+    with Timer().accumulate("update_weights_quantization", parent="update_weights"):
+        return _quantize_expert_params_nvfp4(args, converted_units, quantization_config)
+
+
+def _quantize_expert_params_nvfp4(args, converted_units, quantization_config):
+    _validate_nvfp4_config(args, quantization_config)
+    ignore_rules = _get_ignore_rules(quantization_config)
+    literal_rules = _literal_ignore_rules(tuple(ignore_rules))
+    units = [params for _, params in converted_units]
+    selected = []
+    pairs, pair_targets = [], []
+    singles, single_targets = [], []
+    for index, (megatron_name, params) in enumerate(converted_units):
+        if not _is_nvfp4_expert(args, megatron_name):
+            continue
+        eligible = [
+            (name, weight)
+            for name, weight in params
+            if _should_quantize_param(name, weight, ignore_rules, literal_rules)
+        ]
+        # Direct converters emit matrices. Keep the scalar processor's handling
+        # of stacked/other ranks for callers that already supply those layouts.
+        if any(weight.dim() != 2 for _, weight in eligible):
+            units[index] = _quantize_moe_params(params, ignore_rules)
+            continue
+        candidates = _gated_candidates(params, ignore_rules, literal_rules)
+        paired_names = set()
+        for roles in candidates.values():
+            gate_name, gate = roles["gate"]
+            up_name, up = roles["up"]
+            pairs.append((gate, up))
+            pair_targets.append((index, gate_name, up_name))
+            paired_names.update((gate_name, up_name))
+        for name, weight in eligible:
+            if name not in paired_names:
+                singles.append(weight)
+                single_targets.append((index, name))
+        selected.append(index)
+
+    outputs = [{} for _ in units]
+    pair_outputs = nvfp4_quantize_1d_pair_batch(pairs) if pairs else []
+    for (index, gate_name, up_name), (gate, up) in zip(pair_targets, pair_outputs, strict=True):
+        outputs[index][gate_name] = gate
+        outputs[index][up_name] = up
+    single_outputs = nvfp4_quantize_1d_batch(singles) if singles else []
+    for (index, name), output in zip(single_targets, single_outputs, strict=True):
+        outputs[index][name] = output
+    for index in selected:
+        units[index] = _format_quantized_params(units[index], outputs[index])
+    return units
 
 
 def _quantize_moe_params(converted_named_params, ignore_rules):
     # Build/hash the policy once per conversion batch, not once per weight check.
     literal_rules = _literal_ignore_rules(tuple(ignore_rules))
-    gated_candidates = {}
+    candidates = _gated_candidates(converted_named_params, ignore_rules, literal_rules)
+    outputs = {}
+    for roles in candidates.values():
+        gate_name, gate_weight = roles["gate"]
+        up_name, up_weight = roles["up"]
+        outputs[gate_name], outputs[up_name] = nvfp4_quantize_1d_pair(gate_weight, up_weight)
+    quantized_params = []
+    for name, param in converted_named_params:
+        if not _should_quantize_param(name, param, ignore_rules, literal_rules):
+            quantized_params.append((name, param))
+            continue
+        output = outputs[name] if name in outputs else quantize_nvfp4(param)
+        quantized_params.extend(_named_quantized_params(name, output))
+    return quantized_params
+
+
+def _gated_candidates(converted_named_params, ignore_rules, literal_rules):
+    candidates = {}
     for converted_name, param in converted_named_params:
         base, role = _split_gated_pair_name(converted_name)
         if base is None or role is None:
             continue
         if _should_quantize_param(converted_name, param, ignore_rules, literal_rules):
-            roles = gated_candidates.setdefault(base, {})
+            roles = candidates.setdefault(base, {})
             if role in roles:
                 raise ValueError(
                     f"NVFP4 requires a single complete gate/up pair per conversion batch; "
@@ -120,34 +205,34 @@ def _quantize_moe_params(converted_named_params, ignore_rules):
                 )
             roles[role] = (converted_name, param)
 
-    paired_outputs = {}
-    for base, roles in gated_candidates.items():
+    for base, roles in candidates.items():
         if set(roles) != {"gate", "up"}:
             present = ", ".join(sorted(roles))
             raise ValueError(
                 f"NVFP4 requires gate/up tensors to be quantized together so they can share "
                 f"one global amax; found only {{{present}}} for {base}."
             )
-        gate_name, gate_weight = roles["gate"]
-        up_name, up_weight = roles["up"]
-        gate_output, up_output = nvfp4_quantize_1d_pair(gate_weight, up_weight)
-        paired_outputs[gate_name] = gate_output
-        paired_outputs[up_name] = up_output
+    return candidates
 
+
+def _format_quantized_params(converted_named_params, outputs):
     quantize_named_params = []
     for converted_name, param in converted_named_params:
-        if not _should_quantize_param(converted_name, param, ignore_rules, literal_rules):
+        if converted_name not in outputs:
             quantize_named_params.append((converted_name, param))
             continue
-        if converted_name in paired_outputs:
-            qweight, block_scale, weight_scale_2 = paired_outputs[converted_name]
-        else:
-            qweight, block_scale, weight_scale_2 = quantize_nvfp4(param)
-        quantize_named_params.append((converted_name, qweight))
-        quantize_named_params.append((converted_name.replace(".weight", ".weight_scale"), block_scale))
-        quantize_named_params.append((converted_name.replace(".weight", ".weight_scale_2"), weight_scale_2))
+        quantize_named_params.extend(_named_quantized_params(converted_name, outputs[converted_name]))
 
     return quantize_named_params
+
+
+def _named_quantized_params(name, output):
+    qweight, block_scale, weight_scale_2 = output
+    return [
+        (name, qweight),
+        (name.replace(".weight", ".weight_scale"), block_scale),
+        (name.replace(".weight", ".weight_scale_2"), weight_scale_2),
+    ]
 
 
 def _should_quantize_param(name, weight, ignore_rules, literal_rules=None):

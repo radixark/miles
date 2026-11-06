@@ -12,7 +12,7 @@ from tqdm import tqdm
 
 from miles.backends.megatron_utils.lora.native import export_lora_hf_named
 from miles.backends.megatron_utils.lora.native.modules.linear import iter_adapters
-from miles.backends.megatron_utils.megatron_to_hf import convert_to_hf
+from miles.backends.megatron_utils.megatron_to_hf import convert_experts_to_hf, convert_to_hf
 from miles.backends.megatron_utils.named_weights import named_params_and_buffers
 from miles.backends.megatron_utils.sglang import monkey_patch_torch_reductions
 from miles.backends.megatron_utils.update_weight.expert_gather import ExpertGather
@@ -110,7 +110,7 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
                     self.args, batch.param_infos, weights, gather_pp=self.placement.gather_pp
                 )
                 if materialize:
-                    yield from self._convert_to_hf_param_units(named_params)
+                    yield from self._convert_expert_to_hf_param_units(named_params)
                 del named_params
             pbar.update(1)
         pbar.close()
@@ -127,7 +127,7 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
             for info in batch.param_infos
             if info.src_rank == rank
         )
-        units = list(self._convert_to_hf_param_units(local_params))
+        units = list(self._convert_expert_to_hf_param_units(local_params))
         for gather in batch.gathers:
             units = gather(units, device=device)
         return units
@@ -156,6 +156,15 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
                     self.args, self.model_name, name, param, self.quantization_config, self.packed_weight_basenames
                 )
             )
+
+    def _convert_expert_to_hf_param_units(self, named_params):
+        return convert_experts_to_hf(
+            self.args,
+            self.model_name,
+            named_params,
+            self.quantization_config,
+            self.packed_weight_basenames,
+        )
 
 
 def _load_or_allocate_params(param_infos: Sequence[ParamInfo], megatron_local_weights) -> list[torch.Tensor]:
