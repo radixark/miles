@@ -1,3 +1,4 @@
+import functools
 import logging
 from types import SimpleNamespace
 
@@ -116,7 +117,9 @@ async def test_session_identity_for_penalty_logs_is_owned_by_tracer(monkeypatch,
 @pytest.mark.asyncio
 async def test_a_max_seq_len_warns_once_that_miles_does_not_stop_the_agent(monkeypatch, caplog):
     """The limit only reaches the agent as metadata and truncates collected samples; the warning says so once."""
-    agentic_tool_call._warn_max_seq_len_does_not_stop_the_agent.cache_clear()
+    # a cache of its own, so neither earlier nor later tests share the once-per-process state
+    warn = agentic_tool_call._warn_max_seq_len_does_not_stop_the_agent
+    monkeypatch.setattr(agentic_tool_call, warn.__name__, functools.cache(warn.__wrapped__))
     sample = Sample(status=Sample.Status.COMPLETED, response_length=1, tokens=[1])
     tracer = _Tracer(SamplesReply(samples=[sample], session_metadata={}, empty_reason=None))
     _patch_agent(monkeypatch, tracer)

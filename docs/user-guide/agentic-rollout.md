@@ -194,8 +194,8 @@ payloads can become very large.
 
 The session server leaves the harness's control flow alone. It never lowers a turn's
 `max_tokens`, refuses a turn for its length, or cuts a turn short: how long an episode runs
-is the harness's decision. A request the session cannot serve, such as one that sets a TITO
-control field, fails loud with an HTTP error.
+is the harness's decision. A request the session cannot serve, such as one that sets
+`input_ids`, fails loud with an HTTP error.
 
 `--max-seq-len` follows this rule. Miles passes it to your agent as
 `metadata["max_seq_len"]` and truncates each collected trajectory to it after the episode,
