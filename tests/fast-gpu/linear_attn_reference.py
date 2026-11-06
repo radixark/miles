@@ -173,15 +173,16 @@ def gather(local: torch.Tensor, dim: int, group) -> torch.Tensor:
     return torch.cat(parts, dim=dim)
 
 
-def build_layer(ref, config, allgather_cp: bool = True) -> LinearAttentionLayer:
-    """A head-sharded layer holding this TP rank's shard of ``ref``'s weights, identity input norm."""
+def build_layer(ref, config, allgather_cp: bool = True, backend: str = "fla") -> LinearAttentionLayer:
+    """A head-sharded layer holding this TP rank's shard of ``ref``'s weights, identity input norm; ``backend``
+    picks the GDN kernel of the sharded core (the reference always runs fla)."""
     pg = ProcessGroupCollection.use_mpu_process_groups(required_pgs=["tp", "cp"])
     tp = pg.tp
     if isinstance(ref, ReplicatedKDA):
         core = KimiDeltaAttention(config, ref.heads, CONV, EPS, tp, gate_lower_bound=KDA_LOWER_BOUND)
     else:
         core_cls = Qwen3_5GatedDeltaNet if ref.family == "qwen3_5" else Qwen3NextGatedDeltaNet
-        core = core_cls(config, ref.heads, CONV, EPS, tp)
+        core = core_cls(config, ref.heads, CONV, EPS, tp, backend=backend)
     with torch.no_grad():
         for name, full in sharded_projections(ref).items():
             getattr(core, name).weight.copy_(shard(full, 0, tp))

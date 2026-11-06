@@ -30,7 +30,7 @@ class ReplicatedGatedDeltaNet(nn.Module):
     def __init__(self, config, layer_idx: int, args=None):
         super().__init__()
         self.gdn_backend = args.linear_attention_backend if args is not None else "fla"
-        self.chunk_gated_delta_rule = gdn_kernel(self.gdn_backend)
+        self.chunk_gated_delta_rule = gdn_kernel(self.gdn_backend, args=args)
         self.hidden_size = config.hidden_size
         self.num_v_heads = config.linear_num_value_heads
         self.num_k_heads = config.linear_num_key_heads
@@ -129,9 +129,9 @@ class ReplicatedGatedDeltaNet(nn.Module):
             key = key.repeat_interleave(self.num_v_heads // self.num_k_heads, dim=2)
 
         if cp_context is not None:
-            if self.gdn_backend != "fla":
+            if self.gdn_backend not in ("fla", "cake"):
                 raise NotImplementedError(
-                    f"GDN context parallelism requires the 'fla' backend, got {self.gdn_backend!r}."
+                    f"GDN context parallelism requires the 'fla' or 'cake' backend, got {self.gdn_backend!r}."
                 )
             core_attn_out, _ = self.chunk_gated_delta_rule(
                 query,
