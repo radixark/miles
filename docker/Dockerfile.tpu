@@ -19,7 +19,8 @@ ARG TORCHVISION_VERSION=0.29.1
 # the triton torch 2.14 pairs with; torchtitan imports triton unconditionally
 ARG TRITON_VERSION=3.8.0
 ARG TORCHTITAN_REPO=pytorch/torchtitan
-# TORCHTITAN_COMMIT and WHEELS_TAG equal docker/Dockerfile's (tests/fast/test_training_images.py checks it)
+# TORCHTITAN_COMMIT and WHEELS_TAG equal docker/Dockerfile's (tests/fast/test_training_images.py checks it); bumping
+# TORCHTITAN_COMMIT means rebasing docker/tpu_patch/torchtitan_torch_tpu.patch, which applies with --fuzz=0
 ARG TORCHTITAN_COMMIT=45e33cd413b64cb37a7840cfd3c9765d3c639ae1
 ARG MILES_COMMIT=main
 ARG WHEELS_REPO=radixark/miles-wheels

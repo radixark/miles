@@ -1,3 +1,13 @@
+torchtitan on torch_tpu, applied by docker/Dockerfile.tpu at TORCHTITAN_COMMIT; rebase it whenever that commit moves.
+`patch` skips this text. Each hunk, and where it should end up:
+
+- fsdp.py `_cpu_offload_policy`, force-SUM gradient reduction: generic torch_tpu support (pin_memory deadlocks on
+  TPU; tpu_dist has no PREMUL_SUM). Upstream to torchtitan.
+- tools/utils.py `_TpuDeviceModule`, `integer_cumsum`, and moe.py's offsets through `integer_cumsum`: generic
+  torch_tpu support (no torch.tpu device module; no integer cumsum lowering). Upstream to torchtitan.
+- linear.py `_TpuGroupedMM`: works around torch_tpu's grouped matmul (wrong for groups under 256 rows, no output
+  for empty groups). Drop once torch_tpu fixes the kernel.
+
 diff --git a/torchtitan/distributed/fsdp.py b/torchtitan/distributed/fsdp.py
 index 0f6dd9ee2..e472b3067 100644
 --- a/torchtitan/distributed/fsdp.py
