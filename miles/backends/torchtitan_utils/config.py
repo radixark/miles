@@ -3,6 +3,7 @@ import inspect
 import logging
 import os
 import tempfile
+from pathlib import Path
 from types import ModuleType
 
 import torch.distributed as dist
@@ -135,8 +136,11 @@ def _optim_config(args: TrainerConfig) -> Optim.Config:
     )
 
 
-def _checkpointer_config(args: TrainerConfig, *, dump_subdir: str) -> TiedCheckpointManager.Config:
+def _checkpointer_config(args: TrainerConfig, *, dump_subdir: str, with_lora: bool) -> TiedCheckpointManager.Config:
     resume_from = _latest_step_dir(args.backend.load, dump_subdir) if args.backend.load else None
+    if with_lora:
+        _assert_lora_not_resumed_by_checkpointer(args, dump_subdir, resume_from)
+        resume_from = None
     if resume_from is None:
         return TiedCheckpointManager.Config(
             last_save_model_only=False, initial_load_model_only=True, initial_load_in_hf=True
@@ -147,6 +151,30 @@ def _checkpointer_config(args: TrainerConfig, *, dump_subdir: str) -> TiedCheckp
         initial_load_model_only=False,
         initial_load_in_hf=False,
     )
+
+
+def _assert_lora_not_resumed_by_checkpointer(args: TrainerConfig, dump_subdir: str, load_step: str | None) -> None:
+    # torchtitan's checkpointer resumes from the latest step dir under --save whatever initial_load_path says
+    save_step = args.backend.save and _latest_step_dir(args.backend.save, dump_subdir)
+    if save_step:
+        raise ValueError(
+            f"--save holds the torchtitan checkpoint {save_step}, which torchtitan's checkpointer would resume from "
+            f"on its own: move {save_step} out of --save and pass its new path as --lora-adapter-path"
+        )
+    if args.lora_adapter_path is not None:
+        return
+    # a restart without --lora-adapter-path would start fresh: from the base model, overwriting any adapters
+    if load_step:
+        raise ValueError(
+            f"--load holds the torchtitan checkpoint {load_step}, which LoRA does not resume from: resume it with "
+            f"--lora-adapter-path {load_step}"
+        )
+    for flag, root in (("--load", args.backend.load), ("--save", args.backend.save)):
+        if root and any(Path(root).glob("iter_*/adapter")):
+            raise ValueError(
+                f"{flag} {root} holds LoRA adapter checkpoints (iter_*/adapter): resume one with "
+                f"--lora-adapter-path, or point {flag} elsewhere"
+            )
 
 
 def build_trainer_config(
@@ -193,7 +221,7 @@ def build_trainer_config(
             disable_cuda_graphs=True,
         ),
         optim=_optim_config(args),
-        checkpointer=_checkpointer_config(args, dump_subdir=dump_subdir),
+        checkpointer=_checkpointer_config(args, dump_subdir=dump_subdir, with_lora=with_lora),
         activation_remat=FullActivationRematConfig() if args.backend.gradient_checkpointing else None,
         loss=RLLossAdapter.Config(),
         debug=DebugConfig(seed=args.backend.seed, distinct_seed_mesh_axes=["pp", "dp_shard"]),
