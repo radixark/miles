@@ -28,6 +28,12 @@ TestMergeTokensBoundary
       the stop token, but the template also emits it as the next turn's opener).
     - Default: plain concatenation (no boundary handling).
 
+TestGLMStopTokenReplace
+    GLM-4.7-Flash and GLM-5.3: the strip replaces the sampled stop token only
+    when the appended render starts with another token. The family default
+    allows it with one warning; ``allow_stop_token_replace=False`` rejects it
+    with ``MessageValidationError``; an overlap stays silent either way.
+
 TestTokenizeAdditional
     Behavioral tests for tokenize_additional_messages — the single synthetic-prefix diff that computes incremental token IDs for the complete appended suffix.
 
@@ -48,12 +54,14 @@ TestFactory
 from __future__ import annotations
 
 import json
+import logging
 from copy import deepcopy
 from unittest.mock import MagicMock
 
 import pytest
 from transformers import AutoTokenizer
 
+from miles.rollout.session.errors import MessageValidationError
 from miles.utils.chat_template_utils import (
     TEMPLATE_DIR,
     MismatchType,
@@ -905,6 +913,12 @@ class TestDeepSeekV32IncrementalAppend:
 # ---------------------------------------------------------------------------
 
 _BND_OLD, _BND_NEW, _BND_TOOLS = _split_at(SingleToolTrajectory, 3)
+_TITO_LOGGER = "miles.utils.chat_template_utils.tito_tokenizer"
+
+
+def _tito_warnings(caplog) -> list[str]:
+    """Warnings from the TITO module; INFO records such as template resolution on a cold tokenizer cache are ignored."""
+    return [r.getMessage() for r in caplog.records if r.name == _TITO_LOGGER and r.levelno >= logging.WARNING]
 
 
 class TestMergeTokensBoundary:
@@ -937,31 +951,35 @@ class TestMergeTokensBoundary:
 
     # -- GLM47: strip ambiguous boundary tokens --
 
-    def test_glm47_strips_observation(self, glm47_tito: GLM47TITOTokenizer):
+    def test_glm47_strips_observation(self, glm47_tito: GLM47TITOTokenizer, caplog):
         """Model emits <|observation|> as stop token; merge_tokens strips the duplicate."""
         incremental = glm47_tito.tokenize_additional_messages(
             _BND_OLD, _BND_NEW, template_args=glm47_tito.default_template_args(_BND_TOOLS)
         )
-        result = glm47_tito.merge_tokens(
-            _BND_OLD,
-            _BND_NEW,
-            [100, 200, glm47_tito._observation_id],
-            template_args=glm47_tito.default_template_args(_BND_TOOLS),
-        )
+        with caplog.at_level(logging.WARNING, logger=_TITO_LOGGER):
+            result = glm47_tito.merge_tokens(
+                _BND_OLD,
+                _BND_NEW,
+                [100, 200, glm47_tito._observation_id],
+                template_args=glm47_tito.default_template_args(_BND_TOOLS),
+            )
         assert result == [100, 200] + incremental
+        assert not _tito_warnings(caplog)
 
-    def test_glm47_strips_user(self, glm47_tito: GLM47TITOTokenizer):
-        """<|user|> is also an ambiguous boundary — stripped the same way."""
+    def test_glm47_strips_user(self, glm47_tito: GLM47TITOTokenizer, caplog):
+        """<|user|> is also an ambiguous boundary — stripped the same way; before a tool message it is replaced."""
         incremental = glm47_tito.tokenize_additional_messages(
             _BND_OLD, _BND_NEW, template_args=glm47_tito.default_template_args(_BND_TOOLS)
         )
-        result = glm47_tito.merge_tokens(
-            _BND_OLD,
-            _BND_NEW,
-            [100, 200, glm47_tito._user_id],
-            template_args=glm47_tito.default_template_args(_BND_TOOLS),
-        )
+        with caplog.at_level(logging.WARNING, logger=_TITO_LOGGER):
+            result = glm47_tito.merge_tokens(
+                _BND_OLD,
+                _BND_NEW,
+                [100, 200, glm47_tito._user_id],
+                template_args=glm47_tito.default_template_args(_BND_TOOLS),
+            )
         assert result == [100, 200] + incremental
+        assert len(_tito_warnings(caplog)) == 1
 
     def test_glm47_no_strip_otherwise(self, glm47_tito: GLM47TITOTokenizer):
         """Non-boundary trailing token is preserved."""
@@ -996,6 +1014,116 @@ class TestMergeTokensBoundary:
             _BND_OLD, _BND_NEW, [], template_args=qwen3_tito.default_template_args(_BND_TOOLS)
         )
         assert result == incremental
+
+
+# ---------------------------------------------------------------------------
+# TestGLMStopTokenReplace — the strip replaces the sampled stop token only when
+# the appended render starts with a different token
+# ---------------------------------------------------------------------------
+
+_GLM_MODELS = [
+    pytest.param("zai-org/GLM-4.7-Flash", TITOTokenizerType.GLM47, id="glm47_flash"),
+    pytest.param("zai-org/GLM-5.3", TITOTokenizerType.GLM53, id="glm53"),
+]
+
+# sys, user, assistant(tool_calls)
+_STORED_TOOL_CALL = SingleToolTrajectory.MESSAGES[:3]
+# sys, user, assistant(text)
+_STORED_TEXT = [
+    *SingleToolTrajectory.MESSAGES[:2],
+    {"role": "assistant", "content": "Let me check the weather."},
+]
+_APPENDED = {
+    "tool": SingleToolTrajectory.MESSAGES[3],
+    "user": {"role": "user", "content": "Please answer directly."},
+}
+
+# (stop token, stored history, appended role, the stop is replaced)
+_GLM_BOUNDARY_CASES = [
+    pytest.param("<|observation|>", _STORED_TOOL_CALL, "tool", False, id="observation_then_tool"),
+    pytest.param("<|observation|>", _STORED_TOOL_CALL, "user", True, id="observation_then_user"),
+    pytest.param("<|user|>", _STORED_TEXT, "user", False, id="user_then_user"),
+    pytest.param("<|user|>", _STORED_TOOL_CALL, "tool", True, id="user_then_tool"),
+]
+
+
+def _glm_tito(model_id: str, tito_type: TITOTokenizerType, *, allow: bool | None = None) -> TITOTokenizer:
+    return get_tito_tokenizer(
+        _get_tokenizer(model_id, tito_type), tokenizer_type=tito_type, allow_stop_token_replace=allow
+    )
+
+
+def _merge_at_stop(tito: TITOTokenizer, stop_token: str, stored: list[dict], appended_role: str):
+    """Merge a synthetic prefix that ends with *stop_token*; return ``(result, expected_after_strip)``."""
+    new = [*stored, _APPENDED[appended_role]]
+    template_args = tito.default_template_args(SingleToolTrajectory.TOOLS)
+    incremental = tito.tokenize_additional_messages(stored, new, template_args=template_args)
+    stop_id = tito.tokenizer.convert_tokens_to_ids(stop_token)
+    result = tito.merge_tokens(stored, new, [100, 200, stop_id], template_args=template_args)
+    return result, [100, 200] + incremental
+
+
+@pytest.mark.parametrize("model_id,tito_type", _GLM_MODELS)
+class TestGLMStopTokenReplace:
+    @pytest.mark.parametrize("stop_token,stored,appended_role,replaced", _GLM_BOUNDARY_CASES)
+    def test_default_allows_and_warns_only_on_replacement(
+        self, caplog, model_id, tito_type, stop_token, stored, appended_role, replaced
+    ):
+        """The GLM default keeps today's tokens and logs one warning per replaced stop token."""
+        tito = _glm_tito(model_id, tito_type)
+        assert tito.allow_stop_token_replace is True
+
+        with caplog.at_level(logging.WARNING, logger=_TITO_LOGGER):
+            result, expected = _merge_at_stop(tito, stop_token, stored, appended_role)
+
+        assert result == expected
+        if not replaced:
+            assert not _tito_warnings(caplog)
+            return
+        warnings = _tito_warnings(caplog)
+        assert len(warnings) == 1
+        message = warnings[0]
+        replacement = tito.tokenizer.convert_ids_to_tokens(expected[2])
+        assert replacement != stop_token
+        assert f"sampled stop token {stop_token} is replaced by {replacement}" in message
+
+    @pytest.mark.parametrize("stop_token,stored,appended_role,replaced", _GLM_BOUNDARY_CASES)
+    def test_disallowed_rejects_only_replacement(
+        self, caplog, model_id, tito_type, stop_token, stored, appended_role, replaced
+    ):
+        """--no-allow-stop-token-replace turns a replacement into a 400; an overlap still merges silently."""
+        tito = _glm_tito(model_id, tito_type, allow=False)
+
+        with caplog.at_level(logging.WARNING, logger=_TITO_LOGGER):
+            if replaced:
+                with pytest.raises(MessageValidationError, match="--no-allow-stop-token-replace") as exc_info:
+                    _merge_at_stop(tito, stop_token, stored, appended_role)
+                assert exc_info.value.status_code == 400
+                assert f"sampled stop token {stop_token} is replaced" in str(exc_info.value)
+            else:
+                result, expected = _merge_at_stop(tito, stop_token, stored, appended_role)
+                assert result == expected
+
+        assert not _tito_warnings(caplog)
+
+    def test_non_boundary_stop_is_kept(self, caplog, model_id, tito_type):
+        """A prefix that does not end in a boundary token is neither stripped nor checked."""
+        tito = _glm_tito(model_id, tito_type, allow=False)
+        new = [*_STORED_TEXT, _APPENDED["user"]]
+        incremental = tito.tokenize_additional_messages(_STORED_TEXT, new)
+
+        with caplog.at_level(logging.WARNING, logger=_TITO_LOGGER):
+            result = tito.merge_tokens(_STORED_TEXT, new, [100, 200, 300])
+
+        assert result == [100, 200, 300] + incremental
+        assert not _tito_warnings(caplog)
+
+
+@pytest.mark.parametrize("tito_type", list(TITOTokenizerType))
+def test_only_glm_families_allow_stop_token_replace_by_default(tito_type):
+    """GLM is the only family whose merge_tokens strips a sampled stop token, so only it defaults to allowing it."""
+    expected = tito_type in (TITOTokenizerType.GLM47, TITOTokenizerType.GLM53)
+    assert TITOTokenizerType.get_tokenizer_class(tito_type).allow_stop_token_replace is expected
 
 
 # ---------------------------------------------------------------------------

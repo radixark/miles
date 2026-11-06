@@ -647,6 +647,7 @@ def _serve_router(extra_args: dict | None = None):
             "hf_checkpoint": "Qwen/Qwen3-0.6B",
             "apply_chat_template_kwargs": {"enable_thinking": False},
             "tito_model": "default",
+            "allow_stop_token_replace": False,
             "pause_generation_mode": "retract",
         }
         config = make_session_server_config(
