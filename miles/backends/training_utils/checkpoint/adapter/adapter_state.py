@@ -78,6 +78,18 @@ def gloo_group():
     return get_gloo_group() if dist.is_initialized() else None
 
 
+def is_rank0() -> bool:
+    return not dist.is_initialized() or dist.get_rank() == 0
+
+
+def broadcast_from_rank0(value):
+    if not dist.is_initialized():
+        return value
+    box = [value]
+    dist.broadcast_object_list(box, src=0, group=gloo_group())
+    return box[0]
+
+
 class RanksFailedError(RuntimeError):
     pass
 
@@ -183,7 +195,7 @@ def _agreed_state_dict(state: AdapterState, *, for_save: bool) -> dict:
 def _save_adapter_state(directory: Path, state: AdapterState) -> None:
     state_dict = _agreed_state_dict(state, for_save=True)
     step = _agree_on_step(state.step)
-    if not dist.is_initialized() or dist.get_rank() == 0:
+    if is_rank0():
         state_dict[STEP_KEY] = torch.tensor(step, dtype=torch.int64)
     dcp.save(
         state_dict,
