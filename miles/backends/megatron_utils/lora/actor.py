@@ -5,7 +5,7 @@ from miles.backends.megatron_utils.actor import MegatronTrainRayActor
 from miles.backends.megatron_utils.lora import checkpoint as lora_checkpoint
 from miles.backends.megatron_utils.lora import model as lora_model
 from miles.backends.megatron_utils.lora.optimizer import SlotOptimizer
-from miles.backends.training_utils.checkpoint.adapter.adapter_dir import write_sampler_export
+from miles.backends.training_utils.checkpoint.adapter.adapter_dir import save_sampler_export
 from miles.backends.training_utils.checkpoint.adapter.commit import UncommittedAdapterDir
 from miles.backends.training_utils.data.rollout import get_rollout_data
 from miles.backends.training_utils.parallel import get_parallel_state
@@ -77,7 +77,7 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
         assert parametrization.lora_rank == self.adapter_slots.lora_rank(
             slot
         ), "the gateway and the slot disagree on rank"
-        return write_sampler_export(
+        return save_sampler_export(
             root=Path(root),
             name=name,
             members=self.adapter_slots,

@@ -237,7 +237,7 @@ def _write_bf16_export(
             )
 
 
-def write_sampler_export(
+def save_sampler_export(
     root: Path,
     name: str,
     members: AdapterCheckpointMembers,
