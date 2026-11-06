@@ -16,11 +16,14 @@ import pytest
 import torch
 from tests.fast.fixtures.args_fixtures import parse_megatron_test_config
 from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config, write_megatron_config_trainers
+from tests.fast.fixtures.sglang_config_fixtures import make_sglang_config
 
 from miles.backends.fsdp_utils.arguments import build_fsdp_parser
 from miles.backends.megatron_utils.megatron_config import MegatronConfig, get_megatron_arg_parser
 from miles.backends.sglang_utils.arguments import add_sglang_arguments, collect_eval_sglang_overrides
 from miles.backends.sglang_utils.arguments import validate_args as validate_sglang_args
+from miles.backends.sglang_utils.sglang_api_client import WorkerType
+from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig, SglangConfig
 from miles.backends.torchtitan_utils.arguments import build_torchtitan_parser
 from miles.router.backend import RouterKind
 from miles.utils.args.configs.router import RouterConfig
@@ -28,6 +31,7 @@ from miles.utils.args.trainer_utils import compute_trainer_ckpt_load_config
 from miles.utils.arguments import (
     CAKE_BACKEND_ARGS,
     FULLY_ASYNC_ROLLOUT_PATH,
+    _check_stop_token_replace_streaming_session,
     _compute_custom_inference_engine_provider_path,
     _compute_rollout_external,
     _maybe_apply_dumper_overrides,
@@ -2543,6 +2547,119 @@ class TestPartitionRadixCacheByRolloutCallResolution:
             miles_validate_args(args)
             assert args.namespaced_radix_cache is False
             assert args.rollout_function_path == "miles.rollout.sglang_rollout.generate_rollout"
+
+
+class TestAllowStopTokenReplaceResolution:
+    def _parse(self, extra):
+        parser = get_megatron_arg_parser()
+        return parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
+
+    def test_it_is_unset_before_validation(self):
+        """The flag is tri-state, so parsing alone must not decide it."""
+        assert self._parse(["--use-session-server"]).allow_stop_token_replace is None
+
+    @pytest.mark.parametrize(
+        ("tito_model", "expected"),
+        [("glm47", True), ("glm53", True), ("qwen3", False), ("default", False)],
+    )
+    def test_an_omitted_flag_takes_the_family_default(self, caplog, tito_model, expected):
+        """Only GLM strips a sampled stop token, so only its families allow the replacement by default."""
+        args = self._parse(["--use-session-server", "--tito-model", tito_model])
+
+        with caplog.at_level(logging.INFO, logger="miles.utils.arguments"):
+            miles_validate_args(args)
+
+        assert args.allow_stop_token_replace is expected
+        verdict = "allowed" if expected else "rejected"
+        assert any(
+            record.getMessage()
+            == f"Session server stop-token replacement {verdict} (--tito-model={tito_model} default)"
+            for record in caplog.records
+        )
+
+    @pytest.mark.parametrize(
+        ("extra", "expected"),
+        [
+            (["--tito-model", "glm47", "--no-allow-stop-token-replace"], False),
+            (["--tito-model", "qwen3", "--allow-stop-token-replace"], True),
+        ],
+    )
+    def test_an_explicit_flag_wins_over_the_family_default(self, extra, expected):
+        args = self._parse(["--use-session-server", *extra])
+
+        miles_validate_args(args)
+
+        assert args.allow_stop_token_replace is expected
+
+    @pytest.mark.parametrize("flag", ["--allow-stop-token-replace", "--no-allow-stop-token-replace"])
+    def test_an_explicit_flag_requires_the_session_server(self, flag):
+        """Without a session server nothing reads the flag, so setting it is refused instead of ignored."""
+        args = self._parse([flag])
+        with pytest.raises(ValueError, match="--allow-stop-token-replace requires --use-session-server"):
+            miles_validate_args(args)
+
+    def test_no_session_server_resolves_to_off(self):
+        args = self._parse([])
+
+        miles_validate_args(args)
+
+        assert args.allow_stop_token_replace is False
+
+    @pytest.mark.parametrize("allowed", [False, True])
+    @pytest.mark.parametrize("streaming", [False, True])
+    def test_an_allowed_replacement_rejects_a_streaming_session(self, allowed, streaming):
+        """A streaming session extends the engine's tokens append-only, which a replaced stop token breaks."""
+        args = argparse.Namespace(allow_stop_token_replace=allowed, tito_model="glm47")
+        sglang = make_sglang_config(enable_streaming_session=streaming)
+
+        if allowed and streaming:
+            with pytest.raises(ValueError, match="cannot be combined with --sglang-enable-streaming-session"):
+                _check_stop_token_replace_streaming_session(args, sglang=sglang)
+        else:
+            _check_stop_token_replace_streaming_session(args, sglang=sglang)
+
+    def test_a_server_group_override_enables_the_streaming_session_too(self):
+        """A --sglang-config group override reaches the engine just like the CLI flag."""
+        group = ServerGroupConfig(
+            worker_type=WorkerType.REGULAR,
+            num_gpus_per_engine=1,
+            overrides={"enable_streaming_session": True},
+            needs_offload=False,
+        )
+        model = ModelConfig(name="default", model_path=None, server_groups=[group], update_weights=True)
+        sglang = SglangConfig(models=[model], base_args={"enable_streaming_session": False})
+        args = argparse.Namespace(allow_stop_token_replace=True, tito_model="glm47")
+
+        with pytest.raises(ValueError, match="cannot be combined with --sglang-enable-streaming-session"):
+            _check_stop_token_replace_streaming_session(args, sglang=sglang)
+
+
+def test_the_full_parse_rejects_glm_with_a_streaming_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The streaming-session check runs on the real parse path, after the SGLang config is resolved."""
+    monkeypatch.setattr(torch, "__version__", "2.14.0")
+    argv = [
+        "test",
+        "--train-backend",
+        "fsdp",
+        "--rollout-batch-size",
+        "2",
+        "--num-rollout",
+        "1",
+        "--actor-num-gpus-per-node",
+        "1",
+        "--micro-batch-size",
+        "1",
+        "--rollout-max-response-len",
+        "1024",
+        "--use-session-server",
+        "--tito-model",
+        "glm47",
+        "--sglang-enable-streaming-session",
+    ]
+    monkeypatch.setattr(sys, "argv", argv)
+
+    with pytest.raises(ValueError, match="cannot be combined with --sglang-enable-streaming-session"):
+        parse_args_and_get_parser()
 
 
 class TestTitoFixedTemplateConfiguration:
