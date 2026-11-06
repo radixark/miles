@@ -2109,7 +2109,7 @@ async def test_a_pickle_in_a_file_import_never_reaches_the_trainer(tmp_path, mon
         # None: a new model's empty slot
         if ckpt_path is not None:
             trainer_read.append(sorted(str(p.relative_to(ckpt_path)) for p in Path(ckpt_path).rglob("*")))
-            # every trainer rank's dry run of the source (find_load_mismatch), on what the trainer is given
+            # rank 0's dry run of the source (find_load_mismatch), on what the trainer is given
             targets = get_hf_lora_targets({"model_type": "qwen3", "num_hidden_layers": 1})
             with suppress(Exception):
                 check_adapter_source(Path(ckpt_path), run, targets, load_optimizer=False)
