@@ -69,6 +69,7 @@ class Attention(LinearAttentionLayer):
             tp_group=pg_collection.tp,
             backend=args.linear_attention_backend,
             norm_activation=text_config.hidden_act,
+            args=args,
         )
         input_layernorm = gdn_input_layernorm(
             args.linear_attention_input_norm, text_config.hidden_size, text_config.rms_norm_eps, config.params_dtype

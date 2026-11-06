@@ -14,6 +14,7 @@ from miles.utils.external_utils.command_utils.common import (
     _pythonpath_with_sources,
     get_bool_env_var,
     get_mooncake_master_port,
+    miles_ext_kernels_pythonpath,
     run_shell_command,
     train_env_vars,
 )
@@ -61,7 +62,7 @@ class RayCommandBackend(BaseCommandBackend):
 
         runtime_env_vars = train_env_vars(request, self._ray_env_vars(master_addr=master_addr), config=config)
         runtime_env_vars["PYTHONPATH"] = _pythonpath_with_sources(
-            request.megatron_path, runtime_env_vars.get("PYTHONPATH")
+            request.megatron_path, miles_ext_kernels_pythonpath(request.train_args), runtime_env_vars.get("PYTHONPATH")
         )
 
         if get_bool_env_var("MILES_SCRIPT_ENABLE_RAY_SUBMIT", "1"):
