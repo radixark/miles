@@ -1,7 +1,7 @@
+import ast
 import asyncio
 import gc
 import os
-import re
 import subprocess
 import tempfile
 from contextlib import contextmanager
@@ -103,58 +103,67 @@ class PythonSandbox:
             "fractions",
         }
 
+    # Builtins that give access to the host (code execution, filesystem,
+    # attribute/namespace reflection). Blocked by name.
+    _FORBIDDEN_NAMES = frozenset(
+        {
+            "__import__",
+            "eval",
+            "exec",
+            "compile",
+            "execfile",
+            "open",
+            "file",
+            "input",
+            "raw_input",
+            "getattr",
+            "setattr",
+            "delattr",
+            "globals",
+            "locals",
+            "vars",
+            "breakpoint",
+            "memoryview",
+        }
+    )
+
     def _check_code_safety(self, code: str) -> tuple[bool, str]:
-        """Check code safety by scanning for dangerous patterns"""
-        # Check for dangerous operations
-        dangerous_patterns = [
-            r"import\s+os",
-            r"import\s+sys",
-            r"import\s+subprocess",
-            r"import\s+shutil",
-            r"import\s+glob",
-            r"import\s+pathlib",
-            r"__import__",
-            r"eval\s*\(",
-            r"exec\s*\(",
-            r"open\s*\(",
-            r"file\s*\(",
-            r"input\s*\(",
-            r"raw_input\s*\(",
-            r"compile\s*\(",
-            r"execfile\s*\(",
-            r"getattr\s*\(",
-            r"setattr\s*\(",
-            r"delattr\s*\(",
-            r"hasattr\s*\(",
-            r"globals\s*\(",
-            r"locals\s*\(",
-            r"vars\s*\(",
-            r"dir\s*\(",
-            r"type\s*\(",
-            r"isinstance\s*\(",
-            r"issubclass\s*\(",
-            r"super\s*\(",
-            r"property\s*\(",
-            r"staticmethod\s*\(",
-            r"classmethod\s*\(",
-            r"__\w+__",  # double underscore methods
-        ]
+        """Check code safety with an AST allowlist.
 
-        for pattern in dangerous_patterns:
-            if re.search(pattern, code, re.IGNORECASE):
-                return False, f"Code contains dangerous pattern: {pattern}"
+        A regex denylist is not a security boundary: `import math, os` slips
+        past `import\\s+os`, and an allowlist that only captures the first name
+        after `import` never sees the second module. Parse the code instead and
+        reject anything that is not explicitly allowed. This is defense in depth
+        on top of a real OS-level sandbox, not a replacement for one.
+        """
+        try:
+            tree = ast.parse(code)
+        except SyntaxError as e:
+            return False, f"Code could not be parsed: {e}"
 
-        # Check imported modules
-        import_pattern = r"import\s+(\w+)"
-        from_pattern = r"from\s+(\w+)"
-
-        imports = re.findall(import_pattern, code)
-        froms = re.findall(from_pattern, code)
-
-        all_imports = set(imports + froms)
-        for imp in all_imports:
-            if imp not in self.allowed_modules:
-                return False, f"Import of '{imp}' is not allowed"
+        for node in ast.walk(tree):
+            # Every imported module's root package must be on the allowlist.
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    root = alias.name.split(".")[0]
+                    if root not in self.allowed_modules:
+                        return False, f"Import of '{alias.name}' is not allowed"
+            elif isinstance(node, ast.ImportFrom):
+                if node.level and node.level > 0:
+                    return False, "Relative imports are not allowed"
+                root = (node.module or "").split(".")[0]
+                if root not in self.allowed_modules:
+                    return False, f"Import from '{node.module}' is not allowed"
+            # Block dunder attribute access (e.g. ().__class__, obj.__globals__).
+            elif isinstance(node, ast.Attribute):
+                if node.attr.startswith("__") and node.attr.endswith("__"):
+                    return False, f"Access to dunder attribute '{node.attr}' is not allowed"
+            # Block dunder and forbidden builtin names.
+            elif isinstance(node, ast.Name):
+                if node.id.startswith("__") and node.id.endswith("__"):
+                    return False, f"Use of dunder name '{node.id}' is not allowed"
+                if node.id in self._FORBIDDEN_NAMES:
+                    return False, f"Use of '{node.id}' is not allowed"
 
         return True, "Code is safe"
 
@@ -168,10 +177,18 @@ class PythonSandbox:
             # Create safe Python script
             script_path = os.path.join(temp_dir, "code.py")
 
-            # Set environment variables
-            env = os.environ.copy()
-            env["PYTHONPATH"] = temp_dir
-            env["PYTHONUNBUFFERED"] = "1"
+            # Scrub the environment: model-written code must not inherit the
+            # trainer's secrets (HF_TOKEN, WANDB_API_KEY, cloud credentials,
+            # etc.). Pass only what the interpreter needs. This is still NOT a
+            # sandbox on its own -- run this subprocess inside a real isolation
+            # boundary (nsjail / bubblewrap / a no-network, read-only container)
+            # before trusting it with untrusted code.
+            env = {
+                "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                "PYTHONPATH": temp_dir,
+                "PYTHONUNBUFFERED": "1",
+                "LANG": os.environ.get("LANG", "C.UTF-8"),
+            }
 
             yield script_path, env, temp_dir
 
