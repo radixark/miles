@@ -253,8 +253,9 @@ class DistributedOptimizerMembers:
         weights = pieces("param")
         for weight, (index, offsets) in zip(weights, sources, strict=True):
             bf16 = cut(params[index], offsets)
-            assert torch.equal(
-                weight.to(bf16), bf16.reshape(weight.shape)
+            # NaN-safe: a slot that diverged still saves what it holds
+            assert torch.allclose(
+                weight.to(bf16), bf16.reshape(weight.shape), rtol=0, atol=0, equal_nan=True
             ), "a bf16 adapter parameter is not its master"
         if not self._save_moments:
             return AdapterState(specs, weights, [], [], step=step, has_optimizer_state=False)

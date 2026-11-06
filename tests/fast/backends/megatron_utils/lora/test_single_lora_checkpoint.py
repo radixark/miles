@@ -358,6 +358,27 @@ def test_an_export_reads_only_the_parameters_this_rank_leads(monkeypatch):
     assert torch.equal(state.weights[0], master) and torch.equal(state.exp_avgs[0], master + 1)
 
 
+def test_an_export_of_masters_holding_nan_saves_them(monkeypatch):
+    master = torch.tensor([[1.0, float("nan")]])
+    param = torch.nn.Parameter(master.bfloat16())
+    monkeypatch.setattr(
+        lora_checkpoint,
+        "get_parallel_state",
+        lambda: SimpleNamespace(intra_dp_cp=SimpleNamespace(rank=0), edp=SimpleNamespace(rank=0)),
+    )
+    dense = _DpZeroOptimizer(param, master, SimpleNamespace(rank=lambda: 0))
+    slots = SimpleNamespace(
+        slot_parameters=lambda slot: [param],
+        local_shard_specs=lambda slot, holds: [SimpleNamespace(local_shape=param.shape)],
+        piece_parameter=lambda slot, holds: [(0, torch.arange(2))],
+    )
+    members = lora_checkpoint.DistributedOptimizerMembers(
+        slots, SimpleNamespace(chained_optimizers=[dense]), [], precision_aware=False
+    )
+    state = members.export_adapter_state(0)
+    assert torch.equal(state.weights[0].isnan(), master.isnan())
+
+
 def test_without_an_optimizer_an_adapter_path_loads_the_weights_and_starts_over(tmp_path, monkeypatch):
     param = torch.nn.Parameter(torch.zeros(2, 2, dtype=torch.bfloat16))
     slots = SimpleNamespace(
