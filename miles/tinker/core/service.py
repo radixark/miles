@@ -84,7 +84,8 @@ def _is_same_base_model(a: str, b: str) -> bool:
 
 
 def _staged_failure(error: str) -> dict:
-    return {"failure": {"error": error, "error_category": "server"}}
+    # the load never reached the slot, so the model stays usable
+    return {"failure": {"error": error, "error_category": "server", "slot_unchanged": True}}
 
 
 class TinkerService:
@@ -390,7 +391,7 @@ class TinkerService:
     async def _finish_request(self, model_queue, pending, outcome: dict) -> None:
         if "error" in outcome:
             category = outcome.get("error_category", "server")
-            if pending.command.op.requires_model_close_on_failure(category):
+            if pending.command.op.requires_model_close_on_failure(category) and not outcome.get("slot_unchanged"):
                 await self._close_model(
                     model_queue.model_id,
                     f"model training failed ({outcome['error']}); create a new model and restore from a checkpoint",

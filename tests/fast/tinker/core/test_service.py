@@ -1785,6 +1785,7 @@ async def test_an_import_that_cannot_be_copied_fails_only_its_load(tmp_path):
         loaded = await await_settled(service, "tenant", service.submit("tenant", "load_state", payload))
         assert loaded.state == FAILED and loaded.error_category == "server", loaded.error
         assert not run_task.done(), "the dispatcher survived"
+        assert model_id in service.models, "a load that never reached the slot closed the model"
     finally:
         run_task.cancel()
         with suppress(asyncio.CancelledError):
