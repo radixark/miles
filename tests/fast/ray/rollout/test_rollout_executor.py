@@ -27,6 +27,7 @@ from miles.rollout.base_types import (
 from miles.rollout.data_source import RolloutDataSource
 from miles.rollout.inference_rollout import inference_rollout_common
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
+from miles.utils import http_utils
 from miles.utils.args.component_rollout import InferenceRuntimeImmutState, InferenceRuntimeMutState
 from miles.utils.audit_utils.event_analyzer.rules.sample_ownership.models import SampleOwnershipViolation
 from miles.utils.audit_utils.event_logger.logger import EventLogger, read_events, set_event_logger
@@ -200,6 +201,31 @@ class TestDispose:
         await executor.dispose()
 
         assert disposed == ["train", "eval", "sweep"]
+
+    async def test_dispose_closes_the_rollout_client_so_the_process_exits_without_an_open_session(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """aiohttp logs a session still open when the process exits as an error."""
+        monkeypatch.setattr(http_utils, "_http_clients", {})
+        monkeypatch.setattr(http_utils, "_client_concurrency", 3)
+        client = http_utils._rollout_client()
+        executor = RolloutExecutor.__new__(RolloutExecutor)
+        executor._disposed = False
+        executor.use_legacy_rollout_v1 = False
+        executor.generate_rollout = None
+        executor.eval_generate_rollout = None
+        executor.data_source = object()
+        executor.args = Namespace()
+        executor._metric_checker = None
+        executor._delete_store_refs = None
+        monkeypatch.setattr(rollout_executor_module.event_analyzer, "run_analysis_from_args", lambda _args: None)
+        monkeypatch.setattr(
+            rollout_executor_module.event_analyzer, "run_sample_ownership_analysis", lambda *, args: None
+        )
+
+        await executor.dispose()
+
+        assert client.is_closed
 
     async def test_the_final_ownership_check_runs_before_the_run_ends(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Violations that only mature after the last get would otherwise never be checked."""
