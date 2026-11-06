@@ -16,6 +16,7 @@ from megatron.core.transformer.spec_utils import import_module
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.training.arguments import core_transformer_config_from_args
 
+from miles.backends.megatron_utils.cake_router_gemm import install_cake_router_gemm
 from miles.backends.training_utils.model_companion import ModelCompanionInstallationUtils
 from miles.utils.args.custom_view import compute_custom_function_config
 from miles.utils.args.runtime import TrainerConfig
@@ -185,6 +186,7 @@ def get_model_provider_func(
                 model.output_layer = LinearForLastLayer(
                     input_size=model.config.hidden_size, output_size=1, config=model.config
                 )
+            _maybe_install_cake_router_gemm(args, model)
             _maybe_install_witness(args, model, vp_stage=vp_stage)
             return model
 
@@ -216,6 +218,7 @@ def get_model_provider_func(
                 model.output_layer = LinearForLastLayer(
                     input_size=model.config.hidden_size, output_size=1, config=model.config
                 )
+            _maybe_install_cake_router_gemm(args, model)
             assert not args.enable_witness, "Witness is not supported yet in this mode"
             ModelCompanionInstallationUtils.install(model=model, chunk_index=vp_stage or 0)
             # Gemma-4 forward returns (logits, loss_mask); keep logits only.
@@ -354,6 +357,7 @@ def get_model_provider_func(
             model = GPTModel(**kwargs)
 
         _maybe_freeze_native_dsa_indexer(args, model)
+        _maybe_install_cake_router_gemm(args, model)
 
         if post_process and role == "critic":
             model.output_layer = LinearForLastLayer(input_size=config.hidden_size, output_size=1, config=config)
@@ -372,6 +376,12 @@ def _maybe_freeze_native_dsa_indexer(args: TrainerConfig, model: GPTModel) -> No
         for name, parameter in model.named_parameters():
             if ".self_attention.core_attention.indexer." in name:
                 parameter.requires_grad_(False)
+
+
+def _maybe_install_cake_router_gemm(args: TrainerConfig, model: GPTModel) -> None:
+    # --moe-router-gemm-backend cake: the gate GEMM of every MoE router runs on the Cake FP32 kernels
+    if args.moe_router_gemm_backend == "cake":
+        install_cake_router_gemm(model)
 
 
 def _maybe_install_witness(

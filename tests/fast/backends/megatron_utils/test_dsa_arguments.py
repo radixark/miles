@@ -31,6 +31,8 @@ def _args(**overrides):
         dsa_kernel_backend="cudnn",
         dsa_indexer_loss_coeff=None,
         miles_dsa_topk_backend="canonical",
+        dsa_attention_backend="tilelang",
+        batched_projection_gemm_backend="torch",
         cp_comm_type=None,
         true_on_policy_mode=False,
         debug_disable_optimizer=False,
@@ -152,8 +154,7 @@ def test_native_dsa_keeps_the_requested_topk_backend():
     assert args.dsa_indexer_topk_backend == "flashinfer"
 
 
-@pytest.fixture
-def megatron_defaults(monkeypatch):
+def _load_megatron_arguments(monkeypatch):
     # Exercise the real normalization entrypoint without importing GPU startup dependencies.
     monkeypatch.setitem(
         sys.modules,
@@ -170,7 +171,18 @@ def megatron_defaults(monkeypatch):
     spec = importlib.util.spec_from_file_location("dsa_megatron_arguments_under_test", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module.set_default_megatron_args
+    return module
+
+
+@pytest.fixture
+def megatron_arguments(monkeypatch):
+    return _load_megatron_arguments(monkeypatch)
+
+
+# self-contained (no fixture dependency): other test modules import this fixture by name
+@pytest.fixture
+def megatron_defaults(monkeypatch):
+    return _load_megatron_arguments(monkeypatch).set_default_megatron_args
 
 
 @pytest.mark.parametrize(
@@ -254,3 +266,122 @@ def test_worker_parser_registers_dsa_arguments(
     assert args.miles_dsa_topk_backend == "flashinfer"
     assert args.cp_comm_type is None
     assert args.hf_checkpoint == "/hf"
+
+
+DSV4_SPEC = ["miles_plugins.models.deepseek_v4.deepseek_v4", "get_dsv4_spec"]
+DSV41_SPEC = ["miles_plugins.models.deepseek_v4_1.deepseek_v4_1", "get_dsv41_spec"]
+GLM5_NEXT_SPEC = ["miles_plugins.models.glm5_next.glm5_next", "get_glm5_next_spec"]
+
+
+def _cake_args(**overrides):
+    values = dict(
+        dsa_attention_backend="cake",
+        batched_projection_gemm_backend="torch",
+        megatron_to_hf_mode="raw",
+        multi_lora_n_adapters=0,
+        spec=list(MILES_DSA_SPEC),
+        dsa_impl="miles",
+        dsv4_impl="megatron",
+        kv_lora_rank=512,
+        qk_pos_emb_head_dim=64,
+    )
+    return Namespace(**(values | overrides))
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {},
+        {"spec": GLM5_NEXT_SPEC, "qk_pos_emb_head_dim": 0},
+        {"spec": DSV4_SPEC, "dsv4_impl": "miles"},
+        {"spec": DSV41_SPEC, "dsv4_impl": "miles"},
+        {"dsa_attention_backend": "tilelang", "megatron_to_hf_mode": "bridge", "spec": None, "kv_lora_rank": 32},
+    ],
+    ids=["glm5-dsv32", "glm5.3-flash", "dsv4", "dsv4.1", "default-anywhere"],
+)
+def test_cake_kernels_are_accepted_on_the_miles_dsa_plugin_specs(megatron_arguments, overrides):
+    megatron_arguments._validate_cake_dsa_attention_backend(_cake_args(**overrides))
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"megatron_to_hf_mode": "bridge"}, "requires --megatron-to-hf-mode raw"),
+        ({"multi_lora_n_adapters": 2}, "without multi-LoRA"),
+        ({"dsa_impl": "megatron"}, "pass --dsa-impl miles"),
+        ({"spec": list(MEGATRON_DSA_SPEC), "dsa_impl": "megatron"}, "only wired into the miles DSA plugin specs"),
+        ({"spec": DSV4_SPEC}, "pass --dsv4-impl miles"),
+        ({"spec": DSV41_SPEC, "dsv4_impl": "megatron"}, "pass --dsv4-impl miles"),
+        ({"spec": ["miles_plugins.models.qwen3_5.qwen3_5", "get_qwen3_5_spec"]}, "only wired"),
+        ({"spec": None}, "only wired"),
+        ({"kv_lora_rank": 256}, "--kv-lora-rank 256"),
+        ({"qk_pos_emb_head_dim": 128}, "--qk-pos-emb-head-dim 128"),
+    ],
+    ids=[
+        "bridge",
+        "multi-lora",
+        "native-dsa",
+        "native-dsa-spec",
+        "native-dsv4",
+        "native-dsv4.1",
+        "other-spec",
+        "no-spec",
+        "latent-width",
+        "rope-tail",
+    ],
+)
+def test_cake_kernels_are_rejected_where_they_would_be_ignored_or_cannot_run(megatron_arguments, overrides, message):
+    with pytest.raises(ValueError, match=message):
+        megatron_arguments._validate_cake_dsa_attention_backend(_cake_args(**overrides))
+
+
+def test_set_default_megatron_args_validates_the_cake_kernels(megatron_defaults):
+    args = _cake_args(
+        dsa_impl="megatron",
+        optimizer="adam",
+        fp16=False,
+        seq_length=None,
+        vocab_size=None,
+        tokenizer_model=None,
+        tokenizer_type=None,
+        hf_checkpoint="/model",
+        true_on_policy_mode=False,
+        debug_disable_optimizer=False,
+        rope_type=None,
+        multi_latent_attention=True,
+    )
+    with pytest.raises(ValueError, match="pass --dsa-impl miles"):
+        megatron_defaults(args)
+
+
+def _cake_projection_args(**overrides):
+    return _cake_args(**({"dsa_attention_backend": "tilelang", "batched_projection_gemm_backend": "cake"} | overrides))
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {},
+        {"spec": GLM5_NEXT_SPEC},
+        {"spec": DSV4_SPEC, "dsv4_impl": "miles"},
+        {"spec": DSV41_SPEC, "dsv4_impl": "miles"},
+        {"batched_projection_gemm_backend": "torch", "megatron_to_hf_mode": "bridge", "spec": None},
+    ],
+    ids=["glm5-dsv32", "glm5.3-flash", "dsv4", "dsv4.1", "torch-anywhere"],
+)
+def test_the_cake_batched_projection_is_accepted_on_the_miles_dsa_plugin_specs(megatron_arguments, overrides):
+    megatron_arguments._validate_cake_batched_projection_backend(_cake_projection_args(**overrides))
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"megatron_to_hf_mode": "bridge"}, "--batched-projection-gemm-backend cake requires --megatron-to-hf"),
+        ({"spec": ["miles_plugins.models.qwen3_5.qwen3_5", "get_qwen3_5_spec"]}, "only wired"),
+        ({"spec": DSV4_SPEC}, "pass --dsv4-impl miles"),
+    ],
+    ids=["bridge", "other-spec", "native-dsv4"],
+)
+def test_the_cake_batched_projection_is_rejected_where_it_would_be_ignored(megatron_arguments, overrides, message):
+    with pytest.raises(ValueError, match=message):
+        megatron_arguments._validate_cake_batched_projection_backend(_cake_projection_args(**overrides))

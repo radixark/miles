@@ -8,6 +8,11 @@ A batched sbhd caller runs one packed problem per batch element with `indexer_lo
 Scores come from the Triton kernel (tensor-core MMA on Hopper and Blackwell) or the TileLang one, as an
 IndexerConfig picks: measured rows live in _TUNED, keyed by (arch major, heads). Score rows are padded to
 SCORE_ROW_ALIGN columns so the canonical top-k can read them with aligned vector loads.
+
+CAKE_INDEXER_CONFIG (--dsa-attention-backend cake) scores with the deterministic Cake kernels of the
+miles-ext-kernels submodule (miles.kernels.attention.dsa.cake; SM100a / SM103a / SM107a, 8 / 16 / 32 / 64 heads, head
+dim 128), one launch for a whole sbhd batch. _default_config never selects it; the gathered-score backward stays
+TileLang.
 """
 
 from dataclasses import dataclass
@@ -15,6 +20,7 @@ from typing import Literal
 
 import torch
 
+from miles.kernels.attention.dsa import cake
 from miles.kernels.attention.dsa.topk import SCORE_ROW_ALIGN
 from miles.kernels.attention.dsa.triton.indexer_fwd import indexer_fwd as triton_indexer_fwd
 
@@ -24,12 +30,15 @@ _BWD_MIN_TOPK = 32
 
 @dataclass(frozen=True)
 class IndexerConfig:
-    score_backend: Literal["triton", "tilelang"] = "tilelang"
+    score_backend: Literal["triton", "tilelang", "cake"] = "tilelang"
     block_rows: int = 256
     block_n: int = 64
     num_warps: int = 4
     num_stages: int = 2
 
+
+# Opt-in Cake score kernels (--dsa-attention-backend cake); the tiling fields do not apply to them.
+CAKE_INDEXER_CONFIG = IndexerConfig(score_backend="cake")
 
 # Measured at 16k tokens (DeepSeek-V4 C4 indexer: 64 heads, ratio 4; V4.1 / GLM-5: 32 heads, ratio 1) on
 # H200 (9) and GB300 (10). block_rows = queries per program x heads.
@@ -69,6 +78,17 @@ def _empty_scores(*leading: int, seq_len_kv: int, device) -> torch.Tensor:
     return torch.empty(*leading, padded, device=device, dtype=torch.float32)[..., :seq_len_kv]
 
 
+def _cake_logits(q, k, weights, cu_seqlen_ks, cu_seqlen_ke, layout: str) -> torch.Tensor:
+    """Cake scores ([T, T_kv] for thd, [B, S, S_kv] for sbhd), always -inf outside each query's range, with
+    SCORE_ROW_ALIGN-aligned rows: the dense Cake rows as they are when aligned, else copied into padded rows."""
+    logits = cake.ops().indexer_logits(q, k, weights, cu_seqlen_ks, cu_seqlen_ke, layout=layout)
+    if logits.shape[-1] % SCORE_ROW_ALIGN == 0:
+        return logits
+    out = _empty_scores(*logits.shape[:-1], seq_len_kv=logits.shape[-1], device=logits.device)
+    out.copy_(logits)
+    return out
+
+
 def _write_logits(q, k, weights, cu_seqlen_ks, cu_seqlen_ke, out, clean_logits, config):
     if config.score_backend == "triton":
         triton_indexer_fwd(
@@ -105,7 +125,11 @@ def indexer_logits(
     q, k, weights, cu_seqlen_ks, cu_seqlen_ke, clean_logits: bool = True, config: IndexerConfig | None = None
 ) -> torch.Tensor:
     """Scores [T, T_kv] fp32 with SCORE_ROW_ALIGN-padded rows. Keys outside a query's range are -inf when
-    clean_logits; otherwise they are undefined and only a range-aware top-k may read the result."""
+    clean_logits (always, with the cake backend); otherwise they are undefined and only a range-aware top-k may read
+    the result."""
+    config = config or _default_config(q)
+    if config.score_backend == "cake":
+        return _cake_logits(q, k, weights, cu_seqlen_ks, cu_seqlen_ke, layout="thd")
     out = _empty_scores(q.shape[0], seq_len_kv=k.shape[0], device=q.device)
     _write_logits(
         q.contiguous(),
@@ -115,7 +139,7 @@ def indexer_logits(
         cu_seqlen_ke,
         out,
         clean_logits,
-        config or _default_config(q),
+        config,
     )
     return out
 
@@ -126,8 +150,11 @@ def indexer_logits_sbhd(
     """q [S, B, H, D], k [S_kv, B, D], weights [S, B, H]; ranges are shared across the batch.
     Returns [B, S, S_kv] with SCORE_ROW_ALIGN-padded rows."""
     seqlen, batch, _, _ = q.shape
-    out = _empty_scores(batch, seqlen, seq_len_kv=k.shape[0], device=q.device)
     config = config or _default_config(q)
+    if config.score_backend == "cake":
+        # one launch for the whole batch
+        return _cake_logits(q, k, weights, cu_seqlen_ks, cu_seqlen_ke, layout="sbhd")
+    out = _empty_scores(batch, seqlen, seq_len_kv=k.shape[0], device=q.device)
     for b in range(batch):
         _write_logits(
             q[:, b].contiguous(),

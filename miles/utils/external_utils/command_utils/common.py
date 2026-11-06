@@ -44,6 +44,19 @@ def _pythonpath_with_sources(megatron_path: str, *additional_pythonpaths: str | 
     return os.pathsep.join(dict.fromkeys(entries))
 
 
+# The miles-ext-kernels submodule: a --use-miles-ext-kernels run imports it as the top-level package
+# miles_ext_kernels, in the driver and in every Ray worker.
+MILES_EXT_KERNELS_DIR = repo_base_dir / "3rdparty" / "miles-ext-kernels"
+USE_MILES_EXT_KERNELS_FLAG = "--use-miles-ext-kernels"
+
+
+def miles_ext_kernels_pythonpath(train_args: str) -> str | None:
+    """The submodule checkout when ``train_args`` pass --use-miles-ext-kernels, else None."""
+    if ArgvManipulator.is_defined(shlex.split(train_args), USE_MILES_EXT_KERNELS_FLAG):
+        return str(MILES_EXT_KERNELS_DIR)
+    return None
+
+
 def chart_dir(*, repo_base_dir: str | Path) -> Path:
     return Path(repo_base_dir) / "charts" / CHART_NAME
 

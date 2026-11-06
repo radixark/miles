@@ -126,7 +126,11 @@ def _model_config(tmp_path, **text_overrides):
 
     checkpoint = _write_checkpoint_config(tmp_path, **text_overrides)
     return build_model_config(
-        Namespace(backend=Namespace(titan_model_name="glm5_next", titan_model_flavor="4layer", seq_length=4096)),
+        Namespace(
+            backend=Namespace(titan_model_name="glm5_next", titan_model_flavor="4layer", seq_length=4096),
+            moe_grouped_gemm_backend="torch",
+            miles_ext_kernels_args=None,
+        ),
         parallelism=ParallelismConfig(),
         hf_assets_path=checkpoint,
     )

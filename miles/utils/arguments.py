@@ -6,6 +6,7 @@ import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from string import Formatter
+from types import ModuleType
 from typing import Any
 
 import yaml
@@ -70,10 +71,23 @@ from miles.utils.workers.worker_provider.static import parse_host_and_port
 
 logger = logging.getLogger(__name__)
 
-LINEAR_ATTENTION_BACKENDS = ("fla", "flashqla")
+LINEAR_ATTENTION_BACKENDS = ("fla", "flashqla", "cake")
 # Backend arguments whose 'cake' choice runs a kernel from the miles-ext-kernels submodule.
-CAKE_BACKEND_ARGS = ("linear_attention_backend", "dsa_attention_backend", "miles_dsa_topk_backend")
-LINEAR_ATTENTION_INPUT_NORMS = ("te", "hf")
+CAKE_BACKEND_ARGS = (
+    "linear_attention_backend",
+    "dsa_attention_backend",
+    "miles_dsa_topk_backend",
+    "kda_backend",
+    "linear_attention_conv_backend",
+    "linear_attention_output_norm_backend",
+    "linear_attention_input_norm",
+    "mhc_backend",
+    "full_attention_backend",
+    "batched_projection_gemm_backend",
+    "moe_router_gemm_backend",
+    "moe_grouped_gemm_backend",
+)
+LINEAR_ATTENTION_INPUT_NORMS = ("te", "hf", "cake")
 
 FULLY_ASYNC_ROLLOUT_PATH = "miles.rollout.fully_async_rollout.FullyAsyncRolloutFn"
 
@@ -177,6 +191,22 @@ def _resolve_rollout_functions(args) -> None:
     args.eval_uses_snapshots = args.eval_num_gpus > 0 or checkpoint_backend
 
 
+def import_miles_ext_kernels() -> ModuleType:
+    """The miles-ext-kernels package, with a clear error when its submodule is not checked out or not importable."""
+    try:
+        import miles_ext_kernels
+    except ModuleNotFoundError as exc:
+        if exc.name != "miles_ext_kernels":
+            raise
+        raise ModuleNotFoundError(
+            "--use-miles-ext-kernels needs the miles-ext-kernels submodule: run "
+            "'git submodule update --init 3rdparty/miles-ext-kernels' and put 3rdparty/miles-ext-kernels on "
+            "PYTHONPATH (the miles Ray launcher adds it for runs that pass --use-miles-ext-kernels)",
+            name=exc.name,
+        ) from exc
+    return miles_ext_kernels
+
+
 def _add_miles_ext_kernels_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     try:
         with with_relax_parser_required_args(parser), with_suppressed_parser_help(parser):
@@ -184,10 +214,20 @@ def _add_miles_ext_kernels_arguments(parser: argparse.ArgumentParser) -> argpars
     except SystemExit:
         return parser
     if args_partial.use_miles_ext_kernels:
-        import miles_ext_kernels
-
-        miles_ext_kernels.add_arguments(parser)
+        import_miles_ext_kernels().add_arguments(parser)
     return parser
+
+
+def resolve_miles_ext_kernels_args(args: argparse.Namespace) -> None:
+    """Move the values of the arguments the miles-ext-kernels submodule registered into the typed
+    ``miles_ext_kernels_args`` field, their one configuration owner, as ``resolve_custom_function_configs`` does for
+    custom function arguments. The submodule's own parser hook names them; its ``validate_args`` has already seen
+    (and resolved) them on the flat namespace."""
+    if not args.use_miles_ext_kernels:
+        return
+    parser = argparse.ArgumentParser(add_help=False)
+    import_miles_ext_kernels().add_arguments(parser)
+    args.miles_ext_kernels_args = {action.dest: vars(args).pop(action.dest) for action in parser._actions}
 
 
 def get_miles_extra_args_provider(
@@ -373,6 +413,13 @@ def parse_args_and_get_parser(
         validate_hybrid_shard_args(args)
         validate_kernel_backend_args(args)
 
+    if args.full_attention_backend == "cake":
+        # local import: the layer module owns its startup rules, which need Megatron's resolved kv_channels and
+        # query groups, and imports Transformer Engine's attention, which only the cake backend needs
+        from miles_plugins.models.cake_full_attention import validate_full_attention_backend
+
+        validate_full_attention_backend(args)
+
     if backend != "megatron":
         training_backend_arg_names.update(
             {
@@ -406,6 +453,7 @@ def parse_args_and_get_parser(
 
     assert parser is not None
     resolve_custom_function_configs(args)
+    resolve_miles_ext_kernels_args(args)
     backend_values = {name: value for name, value in vars(args).items() if name in training_backend_arg_names}
     _validate_argument_ownership(args, parser=parser, training_backend_arg_names=training_backend_arg_names)
     sglang, sglang_scaling = SglangConfig.parse_args(args)
@@ -448,7 +496,10 @@ def parse_args_train_backend():
     if os.environ.get("MILES_BACKEND") is not None:
         raise Exception("`MILES_BACKEND` is deprecated, please use --train-backend directly.")
 
-    parser = argparse.ArgumentParser()
+    # This parser holds only the miles flags, so an abbreviation match would take a backend flag that prefixes one of
+    # them (Megatron's --moe-grouped-gemm, a prefix of --moe-grouped-gemm-backend) as that miles flag; Megatron's own
+    # parser does not abbreviate either.
+    parser = argparse.ArgumentParser(allow_abbrev=False)
     get_miles_extra_args_provider()(parser)
     args_partial, _ = parser.parse_known_args()
     return args_partial.train_backend
@@ -908,10 +959,38 @@ def validate_miles_ext_kernels_args(args) -> None:
         backend = getattr(args, name)  # config-access-exempt: backend flags named in CAKE_BACKEND_ARGS
         if backend == "cake" and not args.use_miles_ext_kernels:
             raise ValueError(f"--{name.replace('_', '-')} cake requires --use-miles-ext-kernels")
+    if args.dsa_attention_backend == "cake" and args.train_backend != "megatron":
+        raise ValueError(
+            "--dsa-attention-backend cake runs in the miles DSA plugin layers of the Megatron backend; "
+            f"--train-backend {args.train_backend} would silently ignore it: use --train-backend megatron"
+        )
+    megatron_gemms = {
+        "--batched-projection-gemm-backend": args.batched_projection_gemm_backend,
+        "--moe-router-gemm-backend": args.moe_router_gemm_backend,
+    }
+    for flag, backend in megatron_gemms.items():
+        if backend == "cake" and args.train_backend != "megatron":
+            raise ValueError(
+                f"{flag} cake runs in the Megatron backend's layers; --train-backend {args.train_backend} would "
+                "silently ignore it: use --train-backend megatron"
+            )
+    if args.moe_grouped_gemm_backend == "cake" and args.train_backend != "torchtitan":
+        raise ValueError(
+            "--moe-grouped-gemm-backend cake runs in the routed experts of the torchtitan backend; --train-backend "
+            f"{args.train_backend} would silently ignore it: use --train-backend torchtitan"
+        )
+    if args.kda_backend == "cake" and args.train_backend != "megatron":
+        raise ValueError(
+            f"--kda-backend cake runs in the Megatron KDA layers; --train-backend {args.train_backend} would silently "
+            "run fla: use --train-backend megatron or --kda-backend fla"
+        )
     if args.use_miles_ext_kernels:
-        import miles_ext_kernels
+        import_miles_ext_kernels().validate_args(args)
+    if args.mhc_backend == "cake":
+        # local import: the module imports Megatron, and only --mhc-backend cake reaches it
+        from miles_plugins.models.cake_hyper_connection import validate_mhc_backend
 
-        miles_ext_kernels.validate_args(args)
+        validate_mhc_backend(args)
 
 
 def validate_log_probs_backend_args(args) -> None:

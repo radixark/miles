@@ -26,11 +26,13 @@ from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.transformer.transformer_layer import HyperConnectionTransformerLayer, get_transformer_layer_offset
 from megatron.core.transformer.utils import make_sharded_tensors_for_checkpoint
 
-from miles.kernels.attention.dsa import sparse_attention
+from miles.kernels.attention.dsa import cake, sparse_attention
+from miles.kernels.attention.dsa.sparse_attention import CAKE_SPARSE_ATTENTION_CONFIG
 from miles.kernels.hyper_connection.mhc import mhc_aggregate, mhc_mix
 from miles.kernels.position.rope import apply_rotary_emb
 from miles.kernels.quant.fake_quant import fake_quant_compressed_kv
 from miles.utils.hf_utils.config import load_hf_config
+from miles_plugins.models.cake_batched_projection import validate_batched_projection_config
 from miles_plugins.models.deepseek_v4.ops.cp_utils import (
     all_gather_cp,
     get_freqs_cis_for_cp,
@@ -363,6 +365,8 @@ class DeepSeekV41Attention(MegatronModule):
         self.eps = config.layernorm_epsilon
         self.softmax_scale = self.head_dim**-0.5
         self.sequence_parallel = config.sequence_parallel
+        use_cake = config.miles_dsa_attention_backend == "cake"
+        self.attention_config = CAKE_SPARSE_ATTENTION_CONFIG if use_cake else None
         assert self.compress_ratio in (0, 1, 2)
         assert self.head_dim == 512 and self.rope_head_dim == 64 and self.window_size == 128
 
@@ -431,7 +435,16 @@ class DeepSeekV41Attention(MegatronModule):
         config.init_method(o_group_proj)
         self.linear_o_group_proj = nn.Parameter(o_group_proj)
         set_tensor_model_parallel_attributes(self.linear_o_group_proj, is_parallel=True, dim=0, stride=1)
-        self.o_group_matmul = GroupedMatmul()
+        # --batched-projection-gemm-backend: the grouped output projection on torch.einsum or the Cake GEMM
+        validate_batched_projection_config(
+            config,
+            num_heads=self.n_local_groups,
+            d_in=self.n_heads * self.head_dim // self.n_groups,
+            d_out=self.o_lora_rank,
+            weight_layout="out_in",
+            backend=config.miles_batched_projection_gemm_backend,
+        )
+        self.o_group_matmul = GroupedMatmul(backend=config.miles_batched_projection_gemm_backend)
         self.linear_proj = TERowParallelLinear(
             self.n_groups * self.o_lora_rank,
             self.dim,
@@ -562,6 +575,7 @@ class DeepSeekV41Attention(MegatronModule):
             topk_idxs.unsqueeze(2),
             self.softmax_scale,
             attn_sink=self.core_attention.attn_sink,
+            config=self.attention_config,
         )
         o = torch.cat((o[..., :-rd], apply_rotary_emb(o[..., -rd:].clone(), freqs_cis, inverse=True)), dim=-1)
 
@@ -636,6 +650,19 @@ def get_dsv41_spec(args, config, vp_stage):
     config.v41_hf_checkpoint = args.hf_checkpoint
     config.v41_runtime = V41Runtime()
     config.miles_dsa_topk_backend = args.miles_dsa_topk_backend
+    config.miles_dsa_attention_backend = args.dsa_attention_backend
+    config.miles_batched_projection_gemm_backend = args.batched_projection_gemm_backend
+    if args.dsa_attention_backend == "cake":
+        # MQA over the kv_lora_rank latent (its RoPE channels inside it) with a per-head sink, the TP rank's heads
+        cake.setup(
+            args,
+            heads=config.num_attention_heads // config.tensor_model_parallel_size,
+            d_qk=config.kv_lora_rank,
+            d_v=config.kv_lora_rank,
+            attn_sink=True,
+            index_heads=config.dsa_indexer_n_heads,
+            index_head_dim=config.dsa_indexer_head_dim,
+        )
     _install_patches(config)
 
     _orig_get_spec = _eav_specs.get_experimental_attention_variant_module_spec

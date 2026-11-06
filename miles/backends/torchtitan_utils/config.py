@@ -19,7 +19,7 @@ from torchtitan.models.common.attention import FlexInnerAttention
 from torchtitan.models.common.attention.cp_attention import AllGatherKVFlexInnerAttention
 from torchtitan.models.common.moe import MoE
 
-from miles.backends.torchtitan_utils import lora
+from miles.backends.torchtitan_utils import cake_grouped_linear, lora
 from miles.backends.torchtitan_utils.components import TiedCheckpointManager
 from miles.backends.torchtitan_utils.loss import RLLossAdapter
 from miles.backends.torchtitan_utils.trainer import TitanTrainer
@@ -63,6 +63,12 @@ def build_model_config(
         kwargs["hf_config"] = load_hf_config(hf_assets_path)
     model = builder(args.backend.titan_model_flavor, **kwargs)
     _disable_load_balancing(model)
+    model = cake_grouped_linear.convert_model_config(
+        model,
+        backend=args.moe_grouped_gemm_backend,
+        miles_ext_kernels_args=args.miles_ext_kernels_args,
+        expert_parallel_degree=parallelism.expert_parallel_degree,
+    )
     if parallelism.context_parallel_degree > 1:
         model = transform_model_config_(
             model, [ContextParallelTransform(inner_attention_map={FlexInnerAttention: AllGatherKVFlexInnerAttention})]

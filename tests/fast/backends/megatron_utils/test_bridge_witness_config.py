@@ -45,6 +45,7 @@ class TestBridgeWitnessConfig:
         args.megatron_to_hf_mode = "bridge"
         args.hf_checkpoint = "sdk-only-model"
         args.enable_witness = enabled
+        args.moe_router_gemm_backend = "megatron"
 
         construct = get_model_provider_func(args=args, role="actor")
         if enabled:
