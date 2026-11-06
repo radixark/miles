@@ -50,6 +50,7 @@ def _serve_router(extra_args: dict | None = None):
             "chat_template_path": None,
             "apply_chat_template_kwargs": {"enable_thinking": False},
             "tito_model": "default",
+            "allow_stop_token_replace": False,
             "use_rollout_routing_replay": False,
             "use_rollout_indexer_replay": False,
             "rollout_indexer_topk_num_streams": None,

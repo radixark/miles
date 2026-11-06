@@ -447,6 +447,7 @@ def parse_args_and_get_parser(
     sglang, sglang_scaling = SglangConfig.parse_args(args)
     raw_megatron = resolve_megatron_config(args, base_args=backend_values if backend == "megatron" else {})
     check_output_store_args(args, sglang=sglang, megatron=raw_megatron)
+    _check_stop_token_replace_streaming_session(args, sglang=sglang)
     values = {name: value for name, value in vars(args).items() if name in AllConfig.model_fields} | {
         "raw_megatron": raw_megatron,
         "raw_fsdp": FsdpArgsNamespace(**backend_values) if backend == "fsdp" else None,
@@ -603,13 +604,6 @@ def _validate_rollout_data_yaml_config(args) -> None:
         ),  # config-access-exempt: optional length limit registered by custom agent hooks
     )
     _check_dataset_rewards(args, datasets)
-    for dataset in datasets:
-        # TODO(#3947): pass these settings on to the dataset's samples
-        set_fields = dataset.model_dump(exclude_none=True)
-        if unsupported := [name for name in ("max_response_len",) if name in set_fields]:
-            raise NotImplementedError(
-                f"--rollout-data-yaml-config dataset {dataset.name!r}: {', '.join(unsupported)} not supported yet"
-            )
     default_generate = getattr(  # config-access-exempt: still a path string before custom hooks resolve
         args.custom_generate_function_path, "path", args.custom_generate_function_path
     )
@@ -1053,6 +1047,37 @@ def _resolve_sample_ownership_check(args: argparse.Namespace) -> None:
         )
 
 
+def _resolve_allow_stop_token_replace(args: argparse.Namespace) -> bool:
+    if not args.use_session_server:
+        if args.allow_stop_token_replace is not None:
+            raise ValueError(
+                "--allow-stop-token-replace requires --use-session-server; "
+                "this flag only configures the session-server TITO middleware."
+            )
+        return False
+    family_default = TITOTokenizerType.get_tokenizer_class(TITOTokenizerType(args.tito_model)).allow_stop_token_replace
+    # An explicit flag wins over the --tito-model family default.
+    allowed = family_default if args.allow_stop_token_replace is None else args.allow_stop_token_replace
+    source = (
+        f"--tito-model={args.tito_model} default"
+        if args.allow_stop_token_replace is None
+        else "explicit --allow-stop-token-replace"
+    )
+    logger.info(f"Session server stop-token replacement {'allowed' if allowed else 'rejected'} ({source})")
+    return allowed
+
+
+def _check_stop_token_replace_streaming_session(args: argparse.Namespace, *, sglang: SglangConfig) -> None:
+    if args.allow_stop_token_replace and sglang.common_value("enable_streaming_session"):
+        raise ValueError(
+            f"Stop-token replacement (allowed by --tito-model={args.tito_model} or --allow-stop-token-replace) "
+            "cannot be combined with --sglang-enable-streaming-session: replacing the sampled stop token rewrites "
+            "the last generated token, while a streaming session extends the engine's stored tokens append-only. "
+            "Change the agent harness so a stop at a role token is followed by the message that token opens and "
+            "pass --no-allow-stop-token-replace, or drop --sglang-enable-streaming-session."
+        )
+
+
 def _apply_custom_config(args, data: dict) -> None:
     # configs written before --router
     if data.pop("use_miles_router", False):
@@ -1074,7 +1099,7 @@ def miles_validate_args(args):
 
     validate_length_penalty_args(args)
     mode = args.update_weight_transfer_mode
-    if mode not in ("broadcast", "broadcast_packed", "p2p", "disk-delta"):
+    if mode not in ("broadcast", "broadcast_packed", "p2p", "disk-delta", "ici"):
         raise ValueError(f"Unknown --update-weight-transfer-mode {mode!r}")
     if mode == "broadcast_packed" and (args.train_backend != "megatron" or args.colocate):
         raise ValueError("broadcast_packed requires Megatron non-colocated weight transfer")
@@ -1212,6 +1237,8 @@ def miles_validate_args(args):
             "thinking-token trimming). This can cause input_ids to diverge from "
             "the canonical template output. Use at your own risk."
         )
+
+    args.allow_stop_token_replace = _resolve_allow_stop_token_replace(args)
 
     if args.debug_disable_optimizer:
         args.no_load_optim = True
@@ -1526,6 +1553,28 @@ def miles_validate_args(args):
                 f"Requested --load={args.requested_load}."
             )
 
+    if args.update_weight_transfer_mode == "ici":
+        assert (
+            args.train_backend == "torchtitan"
+        ), "ICI weight transfer is implemented for the torchtitan trainer only."
+        assert not args.colocate, "ICI weight transfer needs the engine on its own devices of the shared slice."
+        assert args.prefill_num_servers is None, "ICI weight transfer pairs the trainer with one engine; PD runs two."
+        assert args.lora_rank <= 0, "LoRA weight sync is not supported for ICI weight transfer."
+        assert (
+            not args.use_critic
+        ), "ICI weight transfer joins one trainer job to the slice; a critic would be a second."
+        assert not args.use_fault_tolerance, "ICI weight transfer cannot reconnect a restarted engine to the slice."
+        hf_config = load_hf_config(args.hf_checkpoint).get_text_config()
+        is_moe = any(
+            getattr(hf_config, name, None)  # config-access-exempt: model families name the expert count differently
+            for name in ("n_routed_experts", "num_experts", "num_local_experts")
+        )
+        # trainer rank i sends only its own experts, so engine rank i must own exactly those
+        assert not is_moe or args.sglang_ep_size == args.rollout_num_gpus_per_engine, (
+            f"ICI weight transfer of a MoE model needs --sglang-ep-size {args.rollout_num_gpus_per_engine} (one EP "
+            f"rank per engine device), got {args.sglang_ep_size}; other expert splits would keep stale experts."
+        )
+
     if args.colocate:
         if args.offload_train is None:
             args.offload_train = True
@@ -1753,6 +1802,18 @@ def miles_validate_args(args):
                 f"// num_steps_per_rollout {args.num_steps_per_rollout}"
             )
         args.global_batch_size = global_batch_size
+
+    if args.async_submit_within_staleness:
+        assert (
+            args.fully_async and args.max_weight_staleness is not None and args.max_weight_staleness >= 0
+        ), "--async-submit-within-staleness requires --fully-async and --max-weight-staleness >= 0"
+        assert args.update_weights_interval == 1 and (
+            args.use_dynamic_global_batch_size
+            or args.global_batch_size == args.rollout_batch_size * args.n_samples_per_prompt
+        ), (
+            "--async-submit-within-staleness requires one weight version per step: --update-weights-interval 1 and "
+            "one optimizer step per rollout"
+        )
 
     # Multi-LoRA adapters carry their own n_samples_per_prompt; the per-group
     # normalization path already skips std for singleton groups.
