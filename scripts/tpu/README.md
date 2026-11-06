@@ -31,7 +31,7 @@ pip install --no-deps --force-reinstall /path/to/sglang_router-*.whl
 
 Weight sync over ICI also needs:
 
-- `--update-weight-transfer-mode ici` in miles (radixark/miles#4587);
+- `--update-weight-transfer-mode ici` in miles (radixark/miles#4589);
 - a torch_tpu build with job-local worlds (`TORCH_TPU_JOB_DEVICE_IDS`), so each job compiles and runs its
   collectives over its own devices (radixark/miles#4598 puts it in the image);
 - sglang-torchtpu's shared-slice receiver (sgl-project/sglang-torchtpu#1884);
@@ -77,10 +77,11 @@ wandb is on when `WANDB_API_KEY` is set.
 
 ## Notes
 
-- **Stop a training run gracefully while sglang is running.** The host's TPU network session is
-  shared, and a `kill -9`'d TPU process can take the other half down with it. Stop a run with
-  `ray stop` (without `--force`) and wait for its devices to be released before starting the next:
-  `train` does the same to any ray processes left from an earlier run, and leaves sglang alone.
+- **Restart sglang with every training run.** Trainer rank 0 hosts the slice's TPU controller, so when a
+  run exits the engine loses it: `/health` still answers 200, but the engine's devices stay in the old
+  session and the next trainer waits forever ("still in session"). Stop the run with `ray stop` (without
+  `--force`; a `kill -9`'d TPU process can take the other half down with it), stop sglang, then start
+  both again.
 - **Do not mask chips with `TPU_VISIBLE_CHIPS`**: it hangs libtpu's session setup. Both jobs
   address the slice through `TORCH_TPU_TOPOLOGY` and the shared-slice specs; the launcher sets them.
 - **Keep crash dumps off small disks** (`ulimit -c 0`): core files from crashed TPU processes
