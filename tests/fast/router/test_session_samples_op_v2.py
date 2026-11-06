@@ -162,9 +162,6 @@ _AGENT_METADATA = {"shared_key": "from-agent", "agent_only": 1, "accumulated_tok
 
 
 async def _make_session(core, records, accumulated) -> str:
-    """Commit the records as one chain, the way ``commit_generation`` does: each node holds its
-    turn's prompt + output with that turn's completion span, and the stored request keeps no
-    ``input_ids``. The last node's snapshot is ``accumulated``, which a test may corrupt."""
     response = await core.create_session()
     sid = json.loads(response.body)["session_id"]
     state = core.registry.sessions[sid]
@@ -189,7 +186,6 @@ async def _make_session(core, records, accumulated) -> str:
 
 
 def _without_input_ids(record):
-    """The record as a v2 commit stores it: the prompt's input_ids live in the tree."""
     return record.model_copy(
         update={"request": {key: value for key, value in record.request.items() if key != "input_ids"}}
     )

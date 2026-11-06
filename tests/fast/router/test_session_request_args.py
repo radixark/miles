@@ -44,8 +44,6 @@ def _metadata(url: str, session_id: str) -> dict:
 
 
 def _committed_turn_args(request_args: dict, version: str) -> dict:
-    """What a committed turn's ``turn_args`` holds: the request it sent; v2 leaves out the
-    prompt's ``input_ids``, which its trajectory tree holds."""
     if version == "v1":
         return request_args
     return {key: value for key, value in request_args.items() if key != "input_ids"}

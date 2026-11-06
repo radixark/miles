@@ -188,10 +188,8 @@ def commit_generation(
 ) -> TrajectoryNode:
     """Validate and append one generation under *parent* (the request's attach
     node). Prefix validation is byte-identical to the pre-tree checkpoint check.
-    ``turn_args`` is the full resolved request for this generation, without the prompt's
-    ``input_ids``, which the new node's token snapshot holds."""
+    ``turn_args`` is the full resolved request for this generation, except ``input_ids``."""
     all_token_ids = prompt_token_ids + completion_token_ids
-    # Materialized once: the prefix check and the node's delta split both read it.
     parent_token_ids = parent.token_ids if parent is not None else []
     assert_pretokenized_prefix(
         parent_token_ids,

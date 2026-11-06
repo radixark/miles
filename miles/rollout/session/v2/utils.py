@@ -71,8 +71,6 @@ def build_leaf_material(
     for leaf in state.tree.leaves():
         path = leaf.path_nodes()
         records = [node.record for node in path]
-        # Records do not keep their prompt's input_ids: each prompt is a prefix of the leaf's
-        # snapshot, materialized once here, and only the prefix lengths travel.
         accumulated_token_ids = leaf.token_ids
         prompt_lengths = [node.completion_span[0] for node in path]
         turns = compute_samples_from_openai_records(

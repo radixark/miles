@@ -1,11 +1,3 @@
-"""Token storage contract of the v2 trajectory tree.
-
-Each node stores only its tokens past the parent prefix it reuses, as a read-only int32
-array, and a committed request keeps no ``input_ids``. A session's token storage is then
-linear in its final context instead of one full snapshot per turn, while every snapshot,
-prompt, assembled sample and ``GET /sessions`` record reads the same tokens as before.
-"""
-
 import json
 from contextlib import asynccontextmanager
 
@@ -27,12 +19,10 @@ from miles.utils.processing_utils import load_tokenizer
 from miles.utils.types import Sample
 
 _TURNS = 5
-# Stands in for a trailing token a max_trim_tokens=1 template renders differently at the turn boundary.
 _REWRITTEN_ID = 13
 
 
 class _RecordingBackend:
-    """Answers every chat request with the same completion and keeps the bodies it was sent."""
 
     def __init__(self, completion_ids: list[int]):
         self.completion_ids = completion_ids
@@ -58,7 +48,6 @@ class _RecordingBackend:
 
 
 class _RewritingTITOTokenizer(TITOTokenizer):
-    """Every continued turn rewrites the parent's last token, as a trim-tolerant template may."""
 
     max_trim_tokens = 1
 
@@ -131,7 +120,6 @@ async def test_token_storage_is_linear_in_final_context(default_session):
     path = leaf.path_nodes()
     assert len(path) == _TURNS
 
-    # Four bytes per token of the FINAL context, not per turn x context.
     assert sum(node.token_delta.nbytes for node in path) == 4 * leaf.num_tokens
     for parent, child in zip([None, *path], path, strict=False):
         assert child.token_delta.dtype == np.int32 and not child.token_delta.flags.writeable
@@ -139,10 +127,8 @@ async def test_token_storage_is_linear_in_final_context(default_session):
 
     leaf_token_ids = leaf.token_ids
     for node, sent in zip(path, backend.requests, strict=True):
-        # Every snapshot is a prefix of its leaf's, and holds exactly the prompt the backend received.
         assert node.token_ids == leaf_token_ids[: node.num_tokens]
         assert node.token_ids[: node.completion_span[0]] == sent["input_ids"]
-        # Neither the record nor turn_args repeats the prompt the snapshot holds.
         assert "input_ids" not in node.record.request
         assert "input_ids" not in node.turn_args
 
@@ -158,7 +144,6 @@ async def test_get_session_serves_each_request_as_sent(default_session):
 
 
 async def test_collect_assembles_what_records_with_input_ids_assemble(any_session):
-    """Prompts sliced from the leaf assemble the same turns as records carrying their own input_ids."""
     core, backend = any_session
     sid = await _run_chain(core)
     leaf = _leaf(core, sid)
@@ -198,7 +183,6 @@ async def test_boundary_rewrites_live_in_the_child_delta(rewriting_session):
     for parent, child in zip(path, path[1:], strict=False):
         assert child.parent_reuse == parent.num_tokens - 1
         assert child.token_ids[parent.num_tokens - 1] == _REWRITTEN_ID != parent.token_ids[-1]
-    # One shadowed token per continued turn on top of the final context.
     assert sum(node.token_delta.size for node in path) == path[-1].num_tokens + len(path) - 1
     payload = json.loads((await core.get_session(sid)).body)
     assert [record["request"]["input_ids"] for record in payload["records"]] == [
@@ -226,8 +210,6 @@ def _create(tree: SessionTree, parent, token_ids: list[int], completion_span: tu
 
 
 def test_sibling_rewrites_each_keep_their_own_view():
-    """Two children rewriting the same parent tail differently: each snapshot keeps its own
-    rewrite, and the parent keeps the token it committed."""
     tree = SessionTree()
     parent = _create(tree, None, [1, 2, 3, 9], (3, 4))
     left = _create(tree, parent, [1, 2, 3, 70, 5, 6], (5, 6))
@@ -241,8 +223,6 @@ def test_sibling_rewrites_each_keep_their_own_view():
 
 
 def test_snapshot_shorter_than_its_parent_keeps_every_view():
-    """The prefix check tolerates up to max_trim_tokens fewer tokens than the parent: the shorter
-    snapshot drops the parent's tail, and a descendant growing past it again overwrites that tail."""
     tree = SessionTree()
     parent = _create(tree, None, [1, 2, 3, 9], (3, 4))
     shorter = _create(tree, parent, [1, 2, 3], (3, 3))
@@ -255,8 +235,6 @@ def test_snapshot_shorter_than_its_parent_keeps_every_view():
 
 
 def test_rewrite_into_an_earlier_turns_prompt_is_refused():
-    """A rewrite can stay clear of its parent's prompt and still reach an earlier, longer prompt on
-    the path; that turn's record would then be served a prompt it never sent."""
     tree = SessionTree()
     first = _create(tree, None, [1, 2, 3, 4, 5], (4, 5))
     second = _create(tree, first, [1, 2, 3, 4, 5, 6], (3, 6))
@@ -282,7 +260,6 @@ def test_snapshots_that_break_the_storage_contract_are_refused(token_ids, match)
 
 
 def test_nodes_compare_without_their_token_arrays():
-    """Twin retries with equal messages compare by their other fields instead of raising on arrays."""
     tree = SessionTree()
     parent = _create(tree, None, [1, 2, 3, 9], (3, 4))
     twins = [_create(tree, parent, [1, 2, 3, 9, 5, 6], (5, 6)) for _ in range(2)]

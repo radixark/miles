@@ -52,9 +52,6 @@ def compute_samples_from_openai_records(
     tokens the model emitted that the chat template also renders as the next
     turn's delimiter — to avoid double-counting.
 
-    v2 records do not keep their prompt: v2 passes ``prompt_lengths`` instead, and each
-    turn's prompt is that many leading tokens of ``accumulated_token_ids``.
-
     See ``TestTITOTrailingTokenTrim`` in
     ``tests/fast/rollout/session/test_samples.py``
     for a concrete worked example with token-level walkthroughs.
@@ -221,7 +218,6 @@ def adopt_session_records(
     next turn's incremental object starts after. Like ``merge_samples_with_addition_r3``, they are
     rebuilt from the untrimmed records, each continuing from its ``routed_experts_start_len``. The
     sample also owns every record's object, so objects of turns the merge dropped are deleted with it.
-    ``prompt_lengths`` is as in ``compute_samples_from_openai_records``.
     """
     plan = merged.rollout_store_plan
     if plan is None:
@@ -257,10 +253,7 @@ def merge_samples_with_addition_r3(
     *,
     prompt_lengths: list[int] | None = None,
 ) -> Sample:
-    """Merge ordinary fields, then materialize the required append-only R3 prefix.
-
-    ``prompt_lengths`` is as in ``compute_samples_from_openai_records``.
-    """
+    """Merge ordinary fields, then materialize the required append-only R3 prefix."""
     merged = merge_samples(samples, tokenizer)
     if all(record.response["choices"][0]["meta_info"].get("routed_experts") is None for record in records):
         return merged
@@ -305,7 +298,6 @@ def merge_samples_with_addition_r3(
 
 
 def _prompt_lengths(records: list[SessionRecord], prompt_lengths: list[int] | None) -> list[int]:
-    """Each record's prompt length: given by v2, whose records keep no ``input_ids``, else read from them."""
     return prompt_lengths if prompt_lengths is not None else [len(record.request["input_ids"]) for record in records]
 
 

@@ -7,8 +7,7 @@ defaults fill the fields the client omitted. The TITO tokenizer then applies
 model rules to the same full request.
 
 After rendering and a successful generation, the session records the complete
-resolved request as ``turn_args`` (v2 without the prompt's ``input_ids``, which
-its trajectory tree holds). A continuation supplies that history to the
+resolved request as ``turn_args``. A continuation supplies that history to the
 model resolver, which decides which fields inherit or must stay compatible.
 """
 

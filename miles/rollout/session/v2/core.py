@@ -220,7 +220,6 @@ class SessionCoreV2(SessionCore):
             logger.debug("Using TITO input_ids: %d tokens", len(prompt_token_ids))
 
             if self.use_addition_r3:
-                # Materializing the attach node's snapshot is O(context); the helper needs it only for addition R3.
                 checkpoint_token_ids = attach_parent.token_ids if attach_parent is not None else []
                 self._maybe_request_addition_r3(request_body, checkpoint_token_ids, prompt_token_ids)
             _add_session_extra_key(request_body, session)
@@ -254,9 +253,6 @@ class SessionCoreV2(SessionCore):
                 logger.debug("Session %s closed during proxy, skipping state update", session_id)
                 return _chat_client_response(result, response, response_intent)
 
-            # The prompt's input_ids are the new node's first completion_span[0] tokens, which the tree
-            # already holds; keeping them here too would store a full-context list per turn. Assembly
-            # and GET /sessions read them from the tree.
             stored_request = {key: value for key, value in request_body.items() if key != "input_ids"}
             record = SessionRecord(
                 timestamp=time.time(),
@@ -286,11 +282,6 @@ class SessionCoreV2(SessionCore):
 
 
 def _records_with_input_ids(leaf: TrajectoryNode, leaf_token_ids: list[int]) -> list[SessionRecord]:
-    """The path's records with each request's ``input_ids`` put back as its last key.
-
-    The values are what the chat request sent: every record's prompt is a prefix of its leaf's
-    snapshot. List slices share the int objects.
-    """
     return [
         node.record.model_copy(
             update={"request": {**node.record.request, "input_ids": leaf_token_ids[: node.completion_span[0]]}}
