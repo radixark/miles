@@ -44,6 +44,7 @@ from miles.backends.training_utils.checkpoint.adapter.adapter_dir import (
 )
 from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
     AdapterState,
+    agreed_step,
     gloo_group,
     raise_if_any_rank_failed,
 )
@@ -91,13 +92,9 @@ class LayerWiseSlotMembers:
 
     def _holds(self, slot: int) -> tuple[dict[int, tuple[torch.Tensor, dict, dict]], list]:
         """``_owned(slot)`` and this rank's shard specs, agreed by every rank first."""
-        error, owned = None, {}
-        try:
-            owned = self._owned(slot)
-        except Exception as exc:
-            error = exc
         # the specs gather over Gloo: a rank that cannot list its ownership must not leave the others there
-        raise_if_any_rank_failed(error)
+        with agreed_step():
+            owned = self._owned(slot)
         return owned, self._slots.local_shard_specs(slot, frozenset(owned))
 
     def get_local_shard_specs(self, slot: int):
@@ -530,13 +527,9 @@ class LegacyTinkerCheckpointLoader:
         return replace(self._run, lora_alpha=alpha), True
 
     def prepare(self, path: Path) -> tuple[Path, dict]:
-        error, weights = None, None
-        try:
-            weights = _slot_weights_sharded_state_dict(self._model, self._optimizer.slot)
-        except Exception as exc:
-            error = exc
         # the optimizer shells gather over the default group: a rank without slot tensors must not leave the others there
-        raise_if_any_rank_failed(error)
+        with agreed_step():
+            weights = _slot_weights_sharded_state_dict(self._model, self._optimizer.slot)
         shells = {_WEIGHTS_KEY: weights, _OPTIM_KEY: self._optimizer.sharded_state(weights, is_loading=True)}
         _canonicalize_slot_keys(shells, self._optimizer.slot)
         return path, shells
@@ -604,8 +597,7 @@ def _canonicalize_slot_keys(tree: dict, slot: int) -> dict:
 
 def _load_legacy_slot(shells: dict, slot_optimizer: SlotOptimizer, path: str, load_optimizer: bool) -> None:
     loaded = dist_checkpointing.load(shells, path)
-    error = None
-    try:
+    with agreed_step():
         slot_optimizer.load_sharded_state(loaded[_OPTIM_KEY])
         if not load_optimizer:
             slot_optimizer.reset_adam_state()
@@ -613,9 +605,6 @@ def _load_legacy_slot(shells: dict, slot_optimizer: SlotOptimizer, path: str, lo
         # them only into the returned dict); the loaded masters are authoritative
         for child in slot_optimizer.chained_optimizers:
             child._copy_main_params_to_model_params()
-    except Exception as exc:
-        error = exc
-    raise_if_any_rank_failed(error)
     slot_optimizer.allgather_params()
 
 

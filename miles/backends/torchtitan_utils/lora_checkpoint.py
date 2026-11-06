@@ -28,11 +28,7 @@ from miles.backends.training_utils.checkpoint.adapter.adapter_dir import (
     read_training_state,
     save_and_commit_adapter_dir,
 )
-from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
-    AdapterState,
-    gloo_group,
-    raise_if_any_rank_failed,
-)
+from miles.backends.training_utils.checkpoint.adapter.adapter_state import AdapterState, agreed_step, gloo_group
 from miles.backends.training_utils.checkpoint.adapter.base_model import (
     assert_same_base_tensors,
     hf_fingerprint_tensors,
@@ -55,7 +51,6 @@ from miles.backends.training_utils.checkpoint.adapter.readers import AdapterSour
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.utils.hf_utils.config import load_hf_config
 from miles.utils.lora.hf_lora_targets import HfLoraTargets, get_hf_lora_targets
-
 
 # a placed code is rank * _RANK_STRIDE + the element's offset in the rank's concatenated local shards
 _RANK_STRIDE = 2**40
@@ -269,8 +264,8 @@ class TorchtitanCheckpointLoader:
 
     def _base_fingerprint_tensors(self, path: Path, metadata) -> dict[str, torch.Tensor]:
         """The DCP's fingerprint tensors under their HF names (only what the titan model holds, e.g. no MTP)."""
-        fqns, error = set(), None
-        try:
+        fqns = set()
+        with agreed_step():
             for part in self._model_parts:
                 for fqn, param in part.named_parameters():
                     candidate = "norm" in fqn or fqn.startswith("layers.0.attention.")
@@ -278,9 +273,6 @@ class TorchtitanCheckpointLoader:
                         hf_names = self._sd_adapter.to_hf({fqn: torch.empty(param.shape, device="meta")})
                         if any(is_fingerprint_tensor(name) for name in hf_names):
                             fqns.add(fqn)
-        except Exception as exc:
-            error = exc
-        raise_if_any_rank_failed(error)
         # pipeline stages hold different layers; every rank reads them all
         gathered = [None] * dist.get_world_size()
         dist.all_gather_object(gathered, fqns, group=gloo_group())
@@ -293,14 +285,10 @@ class TorchtitanCheckpointLoader:
 
     def parametrization(self, path: Path) -> tuple[AdapterParametrization, bool]:
         """Collective: every check against the source, reading it only; ``apply`` then loads it."""
-        metadata, error, has_optimizer_state = None, None, None
-        try:
+        with agreed_step():
             metadata = dcp.FileSystemReader(path).read_metadata().state_dict_metadata
-        except Exception as exc:
-            error = exc
-        raise_if_any_rank_failed(error)
         params = self._slots.parameters
-        try:
+        with agreed_step():
             saved = {k for k in metadata if is_adapter_key(k)}
             expected = [None] * dist.get_world_size()
             dist.all_gather_object(expected, {k: tuple(p.shape) for k, p in params.items()}, group=gloo_group())
@@ -327,20 +315,14 @@ class TorchtitanCheckpointLoader:
                         assert (
                             dtype == torch.float32
                         ), f"{path}: {key}'s {name} is {dtype}; only fp32 moments resume exactly"
-        except Exception as exc:
-            error = exc
-        raise_if_any_rank_failed(error)
         # agreed before the collective dcp.load in apply: e.g. one node's HF cache may lack --hf-checkpoint
-        try:
+        with agreed_step():
             source_tensors = self._base_fingerprint_tensors(path, metadata)
             hf_dir = resolve_hf_dir(self._run.base_model)
             assert (
                 hf_dir is not None
             ), f"--hf-checkpoint {self._run.base_model} has no local HF weights to compare {path} with"
             assert_same_base_tensors(str(path), source_tensors, hf_fingerprint_tensors(hf_dir), self._run.base_model)
-        except Exception as exc:
-            error = exc
-        raise_if_any_rank_failed(error)
         self._checked = (path, metadata)
         return replace(self._run, lora_alpha=None), has_optimizer_state
 
