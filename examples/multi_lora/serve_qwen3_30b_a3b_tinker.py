@@ -64,7 +64,11 @@ def serve(args: ScriptArgs):
         f"{args.n_adapters} adapter slots, port {args.tinker_port}"
     )
 
-    ckpt_args = f"--hf-checkpoint {args.hf_checkpoint} --megatron-to-hf-mode {args.megatron_to_hf_mode} "
+    # raw mode starts fresh runs from --ref-load
+    ckpt_args = (
+        f"--hf-checkpoint {args.hf_checkpoint} --ref-load {args.hf_checkpoint} "
+        f"--megatron-to-hf-mode {args.megatron_to_hf_mode} "
+    )
 
     lora_args = (
         f"--lora-rank {args.lora_rank} --lora-alpha {args.lora_alpha} --lora-dropout 0.0 "
