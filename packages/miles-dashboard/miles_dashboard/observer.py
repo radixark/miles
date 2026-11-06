@@ -18,9 +18,6 @@ from typing import Any
 import ray
 from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 
-from miles.dashboard import sandbox_health, store
-from miles.dashboard.args import ENABLE_ENV, collector_config_from_args, env_switch, validate_dashboard_args
-from miles.dashboard.collector import COLLECTOR_ACTOR_NAME, DashboardCollector
 from miles.utils.logging_utils import RateLimitedWarner
 from miles.utils.observers import (
     EngineInfo,
@@ -32,6 +29,9 @@ from miles.utils.observers import (
     TrajectoryEvent,
 )
 from miles.utils.tracking_utils.prometheus_utils import _COLLECTOR_ACTOR_NAME as _PROMETHEUS_ACTOR_NAME
+from miles_dashboard import sandbox_health, store
+from miles_dashboard.args import ENABLE_ENV, collector_config_from_args, env_switch, validate_dashboard_args
+from miles_dashboard.collector import COLLECTOR_ACTOR_NAME, DashboardCollector
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +80,7 @@ class DashboardObserver(Observer):
         self._collector.start.remote()
         self._owns_collector = True
         logger.info(
-            "miles dashboard: telemetry -> %s | view live: python -m miles.dashboard.serve "
+            "miles dashboard: telemetry -> %s | view live: python -m miles_dashboard.serve "
             "--dump-details %s --follow --port 7788",
             config.dashboard_dir,
             run["args"]["dump_details"],

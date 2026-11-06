@@ -1,8 +1,18 @@
 # miles dashboard
 
 Training-dynamics and efficiency dashboards for miles runs, built on top of
-`--dump-details` plus a live telemetry collector. It watches a run through
-miles' run observers (`miles.utils.observers`).
+`--dump-details` plus a live telemetry collector. The package watches a run
+through miles' run observers (`miles.utils.observers`).
+
+## Install
+
+The miles image installs it. Elsewhere, such as a login node that only views
+dumps, install miles first and then the plugin, from a miles checkout:
+
+```bash
+pip install -e .
+pip install -e packages/miles-dashboard
+```
 
 ## Collect
 
@@ -43,7 +53,7 @@ a step, so later token views never full-load the `.pt`.
 ## View
 
 ```bash
-python -m miles.dashboard.serve --dump-details /path/to/dump [--follow] [--port 7788]
+python -m miles_dashboard.serve --dump-details /path/to/dump [--follow] [--port 7788]
 ```
 
 Works on any machine that can see the directory (login node over NFS, the
@@ -118,9 +128,9 @@ after 10 minutes. The collector overwrites
 ## Develop
 
 ```bash
-python -m miles.dashboard.serve --demo    # generated demo data, no cluster needed
-python -m pytest tests/fast/dashboard/ -q
-MILES_DASHBOARD_REALDATA_DIR=/path/to/real/dump python -m pytest tests/fast/dashboard/ -q
+python -m miles_dashboard.serve --demo    # generated demo data, no cluster needed
+python -m pytest tests/fast/packages/miles_dashboard/ -q
+MILES_DASHBOARD_REALDATA_DIR=/path/to/real/dump python -m pytest tests/fast/packages/miles_dashboard/ -q
 ```
 
 Architecture:
