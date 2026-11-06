@@ -149,12 +149,14 @@ def _load_slot(
                 slot_param[:, :rank].copy_(single_param)
 
 
-def _base_weight():
-    return torch.randn(OUT, HIDDEN, generator=torch.Generator().manual_seed(0))
+def _base_weight(dtype=torch.float32):
+    return torch.randn(OUT, HIDDEN, generator=torch.Generator().manual_seed(0), dtype=dtype)
 
 
-def _tokens(num_tokens, seed=1):
-    return torch.randn(num_tokens, 1, HIDDEN, generator=torch.Generator().manual_seed(seed)).requires_grad_()
+def _tokens(num_tokens, seed=1, dtype=torch.float32):
+    return torch.randn(
+        num_tokens, 1, HIDDEN, generator=torch.Generator().manual_seed(seed), dtype=dtype
+    ).requires_grad_()
 
 
 def _assert_bitwise(actual, expected):
@@ -166,9 +168,9 @@ def _assert_bitwise(actual, expected):
 @pytest.mark.parametrize("rank", [MAX_RANK, 2])
 def test_one_routed_slot_equals_single_lora(build, slot, rank):
     """Bitwise at the max rank; below it the slot's GEMMs also reduce over its zero padding, so the values match
-    and the bits need not."""
+    (in float64, to the dtype's own tolerance) and the bits need not."""
     check = _assert_bitwise if rank == MAX_RANK else torch.testing.assert_close
-    base_weight, alpha = _base_weight(), 6.0
+    base_weight, alpha = _base_weight(torch.float64), 6.0
     single = _single(build, rank=rank, alpha=alpha, base_weight=base_weight, seed=7)
     multi = _attached(build, _context(rank=MAX_RANK, num_slots=NUM_SLOTS), base_weight)
     for other in range(NUM_SLOTS):
@@ -178,7 +180,7 @@ def test_one_routed_slot_equals_single_lora(build, slot, rank):
     counts = [0] * NUM_SLOTS
     counts[slot] = 5
     multi.adapter.token_counts_by_slot = tuple(counts)
-    x_single, x_multi = _tokens(5), _tokens(5)
+    x_single, x_multi = _tokens(5, dtype=torch.float64), _tokens(5, dtype=torch.float64)
 
     out_single, _ = single.host(x_single)
     out_multi, _ = multi.host(x_multi)
