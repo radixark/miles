@@ -83,7 +83,6 @@ def apply_sample_max_response_len(sampling_params: dict[str, Any], sample: Sampl
     return {**sampling_params, "max_new_tokens": limit}
 
 
-
 def stamp_prompt_routing_key(args, samples: list[Sample]) -> None:
     """Key the samples of one prompt for the router, at the scope the router backend decides.
 

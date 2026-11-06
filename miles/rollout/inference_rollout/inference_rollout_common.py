@@ -18,7 +18,10 @@ from miles.rollout.base_types import (
     compute_kv_cache_namespace,
 )
 from miles.rollout.generate_hub.single_turn import generate
-from miles.rollout.generate_utils.generate_endpoint_utils import apply_sample_max_response_len, stamp_prompt_routing_key
+from miles.rollout.generate_utils.generate_endpoint_utils import (
+    apply_sample_max_response_len,
+    stamp_prompt_routing_key,
+)
 from miles.rollout.inference_rollout.compatibility import load_generate_function
 from miles.rollout.rm_hub import async_rm, batched_async_rm
 from miles.utils.async_utils import DynamicLimitSemaphore
