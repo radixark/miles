@@ -46,9 +46,9 @@ class TestComputeSendChecksums:
         with pytest.raises(AssertionError, match="duplicate tensor names"):
             compute_send_checksums({"w": torch.zeros(2)}, ["w", "w"])
 
-    def test_a_buffer_that_is_not_on_the_cpu_is_rejected(self) -> None:
-        """Only the registered CPU buffers are what the transfer engine reads."""
-        with pytest.raises(AssertionError, match="registered CPU send buffers"):
+    def test_a_buffer_that_is_neither_host_nor_gpu_memory_is_rejected(self) -> None:
+        """Only registered host or GPU buffers are what the transfer engine reads."""
+        with pytest.raises(AssertionError, match="registered host or GPU send buffers"):
             compute_send_checksums({"w": torch.zeros(2, device="meta")}, ["w"])
 
 

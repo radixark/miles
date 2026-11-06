@@ -572,9 +572,11 @@ class TestReconnectionWithOutstandingWrites:
 
         hold.release.set()
         if late_failure:
-            native_error = (
-                "returned -1" if p2p_sender.p2p_transport == "mooncake" else "NIXL WRITE of 1 weights is ERR"
-            )
+            native_error = {
+                "mooncake": "returned -1",
+                "nixl": "NIXL WRITE of 1 weights is ERR",
+                "mori": r"MoRI WRITE of 1 weights to .* failed: errors",
+            }[p2p_sender.p2p_transport]
             with pytest.raises(RuntimeError, match=native_error):
                 old_future.result(timeout=10)
         else:
