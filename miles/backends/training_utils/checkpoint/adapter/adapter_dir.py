@@ -14,7 +14,9 @@ from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
     _save_adapter_state,
     agreed_step,
     assert_adapter_state_keys,
+    broadcast_from_rank0,
     gloo_group,
+    is_rank0,
     is_vocab_padding,
     read_adapter_state_shapes,
 )
@@ -120,7 +122,7 @@ def save_adapter_dir(
                 f"missing {sorted(expected - keys)[:8]}, unexpected {sorted(keys - expected)[:8]}"
             )
         _save_adapter_state(written.path, state)
-        if torch.distributed.is_initialized() and torch.distributed.get_rank() != 0:
+        if not is_rank0():
             return written
         if training_state is not None:
             (written.path / TRAINING_STATE_FILENAME).write_text(json.dumps(training_state, indent=2))
@@ -167,18 +169,6 @@ def _zero_filled(specs: list[LocalShardSpec], loaded: AdapterState) -> AdapterSt
     )
 
 
-def _is_rank0() -> bool:
-    return not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0
-
-
-def _broadcast_from_rank0(value):
-    if not torch.distributed.is_initialized():
-        return value
-    box = [value]
-    torch.distributed.broadcast_object_list(box, src=0, group=gloo_group())
-    return box[0]
-
-
 def _assert_pieces_readable(
     weights: dict[str, torch.Tensor], specs: list[LocalShardSpec], head_rows: HeadRows | None
 ) -> None:
@@ -197,14 +187,14 @@ def _scatter_weights_only_state(
     specs_by_rank = [specs]
     if torch.distributed.is_initialized():
         # only the specs go through gather_object, which pads every rank's payload to the largest one
-        specs_by_rank = [None] * torch.distributed.get_world_size() if _is_rank0() else None
+        specs_by_rank = [None] * torch.distributed.get_world_size() if is_rank0() else None
         torch.distributed.gather_object(specs, specs_by_rank, dst=0, group=gloo_group())
     with agreed_step():
-        if _is_rank0():
+        if is_rank0():
             for rank_specs in specs_by_rank:
                 _assert_pieces_readable(weights, rank_specs, head_rows)
     # no export or conversion carries vocab padding: it stays zero, as at init
-    if not _is_rank0():
+    if not is_rank0():
         pieces = [torch.zeros(s.local_shape) for s in specs]
         for spec, piece in zip(specs, pieces, strict=True):
             if not is_vocab_padding(spec.key):
@@ -290,7 +280,7 @@ def load_adapter_dir(
         # PEFT and external readers load every tensor, so only rank 0 opens such a source; an adapter dir's
         # metadata is cheap, and every rank reads its own pieces of adapter_state/
         reader, source, steps = None, None, None
-        if kind == AdapterSourceKind.ADAPTER_DIR or _is_rank0():
+        if kind == AdapterSourceKind.ADAPTER_DIR or is_rank0():
             if kind == AdapterSourceKind.ADAPTER_DIR:
                 reader = MilesAdapterDirReader(path, targets)
             elif kind == AdapterSourceKind.EXTERNAL_WEIGHTS:
@@ -307,7 +297,7 @@ def load_adapter_dir(
                 has_optimizer_state=reader.source.has_optimizer_state,
             )
     reads_pieces = isinstance(reader, MilesAdapterDirReader) and reader.has_adapter_state() and not steps
-    source, reads_pieces = _broadcast_from_rank0((source, reads_pieces))
+    source, reads_pieces = broadcast_from_rank0((source, reads_pieces))
 
     if reads_pieces:
         run_keys = _all_ranks_keys(specs)
@@ -328,7 +318,7 @@ def load_adapter_dir(
         state = _zero_filled(specs, loaded)
     else:
         with agreed_step():
-            weights = apply_parametrization_conversion(reader.read_weights(), steps) if _is_rank0() else None
+            weights = apply_parametrization_conversion(reader.read_weights(), steps) if is_rank0() else None
         state = _scatter_weights_only_state(weights, specs, members.head_rows)
     with agreed_step():
         members.import_adapter_state(slot, state)
