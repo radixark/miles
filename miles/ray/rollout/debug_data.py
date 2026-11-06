@@ -6,9 +6,15 @@ from string import Formatter
 
 import torch
 
+from miles.utils.observers import Observers
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
+
+
+def records_conversations(args) -> bool:
+    """Whether generate paths keep each sample's raw conversation: the trajectory dump or a run observer of samples wants it."""
+    return args.save_debug_trajectory_data is not None or Observers().hears("rollout_samples")
 
 
 def trajectory_rows(samples: list[Sample]) -> list[dict]:
@@ -114,6 +120,23 @@ def load_debug_rollout_data(args, rollout_id: int) -> tuple[list[Sample], dict]:
     return data, metadata
 
 
+def drop_conversations_not_dumped(args, data, *, evaluation: bool) -> None:
+    """Conversations recorded only for the run's observers leave the samples once reported, so the step's data stays lean."""
+    observers = Observers()
+    # none were recorded, or the trajectory dump moves them into its sidecar
+    if not observers.hears("rollout_samples") or args.save_debug_trajectory_data is not None:
+        return
+    with observers.isolated("drop_conversations"):
+        for sample in samples_of(data, evaluation=evaluation):
+            if sample.metadata:
+                sample.metadata.pop("messages", None)
+
+
+def samples_of(data, *, evaluation: bool) -> list[Sample]:
+    """A step's rollout data as one flat sample list (evaluation data is keyed by dataset)."""
+    return [sample for info in data.values() for sample in info["samples"]] if evaluation else list(data)
+
+
 def save_debug_rollout_data(
     args, data, rollout_id, evaluation: bool, metadata: dict | None = None, trainer_model_id: str | None = None
 ) -> None:
@@ -124,7 +147,7 @@ def save_debug_rollout_data(
         logger.info(f"Save debug rollout data to {path}")
         path.parent.mkdir(parents=True, exist_ok=True)
 
-        samples = [sample for info in data.values() for sample in info["samples"]] if evaluation else list(data)
+        samples = samples_of(data, evaluation=evaluation)
         save_debug_trajectory_data(args, samples, rollout_id, evaluation, trainer_model_id=trainer_model_id)
         save_dashboard_columns(samples, path.parent.parent / "dashboard_columns" / f"rollout_{stem}.parquet")
 
