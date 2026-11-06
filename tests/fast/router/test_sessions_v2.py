@@ -615,7 +615,7 @@ class TestMaxSeqLen:
         assert response.status_code == 200, response.text
         return response.json()["choices"][0]["message"], env.backend.request_log[-1]
 
-    def test_a_prompt_that_fills_it_closes_the_chain(self, router_env):
+    def test_a_prompt_that_fills_it_is_refused_before_the_backend(self, router_env):
         probe = self._session(router_env.url, 10_000)
         a1, _ = self._turn(router_env, probe, [self.U1])
         _, sent2 = self._turn(router_env, probe, [self.U1, a1, self.T1])
@@ -624,9 +624,13 @@ class TestMaxSeqLen:
         session_id = self._session(router_env.url, len(sent2["input_ids"]))
         a1, sent1 = self._turn(router_env, session_id, [self.U1])
         assert sent1.get("max_tokens") is None and "max_seq_len" not in sent1
+        before = requests.get(f"{router_env.url}/sessions/{session_id}", timeout=5.0).json()
+        backend_requests = len(router_env.backend.request_log)
         extend = _post_chat(router_env.url, session_id, {"messages": [self.U1, a1, self.T1]})
         assert extend.status_code == 409
         assert "max_seq_len" in extend.json()["error"]
+        assert len(router_env.backend.request_log) == backend_requests
+        assert requests.get(f"{router_env.url}/sessions/{session_id}", timeout=5.0).json() == before
 
         # a new root still fits
         fresh = _post_chat(router_env.url, session_id, {"messages": [{"role": "user", "content": "fresh"}]})

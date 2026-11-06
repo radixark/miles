@@ -6,8 +6,9 @@ retain what the client asked the response to carry. The session's sampling
 defaults fill the fields the client omitted. The TITO tokenizer then applies
 model rules to the same full request.
 
-After rendering and a successful generation, the session records the complete
-resolved request as ``turn_args``. A continuation supplies that history to the
+After rendering, ``refuse_prompt_filling_max_seq_len`` checks the prompt against
+the session's length limit. After a successful generation, the session records
+the complete resolved request as ``turn_args``. A continuation supplies that history to the
 model resolver, which decides which fields inherit or must stay compatible.
 """
 

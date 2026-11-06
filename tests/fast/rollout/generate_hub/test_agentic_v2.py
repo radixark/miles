@@ -118,7 +118,7 @@ async def test_session_identity_for_penalty_logs_is_owned_by_tracer(monkeypatch,
     ("launch", "dataset", "expected"), [(None, None, None), (4096, None, 4096), (4096, 1024, 1024), (None, 1024, 1024)]
 )
 async def test_session_is_created_with_the_resolved_max_seq_len(monkeypatch, launch, dataset, expected):
-    """The session refuses a turn whose prompt fills the same max_seq_len that sample assembly truncates to."""
+    """The session is registered with the lower of the launch and dataset length limits."""
     sample = Sample(status=Sample.Status.COMPLETED, response_length=1, tokens=[1])
     tracer = _Tracer(SamplesReply(samples=[sample], session_metadata={}, empty_reason=None))
     _patch_agent(monkeypatch, tracer)

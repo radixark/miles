@@ -241,10 +241,10 @@ class TestMaxSeqLen:
         first = _post_chat(router_env.url, session_id, {"messages": [self.U1]})
         assert router_env.backend.request_log[-1].get("max_tokens") is None
         a1 = first.json()["choices"][0]["message"]
+        before = requests.get(f"{router_env.url}/sessions/{session_id}", timeout=5.0).json()
         backend_requests = len(router_env.backend.request_log)
         extend = _post_chat(router_env.url, session_id, {"messages": [self.U1, a1, self.T1]})
         assert extend.status_code == 409
         assert "max_seq_len" in extend.json()["error"]
         assert len(router_env.backend.request_log) == backend_requests
-        # the refusal leaves the session as it was: retrying the first turn still works
-        assert _post_chat(router_env.url, session_id, {"messages": [self.U1]}).status_code == 200
+        assert requests.get(f"{router_env.url}/sessions/{session_id}", timeout=5.0).json() == before

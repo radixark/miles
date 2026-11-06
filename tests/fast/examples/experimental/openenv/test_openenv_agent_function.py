@@ -13,6 +13,8 @@ below are shared with it.
 import asyncio
 import types
 
+import httpx
+import openai
 import openenv_agent_function as oaf
 
 
@@ -156,6 +158,35 @@ def test_length_capped_turn_ends_the_episode(monkeypatch):
     assert metrics["tool_calls"] == 0
     execs = [a for a in _FakeEnv.last_actions if a.action_type == "exec"]
     assert not [a for a in execs if "echo hi" in (a.command or "")], "ran a command the model never finished"
+
+
+class _MaxSeqLenPolicy(_FakePolicy):
+    """Turn 2's prompt fills the session's --max-seq-len, so the session server refuses it with 409."""
+
+    async def _create(self, **kw):
+        if self.n == 1:
+            request = httpx.Request("POST", "http://session/v1/chat/completions")
+            raise openai.ConflictError(
+                "max_seq_len", response=httpx.Response(409, request=request), body={"error": "max_seq_len"}
+            )
+        return await super()._create(**kw)
+
+
+def test_a_max_seq_len_refusal_ends_the_episode_and_scores_it(monkeypatch):
+    """The session's 409 ends the episode like a length cut: the executed command stays and scoring runs."""
+    monkeypatch.setattr(oaf, "load_tbench2", lambda: _CLASSES)
+
+    async def spying_with_env(env_cls, env_url, body):
+        return await body(env_cls())
+
+    monkeypatch.setattr(oaf, "_with_env", spying_with_env)
+
+    reward, metrics = run_async(
+        oaf.run_episode(_MaxSeqLenPolicy(), "m", [{"role": "system", "content": "s"}], {}, {"task_id": "t1"})
+    )
+
+    assert (reward, metrics["turns"], metrics["end_reason"], metrics["tool_calls"]) == (1.0, 1, "length", 1)
+    assert any(a.action_type == "evaluate" for a in _FakeEnv.last_actions), "scoring still runs"
 
 
 def test_no_command_reports_end_reason(monkeypatch):

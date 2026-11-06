@@ -47,6 +47,9 @@ async def completion(client: httpx.AsyncClient, url: str, body: dict, context: i
         return await post_json(client, url, body)
     except httpx.HTTPStatusError as error:
         text = error.response.text
+        # The session server answers 409 to a prompt that fills --max-seq-len, which this recipe sets to the context.
+        if error.response.status_code == 409:
+            raise ContextBudgetExceeded(text) from error
         if error.response.status_code != 400:
             raise
         match = re.search(r"(\d+) tokens from the input messages", text)
