@@ -199,27 +199,3 @@ class TestDeepSeekCheckpointCompatibility:
                 args=args,
             )
 
-
-@pytest.mark.parametrize("model_vocab_rows", [12, 10], ids=["megatron-padded", "built-unpadded"])
-def test_mbridge_pads_the_hf_embedding_to_the_built_models_rows(tmp_path, monkeypatch, model_vocab_rows):
-    """An HF embedding loads padded with zeros to the built model's vocab rows, not failing the TP scatter."""
-    pytest.importorskip("mbridge")
-    import transformers
-    from mbridge.core.parallel_states import ParallelStates
-
-    monkeypatch.setattr(ParallelStates, "get_parallel_state", classmethod(lambda cls: cls()))
-    transformers.Qwen3Config(
-        vocab_size=10,
-        hidden_size=4,
-        intermediate_size=8,
-        num_hidden_layers=1,
-        num_attention_heads=2,
-        num_key_value_heads=1,
-        head_dim=2,
-    ).save_pretrained(tmp_path)
-
-    bridge = checkpoint.create_mbridge_for_model([SimpleNamespace(vocab_size=model_vocab_rows)], str(tmp_path))
-    rows = bridge._weight_to_mcore_format("embedding.word_embeddings.weight", [torch.ones(10, 4)])
-
-    assert rows.shape == (model_vocab_rows, 4)
-    assert not rows[10:].any(), "padding rows are zero"

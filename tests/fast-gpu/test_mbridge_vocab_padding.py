@@ -1,0 +1,55 @@
+"""mbridge loads an HF embedding into a miles-built model at that model's vocab rows."""
+
+from types import SimpleNamespace
+
+import pytest
+import torch
+from tests.ci.ci_register import register_cuda_ci
+
+register_cuda_ci(
+    est_time=30,
+    suite="stage-b-2-gpu-h200",
+    labels=["lora", "miles-plugin"],
+    hardware=["hopper", "blackwell"],
+    num_gpus=1,
+)
+
+pytest.importorskip("mbridge")
+
+import transformers  # noqa: E402
+from mbridge.core.parallel_states import ParallelStates  # noqa: E402
+
+from miles.backends.megatron_utils.checkpoint import create_mbridge_for_model  # noqa: E402
+
+HF_VOCAB = 10
+
+
+@pytest.fixture
+def hf_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(ParallelStates, "get_parallel_state", classmethod(lambda cls: cls()))
+    transformers.Qwen3Config(
+        vocab_size=HF_VOCAB,
+        hidden_size=4,
+        intermediate_size=8,
+        num_hidden_layers=1,
+        num_attention_heads=2,
+        num_key_value_heads=1,
+        head_dim=2,
+    ).save_pretrained(tmp_path)
+    return str(tmp_path)
+
+
+@pytest.mark.parametrize("model_vocab_rows", [12, HF_VOCAB], ids=["megatron-padded", "built-unpadded"])
+def test_the_hf_embedding_loads_padded_with_zeros_to_the_built_models_rows(hf_dir, model_vocab_rows):
+    """Unpadded rows fail the TP scatter of a padded model."""
+    bridge = create_mbridge_for_model([SimpleNamespace(vocab_size=model_vocab_rows)], hf_dir)
+
+    rows = bridge._weight_to_mcore_format("embedding.word_embeddings.weight", [torch.ones(HF_VOCAB, 4)])
+
+    assert rows.shape == (model_vocab_rows, 4)
+    assert rows[:HF_VOCAB].eq(1).all() and not rows[HF_VOCAB:].any()
+
+
+def test_a_model_built_with_fewer_rows_than_the_hf_vocab_is_refused(hf_dir):
+    with pytest.raises(AssertionError, match="fewer vocab rows"):
+        create_mbridge_for_model([SimpleNamespace(vocab_size=HF_VOCAB - 1)], hf_dir)
