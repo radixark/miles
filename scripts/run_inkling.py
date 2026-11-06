@@ -42,7 +42,7 @@ Tasks:
   - geo3k      vision (geo3k), structured-message rendering, frozen towers,
                geo3k-val eval.
   - avqa_audio audio multiple choice (AVQA, examples/avqa_audio/prepare_avqa_audio.py),
-               structured-message rendering, frozen towers.
+               structured-message rendering, frozen towers, held-out AVQA eval.
   Multimodal tasks run on SGLang's token-space processor; --no-token-space-mm keeps
   the Miles-side Inkling processor (sentinel rendering and expansion at training).
 
@@ -299,6 +299,15 @@ def _train(args: ScriptArgs):
                 "--custom-rm-path examples.avqa_audio.reward.reward_func "
                 "--dynamic-sampling-filter-path miles.rollout.filter_hub.common_filters.apply_reward_nonzero_std_filter "
             )
+            if args.enable_eval:
+                eval_args = (
+                    "--eval-interval 5 "
+                    f"--eval-prompt-data avqa_heldout {args.data_dir}/avqa_audio/avqa_heldout.jsonl "
+                    "--eval-input-key prompt --eval-label-key label "
+                    "--n-samples-per-eval-prompt 1 --eval-temperature 0 "
+                    # Twice the training budget, so a greedy answer's thinking is not cut short.
+                    "--eval-max-response-len 2048 "
+                )
 
     grpo_args = (
         "--advantage-estimator grpo "
