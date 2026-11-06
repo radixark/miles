@@ -8,7 +8,12 @@ from tests.ci.ci_register import register_cuda_ci
 from miles.utils.external_utils import command_utils
 
 register_cuda_ci(
-    est_time=1000, suite="stage-c-8-gpu-b200", labels=["megatron", "model-scripts"], hardware=["blackwell"], num_gpus=8
+    # Conservative TP2/DCP2 bound; registered-runner timing is pending.
+    est_time=2400,
+    suite="stage-c-8-gpu-b200",
+    labels=["megatron", "model-scripts"],
+    hardware=["blackwell"],
+    num_gpus=8,
 )
 
 MODEL_ORG = "Pinaster"
@@ -257,17 +262,17 @@ def _assert_gpu_delta_performance(report_path):
     assert not missing, f"GPU-delta CI has no nonempty warm ordinary-codec update for {len(missing)} current ranks"
     warm = [rank for update in report["updates"] for rank in update["ranks"]]
     assert warm, "GPU-delta CI did not validate any nonempty warm update"
-    assert all(rank["apply_kernel_cache_misses"] == 0 for rank in warm), (
-        "GPU-delta CI warm updates must reuse the prepared Triton kernels"
-    )
+    assert all(
+        rank["apply_kernel_cache_misses"] == 0 for rank in warm
+    ), "GPU-delta CI warm updates must reuse the prepared Triton kernels"
     # Provisional five-layer CI limits: allow CPU headroom over the full-model <5s prepare proxy.
     for name, limit in (("prepare_s", 6.0), ("pause_s", 0.3)):
         failures = [rank[name] for rank in warm if not 0 <= rank[name] < limit]
         assert not failures, f"GPU-delta CI warm {name} must be <{limit}s; violations={failures}"
     warm_engines = [engine for update in report["updates"] for engine in update["engines"]]
-    assert set(engines) == {engine["engine"] for engine in warm_engines}, (
-        "GPU-delta CI requires warm all-TP apply/resume timing for every engine"
-    )
+    assert set(engines) == {
+        engine["engine"] for engine in warm_engines
+    }, "GPU-delta CI requires warm all-TP apply/resume timing for every engine"
     failures = [engine["apply_and_resume_s"] for engine in warm_engines if not 0 <= engine["apply_and_resume_s"] < 0.3]
     assert not failures, f"GPU-delta CI warm engine apply/resume must be <0.3s; violations={failures}"
     owners = [owner for update in report["encoding_updates"].values() for owner in update["owners"]]
@@ -277,7 +282,7 @@ def _assert_gpu_delta_performance(report_path):
         owner["owner_rank"] for owner in warm_owners
     }, "GPU-delta CI requires nonempty warm ordinary encoding for every matrix-producing owner"
     # Provisional budget from full-model measured encoding stages, not pure compression.
-    # Actual five-layer timings are not yet calibrated.
+    # Leave CPU headroom until timings are calibrated on the registered CI runner.
     encoding_limit_s = 6.0
     failures = [
         owner["encoding_stage_wall_s"]
@@ -449,9 +454,7 @@ def execute():
         "--sglang-watchdog-timeout 3600 "
     )
 
-    ci_args = (
-        "--ci-test --ci-disable-logprobs-checker --ci-disable-weight-update-checker --ci-disable-kl-checker "
-    )
+    ci_args = "--ci-test --ci-disable-logprobs-checker --ci-disable-weight-update-checker --ci-disable-kl-checker "
 
     mixed_precision_args = (
         "--transformer-impl transformer_engine "
@@ -507,7 +510,13 @@ def execute():
         num_gpus_per_node=NUM_GPUS,
         megatron_model_type=MODEL_TYPE,
         megatron_path=MEGATRON_PATH,
-        extra_env_vars={**NVFP4_ENV, **GLM5_ENV, **delta_env},
+        extra_env_vars={
+            **NVFP4_ENV,
+            **GLM5_ENV,
+            **delta_env,
+            # DCP2 doubles this to 1.5 GiB; FlashInfer autotune needs more than 1 GiB.
+            "SGLANG_FLASHINFER_WORKSPACE_SIZE": "805306368",
+        },
     )
     check = (
         "from tests.e2e.megatron.test_glm5_2_744b_a40b_5layer_nvfp4_w4a16 import _assert_gpu_delta_performance; "
