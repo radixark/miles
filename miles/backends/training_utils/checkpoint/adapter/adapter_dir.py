@@ -174,10 +174,6 @@ def _stacked_expert_keys(named_tensors: list[tuple[str, torch.Tensor]], map_name
     return frozenset(keys)
 
 
-def _is_writer() -> bool:
-    return not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0
-
-
 def write_peft_export(
     directory: Path,
     members: AdapterCheckpointMembers,
@@ -230,7 +226,7 @@ def _write_bf16_export(
     with agreed_step():
         # the gathered adapter leaves the GPU before rank 0 splits and copies it
         named_tensors = [(key, tensor.cpu()) for key, tensor in members.export_bf16_adapter(slot)]
-        if _is_writer():
+        if is_rank0():
             weights = _hf_keyed_bf16_adapter(named_tensors, members, parametrization, targets)
             write(
                 directory,
@@ -254,11 +250,7 @@ def write_sampler_export(
 ) -> UncommittedAdapterDir:
     """All ranks call; rank 0 writes ``slot``'s bf16 sampler export. The caller's committer then commits it."""
     with write_adapter_dir(root, name, tenant_digest=tenant_digest) as written:
-        # the gathered adapter leaves the GPU before rank 0 splits and copies it
-        named_tensors = [(key, tensor.cpu()) for key, tensor in members.export_bf16_adapter(slot)]
-        if _is_writer():
-            weights = _hf_keyed_bf16_adapter(named_tensors, members, parametrization, targets)
-            write_sampler_adapter(written.path, weights, parametrization, targets, lora_dropout=lora_dropout)
+        write_sampler_view(written.path, members, slot, parametrization, targets, lora_dropout=lora_dropout)
     return written
 
 
