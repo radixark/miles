@@ -10,7 +10,10 @@ def _lora_actor_module(monkeypatch, *, model=None, checkpoint=None):
         "miles.backends.megatron_utils.actor": {"MegatronTrainRayActor": object},
         "miles.backends.megatron_utils.lora": {"checkpoint": checkpoint, "model": model},
         "miles.backends.megatron_utils.lora.optimizer": {"SlotOptimizer": object},
-        "miles.backends.training_utils.checkpoint.adapter.adapter_dir": {"save_adapter_dir": None, "save_sampler_export": None},
+        "miles.backends.training_utils.checkpoint.adapter.adapter_dir": {
+            "save_adapter_dir": None,
+            "save_sampler_export": None,
+        },
         "miles.backends.training_utils.checkpoint.adapter.commit": {"UncommittedAdapterDir": object},
         "miles.backends.training_utils.data.rollout": {
             "get_rollout_data": lambda *args, **kwargs: ({}, nullcontext())
