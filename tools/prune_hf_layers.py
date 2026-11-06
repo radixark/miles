@@ -41,7 +41,6 @@ def prune(src: Path, dst: Path, num_layers: int) -> None:
     for key in _MTP_CONFIG_KEYS:
         if key in config:
             config[key] = 0
-    (dst / "config.json").write_text(json.dumps(config, indent=2))
     # tokenizer, chat template and generation config travel unchanged
     for path in src.iterdir():
         if (
@@ -50,6 +49,8 @@ def prune(src: Path, dst: Path, num_layers: int) -> None:
             and path.name not in ("config.json", "model.safetensors.index.json")
         ):
             shutil.copy2(path, dst / path.name)
+    # last: a launcher skips the cut once config.json exists
+    (dst / "config.json").write_text(json.dumps(config, indent=2))
 
 
 def main() -> None:
