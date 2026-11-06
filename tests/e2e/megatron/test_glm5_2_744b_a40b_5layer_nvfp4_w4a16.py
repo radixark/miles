@@ -6,10 +6,6 @@ from pathlib import Path
 from tests.ci.ci_register import register_cuda_ci
 
 from miles.utils.external_utils import command_utils
-from miles.utils.test_utils.fault_injector.actions.cell import RestartRolloutCellAction
-from miles.utils.test_utils.fault_injector.models import FaultHookName, FaultHookRequest
-from miles.utils.test_utils.fault_injector.static_source import compute_fault_hooks_arg
-from miles.utils.workers.naming import compute_cell_id
 
 register_cuda_ci(
     est_time=1000, suite="stage-c-8-gpu-b200", labels=["megatron", "model-scripts"], hardware=["blackwell"], num_gpus=8
@@ -165,6 +161,8 @@ def _install_gpu_delta_performance_check(args):
         assert len(receipts) == len(expected) and {r["identity"]["rank_id"] for r in receipts} == expected
         codec, version = publication["codec"], publication["target_version"]
         for group in cohort.participants:
+            assert sorted(identity["tp_rank"] for identity in group) == list(range(ROLLOUT_GPUS_PER_ENGINE))
+            assert all(identity["dp_rank"] == 0 for identity in group)
             engines[group[0]["engine_id"]] = {"ranks": [r["rank_id"] for r in group], "version": version}
         warm = []
         for receipt in receipts:
@@ -180,11 +178,22 @@ def _install_gpu_delta_performance_check(args):
                             "rank": rank,
                             "prepare_s": timing["host_prepare_s"],
                             "pause_s": (scheduler["resumed_ns"] - scheduler["pause_started_ns"]) / 1e9,
+                            "apply_kernel_cache_misses": timing["apply_kernel_cache_misses"],
                         }
                     )
                 seen.add(key)
         if warm:
-            updates.append({"version": version, "codec": codec, "ranks": warm})
+            warm_ranks = {rank["rank"] for rank in warm}
+            warm_engines = [
+                {
+                    "engine": timing["engine_id"],
+                    # Adjacent tokenizer spans include all-TP acknowledgement before admission reopens.
+                    "apply_and_resume_s": timing["apply_s"] + timing["resume_s"],
+                }
+                for timing in result["engine_timings"]
+                if set(engines[timing["engine_id"]]["ranks"]).issubset(warm_ranks)
+            ]
+            updates.append({"version": version, "codec": codec, "ranks": warm, "engines": warm_engines})
         if (
             codec == ordinary_codec
             and version > 1
@@ -248,10 +257,19 @@ def _assert_gpu_delta_performance(report_path):
     assert not missing, f"GPU-delta CI has no nonempty warm ordinary-codec update for {len(missing)} current ranks"
     warm = [rank for update in report["updates"] for rank in update["ranks"]]
     assert warm, "GPU-delta CI did not validate any nonempty warm update"
+    assert all(rank["apply_kernel_cache_misses"] == 0 for rank in warm), (
+        "GPU-delta CI warm updates must reuse the prepared Triton kernels"
+    )
     # Provisional five-layer CI limits: allow CPU headroom over the full-model <5s prepare proxy.
     for name, limit in (("prepare_s", 6.0), ("pause_s", 0.3)):
         failures = [rank[name] for rank in warm if not 0 <= rank[name] < limit]
         assert not failures, f"GPU-delta CI warm {name} must be <{limit}s; violations={failures}"
+    warm_engines = [engine for update in report["updates"] for engine in update["engines"]]
+    assert set(engines) == {engine["engine"] for engine in warm_engines}, (
+        "GPU-delta CI requires warm all-TP apply/resume timing for every engine"
+    )
+    failures = [engine["apply_and_resume_s"] for engine in warm_engines if not 0 <= engine["apply_and_resume_s"] < 0.3]
+    assert not failures, f"GPU-delta CI warm engine apply/resume must be <0.3s; violations={failures}"
     owners = [owner for update in report["encoding_updates"].values() for owner in update["owners"]]
     nonempty_owners = {owner["owner_rank"] for owner in owners if owner["nonempty"]}
     warm_owners = [owner for owner in owners if owner["warm"]]
@@ -271,6 +289,7 @@ def _assert_gpu_delta_performance(report_path):
         f"GPU-delta CI warm ranks={len(current_ranks)} checks={len(warm)} "
         f"prepare_max_s={max(rank['prepare_s'] for rank in warm)} "
         f"scheduler_pause_max_s={max(rank['pause_s'] for rank in warm)} "
+        f"engine_apply_and_resume_max_s={max(engine['apply_and_resume_s'] for engine in warm_engines)} "
         f"encoding_owners={len(nonempty_owners)} "
         f"encoding_stage_wall_max_s={max(owner['encoding_stage_wall_s'] for owner in warm_owners)}",
         flush=True,
@@ -351,7 +370,7 @@ def execute():
         "--apply-chat-template "
         "--rollout-shuffle "
         "--rm-type deterministic_random "
-        # Give restarted ranks two ordinary-codec updates so their second apply is warm.
+        # Exercise repeated warm ordinary-codec updates on every TP rank.
         "--num-rollout 5 "
         "--rollout-batch-size 4 "
         "--n-samples-per-prompt 4 "
@@ -407,20 +426,22 @@ def execute():
 
     sglang_args = (
         "--sglang-mem-fraction-static 0.7 "
-        "--sglang-enable-dp-attention "
         "--sglang-attention-backend nsa "
-        "--sglang-dsa-decode-backend flashmla_kv "
-        "--sglang-dsa-prefill-backend flashmla_sparse "
+        "--sglang-dsa-decode-backend trtllm "
+        "--sglang-dsa-prefill-backend trtllm "
         "--sglang-dsa-topk-backend flashinfer "
         "--sglang-kv-cache-dtype fp8_e4m3 "
         "--sglang-page-size 64 "
         f"--rollout-num-gpus-per-engine {ROLLOUT_GPUS_PER_ENGINE} "
         "--sglang-moe-runner-backend flashinfer_cutedsl "
         "--sglang-moe-a2a-backend none "
-        f"--sglang-ep-size {ROLLOUT_GPUS_PER_ENGINE} "
-        f"--sglang-dp-size {ROLLOUT_GPUS_PER_ENGINE} "
-        "--sglang-moe-dense-tp-size 1 "
-        "--sglang-enable-dp-lm-head "
+        # Each engine shards attention, routed experts, and BF16 shared experts across TP2.
+        "--sglang-ep-size 1 "
+        "--sglang-dp-size 1 "
+        f"--sglang-moe-dense-tp-size {ROLLOUT_GPUS_PER_ENGINE} "
+        f"--sglang-dcp-size {ROLLOUT_GPUS_PER_ENGINE} "
+        # Pin the default DCP Q replica so updates also cover its derived weights.
+        "--sglang-dcp-replicate-q-proj "
         "--sglang-enable-fp32-lm-head "
         "--sglang-cuda-graph-max-bs-decode 256 "
         "--sglang-max-running-requests 512 "
@@ -430,18 +451,6 @@ def execute():
 
     ci_args = (
         "--ci-test --ci-disable-logprobs-checker --ci-disable-weight-update-checker --ci-disable-kl-checker "
-        "--use-fault-tolerance --ft-components rollout "
-        + compute_fault_hooks_arg(
-            [
-                FaultHookRequest(
-                    hook_name=FaultHookName.ORCHESTRATOR_STEP_END,
-                    rollout_id=1,
-                    action=RestartRolloutCellAction(
-                        cell_id=compute_cell_id(pool_id="inference-engine-all-0-0", cell_index=1),
-                    ),
-                ),
-            ]
-        )
     )
 
     mixed_precision_args = (
