@@ -1,14 +1,13 @@
+"""Blocked document-causal SDPA must equal one dense document-causal mask."""
+
 import pytest
 import torch
 import torch.nn.functional as F
+from tests.ci.ci_register import register_cpu_ci
 
-pytest.importorskip("torchtitan")
+from miles.backends.torchtitan_utils.document_attention import document_causal_attention, document_ids
 
-from miles.backends.torchtitan_utils.sdpa_document_attention import (  # noqa: E402
-    BlockedSdpaInnerAttention,
-    document_causal_attention,
-    document_ids,
-)
+register_cpu_ci(est_time=10, suite="stage-a-cpu", labels=[])
 
 # documents of 700, 900 and 1200 tokens, then a 1296-token padding tail: two cross a 1024 query block
 _DOC_LENGTHS = [700, 900, 1200, 1296]
@@ -46,33 +45,3 @@ def test_blocked_attention_matches_one_dense_document_causal_mask(num_kv_heads):
 
     expected = _dense_reference(q, k, v, doc_ids, enable_gqa=gqa)
     torch.testing.assert_close(document_causal_attention(q, k, v, doc_ids, enable_gqa=gqa), expected)
-
-
-def test_the_inner_attention_takes_torchtitans_token_major_layout():
-    """torchtitan hands inner attention [T, H, K] tensors and the metadata its config built from the positions."""
-    torch.manual_seed(0)
-    config = BlockedSdpaInnerAttention.Config()
-    attention = config.build()
-    positions = _positions()
-    seq_len = positions.shape[0]
-    q, k, v = (torch.randn(seq_len, heads, 16, dtype=torch.float64) for heads in (4, 2, 2))
-
-    out = attention(q, k, v, attention_metadata=config.build_attention_metadata(positions), enable_gqa=True)
-
-    to_bhtk = lambda t: t.transpose(0, 1).unsqueeze(0)  # noqa: E731
-    expected = _dense_reference(
-        to_bhtk(q), to_bhtk(k), to_bhtk(v), document_ids(positions).unsqueeze(0), enable_gqa=True
-    )
-    torch.testing.assert_close(out, expected.squeeze(0).transpose(0, 1))
-
-
-def test_the_inner_attention_refuses_what_it_cannot_honor():
-    attention = BlockedSdpaInnerAttention.Config().build()
-    q = torch.randn(8, 2, 4)
-    doc_ids = document_ids(torch.arange(8))
-    with pytest.raises(NotImplementedError):
-        attention(q, q, q, attention_metadata=doc_ids, score_mod=lambda score, *idx: score)
-    with pytest.raises(NotImplementedError):
-        attention(q, q, q, attention_metadata=doc_ids, out_transform=lambda out, lse: out)
-    with pytest.raises(TypeError, match="document ids"):
-        attention(q, q, q, attention_metadata=object())
