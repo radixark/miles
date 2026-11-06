@@ -61,7 +61,7 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
         fresh. A source the slot cannot take is refused before the slot changes, as a user error."""
         if source is not None:
             parametrization = self.adapter_slots.parametrization(**source["parametrization_fields"])
-            mismatch = lora_checkpoint.find_load_mismatch(
+            mismatch, checked = lora_checkpoint.check_load_source(
                 self.model,
                 slot,
                 source["path"],
@@ -81,6 +81,7 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
                 parametrization,
                 self.adapter_slots.targets,
                 source["load_optimizer"],
+                checked=checked,
             )
         return None
 

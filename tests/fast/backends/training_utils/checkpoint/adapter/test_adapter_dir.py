@@ -11,6 +11,7 @@ import torch.distributed as dist
 import torch.distributed.checkpoint
 from tests.fast.dist_utils import init_gloo, run_multiprocess
 
+from miles.backends.training_utils.checkpoint.adapter import adapter_dir
 from miles.backends.training_utils.checkpoint.adapter.adapter_dir import (
     HeadRows,
     load_adapter_dir,
@@ -349,6 +350,20 @@ def _one_rank_fails(rank, world_size, port, *, peft, torchtitan, scratch):
     init_gloo(rank, world_size, port=port)
     init_gloo_group()
     rank = dist.get_rank()
+    opened = []
+
+    class CountingReader(adapter_dir.PeftAdapterReader):
+        def __init__(self, *args, **kwargs):
+            opened.append(rank)
+            super().__init__(*args, **kwargs)
+
+    adapter_dir.PeftAdapterReader = CountingReader
+    members = FakeMembers()
+    load_adapter_dir(Path(peft), members, 0, RUN, TARGETS, load_optimizer=False)
+    assert opened == ([0] if rank == 0 else []), "a source that needs conversion is read on rank 0 only"
+    expected = [FULL["lora_A"], FULL["lora_B"][rank * 2 : rank * 2 + 2]]
+    for got, want in zip(members.imported.weights, expected, strict=True):
+        assert torch.equal(got, want.to(torch.bfloat16).float())
     # a file where the root directory should be makes rank 0's mkdir fail
     if rank == 0:
         Path(scratch, "blocker").write_text("")
@@ -378,7 +393,8 @@ def _one_rank_fails(rank, world_size, port, *, peft, torchtitan, scratch):
 
 
 def test_a_rank_local_failure_fails_every_rank_before_the_next_collective(tmp_path):
-    """Save prepare, source read, shard specs, import and in-model prepare each agree before a collective."""
+    """A converted source is read on rank 0 only and scattered; save prepare, source read, shard specs, import and
+    in-model prepare each agree before a collective."""
     peft = tmp_path / "peft"
     write_peft_adapter(peft, {f"{MODULE}.{k}": v for k, v in FULL.items()}, RUN, TARGETS, lora_dropout=0.0)
     torchtitan = _torchtitan_checkpoint(tmp_path / "torchtitan")
