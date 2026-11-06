@@ -206,8 +206,7 @@ def _write_bf16_export(
     targets: HfLoraTargets,
     write: Callable[..., None],
 ) -> None:
-    error = None
-    try:
+    with agreed_step():
         # the gathered adapter leaves the GPU before rank 0 splits and copies it
         named_tensors = [(name, tensor.cpu()) for name, tensor in members.export_bf16_adapter(slot)]
         if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
@@ -222,9 +221,6 @@ def _write_bf16_export(
                 targets,
                 stacked_keys=_stacked_expert_keys(named_tensors, map_name),
             )
-    except Exception as exc:
-        error = exc
-    raise_if_any_rank_failed(error)
 
 
 def _slice(full: torch.Tensor, spec: LocalShardSpec) -> torch.Tensor:
