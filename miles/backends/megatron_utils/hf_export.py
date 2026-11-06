@@ -12,7 +12,7 @@ from miles.backends.megatron_utils.lora.bridge_checkpoint import BridgeAdapterSl
 from miles.backends.megatron_utils.lora.native.merge import merge_lora_into_weights
 from miles.backends.megatron_utils.lora.utils import is_lora_model
 from miles.backends.megatron_utils.named_weights import named_params_and_buffers
-from miles.backends.training_utils.checkpoint.adapter.adapter_dir import write_peft_export, write_sampler_view
+from miles.backends.training_utils.checkpoint.adapter.adapter_dir import write_peft_export, write_sampler_export
 from miles.backends.training_utils.checkpoint.adapter.adapter_exports import has_plain_peft_form
 from miles.backends.training_utils.checkpoint.io import write_checkpoint_dir
 from miles.backends.training_utils.parallel import get_parallel_state
@@ -88,7 +88,7 @@ def save_hf_model(
             write = (
                 write_peft_export
                 if has_plain_peft_form(parametrization, adapter_slots.targets)
-                else write_sampler_view
+                else write_sampler_export
             )
             write(
                 checkpoint_dir / "adapter",

@@ -179,7 +179,7 @@ def write_peft_export(
     )
 
 
-def write_sampler_view(
+def write_sampler_export(
     directory: Path,
     members: AdapterCheckpointMembers,
     slot: int,

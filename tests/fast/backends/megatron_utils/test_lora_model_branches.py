@@ -249,7 +249,7 @@ class TestSaveHfModelRawLoRA:
 
 class TestSaveHfModelBridgeLoRA:
     @patch(f"{_HF_EXPORT_MODULE}.has_plain_peft_form", return_value=True)
-    @patch(f"{_HF_EXPORT_MODULE}.write_sampler_view")
+    @patch(f"{_HF_EXPORT_MODULE}.write_sampler_export")
     @patch(f"{_HF_EXPORT_MODULE}.write_peft_export")
     @patch(f"{_HF_EXPORT_MODULE}.get_gloo_group")
     @patch(f"{_HF_EXPORT_MODULE}.torch")
