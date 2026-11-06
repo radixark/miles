@@ -68,8 +68,9 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     graceful_ray_stop: bool = True
 
 
-# sglang's TPU scheduling flags, with scoped VMEM at the v7x maximum and the associative-scan emitter off
-# (libtpu >= 0.0.44 miscompiles cumulative ops for lengths not a multiple of 1024)
+# sglang-torchtpu's benchmark/tpu/common_env.sh flags (exporting LIBTPU_INIT_ARGS replaces them there), with scoped
+# VMEM at the v7x maximum and the associative-scan emitter off (libtpu >= 0.0.44 miscompiles cumulative ops for
+# lengths not a multiple of 1024)
 _LIBTPU_ARGS = (
     "--xla_tpu_scoped_vmem_limit_kib=65472 "
     "--xla_tpu_enable_async_collective_fusion=true "
@@ -77,6 +78,11 @@ _LIBTPU_ARGS = (
     "--xla_tpu_enable_async_collective_fusion_multiple_steps=true "
     "--xla_tpu_enable_latency_hiding_scheduler=true "
     "--xla_latency_hiding_scheduler_rerun=10 "
+    "--xla_tpu_all_gather_collective_matmul_mode=post_spmd_conservative "
+    "--xla_tpu_reduce_scatter_collective_matmul_mode=post_spmd_conservative "
+    "--xla_tpu_enable_sparse_core_collective_offload_all_reduce=false "
+    "--xla_tpu_offload_gather_to_sparsecore=false "
+    "--xla_tpu_enable_sparse_core_collective_offload_reduce_scatter=false "
     "--xla_tpu_use_associative_scan_emitter=false"
 )
 
