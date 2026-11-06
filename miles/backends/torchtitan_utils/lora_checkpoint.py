@@ -262,7 +262,7 @@ class TorchtitanCheckpointLoader:
         # (path, metadata) once parametrization accepted a source
         self._checked: tuple[Path, dict] | None = None
 
-    def _base_fingerprint_tensors(self, path: Path, metadata) -> dict[str, torch.Tensor]:
+    def _base_check_tensors(self, path: Path, metadata) -> dict[str, torch.Tensor]:
         """The DCP's fingerprint tensors under their HF names (only what the titan model holds, e.g. no MTP)."""
         fqns = set()
         with agree_on_failure_context():
@@ -317,7 +317,7 @@ class TorchtitanCheckpointLoader:
                         ), f"{path}: {key}'s {name} is {dtype}; only fp32 moments resume exactly"
         # agreed before the collective dcp.load in apply: e.g. one node's HF cache may lack --hf-checkpoint
         with agree_on_failure_context():
-            source_tensors = self._base_fingerprint_tensors(path, metadata)
+            source_tensors = self._base_check_tensors(path, metadata)
             hf_dir = resolve_hf_dir(self._run.base_model)
             assert (
                 hf_dir is not None

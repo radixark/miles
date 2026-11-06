@@ -193,7 +193,7 @@ def test_a_dcp_reports_whether_it_holds_optimizer_state(tmp_path, single_rank_gl
         patch.object(lora_checkpoint, "resolve_hf_dir", return_value=tmp_path),
         patch.object(lora_checkpoint, "read_base_check_tensors", return_value={}),
         patch.object(lora_checkpoint, "assert_same_base_tensors"),
-        patch.object(loader, "_base_fingerprint_tensors", return_value={}),
+        patch.object(loader, "_base_check_tensors", return_value={}),
     ):
         assert loader.parametrization(path) == (replace(_Run(str(tmp_path), 16), lora_alpha=None), with_optimizer)
 
