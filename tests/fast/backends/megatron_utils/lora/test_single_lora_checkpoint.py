@@ -539,6 +539,7 @@ def test_an_export_of_masters_holding_nan_saves_them(monkeypatch):
     )
     dense = _DpZeroOptimizer(param, master, SimpleNamespace(rank=lambda: 0))
     slots = SimpleNamespace(
+        bf16_adapter_key_style="peft",
         slot_parameters=lambda slot: [param],
         local_shard_specs=lambda slot, holds: [SimpleNamespace(local_shape=param.shape)],
         piece_parameter=lambda slot, holds: [(0, torch.arange(2))],
