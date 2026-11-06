@@ -29,6 +29,7 @@ Agent function contract:
 """
 
 import argparse
+import functools
 import logging
 import time
 from collections.abc import Callable
@@ -80,6 +81,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
 
     metadata = input.sample.metadata
     if max_seq_len is not None:
+        _warn_max_seq_len_does_not_stop_the_agent()
         metadata = {**metadata, "max_seq_len": max_seq_len}
     if tracer.session_server_instance_id:
         metadata = {**metadata, "session_server_instance_id": tracer.session_server_instance_id}
@@ -198,6 +200,15 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     return GenerateFnOutput(samples=sample)
 
 
+@functools.cache
+def _warn_max_seq_len_does_not_stop_the_agent() -> None:
+    """Once per process: the session server leaves the agent's control flow alone, so the limit only truncates."""
+    logger.warning(
+        "max_seq_len reaches the agent as metadata['max_seq_len'] and truncates the collected samples; "
+        "Miles does not stop the agent at it, so an agent that does not read it runs on past it"
+    )
+
+
 def _add_arguments(parser: argparse.ArgumentParser):
     parser.add_argument(
         "--custom-agent-function-mode",
@@ -212,8 +223,9 @@ def _add_arguments(parser: argparse.ArgumentParser):
         default=None,
         dest="max_seq_len",
         help="Max sequence length in tokens (prompt + completion, including env responses) "
-        "per session. Truncation happens inside the session server during sample assembly; "
-        "also forwarded to the Harbor agent server (as max_seq_len) to abort the trial early.",
+        "per session. Sample assembly truncates each collected trajectory to it, and the agent "
+        "receives it as metadata['max_seq_len'] (the Harbor agent server as max_seq_len); "
+        "Miles does not stop the agent at it.",
     )
 
 
