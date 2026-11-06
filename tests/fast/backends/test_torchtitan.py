@@ -21,6 +21,9 @@ register_cpu_ci(est_time=20, suite="stage-a-cpu", labels=[])
 
 def _args(**overrides) -> Namespace:
     base = dict(
+        # validate_response_layout_args reads these on a platform without dynamic shapes
+        train_backend="torchtitan",
+        loss_type="sft_loss",
         titan_model_name="qwen3",
         seq_length=8192,
         pipeline_model_parallel_size=1,
