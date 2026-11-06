@@ -24,8 +24,8 @@ stateless `/generate` interface.
 ## Configure the wrapper
 
 Select `agentic_tool_call.generate` as the custom generate function. The wrapper
-registers `--custom-agent-function-path` and `--max-seq-len`, creates a TITO
-session for each rollout, invokes your agent, and collects the resulting samples.
+creates a TITO session for each rollout, invokes the function named by
+`--custom-agent-function-path`, and collects the resulting samples.
 
 ```bash
 AGENTIC_ARGS=(

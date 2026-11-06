@@ -105,7 +105,7 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     rollout_batch_size: int = 4
     n_samples_per_prompt: int = 4
     rollout_max_response_len: int = 0  # 0 => per-task default (gsm8k 512, dapo-math 4096)
-    # emitted as --seq-length + --rollout-max-context-len when > 0
+    # emitted as --seq-length + --max-seq-len when > 0
     seq_window: int = 0
     global_batch_size: int = 16
 
@@ -302,9 +302,7 @@ def _train(args: ScriptArgs):
 
     wandb_args = command_utils.get_default_wandb_args(__file__, run_id=args.run_id) if args.enable_wandb else ""
 
-    seq_args = (
-        f"--seq-length {args.seq_window} --rollout-max-context-len {args.seq_window} " if args.seq_window > 0 else ""
-    )
+    seq_args = f"--seq-length {args.seq_window} --max-seq-len {args.seq_window} " if args.seq_window > 0 else ""
 
     train_args = f"{ckpt_args} {lora_args} {rollout_args} {seq_args} {optimizer_args} {grpo_args} {r3_args} {wandb_args} {perf_args} {sglang_args} {save_args} {misc_args} {args.extra_args} "
 

@@ -48,7 +48,7 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
 
     # Training settings (smoke scale)
     rollout_max_response_len: int = 512
-    rollout_max_context_len: int = 2048
+    max_seq_len: int = 2048
     num_rollout: int = 3
     rollout_batch_size: int = 3
     n_samples_per_prompt: int = 4
@@ -111,7 +111,7 @@ def execute(args: ScriptArgs):
         f"--n-samples-per-prompt {args.n_samples_per_prompt} "
         f"--over-sampling-batch-size {args.rollout_batch_size} "
         f"--rollout-max-response-len {args.rollout_max_response_len} "
-        f"--rollout-max-context-len {args.rollout_max_context_len} "
+        f"--max-seq-len {args.max_seq_len} "
         "--rollout-temperature 0.8 "
         f"--rollout-num-gpus-per-engine 1 "
     )

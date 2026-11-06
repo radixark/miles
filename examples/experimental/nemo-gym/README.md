@@ -228,17 +228,14 @@ on CPU-only machines, in three independent layers (all three pass as of
 
 ## Troubleshooting
 
-1. `train.py: error: unrecognized arguments: --max-seq-len
-   --custom-agent-function-path`: `MILES_USE_LEGACY_ROLLOUT_V1=1` is set in the
-   training environment — the legacy path never registers the agentic flags.
-2. `mini_swe_agent_2` dies at spin-up with an unresolvable-dependency error
+1. `mini_swe_agent_2` dies at spin-up with an unresolvable-dependency error
    (`openai==X` vs `nemo-gym depends on openai<=Y`): the main venv has extra
    packages installed. Recreate it with `uv sync --extra dev` only — see the
    setup note above.
-3. Slow episodes are usually docker pulls (each task has its own image,
+2. Slow episodes are usually docker pulls (each task has its own image,
    fetched on first use) or the in-container SWE-bench evaluation
    (server-side `eval_timeout`, default 1800s). `NEMO_GYM_RUN_TIMEOUT`
    (default 3600s) caps one episode end-to-end on the Miles side.
-4. A failed episode surfaces as `sample.metadata["eval_report"]["error"]` with
+3. A failed episode surfaces as `sample.metadata["eval_report"]["error"]` with
    a traceback from the NeMo Gym server — check there before digging into
    server logs.

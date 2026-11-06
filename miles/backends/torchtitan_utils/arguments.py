@@ -39,11 +39,11 @@ def validate_torchtitan_args(args) -> None:
     if args.context_parallel_size != 1 and args.titan_model_name == "qwen3_5":
         raise ValueError("torchtitan does not support context parallelism for qwen3_5")
 
-    if args.rollout_max_context_len is not None:
-        if args.seq_length < args.rollout_max_context_len:
+    if args.max_seq_len is not None:
+        if args.seq_length < args.max_seq_len:
             raise ValueError(
                 f"--seq-length {args.seq_length} is shorter than "
-                f"--rollout-max-context-len {args.rollout_max_context_len}: torchtitan builds its "
+                f"--max-seq-len {args.max_seq_len}: torchtitan builds its "
                 "rotary embeddings for the former, so a longer sequence would index past them"
             )
     elif args.seq_length <= args.rollout_max_response_len:

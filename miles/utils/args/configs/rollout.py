@@ -368,12 +368,19 @@ class RolloutRelatedRolloutOnlyConfig(BaseConfig):
             ),
         ),
     ] = None
-    rollout_max_context_len: A[
+    max_seq_len: A[
         int | None,
         Arg(
             help=(
-                "The maximum context size for the inference engine during rollout."
-                "It should no exceed the `max_position_embeddinds` in Huggingface model's `config.json`"
+                "Max tokens in one trajectory: its prompt plus every completion and environment response. "
+                "On /generate, each request's max_new_tokens is lowered so prompt and completion fit it, and "
+                "a request with no room left stops the sample as TRUNCATED. Under the session server, agent "
+                "functions receive it in metadata and decide when to stop, and sample assembly truncates the "
+                "collected samples to it. An agentic dataset in --rollout-data-yaml-config may set a lower "
+                "max_seq_len. "
+                "It should not exceed `max_position_embeddings` in the HuggingFace model's `config.json`; "
+                "under the session server the engine context must also fit one --rollout-max-response-len "
+                "response past it."
             )
         ),
     ] = None

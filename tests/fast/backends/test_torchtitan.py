@@ -29,7 +29,7 @@ def _args(**overrides) -> Namespace:
         pipeline_model_parallel_size=1,
         context_parallel_size=1,
         expert_model_parallel_size=1,
-        rollout_max_context_len=8192,
+        max_seq_len=8192,
         rollout_max_response_len=4096,
         ref_update_interval=None,
         save_debug_train_data=None,
@@ -76,10 +76,10 @@ def test_ici_weight_sync_needs_the_shared_slice_env(monkeypatch):
 def test_the_sequence_must_cover_the_rotary_tables(monkeypatch):
     monkeypatch.setattr(torch, "__version__", "2.14.0")
     with pytest.raises(ValueError, match="seq-length"):
-        validate_torchtitan_args(_args(seq_length=8192, rollout_max_context_len=16384))
+        validate_torchtitan_args(_args(seq_length=8192, max_seq_len=16384))
     with pytest.raises(ValueError, match="no room for a prompt"):
-        validate_torchtitan_args(_args(seq_length=8192, rollout_max_context_len=None, rollout_max_response_len=8192))
-    validate_torchtitan_args(_args(seq_length=16384, rollout_max_context_len=None, rollout_max_response_len=8192))
+        validate_torchtitan_args(_args(seq_length=8192, max_seq_len=None, rollout_max_response_len=8192))
+    validate_torchtitan_args(_args(seq_length=16384, max_seq_len=None, rollout_max_response_len=8192))
 
 
 def test_context_parallelism_is_rejected_for_qwen3_5(monkeypatch):

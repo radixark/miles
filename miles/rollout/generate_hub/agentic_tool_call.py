@@ -72,12 +72,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     custom_agent_function: Callable = load_function(agent_function_path)
     assert custom_agent_function is not None, f"Custom agent function {agent_function_path} not found"
 
-    max_seq_len = lower_limit(
-        getattr(
-            input.args, "max_seq_len", None
-        ),  # config-access-exempt: optional length limit registered by custom agent hooks
-        input.sample.max_seq_len,
-    )
+    max_seq_len = lower_limit(input.args.max_seq_len, input.sample.max_seq_len)
 
     metadata = input.sample.metadata
     if max_seq_len is not None:
@@ -216,16 +211,6 @@ def _add_arguments(parser: argparse.ArgumentParser):
         default="subproc",
         help="Where each agent call runs: subproc, a child process of its own so one episode's "
         "blocking step or crash cannot stall the others; or inline, on the rollout's event loop.",
-    )
-    parser.add_argument(
-        "--max-seq-len",
-        type=int,
-        default=None,
-        dest="max_seq_len",
-        help="Max sequence length in tokens (prompt + completion, including env responses) "
-        "per session. Sample assembly truncates each collected trajectory to it, and the agent "
-        "receives it as metadata['max_seq_len'] (the Harbor agent server as max_seq_len); "
-        "Miles does not stop the agent at it.",
     )
 
 
