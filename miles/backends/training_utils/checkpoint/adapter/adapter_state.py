@@ -117,7 +117,7 @@ def raise_if_any_rank_failed(error: BaseException | None) -> None:
 
 
 @contextmanager
-def agreed_step():
+def agree_on_failure_context():
     """Every rank leaves together: a failure on any rank raises ``RanksFailedError`` on all of them."""
     error = None
     try:
@@ -187,7 +187,7 @@ def _state_dict(state: AdapterState, *, for_save: bool) -> dict:
 
 
 def _agreed_state_dict(state: AdapterState, *, for_save: bool) -> dict:
-    with agreed_step():
+    with agree_on_failure_context():
         state_dict = _state_dict(state, for_save=for_save)
     return state_dict
 
