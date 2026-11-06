@@ -1485,6 +1485,7 @@ def miles_validate_args(args):
         assert (
             not args.use_critic
         ), "ICI weight transfer joins one trainer job to the slice; a critic would be a second."
+        assert not args.use_fault_tolerance, "ICI weight transfer cannot reconnect a restarted engine to the slice."
         hf_config = load_hf_config(args.hf_checkpoint).get_text_config()
         is_moe = any(
             getattr(hf_config, name, None)  # config-access-exempt: model families name the expert count differently

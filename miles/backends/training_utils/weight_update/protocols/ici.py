@@ -12,6 +12,7 @@ from miles.backends.training_utils.weight_update.rollout_cell_updater import cre
 from miles.backends.training_utils.weight_update.session import check_weight_sync_results
 from miles.platforms import tpu_shared_slice
 from miles.utils import async_utils
+from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.timer import timer
 
 
@@ -42,17 +43,23 @@ class UpdateWeightFromIci(WeightTransferProtocol):
     ) -> None:
         shared = tpu_shared_slice.spec()
         trainer_size = dist.get_world_size()
-        if list(engine_gpu_counts or ()) != [trainer_size] or shared.size - shared.rank_offset != 2 * trainer_size:
+        # the engine pairs its TP rank i with slice rank i and expects the store at slice rank 0
+        if (
+            shared.rank_offset != 0
+            or list(engine_gpu_counts or ()) != [trainer_size]
+            or shared.size != 2 * trainer_size
+        ):
             raise ValueError(
-                "--update-weight-transfer-mode ici pairs trainer rank i with TP rank i of one engine that fills the "
-                f"rest of the shared slice: trainer ranks {trainer_size}, engine devices {engine_gpu_counts}, "
-                f"slice size {shared.size}"
+                "--update-weight-transfer-mode ici pairs trainer rank i (slice rank i) with TP rank i of one engine "
+                f"that fills the rest of the shared slice: slice rank offset {shared.rank_offset} (must be 0), "
+                f"trainer ranks {trainer_size}, engine devices {engine_gpu_counts}, slice size {shared.size}"
             )
         self.rollout_engines = rollout_engines
         self.cell_updaters_of_cell_id = create_rollout_cell_updaters(self.args, rollout_engines, engine_cell_ids)
         self.is_sender = True
         self._selector = selector
-        self._engine_slice_rank = shared.rank_offset + trainer_size + dist.get_rank()
+        self._engine_slice_rank = trainer_size + dist.get_rank()
+        tpu_shared_slice.reset_tags()
         if dist.get_rank() == 0:
             futures = [
                 updater.submit_client_call(
@@ -62,7 +69,7 @@ class UpdateWeightFromIci(WeightTransferProtocol):
                     rank_offset=0,
                     world_size=shared.size,
                     group_name=self.group_name,
-                    backend=tpu_shared_slice.ENGINE_BACKEND_NAME,
+                    backend=tpu_shared_slice.receiver_contract().BACKEND_NAME,
                 )
                 for updater in self.cell_updaters_of_cell_id.values()
             ]
@@ -89,4 +96,16 @@ class UpdateWeightFromIci(WeightTransferProtocol):
         with timer("ici_send"):
             tpu_shared_slice.send(packed, self._engine_slice_rank, names=names)
         with timer("ici_engine_load"):
-            check_weight_sync_results(async_utils.wait_futures(futures), is_lora=False)
+            engine_error = None
+            if futures:
+                try:
+                    check_weight_sync_results(async_utils.wait_futures(futures), is_lora=False)
+                except Exception as error:  # re-raised below, once every rank knows
+                    engine_error = error
+            # only rank 0 hears from the engine; every rank must stop here, not block in the next bucket's send
+            loaded = torch.tensor([engine_error is None], dtype=torch.int32)
+            dist.all_reduce(loaded, op=dist.ReduceOp.MIN, group=get_gloo_group())
+        if engine_error is not None:
+            raise engine_error
+        if not loaded.item():
+            raise RuntimeError("the engine failed to load an ICI weight bucket (see trainer rank 0)")
