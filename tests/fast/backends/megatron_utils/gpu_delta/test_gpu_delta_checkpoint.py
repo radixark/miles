@@ -34,6 +34,8 @@ def _checkpoint_worker(actor_module, **overrides):
     worker._heartbeat = Mock()
     worker.model, worker.optimizer, worker.opt_param_scheduler = object(), object(), object()
     worker.snapshot_publisher = None
+    worker.adapter_slots = None
+    worker._schedule_first_rollout = 0
     worker.weight_updater = Mock()
     worker._get_actor_weight_version = Mock(return_value=42)
     return worker
