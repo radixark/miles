@@ -1,8 +1,20 @@
+import numpy as np
 import pytest
 from huggingface_hub import snapshot_download
+from openai.types.chat import ChatCompletionMessageToolCall
+from sglang.srt.function_call.core_types import ToolCallItem
 
-from miles.rollout.generate_utils.tool_call_utils import _DUMMY_USER, _build_dummy_assistant, tokenize_tool_responses
+from miles.rollout.generate_utils.tool_call_utils import (
+    _DUMMY_USER,
+    _build_dummy_assistant,
+    _execute_tool_call,
+    execute_tool_calls,
+    tokenize_tool_responses,
+    update_sample_with_tool_responses,
+)
 from miles.utils.processing_utils import load_tokenizer
+from miles.utils.sampling_mask import RolloutSamplingMask
+from miles.utils.types import Sample
 
 TOOL_CALL_TEST_MODELS = [
     "Qwen/Qwen2.5-0.5B-Instruct",
@@ -58,6 +70,125 @@ SAMPLE_TOOL_RESPONSES = [
         "name": "get_temperature",
     },
 ]
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    ['{"cmd": "pytest"', "[1, 2]", "42", '"pytest"', "null"],
+)
+async def test_invalid_tool_arguments_return_an_error_without_execution(arguments):
+    calls = []
+
+    async def execute_one(name, params):
+        calls.append((name, params))
+        return "ok"
+
+    message = await _execute_tool_call(ToolCallItem(tool_index=0, name="bash", parameters=arguments), execute_one)
+
+    assert calls == []
+    assert message["role"] == "tool"
+    assert message["name"] == "bash"
+    assert message["tool_call_id"].startswith("call_")
+    assert message["content"] == ("Invalid tool arguments: expected a JSON object. The tool was not executed.")
+
+
+async def test_openai_tool_call_preserves_id_when_arguments_are_invalid():
+    async def execute_one(name, params):
+        pytest.fail(f"executor called with {name=} and {params=}")
+
+    call = ChatCompletionMessageToolCall(
+        id="call_known",
+        function={"name": "bash", "arguments": "{"},
+        type="function",
+    )
+
+    message = await _execute_tool_call(call, execute_one)
+
+    assert message == {
+        "role": "tool",
+        "tool_call_id": "call_known",
+        "content": "Invalid tool arguments: expected a JSON object. The tool was not executed.",
+        "name": "bash",
+    }
+
+
+@pytest.mark.parametrize("arguments", ["", '{"cmd": "pytest"}'])
+async def test_valid_tool_arguments_reach_the_executor(arguments):
+    calls = []
+
+    async def execute_one(name, params):
+        calls.append((name, params))
+        return "ok"
+
+    message = await _execute_tool_call(ToolCallItem(tool_index=0, name="bash", parameters=arguments), execute_one)
+
+    expected_params = {} if not arguments else {"cmd": "pytest"}
+    assert calls == [("bash", expected_params)]
+    assert message["content"] == "ok"
+
+
+async def test_invalid_arguments_do_not_skip_later_tool_calls():
+    calls = []
+
+    async def execute_one(name, params):
+        calls.append((name, params))
+        return f"ran {name}"
+
+    messages = await execute_tool_calls(
+        [
+            ToolCallItem(tool_index=0, name="broken", parameters="{"),
+            ToolCallItem(tool_index=1, name="bash", parameters='{"cmd": "pytest"}'),
+        ],
+        execute_one,
+    )
+
+    assert calls == [("bash", {"cmd": "pytest"})]
+    assert [message["content"] for message in messages] == [
+        "Invalid tool arguments: expected a JSON object. The tool was not executed.",
+        "ran bash",
+    ]
+
+
+@pytest.mark.parametrize("arguments", ["{", '{"cmd": "pytest"}'])
+async def test_tool_responses_preserve_sampling_metadata(arguments):
+    calls = []
+
+    async def execute_one(name, params):
+        calls.append((name, params))
+        return "ok"
+
+    messages = await execute_tool_calls([ToolCallItem(tool_index=0, name="bash", parameters=arguments)], execute_one)
+    assert calls == ([] if arguments == "{" else [("bash", {"cmd": "pytest"})])
+
+    tokenizer = load_tokenizer("Qwen/Qwen3-0.6B", trust_remote_code=True)
+    appended_ids = tokenize_tool_responses(messages, tokenizer)
+    assert appended_ids
+    sample = Sample(
+        tokens=[1, 2],
+        response="existing",
+        response_length=1,
+        loss_mask=[1],
+        rollout_log_probs=[-0.25],
+        rollout_topk_token_ids=np.array([[2, 3]], dtype=np.int32),
+        rollout_topk_log_probs=np.array([[-0.25, -1.5]], dtype=np.float32),
+        rollout_sampling_mask=RolloutSamplingMask.from_mask_list([[2, 3]]),
+    )
+
+    update_sample_with_tool_responses(sample, messages, tokenizer)
+
+    sample.validate()
+    assert sample.tokens == [1, 2] + appended_ids
+    assert sample.response == "existing" + tokenizer.decode(appended_ids)
+    assert sample.response_length == 1 + len(appended_ids)
+    assert sample.loss_mask == [1] + [0] * len(appended_ids)
+    assert sample.rollout_log_probs == [-0.25] + [0.0] * len(appended_ids)
+    np.testing.assert_array_equal(sample.rollout_topk_token_ids[0], [2, 3])
+    np.testing.assert_array_equal(sample.rollout_topk_log_probs[0], [-0.25, -1.5])
+    assert np.all(sample.rollout_topk_token_ids[1:] == -1)
+    assert np.all(np.isneginf(sample.rollout_topk_log_probs[1:]))
+    mask_ids, mask_offsets = sample.rollout_sampling_mask._as_tensors()
+    assert mask_ids.tolist() == [2, 3] + appended_ids
+    assert mask_offsets.tolist() == [0, 2] + list(range(3, len(appended_ids) + 3))
 
 
 class TestTokenizeToolResponses:
