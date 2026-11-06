@@ -15,9 +15,12 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-import torch.distributed as dist
 
-from miles.backends.training_utils.checkpoint.adapter.adapter_state import gloo_group, raise_if_any_rank_failed
+from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
+    broadcast_from_rank0,
+    is_rank0,
+    raise_if_any_rank_failed,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -57,14 +60,6 @@ def _physical_dir(root: Path, name: str, commit_id: str) -> Path:
     return root / f".{name}.{commit_id}"
 
 
-def _broadcast_from_rank0(value):
-    if not dist.is_initialized():
-        return value
-    box = [value]
-    dist.broadcast_object_list(box, src=0, group=gloo_group())
-    return box[0]
-
-
 def _assert_user_name(name: str) -> None:
     assert not name.startswith("."), f"adapter name {name!r} must not start with '.'"
     assert name and "/" not in name, f"adapter name {name!r} must be one path component"
@@ -78,10 +73,10 @@ def write_adapter_dir(root: Path, name: str, *, tenant_digest: str | None = None
     ``tenant_digest``: the committer digests the tenant's key, so the key itself never reaches the writing ranks.
     """
     _assert_user_name(name)
-    commit_id = _broadcast_from_rank0(secrets.token_hex(_COMMIT_ID_NBYTES))
+    commit_id = broadcast_from_rank0(secrets.token_hex(_COMMIT_ID_NBYTES))
     path = _physical_dir(Path(root), name, commit_id)
     prepare_error = None
-    if not dist.is_initialized() or dist.get_rank() == 0:
+    if is_rank0():
         try:
             path.mkdir(parents=True)
             try:
@@ -96,7 +91,7 @@ def write_adapter_dir(root: Path, name: str, *, tenant_digest: str | None = None
     error = None
     try:
         yield UncommittedAdapterDir(path, commit_id)
-        if not dist.is_initialized() or dist.get_rank() == 0:
+        if is_rank0():
             # the commit must follow a durable write; DCP syncs only its own files
             for entry in (*path.iterdir(), path):
                 _fsync(entry)
@@ -105,7 +100,7 @@ def write_adapter_dir(root: Path, name: str, *, tenant_digest: str | None = None
     try:
         raise_if_any_rank_failed(error)
     except RuntimeError:
-        if not dist.is_initialized() or dist.get_rank() == 0:
+        if is_rank0():
             _rmtree(path)
         raise
 
