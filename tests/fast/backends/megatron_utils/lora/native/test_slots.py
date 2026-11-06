@@ -157,10 +157,17 @@ def _tokens(num_tokens, seed=1):
     return torch.randn(num_tokens, 1, HIDDEN, generator=torch.Generator().manual_seed(seed)).requires_grad_()
 
 
+def _assert_bitwise(actual, expected):
+    assert torch.equal(actual, expected)
+
+
 @pytest.mark.parametrize("build", ADAPTER_BUILDS.values(), ids=ADAPTER_BUILDS)
 @pytest.mark.parametrize("slot", [0, 2])
 @pytest.mark.parametrize("rank", [MAX_RANK, 2])
-def test_one_routed_slot_equals_single_lora_bitwise(build, slot, rank):
+def test_one_routed_slot_equals_single_lora(build, slot, rank):
+    """Bitwise at the max rank; below it the slot's GEMMs also reduce over its zero padding, so the values match
+    and the bits need not."""
+    check = _assert_bitwise if rank == MAX_RANK else torch.testing.assert_close
     base_weight, alpha = _base_weight(), 6.0
     single = _single(build, rank=rank, alpha=alpha, base_weight=base_weight, seed=7)
     multi = _attached(build, _context(rank=MAX_RANK, num_slots=NUM_SLOTS), base_weight)
@@ -178,13 +185,13 @@ def test_one_routed_slot_equals_single_lora_bitwise(build, slot, rank):
     out_single.square().sum().backward()
     out_multi.square().sum().backward()
 
-    assert torch.equal(out_multi, out_single)
-    assert torch.equal(x_multi.grad, x_single.grad)
+    check(out_multi, out_single)
+    check(x_multi.grad, x_single.grad)
     for (name, slot_param), single_param in zip(
         multi.adapter.adapters[slot].named_parameters(), single.adapter.parameters(), strict=True
     ):
         within = slot_param.grad[:rank] if name.endswith("_A") else slot_param.grad[:, :rank]
-        assert torch.equal(within, single_param.grad), name
+        check(within, single_param.grad)
     for other in set(range(NUM_SLOTS)) - {slot}:
         assert all(torch.count_nonzero(p.grad) == 0 for p in multi.adapter.adapters[other].parameters())
 
