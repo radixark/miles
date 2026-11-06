@@ -195,3 +195,27 @@ class TestDeepSeekCheckpointCompatibility:
                 skip_load_to_model_and_opt=False,
                 args=args,
             )
+
+
+@pytest.mark.parametrize("model_vocab_rows", [12, 10], ids=["megatron-padded", "built-unpadded"])
+def test_mbridge_loader_pads_the_hf_vocab_to_the_built_models_rows(monkeypatch, model_vocab_rows):
+    """mbridge pads embedding rows only to a size it learns from its own provider, which miles never calls."""
+    import sys
+    from types import ModuleType
+
+    class _AutoBridge:
+        @staticmethod
+        def from_pretrained(path, trust_remote_code, make_vocab_size_divisible_by=None):
+            text_config = SimpleNamespace(vocab_size=10)
+            return SimpleNamespace(
+                hf_config=SimpleNamespace(get_text_config=lambda: text_config),
+                make_vocab_size_divisible_by=make_vocab_size_divisible_by,
+            )
+
+    monkeypatch.setitem(sys.modules, "mbridge", SimpleNamespace(AutoBridge=_AutoBridge))
+    monkeypatch.setitem(sys.modules, "miles_plugins.mbridge", ModuleType("miles_plugins.mbridge"))
+
+    bridge = checkpoint.create_mbridge_loader([SimpleNamespace(vocab_size=model_vocab_rows)], "/hf")
+
+    assert bridge.make_vocab_size_divisible_by is not None, "mbridge skips padding without it"
+    assert (bridge.vocab_size, bridge.padded_vocab_size) == (10, model_vocab_rows)
