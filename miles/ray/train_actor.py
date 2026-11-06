@@ -15,7 +15,7 @@ import torch.distributed as dist
 import miles.utils.eval_config
 from miles.backends.megatron_utils.checkpoint_request import MegatronCkptLoadConfig
 from miles.backends.training_utils.types import TrainStepOutput
-from miles.platforms import current_platform
+from miles.platforms import current_platform, tpu_shared_slice
 from miles.ray.rollout.inference_controller import UpdatableEngines
 from miles.utils import object_store
 from miles.utils.args.runtime import TrainerConfig
@@ -34,6 +34,7 @@ from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.misc import NodeProbeMixin, get_current_node_ip, get_free_port
 from miles.utils.object_store import StoreObjectRef
 from miles.utils.output_store.config import output_store_reader
+from miles.utils.port_range import service_port_range
 from miles.utils.processing_utils import load_processor, load_tokenizer
 from miles.utils.test_utils.det_process_group import DET_NCCL_BACKEND_NAME, register_det_nccl_backend
 from miles.utils.test_utils.fault_injector.controller import FaultHookCommand, fault_hook_controller
@@ -113,6 +114,10 @@ class TrainRayActor(NodeProbeMixin):
         # os.environ.pop("CUDA_VISIBLE_DEVICES", None)
         # os.environ["LOCAL_RANK"] = str(ray.get_gpu_ids()[0])
         os.environ["LOCAL_RANK"] = str(get_local_gpu_id())
+        if args.update_weight_transfer_mode == "ici":
+            # at construction, not in init(): the engine sharing the slice cannot finish starting (and be
+            # discovered) until the trainer joins it, and init() runs after discovery
+            tpu_shared_slice.join(tpu_shared_slice.spec(), job_rank=self._rank, job_size=self._world_size)
 
         configure_logger(
             args,
@@ -169,7 +174,9 @@ class TrainRayActor(NodeProbeMixin):
                 self.processor = load_processor(self.args.hf_checkpoint, trust_remote_code=True)
 
     def propose_master_addr_and_port(self) -> tuple[str, int]:
-        return get_current_node_ip(), get_free_port(start_port=random.randint(20000, 21000))
+        low, high = service_port_range()
+        start_port = random.randint(low, min(low + 1000, high))
+        return get_current_node_ip(), get_free_port(start_port=start_port, port_range=(low, high))
 
     def configure_master_addr_and_port(self, *, master_addr: str, master_port: int) -> None:
         os.environ["MASTER_ADDR"] = master_addr

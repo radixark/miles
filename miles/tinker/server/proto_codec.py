@@ -127,7 +127,7 @@ def encode_sample_response(result: dict) -> bytes:
     if result.get("topk_prompt_logprobs") is not None:
         topk = result["topk_prompt_logprobs"]
         token_ids = np.asarray(topk["token_ids"], dtype=np.int32)
-        message.topk_prompt_logprobs.prompt_length, message.topk_prompt_logprobs.k = token_ids.shape
+        message.topk_prompt_logprobs.length, message.topk_prompt_logprobs.k = token_ids.shape
         message.topk_prompt_logprobs.token_ids = token_ids.tobytes()
         message.topk_prompt_logprobs.logprobs = np.asarray(topk["logprobs"], dtype=np.float32).tobytes()
     return message.SerializeToString()

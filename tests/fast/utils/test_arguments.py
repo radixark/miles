@@ -16,17 +16,22 @@ import pytest
 import torch
 from tests.fast.fixtures.args_fixtures import parse_megatron_test_config
 from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config, write_megatron_config_trainers
+from tests.fast.fixtures.sglang_config_fixtures import make_sglang_config
 
 from miles.backends.fsdp_utils.arguments import build_fsdp_parser
 from miles.backends.megatron_utils.megatron_config import MegatronConfig, get_megatron_arg_parser
 from miles.backends.sglang_utils.arguments import add_sglang_arguments, collect_eval_sglang_overrides
 from miles.backends.sglang_utils.arguments import validate_args as validate_sglang_args
+from miles.backends.sglang_utils.sglang_api_client import WorkerType
+from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig, SglangConfig
 from miles.backends.torchtitan_utils.arguments import build_torchtitan_parser
 from miles.router.backend import RouterKind
 from miles.utils.args.configs.router import RouterConfig
 from miles.utils.args.trainer_utils import compute_trainer_ckpt_load_config
 from miles.utils.arguments import (
+    CAKE_BACKEND_ARGS,
     FULLY_ASYNC_ROLLOUT_PATH,
+    _check_stop_token_replace_streaming_session,
     _compute_custom_inference_engine_provider_path,
     _compute_rollout_external,
     _maybe_apply_dumper_overrides,
@@ -45,6 +50,7 @@ from miles.utils.arguments import (
     supports_partial_target_weight_update,
     validate_async_off_policy_correction,
     validate_log_probs_backend_args,
+    validate_miles_ext_kernels_args,
     validate_skip_actor_forward_only,
 )
 from miles.utils.env_report.redaction import _SECRET_ARG_NAMES, _SECRET_ENV_VAR_PATTERN
@@ -183,7 +189,7 @@ class TestRouterFlag:
 
     def test_an_unknown_router_is_rejected_at_parse_time(self):
         with pytest.raises(SystemExit):
-            parse_megatron_test_config("--router", "dynamo")
+            parse_megatron_test_config("--router", "unknown-router")
 
     @pytest.mark.parametrize(
         ("config", "expected"),
@@ -198,7 +204,7 @@ class TestRouterFlag:
 
     def test_an_unknown_router_in_a_config_file_is_rejected(self, tmp_path: Path):
         path = tmp_path / "config.yaml"
-        path.write_text("router: dynamo")
+        path.write_text("router: unknown-router")
         with pytest.raises(ValueError, match="router"):
             parse_megatron_test_config("--custom-config-path", str(path))
 
@@ -1123,10 +1129,13 @@ class TestClusterBackend:
         with pytest.raises(AssertionError, match="--use-output-store"):
             miles_validate_args(args)
 
-    def test_refuses_a_kubernetes_run_that_drives_multi_lora(self, tmp_path: Path) -> None:
+    def test_refuses_a_kubernetes_run_that_drives_multi_lora(self, tmp_path: Path, monkeypatch) -> None:
         """The multi-LoRA controller calls into RayWorkerManager, which this backend never instantiates."""
         from transformers import Qwen3Config
 
+        monkeypatch.setattr(
+            "miles.backends.megatron_utils.lora.target_modules.check_fused_lora_selection", lambda *a, **k: None
+        )
         Qwen3Config(num_hidden_layers=1).save_pretrained(tmp_path)
         args = self._parse(
             [
@@ -1138,6 +1147,8 @@ class TestClusterBackend:
                 "2",
                 "--lora-rank",
                 "8",
+                "--megatron-to-hf-mode",
+                "bridge",
                 "--target-modules",
                 "q_proj",
                 "--hf-checkpoint",
@@ -2538,6 +2549,119 @@ class TestPartitionRadixCacheByRolloutCallResolution:
             assert args.rollout_function_path == "miles.rollout.sglang_rollout.generate_rollout"
 
 
+class TestAllowStopTokenReplaceResolution:
+    def _parse(self, extra):
+        parser = get_megatron_arg_parser()
+        return parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
+
+    def test_it_is_unset_before_validation(self):
+        """The flag is tri-state, so parsing alone must not decide it."""
+        assert self._parse(["--use-session-server"]).allow_stop_token_replace is None
+
+    @pytest.mark.parametrize(
+        ("tito_model", "expected"),
+        [("glm47", True), ("glm53", True), ("qwen3", False), ("default", False)],
+    )
+    def test_an_omitted_flag_takes_the_family_default(self, caplog, tito_model, expected):
+        """Only GLM strips a sampled stop token, so only its families allow the replacement by default."""
+        args = self._parse(["--use-session-server", "--tito-model", tito_model])
+
+        with caplog.at_level(logging.INFO, logger="miles.utils.arguments"):
+            miles_validate_args(args)
+
+        assert args.allow_stop_token_replace is expected
+        verdict = "allowed" if expected else "rejected"
+        assert any(
+            record.getMessage()
+            == f"Session server stop-token replacement {verdict} (--tito-model={tito_model} default)"
+            for record in caplog.records
+        )
+
+    @pytest.mark.parametrize(
+        ("extra", "expected"),
+        [
+            (["--tito-model", "glm47", "--no-allow-stop-token-replace"], False),
+            (["--tito-model", "qwen3", "--allow-stop-token-replace"], True),
+        ],
+    )
+    def test_an_explicit_flag_wins_over_the_family_default(self, extra, expected):
+        args = self._parse(["--use-session-server", *extra])
+
+        miles_validate_args(args)
+
+        assert args.allow_stop_token_replace is expected
+
+    @pytest.mark.parametrize("flag", ["--allow-stop-token-replace", "--no-allow-stop-token-replace"])
+    def test_an_explicit_flag_requires_the_session_server(self, flag):
+        """Without a session server nothing reads the flag, so setting it is refused instead of ignored."""
+        args = self._parse([flag])
+        with pytest.raises(ValueError, match="--allow-stop-token-replace requires --use-session-server"):
+            miles_validate_args(args)
+
+    def test_no_session_server_resolves_to_off(self):
+        args = self._parse([])
+
+        miles_validate_args(args)
+
+        assert args.allow_stop_token_replace is False
+
+    @pytest.mark.parametrize("allowed", [False, True])
+    @pytest.mark.parametrize("streaming", [False, True])
+    def test_an_allowed_replacement_rejects_a_streaming_session(self, allowed, streaming):
+        """A streaming session extends the engine's tokens append-only, which a replaced stop token breaks."""
+        args = argparse.Namespace(allow_stop_token_replace=allowed, tito_model="glm47")
+        sglang = make_sglang_config(enable_streaming_session=streaming)
+
+        if allowed and streaming:
+            with pytest.raises(ValueError, match="cannot be combined with --sglang-enable-streaming-session"):
+                _check_stop_token_replace_streaming_session(args, sglang=sglang)
+        else:
+            _check_stop_token_replace_streaming_session(args, sglang=sglang)
+
+    def test_a_server_group_override_enables_the_streaming_session_too(self):
+        """A --sglang-config group override reaches the engine just like the CLI flag."""
+        group = ServerGroupConfig(
+            worker_type=WorkerType.REGULAR,
+            num_gpus_per_engine=1,
+            overrides={"enable_streaming_session": True},
+            needs_offload=False,
+        )
+        model = ModelConfig(name="default", model_path=None, server_groups=[group], update_weights=True)
+        sglang = SglangConfig(models=[model], base_args={"enable_streaming_session": False})
+        args = argparse.Namespace(allow_stop_token_replace=True, tito_model="glm47")
+
+        with pytest.raises(ValueError, match="cannot be combined with --sglang-enable-streaming-session"):
+            _check_stop_token_replace_streaming_session(args, sglang=sglang)
+
+
+def test_the_full_parse_rejects_glm_with_a_streaming_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The streaming-session check runs on the real parse path, after the SGLang config is resolved."""
+    monkeypatch.setattr(torch, "__version__", "2.14.0")
+    argv = [
+        "test",
+        "--train-backend",
+        "fsdp",
+        "--rollout-batch-size",
+        "2",
+        "--num-rollout",
+        "1",
+        "--actor-num-gpus-per-node",
+        "1",
+        "--micro-batch-size",
+        "1",
+        "--rollout-max-response-len",
+        "1024",
+        "--use-session-server",
+        "--tito-model",
+        "glm47",
+        "--sglang-enable-streaming-session",
+    ]
+    monkeypatch.setattr(sys, "argv", argv)
+
+    with pytest.raises(ValueError, match="cannot be combined with --sglang-enable-streaming-session"):
+        parse_args_and_get_parser()
+
+
 class TestTitoFixedTemplateConfiguration:
     def _parse(self, extra):
         parser = get_megatron_arg_parser()
@@ -2775,6 +2899,11 @@ class TestDataSourceSelection:
 class TestMultiLoRAValidation:
     @pytest.fixture(autouse=True)
     def _bridge_selector(self, monkeypatch):
+        self.fused_checks = []
+        monkeypatch.setattr(
+            "miles.backends.megatron_utils.lora.target_modules.check_fused_lora_selection",
+            lambda checkpoint, targets, *, canonical: self.fused_checks.append((list(targets), canonical)),
+        )
         monkeypatch.setattr(
             "miles.utils.lora.arguments.HfWeightMapping.from_config",
             lambda config: SimpleNamespace(parameter_names=frozenset()),
@@ -2795,6 +2924,8 @@ class TestMultiLoRAValidation:
                 "2",
                 "--lora-rank",
                 "8",
+                "--megatron-to-hf-mode",
+                "bridge",
                 "--target-modules",
                 "linear_qkv",
                 "--num-rollout",
@@ -2865,6 +2996,82 @@ class TestMultiLoRAValidation:
         assert args.exclude_modules == exclusion
         assert set(args.hf_lora_targets) == expected
         assert args.lora_adapter_targets == args.hf_lora_targets
+
+    @pytest.mark.parametrize(
+        "lora_type,served",
+        [
+            ("canonical_lora", ["in_proj_q", "in_proj_k", "in_proj_v", "in_proj_z", "out_proj"]),
+            ("lora", ["in_proj_qkv", "in_proj_z", "out_proj"]),
+        ],
+    )
+    def test_bridge_canonical_serves_gdn_in_proj_components(self, monkeypatch, lora_type, served):
+        """Bridge's canonical adapters export Qwen3.5's GDN in_proj by component, as SGLang must load them."""
+        prefix = "model.language_model.layers.0.linear_attn."
+        monkeypatch.setattr(
+            "miles.utils.lora.arguments.HfWeightMapping.from_config",
+            lambda config: HfWeightMapping(
+                frozenset(
+                    f"{prefix}{leaf}.weight"
+                    for leaf in ("in_proj_qkv", "in_proj_z", "in_proj_b", "in_proj_a", "out_proj")
+                )
+            ),
+        )
+        args = self._parse(["--target-modules", "in_proj_qkv,in_proj_z,out_proj", "--lora-type", lora_type])
+        miles_validate_args(args)
+        assert args.lora_adapter_targets == served
+
+    @pytest.mark.parametrize(
+        "lora_type,gdn_leaves",
+        [
+            ("lora", ("in_proj_qkv", "in_proj_z", "out_proj", "in_proj_b", "in_proj_a")),
+            ("canonical_lora", ("in_proj_qkv", "in_proj_z", "out_proj")),
+        ],
+    )
+    def test_bridge_attn_group_takes_the_fused_gdn_in_proj_whole_under_lora(self, monkeypatch, lora_type, gdn_leaves):
+        """lora shares one lora_A across Qwen3.5's fused GDN in_proj, so attn adapts it whole; canonical_lora
+        keeps official Tinker's q / k / v / z."""
+        config = {
+            "model_type": "qwen3_5_text",
+            "layer_types": ["linear_attention"],
+            "linear_num_key_heads": 2,
+            "linear_key_head_dim": 4,
+            "linear_num_value_heads": 4,
+            "linear_value_head_dim": 4,
+        }
+        monkeypatch.setattr(
+            "miles.utils.lora.arguments.load_hf_config",
+            lambda path: SimpleNamespace(model_type=config["model_type"], to_dict=lambda: config),
+        )
+        miles_validate_args(self._parse(["--target-modules", "attn", "--lora-type", lora_type]))
+        targets = [f"model.layers.*.linear_attn.{leaf}" for leaf in gdn_leaves]
+        assert self.fused_checks == [(targets, lora_type == "canonical_lora")]
+
+    @pytest.mark.parametrize("lora_type", ["lora", "canonical_lora"])
+    def test_bridge_checks_fused_modules_at_argument_time(self, lora_type):
+        miles_validate_args(self._parse(["--target-modules", "q_proj", "--lora-type", lora_type]))
+        assert self.fused_checks == [(["q_proj"], lora_type == "canonical_lora")]
+
+    def test_bridge_canonical_serves_wildcard_gdn_targets_by_component(self, monkeypatch):
+        """A target whose block is a wildcard still reaches the GDN modules Bridge splits into components."""
+        prefix = "model.language_model.layers.0.linear_attn."
+        monkeypatch.setattr(
+            "miles.utils.lora.arguments.HfWeightMapping.from_config",
+            lambda config: HfWeightMapping(
+                frozenset(f"{prefix}{leaf}.weight" for leaf in ("in_proj_qkv", "in_proj_z"))
+            ),
+        )
+        args = self._parse(["--target-modules", "*.in_proj_qkv,*.in_proj_z", "--lora-type", "canonical_lora"])
+        miles_validate_args(args)
+        assert args.lora_adapter_targets == [f"*.in_proj_{component}" for component in ("q", "k", "v", "z")]
+
+    def test_bridge_canonical_refuses_a_partial_gdn_group(self, monkeypatch):
+        monkeypatch.setattr(
+            "miles.utils.lora.arguments.HfWeightMapping.from_config",
+            lambda config: HfWeightMapping(frozenset({"model.language_model.layers.0.linear_attn.in_proj_b.weight"})),
+        )
+        args = self._parse(["--target-modules", "in_proj_b", "--lora-type", "canonical_lora"])
+        with pytest.raises(AssertionError, match=r"\['in_proj_a', 'in_proj_b'\] selected together"):
+            miles_validate_args(args)
 
     def test_rejects_multiple_tokenizer_workers(self):
         # Each sglang tokenizer worker holds its own LoRA registry, so per-step
@@ -3975,6 +4182,42 @@ class TestWeightUpdateFaultToleranceSupport:
             miles_validate_args(args)
 
 
+class TestMilesExtKernels:
+    def _parse(self, argv: list[str]) -> argparse.Namespace:
+        with patch.object(sys, "argv", ["test", *argv, *REQUIRED_ARGS]):
+            parser = argparse.ArgumentParser()
+            get_miles_extra_args_provider()(parser)
+            return parser.parse_args()
+
+    @pytest.mark.parametrize("name", CAKE_BACKEND_ARGS)
+    def test_a_cake_backend_requires_the_flag(self, name: str) -> None:
+        args = self._parse([])
+        setattr(args, name, "cake")
+
+        with pytest.raises(ValueError, match=f"--{name.replace('_', '-')} cake requires --use-miles-ext-kernels"):
+            validate_miles_ext_kernels_args(args)
+
+    def test_the_flag_registers_and_validates_the_ext_arguments(self) -> None:
+        import miles_ext_kernels
+
+        with patch.object(miles_ext_kernels, "add_arguments") as add_arguments:
+            args = self._parse(["--use-miles-ext-kernels"])
+        add_arguments.assert_called_once()
+
+        args.linear_attention_backend = "cake"
+        with patch.object(miles_ext_kernels, "validate_args") as validate_args:
+            validate_miles_ext_kernels_args(args)
+        validate_args.assert_called_once_with(args)
+
+    def test_without_the_flag_the_ext_arguments_are_not_registered(self) -> None:
+        import miles_ext_kernels
+
+        with patch.object(miles_ext_kernels, "add_arguments") as add_arguments:
+            args = self._parse([])
+        add_arguments.assert_not_called()
+        assert args.use_miles_ext_kernels is False
+
+
 @pytest.mark.parametrize("backend", ["megatron", "fsdp", "torchtitan"])
 def test_dumper_retention_override_is_only_added_for_megatron(backend: str) -> None:
     """Dumper mode cannot introduce a Megatron-only checkpoint field into native backend arguments."""
@@ -4024,3 +4267,36 @@ def test_native_backends_own_the_mtp_detach_heads_argument(
     assert native_args is not None
     assert native_args.mtp_detach_heads is detach_heads
     assert "mtp_detach_heads" not in args.model_fields
+
+
+class TestLoRATypeResolution:
+    """--lora-type defaults to what each backend trains: native gives every HF projection its own lora_A."""
+
+    @pytest.fixture(autouse=True)
+    def _no_bridge(self, monkeypatch):
+        monkeypatch.setattr(
+            "miles.backends.megatron_utils.lora.target_modules.check_fused_lora_selection", lambda *a, **k: None
+        )
+
+    def _parse(self, tmp_path, extra):
+        from transformers import Qwen3Config
+
+        Qwen3Config(num_hidden_layers=1).save_pretrained(tmp_path)
+        args = get_megatron_arg_parser().parse_args(
+            ["--lora-rank", "8", "--target-modules", "q_proj", "--hf-checkpoint", str(tmp_path), "--num-rollout", "1"]
+            + extra
+            + REQUIRED_ARGS
+        )
+        miles_validate_args(args)
+        return args
+
+    @pytest.mark.parametrize("mode,lora_type", [("raw", "canonical_lora"), ("bridge", "lora")])
+    def test_default_follows_the_backend(self, tmp_path, mode, lora_type):
+        assert self._parse(tmp_path, ["--megatron-to-hf-mode", mode]).lora_type == lora_type
+
+    def test_native_refuses_shared_a_lora(self, tmp_path):
+        from miles.utils.lora.arguments import validate_lora_args_after_megatron
+
+        args = self._parse(tmp_path, ["--megatron-to-hf-mode", "raw", "--lora-type", "lora"])
+        with pytest.raises(AssertionError, match="--lora-type lora shares one lora_A"):
+            validate_lora_args_after_megatron(args)

@@ -1,14 +1,7 @@
 import math
 import re
 
-from miles.tinker.core.types import (
-    LOSS_FN_INPUTS,
-    LOSS_INPUT_KEYS,
-    CommandOp,
-    GatewayConfig,
-    ModelRecord,
-    UserInputError,
-)
+from miles.tinker.core.types import LOSS_FN_INPUTS, LOSS_INPUT_KEYS, CommandOp, GatewayConfig, UserInputError
 
 
 def validate_model_config(lora_config: dict, config: GatewayConfig) -> None:
@@ -90,7 +83,7 @@ def validate_batch_payload(op: CommandOp, payload: dict, config: GatewayConfig) 
 
 def validate_sample_payload(payload: dict, config: GatewayConfig) -> None:
     validate_token_ids(payload["prompt_tokens"], config.vocab_size, "prompt")
-    max_tokens = payload["sampling_params"].get("max_tokens")
+    max_tokens = payload["sampling_params"]["max_tokens"]
     if type(max_tokens) is not int or max_tokens < 0:
         raise UserInputError("sampling_params.max_tokens must be a nonnegative integer")
     prompt_length = len(payload["prompt_tokens"])
@@ -124,46 +117,21 @@ def validate_checkpoint_segment(segment: str) -> None:
         raise UserInputError(f"invalid checkpoint path segment {segment!r}")
 
 
-def validate_checkpoint_compatibility(meta: dict, record: ModelRecord, config: GatewayConfig, shown_path: str) -> None:
-    """Reject settings that would change the saved tensors' meaning."""
-    expected = {
-        "base_model": record.base_model,
-        "lora_rank": record.lora_rank,
-        "lora_alpha": record.lora_alpha,
-        "lora_type": config.lora_type,
-        "experts_shared_outer_loras": config.experts_shared_outer_loras,
-        "train_attn": config.trains_attn,
-        "train_mlp": config.trains_mlp,
-        "train_unembed": config.trains_unembed,
-    }
-    # Checkpoints written before the layout was recorded are all fused, per-expert.
-    meta = {"lora_type": "lora", "experts_shared_outer_loras": False, **meta}
-    for key, value in expected.items():
-        if meta[key] != value:
-            message = (
-                f"checkpoint {shown_path!r} was saved with {key}={meta[key]!r}; this model expects {key}={value!r}"
-            )
-            if key in _GATEWAY_LAYOUT_FLAGS:
-                message += (
-                    f". The adapter layout is set per gateway: restore it on one launched with "
-                    f"{_GATEWAY_LAYOUT_FLAGS[key](meta[key])}"
-                )
-            raise UserInputError(message)
+# the SDK's range for ttl_seconds
+MIN_TTL_S = 3600
+MAX_TTL_S = 10 * 365 * 24 * 3600
 
 
-# a gateway-wide layout setting -> the launch flag that restores a checkpoint saved under `value`
-_GATEWAY_LAYOUT_FLAGS = {
-    "lora_type": lambda value: f"--lora-type {value}",
-    "experts_shared_outer_loras": lambda value: (
-        "--experts-shared-outer-loras" if value else "no --experts-shared-outer-loras"
-    ),
-}
+def validate_ttl_seconds(ttl_seconds) -> None:
+    if ttl_seconds is not None and not (type(ttl_seconds) is int and MIN_TTL_S <= ttl_seconds <= MAX_TTL_S):
+        raise UserInputError(
+            f"ttl_seconds must be an integer between {MIN_TTL_S} and {MAX_TTL_S}, got {ttl_seconds!r}"
+        )
 
 
-def validate_save_options(payload: dict) -> None:
-    if payload.get("ttl_seconds") is not None:
-        raise UserInputError("ttl_seconds is not supported: checkpoints on this gateway do not expire")
-    if payload.get("user_metadata") is not None:
+def validate_save_options(ttl_seconds: int | None, user_metadata: dict | None) -> None:
+    validate_ttl_seconds(ttl_seconds)
+    if user_metadata is not None:
         raise UserInputError("user_metadata is not supported by this gateway")
 
 

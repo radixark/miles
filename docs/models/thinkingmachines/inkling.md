@@ -26,7 +26,7 @@ description: Launch recipe for Inkling (975 B), Thinking Machines' multimodal Mo
 
 ```bash
 # Pull the image
-docker pull radixark/miles:inkling
+docker pull radixark/miles:latest
 
 # Full-parameter GRPO on 16 nodes x 4 GB300, inside the container
 cd /root/miles
@@ -199,7 +199,7 @@ $$
 
 The adapter follows Inkling's released LoRA schema, covering the attention, dense MLP, MoE, and LM-head projections (defaults: rank 32, `alpha = 32`, all-linear). The routed experts use a shared-outer factorization: one factor is shared across experts while the expert-specific factors follow EP sharding.
 
-After each optimizer step, Miles exports a serving-ready adapter directly from the distributed training state and hands it to the colocated SGLang worker over CUDA IPC; the frozen base is never re-transferred. This cuts the weight update from 49.4 s to 2.5 s (20×) and brings training-step time to ~85 % of full-parameter training, with no optimizer offload needed. Released Inkling adapters in safetensors format support warm starts via `--lora-adapter-path`, and per-rank adapter checkpoints allow exact training resume.
+After each optimizer step, Miles exports a serving-ready adapter directly from the distributed training state and hands it to the colocated SGLang worker over CUDA IPC; the frozen base is never re-transferred. This cuts the weight update from 49.4 s to 2.5 s (20×) and brings training-step time to ~85 % of full-parameter training, with no optimizer offload needed. Released Inkling adapters in safetensors format support warm starts via `--lora-adapter-path`, and `--save` adapter checkpoints resume exactly under any parallel layout.
 
 ## 7. Multimodal RL
 

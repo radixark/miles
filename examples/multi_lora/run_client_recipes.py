@@ -49,6 +49,8 @@ def run_rl(base_url: str, base_model: str, steps: int) -> None:
             ttl_seconds=None,
             max_tokens=512,
             max_steps=steps,
+            # the recipe defaults to stable_reinforce, which the gateway does not serve
+            loss_fn="importance_sampling",
         )
     )
 

@@ -201,6 +201,8 @@ def assert_agentic_retry_trajectory_parity(v1: SessionParityRun, v2: SessionPari
         assert v1.samples[0].metadata[key] == value
         assert v2.samples[0].metadata[key] == value
     assert v1.samples[0].metadata["max_trim_tokens"] == v2.session_metadata["max_trim_tokens"]
+    assert isinstance(v1.samples[0].metadata["session_id"], str)
+    assert isinstance(v2.samples[0].metadata["session_id"], str)
 
     v2_linear_metadata = {key: value for key, value in v2.session_metadata.items() if key not in ("agent", "tree")}
     _assert_bits_equal(v1.session_metadata, v2_linear_metadata, path="session_metadata")
@@ -289,6 +291,9 @@ def _training_metadata_projection(metadata: dict[str, Any]) -> dict[str, Any]:
     projected = deepcopy(metadata)
     projected.pop("leaf", None)
     projected.pop("max_trim_tokens", None)
+    # each path opens its own session, so the ids differ by construction
+    if "session_id" in projected:
+        projected["session_id"] = "<session>"
     lifecycle = projected.get("lifecycle")
     if lifecycle is not None:
         segments = lifecycle if isinstance(lifecycle, list) else [lifecycle]
