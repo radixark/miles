@@ -398,55 +398,28 @@ class TinkerService:
         if isinstance(written, dict):
             return written
         tinker_path = f"tinker://{record.model_id}/weights/{name}"
-        # a TTL change between the drop and the new expiry would land on the wrong commit
-        async with self._expiry_lock:
-            old_expires_at = self.expiry.expires_at(tinker_path) if payload["overwrite"] else None
-            try:
-                if old_expires_at is not None:
-                    old_commit_id = await asyncio.to_thread(self._live_commit_id, root, name)
-                    # a crash between the commit and the new TTL must not leave the new commit the old one's expiry
-                    await asyncio.to_thread(self.expiry.drop, tinker_path)
-                # the commit's recovery walk and fsyncs hit shared storage; keep the event loop serving
-                await asyncio.to_thread(
-                    self.backend.commit_adapter, root, name, written, overwrite=payload["overwrite"]
-                )
-            except Exception as error:
-                # the commit can fail before or after its link swap; only the old commit keeps the old expiry. An
-                # entry still present means the drop never happened
-                if old_expires_at is not None and self.expiry.expires_at(tinker_path) is None:
-                    try:
-                        if await asyncio.to_thread(self._live_commit_id, root, name) == old_commit_id:
-                            await asyncio.to_thread(self.expiry.restore, tinker_path, old_expires_at)
-                    except (OSError, ValueError):
-                        # the save fails either way; the old commit then only no longer expires
-                        logger.exception(f"could not restore the expiry of {tinker_path}")
-                if isinstance(error, ValueError):
-                    # the commit refuses to replace a link it did not write (e.g. an operator's link to a shared
-                    # adapter)
-                    raise UserInputError(f"cannot commit checkpoint {name!r}: {error}") from None
-                if not isinstance(error, OSError):
-                    raise
-                # a storage failure loses only this save
-                return {"error": f"cannot commit checkpoint {name!r}: {error}", "error_category": "server"}
-            self._delete_retired_outside_the_lock(root)
-            await self._set_expiry_after_commit_locked(tinker_path, payload["ttl_seconds"])
+        # an overwrite's old expiry names the old commit, so it never deletes this one, whether or not the commit lands
+        try:
+            # the commit's recovery walk and fsyncs hit shared storage; keep the event loop serving
+            await asyncio.to_thread(self.backend.commit_adapter, root, name, written, overwrite=payload["overwrite"])
+        except ValueError as error:
+            # the commit refuses to replace a link it did not write (e.g. an operator's link to a shared adapter)
+            raise UserInputError(f"cannot commit checkpoint {name!r}: {error}") from None
+        except OSError as error:
+            # a storage failure loses only this save
+            return {"error": f"cannot commit checkpoint {name!r}: {error}", "error_category": "server"}
+        self._delete_retired_outside_the_lock(root)
+        await self._set_expiry_after_commit(tinker_path, written.commit_id, payload["ttl_seconds"])
         return {"op": "save_state", "path": tinker_path}
 
-    async def _set_expiry_after_commit(self, tinker_path: str, ttl_seconds: int | None) -> None:
-        async with self._expiry_lock:
-            await self._set_expiry_after_commit_locked(tinker_path, ttl_seconds)
-
-    async def _set_expiry_after_commit_locked(self, tinker_path: str, ttl_seconds: int | None) -> None:
+    async def _set_expiry_after_commit(self, tinker_path: str, commit_id: str, ttl_seconds: int | None) -> None:
         try:
-            # two fsyncs on shared storage
-            await asyncio.to_thread(self.expiry.set, tinker_path, ttl_seconds, time.time())
+            async with self._expiry_lock:
+                # two fsyncs on shared storage
+                await asyncio.to_thread(self.expiry.set, tinker_path, commit_id, ttl_seconds, time.time())
         except OSError:
             # failing the request would hide a committed save; without its entry it only does not expire
             logger.exception(f"could not record the expiry of {tinker_path}; it does not expire")
-
-    def _live_commit_id(self, root: str, name: str) -> str | None:
-        files = self.backend.resolve_checkpoint_files(root, name, None)
-        return None if files is None else files["commit_id"]
 
     def _delete_retired_outside_the_lock(self, root: str) -> None:
         task = asyncio.create_task(self._delete_retired(root))
@@ -534,7 +507,7 @@ class TinkerService:
             "op": "save_weights_for_sampler",
             "path": f"tinker://{record.model_id}/sampler_weights/{version}",
         }
-        await self._set_expiry_after_commit(result["path"], payload["ttl_seconds"])
+        await self._set_expiry_after_commit(result["path"], written.commit_id, payload["ttl_seconds"])
         if payload.get("sampler_path") is None:
             # unnamed saves return a sampling session bound to the new version
             result["sampling_session_id"] = self._new_sampling_session(
@@ -570,7 +543,7 @@ class TinkerService:
             # e.g. a full disk: the trainer is healthy, so only this save fails
             return {"error": f"could not commit external weights {name!r}: {error}", "error_category": "server"}
         tinker_path = f"tinker://{record.model_id}/external_weights/{name}"
-        await self._set_expiry_after_commit(tinker_path, payload["ttl_seconds"])
+        await self._set_expiry_after_commit(tinker_path, written.commit_id, payload["ttl_seconds"])
         try:
             size = await asyncio.to_thread(self._checkpoint_size, root, name, record.tenant)
         except OSError:
@@ -608,7 +581,7 @@ class TinkerService:
         tinker_path, _, _, files = await asyncio.to_thread(self._owned_checkpoint, tenant, model_id, checkpoint_id)
         now = time.time()
         expires_at = now + _DOWNLOAD_URL_TTL_S
-        if (checkpoint_expires_at := self.expiry.expires_at(tinker_path)) is not None:
+        if (checkpoint_expires_at := self.expiry.expires_at(tinker_path, files["commit_id"])) is not None:
             # expired, and only not yet swept
             if checkpoint_expires_at <= now:
                 raise NotFoundError(f"checkpoint {tinker_path} has expired")
@@ -648,8 +621,8 @@ class TinkerService:
     async def set_checkpoint_ttl(self, tenant: str, model_id: str, checkpoint_id: str, ttl_seconds) -> None:
         # with deletes, so a TTL never outlives its checkpoint onto a later save of the same name
         async with self._expiry_lock:
-            tinker_path, _, _, _ = await asyncio.to_thread(self._owned_checkpoint, tenant, model_id, checkpoint_id)
-            await asyncio.to_thread(self.expiry.set, tinker_path, ttl_seconds, time.time())
+            tinker_path, _, _, files = await asyncio.to_thread(self._owned_checkpoint, tenant, model_id, checkpoint_id)
+            await asyncio.to_thread(self.expiry.set, tinker_path, files["commit_id"], ttl_seconds, time.time())
 
     async def delete_checkpoint(self, tenant: str, model_id: str, checkpoint_id: str) -> None:
         async with self._trainer_lock, self._expiry_lock:
@@ -684,12 +657,13 @@ class TinkerService:
         if not self.expiry.expired(time.time()):
             return
         async with self._trainer_lock, self._expiry_lock:
-            for tinker_path in self.expiry.expired(time.time()):
+            for tinker_path, entry in self.expiry.expired(time.time()):
                 model_id, kind, name = parse_tinker_path(tinker_path)
                 try:
                     root = os.path.dirname(resolve_checkpoint_dir(self.config.checkpoint_root, model_id, kind, name))
-                    if await asyncio.to_thread(self.backend.resolve_checkpoint_files, root, name, None) is None:
-                        # deleted by hand, or never committed: nothing to remove
+                    files = await asyncio.to_thread(self.backend.resolve_checkpoint_files, root, name, None)
+                    if files is None or files["commit_id"] != entry.commit_id:
+                        # deleted by hand, or the expiry of a commit an overwrite replaced: nothing to remove
                         await asyncio.to_thread(self.expiry.drop, tinker_path)
                     else:
                         await self._delete_checkpoint(tinker_path, root, name, None)

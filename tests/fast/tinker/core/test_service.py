@@ -1317,7 +1317,7 @@ async def test_an_external_save_is_downloadable_by_its_tenant_only(service):
     )
     result = (await await_settled(service, "tenant", save)).result
     assert result["path"] == f"tinker://{model_id}/external_weights/export" and result["size_bytes"] > 0
-    assert service.expiry.expires_at(result["path"]) is not None
+    assert service.expiry.entry(result["path"]) is not None
 
     urls = await service.external_weights_urls("tenant", model_id, "external_weights/export", "http://gateway/")
     assert sorted(urls["urls"]) == ["adapter_config.json", "adapter_model.safetensors"], "tenant.json stays private"
@@ -1341,7 +1341,7 @@ async def test_an_external_save_is_downloadable_by_its_tenant_only(service):
     await service.delete_checkpoint("tenant", model_id, "external_weights/export")
     with pytest.raises(NotFoundError, match="deleted"):
         await service.download_path(token, "adapter_config.json")
-    assert service.expiry.expires_at(result["path"]) is None
+    assert service.expiry.entry(result["path"]) is None
 
 
 async def test_a_download_token_never_outlives_the_expiry_it_was_issued_with(service, monkeypatch):
@@ -1474,8 +1474,15 @@ async def test_an_overwrite_that_crashes_before_its_ttl_does_not_inherit_the_old
         await service._save_state(
             service.models[model_id], {"seq_id": 2, "name": "ck", "overwrite": True, "ttl_seconds": None}
         )
-    assert resolve_adapter_dir(root, "ck", tenant=None).commit_id != old_commit, "the overwrite committed"
-    assert CheckpointExpiry(service.config.checkpoint_root).expires_at(path) is None
+    new_commit = resolve_adapter_dir(root, "ck", tenant=None).commit_id
+    assert new_commit != old_commit, "the overwrite committed"
+    assert CheckpointExpiry(service.config.checkpoint_root).expires_at(path, new_commit) is None
+    real_time = time.time
+    monkeypatch.setattr(time, "time", lambda: real_time() + 3601)
+    await service._expire_checkpoints()
+    assert (
+        resolve_adapter_dir(root, "ck", tenant=None).commit_id == new_commit
+    ), "the old expiry deleted the new commit"
 
 
 @pytest.mark.parametrize("swapped", [False, True], ids=["before_the_swap", "after_the_swap"])
@@ -1487,7 +1494,8 @@ async def test_a_failed_overwrite_commit_keeps_the_old_expiry_only_on_the_old_co
         {"model_id": model_id, "seq_id": 1, "name": "ck", "overwrite": False, "ttl_seconds": 3600},
     )
     path = (await await_settled(service, "tenant", save)).result["path"]
-    old_expires_at = service.expiry.expires_at(path)
+    old_expires_at = service.expiry.entry(path).expires_at
+    root = Path(resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "weights", "ck")).parent
     commit = service.backend.commit_adapter
 
     def failing_commit(root, name, written, overwrite):
@@ -1501,7 +1509,8 @@ async def test_a_failed_overwrite_commit_keeps_the_old_expiry_only_on_the_old_co
     )
     assert failed["error_category"] == "server" and "No space left" in failed["error"]
     expected = None if swapped else old_expires_at
-    assert CheckpointExpiry(service.config.checkpoint_root).expires_at(path) == expected
+    live_commit = resolve_adapter_dir(root, "ck", tenant=None).commit_id
+    assert CheckpointExpiry(service.config.checkpoint_root).expires_at(path, live_commit) == expected
 
 
 def _full_disk(*args, **kwargs):
@@ -1518,7 +1527,7 @@ async def test_a_failed_expiry_write_after_a_commit_keeps_the_save_and_the_gatew
         saved = await await_settled(service, "tenant", service.submit("tenant", "save_weights_external", payload))
         assert saved.state == DONE, saved.error
         # recorded nowhere, so it never expires, in this process or after a restart
-        assert service.expiry.expires_at(saved.result["path"]) is None
+        assert service.expiry.entry(saved.result["path"]) is None
     assert saved.result["size_bytes"] is None
 
 
@@ -1536,7 +1545,7 @@ async def test_ttl_is_set_removed_and_swept(service, monkeypatch):
     )
     path = (await await_settled(service, "tenant", save)).result["path"]
     await service.set_checkpoint_ttl("tenant", model_id, "weights/ck", None)
-    assert service.expiry.expires_at(path) is None
+    assert service.expiry.entry(path) is None
     with pytest.raises(UserInputError, match="ttl_seconds"):
         await service.set_checkpoint_ttl("tenant", model_id, "weights/ck", 60)
     with pytest.raises(OwnershipError):
@@ -1547,7 +1556,7 @@ async def test_ttl_is_set_removed_and_swept(service, monkeypatch):
     monkeypatch.setattr(time, "time", lambda: real_time() + 7201)
     await service._expire_checkpoints()
     root = Path(resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "weights", "ck")).parent
-    assert resolve_adapter_dir(root, "ck", tenant=None) is None and service.expiry.expires_at(path) is None
+    assert resolve_adapter_dir(root, "ck", tenant=None) is None and service.expiry.entry(path) is None
     with pytest.raises(NotFoundError):
         await service.delete_checkpoint("tenant", model_id, "weights/ck")
 
@@ -1571,10 +1580,10 @@ async def test_an_expiring_name_relinked_by_an_operator_is_kept_and_the_rest_are
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(time, "time", lambda: real_time() + 3601)
         await service._expire_checkpoints()
-    assert resolve_adapter_dir(root, "ok", tenant=None) is None and service.expiry.expires_at(paths["ok"]) is None
+    assert resolve_adapter_dir(root, "ok", tenant=None) is None and service.expiry.entry(paths["ok"]) is None
     assert shared.is_dir() and (root / "shared.adapter").is_dir()
-    assert service.expiry.expires_at(paths["outside"]) is not None
-    assert service.expiry.expires_at(paths["foreign"]) is not None
+    assert service.expiry.entry(paths["outside"]) is not None
+    assert service.expiry.entry(paths["foreign"]) is not None
 
 
 async def test_trainer_ranks_get_only_the_tenant_digest(service):
@@ -1599,7 +1608,7 @@ async def test_a_ttl_change_does_not_wait_for_a_training_call(service):
     # a training call in progress
     async with service._trainer_lock:
         await asyncio.wait_for(service.set_checkpoint_ttl("tenant", model_id, "weights/ck", 7200), timeout=1.0)
-    assert service.expiry.expires_at(f"tinker://{model_id}/weights/ck") is not None
+    assert service.expiry.entry(f"tinker://{model_id}/weights/ck") is not None
 
 
 async def test_weights_info_reports_a_sampler_exports_own_groups_not_the_gateways(service):
