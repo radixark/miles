@@ -117,9 +117,11 @@ class AlgoConfig(BaseConfig):
     advantage_estimator: A[
         str,
         Arg(
-            choices=["grpo", "gspo", "reinforce_plus_plus", "reinforce_plus_plus_baseline", "ppo"],
+            choices=["grpo", "gspo", "reinforce_plus_plus", "reinforce_plus_plus_baseline", "ppo", "reinforce_zero"],
             help=(
-                "Advantage estimator to use. Note: on-policy distillation (OPD) is now orthogonal "
+                "Advantage estimator to use. `reinforce_zero` is REINFORCE Zero: group-mean advantages and "
+                "unclipped token-level importance sampling against the rollout log-probs; it requires "
+                "--use-rollout-logprobs. Note: on-policy distillation (OPD) is now orthogonal "
                 "to the advantage estimator. Use --opd-kl-coef > 0 to enable OPD on top of any estimator."
             ),
         ),
