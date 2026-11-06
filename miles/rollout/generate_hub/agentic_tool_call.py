@@ -29,6 +29,7 @@ Agent function contract:
 """
 
 import argparse
+import functools
 import logging
 import time
 from collections.abc import Callable
@@ -59,28 +60,28 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     )
     use_v2 = input.args.use_session_server == "v2"
     collect_spec_metrics = use_v2 and input.args.sglang.common_value("speculative_algorithm") is not None
-    # a mixed dataset may name a lower length limit; the session refuses a turn whose prompt fills it
+    tracer = await OpenAIEndpointTracer.create(
+        input.args,
+        evaluation=input.evaluation,
+        sampling_params=input.sampling_params,
+        extra_key=input.sample.kv_cache_namespace,
+    )
+
+    # a mixed dataset may name its own agent and a lower length limit
+    agent_function_path = input.sample.agent_function_path or input.args.custom_agent_function_path
+    custom_agent_function: Callable = load_function(agent_function_path)
+    assert custom_agent_function is not None, f"Custom agent function {agent_function_path} not found"
+
     max_seq_len = lower_limit(
         getattr(
             input.args, "max_seq_len", None
         ),  # config-access-exempt: optional length limit registered by custom agent hooks
         input.sample.max_seq_len,
     )
-    tracer = await OpenAIEndpointTracer.create(
-        input.args,
-        evaluation=input.evaluation,
-        sampling_params=input.sampling_params,
-        extra_key=input.sample.kv_cache_namespace,
-        max_seq_len=max_seq_len,
-    )
-
-    # a mixed dataset may name its own agent
-    agent_function_path = input.sample.agent_function_path or input.args.custom_agent_function_path
-    custom_agent_function: Callable = load_function(agent_function_path)
-    assert custom_agent_function is not None, f"Custom agent function {agent_function_path} not found"
 
     metadata = input.sample.metadata
     if max_seq_len is not None:
+        _warn_max_seq_len_does_not_stop_the_agent()
         metadata = {**metadata, "max_seq_len": max_seq_len}
     if tracer.session_server_instance_id:
         metadata = {**metadata, "session_server_instance_id": tracer.session_server_instance_id}
@@ -199,6 +200,15 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     return GenerateFnOutput(samples=sample)
 
 
+@functools.cache
+def _warn_max_seq_len_does_not_stop_the_agent() -> None:
+    """Once per process: the session server leaves the agent's control flow alone, so the limit only truncates."""
+    logger.warning(
+        "max_seq_len reaches the agent as metadata['max_seq_len'] and truncates the collected samples; "
+        "Miles does not stop the agent at it, so an agent that does not read it runs on past it"
+    )
+
+
 def _add_arguments(parser: argparse.ArgumentParser):
     parser.add_argument(
         "--custom-agent-function-mode",
@@ -213,9 +223,9 @@ def _add_arguments(parser: argparse.ArgumentParser):
         default=None,
         dest="max_seq_len",
         help="Max sequence length in tokens (prompt + completion, including env responses) "
-        "per session. The session server refuses a turn once its prompt fills it (HTTP 409), "
-        "and truncates the trajectory to it during sample assembly. Also forwarded to the agent "
-        "in metadata (and to the Harbor agent server as max_seq_len) to stop the episode early.",
+        "per session. Sample assembly truncates each collected trajectory to it, and the agent "
+        "receives it as metadata['max_seq_len'] (the Harbor agent server as max_seq_len); "
+        "Miles does not stop the agent at it.",
     )
 
 

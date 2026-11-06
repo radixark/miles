@@ -10,8 +10,6 @@ class CreateSessionRequest(StrictBaseModel):
     temperature: StrictFloat | None = None
     top_p: StrictFloat | None = None
     top_k: StrictInt | None = None
-    # the session's prompt length limit: a request whose prompt fills it is refused
-    max_seq_len: StrictInt | None = Field(default=None, ge=1)
 
     @field_validator("top_k", mode="before")
     @classmethod

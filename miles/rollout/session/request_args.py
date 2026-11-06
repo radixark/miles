@@ -6,9 +6,8 @@ retain what the client asked the response to carry. The session's sampling
 defaults fill the fields the client omitted. The TITO tokenizer then applies
 model rules to the same full request.
 
-After rendering, ``refuse_prompt_filling_max_seq_len`` checks the prompt against
-the session's length limit. After a successful generation, the session records
-the complete resolved request as ``turn_args``. A continuation supplies that history to the
+After rendering and a successful generation, the session records the complete
+resolved request as ``turn_args``. A continuation supplies that history to the
 model resolver, which decides which fields inherit or must stay compatible.
 """
 
@@ -21,7 +20,7 @@ import orjson
 from miles.rollout.generate_utils.rollout_topk_logprobs import configure_rollout_topk_logprobs_request
 from miles.rollout.generate_utils.sampling_mask import validate_sampling_support_request
 from miles.rollout.session.config import SessionServerConfig
-from miles.rollout.session.errors import MaxSeqLenReachedError, MessageValidationError
+from miles.rollout.session.errors import MessageValidationError
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer, extract_template_args
 from miles.utils.lora.utils import LORA_ADAPTER_NAME, lora_rollout_enabled
 from miles.utils.output_store.plan import FIELDS, OUTPUT_STORE_REQUEST_KEY
@@ -124,20 +123,6 @@ def prepare_chat_request(
     return PreparedChatRequest(
         body=request_args, template_args=extract_template_args(request_args), response_intent=response_intent
     )
-
-
-def refuse_prompt_filling_max_seq_len(*, max_seq_len: int | None, prompt_tokens: int) -> None:
-    """Raise 409 when the rendered prompt already fills *max_seq_len*; None means no limit.
-
-    A prompt that fills ``max_seq_len`` leaves no room for a completion. The request's ``max_tokens`` is left
-    to the client: the last turn may still run past the limit, and collection truncates it to the limit the
-    collector passes.
-    """
-    if max_seq_len is not None and prompt_tokens >= max_seq_len:
-        raise MaxSeqLenReachedError(
-            f"the prompt has {prompt_tokens} tokens, filling the session's max_seq_len={max_seq_len}: "
-            "the trajectory cannot be extended"
-        )
 
 
 def apply_session_sampling_defaults(
