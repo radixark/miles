@@ -231,6 +231,7 @@ def read_imported_adapter(path: str, shown_path: str) -> dict:
     # the source is the client's file: a malformed one is a user error, not a gateway failure
     try:
         if (Path(path) / PARAMETRIZATION_FILENAME).is_file():
+            _read_json_object(Path(path) / PARAMETRIZATION_FILENAME)
             parametrization = read_parametrization(Path(path))
             source = {
                 "lora_rank": parametrization.lora_rank,
@@ -238,7 +239,7 @@ def read_imported_adapter(path: str, shown_path: str) -> dict:
                 "base_model": parametrization.base_model,
             }
         elif config_file.is_file():
-            config = json.loads(config_file.read_text())
+            config = _read_json_object(config_file)
             source = {
                 "lora_rank": config["r"],
                 "lora_alpha": config.get("lora_alpha"),
@@ -248,6 +249,11 @@ def read_imported_adapter(path: str, shown_path: str) -> dict:
             raise UserInputError(f"{shown_path} holds no adapter ({PARAMETRIZATION_FILENAME} or adapter_config.json)")
         if source["base_model"] is not None and not isinstance(source["base_model"], str):
             raise TypeError(f"base model {source['base_model']!r} is not a name")
+        # compared as a path later, where a NUL byte or a lone surrogate raises
+        if source["base_model"] is not None and "\x00" in source["base_model"]:
+            raise ValueError(f"base model {source['base_model']!r} holds a NUL byte")
+        if source["base_model"] is not None:
+            source["base_model"].encode()
         if type(source["lora_rank"]) is not int:
             raise TypeError(f"rank {source['lora_rank']!r} is not an integer")
         if source["lora_alpha"] is not None and type(source["lora_alpha"]) not in (int, float):
@@ -258,6 +264,13 @@ def read_imported_adapter(path: str, shown_path: str) -> dict:
     except (OSError, ValueError, KeyError, TypeError, AssertionError, RecursionError, OverflowError) as error:
         raise UserInputError(f"{shown_path} is not a readable adapter: {type(error).__name__}: {error}") from error
     return source
+
+
+def _read_json_object(path: Path) -> dict:
+    data = json.loads(path.read_text())
+    if not isinstance(data, dict):
+        raise TypeError(f"{path.name} holds a JSON {type(data).__name__}, not an object")
+    return data
 
 
 # a fused HF module's adapter is recorded under its components' leaves

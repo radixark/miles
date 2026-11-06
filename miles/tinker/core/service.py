@@ -83,6 +83,10 @@ def _is_same_base_model(a: str, b: str) -> bool:
     return a == b or (is_path(a) and is_path(b) and os.path.realpath(a) == os.path.realpath(b))
 
 
+def _staged_failure(error: str) -> dict:
+    return {"failure": {"error": error, "error_category": "server"}}
+
+
 class TinkerService:
     def __init__(self, backend, config: GatewayConfig) -> None:
         self.backend = backend
@@ -569,6 +573,12 @@ class TinkerService:
             command.payload["staged_import"] = await self._stage_import(record, command.payload)
         except UserInputError as error:
             command.validation_error = str(error)
+        except Exception as error:
+            # a background task's error stops the dispatcher; this one is only this request's
+            logger.exception(f"could not stage {command.payload['path']}")
+            command.payload["staged_import"] = _staged_failure(
+                f"cannot stage {command.payload['path']}: {type(error).__name__}: {error}"
+            )
         if self.models.get(record.model_id) is not record:
             # closed while copying; its future already failed
             if "copy_dir" in command.payload.get("staged_import", {}):
@@ -588,9 +598,7 @@ class TinkerService:
             )
         except OSError as error:
             # e.g. a full checkpoint disk: only this load fails, the gateway keeps serving
-            return {
-                "failure": {"error": f"cannot copy {payload['path']} to load it: {error}", "error_category": "server"}
-            }
+            return _staged_failure(f"cannot copy {payload['path']} to load it: {error}")
         try:
             source = await asyncio.to_thread(self._read_import_copy, payload["path"], copy_dir)
             if source["lora_alpha"] is None:
