@@ -53,7 +53,13 @@ class _PolicyCallError(Exception):
         self.model = model
 
 
-_METADATA = {"domain": "retail", "task_split": "train", "task_id": "7"}
+# the generate wrapper adds the router URL the user simulator and the judge default to
+_METADATA = {
+    "domain": "retail",
+    "task_split": "train",
+    "task_id": "7",
+    "tau2_user_api_base": "http://10.0.0.1:30000/v1",
+}
 
 
 def _run(module, simulate):
