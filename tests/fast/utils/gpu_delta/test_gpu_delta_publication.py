@@ -37,10 +37,10 @@ def _encoded(codec):
         dict(decoded_offset=2 * publication.FRAME_BYTES, decoded_bytes=139, encoded_offset=16, encoded_bytes=9),
     ]
     inner = b"inner-frame-1" + bytes(3) + b"frame-two"
-    payload = inner if codec == "lz4" else b"opaque outer frame"
+    payload = inner if publication.CODECS[codec][1] is None else b"opaque outer frame"
     outer_frames = (
         []
-        if codec == "lz4"
+        if publication.CODECS[codec][1] is None
         else [dict(decoded_offset=0, decoded_bytes=len(inner), encoded_offset=0, encoded_bytes=len(payload))]
     )
     return frames, payload, dict(decoded_bytes=len(inner), encoded_bytes=len(payload), frames=outer_frames)

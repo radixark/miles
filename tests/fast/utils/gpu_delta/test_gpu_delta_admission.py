@@ -59,7 +59,12 @@ def test_trainable_draft_and_invalid_initial_codec_fail_before_startup(tmp_path,
 
 @pytest.mark.parametrize(
     "codec,symbol,options",
-    [("snappy", "Snappy", nvcomp._Options), ("zstd", "Zstd", nvcomp._Options), ("lz4", "LZ4", nvcomp._LZ4Options)],
+    [
+        ("snappy", "Snappy", nvcomp._Options),
+        ("zstd", "Zstd", nvcomp._Options),
+        ("lz4", "LZ4", nvcomp._LZ4Options),
+        ("bitcomp", "Bitcomp", nvcomp._BitcompOptions),
+    ],
 )
 def test_nvcomp6_abi_and_stream_bound_workspace_queries(monkeypatch, codec, symbol, options):
     calls, libraries = [], []
@@ -95,8 +100,21 @@ def test_nvcomp6_abi_and_stream_bound_workspace_queries(monkeypatch, codec, symb
     monkeypatch.setattr(torch.version, "cuda", "13.0")
     compressor = nvcomp.NvcompCompressor(codec, torch.device("cuda", 0))
     assert libraries == ["nvidia/libnvcomp/lib64/libnvcomp.so.6"]
-    assert ctypes.sizeof(options) == 64 and bytes(compressor._options) == bytes(64)
-    assert ctypes.alignment(options) == (ctypes.alignment(ctypes.c_int) if codec == "lz4" else 1)
+    assert ctypes.sizeof(options) == 64
+    if codec == "bitcomp":
+        assert ctypes.alignment(options) == 8
+        assert [options.algorithm.offset, options.data_type.offset, options.delta.offset, options.mode.offset] == [
+            0,
+            4,
+            8,
+            16,
+        ]
+        assert compressor._options.algorithm == 1 and compressor._options.data_type == 1
+        assert compressor._options.mode == 0 and compressor._options.delta == 0.0
+        assert bytes(compressor._options)[20:] == bytes(44)
+    else:
+        assert bytes(compressor._options) == bytes(64)
+        assert ctypes.alignment(options) == (ctypes.alignment(ctypes.c_int) if codec == "lz4" else 1)
     assert ctypes.sizeof(nvcomp._Alignments) == 24 and ctypes.alignment(nvcomp._Alignments) == 8
     assert [nvcomp._Alignments.input.offset, nvcomp._Alignments.output.offset, nvcomp._Alignments.temp.offset] == [
         0,

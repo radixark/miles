@@ -3,9 +3,10 @@
 The experimental `--update-weight-transfer-mode gpu-delta` uses SGLang's
 `update_weights_from_gpu_delta` endpoint for both rolling updates and recovery.
 SGLang owns preparation, application and resume within each engine. `disk-delta`
-remains a separate checkpoint handoff path. GPU-delta supports `snappy-zstd`
-(default), `lz4-zstd` and plain
-`lz4`, with `--update-weight-delta-encoding xor`. Changed scalar/vector tensors
+remains a separate checkpoint handoff path. GPU-delta supports `snappy-zstd`,
+`lz4-zstd`, `lz4`, `bitcomp-zstd` (default) and `bitcomp`, with
+`--update-weight-delta-encoding xor`. Bitcomp always uses the sparse algorithm,
+lossless U8 byte interpretation and no quantization. Changed scalar/vector tensors
 carry complete target bytes; the `overwrite` transport option belongs to disk-delta.
 
 See [GPU-accelerated weight teleportation](https://humansand.ai/blog/gpu-accelerated-weight-teleportation)
@@ -45,19 +46,22 @@ The optional CPU correctness oracles require `python-snappy`, `lz4` and
 oracles use raw blocks without a prepended uncompressed-size header.
 
 No custom C++/CUDA extension is built. Sender compression uses CUDA SMs.
-Wrapped codecs use receiver CPU Zstd; plain LZ4 skips both outer stages and
-copies its packed inner arenas into private DE input buffers. Both inner codecs
-request the Blackwell hardware decompression engine and reject unsupported
-hardware or allocation modes. DE reads each rank's original host allocation.
-LZ4 uses byte input with bitshuffle disabled; there is no extra layout transform.
+Wrapped codecs use GPU Zstd compression on the sender and CPU Zstd decompression
+during receiver preparation. Plain LZ4 and Bitcomp skip both outer stages.
+Snappy/LZ4 automatically use the hardware decompression engine on SM100/SM103,
+reading each rank's original host allocation. Other CUDA architectures and
+Bitcomp use GPU compute after double-buffered H2D transfers. GPU-delta itself
+does not require SM100/SM103; model/backend kernels retain their hardware requirements.
+LZ4 uses byte input with bitshuffle disabled; Bitcomp uses sparse lossless U8.
+Neither adds a weight layout transform.
 
 These `GPU_DELTA_*` variables are development/debug controls, not a stable
 user-facing configuration API. Runtime defaults are sufficient for normal use.
 
 | Development variable | Meaning |
 | --- | --- |
-| `GPU_DELTA_CODEC=snappy-zstd` | Trainer codec for ordinary learned updates; `lz4-zstd` selects LZ4 with outer Zstd; `lz4` skips outer Zstd. Read once at launch. The receiver selects the codec from each authenticated publication. |
-| `GPU_DELTA_INITIAL_SYNC_CODEC=lz4-zstd` | Trainer codec for initial sync, engine recovery and checkpoint companions; `snappy-zstd` or plain `lz4` overrides it. Initial synchronization is mandatory. |
+| `GPU_DELTA_CODEC=bitcomp-zstd` | Trainer codec for ordinary learned updates; accepts the codecs listed above. `*-zstd` adds GPU Zstd wrapping; `lz4` and `bitcomp` skip it. Read once at launch. The receiver selects the codec from each authenticated publication. |
+| `GPU_DELTA_INITIAL_SYNC_CODEC=bitcomp-zstd` | Trainer codec for initial sync, engine recovery and checkpoint companions; accepts the same codecs. Initial synchronization is mandatory. |
 | `GPU_DELTA_SORT_BEFORE_HW_DECOMPRESS=0` | Receiver only. Set `1` to let nvCOMP sort chunks during paused DE submission; default off for all codecs. It does not change publication bytes or move sorting into preparation. |
 | `GPU_DELTA_CPU_WORKERS=32` | CPU workers per rank. Each engine-host cache creator also uses its pool for parallel owner-file read/hash before local payload preparation. Two EP4 engines have eight pools (up to 256 workers at the default). |
 | `GPU_DELTA_SKIP_PAYLOAD_HASH=1` | Miles-only opt-in: omit owner-file SHA256 generation and send `validate_payload_hash=false` with each receiver update. Defaults off. Such publications declare `payload_checksum_format="none"` and null file hashes; SGLang accepts them only with this explicit request option and does not read the environment variable. Manifest SHA256 and native decoder checks remain mandatory. |
@@ -67,8 +71,9 @@ For Ray launches, set job-level variables through `runtime_env` or
 `execute_train(extra_env_vars=...)`; the submitting shell does not configure
 existing workers. Both trainer and rollout must inherit the shared hash flag.
 Trainer-only settings can use `--train-env-vars`; receiver sorting belongs
-on rollout actors. The five-layer E2E forwards these controls and checks
-each publication's manifest and phase-specific codec.
+on rollout actors. The five-layer E2E explicitly uses Snappy-Zstd for learned
+updates and LZ4-Zstd for initial sync to retain DE coverage. It forwards the hash
+and sorting controls and checks each publication's manifest and phase-specific codec.
 
 The five-layer test is dedicated to GPU delta: it prepares checkpoints and data,
 performs the required initial sync, then runs four rollouts to exercise three learned
@@ -91,8 +96,8 @@ resumed from a checkpoint that differs from the HF base.
 Disk-delta also always performs initial synchronization. Subsequent GPU-delta
 updates start at version 2;
 these transfer versions are independent of restored optimizer/rollout steps.
-GPU delta defaults to LZ4-Zstd for this initial publication, then Snappy-Zstd for
-learned updates. Selection follows the initial-sync call, not transfer-version
+GPU delta defaults to Bitcomp-Zstd for both initial and learned publications.
+Phase-specific overrides follow the initial-sync call, not transfer-version
 arithmetic. Encoder setup is lazy and cached before publication/export; receivers
 cache decoders during preparation from the manifest codec. Canonical plan and
 version-stream identity do not depend on the codec.
@@ -196,13 +201,13 @@ there is no scalar/vector branch inside the matrix compression loop.
 
 Matrix batches follow baseline callback order. When a batch's export D2H event
 completes, the encoder uploads its old/new bytes, computes XOR/change counts,
-and compresses all independent Snappy or LZ4 frames in one call. Encoding can
+and compresses all independent inner-codec frames in one call. Encoding can
 overlap later exports. Unchanged frames are omitted; incompressible changed
 frames retain the selected codec. Compact, 16-byte-aligned inner-codec tensor
 arenas remain in HBM across batches.
 For wrapped codecs, the sender then compresses **all** owner inner-codec arenas
 together with GPU Zstd, using independent outer chunks of at most 1 MiB while
-preserving tensor boundaries. Plain `lz4` bypasses Zstd and its metadata fence.
+preserving tensor boundaries. Plain `lz4` and `bitcomp` bypass Zstd and its metadata fence.
 Both paths pack once and return one final aligned slab to pinned CPU RAM for
 file hashing/writing.
 There is no intermediate inner-codec host slab, CPU compression, or raw matrix fallback.
@@ -215,30 +220,34 @@ positive integer sizes at most 4 MiB, subject to nvCOMP alignment requirements.
 The receiver also checks actual encoded and decoded lengths against its device
 limit. Outer Zstd chunks remain at most 1 MiB.
 
-The manifest records the selected `codec` (`snappy-zstd`, `lz4-zstd` or `lz4`),
+The manifest records the selected `codec`,
 explicit `frame_bytes`, natural tensor identity and outer chunk offsets/lengths.
-For plain `lz4`, the outer descriptor
+For unwrapped codecs, the outer descriptor
 has `frames=[]` and equal encoded/decoded byte lengths: its payload is the
 aligned inner arena directly, without trailing padding. Raw tensors and omitted
 zero-XOR frames keep the same representation. SHA-256 authenticates final owner files by default.
 Ordinary updates do not hash old/new weights or intermediate inner-codec bytes;
 checkpoint/recovery artifacts additionally fingerprint the immutable HF base. The receiver reads
 and verifies immutable encoded files once per engine-host, then every rank
-CPU-decompresses (or copies plain LZ4) its local tensors into its own original HOST_NUMA
-allocation during background preparation. Each allocation requests the hardware-
-decompression flag and checks actual pointer capability; no CUDA handles are
-exported or imported. The initial host capacity fits the required extent rounded to allocation
-granularity; fitting updates reuse it, and growth reserves twice the new requirement.
+CPU-decompresses (or copies unwrapped payloads) its local tensors into its own
+pinned host arena during background preparation. The DE path uses original
+HOST_NUMA allocations with hardware-decompression capability checks; no CUDA
+handles are exported or imported. The CUDA path uses ordinary pinned host storage.
+Fitting updates reuse host capacity; growth reserves twice the new requirement.
+DE allocations also round capacity to the device allocation granularity.
 Encoded-file staging uses a separate retained tmpfs mapping for every codec.
 
 Preparation builds CPU plans and small GPU metadata/workspace, and uploads raw
 scalar/vector targets without writing model weights. After the serving pause and
 reader fence, the fixed double buffer allocates two decoded HBM slots sized for
 the largest batch. Hardware Snappy or LZ4 reads compressed bytes directly from the rank-owned host arena;
-there is no encoded HBM ring or explicit compressed H2D copy. A DE stream decodes
-the next batch while the apply stream checks status and applies the current masks.
-Events protect decoded-slot and status-row reuse. Slots are released after GPU
-completion before resume; static plans and host arena capacity remain cached.
+there is no encoded HBM ring or explicit compressed H2D copy on this path. A DE
+stream decodes the next batch while the apply stream checks status and applies
+the current masks. The CUDA path instead overlaps the next batch's compressed
+H2D copy with the current batch's decode and apply on one compute stream, using
+two encoded/decoded slots. Events protect slot and status-row reuse. Slots are
+released after GPU completion before resume; static plans and host arena capacity
+remain cached.
 `GPU_DELTA_LAYERS_PER_BATCH` defaults to 1 and groups adjacent active model layers;
 embeddings, the language-model head and other standalone tensors form three
 separate groups, omitting empty groups. GPU Zstd decompression is not part of this path.
@@ -324,25 +333,28 @@ producer prefixes reuse the existing owner gather.
   `receiver_host_encoded_caches` counts those caches, not physical nodes.
   Independent engines may retain duplicate encoded bytes.
 - `receiver_host_rank_outer_zstd_*` covers each rank's wrapped matrix tensors
-  and is zero for plain LZ4. Worker-decode sums accumulate worker intervals;
+  and is zero for unwrapped codecs. Worker-decode sums accumulate worker intervals;
   `decode_s` is the wrapped path's wall time including submission, raw copies and joins.
   These nested spans must not be added. Encoded/decoded bytes, tensors and frames
   have rank distributions and `/sum`; `receiver_host_rank_cpu_workers` records
   each rank's worker count. `receiver_host_rank_prepare_s` encloses cache access,
   metadata release, rank allocation and local payload preparation.
 - `receiver_host_rank_{arena,capacity}_bytes/{min,p50,max,sum}` counts distinct
-  original DE host storage on every rank. Used bytes and retained capacity stay
+  rank-owned pinned host storage on every rank: DE-capable allocations on the DE
+  path and ordinary pinned Torch storage on CUDA. Used bytes and retained capacity stay
   separate. Rank allocation duration has `{min,p50,max}`; calls/bytes also have
   `/sum`. `receiver_host_rank_mapping_reused` reports local arena reuse. Fitting
   warm updates allocate no new arena while retaining physical capacity.
 - `receiver_host_plan_cache_reused/{min,p50,max}` reports per-rank static-plan
   reuse.
 - `receiver_de_host_input_bytes` counts compressed bytes read directly by DE;
-  `receiver_h2d_bytes` counts explicit raw-target and metadata uploads. They are
-  different traffic categories, not a throughput estimate. `receiver_raw_h2d_bytes`,
-  `receiver_decoder_metadata_h2d_bytes` and `receiver_apply_metadata_h2d_bytes`
-  expose those upload components; decoder descriptors use one prepare upload and
-  one paused output-pointer upload.
+  `receiver_h2d_bytes` counts explicit raw-target, metadata and CUDA compressed-input
+  uploads. They are different traffic categories, not a throughput estimate.
+  `receiver_raw_h2d_bytes`, `receiver_decoder_metadata_h2d_bytes` and
+  `receiver_apply_metadata_h2d_bytes` expose raw/metadata components; the CUDA
+  compressed-input component is retained as `compressed_input_h2d_bytes` in raw
+  receiver receipts. Decoder descriptors use one prepare upload and one paused
+  output-pointer upload; CUDA adds a paused input-pointer upload.
 - `receiver_decoded_buffers`, `receiver_decoded_scratch_bytes` and
   `receiver_decoder_workspace_bytes` report per-rank prepared capacities, not peak
   HBM. Decoded scratch is the total of both paused slots. Batch, layer-count,
@@ -448,9 +460,9 @@ byte counts or make an oversized individual tensor fit. Wrapped codecs perform
 one owner-wide GPU Zstd finalization per version. Scalar/vector target bytes
 bypass compression.
 
-The default six arms combine `snappy-zstd`, `lz4-zstd` and `lz4` with payload
+The default ten arms combine all five codecs with payload
 hashing on and off. Inner frames are 1 MiB; wrapped codecs also use
-1 MiB outer frames, while plain LZ4 has no outer stage. Every arm uses three
+1 MiB outer frames, while unwrapped codecs have no outer stage. Every arm uses three
 cumulative versions and two EP4 receivers. `--codecs`, `--hashing`,
 `--frame-bytes`, `--versions` and `--ports` select the configuration. For a quick
 single arm, use `--codecs snappy-zstd --hashing off`. Hash-on arms generate and
@@ -473,7 +485,7 @@ statistical repeats of one delta.
 Stdout and `REPORT.md` show a summary row per arm/version: codec, inner frame size (KiB), payload
 SHA policy, compression/publication wall time (seconds), receiver preparation
 (seconds), scheduler pause (milliseconds), and inner, outer and total payload
-sizes (GiB). Plain LZ4 has no outer stage. Full-precision timing components,
+sizes (GiB). Unwrapped codecs have no outer stage. Full-precision timing components,
 exact byte counts and every sender owner/receiver rank metric remain in
 `summary.json`; `comparison.json` records
 each arm’s final selected-output comparison, or `NOT_RUN` when disabled. `inputs.json` records the cache

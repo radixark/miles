@@ -266,7 +266,7 @@ def test_initial_delta_publishes_loaded_trainer_then_switches_to_cached_update_c
     if codec is None:
         monkeypatch.delenv("GPU_DELTA_CODEC", raising=False)
         monkeypatch.delenv("GPU_DELTA_INITIAL_SYNC_CODEC", raising=False)
-        initial_codec, codec = "lz4-zstd", "snappy-zstd"
+        initial_codec = codec = "bitcomp-zstd"
     else:
         monkeypatch.setenv("GPU_DELTA_CODEC", codec)
         monkeypatch.setenv("GPU_DELTA_INITIAL_SYNC_CODEC", initial_codec)
@@ -788,7 +788,7 @@ def test_restarted_engine_uses_negotiated_update_and_retains_cache(
     assert calls[:2] == [(("engine-00000",), 1, 2), (("engine-00001",), 0, 2)]
     assert model_versions[1:3] == [str(model_version), str(model_version)]
     assert previous_descriptor["target_version"] == 1
-    assert loads == [(0, 2, "lz4-zstd")]
+    assert loads == [(0, 2, "bitcomp-zstd")]
     assert protocol._hf_snapshot["w"].tolist() == [1, 2, 3, 4]
 
 

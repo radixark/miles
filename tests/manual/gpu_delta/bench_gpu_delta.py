@@ -7,7 +7,7 @@ Run from the Miles checkout with paired SGLang on PYTHONPATH::
 Requires eight Blackwell GPUs, CUDA 13 and nvCOMP 6. The GLM5.2 W4A16
 workload uses static bundled MTP and two independent TP4/DP4/EP4 receivers.
 Sender processes split whole layers across GPUs; no Megatron checkpoint is needed.
-Defaults: three codecs x payload hashing on/off, all with 1 MiB inner frames.
+Defaults: five codecs x payload hashing on/off, all with 1 MiB inner frames.
 Use --reuse-fixtures with a reviewed producer SPEC to skip encoding and apply
 saved deltas. Reused sender timings are historical; receiver timings are fresh.
 The expensive second model load/oracle is opt-in with --validate-final-target.
@@ -1085,7 +1085,9 @@ def _owner_compression(metrics, codec):
     inner_cuda = metrics.get("batch_cuda_s", {})
     outer_cuda = final.get("finalize_cuda_phase_s", {})
     inner = _seconds(inner_cuda["compression_s"]) if "compression_s" in inner_cuda else None
-    outer = _seconds(outer_cuda["outer_zstd_s"]) if codec != "lz4" and "outer_zstd_s" in outer_cuda else None
+    outer = (
+        _seconds(outer_cuda["outer_zstd_s"]) if CODECS[codec][1] is not None and "outer_zstd_s" in outer_cuda else None
+    )
     combined = _seconds(metrics["compression_and_publication_s"])
     if not math.isclose(
         combined,
@@ -1218,7 +1220,7 @@ def _markdown(summary):
                 _format(row["accounting"]["encoded_frame_bytes"], scale=1 / 2**30),
                 (
                     "absent"
-                    if arm["codec"] == "lz4"
+                    if CODECS[arm["codec"]][1] is None
                     else _format(row["accounting"]["matrix_payload_bytes"], scale=1 / 2**30)
                 ),
                 _format(row["accounting"]["payload_file_bytes"], scale=1 / 2**30),
@@ -1239,7 +1241,7 @@ def _markdown(summary):
         "These independent owner/rank maxima can come from different processes and must not be added.",
         "",
         "Sizes sum across all owners; GiB = 2^30 bytes. Inner is the compressed frame bytes before outer Zstd. "
-        "Outer is the stored Zstd matrix payload; it is absent for plain LZ4. Payload includes all stored "
+        "Outer is the stored Zstd matrix payload; it is absent for unwrapped codecs. Payload includes all stored "
         "matrix/raw bytes and alignment, excluding the manifest. The packed inner arena, exact byte counts, "
         "manifest/publication sizes, frame sizes and canonical/changed bytes remain in `summary.json`.",
         "",

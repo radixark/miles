@@ -139,11 +139,10 @@ def prepare():
 
 def _gpu_delta_env():
     # Ray jobs receive an explicit environment, not every variable in this shell.
-    from miles.utils.gpu_delta.publication import configured_codec
-
+    # Keep this E2E on the DE codecs independently of production defaults.
     return {
-        "GPU_DELTA_CODEC": configured_codec(),
-        "GPU_DELTA_INITIAL_SYNC_CODEC": configured_codec(initial_sync=True),
+        "GPU_DELTA_CODEC": "snappy-zstd",
+        "GPU_DELTA_INITIAL_SYNC_CODEC": "lz4-zstd",
         "GPU_DELTA_SORT_BEFORE_HW_DECOMPRESS": os.environ.get("GPU_DELTA_SORT_BEFORE_HW_DECOMPRESS", "0"),
         "GPU_DELTA_SKIP_PAYLOAD_HASH": os.environ.get("GPU_DELTA_SKIP_PAYLOAD_HASH", "0"),
         "SGLANG_NVFP4_CKPT_FP8_GEMM_IN_ATTN": "0",

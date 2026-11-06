@@ -1,6 +1,6 @@
 """Immutable, independently framed canonical publications for direct GPU apply.
 
-Matrix payloads contain GPU Snappy/LZ4 frames with optional GPU Zstd wrapping.
+Matrix payloads contain GPU Snappy/LZ4/Bitcomp frames with optional GPU Zstd wrapping.
 These publications are not checkpoint patches for the disk-delta loader.
 """
 
@@ -20,7 +20,13 @@ import numpy as np
 import orjson
 
 FRAME_BYTES = 1 << 20
-CODECS = {"snappy-zstd": ("snappy", "zstd"), "lz4-zstd": ("lz4", "zstd"), "lz4": ("lz4", None)}
+CODECS = {
+    "snappy-zstd": ("snappy", "zstd"),
+    "lz4-zstd": ("lz4", "zstd"),
+    "lz4": ("lz4", None),
+    "bitcomp": ("bitcomp", None),
+    "bitcomp-zstd": ("bitcomp", "zstd"),
+}
 DTYPE_BYTES = {
     "BOOL": 1,
     "U8": 1,
@@ -74,9 +80,9 @@ def sha256(data) -> str:
 
 def configured_codec(initial_sync: bool = False) -> str:
     variable = "GPU_DELTA_INITIAL_SYNC_CODEC" if initial_sync else "GPU_DELTA_CODEC"
-    codec = os.environ.get(variable, "lz4-zstd" if initial_sync else "snappy-zstd")
+    codec = os.environ.get(variable, "bitcomp-zstd")
     if codec not in CODECS:
-        raise ValueError(f"Expected {variable}=snappy-zstd, lz4-zstd or lz4")
+        raise ValueError(f"Expected {variable} to be one of {tuple(CODECS)}")
     return codec
 
 
@@ -128,7 +134,7 @@ class PublicationWriter:
         if type(frame_bytes) is not int or not 0 < frame_bytes <= 4 << 20:
             raise ValueError("GPU-delta frame_bytes must be a positive integer at most 4 MiB")
         if codec not in CODECS:
-            raise ValueError("GPU-delta codec must be snappy-zstd, lz4-zstd or lz4")
+            raise ValueError(f"GPU-delta codec must be one of {tuple(CODECS)}")
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
         self.payload_metrics = dict(matrix_hash_write_s=0.0, matrix_inner_arena_bytes=0, matrix_payload_bytes=0)

@@ -5,7 +5,10 @@ Requires nvCOMP 6, zstandard, python-snappy and lz4. CPU decoding here is a
 byte-exact test oracle, never a production fallback.
 """
 
+import ctypes
+import importlib.metadata
 import json
+from functools import cache
 
 import lz4.block
 import numpy as np
@@ -14,6 +17,38 @@ import torch
 import zstandard
 
 from miles.utils.gpu_delta.nvcomp import NvcompCompressor
+
+
+@cache
+def _bitcomp_host_decoder():
+    package = f"nvidia-libnvcomp-cu{torch.version.cuda.split('.')[0]}"
+    distribution = importlib.metadata.distribution(package)
+    library = ctypes.CDLL(str(distribution.locate_file("nvidia/libnvcomp/lib64/libnvcomp.so.6")))
+    pointer = ctypes.c_void_p
+    library.bitcompCreatePlanFromCompressedData.argtypes = [ctypes.POINTER(pointer), pointer]
+    library.bitcompHostUncompress.argtypes = [pointer, pointer, pointer]
+    library.bitcompDestroyPlan.argtypes = [pointer]
+    return library
+
+
+def decode(codec, encoded, decoded_bytes):
+    """Independent CPU byte oracle for the native GPU compressor."""
+    if codec == "lz4":
+        return lz4.block.decompress(encoded, uncompressed_size=decoded_bytes)
+    if codec == "snappy":
+        return snappy.decompress(encoded)
+    if codec == "zstd":
+        return zstandard.ZstdDecompressor().decompress(encoded)
+    assert codec == "bitcomp"
+    library = _bitcomp_host_decoder()
+    source, target = ctypes.create_string_buffer(encoded), ctypes.create_string_buffer(decoded_bytes)
+    handle = ctypes.c_void_p()
+    assert library.bitcompCreatePlanFromCompressedData(ctypes.byref(handle), source) == 0
+    try:
+        assert library.bitcompHostUncompress(handle, source, target) == 0
+        return target.raw
+    finally:
+        assert library.bitcompDestroyPlan(handle) == 0
 
 
 def qualify(codec, device):
@@ -37,12 +72,7 @@ def qualify(codec, device):
         for output, size, expected in zip(batch.outputs, sizes, reference, strict=True):
             assert 0 < size <= output.numel()
             encoded = output[:size].cpu().numpy().tobytes()
-            if codec == "lz4":
-                decoded = lz4.block.decompress(encoded, uncompressed_size=expected.nbytes)
-            elif codec == "snappy":
-                decoded = snappy.decompress(encoded)
-            else:
-                decoded = zstandard.ZstdDecompressor().decompress(encoded)
+            decoded = decode(codec, encoded, expected.nbytes)
             assert decoded == expected.tobytes()
     assert compressor.compress([], stream).outputs == []
     # Warm allocations, then prove submission does not synchronize queued GPU
@@ -65,4 +95,6 @@ def qualify(codec, device):
 if __name__ == "__main__":
     device = torch.device("cuda", 0)
     torch.cuda.set_device(device)
-    print(json.dumps({"status": "PASS", "results": [qualify(c, device) for c in ("zstd", "snappy", "lz4")]}))
+    print(
+        json.dumps({"status": "PASS", "results": [qualify(c, device) for c in ("zstd", "snappy", "lz4", "bitcomp")]})
+    )
