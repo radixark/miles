@@ -303,7 +303,12 @@ class TestSaveHfModelBridgeLoRA:
         publisher.write_adapter.assert_not_called()
         slots.slot_spec.assert_called_once_with(0)
         slots.parametrization.assert_called_once_with(
-            base_model="/hf", lora_rank=rank, lora_alpha=alpha, lora_type="lora", experts_shared_outer_loras=False
+            base_model=args.hf_checkpoint,
+            lora_rank=rank,
+            lora_alpha=alpha,
+            lora_type="lora",
+            experts_shared_outer_loras=False,
+            base_model_fingerprint=None,
         )
         peft_export.assert_called_once_with(
             tmp_path / "adapter", slots, 0, slots.parametrization.return_value, slots.targets, lora_dropout=0.05

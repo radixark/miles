@@ -1,6 +1,11 @@
 """The service preserves request ordering, tenant isolation, and failure isolation."""
 
 import asyncio
+import hashlib
+import json
+import os
+import shutil
+import threading
 from contextlib import suppress
 from pathlib import Path
 
@@ -15,9 +20,16 @@ from tests.fast.tinker.harness import (
     model_payload,
 )
 
+from miles.backends.training_utils.checkpoint.adapter.commit import resolve_adapter_dir
+from miles.backends.training_utils.checkpoint.io import write_checkpoint_dir
 from miles.tinker.core.future import DONE, FAILED
 from miles.tinker.core.types import OwnershipError, UserInputError
-from miles.tinker.core.utils import resolve_checkpoint_dir, resolve_sampler_checkpoint
+from miles.tinker.core.utils import (
+    build_checkpoint_metadata,
+    resolve_checkpoint_dir,
+    resolve_sampler_checkpoint,
+    resolve_sampler_export,
+)
 
 
 def _optim_payload(model_id: str, seq_id: int) -> dict:
@@ -140,10 +152,12 @@ async def test_sampler_save_publishes_successive_versions(service):
         request_id = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": seq_id})
         future = await await_settled(service, "tenant", request_id)
         assert future.result["path"] == f"tinker://{model_id}/sampler_weights/{seq_id}"
-    assert [export["path"] for export in service.backend.named("export_slot")] == [
-        resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "sampler_weights", str(version))
-        for version in (1, 2)
+    root = Path(resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "sampler_weights", "1")).parent
+    assert [(export["root"], export["adapter_name"]) for export in service.backend.named("export_slot")] == [
+        (str(root), "1"),
+        (str(root), "2"),
     ]
+    assert all(resolve_adapter_dir(root, name, tenant="tenant") is not None for name in ("1", "2")), "both committed"
 
 
 async def test_sampling_resolves_against_the_saved_version(service):
@@ -165,7 +179,7 @@ async def test_sampling_resolves_against_the_saved_version(service):
     assert len(sequence_ids) == 2
     future = await await_settled(service, "tenant", request_id)
     assert len(future.result["sequences"]) == 2
-    assert service.backend.named("sample")[0]["lora_name"] == f"{model_id}@1"
+    assert service.backend.named("sample")[0]["lora_name"].startswith(f"{model_id}@1@")
 
 
 @pytest.mark.parametrize("requested,expected", [(8192, 7630), (32, 32), (0, 0)])
@@ -230,8 +244,8 @@ async def test_sampler_requests_carry_the_published_checkpoint_path(service):
     request_id = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
     path = (await await_settled(service, "tenant", request_id)).result["path"]
 
-    disk_dir = resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "sampler_weights", "1")
-    assert service.backend.named("export_slot")[0]["path"] == disk_dir
+    link = Path(resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "sampler_weights", "1"))
+    committed = resolve_adapter_dir(link.parent, "1", tenant="tenant")
 
     sample_id, _ = service.submit_sample(
         "tenant",
@@ -245,7 +259,10 @@ async def test_sampler_requests_carry_the_published_checkpoint_path(service):
         },
     )
     await await_settled(service, "tenant", sample_id)
-    assert service.backend.named("sample")[0]["lora_path"] == disk_dir
+    sample = service.backend.named("sample")[0]
+    # the engine gets the physical commit, under a name no later commit of "1" can reuse
+    assert sample["lora_path"] == str(committed.path)
+    assert sample["lora_name"] == f"{model_id}@1@{committed.commit_id}"
 
 
 async def test_sample_failure_preserves_the_snapshot_and_training_model_queue(service):
@@ -270,8 +287,10 @@ async def test_sample_failure_preserves_the_snapshot_and_training_model_queue(se
     assert future.state == FAILED
     assert future.error == "engine down"
     assert (
-        resolve_sampler_checkpoint(service.config, "tenant", f"tinker://{model_id}/sampler_weights/1")[0]
-        == f"{model_id}@1"
+        resolve_sampler_checkpoint(
+            service.config, "tenant", f"tinker://{model_id}/sampler_weights/1", service.backend.resolve_adapter
+        )[0]
+        == service.backend.named("sample")[0]["lora_name"]
     )
     fb = service.submit("tenant", "forward_backward", fb_payload(model_id, 2, [datum()]))
     assert (await await_settled(service, "tenant", fb)).state == DONE
@@ -526,17 +545,51 @@ async def test_sampler_paths_resolve_independently_of_the_lease(service, expire_
         await service._expire_sessions()
         assert model_id not in service.models
         service.create_session("tenant")
-    lora_name, lora_path = resolve_sampler_checkpoint(service.config, "tenant", path)
-    assert lora_name == f"{model_id}@1" and lora_path.endswith("/sampler_weights/1")
+    lora_name, lora_path = resolve_sampler_checkpoint(service.config, "tenant", path, service.backend.resolve_adapter)
+    # the physical commit behind the name, which an eviction backfill reloads
+    assert lora_name.startswith(f"{model_id}@1@") and "/sampler_weights/.1." in lora_path
     with pytest.raises((UserInputError, OwnershipError)):
-        resolve_sampler_checkpoint(service.config, "thief", path)
+        resolve_sampler_checkpoint(service.config, "thief", path, service.backend.resolve_adapter)
     service.config.experts_shared_outer_loras = not service.config.experts_shared_outer_loras
     with pytest.raises(UserInputError, match="experts_shared_outer_loras"):
-        resolve_sampler_checkpoint(service.config, "tenant", path)
+        resolve_sampler_checkpoint(service.config, "tenant", path, service.backend.resolve_adapter)
     service.config.experts_shared_outer_loras = not service.config.experts_shared_outer_loras
     service.config.base_model = "other"
     with pytest.raises(UserInputError, match="base_model"):
-        resolve_sampler_checkpoint(service.config, "tenant", path)
+        resolve_sampler_checkpoint(service.config, "tenant", path, service.backend.resolve_adapter)
+
+
+async def test_the_sampler_commit_runs_off_the_event_loop(service, monkeypatch):
+    model_id = await created_model(service)
+    commit = service.backend.commit_adapter
+    commit_threads = []
+
+    def recording_commit(root, name, written):
+        commit_threads.append(threading.current_thread())
+        commit(root, name, written)
+
+    monkeypatch.setattr(service.backend, "commit_adapter", recording_commit)
+    save = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
+    assert (await await_settled(service, "tenant", save)).state == DONE
+    assert commit_threads and commit_threads[0] is not threading.current_thread()
+
+
+async def test_a_failed_sampler_commit_fails_only_that_request(service, monkeypatch):
+    model_id = await created_model(service)
+    commit = service.backend.commit_adapter
+
+    def failing_commit(root, name, written):
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr(service.backend, "commit_adapter", failing_commit)
+    failed = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
+    future = await await_settled(service, "tenant", failed)
+    assert (future.state, future.error_category) == (FAILED, "server")
+    assert "No space left on device" in future.error
+
+    monkeypatch.setattr(service.backend, "commit_adapter", commit)
+    retried = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 2})
+    assert (await await_settled(service, "tenant", retried)).state == DONE
 
 
 async def test_an_unnamed_sampler_save_returns_a_sampling_session(service):
@@ -655,7 +708,7 @@ async def test_a_named_sampler_save_uses_the_name_and_rejects_reuse(service):
         },
     )
     await await_settled(service, "tenant", request_id)
-    assert service.backend.named("sample")[0]["lora_name"] == f"{model_id}@v1"
+    assert service.backend.named("sample")[0]["lora_name"].startswith(f"{model_id}@v1@")
 
     reuse = service.submit(
         "tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 2, "sampler_path": "v1"}
@@ -942,3 +995,101 @@ async def test_dispatcher_shutdown_stops_model_creation_and_sampling(tmp_path, m
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def test_a_sampler_dir_written_before_commits_still_resolves(service):
+    model_id = await created_model(service)
+    record = service.models[model_id]
+    legacy = resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "sampler_weights", "old")
+    write_checkpoint_dir(legacy, lambda _: None, metadata=build_checkpoint_metadata(record, service.config))
+    assert resolve_sampler_checkpoint(
+        service.config, "tenant", f"tinker://{model_id}/sampler_weights/old", service.backend.resolve_adapter
+    ) == (
+        f"{model_id}@old",
+        legacy,
+    )
+
+
+async def test_a_sampler_name_resolves_to_a_commit_a_dir_before_commits_or_nothing(service):
+    """weights_info and engine reloads share one resolution: a link whose target is gone is an unknown checkpoint."""
+    model_id = await created_model(service)
+    save = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
+    path = (await await_settled(service, "tenant", save)).result["path"]
+    link = resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "sampler_weights", "1")
+    assert resolve_sampler_export(link, "tenant", model_id, path, service.backend.resolve_adapter) is not None
+    legacy = resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "sampler_weights", "old")
+    os.makedirs(legacy)
+    assert resolve_sampler_export(legacy, "tenant", model_id, path, service.backend.resolve_adapter) is None
+
+    shutil.rmtree(resolve_adapter_dir(Path(link).parent, "1", tenant=None).path)
+    with pytest.raises(UserInputError, match="unknown checkpoint"):
+        service.weights_info("tenant", path)
+    with pytest.raises(UserInputError, match="unknown checkpoint"):
+        resolve_sampler_checkpoint(service.config, "tenant", path, service.backend.resolve_adapter)
+
+
+@pytest.mark.parametrize("filename", ["tenant.json", "adapter_parametrization.json"])
+async def test_a_truncated_sampler_commit_file_is_a_user_error(service, filename):
+    model_id = await created_model(service)
+    save = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
+    path = (await await_settled(service, "tenant", save)).result["path"]
+    root = Path(resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "sampler_weights", "1")).parent
+    commit_file = resolve_adapter_dir(root, "1", tenant=None).path / filename
+    commit_file.write_text(commit_file.read_text()[:-1])
+    with pytest.raises(UserInputError, match="cannot read adapter"):
+        service.weights_info("tenant", path)
+    with pytest.raises(UserInputError, match="cannot read adapter"):
+        resolve_sampler_checkpoint(service.config, "tenant", path, service.backend.resolve_adapter)
+
+
+@pytest.mark.parametrize(
+    "filename, content", [("tenant.json", "{}"), ("tenant.json", "[]"), ("adapter_parametrization.json", "{}")]
+)
+async def test_a_sampler_commit_file_of_the_wrong_schema_is_a_user_error(service, filename, content):
+    model_id = await created_model(service)
+    save = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
+    path = (await await_settled(service, "tenant", save)).result["path"]
+    root = Path(resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "sampler_weights", "1")).parent
+    (resolve_adapter_dir(root, "1", tenant=None).path / filename).write_text(content)
+    with pytest.raises(UserInputError, match="cannot read adapter"):
+        service.weights_info("tenant", path)
+    with pytest.raises(UserInputError, match="cannot read adapter"):
+        resolve_sampler_checkpoint(service.config, "tenant", path, service.backend.resolve_adapter)
+
+
+async def test_another_tenants_sampler_export_does_not_resolve(service):
+    model_id = await created_model(service)
+    save = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
+    path = (await await_settled(service, "tenant", save)).result["path"]
+    with pytest.raises(OwnershipError):
+        resolve_sampler_checkpoint(service.config, "mallory", path, service.backend.resolve_adapter)
+    info = service.weights_info("tenant", path)
+    assert (info["base_model"], info["lora_rank"]) == (
+        service.models[model_id].base_model,
+        service.models[model_id].lora_rank,
+    )
+
+
+async def test_trainer_ranks_get_only_the_tenant_digest(service):
+    model_id = await created_model(service)
+    save = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
+    assert (await await_settled(service, "tenant", save)).state == DONE
+    (export,) = service.backend.named("export_slot")
+    assert export["tenant_digest"] == hashlib.sha256(b"tenant").hexdigest()
+
+
+async def test_weights_info_reports_a_sampler_exports_own_groups_not_the_gateways(service):
+    model_id = await created_model(service)
+    save = service.submit("tenant", "save_weights_for_sampler", {"model_id": model_id, "seq_id": 1})
+    path = (await await_settled(service, "tenant", save)).result["path"]
+    root = Path(resolve_checkpoint_dir(service.config.checkpoint_root, model_id, "sampler_weights", "1")).parent
+    # an mlp-only export, as another gateway would have written it
+    parametrization = resolve_adapter_dir(root, "1", tenant=None).path / "adapter_parametrization.json"
+    fields = json.loads(parametrization.read_text())
+    fields["target_modules"] = ["model.layers.0.mlp.gate_proj"]
+    parametrization.write_text(json.dumps(fields))
+    assert service.config.trains_attn
+
+    info = service.weights_info("tenant", path)
+
+    assert (info["train_attn"], info["train_mlp"], info["train_unembed"]) == (False, True, False)

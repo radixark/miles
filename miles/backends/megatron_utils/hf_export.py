@@ -83,6 +83,8 @@ def save_hf_model(
                 lora_alpha=args.lora_alpha if spec is None else spec.alpha,
                 lora_type=args.lora_type,
                 experts_shared_outer_loras=args.experts_shared_outer_loras,
+                # a PEFT export records no parametrization; a sampler view's is matched to its base by path
+                base_model_fingerprint=None,
             )
             # a fused module whose components have their own A has no PEFT name; sglang's names, as main wrote, do
             write = (

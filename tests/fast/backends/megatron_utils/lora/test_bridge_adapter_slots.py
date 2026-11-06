@@ -1,3 +1,6 @@
+import inspect
+from types import SimpleNamespace
+
 import pytest
 import torch
 import torch.distributed as dist
@@ -9,6 +12,7 @@ from miles.backends.megatron_utils.lora.bridge_adapter_slots import (
     _HfPiece,
     probe_bridge_row_mapping,
 )
+from miles.tinker.core.utils import build_parametrization_fields
 from miles.utils.distributed_utils import init_gloo_group
 from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
 
@@ -256,3 +260,15 @@ def _trim_a_tp_split_rank(rank, world_size, port):
 
 def test_a_multi_lora_slot_keeps_only_its_real_rank_of_a_tp_split_rank_axis():
     run_multiprocess(_trim_a_tp_split_rank)
+
+
+def test_the_gateways_parametrization_fields_are_the_slots_keyword_arguments():
+    """The stdlib gateway builds these fields; the trainer spreads them into the slots across Ray."""
+    record = SimpleNamespace(base_model="m", lora_rank=8, lora_alpha=16.0)
+    config = SimpleNamespace(lora_type="lora", experts_shared_outer_loras=False, base_model_fingerprint="f")
+    keyword_only = {
+        name
+        for name, parameter in inspect.signature(BridgeAdapterSlots.parametrization).parameters.items()
+        if parameter.kind is inspect.Parameter.KEYWORD_ONLY
+    }
+    assert set(build_parametrization_fields(record, config)) == keyword_only

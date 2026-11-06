@@ -154,5 +154,7 @@ def write_sampler_adapter(
             for hf_fragment, sglang_fragment in SAMPLER_EXPERT_NAMES_BY_HF.items():
                 name = name.replace(hf_fragment, sglang_fragment)
         tensors[name] = value.to(torch.bfloat16).contiguous()
-    save_adapter_to_disk(directory, _adapter_config(parametrization, tensors, lora_dropout), tensors)
+    # target_modules name the HF modules the adapter applies to, not sglang's tensor names for them
+    hf_names = [map_hf_keys_to_peft_keys(key) for key in expanded]
+    save_adapter_to_disk(directory, _adapter_config(parametrization, hf_names, lora_dropout), tensors)
     write_parametrization(Path(directory), parametrization)

@@ -32,10 +32,13 @@ from miles.tinker.core.types import (
 )
 from miles.tinker.core.utils import (
     build_checkpoint_metadata,
+    build_parametrization_fields,
     parse_tinker_path,
     read_checkpoint_metadata,
     resolve_checkpoint_dir,
     resolve_sampler_checkpoint,
+    resolve_sampler_export,
+    tenant_digest,
 )
 
 logger = logging.getLogger(__name__)
@@ -386,17 +389,23 @@ class TinkerService:
         else:
             validate_checkpoint_segment(version)
         path = resolve_checkpoint_dir(self.config.checkpoint_root, record.model_id, "sampler_weights", version)
-        if os.path.exists(path):
+        if os.path.lexists(path):
             raise UserInputError(f"sampler weights {version!r} already exist; save under a new name")
-        failure = await self.backend.export_slot(
-            record.slot,
-            record.lora_rank,
-            record.lora_alpha,
-            path,
-            metadata=build_checkpoint_metadata(record, self.config),
+        root = os.path.dirname(path)
+        # the tenant's key stays on the gateway; the trainer ranks see only its digest
+        written = await self.backend.export_slot(
+            slot=record.slot,
+            root=root,
+            name=version,
+            tenant_digest=tenant_digest(record.tenant),
+            parametrization_fields=build_parametrization_fields(record, self.config),
         )
-        if failure is not None:
-            return failure
+        # the commit's recovery walk and fsyncs hit shared storage; keep the event loop serving
+        try:
+            await asyncio.to_thread(self.backend.commit_adapter, root, version, written)
+        except OSError as error:
+            # a storage failure loses only this export; the trainer and other tenants are unaffected
+            return {"error": f"cannot commit sampler weights {version!r}: {error}", "error_category": "server"}
         result = {
             "op": "save_weights_for_sampler",
             "path": f"tinker://{record.model_id}/sampler_weights/{version}",
@@ -411,9 +420,22 @@ class TinkerService:
     def weights_info(self, tenant: str, tinker_path: str) -> dict:
         """What the SDK needs to rebuild a training client from a checkpoint."""
         model_id, kind, name = parse_tinker_path(tinker_path)
-        meta = read_checkpoint_metadata(
-            resolve_checkpoint_dir(self.config.checkpoint_root, model_id, kind, name), tenant, tinker_path
-        )
+        checkpoint_dir = resolve_checkpoint_dir(self.config.checkpoint_root, model_id, kind, name)
+        committed = None
+        if kind == "sampler_weights":
+            committed = resolve_sampler_export(
+                checkpoint_dir, tenant, model_id, tinker_path, self.backend.resolve_adapter
+            )
+        if committed is not None:
+            parametrization = committed["parametrization"]
+            # an export records targets, not group flags; another gateway may have written it
+            return {
+                "base_model": parametrization["base_model"],
+                "is_lora": True,
+                "lora_rank": parametrization["lora_rank"],
+                **self.backend.lora_groups(parametrization["target_modules"]),
+            }
+        meta = read_checkpoint_metadata(checkpoint_dir, tenant, tinker_path)
         return {
             "base_model": meta["base_model"],
             "is_lora": True,
@@ -437,7 +459,7 @@ class TinkerService:
 
     def _new_sampling_session(self, tenant: str, session_id: str, model_path: str | None) -> str:
         if model_path is not None:
-            resolve_sampler_checkpoint(self.config, tenant, model_path)
+            resolve_sampler_checkpoint(self.config, tenant, model_path, self.backend.resolve_adapter)
         sampling_session_id = f"sampling-{uuid.uuid4().hex}"
         self.sampling_sessions[sampling_session_id] = SamplingSessionRecord(
             tenant=tenant, model_path=model_path, session_id=session_id
@@ -490,7 +512,9 @@ class TinkerService:
             }
         }
         lora_name, lora_path = (
-            resolve_sampler_checkpoint(self.config, tenant, model_path) if model_path else (None, None)
+            resolve_sampler_checkpoint(self.config, tenant, model_path, self.backend.resolve_adapter)
+            if model_path
+            else (None, None)
         )
         future = self.futures.create(model_path or "base", tenant)
         sequence_ids = [f"seq-{uuid.uuid4().hex}" for _ in range(payload.get("num_samples", 1))]

@@ -8,7 +8,7 @@ import torch
 import transformers
 from safetensors.torch import load_file, save_file
 
-from miles.backends.training_utils.checkpoint.adapter.adapter_dir import write_peft_export
+from miles.backends.training_utils.checkpoint.adapter.adapter_dir import save_sampler_export, write_peft_export
 from miles.backends.training_utils.checkpoint.adapter.adapter_exports import (
     has_plain_peft_form,
     write_peft_adapter,
@@ -148,6 +148,16 @@ def test_sampler_export_reads_back_through_the_adapter_dir_reader(tmp_path):
     reader = MilesAdapterDirReader(tmp_path, QWEN35)
     assert not reader.source.has_optimizer_state
     assert all(torch.equal(reader.read_weights()[k], v) for k, v in weights.items())
+
+
+def test_sampler_export_target_modules_name_hf_modules_not_sglang_tensors(tmp_path):
+    write_sampler_adapter(
+        tmp_path, {k: v.to(torch.bfloat16) for k, v in _weights(False).items()}, _run(), QWEN35, lora_dropout=0.0
+    )
+    names = set(load_file(str(tmp_path / "adapter_model.safetensors")))
+    assert any(".experts.w1." in n for n in names) and not any(".experts.gate_proj." in n for n in names)
+    config = json.loads((tmp_path / "adapter_config.json").read_text())
+    assert config["target_modules"] == sorted((*QKV, *EXPERTS))
 
 
 def test_splitting_a_shared_a_is_weights_only():
@@ -359,6 +369,126 @@ def test_a_sampler_export_reads_back_when_the_group_starts_at_a_later_gdn_compon
     assert read.keys() == weights.keys() and all(torch.equal(read[k], v) for k, v in weights.items())
 
 
+def test_gpt_oss_gate_and_up_with_their_own_a_have_no_plain_peft_form():
+    # HF gpt-oss has one packed experts.gate_up_proj; canonical gate / up with their own A have no module there
+    gate, up, down = (f"{L}.mlp.experts.{p}" for p in ("gate_proj", "up_proj", "down_proj"))
+    assert not has_plain_peft_form(_run(target_modules=(gate, up, down)), GPT_OSS)
+    assert has_plain_peft_form(_run(target_modules=(gate, up, down), shared_lora_a_groups=((gate, up),)), GPT_OSS)
+
+
+def test_gpt_oss_sampler_export_keeps_packed_hf_names(tmp_path):
+    gate, up, down = (f"{L}.mlp.experts.{p}" for p in ("gate_proj", "up_proj", "down_proj"))
+    run = _run(target_modules=(gate, up, down), shared_lora_a_groups=((gate, up),))
+    weights = (
+        {f"{gate}.lora_A": torch.ones(3, 2, 8)}
+        | {f"{m}.lora_B": torch.ones(3, 8, 2) for m in (gate, up, down)}
+        | {f"{down}.lora_A": torch.ones(3, 2, 8)}
+    )
+    write_sampler_adapter(tmp_path, weights, run, GPT_OSS, lora_dropout=0.0)
+    names = set(load_file(str(tmp_path / "adapter_model.safetensors")))
+    assert names == {f"{L}.mlp.experts.{p}.lora_{f}.weight" for p in ("gate_up_proj", "down_proj") for f in "AB"}
+
+
+def test_gpt_oss_down_proj_alone_stays_one_packed_3d_tensor(tmp_path):
+    """HF gpt-oss has no per-expert down_proj; adapting only it must not split it into experts.N.down_proj."""
+    down = f"{L}.mlp.experts.down_proj"
+    weights = {f"{down}.lora_A": torch.ones(3, 2, 4), f"{down}.lora_B": torch.ones(3, 8, 2)}
+    write_peft_adapter(tmp_path / "peft", weights, _run(target_modules=(down,)), GPT_OSS, lora_dropout=0.0)
+    write_sampler_adapter(tmp_path / "sampler", weights, _run(target_modules=(down,)), GPT_OSS, lora_dropout=0.0)
+    for export, prefix in (("peft", "base_model.model."), ("sampler", "")):
+        tensors = load_file(str(tmp_path / export / "adapter_model.safetensors"))
+        assert set(tensors) == {f"{prefix}{down}.lora_A.weight", f"{prefix}{down}.lora_B.weight"}, export
+        assert tensors[f"{prefix}{down}.lora_A.weight"].shape == (3, 2, 4)
+
+
+class _StackedDownExport:
+    """Bridge's export of a packed checkpoint: experts.down_proj comes as one 3D tensor, not one per expert."""
+
+    bf16_adapter_key_style = "peft"
+
+    def __init__(self):
+        self.a, self.b = torch.randn(3, 2, 4), torch.randn(3, 4, 2)
+
+    def export_bf16_adapter(self, slot):
+        down = f"{L}.mlp.experts.down_proj"
+        yield f"{down}.lora_A.weight", self.a.clone()
+        yield f"{down}.lora_B.weight", self.b.clone()
+
+
+def test_an_expert_module_the_export_stacks_stays_stacked(tmp_path):
+    """The written form follows Bridge's export, not the model family: a packed base has no per-expert names."""
+    down = f"{L}.mlp.experts.down_proj"
+    export = _StackedDownExport()
+    write_peft_export(tmp_path, export, 0, _run(target_modules=(down,)), QWEN3, lora_dropout=0.0)
+
+    written = load_file(str(tmp_path / "adapter_model.safetensors"))
+    assert set(written) == {f"base_model.model.{down}.lora_A.weight", f"base_model.model.{down}.lora_B.weight"}
+    assert torch.equal(written[f"base_model.model.{down}.lora_B.weight"], export.b.to(torch.bfloat16))
+
+
+class _PerExpertDownExport:
+    """Bridge's per-expert export: one 2D tensor per expert."""
+
+    bf16_adapter_key_style = "peft"
+
+    def __init__(self):
+        self.a, self.b = torch.randn(3, 2, 4), torch.randn(3, 4, 2)
+
+    def export_bf16_adapter(self, slot):
+        for e in range(3):
+            yield f"{L}.mlp.experts.{e}.down_proj.lora_A.weight", self.a[e].clone()
+            yield f"{L}.mlp.experts.{e}.down_proj.lora_B.weight", self.b[e].clone()
+
+
+def test_a_sampler_export_is_written_uncommitted_with_its_tenant_and_parametrization(tmp_path):
+    down = f"{L}.mlp.experts.down_proj"
+    run = _run(target_modules=(down,))
+    export = _PerExpertDownExport()
+
+    written = save_sampler_export(tmp_path, "v1", export, 0, run, QWEN3, tenant_digest="digest", lora_dropout=0.0)
+
+    assert written.path.parent == tmp_path and not (tmp_path / "v1").exists(), "the committer links it"
+    tensors = load_file(str(written.path / "adapter_model.safetensors"))
+    # sglang's stacked expert names, every expert in one 3D tensor
+    assert set(tensors) == {f"{L}.mlp.experts.w2.lora_A.weight", f"{L}.mlp.experts.w2.lora_B.weight"}
+    assert torch.equal(tensors[f"{L}.mlp.experts.w2.lora_B.weight"], export.b.to(torch.bfloat16))
+    assert json.loads((written.path / "tenant.json").read_text()) == {"tenant_digest": "digest"}
+    assert MilesAdapterDirReader(written.path, QWEN3).source.parametrization == run
+
+
+class _BridgeSharedOuterExport:
+    """Bridge's shared-outer export (peft_bridge.py, expand_shared_outer=False): one unindexed ``[1, r, in]`` A for
+    every expert, and a 2D B per expert."""
+
+    bf16_adapter_key_style = "peft"
+
+    def __init__(self, num_experts):
+        self.a = torch.randn(1, 2, 4)
+        self.b = [torch.randn(8, 2) for _ in range(num_experts)]
+
+    def export_bf16_adapter(self, slot):
+        gate = f"{L}.mlp.experts.gate_proj"
+        yield f"{gate}.lora_A.weight", self.a.clone()
+        for expert, b in enumerate(self.b):
+            yield f"{L}.mlp.experts.{expert}.gate_proj.lora_B.weight", b.clone()
+
+
+def test_a_bridge_shared_outer_side_is_written_per_expert_like_its_pair(tmp_path):
+    """A shared [1, ...] side is not a packed checkpoint's stacked tensor: HF PEFT needs it under every expert."""
+    gate = f"{L}.mlp.experts.gate_proj"
+    export = _BridgeSharedOuterExport(num_experts=3)
+    write_peft_export(
+        tmp_path, export, 0, _run(target_modules=(gate,), experts_shared_outer_loras=True), QWEN3, lora_dropout=0.0
+    )
+
+    written = load_file(str(tmp_path / "adapter_model.safetensors"))
+    expert = f"base_model.model.{L}.mlp.experts.{{}}.gate_proj"
+    assert set(written) == {f"{expert.format(e)}.lora_{f}.weight" for e in range(3) for f in "AB"}
+    for e in range(3):
+        assert torch.equal(written[f"{expert.format(e)}.lora_A.weight"], export.a[0].to(torch.bfloat16))
+        assert torch.equal(written[f"{expert.format(e)}.lora_B.weight"], export.b[e].to(torch.bfloat16))
+
+
 _GLM5 = get_hf_lora_targets(
     {"model_type": "glm_moe_dsa", "mlp_layer_types": ["sparse"], "n_shared_experts": 0, "q_lora_rank": 4}
 )
@@ -528,93 +658,3 @@ def test_one_local_base_under_another_path_string_matches(tmp_path):
     (tmp_path / "link").symlink_to(tmp_path / "model")
     source, run = _run(base_model=f"{tmp_path}/model/"), _run(base_model=str(tmp_path / "link"))
     assert_parametrization_matches_run(source, run, [], load_optimizer=False, has_optimizer_state=False)
-
-
-def test_gpt_oss_gate_and_up_with_their_own_a_have_no_plain_peft_form():
-    # HF gpt-oss has one packed experts.gate_up_proj; canonical gate / up with their own A have no module there
-    gate, up, down = (f"{L}.mlp.experts.{p}" for p in ("gate_proj", "up_proj", "down_proj"))
-    assert not has_plain_peft_form(_run(target_modules=(gate, up, down)), GPT_OSS)
-    assert has_plain_peft_form(_run(target_modules=(gate, up, down), shared_lora_a_groups=((gate, up),)), GPT_OSS)
-
-
-def test_gpt_oss_sampler_export_keeps_packed_hf_names(tmp_path):
-    gate, up, down = (f"{L}.mlp.experts.{p}" for p in ("gate_proj", "up_proj", "down_proj"))
-    run = _run(target_modules=(gate, up, down), shared_lora_a_groups=((gate, up),))
-    weights = (
-        {f"{gate}.lora_A": torch.ones(3, 2, 8)}
-        | {f"{m}.lora_B": torch.ones(3, 8, 2) for m in (gate, up, down)}
-        | {f"{down}.lora_A": torch.ones(3, 2, 8)}
-    )
-    write_sampler_adapter(tmp_path, weights, run, GPT_OSS, lora_dropout=0.0)
-    names = set(load_file(str(tmp_path / "adapter_model.safetensors")))
-    assert names == {f"{L}.mlp.experts.{p}.lora_{f}.weight" for p in ("gate_up_proj", "down_proj") for f in "AB"}
-
-
-def test_gpt_oss_down_proj_alone_stays_one_packed_3d_tensor(tmp_path):
-    """HF gpt-oss has no per-expert down_proj; adapting only it must not split it into experts.N.down_proj."""
-    down = f"{L}.mlp.experts.down_proj"
-    weights = {f"{down}.lora_A": torch.ones(3, 2, 4), f"{down}.lora_B": torch.ones(3, 8, 2)}
-    write_peft_adapter(tmp_path / "peft", weights, _run(target_modules=(down,)), GPT_OSS, lora_dropout=0.0)
-    write_sampler_adapter(tmp_path / "sampler", weights, _run(target_modules=(down,)), GPT_OSS, lora_dropout=0.0)
-    for export, prefix in (("peft", "base_model.model."), ("sampler", "")):
-        tensors = load_file(str(tmp_path / export / "adapter_model.safetensors"))
-        assert set(tensors) == {f"{prefix}{down}.lora_A.weight", f"{prefix}{down}.lora_B.weight"}, export
-        assert tensors[f"{prefix}{down}.lora_A.weight"].shape == (3, 2, 4)
-
-
-class _StackedDownExport:
-    """Bridge's export of a packed checkpoint: experts.down_proj comes as one 3D tensor, not one per expert."""
-
-    bf16_adapter_key_style = "peft"
-
-    def __init__(self):
-        self.a, self.b = torch.randn(3, 2, 4), torch.randn(3, 4, 2)
-
-    def export_bf16_adapter(self, slot):
-        down = f"{L}.mlp.experts.down_proj"
-        yield f"{down}.lora_A.weight", self.a.clone()
-        yield f"{down}.lora_B.weight", self.b.clone()
-
-
-def test_an_expert_module_the_export_stacks_stays_stacked(tmp_path):
-    """The written form follows Bridge's export, not the model family: a packed base has no per-expert names."""
-    down = f"{L}.mlp.experts.down_proj"
-    export = _StackedDownExport()
-    write_peft_export(tmp_path, export, 0, _run(target_modules=(down,)), QWEN3, lora_dropout=0.0)
-
-    written = load_file(str(tmp_path / "adapter_model.safetensors"))
-    assert set(written) == {f"base_model.model.{down}.lora_A.weight", f"base_model.model.{down}.lora_B.weight"}
-    assert torch.equal(written[f"base_model.model.{down}.lora_B.weight"], export.b.to(torch.bfloat16))
-
-
-class _BridgeSharedOuterExport:
-    """Bridge's shared-outer export (peft_bridge.py, expand_shared_outer=False): one unindexed ``[1, r, in]`` A for
-    every expert, and a 2D B per expert."""
-
-    bf16_adapter_key_style = "peft"
-
-    def __init__(self, num_experts):
-        self.a = torch.randn(1, 2, 4)
-        self.b = [torch.randn(8, 2) for _ in range(num_experts)]
-
-    def export_bf16_adapter(self, slot):
-        gate = f"{L}.mlp.experts.gate_proj"
-        yield f"{gate}.lora_A.weight", self.a.clone()
-        for expert, b in enumerate(self.b):
-            yield f"{L}.mlp.experts.{expert}.gate_proj.lora_B.weight", b.clone()
-
-
-def test_a_bridge_shared_outer_side_is_written_per_expert_like_its_pair(tmp_path):
-    """A shared [1, ...] side is not a packed checkpoint's stacked tensor: HF PEFT needs it under every expert."""
-    gate = f"{L}.mlp.experts.gate_proj"
-    export = _BridgeSharedOuterExport(num_experts=3)
-    write_peft_export(
-        tmp_path, export, 0, _run(target_modules=(gate,), experts_shared_outer_loras=True), QWEN3, lora_dropout=0.0
-    )
-
-    written = load_file(str(tmp_path / "adapter_model.safetensors"))
-    expert = f"base_model.model.{L}.mlp.experts.{{}}.gate_proj"
-    assert set(written) == {f"{expert.format(e)}.lora_{f}.weight" for e in range(3) for f in "AB"}
-    for e in range(3):
-        assert torch.equal(written[f"{expert.format(e)}.lora_A.weight"], export.a[0].to(torch.bfloat16))
-        assert torch.equal(written[f"{expert.format(e)}.lora_B.weight"], export.b[e].to(torch.bfloat16))

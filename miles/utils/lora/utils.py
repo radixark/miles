@@ -27,6 +27,11 @@ def exports_hf_snapshots(args: Namespace) -> bool:
     return args.save_hf is not None or (args.eval_uses_snapshots and args.eval_hf_dir is not None)
 
 
+def reads_adapter_slots(args: Namespace) -> bool:
+    """Something reads the adapter slots: HF exports, and multi-LoRA's sampler exports."""
+    return exports_hf_snapshots(args) or is_multi_lora_enabled(args)
+
+
 def publishes_snapshots(args: Namespace, save: str | None) -> bool:
     """The trainer publishes HF snapshots: HF exports and a Bridge LoRA --save (``save``, which the trainer config
     holds under ``backend``)."""
