@@ -96,7 +96,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         if turn == max_tool_turns:
             messages.append({"role": "user", "content": prompts.SQL_LIMIT_PROMPT})
         observation_ids = _observation_ids(tokenizer, messages, last_token_id=sample.tokens[-1])
-        if args.rollout_max_context_len and len(sample.tokens) + len(observation_ids) >= args.rollout_max_context_len:
+        if args.max_seq_len and len(sample.tokens) + len(observation_ids) >= args.max_seq_len:
             sample.status = Sample.Status.TRUNCATED
             break
         append_observation_tokens(sample, observation_ids, tokenizer=tokenizer)

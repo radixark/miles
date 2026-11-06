@@ -148,7 +148,7 @@ def train(args: ScriptArgs):
         f"--n-samples-per-prompt {args.n_samples_per_prompt} "
         f"--global-batch-size {args.rollout_batch_size * args.n_samples_per_prompt} "
         f"--rollout-max-response-len {args.max_tokens_per_turn} "
-        f"--rollout-max-context-len {args.max_context_len} "
+        f"--max-seq-len {args.max_context_len} "
         "--rollout-temperature 1.0 "
     )
 
