@@ -403,7 +403,7 @@ class TestTrainOneStepModelCompanion:
         )
         monkeypatch.setattr(model_module.SampleIdentityExtractor, "gather_sample_identities", reject_witness_work)
 
-        _, _, outcome = model_module.train_one_step(
+        _, _, outcome, _ = model_module.train_one_step(
             args=train_one_step_env.args,
             rollout_id=7,
             step_id=3,
@@ -438,7 +438,7 @@ class TestTrainOneStepModelCompanion:
 
         monkeypatch.setattr(model_module, "get_forward_backward_func", lambda: forward_backward_engine)
 
-        _, _, outcome = model_module.train_one_step(
+        _, _, outcome, stepped = model_module.train_one_step(
             args=train_one_step_env.args,
             rollout_id=7,
             step_id=3,
@@ -453,11 +453,11 @@ class TestTrainOneStepModelCompanion:
         )
 
         assert outcome is model_module.TrainStepOutcome.NORMAL
+        assert stepped
         assert train_one_step_env.model[0].model_companion.snapshot_sample_consumptions(is_skipped=False) == {
             model_module.SampleLineage(source_sample_index=7, output_index=0, output_count=1): 1
         }
         assert train_one_step_env.model[0].model_companion.snapshot_sample_consumptions(is_skipped=True) == {}
-        assert train_one_step_env.model[0].model_companion.weight_version.item() == 1
 
     def test_nonfinite_step_records_consumed_rows_as_skipped(
         self, train_one_step_env: TrainOneStepEnv, monkeypatch: pytest.MonkeyPatch
@@ -478,7 +478,7 @@ class TestTrainOneStepModelCompanion:
 
         monkeypatch.setattr(model_module, "get_forward_backward_func", lambda: forward_backward_engine)
 
-        _, _, outcome = model_module.train_one_step(
+        _, _, outcome, stepped = model_module.train_one_step(
             args=train_one_step_env.args,
             rollout_id=7,
             step_id=3,
@@ -492,7 +492,7 @@ class TestTrainOneStepModelCompanion:
             attempt=2,
         )
 
-        assert train_one_step_env.model[0].model_companion.weight_version.item() == 0
+        assert not stepped
         assert outcome is model_module.TrainStepOutcome.NORMAL
         assert train_one_step_env.model[0].model_companion.snapshot_sample_consumptions(is_skipped=False) == {}
         assert train_one_step_env.model[0].model_companion.snapshot_sample_consumptions(is_skipped=True) == {
@@ -524,7 +524,7 @@ class TestTrainOneStepModelCompanion:
         monkeypatch.setattr(model_module, "get_forward_backward_func", lambda: forward_backward_engine)
         monkeypatch.setattr(model_module, "allreduce_grads_and_losses_across_replicas", discard_attempt)
 
-        _, _, outcome = model_module.train_one_step(
+        _, _, outcome, _ = model_module.train_one_step(
             args=train_one_step_env.args,
             rollout_id=7,
             step_id=0,
@@ -570,7 +570,7 @@ def test_ft_discard_stays_invalid_with_finite_gradient_norm(
         model_module, "allreduce_grads_and_losses_across_replicas", lambda *args, **kwargs: (False, {})
     )
 
-    _, _, outcome = model_module.train_one_step(
+    _, _, outcome, _ = model_module.train_one_step(
         args=env.args,
         rollout_id=7,
         step_id=0,
@@ -585,3 +585,43 @@ def test_ft_discard_stays_invalid_with_finite_gradient_norm(
     )
 
     assert outcome is model_module.TrainStepOutcome.DISCARDED_SHOULD_RETRY
+
+
+@pytest.mark.parametrize(
+    ("stepped_per_step", "expected_version"),
+    [([True, True, True], 1), ([False, True], 1), ([False, False], 0)],
+)
+def test_a_rollout_bumps_the_weight_version_once_however_many_optimizer_steps_it_takes(
+    train_one_step_env: TrainOneStepEnv,
+    monkeypatch: pytest.MonkeyPatch,
+    stepped_per_step: list[bool],
+    expected_version: int,
+) -> None:
+    """A weight-version gap counts trained rollouts, so --max-weight-staleness does not depend on steps per rollout."""
+    from miles.backends.megatron_utils import model as model_module
+
+    env = train_one_step_env
+    env.args = with_backend_values(env.args, manual_gc=False, use_distributed_optimizer=False)
+    steps = iter(stepped_per_step)
+    monkeypatch.setattr(
+        model_module,
+        "train_one_step",
+        lambda *args, **kwargs: ({}, 0.0, model_module.TrainStepOutcome.NORMAL, next(steps)),
+    )
+    monkeypatch.setattr(model_module, "setup_train_iteration_config", lambda *args: SimpleNamespace())
+    monkeypatch.setattr(model_module, "is_first_replica_megatron_main_rank", lambda: False)
+
+    model_module.train(
+        args=env.args,
+        rollout_id=7,
+        model=env.model,
+        optimizer=None,
+        opt_param_scheduler=None,
+        data_iterator=env.data_iterator,
+        num_microbatches=[1] * len(stepped_per_step),
+        num_rollouts=[1] * len(stepped_per_step),
+        witness_info=None,
+        attempt=0,
+    )
+
+    assert env.model[0].model_companion.weight_version.item() == expected_version

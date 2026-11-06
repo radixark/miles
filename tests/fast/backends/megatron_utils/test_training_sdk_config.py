@@ -209,7 +209,7 @@ class TestBackendTrainingDimensions:
         )
         model_sdk.pipeline_outputs = [{"keys": ["loss"], "values": torch.tensor([8.0, 16.0])}]
 
-        metrics, _, outcome = model_sdk.module.train_one_step(
+        metrics, _, outcome, _ = model_sdk.module.train_one_step(
             args=args,
             rollout_id=0,
             step_id=0,
@@ -263,7 +263,7 @@ class TestBackendTrainingValidation:
         optimizer = Mock(prepare_grads=Mock(return_value=True), step=Mock(return_value=(True, 1.0, 0)))
         scheduler = Mock()
 
-        _, _, outcome = model_sdk.module.train_one_step(
+        _, _, outcome, _ = model_sdk.module.train_one_step(
             args=args,
             rollout_id=0,
             step_id=0,
