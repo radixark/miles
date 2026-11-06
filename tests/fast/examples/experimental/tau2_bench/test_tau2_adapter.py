@@ -8,6 +8,7 @@ installed, and the simulation itself is replaced per test.
 
 import asyncio
 import importlib.util
+import json
 import sys
 from types import ModuleType, SimpleNamespace
 
@@ -86,17 +87,35 @@ class TestRun:
             "tau2_num_messages": 12,
         }
 
+    def test_tau2_rejecting_an_empty_reply_is_a_scored_zero(self, monkeypatch):
+        """The policy's thinking spent the whole turn: the policy's outcome, not a failure of the harness."""
+        module = _load_example(monkeypatch, "tau2_agent_function.py")
+
+        def simulate(*args):
+            raise ValueError("AssistantMessage must have either content or tool_calls. Got AssistantMessage\n...")
+
+        result = _run(monkeypatch, module, simulate)
+
+        assert result == {
+            "reward": 0.0,
+            "tau2_domain": "retail",
+            "tau2_task_id": "7",
+            "tau2_episode_valid": True,
+            "tau2_termination_reason": "empty_reply",
+        }
+
     @pytest.mark.parametrize(
         "exc",
         [
             _EndpointError(400),  # the judge's model is not served, or the engine refuses the prompt length
             _EndpointError(502),  # the engine behind the session
-            ValueError("AssistantMessage must have either content or tool_calls"),  # tau2 rejecting an empty reply
+            ValueError("Simulation is done"),  # another tau2 ValueError
+            json.JSONDecodeError("AssistantMessage must have either content or tool_calls", "", 0),  # a subclass
             RuntimeError("The agent process exited with code 1"),
         ],
-        ids=["endpoint_400", "policy_502", "tau2_value_error", "agent_process"],
+        ids=["endpoint_400", "policy_502", "other_value_error", "value_error_subclass", "agent_process"],
     )
-    def test_anything_raised_invalidates_the_episode(self, monkeypatch, exc):
+    def test_anything_else_raised_invalidates_the_episode(self, monkeypatch, exc):
         module = _load_example(monkeypatch, "tau2_agent_function.py")
 
         def simulate(*args):
@@ -163,6 +182,12 @@ class TestGenerate:
                 {"tau2_episode_valid": True, "tau2_termination_reason": "episode_timeout"},
                 Sample.Status.COMPLETED,
             ),
+            # the policy's thinking spent the turn: the session cut the turn, tau2 rejected the empty reply
+            (
+                Sample.Status.TRUNCATED,
+                {"tau2_episode_valid": True, "tau2_termination_reason": "empty_reply", "reward": 0.0},
+                Sample.Status.TRUNCATED,
+            ),
             (Sample.Status.COMPLETED, {"tau2_episode_valid": False}, Sample.Status.ABORTED),
             (Sample.Status.TRUNCATED, {"tau2_episode_valid": False}, Sample.Status.ABORTED),
             # the agent process never reported (it died before returning)
@@ -174,6 +199,7 @@ class TestGenerate:
             "scored",
             "scored_past_max_seq_len",
             "episode_timeout",
+            "empty_reply",
             "invalid",
             "invalid_length_cut",
             "never_reported",

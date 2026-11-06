@@ -78,7 +78,7 @@ length grows (6k -> 8k tokens) and telecom episodes increasingly loop until
 `TAU2_EPISODE_TIMEOUT_S` (1800 s). A frozen user simulator is the first thing to try.
 
 An agent turn whose thinking exhausts `--rollout-max-response-len` leaves an empty reply,
-which tau2 rejects with a `ValueError`; the episode is then invalid (see below).
+which tau2 rejects; the episode scores 0 (see below).
 
 ## Episode outcomes
 
@@ -91,8 +91,9 @@ in the sample metadata whether the episode is valid and how tau2 ended it, and
 |---|---|---|---|
 | tau2 finished it (user stop, agent stop, step cap, protocol error, ...) | `tau2_termination_reason` = tau2's reason, `reward` = the evaluator's | as the session assembled it | trains |
 | it ran past `--max-seq-len` (miles does not stop the agent: the session serves every turn, tau2 finishes and scores the episode) | as above | `TRUNCATED` by sample assembly, which keeps the first `--max-seq-len` tokens | trains with the evaluator's reward and counts in `truncated_ratio`; `--rollout-sample-filter-path miles.rollout.filter_hub.sample_filters.mask_truncated_zero_reward` leaves out only those scored 0 |
+| the policy's reply was empty (its thinking spent `--rollout-max-response-len`; tau2's `AssistantMessage.validate` rejects it) | `tau2_termination_reason: "empty_reply"`, `reward: 0` | as the session assembled it (`TRUNCATED` when the turn hit the length limit) | trains with reward 0; `mask_truncated_zero_reward` leaves it out of the loss |
 | `TAU2_EPISODE_TIMEOUT_S` elapsed | `tau2_termination_reason: "episode_timeout"`, `reward: 0` | as the session assembled it | trains |
-| anything raised (user simulator or judge endpoint, engine 5xx, tau2 rejecting a reply, ...) | `tau2_episode_valid: false` | `ABORTED` | the whole group is dropped before training |
+| anything else raised (user simulator or judge endpoint, engine 5xx, the agent process, ...) | `tau2_episode_valid: false` | `ABORTED` | the whole group is dropped before training |
 
 ## Env vars
 
