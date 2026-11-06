@@ -33,13 +33,14 @@ Weight sync over ICI also needs:
 
 - `--update-weight-transfer-mode ici` in miles (radixark/miles#4589);
 - a torch_tpu build with job-local worlds (`TORCH_TPU_JOB_DEVICE_IDS`), so each job compiles and runs its
-  collectives over its own devices (radixark/miles#4598 puts it in the image);
+  collectives over its own devices (google-pytorch/torch_tpu#6110; `docker/Dockerfile.tpu` installs it as the
+  `TORCH_TPU_WHEELS_TAG` wheel);
 - sglang-torchtpu's shared-slice receiver (sgl-project/sglang-torchtpu#1884);
 - libtpu 0.0.50 ran Qwen3-4B this way (2026-11-04). 0.0.49 was reported to halt the SparseCore when two
   jobs share the slice, which a dense model may not exercise; MoE models on 0.0.49+ are unverified.
 
 Compiled programs are not cached (libtpu cannot load an executable built for part of a slice), so the
-first step of every run compiles everything.
+first step of every run compiles everything: about 25-30 minutes for Qwen3-4B on a 2x2x1 host.
 
 ## Run
 
@@ -56,9 +57,9 @@ default to `/root/models` and `/root/datasets` (`--model-dir`, `--data-dir`); `t
 model, dapo-math-17k and aime-2024 there if missing. The GLM launcher serves the cut checkpoint, so run its
 `prepare` before `sglang`. The steps below use Qwen3-4B.
 
-1. Start sglang on devices 4-7, in its own shell, and wait for
-   `curl localhost:30000/health` to return 200. The engine finishes compiling only after the
-   trainer joins the slice, so start `train` once the server is listening:
+1. Start sglang on devices 4-7, in its own shell. It waits for the trainer to join the slice before it
+   compiles, so `curl localhost:30000/health` returns 200 only after step 2 has started; start `train`
+   a minute or two after sglang, without waiting for the health check:
 
    ```bash
    python3 scripts/tpu/run_qwen3_4b_torchtitan.py sglang

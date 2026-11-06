@@ -1,7 +1,8 @@
 """Qwen3-4B GRPO on one TPU v7x 2x2x1 host: torchtitan trainer + sglang-torchtpu rollout.
 
 sglang serves the policy on devices 4-7 and the trainer runs on devices 0-3 (scripts/tpu/torchtitan_launch.py).
-Run `sglang` in its own shell (it stays in the foreground), wait for it to report healthy, then run `train`.
+Run `sglang` in its own shell (it stays in the foreground), then `train`: sglang reports healthy only once `train`
+joins.
 scripts/tpu/README.md describes the environment both expect.
 
 Args:

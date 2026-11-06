@@ -2,7 +2,6 @@ from dataclasses import dataclass
 
 import torch
 
-from miles import platforms
 from miles.backends.fsdp_utils.arguments import FSDPArgs, build_dataclass_parser, load_args_from_parser
 from miles.backends.training_utils.loss.hub.response_layout import validate_response_layout_args
 from miles.platforms import current_platform, tpu_shared_slice
@@ -132,7 +131,7 @@ def _validate_lora_args(args) -> None:
 
 
 def _validate_platform_args(args) -> None:
-    platform = platforms.current_platform
+    platform = current_platform
     if args.log_probs_backend == "fused" and not platform.triton_kernels:
         raise ValueError(
             f"--log-probs-backend fused is a Triton kernel; on {platform.device_type} use --log-probs-backend torch"
