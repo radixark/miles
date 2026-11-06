@@ -7,6 +7,7 @@ ipython==9.15.0
 jax==0.10.2  # the TPU image's JAX: checks miles/kernels/tpu's private splash-attention calls at that version
 jaxlib==0.10.2
 msgspec==0.21.1
+multi-storage-client==1.3.1  # msc:// checkpoint tests (tests/fast/utils/test_msc_utils.py)
 openai==2.6.1
 partial_json_parser==0.2.1.1.post7
 peft==0.21.2  # HF PEFT loads the adapter export (test_hf_peft_loads_the_peft_export)

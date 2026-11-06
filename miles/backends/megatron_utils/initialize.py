@@ -18,6 +18,7 @@ from miles.backends.megatron_utils.megatron_config import MegatronArgsNamespace
 from miles.backends.training_utils.parallel import get_parallel_state, set_parallel_state
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.hf_utils.config import register_hf_config_aliases
+from miles.utils.msc_utils import enable_megatron_msc
 
 from .ft.indep_dp import create_indep_dp_group
 from .parallel import create_megatron_parallel_state
@@ -106,6 +107,7 @@ def init(
         indep_dp_info = IndepDPInfo.create_trivial()
 
     set_args(args.backend)
+    enable_megatron_msc(args.backend)
     if args.backend.enable_experimental:
         logger.info("Enable megatron experimental")
         set_experimental_flag(True)
