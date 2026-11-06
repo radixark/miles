@@ -1,22 +1,15 @@
 """Scraper turning sglang engine metrics into dashboard ``EngineSample`` records.
 
-Two fetch modes (design doc §6.6):
+Each tick fetches ``GET {addr}/metrics`` concurrently from every engine in
+the topology. Metric names are normalized (an engine exports
+``sglang:num_running_reqs``, the whitelist names ``sglang_num_running_reqs``),
+filtered by a whitelist, and reduced to the label subset the dashboard uses.
+Records are handed to a sink callable (the collector passes
+``store.append``), so this module has no collector or Ray dependency and is
+fully unit-testable.
 
-- ``router``: one ``GET {router_addr}/engine_metrics`` per tick. The sgl
-  router fans the request out to every registered worker and labels each
-  sample with ``worker_addr`` (sgl-model-gateway ``get_engine_metrics``).
-- ``direct``: concurrent ``GET {addr}/metrics`` against every engine address
-  from the topology. Needed under ``--use-miles-router``, whose router has no
-  aggregation endpoint; here the scraper attaches the address itself.
-
-Metric names are normalized (``sglang:num_running_reqs`` from a raw engine
-equals ``sglang_num_running_reqs`` from the router aggregation), filtered by
-a whitelist, and reduced to the label subset the dashboard uses. Records are
-handed to a sink callable (the collector passes ``store.append``), so this
-module has no collector or Ray dependency and is fully unit-testable.
-
-Failure policy: a failed tick (or a failed engine in direct mode) leaves a
-gap in the series — values are never fabricated — and warnings are
+Failure policy: a failed tick (or a failed engine) leaves a gap in the
+series — values are never fabricated — and warnings are
 rate-limited to one per ``WARN_INTERVAL_SECONDS`` (pattern from
 ``examples/infra_features/random_async/random_async_sglang_metrics.py``).
 """
@@ -29,13 +22,8 @@ import time
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 
-try:
-    from enum import StrEnum
-except ImportError:
-    from backports.strenum import StrEnum
-
-from miles.dashboard.logging_utils import RateLimitedWarner
 from miles.dashboard.store import EngineSample
+from miles.utils.logging_utils import RateLimitedWarner
 
 logger = logging.getLogger(__name__)
 
@@ -74,11 +62,6 @@ DEFAULT_METRIC_WHITELIST = (
 KEPT_LABELS = ("engine_type", "dp_rank")
 
 
-class ScrapeMode(StrEnum):
-    ROUTER = "router"
-    DIRECT = "direct"
-
-
 def _default_http_get(url: str, timeout: float) -> str:
     import requests
 
@@ -93,21 +76,13 @@ class SglangScraper:
         self,
         sink: Callable[[EngineSample], None],
         *,
-        mode: ScrapeMode,
-        router_addr: str | None = None,
-        engine_addrs: Callable[[], Iterable[str]] | None = None,
+        engine_addrs: Callable[[], Iterable[str]],
         interval: float = 2.0,
         timeout: float = 5.0,
         whitelist: Iterable[str] = DEFAULT_METRIC_WHITELIST,
         http_get: Callable[[str, float], str] = _default_http_get,
     ):
-        if mode == ScrapeMode.ROUTER:
-            assert router_addr is not None, "router mode needs router_addr"
-        else:
-            assert engine_addrs is not None, "direct mode needs an engine_addrs provider"
         self._sink = sink
-        self.mode = mode
-        self.router_addr = router_addr
         self.engine_addrs = engine_addrs
         self.interval = interval
         self.timeout = timeout
@@ -147,14 +122,10 @@ class SglangScraper:
             count += self._ingest(addr, text, now)
         return count
 
-    def _fetch(self) -> list[tuple[str | None, str]]:
-        if self.mode == ScrapeMode.ROUTER:
-            # addr None: the router aggregation carries worker_addr labels
-            return [(None, self._http_get(f"{self.router_addr}/engine_metrics", self.timeout))]
-
+    def _fetch(self) -> list[tuple[str, str]]:
         addrs = list(self.engine_addrs())
 
-        def fetch_one(addr: str) -> tuple[str | None, str] | None:
+        def fetch_one(addr: str) -> tuple[str, str] | None:
             try:
                 return addr, self._http_get(f"{addr}/metrics", self.timeout)
             except Exception:
@@ -164,21 +135,15 @@ class SglangScraper:
         with ThreadPoolExecutor(max_workers=min(8, max(1, len(addrs)))) as pool:
             return [result for result in pool.map(fetch_one, addrs) if result is not None]
 
-    def _ingest(self, addr: str | None, text: str, now: float) -> int:
+    def _ingest(self, addr: str, text: str, now: float) -> int:
         from prometheus_client.parser import text_string_to_metric_families
 
         count = 0
         for family in text_string_to_metric_families(self._whitelisted_lines(text)):
             for sample in family.samples:
                 name = _normalize_metric_name(sample.name)
-                sample_addr = addr if addr is not None else sample.labels.get("worker_addr")
-                if sample_addr is None:
-                    self._warn(f"router sample for {name} lacks worker_addr; dropping")
-                    continue
                 labels = {k: v for k, v in sample.labels.items() if k in KEPT_LABELS}
-                self._sink(
-                    EngineSample(ts=now, addr=sample_addr, metric=name, labels=labels, value=float(sample.value))
-                )
+                self._sink(EngineSample(ts=now, addr=addr, metric=name, labels=labels, value=float(sample.value)))
                 count += 1
         return count
 
@@ -199,7 +164,7 @@ class SglangScraper:
 
 
 def _normalize_metric_name(name: str) -> str:
-    # raw engines export "sglang:x", the router aggregation "sglang_x"
+    # engines export "sglang:x"; the whitelist and the store use "sglang_x"
     return name.replace(":", "_")
 
 
