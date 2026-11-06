@@ -20,9 +20,6 @@ class TorchtitanArgs(FSDPArgs):
     pipeline_model_parallel_size: int = 1
     expert_model_parallel_size: int = 1
 
-    # torch.compile each transformer block; always on where shapes are static (TPU), opt-in elsewhere
-    titan_compile: bool = False
-
 
 def build_torchtitan_parser(extra_args_provider=None):
     parser = build_dataclass_parser(TorchtitanArgs, "torchtitan Training (miles)", extra_args_provider)
@@ -151,6 +148,12 @@ def _validate_platform_args(args) -> None:
         raise ValueError(
             f"--context-parallel-size {args.context_parallel_size} is not supported on {platform.device_type}: "
             "its length buckets do not align microbatches to the CP shards"
+        )
+    if args.expert_model_parallel_size != 1:
+        raise ValueError(
+            f"--expert-model-parallel-size {args.expert_model_parallel_size} is not supported on "
+            f"{platform.device_type}: the all-to-all token dispatcher counts tokens with integer cumsums, which "
+            "torch_tpu does not lower; keep every expert on each rank"
         )
     if args.use_dynamic_batch_size and args.max_tokens_per_gpu > args.seq_length:
         raise ValueError(

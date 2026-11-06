@@ -170,10 +170,10 @@ def _checkpointer_config(args: TrainerConfig, *, dump_subdir: str) -> TiedCheckp
 
 def _compile_backend(args: TrainerConfig) -> str | None:
     platform = platforms.current_platform
-    # a static-shape platform (TPU) always compiles, whatever --titan-compile says: eager runs every op separately
-    if args.backend.titan_compile or not platform.dynamic_shapes:
-        return platform.compile_backend
-    return None
+    # a static-shape platform (TPU) compiles each block: eager runs every op as its own program
+    if platform.dynamic_shapes:
+        return None
+    return platform.compile_backend
 
 
 def _prepare_blocks_for_compile(model: BaseModel.Config) -> None:

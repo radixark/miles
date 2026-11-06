@@ -142,6 +142,8 @@ def test_a_tpu_microbatch_cannot_outgrow_the_largest_length_bucket(monkeypatch, 
     validate_torchtitan_args(_tpu_args(micro_batch_size=1))
     with pytest.raises(ValueError, match="context-parallel-size 2"):
         validate_torchtitan_args(_tpu_args(context_parallel_size=2))
+    with pytest.raises(ValueError, match="expert-model-parallel-size 2"):
+        validate_torchtitan_args(_tpu_args(expert_model_parallel_size=2))
 
 
 def test_the_triton_log_prob_kernel_is_refused_on_tpu(monkeypatch, on_tpu):
@@ -219,20 +221,25 @@ def test_compiled_blocks_share_one_graph_across_layers():
 def test_a_static_shape_platform_compiles_static_graphs_for_every_pass_and_bucket(monkeypatch):
     """Each pass with its own guards compiles once per bucket, and none may turn dynamic, which TPU rejects."""
     pytest.importorskip("torchtitan")
-    from miles.backends.torchtitan_utils.trainer import configure_fixed_shape_compile
+    from miles.backends.torchtitan_utils.trainer import TitanTrainer
+
+    trainer = SimpleNamespace(config=SimpleNamespace(training=SimpleNamespace(max_context_length=8192)))
+
+    def configure_fixed_shape_compile(*, num_passes):
+        TitanTrainer.configure_fixed_shape_compile(trainer, num_passes=num_passes)
 
     # dynamo's own patch: monkeypatch's undo deletes a config key, which hides it from every later compile
     with torch._dynamo.config.patch(recompile_limit=1, automatic_dynamic_shapes=True):
-        configure_fixed_shape_compile(seq_len=8192, num_passes=3)
+        configure_fixed_shape_compile(num_passes=3)
         assert torch._dynamo.config.recompile_limit == 1, "a dynamic-shape platform compiles one graph per pass"
         assert torch._dynamo.config.automatic_dynamic_shapes
 
         monkeypatch.setattr(platforms.current_platform, "dynamic_shapes", False)
-        configure_fixed_shape_compile(seq_len=8192, num_passes=2)
+        configure_fixed_shape_compile(num_passes=2)
         # buckets 1024, 2048, 4096, 8192, and two block variants (dense and MoE) per class
         assert torch._dynamo.config.recompile_limit == 2 * 2 * 4
         assert not torch._dynamo.config.automatic_dynamic_shapes
-        configure_fixed_shape_compile(seq_len=8192, num_passes=3)
+        configure_fixed_shape_compile(num_passes=3)
         assert torch._dynamo.config.recompile_limit == 2 * 3 * 4
 
 
@@ -392,7 +399,6 @@ def _config_args(**overrides: object) -> Namespace:
         seed=1,
         gradient_checkpointing=False,
         optimizer_cpu_offload=False,
-        titan_compile=False,
         save=None,
         load=None,
     )
@@ -466,18 +472,13 @@ def test_a_static_shape_platform_compiles_its_blocks_without_the_flag(tmp_path, 
     assert not _layer_linears_accumulate_in_place(config.model), "a traced backward cannot add into .grad in place"
 
 
-def test_gpu_compiles_its_blocks_only_on_request(tmp_path, single_gpu_dims):
+def test_gpu_runs_its_blocks_eager(tmp_path, single_gpu_dims):
     from miles.backends.torchtitan_utils.config import build_trainer_config
 
     hf = _checkpoint_dir(tmp_path, tie_word_embeddings=False)
     eager = build_trainer_config(_config_args(), hf_assets_path=hf, lr_total_steps=1, dump_subdir="x")
     assert eager.compile_backend is None and eager.model.local_compile_regions
     assert _layer_linears_accumulate_in_place(eager.model)
-    compiled = build_trainer_config(
-        _config_args(titan_compile=True), hf_assets_path=hf, lr_total_steps=1, dump_subdir="x"
-    )
-    assert compiled.compile_backend == "inductor" and compiled.model.local_compile_regions == []
-    assert not _layer_linears_accumulate_in_place(compiled.model)
 
 
 def test_a_platform_without_sparse_flex_attention_gets_blocked_sdpa_in_every_layer(tmp_path, single_gpu_dims, on_tpu):

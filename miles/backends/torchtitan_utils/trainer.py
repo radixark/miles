@@ -28,18 +28,6 @@ def fixed_shape_length_buckets(seq_len: int) -> set[int]:
     return {fixed_shape_length_bucket(1 << k, seq_len) for k in range(seq_len.bit_length() + 1)}
 
 
-def configure_fixed_shape_compile(*, seq_len: int, num_passes: int) -> None:
-    """Each pass compiles once per length bucket; fullgraph blocks fail past dynamo's recompile limit."""
-    if platforms.current_platform.dynamic_shapes:
-        return
-    # a second length would otherwise make dynamo mark the dimension dynamic, which the backend rejects
-    torch._dynamo.config.automatic_dynamic_shapes = False
-    # blocks of one class share a forward, and a class can guard on a per-block flag (DeepSeek-V3-style dense first
-    # layers before MoE ones), so each class may hold two graphs per pass and bucket
-    num_graphs = 2 * num_passes * len(fixed_shape_length_buckets(seq_len))
-    torch._dynamo.config.recompile_limit = max(torch._dynamo.config.recompile_limit, num_graphs)
-
-
 def _compile_blocks(model_parts: list[torch.nn.Module], *, backend: str) -> None:
     # the forward only: FSDP's hooks stay eager around each compiled block
     for model in model_parts:
@@ -240,6 +228,17 @@ class TitanTrainer(Configurable):
             2 * (self.config.training.max_context_length // _CP_LENGTH_BUCKET + 1),
         )
         self.loss_fn.set_context_parallel(self.parallelism.get_mesh("cp"))
+
+    def configure_fixed_shape_compile(self, *, num_passes: int) -> None:
+        """Each pass compiles once per length bucket; fullgraph blocks fail past dynamo's recompile limit."""
+        if platforms.current_platform.dynamic_shapes:
+            return
+        # a second length would otherwise make dynamo mark the dimension dynamic, which the backend rejects
+        torch._dynamo.config.automatic_dynamic_shapes = False
+        # blocks of one class share a forward, and a class can guard on a per-block flag (DeepSeek-V3-style dense
+        # first layers before MoE ones), so each class may hold two graphs per pass and bucket
+        num_graphs = 2 * num_passes * len(fixed_shape_length_buckets(self.config.training.max_context_length))
+        torch._dynamo.config.recompile_limit = max(torch._dynamo.config.recompile_limit, num_graphs)
 
     def has_last_stage(self) -> bool:
         return (not self.parallelism.pp_enabled) or self.engine.pp_has_last_stage
