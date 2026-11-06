@@ -17,25 +17,71 @@ class TrainConfig(BaseConfig):
     linear_attention_backend: A[
         str,
         Arg(
-            choices=["fla", "flashqla"],
+            choices=["fla", "flashqla", "cake"],
             help=(
                 "Backend for Qwen GDN linear-attention layers. "
                 "'fla' (flash-linear-attention) is portable and runs on any supported GPU. "
-                "'flashqla' (FlashQLA) requires NVIDIA SM90 (Hopper) or newer, CUDA 12.8+, and PyTorch 2.8+."
+                "'flashqla' (FlashQLA) requires NVIDIA SM90 (Hopper) or newer, CUDA 12.8+, and PyTorch 2.8+. "
+                "'cake' is the Cake chunked forward/backward from the miles-ext-kernels submodule: "
+                "--cake-gdn-variant det (bit-deterministic, the only variant with context parallelism) or fast (the "
+                "Cake non-deterministic package, fixed-order; the default outside --deterministic-mode). It requires "
+                "--use-miles-ext-kernels, NVIDIA SM100a/SM103a/SM107a (Blackwell, Rubin) and K = V = 128."
             ),
         ),
     ] = "fla"
     linear_attention_input_norm: A[
         str,
         Arg(
-            choices=("te", "hf"),
+            choices=("te", "hf", "cake"),
             help=(
                 "Input RMSNorm of the Qwen3.5 / Qwen3-Next GDN layers, zero-centred ((1 + w) scale, fp32 math) "
                 "either way. 'te' is Transformer Engine's fused kernel; 'hf' is the eager HF Qwen3NextRMSNorm "
-                "these layers used before, kept to reproduce its numerics (same math, slower)."
+                "these layers used before, kept to reproduce its numerics (same math, slower). 'cake' is the Cake "
+                "fused RMSNorm from the miles-ext-kernels submodule (--cake-rmsnorm-variant det or fast); it "
+                "requires --use-miles-ext-kernels, NVIDIA SM100a/SM103a/SM107a (Blackwell, Rubin) and a hidden size "
+                "the kernels serve; the layer refuses others when it is built (for example Qwen3.5-4B's 2560)."
             ),
         ),
     ] = "te"
+    kda_backend: A[
+        str,
+        Arg(
+            choices=("fla", "cake"),
+            help=(
+                "Backend for the KDA (Kimi Delta Attention) linear-attention layers of Kimi-K3 and GLM-5.3-Flash. "
+                "'fla' (flash-linear-attention) is portable. 'cake' is the deterministic Cake chunked "
+                "forward/backward from the miles-ext-kernels submodule (raw forget gate and q/k L2 norm in the "
+                "kernels, BF16 beta, 1 to 64 heads per rank); it requires --use-miles-ext-kernels, --train-backend "
+                "megatron, --qkv-format thd, no context parallelism and NVIDIA SM100a/SM103a/SM107a (Blackwell, Rubin)."
+            ),
+        ),
+    ] = "fla"
+    linear_attention_conv_backend: A[
+        str,
+        Arg(
+            choices=("fla", "cake"),
+            help=(
+                "Backend for the causal depthwise short convolution (SiLU, kernel size 4) of the GDN and KDA "
+                "linear-attention layers. 'fla' is flash-linear-attention's kernel. 'cake' is the Cake kernel from "
+                "the miles-ext-kernels submodule (--cake-conv1d-variant det or fast, "
+                "--cake-conv1d-silu-grad-preactivation bf16 or fp32); it requires --use-miles-ext-kernels, no "
+                "context parallelism and NVIDIA SM100a/SM103a/SM107a (Blackwell, Rubin)."
+            ),
+        ),
+    ] = "fla"
+    linear_attention_output_norm_backend: A[
+        str,
+        Arg(
+            choices=("fla", "cake"),
+            help=(
+                "Backend for the SiLU-gated output RMSNorm (RMSNorm(x) * w * SiLU(z), head dimension 128) of the GDN "
+                "linear-attention layers. 'fla' is flash-linear-attention's kernel. 'cake' is the Cake kernel from "
+                "the miles-ext-kernels submodule (--cake-gated-rmsnorm-variant det or fast); it requires "
+                "--use-miles-ext-kernels and NVIDIA SM100a/SM103a/SM107a (Blackwell, Rubin). Layers whose output "
+                "norm has a sigmoid gate (KDA, a sigmoid-gated Qwen3.8-Next config) refuse it when they are built."
+            ),
+        ),
+    ] = "fla"
     true_on_policy_mode: A[bool, Arg(help="Whether to enable true-on-policy mode.")] = False
     train_env_vars: A[
         Any,
@@ -98,14 +144,20 @@ class TrainConfig(BaseConfig):
         str,
         Arg(
             type_parser=None,
-            choices=["megatron", "tilelang"],
+            choices=["megatron", "tilelang", "cake"],
             help=(
                 "DSA sparse-MLA kernel backend for GLM (glm_moe_dsa) under --megatron-to-hf-mode bridge. "
                 "'tilelang' (default) uses the fused TileLang kernels (SparseMLA + lighting_indexer, vendored from slime) for "
                 "rollout<->train numerical parity; 'megatron' uses the portable unfused megatron-core "
                 "kernels. 'tilelang' requires --qkv-format thd and the optional tilelang dep, and is "
                 "training/forward-only (no KV cache, cannot serve inference). Both support GLM-5.1 and "
-                "GLM-5.2, full or LoRA. No effect on non-DSA models or the 'raw' path."
+                "GLM-5.2, full or LoRA. Neither has an effect on non-DSA models or the 'raw' path, whose miles DSA "
+                "layers keep their measured default kernels. 'cake' is for the 'raw' path only: the miles DSA "
+                "plugin layers (GLM-5 / DeepSeek-V3.2 and GLM-5.3 with --dsa-impl miles, DeepSeek-V4 / V4.1 with "
+                "--dsv4-impl miles) run their sparse attention and indexer scores on the Cake kernels from the "
+                "miles-ext-kernels submodule (--cake-dsa-variant det or fast; the scores are always det). It "
+                "requires --use-miles-ext-kernels, NVIDIA SM100a/SM103a/SM107a (Blackwell, Rubin), the Megatron "
+                "backend, a 512-wide latent with a 0 or 64 RoPE tail and 8/16/32/64 indexer heads of dimension 128."
             ),
         ),
     ] = "tilelang"
@@ -118,6 +170,10 @@ class TrainConfig(BaseConfig):
             )
         ),
     ] = False
+    # The values of the per-kernel arguments the miles-ext-kernels submodule registers under
+    # --use-miles-ext-kernels, by destination name (None without the flag). The submodule owns their names; miles hands
+    # them to miles_ext_kernels.configure() where it builds a 'cake' layer.
+    miles_ext_kernels_args: dict[str, Any] | None = None
     extra_high_precision_layers_hf: A[
         list[str] | tuple[str, ...],
         Arg(

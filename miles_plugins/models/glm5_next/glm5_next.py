@@ -12,9 +12,10 @@ from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.transformer.transformer_block import get_num_layers_to_build
 from megatron.core.transformer.transformer_layer import get_transformer_layer_offset
 
+from miles.kernels.attention.dsa import cake
 from miles.utils.hf_utils.config import load_hf_config
 from miles_plugins.models.glm5.glm5 import DSASelfAttentionSubmodules
-from miles_plugins.models.glm5_next.dsa import Glm5NextDSAAttention
+from miles_plugins.models.glm5_next.dsa import _SPARSE_MLA_TAIL_DIM, Glm5NextDSAAttention
 from miles_plugins.models.glm5_next.kda import Glm5NextKDAAttention, _get_text_config
 
 _MHC_EPS = 1e-6
@@ -93,6 +94,17 @@ def get_glm5_next_spec(args, config, vp_stage=None):
 
     _apply_glm5_next_config(config, text_config)
     _patch_reference_proj_rms()
+    if args.dsa_attention_backend == "cake":
+        # the DSA layers attend over the kv_lora_rank latent padded with a zero tail, the TP rank's query heads
+        cake.setup(
+            args,
+            heads=config.num_attention_heads // config.tensor_model_parallel_size,
+            d_qk=config.kv_lora_rank + _SPARSE_MLA_TAIL_DIM,
+            d_v=config.kv_lora_rank,
+            attn_sink=False,
+            index_heads=config.index_num_attention_heads,
+            index_head_dim=config.index_head_dim,
+        )
 
     kwargs = {"use_transformer_engine": True}
     if vp_stage is not None:
@@ -111,6 +123,7 @@ def get_glm5_next_spec(args, config, vp_stage=None):
         params={
             "attn_mask_type": AttnMaskType.causal,
             "topk_backend": args.miles_dsa_topk_backend,
+            "dsa_attention_backend": args.dsa_attention_backend,
         },
         submodules=DSASelfAttentionSubmodules(
             linear_q_down_proj=backend.linear(),
