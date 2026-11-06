@@ -16,6 +16,7 @@ from miles.backends.training_utils.checkpoint.adapter.adapter_dir import (
     HeadRows,
     load_adapter_source,
     save_adapter_dir,
+    save_and_commit_adapter_dir,
     write_peft_export,
 )
 from miles.backends.training_utils.checkpoint.adapter.adapter_exports import write_peft_adapter
@@ -455,6 +456,25 @@ def test_peft_export_of_a_fused_gdn_group_writes_one_a_per_exported_module(tmp_p
     for module, b in members.b.items():
         assert torch.equal(tensors[f"base_model.model.{GDN}.{module}.lora_A.weight"], members.a.to(torch.bfloat16))
         assert torch.equal(tensors[f"base_model.model.{GDN}.{module}.lora_B.weight"], b.to(torch.bfloat16))
+
+
+class CanonicalGdnSaveMembers(FakeMembers):
+    """A canonical GDN component's own A and B: a checkpoint no PEFT adapter can name."""
+
+    def get_local_shard_specs(self, slot):
+        return [replace(s, key=s.key.replace(MODULE, f"{GDN}.in_proj_q")) for s in super().get_local_shard_specs(slot)]
+
+    def export_bf16_adapter(self, slot):
+        raise AssertionError("a parametrization with no plain-PEFT form gets no PEFT view")
+
+
+def test_a_save_of_a_parametrization_with_no_plain_peft_form_commits_without_a_peft_view(tmp_path):
+    run = AdapterParametrization("m", 2, 4.0, "canonical_lora", (f"{GDN}.in_proj_q",), False)
+    committed = save_and_commit_adapter_dir(
+        tmp_path, "adapter", CanonicalGdnSaveMembers(), 0, run, GDN_TARGETS, lora_dropout=0.0
+    )
+    assert resolve_adapter_dir(tmp_path, "adapter", tenant=None).path == committed.path
+    assert not (committed.path / "adapter_model.safetensors").exists()
 
 
 HEAD_RUN = AdapterParametrization("m", 2, 4.0, "canonical_lora", ("lm_head",), False)

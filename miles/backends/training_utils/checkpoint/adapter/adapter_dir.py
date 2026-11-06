@@ -1,6 +1,7 @@
 """The save / load flow, written once; backends only provide their checkpoint members."""
 
 import json
+import logging
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -8,7 +9,11 @@ from typing import Any, Literal, Protocol
 
 import torch
 
-from miles.backends.training_utils.checkpoint.adapter.adapter_exports import write_peft_adapter, write_sampler_adapter
+from miles.backends.training_utils.checkpoint.adapter.adapter_exports import (
+    has_plain_peft_form,
+    write_peft_adapter,
+    write_sampler_adapter,
+)
 from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
     AdapterState,
     LocalShardSpec,
@@ -21,7 +26,13 @@ from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
     is_vocab_padding,
     read_adapter_state_shapes,
 )
-from miles.backends.training_utils.checkpoint.adapter.commit import UncommittedAdapterDir, write_adapter_dir
+from miles.backends.training_utils.checkpoint.adapter.commit import (
+    CommittedAdapterDir,
+    UncommittedAdapterDir,
+    commit_adapter_dir,
+    delete_retired_adapter_dirs,
+    write_adapter_dir,
+)
 from miles.backends.training_utils.checkpoint.adapter.key_mapping import (
     map_named_tensors_to_hf_keys,
     map_peft_keys_to_hf_keys,
@@ -47,6 +58,8 @@ from miles.backends.training_utils.checkpoint.adapter.source_error import Adapte
 from miles.utils.lora.hf_lora_targets import HfLoraTargets
 
 TRAINING_STATE_FILENAME = "training_state.json"
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -137,6 +150,12 @@ def save_adapter_dir(
             (written.path / TRAINING_STATE_FILENAME).write_text(json.dumps(training_state, indent=2))
         write_parametrization(written.path, parametrization)
     return written
+
+
+def read_training_state(path: Path) -> dict | None:
+    """The RL loop's iteration and scheduler state, if the source has them."""
+    state_file = Path(path) / TRAINING_STATE_FILENAME
+    return json.loads(state_file.read_text()) if state_file.is_file() else None
 
 
 def _assert_real_rank(specs: list[LocalShardSpec], lora_rank: int) -> None:
@@ -235,6 +254,37 @@ def _write_bf16_export(
                 targets,
                 stacked_keys=_stacked_expert_keys(named_tensors, _hf_key_mapper(members)),
             )
+
+
+def save_and_commit_adapter_dir(
+    root: Path,
+    name: str,
+    members: AdapterCheckpointMembers,
+    slot: int,
+    parametrization: AdapterParametrization,
+    targets: HfLoraTargets,
+    *,
+    training_state: dict | None = None,
+    lora_dropout: float,
+) -> CommittedAdapterDir:
+    """RL's ``--save``: all ranks write, rank 0 commits over any earlier save of ``name``, then the PEFT export.
+
+    A failed PEFT export fails every rank but keeps the committed checkpoint; its view can be rebuilt offline. A
+    parametrization with no plain-PEFT form gets no PEFT view: the adapter dir is the checkpoint.
+    """
+    written = save_adapter_dir(
+        root, name, members, slot, parametrization, tenant_digest=None, training_state=training_state
+    )
+    with agree_on_failure_context():
+        if is_rank0():
+            commit_adapter_dir(root, name, written, overwrite=True)
+    if has_plain_peft_form(parametrization, targets):
+        write_peft_export(written.path, members, slot, parametrization, targets, lora_dropout=lora_dropout)
+    elif is_rank0():
+        logger.info(f"{written.path}: no PEFT view, as this parametrization has no plain-PEFT form")
+    if is_rank0():
+        delete_retired_adapter_dirs(root)
+    return CommittedAdapterDir(written.path, written.commit_id)
 
 
 def save_sampler_export(

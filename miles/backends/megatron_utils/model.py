@@ -64,6 +64,8 @@ from .ci_utils import (
     save_model_hashes,
 )
 from .initialize import is_first_replica_megatron_main_rank
+from .lora.bridge_adapter_slots import BridgeAdapterSlots
+from .lora.checkpoint import restore_single_lora, save_single_lora
 from .lora.utils import (
     is_lora_enabled,
     is_lora_model,
@@ -96,13 +98,16 @@ def get_optimizer_param_scheduler(args: TrainerConfig, optimizer: MegatronOptimi
         optimizer (MegatronOptimizer): Megatron optimizer bound to the model.
 
     Returns:
-        OptimizerParamScheduler: Initialized scheduler bound to ``optimizer``.
+        OptimizerParamScheduler | None: None when the run trains no step.
     """
     # Iteration-based training.
     with args.backend.mutable():
         args.backend.train_iters = (
             args.num_rollout * args.rollout_batch_size * args.n_samples_per_prompt // args.backend.global_batch_size
         )
+        # a convert-save (--num-rollout 0) trains no step: no schedule, and a loaded one passes through untouched
+        if args.backend.train_iters == 0 and args.lora_adapter_convert_save is not None:
+            return None
         if args.backend.lr_decay_iters is None:
             args.backend.lr_decay_iters = args.backend.train_iters
     lr_decay_steps = args.backend.lr_decay_iters * args.backend.global_batch_size
@@ -935,6 +940,7 @@ def save(
     non_persistent_ckpt: bool = False,
     *,
     snapshot_publisher: SnapshotPublisher | None = None,
+    adapter_slots: BridgeAdapterSlots | None = None,
 ) -> None:
     """Persist a training checkpoint safely with forward hooks disabled.
 
@@ -953,7 +959,9 @@ def save(
     if should_disable_forward_pre_hook(args):
         disable_forward_pre_hook(model)
 
-    if is_lora_model(model):
+    if is_lora_model(model) and args.megatron_to_hf_mode == "bridge":
+        save_single_lora(model, optimizer, opt_param_scheduler, adapter_slots, args, iteration)
+    elif is_lora_model(model):
         save_checkpoint_with_lora(
             iteration, model, optimizer, opt_param_scheduler, args=args, publisher=snapshot_publisher
         )
@@ -1033,6 +1041,7 @@ def load_model_state(
     role: str,
     checkpointing_context: dict | None,
     resume_from_ckpt: bool,
+    adapter_slots: BridgeAdapterSlots | None = None,
 ) -> LoadCheckpointOutput:
     if is_multi_lora_enabled(args):
         # Hide adapter params so the bridge's conversion-task walk doesn't see them
@@ -1075,9 +1084,14 @@ def load_model_state(
 
     adapter_iteration = None
     if is_lora_enabled(args) and role == "actor" and args.lora_adapter_path is not None:
-        adapter_iteration = restore_lora_adapter(
-            model, args, optimizer=optimizer, opt_param_scheduler=opt_param_scheduler
-        )
+        if args.megatron_to_hf_mode == "bridge":
+            adapter_iteration = restore_single_lora(
+                model, args, adapter_slots=adapter_slots, optimizer=optimizer, opt_param_scheduler=opt_param_scheduler
+            )
+        else:
+            adapter_iteration = restore_lora_adapter(
+                model, args, optimizer=optimizer, opt_param_scheduler=opt_param_scheduler
+            )
         if adapter_iteration is not None:
             iteration = adapter_iteration
             restored_trained_iteration = True

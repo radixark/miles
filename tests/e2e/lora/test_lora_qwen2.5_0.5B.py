@@ -4,7 +4,7 @@ Uses the Megatron backend with bridge mode.  Runs a short GRPO training loop
 with LoRA enabled (rank=32, all-linear) to validate:
   - LoRA model setup via Bridge
   - LoRA weight sync to SGLang rollout engines
-  - LoRA checkpoint save (native + HF PEFT format)
+  - a run with --save completes (the saved iter_N/adapter is not checked here)
   - --save-hf writes a PEFT adapter through the adapter slots' probe
   - Training completes without errors
 

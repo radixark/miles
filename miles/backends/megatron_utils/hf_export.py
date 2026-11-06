@@ -9,6 +9,7 @@ import torch
 from megatron.core.distributed import DistributedDataParallel as DDP
 
 from miles.backends.megatron_utils.lora.bridge_adapter_slots import BridgeAdapterSlots
+from miles.backends.megatron_utils.lora.checkpoint import single_lora_parametrization
 from miles.backends.megatron_utils.lora.native.merge import merge_lora_into_weights
 from miles.backends.megatron_utils.lora.utils import is_lora_model
 from miles.backends.megatron_utils.named_weights import named_params_and_buffers
@@ -75,17 +76,7 @@ def save_hf_model(
             publisher.write_adapter(None, checkpoint_dir / "adapter")
         elif is_lora_model(model):
             assert adapter_slots is not None, "a Bridge LoRA export needs the model's adapter slots"
-            # multi-LoRA exports slot 0 at its own rank and alpha, not the run's
-            spec = adapter_slots.slot_spec(0)
-            parametrization = adapter_slots.parametrization(
-                base_model=args.hf_checkpoint,
-                lora_rank=args.lora_rank if spec is None else spec.rank,
-                lora_alpha=args.lora_alpha if spec is None else spec.alpha,
-                lora_type=args.lora_type,
-                experts_shared_outer_loras=args.experts_shared_outer_loras,
-                # a PEFT export records no parametrization; a sampler view's is matched to its base by path
-                base_model_fingerprint=None,
-            )
+            parametrization = single_lora_parametrization(adapter_slots, args)
             # a fused module whose components have their own A has no PEFT name; sglang's names, as main wrote, do
             write = (
                 write_peft_export
