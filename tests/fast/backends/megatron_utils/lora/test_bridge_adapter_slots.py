@@ -3,7 +3,7 @@ import torch
 import torch.distributed as dist
 from tests.fast.dist_utils import init_gloo, run_multiprocess
 
-from miles.backends.megatron_utils.lora.bridge_checkpoint import (
+from miles.backends.megatron_utils.lora.bridge_adapter_slots import (
     BridgeAdapterSlots,
     BridgeRowMapping,
     _HfPiece,
