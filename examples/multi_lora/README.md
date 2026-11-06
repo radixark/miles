@@ -39,7 +39,8 @@ python examples/multi_lora/serve_qwen3_30b_a3b_tinker.py serve     # Tinker API 
 Checkpoints default to `<output_dir>/checkpoints/<run_id>`; use `--save-dir` to choose another root.
 
 Adapters run on Megatron-Bridge by default. `--megatron-to-hf-mode raw` runs them as miles-native LoRA
-instead, which serves dense models only: point `--hf-checkpoint` and `--model-type` at one and pass `--ep 1`.
+instead, which serves dense models only: download one, point `--hf-checkpoint` and `--model-type` at it and pass `--ep 1`
+(`prepare` fetches only Qwen3-30B-A3B).
 
 The launcher sets `--log-probs-chunk-size 1024`, which computes log-probs in 1024-token chunks
 to bound peak GPU memory on long sequences. To override it, add

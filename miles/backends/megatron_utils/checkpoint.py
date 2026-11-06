@@ -251,8 +251,7 @@ def create_mbridge_for_model(model, hf_path: str):
     import miles_plugins.mbridge  # noqa: F401
     from mbridge import AutoBridge
 
-    # mbridge learns the vocab rows only from its own model provider; providers differ on padding (Inkling builds
-    # unpadded), so take them from the built model
+    # mbridge sets these only in its own provider; Inkling builds unpadded
     model_vocab_rows = unwrap_model(model)[0].vocab_size
     # non-None turns on mbridge's pad on load / trim on export
     bridge = AutoBridge.from_pretrained(hf_path, trust_remote_code=True, make_vocab_size_divisible_by=model_vocab_rows)

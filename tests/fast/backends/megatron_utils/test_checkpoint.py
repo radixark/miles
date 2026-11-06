@@ -202,7 +202,7 @@ class TestDeepSeekCheckpointCompatibility:
 
 @pytest.mark.parametrize("model_vocab_rows", [12, 10], ids=["megatron-padded", "built-unpadded"])
 def test_mbridge_pads_the_hf_embedding_to_the_built_models_rows(tmp_path, monkeypatch, model_vocab_rows):
-    """mbridge learns the vocab rows only from its own model provider, which miles never calls."""
+    """An HF embedding loads padded with zeros to the built model's vocab rows, not failing the TP scatter."""
     import transformers
     from mbridge.core.parallel_states import ParallelStates
 
