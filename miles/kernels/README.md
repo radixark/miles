@@ -15,9 +15,11 @@ norm/              grouped_rmsnorm (device helpers shared by hc and ple)
 position/          rope: apply_rotary_emb
 quant/             fp8_blockwise_cast · act_quant · fake_quant_{fp8,fp4,compressed_kv} · fused_nvfp4_qdq · int4_fake/ (CUDA)
 softmax/           token_log_softmax
+tpu/               flash_attention (causal within each segment, SDPA per query block)
 ```
 
 - Only kernels we write (Triton, TileLang, CuTe, CUDA). A third-party kernel we merely call stays with its caller.
+- Kernels written for torch_tpu (SDPA compositions, Pallas through torch_tpu) live under `tpu/`, named by op inside it.
 - One directory per op. Names say what is computed, never the backend; a backend gets a subdirectory only when two coexist.
 - Callers import the entry from the op's module or package, never an implementation file.
 - No Megatron, no process groups, no env policy. Parallelism lives in `miles_plugins/models`.

@@ -3,8 +3,10 @@ import inspect
 import logging
 import os
 import tempfile
+from dataclasses import dataclass
 from types import ModuleType
 
+import torch
 import torch.distributed as dist
 from torchtitan.components.optim import AdamW, LRSchedulersContainer, Optim, OptimizersContainer
 from torchtitan.config import TrainingConfig
@@ -23,8 +25,8 @@ from miles import platforms
 from miles.backends.torchtitan_utils import lora
 from miles.backends.torchtitan_utils.components import TiedCheckpointManager
 from miles.backends.torchtitan_utils.loss import RLLossAdapter
-from miles.backends.torchtitan_utils.sdpa_document_attention import BlockedSdpaInnerAttention
 from miles.backends.torchtitan_utils.trainer import TitanTrainer
+from miles.kernels.tpu.flash_attention import flash_attention
 from miles.utils.args.runtime import TrainerConfig
 from miles.utils.hf_utils.config import load_hf_config
 
@@ -66,7 +68,7 @@ def build_model_config(
     model = builder(args.backend.titan_model_flavor, **kwargs)
     _disable_load_balancing(model)
     if not platforms.current_platform.flex_attention:
-        _use_blocked_sdpa_attention(model)
+        _use_tpu_flash_attention(model)
     if parallelism.context_parallel_degree > 1:
         model = transform_model_config_(
             model, [ContextParallelTransform(inner_attention_map={FlexInnerAttention: AllGatherKVFlexInnerAttention})]
@@ -74,7 +76,59 @@ def build_model_config(
     return model
 
 
-def _use_blocked_sdpa_attention(model: BaseModel.Config) -> None:
+class TpuFlashInnerAttention(InnerAttention):
+    """torchtitan's inner attention on miles.kernels.tpu; its metadata is each token's segment id."""
+
+    @dataclass(kw_only=True, slots=True)
+    class Config(InnerAttention.Config):
+        @property
+        def is_full_attention(self) -> bool:
+            return True
+
+        def build_attention_metadata(
+            self,
+            positions: torch.Tensor,
+            *,
+            padding_mask: torch.Tensor | None = None,
+            max_num_documents: int | None = None,
+            max_context_length: int | None = None,
+        ) -> torch.Tensor:
+            # positions restart at 0 in every sequence and the padding tail, so each token's segment is the index of
+            # its sequence's first token; no cumsum, which libtpu (>= 0.0.44) miscompiles off multiples of 1024
+            return torch.arange(positions.shape[-1], device=positions.device, dtype=torch.int32) - positions.to(
+                torch.int32
+            )
+
+    def __init__(self, config: Config) -> None:
+        super().__init__()
+
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        *,
+        attention_metadata: torch.Tensor,
+        score_mod=None,
+        scale: float | None = None,
+        enable_gqa: bool = False,
+        out_transform=None,
+    ) -> torch.Tensor:
+        if score_mod is not None or out_transform is not None:
+            raise NotImplementedError("the TPU flash attention takes no score_mod or out_transform")
+        # torchtitan passes [tokens, heads, dim]; the kernel takes [batch, heads, tokens, dim]
+        out = flash_attention(
+            q.transpose(0, 1).unsqueeze(0),
+            k.transpose(0, 1).unsqueeze(0),
+            v.transpose(0, 1).unsqueeze(0),
+            segment_ids=attention_metadata.unsqueeze(0),
+            scale=scale,
+            enable_gqa=enable_gqa,
+        )
+        return out.squeeze(0).transpose(0, 1)
+
+
+def _use_tpu_flash_attention(model: BaseModel.Config) -> None:
     for layer in model.layers:
         for _, inner, parent, field_name in layer.traverse(InnerAttention.Config, recurse=True):
             # MLA wraps the attention kernel it runs
@@ -85,7 +139,7 @@ def _use_blocked_sdpa_attention(model: BaseModel.Config) -> None:
                     f"on {platforms.current_platform.device_type} only document-causal FlexAttention has a "
                     f"replacement; {type(inner).__qualname__} has none"
                 )
-            setattr(parent, field_name, BlockedSdpaInnerAttention.Config())
+            setattr(parent, field_name, TpuFlashInnerAttention.Config())
 
 
 # not FreezeMoERoutingTransform: it also freezes the router gate, which RL trains
