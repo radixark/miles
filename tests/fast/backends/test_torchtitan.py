@@ -505,9 +505,8 @@ def test_mla_keeps_its_wrapper_and_runs_blocked_sdpa_inside_it(on_tpu):
     from miles.backends.torchtitan_utils.sdpa_document_attention import BlockedSdpaInnerAttention
 
     model = build_model_config(
-        _config_args(titan_model_name="glm4_moe_lite", titan_model_flavor="4layer"), parallelism=ParallelismConfig()
+        _config_args(titan_model_name="glm4_moe_lite", titan_model_flavor="30B-A3B"), parallelism=ParallelismConfig()
     )
-    assert len(model.layers) == 4
     mla = [layer.attention.inner_attention for layer in model.layers]
     assert {type(wrapper) for wrapper in mla} == {MLAAttention.Config}
     assert {type(wrapper.inner_attention) for wrapper in mla} == {BlockedSdpaInnerAttention.Config}

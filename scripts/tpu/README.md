@@ -44,18 +44,10 @@ first step of every run compiles everything: about 25-30 minutes for Qwen3-4B on
 
 ## Run
 
-One launcher per model, each with the same `sglang` and `train` commands:
-
-| Launcher | Model | Trainer |
-|---|---|---|
-| `run_qwen3_4b_torchtitan.py` | Qwen3-4B | Adam on the device |
-| `run_qwen3_30b_a3b_torchtitan.py` | Qwen3-30B-A3B | params, grads and Adam on the host (`--optimizer-cpu-offload`), ~120 GB of host RAM per trainer process |
-| `run_glm4_7_flash_4layer_torchtitan.py` | GLM-4.7-Flash cut to its first 4 layers (`tools/prune_hf_layers.py`) | Adam on the device |
-
-The MoE trainers keep every expert on each rank (EP 1); sglang serves them with EP 4. Model and data
+`run_qwen3_4b_torchtitan.py` runs Qwen3-4B with Adam on the device, through its `sglang` and `train`
+commands; `torchtitan_launch.py` holds what a launcher for another model would share. Model and data
 default to `/root/models` and `/root/datasets` (`--model-dir`, `--data-dir`); `train` downloads the
-model, dapo-math-17k and aime-2024 there if missing. The GLM launcher serves the cut checkpoint, so run its
-`prepare` before `sglang`. The steps below use Qwen3-4B.
+model, dapo-math-17k and aime-2024 there if missing.
 
 1. Start sglang on devices 4-7, in its own shell. It waits for the trainer to join the slice before it
    compiles, so `curl localhost:30000/health` returns 200 only after step 2 has started; start `train`
