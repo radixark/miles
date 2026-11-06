@@ -265,8 +265,8 @@ class RolloutRelatedConfig(BaseConfig):
                 "'http-lora' is LoRA-only: rank 0 hands the adapter to each engine's LoRA load route over "
                 "HTTP (see --http-lora-ship), so the trainer and the engines need not share a vendor, an "
                 "interconnect, or a host. "
-                "'gpu-delta' publishes canonical GPU-encoded frames using publication-selected "
-                "Snappy-Zstd, LZ4-Zstd or LZ4 for streaming SGLang GPU apply."
+                "'gpu-delta' publishes canonical GPU-encoded frames using the publication-selected codec "
+                "for streaming SGLang GPU apply."
             ),
         ),
     ] = "broadcast"
