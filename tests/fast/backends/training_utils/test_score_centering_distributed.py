@@ -29,6 +29,11 @@ from miles.utils.sampling_mask import RolloutSamplingMask
 
 register_cpu_ci(est_time=60, suite="stage-b-cpu", labels=["precision"])
 
+# (total lengths, response lengths, loss masks). Packed samples; the last has no response.
+_PACKED = ([5, 9, 3], [2, 3, 0], [[1, 0], [1, 1, 1], []])
+# One sample whose response lies in the second CP half, so all-gather CP rank 0 scores no row.
+_LATE_RESPONSE = ([9], [2], [[1, 1]])
+
 
 def _layout(parts: list[torch.Tensor], args: Namespace, cp_rank: int) -> torch.Tensor:
     if args.allgather_cp:
@@ -75,6 +80,8 @@ def _check_loss(
     device: torch.device,
     replay: bool = False,
     use_kl: bool = True,
+    dtype: torch.dtype = torch.float32,
+    samples: tuple[list[int], list[int], list[list[int]]] = _PACKED,
 ) -> None:
     args = Namespace(
         log_probs_backend="torch",
@@ -99,10 +106,13 @@ def _check_loss(
         kl_loss_coef=0.1,
     )
     generator = torch.Generator().manual_seed(19)
-    totals, responses = [5, 9, 3], [2, 3, 0]
-    parts = [torch.randn(total, 8, generator=generator).to(device).requires_grad_() for total in totals]
+    totals, responses, masks = samples
+    # Round to the model precision so the fp32 reference sees the logits the loss sees.
+    parts = [
+        torch.randn(total, 8, generator=generator).to(dtype).float().to(device).requires_grad_() for total in totals
+    ]
     tokens = [torch.randint(0, 7, (total,), generator=generator).to(device) for total in totals]
-    masks = [torch.tensor(mask, device=device) for mask in ([1, 0], [1, 1, 1], [])]
+    masks = [torch.tensor(mask, device=device) for mask in masks]
     advantages = [torch.randn(response, generator=generator).to(device) for response in responses]
     distributions = [torch.randn(response, 7, generator=generator).to(device).softmax(-1) for response in responses]
     candidates = [q.topk(3, dim=-1) for q in distributions]
@@ -152,6 +162,7 @@ def _check_loss(
     expected_loss.backward()
     local = (
         _layout([part.detach() for part in parts], args, cp.rank)[..., tp.rank * 4 : (tp.rank + 1) * 4]
+        .to(dtype)
         .clone()
         .requires_grad_()
     )
@@ -160,7 +171,7 @@ def _check_loss(
         response_lengths=responses,
         unconcat_tokens=tokens,
         loss_masks=masks,
-        max_seq_lens=[12] * 3 if args.qkv_format == "bshd" else None,
+        max_seq_lens=[12] * len(totals) if args.qkv_format == "bshd" else None,
         rollout_topk_token_ids=[head.indices.cpu().numpy().astype("int32") for head in candidates],
         rollout_topk_log_probs=[head.values.log().cpu().numpy() for head in candidates],
         rollout_log_probs=[
@@ -204,7 +215,8 @@ def _check_loss(
         torch.testing.assert_close(metrics["kl_loss"], torch.zeros_like(metrics["kl_loss"]), atol=0, rtol=0)
     loss.backward()
     expected_grad = _layout([part.grad for part in parts], args, cp.rank)[..., tp.rank * 4 : (tp.rank + 1) * 4]
-    torch.testing.assert_close(local.grad, expected_grad, atol=2e-6, rtol=2e-5)
+    atol, rtol = (2e-6, 2e-5) if dtype == torch.float32 else (0.01, 0.01)
+    torch.testing.assert_close(local.grad.float(), expected_grad, atol=atol, rtol=rtol)
     actual_loss = loss.detach().clone()
     dist.all_reduce(actual_loss, group=cp.group)
     torch.testing.assert_close(actual_loss, expected_loss, atol=2e-6, rtol=2e-5)
@@ -232,6 +244,11 @@ def _worker(rank: int, rendezvous: str, backend: str) -> None:
                 _check_loss(tp, cp, layout, mode, device)
                 for use_kl in (False, True):
                     _check_loss(tp, cp, layout, mode, device, replay=True, use_kl=use_kl)
+        # Model-precision logits where one CP rank scores no row in the micro-batch: every
+        # CP rank must all-reduce the same dtype, or the collective fails (Gloo) or hangs (NCCL).
+        for layout in ("allgather", "bshd_allgather"):
+            for replay in (False, True):
+                _check_loss(tp, cp, layout, "mis", device, replay=replay, dtype=torch.bfloat16, samples=_LATE_RESPONSE)
     finally:
         dist.destroy_process_group()
 

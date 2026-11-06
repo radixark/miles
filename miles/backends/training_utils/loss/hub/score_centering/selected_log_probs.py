@@ -164,10 +164,13 @@ def selected_log_probs_and_entropy(
         raise ValueError("Expected logits [T, V/TP] and selected token IDs [T, K]")
     if ((token_ids < -1) | (token_ids >= vocab_size)).any():
         raise ValueError("Score-centering token ID is outside the model vocabulary")
+    dtype = torch.float64 if logits.dtype == torch.float64 else torch.float32
     if logits.size(0) == 0:
+        # Match the non-empty dtype: an all-gather CP rank with no response rows
+        # all-reduces these with ranks that have rows, and differing bytes hang NCCL.
+        logits = logits.to(dtype)
         return logits.sum(-1, keepdim=True).expand_as(token_ids), logits.sum(-1)
     chunk_size = chunk_size if chunk_size > 0 else logits.size(0)
-    dtype = torch.float64 if logits.dtype == torch.float64 else torch.float32
     chunks = []
     for chunk, ids in zip(logits.split(chunk_size), token_ids.split(chunk_size), strict=True):
         if sampling_support:
