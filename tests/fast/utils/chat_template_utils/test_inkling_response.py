@@ -197,6 +197,7 @@ def test_postprocesses_tool_call_response_and_returns_stored_message():
         choice=choice,
         assistant_message=assistant_message,
         completion_token_ids=completion,
+        template_args={},
     )
 
     assert choice["finish_reason"] == "tool_calls"
@@ -229,6 +230,7 @@ def test_postprocesses_parse_error_without_changing_finish_reason():
         choice=choice,
         assistant_message=assistant_message,
         completion_token_ids=completion,
+        template_args={},
     )
 
     assert choice["finish_reason"] == "stop"
