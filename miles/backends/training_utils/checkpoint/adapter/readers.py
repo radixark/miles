@@ -8,6 +8,8 @@ from pathlib import Path
 import torch
 import torch.distributed.checkpoint as dcp
 import yaml
+from safetensors import safe_open
+from safetensors.torch import load_file
 
 from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
     ADAPTER_STATE_DIRNAME,
@@ -71,7 +73,6 @@ class AdapterSourceKind(str, enum.Enum):
 class AdapterSource:
     """Metadata only; tensors are read separately."""
 
-    kind: AdapterSourceKind
     parametrization: AdapterParametrization
     has_optimizer_state: bool
     weight_dtype: torch.dtype
@@ -82,8 +83,6 @@ def _has_peft_files(path: Path) -> bool:
 
 
 def _safetensors_names(path: Path) -> list[str]:
-    from safetensors import safe_open
-
     with safe_open(str(path / "adapter_model.safetensors"), "pt") as f:
         return list(f.keys())
 
@@ -171,8 +170,6 @@ def collapse_shared_lora_a(
 def _read_peft_tensors(
     path: Path, map_name, targets: HfLoraTargets
 ) -> tuple[dict[str, torch.Tensor], list[tuple[str, ...]]]:
-    from safetensors.torch import load_file
-
     return map_named_tensors_to_hf_keys(load_file(str(path / "adapter_model.safetensors")).items(), map_name, targets)
 
 
@@ -190,7 +187,6 @@ class MilesAdapterDirReader:
             if (config["r"], config["lora_alpha"]) != (parametrization.lora_rank, parametrization.lora_alpha):
                 raise AdapterSourceError(f"{self.path}: adapter_config.json disagrees with {PARAMETRIZATION_FILENAME}")
         self.source = AdapterSource(
-            AdapterSourceKind.ADAPTER_DIR,
             parametrization,
             has_optimizer_state=has_state and any(k.endswith(".exp_avg") for k in read_adapter_state_keys(self.path)),
             weight_dtype=torch.float32 if has_state else torch.bfloat16,
@@ -211,7 +207,7 @@ class MilesAdapterDirReader:
         return collapse_shared_lora_a(weights, self.source.parametrization, fused_groups)
 
 
-def _check_peft_config(config: dict, path: Path) -> None:
+def _assert_plain_lora_peft_config(config: dict, path: Path) -> None:
     used = [k for k in _PEFT_CONFIG_MUST_BE_EMPTY if config.get(k)]  # absent and empty both mean unused
     init = config.get("init_lora_weights")
     if isinstance(init, str) and init.startswith(_BASE_REWRITING_INITS):
@@ -226,22 +222,19 @@ class PeftAdapterReader:
     """HF-named PEFT (HF Hub, Bridge's exports), or main's native export, which stacks experts under sglang's names
     (experts.w1 / w3 / w2); per-expert 2D tensors are stacked to 3D."""
 
-    kind = AdapterSourceKind.PEFT
-
     def __init__(self, path: Path, run: AdapterParametrization, targets: HfLoraTargets):
         self.path, self.targets = Path(path), targets
         config = json.loads((self.path / "adapter_config.json").read_text())
         if config.get("peft_type", "LORA") != "LORA":
             raise AdapterSourceError(f"{self.path}: {config['peft_type']} is not LoRA")
         require_fields(config, ("r", "lora_alpha"), self.path / "adapter_config.json")
-        _check_peft_config(config, self.path)
+        _assert_plain_lora_peft_config(config, self.path)
         self._weights, self._fused_groups = _read_peft_tensors(self.path, self._map_name, targets)
         modules = sorted({k.rsplit(".", 1)[0] for k in self._weights if k.endswith(".lora_B")})
         shared_outer = any(".experts." in k and v.dim() == 3 and v.shape[0] == 1 for k, v in self._weights.items())
         groups = tuple(self._fused_groups)
         # PEFT's base_model_name_or_path is a path or hub id, not the run's base name; base and LoRA flavour are the run's
         self.source = AdapterSource(
-            self.kind,
             replace(
                 run,
                 lora_rank=config["r"],
@@ -263,8 +256,6 @@ class PeftAdapterReader:
 
 class ExternalWeightsReader(PeftAdapterReader):
     """Official Tinker export (F32, Tinker names, stacked 3D experts)."""
-
-    kind = AdapterSourceKind.EXTERNAL_WEIGHTS
 
     def _map_name(self, name: str) -> HfKey:
         return map_tinker_keys_to_hf_keys(name, self.targets)

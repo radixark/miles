@@ -8,7 +8,7 @@ import torch
 import transformers
 from safetensors.torch import load_file, save_file
 
-from miles.backends.training_utils.checkpoint.adapter.adapter_dir import write_peft_export, write_sampler_export
+from miles.backends.training_utils.checkpoint.adapter.adapter_dir import save_sampler_export, write_peft_export
 from miles.backends.training_utils.checkpoint.adapter.adapter_exports import (
     has_plain_peft_form,
     write_peft_adapter,
@@ -472,7 +472,7 @@ def test_a_sampler_export_is_written_uncommitted_with_its_tenant_and_parametriza
     run = _run(target_modules=(down,))
     export = _PerExpertDownExport()
 
-    written = write_sampler_export(tmp_path, "v1", export, 0, run, QWEN3, tenant_digest="digest", lora_dropout=0.0)
+    written = save_sampler_export(tmp_path, "v1", export, 0, run, QWEN3, tenant_digest="digest", lora_dropout=0.0)
 
     assert written.path.parent == tmp_path and not (tmp_path / "v1").exists(), "the committer links it"
     tensors = load_file(str(written.path / "adapter_model.safetensors"))
