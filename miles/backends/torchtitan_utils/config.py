@@ -9,6 +9,7 @@ from types import ModuleType
 
 import torch
 import torch.distributed as dist
+import torch.distributed._functional_collectives as funcol
 from torchtitan.components.optim import AdamW, LRSchedulersContainer, Optim, OptimizersContainer
 from torchtitan.config import TrainingConfig
 from torchtitan.config.configs import DebugConfig
@@ -16,9 +17,11 @@ from torchtitan.config.parallelism import ParallelismConfig
 from torchtitan.config.transform import ContextParallelTransform
 from torchtitan.config.transform.apply import transform_model_config_
 from torchtitan.distributed.activation_remat import FullActivationRematConfig
+from torchtitan.distributed.parallelism_context import MeshAxisName
+from torchtitan.distributed.spmd_types import spmd_mesh_group
 from torchtitan.models.base import BaseModel
-from torchtitan.models.common.attention import FlexInnerAttention, InnerAttention, MLAAttention
-from torchtitan.models.common.attention.cp_attention import AllGatherKVFlexInnerAttention
+from torchtitan.models.common.attention import FlexInnerAttention, GQAttention, InnerAttention, MLAAttention
+from torchtitan.models.common.attention.cp_attention import AllGatherKVFlexInnerAttention, Ulysses
 from torchtitan.models.common.linear import Linear
 from torchtitan.models.common.moe import MoE
 
@@ -70,9 +73,14 @@ def build_model_config(
     if not platforms.current_platform.flex_attention:
         _use_tpu_flash_attention(model)
     if parallelism.context_parallel_degree > 1:
-        model = transform_model_config_(
-            model, [ContextParallelTransform(inner_attention_map={FlexInnerAttention: AllGatherKVFlexInnerAttention})]
-        )
+        if platforms.current_platform.flex_attention:
+            cp_attention = {FlexInnerAttention: AllGatherKVFlexInnerAttention}
+        else:
+            _check_heads_divide_across_cp(
+                model, cp=parallelism.context_parallel_degree, tp=parallelism.tensor_parallel_degree
+            )
+            cp_attention = {TpuFlashInnerAttention: UlyssesTpuFlashInnerAttention}
+        model = transform_model_config_(model, [ContextParallelTransform(inner_attention_map=cp_attention)])
     return model
 
 
@@ -130,6 +138,52 @@ class TpuFlashInnerAttention(InnerAttention):
             scale=scale,
         )
         return out.squeeze(0).transpose(0, 1)
+
+
+class UlyssesTpuFlashInnerAttention(Ulysses, TpuFlashInnerAttention):
+    """TpuFlashInnerAttention under Ulysses CP: all-to-alls trade the token shard for a head shard around the kernel,
+    which then sees the whole sequence and its global segment ids."""
+
+    @dataclass(kw_only=True, slots=True)
+    class Config(Ulysses.Config, TpuFlashInnerAttention.Config):
+        pass
+
+    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, **kwargs) -> torch.Tensor:
+        group = spmd_mesh_group(MeshAxisName.CP)
+        # [tokens / cp, heads, dim] -> [tokens, heads / cp, dim]
+        q, k, v = (_cp_all_to_all(x, group, split_dim=1, concat_dim=0) for x in (q, k, v))
+        out = super().forward(q, k, v, **kwargs)
+        return _cp_all_to_all(out, group, split_dim=0, concat_dim=1)
+
+
+def _cp_all_to_all(x: torch.Tensor, group: dist.ProcessGroup, *, split_dim: int, concat_dim: int) -> torch.Tensor:
+    """Split `split_dim` across the group's ranks and concatenate what they send along `concat_dim`.
+
+    A functional collective with equal splits: torch_tpu lowers it inside a compiled block, where Ulysses'
+    `spmd.redistribute` (an autograd.Function Dynamo does not trace) cannot run.
+    """
+    size = group.size()
+    shape = list(x.shape)
+    chunks = x.reshape(*shape[:split_dim], size, shape[split_dim] // size, *shape[split_dim + 1 :])
+    received = funcol.all_to_all_single_autograd(chunks.movedim(split_dim, 0).contiguous(), None, None, group)
+    # eager funcol returns an AsyncCollectiveTensor; a traced one is already waited, and torch_tpu rejects a second wait
+    if isinstance(received, funcol.AsyncCollectiveTensor):
+        received = received.wait()
+    shape[split_dim] //= size
+    shape[concat_dim] *= size
+    return received.movedim(0, concat_dim).reshape(shape)
+
+
+def _check_heads_divide_across_cp(model: BaseModel.Config, *, cp: int, tp: int) -> None:
+    """Ulysses splits each rank's heads (a tensor-parallel share of them) across the CP ranks."""
+    for layer in model.layers:
+        for _, attention, _, _ in layer.traverse(GQAttention.Config):
+            n_kv_heads = attention.n_heads if attention.n_kv_heads is None else attention.n_kv_heads
+            if attention.n_heads % (tp * cp) or n_kv_heads % (tp * cp):
+                raise ValueError(
+                    f"Ulysses context parallelism shards attention heads across {tp} TP x {cp} CP ranks; "
+                    f"{attention.n_heads} query and {n_kv_heads} key/value heads do not divide by {tp * cp}"
+                )
 
 
 def _use_tpu_flash_attention(model: BaseModel.Config) -> None:
