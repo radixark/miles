@@ -8,7 +8,7 @@ from miles.backends.megatron_utils.lora.optimizer import SlotOptimizer
 from miles.backends.training_utils.checkpoint.adapter.adapter_dir import (
     save_adapter_dir,
     save_sampler_export,
-    write_external_export,
+    save_external_export,
 )
 from miles.backends.training_utils.checkpoint.adapter.commit import UncommittedAdapterDir
 from miles.backends.training_utils.data.rollout import get_rollout_data
@@ -145,7 +145,7 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
         assert parametrization.lora_rank == self.adapter_slots.lora_rank(
             slot
         ), "the gateway and the slot disagree on rank"
-        return write_external_export(
+        return save_external_export(
             Path(root),
             name,
             self._checkpoint_members(),

@@ -17,7 +17,7 @@ from miles.backends.training_utils.checkpoint.adapter.adapter_dir import (
     load_adapter_source,
     save_adapter_dir,
     save_and_commit_adapter_dir,
-    write_external_export,
+    save_external_export,
     write_peft_export,
 )
 from miles.backends.training_utils.checkpoint.adapter.adapter_exports import write_peft_adapter
@@ -423,7 +423,7 @@ class DataParallelMembers(FakeMembers):
 def _export_external_with_replicas(rank, world_size, port, *, root):
     init_gloo(rank, world_size, port=port)
     init_gloo_group()
-    written = write_external_export(
+    written = save_external_export(
         Path(root), "x", DataParallelMembers(scale=1 / 3), 0, RUN, TARGETS, tenant_digest=None, lora_dropout=0.0
     )
     if rank == 0:

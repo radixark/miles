@@ -310,7 +310,7 @@ def save_sampler_export(
     return written
 
 
-def write_external_export(
+def save_external_export(
     root: Path,
     name: str,
     members: AdapterCheckpointMembers,
