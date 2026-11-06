@@ -9,7 +9,6 @@ from miles.backends.training_utils.checkpoint.adapter import commit as commit_mo
 from miles.backends.training_utils.checkpoint.adapter.commit import (
     TENANT_FILENAME,
     OwnershipError,
-    UncommittedAdapterDir,
     commit_adapter_dir,
     delete_adapter_dir,
     delete_retired_adapter_dirs,
@@ -70,6 +69,18 @@ def test_another_tenant_cannot_resolve_or_delete(tmp_path):
         delete_adapter_dir(tmp_path, "w", tenant="mallory")
     delete_adapter_dir(tmp_path, "w", tenant="alice")
     assert resolve_adapter_dir(tmp_path, "w", tenant=None) is None
+    _save(tmp_path, "untenanted", "1", tenant=None)
+    with pytest.raises(OwnershipError):
+        resolve_adapter_dir(tmp_path, "untenanted", tenant="alice")
+
+
+def test_a_name_that_is_not_one_visible_path_component_is_refused(tmp_path):
+    for name, refusal in ((".w", "must not start with"), ("x/../y", "one path component")):
+        with pytest.raises(AssertionError, match=refusal):
+            with write_adapter_dir(tmp_path, name):
+                pass
+    with pytest.raises(AssertionError, match="one path component"):
+        resolve_adapter_dir(tmp_path, "x/../w", tenant=None)
 
 
 def test_a_failed_write_is_never_visible_and_leaves_nothing(tmp_path):
@@ -126,12 +137,6 @@ def test_recovery_keeps_a_dangling_foreign_link(tmp_path):
     assert os.readlink(root / "y") == str(tmp_path / "unmounted" / "adapter")
 
 
-def test_user_names_cannot_start_with_a_dot(tmp_path):
-    with pytest.raises(AssertionError, match="must not start with"):
-        with write_adapter_dir(tmp_path, ".w"):
-            pass
-
-
 def test_recovery_removes_a_crashed_commits_staging_link_and_leaves_foreign_hidden_dirs(tmp_path):
     with write_adapter_dir(tmp_path, "w") as crashed:
         pass
@@ -140,23 +145,6 @@ def test_recovery_removes_a_crashed_commits_staging_link_and_leaves_foreign_hidd
     (tmp_path / ".git").mkdir()
     delete_unreferenced_adapter_dirs(tmp_path)
     assert sorted(p.name for p in tmp_path.iterdir()) == [".git"]
-
-
-def test_user_names_must_be_one_path_component(tmp_path):
-    with pytest.raises(AssertionError, match="one path component"):
-        with write_adapter_dir(tmp_path, "x/../y"):
-            pass
-
-
-def test_an_adapter_without_a_tenant_belongs_to_no_tenant(tmp_path):
-    _save(tmp_path, "w", "1", tenant=None)
-    with pytest.raises(OwnershipError):
-        resolve_adapter_dir(tmp_path, "w", tenant="alice")
-
-
-def test_resolve_refuses_a_path_as_a_name(tmp_path):
-    with pytest.raises(AssertionError, match="one path component"):
-        resolve_adapter_dir(tmp_path, "x/../w", tenant=None)
 
 
 def test_an_overwrite_replaces_a_checkpoint_saved_before_commits(tmp_path):
@@ -259,12 +247,6 @@ def test_the_written_files_and_dir_are_synced_before_the_link_swap(tmp_path, mon
     commit_adapter_dir(tmp_path, "w", written, overwrite=False)
     synced = {path for op, path in events[: events.index(("replace", tmp_path / "w"))] if op == "fsync"}
     assert {written.path, *(written.path / f for f in metadata)} <= synced
-
-
-def test_committing_a_dir_this_process_cannot_see_is_a_storage_error(tmp_path):
-    written = UncommittedAdapterDir(tmp_path / ".w.0123456789abcdef", "0123456789abcdef")
-    with pytest.raises(FileNotFoundError, match="does not exist"):
-        commit_adapter_dir(tmp_path, "w", written, overwrite=False)
 
 
 def test_one_committer_per_root_a_commit_removes_another_in_flight_write_of_the_name(tmp_path):

@@ -96,8 +96,7 @@ class TinkerService:
         # ended sessions, kept a lease long and at least the SDK's retry window so a retried finish is answered
         self._ended_sessions: dict[str, _EndedSession] = {}
         self.expiry = CheckpointExpiry(config.checkpoint_root)
-        # serializes expiry changes with each other and with deletes; never held across a training call, so a TTL
-        # change does not wait for one
+        # expiry changes and deletes; never held across a training call
         self._expiry_lock = asyncio.Lock()
         # issued download tokens; unguessable, held only in memory, so a restart invalidates every URL
         self._downloads: dict[str, _Download] = {}
@@ -427,7 +426,7 @@ class TinkerService:
                     raise UserInputError(f"cannot commit checkpoint {name!r}: {error}") from None
                 if not isinstance(error, OSError):
                     raise
-                # a storage failure loses only this save; the trainer and other tenants are unaffected
+                # a storage failure loses only this save
                 return {"error": f"cannot commit checkpoint {name!r}: {error}", "error_category": "server"}
             self._delete_retired_outside_the_lock(root)
             await self._set_expiry_after_commit_locked(tinker_path, payload["ttl_seconds"])
@@ -695,8 +694,7 @@ class TinkerService:
                     else:
                         await self._delete_checkpoint(tinker_path, root, name, None)
                 except (OSError, ValueError, AssertionError):
-                    # one undeletable checkpoint (unwritable, or its name relinked out of the root or to a dir the
-                    # library did not write) must not cut off every tenant or every restart; its entry stays
+                    # one undeletable checkpoint must not stop the sweep; its entry stays for the next one
                     logger.exception(f"could not delete expired checkpoint {tinker_path}; retrying next sweep")
 
     def weights_info(self, tenant: str, tinker_path: str) -> dict:
