@@ -36,7 +36,6 @@ from miles.backends.training_utils.checkpoint.adapter.adapter_dir import (
     check_adapter_source,
     load_adapter_dir,
     read_training_state,
-    save_adapter_dir,
     save_and_commit_adapter_dir,
 )
 from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
@@ -45,7 +44,6 @@ from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
     gloo_group,
     raise_if_any_rank_failed,
 )
-from miles.backends.training_utils.checkpoint.adapter.commit import UncommittedAdapterDir
 from miles.backends.training_utils.checkpoint.adapter.parametrization import (
     AdapterParametrization,
     base_model_fingerprint,
@@ -407,17 +405,6 @@ def _moment(state: dict, master: torch.Tensor, key: str) -> torch.Tensor:
     return state[key] if state else torch.zeros_like(master)
 
 
-def save_slot(
-    members: LayerWiseSlotMembers,
-    slot: int,
-    root: str,
-    name: str,
-    tenant_digest: str,
-    parametrization: AdapterParametrization,
-) -> UncommittedAdapterDir:
-    return save_adapter_dir(Path(root), name, members, slot, parametrization, tenant_digest=tenant_digest)
-
-
 def load_slot(
     model: Sequence[DDP],
     members: LayerWiseSlotMembers,
@@ -440,18 +427,6 @@ def load_slot(
         in_model_loaders_by_kind={AdapterSourceKind.LEGACY_TINKER_CHECKPOINT: legacy},
         checked=checked,
     )
-
-
-def find_load_mismatch(
-    model: Sequence[DDP],
-    slot: int,
-    path: str,
-    run: AdapterParametrization,
-    targets,
-    load_optimizer: bool,
-) -> str | None:
-    """Collective: why ``path`` cannot load into ``slot`` (every rank gets the same answer), or None."""
-    return check_load_source(model, slot, path, run, targets, load_optimizer)[0]
 
 
 def check_load_source(
