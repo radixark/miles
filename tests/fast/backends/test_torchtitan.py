@@ -496,6 +496,19 @@ def test_a_platform_without_sparse_flex_attention_gets_tpu_flash_attention_in_ev
     assert inner == {TpuFlashInnerAttention.Config}
 
 
+def test_tpu_attention_segments_restart_where_the_positions_do():
+    """The kernel masks across segments, so a segment must start exactly where a packed sequence (or the pad) does."""
+    pytest.importorskip("torchtitan")
+    from miles.backends.torchtitan_utils.config import TpuFlashInnerAttention
+
+    positions = torch.cat([torch.arange(n) for n in (700, 900, 1200, 1296)])
+    segment_ids = TpuFlashInnerAttention.Config().build_attention_metadata(positions)
+    assert segment_ids.dtype == torch.int32
+    assert torch.all(segment_ids[1:] >= segment_ids[:-1]), "the kernel skips blocks assuming non-decreasing ids"
+    starts = (positions == 0).cumsum(-1)
+    assert torch.equal(segment_ids[1:] != segment_ids[:-1], starts[1:] != starts[:-1])
+
+
 def test_mla_keeps_its_wrapper_and_runs_tpu_flash_attention_inside_it(on_tpu):
     """MLA wraps the flex kernel in its own inner attention; only the kernel has a TPU replacement."""
     pytest.importorskip("torchtitan")

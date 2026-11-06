@@ -26,7 +26,6 @@ from miles.backends.torchtitan_utils import lora
 from miles.backends.torchtitan_utils.components import TiedCheckpointManager
 from miles.backends.torchtitan_utils.loss import RLLossAdapter
 from miles.backends.torchtitan_utils.trainer import TitanTrainer
-from miles.kernels.tpu.flash_attention import flash_attention
 from miles.utils.args.runtime import TrainerConfig
 from miles.utils.hf_utils.config import load_hf_config
 
@@ -101,6 +100,11 @@ class TpuFlashInnerAttention(InnerAttention):
 
     def __init__(self, config: Config) -> None:
         super().__init__()
+        # imported here, eagerly and on TPU only: it needs jax and torch_tpu, and registers its torch ops at import,
+        # which a compiled region cannot trace
+        from miles.kernels.tpu.flash_attention import flash_attention
+
+        self.flash_attention = flash_attention
 
     def forward(
         self,
@@ -116,14 +120,13 @@ class TpuFlashInnerAttention(InnerAttention):
     ) -> torch.Tensor:
         if score_mod is not None or out_transform is not None:
             raise NotImplementedError("the TPU flash attention takes no score_mod or out_transform")
-        # torchtitan passes [tokens, heads, dim]; the kernel takes [batch, heads, tokens, dim]
-        out = flash_attention(
+        # torchtitan passes [tokens, heads, dim]; the kernel takes [batch, heads, tokens, dim] and runs GQA itself
+        out = self.flash_attention(
             q.transpose(0, 1).unsqueeze(0),
             k.transpose(0, 1).unsqueeze(0),
             v.transpose(0, 1).unsqueeze(0),
             segment_ids=attention_metadata.unsqueeze(0),
             scale=scale,
-            enable_gqa=enable_gqa,
         )
         return out.squeeze(0).transpose(0, 1)
 
