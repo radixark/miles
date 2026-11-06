@@ -579,8 +579,8 @@ def test_without_an_optimizer_an_adapter_path_loads_the_weights_and_starts_over(
         megatron_to_hf_mode="bridge",
         backend=SimpleNamespace(no_load_optim=False, no_save_optim=True, use_precision_aware_optimizer=False),
     )
-    iteration = restore_single_lora([], args, adapter_slots=slots, optimizer=None, opt_param_scheduler=None)
-    assert iteration is None
+    restored = restore_single_lora([], args, adapter_slots=slots, optimizer=None, opt_param_scheduler=None)
+    assert restored == (None, False, 0)
     assert loaded_with["load_optimizer"] is False
     assert torch.equal(param, torch.tensor([[7.0, 0.0], [0.0, 5.0]], dtype=torch.bfloat16))
 
