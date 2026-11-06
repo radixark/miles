@@ -277,6 +277,10 @@ def _load_hf_weights_with_mbridge(ddp_model, args, load_path: str) -> None:
         bypass,
     ):
         bridge = AutoBridge.from_pretrained(load_path, trust_remote_code=True)
+        # mbridge learns the vocab padding only from its own model provider, which miles does not use
+        bridge.make_vocab_size_divisible_by = args.backend.make_vocab_size_divisible_by
+        bridge.vocab_size = bridge.hf_config.get_text_config().vocab_size
+        bridge.padded_vocab_size = args.backend.padded_vocab_size
         bridge.load_weights(ddp_model, load_path, memory_efficient=True)
     torch.cuda.synchronize()
 
