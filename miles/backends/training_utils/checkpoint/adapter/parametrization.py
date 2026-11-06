@@ -105,7 +105,7 @@ def write_parametrization(directory: Path, parametrization: AdapterParametrizati
 
 def read_parametrization(directory: Path) -> AdapterParametrization:
     fields = json.loads((directory / PARAMETRIZATION_FILENAME).read_text())
-    version = fields.pop("format_version", 1)
+    version = fields.pop("format_version")
     if version != PARAMETRIZATION_FORMAT_VERSION:
         raise AdapterSourceError(
             f"{directory / PARAMETRIZATION_FILENAME} has format version {version}; this miles reads version "

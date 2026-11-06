@@ -363,8 +363,6 @@ class TinkerService:
             tenant_digest=tenant_digest(record.tenant),
             parametrization_fields=build_parametrization_fields(record, self.config),
         )
-        if isinstance(written, dict):
-            return written
         # the commit's recovery walk and fsyncs hit shared storage; keep the event loop serving
         try:
             await asyncio.to_thread(self.backend.commit_adapter, root, name, written, overwrite=payload["overwrite"])

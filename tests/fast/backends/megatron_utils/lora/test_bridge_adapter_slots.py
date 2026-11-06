@@ -7,7 +7,7 @@ import torch
 import torch.distributed as dist
 from tests.fast.dist_utils import init_gloo, run_multiprocess
 
-from miles.backends.megatron_utils.lora.bridge_checkpoint import BridgeAdapterSlots, probe_bridge_row_mapping
+from miles.backends.megatron_utils.lora.bridge_adapter_slots import BridgeAdapterSlots, probe_bridge_row_mapping
 from miles.backends.training_utils.checkpoint.adapter.probed_slots import HfPiece, RowMapping
 from miles.tinker.core.utils import build_parametrization_fields
 from miles.utils.distributed_utils import init_gloo_group
