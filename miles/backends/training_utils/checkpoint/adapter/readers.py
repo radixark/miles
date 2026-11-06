@@ -69,7 +69,6 @@ class AdapterSourceKind(str, enum.Enum):
 class AdapterSource:
     """Metadata only; tensors are read separately."""
 
-    kind: AdapterSourceKind
     parametrization: AdapterParametrization
     has_optimizer_state: bool
     weight_dtype: torch.dtype
@@ -182,7 +181,6 @@ class MilesAdapterDirReader:
             if (config["r"], config["lora_alpha"]) != (parametrization.lora_rank, parametrization.lora_alpha):
                 raise AdapterSourceError(f"{self.path}: adapter_config.json disagrees with {PARAMETRIZATION_FILENAME}")
         self.source = AdapterSource(
-            AdapterSourceKind.ADAPTER_DIR,
             parametrization,
             has_optimizer_state=has_state and any(k.endswith(".exp_avg") for k in read_adapter_state_keys(self.path)),
             weight_dtype=torch.float32 if has_state else torch.bfloat16,
@@ -226,8 +224,6 @@ class PeftAdapterReader:
     """HF-named PEFT (HF Hub, Bridge's exports), or main's native export, which stacks experts under sglang's names
     (experts.w1 / w3 / w2); per-expert 2D tensors are stacked to 3D."""
 
-    kind = AdapterSourceKind.PEFT
-
     def __init__(self, path: Path, run: AdapterParametrization, targets: HfLoraTargets):
         self.path, self.targets = Path(path), targets
         config = json.loads((self.path / "adapter_config.json").read_text())
@@ -241,7 +237,6 @@ class PeftAdapterReader:
         groups = tuple(self._fused_groups)
         # PEFT's base_model_name_or_path is a path or hub id, not the run's base name; base and LoRA flavour are the run's
         self.source = AdapterSource(
-            self.kind,
             replace(
                 run,
                 lora_rank=config["r"],
@@ -263,8 +258,6 @@ class PeftAdapterReader:
 
 class ExternalWeightsReader(PeftAdapterReader):
     """Official Tinker export (F32, Tinker names, stacked 3D experts)."""
-
-    kind = AdapterSourceKind.EXTERNAL_WEIGHTS
 
     def _map_name(self, name: str) -> HfKey:
         return map_tinker_keys_to_hf_keys(name, self.targets)
