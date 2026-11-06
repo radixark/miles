@@ -331,13 +331,9 @@ def write_external_export(
     """All ranks call; rank 0 writes ``slot``'s external export from the fp32 masters (no parametrization: it is a
     download, not a checkpoint). The caller's committer then commits it."""
     with write_adapter_dir(root, name, tenant_digest=tenant_digest) as written:
-        state, error = None, None
-        try:
-            state = members.export_adapter_state(slot)
-        except Exception as exc:
-            error = exc
         # agree before the gather, so one rank's failure cannot leave the others waiting in it
-        raise_if_any_rank_failed(error)
+        with agreed_step():
+            state = members.export_adapter_state(slot)
         weights = _gather_whole_weights(state)
         # rank 0's own pieces are in ``weights`` now; the export would otherwise hold them twice
         del state
