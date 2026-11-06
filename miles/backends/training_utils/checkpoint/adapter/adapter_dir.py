@@ -250,7 +250,7 @@ def save_sampler_export(
 ) -> UncommittedAdapterDir:
     """All ranks call; rank 0 writes ``slot``'s bf16 sampler export. The caller's committer then commits it."""
     with write_adapter_dir(root, name, tenant_digest=tenant_digest) as written:
-        write_sampler_view(written.path, members, slot, parametrization, targets, lora_dropout=lora_dropout)
+        write_sampler_export(written.path, members, slot, parametrization, targets, lora_dropout=lora_dropout)
     return written
 
 
