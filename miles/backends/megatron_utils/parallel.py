@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 import torch
 from megatron.core import mpu
 from megatron.core.packed_seq_params import PackedSeqParams
+from megatron.core.transformer.identity_op import IdentityOp
+from megatron.core.transformer.transformer_layer import TransformerLayer
 from megatron.core.utils import get_model_config
 from megatron.training.global_vars import get_args
 
@@ -99,6 +101,34 @@ def verify_megatron_parallel_state(
         assert (
             actual == expected
         ), f"microbatch_group_size_per_vp_stage mismatch: ParallelState has {actual}, model config has {expected}"
+
+
+def verify_allgather_cp_support(model: Sequence[torch.nn.Module], *, allgather_cp: bool) -> None:
+    """Reject ``--allgather-cp`` unless every context-parallel attention layer reads its token layout.
+
+    ``--allgather-cp`` gives each CP rank one contiguous slice of the token stream, while stock
+    Megatron attention and RoPE assume the zigzag split and silently compute wrong results on it.
+    Attention modules that read the contiguous layout opt in with ``supports_allgather_cp = True``.
+    """
+    if not allgather_cp:
+        return
+    for chunk_index, chunk in enumerate(model):
+        for name, layer in chunk.named_modules():
+            # Layers outside the CP split (e.g. a vision tower with its own CP size of 1) never see it.
+            if not isinstance(layer, TransformerLayer) or layer.config.context_parallel_size == 1:
+                continue
+            attention = layer.self_attention
+            if isinstance(attention, IdentityOp):
+                continue
+            if getattr(  # config-access-exempt: only attention modules that read the layout define it
+                attention, "supports_allgather_cp", False
+            ):
+                continue
+            raise ValueError(
+                f"--allgather-cp gives each CP rank a contiguous slice of the sequence, but "
+                f"model chunk {chunk_index} layer {name} uses {type(attention).__name__}, which assumes "
+                "the zigzag CP split. Remove --allgather-cp to use zigzag context parallelism."
+            )
 
 
 @dataclass

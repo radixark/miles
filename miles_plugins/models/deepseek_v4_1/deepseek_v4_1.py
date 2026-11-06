@@ -324,6 +324,9 @@ class V41TransformerLayer(HyperConnectionTransformerLayer):
 
 
 class DeepSeekV41Attention(MegatronModule):
+    # Reads the contiguous token layout of --allgather-cp; see verify_allgather_cp_support.
+    supports_allgather_cp = True
+
     def __init__(
         self,
         config: TransformerConfig,

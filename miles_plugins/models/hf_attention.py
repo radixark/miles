@@ -49,6 +49,11 @@ class HuggingfaceAttention(MegatronModule, ABC):
     # (e.g. via fla's state-passing CP for DeltaNet), bypassing the all-gather.
     hybrid_cp: bool = False
 
+    @property
+    def supports_allgather_cp(self) -> bool:
+        # Only the hybrid-CP path reads the --allgather-cp layout; the all-gather path assumes zigzag.
+        return self.hybrid_cp
+
     def __init__(
         self,
         args,
