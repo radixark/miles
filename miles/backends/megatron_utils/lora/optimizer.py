@@ -140,6 +140,11 @@ class SlotOptimizer:
         for child in self._inner.chained_optimizers:
             child.grad_stats_parallel_group = None
 
+    @property
+    def chained_optimizers(self) -> list:
+        """The slot's Float16 children: masters in ``fp32_from_float16_groups``, Adam state in ``.optimizer``."""
+        return self._inner.chained_optimizers
+
     def apply_adam_params(self, adam_params: dict) -> None:
         for child in self._inner.chained_optimizers:
             for group in child.param_groups:
@@ -173,16 +178,19 @@ class SlotOptimizer:
     def allgather_params(self) -> None:
         self._inner.allgather_params()
 
-    def reload_masters(self) -> None:
-        """Refresh this slot's FP32 masters from its model parameters."""
-        self._inner.reload_model_params()
-
     def sharded_state(self, model_sharded_state_dict: dict, *, is_loading: bool) -> dict:
         """torch_dist form: every state tensor carries its param's global coordinates."""
         return self._inner.sharded_state_dict(model_sharded_state_dict, is_loading=is_loading)
 
     def load_sharded_state(self, loaded: dict) -> None:
         self._inner.load_state_dict(loaded)
+
+    def reset_adam_state(self) -> None:
+        """Drop the Adam moments and step, keeping the masters: the state of a slot that never stepped."""
+        for child in self._inner.chained_optimizers:
+            child.optimizer.state.clear()
+            for group in child.optimizer.param_groups:
+                group.pop("step", None)
 
     def zero_grads(self) -> None:
         """Zero the slot's gradients everywhere they live: the DDP ``main_grad``
