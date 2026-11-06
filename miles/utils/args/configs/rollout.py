@@ -262,8 +262,8 @@ class RolloutRelatedConfig(BaseConfig):
                 "'ici' sends each bucket device to device over the ICI links of a TPU slice the trainer "
                 "shares with one engine (MILES_TPU_SHARED_SLICE on the trainer, SGLANG_TPU_SHARED_SLICE "
                 "on the engine). "
-                "'gpu-delta' publishes canonical GPU-encoded frames using publication-selected "
-                "Snappy-Zstd, LZ4-Zstd or LZ4 for streaming SGLang GPU apply."
+                "'gpu-delta' publishes canonical GPU-encoded frames using the publication-selected codec "
+                "for streaming SGLang GPU apply."
             ),
         ),
     ] = "broadcast"
