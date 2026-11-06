@@ -28,11 +28,15 @@ from miles.backends.training_utils.checkpoint.adapter.adapter_dir import (
     read_training_state,
     save_and_commit_adapter_dir,
 )
-from miles.backends.training_utils.checkpoint.adapter.adapter_state import AdapterState, agree_on_failure_context, gloo_group
+from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
+    AdapterState,
+    agree_on_failure_context,
+    gloo_group,
+)
 from miles.backends.training_utils.checkpoint.adapter.base_model_check import (
     assert_same_base_tensors,
-    read_base_check_tensors,
     is_base_check_tensor,
+    read_base_check_tensors,
     resolve_hf_dir,
 )
 from miles.backends.training_utils.checkpoint.adapter.parametrization import (
