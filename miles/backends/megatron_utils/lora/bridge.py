@@ -13,7 +13,6 @@ from dataclasses import dataclass
 import torch
 import torch.distributed as dist
 from megatron.core.tensor_parallel import ColumnParallelLinear
-from megatron.core.transformer.moe.router import TopKRouter
 from megatron.core.utils import get_attr_wrapped_model
 
 from miles.backends.megatron_utils.lora.slots import create_multi_lora_instance
@@ -238,11 +237,6 @@ def _setup_lora_model_via_bridge(args: TrainerConfig) -> list:
         lora = create_adapter(args, target_modules=adapter_targets)
         transformed = lora(model_chunks, training=True)
         enable_expert_parallel_grad_sync_in_finalize(transformed)
-        if is_multi_lora_enabled(args):
-            for chunk in transformed:
-                for module in chunk.modules():
-                    if isinstance(module, TopKRouter):
-                        module.frozen_expert_bias = True
         lora.set_params_to_save(transformed)
         return transformed
 
