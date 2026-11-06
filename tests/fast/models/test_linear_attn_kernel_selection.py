@@ -1,6 +1,10 @@
 """Linear-attention kernel selection, and fla vs flashqla numerical equivalence for GDN.
 
-The equivalence tests need a Hopper (SM90+) GPU with both `fla` and `flash_qla`; they skip otherwise.
+The flashqla equivalence tests need a Hopper (SM90+) GPU with both `fla` and `flash_qla`; they skip otherwise.
+The cake kernels' equivalence with fla and their determinism are tested in the miles-ext-kernels submodule
+(`3rdparty/miles-ext-kernels/tests/cake/gdn`), which `tests/fast-gpu/kernels/test_miles_ext_kernels.py` runs on
+Blackwell.
+The gradients of the reproducible gated output norm of the cake layers are checked on the CPU against autograd.
 """
 
 import os
@@ -8,13 +12,90 @@ import sys
 import types
 
 import pytest
+from tests.fast.fixtures.args_fixtures import parse_megatron_test_config
 
+from miles.utils.args.trainer_utils import compute_trainer_config
 from miles_plugins.models import linear_attn
 
 
 def test_unknown_backend_raises_value_error():
     with pytest.raises(ValueError, match="Unsupported GDN backend"):
         linear_attn.gdn_kernel("nope")
+
+
+def test_cake_backend_routes_to_the_generated_kernels():
+    pytest.importorskip("torch")
+    pytest.importorskip("miles_ext_kernels.cake.gdn", reason="the miles-ext-kernels submodule is not checked out")
+    fn = linear_attn.gdn_kernel("cake")
+    assert fn.__module__ == "miles_ext_kernels.cake._impl.gdn.ops"
+    assert fn.__name__ == "chunk_gated_delta_rule"
+
+
+def _fake_cake_package(monkeypatch, configured: list, prebuilt: list | None = None) -> None:
+    _fake_ext_package(monkeypatch, "gdn", configured, prebuilt, chunk_gated_delta_rule="cake-kernel")
+
+
+def test_cake_backend_hands_the_kernel_package_its_own_argument_values(monkeypatch):
+    """miles passes the values of the kernel package's own arguments to ``miles_ext_kernels.configure`` without
+    knowing their names, then builds the op's libraries, where a layer is built (the caller has ``args``)."""
+    configured, prebuilt = [], []
+    _fake_cake_package(monkeypatch, configured, prebuilt)
+    fla = types.ModuleType("fla.ops.gated_delta_rule")
+    fla.chunk_gated_delta_rule = "fla-kernel"
+    monkeypatch.setitem(sys.modules, "fla.ops.gated_delta_rule", fla)
+    args = types.SimpleNamespace(linear_attention_backend="cake", miles_ext_kernels_args={"kernel_option": 3})
+
+    assert linear_attn.gdn_kernel("cake") == "cake-kernel"
+    assert linear_attn.gdn_kernel("fla", args=args) == "fla-kernel"
+    assert configured == prebuilt == []
+    assert linear_attn.gdn_kernel("cake", args=args) == "cake-kernel"
+    assert configured == [{"kernel_option": 3}]
+    assert prebuilt == [("gdn", {})]
+    # a configuration without the flag (no ext arguments) configures the package with its defaults
+    assert linear_attn.gdn_kernel("cake", args=types.SimpleNamespace(miles_ext_kernels_args=None)) == "cake-kernel"
+    assert configured[-1] is None
+
+
+@pytest.mark.parametrize(
+    "extra, variant, recompute",
+    [
+        ([], "fast", False),
+        (["--cake-gdn-recompute-state"], "fast", True),
+        (["--cake-gdn-variant", "det"], "det", False),
+        (["--cake-gdn-variant", "fast", "--cake-gdn-recompute-state"], "fast", True),
+    ],
+)
+def test_the_parsed_ext_arguments_reach_the_cake_kernel_package_through_the_trainer_config(
+    monkeypatch, extra, variant, recompute
+):
+    """The real path: the submodule's GDN arguments, parsed and validated by miles (an unset variant resolves to
+    fast outside deterministic mode), sliced into the trainer's typed configuration and handed by the layer seam to
+    ``miles_ext_kernels.configure``."""
+    config = parse_megatron_test_config("--use-miles-ext-kernels", "--linear-attention-backend", "cake", *extra)
+    trainer = compute_trainer_config(config, config.raw_megatron.trainers[0])
+    configured = []
+    _fake_cake_package(monkeypatch, configured)
+
+    linear_attn.gdn_kernel(trainer.linear_attention_backend, args=trainer)
+
+    gdn_args = {name: value for name, value in trainer.miles_ext_kernels_args.items() if name.startswith("cake_gdn_")}
+    assert gdn_args == {"cake_gdn_variant": variant, "cake_gdn_recompute_state": recompute}
+    assert configured == [trainer.miles_ext_kernels_args]
+
+
+def test_the_gdn_variant_needs_the_cake_backend():
+    with pytest.raises(ValueError, match="--cake-gdn-variant requires --linear-attention-backend cake"):
+        parse_megatron_test_config("--use-miles-ext-kernels", "--cake-gdn-variant", "det")
+
+
+def test_cake_backend_without_the_submodule_names_the_flag_and_the_checkout(monkeypatch):
+    monkeypatch.setitem(sys.modules, "miles_ext_kernels", None)
+    monkeypatch.setitem(sys.modules, "miles_ext_kernels.cake", None)
+    monkeypatch.setitem(sys.modules, "miles_ext_kernels.cake.gdn", None)
+
+    with pytest.raises(ImportError, match="--use-miles-ext-kernels") as excinfo:
+        linear_attn.gdn_kernel("cake")
+    assert "git submodule update --init 3rdparty/miles-ext-kernels" in str(excinfo.value)
 
 
 @pytest.mark.parametrize(
@@ -32,9 +113,178 @@ def test_kda_uses_the_triton_backward_on_blackwell_unless_set(monkeypatch, capab
     assert os.environ.get("FLA_TILELANG") == expected
 
 
+def test_cake_kda_backend_routes_to_the_kernel_package(monkeypatch):
+    linear_attn.kda_kernel.cache_clear()
+    cake = types.ModuleType("miles_ext_kernels.cake.kda")
+    cake.chunk_kda = "cake-kda"
+    monkeypatch.setitem(sys.modules, "miles_ext_kernels", types.ModuleType("miles_ext_kernels"))
+    monkeypatch.setitem(sys.modules, "miles_ext_kernels.cake", types.ModuleType("miles_ext_kernels.cake"))
+    monkeypatch.setitem(sys.modules, "miles_ext_kernels.cake.kda", cake)
+    try:
+        assert linear_attn.kda_kernel("cake") == "cake-kda"
+    finally:
+        linear_attn.kda_kernel.cache_clear()
+
+
+def test_unknown_kda_backend_raises_value_error():
+    with pytest.raises(ValueError, match="Unsupported KDA backend"):
+        linear_attn.kda_kernel.__wrapped__("nope")
+
+
+def test_cake_kda_backend_without_the_submodule_names_the_flag(monkeypatch):
+    monkeypatch.setitem(sys.modules, "miles_ext_kernels", None)
+    monkeypatch.setitem(sys.modules, "miles_ext_kernels.cake", None)
+    monkeypatch.setitem(sys.modules, "miles_ext_kernels.cake.kda", None)
+
+    with pytest.raises(ImportError, match="--use-miles-ext-kernels") as excinfo:
+        linear_attn.kda_kernel.__wrapped__("cake")
+    assert "git submodule update --init 3rdparty/miles-ext-kernels" in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    "extra, message",
+    [
+        (["--context-parallel-size", "2"], "--kda-backend cake does not support context parallelism"),
+        (["--qkv-format", "bshd"], "--kda-backend cake needs --qkv-format thd"),
+    ],
+)
+def test_the_cake_kda_backend_rejects_what_its_kernels_do_not_run(extra, message):
+    with pytest.raises(ValueError, match=message):
+        parse_megatron_test_config("--use-miles-ext-kernels", "--kda-backend", "cake", *extra)
+
+
+def test_the_cake_kda_backend_parses_with_its_supported_layout():
+    config = parse_megatron_test_config("--use-miles-ext-kernels", "--kda-backend", "cake")
+
+    assert config.kda_backend == "cake"
+
+
+def _fake_ext_package(
+    monkeypatch, name: str, configured: list | None = None, prebuilt: list | None = None, **attrs
+) -> types.ModuleType:
+    """Stand-ins for ``miles_ext_kernels`` (its ``configure`` records the values), ``miles_ext_kernels.cake`` (its
+    ``prebuild`` records the op and its parameters) and the op module ``miles_ext_kernels.cake.<name>`` with
+    ``attrs``."""
+    package = types.ModuleType("miles_ext_kernels")
+    package.configure = (configured if configured is not None else []).append
+    cake = types.ModuleType("miles_ext_kernels.cake")
+    cake.prebuild = lambda op, **params: (prebuilt if prebuilt is not None else []).append((op, params))
+    module = types.ModuleType(f"miles_ext_kernels.cake.{name}")
+    for attr, value in attrs.items():
+        setattr(module, attr, value)
+    package.cake = cake
+    setattr(cake, name, module)
+    for stub in (package, cake, module):
+        monkeypatch.setitem(sys.modules, stub.__name__, stub)
+    return module
+
+
+def test_miles_ext_configures_the_package_with_its_own_argument_values(monkeypatch):
+    configured = []
+    module = _fake_ext_package(monkeypatch, "conv1d", configured)
+
+    assert linear_attn.miles_ext("conv1d") is module
+    assert configured == []
+    assert linear_attn.miles_ext("conv1d", types.SimpleNamespace(miles_ext_kernels_args={"x": 1})) is module
+    assert configured == [{"x": 1}]
+
+
+def test_miles_ext_without_the_submodule_names_the_flag_and_the_checkout(monkeypatch):
+    monkeypatch.setitem(sys.modules, "miles_ext_kernels", None)
+    monkeypatch.setitem(sys.modules, "miles_ext_kernels.cake", None)
+    monkeypatch.setitem(sys.modules, "miles_ext_kernels.cake.conv1d", None)
+
+    with pytest.raises(ImportError, match="--use-miles-ext-kernels") as excinfo:
+        linear_attn.miles_ext("conv1d")
+    assert "git submodule update --init 3rdparty/miles-ext-kernels" in str(excinfo.value)
+
+
+def test_the_cake_short_conv_runs_the_kernel_package(monkeypatch):
+    calls = []
+    _fake_ext_package(monkeypatch, "conv1d", causal_conv1d=lambda *args: calls.append(args) or "cake-out")
+
+    assert linear_attn.causal_short_conv("x", "w", "silu", "cake", cu_seqlens="cu") == "cake-out"
+    assert calls == [("x", "w", "cu")]
+    with pytest.raises(NotImplementedError, match="context parallelism"):
+        linear_attn.causal_short_conv("x", "w", "silu", "cake", cu_seqlens="cu", cp_context=object())
+
+
+def test_a_cake_short_conv_checks_its_shape_when_built(monkeypatch):
+    torch = pytest.importorskip("torch")
+    checked = []
+    _fake_ext_package(monkeypatch, "conv1d", check_supported=lambda *args, **kwargs: checked.append((args, kwargs)))
+
+    conv = linear_attn.ShardedShortConv(16, 4, tp_group=None, device="cpu", dtype=torch.float32, backend="cake")
+
+    assert conv.backend == "cake"
+    assert checked == [((16, 4, "silu"), {"has_bias": False})]
+
+
+def test_the_cake_short_conv_rejects_context_parallelism_at_startup():
+    with pytest.raises(ValueError, match="--linear-attention-conv-backend cake does not support context parallelism"):
+        parse_megatron_test_config(
+            "--use-miles-ext-kernels", "--linear-attention-conv-backend", "cake", "--context-parallel-size", "2"
+        )
+
+
+def test_the_cake_short_conv_resolves_its_arguments():
+    config = parse_megatron_test_config("--use-miles-ext-kernels", "--linear-attention-conv-backend", "cake")
+
+    assert config.miles_ext_kernels_args["cake_conv1d_variant"] == "fast"
+    assert config.miles_ext_kernels_args["cake_conv1d_silu_grad_preactivation"] == "bf16"
+
+
+def test_the_cake_output_norm_resolves_its_variant():
+    config = parse_megatron_test_config("--use-miles-ext-kernels", "--linear-attention-output-norm-backend", "cake")
+
+    assert config.miles_ext_kernels_args["cake_gated_rmsnorm_variant"] == "fast"
+
+
+def test_the_output_norm_variant_needs_the_cake_output_norm():
+    with pytest.raises(ValueError, match="--cake-gated-rmsnorm-variant requires"):
+        parse_megatron_test_config("--use-miles-ext-kernels", "--cake-gated-rmsnorm-variant", "det")
+
+
 def test_short_conv_backend_respects_fla_conv_backend(monkeypatch):
     monkeypatch.setenv("FLA_CONV_BACKEND", "cuda")
     assert linear_attn.short_conv_backend.__wrapped__() == "cuda"
+
+
+def test_cake_short_conv_defaults_to_triton_unless_set(monkeypatch):
+    monkeypatch.delenv("FLA_CONV_BACKEND", raising=False)
+    assert linear_attn.cake_conv_backend.__wrapped__() == "triton"
+    monkeypatch.setenv("FLA_CONV_BACKEND", "cuda")
+    assert linear_attn.cake_conv_backend.__wrapped__() == "cuda"
+
+
+@pytest.mark.parametrize("activation", ["silu", "sigmoid"])
+def test_the_reproducible_gated_norm_matches_autograd_of_its_formula(activation):
+    """The hand-written backward of ``reproducible_rms_norm_gated`` against autograd through the same formula in
+    FP64 (``rms_norm(x) * weight * act(g)``)."""
+    torch = pytest.importorskip("torch")
+    gen = torch.Generator().manual_seed(0)
+    x, g, dy = (torch.randn(37, 128, generator=gen) for _ in range(3))
+    weight = 1 + 0.1 * torch.randn(128, generator=gen)
+    leaves = [t.clone().requires_grad_() for t in (x, g, weight)]
+    out = linear_attn.reproducible_rms_norm_gated(*leaves, None, activation, 1e-6)
+    out.backward(dy)
+
+    ref = [t.double().requires_grad_() for t in (x, g, weight)]
+    gate = ref[1].sigmoid() if activation == "sigmoid" else torch.nn.functional.silu(ref[1])
+    expected = ref[0] * torch.rsqrt(ref[0].square().mean(-1, keepdim=True) + 1e-6) * ref[2] * gate
+    expected.backward(dy.double())
+    torch.testing.assert_close(out.double(), expected.detach(), rtol=1e-5, atol=1e-6)
+    for got, want in zip(leaves, ref, strict=True):
+        torch.testing.assert_close(got.grad.double(), want.grad, rtol=1e-4, atol=1e-5)
+
+
+def test_the_reproducible_gated_norm_refuses_a_bias_and_other_gates():
+    torch = pytest.importorskip("torch")
+    x = torch.ones(2, 128)
+    with pytest.raises(ValueError, match="no bias"):
+        linear_attn.reproducible_rms_norm_gated(x, x, torch.ones(128), torch.zeros(128), "silu", 1e-6)
+    with pytest.raises(ValueError, match="gate activation"):
+        linear_attn.reproducible_rms_norm_gated(x, x, torch.ones(128), None, "relu", 1e-6)
 
 
 NUM_HEADS = 4

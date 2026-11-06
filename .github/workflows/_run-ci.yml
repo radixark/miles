@@ -120,6 +120,8 @@ jobs:
       TILELANG_CACHE_DIR: /tmp/tilelang_cache
       CUDA_CACHE_PATH: /data/miles_ci/jit/nv
       FLASHINFER_WORKSPACE_BASE: /data/miles_ci/jit
+      # miles-ext-kernels libraries; their file names key on the sources, flags, nvcc, tvm-ffi and machine.
+      TVM_FFI_CACHE_DIR: /data/miles_ci/jit/tvm-ffi
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4

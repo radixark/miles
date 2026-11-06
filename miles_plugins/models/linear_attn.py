@@ -5,7 +5,7 @@
 zigzag relayout, and the row-parallel ``out_proj`` collective out. :class:`LinearAttention` runs this
 rank's heads: the model's input projections, the short conv(s) over q/k/v (one over group-major rows
 for GDN, see ``megatron_to_hf.linear_attn_layout``; one per tensor for KDA), the family's recurrence
-through fla, and a gated RMSNorm whose
+through fla (GDN also through FlashQLA or the Cake ``cake`` kernels), and a gated RMSNorm whose
 replicated weight has its gradient summed across TP. A family subclass supplies the recurrence; a model
 subclass declares the projections under the HF names, plain bf16 linears on sharded parameters, so
 ``--fp8`` training leaves this layer in bf16.
@@ -14,9 +14,11 @@ subclass declares the projections under the HF names, plain bf16 linears on shar
 from __future__ import annotations
 
 import functools
+import importlib
 import logging
 import os
 from abc import ABC, abstractmethod
+from types import ModuleType
 from typing import NamedTuple
 
 import torch
@@ -35,7 +37,7 @@ from megatron.core.tensor_parallel.random import get_cuda_rng_tracker
 from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.utils import ensure_metadata_has_dp_cp_group, make_sharded_tensors_for_checkpoint
 
-from miles.backends.megatron_utils.fp32_param_utils import mark_param_dtype
+from miles.backends.megatron_utils.fp32_param_utils import FORCED_PARAM_DTYPE_ATTR, mark_param_dtype
 from miles.backends.megatron_utils.megatron_to_hf.linear_attn_layout import LinearAttnHeads
 from miles_plugins.models.cp_utils import build_fla_cp_context, packed_shard_to_zigzag, zigzag_to_packed_shard
 
@@ -54,7 +56,30 @@ _CHANNEL_ALIGN = 128
 _ROW_STRIDE_ALIGN = 8
 
 
-def gdn_kernel(backend: str):
+def miles_ext(name: str, args=None) -> ModuleType:
+    """The op module ``miles_ext_kernels.cake.<name>`` of the miles-ext-kernels submodule, with a clear error when it
+    is not importable. Where the caller has the parsed miles configuration ``args``, the values of the package's own
+    arguments (``args.miles_ext_kernels_args``) go to ``miles_ext_kernels.configure`` first."""
+    try:
+        module = importlib.import_module(f"miles_ext_kernels.cake.{name}")
+    except ImportError as exc:
+        raise ImportError(
+            f"the 'cake' backend runs miles_ext_kernels.cake.{name} from the miles-ext-kernels submodule: pass "
+            "--use-miles-ext-kernels and check the submodule out with "
+            "'git submodule update --init 3rdparty/miles-ext-kernels'."
+        ) from exc
+    if args is not None:
+        import miles_ext_kernels
+
+        miles_ext_kernels.configure(args.miles_ext_kernels_args)
+    return module
+
+
+def gdn_kernel(backend: str, args=None):
+    """The ``chunk_gated_delta_rule`` of ``backend``. For ``cake``, where the caller has the parsed miles configuration
+    ``args`` (a layer being built), the values of the kernel package's own arguments (``args.miles_ext_kernels_args``)
+    go to ``miles_ext_kernels.configure`` and every library of the op is built for this GPU
+    (``miles_ext_kernels.cake.prebuild("gdn")``), so no training step compiles."""
     if backend == "fla":
         try:
             from fla.ops.gated_delta_rule import chunk_gated_delta_rule
@@ -71,13 +96,42 @@ def gdn_kernel(backend: str):
             ) from exc
         return chunk_gated_delta_rule
 
+    if backend == "cake":
+        try:
+            import miles_ext_kernels
+            from miles_ext_kernels import cake
+            from miles_ext_kernels.cake.gdn import chunk_gated_delta_rule
+        except ImportError as exc:
+            raise ImportError(
+                "GDN backend 'cake' runs miles_ext_kernels.cake.gdn from the miles-ext-kernels submodule: pass "
+                "--use-miles-ext-kernels and check the submodule out with "
+                "'git submodule update --init 3rdparty/miles-ext-kernels'."
+            ) from exc
+        if args is not None:
+            miles_ext_kernels.configure(args.miles_ext_kernels_args)
+            cake.prebuild("gdn")
+        return chunk_gated_delta_rule
+
     raise ValueError(f"Unsupported GDN backend: {backend}")
 
 
 @functools.cache
-def kda_kernel():
-    """fla's chunk_kda. On Blackwell its backward runs the Triton dqkg kernel (FLA_TILELANG=0), which
-    beats fla's TileLang one there at every tiling; an explicit FLA_TILELANG wins."""
+def kda_kernel(backend: str = "fla"):
+    """The ``chunk_kda`` of ``backend``. 'fla': on Blackwell its backward runs the Triton dqkg kernel
+    (FLA_TILELANG=0), which beats fla's TileLang one there at every tiling; an explicit FLA_TILELANG wins. 'cake': the
+    deterministic Cake kernels of ``miles_ext_kernels.cake.kda`` (from the miles-ext-kernels submodule)."""
+    if backend == "cake":
+        try:
+            from miles_ext_kernels.cake.kda import chunk_kda
+        except ImportError as exc:
+            raise ImportError(
+                "KDA backend 'cake' runs miles_ext_kernels.cake.kda from the miles-ext-kernels submodule: pass "
+                "--use-miles-ext-kernels and check the submodule out with "
+                "'git submodule update --init 3rdparty/miles-ext-kernels'."
+            ) from exc
+        return chunk_kda
+    if backend != "fla":
+        raise ValueError(f"Unsupported KDA backend: {backend}")
     try:
         from fla.ops.kda import chunk_kda
     except ImportError as exc:
@@ -88,15 +142,27 @@ def kda_kernel():
     return chunk_kda
 
 
-def gdn_recurrence(q, k, v, beta_logits, decay, A_log, dt_bias, *, backend, cu_seqlens, cp_context):
-    """q/k ``[b, s, G, hk]``, v ``[b, s, H, hv]`` (fla groups value heads per key head), decay ``[b, s, H]``
-    -> ``[b, s, H, hv]``."""
-    if cp_context is not None and backend != "fla":
-        raise NotImplementedError(f"GDN context parallelism requires the 'fla' backend, got {backend!r}.")
+def gdn_recurrence(
+    q, k, v, beta_logits, decay, A_log, dt_bias, *, backend, cu_seqlens, cp_context, cu_seqlens_host=None
+):
+    """q/k ``[b, s, G, hk]``, v ``[b, s, H, hv]`` (fla and the cake kernels group value heads per key head),
+    decay ``[b, s, H]`` -> ``[b, s, H, hv]``.
+
+    ``cu_seqlens_host`` (the packed boundaries as host ints, from ``packed_seq_params.cu_seqlens_host``) lets the
+    ``cake`` backend take its exact per-layout chunk table from a cache shared by every layer of the micro-batch
+    instead of rebuilding it on the device per layer; it is not passed under context parallelism, where the CP
+    context carries this rank's local boundaries."""
+    if cp_context is not None and backend not in ("fla", "cake"):
+        raise NotImplementedError(f"GDN context parallelism requires the 'fla' or 'cake' backend, got {backend!r}.")
     beta = beta_logits.sigmoid()
     g = -A_log.float().exp() * F.softplus(decay.float() + dt_bias)
     if backend == "flashqla":
         q, k, v, g, beta = (t.contiguous() for t in (q, k, v, g, beta))
+    extra = {}
+    if cp_context is not None:
+        extra["cp_context"] = cp_context
+    elif backend == "cake" and cu_seqlens_host is not None and cu_seqlens is not None:
+        extra["cu_seqlens_cpu"] = cu_seqlens_host
     out, _ = gdn_kernel(backend)(
         q,
         k,
@@ -107,16 +173,36 @@ def gdn_recurrence(q, k, v, beta_logits, decay, A_log, dt_bias, *, backend, cu_s
         output_final_state=False,
         use_qk_l2norm_in_kernel=True,
         cu_seqlens=cu_seqlens,
-        **({"cp_context": cp_context} if cp_context is not None else {}),
+        **extra,
     )
     return out
 
 
-def kda_recurrence(q, k, v, beta_logits, decay, A_log, dt_bias, *, gate_lower_bound, cu_seqlens, cp_context):
+def kda_recurrence(
+    q, k, v, beta_logits, decay, A_log, dt_bias, *, gate_lower_bound, cu_seqlens, cp_context, backend="fla"
+):
     """q/k ``[b, s, H, hk]``, v ``[b, s, H, hv]``, decay ``[b, s, H * hv]`` (the low-rank forget gate,
-    gated inside the kernel) -> ``[b, s, H, hv]``."""
+    gated inside the kernel) -> ``[b, s, H, hv]``. The ``cake`` kernels take the raw forget gate and a BF16 beta,
+    one packed sequence and no context parallelism (both also rejected at startup)."""
+    if backend == "cake":
+        if cp_context is not None:
+            raise NotImplementedError("--kda-backend cake does not support context parallelism yet.")
+        assert q.shape[0] == 1, f"--kda-backend cake takes one packed sequence (thd), got batch {q.shape[0]}"
+        return kda_kernel("cake")(
+            q,
+            k,
+            v,
+            g=decay.reshape(v.shape),
+            beta=beta_logits.float().sigmoid().to(torch.bfloat16),
+            A_log=A_log,
+            dt_bias=dt_bias,
+            lower_bound=gate_lower_bound,
+            cu_seqlens=cu_seqlens,
+            use_gate_in_kernel=True,
+            use_qk_l2norm_in_kernel=True,
+        )
     boundaries = {"cp_context": cp_context} if cp_context is not None else {"cu_seqlens": cu_seqlens}
-    out, _ = kda_kernel()(
+    out, _ = kda_kernel("fla")(
         q=q,
         k=k,
         v=v,
@@ -152,6 +238,17 @@ def short_conv_backend() -> str:
     return backend
 
 
+@functools.cache
+def cake_conv_backend() -> str:
+    """Short conv backend under the ``cake`` GDN and KDA backends: fla's Triton kernels, whose backward reproduces the
+    weight gradient bit for bit, instead of :func:`short_conv_backend`'s ``mix`` (causal-conv1d's CUDA backward
+    accumulates ``dweight`` with atomics, so repeated passes differ in the last bits). An explicit ``FLA_CONV_BACKEND``
+    wins."""
+    backend = os.environ.get("FLA_CONV_BACKEND", "triton")
+    logger.info(f"Linear-attention short conv backend under cake: {backend}")
+    return backend
+
+
 class _ContiguousGrad(torch.autograd.Function):
     """Identity whose backward hands on a contiguous gradient. The gradient of one channel chunk of a
     concatenation is a strided view whose row stride is the full width; fla's conv backward indexes it
@@ -167,9 +264,15 @@ class _ContiguousGrad(torch.autograd.Function):
 
 
 def causal_short_conv(x, weight, activation, backend, cu_seqlens=None, cp_context=None):
-    """Depthwise causal conv of ``x`` ``[b, s, C]`` with ``weight`` ``[C, K]`` through fla. fla indexes with
-    int32, so inputs past 2**31 elements (long sequences at low TP) run as channel chunks of at most
-    2**30; the conv is per channel, so this is exact."""
+    """Depthwise causal conv of ``x`` ``[b, s, C]`` with ``weight`` ``[C, K]`` through fla, or the Cake kernels of
+    ``miles_ext_kernels.cake.conv1d`` for ``backend`` 'cake' (SiLU, kernel size 4, one packed sequence, no context
+    parallelism: both checked when the layer is built and at startup). fla indexes with int32, so inputs past 2**31
+    elements (long sequences at low TP) run as channel chunks of at most 2**30; the conv is per channel, so this is
+    exact. The Cake kernels take any size and copy a strided ``x`` themselves."""
+    if backend == "cake":
+        if cp_context is not None:
+            raise NotImplementedError("--linear-attention-conv-backend cake does not support context parallelism yet.")
+        return miles_ext("conv1d").causal_conv1d(x, weight, cu_seqlens)
     from fla.modules.conv.causal_conv1d import causal_conv1d
 
     tokens = x.shape[0] * x.shape[1]
@@ -192,9 +295,10 @@ def causal_short_conv(x, weight, activation, backend, cu_seqlens=None, cp_contex
 
 class ShardedShortConv(nn.Conv1d):
     """Depthwise causal conv (SiLU, no bias) over this rank's channels, holding the TP-sharded weight.
-    Built like fla's ``ShortConvolution``, so weights and checkpoints match it."""
+    Built like fla's ``ShortConvolution``, so weights and checkpoints match it. ``backend`` is fla's conv backend, or
+    'cake' for the Cake kernels (see :func:`causal_short_conv`)."""
 
-    def __init__(self, channels: int, kernel_size: int, tp_group, device=None, dtype=None):
+    def __init__(self, channels: int, kernel_size: int, tp_group, device=None, dtype=None, backend: str | None = None):
         super().__init__(
             in_channels=channels,
             out_channels=channels,
@@ -206,7 +310,9 @@ class ShardedShortConv(nn.Conv1d):
             dtype=dtype,
         )
         self.activation = "silu"
-        self.backend = short_conv_backend()
+        self.backend = backend or short_conv_backend()
+        if self.backend == "cake":
+            miles_ext("conv1d").check_supported(channels, kernel_size, self.activation, has_bias=self.bias is not None)
         self.tp_group = tp_group
         set_tensor_model_parallel_attributes(self.weight, True, 0, 1)
 
@@ -225,6 +331,53 @@ class ShardedShortConv(nn.Conv1d):
         )
 
 
+_GATE_ACTIVATIONS = ("silu", "swish", "sigmoid")
+
+
+class _ReproducibleGatedRMSNorm(torch.autograd.Function):
+    """``rms_norm(x) * weight * act(g)`` over the rows of ``x`` / ``g`` ``[rows, d]`` in FP32 PyTorch ops."""
+
+    @staticmethod
+    def forward(ctx, x, g, weight, activation: str, eps: float):
+        rstd = torch.rsqrt(x.float().square().mean(-1, keepdim=True) + eps)
+        gate = g.float()
+        gate = gate.sigmoid() if activation == "sigmoid" else F.silu(gate)
+        ctx.save_for_backward(x, g, weight, rstd)
+        ctx.activation = activation
+        return (x.float() * rstd * weight.float() * gate).to(x.dtype)
+
+    @staticmethod
+    def backward(ctx, dy):
+        x, g, weight, rstd = ctx.saved_tensors
+        xhat = x.float() * rstd
+        normed = xhat * weight.float()
+        gate = g.float()
+        sig = gate.sigmoid()
+        dy = dy.float()
+        if ctx.activation == "sigmoid":
+            dg = dy * normed * sig * (1 - sig)
+            dnormed = dy * sig
+        else:  # d(g * sigmoid(g)) / dg = sigmoid(g) * (1 + g * (1 - sigmoid(g)))
+            dg = dy * normed * sig * (1 + gate * (1 - sig))
+            dnormed = dy * gate * sig
+        dweight = (dnormed * xhat).sum(0)
+        dxhat = dnormed * weight.float()
+        dx = (dxhat - xhat * (dxhat * xhat).mean(-1, keepdim=True)) * rstd
+        return dx.to(x.dtype), dg.to(g.dtype), dweight.to(weight.dtype), None, None
+
+
+def reproducible_rms_norm_gated(x, g, weight, bias, activation, eps):
+    """fla's ``rms_norm_gated`` (no bias) whose gradients repeat bit for bit: PyTorch ops in FP32, fixed-order
+    reductions. fla's fused backward does not repeat: each program walks ceil(rows / #SM) rows in tiles of the
+    autotuned height, so a program's last tile can run into the next program's rows, both programs then store those
+    rows of ``dx``, and the two values can differ in the last bit (whichever store lands last wins)."""
+    if bias is not None:
+        raise ValueError("the reproducible gated RMSNorm takes no bias")
+    if activation not in _GATE_ACTIVATIONS:
+        raise ValueError(f"gate activation must be one of {_GATE_ACTIVATIONS}, not {activation!r}")
+    return _ReproducibleGatedRMSNorm.apply(x, g, weight, activation, eps)
+
+
 class Projections(NamedTuple):
     """This rank's projections: ``qkv`` as :meth:`LinearAttention.convolve` takes it (one group-major
     ``[b, s, Gl * group_qkv_dim]`` tensor for GDN, a ``(q, k, v)`` tuple for KDA), ``gate``
@@ -240,10 +393,17 @@ class Projections(NamedTuple):
 class LinearAttention(MegatronModule, ABC):
     """This rank's heads: projections -> conv -> recurrence -> gated norm. ``out_proj`` holds this
     rank's columns; :class:`LinearAttentionLayer` applies it and the TP reduction. ``dt_bias`` is one
-    value per value head, or per value channel when the family sets ``dt_bias_per_channel``."""
+    value per value head, or per value channel when the family sets ``dt_bias_per_channel``.
+    ``conv_backend`` pins the short conv's fla backend (``None``: :func:`short_conv_backend`), or selects the Cake
+    short-conv kernels ('cake'), whose libraries for this layer's conv weight dtypes are built with the layer.
+    ``norm_backend`` 'cake' runs the gated output norm on the Cake SiLU-gated RMSNorm kernels (SiLU gate, head
+    dimension 128, BF16 weight), checked and built with the layer.
+    ``reproducible_norm`` runs the gated output norm on :func:`reproducible_rms_norm_gated` instead of fla's
+    fused kernels; the backends that promise reproducible gradients set it."""
 
     dt_bias_per_channel: bool = False
     dt_bias_dtype: torch.dtype | None = None
+    reproducible_norm: bool = False
 
     def __init__(
         self,
@@ -253,12 +413,15 @@ class LinearAttention(MegatronModule, ABC):
         norm_eps: float,
         tp_group,
         norm_activation: str,
+        conv_backend: str | None = None,
+        norm_backend: str = "fla",
     ):
         super().__init__(config=config)
         self.tp_group = tp_group
         self.heads = heads
         self.local = heads.local(tp_group.size())
         self.conv_kernel_size = conv_kernel_size
+        self.conv_backend = conv_backend
         self.norm_eps = norm_eps
         self.norm_activation = norm_activation
         device = torch.cuda.current_device()
@@ -275,6 +438,19 @@ class LinearAttention(MegatronModule, ABC):
                 torch.empty(self.local.num_v_heads, dtype=torch.float32, device=device).uniform_(1, 16).log_()
             )
         mark_param_dtype(self.A_log, torch.float32)
+        if conv_backend == "cake":
+            from miles_ext_kernels import cake
+
+            # the weight dtype the conv trains in: KDA marks its taps FP32, GDN keeps the params dtype
+            for module in self.modules():
+                if isinstance(module, ShardedShortConv):
+                    cake.prebuild(
+                        "conv1d",
+                        weight_dtype=getattr(  # config-access-exempt: only mark_param_dtype sets the forced dtype
+                            module.weight, FORCED_PARAM_DTYPE_ATTR, None
+                        )
+                        or module.weight.dtype,
+                    )
         dt_bias_size = self.local.value_dim if self.dt_bias_per_channel else self.local.num_v_heads
         self.dt_bias = nn.Parameter(torch.ones(dt_bias_size, dtype=self.dt_bias_dtype or dtype, device=device))
         if self.dt_bias_dtype is not None:
@@ -284,6 +460,15 @@ class LinearAttention(MegatronModule, ABC):
         self.norm = FusedRMSNormGated(
             heads.head_v_dim, eps=norm_eps, activation=norm_activation, device=device, dtype=dtype
         )
+        self.norm_backend = norm_backend
+        if norm_backend == "cake":
+            # refuses a sigmoid gate (KDA), rows other than 128, a bias or a non-BF16 weight, then builds the kernels
+            miles_ext("gated_rmsnorm").check_supported(
+                heads.head_v_dim, norm_activation, self.norm.weight.dtype, has_bias=self.norm.bias is not None
+            )
+            from miles_ext_kernels import cake
+
+            cake.prebuild("gated_rmsnorm")
         self.out_proj = nn.Linear(self.local.value_dim, config.hidden_size, bias=False, device=device, dtype=dtype)
         with get_cuda_rng_tracker().fork():
             config.output_layer_init_method(self.out_proj.weight)
@@ -291,7 +476,12 @@ class LinearAttention(MegatronModule, ABC):
 
     def sharded_conv(self, channels: int) -> ShardedShortConv:
         return ShardedShortConv(
-            channels, self.conv_kernel_size, self.tp_group, torch.cuda.current_device(), self.config.params_dtype
+            channels,
+            self.conv_kernel_size,
+            self.tp_group,
+            torch.cuda.current_device(),
+            self.config.params_dtype,
+            backend=self.conv_backend,
         )
 
     def _build_convolutions(self) -> None:
@@ -350,37 +540,76 @@ class LinearAttention(MegatronModule, ABC):
     def project(self, x: torch.Tensor) -> Projections: ...
 
     @abstractmethod
-    def recurrence(self, q, k, v, beta_logits, decay, cu_seqlens, cp_context) -> torch.Tensor:
-        """q/k ``[b, s, Gl, hk]``, v ``[b, s, Hl, hv]`` -> ``[b, s, Hl, hv]``."""
+    def recurrence(self, q, k, v, beta_logits, decay, cu_seqlens, cp_context, cu_seqlens_host=None) -> torch.Tensor:
+        """q/k ``[b, s, Gl, hk]``, v ``[b, s, Hl, hv]`` -> ``[b, s, Hl, hv]``.  ``cu_seqlens_host``: the same
+        boundaries as host ints when the batch carries them (see :func:`gdn_recurrence`)."""
 
-    def forward(self, x: torch.Tensor, cu_seqlens: torch.Tensor | None, cp_context=None) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, cu_seqlens: torch.Tensor | None, cp_context=None, cu_seqlens_host=None
+    ) -> torch.Tensor:
         """x ``[b, s, hidden]``, TP collective already applied -> ``[b, s, local value_dim]``."""
         batch, seq_len, _ = x.shape
         qkv, gate, beta_logits, decay = self.project(x)
         q, k, v = self.convolve(qkv, cu_seqlens, cp_context)
-        core = self.recurrence(q, k, v, beta_logits, decay, cu_seqlens, cp_context)
+        core = self.recurrence(q, k, v, beta_logits, decay, cu_seqlens, cp_context, cu_seqlens_host=cu_seqlens_host)
         weight = copy_to_tensor_model_parallel_region(self.norm.weight, group=self.tp_group)
-        core = rms_norm_gated(
-            core.reshape(-1, self.heads.head_v_dim),
-            gate.reshape(-1, self.heads.head_v_dim),
-            weight,
-            self.norm.bias,
-            self.norm_activation,
-            eps=self.norm_eps,
-        )
+        if self.norm_backend == "cake":
+            # [T, Hl, hv] views: the gate is a column slice of the fused projection, which this view keeps a view
+            rows = (-1, self.local.num_v_heads, self.heads.head_v_dim)
+            core = miles_ext("gated_rmsnorm").rmsnorm_silu_gate(
+                core.reshape(rows), gate.reshape(rows), weight, self.norm_eps
+            )
+        else:
+            norm = reproducible_rms_norm_gated if self.reproducible_norm else rms_norm_gated
+            core = norm(
+                core.reshape(-1, self.heads.head_v_dim),
+                gate.reshape(-1, self.heads.head_v_dim),
+                weight,
+                self.norm.bias,
+                self.norm_activation,
+                eps=self.norm_eps,
+            )
         return core.reshape(batch, seq_len, -1)
 
 
 class GatedDeltaNet(LinearAttention):
     """Gated DeltaNet: one softplus-gated decay per value head, through fla's or FlashQLA's chunked
-    kernel. Models subclass it with their projections and :meth:`in_proj_sections`; all four projections
-    run as one GEMM whose width is zero-padded to a multiple of 8, the row-stride alignment causal-conv1d's
-    channel-last backward requires of the q/k/v view."""
+    kernel, or the Cake one (``cake``, SM100a / SM103a / SM107a, K = V = 128, ``miles_ext_kernels.cake.gdn`` from the
+    miles-ext-kernels submodule: ``--cake-gdn-variant`` det, the bit-deterministic kernels, or fast, the
+    non-deterministic package; its short conv runs on :func:`cake_conv_backend` and its gated output norm on
+    :func:`reproducible_rms_norm_gated`, so the whole layer's gradients are reproducible under det). ``args``, the
+    parsed miles arguments, configure the ``cake`` kernels and build them (see :func:`gdn_kernel`); a
+    process that never configured them runs det. ``args.linear_attention_conv_backend`` 'cake' runs the short conv on
+    the Cake kernels, with any GDN backend, and ``args.linear_attention_output_norm_backend`` 'cake' the gated output
+    norm. Models subclass it with their projections and :meth:`in_proj_sections`; all four projections run as one
+    GEMM whose width is zero-padded to a multiple of 8, the row-stride alignment causal-conv1d's channel-last backward
+    requires of the q/k/v view."""
 
-    def __init__(self, config, heads, conv_kernel_size, norm_eps, tp_group, backend="fla", norm_activation="silu"):
-        gdn_kernel(backend)
-        super().__init__(config, heads, conv_kernel_size, norm_eps, tp_group, norm_activation)
+    def __init__(
+        self, config, heads, conv_kernel_size, norm_eps, tp_group, backend="fla", norm_activation="silu", args=None
+    ):
+        gdn_kernel(backend, args=args)
+        if args is not None and args.linear_attention_conv_backend == "cake":
+            miles_ext("conv1d", args)
+            conv_backend = "cake"
+        else:
+            conv_backend = cake_conv_backend() if backend == "cake" else None
+        norm_backend = "fla"
+        if args is not None and args.linear_attention_output_norm_backend == "cake":
+            miles_ext("gated_rmsnorm", args)
+            norm_backend = "cake"
+        super().__init__(
+            config,
+            heads,
+            conv_kernel_size,
+            norm_eps,
+            tp_group,
+            norm_activation,
+            conv_backend=conv_backend,
+            norm_backend=norm_backend,
+        )
         self.backend = backend
+        self.reproducible_norm = backend == "cake"
         local = self.local
         self.in_proj_widths = (
             local.num_k_heads * local.group_qkv_dim,
@@ -400,7 +629,7 @@ class GatedDeltaNet(LinearAttention):
         out = F.linear(x, torch.cat([*sections, padding]))
         return Projections(*out.split([*self.in_proj_widths, self.in_proj_padding], dim=-1)[:4])
 
-    def recurrence(self, q, k, v, beta_logits, decay, cu_seqlens, cp_context):
+    def recurrence(self, q, k, v, beta_logits, decay, cu_seqlens, cp_context, cu_seqlens_host=None):
         return gdn_recurrence(
             q,
             k,
@@ -412,6 +641,7 @@ class GatedDeltaNet(LinearAttention):
             backend=self.backend,
             cu_seqlens=cu_seqlens,
             cp_context=cp_context,
+            cu_seqlens_host=cu_seqlens_host,
         )
 
 
@@ -421,14 +651,50 @@ class KimiDeltaAttention(LinearAttention):
     gated inside fla's kernel. One key head per value head, so the convs see contiguous per-head q / k / v
     and need no group-major permutation. ``f_a_proj`` is replicated and feeds head-sharded ``f_b_proj``,
     so its weight passes the TP copy op like the norm. The conv weights train in fp32, as Kimi's
-    checkpoints store them."""
+    checkpoints store them. ``kda_backend`` 'cake' runs the recurrence on the deterministic Cake kernels of
+    ``miles_ext_kernels.cake.kda`` (1 to 64 heads per rank, SM100a / SM103a / SM107a), whose libraries are built when
+    the layer is (``miles_ext_kernels.cake.prebuild("kda", num_heads=...)``); its short convs then default to
+    :func:`cake_conv_backend` and its gated output norm runs on :func:`reproducible_rms_norm_gated`, so the layer's
+    gradients are reproducible."""
 
     dt_bias_per_channel = True
     dt_bias_dtype = torch.float32
 
-    def __init__(self, config, heads, conv_kernel_size, norm_eps, tp_group, gate_lower_bound: float):
-        super().__init__(config, heads, conv_kernel_size, norm_eps, tp_group, norm_activation="sigmoid")
+    def __init__(
+        self,
+        config,
+        heads,
+        conv_kernel_size,
+        norm_eps,
+        tp_group,
+        gate_lower_bound: float,
+        kda_backend: str = "fla",
+        conv_backend: str | None = None,
+        norm_backend: str = "fla",
+    ):
+        if conv_backend is None and kda_backend == "cake":
+            conv_backend = cake_conv_backend()
+        # norm_backend 'cake' is refused when the layer is built: the KDA output norm has a sigmoid gate
+        super().__init__(
+            config,
+            heads,
+            conv_kernel_size,
+            norm_eps,
+            tp_group,
+            norm_activation="sigmoid",
+            conv_backend=conv_backend,
+            norm_backend=norm_backend,
+        )
         self.gate_lower_bound = gate_lower_bound
+        self.kda_backend = kda_backend
+        self.reproducible_norm = kda_backend == "cake"
+        if kda_backend == "cake":
+            kda_kernel("cake")  # the clear ImportError without the submodule
+            from miles_ext_kernels import cake
+
+            # Builds every library of the op for this GPU. More than 64 heads per rank raises here (Kimi-K3's 96 at
+            # TP1), as does a GPU other than SM100a / SM103a / SM107a
+            cake.prebuild("kda", num_heads=self.local.num_v_heads)
 
     def _build_projections(self):
         hidden, local = self.config.hidden_size, self.local
@@ -477,7 +743,7 @@ class KimiDeltaAttention(LinearAttention):
             self.f_b_proj(F.linear(x, f_a_weight)),
         )
 
-    def recurrence(self, q, k, v, beta_logits, decay, cu_seqlens, cp_context):
+    def recurrence(self, q, k, v, beta_logits, decay, cu_seqlens, cp_context, cu_seqlens_host=None):
         return kda_recurrence(
             q,
             k,
@@ -489,6 +755,7 @@ class KimiDeltaAttention(LinearAttention):
             gate_lower_bound=self.gate_lower_bound,
             cu_seqlens=cu_seqlens,
             cp_context=cp_context,
+            backend=self.kda_backend,
         )
 
 
@@ -516,10 +783,15 @@ class LinearAttentionLayer(MegatronModule):
             param.sequence_parallel = self.sequence_parallel
 
     def _global_cu_seqlens(self, hidden_states, packed_seq_params):
+        """Global packed boundaries on the device and, when the batch carries them, the same values as host ints
+        (``PackedSeqParamsWithHostCuSeqlens.cu_seqlens_host``; ``None`` otherwise)."""
         if packed_seq_params is not None and packed_seq_params.cu_seqlens_q is not None:
-            return packed_seq_params.cu_seqlens_q
+            cu_seqlens_host = getattr(
+                packed_seq_params, "cu_seqlens_host", None
+            )  # config-access-exempt: only PackedSeqParamsWithHostCuSeqlens carries the host boundaries
+            return packed_seq_params.cu_seqlens_q, cu_seqlens_host
         total = hidden_states.shape[0] * self.cp_size
-        return torch.tensor([0, total], dtype=torch.int32, device=hidden_states.device)
+        return torch.tensor([0, total], dtype=torch.int32, device=hidden_states.device), (0, total)
 
     def forward(
         self,
@@ -542,7 +814,7 @@ class LinearAttentionLayer(MegatronModule):
         else:
             x = copy_to_tensor_model_parallel_region(x, group=self.tp_group)
 
-        global_cu_seqlens = self._global_cu_seqlens(x, packed_seq_params)
+        global_cu_seqlens, cu_seqlens_host = self._global_cu_seqlens(x, packed_seq_params)
         relayout = self.cp_size > 1 and not self.allgather_cp
         if relayout:
             x = zigzag_to_packed_shard(x, global_cu_seqlens, self.cp_group, self.cp_group.rank(), self.cp_size)
@@ -553,8 +825,11 @@ class LinearAttentionLayer(MegatronModule):
                 global_cu_seqlens, self.cp_group, self.linear_attn.conv_kernel_size, x.device
             )
             cu_seqlens = cp_context.cu_seqlens
+            cu_seqlens_host = None  # the CP context carries this rank's local boundaries
 
-        core = self.linear_attn(x.transpose(0, 1), cu_seqlens, cp_context).transpose(0, 1)
+        core = self.linear_attn(x.transpose(0, 1), cu_seqlens, cp_context, cu_seqlens_host=cu_seqlens_host).transpose(
+            0, 1
+        )
 
         if relayout:
             core = packed_shard_to_zigzag(core, global_cu_seqlens, self.cp_group, self.cp_group.rank(), self.cp_size)
