@@ -18,7 +18,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     model_dir: str = "/root/models"
     save_dir: str | None = None
     megatron_path: str = "/root/Megatron-LM"
-    # bridge: Megatron-Bridge LoRA; raw: miles-native LoRA
+    # bridge: Megatron-Bridge LoRA; raw: miles-native LoRA, dense models only (not this default MoE)
     megatron_to_hf_mode: str = "bridge"
 
     num_gpus_per_node: int = 8
