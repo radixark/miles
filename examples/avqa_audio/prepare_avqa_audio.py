@@ -1,7 +1,10 @@
 """prepare_avqa_audio.py ROOT: audio multiple-choice prompts for `scripts/run_inkling.py --task avqa_audio`.
 
-Train: AVQA as R1-AQA and Omni-R1 trained on it (Joysw909/AVQA: one JSON object per line plus the
-wav clips), as GPQA-style prompts scored by `--rm-type gpqa`.
+Train and eval: AVQA (Joysw909/AVQA: one JSON object per line plus the wav clips), the set
+R1-AQA and Omni-R1 trained on. The repack only carries AVQA's training subset, so 2,000 of its
+clips, drawn per question type with a fixed seed, are held out with all their questions as
+`avqa_heldout.jsonl`, so no held-out audio is ever trained on. Everything becomes a GPQA-style
+prompt graded by `examples/avqa_audio/reward.py`.
 
 Every clip is written as 16 kHz mono PCM WAV, the rate Inkling's dMel extractor takes: the engines'
 loader and the Miles-side processor then decode the same samples and never resample.
@@ -10,8 +13,10 @@ loader and the Miles-side processor then decode the same samples and never resam
     python examples/avqa_audio/prepare_avqa_audio.py ROOT
 """
 
+import collections
 import io
 import json
+import random
 import string
 import sys
 from pathlib import Path
@@ -25,10 +30,13 @@ ROOT = Path(sys.argv[1])
 OUT = ROOT / "avqa_audio"
 SAMPLE_RATE = 16000
 INSTRUCTION = "Listen to the audio and answer the question. Answer with the letter of the correct option."
+HELDOUT_SIZE = 2000
 
 
 def prompt(audio_path: str, question: str, choices: list[str]) -> list[dict]:
-    options = "\n".join(f"({letter}) {choice}" for letter, choice in zip(string.ascii_uppercase[: len(choices)], choices, strict=True))
+    options = "\n".join(
+        f"({letter}) {choice}" for letter, choice in zip(string.ascii_uppercase[: len(choices)], choices, strict=True)
+    )
     return [
         {
             "role": "user",
@@ -58,10 +66,11 @@ def write(rows: list[dict], path: Path) -> None:
     print(f"{path}: {len(rows)} rows")
 
 
-def avqa_rows() -> list[dict]:
+def avqa_rows() -> tuple[list[dict], list[dict]]:
+    """AVQA as (train, held-out): whole clips, the held-out share of each question type matching its share of the data."""
     wav_dir = OUT / "avqa_wav"
     wav_dir.mkdir(parents=True, exist_ok=True)
-    rows = []
+    by_clip = collections.defaultdict(list)
     for line in (ROOT / "avqa" / "train_r1aqa_line.json").open():
         item = json.loads(line)
         # audio_path is "./Joysw909/AVQA/<dir>/<clip>.wav"; the download holds <dir>/<clip>.wav.
@@ -69,16 +78,35 @@ def avqa_rows() -> list[dict]:
         if not source.is_file():
             continue
         audio_path = wav_dir / source.name
-        write_wav(str(source), audio_path)
-        rows.append(
-            {
-                "prompt": prompt(str(audio_path.resolve()), item["question_text"], item["multi_choice"]),
-                "label": string.ascii_uppercase[item["answer"]],
-            }
+        if not audio_path.is_file():
+            write_wav(str(source), audio_path)
+        by_clip[audio_path].append(
+            (
+                item["question_type"],
+                {
+                    "prompt": prompt(str(audio_path.resolve()), item["question_text"], item["multi_choice"]),
+                    "label": string.ascii_uppercase[item["answer"]],
+                },
+            )
         )
-    return rows
+    # A clip with several questions goes to one side whole, under its first question's type.
+    by_type = collections.defaultdict(list)
+    for questions in by_clip.values():
+        by_type[questions[0][0]].append([row for _, row in questions])
+    total = sum(len(clips) for clips in by_type.values())
+    rng = random.Random(0)
+    train, heldout = [], []
+    for clips in by_type.values():
+        rng.shuffle(clips)
+        cut = round(HELDOUT_SIZE * len(clips) / total)
+        heldout += [row for clip in clips[:cut] for row in clip]
+        train += [row for clip in clips[cut:] for row in clip]
+    rng.shuffle(train)
+    return train, heldout
 
 
 if __name__ == "__main__":
     OUT.mkdir(parents=True, exist_ok=True)
-    write(avqa_rows(), OUT / "train.jsonl")
+    train, heldout = avqa_rows()
+    write(train, OUT / "train.jsonl")
+    write(heldout, OUT / "avqa_heldout.jsonl")
