@@ -16,7 +16,7 @@ from megatron.bridge.peft.lora import LoRA
 from megatron.bridge.training.utils.config_utils import _ConfigContainerBase
 from megatron.bridge.utils.yaml_utils import safe_yaml_representers
 
-from miles.backends.megatron_utils.lora.bridge_peft_checkpoint import assert_bridge_run_config_matches
+from miles.backends.megatron_utils.lora.bridge_checkpoint_loader import assert_bridge_run_config_matches
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
 
 FP32 = {"_target_": "torch.float32", "_call_": False}

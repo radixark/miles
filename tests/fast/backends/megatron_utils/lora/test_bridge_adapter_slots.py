@@ -11,9 +11,9 @@ from megatron.core.dist_checkpointing.mapping import ShardedTensor
 from safetensors.torch import save_file
 from tests.fast.dist_utils import init_gloo, run_multiprocess
 
-from miles.backends.megatron_utils.lora import bridge_peft_checkpoint
+from miles.backends.megatron_utils.lora import bridge_checkpoint_loader
 from miles.backends.megatron_utils.lora.bridge_adapter_slots import BridgeAdapterSlots, probe_bridge_row_mapping
-from miles.backends.megatron_utils.lora.bridge_peft_checkpoint import (
+from miles.backends.megatron_utils.lora.bridge_checkpoint_loader import (
     _BRIDGE_BASE_REMEDY,
     assert_bridge_run_config_matches,
     assert_same_base_as_torch_dist,
@@ -436,7 +436,9 @@ def single_rank_gloo(tmp_path, monkeypatch):
     monkeypatch.setattr(torch.cuda, "synchronize", lambda *args: None)
     monkeypatch.setattr(torch.cuda, "current_device", lambda: "cpu")
     monkeypatch.setattr(
-        bridge_peft_checkpoint, "get_parallel_state", lambda: SimpleNamespace(intra_dp_cp=SimpleNamespace(group=None))
+        bridge_checkpoint_loader,
+        "get_parallel_state",
+        lambda: SimpleNamespace(intra_dp_cp=SimpleNamespace(group=None)),
     )
     init_gloo_group()
     try:
@@ -625,14 +627,14 @@ def _offloaded_optimizer():
 def _checked_loader(optimizer, members, monkeypatch, *, load_optimizer=True, keys=()):
     """A loader over an empty model with a stubbed source read."""
     run = AdapterParametrization("base", 4, 8.0, "lora", ("model.layers.0.self_attn.q_proj",), False)
-    loader = bridge_peft_checkpoint.MegatronBridgeCheckpointLoader([], optimizer, members, run, load_optimizer)
-    monkeypatch.setattr(bridge_peft_checkpoint, "unwrap_model", lambda model: [])
+    loader = bridge_checkpoint_loader.MegatronBridgeCheckpointLoader([], optimizer, members, run, load_optimizer)
+    monkeypatch.setattr(bridge_checkpoint_loader, "unwrap_model", lambda model: [])
     monkeypatch.setattr(loader, "_read_source", lambda path, chunks: ({"peft": {"alpha": 16}}, {}, [], [], None))
     metadata = SimpleNamespace(state_dict_metadata=dict.fromkeys(keys))
     monkeypatch.setattr(
-        bridge_peft_checkpoint.dcp, "FileSystemReader", lambda path: SimpleNamespace(read_metadata=lambda: metadata)
+        bridge_checkpoint_loader.dcp, "FileSystemReader", lambda path: SimpleNamespace(read_metadata=lambda: metadata)
     )
-    monkeypatch.setattr(bridge_peft_checkpoint.dist_checkpointing, "load", lambda state, path: {"optimizer": {}})
+    monkeypatch.setattr(bridge_checkpoint_loader.dist_checkpointing, "load", lambda state, path: {"optimizer": {}})
     return loader, run
 
 
