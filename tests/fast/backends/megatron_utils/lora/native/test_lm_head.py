@@ -11,11 +11,13 @@ from tests.fast.fixtures.args_fixtures import make_trainer_config
 
 from miles.backends.megatron_utils.lora.native.config import LoRAConfig
 from miles.backends.megatron_utils.lora.native.merge import merge_lora_into_weights
+from miles.backends.megatron_utils.lora.native.modules.lm_head import LoRAOutputHead
 from miles.backends.megatron_utils.lora.native.naming import ConverterNaming
 from miles.backends.megatron_utils.lora.native.registry import MODEL_SPECS, resolve_adapter_targets
 from miles.backends.megatron_utils.lora.native.spec.base import AttachContext
 from miles.backends.megatron_utils.lora.native.spec.lm_head import LMHeadSpec
-from miles.utils.lora.hf_lora_targets import resolve_hf_lora_targets
+from miles.backends.training_utils.checkpoint.adapter.adapter_dir import HeadRows
+from miles.utils.lora.hf_lora_targets import get_hf_lora_targets, resolve_hf_lora_targets
 
 HIDDEN, VOCAB, PADDED_VOCAB = 8, 10, 12
 
@@ -107,6 +109,37 @@ def test_export_trims_megatrons_vocab_padding():
 
     assert exported["lm_head.lora_A.weight"] is adapter.head_A
     torch.testing.assert_close(exported["lm_head.lora_B.weight"](), adapter.head_B[:VOCAB])
+
+
+@pytest.mark.parametrize("tp_rank, padded", [(0, slice(6, 6)), (1, slice(4, 6))])
+def test_the_vocab_padding_the_export_trims_is_kept_in_its_own_piece(monkeypatch, tp_rank, padded):
+    """The padding rows train (the loss softmaxes over the padded vocab), so adapter_state keeps them for a resume."""
+    import miles.backends.megatron_utils.lora.native.checkpoint as native_checkpoint
+
+    context = dataclasses.replace(_context(("lm_head",)), tp_size=2, tp_rank=tp_rank)
+    head = LoRAOutputHead(
+        hf_prefix="lm_head.",
+        reference=torch.empty(PADDED_VOCAB // 2, HIDDEN),
+        context=context,
+        vocab_local=PADDED_VOCAB // 2,
+        unpadded_vocab_size=VOCAB,
+    )
+    assert head.padded_local_rows() == padded
+    monkeypatch.setattr(native_checkpoint, "iter_adapters", lambda model: [head])
+    slots = native_checkpoint.NativeAdapterSlots.__new__(native_checkpoint.NativeAdapterSlots)
+    slots._model, slots._multi_lora = [], False
+    monkeypatch.setattr(slots, "slot_parameters", lambda slot: [head.head_A, head.head_B])
+    monkeypatch.setattr(slots, "_map_name", lambda name: SimpleNamespace(key=name.removesuffix(".weight")))
+
+    pieces = slots._vocab_padding_pieces()
+
+    if padded.start == padded.stop:
+        assert pieces == []
+        return
+    (piece,) = pieces
+    assert (piece.key, piece.global_shape, piece.offsets) == ("lm_head.lora_B.vocab_padding", (2, 2), (0, 0))
+    flat = torch.cat([head.head_A.detach().flatten(), head.head_B.detach().flatten()])
+    assert torch.equal(flat[piece.local_elements], head.head_B.detach()[padded])
 
 
 def test_a_converter_naming_the_head_otherwise_fails():
@@ -224,7 +257,14 @@ def test_every_head_family_converter_names_the_declared_leaf(model_type):
 
 _QWEN3_5 = {
     "model_type": "qwen3_5",
-    "text_config": {"layer_types": ["linear_attention", "full_attention"], "tie_word_embeddings": True},
+    "text_config": {
+        "layer_types": ["linear_attention", "full_attention"],
+        "tie_word_embeddings": True,
+        "linear_num_key_heads": 2,
+        "linear_key_head_dim": 2,
+        "linear_num_value_heads": 4,
+        "linear_value_head_dim": 2,
+    },
 }
 _DEEPSEEK_V3 = {
     "model_type": "deepseek_v3",
@@ -260,3 +300,21 @@ def test_specs_without_a_head_adapter_still_refuse_it(model_type, head):
             lora_type="canonical_lora",
             experts_shared_outer_loras=True,
         )
+
+
+def test_native_declares_its_head_rows_under_the_models_own_head_name(monkeypatch):
+    """Inkling's native head is language_model.lm_head; the family's unembed name is lm_head."""
+    import miles.backends.megatron_utils.lora.native.checkpoint as native_checkpoint
+
+    head = LoRAOutputHead.__new__(LoRAOutputHead)
+    nn.Module.__init__(head)
+    head.hf_prefix = "language_model.lm_head."
+    monkeypatch.setattr(native_checkpoint, "iter_adapters", lambda model: [head])
+    slots = native_checkpoint.NativeAdapterSlots.__new__(native_checkpoint.NativeAdapterSlots)
+    slots._model = []
+    slots.targets = dataclasses.replace(
+        get_hf_lora_targets({"model_type": "qwen3", "num_hidden_layers": 1}), vocab_size=16
+    )
+    head_b = "language_model.lm_head.lora_B"
+    slots.row_mapping = SimpleNamespace(pieces=[SimpleNamespace(key=head_b, global_shape=(VOCAB, 2))])
+    assert slots._head_rows() == HeadRows(head_b, max_source_rows=16)
