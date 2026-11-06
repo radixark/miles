@@ -170,6 +170,14 @@ def _make_cell(
     )
 
 
+async def _tick_through_post_launch_release(cell: ServerCell) -> None:
+    """The release runs in the background; a later tick finishes initializing once it is done."""
+    await cell.tick()
+    if (release := cell._post_launch_release) is not None:
+        await asyncio.wait({release})
+        await cell.tick()
+
+
 class TestInit:
     async def test_a_fresh_cell_has_not_been_initialized_yet(self):
         """A constructed cell is only bookkeeping until someone releases its engine."""
@@ -352,7 +360,7 @@ class TestTick:
         """The sweep runs every second, so a second release would thrash the engine's memory."""
         cell = _make_cell(needs_offload=True)
         await cell.init()
-        await cell.tick()
+        await _tick_through_post_launch_release(cell)
         calls_after_first_tick = list(cell_env["memory_calls"])
 
         await cell.tick()
@@ -365,16 +373,100 @@ class TestTick:
         cell = _make_cell(needs_offload=True)
         await cell.init()
 
-        await cell.tick()
+        await _tick_through_post_launch_release(cell)
 
         assert cell_env["memory_calls"] == [("release", dict(tags=None)), ("resume", dict(tags=["weights"]))]
+
+    async def test_ticks_during_the_release_do_not_probe_the_half_released_engine(self, cell_env, monkeypatch):
+        """A probe generates on the engine, and a generate on unmapped KV pools kills its schedulers."""
+        released = asyncio.Event()
+        probes = {"count": 0}
+
+        async def _slow_release(self, tags=None):
+            _RecordingApiClient.calls.append(("release", dict(tags=tags)))
+            await released.wait()
+
+        async def _counting_probe(server_url: str, api_key, timeout: float = 5.0) -> bool:
+            probes["count"] += 1
+            return True
+
+        monkeypatch.setattr(_RecordingApiClient, "release_memory_occupation", _slow_release)
+        monkeypatch.setattr(server_cell_module, "probe_server_healthy", _counting_probe)
+        cell = _make_cell(needs_offload=True)
+        await cell.init()
+
+        await cell.tick()
+        await asyncio.sleep(0)
+        await cell.tick()
+        assert cell.is_initializing
+        released.set()
+        await _tick_through_post_launch_release(cell)
+
+        assert probes["count"] == 1
+        assert cell_env["memory_calls"] == [("release", dict(tags=None)), ("resume", dict(tags=["weights"]))]
+        assert isinstance(cell._state, StatePendingWeights)
+
+    async def test_a_tick_that_fails_after_the_release_does_not_probe_or_release_again(self, cell_env, monkeypatch):
+        """Once the engine has handed its memory back, a probe would generate on unmapped KV pools."""
+        probes = {"count": 0}
+        failures = {"remaining": 1}
+        original_check_weights = ServerCell.check_weights
+
+        async def _counting_probe(server_url: str, api_key, timeout: float = 5.0) -> bool:
+            probes["count"] += 1
+            return True
+
+        async def _flaky_check_weights(self, action, allow_quant_error, selector, skip_list):
+            if action == "reset_tensors" and failures["remaining"] > 0:
+                failures["remaining"] -= 1
+                raise RuntimeError("engine refused to reset its tensors")
+            return await original_check_weights(
+                self, action=action, allow_quant_error=allow_quant_error, selector=selector, skip_list=skip_list
+            )
+
+        monkeypatch.setattr(server_cell_module, "probe_server_healthy", _counting_probe)
+        monkeypatch.setattr(ServerCell, "check_weights", _flaky_check_weights)
+        cell = _make_cell(needs_offload=True, args_overrides=dict(check_weight_update_equal=True))
+        await cell.init()
+        with pytest.raises(RuntimeError, match="refused to reset"):
+            await _tick_through_post_launch_release(cell)
+
+        await cell.tick()
+
+        assert probes["count"] == 1
+        assert [name for name, _kwargs in cell_env["memory_calls"] if name in ("release", "resume")] == [
+            "release",
+            "resume",
+        ]
+        assert isinstance(cell._state, StatePendingWeights)
+
+    async def test_a_cell_disposed_mid_release_sends_its_engine_nothing_more(self, cell_env, monkeypatch):
+        """Fault handling disposes a cell whose engine may already be gone or replaced."""
+        released = asyncio.Event()
+
+        async def _slow_release(self, tags=None):
+            _RecordingApiClient.calls.append(("release", dict(tags=tags)))
+            await released.wait()
+
+        monkeypatch.setattr(_RecordingApiClient, "release_memory_occupation", _slow_release)
+        cell = _make_cell(needs_offload=True)
+        await cell.init()
+        await cell.tick()
+        await asyncio.sleep(0)
+        release = cell._post_launch_release
+
+        await cell.dispose()
+        released.set()
+        await asyncio.gather(release, return_exceptions=True)
+
+        assert cell_env["memory_calls"] == [("release", dict(tags=None))]
 
     async def test_the_weight_checker_snapshots_before_the_memory_is_handed_back(self, cell_env):
         """Releasing the occupation discards the loaded weights, so a later snapshot records garbage."""
         cell = _make_cell(needs_offload=True, args_overrides=dict(check_weight_update_equal=True))
         await cell.init()
 
-        await cell.tick()
+        await _tick_through_post_launch_release(cell)
 
         names = [name for name, _kwargs in cell_env["memory_calls"]]
         assert names.index("check_weights") < names.index("release")
@@ -426,6 +518,34 @@ class TestTick:
         assert isinstance(cell._state, StateServing)
         assert [name for name, _kwargs in router.calls] == ["add_worker"]
 
+    async def test_a_resume_failing_after_the_release_is_retried_without_probing_or_releasing_again(
+        self, result_api_client, monkeypatch
+    ):
+        """The KV pools stay released after a failed resume, so a retry that probes kills the engine."""
+        probes = {"count": 0}
+
+        async def _counting_probe(server_url: str, api_key, timeout: float = 5.0) -> bool:
+            probes["count"] += 1
+            return True
+
+        monkeypatch.setattr(server_cell_module, "probe_server_healthy", _counting_probe)
+        result_api_client.errors["resume_memory_occupation"] = RuntimeError("engine refused to resume its weights")
+        cell = _make_cell(needs_offload=True)
+        await cell.init()
+        with pytest.raises(RuntimeError, match="refused to resume"):
+            await _tick_through_post_launch_release(cell)
+
+        result_api_client.errors.pop("resume_memory_occupation")
+        await _tick_through_post_launch_release(cell)
+
+        assert probes["count"] == 1
+        assert [name for name, _kwargs in result_api_client.calls] == [
+            "release_memory_occupation",
+            "resume_memory_occupation",
+            "resume_memory_occupation",
+        ]
+        assert isinstance(cell._state, StatePendingWeights)
+
     @pytest.mark.parametrize(
         ("failing_operation", "error_message"),
         [
@@ -442,11 +562,11 @@ class TestTick:
         await cell.init()
 
         with pytest.raises(RuntimeError, match=error_message):
-            await cell.tick()
+            await _tick_through_post_launch_release(cell)
         assert cell.is_initializing
 
         result_api_client.errors.pop(failing_operation)
-        await cell.tick()
+        await _tick_through_post_launch_release(cell)
 
         assert isinstance(cell._state, StatePendingWeights)
 
@@ -524,7 +644,7 @@ class TestTick:
         cell = _make_cell(needs_offload=True, args_overrides=dict(check_weight_update_equal=True))
         await cell.init()
 
-        await cell.tick()
+        await _tick_through_post_launch_release(cell)
 
         names = [
             f"check_weights:{kwargs['action']}" if name == "check_weights" else name
