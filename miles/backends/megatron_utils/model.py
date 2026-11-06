@@ -63,7 +63,7 @@ from .ci_utils import (
     save_model_hashes,
 )
 from .initialize import is_first_replica_megatron_main_rank
-from .lora.bridge_checkpoint import BridgeAdapterSlots
+from .lora.bridge_adapter_slots import BridgeAdapterSlots
 from .lora.checkpoint import restore_single_lora, save_single_lora
 from .lora.utils import is_lora_enabled, is_lora_model, patch_param_grad_buffer_for_colocate_mode_lora
 from .model_provider import get_model_provider_func

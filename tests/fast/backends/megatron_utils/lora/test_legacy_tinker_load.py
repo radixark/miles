@@ -47,19 +47,19 @@ def _legacy_source(monkeypatch, saved_shape, *, with_optimizer=True):
 @pytest.mark.parametrize("load_optimizer", [True, False])
 def test_a_legacy_checkpoint_with_the_slots_keys_loads(gloo, monkeypatch, load_optimizer):
     _legacy_source(monkeypatch, saved_shape=(32, 6))
-    assert checkpoint.find_load_mismatch(None, 0, "/ckpt", None, None, load_optimizer) is None
+    assert checkpoint.check_load_source(None, 0, "/ckpt", None, None, load_optimizer)[0] is None
 
 
 @pytest.mark.parametrize("load_optimizer", [True, False])
 def test_a_legacy_checkpoint_without_optimizer_state_is_a_mismatch(gloo, monkeypatch, load_optimizer):
     _legacy_source(monkeypatch, saved_shape=(32, 6), with_optimizer=False)
-    mismatch = checkpoint.find_load_mismatch(None, 0, "/ckpt", None, None, load_optimizer)
+    mismatch = checkpoint.check_load_source(None, 0, "/ckpt", None, None, load_optimizer)[0]
     assert mismatch is not None and "holds no optimizer state, which every legacy slot load reads" in mismatch
 
 
 def test_a_legacy_checkpoint_padded_to_another_max_rank_is_a_mismatch(gloo, monkeypatch):
     _legacy_source(monkeypatch, saved_shape=(64, 6))
-    mismatch = checkpoint.find_load_mismatch(None, 0, "/ckpt", None, None, load_optimizer=False)
+    mismatch = checkpoint.check_load_source(None, 0, "/ckpt", None, None, load_optimizer=False)[0]
     assert mismatch is not None and "layer.adapter.w: saved (64, 6), slot (32, 6)" in mismatch
 
 
@@ -78,7 +78,7 @@ def test_a_failure_that_is_not_the_sources_fault_is_a_server_error(gloo, monkeyp
 
     monkeypatch.setattr(checkpoint, "check_adapter_source", failing)
     with pytest.raises(RuntimeError, match=str(error.args[-1])):
-        checkpoint.find_load_mismatch(None, 0, "/ckpt", None, None, load_optimizer=False)
+        checkpoint.check_load_source(None, 0, "/ckpt", None, None, load_optimizer=False)[0]
 
 
 def _check_missing_source(rank, world_size, port, *, path):
@@ -92,7 +92,7 @@ def _check_missing_source(rank, world_size, port, *, path):
         return check(*args, **kwargs)
 
     checkpoint.check_adapter_source = counting_check
-    mismatch = checkpoint.find_load_mismatch(None, 0, path, UNSHARED, TARGETS, load_optimizer=False)
+    mismatch = checkpoint.check_load_source(None, 0, path, UNSHARED, TARGETS, load_optimizer=False)[0]
     assert checked_on == ([0] if rank == 0 else []), "only rank 0 reads the source"
     assert mismatch is not None and "cannot load into this model" in mismatch
     dist.destroy_process_group()
@@ -118,14 +118,14 @@ def test_a_source_the_weight_conversion_refuses_is_a_mismatch(gloo, tmp_path):
     weights |= {f"{m}.lora_B": torch.zeros(4, 2) for m in (Q, K)}
     write_peft_adapter(tmp_path, weights, UNSHARED, TARGETS, lora_dropout=0.0)
     shared = replace(UNSHARED, shared_lora_a_groups=((Q, K),))
-    mismatch = checkpoint.find_load_mismatch(None, 0, str(tmp_path), shared, TARGETS, load_optimizer=False)
+    mismatch = checkpoint.check_load_source(None, 0, str(tmp_path), shared, TARGETS, load_optimizer=False)[0]
     assert mismatch is not None and "cannot share A" in mismatch
 
 
 def test_an_unreadable_source_is_a_mismatch(gloo, tmp_path):
     (tmp_path / "adapter_config.json").write_text("{}")
     (tmp_path / "adapter_model.safetensors").write_bytes(b"not safetensors")
-    mismatch = checkpoint.find_load_mismatch(None, 0, str(tmp_path), UNSHARED, TARGETS, load_optimizer=False)
+    mismatch = checkpoint.check_load_source(None, 0, str(tmp_path), UNSHARED, TARGETS, load_optimizer=False)[0]
     assert mismatch is not None and "cannot load into this model" in mismatch
 
 
@@ -141,7 +141,7 @@ def test_a_legacy_meta_without_a_required_field_is_the_users_mismatch(gloo, tmp_
         checkpoint, "check_adapter_source", lambda *_, **__: CheckedSource(AdapterSourceKind.LEGACY_TINKER_CHECKPOINT)
     )
     (tmp_path / "META.json").write_text('{"base_model": "m", "lora_alpha": 4.0}')
-    mismatch = checkpoint.find_load_mismatch(None, 0, str(tmp_path), UNSHARED, TARGETS, load_optimizer=False)
+    mismatch = checkpoint.check_load_source(None, 0, str(tmp_path), UNSHARED, TARGETS, load_optimizer=False)[0]
     assert mismatch is not None and "lacks ['lora_rank']" in mismatch
 
 

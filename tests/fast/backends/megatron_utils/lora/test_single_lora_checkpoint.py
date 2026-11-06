@@ -57,11 +57,11 @@ def _restore(path, *, convert_save=None):
     with patch.multiple(
         _MODULE,
         DistributedOptimizerMembers=DEFAULT,
-        load_adapter_dir=DEFAULT,
+        load_adapter_source=DEFAULT,
         save_and_commit_adapter_dir=DEFAULT,
         load_hf_config=lambda path: SimpleNamespace(to_dict=lambda: {"model_type": "qwen3"}),
     ) as mocks:
-        mocks["load_adapter_dir"].return_value = SimpleNamespace(lora_alpha=16.0)
+        mocks["load_adapter_source"].return_value = SimpleNamespace(lora_alpha=16.0)
         iteration = restore_single_lora(
             [], args, adapter_slots=slots, optimizer=MagicMock(), opt_param_scheduler=scheduler
         )
@@ -121,7 +121,7 @@ def test_an_old_format_save_reports_the_alpha_its_peft_pair_records(tmp_path):
     ids=["full", "saved-with-no-save-optim", "pre-parameter-state-format"],
 )
 def test_an_old_format_save_reports_whether_it_holds_optimizer_state(tmp_path, training_state, has_optimizer_state):
-    """load_adapter_dir refuses a source without it unless --no-load-optim."""
+    """load_adapter_source refuses a source without it unless --no-load-optim."""
     (tmp_path / "adapter_config.json").write_text(json.dumps({"lora_alpha": 32.0}))
     state = {"iteration": 5, "opt_param_scheduler": None} | training_state
     torch.save(state, tmp_path / "training_state_rank0.pt")
@@ -285,7 +285,7 @@ def _optimizer(calls):
 def _load(path, chunks, calls, *, load_optimizer):
     loader = LegacyRankShardLoader(chunks, _optimizer(calls), RUN, load_optimizer, precision_aware=False)
     parametrization, has_optimizer_state = loader.parametrization(path)
-    # load_adapter_dir's check between reading the parametrization and preparing
+    # load_adapter_source's check between reading the parametrization and preparing
     assert_parametrization_matches_run(
         parametrization, RUN, [], load_optimizer=load_optimizer, has_optimizer_state=has_optimizer_state
     )
@@ -309,7 +309,7 @@ class TestLegacyRankShardLoader:
         _save_old_format(tmp_path, saved)
         restored, calls = [_Chunk(), _Chunk()], []
 
-        # the old save records no alpha; load_adapter_dir falls back to the run's
+        # the old save records no alpha; load_adapter_source falls back to the run's
         assert _load(tmp_path, restored, calls, load_optimizer=False) == replace(RUN, lora_alpha=None)
 
         for before, after in zip(saved, restored, strict=True):
@@ -529,6 +529,27 @@ def test_an_export_reads_only_the_parameters_this_rank_leads(monkeypatch):
     assert torch.equal(state.weights[0], master) and torch.equal(state.exp_avgs[0], master + 1)
 
 
+def test_an_export_of_masters_holding_nan_saves_them(monkeypatch):
+    master = torch.tensor([[1.0, float("nan")]])
+    param = torch.nn.Parameter(master.bfloat16())
+    monkeypatch.setattr(
+        lora_checkpoint,
+        "get_parallel_state",
+        lambda: SimpleNamespace(intra_dp_cp=SimpleNamespace(rank=0), edp=SimpleNamespace(rank=0)),
+    )
+    dense = _DpZeroOptimizer(param, master, SimpleNamespace(rank=lambda: 0))
+    slots = SimpleNamespace(
+        slot_parameters=lambda slot: [param],
+        local_shard_specs=lambda slot, holds: [SimpleNamespace(local_shape=param.shape)],
+        piece_parameter=lambda slot, holds: [(0, torch.arange(2))],
+    )
+    members = lora_checkpoint.DistributedOptimizerMembers(
+        slots, SimpleNamespace(chained_optimizers=[dense]), [], precision_aware=False
+    )
+    state = members.export_adapter_state(0)
+    assert torch.equal(state.weights[0].isnan(), master.isnan())
+
+
 def test_without_an_optimizer_an_adapter_path_loads_the_weights_and_starts_over(tmp_path, monkeypatch):
     param = torch.nn.Parameter(torch.zeros(2, 2, dtype=torch.bfloat16))
     slots = SimpleNamespace(
@@ -540,7 +561,7 @@ def test_without_an_optimizer_an_adapter_path_loads_the_weights_and_starts_over(
 
     loaded_with = {}
 
-    def load_adapter_dir(path, members, slot, run, targets, **kwargs):
+    def load_adapter_source(path, members, slot, run, targets, **kwargs):
         loaded_with.update(kwargs)
         members.import_adapter_state(
             0,
@@ -557,7 +578,7 @@ def test_without_an_optimizer_an_adapter_path_loads_the_weights_and_starts_over(
         return SimpleNamespace(lora_alpha=16.0)
 
     monkeypatch.setattr(lora_checkpoint, "single_lora_parametrization", lambda *_: SimpleNamespace(lora_alpha=16.0))
-    monkeypatch.setattr(lora_checkpoint, "load_adapter_dir", load_adapter_dir)
+    monkeypatch.setattr(lora_checkpoint, "load_adapter_source", load_adapter_source)
     args = SimpleNamespace(
         lora_adapter_path=str(tmp_path),
         lora_adapter_convert_save=None,

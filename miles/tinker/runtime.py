@@ -199,17 +199,16 @@ class MilesBackend:
 
     async def save_slot(
         self, slot: int, root: str, name: str, tenant_digest: str, parametrization_fields: dict
-    ) -> UncommittedAdapterDir | dict:
-        """The uncommitted state every rank agreed on, or the first worker failure."""
-        return _written_or_failure(
-            await self.trainer.save_slot(
-                slot=slot,
-                root=root,
-                name=name,
-                tenant_digest=tenant_digest,
-                parametrization_fields=parametrization_fields,
-            )
+    ) -> UncommittedAdapterDir:
+        """The uncommitted state every rank agreed on; a failed save raises."""
+        worker_results = await self.trainer.save_slot(
+            slot=slot,
+            root=root,
+            name=name,
+            tenant_digest=tenant_digest,
+            parametrization_fields=parametrization_fields,
         )
+        return worker_results[0]
 
     async def export_slot(
         self, slot: int, root: str, name: str, tenant_digest: str, parametrization_fields: dict
@@ -287,11 +286,6 @@ class MilesBackend:
                 # request-carried backfill source: the engine refills an evicted version itself
                 request["lora_backfill_paths"] = {lora_name: lora_path}
         return request
-
-
-def _written_or_failure(worker_results: list) -> UncommittedAdapterDir | dict:
-    failure = _slot_failure([result for result in worker_results if isinstance(result, dict)])
-    return worker_results[0] if failure is None else failure
 
 
 def _slot_failure(worker_results: list) -> dict | None:

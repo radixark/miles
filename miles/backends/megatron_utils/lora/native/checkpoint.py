@@ -2,7 +2,7 @@
 
 import torch
 
-from miles.backends.megatron_utils.lora.bridge_checkpoint import BridgeAdapterSlots, _HfPiece
+from miles.backends.megatron_utils.lora.bridge_adapter_slots import BridgeAdapterSlots, _HfPiece
 from miles.backends.megatron_utils.lora.native.hf_adapter import export_lora_hf_named
 from miles.backends.megatron_utils.lora.native.modules.linear import iter_adapters
 from miles.backends.megatron_utils.lora.native.modules.lm_head import LoRAOutputHead
