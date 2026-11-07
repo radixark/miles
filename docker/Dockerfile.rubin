@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # doc-dev: docs/developer/ci/02-docker-build.md
 # Native aarch64 build adding Vera Rubin (SM107) support.
-ARG SGLANG_IMAGE=lmsysorg/sglang:nightly-cu134-20260911-a4ff563@sha256:4af3254b070e087afdf8cabebe895132bb4d1d6cf6fd5b5c60f0a3da07c1b468
+ARG SGLANG_IMAGE=lmsysorg/sglang:nightly-cu134-20261009-91b3692@sha256:3ebc3d7c39d20c1cc23ab1145ec55f47aa532283dc7093dde67fe7d29f2a7492
 FROM ${SGLANG_IMAGE}
 
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
@@ -15,8 +15,9 @@ ARG TE_COMMIT=5e52befd5262c06289106338c308079d6adb391f
 ARG TE_FA4_FIX_COMMIT=8d43cd1ff49a024b00e228d156b63cd5a19d32b3
 ARG APEX_COMMIT=1bcf66dc11c3f614d6a071b1bb39854189ea3110
 ARG FA2_COMMIT=edb5c76ee329b18ed95d1f7ea9aa522a1331ab7d
-ARG MEGATRON_COMMIT=96fe16ecb280f0365f68fe0dc8a33e2e27b4cb95
-ARG SGLANG_COMMIT=67e4cd1885155bf9b08366b348c59d5b79a7fb7b
+ARG MEGATRON_COMMIT=fd15ee20a4f03b03680529baf4b8f7eeed64df1d
+ARG MBRIDGE_COMMIT=a61943d7fcb34a190471cfeb0a0eb8bbda621ddf
+ARG SGLANG_MILES_COMMIT=6b5f3dfc5a395d6fd56d105c34c8e3542846ca4c
 ARG FLASH_MLA_COMMIT=b7643bd54521f563b839b98289b5cd048c062ba2
 ARG FHT_COMMIT=e7706faf8d1c3b9f241e36860640ad1dac644ede
 
@@ -96,10 +97,25 @@ RUN git init /root/Megatron-LM && \
     git -C /root/Megatron-LM checkout --detach FETCH_HEAD && \
     git -C /root/Megatron-LM submodule update --init --recursive --depth=1 && \
     python3 -m pip install -e /root/Megatron-LM --no-deps --no-build-isolation && \
-    python3 -m pip install --no-deps --no-build-isolation \
-      git+https://github.com/ISEEKYAN/mbridge.git@89eb10887887bc74853f89a4de258c0702932a1c && \
     TMS_CUDA_MAJOR=13 python3 -m pip install --force-reinstall --no-deps --no-build-isolation \
       git+https://github.com/fzyzcjy/torch_memory_saver.git@118b09b3bc7b0cf386745db1eac2601d4aa7e681
+
+RUN git init /opt/mbridge && \
+    git -C /opt/mbridge remote add origin https://github.com/ISEEKYAN/mbridge.git && \
+    git -C /opt/mbridge fetch --depth=1 origin ${MBRIDGE_COMMIT} && \
+    git -C /opt/mbridge checkout --detach FETCH_HEAD
+
+# Unmerged: load weights on each rank's CUDA device (https://github.com/ISEEKYAN/mbridge/pull/151).
+RUN git -C /opt/mbridge fetch --depth=2 origin 9b35aef3c1aa8de5d799cbecc12e7233cc39bb16 && \
+    git -C /opt/mbridge -c user.name="Miles image build" -c user.email="build@localhost" \
+      cherry-pick FETCH_HEAD
+
+# Unmerged: handle null HF RoPE scaling (https://github.com/ISEEKYAN/mbridge/pull/162).
+RUN git -C /opt/mbridge fetch --depth=2 origin 6be2f6ef9adfc6d7d05ef2250f6493498266a214 && \
+    git -C /opt/mbridge -c user.name="Miles image build" -c user.email="build@localhost" \
+      cherry-pick FETCH_HEAD
+
+RUN python3 -m pip install /opt/mbridge --no-deps --no-build-isolation
 
 # Megatron's build requires <80; ModelOpt needs >=80 and still imports pkg_resources.
 RUN python3 -m pip install --no-deps setuptools==80.9.0
@@ -111,7 +127,7 @@ RUN if git -C /sgl-workspace/sglang config --local --get-all 'http.https://githu
       git -C /sgl-workspace/sglang config --local --unset-all 'http.https://github.com/.extraheader'; \
     fi && \
     git -C /sgl-workspace/sglang remote set-url origin https://github.com/sgl-project/sglang.git && \
-    git -C /sgl-workspace/sglang fetch --depth=1 origin ${SGLANG_COMMIT} && \
+    git -C /sgl-workspace/sglang fetch --depth=1 origin ${SGLANG_MILES_COMMIT} && \
     git -C /sgl-workspace/sglang checkout -f --detach FETCH_HEAD
 
 # The AOT kernel version is independent of the SGLang framework version.
@@ -146,7 +162,7 @@ RUN bash /tmp/install-kube-tools.sh "${TARGETARCH}" && rm -f /tmp/install-kube-t
 # ====================================== Install main package ============================================
 
 ARG MILES_REPO=radixark/miles
-ARG MILES_COMMIT=a3be2ba174b48064fc46bc0724bca05cf1695d69
+ARG MILES_COMMIT=05bd9cb2afc9f6a1e94544e8fb4e9918771e763b
 RUN git clone "https://github.com/${MILES_REPO}.git" /opt/miles && \
     cd /opt/miles && \
     git fetch --depth=1 origin "${MILES_COMMIT}" && \
