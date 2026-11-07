@@ -306,25 +306,19 @@ class _AudioProcessor(_RecordingProcessor):
         }
 
 
-def test_audio_rows_take_the_audio_spans(monkeypatch):
+def test_audio_rows_take_the_audio_spans():
     """Every modality's tower rows are placed from its own spans, in media order; no mRoPE without one."""
     processor = _AudioProcessor()
-    monkeypatch.setattr(
-        token_space_media_process,
-        "_trainer_processor",
-        lambda *args: token_space_media_process._TrainerProcessor(core=processor, image_device=None),
-    )
     pending = token_space_media_process.compute_multimodal_train_inputs(
-        object(),
+        token_space_media_process.TrainerProcessor(core=processor, image_device=None),
         [{"images": ["/shared/a.png"], "audios": ["/shared/a.wav", "/shared/b.wav"]}],
         [torch.arange(11)],
         mm_processor_worker_num=1,
-        mm_io_worker_num=0,
         with_sglang_placement=True,
         device=torch.device("cpu"),
     )
 
-    (train_inputs,) = token_space_media_process.resolved(pending.multimodal_train_inputs)
+    (train_inputs,) = token_space_media_process.resolved_multimodal_train_inputs(pending.multimodal_train_inputs)
     assert processor.calls[0]["audio_data"] == ["/shared/a.wav", "/shared/b.wav"]
     assert set(train_inputs) == {"vision_patches_bthwc", "dmel_bins", "mm_image_positions", "mm_audio_positions"}
     assert train_inputs["mm_image_positions"].tolist() == [4, 5]
