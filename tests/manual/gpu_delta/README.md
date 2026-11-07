@@ -54,6 +54,12 @@ Snappy/LZ4 automatically use the hardware decompression engine on SM100/SM103,
 reading each rank's original host allocation. Other CUDA architectures and
 Bitcomp use GPU compute after double-buffered H2D transfers. GPU-delta itself
 does not require SM100/SM103; model/backend kernels retain their hardware requirements.
+One original rank per engine host reads and verifies the publication, unwraps
+outer Zstd, and stages the full payload in a shared arena. CUDA ranks register
+that arena and transfer only their selected frames. DE ranks copy their selected
+spans into private DE-capable input allocations. The shared arena and its worker
+pool persist across updates; all ranks must finish apply and resume before its
+contents can be replaced.
 LZ4 uses byte input with bitshuffle disabled; Bitcomp uses sparse lossless U8.
 Neither adds a weight layout transform.
 
@@ -65,9 +71,9 @@ user-facing configuration API. Runtime defaults are sufficient for normal use.
 | `GPU_DELTA_CODEC=bitcomp-zstd` | Trainer codec for ordinary learned updates; accepts the codecs listed above. `*-zstd` adds GPU Zstd wrapping; `lz4` and `bitcomp` skip it. Read once at launch. The receiver selects the codec from each authenticated publication. |
 | `GPU_DELTA_INITIAL_SYNC_CODEC=bitcomp-zstd` | Trainer codec for initial sync, engine recovery and checkpoint companions; accepts the same codecs. Initial synchronization is mandatory. |
 | `GPU_DELTA_SORT_BEFORE_HW_DECOMPRESS=0` | Receiver only. Set `1` to let nvCOMP sort chunks during paused DE submission; default off for all codecs. It does not change publication bytes or move sorting into preparation. |
-| `GPU_DELTA_CPU_WORKERS=32` | CPU workers per rank. Each engine-host cache creator also uses its pool for parallel owner-file read/hash before local payload preparation. Two EP4 engines have eight pools (up to 256 workers at the default). |
+| `GPU_DELTA_CPU_WORKERS=32` | Persistent CPU workers per engine host on both decoder paths. The same pool reads/hashes files and prepares the full input image. Two single-host TP4 engines use two pools (up to 64 workers). |
 | `GPU_DELTA_SKIP_PAYLOAD_HASH=1` | Miles-only opt-in: omit owner-file SHA256 generation and send `validate_payload_hash=false` with each receiver update. Defaults off. Such publications declare `payload_checksum_format="none"` and null file hashes; SGLang accepts them only with this explicit request option and does not read the environment variable. Manifest SHA256 and native decoder checks remain mandatory. |
-| `GPU_DELTA_HOST_CACHE_DIR` | Tmpfs base for engine-host encoded caches; defaults to `/dev/shm/sglang-gpu-delta-<uid>`. Each engine has separate identities and locks. Its ranks share encoded files, while prepared input arenas remain private to each rank on both decoder paths. |
+| `GPU_DELTA_HOST_CACHE_DIR` | Tmpfs base for engine-host caches; defaults to `/dev/shm/sglang-gpu-delta-<uid>`. Each engine has separate identities and locks. Ranks share encoded files and the full prepared input arena. DE additionally retains private hardware-capable input allocations. |
 
 For Ray launches, set job-level variables through `runtime_env` or
 `execute_train(extra_env_vars=...)`; the submitting shell does not configure
@@ -243,14 +249,15 @@ aligned inner arena directly, without trailing padding. Raw tensors and omitted
 zero-XOR frames keep the same representation. SHA-256 authenticates final owner files by default.
 Ordinary updates do not hash old/new weights or intermediate inner-codec bytes;
 checkpoint/recovery artifacts additionally fingerprint the immutable HF base. The receiver reads
-and verifies immutable encoded files once per engine-host, then every rank
-CPU-decompresses (or copies unwrapped payloads) its local tensors into its own
-pinned host arena during background preparation. The DE path uses original
+and verifies immutable encoded files once per engine-host. One fixed original
+rank's persistent CPU pool prepares the complete canonical image in shared tmpfs.
+CUDA ranks register that image and transfer only their selected frames. DE ranks
+map the shared image without registration and copy selected spans into private
 HOST_NUMA allocations with hardware-decompression capability checks; no CUDA
-handles are exported or imported. The CUDA path uses ordinary pinned host storage.
-Fitting updates reuse host capacity; growth reserves twice the new requirement.
-DE allocations also round capacity to the device allocation granularity.
-Encoded-file staging uses a separate retained tmpfs mapping for every codec.
+handles are exported or imported. Fitting updates reuse host capacity and CUDA
+registrations; growth reserves twice the new requirement. DE allocations also
+round capacity to the device allocation granularity. Encoded-file staging uses
+a separate retained tmpfs mapping for every codec.
 
 Preparation builds CPU plans and small GPU metadata/workspace, and uploads raw
 scalar/vector targets without writing model weights. After the serving pause and
@@ -270,10 +277,11 @@ separate groups, omitting empty groups. GPU Zstd decompression is not part of th
 Miles negotiates the immutable plan and original participant cohort once when
 connecting; learned updates reuse that plan rather than sort and hash it again.
 Participant identities include an opaque engine-host encoded-cache identity.
-Ranks share encoded-file verification and prepare only their local bindings;
-independent engines have separate caches and no shared release barrier.
-Each rank bounds queued decode futures to `4 * GPU_DELTA_CPU_WORKERS`; it does
-not enqueue one unbounded future for every tensor/frame.
+Independent engines have separate caches and no shared release barrier. The
+owner pool bounds queued payload groups to `4 * GPU_DELTA_CPU_WORKERS`. For wrapped
+codecs, each worker uses native Zstd `multi_decompress_to_buffer(threads=0)`,
+then scatters the temporary ordinary CPU output into the persistent shared image.
+The existing pool supplies concurrency; native decoding creates no extra workers.
 The global canonical inventory must have complete, unique owner coverage. Duplicate
 exports, including overlapping PP/MTP names, are rejected rather than deduplicated.
 
@@ -343,24 +351,36 @@ producer prefixes reuse the existing owner gather.
   overlapping worker intervals and must not be added to that wall span. These
   timings and cache-build spans have `{min,p50,max}`; hash bytes/files and
   allocation calls/bytes have `/sum`. All
-  file tasks drain before READY or failure; rank-local decode uses verified bytes.
+  file tasks drain before READY or failure; payload preparation uses verified bytes.
 - `host_encoded_cache_capacity_bytes/{min,p50,max,sum}` counts retained tmpfs
   capacity once per engine-host cache, including when there is no new creator.
   `receiver_host_encoded_caches` counts those caches, not physical nodes.
   Independent engines may retain duplicate encoded bytes.
-- `receiver_host_rank_outer_zstd_*` covers each rank's wrapped matrix tensors
-  and is zero for unwrapped codecs. Worker-decode sums accumulate worker intervals;
+- `receiver_host_rank_outer_zstd_*` reports actual work: one owner per engine-host
+  decodes the full image and followers report zero on both decoder paths. These
+  fields are zero for unwrapped codecs. Worker-decode sums include each worker's
+  native batch decode and scatter into the shared image;
   `decode_s` is the wrapped path's wall time including submission, raw copies and joins.
   These nested spans must not be added. Encoded/decoded bytes, tensors and frames
   have rank distributions and `/sum`; `receiver_host_rank_cpu_workers` records
-  each rank's worker count. `receiver_host_rank_prepare_s` encloses cache access,
-  metadata release, rank allocation and local payload preparation.
-- `receiver_host_rank_{arena,capacity}_bytes/{min,p50,max,sum}` counts distinct
-  rank-owned pinned host storage on every rank: DE-capable allocations on the DE
-  path and ordinary pinned Torch storage on CUDA. Used bytes and retained capacity stay
-  separate. Rank allocation duration has `{min,p50,max}`; calls/bytes also have
-  `/sum`. `receiver_host_rank_mapping_reused` reports local arena reuse. Fitting
-  warm updates allocate no new arena while retaining physical capacity.
+  each rank's worker count (zero on followers).
+  `receiver_host_rank_prepare_s` encloses cache access, metadata release, allocation
+  or registration, and payload preparation.
+- `host_prepared_cache_*` describes the shared image. Creator build/layout
+  timings and allocation work count once per engine-host. Shared capacities have
+  `{min,p50,max,sum}`; `host_input_capacity_bytes/sum` combines these physical pages
+  with DE rank-private input capacity without counting shared mappings repeatedly.
+  These capacity counters exclude temporary native Zstd output slabs and do not
+  measure total host RAM usage.
+- `receiver_host_rank_{arena,capacity}_bytes/{min,p50,max,sum}` describes each rank's
+  selected input extent and mapped capacity. CUDA ranks map the same shared pages,
+  so summing their capacities counts aliases. DE inputs are separate physical
+  allocations. Rank allocation duration has `{min,p50,max}`; calls/bytes also have
+  `/sum` and count CUDA registration work. `receiver_host_rank_mapping_reused`
+  reports retained mapping reuse. Fitting warm updates allocate or register no
+  new arena. `receiver_host_rank_private_capacity_bytes` counts only DE-private
+  storage. `receiver_host_rank_staging_copy_{s,bytes}` records the selected-span
+  copy into that storage; CUDA reports zero.
 - `receiver_host_plan_cache_reused/{min,p50,max}` reports per-rank static-plan
   reuse.
 - `receiver_de_host_input_bytes` counts compressed bytes read directly by DE;
@@ -485,9 +505,11 @@ cumulative versions and two EP4 receivers. `--codecs`, `--hashing`,
 single arm, use `--hashing on`. Hash-on arms generate and
 verify payload SHA256; hash-off arms skip it on both sides. Host wall clocks and
 scheduler pause timestamps remain available without per-phase CUDA events.
-Use `--profile-version` with an external Nsight Systems launcher for GPU profiling.
-It enables all receiver NVTX ranges through `SGLANG_ENABLE_NVTX_OPERATIONS=1`;
-there is no separate GPU-delta NVTX mode or configurable decode-stage count.
+`--nsys` launches Nsight Systems and captures one warm receiver update, always
+including CUDA, NVTX, OS-runtime and Python GIL tracing, CPU
+sampling/context switches, and Python stack sampling. It enables all receiver
+NVTX ranges through `SGLANG_ENABLE_NVTX_OPERATIONS=1`; there is no separate
+GPU-delta NVTX mode or configurable decode-stage count.
 Historical event measurements in saved fixtures remain identifiable as old
 measurements; missing CUDA intervals are reported as unmeasured, not zero.
 
@@ -531,6 +553,21 @@ python tests/manual/gpu_delta/bench_gpu_delta.py \
   --codecs bitcomp-zstd --hashing on --frame-bytes 1048576 \
   --versions 3 --sender-gpus 8
 ```
+
+For a receiver profile, add `--nsys` to this saved-delta command and choose a new
+output directory. It captures version 2 by default; `--profile-version N`
+selects another warm update and does not enable profiling by itself.
+Invoke the script directly: it owns the `nsys`
+launch, so do not wrap it in another `nsys profile` command. `nsys` must be on
+`PATH`, with CPU profiling permitted in the container. The output contains
+`receiver-profile.nsys-rep` and the exact arguments/environment overrides in
+`nsys-command.json`.
+
+The cold first update runs without capture. The selected warm update emits one
+`gpu_delta_benchmark_capture` range around preparation through both engine resume
+replies, including a 0.2-second capture-arming lead-in. Capture stops when that
+range ends; the remaining generation/update checks continue. Profiled timings
+are diagnostic and must be kept separate from unprofiled performance results.
 
 Fresh encoding runs write `producer-spec.json` with explicit encoder settings,
 prepared-cache metadata hashes, the settings hash and producer source-file hashes.
