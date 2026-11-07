@@ -12,6 +12,6 @@ source /sgl-workspace/sglang/benchmark/tpu/common_env.sh && SGLANG_TPU_SHARED_SL
   --tp-size 4
   --base-gpu-id 4
   --gpu-id-step 1
-  --mem-fraction-static 0.4
+  --mem-fraction-static 0.7
   --host 0.0.0.0
   --port 30000

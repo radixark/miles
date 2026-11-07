@@ -46,7 +46,7 @@ class _Recipe:
 
 
 _RECIPES: dict[str, _Recipe] = {
-    "smoke": _Recipe(3, 8, 4, 1024, 32, enable_eval=False),
+    "smoke": _Recipe(3, 8, 4, 7168, 32, enable_eval=False),
     "bench": _Recipe(4, 16, 8, 7168, 128, enable_eval=False),
     "full": _Recipe(100, 16, 8, 7168, 128, enable_eval=True),
 }
@@ -64,19 +64,32 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     sglang_env_script: str = "/sgl-workspace/sglang/benchmark/tpu/common_env.sh"
     slice_port_base: int = 30100
     extra_args: str = ""
+    # the engine shares this host's TPU session, so a run must not SIGKILL anything holding a TPU
+    graceful_ray_stop: bool = True
+    # keeps the trainer's compiled programs across runs (torch_tpu's tier-3 cache); a rerun's step 0 then loads them
+    compile_cache_dir: str = ""
 
 
-# sglang's TPU scheduling flags, with scoped VMEM at the v7x maximum and the associative-scan emitter off
-# (libtpu >= 0.0.44 miscompiles cumulative ops for lengths not a multiple of 1024)
-_LIBTPU_ARGS = (
+# the associative-scan emitter off: libtpu >= 0.0.44 miscompiles cumulative ops for lengths not a multiple of 1024
+_SCAN_EMITTER_OFF = "--xla_tpu_use_associative_scan_emitter=false"
+# sglang-torchtpu's benchmark/tpu/common_env.sh flags (exporting LIBTPU_INIT_ARGS replaces them there), with scoped
+# VMEM at the v7x maximum
+_ENGINE_LIBTPU_ARGS = (
     "--xla_tpu_scoped_vmem_limit_kib=65472 "
     "--xla_tpu_enable_async_collective_fusion=true "
     "--xla_tpu_overlap_compute_collective_tc=true "
     "--xla_tpu_enable_async_collective_fusion_multiple_steps=true "
     "--xla_tpu_enable_latency_hiding_scheduler=true "
     "--xla_latency_hiding_scheduler_rerun=10 "
-    "--xla_tpu_use_associative_scan_emitter=false"
+    "--xla_tpu_all_gather_collective_matmul_mode=post_spmd_conservative "
+    "--xla_tpu_reduce_scatter_collective_matmul_mode=post_spmd_conservative "
+    "--xla_tpu_enable_sparse_core_collective_offload_all_reduce=false "
+    "--xla_tpu_offload_gather_to_sparsecore=false "
+    "--xla_tpu_enable_sparse_core_collective_offload_reduce_scatter=false "
+    f"{_SCAN_EMITTER_OFF}"
 )
+# the engine's other flags change neither the trainer's compile time nor its step time
+_TRAINER_LIBTPU_ARGS = _SCAN_EMITTER_OFF
 
 
 def _shared_slice(args: ScriptArgs, rank_offset: int) -> str:
@@ -90,16 +103,17 @@ def _clear_chip_masks() -> None:
         os.environ.pop(key, None)
 
 
-def _slice_env(args: ScriptArgs) -> dict[str, str]:
-    """What both jobs share: one topology, the slice builders and one libtpu flag set."""
+def _slice_env(args: ScriptArgs, libtpu_args: str) -> dict[str, str]:
+    """What both jobs share: one topology and the slice builders; each job brings its own libtpu flags."""
     return {
         "TORCH_TPU_TOPOLOGY": WHOLE_HOST_TOPOLOGY,
         "TORCH_TPU_SLICEBUILDER_ADDRESSES": ",".join(
             f"localhost:{args.slice_port_base + index}" for index in range(SLICE_SIZE)
         ),
-        "LIBTPU_INIT_ARGS": os.environ.get("LIBTPU_INIT_ARGS", _LIBTPU_ARGS),  # a caller's flag set wins
-        # libtpu cannot load an executable serialized for part of a slice, so nothing may come from a cache
+        "LIBTPU_INIT_ARGS": os.environ.get("LIBTPU_INIT_ARGS", libtpu_args),  # a caller's flag set wins
+        # the engine compiles each program itself; the trainer shares its programs across ranks (_trainer_env)
         "TORCH_TPU_TIER2_COMPILATION_CACHE": "disabled",
+        # these store torch_tpu programs without their devices: a 4-rank job would load the 8-device engine's
         "TORCHINDUCTOR_FX_GRAPH_CACHE": "0",
         "TORCHINDUCTOR_AUTOGRAD_CACHE": "0",
         "TPU_STDERR_LOG_LEVEL": os.environ.get("TPU_STDERR_LOG_LEVEL", "1"),
@@ -112,7 +126,7 @@ def serve_sglang(args: ScriptArgs, model: TitanTpuModel) -> None:
     """Serve the policy on devices 4-7 in the foreground."""
     U = args.create_backend()
     _clear_chip_masks()
-    os.environ.update(_slice_env(args))
+    os.environ.update(_slice_env(args, _ENGINE_LIBTPU_ARGS))
     U.exec_command_cpu(
         f"source {args.sglang_env_script} && "
         f"SGLANG_TPU_SHARED_SLICE={_shared_slice(args, rank_offset=NUM_TRAINER_DEVICES)} "
@@ -121,7 +135,7 @@ def serve_sglang(args: ScriptArgs, model: TitanTpuModel) -> None:
         "--device tpu "
         "--dtype bfloat16 "
         "--grammar-backend none "
-        # Required: it disables the piecewise prefill graph, which TPU does not implement.
+        # disables the piecewise prefill graph, which TPU does not implement
         "--enable-torch-compile "
         "--page-size 64 "
         f"--kv-cache-dtype {args.kv_cache_dtype} "
@@ -130,7 +144,8 @@ def serve_sglang(args: ScriptArgs, model: TitanTpuModel) -> None:
         f"--tp-size {NUM_ENGINE_DEVICES} "
         f"--base-gpu-id {SGLANG_BASE_DEVICE} "
         "--gpu-id-step 1 "
-        "--mem-fraction-static 0.4 "
+        # the engine has devices 4-7 to itself; the rest of HBM holds XLA's program buffers
+        "--mem-fraction-static 0.7 "
         f"{model.sglang_args}"
         f"--host 0.0.0.0 --port {args.sglang_port}"
     )
@@ -147,8 +162,14 @@ def prepare_model_and_data(args: ScriptArgs, model_commands: Sequence[str]) -> N
 
 
 def _trainer_env(args: ScriptArgs) -> dict[str, str]:
+    compile_cache = (
+        {"TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT": args.compile_cache_dir} if args.compile_cache_dir else {}
+    )
     return {
-        **_slice_env(args),
+        **_slice_env(args, _TRAINER_LIBTPU_ARGS),
+        # one rank compiles each program and the others load it; torch_tpu's tier-3 cache needs this tier on
+        "TORCH_TPU_TIER2_COMPILATION_CACHE": "miles_trainer",
+        **compile_cache,
         "MILES_ACCELERATOR": "tpu",
         "MILES_TPU_SHARED_SLICE": _shared_slice(args, rank_offset=0),
         # wandb's system-stats sampler polls the node's TPU device plugin, whose restarts kill TPU sessions
@@ -172,8 +193,11 @@ def execute_train(args: ScriptArgs, model: TitanTpuModel, *, launcher_file: str)
         "--input-key prompt "
         "--label-key label "
         "--apply-chat-template "
+        # thinking off: a thinking response often runs out of tokens before its answer, so every reward is 0
+        """--apply-chat-template-kwargs '{"enable_thinking":false}' """
         "--rollout-shuffle "
-        "--rm-type deepscaler "
+        # grades the last \boxed{}; deepscaler grades only after </think>, which a thinking-off response lacks
+        "--rm-type math "
         f"--num-rollout {recipe.num_rollout} "
         f"--rollout-batch-size {recipe.rollout_batch_size} "
         f"--n-samples-per-prompt {recipe.n_samples_per_prompt} "
@@ -192,7 +216,7 @@ def execute_train(args: ScriptArgs, model: TitanTpuModel, *, launcher_file: str)
             "--eval-top-p 1 "
         )
 
-    # no KL term: its reference model would cost a third compiled pass (~15 min in step 0) for a zero coefficient
+    # no KL term: its reference model would cost a third compiled pass for a zero coefficient
     grpo_args = "--advantage-estimator grpo --entropy-coef 0.00 --eps-clip 0.2 --eps-clip-high 0.28 "
 
     optimizer_args = (

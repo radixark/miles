@@ -21,8 +21,12 @@ class Platform:
     flex_attention = True
     # the process group has a rooted reduce
     rooted_reduce = True
+    # the process group has PREMUL_SUM, which FSDP picks for a gradient divide factor other than the group size
+    premul_sum_reduce = True
     # the --update-weight-transfer-mode values an engine on this platform can receive; None: all of them
     weight_transfer_modes: frozenset[str] | None = None
+    # the engine reports the weight version each prompt's KV was computed under (--sglang-enable-prefill-weight-versions)
+    prefill_weight_versions = True
     # torch.compile(dynamic=True) works here; a platform without it runs dynamic-shape helpers eager
     dynamic_shapes = True
     # NVML sees the devices, so each training rank is pinned to its GPU's NUMA node

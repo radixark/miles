@@ -44,10 +44,7 @@ class RayCommandBackend(BaseCommandBackend):
             None if config.external_mooncake else self._resolve_mooncake_master_port(request.train_args)
         )
 
-        # an external engine may share this host (scripts/tpu): it is not this run's to kill, and a SIGKILL of a
-        # process holding a TPU can take the host's TPU session, engine included, down with it
-        shares_host = ArgvManipulator.is_defined(shlex.split(request.train_args), "--rollout-external-engine-addrs")
-        self._clean_up_previous_run(external_ray=external_ray, graceful=shares_host)
+        self._clean_up_previous_run(external_ray=external_ray, graceful=config.graceful_ray_stop)
 
         if not external_ray:
             self.exec_command_cpu(
@@ -82,7 +79,7 @@ class RayCommandBackend(BaseCommandBackend):
                 )
             finally:
                 if request.job_lifetime == "launcher" and not external_ray:
-                    self.exec_command_cpu(_GRACEFUL_RAY_STOP if shares_host else "ray stop --force")
+                    self.exec_command_cpu(_GRACEFUL_RAY_STOP if config.graceful_ray_stop else "ray stop --force")
 
     def _resolve_mooncake_master_port(self, train_args: str) -> int | None:
         train_argv = shlex.split(train_args)

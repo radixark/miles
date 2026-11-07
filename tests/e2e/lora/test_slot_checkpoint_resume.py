@@ -22,9 +22,18 @@ from megatron.core.transformer.transformer_config import TransformerConfig
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from torch.utils._pytree import tree_flatten, tree_map
 
-from miles.backends.megatron_utils.lora.checkpoint import load_slot, save_slot
+from miles.backends.megatron_utils.lora.bridge_adapter_slots import BridgeAdapterSlots
+from miles.backends.megatron_utils.lora.checkpoint import LayerWiseSlotMembers, load_slot
 from miles.backends.megatron_utils.lora.optimizer import SlotOptimizer, adapter_slot_parameters, step_slot_optimizers
+from miles.backends.training_utils.checkpoint.adapter.adapter_dir import save_adapter_dir
+from miles.backends.training_utils.checkpoint.adapter.commit import (
+    commit_adapter_dir,
+    resolve_adapter_dir,
+    tenant_digest,
+)
+from miles.backends.training_utils.checkpoint.adapter.parametrization import base_model_fingerprint
 from miles.utils.distributed_utils import init_gloo_group
+from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
 
 register_cuda_ci(est_time=120, suite="stage-b-2-gpu-h200", labels=["lora"], hardware=["hopper"], num_gpus=2)
 register_rocm_ci(est_time=60, suite="nightly-stage-c-2-gpu-mi350", labels=["lora"])
@@ -47,6 +56,29 @@ class CheckpointModel(MegatronModule):
             )
             linear.requires_grad_(False)
             self.layers.append(MultiLoRALinear(linear, n_adapters=2, dim=4, alpha=8, full_name=f"layers.{index}"))
+
+
+class CheckpointModelExport:
+    """Stands in for Bridge's HF export of CheckpointModel (TP1): layer 0 is an up_proj, layer 1 a down_proj."""
+
+    def __init__(self, model):
+        self._layers = [m for chunk in model for m in chunk.modules() if isinstance(m, MultiLoRALinear)]
+
+    def _named(self, adapters, rank: int | None = None):
+        for index, (adapter, projection) in enumerate(zip(adapters, ("up_proj", "down_proj"), strict=True)):
+            prefix = f"model.layers.{index}.mlp.{projection}"
+            yield f"{prefix}.lora_A.weight", adapter.linear_in.weight[:rank]
+            yield f"{prefix}.lora_B.weight", adapter.linear_out.weight[:, :rank]
+
+    def iter_current_adapter(self):
+        # inside expose_adapter_slot, which swaps each layer's slots for the exposed one
+        yield from self._named([layer.adapter for layer in self._layers])
+
+    def materialize_adapter(self, spec, *, materialize: bool = True) -> dict[str, torch.Tensor]:
+        if not materialize:
+            return {}
+        adapters = [layer.adapters[spec.slot] for layer in self._layers]
+        return {name: tensor.detach().clone() for name, tensor in self._named(adapters, spec.rank)}
 
 
 def snapshot(model, optimizer):
@@ -104,7 +136,20 @@ def run_worker(checkpoint_dir):
     )
     for slot in (0, 1):
         init_adapter_slot(model, slot, rank=4, alpha=8)
-    source = SlotOptimizer(args, model, slot=0)
+    hf_config = {"model_type": "qwen3", "num_hidden_layers": 2}
+    targets = get_hf_lora_targets(hf_config)
+    slots = BridgeAdapterSlots(model, CheckpointModelExport(model), targets, multi_lora=True)
+    optimizers = {}
+    members = LayerWiseSlotMembers(slots, optimizers)
+    run = slots.parametrization(
+        base_model="toy",
+        base_model_fingerprint=base_model_fingerprint(hf_config),
+        lora_rank=4,
+        lora_alpha=8.0,
+        lora_type="lora",
+        experts_shared_outer_loras=False,
+    )
+    source = optimizers[0] = SlotOptimizer(args, model, slot=0)
     for step in (1, 2, 3):
         apply_step(model, source, step)
     saved = snapshot(model, source)
@@ -127,9 +172,15 @@ def run_worker(checkpoint_dir):
                 assert state[name].dtype == torch.float32 and torch.count_nonzero(state[name]) > 0
     print(f"rank={dist.get_rank()} warmup complete; owned_masters=192; sub_bf16_precision=True", flush=True)
 
-    save_slot(model, source, str(checkpoint_dir))
-    resumed = SlotOptimizer(args, model, slot=1)
-    load_slot(model, resumed, str(checkpoint_dir), load_optimizer=True)
+    written = save_adapter_dir(checkpoint_dir, "ck", members, 0, run, tenant_digest=tenant_digest("tenant"))
+    if dist.get_rank() == 0:
+        commit_adapter_dir(checkpoint_dir, "ck", written, overwrite=False)
+    dist.barrier()
+    checkpoint_dir = resolve_adapter_dir(checkpoint_dir, "ck", tenant="tenant").path
+    resumed = optimizers[1] = SlotOptimizer(args, model, slot=1)
+    load_slot(model, members, resumed, str(checkpoint_dir), run, targets, load_optimizer=True)
+    # Adam's hyperparameters are not checkpointed: every step passes them
+    resumed.apply_adam_params(ADAM)
     assert_same_state(snapshot(model, resumed), saved)
     assert_same_state(snapshot(model, source), saved)
     print(f"rank={dist.get_rank()} cross-slot restore is exact", flush=True)
@@ -142,14 +193,15 @@ def run_worker(checkpoint_dir):
     assert all(group["step"] == 4 for child in resumed._inner.chained_optimizers for group in child.param_groups)
     print(f"rank={dist.get_rank()} resumed Adam step is exact", flush=True)
 
-    load_slot(model, resumed, str(checkpoint_dir), load_optimizer=True)
-    resumed.reload_masters()
+    load_slot(model, members, resumed, str(checkpoint_dir), run, targets, load_optimizer=True)
+    # round the FP32 masters to the bf16 model params
+    resumed._inner.reload_model_params()
     with pytest.raises(AssertionError):
         assert_same_state(snapshot(model, resumed), saved)
     print(f"rank={dist.get_rank()} negative control: rounding masters is detected", flush=True)
 
-    resumed = SlotOptimizer(args, model, slot=1)
-    load_slot(model, resumed, str(checkpoint_dir), load_optimizer=False)
+    resumed = optimizers[1] = SlotOptimizer(args, model, slot=1)
+    load_slot(model, members, resumed, str(checkpoint_dir), run, targets, load_optimizer=False)
     apply_step(model, resumed, 4)
     with pytest.raises(AssertionError):
         assert_same_state(snapshot(model, resumed), uninterrupted)

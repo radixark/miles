@@ -2,6 +2,7 @@ import re
 from argparse import Namespace
 from typing import TYPE_CHECKING
 
+from miles.platforms import current_platform
 from miles.utils.lora.utils import is_lora_enabled
 
 if TYPE_CHECKING:
@@ -39,10 +40,7 @@ def assert_samples_weight_version_sane(args: Namespace, samples: list["Sample"])
             _assert_span_weight_version_sane(sample=sample, span=span, what="were generated under")
         for span in sample.all_prefill_weight_version_spans:
             _assert_span_weight_version_sane(sample=sample, span=span, what="had their prompt KV computed under")
-        # sglang-torchtpu has no --enable-prefill-weight-versions
-        if "enable_prefill_weight_versions" in args.sglang.base_args and args.sglang.common_value(
-            "enable_prefill_weight_versions"
-        ):
+        if current_platform.prefill_weight_versions and args.sglang.common_value("enable_prefill_weight_versions"):
             _assert_sample_reports_prefill_weight_versions(sample)
 
 

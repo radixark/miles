@@ -1,7 +1,7 @@
-"""On a TPU host with the patched torchtitan: `_TpuGroupedMM`'s gradients equal a per-group fp32 reference.
+"""On a TPU host: `torch._grouped_mm`'s gradients equal a per-group fp32 reference.
 
-torch_tpu's grouped weight-gradient kernels are wrong below 256 rows a group and leave empty groups unwritten,
-so the patch pads every group; rows past the last offset (dispatcher padding) belong to no expert.
+torchtitan's MoE experts call it unpatched. torch_tpu before 73ff51af3 got the weight gradient wrong for groups
+inside the first 256-row tile; rows past the last offset (dispatcher padding) belong to no expert.
 
     python -m pytest -q tests/manual/tpu/test_tpu_grouped_mm.py
 """
@@ -10,7 +10,6 @@ import pytest
 import torch
 
 torch_tpu = pytest.importorskip("torch_tpu")
-linear = pytest.importorskip("torchtitan.models.common.linear.linear")
 
 
 def _reference_grads(a, b_t, offs, grad_out):
@@ -45,7 +44,7 @@ def test_the_gradients_match_a_per_group_reference(sizes, tail_rows):
 
     a_dev = a.to(device).requires_grad_()
     b_dev = b_t.to(device).requires_grad_()
-    linear._TpuGroupedMM.apply(a_dev, b_dev, offs.to(device)).backward(grad_out.to(device))
+    torch._grouped_mm(a_dev, b_dev, offs=offs.to(device)).backward(grad_out.to(device))
 
     expected_a, expected_b = _reference_grads(a, b_t, offs, grad_out)
     rows = offs[-1].item()
