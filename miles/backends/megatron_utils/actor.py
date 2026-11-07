@@ -43,7 +43,6 @@ from miles.backends.training_utils.weight_update.hf_weight_iterator import Weigh
 from miles.backends.training_utils.weight_update.snapshot_publisher import SnapshotPublisher
 from miles.backends.training_utils.weight_update.updater import WeightUpdater
 from miles.dashboard import hooks as dashboard_hooks
-from miles.platforms import current_platform
 from miles.ray.rollout.inference_controller import UpdatableEngines
 from miles.ray.specs.train import compute_trainer_pool_id
 from miles.ray.train_actor import TrainRayActor, WeightUpdateOutput
