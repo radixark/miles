@@ -1535,6 +1535,9 @@ def miles_validate_args(args):
             "and does not support multi-LoRA."
         )
         assert not args.colocate, "--update-weight-transfer-mode=http-lora is for non-colocated engines"
+        assert (
+            args.prefill_num_servers is None
+        ), "--update-weight-transfer-mode=http-lora has not been tested when PD is enabled."
         assert args.http_lora_ship == "tensors" or args.update_weight_disk_dir, (
             "--http-lora-ship path requires --update-weight-disk-dir as the staging directory (shared with "
             "the engines, or replicated by --custom-update-weight-post-write-path)."
