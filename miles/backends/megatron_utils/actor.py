@@ -200,7 +200,7 @@ class MegatronTrainRayActor(TrainRayActor):
         if args.multimodal_token_space_processing:
             # Overlaps the processor builds with model initialization.
             prewarm_token_space_processor(
-                RolloutEngineProcessorArgs.from_sglang_config(args.sglang),
+                RolloutEngineProcessorArgs.from_sglang_config(args.sglang, hf_checkpoint=args.hf_checkpoint),
                 mm_processor_worker_num=args.trainer_mm_processor_worker_num,
                 mm_io_worker_num=args.trainer_mm_io_worker_num,
                 device=current_platform.current_device(),

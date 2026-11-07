@@ -4359,7 +4359,11 @@ class TestMultimodalTokenSpaceProcessingArgs:
     def test_engine_groups_that_disagree_on_a_processor_setting_are_rejected_at_startup(self):
         """The trainer builds one processor, so two engine groups with different settings cannot both be mirrored."""
         args = SimpleNamespace(
-            multimodal_token_space_processing=True, rollout_external_engine_addrs=None, hf_checkpoint="/ckpt"
+            multimodal_token_space_processing=True,
+            rollout_external_engine_addrs=None,
+            trainer_mm_processor_worker_num=1,
+            trainer_mm_io_worker_num=0,
+            hf_checkpoint="/ckpt",
         )
         groups = [
             ServerGroupConfig(
