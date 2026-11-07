@@ -206,6 +206,7 @@ async def _run_inference_step(
         payload["image_data"] = image_data
     if mm_token_expansion_start_len is not None:
         payload.update(token_space_request_fields(mm_token_expansion_start_len))
+        payload["return_routed_experts"] = args.use_rollout_routing_replay
 
     output = await post(url, payload)
     adopt_expanded_prompt_ids(sample, payload, output)

@@ -9,8 +9,8 @@
             budget ≤ 0 → TRUNCATED; last turn → COMPLETED
 
     legacy      test_generation_uses_caller_state_and_closes_environment_on_every_return   budget 0 / finish length
-    token space test_a_token_space_turn_records_the_engines_routed_experts                  request: rows = served
-                                                                                             prompt + response − 1
+    token space test_a_token_space_turn_records_the_engines_routed_experts                  request asks for them;
+                                                                                             rows = served prompt + response − 1
                 test_a_response_past_max_seq_len_is_trimmed_to_it                         [a] trim
                 test_an_observation_whose_media_leaves_no_room_is_rolled_back             [a] roll back, two limits
                 TestObservationStaysOutOfAnEndingSample                                   [b]
@@ -79,16 +79,25 @@ async def test_a_token_space_turn_records_the_engines_routed_experts(
             "routed_experts": pybase64.b64encode(rows.tobytes()).decode(),
         },
     }
-    monkeypatch.setattr(rollout, "post", AsyncMock(return_value=output))
+    post = AsyncMock(return_value=output)
+    monkeypatch.setattr(rollout, "post", post)
 
     await rollout._run_inference_step(
-        "url", sample, {}, None, 0 if token_space else None, args=SimpleNamespace(num_layers=layers)
+        "url",
+        sample,
+        {},
+        None,
+        0 if token_space else None,
+        args=SimpleNamespace(num_layers=layers, use_rollout_routing_replay=True),
     )
 
+    payload = post.call_args.args[1]
     if token_space:
+        assert payload["return_routed_experts"] is True
         assert sample.tokens == served_prompt
         assert sample.rollout_routed_experts.shape == (len(served_prompt) + len(response) - 1, layers, topk)
     else:
+        assert "return_routed_experts" not in payload
         assert sample.tokens == [1, -101, 2]
         assert sample.rollout_routed_experts is None
 
