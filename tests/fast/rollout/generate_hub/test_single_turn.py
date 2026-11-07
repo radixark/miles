@@ -16,7 +16,7 @@ from miles.rollout.generate_hub import single_turn
 from miles.rollout.inference_rollout import inference_rollout_common
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
 from miles.utils.async_utils import run
-from miles.utils.processing_utils import encode_image_for_rollout_engine
+from miles.utils.media_refs import load_media_for_processor
 from miles.utils.test_utils.mock_sglang_server import ProcessResult, ProcessResultMetaInfo
 from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
 
@@ -526,15 +526,16 @@ VLM_MODEL_NAME = "Qwen/Qwen2-VL-2B-Instruct"
 
 class TestMultimodal:
     @pytest.mark.parametrize("generation_env", [{"args_kwargs": {"model_name": VLM_MODEL_NAME}}], indirect=True)
-    def test_multimodal_inputs_processed(self, variant, generation_env):
+    def test_multimodal_inputs_processed(self, variant, generation_env, tmp_path):
         if variant == "multi_turn":
             pytest.skip("not tested yet")
-        test_image = Image.new("RGB", (64, 64), color="red")
-        multimodal_inputs = {"images": [test_image]}
+        image_path = tmp_path / "red.png"
+        Image.new("RGB", (64, 64), color="red").save(image_path)
+        multimodal_inputs = {"images": [str(image_path)]}
         processor = AutoProcessor.from_pretrained(VLM_MODEL_NAME, trust_remote_code=True)
         expected_mti = {
             k: v
-            for k, v in processor(text=PROMPT, **multimodal_inputs).items()
+            for k, v in processor(text=PROMPT, **load_media_for_processor(multimodal_inputs)).items()
             if k not in ["input_ids", "attention_mask", "mm_token_type_ids"]
         }
 
@@ -544,7 +545,7 @@ class TestMultimodal:
             expected_request(
                 variant,
                 input_ids=PROMPT_TOKENS,
-                image_data=[encode_image_for_rollout_engine(test_image)],
+                image_data=[str(image_path)],
             )
         ]
         actual_mti = result.sample.multimodal_train_inputs

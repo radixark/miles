@@ -66,6 +66,7 @@ def _load_prompt_dataset(args, path: str, *, tokenizer, processor, max_length: i
         max_length=max_length,
         prompt_key=args.input_key,
         multimodal_keys=args.multimodal_keys,
+        media_dir=args.shared_media_dir,
         label_key=args.label_key,
         metadata_key=args.metadata_key,
         tool_key=args.tool_key,

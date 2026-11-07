@@ -102,6 +102,8 @@
 "8"
 "--multimodal-keys"
 "{\"image\": \"images\"}"
+"--shared-media-dir"
+"/root/datasets/geo3k_imgurl/media"
 "--swiglu"
 "--num-layers"
 "36"

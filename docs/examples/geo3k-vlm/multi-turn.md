@@ -7,7 +7,7 @@ Training VLM on [geo3k dataset](https://huggingface.co/datasets/hiyouga/geometry
 
 Use the CUDA 13 Miles image from the [installation guide](/getting-started/installation) and keep its bundled cuDNN version.
 
-The multi-turn rollout is implemented through a [custom generate function](https://github.com/radixark/miles/blob/main/examples/geo3k_vlm/multi_turn/rollout.py#L309), overriding the original generate function.
+The multi-turn rollout is implemented through a [custom generate function](https://github.com/radixark/miles/blob/main/examples/geo3k_vlm/multi_turn/rollout.py), overriding the original generate function.
 
 In terms of the environment interaction, this example initializes a [custom interactive environment](https://github.com/radixark/miles/blob/main/examples/geo3k_vlm/multi_turn/env_geo3k.py) with the APIs below.
 
