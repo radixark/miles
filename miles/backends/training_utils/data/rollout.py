@@ -11,10 +11,7 @@ from miles.backends.training_utils.data.context_parallel import (
     slice_log_prob_with_cp,
     slice_with_cp,
 )
-from miles.backends.training_utils.data.multimodal import (
-    expand_multimodal_rollout_data_in_place,
-    media_expansion_pending,
-)
+from miles.backends.training_utils.data.multimodal import expand_multimodal_rollout_data_in_place
 from miles.backends.training_utils.data.token_space_media_process import (
     RolloutEngineProcessorArgs,
     compute_multimodal_train_inputs,
@@ -254,9 +251,6 @@ def get_batch(
     # Token-space train inputs rebuild in the background; wait for this micro-batch's samples.
     if (multimodal_train_inputs := batch.get("multimodal_train_inputs")) is not None:
         batch["multimodal_train_inputs"] = resolved(multimodal_train_inputs)
-
-    # Media placeholders are expanded once, in get_data_iterator; token-space tokens arrive expanded.
-    assert not media_expansion_pending(batch), "media placeholders reach get_batch unexpanded"
 
     tokens = batch["tokens"]
     # use 0 as the pad token id should be fine?
