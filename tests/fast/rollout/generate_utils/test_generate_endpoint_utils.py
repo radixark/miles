@@ -1,9 +1,15 @@
+import asyncio
 from types import SimpleNamespace
 
+import numpy as np
+import pybase64
 import pytest
+from tests.fast.fixtures.sglang_config_fixtures import make_sglang_config
 
-from miles.rollout.generate_utils.generate_endpoint_utils import compute_request_payload
+from miles.rollout.generate_utils import generate_endpoint_utils
+from miles.rollout.generate_utils.generate_endpoint_utils import compute_request_payload, update_sample_from_response
 from miles.utils.output_store.plan import OUTPUT_STORE_REQUEST_KEY, StorePlanError
+from miles.utils.types import Sample
 
 
 def _make_args() -> SimpleNamespace:
@@ -70,3 +76,27 @@ class TestComputeRequestPayloadOutputStore:
                 sampling_params={},
                 multimodal_inputs={"images": ["/shared/media/image.png"]},
             )
+
+
+def test_routed_experts_cover_the_prompt_the_engine_served():
+    layers, topk, response = 2, 3, [7, 8]
+    sample = Sample(prompt="", tokens=[1, -101, 2])
+    served_prompt_tokens = 6  # the placeholder became a 4-token image run
+    rows = np.arange((served_prompt_tokens + len(response) - 1) * layers * topk, dtype=np.int32)
+    output = {
+        "text": "",
+        "meta_info": {
+            "output_token_logprobs": [(-0.5, t, None) for t in response],
+            "finish_reason": {"type": "stop"},
+            "prompt_tokens": served_prompt_tokens,
+            "completion_tokens": len(response),
+            "routed_experts": pybase64.b64encode(rows.tobytes()).decode(),
+        },
+    }
+    args = SimpleNamespace(
+        rollout_top_logprobs_num=0, sglang=make_sglang_config(speculative_algorithm=None), num_layers=layers
+    )
+
+    asyncio.run(update_sample_from_response(args, sample, {"input_ids": sample.tokens}, output))
+
+    assert sample.rollout_routed_experts.shape == (served_prompt_tokens + len(response) - 1, layers, topk)
