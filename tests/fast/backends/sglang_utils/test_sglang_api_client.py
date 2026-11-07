@@ -284,6 +284,9 @@ _REMAINING_POST_CASES = [
     ),
     (lambda c: c.pause_generation(mode="abort"), "pause_generation", {"mode": "abort"}),
     (lambda c: c.continue_generation(), "continue_generation", {}),
+    (lambda c: c.get_gpu_delta_info("engine-1"), "get_gpu_delta_info", {"engine_id": "engine-1"}),
+    (lambda c: c.get_gpu_delta_status("publication-1"), "get_gpu_delta_status", {"session_id": "publication-1"}),
+    (lambda c: c.clear_gpu_delta_state(), "clear_gpu_delta_state", {}),
     (
         lambda c: c.start_profile(output_dir="/out", num_steps=3),
         "start_profile",
