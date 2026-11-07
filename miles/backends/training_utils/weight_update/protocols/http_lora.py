@@ -107,7 +107,7 @@ class UpdateWeightHttpLora(WeightTransferProtocol):
         placement: WeightUpdatePlacement,
         selector: str,
     ) -> None:
-        assert placement.gather_pp, "http-lora needs the full adapter on one rank"
+        assert placement.is_full_gather, "http-lora needs the full adapter on one rank"
         assert engine_gpu_counts is not None and len(engine_gpu_counts) == len(rollout_engines)
         self.rollout_engines = rollout_engines
         self.cell_updaters_of_cell_id = create_rollout_cell_updaters(self.args, rollout_engines, engine_cell_ids)
@@ -223,7 +223,7 @@ class UpdateWeightHttpLoraStream(WeightTransferProtocol):
         placement: WeightUpdatePlacement,
         selector: str,
     ) -> None:
-        assert placement.gather_pp, "http-lora needs the full adapter on one rank"
+        assert placement.is_full_gather, "http-lora needs the full adapter on one rank"
         self.rollout_engines = rollout_engines
         self.cell_updaters_of_cell_id = create_rollout_cell_updaters(self.args, rollout_engines, engine_cell_ids)
         self._selector = selector
