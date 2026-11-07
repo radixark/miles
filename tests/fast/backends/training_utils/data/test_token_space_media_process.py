@@ -55,7 +55,7 @@ def _rebuild(monkeypatch, multimodal_inputs, tokens, *, with_sglang_placement=Tr
         device=torch.device("cpu"),
     )
     train_inputs = token_space_media_process.TokenSpaceTrainInputs(
-        token_space_media_process.resolved(pending.multimodal_train_inputs),
+        token_space_media_process.resolved_multimodal_train_inputs(pending.multimodal_train_inputs),
         (
             None
             if pending.mrope_position_ids is None
@@ -85,8 +85,8 @@ def test_trainer_rebuilds_tensors_without_expanding_the_rollout_tokens(monkeypat
 def test_rebuild_runs_in_the_background(monkeypatch):
     """compute_multimodal_train_inputs returns before the processor ran; resolving an entry waits for it.
 
-    main thread:  compute(...) --returns futures--> ... resolved(...) --waits--> payload
-    background:                 process() blocks here ---release---> result set
+    main thread:  compute(...) --returns build futures--> ... resolved_*(...) --waits--> payload
+    background:                 process() blocks here ---release---> build returned
     """
     release = threading.Event()
     processor = _RecordingProcessor()
@@ -113,12 +113,40 @@ def test_rebuild_runs_in_the_background(monkeypatch):
         device=torch.device("cpu"),
     )
 
-    (train_inputs,) = pending.multimodal_train_inputs
-    (positions,) = pending.mrope_position_ids
-    assert not train_inputs.done() and not positions.done()
+    (build,) = pending.multimodal_train_inputs
+    assert pending.mrope_position_ids == [build]
+    assert not build.done()
     release.set()
-    assert set(train_inputs.result()) == {"pixel_values", "image_grid_thw", "mm_image_positions"}
-    assert positions.result().shape == (7, 3)
+    assert set(build.result().multimodal_train_inputs) == {"pixel_values", "image_grid_thw", "mm_image_positions"}
+    assert build.result().mrope_position_ids.shape == (7, 3)
+
+
+def test_a_failed_rebuild_raises_where_the_sample_is_resolved(monkeypatch):
+    """The executor's future carries the error, so a build that fails on its thread never leaves a consumer waiting.
+
+    background:   rebuild() raises ----> future holds the error
+    main thread:  resolved_multimodal_train_inputs(...) raises it; resolved_mrope_position_ids(...) raises it too
+    """
+
+    def broken_processor(*_):
+        raise RuntimeError("device copy failed")
+
+    monkeypatch.setattr(token_space_media_process, "_trainer_processor", broken_processor)
+
+    pending = token_space_media_process.compute_multimodal_train_inputs(
+        object(),
+        [{"images": ["/shared/a.png"]}],
+        [torch.tensor([1, 9, 2])],
+        mm_processor_worker_num=1,
+        mm_io_worker_num=0,
+        with_sglang_placement=True,
+        device=torch.device("cpu"),
+    )
+
+    with pytest.raises(RuntimeError, match="device copy failed"):
+        token_space_media_process.resolved_multimodal_train_inputs(pending.multimodal_train_inputs)
+    with pytest.raises(RuntimeError, match="device copy failed"):
+        token_space_media_process.resolved_mrope_position_ids(pending.mrope_position_ids)
 
 
 def test_rollout_engine_args_read_the_parsed_engine_config():

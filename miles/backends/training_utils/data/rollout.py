@@ -15,8 +15,8 @@ from miles.backends.training_utils.data.multimodal import expand_multimodal_roll
 from miles.backends.training_utils.data.token_space_media_process import (
     RolloutEngineProcessorArgs,
     compute_multimodal_train_inputs,
-    resolved,
     resolved_mrope_position_ids,
+    resolved_multimodal_train_inputs,
 )
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.platforms import current_platform
@@ -250,7 +250,7 @@ def get_batch(
 
     # Token-space train inputs rebuild in the background; wait for this micro-batch's samples.
     if (multimodal_train_inputs := batch.get("multimodal_train_inputs")) is not None:
-        batch["multimodal_train_inputs"] = resolved(multimodal_train_inputs)
+        batch["multimodal_train_inputs"] = resolved_multimodal_train_inputs(multimodal_train_inputs)
 
     tokens = batch["tokens"]
     # use 0 as the pad token id should be fine?

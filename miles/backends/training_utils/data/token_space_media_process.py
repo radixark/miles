@@ -24,31 +24,39 @@ import json
 from collections.abc import Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Any, NamedTuple, TypeVar
+from typing import Any, NamedTuple
 
 import torch
 
 from miles.utils.processing_utils import extract_multimodal_train_inputs
 
 
-T = TypeVar("T")
+class _SampleBuild(NamedTuple):
+    """One sample's rebuilt processor tensors and mRoPE positions."""
+
+    multimodal_train_inputs: dict[str, torch.Tensor] | None
+    mrope_position_ids: torch.Tensor | None
 
 
 class TokenSpaceTrainInputs(NamedTuple):
-    # Each sample's processor tensors and tower row placement, or None for a text-only sample.
+    # Each sample's build future, or its finished processor tensors with the tower row placement; None for a
+    # text-only sample.
     multimodal_train_inputs: list[Future | dict[str, torch.Tensor] | None]
-    # Each sample's [num_tokens, 3] mRoPE positions; None for a model that computes its own.
+    # The same build futures, read for each sample's [num_tokens, 3] positions; None for a model that computes
+    # its own.
     mrope_position_ids: list[Future | torch.Tensor] | None
 
 
-def resolved(entries: Sequence[Future | T]) -> list[T]:
-    """Each entry's payload, waiting for the entries still rebuilding in the background."""
-    return [entry.result() if isinstance(entry, Future) else entry for entry in entries]
+def resolved_multimodal_train_inputs(
+    entries: Sequence[Future | dict[str, torch.Tensor] | None],
+) -> list[dict[str, torch.Tensor] | None]:
+    """Each sample's processor tensors, waiting for the builds still running in the background."""
+    return [entry.result().multimodal_train_inputs if isinstance(entry, Future) else entry for entry in entries]
 
 
 def resolved_mrope_position_ids(entries: Sequence[Future | torch.Tensor]) -> list[torch.Tensor] | None:
     """Each sample's positions, or None when the model has no mRoPE and the processor computed none."""
-    positions = resolved(entries)
+    positions = [entry.result().mrope_position_ids if isinstance(entry, Future) else entry for entry in entries]
     if all(sample_positions is None for sample_positions in positions):
         return None
     assert all(sample_positions is not None for sample_positions in positions), "mRoPE positions for only some samples"
@@ -124,12 +132,11 @@ def compute_multimodal_train_inputs(
         device: This rank's device; the tensors land here, and it stands in for the engine's GPU.
 
     Returns:
-        Each sample's processor tensors and, with SGLang's placement, each sample's positions, as futures that
-        resolve when the background rebuild reaches the sample.
+        Each sample's build future, which resolves to its processor tensors and, with SGLang's placement, its
+        positions once the background rebuild reaches the sample.
     """
-    train_inputs, mrope_position_ids = [], []
-    for sample_multimodal_inputs, sample_tokens in zip(multimodal_inputs, tokens, strict=True):
-        sample_train_inputs, sample_mrope_position_ids = _submit_sample_build(
+    builds = [
+        _submit_sample_build(
             rollout_engine_args,
             sample_multimodal_inputs,
             sample_tokens,
@@ -138,9 +145,9 @@ def compute_multimodal_train_inputs(
             with_sglang_placement=with_sglang_placement,
             device=device,
         )
-        train_inputs.append(sample_train_inputs)
-        mrope_position_ids.append(sample_mrope_position_ids)
-    return TokenSpaceTrainInputs(train_inputs, mrope_position_ids if with_sglang_placement else None)
+        for sample_multimodal_inputs, sample_tokens in zip(multimodal_inputs, tokens, strict=True)
+    ]
+    return TokenSpaceTrainInputs(builds, list(builds) if with_sglang_placement else None)
 
 
 def prewarm_token_space_processor(
@@ -171,36 +178,26 @@ def _submit_sample_build(
     mm_io_worker_num: int,
     with_sglang_placement: bool,
     device: torch.device,
-) -> tuple[Future, Future]:
-    """Queue one sample's rebuild; the two futures carry its train inputs and its [num_tokens, 3] positions."""
-    train_inputs, mrope_position_ids = Future(), Future()
+) -> Future:
+    """Queue one sample's rebuild; the executor's future carries its ``_SampleBuild``, or the error that stopped it."""
 
-    def rebuild():
-        try:
-            # Built on this thread, so a prewarmed build is ready and the first rebuild never blocks the caller.
-            trainer_processor = _trainer_processor(
-                rollout_engine_args, mm_processor_worker_num, mm_io_worker_num, device
+    def rebuild() -> _SampleBuild:
+        # Built on this thread, so a prewarmed build is ready and the first rebuild never blocks the caller.
+        trainer_processor = _trainer_processor(rollout_engine_args, mm_processor_worker_num, mm_io_worker_num, device)
+        if multimodal_inputs:
+            sample_train_inputs, positions = _sample_train_inputs(
+                trainer_processor,
+                multimodal_inputs,
+                tokens,
+                with_sglang_placement=with_sglang_placement,
+                device=device,
             )
-            if multimodal_inputs:
-                sample_train_inputs, positions = _sample_train_inputs(
-                    trainer_processor,
-                    multimodal_inputs,
-                    tokens,
-                    with_sglang_placement=with_sglang_placement,
-                    device=device,
-                )
-            else:
-                sample_train_inputs = None
-                positions = _text_mrope_positions(trainer_processor, tokens) if with_sglang_placement else None
-        except BaseException as error:
-            train_inputs.set_exception(error)
-            mrope_position_ids.set_exception(error)
-            raise
-        train_inputs.set_result(sample_train_inputs)
-        mrope_position_ids.set_result(None if positions is None else positions.T.contiguous().to(device))
+        else:
+            sample_train_inputs = None
+            positions = _text_mrope_positions(trainer_processor, tokens) if with_sglang_placement else None
+        return _SampleBuild(sample_train_inputs, None if positions is None else positions.T.contiguous().to(device))
 
-    _build_executor(mm_processor_worker_num).submit(rebuild)
-    return train_inputs, mrope_position_ids
+    return _build_executor(mm_processor_worker_num).submit(rebuild)
 
 
 class _TrainerProcessor(NamedTuple):
