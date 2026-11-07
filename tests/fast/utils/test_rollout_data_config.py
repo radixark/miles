@@ -223,11 +223,11 @@ class TestStartupValidation:
         with pytest.raises(ValueError, match="exceeds --rollout-max-response-len 32768"):
             _parse("--rollout-data-yaml-config", _inline(too_long))
 
-    def test_the_prompt_limit_derived_from_the_context_length_bounds_a_dataset(self):
-        """`--rollout-max-prompt-len` defaults from `--rollout-max-context-len`; the check must see that value."""
+    def test_the_prompt_limit_derived_from_max_seq_len_bounds_a_dataset(self):
+        """`--rollout-max-prompt-len` defaults from `--max-seq-len`; the check must see that value."""
         too_long = _with_dataset(max_prompt_len=8192)
         with pytest.raises(ValueError, match="exceeds --rollout-max-prompt-len 8191"):
-            _parse("--rollout-data-yaml-config", _inline(too_long), "--rollout-max-context-len", "8192")
+            _parse("--rollout-data-yaml-config", _inline(too_long), "--max-seq-len", "8192")
 
     @pytest.mark.parametrize("custom_generate_function_path", [None, "miles.rollout.generate_hub.multi_turn.generate"])
     def test_an_agent_block_no_generate_function_reads_is_rejected(self, custom_generate_function_path):
@@ -313,8 +313,8 @@ class TestDatasetHookSettings:
         assert args.rollout_dataset_functions["test3947.typed_generate"].config.typed_marker == 7
         assert view.typed_marker == 7
 
-    def test_a_dataset_max_seq_len_above_the_agentic_limit_fails_at_startup(self):
-        """--max-seq-len is registered by the dataset's agentic generate function itself, then bounds the dataset."""
+    def test_a_dataset_max_seq_len_above_the_run_limit_fails_at_startup(self):
+        """--max-seq-len bounds an agentic dataset's max_seq_len."""
         document = _with_dataset(
             custom_generate_function_path="miles.rollout.generate_hub.agentic_tool_call.generate", max_seq_len=70000
         )

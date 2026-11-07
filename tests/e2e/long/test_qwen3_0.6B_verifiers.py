@@ -99,7 +99,7 @@ def execute():
             "--n-samples-per-prompt 4",
             "--over-sampling-batch-size 3",
             "--rollout-max-response-len 512",
-            "--rollout-max-context-len 2048",
+            "--max-seq-len 2048",
             "--rollout-temperature 0.8",
             "--global-batch-size 12",
             "--balance-data",

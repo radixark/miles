@@ -4,6 +4,7 @@ from contextlib import suppress
 
 import uvicorn
 
+from miles.backends.training_utils.checkpoint.adapter.parametrization import base_model_fingerprint
 from miles.ray.placement_group import create_trainer_handles
 from miles.ray.rollout.router_manager import resolve_router_addrs
 from miles.ray.specs.inference import compute_router_providers, create_inference_controller_handle
@@ -12,7 +13,7 @@ from miles.ray.train.init_request import TrainerControllerInitRequest
 from miles.tinker.arguments import configure_tinker_args, validate_tinker_args
 from miles.tinker.core.service import TinkerService
 from miles.tinker.core.types import GatewayConfig
-from miles.tinker.runtime import MilesBackend
+from miles.tinker.runtime import MilesBackend, take_checkpoint_root
 from miles.tinker.server.app import build_app
 from miles.tinker.server.encoding import assert_installed_sdk_version
 from miles.utils.args.trainer_utils import compute_trainer_ckpt_load_config
@@ -20,6 +21,7 @@ from miles.utils.arguments import parse_args
 from miles.utils.async_utils import Disposer, with_disposer
 from miles.utils.hf_utils.config import load_hf_config
 from miles.utils.http_utils import init_http_client
+from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
 from miles.utils.orchestration_utils import ArgvOrchestratorStartupInfo, init_orchestration_script
 
 logger = logging.getLogger(__name__)
@@ -34,7 +36,8 @@ async def serve(args, *, disposer: Disposer):
     ckpt_load_config = compute_trainer_ckpt_load_config(args, actor_config)
     assert ckpt_load_config is not None
     assert ckpt_load_config.load == args.hf_checkpoint, "Tinker trainers and engines must load the same frozen HF base"
-    hf_config = load_hf_config(args.hf_checkpoint).get_text_config()
+    full_hf_config = load_hf_config(args.hf_checkpoint)
+    hf_config = full_hf_config.get_text_config()
     max_tokens_per_datum = hf_config.max_position_embeddings
     if args.max_tokens_per_gpu is not None:
         # The trainer pads each packed microbatch to this multiple.
@@ -50,6 +53,9 @@ async def serve(args, *, disposer: Disposer):
     # SGLang rejects inputs with len >= min(context_len - 1, kv_capacity - 1) - 5, assuming the KV pool
     # exceeds one context; a sequence sampled up to the window must still be accepted as a scoring prompt.
     max_tokens_per_sample = min(max_tokens_per_datum, engine_context_length - 7)
+    # a second gateway on this root fails here, not after the trainer and engines start; released after they stop
+    checkpoint_root_lock = take_checkpoint_root(args.tinker_checkpoint_root)
+    disposer.add(checkpoint_root_lock.close)
     capability = init_orchestration_script(ArgvOrchestratorStartupInfo.create(args), disposer=disposer)
     trainer_request = TrainerControllerInitRequest(
         num_rollout=args.num_rollout,
@@ -71,16 +77,20 @@ async def serve(args, *, disposer: Disposer):
     await trainer.init(trainer_request)
     disposer.add(trainer)
 
+    lora_layout = get_hf_lora_targets(full_hf_config.to_dict())
     config = GatewayConfig(
         base_model=args.tinker_base_model or args.hf_checkpoint,
         n_slots=args.multi_lora_n_adapters,
         checkpoint_root=args.tinker_checkpoint_root,
+        public_url=args.tinker_public_url,
         vocab_size=hf_config.vocab_size,
+        exports_tinker_names=bool(lora_layout.tinker_name_renames),
         max_tokens_per_datum=max_tokens_per_datum,
         max_tokens_per_sample=max_tokens_per_sample,
         lora_alpha=args.lora_alpha,
         lora_type=args.lora_type,
         experts_shared_outer_loras=args.experts_shared_outer_loras,
+        base_model_fingerprint=base_model_fingerprint(hf_config.to_dict()),
         max_lora_rank=args.lora_rank,
         trains_attn="attn" in args.tinker_lora_groups,
         trains_mlp="mlp" in args.tinker_lora_groups,
@@ -93,7 +103,7 @@ async def serve(args, *, disposer: Disposer):
         * args.raw_megatron.base_args["pipeline_model_parallel_size"]
         * args.raw_megatron.base_args["context_parallel_size"]
     )
-    service = TinkerService(MilesBackend(trainer, router_url, dp_size=dp_size), config)
+    service = TinkerService(MilesBackend(trainer, router_url, lora_layout, dp_size=dp_size), config)
 
     server = uvicorn.Server(
         uvicorn.Config(

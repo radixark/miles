@@ -289,7 +289,8 @@ def test_save_model_does_not_manage_lifecycle(actor_module, monkeypatch):
     worker.model = object()
     worker.optimizer = object()
     worker.opt_param_scheduler = object()
-    worker.snapshot_publisher = object()
+    worker.adapter_slots = None
+    worker._schedule_first_rollout = 0
     worker.wake_up = Mock()
     worker.sleep = Mock()
     save = Mock()
@@ -307,7 +308,8 @@ def test_save_model_does_not_manage_lifecycle(actor_module, monkeypatch):
         worker.model,
         worker.optimizer,
         worker.opt_param_scheduler,
-        snapshot_publisher=worker.snapshot_publisher,
+        adapter_slots=None,
+        schedule_first_rollout=0,
     )
     worker.wake_up.assert_not_called()
     worker.sleep.assert_not_called()
@@ -330,6 +332,8 @@ def test_force_sync_save_overlaps_hf_export_with_async_checkpoint(actor_module, 
     worker.optimizer = object()
     worker.opt_param_scheduler = object()
     worker.snapshot_publisher = object()
+    worker.adapter_slots = None
+    worker._schedule_first_rollout = 0
     events = []
 
     monkeypatch.setattr(actor_module, "save", lambda *_args, **_kwargs: events.append("save"))
