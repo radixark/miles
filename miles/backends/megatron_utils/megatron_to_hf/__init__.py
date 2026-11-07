@@ -1,3 +1,5 @@
+from miles.backends.megatron_utils.megatron_to_hf.processors.quantizer_nvfp4 import quantize_expert_params_nvfp4
+
 from .deepseekv3 import convert_deepseekv3_to_hf
 from .deepseekv4 import convert_deepseekv4_to_hf
 from .deepseekv4_1 import convert_deepseekv4_1_to_hf
@@ -32,6 +34,20 @@ def convert_to_hf(args, model_name, name, param, quantization_config=None, packe
     converted_named_tensors = _convert_to_hf_core(args, model_name, name, param)
 
     return quantize_params(args, name, converted_named_tensors, quantization_config, packed_weight_basenames)
+
+
+def convert_experts_to_hf(args, model_name, named_params, quantization_config=None, packed_weight_basenames=None):
+    """Convert one bounded expert batch, preserving each source parameter's HF unit."""
+    if quantization_config is None or not (
+        quantization_config.get("quant_algo") == "NVFP4" or quantization_config.get("quant_method") == "nvfp4"
+    ):
+        return (
+            list(convert_to_hf(args, model_name, name, param, quantization_config, packed_weight_basenames))
+            for name, param in named_params
+        )
+
+    converted_units = [(name, list(convert_to_hf(args, model_name, name, param))) for name, param in named_params]
+    return quantize_expert_params_nvfp4(args, converted_units, quantization_config)
 
 
 # TODO optimize code details

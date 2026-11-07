@@ -332,3 +332,199 @@ class TestExpertParallelGatherFaultHook:
 
         assert [name for name, _ in _materialize_experts(direct_module)] == _EXPERT_NAMES
         assert gather_log.log == []
+
+
+class TestExpertBatchConversion:
+    @pytest.mark.parametrize("policy", ["ignore", "exclude_modules", "regex"])
+    def test_nvfp4_preserves_units_and_exclusions(self, direct_module, monkeypatch, policy):
+        import miles.utils.nvfp4 as nvfp4
+
+        convert_experts = direct_module.convert_experts_to_hf
+        processor = convert_experts.__globals__["quantize_expert_params_nvfp4"]
+        args = Namespace(
+            extra_high_precision_layers_megatron=("linear_fc2.weight6",),
+            backend=Namespace(
+                vocab_size=16,
+                kv_channels=16,
+                num_attention_heads=1,
+                num_query_groups=1,
+                first_last_layers_bf16=True,
+                num_layers=4,
+                num_layers_at_start_in_bf16=1,
+                num_layers_at_end_in_bf16=1,
+            ),
+        )
+        sources = [(2, 2, 1), (1, 4, 1), (1, 0, 1), (1, 1, 1), (1, 3, 0), (2, 6, 1), (1, 5, 3)]
+        named_params = [
+            (
+                f"module.module.decoder.layers.{layer}.mlp.experts.linear_fc{fc}.weight{expert}",
+                torch.full((4, 32), expert + 1, dtype=torch.float32),
+            )
+            for fc, expert, layer in sources
+        ]
+        config = {"quant_method": "nvfp4"}
+        config["ignore" if policy == "regex" else policy] = (
+            r"re:model\.layers\.1\.mlp\.experts\.1\." if policy == "regex" else "model.layers.1.mlp.experts.1"
+        )
+        calls = []
+
+        def quantize_batch(weights):
+            # Sentinel outputs expose expert mixups; GPU tests cover numerical equality.
+            calls.append([weight[0, 0].item() for weight in weights])
+            return [
+                (
+                    torch.zeros((weight.shape[0], 16), dtype=torch.uint8),
+                    torch.zeros((weight.shape[0], 2), dtype=torch.float8_e4m3fn),
+                    weight[0, 0].clone(),
+                )
+                for weight in weights
+            ]
+
+        monkeypatch.setattr(nvfp4, "nvfp4_quantize_1d_batch", quantize_batch)
+        monkeypatch.setitem(processor.__globals__, "nvfp4_quantize_1d_batch", quantize_batch)
+        original = [direct_module.convert_to_hf(args, "DeepseekV3", name, weight) for name, weight in named_params]
+        units = convert_experts(args, "DeepseekV3", iter(named_params), config)
+
+        assert sorted(marker for batch in calls for marker in batch) == [1, 3, 5]
+        assert any(len(batch) > 1 for batch in calls)
+        assert len(units) == len(original)
+        for index, (unit, source) in enumerate(zip(units, original, strict=True)):
+            if index < 3:
+                assert [name for name, _ in unit] == [
+                    name.replace(".weight", suffix)
+                    for name, _ in source
+                    for suffix in (".weight", ".weight_scale", ".weight_scale_2")
+                ]
+                for name, scale in unit:
+                    if name.endswith("weight_scale_2"):
+                        assert scale.item() == sources[index][1] + 1
+            else:
+                assert [name for name, _ in unit] == [name for name, _ in source]
+                assert all(
+                    weight.data_ptr() == source_weight.data_ptr()
+                    for (_, weight), (_, source_weight) in zip(unit, source, strict=True)
+                )
+
+    @pytest.mark.parametrize("case", ["missing", "duplicate", "ignore_half"])
+    def test_nvfp4_rejects_incomplete_or_duplicate_pairs_before_quantizing(self, direct_module, monkeypatch, case):
+        processor = direct_module.convert_experts_to_hf.__globals__["quantize_expert_params_nvfp4"]
+        source_name = "module.module.decoder.layers.1.mlp.experts.linear_fc1.weight0"
+        params = [(f"model.layers.1.mlp.experts.0.{part}_proj.weight", torch.ones((2, 32))) for part in ("gate", "up")]
+        config = {"quant_method": "nvfp4"}
+        if case == "missing":
+            params.pop()
+        elif case == "duplicate":
+            params.append(params[0])
+        else:
+            config["ignore"] = [params[1][0]]
+        monkeypatch.setitem(
+            processor.__globals__,
+            "nvfp4_quantize_1d_pair_batch",
+            lambda _: pytest.fail("Invalid pairs reached quantization"),
+        )
+
+        with pytest.raises(ValueError, match="NVFP4 requires"):
+            processor(
+                Namespace(extra_high_precision_layers_megatron=(), backend=Namespace()),
+                [(source_name, params)],
+                config,
+            )
+
+    @pytest.mark.parametrize("method", [None, "fp8", "mxfp8", "compressed-tensors"])
+    def test_other_formats_keep_the_existing_conversion_contract(self, direct_module, monkeypatch, method):
+        convert_experts = direct_module.convert_experts_to_hf
+        args, packed_names = object(), {"model.layers.0.mlp.experts.0.gate_proj"}
+        config = None if method is None else {"quant_method": method}
+        named_params = [("expert2", torch.tensor([2])), ("expert0", torch.tensor([0]))]
+        observed = []
+
+        def convert_one(actual_args, model_name, name, param, actual_config, actual_packed_names):
+            assert actual_args is args
+            assert model_name == "model"
+            assert actual_config is config
+            assert actual_packed_names is packed_names
+            observed.append(name)
+            return [(name, param)]
+
+        monkeypatch.setitem(convert_experts.__globals__, "convert_to_hf", convert_one)
+        iterator = convert_experts(args, "model", iter(named_params), config, packed_names)
+        assert observed == []
+        first_unit = next(iterator)
+        assert observed == ["expert2"]
+        units = [first_unit, *iterator]
+
+        assert observed == ["expert2", "expert0"]
+        assert [unit[0][0] for unit in units] == observed
+        assert all(unit[0][1] is source[1] for unit, source in zip(units, named_params, strict=True))
+
+    @pytest.mark.parametrize("before_gather", [True, False])
+    @pytest.mark.parametrize("materialize", [True, False])
+    def test_expert_batch_routing_preserves_collective_and_sender_contracts(
+        self, direct_module, monkeypatch, before_gather, materialize
+    ):
+        events = []
+        dense_weight, expert_weight = torch.tensor([1]), torch.tensor([2])
+
+        class ResidentWeight:
+            def detach(self):
+                return self
+
+            def to(self, *, device, non_blocking):
+                assert device.type == "cuda" and non_blocking
+                return expert_weight
+
+        def gather_dense(*args, **kwargs):
+            events.append("gather_dense")
+            return [("dense", dense_weight)]
+
+        def gather_source(*args, **kwargs):
+            events.append("gather_source")
+            return [("expert", expert_weight)]
+
+        def gather_hf(units, *, device):
+            events.append("gather_hf")
+            return units
+
+        def convert_one(args, model_name, name, param, config, packed_names):
+            assert name == "dense"
+            events.append("convert_dense")
+            return [(name, param)]
+
+        def convert_experts(args, model_name, named_params, config, packed_names):
+            named_params = list(named_params)
+            assert [name for name, _ in named_params] == ["expert"]
+            assert named_params[0][1] is expert_weight
+            events.append("convert_experts")
+            return [named_params]
+
+        monkeypatch.setattr(direct_module.dist, "get_rank", lambda: 0)
+        monkeypatch.setattr(direct_module.torch.cuda, "current_device", lambda: 0)
+        monkeypatch.setattr(direct_module, "_materialize_non_expert_batch", gather_dense)
+        monkeypatch.setattr(direct_module, "_gather_megatron_expert_batch", gather_source)
+        monkeypatch.setattr(direct_module, "_iter_mm_tower_units", lambda *args, **kwargs: iter(()))
+        monkeypatch.setattr(direct_module, "convert_to_hf", convert_one)
+        monkeypatch.setattr(direct_module, "convert_experts_to_hf", convert_experts)
+        monkeypatch.setattr(
+            direct_module, "tqdm", lambda **kwargs: SimpleNamespace(update=lambda _: None, close=lambda: None)
+        )
+        iterator = object.__new__(direct_module.HfWeightIteratorDirect)
+        iterator.args = Namespace()
+        iterator.model_name = "model"
+        iterator.quantization_config = {"quant_method": "nvfp4"}
+        iterator.packed_weight_basenames = None
+        iterator.placement = SimpleNamespace(gather_pp=False)
+        iterator._non_expert_batches = [[_param("dense", 1)]]
+        iterator._expert_batches = [
+            direct_module._ExpertBatch(param_infos=[_param("expert", 1)], gathers=(gather_hf,))
+        ]
+        iterator._convert_experts_before_gather = before_gather
+
+        units = list(iterator._iter_hf_param_units({"expert": ResidentWeight()}, materialize=materialize))
+
+        expected = ["gather_dense"] + (["convert_dense"] if materialize else [])
+        if before_gather:
+            expected += ["convert_experts", "gather_hf"]
+        else:
+            expected += ["gather_source"] + (["convert_experts"] if materialize else [])
+        assert events == expected
+        assert [[name for name, _ in unit] for unit in units] == ([["dense"], ["expert"]] if materialize else [])

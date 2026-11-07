@@ -36,7 +36,10 @@ from miles.utils.nvfp4 import (
     NVFP4_GROUP_SIZE,
     nvfp4_global_decode_scale_te,
     nvfp4_global_encode_scale_te,
+    nvfp4_quantize_1d,
+    nvfp4_quantize_1d_batch,
     nvfp4_quantize_1d_pair,
+    nvfp4_quantize_1d_pair_batch,
     nvfp4_weight_e4m3_max,
 )
 
@@ -55,6 +58,157 @@ NVFP4_SHAPES = [
     (2048, 7168),
     (128, 16384),
 ]
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16, torch.float32], ids=["bf16", "fp16", "fp32"])
+@pytest.mark.parametrize("layout", ["adjacent", "disjoint", "strided"])
+@pytest.mark.parametrize(
+    ("enabled", "error_mode", "e4m3_max"),
+    [(False, "MAE", 448), (True, "MAE", 448), (True, "MAE", 256), (True, "MSE", 448), (True, "MSE", 256)],
+)
+@torch.inference_mode()
+def test_nvfp4_quantize_batch_matches_scalar_bitwise(monkeypatch, dtype, layout, enabled, error_mode, e4m3_max):
+    """Independent expert maxima, bulk output layout, padding, and scalar fallbacks."""
+    monkeypatch.setenv("NVTE_USE_FAST_MATH", "0")
+    monkeypatch.setenv("NVTE_NVFP4_4OVER6", "weights" if enabled else "none")
+    monkeypatch.setenv("NVTE_NVFP4_4OVER6_E4M3_USE_256", "weights" if e4m3_max == 256 else "none")
+    monkeypatch.setenv("NVTE_NVFP4_4OVER6_ERR_MODE", error_mode)
+    monkeypatch.setenv("NVTE_NVFP4_4OVER6_ERR_USE_FAST_MATH", "0")
+    generator = torch.Generator(device="cuda").manual_seed(126)
+    backing = torch.randn((96, 128), dtype=dtype, device="cuda", generator=generator)
+    backing[:32].mul_(0.125)
+    backing[16:32].zero_()
+    backing[32:64].mul_(16)
+    backing[64:].zero_()
+    if layout == "strided":
+        weights = [part[::2] for part in backing.split(32)]
+    else:
+        weights = list(backing[:48].split(16))
+        if layout == "disjoint":
+            weights = [weight.clone() for weight in weights]
+    # Interleave other K dimensions to expose output reordering. K=64 uses the
+    # scalar path; rows 3 and 17 force separate padding in the K=256 batch.
+    weights[1:1] = [torch.randn((3, 256), dtype=dtype, device="cuda", generator=generator)]
+    weights.insert(3, torch.randn((16, 64), dtype=dtype, device="cuda", generator=generator))
+    weights.append(torch.randn((17, 256), dtype=dtype, device="cuda", generator=generator))
+    snapshots = [weight.clone() for weight in weights]
+    expected = [nvfp4_quantize_1d(weight) for weight in weights]
+
+    actual = nvfp4_quantize_1d_batch(weights)
+    for result, reference, weight, snapshot in zip(actual, expected, weights, snapshots, strict=True):
+        for got, want in zip(result, reference, strict=True):
+            assert got.shape == want.shape and got.dtype == want.dtype and got.device == want.device
+            assert got.is_contiguous()
+            torch.testing.assert_close(
+                got.reshape(-1).view(torch.uint8), want.reshape(-1).view(torch.uint8), rtol=0, atol=0
+            )
+        torch.testing.assert_close(weight, snapshot, rtol=0, atol=0)
+
+    assert nvfp4_quantize_1d_batch([]) == []
+    singleton = nvfp4_quantize_1d_batch([weights[0]])
+    for got, want in zip(singleton[0], expected[0], strict=True):
+        torch.testing.assert_close(
+            got.reshape(-1).view(torch.uint8), want.reshape(-1).view(torch.uint8), rtol=0, atol=0
+        )
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16, torch.float32], ids=["bf16", "fp16", "fp32"])
+@pytest.mark.parametrize(
+    ("enabled", "error_mode", "e4m3_max"),
+    [(False, "MAE", 448), (True, "MAE", 448), (True, "MAE", 256), (True, "MSE", 448), (True, "MSE", 256)],
+)
+@torch.inference_mode()
+def test_nvfp4_quantize_pair_batch_preserves_asymmetric_pair_amax(monkeypatch, dtype, enabled, error_mode, e4m3_max):
+    monkeypatch.setenv("NVTE_USE_FAST_MATH", "0")
+    monkeypatch.setenv("NVTE_NVFP4_4OVER6", "weights" if enabled else "none")
+    monkeypatch.setenv("NVTE_NVFP4_4OVER6_E4M3_USE_256", "weights" if e4m3_max == 256 else "none")
+    monkeypatch.setenv("NVTE_NVFP4_4OVER6_ERR_MODE", error_mode)
+    monkeypatch.setenv("NVTE_NVFP4_4OVER6_ERR_USE_FAST_MATH", "0")
+    generator = torch.Generator(device="cuda").manual_seed(127)
+    first = (torch.randn((6, 128), dtype=dtype, device="cuda", generator=generator) * 0.125)[::2]
+    second = torch.randn((17, 128), dtype=dtype, device="cuda", generator=generator) * 32
+    adjacent = torch.randn((32, 128), dtype=dtype, device="cuda", generator=generator) * 2
+    pairs = [(first, second), (adjacent[:16], adjacent[16:])]
+    expected = [nvfp4_quantize_1d_pair(*pair) for pair in pairs]
+
+    actual = nvfp4_quantize_1d_pair_batch(pairs)
+    assert nvfp4_quantize_1d_pair_batch([]) == []
+    for actual_pair, expected_pair in zip(actual, expected, strict=True):
+        for result, reference in zip(actual_pair, expected_pair, strict=True):
+            for got, want in zip(result, reference, strict=True):
+                assert got.shape == want.shape and got.dtype == want.dtype and got.device == want.device
+                torch.testing.assert_close(
+                    got.reshape(-1).view(torch.uint8), want.reshape(-1).view(torch.uint8), rtol=0, atol=0
+                )
+        torch.testing.assert_close(actual_pair[0][2], actual_pair[1][2], rtol=0, atol=0)
+    assert not torch.equal(actual[0][0][2], actual[1][0][2])
+
+
+@torch.inference_mode()
+def test_nvfp4_quantize_batch_chunks_at_te_split_capacity(monkeypatch):
+    import transformer_engine_torch as tex
+
+    monkeypatch.setenv("NVTE_USE_FAST_MATH", "0")
+    monkeypatch.setenv("NVTE_NVFP4_4OVER6", "weights")
+    monkeypatch.setenv("NVTE_NVFP4_4OVER6_E4M3_USE_256", "none")
+    monkeypatch.setenv("NVTE_NVFP4_4OVER6_ERR_MODE", "MSE")
+    monkeypatch.setenv("NVTE_NVFP4_4OVER6_ERR_USE_FAST_MATH", "1")
+    generator = torch.Generator(device="cuda").manual_seed(128)
+    weights = [
+        torch.randn((3, 128), dtype=torch.bfloat16, device="cuda", generator=generator) * (i + 1) for i in range(65)
+    ]
+    expected = [nvfp4_quantize_1d(weight) for weight in weights]
+    split_quantize = tex.split_quantize
+    split_counts = []
+
+    def record_split_quantize(packed, rows, quantizers):
+        split_counts.append(len(rows))
+        return split_quantize(packed, rows, quantizers)
+
+    monkeypatch.setattr(tex, "split_quantize", record_split_quantize)
+    actual = nvfp4_quantize_1d_batch(weights)
+    assert split_counts == [64]
+    for result, reference in zip(actual, expected, strict=True):
+        for got, want in zip(result, reference, strict=True):
+            torch.testing.assert_close(
+                got.reshape(-1).view(torch.uint8), want.reshape(-1).view(torch.uint8), rtol=0, atol=0
+            )
+
+
+@torch.inference_mode()
+def test_nvfp4_quantize_batch_uses_and_restores_input_devices(monkeypatch):
+    if torch.cuda.device_count() < 2:
+        pytest.skip("Cross-device quantization requires two CUDA devices")
+    if int(os.getenv("WORLD_SIZE", "1")) > 1:
+        pytest.skip("Run the cross-device state test in a dedicated single process")
+    monkeypatch.setenv("NVTE_USE_FAST_MATH", "0")
+    monkeypatch.setenv("NVTE_NVFP4_4OVER6", "none")
+    primary = torch.cuda.current_device()
+    secondary = (primary + 1) % torch.cuda.device_count()
+    specifications = [
+        (secondary, 128),
+        (primary, 128),
+        (secondary, 128),
+        (primary, 128),
+        (secondary, 256),
+        (secondary, 64),
+    ]
+    weights, expected = [], []
+    for index, (device, cols) in enumerate(specifications):
+        with torch.cuda.device(device):
+            weight = torch.full((16, cols), 2.0**index, dtype=torch.bfloat16, device=f"cuda:{device}")
+            weights.append(weight)
+            expected.append(nvfp4_quantize_1d(weight))
+
+    assert torch.cuda.current_device() == primary
+    actual = nvfp4_quantize_1d_batch(weights)
+    assert torch.cuda.current_device() == primary
+    for result, reference in zip(actual, expected, strict=True):
+        for got, want in zip(result, reference, strict=True):
+            assert got.device == want.device
+            torch.testing.assert_close(
+                got.reshape(-1).view(torch.uint8), want.reshape(-1).view(torch.uint8), rtol=0, atol=0
+            )
 
 
 def _make_weight(init_data: str, dtype: torch.dtype, shape: tuple[int, int], device: str) -> torch.Tensor:
