@@ -104,7 +104,9 @@ def _make_args(tmp_path, **overrides) -> Namespace:
     return args
 
 
-def _connect(args: Namespace, engines: list, gpu_counts: list[int] | None = None, protocol_cls=UpdateWeightHttpLoraPath):
+def _connect(
+    args: Namespace, engines: list, gpu_counts: list[int] | None = None, protocol_cls=UpdateWeightHttpLoraPath
+):
     protocol = protocol_cls(args)
     with patch(f"{_MODULE}.dist.get_rank", return_value=0):
         protocol.connect(
