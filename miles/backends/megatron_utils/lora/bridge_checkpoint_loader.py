@@ -21,8 +21,8 @@ from miles.backends.megatron_utils.lora.utils import (
     _zero_init_empty_hdo_states,
 )
 from miles.backends.training_utils.checkpoint.adapter.adapter_dir import AdapterCheckpointMembers
-from miles.backends.training_utils.checkpoint.adapter.adapter_state import gloo_group, raise_if_any_rank_failed
-from miles.backends.training_utils.checkpoint.adapter.base_model import assert_same_base_model
+from miles.backends.training_utils.checkpoint.adapter.adapter_state import agree_on_failure_context, gloo_group
+from miles.backends.training_utils.checkpoint.adapter.base_model_check import assert_same_base_model
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
 from miles.backends.training_utils.parallel import get_parallel_state
 
@@ -114,7 +114,7 @@ def torch_dist_base_dir(pretrained_checkpoint: str | None) -> Path | None:
     return root if dist_checkpointing.check_is_distributed_checkpoint(str(root)) else None
 
 
-def _is_base_fingerprint(key: str, tensor) -> bool:
+def _is_base_check_tensor(key: str, tensor) -> bool:
     # a full fine-tune changes the norms, a merged LoRA the projections; a chunk's layer 0 is its first local layer
     return (
         isinstance(tensor, ShardedTensor)
@@ -129,13 +129,13 @@ def assert_same_base_as_torch_dist(source: str, chunks, base_dir: Path) -> None:
     torch_dist base checkpoint's, bitwise. The in-memory model is the run's base, so a base fine-tuned in Megatron
     after its HF conversion is caught. Not detected: a LoRA merged only into MLP or expert weights, or only into
     layers past each chunk's first."""
-    held, requested, error = {}, {}, None
-    try:
+    held, requested = {}, {}
+    with agree_on_failure_context():
         metadata = dict(dist_checkpointing.load_content_metadata(str(base_dir)) or {})
         metadata["dp_cp_group"] = get_parallel_state().intra_dp_cp.group
         for index, chunk in enumerate(chunks):
             compared = {
-                k: t for k, t in chunk.sharded_state_dict(metadata=metadata).items() if _is_base_fingerprint(k, t)
+                k: t for k, t in chunk.sharded_state_dict(metadata=metadata).items() if _is_base_check_tensor(k, t)
             }
             held |= {(index, k): t.data for k, t in compared.items()}
             # loading writes into the requested tensors: empty copies, never the model's own parameters
@@ -147,19 +147,13 @@ def assert_same_base_as_torch_dist(source: str, chunks, base_dir: Path) -> None:
             f"{source}'s base checkpoint {base_dir} cannot be compared with this run's model: it lacks e.g. "
             f"{missing[:3]}"
         )
-    except Exception as exc:
-        error = exc
-    raise_if_any_rank_failed(error)
-    try:
+    with agree_on_failure_context():
         loaded = dist_checkpointing.load(requested, str(base_dir))
         differing = [k for (index, k), data in held.items() if not torch.equal(loaded[f"model{index}"][k], data)]
         assert not differing, (
             f"{source} was trained on another base model than this run's --hf-checkpoint: its base checkpoint "
             f"{base_dir} differs in e.g. {differing[:3]}"
         )
-    except Exception as exc:
-        error = exc
-    raise_if_any_rank_failed(error)
 
 
 class MegatronBridgeCheckpointLoader:
@@ -176,8 +170,8 @@ class MegatronBridgeCheckpointLoader:
         """Collective: every check against the source, reading it only; ``apply`` then loads what it requested."""
         chunks = unwrap_model(self._model)
         names = ["model"] if len(chunks) == 1 else [f"model{i}" for i in range(len(chunks))]
-        config, metadata, model_state_dicts, adapter, base_dir = self._read_source(path, chunks)
-        self._check_torch_dist_base(path, chunks, base_dir)
+        config, metadata, model_state_dicts, adapter, base_dir = self._read_and_check_source(path, chunks)
+        self._assert_same_torch_dist_base(path, chunks, base_dir)
         has_optimizer_state = self._check_adapter_keys(path, adapter)
         self._checked = (path, names, chunks, model_state_dicts, adapter, metadata)
         return replace(self._run, lora_alpha=float(config["peft"]["alpha"])), has_optimizer_state
@@ -196,11 +190,10 @@ class MegatronBridgeCheckpointLoader:
         # collective; asserts each bf16 adapter parameter is its fp32 master
         self._members.export_adapter_state(0)
 
-    def _read_source(self, path: Path, chunks):
+    def _read_and_check_source(self, path: Path, chunks):
         """Collective: the source's run_config.yaml checked against this run, its content metadata, and this run's
         sharded state dicts with their adapter subsets."""
-        config, metadata, model_state_dicts, adapter, base_dir, error = None, None, None, None, None, None
-        try:
+        with agree_on_failure_context():
             config = yaml.safe_load((path / "run_config.yaml").read_text())
             assert config["checkpoint"]["ckpt_format"] == "torch_dist", f"{path} is not a torch_dist checkpoint"
             assert_bridge_run_config_matches(
@@ -220,12 +213,9 @@ class MegatronBridgeCheckpointLoader:
                 {k: v for k, v in sd.items() if ".adapter." in k and "_extra_state" not in k}
                 for sd in model_state_dicts
             ]
-        except Exception as exc:
-            error = exc
-        raise_if_any_rank_failed(error)
         return config, metadata, model_state_dicts, adapter, base_dir
 
-    def _check_torch_dist_base(self, path: Path, chunks, base_dir: Path | None) -> None:
+    def _assert_same_torch_dist_base(self, path: Path, chunks, base_dir: Path | None) -> None:
         """Collective: compares the model with a torch_dist pretrained_checkpoint every rank sees."""
         # a base visible on some nodes only would leave the others outside the collective load
         base_dirs = [None] * dist.get_world_size()
@@ -240,38 +230,29 @@ class MegatronBridgeCheckpointLoader:
         expected = [None] * dist.get_world_size()
         dist.all_gather_object(expected, {t.key for sd in adapter for t in nested_values(sd)}, group=gloo_group())
         expected = set().union(*expected)
-        error, has_optimizer_state = None, None
-        try:
+        with agree_on_failure_context():
             keys = list(dcp.FileSystemReader(path).read_metadata().state_dict_metadata)
             has_optimizer_state = any(OPTIMIZER_KEY.match(k) for k in keys)
             saved = {k for k in keys if ".adapter." in k and "_extra_state" not in k and not OPTIMIZER_KEY.match(k)}
             assert (
                 expected == saved
             ), f"{path} holds other adapters than this run's model, e.g. {sorted(expected ^ saved)[:3]}"
-        except Exception as exc:
-            error = exc
-        raise_if_any_rank_failed(error)
         return has_optimizer_state
 
     def _optimizer_state_to_load(self, names, model_state_dicts, metadata) -> dict:
         """Collective: the DistributedOptimizer's sharded state to load into, built once its offloaded state exists."""
-        state, error = None, None
-        try:
+        with agree_on_failure_context():
             # sharded_state_dict(is_loading=True) runs Megatron's load_state_dict, which would dummy-step an empty
             # HDO state
             _zero_init_empty_hdo_states(_distributed_optimizers(self._optimizer))
             state = self._optimizer.sharded_state_dict(
                 dict(zip(names, model_state_dicts, strict=True)), is_loading=True, metadata=metadata
             )
-        except Exception as exc:
-            error = exc
-        raise_if_any_rank_failed(error)
         return state
 
     def _load(self, path: Path, names, chunks, requested: dict) -> None:
         """Collective: loads the adapters, and the Adam state or masters re-cast from them."""
-        error = None
-        try:
+        with agree_on_failure_context():
             # a rank-local failure inside load's own collectives still hangs; one after them is agreed below
             loaded = dist_checkpointing.load(requested, str(path))
             for name, chunk in zip(names, chunks, strict=True):
@@ -281,9 +262,6 @@ class MegatronBridgeCheckpointLoader:
                 self._load_optimizer_state(path, loaded["optimizer"])
             else:
                 self._optimizer.reload_model_params()
-        except Exception as exc:
-            error = exc
-        raise_if_any_rank_failed(error)
 
     def _load_optimizer_state(self, path: Path, state: dict) -> None:
         # the run owns the schedule: only state and step come from the source, not its lr or weight decay

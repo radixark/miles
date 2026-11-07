@@ -29,7 +29,7 @@ bash examples/experimental/multi_agent/run-qwen3-30B-A3B-multi-agent.sh
 ## New Arguments
 
 - Specify the agent rollout function with the `--custom-generate-function-path` argument.
-- Set the `--rollout-max-context-len` argument according to your model’s context window.
+- Set the `--max-seq-len` argument according to your model’s context window.
 
 ```bash
 ROLLOUT_ARGS=(
@@ -43,7 +43,7 @@ ROLLOUT_ARGS=(
    --num-rollout 3000
    --rollout-batch-size 32
    --n-samples-per-prompt 8
-   --rollout-max-context-len 16384
+   --max-seq-len 16384
    --rollout-max-response-len 8192
    --rollout-temperature 1
 

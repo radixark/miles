@@ -612,6 +612,10 @@ memory is set by the shard, pipeline and tensor degrees together; MoE dispatch b
 *not* shrink with sharding, so adding nodes only helps if it raises the shard degree —
 replication alone does not.
 
+On TPU each transformer block is compiled with `torch.compile(fullgraph=True)`, microbatches are
+padded to power-of-two lengths up to `--seq-length`, and `--max-tokens-per-gpu` may not exceed
+`--seq-length` (`miles/backends/torchtitan_utils/arguments.py`). `scripts/tpu/README.md` runs it.
+
 ### 4. Getting weights in and out
 
 Nothing to configure: weights are streamed to SGLang under HF names through the model's own

@@ -93,7 +93,7 @@ def compute_request_payload(
 ) -> tuple[dict[str, Any] | None, Sample.Status | None]:
     sampling_params = deepcopy(sampling_params)
     max_new_tokens = sampling_params.pop("max_new_tokens", args.rollout_max_response_len)
-    if x := args.rollout_max_context_len:
+    if x := args.max_seq_len:
         max_new_tokens = min(max_new_tokens, x - len(input_ids))
     if max_new_tokens <= 0:
         return None, Sample.Status.TRUNCATED

@@ -31,7 +31,7 @@ async def generate_response(args: ImmutableNamespace, prompt: str, key: str, *, 
     try:
         sampling_params = state.sampling_params
         tokenizer = state.tokenizer
-        max_context_length = args.rollout_max_context_len
+        max_context_length = args.max_seq_len
         sample = deepcopy(state.sample)
 
         url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}/generate"
