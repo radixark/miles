@@ -771,7 +771,7 @@ def _train(args: ScriptArgs):
     if rollout_expert_format in ("mxfp8", "mxfp4"):
         misc_args += f"--rollout-routed-expert-format {rollout_expert_format} "
     if args.train_precision == "mxfp8-mxfp4-routed-expert":
-        misc_args += "--dsv4-mxfp4-qat "
+        misc_args += "--routed-expert-qat mxfp4 "
     if args.colocate:
         misc_args += "--colocate "
     else:

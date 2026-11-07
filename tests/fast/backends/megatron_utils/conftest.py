@@ -83,7 +83,7 @@ def runtime_args() -> argparse.Namespace:
         moe_aux_loss_coeff=None,
     )
     return argparse.Namespace(
-        backend=backend, dsa_attention_backend=None, dsv4_mxfp4_qat=False, enable_mtp_training=False
+        backend=backend, dsa_attention_backend=None, routed_expert_qat=None, enable_mtp_training=False
     )
 
 

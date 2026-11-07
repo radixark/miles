@@ -287,7 +287,7 @@ def test_routed_expert_formats_reach_sglang_and_online_updates(
     assert "--dsv4-impl megatron" in train_args
     assert "--qkv-format thd" in train_args
     assert "--fp8-recipe mxfp8" in train_args
-    assert ("--dsv4-mxfp4-qat" in train_args) == (train_precision == _W4A8)
+    assert ("--routed-expert-qat mxfp4" in train_args) == (train_precision == _W4A8)
     if expert_format is None:
         assert "--rollout-routed-expert-format" not in train_args
     else:

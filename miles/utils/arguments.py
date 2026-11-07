@@ -332,8 +332,8 @@ def parse_args_and_get_parser(
             args.num_layers = resolve_fsdp_num_layers(load_hf_config(args.hf_checkpoint))
         else:
             args.num_layers = None
-        if args.dsv4_mxfp4_qat or args.rollout_routed_expert_format is not None:
-            raise ValueError("--dsv4-mxfp4-qat and --rollout-routed-expert-format require the Megatron backend.")
+        if args.routed_expert_qat is not None or args.rollout_routed_expert_format is not None:
+            raise ValueError("--routed-expert-qat and --rollout-routed-expert-format require the Megatron backend.")
 
         if backend == "fsdp":
             assert args.context_parallel_size == 1, "Context parallelism is not supported for FSDP backend."
@@ -2154,10 +2154,8 @@ def resolve_fsdp_num_layers(hf_config) -> int | None:
 
 def validate_routed_expert_quantization_args(args, hf_config) -> None:
     """Reject routed-expert quantization flags that no code path would apply."""
-    if args.dsv4_mxfp4_qat and args.megatron_to_hf_mode != "bridge":
-        raise ValueError(
-            "--dsv4-mxfp4-qat is applied by the Megatron-Bridge provider; use --megatron-to-hf-mode bridge."
-        )
+    if args.routed_expert_qat is not None:
+        _validate_routed_expert_qat_args(args, hf_config)
     if args.rollout_routed_expert_format is not None:
         quantization_config = (
             getattr(hf_config, "quantization_config", None) or {}
@@ -2171,6 +2169,33 @@ def validate_routed_expert_quantization_args(args, hf_config) -> None:
                 "--rollout-routed-expert-format overrides the routed experts of a block-wise FP8 rollout "
                 f"checkpoint, but --hf-checkpoint has quantization_config={quantization_config}."
             )
+
+
+# Models whose routed-expert layout keeps each 1x32 MXFP4 block of the trained weight intact through
+# the conversion to the rollout checkpoint, so that rounding in training matches the rollout encoding.
+_ROUTED_EXPERT_QAT_MODEL_TYPES = ("deepseek_v4",)
+
+
+def _validate_routed_expert_qat_args(args, hf_config) -> None:
+    if args.megatron_to_hf_mode != "bridge":
+        raise ValueError(
+            "--routed-expert-qat is configured through the Megatron-Bridge provider; use --megatron-to-hf-mode bridge."
+        )
+    if hf_config.model_type not in _ROUTED_EXPERT_QAT_MODEL_TYPES:
+        raise ValueError(
+            f"--routed-expert-qat supports model types {_ROUTED_EXPERT_QAT_MODEL_TYPES}, "
+            f"not {hf_config.model_type!r}."
+        )
+    # The routed-expert weights are rounded in place, which is only straight-through when an optimizer
+    # keeps separate fp32 master weights and overwrites the rounded copies after every step.
+    if not (args.bf16 or args.fp16):
+        raise ValueError("--routed-expert-qat requires --bf16 or --fp16 training with fp32 master weights.")
+    if args.use_precision_aware_optimizer and str(args.main_params_dtype) not in ("fp32", "torch.float32"):
+        raise ValueError("--routed-expert-qat requires fp32 master weights (--main-params-dtype fp32).")
+    if args.fp8_param_gather:
+        raise ValueError("--routed-expert-qat does not support FP8 primary weights (--fp8-param-gather).")
+    if is_lora_enabled(args):
+        raise ValueError("--routed-expert-qat does not support LoRA.")
 
 
 def hf_validate_args(args, hf_config):
