@@ -139,6 +139,8 @@ _FORBIDDEN_MISMATCH_TYPES: frozenset[str] = frozenset(
 DEFAULT_CYCLES = 3
 _MAX_INCOMPLETE_TURN_RETRIES = 2
 _RETRY_SEED_STRIDE = 1_000_000
+# Characters of each side kept in a journaled assistant_text example.
+_MISMATCH_EXAMPLE_CHARS = 300
 
 
 def fixed_template_append_roles(tito_model: TITOTokenizerType | str) -> tuple[str, ...]:
@@ -429,6 +431,25 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
     return {"driver_events": events, **counters}
 
 
+def _mismatch_window(expected: str, actual: str, *, width: int = _MISMATCH_EXAMPLE_CHARS) -> dict:
+    """``width`` characters of each side, starting shortly before the first differing character.
+
+    An assistant segment opens with the whole reasoning block, so a window
+    taken from the start would show only text both sides share.  When one
+    side is a prefix of the other, the difference starts where it ends.
+    """
+    diff_offset = next(
+        (i for i, (e, a) in enumerate(zip(expected, actual, strict=False)) if e != a),
+        min(len(expected), len(actual)),
+    )
+    start = max(0, diff_offset - width // 3)
+    return {
+        "diff_offset": diff_offset,
+        "expected_text": expected[start : start + width],
+        "actual_text": actual[start : start + width],
+    }
+
+
 def _verify_tito_samples(samples, events_per_sample, *, allowed_roles) -> None:
     """Record every sample and defer hard failures to the run-level gate.
 
@@ -458,8 +479,7 @@ def _verify_tito_samples(samples, events_per_sample, *, allowed_roles) -> None:
                 first = assistant_mismatches[0]
                 assistant_example = {
                     "segment_index": first.get("segment_index"),
-                    "expected_text": (first.get("expected_text") or "")[:300],
-                    "actual_text": (first.get("actual_text") or "")[:300],
+                    **_mismatch_window(first.get("expected_text") or "", first.get("actual_text") or ""),
                 }
             hard_example = None
             if forbidden:

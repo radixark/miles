@@ -276,6 +276,60 @@ def test_generate_records_hard_mismatch_without_dropping_sample(monkeypatch, tmp
     assert writes == [(json.dumps(metric) + "\n").encode()]
 
 
+@pytest.mark.parametrize(
+    ("expected", "actual", "diff_offset"),
+    [
+        ("same", "same", 4),
+        ("", "", 0),
+        ("Sunny.\n", "Sunny.", 6),
+        ("", "<think>", 0),
+        ("a" * 400 + "X" + "b" * 400, "a" * 400 + "Y" + "b" * 400, 400),
+    ],
+)
+def test_mismatch_window_starts_before_the_first_differing_character(expected, actual, diff_offset):
+    window = session_verify_agent._mismatch_window(expected, actual, width=300)
+
+    assert window["diff_offset"] == diff_offset
+    start = max(0, diff_offset - 100)
+    assert window["expected_text"] == expected[start : start + 300]
+    assert window["actual_text"] == actual[start : start + 300]
+
+
+def test_generate_journals_assistant_mismatch_around_the_diff(monkeypatch, tmp_path):
+    metrics_path = tmp_path / "metrics.jsonl"
+    monkeypatch.setenv("MILES_SESSION_VERIFY_METRICS_PATH", str(metrics_path))
+    shared = "<think>" + "reasoning " * 50
+    returned_sample = _qwen3_verified_sample(
+        [
+            {
+                "type": "assistant_text",
+                "segment_index": 3,
+                "expected_text": shared + "</think>Sunny.\n\n<tool_calls>",
+                "actual_text": shared + "</think>Sunny.\n<tool_calls>",
+            }
+        ]
+    )
+
+    async def fake_base_generate(input):
+        return GenerateFnOutput(samples=[returned_sample])
+
+    monkeypatch.setattr(session_verify_agent, "_base_generate", fake_base_generate)
+    input_value = SimpleNamespace(
+        sample=Sample(),
+        args=SimpleNamespace(tito_model="qwen3", session_verify_cycles=3, tool_call_failure_mode="rollback"),
+    )
+
+    asyncio.run(session_verify_agent.generate(input_value))
+
+    [metric] = [json.loads(line) for line in metrics_path.read_text().splitlines()]
+    example = metric["assistant_mismatch_example"]
+    assert example["segment_index"] == 3
+    assert example["diff_offset"] == len(shared) + len("</think>Sunny.\n")
+    assert example["expected_text"].endswith("</think>Sunny.\n\n<tool_calls>")
+    assert example["actual_text"].endswith("</think>Sunny.\n<tool_calls>")
+    assert len(example["expected_text"]) <= 300
+
+
 def test_hard_mismatch_still_raises_without_metrics_sidecar(monkeypatch):
     monkeypatch.delenv("MILES_SESSION_VERIFY_METRICS_PATH", raising=False)
     sample = _qwen3_verified_sample([{"type": "non_assistant_text"}])

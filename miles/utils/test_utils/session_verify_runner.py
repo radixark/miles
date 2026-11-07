@@ -323,6 +323,7 @@ def assert_session_verify_metrics(
     soft and is checked only against the caller-provided ratio threshold.
     """
     samples_with_mismatch = 0
+    assistant_mismatch_example = None
     total_samples = 0
     has_append_tool = False
     samples_with_special_token_count_only = 0
@@ -359,6 +360,8 @@ def assert_session_verify_metrics(
             has_append_tool = has_append_tool or "append_tool" in entry.get("driver_events", [])
             if entry.get("had_assistant_mismatch"):
                 samples_with_mismatch += 1
+                if assistant_mismatch_example is None:
+                    assistant_mismatch_example = entry.get("assistant_mismatch_example")
             entry_hard_types = entry.get("hard_mismatch_types", [])
             entry_hard_count = entry.get("hard_mismatch_count", len(entry_hard_types))
             if entry_hard_count or entry_hard_types:
@@ -424,11 +427,14 @@ def assert_session_verify_metrics(
         )
 
     if ratio > assistant_text_threshold:
+        # The per-sample JSONL only survives on the CI runner, so the first
+        # expected/actual pair rides along in the message.
         raise AssertionError(
             f"Session multi-role e2e: assistant_text mismatch ratio "
             f"{samples_with_mismatch}/{total_samples}={ratio:.3f} exceeds "
             f"threshold {assistant_text_threshold}.  TITO "
             "tokenization for assistant content has drifted from the chat "
             "template's canonical render — investigate via "
-            "verify_session_tito_tokenizer.py + sample-level mismatch logs."
+            "verify_session_tito_tokenizer.py + sample-level mismatch logs.  "
+            f"first={assistant_mismatch_example}"
         )
