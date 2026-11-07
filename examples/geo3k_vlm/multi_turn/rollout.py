@@ -14,6 +14,7 @@ from examples.geo3k_vlm.multi_turn.base_env import BaseInteractionEnv
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
 from miles.rollout.generate_utils.generate_endpoint_utils import (
     adopt_expanded_prompt_ids,
+    get_routed_experts_from_response,
     token_space_request_fields,
     truncate_to_max_seq_len,
 )
@@ -194,7 +195,7 @@ def _prepare_start_state(sample: Sample, state, processor, args: Any, sampling_p
 
 
 async def _run_inference_step(
-    url: str, sample: Sample, sampling_params: dict, image_data, mm_token_expansion_start_len: int | None
+    url: str, sample: Sample, sampling_params: dict, image_data, mm_token_expansion_start_len: int | None, *, args
 ):
     payload = {
         "input_ids": sample.tokens,
@@ -208,6 +209,13 @@ async def _run_inference_step(
 
     output = await post(url, payload)
     adopt_expanded_prompt_ids(sample, payload, output)
+    if mm_token_expansion_start_len is not None:
+        # Routed experts cover the prompt the engine served plus this response, as update_sample_from_response
+        # reads them; a later turn's rows replace the earlier ones, since its prompt is the whole history.
+        meta_info = output["meta_info"]
+        sample.rollout_routed_experts = get_routed_experts_from_response(
+            args, output, meta_info["prompt_tokens"] + meta_info["completion_tokens"] - 1
+        )
     response_text = output["text"]
     if "output_token_logprobs" in output["meta_info"]:
         new_tokens = [item[1] for item in output["meta_info"]["output_token_logprobs"]]
@@ -368,7 +376,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
 
             tokens_before_expansion = len(sample.tokens)
             response_text, new_response_tokens, new_response_log_probs, finish_type = await _run_inference_step(
-                url, sample, cur_sampling_params, current_image_data, mm_token_expansion_start_len
+                url, sample, cur_sampling_params, current_image_data, mm_token_expansion_start_len, args=args
             )
             if num_expanded_tokens := len(sample.tokens) - tokens_before_expansion:
                 # SGLang expanded the prompt, or on a later turn the latest observation inside the response.
