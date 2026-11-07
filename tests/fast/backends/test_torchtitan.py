@@ -32,6 +32,7 @@ def _args(**overrides) -> Namespace:
         log_probs_backend="torch",
         colocate=False,
         update_weight_transfer_mode="broadcast",
+        titan_fsdp_gather_once=False,
         pipeline_model_parallel_size=1,
         context_parallel_size=1,
         expert_model_parallel_size=1,
@@ -412,6 +413,7 @@ def _config_args(**overrides: object) -> Namespace:
         seed=1,
         gradient_checkpointing=False,
         optimizer_cpu_offload=False,
+        titan_fsdp_gather_once=False,
         save=None,
         load=None,
     )
@@ -845,3 +847,72 @@ def test_sleep_and_wake_leave_cpu_offloaded_training_state_on_the_host(monkeypat
     actor.wake_up()
 
     assert moved == ([] if cpu_offload else [True, False])
+
+
+def test_fsdp_gather_once_is_refused_under_pipeline_parallelism(monkeypatch):
+    monkeypatch.setattr(torch, "__version__", "2.14.0")
+    with pytest.raises(ValueError, match="gather-once"):
+        validate_torchtitan_args(_args(titan_fsdp_gather_once=True, pipeline_model_parallel_size=2))
+    validate_torchtitan_args(_args(titan_fsdp_gather_once=True))
+
+
+@pytest.mark.parametrize("gather_once", [False, True])
+def test_fsdp_gather_once_maps_onto_torchtitans_fsdp_policies(tmp_path, single_gpu_dims, gather_once):
+    from miles.backends.torchtitan_utils.config import build_trainer_config
+
+    config = build_trainer_config(
+        _config_args(titan_fsdp_gather_once=gather_once),
+        hf_assets_path=_checkpoint_dir(tmp_path, tie_word_embeddings=False),
+        lr_total_steps=1,
+        dump_subdir="x",
+    )
+    expected = ("never", True) if gather_once else ("default", False)
+    assert (
+        config.parallelism.fsdp_reshard_after_forward,
+        config.parallelism.fsdp_defer_gradient_reduction,
+    ) == expected
+
+
+@pytest.mark.parametrize("gather_once", [False, True])
+def test_gather_once_reduces_gradients_on_the_last_microbatch_only(monkeypatch, gather_once):
+    """One reduce-scatter per step: earlier microbatches keep params gathered and gradients local."""
+    pytest.importorskip("torchtitan")
+    from miles.backends.torchtitan_utils import trainer as titan_trainer
+    from miles.backends.torchtitan_utils.trainer import TitanTrainer
+
+    calls = []
+
+    class Root(torch.nn.Module):
+        def set_is_last_backward(self, value):
+            calls.append(("is_last_backward", value))
+
+        def set_reshard_after_backward(self, value):
+            calls.append(("reshard_after_backward", value))
+
+        def set_requires_gradient_sync(self, value):
+            calls.append(("requires_gradient_sync", value))
+
+        def reshard(self):
+            calls.append(("reshard", None))
+
+    monkeypatch.setattr(titan_trainer, "FSDPModule", Root)
+    trainer = SimpleNamespace(
+        model_parts=[Root()],
+        config=SimpleNamespace(
+            parallelism=SimpleNamespace(
+                fsdp_defer_gradient_reduction=gather_once,
+                fsdp_reshard_after_forward="never" if gather_once else "default",
+            )
+        ),
+    )
+    for is_last in (False, False, True):
+        TitanTrainer._defer_gradient_reduction(trainer, is_last_microbatch=is_last)
+    TitanTrainer._reshard_kept_params(trainer)
+    if not gather_once:
+        assert calls == []
+        return
+    per_microbatch = [
+        [("is_last_backward", last), ("reshard_after_backward", last), ("requires_gradient_sync", last)]
+        for last in (False, False, True)
+    ]
+    assert calls == [call for group in per_microbatch for call in group] + [("reshard", None)]
