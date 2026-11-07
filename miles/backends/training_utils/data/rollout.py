@@ -78,7 +78,7 @@ def get_rollout_data(
 
     if "multimodal_inputs" in rollout_data:
         rollout_data["multimodal_train_inputs"] = compute_multimodal_train_inputs(
-            RolloutEngineProcessorArgs.from_sglang_config(args.sglang),
+            RolloutEngineProcessorArgs.from_sglang_config(args.sglang, hf_checkpoint=args.hf_checkpoint),
             rollout_data.pop("multimodal_inputs"),
             rollout_data["tokens"],
             device=current_platform.current_device(),

@@ -4311,6 +4311,15 @@ class TestMultimodalTokenSpaceProcessingArgs:
         "rl_on_policy_target": None,
         "true_on_policy_contract": None,
         "decrypted_config_file": None,
+        "tokenizer_path": None,
+        "tokenizer_mode": "auto",
+        "tokenizer_backend": "huggingface",
+        "revision": None,
+        "model_config_parser": "auto",
+        "json_model_override_args": "{}",
+        "image_processor_backend": "auto",
+        "disable_fast_image_processor": False,
+        "mm_process_config": None,
     }
 
     @pytest.mark.parametrize(
@@ -4324,13 +4333,40 @@ class TestMultimodalTokenSpaceProcessingArgs:
         ],
     )
     def test_settings_the_trainer_cannot_follow_are_rejected(self, engine_overrides, external_engines, match):
-        args = SimpleNamespace(multimodal_token_space_processing=True, rollout_external_engine_addrs=external_engines)
+        args = SimpleNamespace(
+            multimodal_token_space_processing=True,
+            rollout_external_engine_addrs=external_engines,
+            hf_checkpoint="/ckpt",
+        )
         sglang = make_sglang_config(**{**self._SUPPORTED, **engine_overrides})
 
         with pytest.raises(ValueError, match=match):
             _check_multimodal_token_space_processing_args(args, sglang=sglang)
 
     def test_supported_settings_pass(self):
-        args = SimpleNamespace(multimodal_token_space_processing=True, rollout_external_engine_addrs=None)
+        args = SimpleNamespace(
+            multimodal_token_space_processing=True, rollout_external_engine_addrs=None, hf_checkpoint="/ckpt"
+        )
 
         _check_multimodal_token_space_processing_args(args, sglang=make_sglang_config(**self._SUPPORTED))
+
+    def test_engine_groups_that_disagree_on_a_processor_setting_are_rejected_at_startup(self):
+        """The trainer builds one processor, so two engine groups with different settings cannot both be mirrored."""
+        args = SimpleNamespace(
+            multimodal_token_space_processing=True, rollout_external_engine_addrs=None, hf_checkpoint="/ckpt"
+        )
+        groups = [
+            ServerGroupConfig(
+                worker_type=WorkerType.REGULAR,
+                num_gpus_per_engine=1,
+                needs_offload=False,
+                overrides={"model_path": "/ckpt", "image_processor_backend": backend},
+            )
+            for backend in ("pil", "auto")
+        ]
+        actor = ModelConfig(name="actor", model_path=None, server_groups=groups, update_weights=True)
+
+        with pytest.raises(AssertionError, match="Field 'image_processor_backend' differs"):
+            _check_multimodal_token_space_processing_args(
+                args, sglang=SglangConfig(models=[actor], base_args=self._SUPPORTED)
+            )

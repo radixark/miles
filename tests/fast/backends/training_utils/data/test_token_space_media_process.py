@@ -5,6 +5,7 @@ from transformers import BaseImageProcessor
 
 from miles.backends.training_utils.data import token_space_media_process
 from miles.backends.training_utils.data.token_space_media_process import RolloutEngineProcessorArgs
+from miles.utils.external_utils.command_utils.common import encode_pseudo_file
 
 
 class _RecordingProcessor:
@@ -70,12 +71,53 @@ def test_rollout_engine_args_read_the_parsed_engine_config():
         }
     )
 
-    rollout_engine_args = RolloutEngineProcessorArgs.from_sglang_config(values["sglang"])
+    rollout_engine_args = RolloutEngineProcessorArgs.from_sglang_config(values["sglang"], hf_checkpoint="/ckpt")
 
     assert (rollout_engine_args.model_path, rollout_engine_args.tokenizer_path) == ("/ckpt", "/ckpt")
     assert rollout_engine_args.revision == "v1"
     assert rollout_engine_args.image_processor_backend == "pil"
     assert rollout_engine_args.mm_process_config_json == '{"video": {"fps": 2}}'
+
+
+def test_rollout_engine_args_take_the_actor_model():
+    """A frozen reference model with its own checkpoint does not become the model the trainer rebuilds for."""
+    values = with_parser_defaults_and_sglang_config(
+        {
+            "hf_checkpoint": "/ckpt",
+            "rollout_num_gpus": 2,
+            "rollout_num_gpus_per_engine": 1,
+            "num_gpus_per_node": 8,
+            "sglang_image_processor_backend": "pil",
+            "sglang_config": encode_pseudo_file(
+                "sglang:\n"
+                "  - name: actor\n"
+                "    server_groups:\n"
+                "      - worker_type: regular\n"
+                "        num_gpus: 1\n"
+                "  - name: ref\n"
+                "    model_path: /ref\n"
+                "    update_weights: false\n"
+                "    server_groups:\n"
+                "      - worker_type: regular\n"
+                "        num_gpus: 1\n"
+            ),
+        }
+    )
+
+    rollout_engine_args = RolloutEngineProcessorArgs.from_sglang_config(values["sglang"], hf_checkpoint="/ckpt")
+
+    assert (rollout_engine_args.model_path, rollout_engine_args.tokenizer_path) == ("/ckpt", "/ckpt")
+    assert rollout_engine_args.image_processor_backend == "pil"
+
+
+def test_rollout_engine_args_fall_back_to_the_checkpoint_without_engines():
+    """--debug-train-only starts no engine; the replayed samples came from the trainer's own checkpoint."""
+    values = with_parser_defaults_and_sglang_config({"hf_checkpoint": "/ckpt", "starts_inference_engines": False})
+
+    rollout_engine_args = RolloutEngineProcessorArgs.from_sglang_config(values["sglang"], hf_checkpoint="/ckpt")
+
+    assert values["sglang"].models == []
+    assert (rollout_engine_args.model_path, rollout_engine_args.tokenizer_path) == ("/ckpt", "/ckpt")
 
 
 class _ImageProcessor(BaseImageProcessor):

@@ -23,6 +23,7 @@ from miles.backends.sglang_utils.arguments import validate_args as sglang_valida
 from miles.backends.sglang_utils.sglang_config import SglangConfig
 from miles.backends.sglang_utils.sglang_scaling_config import SglangScalingConfig
 from miles.backends.torchtitan_utils.args_namespace import TorchtitanArgsNamespace
+from miles.backends.training_utils.data.token_space_media_process import RolloutEngineProcessorArgs
 from miles.dashboard.args import validate_dashboard_args
 from miles.ray.specs.train import external_trainer_controller_addrs
 from miles.rollout.checkpoint_eval import is_checkpoint_eval_fn
@@ -1065,6 +1066,8 @@ def _check_multimodal_token_space_processing_args(args, *, sglang: SglangConfig)
                 f"--multimodal-token-space-processing does not support --sglang-{name.replace('_', '-')}: the "
                 "trainer cannot yet build its processor the way the engines then do."
             )
+    # Actor engine groups that disagree on a processor setting fail here, not after the first rollout.
+    RolloutEngineProcessorArgs.from_sglang_config(sglang, hf_checkpoint=args.hf_checkpoint)
 
 
 def miles_validate_args(args):
