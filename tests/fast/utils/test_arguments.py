@@ -31,6 +31,7 @@ from miles.utils.args.trainer_utils import compute_trainer_ckpt_load_config
 from miles.utils.arguments import (
     CAKE_BACKEND_ARGS,
     FULLY_ASYNC_ROLLOUT_PATH,
+    _check_multimodal_token_space_processing_args,
     _check_stop_token_replace_streaming_session,
     _compute_custom_inference_engine_provider_path,
     _compute_rollout_external,
@@ -4300,3 +4301,72 @@ class TestLoRATypeResolution:
         args = self._parse(tmp_path, ["--megatron-to-hf-mode", "raw", "--lora-type", "lora"])
         with pytest.raises(AssertionError, match="--lora-type lora shares one lora_A"):
             validate_lora_args_after_megatron(args)
+
+
+class TestMultimodalTokenSpaceProcessingArgs:
+    """The trainer rebuilds the rollout engines' media features, so it must reject settings it cannot follow."""
+
+    _SUPPORTED = {
+        "enable_token_space_processor": True,
+        "rl_on_policy_target": None,
+        "true_on_policy_contract": None,
+        "decrypted_config_file": None,
+        "tokenizer_path": None,
+        "tokenizer_mode": "auto",
+        "tokenizer_backend": "huggingface",
+        "revision": None,
+        "model_config_parser": "auto",
+        "json_model_override_args": "{}",
+        "image_processor_backend": "auto",
+        "disable_fast_image_processor": False,
+        "mm_process_config": None,
+    }
+
+    @pytest.mark.parametrize(
+        ("engine_overrides", "external_engines", "match"),
+        [
+            ({"enable_token_space_processor": False}, None, "--sglang-enable-token-space-processor"),
+            ({}, ["10.0.0.1:30000"], "external engines"),
+            ({"rl_on_policy_target": "fsdp"}, None, "--sglang-rl-on-policy-target"),
+            ({"true_on_policy_contract": "qwen3_dense_v1"}, None, "--sglang-true-on-policy-contract"),
+            ({"decrypted_config_file": "/ckpt/override.json"}, None, "--sglang-decrypted-config-file"),
+        ],
+    )
+    def test_settings_the_trainer_cannot_follow_are_rejected(self, engine_overrides, external_engines, match):
+        args = SimpleNamespace(
+            multimodal_token_space_processing=True,
+            rollout_external_engine_addrs=external_engines,
+            hf_checkpoint="/ckpt",
+        )
+        sglang = make_sglang_config(**{**self._SUPPORTED, **engine_overrides})
+
+        with pytest.raises(ValueError, match=match):
+            _check_multimodal_token_space_processing_args(args, sglang=sglang)
+
+    def test_supported_settings_pass(self):
+        args = SimpleNamespace(
+            multimodal_token_space_processing=True, rollout_external_engine_addrs=None, hf_checkpoint="/ckpt"
+        )
+
+        _check_multimodal_token_space_processing_args(args, sglang=make_sglang_config(**self._SUPPORTED))
+
+    def test_engine_groups_that_disagree_on_a_processor_setting_are_rejected_at_startup(self):
+        """The trainer builds one processor, so two engine groups with different settings cannot both be mirrored."""
+        args = SimpleNamespace(
+            multimodal_token_space_processing=True, rollout_external_engine_addrs=None, hf_checkpoint="/ckpt"
+        )
+        groups = [
+            ServerGroupConfig(
+                worker_type=WorkerType.REGULAR,
+                num_gpus_per_engine=1,
+                needs_offload=False,
+                overrides={"model_path": "/ckpt", "image_processor_backend": backend},
+            )
+            for backend in ("pil", "auto")
+        ]
+        actor = ModelConfig(name="actor", model_path=None, server_groups=groups, update_weights=True)
+
+        with pytest.raises(AssertionError, match="Field 'image_processor_backend' differs"):
+            _check_multimodal_token_space_processing_args(
+                args, sglang=SglangConfig(models=[actor], base_args=self._SUPPORTED)
+            )

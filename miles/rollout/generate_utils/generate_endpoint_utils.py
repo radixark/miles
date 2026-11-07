@@ -36,7 +36,8 @@ from miles.utils.types import Sample
 def compute_prompt_ids_from_sample(state, sample, tools=None):
     prompt = sample.prompt
 
-    if state.processor and has_media(sample.multimodal_inputs):
+    # In token space SGLang expands the media placeholders and the trainer builds the processor tensors.
+    if state.processor and has_media(sample.multimodal_inputs) and not state.args.multimodal_token_space_processing:
         processor_output = state.processor(text=prompt, **load_media_for_processor(sample.multimodal_inputs))
         prompt_ids = processor_output["input_ids"][0]
 
@@ -83,6 +84,35 @@ def apply_sample_max_response_len(sampling_params: dict[str, Any], sample: Sampl
     return {**sampling_params, "max_new_tokens": limit}
 
 
+def token_space_request_fields(mm_token_expansion_start_len: int) -> dict[str, Any]:
+    """Ask SGLang to expand media placeholders after the already expanded prefix and return the prompt IDs."""
+    # The request carries every media reference; SGLang matches the placeholders after the prefix
+    # to the trailing references, so a resumed request with a fully expanded prefix expands nothing.
+    return {"mm_token_expansion_start_len": mm_token_expansion_start_len, "return_prompt_token_ids": True}
+
+
+def adopt_expanded_prompt_ids(sample: Sample, payload: dict, output: dict) -> None:
+    """Replace the request's prompt IDs with the ones SGLang expanded in token space.
+
+    Args:
+        sample: The sample the request was built from; its tokens, and on a later turn its response fields, grow.
+        payload: The request sent to SGLang; nothing happens unless it asked for ``return_prompt_token_ids``.
+        output: SGLang's response, carrying the expanded ``prompt_token_ids``.
+    """
+    if not payload.get("return_prompt_token_ids"):
+        return
+    prompt_token_ids = output["prompt_token_ids"]
+    num_added_prompt_tokens = len(prompt_token_ids) - len(sample.tokens)
+    if sample.response_length:
+        # Expansion after the first response belongs to the zero-loss input suffix of a later turn.
+        sample.response_length += num_added_prompt_tokens
+        if sample.loss_mask is not None:
+            sample.loss_mask += [0] * num_added_prompt_tokens
+        if sample.rollout_log_probs is not None:
+            sample.rollout_log_probs += [0.0] * num_added_prompt_tokens
+    sample.tokens = list(prompt_token_ids)
+
+
 def compute_request_payload(
     args,
     input_ids: list[int],
@@ -91,10 +121,13 @@ def compute_request_payload(
     *,
     evaluation: bool = False,
     kv_cache_namespace: str | None = None,
+    mm_token_expansion_start_len: int = 0,
 ) -> tuple[dict[str, Any] | None, Sample.Status | None]:
     sampling_params = deepcopy(sampling_params)
     max_new_tokens = sampling_params.pop("max_new_tokens", args.rollout_max_response_len)
     if x := args.max_seq_len:
+        # In token space this is only an upper bound: SGLang expands the media placeholders of input_ids after
+        # it is taken, and the response is trimmed back to the limit when it arrives.
         max_new_tokens = min(max_new_tokens, x - len(input_ids))
     if max_new_tokens <= 0:
         return None, Sample.Status.TRUNCATED
@@ -113,6 +146,8 @@ def compute_request_payload(
     if lora_rollout_enabled(args):
         payload["lora_path"] = LORA_ADAPTER_NAME
     payload.update(rollout_media_payload(multimodal_inputs))
+    if has_media(multimodal_inputs) and args.multimodal_token_space_processing:
+        payload.update(token_space_request_fields(mm_token_expansion_start_len))
     if kv_cache_namespace is not None:
         payload["extra_key"] = kv_cache_namespace
 
@@ -128,12 +163,37 @@ def compute_request_payload(
     return payload, None
 
 
+def truncate_to_max_seq_len(args, sample: Sample, tokenizer) -> None:
+    """Trim the output of a sample that SGLang's media expansion carried past ``--max-seq-len``.
+
+    ``max_new_tokens`` was budgeted from the unexpanded prompt, so in token space the expanded prompt plus the
+    response can exceed the limit. The cut is taken from the end of the output; a multi-turn caller whose
+    observations carry media decides on the expanded observation before calling, so the cut stays in the response.
+    """
+    overrun = len(sample.tokens) - args.max_seq_len if args.max_seq_len else 0
+    if overrun <= 0:
+        return
+    sample.strip_last_output_tokens(min(overrun, sample.response_length), tokenizer)
+    sample.status = Sample.Status.TRUNCATED
+
+
 async def update_sample_from_response(
-    args, sample: Sample, payload: dict, output: dict, update_loss_mask: bool = False
+    args, sample: Sample, payload: dict, output: dict, update_loss_mask: bool = False, *, tokenizer
 ):
+    """Append SGLang's response to the sample.
+
+    Args:
+        args: Run arguments.
+        sample: The sample the request was built from.
+        payload: The request sent to SGLang.
+        output: SGLang's response.
+        update_loss_mask: Extend ``sample.loss_mask`` with ones for the new output tokens.
+        tokenizer: Re-decodes ``sample.response`` when a token-space response is trimmed to ``--max-seq-len``.
+    """
     # Initialize sample.tokens for the first turn
     if (len(sample.response) == 0) and not sample.tokens:
         sample.tokens = payload["input_ids"]
+    adopt_expanded_prompt_ids(sample, payload, output)
 
     if x := output["meta_info"].get("output_token_logprobs"):
         new_response_tokens = [item[1] for item in x]
@@ -201,6 +261,9 @@ async def update_sample_from_response(
 
     # TODO may unify (currently there are both methods inside Sample and separate functions)
     sample.update_from_meta_info(args, output["meta_info"])
+    if payload.get("return_prompt_token_ids"):
+        # Only a token-space media request expands after max_new_tokens was budgeted.
+        truncate_to_max_seq_len(args, sample, tokenizer)
 
 
 def _append_store_response(
