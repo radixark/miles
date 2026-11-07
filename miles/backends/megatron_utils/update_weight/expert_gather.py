@@ -1,5 +1,6 @@
 """Pack and gather converted expert tensors and scales across training ranks."""
 
+import time
 from dataclasses import dataclass
 
 import torch
@@ -26,6 +27,25 @@ class _PayloadLayout:
     dtype_view_nbytes: tuple[tuple[torch.dtype, int], ...]
 
 
+class _CompositeWork:
+    """Wait for several process-group operations as one operation."""
+
+    def __init__(self, works):
+        self._works = tuple(works)
+
+    def wait(self, timeout=None):
+        deadline = None if timeout is None else time.monotonic() + timeout
+        for work in self._works:
+            if deadline is None:
+                if not work.wait():
+                    return False
+            else:
+                remaining = max(deadline - time.monotonic(), 0)
+                if not work.wait(timeout=remaining):
+                    return False
+        return True
+
+
 class ExpertGather:
     """Gather one fixed-layout expert batch, exchanging payload layouts once.
 
@@ -48,6 +68,7 @@ class ExpertGather:
         self._layouts: tuple[_PayloadLayout, ...] | None = None
         self._payload_sizes: tuple[int, ...] = ()
         self._single_source: int | None = None
+        self._sources: tuple[int, ...] = ()
         self._total_bytes = 0
         self._uniform = False
 
@@ -67,6 +88,7 @@ class ExpertGather:
             self._total_bytes = sum(self._payload_sizes)
             self._uniform = len(set(self._payload_sizes)) == 1
             sources = [index for index, size in enumerate(self._payload_sizes) if size]
+            self._sources = tuple(sources)
             self._single_source = sources[0] if len(sources) == 1 else None
 
         local_layout = self._layouts[self._local_index]
@@ -94,8 +116,17 @@ class ExpertGather:
         if self._uniform:
             # Native NCCL all-gather, in place: no flattened temporary or copies.
             return dist.all_gather_into_tensor(storage, local_payload, group=self._group, async_op=True)
-        # NCCL coalesces uneven all-gather internally into one Work handle.
-        return dist.all_gather(payloads, local_payload, group=self._group, async_op=True)
+        # Avoid a multi-root uneven all-gather. NCCL 2.29/2.30 with a tuner plugin
+        # can enter AllGatherV and read past the communicator's channel array.
+        return _CompositeWork(
+            dist.broadcast(
+                payloads[source],
+                src=self._source_ranks[source],
+                group=self._group,
+                async_op=True,
+            )
+            for source in self._sources
+        )
 
 
 def _build_payload_layout(units):
