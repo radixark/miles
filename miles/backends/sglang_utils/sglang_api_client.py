@@ -294,6 +294,12 @@ class SGLangApiClient:
             {"lora_name": lora_name, "config_dict": config_dict, "pinned": pinned},
         )
 
+    async def load_lora_adapter(self, lora_name: str, lora_path: str, pinned: bool = False, upsert: bool = False):
+        """Load a PEFT adapter directory. With ``upsert``, a same-name adapter is replaced in place."""
+        return await self._make_request(
+            "load_lora_adapter", {"lora_name": lora_name, "lora_path": lora_path, "pinned": pinned, "upsert": upsert}
+        )
+
     async def release_memory_occupation(self, tags: list[str] = None):
         """Release memory occupation. Available tags: weights, kv_cache."""
         await self.flush_cache()
