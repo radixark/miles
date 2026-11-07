@@ -11,7 +11,7 @@ from cryptography.hazmat.primitives.asymmetric import ed25519
 from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat, PublicFormat
 from safetensors.torch import load_file, save_file
 
-from miles.backends.training_utils.checkpoint.adapter.adapter_dir import write_peft_export, write_sampler_export
+from miles.backends.training_utils.checkpoint.adapter.adapter_dir import save_sampler_export, write_peft_export
 from miles.backends.training_utils.checkpoint.adapter.adapter_exports import (
     has_plain_peft_form,
     write_external_adapter,
@@ -253,7 +253,7 @@ def test_an_encrypted_external_export_decrypts_to_the_plain_one(tmp_path, key_ty
         recipient = str(identity.to_public())
     write_external_adapter(tmp_path / "plain", _weights(False), _run(), QWEN35, lora_dropout=0.0)
     write_external_adapter(
-        tmp_path / "age", _weights(False), _run(), QWEN35, age_recipients=[recipient], lora_dropout=0.0
+        tmp_path / "age", _weights(False), _run(), QWEN35, age_encryption_recipients=[recipient], lora_dropout=0.0
     )
     assert sorted(p.name for p in (tmp_path / "age").iterdir()) == [
         "adapter_config.json.age",
@@ -274,7 +274,12 @@ def test_an_encrypted_external_export_never_writes_plaintext(tmp_path, monkeypat
 
     monkeypatch.setattr(pyrage, "encrypt", encrypt)
     write_external_adapter(
-        tmp_path / "age", _weights(False), _run(), QWEN35, age_recipients=[str(identity.to_public())], lora_dropout=0.0
+        tmp_path / "age",
+        _weights(False),
+        _run(),
+        QWEN35,
+        age_encryption_recipients=[str(identity.to_public())],
+        lora_dropout=0.0,
     )
 
 
@@ -544,7 +549,7 @@ def test_a_sampler_export_is_written_uncommitted_with_its_tenant_and_parametriza
     run = _run(target_modules=(down,))
     export = _PerExpertDownExport()
 
-    written = write_sampler_export(tmp_path, "v1", export, 0, run, QWEN3, tenant_digest="digest", lora_dropout=0.0)
+    written = save_sampler_export(tmp_path, "v1", export, 0, run, QWEN3, tenant_digest="digest", lora_dropout=0.0)
 
     assert written.path.parent == tmp_path and not (tmp_path / "v1").exists(), "the committer links it"
     tensors = load_file(str(written.path / "adapter_model.safetensors"))

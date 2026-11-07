@@ -4,6 +4,7 @@ An internal datum has tokens = model_input + target_tokens[-1:] and explicit tar
 Its target_len counts every label position, including prompt positions; loss inputs align to it.
 """
 
+import asyncio
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -119,6 +120,8 @@ class ModelRecord:
     slot_initialized: bool = False
     # failed publications burn their version number, leaving gaps
     next_sampler_version: int = 1
+    # one staged file:// copy at a time: each can reach the import's max_bytes on the shared disk
+    staged_import_slot: asyncio.Semaphore = field(default_factory=lambda: asyncio.Semaphore(1))
 
 
 @dataclass

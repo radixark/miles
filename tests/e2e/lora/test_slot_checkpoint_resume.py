@@ -22,9 +22,10 @@ from megatron.core.transformer.transformer_config import TransformerConfig
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from torch.utils._pytree import tree_flatten, tree_map
 
-from miles.backends.megatron_utils.lora.bridge_checkpoint import BridgeAdapterSlots
-from miles.backends.megatron_utils.lora.checkpoint import LayerWiseSlotMembers, load_slot, save_slot
+from miles.backends.megatron_utils.lora.bridge_adapter_slots import BridgeAdapterSlots
+from miles.backends.megatron_utils.lora.checkpoint import LayerWiseSlotMembers, load_slot
 from miles.backends.megatron_utils.lora.optimizer import SlotOptimizer, adapter_slot_parameters, step_slot_optimizers
+from miles.backends.training_utils.checkpoint.adapter.adapter_dir import save_adapter_dir
 from miles.backends.training_utils.checkpoint.adapter.commit import (
     commit_adapter_dir,
     resolve_adapter_dir,
@@ -171,7 +172,7 @@ def run_worker(checkpoint_dir):
                 assert state[name].dtype == torch.float32 and torch.count_nonzero(state[name]) > 0
     print(f"rank={dist.get_rank()} warmup complete; owned_masters=192; sub_bf16_precision=True", flush=True)
 
-    written = save_slot(members, 0, str(checkpoint_dir), "ck", tenant_digest("tenant"), run)
+    written = save_adapter_dir(checkpoint_dir, "ck", members, 0, run, tenant_digest=tenant_digest("tenant"))
     if dist.get_rank() == 0:
         commit_adapter_dir(checkpoint_dir, "ck", written, overwrite=False)
     dist.barrier()

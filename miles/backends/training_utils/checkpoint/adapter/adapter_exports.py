@@ -4,7 +4,6 @@ import json
 from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import safetensors.torch
 import torch
@@ -27,9 +26,6 @@ from miles.backends.training_utils.checkpoint.adapter.parametrization_conversion
 )
 from miles.utils.lora.hf_lora_targets import HfLoraTargets
 from miles.utils.lora.utils import get_adapter_target_modules, save_adapter_to_disk
-
-if TYPE_CHECKING:
-    import pyrage
 
 
 def _components_without_plain_peft_form(parametrization: AdapterParametrization, targets: HfLoraTargets) -> list[str]:
@@ -175,11 +171,12 @@ def write_external_adapter(
     targets: HfLoraTargets,
     *,
     lora_dropout: float,
-    age_recipients: Sequence[str] = (),
+    age_encryption_recipients: Sequence[str] = (),
 ) -> None:
     """The official Tinker export: F32 under Tinker names, experts stacked 3D as the parametrization has them
     (``[1, ...]`` on a shared-outer side), and every module its own copy of a shared A (no re-fusing: Tinker trains
-    the components apart). With ``age_recipients`` both files are age-encrypted to them and named ``<file>.age``."""
+    the components apart). With ``age_encryption_recipients`` both files are age-encrypted to them and named ``<file>.age``.
+    """
     tensors = {}
     shared_copies = {member: group[0] for group in parametrization.shared_lora_a_groups for member in group[1:]}
     for module in parametrization.target_modules:
@@ -197,14 +194,18 @@ def write_external_adapter(
         "target_parameters": None,
         "base_model_name_or_path": None,
     }
-    if not age_recipients:
+    if not age_encryption_recipients:
         save_adapter_to_disk(directory, config, tensors)
         return
 
     # lazy: every run imports this module, and prebuilt images may lack pyrage
     import pyrage
 
-    recipients = [parse_age_recipient(r) for r in age_recipients]
+    # the SDK documents both native age (age1...) and SSH (ssh-...) public keys
+    recipients = [
+        (pyrage.ssh if r.startswith("ssh-") else pyrage.x25519).Recipient.from_str(r)
+        for r in age_encryption_recipients
+    ]
     # encrypted in memory, one file at a time: no plaintext ever reaches the disk
     Path(directory).mkdir(parents=True, exist_ok=True)
     for name, plaintext in (
@@ -212,12 +213,3 @@ def write_external_adapter(
         ("adapter_model.safetensors", lambda: safetensors.torch.save(tensors)),
     ):
         (Path(directory) / f"{name}.age").write_bytes(pyrage.encrypt(plaintext(), recipients))
-
-
-def parse_age_recipient(recipient: str) -> "pyrage.x25519.Recipient | pyrage.ssh.Recipient":
-    """The SDK documents both native age (age1...) and SSH (ssh-...) public keys."""
-    import pyrage
-
-    if recipient.startswith("ssh-"):
-        return pyrage.ssh.Recipient.from_str(recipient)
-    return pyrage.x25519.Recipient.from_str(recipient)

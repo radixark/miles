@@ -8,13 +8,13 @@ from pathlib import Path
 import torch
 from megatron.core.distributed import DistributedDataParallel as DDP
 
-from miles.backends.megatron_utils.lora.bridge_checkpoint import BridgeAdapterSlots
+from miles.backends.megatron_utils.lora.bridge_adapter_slots import BridgeAdapterSlots
 from miles.backends.megatron_utils.lora.checkpoint import single_lora_parametrization
 from miles.backends.megatron_utils.lora.native.checkpoint import NativeAdapterSlots
 from miles.backends.megatron_utils.lora.native.merge import merge_lora_into_weights
 from miles.backends.megatron_utils.lora.utils import is_lora_model
 from miles.backends.megatron_utils.named_weights import named_params_and_buffers
-from miles.backends.training_utils.checkpoint.adapter.adapter_dir import write_peft_export, write_sampler_view
+from miles.backends.training_utils.checkpoint.adapter.adapter_dir import write_peft_export, write_sampler_export
 from miles.backends.training_utils.checkpoint.adapter.adapter_exports import has_plain_peft_form
 from miles.backends.training_utils.checkpoint.io import write_checkpoint_dir
 from miles.backends.training_utils.parallel import get_parallel_state
@@ -79,7 +79,7 @@ def save_hf_model(
             # native keeps sglang's stacked expert layout; a fused module whose components have their own A has no
             # PEFT name, and sglang's names, as main wrote, do
             write_export = (
-                write_sampler_view
+                write_sampler_export
                 if adapter_slots.bf16_adapter_key_style == "sampler"
                 or not has_plain_peft_form(parametrization, adapter_slots.targets)
                 else write_peft_export

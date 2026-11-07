@@ -4,6 +4,8 @@ cryptography==50.0.2  # SSH keys for the age-recipient tests (Tinker external we
 einops==0.8.2
 gguf==0.19.0
 ipython==9.15.0
+jax==0.10.2  # the TPU image's JAX: checks miles/kernels/tpu's private splash-attention calls at that version
+jaxlib==0.10.2
 msgspec==0.21.1
 openai==2.6.1
 partial_json_parser==0.2.1.1.post7

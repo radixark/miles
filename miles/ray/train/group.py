@@ -598,7 +598,7 @@ class TrainerController:
         name: str,
         tenant_digest: str,
         parametrization_fields: dict,
-        age_recipients: list[str],
+        age_encryption_recipients: list[str],
     ) -> list:
         return await self._execute_slots(
             "export_external_slot",
@@ -607,7 +607,7 @@ class TrainerController:
             name=name,
             tenant_digest=tenant_digest,
             parametrization_fields=parametrization_fields,
-            age_recipients=age_recipients,
+            age_encryption_recipients=age_encryption_recipients,
         )
 
     async def unload_slot(self, slot: int) -> list:

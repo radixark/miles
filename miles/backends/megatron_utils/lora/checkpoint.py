@@ -21,8 +21,8 @@ from megatron.core.optimizer.cpu_offloading.hybrid_optimizer import HybridDevice
 from megatron.core.utils import unwrap_model
 from safetensors import SafetensorError
 
-from miles.backends.megatron_utils.lora.bridge_checkpoint import BridgeAdapterSlots
-from miles.backends.megatron_utils.lora.bridge_peft_checkpoint import MegatronBridgeCheckpointLoader
+from miles.backends.megatron_utils.lora.bridge_adapter_slots import BridgeAdapterSlots
+from miles.backends.megatron_utils.lora.bridge_checkpoint_loader import MegatronBridgeCheckpointLoader
 from miles.backends.megatron_utils.lora.native.checkpoint import NativeAdapterSlots
 from miles.backends.megatron_utils.lora.optimizer import SlotOptimizer
 from miles.backends.megatron_utils.lora.utils import (
@@ -35,19 +35,19 @@ from miles.backends.megatron_utils.lora.utils import (
 )
 from miles.backends.megatron_utils.rematerialize_utils import _build_cast_main_to_params_fn
 from miles.backends.training_utils.checkpoint.adapter.adapter_dir import (
+    CheckedSource,
     HeadRows,
     check_adapter_source,
-    load_adapter_dir,
+    load_adapter_source,
     read_training_state,
-    save_adapter_dir,
     save_and_commit_adapter_dir,
 )
 from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
     AdapterState,
+    agree_on_failure_context,
     gloo_group,
     raise_if_any_rank_failed,
 )
-from miles.backends.training_utils.checkpoint.adapter.commit import UncommittedAdapterDir
 from miles.backends.training_utils.checkpoint.adapter.parametrization import (
     AdapterParametrization,
     base_model_fingerprint,
@@ -91,13 +91,9 @@ class LayerWiseSlotMembers:
 
     def _holds(self, slot: int) -> tuple[dict[int, tuple[torch.Tensor, dict, dict]], list]:
         """``_owned(slot)`` and this rank's shard specs, agreed by every rank first."""
-        error, owned = None, {}
-        try:
-            owned = self._owned(slot)
-        except Exception as exc:
-            error = exc
         # the specs gather over Gloo: a rank that cannot list its ownership must not leave the others there
-        raise_if_any_rank_failed(error)
+        with agree_on_failure_context():
+            owned = self._owned(slot)
         return owned, self._slots.local_shard_specs(slot, frozenset(owned))
 
     def get_local_shard_specs(self, slot: int):
@@ -253,8 +249,9 @@ class DistributedOptimizerMembers:
         weights = pieces("param")
         for weight, (index, offsets) in zip(weights, sources, strict=True):
             bf16 = cut(params[index], offsets)
-            assert torch.equal(
-                weight.to(bf16), bf16.reshape(weight.shape)
+            # NaN-safe: a slot that diverged still saves what it holds
+            assert torch.allclose(
+                weight.to(bf16), bf16.reshape(weight.shape), rtol=0, atol=0, equal_nan=True
             ), "a bf16 adapter parameter is not its master"
         if not self._save_moments:
             return AdapterState(specs, weights, [], [], step=step, has_optimizer_state=False)
@@ -389,17 +386,6 @@ def _moment(state: dict, master: torch.Tensor, key: str) -> torch.Tensor:
     return state[key] if state else torch.zeros_like(master)
 
 
-def save_slot(
-    members: LayerWiseSlotMembers,
-    slot: int,
-    root: str,
-    name: str,
-    tenant_digest: str,
-    parametrization: AdapterParametrization,
-) -> UncommittedAdapterDir:
-    return save_adapter_dir(Path(root), name, members, slot, parametrization, tenant_digest=tenant_digest)
-
-
 def load_slot(
     model: Sequence[DDP],
     members: LayerWiseSlotMembers,
@@ -408,10 +394,11 @@ def load_slot(
     run: AdapterParametrization,
     targets,
     load_optimizer: bool,
+    checked: CheckedSource | None = None,
 ) -> AdapterParametrization:
     """Any recognized source; a checkpoint written before the adapter format goes through the legacy loader."""
     legacy = LegacyTinkerCheckpointLoader(model, slot_optimizer, run, load_optimizer)
-    return load_adapter_dir(
+    return load_adapter_source(
         Path(path),
         members,
         slot_optimizer.slot,
@@ -419,10 +406,11 @@ def load_slot(
         targets,
         load_optimizer=load_optimizer,
         in_model_loaders_by_kind={AdapterSourceKind.LEGACY_TINKER_CHECKPOINT: legacy},
+        checked=checked,
     )
 
 
-def find_load_mismatch(
+def check_load_source(
     model: Sequence[DDP],
     slot: int,
     path: str,
@@ -431,21 +419,40 @@ def find_load_mismatch(
     load_optimizer: bool,
     run_shapes: dict[str, tuple[int, ...]],
     head_rows: HeadRows | None = None,
-) -> str | None:
-    """Collective: why ``path`` cannot load into ``slot`` (every rank gets the same answer), or None.
+) -> tuple[str | None, CheckedSource | None]:
+    """Collective: why ``path`` cannot load into ``slot`` (every rank gets the same answer) or None, and on rank 0
+    the checked source, which ``load_slot`` reads instead of reading the source again.
 
     A legacy checkpoint records no adapter layout in META.json, so its tensor keys are compared with the slot's,
     e.g. one fused GDN in_proj adapter saved before the canonical in_proj_q/k/v/z split.
     ``run_shapes``: the whole shape of each HF-keyed tensor this rank loads.
     """
     path = Path(path)
-    mismatch, saved, server_error = None, None, None
+    checked, verdict, server_error = None, (None, None), None
     # a source the user named that is missing, malformed or refused is theirs; raised after the slot reset, it kills
-    # the trainer cell
+    # the trainer cell. Only rank 0 reads it, so only rank 0 can tell the user's fault from the gateway's
+    shapes_by_rank = [None] * dist.get_world_size() if dist.get_rank() == 0 else None
+    dist.gather_object(run_shapes, shapes_by_rank, dst=0, group=gloo_group())
+    if dist.get_rank() == 0:
+        try:
+            all_shapes = {key: shape for shapes in shapes_by_rank for key, shape in shapes.items()}
+            checked = check_adapter_source(
+                path, run, targets, load_optimizer=load_optimizer, run_shapes=all_shapes, head_rows=head_rows
+            )
+            verdict = (checked.kind, None)
+        except _SOURCE_ERRORS as error:
+            verdict = (None, f"{path} cannot load into this model: {error}")
+        except Exception as error:
+            # storage faults (EIO, ESTALE) and bugs are the gateway's
+            server_error = error
+    raise_if_any_rank_failed(server_error)
+    verdict = [verdict]
+    dist.broadcast_object_list(verdict, src=0, group=gloo_group())
+    kind, mismatch = verdict[0]
+    if mismatch is not None:
+        return mismatch, None
+    saved = None
     try:
-        kind = check_adapter_source(
-            path, run, targets, load_optimizer=load_optimizer, run_shapes=run_shapes, head_rows=head_rows
-        )
         if kind == AdapterSourceKind.LEGACY_TINKER_CHECKPOINT:
             _read_legacy_meta(path, run)
             state_dict_metadata = dcp.FileSystemReader(path).read_metadata().state_dict_metadata
@@ -457,7 +464,7 @@ def find_load_mismatch(
                 if ".adapter." in k and "_extra_state" not in k and not OPTIMIZER_KEY.match(k)
             }
         elif kind.is_read_into_model():
-            # load_adapter_dir refuses it only after the slot reset
+            # load_adapter_source refuses it only after the slot reset
             mismatch = f"{path} is a {kind.value} source, which this backend cannot load"
     except _SOURCE_ERRORS as error:
         mismatch = f"{path} cannot load into this model: {error}"
@@ -488,7 +495,8 @@ def find_load_mismatch(
             )
     gathered = [None] * dist.get_world_size()
     dist.all_gather_object(gathered, mismatch, group=gloo_group())
-    return next((m for m in gathered if m is not None), None)
+    mismatch = next((m for m in gathered if m is not None), None)
+    return mismatch, (None if mismatch is not None else checked)
 
 
 # a source the user named that is absent, unreadable, malformed or refused; any other failure is the gateway's
@@ -530,13 +538,9 @@ class LegacyTinkerCheckpointLoader:
         return replace(self._run, lora_alpha=alpha), True
 
     def prepare(self, path: Path) -> tuple[Path, dict]:
-        error, weights = None, None
-        try:
-            weights = _slot_weights_sharded_state_dict(self._model, self._optimizer.slot)
-        except Exception as exc:
-            error = exc
         # the optimizer shells gather over the default group: a rank without slot tensors must not leave the others there
-        raise_if_any_rank_failed(error)
+        with agree_on_failure_context():
+            weights = _slot_weights_sharded_state_dict(self._model, self._optimizer.slot)
         shells = {_WEIGHTS_KEY: weights, _OPTIM_KEY: self._optimizer.sharded_state(weights, is_loading=True)}
         _canonicalize_slot_keys(shells, self._optimizer.slot)
         return path, shells
@@ -604,8 +608,7 @@ def _canonicalize_slot_keys(tree: dict, slot: int) -> dict:
 
 def _load_legacy_slot(shells: dict, slot_optimizer: SlotOptimizer, path: str, load_optimizer: bool) -> None:
     loaded = dist_checkpointing.load(shells, path)
-    error = None
-    try:
+    with agree_on_failure_context():
         slot_optimizer.load_sharded_state(loaded[_OPTIM_KEY])
         if not load_optimizer:
             slot_optimizer.reset_adam_state()
@@ -613,9 +616,6 @@ def _load_legacy_slot(shells: dict, slot_optimizer: SlotOptimizer, path: str, lo
         # them only into the returned dict); the loaded masters are authoritative
         for child in slot_optimizer.chained_optimizers:
             child._copy_main_params_to_model_params()
-    except Exception as exc:
-        error = exc
-    raise_if_any_rank_failed(error)
     slot_optimizer.allgather_params()
 
 
@@ -717,12 +717,12 @@ def restore_single_lora(
         )
     }
     # a Bridge checkpoint's sharded keys exist only in a Bridge model, and its load refreshes the optimizer's masters;
-    # elsewhere load_adapter_dir refuses it as a kind this backend cannot load
+    # elsewhere load_adapter_source refuses it as a kind this backend cannot load
     if args.megatron_to_hf_mode == "bridge" and optimizer is not None:
         in_model_loaders_by_kind[AdapterSourceKind.MEGATRON_BRIDGE_CHECKPOINT] = MegatronBridgeCheckpointLoader(
             model, optimizer, members, run, load_optimizer
         )
-    source = load_adapter_dir(
+    source = load_adapter_source(
         path,
         members,
         0,
@@ -737,7 +737,7 @@ def restore_single_lora(
     ), f"{path} was trained with lora_alpha={source.lora_alpha}; this run uses {run.lora_alpha}"
     if optimizer is None:
         # no optimizer: the run starts over, as on main
-        return None
+        return AdapterRestore(None, False, 0)
     # an old-format save holds its training state beside the rank shards, whichever reader loaded the weights
     training_state = read_training_state(path) or _read_legacy_training_state(path)
     if args.lora_adapter_convert_save is not None:
@@ -772,7 +772,7 @@ class LegacyRankShardLoader:
     def parametrization(self, path: Path) -> tuple[AdapterParametrization, bool]:
         state = _load_training_state(path)
         has_optimizer_state = state is not None and state["optimizer"] is not None and "parameter_state" in state
-        # an old save records alpha in its PEFT pair; load_adapter_dir takes the run's when it records none
+        # an old save records alpha in its PEFT pair; load_adapter_source takes the run's when it records none
         return replace(self._run, lora_alpha=read_source_lora_alpha(path)), has_optimizer_state
 
     def prepare(self, path: Path) -> tuple[list, dict | None]:

@@ -44,7 +44,7 @@ from miles.backends.torchtitan_utils.lora_checkpoint import (
     probe_torchtitan_row_mapping,
 )
 from miles.backends.torchtitan_utils.lora_names import iter_hf_adapter_tensors
-from miles.backends.training_utils.checkpoint.adapter.adapter_dir import load_adapter_dir, save_adapter_dir
+from miles.backends.training_utils.checkpoint.adapter.adapter_dir import load_adapter_source, save_adapter_dir
 from miles.backends.training_utils.checkpoint.adapter.adapter_state import RanksFailedError
 from miles.backends.training_utils.checkpoint.adapter.commit import commit_adapter_dir
 from miles.backends.training_utils.checkpoint.adapter.key_mapping import (
@@ -150,11 +150,11 @@ def _load_dcp(tmp_path, saved: dict) -> TorchtitanCheckpointLoader:
     loader = TorchtitanCheckpointLoader(slots, members, [], sd_adapter, _Run(str(tmp_path), 16), load_optimizer=False)
     with (
         patch.object(lora_checkpoint, "resolve_hf_dir", return_value=tmp_path),
-        patch.object(lora_checkpoint, "hf_fingerprint_tensors", return_value={}),
+        patch.object(lora_checkpoint, "read_base_check_tensors", return_value={}),
         patch.object(lora_checkpoint, "assert_same_base_tensors"),
     ):
         assert loader.parametrization(path)[1] is False
-        # the checks read the source only; nothing is loaded until load_adapter_dir accepted it
+        # the checks read the source only; nothing is loaded until load_adapter_source accepted it
         assert all(torch.equal(param, torch.zeros(2, 2)) for param in params.values())
         loader.apply(loader.prepare(path))
     for key, param in params.items():
@@ -177,7 +177,7 @@ def test_a_full_dcp_loads_its_training_state(tmp_path, single_rank_gloo):
 
 @pytest.mark.parametrize("with_optimizer", [True, False])
 def test_a_dcp_reports_whether_it_holds_optimizer_state(tmp_path, single_rank_gloo, with_optimizer):
-    """load_adapter_dir refuses a source without it unless --no-load-optim."""
+    """load_adapter_source refuses a source without it unless --no-load-optim."""
     saved = {_LORA_A: torch.ones(2, 2), _LORA_B: torch.ones(2, 2)}
     if with_optimizer:
         for key in (_LORA_A, _LORA_B):
@@ -191,9 +191,9 @@ def test_a_dcp_reports_whether_it_holds_optimizer_state(tmp_path, single_rank_gl
     )
     with (
         patch.object(lora_checkpoint, "resolve_hf_dir", return_value=tmp_path),
-        patch.object(lora_checkpoint, "hf_fingerprint_tensors", return_value={}),
+        patch.object(lora_checkpoint, "read_base_check_tensors", return_value={}),
         patch.object(lora_checkpoint, "assert_same_base_tensors"),
-        patch.object(loader, "_base_fingerprint_tensors", return_value={}),
+        patch.object(loader, "_base_check_tensors", return_value={}),
     ):
         assert loader.parametrization(path) == (replace(_Run(str(tmp_path), 16), lora_alpha=None), with_optimizer)
 
@@ -209,7 +209,7 @@ def _base_check_worker(rank: int, world_size: int, port: int, path) -> None:
     )
     with (
         patch.object(lora_checkpoint, "resolve_hf_dir", return_value=path if rank == 0 else None),
-        patch.object(lora_checkpoint, "hf_fingerprint_tensors", return_value={}),
+        patch.object(lora_checkpoint, "read_base_check_tensors", return_value={}),
         patch.object(lora_checkpoint, "assert_same_base_tensors"),
         pytest.raises(RuntimeError, match="rank 1: .*has no local HF weights"),
     ):
@@ -291,7 +291,7 @@ class _Trainer:
 def _restore(tmp_path, *, dcp_step=None, training_state=None, **flags):
     """``dcp_step``: the source is a torchtitan DCP with this train_state step; ``training_state``: an adapter dir's."""
 
-    def load_adapter_dir(path, members, slot, run, targets, *, load_optimizer, in_model_loaders_by_kind):
+    def load_adapter_source(path, members, slot, run, targets, *, load_optimizer, in_model_loaders_by_kind):
         if dcp_step is not None:
             (loader,) = in_model_loaders_by_kind.values()
             loader.training_state = lambda: ({"step": dcp_step, "ntokens_seen": 7}, {"last_epoch": dcp_step})
@@ -318,7 +318,7 @@ def _restore(tmp_path, *, dcp_step=None, training_state=None, **flags):
     with (
         patch.object(lora_checkpoint, "load_hf_config", return_value=_QWEN3_CONFIG),
         patch.object(lora_checkpoint, "_torchtitan_adapter_slots", return_value=slots),
-        patch.object(lora_checkpoint, "load_adapter_dir", side_effect=load_adapter_dir),
+        patch.object(lora_checkpoint, "load_adapter_source", side_effect=load_adapter_source),
         patch.object(lora_checkpoint, "read_training_state", return_value=training_state),
         patch.object(lora_checkpoint, "load_lr_schedulers") as load_lr_schedulers,
         patch.object(lora_checkpoint, "save_and_commit_adapter_dir") as save,
@@ -845,7 +845,7 @@ def _cross_layout_round_trip(rank, world_size, port, path, source, target):
     dist.barrier()
 
     slots, loaded = _members_on(mesh, target, sd_adapter, {key: torch.zeros_like(v) for key, v in params.items()})
-    load_adapter_dir(written.path, loaded, 0, run, slots.targets, load_optimizer=True)
+    load_adapter_source(written.path, loaded, 0, run, slots.targets, load_optimizer=True)
     for (key, param), state in zip(slots.parameters.items(), loaded.adam_states(), strict=True):
         assert torch.equal(param.full_tensor(), params[key]), key
         assert torch.equal(state["exp_avg"].full_tensor(), moments[key][0]), key
