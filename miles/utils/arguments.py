@@ -2069,8 +2069,12 @@ def hf_validate_args(args, hf_config):
     if (hf_config.model_type == "deepseek_v4" or "deepseekv4" in model_name) and args.context_parallel_size > 1:
         assert args.allgather_cp, "zigzag CP is not supported for DeepSeek V4."
 
-    # MiniMax-M3 names the dense width dense_intermediate_size and the expert width intermediate_size
-    if hasattr(hf_config, "dense_intermediate_size"):  # config-access-exempt: model-specific key
+    # MiniMax-M3 names the dense width dense_intermediate_size and the expert width intermediate_size.
+    # Inkling names its fields the same way, but its Megatron recipe sizes ffn_hidden_size from
+    # intermediate_size, so the naming is keyed on the model type, not on the key being present.
+    if getattr(hf_config, "model_type", "").startswith(
+        "minimax_m3"
+    ):  # config-access-exempt: model-family schemas differ in optional model_type metadata
         dense_ffn_key, moe_ffn_key = "dense_intermediate_size", "intermediate_size"
     else:
         dense_ffn_key, moe_ffn_key = "intermediate_size", "moe_intermediate_size"
