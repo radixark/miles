@@ -21,6 +21,10 @@ up a new model architecture.
 | **FP8 block-wise** (DeepSeek-style) | 128×128, FP32 scales | Hopper (H100 / H200), Blackwell (B200+), AMD MI350X / MI355X | Qwen3-4B, Qwen3-30B-A3B, DeepSeek-V4-Flash | Generally available |
 | **MXFP8** | 1×32, UE8M0 scales | Blackwell only (B200, B300, GB200, GB300) | Qwen3-30B-A3B, DeepSeek-V3.2 | Beta |
 | **NVFP4** (E2M1) | 1×16, two-level (FP8 + FP32) scales | Blackwell only (B200, B300, GB200, GB300) | Qwen3-30B-A3B | Beta |
+| **MXFP4** (E2M1) | 1×32, UE8M0 scales | Blackwell only (B200, B300, GB200, GB300) | DeepSeek-V4-Flash (routed experts, inference only) | Experimental |
+
+MXFP4 is not a standalone choice: rollout uses it only for the routed experts of
+releases that ship them in MXFP4 ([mode 5](#5-mxfp4-routed-experts-blackwell)).
 
 ## Rollout × training compatibility
 
@@ -33,10 +37,12 @@ forward precision. ✅ = supported; ✗ = not supported.
 | **FP8 block-wise** | ✅ | ✅ Hopper + Blackwell + MI350X / MI355X | ✗ | ✗ |
 | **MXFP8**          | ✅ | ✗ | ✅ Blackwell | ✗ |
 | **NVFP4**          | ✗ | ✗ | ✗ | ✅ Blackwell |
+| **MXFP4**          | ✗ | ✗ | ✅ Blackwell, optional MXFP4 QAT | ✗ |
 
 The reference script (`scripts/run_qwen3_30b_a3b.py`) allows only one rollout
 precision and one training precision at a time. Use paired rollout and training
-flags for the end-to-end MXFP8 and NVFP4 recipes below.
+flags for the end-to-end MXFP8 and NVFP4 recipes below. MXFP4 rollout keeps the
+weights other than the routed experts in block-wise FP8.
 
 ## Unified training recipe
 
@@ -295,6 +301,58 @@ export FLASHINFER_NVFP4_4OVER6_ERR_MODE=MSE
 export NVTE_NVFP4_4OVER6_ERR_USE_FAST_MATH=0
 export FLASHINFER_NVFP4_4OVER6_ERR_USE_FAST_MATH=0
 ```
+
+### 5. MXFP4 routed experts (Blackwell)
+
+DeepSeek-V4 and Kimi K3 release their routed experts in MXFP4 — E2M1 values in
+32-value blocks with one UE8M0 scale per block — and keep their other weights in
+higher precision. Both reach these weights through MXFP4 quantization-aware
+training (QAT) in post-training ([DeepSeek-V4](https://arxiv.org/abs/2606.19348),
+[Kimi K3](https://arxiv.org/abs/2607.24653)).
+
+Miles implements this for DeepSeek-V4 by changing only the routed experts on top
+of FP8 training and rollout. In rollout, the routed experts run MXFP4 weights ×
+MXFP8 activations (W4A8), as in the release. Three DeepSeek-V4 configurations
+change one thing at a time:
+
+| `--train-precision` | `--rollout-precision` | Routed experts in training | Routed experts in rollout |
+|---|---|---|---|
+| `mxfp8` | `mxfp8` | MXFP8 | MXFP8 |
+| `mxfp8` | `mxfp8-mxfp4-routed-expert` | MXFP8 | MXFP4 × MXFP8 |
+| `mxfp8-mxfp4-routed-expert` | `mxfp8-mxfp4-routed-expert` | MXFP4 grid × MXFP8 | MXFP4 × MXFP8 |
+
+The first and last align the routed experts between training and rollout. The
+second serves the MXFP4 experts without QAT, so the routed experts carry a
+train–rollout mismatch, as in mode 1. In all three, the other layers use the
+MXFP8 recipe in training and block-wise FP8 in rollout.
+
+**MXFP4 QAT.** Training has no MXFP4 GEMM. Before each routed-expert MXFP8 GEMM,
+the trainer rounds the weights onto the MXFP4 grid, with the block layout and
+rounding of the rollout encoder. MXFP4 and MXFP8 share the 1×32 block, so the
+forward GEMM receives the rounded weights unchanged, which are the weights
+rollout serves. The weight gradient passes straight through (STE). Master
+weights and optimizer state keep their precision, and nothing outside the
+routed-expert weights is rounded to MXFP4.
+
+![Routed-expert MXFP4 QAT on the MXFP8 recipe](/assets/images/low-precision/mxfp4-qat.png)
+
+The MXFP8 recipe also matches the 1×32 activation scaling of the W4A8 rollout
+kernel, so both GEMM operands agree with rollout.
+
+**Hardware:** Blackwell. QAT also requires initializing the trainer from the
+Hugging Face checkpoint (`--init-model-source hf`).
+
+```bash
+python scripts/run_deepseek_v4.py full-train \
+   --model-name DeepSeek-V4-Flash --hardware GB300 \
+   --num-nodes 8 --num-gpus-per-node 4 \
+   --init-model-source hf --rollout-weight-source trainer \
+   --train-precision mxfp8-mxfp4-routed-expert \
+   --rollout-precision mxfp8-mxfp4-routed-expert
+```
+
+See [Training and rollout precision](/models/deepseek/deepseek-v4-flash#35-training-and-rollout-precision)
+for the option values and their constraints.
 
 ## Fine-grained BF16 exceptions
 
