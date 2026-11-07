@@ -50,6 +50,6 @@ async def generate(input: GenerateFnInput, url: str | None = None) -> GenerateFn
         return GenerateFnOutput(samples=sample)
 
     output = await post(url, payload, headers=compute_routing_headers(args, sample))
-    await update_sample_from_response(args, sample, payload=payload, output=output)
+    await update_sample_from_response(args, sample, payload=payload, output=output, tokenizer=input.state.tokenizer)
 
     return GenerateFnOutput(samples=sample)

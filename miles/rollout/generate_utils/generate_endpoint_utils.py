@@ -126,6 +126,8 @@ def compute_request_payload(
     sampling_params = deepcopy(sampling_params)
     max_new_tokens = sampling_params.pop("max_new_tokens", args.rollout_max_response_len)
     if x := args.max_seq_len:
+        # In token space this is only an upper bound: SGLang expands the media placeholders of input_ids after
+        # it is taken, and the response is trimmed back to the limit when it arrives.
         max_new_tokens = min(max_new_tokens, x - len(input_ids))
     if max_new_tokens <= 0:
         return None, Sample.Status.TRUNCATED
@@ -161,9 +163,33 @@ def compute_request_payload(
     return payload, None
 
 
+def truncate_to_max_seq_len(args, sample: Sample, tokenizer) -> None:
+    """Trim the output of a sample that SGLang's media expansion carried past ``--max-seq-len``.
+
+    ``max_new_tokens`` was budgeted from the unexpanded prompt, so in token space the expanded prompt plus the
+    response can exceed the limit. The cut is taken from the end of the output; a multi-turn caller whose
+    observations carry media decides on the expanded observation before calling, so the cut stays in the response.
+    """
+    overrun = len(sample.tokens) - args.max_seq_len if args.max_seq_len else 0
+    if overrun <= 0:
+        return
+    sample.strip_last_output_tokens(min(overrun, sample.response_length), tokenizer)
+    sample.status = Sample.Status.TRUNCATED
+
+
 async def update_sample_from_response(
-    args, sample: Sample, payload: dict, output: dict, update_loss_mask: bool = False
+    args, sample: Sample, payload: dict, output: dict, update_loss_mask: bool = False, *, tokenizer
 ):
+    """Append SGLang's response to the sample.
+
+    Args:
+        args: Run arguments.
+        sample: The sample the request was built from.
+        payload: The request sent to SGLang.
+        output: SGLang's response.
+        update_loss_mask: Extend ``sample.loss_mask`` with ones for the new output tokens.
+        tokenizer: Re-decodes ``sample.response`` when a token-space response is trimmed to ``--max-seq-len``.
+    """
     # Initialize sample.tokens for the first turn
     if (len(sample.response) == 0) and not sample.tokens:
         sample.tokens = payload["input_ids"]
@@ -230,6 +256,9 @@ async def update_sample_from_response(
 
     # TODO may unify (currently there are both methods inside Sample and separate functions)
     sample.update_from_meta_info(args, output["meta_info"])
+    if payload.get("return_prompt_token_ids"):
+        # Only a token-space media request expands after max_new_tokens was budgeted.
+        truncate_to_max_seq_len(args, sample, tokenizer)
 
 
 def _append_store_response(
