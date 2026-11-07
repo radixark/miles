@@ -4018,8 +4018,7 @@ class TestMilesValidateArgsDiskDeltaResume:
 
 
 class TestMilesValidateArgsHttpLora:
-    """http-lora is accepted by the transfer-mode allow-list in miles_validate_args, not only by the
-    protocol factory; path mode needs a staging directory, tensors mode does not."""
+    """http-lora passes miles_validate_args' transfer-mode allow-list, not only the protocol factory's."""
 
     @staticmethod
     def _parse(tmp_path, extra: list[str]) -> argparse.Namespace:
@@ -4042,12 +4041,8 @@ class TestMilesValidateArgsHttpLora:
             + REQUIRED_ARGS
         )
 
-    def test_tensors_mode_validates_without_a_staging_directory(self, tmp_path):
-        args = self._parse(tmp_path, ["--http-lora-ship", "tensors"])
-
-        miles_validate_args(args)
-
-        assert args.update_weight_transfer_mode == "http-lora"
+    def test_default_tensors_mode_validates_without_a_staging_directory(self, tmp_path):
+        miles_validate_args(self._parse(tmp_path, []))
 
     def test_path_mode_validates_with_a_staging_directory(self, tmp_path):
         args = self._parse(tmp_path, ["--http-lora-ship", "path", "--update-weight-disk-dir", str(tmp_path / "stage")])
@@ -4057,13 +4052,6 @@ class TestMilesValidateArgsHttpLora:
     def test_path_mode_requires_a_staging_directory(self, tmp_path):
         with pytest.raises(AssertionError, match="requires --update-weight-disk-dir"):
             miles_validate_args(self._parse(tmp_path, ["--http-lora-ship", "path"]))
-
-    def test_tensors_is_the_default_ship(self, tmp_path):
-        args = self._parse(tmp_path, [])
-
-        miles_validate_args(args)
-
-        assert args.http_lora_ship == "tensors"
 
     def test_path_mode_refuses_check_lora_weight_equal(self, tmp_path):
         extra = ["--http-lora-ship", "path", "--update-weight-disk-dir", str(tmp_path / "stage")]

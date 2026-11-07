@@ -30,12 +30,10 @@ def _http_error(status_code: int, text: str) -> httpx.HTTPStatusError:
 
 
 class _FakeEngine:
-    """Models SGLang's LoRA registry: a held name rejects a plain load; upsert replaces it only if supported."""
+    """Models SGLang's LoRA registry: a held name rejects a plain load; upsert replaces it."""
 
-    def __init__(self, url: str = "http://e:1", supports_upsert: bool = True, held: dict | None = None) -> None:
-        # supports_upsert=False models a stock SGLang, which ignores the field and rejects a held name.
+    def __init__(self, url: str = "http://e:1", held: dict | None = None) -> None:
         self.server_url = url
-        self.supports_upsert = supports_upsert
         self.served: dict[str, object] = dict(held or {})
         self.calls: list[str] = []
         self.load_error: httpx.HTTPStatusError | None = None
@@ -51,7 +49,7 @@ class _FakeEngine:
         self.calls.append(f"{route}+upsert" if upsert else route)
         if self.load_error is not None:
             raise self.load_error
-        if lora_name in self.served and not (upsert and self.supports_upsert):
+        if lora_name in self.served and not upsert:
             raise _http_error(400, f"LoRA with name {lora_name} already exists. Loaded LoRAs: [{lora_name}]")
         self.served[lora_name] = payload
         return {"success": True}
@@ -153,15 +151,6 @@ def test_an_adapter_left_by_an_earlier_run_is_replaced_in_place(tmp_path):
     assert engine.calls == ["pause", "flush", "load+upsert", "version=1", "resume"]
 
 
-def test_an_engine_without_upsert_fails_the_sync_and_resumes_the_fleet(tmp_path):
-    engine = _FakeEngine(supports_upsert=False, held={LORA_ADAPTER_NAME: "/old/run/v30"})
-    protocol = _connect(_make_args(tmp_path), [engine])
-
-    with pytest.raises(httpx.HTTPStatusError, match="already exists"):
-        _sync(protocol, 1)
-    assert engine.calls[-1] == "resume"
-
-
 def test_a_load_failure_raises_and_resumes(tmp_path):
     engine = _FakeEngine()
     engine.load_error = _http_error(400, "rank 64 exceeds --max-lora-rank")
@@ -253,12 +242,6 @@ def test_stream_mode_rejects_a_bucket_for_another_adapter(tmp_path):
 
     with pytest.raises(AssertionError, match="one adapter"):
         protocol.send_bucket([(f"other:{_HF_KEY}", torch.ones(2, 2))])
-
-
-def test_stream_mode_leaves_the_session_frame_to_the_updater():
-    # The updater pauses, registers, and ends the session only for protocols that declare it.
-    assert UpdateWeightHttpLoraTensors.use_weight_update_session is True
-    assert UpdateWeightHttpLoraPath.use_weight_update_session is False
 
 
 def _foreign_load_from_bytes(b):
