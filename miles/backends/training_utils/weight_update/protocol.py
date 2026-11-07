@@ -105,11 +105,11 @@ def get_weight_transfer_protocol(args: Namespace) -> WeightTransferProtocol:
         return UpdateWeightP2P(args)
     if mode == "http-lora":
         from miles.backends.training_utils.weight_update.protocols.http_lora import (
-            UpdateWeightHttpLora,
-            UpdateWeightHttpLoraStream,
+            UpdateWeightHttpLoraPath,
+            UpdateWeightHttpLoraTensors,
         )
 
         if args.http_lora_ship == "tensors":
-            return UpdateWeightHttpLoraStream(args)
-        return UpdateWeightHttpLora(args)
+            return UpdateWeightHttpLoraTensors(args)
+        return UpdateWeightHttpLoraPath(args)
     raise ValueError(f"Unknown --update-weight-transfer-mode {mode!r}")

@@ -77,7 +77,7 @@ def _pickle_with_torch_globals(obj: object) -> bytes:
         torch.storage._load_from_bytes = current
 
 
-class UpdateWeightHttpLora(WeightTransferProtocol):
+class UpdateWeightHttpLoraPath(WeightTransferProtocol):
     """``--http-lora-ship path``: rank 0 writes the adapter to shared storage once and
     posts its path to every engine at finalize, which replaces the adapter in place
     (upsert on /load_lora_adapter, as sglang-miles ships it)."""
@@ -191,7 +191,7 @@ class UpdateWeightHttpLora(WeightTransferProtocol):
         )
 
 
-class UpdateWeightHttpLoraStream(WeightTransferProtocol):
+class UpdateWeightHttpLoraTensors(WeightTransferProtocol):
     """``--http-lora-ship tensors``: rank 0 posts each adapter bucket into the
     engines' weight-update session, once per engine; the engine hands that one
     payload to all of its TP ranks (plain CPU tensors, no per-rank IPC handles).

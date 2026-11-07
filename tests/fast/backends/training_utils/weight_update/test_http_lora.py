@@ -15,8 +15,8 @@ import torch
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.protocols import http_lora
 from miles.backends.training_utils.weight_update.protocols.http_lora import (
-    UpdateWeightHttpLora,
-    UpdateWeightHttpLoraStream,
+    UpdateWeightHttpLoraPath,
+    UpdateWeightHttpLoraTensors,
 )
 from miles.utils.lora.utils import LORA_ADAPTER_NAME
 
@@ -106,7 +106,7 @@ def _make_args(tmp_path, **overrides) -> Namespace:
     return args
 
 
-def _connect(args: Namespace, engines: list, gpu_counts: list[int] | None = None, protocol_cls=UpdateWeightHttpLora):
+def _connect(args: Namespace, engines: list, gpu_counts: list[int] | None = None, protocol_cls=UpdateWeightHttpLoraPath):
     protocol = protocol_cls(args)
     with patch(f"{_MODULE}.dist.get_rank", return_value=0):
         protocol.connect(
@@ -121,7 +121,7 @@ def _connect(args: Namespace, engines: list, gpu_counts: list[int] | None = None
     return protocol
 
 
-def _sync(protocol: UpdateWeightHttpLora, weight_version: int, adapter_value: float = 1.0) -> None:
+def _sync(protocol: UpdateWeightHttpLoraPath, weight_version: int, adapter_value: float = 1.0) -> None:
     protocol.send_bucket([(f"{LORA_ADAPTER_NAME}:{_HF_KEY}", torch.full((16, 8), adapter_value))])
     protocol.finalize(weight_version)
 
@@ -224,7 +224,7 @@ def _stream_args(tmp_path) -> Namespace:
 
 def test_stream_mode_posts_one_copy_per_engine_whatever_its_gpu_count_and_writes_nothing(tmp_path):
     engines = [_FakeSessionEngine("http://a:1"), _FakeSessionEngine("http://b:1")]
-    protocol = _connect(_stream_args(tmp_path), engines, gpu_counts=[2, 8], protocol_cls=UpdateWeightHttpLoraStream)
+    protocol = _connect(_stream_args(tmp_path), engines, gpu_counts=[2, 8], protocol_cls=UpdateWeightHttpLoraTensors)
 
     name = f"{LORA_ADAPTER_NAME}:{_HF_KEY}"
     protocol.send_bucket([(name, torch.full((16, 8), 5.0))])
@@ -242,14 +242,14 @@ def test_stream_mode_posts_one_copy_per_engine_whatever_its_gpu_count_and_writes
 
 def test_stream_mode_raises_when_an_engine_rejects_a_bucket(tmp_path):
     engines = [_FakeSessionEngine("http://a:1"), _FakeSessionEngine("http://b:1", reject=True)]
-    protocol = _connect(_stream_args(tmp_path), engines, protocol_cls=UpdateWeightHttpLoraStream)
+    protocol = _connect(_stream_args(tmp_path), engines, protocol_cls=UpdateWeightHttpLoraTensors)
 
     with pytest.raises(RuntimeError, match="stash refused"):
         protocol.send_bucket([(f"{LORA_ADAPTER_NAME}:{_HF_KEY}", torch.ones(2, 2))])
 
 
 def test_stream_mode_rejects_a_bucket_for_another_adapter(tmp_path):
-    protocol = _connect(_stream_args(tmp_path), [_FakeSessionEngine()], protocol_cls=UpdateWeightHttpLoraStream)
+    protocol = _connect(_stream_args(tmp_path), [_FakeSessionEngine()], protocol_cls=UpdateWeightHttpLoraTensors)
 
     with pytest.raises(AssertionError, match="one adapter"):
         protocol.send_bucket([(f"other:{_HF_KEY}", torch.ones(2, 2))])
@@ -257,8 +257,8 @@ def test_stream_mode_rejects_a_bucket_for_another_adapter(tmp_path):
 
 def test_stream_mode_leaves_the_session_frame_to_the_updater():
     # The updater pauses, registers, and ends the session only for protocols that declare it.
-    assert UpdateWeightHttpLoraStream.use_weight_update_session is True
-    assert UpdateWeightHttpLora.use_weight_update_session is False
+    assert UpdateWeightHttpLoraTensors.use_weight_update_session is True
+    assert UpdateWeightHttpLoraPath.use_weight_update_session is False
 
 
 def _foreign_load_from_bytes(b):
