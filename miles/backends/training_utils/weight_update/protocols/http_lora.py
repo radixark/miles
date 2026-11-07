@@ -94,7 +94,6 @@ class UpdateWeightHttpLoraPath(WeightTransferProtocol):
         selector: str,
     ) -> None:
         assert placement.is_full_gather, "http-lora needs the full adapter on one rank"
-        assert engine_gpu_counts is not None and len(engine_gpu_counts) == len(rollout_engines)
         self.rollout_engines = rollout_engines
         self.cell_updaters_of_cell_id = create_rollout_cell_updaters(self.args, rollout_engines, engine_cell_ids)
         self.is_sender = dist.get_rank() == 0
@@ -189,7 +188,6 @@ class UpdateWeightHttpLoraTensors(WeightTransferProtocol):
     def __init__(self, args: Namespace) -> None:
         super().__init__(args)
         self.group_name = "miles-http-lora"
-        self._selector = "all"
         self._num_bytes = 0
         self._post_s = 0.0
 
