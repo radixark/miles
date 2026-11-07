@@ -1,7 +1,6 @@
 import asyncio
 import copy
 import logging
-import uuid
 from argparse import Namespace
 from collections.abc import Callable
 from contextlib import contextmanager
@@ -43,7 +42,7 @@ from .generate_utils.generate_endpoint_utils import (
     apply_sample_max_response_len,
     compute_routing_headers,
     get_indexer_topk_from_response,
-    router_routes_by_key,
+    stamp_prompt_routing_key,
 )
 from .generate_utils.prefill_logprobs import recompute_samples_rollout_logprobs_via_prefill
 from .generate_utils.sample_utils import reward_log_summary, sample_text_preview
@@ -398,11 +397,7 @@ async def generate_and_rm_group(
     if state.aborted:
         return group
 
-    # Generate a unique routing_key for each sample in the group (routing-key policies only)
-    if router_routes_by_key(args):
-        for sample in group:
-            if sample.routing_key is None:
-                sample.routing_key = str(uuid.uuid4())
+    stamp_prompt_routing_key(args, group)
 
     tasks = []
     for idx, sample in enumerate(group):
@@ -655,16 +650,15 @@ async def eval_rollout_single_dataset(
     tasks = []
     # do multiple samples for eval prompts
     sample_index = 0
-    for _i, prompt_sample in enumerate(dataset.samples):
-        for j in range(dataset_cfg.n_samples_per_eval_prompt):
-            # use the same prompt for multiple samples
-            sample = copy.deepcopy(prompt_sample)
+    for prompt_sample in dataset.samples:
+        # use the same prompt for multiple samples
+        prompt_samples = [copy.deepcopy(prompt_sample) for _ in range(dataset_cfg.n_samples_per_eval_prompt)]
+        stamp_prompt_routing_key(args, prompt_samples)
+        for j, sample in enumerate(prompt_samples):
             sample.index = sample_index
             sample_index += 1
             sample.metadata = dataset_cfg.inject_metadata(sample.metadata)
             sample.generate_function_path = x.path if (x := dataset_cfg.custom_generate_function_path) else None
-            if router_routes_by_key(args):
-                sample.routing_key = str(uuid.uuid4())
             sampling_params = base_sampling_params
             if args.sglang.common_value("enable_deterministic_inference"):
                 sampling_params = base_sampling_params.copy()

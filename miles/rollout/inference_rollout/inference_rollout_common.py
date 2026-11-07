@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import uuid
 from argparse import Namespace
 from collections.abc import Callable
 from copy import deepcopy
@@ -19,7 +18,10 @@ from miles.rollout.base_types import (
     compute_kv_cache_namespace,
 )
 from miles.rollout.generate_hub.single_turn import generate
-from miles.rollout.generate_utils.generate_endpoint_utils import apply_sample_max_response_len, router_routes_by_key
+from miles.rollout.generate_utils.generate_endpoint_utils import (
+    apply_sample_max_response_len,
+    stamp_prompt_routing_key,
+)
 from miles.rollout.inference_rollout.compatibility import load_generate_function
 from miles.rollout.rm_hub import async_rm, batched_async_rm
 from miles.utils.async_utils import DynamicLimitSemaphore
@@ -169,10 +171,7 @@ async def generate_and_rm_group(
     if state.aborted:
         return group
 
-    if router_routes_by_key(args):
-        for sample in group:
-            if sample.routing_key is None:
-                sample.routing_key = str(uuid.uuid4())
+    stamp_prompt_routing_key(args, group)
 
     log_prefix = f"[group indices={[s.index for s in group]}]"
     logger.debug(f"{log_prefix} Starting group with {len(group)} samples")
