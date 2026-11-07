@@ -1,19 +1,7 @@
-"""LoRA weight transfer over each engine's LoRA load route, for engines the trainer shares no collective or host with.
+"""LoRA weight transfer over HTTP, for engines the trainer shares no collective or host with.
 
-The other transports assume the trainer reaches the engines through a collective
-or a shared host. Neither holds when the rollout pool is on different hardware
-from the trainer: NCCL and RCCL cannot share a communicator, and cuda_ipc handles
-do not leave the host. The cross-host transports, p2p and disk-delta, carry full
-weights only. A LoRA run needs neither: the base weights never change, and the
-adapter is small enough to hand to each engine over HTTP.
-
-``--http-lora-ship tensors`` (default) streams the adapter through the engine's
-weight-update session (/register_lora_adapter, /update_weights_from_tensor,
-/end_weight_update), one copy per engine that the engine shares across its TP
-ranks, so the engines need nothing but an HTTP port and the session installs
-each version in place. ``path`` stages a versioned PEFT directory once and posts
-its path to /load_lora_adapter with upsert, so every engine loads the same copy
-from storage.
+NCCL and RCCL cannot share a communicator and cuda_ipc handles do not leave the
+host, while p2p and disk-delta carry full weights only.
 """
 
 from __future__ import annotations
@@ -78,9 +66,7 @@ def _pickle_with_torch_globals(obj: object) -> bytes:
 
 
 class UpdateWeightHttpLoraPath(WeightTransferProtocol):
-    """``--http-lora-ship path``: rank 0 writes the adapter to shared storage once and
-    posts its path to every engine at finalize, which replaces the adapter in place
-    (upsert on /load_lora_adapter, as sglang-miles ships it)."""
+    """``--http-lora-ship path``: stage a PEFT directory once; every engine upserts it from storage."""
 
     required_placement = WeightUpdatePlacement(gather_pp=True)
     supports_lora = True
@@ -164,7 +150,7 @@ class UpdateWeightHttpLoraPath(WeightTransferProtocol):
         safetensors.torch.save_file(adapter, weights_path, metadata={"format": "pt"})
         with open(config_path, "w") as f:
             json.dump(self._lora_config, f, indent=2)
-        # The engine host or a post-write shipper often reads as another user, and safetensors writes 0600.
+        # safetensors writes 0600; engines may read as another user
         os.chmod(adapter_dir, 0o755)
         os.chmod(weights_path, 0o644)
         os.chmod(config_path, 0o644)
@@ -179,8 +165,7 @@ class UpdateWeightHttpLoraPath(WeightTransferProtocol):
             shutil.rmtree(os.path.join(self._stage_root, f"{prefix}{version}"), ignore_errors=True)
 
     def _load_everywhere(self, cell_updaters: list[_RolloutCellUpdater], adapter_dir: str) -> None:
-        # Upsert installs a fresh name and replaces a held one (this run's previous version, or a
-        # leftover from an earlier run) under the same lora_id, so no sync leaves the name unregistered.
+        # upsert also replaces a leftover from an earlier run
         async_utils.wait_futures(
             [
                 updater.submit_client_call(
@@ -192,14 +177,9 @@ class UpdateWeightHttpLoraPath(WeightTransferProtocol):
 
 
 class UpdateWeightHttpLoraTensors(WeightTransferProtocol):
-    """``--http-lora-ship tensors``: rank 0 posts each adapter bucket into the
-    engines' weight-update session, once per engine; the engine hands that one
-    payload to all of its TP ranks (plain CPU tensors, no per-rank IPC handles).
+    """``--http-lora-ship tensors``: post each bucket into the engines' weight-update session.
 
-    The updater owns the session frame: it registers the adapter, pauses the
-    engines, opens the session, and closes it with end_weight_update, which
-    installs the streamed tensors in place and verifies them against the
-    trainer's checksums under --check-lora-weight-equal.
+    One payload per engine serves all its TP ranks: plain CPU tensors carry no per-rank IPC handles.
     """
 
     required_placement = WeightUpdatePlacement(gather_pp=True)
@@ -234,7 +214,7 @@ class UpdateWeightHttpLoraTensors(WeightTransferProtocol):
             lora_name, _ = name.split(":", 1)
             assert lora_name == LORA_ADAPTER_NAME, f"http-lora publishes one adapter, got {name!r}"
         named = [(name, tensor.detach().to("cpu", copy=True).contiguous()) for name, tensor in bucket]
-        # A plain pickle, not MultiprocessingSerializer, whose shared-memory handles do not leave the host.
+        # not MultiprocessingSerializer: its shared-memory handles do not leave the host
         blob = base64.b64encode(_pickle_with_torch_globals(named)).decode("ascii")
 
         start = time.perf_counter()
