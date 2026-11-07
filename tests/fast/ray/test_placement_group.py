@@ -1067,7 +1067,13 @@ class TestCreateComponents:
 
     @staticmethod
     def _args(**overrides):
-        defaults = dict(rollout_external=True, num_rollout=4, compile_warmup=True, start_rollout_id=0)
+        defaults = dict(
+            rollout_external=True,
+            num_rollout=4,
+            compile_warmup=True,
+            start_rollout_id=0,
+            trainer_controller_addrs=None,
+        )
         return SimpleNamespace(**{**defaults, **overrides})
 
     async def test_external_engines_start_while_the_trainers_initialize(self, monkeypatch):
@@ -1095,6 +1101,7 @@ class TestCreateComponents:
             ({"compile_warmup": False}, False),
             ({"rollout_external": False}, False),
             ({"num_rollout": None}, False),
+            ({"trainer_controller_addrs": ["http://trainer:8000"]}, False),
             ({}, True),
         ],
     )

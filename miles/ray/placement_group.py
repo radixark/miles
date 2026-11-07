@@ -246,9 +246,15 @@ async def create_components(
     the trainers initialize, and compile their first step, while the engines start: they share no device with the
     trainers. The rollout components still come first for engines miles launches (a colocated trainer initializes
     under them), for a run sized by --num-epoch (its LR schedules need the dataset size the executor reads) and for
-    a hot restart (the takeover of the surviving inference controller waits for idle trainers).
+    a hot restart (the takeover of the surviving inference controller waits for idle trainers) and for independently
+    deployed trainers (their take-over gate must accept them before the disposer may hold them).
     """
-    overlap = args.compile_warmup and args.rollout_external and args.num_rollout is not None
+    overlap = (
+        args.compile_warmup
+        and args.rollout_external
+        and args.num_rollout is not None
+        and args.trainer_controller_addrs is None
+    )
     if overlap:
         # a fresh start takes the workers once the executor's gate passes (create_rollout_components passes it
         # again), so the disposer may hold them while the trainers initialize alongside
