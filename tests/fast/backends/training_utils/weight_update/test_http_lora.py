@@ -209,13 +209,13 @@ def test_path_mode_keeps_the_newest_versions_of_this_run_only(tmp_path):
     assert os.path.isdir(tmp_path / f"{LORA_ADAPTER_NAME}_19990101-000000_v30")
 
 
-def _stream_args(tmp_path) -> Namespace:
+def _tensors_args(tmp_path) -> Namespace:
     return _make_args(tmp_path, http_lora_ship="tensors", update_weight_disk_dir=None)
 
 
-def test_stream_mode_posts_one_copy_per_engine_whatever_its_gpu_count_and_writes_nothing(tmp_path):
+def test_tensors_mode_posts_one_copy_per_engine_whatever_its_gpu_count_and_writes_nothing(tmp_path):
     engines = [_FakeSessionEngine("http://a:1"), _FakeSessionEngine("http://b:1")]
-    protocol = _connect(_stream_args(tmp_path), engines, gpu_counts=[2, 8], protocol_cls=UpdateWeightHttpLoraTensors)
+    protocol = _connect(_tensors_args(tmp_path), engines, gpu_counts=[2, 8], protocol_cls=UpdateWeightHttpLoraTensors)
 
     name = f"{LORA_ADAPTER_NAME}:{_HF_KEY}"
     protocol.send_bucket([(name, torch.full((16, 8), 5.0))])
@@ -231,16 +231,16 @@ def test_stream_mode_posts_one_copy_per_engine_whatever_its_gpu_count_and_writes
     assert protocol.pop_metrics()["http_lora/bytes"] == 16 * 8 * 4
 
 
-def test_stream_mode_raises_when_an_engine_rejects_a_bucket(tmp_path):
+def test_tensors_mode_raises_when_an_engine_rejects_a_bucket(tmp_path):
     engines = [_FakeSessionEngine("http://a:1"), _FakeSessionEngine("http://b:1", reject=True)]
-    protocol = _connect(_stream_args(tmp_path), engines, protocol_cls=UpdateWeightHttpLoraTensors)
+    protocol = _connect(_tensors_args(tmp_path), engines, protocol_cls=UpdateWeightHttpLoraTensors)
 
     with pytest.raises(RuntimeError, match="stash refused"):
         protocol.send_bucket([(f"{LORA_ADAPTER_NAME}:{_HF_KEY}", torch.ones(2, 2))])
 
 
-def test_stream_mode_rejects_a_bucket_for_another_adapter(tmp_path):
-    protocol = _connect(_stream_args(tmp_path), [_FakeSessionEngine()], protocol_cls=UpdateWeightHttpLoraTensors)
+def test_tensors_mode_rejects_a_bucket_for_another_adapter(tmp_path):
+    protocol = _connect(_tensors_args(tmp_path), [_FakeSessionEngine()], protocol_cls=UpdateWeightHttpLoraTensors)
 
     with pytest.raises(AssertionError, match="one adapter"):
         protocol.send_bucket([(f"other:{_HF_KEY}", torch.ones(2, 2))])
