@@ -7,9 +7,9 @@ vision features the rollout engines saw:
 - the position-embedding table is interpolated with SGLang's bilinear weights, scaled and summed in the table dtype;
 - the rotary cos/sin table is computed in fp32 on the GPU, as ``RotaryEmbedding`` builds its cache;
 - attention applies SGLang's ``apply_rotary_pos_emb`` and runs on the flash-attention package of the device's
-  generation (FA3 on Hopper, FA4 on Blackwell), the kernels SGLang's ``VisionAttention`` picks on the same device.
-  SGLang's FA3 is the same build as the package; its FA4 is a vendored copy that differs from the package at bf16
-  ULP level, so on Blackwell launch the engines with ``SGLANG_INKLING_FA4_USE_PIP=1`` to keep the rows bitwise.
+  generation (FA3 on Hopper, FA4 on Blackwell). SGLang's FA3 is the same build as the package, so the rows are
+  bitwise on Hopper; its FA4 is a fork of the package, so on Blackwell the rows differ from the engines' by up to
+  3e-2 relative, as the text model's attention differs in every run that is not true-on-policy.
 
 Parameter names are the HF ones under ``model.visual.``, so the checkpoint loads unchanged.
 """
@@ -110,8 +110,8 @@ class _Attention(nn.Module):
 def _flash_attn_varlen_func():
     """The varlen flash-attention of the device's generation: FA3 on Hopper, FA4 on Blackwell.
 
-    SGLang's prebuilt FA3 and vendored FA4 have no backward; the pip packages compute the same forward
-    (bitwise on the tower) and keep the tower trainable.
+    SGLang's prebuilt FA3 and vendored FA4 have no backward; the pip packages have one, so the tower can be
+    unfrozen. The FA3 package is SGLang's build; the FA4 package is not (SGLang's is a fork).
     """
     major, _ = torch.cuda.get_device_capability()
     if major == 9:
