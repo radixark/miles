@@ -14,6 +14,7 @@ import urllib.parse
 import aiohttp
 import httpx
 import numpy as np
+import orjson
 
 logger = logging.getLogger(__name__)
 
@@ -216,6 +217,19 @@ def _next_actor():
     return actor
 
 
+def _decode_reply(response: httpx.Response):
+    """Return a reply's JSON value, or its text when the reply is not JSON."""
+    # SGLang writes its replies with orjson; json.loads of a wave of logprob-heavy replies held the rollout loop.
+    try:
+        return orjson.loads(response.content)
+    except orjson.JSONDecodeError:
+        # json also reads what orjson refuses, such as the NaN that Python's json.dumps writes by default.
+        try:
+            return response.json()
+        except json.JSONDecodeError:
+            return response.text
+
+
 async def _post(client, url, payload, max_retries=60, action="post", headers=None):
     retry_count = 0
     while retry_count < max_retries:
@@ -230,10 +244,7 @@ async def _post(client, url, payload, max_retries=60, action="post", headers=Non
                     url, json=payload or {}, headers=headers
                 )  # config-access-exempt: attribute selected at runtime from action
             response.raise_for_status()
-            try:
-                output = response.json()
-            except json.JSONDecodeError:
-                output = response.text
+            output = _decode_reply(response)
         except Exception as e:
             retry_count += 1
 

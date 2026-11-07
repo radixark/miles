@@ -35,6 +35,7 @@ from typing import Any, NamedTuple
 from unittest.mock import patch
 
 import httpx
+import orjson
 import pytest
 import ray
 from tests.fast.import_isolation_utils import run_with_blocked_imports
@@ -88,6 +89,32 @@ async def test_post_still_retries_transient_responses(status, monkeypatch):
     async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
         assert await http_utils._post(client, "http://engine/generate", {}) == {"ok": True}
     assert len(calls) == 2
+
+
+async def _post_reply(body: bytes):
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, content=body))
+    async with httpx.AsyncClient(transport=transport) as client:
+        return await http_utils._post(client, "http://engine/generate", {})
+
+
+@pytest.mark.asyncio
+async def test_post_decodes_a_json_reply():
+    reply = {"text": "4", "meta_info": {"output_token_logprobs": [[-0.25, 19, None]], "completion_tokens": 1}}
+
+    assert await _post_reply(orjson.dumps(reply)) == reply
+
+
+@pytest.mark.asyncio
+async def test_post_reads_a_nan_that_orjson_refuses():
+    """Python's json.dumps writes NaN for a nan reward, and orjson refuses that token."""
+    reply = await _post_reply(b'{"reward": NaN}')
+
+    assert reply["reward"] == pytest.approx(float("nan"), nan_ok=True)
+
+
+@pytest.mark.asyncio
+async def test_post_returns_a_reply_that_is_not_json_as_text():
+    assert await _post_reply(b"engine paused") == "engine paused"
 
 
 def _listen_after_delay(host: str, port: int, delay: float, stop_event: threading.Event):
