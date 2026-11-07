@@ -11,6 +11,8 @@
     legacy      test_generation_uses_caller_state_and_closes_environment_on_every_return   budget 0 / finish length
     token space test_a_token_space_turn_records_the_engines_routed_experts                  request asks for them;
                                                                                              rows = served prompt + response − 1
+                test_a_later_token_space_turn_appends_only_the_rows_after_the_held_ones   request starts at the held
+                                                                                             rows; they stay, new ones append
                 test_a_response_past_max_seq_len_is_trimmed_to_it                         [a] trim
                 test_an_observation_whose_media_leaves_no_room_is_rolled_back             [a] roll back, two limits
                 TestObservationStaysOutOfAnEndingSample                                   [b]
@@ -94,12 +96,46 @@ async def test_a_token_space_turn_records_the_engines_routed_experts(
     payload = post.call_args.args[1]
     if token_space:
         assert payload["return_routed_experts"] is True
+        assert payload["routed_experts_start_len"] == 0
         assert sample.tokens == served_prompt
         assert sample.rollout_routed_experts.shape == (len(served_prompt) + len(response) - 1, layers, topk)
     else:
         assert "return_routed_experts" not in payload
         assert sample.tokens == [1, -101, 2]
         assert sample.rollout_routed_experts is None
+
+
+async def test_a_later_token_space_turn_appends_only_the_rows_after_the_held_ones(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A later turn keeps the routed experts the earlier requests recorded and asks the engine only for the rows
+    after them: the request's prefill would route bf16 ties differently from the decode that produced the
+    earlier tokens' logprobs, and replay (R3) must use the routing those logprobs came from."""
+    layers, topk = 2, 3
+    held = np.full((4, layers, topk), 9, dtype=np.int32)  # turn 0: served prompt [1, 5, 2] + response [7, 8] → 4 rows
+    sample = Sample(prompt="", tokens=[1, 5, 2, 7, 8, 3, 3], rollout_routed_experts=held)  # + a 2-token observation
+    response = [6]
+    new_rows = np.arange((len(sample.tokens) + len(response) - 1 - len(held)) * layers * topk, dtype=np.int32)
+    output = {
+        "text": "answer",
+        "prompt_token_ids": list(sample.tokens),
+        "meta_info": {
+            "output_token_logprobs": [(-0.5, t, None) for t in response],
+            "finish_reason": {"type": "stop"},
+            "prompt_tokens": len(sample.tokens),
+            "completion_tokens": len(response),
+            "routed_experts": pybase64.b64encode(new_rows.tobytes()).decode(),
+        },
+    }
+    post = AsyncMock(return_value=output)
+    monkeypatch.setattr(rollout, "post", post)
+
+    await rollout._run_inference_step(
+        "url", sample, {}, None, 5, args=SimpleNamespace(num_layers=layers, use_rollout_routing_replay=True)
+    )
+
+    assert post.call_args.args[1]["routed_experts_start_len"] == len(held)
+    assert sample.rollout_routed_experts.shape == (len(sample.tokens) + len(response) - 1, layers, topk)
+    np.testing.assert_array_equal(sample.rollout_routed_experts[: len(held)], held)
+    np.testing.assert_array_equal(sample.rollout_routed_experts[len(held) :], new_rows.reshape(-1, layers, topk))
 
 
 @pytest.mark.parametrize("budget", [0, 1])

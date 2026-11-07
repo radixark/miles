@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import torch
 from examples.geo3k_vlm.multi_turn.base_env import BaseInteractionEnv
 
@@ -204,18 +205,23 @@ async def _run_inference_step(
     }
     if image_data:
         payload["image_data"] = image_data
+    record_routed_experts = mm_token_expansion_start_len is not None and args.use_rollout_routing_replay
+    held_rows = 0 if sample.rollout_routed_experts is None else len(sample.rollout_routed_experts)
     if mm_token_expansion_start_len is not None:
         payload.update(token_space_request_fields(mm_token_expansion_start_len))
         payload["return_routed_experts"] = args.use_rollout_routing_replay
+    if record_routed_experts:
+        # Keep the rows earlier requests recorded: this request's prefill would route bf16 ties differently.
+        payload["routed_experts_start_len"] = held_rows
 
     output = await post(url, payload)
     adopt_expanded_prompt_ids(sample, payload, output)
-    if mm_token_expansion_start_len is not None:
-        # Routed experts cover the prompt the engine served plus this response, as update_sample_from_response
-        # reads them; a later turn's rows replace the earlier ones, since its prompt is the whole history.
+    if record_routed_experts:
         meta_info = output["meta_info"]
-        sample.rollout_routed_experts = get_routed_experts_from_response(
-            args, output, meta_info["prompt_tokens"] + meta_info["completion_tokens"] - 1
+        new_rows = meta_info["prompt_tokens"] + meta_info["completion_tokens"] - 1 - held_rows
+        patch = get_routed_experts_from_response(args, output, new_rows)
+        sample.rollout_routed_experts = (
+            patch if sample.rollout_routed_experts is None else np.concatenate([sample.rollout_routed_experts, patch])
         )
     response_text = output["text"]
     if "output_token_logprobs" in output["meta_info"]:
