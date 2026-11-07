@@ -111,23 +111,21 @@ class RolloutEngineProcessorArgs:
 
 
 def compute_multimodal_train_inputs(
-    rollout_engine_args: RolloutEngineProcessorArgs,
+    trainer_processor: "TrainerProcessor",
     multimodal_inputs: Sequence[dict[str, list[str]] | None],
     tokens: Sequence[torch.Tensor],
     *,
     mm_processor_worker_num: int,
-    mm_io_worker_num: int,
     with_sglang_placement: bool,
     device: torch.device,
 ) -> TokenSpaceTrainInputs:
     """Start rebuilding each sample's processor tensors and mRoPE positions on the trainer from its media references.
 
     Args:
-        rollout_engine_args: The rollout engines' server args that decide the processor output.
+        trainer_processor: The processor built from the rollout engines' server args (``build_trainer_processor``).
         multimodal_inputs: Each sample's media references, or None for a text-only sample.
         tokens: Each sample's tokens, with the media placeholders SGLang expanded.
         mm_processor_worker_num: Samples built at once (--trainer-mm-processor-worker-num).
-        mm_io_worker_num: Media decoding threads of the processor (--trainer-mm-io-worker-num; 0 lets SGLang choose).
         with_sglang_placement: Also return the tower row placement and the mRoPE positions SGLang computes.
         device: This rank's device; the tensors land here, and it stands in for the engine's GPU.
 
@@ -137,30 +135,16 @@ def compute_multimodal_train_inputs(
     """
     builds = [
         _submit_sample_build(
-            rollout_engine_args,
+            trainer_processor,
             sample_multimodal_inputs,
             sample_tokens,
             mm_processor_worker_num=mm_processor_worker_num,
-            mm_io_worker_num=mm_io_worker_num,
             with_sglang_placement=with_sglang_placement,
             device=device,
         )
         for sample_multimodal_inputs, sample_tokens in zip(multimodal_inputs, tokens, strict=True)
     ]
     return TokenSpaceTrainInputs(builds, list(builds) if with_sglang_placement else None)
-
-
-def prewarm_token_space_processor(
-    rollout_engine_args: RolloutEngineProcessorArgs,
-    *,
-    mm_processor_worker_num: int,
-    mm_io_worker_num: int,
-    device: torch.device,
-) -> None:
-    """Queue the processor build ahead of the first rebuild, so it overlaps actor initialization."""
-    _build_executor(mm_processor_worker_num).submit(
-        _trainer_processor, rollout_engine_args, mm_processor_worker_num, mm_io_worker_num, device
-    )
 
 
 @functools.cache
@@ -170,20 +154,17 @@ def _build_executor(mm_processor_worker_num: int) -> ThreadPoolExecutor:
 
 
 def _submit_sample_build(
-    rollout_engine_args: RolloutEngineProcessorArgs,
+    trainer_processor: "TrainerProcessor",
     multimodal_inputs: dict[str, list[str]] | None,
     tokens: torch.Tensor,
     *,
     mm_processor_worker_num: int,
-    mm_io_worker_num: int,
     with_sglang_placement: bool,
     device: torch.device,
 ) -> Future:
     """Queue one sample's rebuild; the executor's future carries its ``_SampleBuild``, or the error that stopped it."""
 
     def rebuild() -> _SampleBuild:
-        # Built on this thread, so a prewarmed build is ready and the first rebuild never blocks the caller.
-        trainer_processor = _trainer_processor(rollout_engine_args, mm_processor_worker_num, mm_io_worker_num, device)
         if multimodal_inputs:
             sample_train_inputs, positions = _sample_train_inputs(
                 trainer_processor,
@@ -200,19 +181,21 @@ def _submit_sample_build(
     return _build_executor(mm_processor_worker_num).submit(rebuild)
 
 
-class _TrainerProcessor(NamedTuple):
+class TrainerProcessor(NamedTuple):
+    """The trainer's copy of the rollout engines' token-space processor; the training actor builds it once."""
+
     core: Any
     # The image device the engine's processor wrapper passes, mapped to this rank's device.
     image_device: str | None
 
 
-@functools.cache
-def _trainer_processor(
+def build_trainer_processor(
     rollout_engine_args: RolloutEngineProcessorArgs,
+    *,
     mm_processor_worker_num: int,
     mm_io_worker_num: int,
     device: torch.device,
-) -> _TrainerProcessor:
+) -> TrainerProcessor:
     # Deferred: only SGLang builds with the token-space processor provide these modules.
     from sglang.srt.multimodal.processors.processor_config import MultimodalProcessorConfig
     from sglang.srt.multimodal.token_space_mm_process.processor import TokenSpaceProcessor
@@ -260,7 +243,7 @@ def _trainer_processor(
         worker_thread_device=worker_thread_device,
     )
     image_device = _image_device(hf_processor, image_processor_backend=image_processor_backend, device=device)
-    return _TrainerProcessor(core=core, image_device=image_device)
+    return TrainerProcessor(core=core, image_device=image_device)
 
 
 def _image_device(hf_processor, *, image_processor_backend: str, device: torch.device) -> str | None:
@@ -282,7 +265,7 @@ def _image_device(hf_processor, *, image_processor_backend: str, device: torch.d
 
 
 def _sample_train_inputs(
-    trainer_processor: _TrainerProcessor,
+    trainer_processor: TrainerProcessor,
     multimodal_inputs: dict[str, list[str]],
     tokens: torch.Tensor,
     *,
@@ -324,6 +307,6 @@ def _sample_train_inputs(
     return train_inputs, mrope_positions
 
 
-def _text_mrope_positions(trainer_processor: _TrainerProcessor, tokens: torch.Tensor) -> torch.Tensor | None:
+def _text_mrope_positions(trainer_processor: TrainerProcessor, tokens: torch.Tensor) -> torch.Tensor | None:
     mrope_positions, _ = trainer_processor.core.strategy.compute_mrope_positions({"input_ids": tokens.tolist()})
     return mrope_positions

@@ -13,7 +13,7 @@ from miles.backends.training_utils.data.context_parallel import (
 )
 from miles.backends.training_utils.data.multimodal import expand_multimodal_rollout_data_in_place
 from miles.backends.training_utils.data.token_space_media_process import (
-    RolloutEngineProcessorArgs,
+    TrainerProcessor,
     compute_multimodal_train_inputs,
     resolved_mrope_position_ids,
     resolved_multimodal_train_inputs,
@@ -49,6 +49,7 @@ def get_rollout_data(
     train_parallel_config: TrainParallelConfig,
     output_store_read: Callable | None = None,
     sample_device: torch.device | None = None,
+    token_space_processor: TrainerProcessor | None = None,
 ) -> tuple[RolloutBatch, ObjectStoreGetResult]:
     """Fetch this rank's rollout shard; per-sample tokens, masks and log-probs go to `sample_device`.
 
@@ -86,11 +87,10 @@ def get_rollout_data(
         # A rollout without media ships no references, but its tokens still need the model's mRoPE positions.
         multimodal_inputs = rollout_data.pop("multimodal_inputs", [None] * len(rollout_data["tokens"]))
         token_space_train_inputs = compute_multimodal_train_inputs(
-            RolloutEngineProcessorArgs.from_sglang_config(args.sglang, hf_checkpoint=args.hf_checkpoint),
+            token_space_processor,
             multimodal_inputs,
             rollout_data["tokens"],
             mm_processor_worker_num=args.trainer_mm_processor_worker_num,
-            mm_io_worker_num=args.trainer_mm_io_worker_num,
             # Megatron-Bridge and torch-native models place their media rows and rotate by themselves.
             with_sglang_placement=args.train_backend == "megatron" and args.megatron_to_hf_mode == "raw",
             device=current_platform.current_device(),

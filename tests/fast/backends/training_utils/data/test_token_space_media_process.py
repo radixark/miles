@@ -40,17 +40,11 @@ class _RecordingProcessor:
 
 def _rebuild(monkeypatch, multimodal_inputs, tokens, *, with_sglang_placement=True):
     processor = _RecordingProcessor()
-    monkeypatch.setattr(
-        token_space_media_process,
-        "_trainer_processor",
-        lambda *_: token_space_media_process._TrainerProcessor(core=processor, image_device="cuda:3"),
-    )
     pending = token_space_media_process.compute_multimodal_train_inputs(
-        object(),
+        token_space_media_process.TrainerProcessor(core=processor, image_device="cuda:3"),
         multimodal_inputs,
         tokens,
         mm_processor_worker_num=1,
-        mm_io_worker_num=0,
         with_sglang_placement=with_sglang_placement,
         device=torch.device("cpu"),
     )
@@ -97,18 +91,12 @@ def test_rebuild_runs_in_the_background(monkeypatch):
         return await unblocked_process(**kwargs)
 
     processor.process = blocking_process
-    monkeypatch.setattr(
-        token_space_media_process,
-        "_trainer_processor",
-        lambda *_: token_space_media_process._TrainerProcessor(core=processor, image_device=None),
-    )
 
     pending = token_space_media_process.compute_multimodal_train_inputs(
-        object(),
+        token_space_media_process.TrainerProcessor(core=processor, image_device=None),
         [{"images": ["/shared/a.png", "/shared/b.png"]}],
         [torch.tensor([1, 9, 9, 9, 9, 2, 5])],
         mm_processor_worker_num=1,
-        mm_io_worker_num=0,
         with_sglang_placement=True,
         device=torch.device("cpu"),
     )
@@ -145,21 +133,15 @@ def test_a_failed_rebuild_raises_where_the_sample_is_resolved(monkeypatch):
     """
     monkeypatch.setattr(
         token_space_media_process,
-        "_trainer_processor",
-        lambda *_: token_space_media_process._TrainerProcessor(core=_RecordingProcessor(), image_device=None),
-    )
-    monkeypatch.setattr(
-        token_space_media_process,
         "_sample_train_inputs",
         lambda *args, **kwargs: ({"pixel_values": torch.zeros(1)}, _PositionsThatFailToCopy()),
     )
 
     pending = token_space_media_process.compute_multimodal_train_inputs(
-        object(),
+        token_space_media_process.TrainerProcessor(core=_RecordingProcessor(), image_device=None),
         [{"images": ["/shared/a.png"]}],
         [torch.tensor([1, 9, 2])],
         mm_processor_worker_num=1,
-        mm_io_worker_num=0,
         with_sglang_placement=True,
         device=torch.device("cpu"),
     )

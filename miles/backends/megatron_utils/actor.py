@@ -25,10 +25,6 @@ from miles.backends.training_utils.data.rollout import (
     get_num_rollouts,
     get_rollout_data,
 )
-from miles.backends.training_utils.data.token_space_media_process import (
-    RolloutEngineProcessorArgs,
-    prewarm_token_space_processor,
-)
 from miles.backends.training_utils.loss.objective import (
     compute_advantages_and_returns,
     get_log_probs_and_entropy,
@@ -197,14 +193,6 @@ class MegatronTrainRayActor(TrainRayActor):
         self.prof = TrainProfiler(args)
 
         self.load_hf_assets()
-        if args.multimodal_token_space_processing:
-            # Overlaps the processor builds with model initialization.
-            prewarm_token_space_processor(
-                RolloutEngineProcessorArgs.from_sglang_config(args.sglang, hf_checkpoint=args.hf_checkpoint),
-                mm_processor_worker_num=args.trainer_mm_processor_worker_num,
-                mm_io_worker_num=args.trainer_mm_io_worker_num,
-                device=current_platform.current_device(),
-            )
 
         self.train_parallel_config = (
             None if args.indep_dp else get_parallel_state().train_parallel_config(supports_precomputed_schedule=True)
@@ -692,6 +680,7 @@ class MegatronTrainRayActor(TrainRayActor):
                     rollout_data_ref=rollout_data_ref,
                     output_store_read=self.output_store_read,
                     witness_info=witness_info,
+                    token_space_processor=self.token_space_processor,
                     train_parallel_config=get_parallel_state().train_parallel_config(
                         supports_precomputed_schedule=True
                     ),
