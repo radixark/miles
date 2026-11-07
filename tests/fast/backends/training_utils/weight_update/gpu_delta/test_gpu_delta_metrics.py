@@ -1,4 +1,4 @@
-"""Completed pause, shared encoded-cache and rank-owned arena metrics without CUDA."""
+"""Completed pause and physical/shared host-storage accounting without CUDA."""
 
 import ast
 import copy
@@ -180,6 +180,38 @@ def test_encoded_capacity_counts_once_while_rank_arenas_and_gpu_scratch_remain_p
     assert result[prefix + "host_encoded_cache_capacity_bytes/sum"] == 1536
     assert result[prefix + "receiver_host_rank_capacity_bytes/sum"] == 10240
     assert prefix + "creator_host_encoded_cache_allocation_s/p50" not in result
+
+    # Both engines share prepared pages; DE additionally keeps private inputs.
+    # Only one owner per engine reports outer-decode work and holds a pool.
+    for receipt in activation["resumed_receipts"]:
+        rank = int(receipt["identity"]["rank_id"])
+        creator = rank % 2 == 0
+        shared_capacity = 8192 if rank < 2 else 6144
+        receipt["result"]["timings"].update(
+            host_rank_capacity_bytes=8192 if rank < 2 else 1024 * (rank + 1),
+            host_rank_private_capacity_bytes=0 if rank < 2 else 1024 * (rank + 1),
+            host_rank_cpu_workers=32 if creator else 0,
+            host_rank_outer_zstd_decoded_bytes=4096 if creator else 0,
+            host_prepared_cache_created=int(creator),
+            host_prepared_cache_capacity_bytes=shared_capacity,
+            host_prepared_cache_capacity_generation=1,
+            host_prepared_cache_arena_bytes=4096,
+            host_prepared_cache_layout_s=0.1 if creator else 0,
+            host_prepared_cache_build_s=0.2,
+            host_prepared_cache_allocation_s=0.3 if not warm and creator else 0,
+            host_prepared_cache_allocation_calls=int(not warm and creator),
+            host_prepared_cache_allocation_bytes=shared_capacity if not warm and creator else 0,
+        )
+    result = metrics.activation_metrics(activation)
+    assert result[prefix + "receiver_host_rank_capacity_bytes/sum"] == 23552
+    assert result[prefix + "receiver_host_rank_private_capacity_bytes/sum"] == 7168
+    assert result[prefix + "host_prepared_cache_capacity_bytes/sum"] == 14336
+    assert result[prefix + "host_input_capacity_bytes/sum"] == 21504
+    assert result[prefix + "creator_host_prepared_cache_layout_s/min"] == 0.1
+    assert result[prefix + "creator_host_prepared_cache_allocation_bytes/sum"] == (0 if warm else 14336)
+    assert result[prefix + "receiver_host_rank_outer_zstd_decoded_bytes/sum"] == 8192
+    del activation["resumed_receipts"][0]["result"]["timings"]["host_prepared_cache_capacity_bytes"]
+    assert prefix + "host_input_capacity_bytes/sum" not in metrics.activation_metrics(activation)
 
 
 class _OrdinaryProtocol(WeightTransferProtocol):

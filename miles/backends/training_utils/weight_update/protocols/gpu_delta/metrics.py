@@ -1,8 +1,8 @@
 """Completed GPU-delta timing summaries, without additional distributed work.
 
 Receiver clocks are compared only within the same original process. Nested
-spans remain separate. Encoded-cache work is sampled once per engine-host;
-outer decode and original host arenas are counted for every receiver rank.
+spans remain separate. Shared cache work is reported by its engine-host creator;
+rank-mapped capacities may alias the same physical host pages.
 """
 
 import logging
@@ -17,10 +17,12 @@ _RANK_TIMINGS = (
     "host_prepare_s",
     "paused_apply_host_wall_s",
     "host_encoded_cache_wait_s",
+    "host_prepared_cache_wait_s",
     "host_rank_prepare_s",
     "host_rank_outer_zstd_decode_s",
     "host_rank_outer_zstd_worker_decode_sum_s",
     "host_rank_allocation_s",
+    "host_rank_staging_copy_s",
     "host_manifest_read_parse_s",
     "host_plan_validate_s",
     "host_tensor_prepare_s",
@@ -47,6 +49,8 @@ _RANK_COUNTERS = (
     "host_rank_cpu_workers",
     "host_encoded_cache_created",
     "host_encoded_cache_reused",
+    "host_prepared_cache_created",
+    "host_prepared_cache_reused",
     "compressed_batches",
     "compressed_tensors",
     "layers_per_batch",
@@ -73,6 +77,8 @@ _RANK_WORK_TOTALS = (
     "host_rank_allocation_bytes",
     "host_rank_arena_bytes",
     "host_rank_capacity_bytes",
+    "host_rank_private_capacity_bytes",
+    "host_rank_staging_copy_bytes",
 )
 _CACHE_WORK_TOTALS = (
     "host_encoded_cache_hash_bytes",
@@ -128,15 +134,33 @@ def activation_metrics(activation):
     for name in _CACHE_WORK_TOTALS:
         if all(name in row for row in creators):
             metrics[_PREFIX + "creator_" + name + "/sum"] = sum(row[name] for row in creators)
-    # Encoded files are physically shared within each engine-host cache; their
-    # retained capacity still counts when this publication has no new creator.
-    # Rank-local input arenas are separate physical storage on both decoder paths.
-    for name in ("host_encoded_cache_capacity_bytes", "host_encoded_cache_capacity_generation"):
+    # Retained cache capacities count once per engine-host, including reuse.
+    for name in (
+        "host_encoded_cache_capacity_bytes",
+        "host_encoded_cache_capacity_generation",
+        "host_prepared_cache_capacity_bytes",
+        "host_prepared_cache_capacity_generation",
+        "host_prepared_cache_arena_bytes",
+    ):
         if all(name in row for row in timings):
             values = [timing[name] for timing in caches.values()]
             _distribution(metrics, name, values)
-            if name == "host_encoded_cache_capacity_bytes":
+            if name.endswith("_bytes"):
                 metrics[_PREFIX + name + "/sum"] = sum(values)
+    prepared_creators = [row for row in timings if row.get("host_prepared_cache_created") == 1]
+    for name in ("host_prepared_cache_layout_s", "host_prepared_cache_build_s", "host_prepared_cache_allocation_s"):
+        _distribution(metrics, "creator_" + name, [row[name] for row in prepared_creators])
+    for name in ("host_prepared_cache_allocation_calls", "host_prepared_cache_allocation_bytes"):
+        if prepared_creators:
+            metrics[_PREFIX + "creator_" + name + "/sum"] = sum(row[name] for row in prepared_creators)
+    if all(
+        "host_rank_private_capacity_bytes" in row and "host_prepared_cache_capacity_bytes" in row for row in timings
+    ):
+        # Both paths share prepared pages; DE additionally owns private input.
+        # CUDA rank-capacity sums describe mappings, not physical memory.
+        metrics[_PREFIX + "host_input_capacity_bytes/sum"] = sum(
+            row["host_rank_private_capacity_bytes"] for row in timings
+        ) + sum(row["host_prepared_cache_capacity_bytes"] for row in caches.values())
     engine_timings = activation["engine_timings"]
     metrics[_PREFIX + "receiver_engines"] = len(engine_timings)
     for name in ("prepare_s", "apply_s", "resume_s", "activation_s"):
