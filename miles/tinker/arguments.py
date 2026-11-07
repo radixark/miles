@@ -24,6 +24,8 @@ def validate_tinker_args(args):
         assert value is None, f"Tinker does not support {flag}; checkpoints are saved through the Tinker API"
     assert args.tinker_checkpoint_root, "Tinker requires --tinker-checkpoint-root"
     if args.tinker_import_root is not None:
+        # file:// paths are absolute, so a relative root would refuse every import
+        args.tinker_import_root = os.path.abspath(args.tinker_import_root)
         # file:// loads skip tenant ownership checks, so they must never reach tinker:// checkpoints
         imports, checkpoints = (os.path.realpath(p) for p in (args.tinker_import_root, args.tinker_checkpoint_root))
         # raised, not asserted: tenant isolation rests on it, and python -O strips asserts

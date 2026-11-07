@@ -6,7 +6,7 @@ from contextlib import nullcontext
 
 from megatron.core.distributed import DistributedDataParallel as DDP
 
-from miles.backends.megatron_utils.lora.bridge_checkpoint import BridgeAdapterSlots
+from miles.backends.megatron_utils.lora.bridge_adapter_slots import BridgeAdapterSlots
 from miles.backends.megatron_utils.lora.optimizer import SlotOptimizer, accumulate_gradients, step_slot_optimizers
 from miles.backends.megatron_utils.model import run_forward_backward_pass, setup_train_iteration_config
 from miles.backends.training_utils.data.rollout import get_data_iterator

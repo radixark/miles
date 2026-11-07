@@ -446,10 +446,10 @@ class TestBoundaryConditions:
             weight_versions=[],
         )
 
-    @pytest.mark.parametrize("generation_env", [{"args_kwargs": {"rollout_max_context_len": 5}}], indirect=True)
-    def test_prompt_exceeds_max_context_len_returns_truncated(self, variant, generation_env):
+    @pytest.mark.parametrize("generation_env", [{"args_kwargs": {"max_seq_len": 5}}], indirect=True)
+    def test_prompt_exceeds_max_seq_len_returns_truncated(self, variant, generation_env):
         if variant == "old_sglang_rollout":
-            pytest.skip("old_sglang_rollout does not support rollout_max_context_len")
+            pytest.skip("old_sglang_rollout does not support max_seq_len")
         result = _run_generate(variant, generation_env)
         assert result.requests == []
         tokens = PROMPT_TOKENS if variant == "multi_turn" else []
@@ -470,15 +470,15 @@ class TestBoundaryConditions:
     @pytest.mark.parametrize(
         "generation_env,expected_max_new_tokens",
         [
-            ({"args_kwargs": {"rollout_max_context_len": 10}}, 10 - PROMPT_TOKEN_LEN),
-            ({"args_kwargs": {"rollout_max_context_len": 8}}, 8 - PROMPT_TOKEN_LEN),
-            ({"args_kwargs": {"rollout_max_context_len": 100}}, DEFAULT_MAX_NEW_TOKENS),
+            ({"args_kwargs": {"max_seq_len": 10}}, 10 - PROMPT_TOKEN_LEN),
+            ({"args_kwargs": {"max_seq_len": 8}}, 8 - PROMPT_TOKEN_LEN),
+            ({"args_kwargs": {"max_seq_len": 100}}, DEFAULT_MAX_NEW_TOKENS),
         ],
         indirect=["generation_env"],
     )
     def test_moderate_length_input_adjusts_max_new_tokens(self, variant, generation_env, expected_max_new_tokens):
         if variant == "old_sglang_rollout":
-            pytest.skip("old_sglang_rollout does not support rollout_max_context_len")
+            pytest.skip("old_sglang_rollout does not support max_seq_len")
         result = _run_generate(variant, generation_env)
         assert len(result.requests) == 1
         assert result.requests[0]["sampling_params"]["max_new_tokens"] == expected_max_new_tokens
@@ -487,12 +487,12 @@ class TestBoundaryConditions:
 
     @pytest.mark.parametrize(
         "generation_env",
-        [{"args_kwargs": {"rollout_max_context_len": PROMPT_TOKEN_LEN}}],
+        [{"args_kwargs": {"max_seq_len": PROMPT_TOKEN_LEN}}],
         indirect=True,
     )
     def test_adjusted_max_new_tokens_zero_returns_truncated(self, variant, generation_env):
         if variant == "old_sglang_rollout":
-            pytest.skip("old_sglang_rollout does not support rollout_max_context_len")
+            pytest.skip("old_sglang_rollout does not support max_seq_len")
         result = _run_generate(variant, generation_env)
         assert result.requests == []
         tokens = PROMPT_TOKENS if variant == "multi_turn" else []

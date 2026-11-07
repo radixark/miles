@@ -8,7 +8,7 @@ import torch
 from miles.backends.megatron_utils.lora import actor as actor_module
 from miles.backends.megatron_utils.lora import checkpoint as lora_checkpoint
 from miles.backends.megatron_utils.lora import model as lora_model
-from miles.backends.megatron_utils.lora.bridge_checkpoint import BridgeAdapterSlots
+from miles.backends.megatron_utils.lora.bridge_adapter_slots import BridgeAdapterSlots
 
 
 class _RecordedSlots(BridgeAdapterSlots):

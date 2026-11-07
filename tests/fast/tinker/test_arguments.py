@@ -1,3 +1,4 @@
+import os
 from argparse import Namespace
 
 import pytest
@@ -55,3 +56,7 @@ class TestTinkerCheckpointOwnership:
         with pytest.raises(ValueError, match="must not contain one another"):
             validate_tinker_args(_tinker_args(tinker_import_root=import_root))
         validate_tinker_args(_tinker_args(tinker_import_root="/checkpoints/imports"))
+        # file:// paths are absolute, so a relative root would refuse every import
+        relative = _tinker_args(tinker_import_root="imports")
+        validate_tinker_args(relative)
+        assert relative.tinker_import_root == os.path.abspath("imports")

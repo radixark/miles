@@ -229,7 +229,7 @@ _HF_EXPORT_MODULE = "miles.backends.megatron_utils.hf_export"
 
 
 class TestSaveHfModelRawLoRA:
-    @patch(f"{_HF_EXPORT_MODULE}.write_sampler_view")
+    @patch(f"{_HF_EXPORT_MODULE}.write_sampler_export")
     @patch(f"{_HF_EXPORT_MODULE}._get_hf_bridge")
     @patch(f"{_HF_EXPORT_MODULE}.merge_lora_into_weights")
     @patch(f"{_HF_EXPORT_MODULE}.named_params_and_buffers")
@@ -359,7 +359,7 @@ def _fingerprint(hf: str) -> str:
 
 class TestSaveHfModelBridgeLoRA:
     @patch(f"{_HF_EXPORT_MODULE}.has_plain_peft_form", return_value=True)
-    @patch(f"{_HF_EXPORT_MODULE}.write_sampler_view")
+    @patch(f"{_HF_EXPORT_MODULE}.write_sampler_export")
     @patch(f"{_HF_EXPORT_MODULE}.write_peft_export")
     @patch(f"{_HF_EXPORT_MODULE}.get_gloo_group")
     @patch(f"{_HF_EXPORT_MODULE}.torch")

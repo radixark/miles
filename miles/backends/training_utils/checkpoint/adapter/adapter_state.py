@@ -1,5 +1,6 @@
 """``adapter_state/``: fp32 adapter weights, Adam moments and step as plain DCP, keyed by HF module path."""
 
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -77,6 +78,18 @@ def gloo_group():
     return get_gloo_group() if dist.is_initialized() else None
 
 
+def is_rank0() -> bool:
+    return not dist.is_initialized() or dist.get_rank() == 0
+
+
+def broadcast_from_rank0(value):
+    if not dist.is_initialized():
+        return value
+    box = [value]
+    dist.broadcast_object_list(box, src=0, group=gloo_group())
+    return box[0]
+
+
 class RanksFailedError(RuntimeError):
     pass
 
@@ -101,6 +114,17 @@ def raise_if_any_rank_failed(error: BaseException | None) -> None:
             f"rank {','.join(ranks)}: {e}" for e, ranks in ranks_by_error.items()
         )
         raise RanksFailedError(message) from error
+
+
+@contextmanager
+def agree_on_failure_context():
+    """Every rank leaves together: a failure on any rank raises ``RanksFailedError`` on all of them."""
+    error = None
+    try:
+        yield
+    except Exception as exc:
+        error = exc
+    raise_if_any_rank_failed(error)
 
 
 def _agree_on_step(step: int | None) -> int:
@@ -188,19 +212,15 @@ def _state_dict(state: AdapterState, *, for_save: bool) -> dict:
 
 
 def _agreed_state_dict(state: AdapterState, *, for_save: bool) -> dict:
-    state_dict, error = None, None
-    try:
+    with agree_on_failure_context():
         state_dict = _state_dict(state, for_save=for_save)
-    except Exception as exc:
-        error = exc
-    raise_if_any_rank_failed(error)
     return state_dict
 
 
 def _save_adapter_state(directory: Path, state: AdapterState) -> None:
     state_dict = _agreed_state_dict(state, for_save=True)
     step = _agree_on_step(state.step)
-    if not dist.is_initialized() or dist.get_rank() == 0:
+    if is_rank0():
         state_dict[STEP_KEY] = torch.tensor(step, dtype=torch.int64)
     dcp.save(
         state_dict,

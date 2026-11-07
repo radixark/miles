@@ -11,8 +11,9 @@ def _lora_actor_module(monkeypatch, *, model=None, checkpoint=None):
         "miles.backends.megatron_utils.lora": {"checkpoint": checkpoint, "model": model},
         "miles.backends.megatron_utils.lora.optimizer": {"SlotOptimizer": object},
         "miles.backends.training_utils.checkpoint.adapter.adapter_dir": {
-            "write_external_export": None,
-            "write_sampler_export": None,
+            "save_adapter_dir": None,
+            "save_sampler_export": None,
+            "save_external_export": None,
         },
         "miles.backends.training_utils.checkpoint.adapter.commit": {"UncommittedAdapterDir": object},
         "miles.backends.training_utils.data.rollout": {
@@ -38,7 +39,7 @@ def _lora_actor_module(monkeypatch, *, model=None, checkpoint=None):
 def test_a_source_the_slot_cannot_take_is_a_user_error_and_leaves_the_slot_alone(monkeypatch):
     loaded = []
     checkpoint = SimpleNamespace(
-        find_load_mismatch=lambda *args, **shapes: "rank 4 != 8",
+        check_load_source=lambda *args, **shapes: ("rank 4 != 8", None),
         load_slot=lambda *args: loaded.append("checkpoint"),
     )
     model = SimpleNamespace(load_slot=lambda *args: loaded.append("model"))

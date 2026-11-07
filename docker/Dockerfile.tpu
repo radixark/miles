@@ -3,7 +3,7 @@
 #       python docker/build.py --variant tpu --image-tag dev --push   # radixark/miles:dev-tpu (amd64)
 #
 # One Python environment for the sglang-torchtpu engine and the torchtitan trainer, on the CUDA image's torch.
-# sglang-torchtpu releases on torch 2.11, but the torchtitan backend needs torch >= 2.13; torch_tpu carries
+# sglang-torchtpu releases on torch 2.11, but the torchtitan backend needs torch >= 2.14; torch_tpu carries
 # builds for torch 2.11-2.15.
 
 ARG SGLANG_TPU_IMAGE_TAG=v0.1.0-tpu
@@ -12,16 +12,15 @@ FROM lmsysorg/sglang:${SGLANG_TPU_IMAGE_TAG}
 # ======================================== Arguments =============================================
 
 ARG SGLANG_TPU_REPO=sgl-project/sglang-torchtpu
-# sglang-torchtpu main (2026-11-03) plus docker/tpu_patch/sglang_torchtpu_*.patch (sgl-project/sglang-torchtpu#1851, the
-# cross-chip TP all-gather fix, and #1884, the ICI weight receiver for --update-weight-transfer-mode ici); drop a patch
-# once main has its PR, and swap the commit for a release image tag once one ships.
-ARG SGLANG_TPU_COMMIT=92f8c6849016acbd1c6f3f106bbe37f2e84b100e
+# sglang-torchtpu main (2026-11-06); swap the commit for a release image tag once one ships.
+ARG SGLANG_TPU_COMMIT=108d775ea43d29f713fb486a496a46fe4e1682e6
 ARG TORCH_VERSION=2.14.1
 ARG TORCHVISION_VERSION=0.29.1
 # the triton torch 2.14 pairs with; torchtitan imports triton unconditionally
 ARG TRITON_VERSION=3.8.0
 ARG TORCHTITAN_REPO=pytorch/torchtitan
-# TORCHTITAN_COMMIT and WHEELS_TAG equal docker/Dockerfile's (tests/fast/test_training_images.py checks it)
+# TORCHTITAN_COMMIT and WHEELS_TAG equal docker/Dockerfile's (tests/fast/test_training_images.py checks it); bumping
+# TORCHTITAN_COMMIT means rebasing docker/tpu_patch/torchtitan_torch_tpu.patch, which applies with --fuzz=0
 ARG TORCHTITAN_COMMIT=45e33cd413b64cb37a7840cfd3c9765d3c639ae1
 ARG MILES_COMMIT=main
 ARG WHEELS_REPO=radixark/miles-wheels
@@ -35,12 +34,10 @@ ARG TARGETARCH
 # The base image's /sgl-workspace/sglang is a source tree without git history, installed editable. The commit
 # pins the same python/pyproject_tpu.toml stack as the release (torch_tpu, libtpu, jax), so only the source
 # changes and the reinstall needs no dependencies.
-COPY docker/tpu_patch/sglang_torchtpu_*.patch /tmp/sglang-torchtpu-patch/
 RUN SGLANG_VERSION=$(python3 -c 'import importlib.metadata as m; print(m.version("sglang"))') && \
     SGLANG_TPU_VERSION=$(python3 -c 'import importlib.metadata as m; print(m.version("sglang-tpu"))') && \
     rm -rf /sgl-workspace/sglang && git init -q /sgl-workspace/sglang && cd /sgl-workspace/sglang && \
     git fetch -q --depth 1 https://github.com/${SGLANG_TPU_REPO}.git ${SGLANG_TPU_COMMIT} && git checkout -q FETCH_HEAD && \
-    for p in /tmp/sglang-torchtpu-patch/*.patch; do patch --fuzz=0 -p1 < "$p"; done && rm -r /tmp/sglang-torchtpu-patch && \
     cp python/pyproject_tpu.toml python/pyproject.toml && \
     SETUPTOOLS_SCM_PRETEND_VERSION_FOR_SGLANG=${SGLANG_VERSION} pip install --no-deps -e python && \
     SETUPTOOLS_SCM_PRETEND_VERSION_FOR_SGLANG_TPU=${SGLANG_TPU_VERSION} pip install --no-deps -e .
@@ -66,9 +63,11 @@ RUN TORCH_TPU_PIN=$(python3 -c 'import importlib.metadata as m; print(m.version(
 
 # ====================================== Install torchtitan ============================================
 
-# with its own dependencies (the constraints keep torch)
+# with miles' torch_tpu patch and its own dependencies (the constraints keep torch)
+COPY docker/tpu_patch/torchtitan_torch_tpu.patch /tmp/torchtitan_torch_tpu.patch
 RUN git clone https://github.com/${TORCHTITAN_REPO}.git /root/torchtitan && \
     cd /root/torchtitan && git checkout -f ${TORCHTITAN_COMMIT} && \
+    patch --fuzz=0 -p1 < /tmp/torchtitan_torch_tpu.patch && rm /tmp/torchtitan_torch_tpu.patch && \
     pip install -c /opt/torch-constraints.txt -e .
 
 # ====================================== Install main package ============================================
