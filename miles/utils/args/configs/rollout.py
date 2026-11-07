@@ -292,7 +292,8 @@ class RolloutRelatedConfig(BaseConfig):
             help=(
                 "Filesystem directory disk-delta weight sync publishes to: one delta directory "
                 "(changed tensors only) per sync, written by the trainer and read by every "
-                "rollout host. Required for --update-weight-transfer-mode=disk-delta."
+                "rollout host. Required for --update-weight-transfer-mode=disk-delta, and the "
+                "adapter staging directory of --http-lora-ship path."
             )
         ),
     ] = None
