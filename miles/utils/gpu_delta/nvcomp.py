@@ -1,7 +1,7 @@
 """Asynchronous CUDA compression using nvCOMP 6's prebuilt batched C API.
 
-Compression runs on CUDA SMs. Blackwell's fixed-function engine can decompress
-the inner Snappy or LZ4 frames at the receiver.
+Compression runs on CUDA SMs. The receiver uses SMs for Bitcomp and other
+non-DE decoding, or Blackwell's fixed-function engine for Snappy/LZ4.
 """
 
 from __future__ import annotations

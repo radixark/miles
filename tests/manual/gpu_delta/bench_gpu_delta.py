@@ -4,10 +4,11 @@ Run from the Miles checkout with paired SGLang on PYTHONPATH::
 
     python tests/manual/gpu_delta/bench_gpu_delta.py --model /models/base
 
-Requires eight Blackwell GPUs, CUDA 13 and nvCOMP 6. The GLM5.2 W4A16
-workload uses static bundled MTP and two independent TP4/DP4/EP4 receivers.
+This GLM5.2 NVFP4 W4A16 workload requires eight Blackwell GPUs, CUDA 13 and
+nvCOMP 6; GPU-delta's CUDA decoder path does not itself require Blackwell.
+The workload uses static bundled MTP and two independent TP4/DP4/EP4 receivers.
 Sender processes split whole layers across GPUs; no Megatron checkpoint is needed.
-Defaults: five codecs x payload hashing on/off, all with 1 MiB inner frames.
+Defaults: Bitcomp-Zstd with payload hashing on/off and 1 MiB inner frames.
 Use --reuse-fixtures with a reviewed producer SPEC to skip encoding and apply
 saved deltas. Reused sender timings are historical; receiver timings are fresh.
 The expensive second model load/oracle is opt-in with --validate-final-target.
@@ -1600,7 +1601,7 @@ def main():
         action="store_true",
         help="Load the full target checkpoint and compare selected outputs on all routes (expensive)",
     )
-    parser.add_argument("--codecs", choices=CODECS, nargs="+", default=list(CODECS), help="Sender/receiver codecs")
+    parser.add_argument("--codecs", choices=CODECS, nargs="+", default=["bitcomp-zstd"], help="Sender/receiver codecs")
     parser.add_argument("--frame-bytes", type=int, default=FRAME_BYTES, help="Inner frame bytes; at most 4 MiB")
     parser.add_argument("--sender-gpus", type=int, help="Compression GPUs; defaults to all visible GPUs")
     parser.add_argument(
