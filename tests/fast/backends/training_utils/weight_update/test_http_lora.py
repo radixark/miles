@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import io
 import json
@@ -38,9 +39,12 @@ class _FakeEngine:
         self.served: dict[str, object] = dict(held or {})
         self.calls: list[str] = []
         self.load_error: httpx.HTTPStatusError | None = None
+        self.load_hangs = False
         self.pause_error: Exception | None = None
 
-    async def load_lora_adapter(self, lora_name, lora_path, pinned=False, upsert=False, timeout=None):
+    async def load_lora_adapter(self, lora_name, lora_path, pinned=False, upsert=False):
+        if self.load_hangs:
+            await asyncio.sleep(60)
         return self._load("load", lora_name, lora_path, upsert)
 
     def _load(self, route: str, lora_name: str, payload: object, upsert: bool) -> dict:
@@ -164,6 +168,16 @@ def test_a_load_failure_raises_and_resumes(tmp_path):
     protocol = _connect(_make_args(tmp_path), [engine])
 
     with pytest.raises(httpx.HTTPStatusError, match="max-lora-rank"):
+        _sync(protocol, 1)
+    assert engine.calls[-1] == "resume"
+
+
+def test_a_load_is_bounded_by_the_engine_request_timeout(tmp_path):
+    engine = _FakeEngine()
+    engine.load_hangs = True
+    protocol = _connect(_make_args(tmp_path, update_weight_engine_request_timeout=0.05), [engine])
+
+    with pytest.raises(TimeoutError):
         _sync(protocol, 1)
     assert engine.calls[-1] == "resume"
 

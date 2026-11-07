@@ -37,7 +37,10 @@ from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
-from miles.backends.training_utils.weight_update.rollout_cell_updater import create_rollout_cell_updaters
+from miles.backends.training_utils.weight_update.rollout_cell_updater import (
+    _RolloutCellUpdater,
+    create_rollout_cell_updaters,
+)
 from miles.backends.training_utils.weight_update.session import (
     check_weight_sync_results,
     maybe_pause_engines,
@@ -51,7 +54,6 @@ from miles.utils.lora.utils import LORA_ADAPTER_NAME, build_lora_config
 logger = logging.getLogger(__name__)
 
 KEEP_VERSIONS = 3
-LOAD_TIMEOUT_S = 300.0
 
 
 def _pickle_with_torch_globals(obj: object) -> bytes:
@@ -137,7 +139,7 @@ class UpdateWeightHttpLora(WeightTransferProtocol):
         start = time.perf_counter()
         try:
             maybe_pause_engines(self.args, cell_updaters)
-            self._load_everywhere(engines, adapter_dir)
+            self._load_everywhere(cell_updaters, adapter_dir)
             set_weight_version(cell_updaters, weight_version)
         finally:
             maybe_resume_engines(self.args, cell_updaters)
@@ -176,15 +178,15 @@ class UpdateWeightHttpLora(WeightTransferProtocol):
         for version in versions[:-KEEP_VERSIONS]:
             shutil.rmtree(os.path.join(self._stage_root, f"{prefix}{version}"), ignore_errors=True)
 
-    def _load_everywhere(self, engines: list[SGLangApiClient], adapter_dir: str) -> None:
+    def _load_everywhere(self, cell_updaters: list[_RolloutCellUpdater], adapter_dir: str) -> None:
         # Upsert installs a fresh name and replaces a held one (this run's previous version, or a
         # leftover from an earlier run) under the same lora_id, so no sync leaves the name unregistered.
         async_utils.wait_futures(
             [
-                async_utils.submit(
-                    engine.load_lora_adapter(LORA_ADAPTER_NAME, adapter_dir, upsert=True, timeout=LOAD_TIMEOUT_S)
+                updater.submit_client_call(
+                    "load_lora_adapter", lora_name=LORA_ADAPTER_NAME, lora_path=adapter_dir, upsert=True
                 )
-                for engine in engines
+                for updater in cell_updaters
             ]
         )
 
