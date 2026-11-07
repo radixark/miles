@@ -326,13 +326,15 @@ second serves the MXFP4 experts without QAT, so the routed experts carry a
 train–rollout mismatch, as in mode 1. In all three, the other layers use the
 MXFP8 recipe in training and block-wise FP8 in rollout.
 
-**MXFP4 QAT.** Training has no MXFP4 GEMM. Before each routed-expert MXFP8 GEMM,
-the trainer rounds the weights onto the MXFP4 grid, with the block layout and
-rounding of the rollout encoder. MXFP4 and MXFP8 share the 1×32 block, so the
-forward GEMM receives the rounded weights unchanged, which are the weights
-rollout serves. The weight gradient passes straight through (STE). Master
-weights and optimizer state keep their precision, and nothing outside the
-routed-expert weights is rounded to MXFP4.
+**MXFP4 QAT.** Training has no MXFP4 GEMM. On the first microbatch of each
+forward-backward pass, the trainer rounds the routed-expert BF16 weights onto the
+MXFP4 grid in place, with the block layout and rounding of the rollout encoder
+(round to nearest, ties to even). MXFP4 and MXFP8 share the 1×32 block, so the
+MXFP8 GEMMs receive the rounded weights unchanged, which are the weights rollout
+serves. The optimizer updates the fp32 master weights and overwrites the BF16
+weights after every step, so the weight gradient passes straight through (STE)
+and no rounded copy is kept. Master weights and optimizer state keep their
+precision, and nothing outside the routed-expert weights is rounded to MXFP4.
 
 ![Routed-expert MXFP4 QAT on the MXFP8 recipe](/assets/images/low-precision/mxfp4-qat.png)
 

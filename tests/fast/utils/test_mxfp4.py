@@ -76,3 +76,23 @@ def test_quantize_encodes_zero_blocks_without_nan():
     packed, scale = mxfp4_quantize(torch.zeros(2, MXFP4_GROUP_SIZE))
 
     assert torch.equal(_dequantize_mxfp4(packed, scale), torch.zeros(2, MXFP4_GROUP_SIZE))
+
+
+def test_quantize_rounds_ties_to_even():
+    ties = torch.tensor([0.25, 0.75, 1.25, 1.75, 2.5, 3.5, 5.0])
+    expected = torch.tensor([0.0, 1.0, 1.0, 2.0, 2.0, 4.0, 4.0])
+    weight = torch.zeros(1, MXFP4_GROUP_SIZE)
+    weight[0, 0] = 6.0
+    weight[0, 1:8] = ties
+    weight[0, 8:15] = -ties
+
+    decoded = _dequantize_mxfp4(*mxfp4_quantize(weight))
+
+    assert torch.equal(decoded[0, 1:8], expected)
+    assert torch.equal(decoded[0, 8:15], -expected)
+
+
+def test_quantize_gives_tiny_blocks_the_smallest_normal_scale():
+    _, scale = mxfp4_quantize(torch.full((1, MXFP4_GROUP_SIZE), 2.0**-140))
+
+    assert scale.view(torch.uint8).item() == 1

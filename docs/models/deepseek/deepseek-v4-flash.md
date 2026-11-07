@@ -150,12 +150,13 @@ with a straight-through estimator, and samples RL rollouts from the native FP4
 weights.
 
 Training has no MXFP4 GEMM. With `--train-precision mxfp8-mxfp4-routed-expert`,
-routed-expert weights are rounded to the MXFP4 grid, with the block layout and
-rounding of the rollout encoder, before their MXFP8 GEMMs, and the weight gradient
-passes straight through. The forward pass of the routed experts thus matches their
-MXFP4 × MXFP8 rollout, without saving memory or time. Master weights and optimizer
-state keep their precision; attention, shared experts and activations are not
-rounded to MXFP4. This value requires `--init-model-source hf` and the same
+the routed-expert BF16 weights are rounded in place to the MXFP4 grid, with the block
+layout and rounding of the rollout encoder, once per forward-backward pass before
+their MXFP8 GEMMs, and the weight gradient passes straight through to the fp32
+master weights. The forward pass of the routed experts thus matches their MXFP4 ×
+MXFP8 rollout, without saving memory or time. Master weights and optimizer state
+keep their precision; attention, shared experts and activations are not rounded to
+MXFP4. This value requires `--init-model-source hf` and the same
 `--rollout-precision`. The report computes on the rounded weights in block-wise
 FP8; this value uses MXFP8, whose 1×32 activation scaling matches the MXFP4 ×
 MXFP8 rollout kernel. [Low Precision RL](/advanced/low-precision#5-mxfp4-routed-experts-blackwell)

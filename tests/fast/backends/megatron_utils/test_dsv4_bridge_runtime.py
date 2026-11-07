@@ -1,5 +1,5 @@
+import dataclasses
 from types import SimpleNamespace
-from unittest.mock import patch
 
 import pytest
 
@@ -44,16 +44,33 @@ def _runtime_args(**overrides):
         backend=SimpleNamespace(**values),
         enable_mtp_training=False,
         dsa_attention_backend=values.get("dsa_attention_backend"),
-        dsv4_mxfp4_qat=values.get("dsv4_mxfp4_qat", False),
+        routed_expert_qat=values.get("routed_expert_qat"),
     )
+
+
+@dataclasses.dataclass
+class _Provider:
+    dsa_kernel_backend: str = "none"
+    mtp_num_layers: int | None = 1
+    experimental_attention_variant: str = "dsv4_hybrid"
+    moe_expert_fake_quant: str | None = None
+    moe_grouped_gemm: bool = True
+    use_transformer_engine_op_fuser: bool = False
+    delay_wgrad_compute: bool = False
+    fp4: str | None = None
+
+
+@dataclasses.dataclass
+class _ProviderWithoutFakeQuantField:
+    dsa_kernel_backend: str = "none"
+    mtp_num_layers: int | None = 1
+    experimental_attention_variant: str = "dsv4_hybrid"
+    moe_grouped_gemm: bool = True
+    fp4: str | None = None
 
 
 def _provider():
-    return SimpleNamespace(
-        dsa_kernel_backend="none",
-        mtp_num_layers=1,
-        experimental_attention_variant="dsv4_hybrid",
-    )
+    return _Provider()
 
 
 def test_bridge_runtime_preserves_native_variant_and_disables_unrequested_mtp():
@@ -64,7 +81,7 @@ def test_bridge_runtime_preserves_native_variant_and_disables_unrequested_mtp():
     assert provider.experimental_attention_variant == "dsv4_hybrid"
     assert provider.dsa_kernel_backend == "cudnn"
     assert provider.mtp_num_layers is None
-    assert provider.dsv4_mxfp4_qat is False
+    assert provider.moe_expert_fake_quant is None
 
 
 @pytest.mark.parametrize("backend", [None, "none", "tilelang", "cudnn"])
@@ -76,15 +93,12 @@ def test_bridge_runtime_resolves_native_dsv4_kernel_default(backend):
     assert provider.dsa_kernel_backend == (backend or "cudnn")
 
 
-def test_bridge_runtime_installs_mxfp4_qat_when_enabled():
+def test_bridge_runtime_sets_routed_expert_fake_quant_when_enabled():
     provider = _provider()
-    provider.moe_grouped_gemm = True
 
-    with patch("miles_plugins.models.deepseek_v4.ops.mxfp4_qat.install_dsv4_mxfp4_qat") as install_qat:
-        _apply_bridge_runtime_config(provider, _runtime_args(dsv4_mxfp4_qat=True))
+    _apply_bridge_runtime_config(provider, _runtime_args(routed_expert_qat="mxfp4"))
 
-    install_qat.assert_called_once_with()
-    assert provider.dsv4_mxfp4_qat is True
+    assert provider.moe_expert_fake_quant == "mxfp4"
 
 
 @pytest.mark.parametrize(
@@ -95,13 +109,27 @@ def test_bridge_runtime_installs_mxfp4_qat_when_enabled():
         ("delay_wgrad_compute", True, "delayed weight-gradient"),
     ],
 )
-def test_bridge_runtime_rejects_mxfp4_qat_that_would_bypass_the_hook(field, value, message):
+def test_bridge_runtime_rejects_fake_quant_that_would_bypass_the_hook(field, value, message):
     provider = _provider()
-    provider.moe_grouped_gemm = True
     setattr(provider, field, value)
 
-    with patch("miles_plugins.models.deepseek_v4.ops.mxfp4_qat.install_dsv4_mxfp4_qat") as install_qat:
-        with pytest.raises(ValueError, match=message):
-            _apply_bridge_runtime_config(provider, _runtime_args(dsv4_mxfp4_qat=True))
+    with pytest.raises(ValueError, match=message):
+        _apply_bridge_runtime_config(provider, _runtime_args(routed_expert_qat="mxfp4"))
 
-    install_qat.assert_not_called()
+
+def test_bridge_runtime_rejects_fake_quant_without_a_first_microbatch_signal():
+    with pytest.raises(ValueError, match="FP8 or FP4 training recipe"):
+        _apply_bridge_runtime_config(_provider(), _runtime_args(routed_expert_qat="mxfp4", fp8=None))
+
+
+def test_bridge_runtime_rejects_fake_quant_on_a_megatron_without_the_field():
+    with pytest.raises(ValueError, match="no moe_expert_fake_quant field"):
+        _apply_bridge_runtime_config(_ProviderWithoutFakeQuantField(), _runtime_args(routed_expert_qat="mxfp4"))
+
+
+@pytest.mark.parametrize("flag", ["OPEN_TRAINING_NVFP4_FAKE_QAT_FLAG", "OPEN_TRAINING_INT4_FAKE_QAT_FLAG"])
+def test_bridge_runtime_rejects_combining_fake_quant_formats(monkeypatch, flag):
+    monkeypatch.setenv(flag, "1")
+
+    with pytest.raises(ValueError, match="cannot be combined"):
+        _apply_bridge_runtime_config(_provider(), _runtime_args(routed_expert_qat="mxfp4"))
