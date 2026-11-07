@@ -369,9 +369,14 @@ def get_batch(
     # Process multimodal training tensors if present
     multimodal_train_inputs = batch.get("multimodal_train_inputs", None)
     if multimodal_train_inputs is not None:
-        sample_offsets = [0]
-        for t in batch["unconcat_tokens"]:
-            sample_offsets.append(sample_offsets[-1] + t.size(0))
+        # `*_positions` are sample-local indices; shift them into the packed row. Under THD a sample
+        # starts at its `cu_seqlens` boundary, which already includes per-sample zigzag CP padding.
+        if qkv_format == "thd":
+            sample_offsets = batch["cu_seqlens_host"]
+        else:
+            sample_offsets = [0]
+            for t in batch["unconcat_tokens"]:
+                sample_offsets.append(sample_offsets[-1] + t.size(0))
         multimodal_data = {}  # key -> concatenated tensor
         multimodal_num_items = {}  # key -> list of item counts per sequence
         for i, mm_input_dict in enumerate(multimodal_train_inputs):
