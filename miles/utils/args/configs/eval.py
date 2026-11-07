@@ -40,7 +40,6 @@ class EvalConfig(BaseConfig):
     eval_top_k: A[int | None, Arg()] = None
     eval_max_response_len: A[int | None, Arg()] = None
     eval_min_new_tokens: A[int | None, Arg()] = None
-    eval_max_context_len: A[int | None, Arg()] = None
     eval_hf_dir: A[
         str | None,
         Arg(

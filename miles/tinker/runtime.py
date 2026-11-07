@@ -12,7 +12,7 @@ import httpx
 from safetensors import safe_open
 
 from miles.backends.training_utils.checkpoint.adapter.adapter_state import ADAPTER_STATE_DIRNAME
-from miles.backends.training_utils.checkpoint.adapter.base_model import resolve_hf_dir
+from miles.backends.training_utils.checkpoint.adapter.base_model_check import resolve_hf_dir
 from miles.backends.training_utils.checkpoint.adapter.commit import TENANT_FILENAME
 from miles.backends.training_utils.checkpoint.adapter.commit import OwnershipError as AdapterOwnershipError
 from miles.backends.training_utils.checkpoint.adapter.commit import (

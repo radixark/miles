@@ -24,8 +24,8 @@ stateless `/generate` interface.
 ## Configure the wrapper
 
 Select `agentic_tool_call.generate` as the custom generate function. The wrapper
-registers `--custom-agent-function-path` and `--max-seq-len`, creates a TITO
-session for each rollout, invokes your agent, and collects the resulting samples.
+creates a TITO session for each rollout, invokes the function named by
+`--custom-agent-function-path`, and collects the resulting samples.
 
 ```bash
 AGENTIC_ARGS=(
@@ -192,8 +192,16 @@ replay, every pause mode except `retract` requests only additional R3 rows.
 `retract` returns full R3 data on every turn and emits a warning because the
 payloads can become very large.
 
-Set `--max-seq-len` to cap the context length. Miles also includes this value in the
-metadata passed to your agent so an external environment can stop early.
+The session server leaves the harness's control flow alone. It never lowers a turn's
+`max_tokens`, refuses a turn for its length, or cuts a turn short: how long an episode runs
+is the harness's decision. A request the session cannot serve, such as one that sets
+`input_ids`, fails loud with an HTTP error.
+
+`--max-seq-len` follows this rule. Miles passes it to your agent as
+`metadata["max_seq_len"]` and truncates each collected trajectory to it after the episode,
+so samples fit training memory. It does not stop the agent: a harness that reads the value
+can end the episode there, and one that does not runs on past it. The agentic generator
+logs a warning once when the limit is set.
 
 ### Pick your `--tito-model`
 

@@ -411,6 +411,7 @@ def parse_args_and_get_parser(
     sglang, sglang_scaling = SglangConfig.parse_args(args)
     raw_megatron = resolve_megatron_config(args, base_args=backend_values if backend == "megatron" else {})
     check_output_store_args(args, sglang=sglang, megatron=raw_megatron)
+    _check_stop_token_replace_streaming_session(args, sglang=sglang)
     values = {name: value for name, value in vars(args).items() if name in AllConfig.model_fields} | {
         "raw_megatron": raw_megatron,
         "raw_fsdp": FsdpArgsNamespace(**backend_values) if backend == "fsdp" else None,
@@ -562,9 +563,7 @@ def _validate_rollout_data_yaml_config(args) -> None:
         datasets,
         rollout_max_prompt_len=args.rollout_max_prompt_len,
         rollout_max_response_len=args.rollout_max_response_len,
-        max_seq_len=getattr(
-            args, "max_seq_len", None
-        ),  # config-access-exempt: optional length limit registered by custom agent hooks
+        max_seq_len=args.max_seq_len,
     )
     _check_dataset_rewards(args, datasets)
     default_generate = getattr(  # config-access-exempt: still a path string before custom hooks resolve
@@ -1002,6 +1001,37 @@ def _resolve_sample_ownership_check(args: argparse.Namespace) -> None:
         )
 
 
+def _resolve_allow_stop_token_replace(args: argparse.Namespace) -> bool:
+    if not args.use_session_server:
+        if args.allow_stop_token_replace is not None:
+            raise ValueError(
+                "--allow-stop-token-replace requires --use-session-server; "
+                "this flag only configures the session-server TITO middleware."
+            )
+        return False
+    family_default = TITOTokenizerType.get_tokenizer_class(TITOTokenizerType(args.tito_model)).allow_stop_token_replace
+    # An explicit flag wins over the --tito-model family default.
+    allowed = family_default if args.allow_stop_token_replace is None else args.allow_stop_token_replace
+    source = (
+        f"--tito-model={args.tito_model} default"
+        if args.allow_stop_token_replace is None
+        else "explicit --allow-stop-token-replace"
+    )
+    logger.info(f"Session server stop-token replacement {'allowed' if allowed else 'rejected'} ({source})")
+    return allowed
+
+
+def _check_stop_token_replace_streaming_session(args: argparse.Namespace, *, sglang: SglangConfig) -> None:
+    if args.allow_stop_token_replace and sglang.common_value("enable_streaming_session"):
+        raise ValueError(
+            f"Stop-token replacement (allowed by --tito-model={args.tito_model} or --allow-stop-token-replace) "
+            "cannot be combined with --sglang-enable-streaming-session: replacing the sampled stop token rewrites "
+            "the last generated token, while a streaming session extends the engine's stored tokens append-only. "
+            "Change the agent harness so a stop at a role token is followed by the message that token opens and "
+            "pass --no-allow-stop-token-replace, or drop --sglang-enable-streaming-session."
+        )
+
+
 def _apply_custom_config(args, data: dict) -> None:
     # configs written before --router
     if data.pop("use_miles_router", False):
@@ -1161,6 +1191,8 @@ def miles_validate_args(args):
             "thinking-token trimming). This can cause input_ids to diverge from "
             "the canonical template output. Use at your own risk."
         )
+
+    args.allow_stop_token_replace = _resolve_allow_stop_token_replace(args)
 
     if args.debug_disable_optimizer:
         args.no_load_optim = True
@@ -1826,21 +1858,15 @@ def miles_validate_args(args):
         args.use_indexer_replay = True
         assert args.context_parallel_size == 1, "indexer replay does not support context parallelism yet"
 
-    if args.eval_max_context_len is None:
-        logger.info(
-            f"args.eval_max_context_len is not set. Use args.rollout_max_context_len {args.rollout_max_context_len} as default value."
-        )
-        args.eval_max_context_len = args.rollout_max_context_len
-
-    if args.rollout_max_context_len is not None:
+    if args.max_seq_len is not None:
         if args.rollout_max_prompt_len is None:
-            args.rollout_max_prompt_len = args.rollout_max_context_len - 1
+            args.rollout_max_prompt_len = args.max_seq_len - 1
             logger.info(
-                f"args.rollout_max_prompt_len is not set. Use args.rollout_max_context_len - 1 ({args.rollout_max_context_len} - 1) as default value so that there is at least one generated token to compute loss."
+                f"args.rollout_max_prompt_len is not set. Use args.max_seq_len - 1 ({args.max_seq_len} - 1) as default value so that there is at least one generated token to compute loss."
             )
         assert (
-            args.rollout_max_prompt_len <= args.rollout_max_context_len - 1
-        ), f"args.rollout_max_prompt_len ({args.rollout_max_prompt_len}) must be smaller than args.rollout_max_context_len ({args.rollout_max_context_len}) so that there is at least one generated token to compute loss."
+            args.rollout_max_prompt_len <= args.max_seq_len - 1
+        ), f"args.rollout_max_prompt_len ({args.rollout_max_prompt_len}) must be smaller than args.max_seq_len ({args.max_seq_len}) so that there is at least one generated token to compute loss."
 
     _validate_rollout_data_yaml_config(args)
 

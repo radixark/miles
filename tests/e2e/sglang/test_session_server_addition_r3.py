@@ -74,6 +74,7 @@ def _serve_session(backend_url: str) -> Iterator[str]:
         chat_template_path=None,
         apply_chat_template_kwargs={"enable_thinking": False},
         tito_model="qwen3",
+        allow_stop_token_replace=False,
         sglang=make_sglang_config(speculative_algorithm=None),
         raw_megatron=MegatronConfig(trainers=[], base_args={}),
         use_session_server="v1",
