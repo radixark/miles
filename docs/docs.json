@@ -315,6 +315,7 @@
      "developer/adding-a-sandbox-provider",
      "developer/reconcile-loop",
      "developer/versions",
+     "developer/miles-ext-kernels-pins",
      "developer/debug",
      {
       "group": "CI",
