@@ -4320,6 +4320,7 @@ class TestMultimodalTokenSpaceProcessingArgs:
         "image_processor_backend": "auto",
         "disable_fast_image_processor": False,
         "mm_process_config": None,
+        "token_space_preprocess_cache_dir": None,
     }
 
     @pytest.mark.parametrize(
