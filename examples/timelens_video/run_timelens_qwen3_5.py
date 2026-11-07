@@ -178,11 +178,7 @@ def execute(args: ScriptArgs):
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
         megatron_path=args.megatron_path,
-        extra_env_vars={
-            "PYTHONPATH": args.megatron_path,
-            # Blackwell: the engines attend on the same flash-attn-4 package as the trainer's vision tower.
-            "SGLANG_INKLING_FA4_USE_PIP": "1",
-        },
+        extra_env_vars={"PYTHONPATH": args.megatron_path},
     )
 
 
