@@ -23,8 +23,9 @@ Env vars (the agent-loop ones in ``openenv_agent_function`` apply too):
                     warm-start), or pre-baked via the tb2_sandbox_e2b CLI.
   E2B_API_KEY / E2B_API_KEY_FILE   key supply on the contract every backend
                     shares (file default ~/.config/e2b/api_key; launchers
-                    forward the PATH, never the value). AgentENV accepts any
-                    non-empty key today.
+                    forward the PATH, never the value). Whether the key is
+                    checked is up to the endpoint: E2B Cloud rejects a wrong
+                    one, a self-hosted server may accept anything.
   E2B_API_URL / E2B_SANDBOX_URL    endpoint overrides read by the SDK itself;
                     set both to target a self-hosted AgentENV.
   OPENENV_E2B_CREATE_CONCURRENCY   max in-flight sandbox creates (default 4).
