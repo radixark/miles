@@ -13,8 +13,10 @@ from miles.backends.training_utils.data.context_parallel import (
 )
 from miles.backends.training_utils.data.multimodal import expand_multimodal_rollout_data_in_place
 from miles.backends.training_utils.data.token_space_media_process import (
-    RolloutEngineProcessorArgs,
+    TrainerProcessor,
     compute_multimodal_train_inputs,
+    resolved_mrope_position_ids,
+    resolved_multimodal_train_inputs,
 )
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.platforms import current_platform
@@ -47,6 +49,7 @@ def get_rollout_data(
     train_parallel_config: TrainParallelConfig,
     output_store_read: Callable | None = None,
     sample_device: torch.device | None = None,
+    token_space_processor: TrainerProcessor | None = None,
 ) -> tuple[RolloutBatch, ObjectStoreGetResult]:
     """Fetch this rank's rollout shard; per-sample tokens, masks and log-probs go to `sample_device`.
 
@@ -84,9 +87,10 @@ def get_rollout_data(
         # A rollout without media ships no references, but its tokens still need the model's mRoPE positions.
         multimodal_inputs = rollout_data.pop("multimodal_inputs", [None] * len(rollout_data["tokens"]))
         token_space_train_inputs = compute_multimodal_train_inputs(
-            RolloutEngineProcessorArgs.from_sglang_config(args.sglang, hf_checkpoint=args.hf_checkpoint),
+            token_space_processor,
             multimodal_inputs,
             rollout_data["tokens"],
+            mm_processor_worker_num=args.trainer_mm_processor_worker_num,
             # Megatron-Bridge and torch-native models place their media rows and rotate by themselves.
             with_sglang_placement=args.train_backend == "megatron" and args.megatron_to_hf_mode == "raw",
             device=current_platform.current_device(),
@@ -244,8 +248,9 @@ def get_batch(
         if unit_key in data_iterator.rollout_data:
             batch[unit_key] = data_iterator.rollout_data[unit_key]
 
-    # No-op safety net if batches reach get_batch without rollout-level preprocessing.
-    expand_multimodal_rollout_data_in_place(batch, qkv_format=qkv_format)
+    # Token-space train inputs rebuild in the background; wait for this micro-batch's samples.
+    if (multimodal_train_inputs := batch.get("multimodal_train_inputs")) is not None:
+        batch["multimodal_train_inputs"] = resolved_multimodal_train_inputs(multimodal_train_inputs)
 
     tokens = batch["tokens"]
     # use 0 as the pad token id should be fine?
@@ -362,7 +367,8 @@ def get_batch(
             raise NotImplementedError
         return ids
 
-    if (mrope_position_ids := batch.pop("mrope_position_ids", None)) is not None:
+    mrope_position_ids = batch.pop("mrope_position_ids", None)
+    if mrope_position_ids is not None and (mrope_position_ids := resolved_mrope_position_ids(mrope_position_ids)):
         assert qkv_format == "thd" and not allgather_cp, "mRoPE positions need the per-sample THD CP layout"
         batch["position_ids"] = _pack_natural_position_ids(mrope_position_ids, cu_seqlens_host)
 
@@ -536,7 +542,9 @@ def get_data_iterator(
     - `data_iterators`: list of `DataIterator`, one per VPP stage (size 1 if VPP disabled)
     - `num_microbatches`: list[int], one per local step in the rollout (length = steps)
     """
-    expand_multimodal_rollout_data_in_place(rollout_data, qkv_format=args.qkv_format)
+    # Token-space tokens arrive expanded, and their train inputs may still be rebuilding.
+    if not args.multimodal_token_space_processing:
+        expand_multimodal_rollout_data_in_place(rollout_data, qkv_format=args.qkv_format)
 
     parallel_state = get_parallel_state()
 

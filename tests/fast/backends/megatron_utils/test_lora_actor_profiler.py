@@ -15,6 +15,7 @@ def test_lora_pass_emits_scheduled_trace(monkeypatch, method):
     actor = module.MultiLoRATrainRayActor()
     actor.args = SimpleNamespace()
     actor.output_store_read = None
+    actor.token_space_processor = None
     actor.model = []
     actor._heartbeat = SimpleNamespace(bump=lambda: None)
     actor.prof = TrainProfiler(
