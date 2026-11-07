@@ -452,6 +452,24 @@ def slice_with_cp(
     return torch.cat([tokens[start_1:end_1], tokens[start_2:end_2]])
 
 
+def natural_to_local_cp_rows(
+    positions: torch.Tensor, *, sample_start: int, sample_end: int, cp_size: int, cp_rank: int
+) -> torch.Tensor:
+    """Map a sample's token indices to this CP rank's packed rows, -1 where another rank holds the token.
+
+    The sample spans the natural rows ``[sample_start, sample_end)``, padded to ``2 * cp_size`` chunks by
+    :func:`slice_with_cp`; this rank holds chunks ``cp_rank`` and ``2 * cp_size - 1 - cp_rank``, packed from
+    row ``sample_start // cp_size``.
+    """
+    if cp_size == 1:
+        return positions + sample_start
+    chunk_size = (sample_end - sample_start) // (2 * cp_size)
+    chunk, within = positions // chunk_size, positions % chunk_size
+    local = sample_start // cp_size + torch.where(chunk == cp_rank, within, chunk_size + within)
+    on_rank = (chunk == cp_rank) | (chunk == 2 * cp_size - 1 - cp_rank)
+    return torch.where(on_rank, local, -1)
+
+
 def natural_to_zigzag_slice(tensor: torch.Tensor, dim: int, cp_size: int, cp_rank: int) -> torch.Tensor:
     """Slice a full-length tensor into the zigzag ring-attention CP layout.
 

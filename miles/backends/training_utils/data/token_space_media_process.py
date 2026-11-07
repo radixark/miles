@@ -4,6 +4,14 @@ With ``--multimodal-token-space-processing`` the rollout ships ordered media ref
 processor tensors. Each trainer rank rebuilds the tensors with SGLang's ``TokenSpaceProcessor``,
 the same core the rollout engines serve with, built from their server args the way they build it,
 so training sees the features the rollout engines saw.
+
+For models that take them instead of computing their own, each sample also gets what SGLang computes from the
+expanded tokens:
+
+- ``mm_image_positions`` / ``mm_video_positions``: [num_rows] sample-local token index of every vision tower
+  output row, from the processor's ``mm_spans``;
+- its mRoPE positions, [num_tokens, 3], text-only samples included. They are not multimodal inputs but the
+  model's ``position_ids``, so they travel apart; ``get_batch`` packs them like the tokens.
 """
 
 import asyncio
@@ -16,6 +24,13 @@ from typing import Any, NamedTuple
 import torch
 
 from miles.utils.processing_utils import extract_multimodal_train_inputs
+
+
+class TokenSpaceTrainInputs(NamedTuple):
+    # Each sample's processor tensors and tower row placement, or None for a text-only sample.
+    multimodal_train_inputs: list[dict[str, torch.Tensor] | None]
+    # Each sample's [num_tokens, 3] mRoPE positions, or None for a model without mRoPE.
+    mrope_position_ids: list[torch.Tensor] | None
 
 
 @dataclass(frozen=True)
@@ -70,28 +85,42 @@ def compute_multimodal_train_inputs(
     multimodal_inputs: Sequence[dict[str, list[str]] | None],
     tokens: Sequence[torch.Tensor],
     *,
+    with_sglang_placement: bool,
     device: torch.device,
-) -> list[dict[str, torch.Tensor] | None]:
-    """Rebuild each sample's processor tensors on the trainer from its media references and expanded tokens.
+) -> TokenSpaceTrainInputs:
+    """Rebuild each sample's processor tensors and mRoPE positions on the trainer from its media references.
 
     Args:
         rollout_engine_args: The rollout engines' server args that decide the processor output.
         multimodal_inputs: Each sample's media references, or None for a text-only sample.
         tokens: Each sample's tokens, with the media placeholders SGLang expanded.
+        with_sglang_placement: Also return the tower row placement and the mRoPE positions SGLang computes.
         device: This rank's device; the tensors land here, and it stands in for the engine's GPU.
 
     Returns:
-        Each sample's ``multimodal_train_inputs``, or None for a text-only sample.
+        Each sample's processor tensors and, for a model with mRoPE, each sample's positions.
     """
     trainer_processor = _trainer_processor(rollout_engine_args, device)
-    return [
+    samples = [
         (
-            _sample_train_inputs(trainer_processor, sample_multimodal_inputs, sample_tokens, device=device)
+            _sample_train_inputs(
+                trainer_processor,
+                sample_multimodal_inputs,
+                sample_tokens,
+                with_sglang_placement=with_sglang_placement,
+                device=device,
+            )
             if sample_multimodal_inputs
-            else None
+            else (None, _text_mrope_positions(trainer_processor, sample_tokens) if with_sglang_placement else None)
         )
         for sample_multimodal_inputs, sample_tokens in zip(multimodal_inputs, tokens, strict=True)
     ]
+    train_inputs, mrope_positions = zip(*samples, strict=True)
+    if all(positions is None for positions in mrope_positions):
+        return TokenSpaceTrainInputs(list(train_inputs), None)
+    assert all(positions is not None for positions in mrope_positions), "mRoPE positions for only some samples"
+    mrope_position_ids = [positions.T.contiguous().to(device) for positions in mrope_positions]
+    return TokenSpaceTrainInputs(list(train_inputs), mrope_position_ids)
 
 
 class _TrainerProcessor(NamedTuple):
@@ -172,8 +201,11 @@ def _sample_train_inputs(
     multimodal_inputs: dict[str, list[str]],
     tokens: torch.Tensor,
     *,
+    with_sglang_placement: bool,
     device: torch.device,
 ):
+    from sglang.srt.multimodal.modality import Modality
+
     input_ids = tokens.tolist()
     # No video device, as the engine's wrapper: the core takes it from the image device or the mm_process_config.
     batch_feature = asyncio.run(
@@ -184,8 +216,29 @@ def _sample_train_inputs(
             input_ids=input_ids,
             mm_token_expansion_start_len=len(input_ids),
             image_device=trainer_processor.image_device,
+            compute_mrope_positions=with_sglang_placement,
         )
     )
-    # mm_modalities and mm_spans tell SGLang where each media's tower output goes; the model does not take them.
     train_inputs = extract_multimodal_train_inputs(batch_feature)
-    return {key: value.to(device) for key, value in train_inputs.items() if key not in ("mm_modalities", "mm_spans")}
+    modalities, spans = train_inputs.pop("mm_modalities"), train_inputs.pop("mm_spans")
+    mrope_positions = train_inputs.pop("mrope_positions", None)
+    train_inputs.pop("mrope_position_delta", None)
+    train_inputs = {key: value.to(device) for key, value in train_inputs.items()}
+    if not with_sglang_placement:
+        return train_inputs, None
+    # The token index of every tower output row, from where SGLang placed each media (half-open spans).
+    for modality, key in ((Modality.IMAGE, "mm_image_positions"), (Modality.VIDEO, "mm_video_positions")):
+        rows = [
+            torch.arange(start, end)
+            for media, media_spans in zip(modalities, spans, strict=True)
+            if media == modality
+            for start, end in media_spans
+        ]
+        if rows:
+            train_inputs[key] = torch.cat(rows).to(device)
+    return train_inputs, mrope_positions
+
+
+def _text_mrope_positions(trainer_processor: _TrainerProcessor, tokens: torch.Tensor) -> torch.Tensor | None:
+    mrope_positions, _ = trainer_processor.core.strategy.compute_mrope_positions({"input_ids": tokens.tolist()})
+    return mrope_positions

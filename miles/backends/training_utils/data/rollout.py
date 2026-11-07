@@ -6,7 +6,11 @@ import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 
-from miles.backends.training_utils.data.context_parallel import slice_log_prob_with_cp, slice_with_cp
+from miles.backends.training_utils.data.context_parallel import (
+    natural_to_local_cp_rows,
+    slice_log_prob_with_cp,
+    slice_with_cp,
+)
 from miles.backends.training_utils.data.multimodal import expand_multimodal_rollout_data_in_place
 from miles.backends.training_utils.data.token_space_media_process import (
     RolloutEngineProcessorArgs,
@@ -76,13 +80,20 @@ def get_rollout_data(
             for t, sid in zip(rollout_data["tokens"], seq_witness_ids, strict=True)
         ]
 
-    if "multimodal_inputs" in rollout_data:
-        rollout_data["multimodal_train_inputs"] = compute_multimodal_train_inputs(
+    if args.multimodal_token_space_processing:
+        # A rollout without media ships no references, but its tokens still need the model's mRoPE positions.
+        multimodal_inputs = rollout_data.pop("multimodal_inputs", [None] * len(rollout_data["tokens"]))
+        token_space_train_inputs = compute_multimodal_train_inputs(
             RolloutEngineProcessorArgs.from_sglang_config(args.sglang, hf_checkpoint=args.hf_checkpoint),
-            rollout_data.pop("multimodal_inputs"),
+            multimodal_inputs,
             rollout_data["tokens"],
+            # Megatron-Bridge and torch-native models place their media rows and rotate by themselves.
+            with_sglang_placement=args.train_backend == "megatron" and args.megatron_to_hf_mode == "raw",
             device=current_platform.current_device(),
         )
+        rollout_data["multimodal_train_inputs"] = token_space_train_inputs.multimodal_train_inputs
+        if token_space_train_inputs.mrope_position_ids is not None:
+            rollout_data["mrope_position_ids"] = token_space_train_inputs.mrope_position_ids
     elif "multimodal_train_inputs" in rollout_data:
         # Move multimodal training tensors to the device in advance
         rollout_data["multimodal_train_inputs"] = [
@@ -351,6 +362,10 @@ def get_batch(
             raise NotImplementedError
         return ids
 
+    if (mrope_position_ids := batch.pop("mrope_position_ids", None)) is not None:
+        assert qkv_format == "thd" and not allgather_cp, "mRoPE positions need the per-sample THD CP layout"
+        batch["position_ids"] = _pack_natural_position_ids(mrope_position_ids, cu_seqlens_host)
+
     if get_position_ids:
         position_ids_list = []
         for t in batch["unconcat_tokens"]:
@@ -383,13 +398,28 @@ def get_batch(
         sample_offsets = [0]
         for t in batch["unconcat_tokens"]:
             sample_offsets.append(sample_offsets[-1] + t.size(0))
+
+        def packed_rows(positions: torch.Tensor, sample_index: int) -> torch.Tensor:
+            if qkv_format == "thd" and not allgather_cp:
+                return natural_to_local_cp_rows(
+                    positions,
+                    sample_start=cu_seqlens_host[sample_index],
+                    sample_end=cu_seqlens_host[sample_index + 1],
+                    cp_size=cp_size,
+                    cp_rank=parallel_state.cp.rank,
+                )
+            return positions + sample_offsets[sample_index]
+
         multimodal_data = {}  # key -> concatenated tensor
         multimodal_num_items = {}  # key -> list of item counts per sequence
         for i, mm_input_dict in enumerate(multimodal_train_inputs):
             if mm_input_dict is not None:
                 for key, mm_tensor in mm_input_dict.items():
+                    # Sample-local token indices of tower output rows, one long entry per row in tower output order:
+                    # mm_image_positions and mm_video_positions from the token-space processor, mm_vision_positions
+                    # and mm_audio_positions from the Inkling expansion.
                     if key.endswith("_positions"):
-                        mm_tensor = mm_tensor + sample_offsets[i]
+                        mm_tensor = packed_rows(mm_tensor, i)
                     if key not in multimodal_data:
                         multimodal_data[key] = mm_tensor
                         multimodal_num_items[key] = [mm_tensor.size(0)]
@@ -400,6 +430,20 @@ def get_batch(
         batch["multimodal_num_items"] = multimodal_num_items
 
     return batch
+
+
+def _pack_natural_position_ids(sample_positions: list[torch.Tensor], cu_seqlens_host: tuple[int, ...]) -> torch.Tensor:
+    """Pack each sample's [num_tokens, 3] positions into the [3, 1, T] natural (not CP-sliced) packed row.
+
+    Each sample starts at its ``cu_seqlens`` boundary, the same packing the tokens get before the CP split;
+    Megatron's THD rotary picks each CP rank's rows from it. Padding keeps position 0: it only follows the
+    real tokens, so causal attention never lets them see it.
+    """
+    positions = sample_positions[0].new_zeros(cu_seqlens_host[-1], sample_positions[0].size(1))
+    for sample, start, end in zip(sample_positions, cu_seqlens_host, cu_seqlens_host[1:], strict=False):
+        assert sample.size(0) <= end - start, f"{sample.size(0)} positions for a {end - start}-token segment"
+        positions[start : start + sample.size(0)] = sample
+    return positions.T.unsqueeze(1)
 
 
 class DataIterator:

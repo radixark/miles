@@ -338,6 +338,7 @@ def forward_only(
             "tokens",
             "loss_masks",
             "multimodal_train_inputs",
+            "mrope_position_ids",
             "total_lengths",
             "response_lengths",
             "max_seq_lens",
@@ -366,7 +367,7 @@ def forward_only(
 
         output_tensor = model(
             input_ids=tokens,
-            position_ids=None,
+            position_ids=batch.get("position_ids"),
             attention_mask=None,
             labels=None,
             packed_seq_params=packed_seq_params,
@@ -477,6 +478,7 @@ def run_forward_backward_pass(
             [
                 "tokens",
                 "multimodal_train_inputs",
+                "mrope_position_ids",
                 "packed_seq_params",
                 "total_lengths",
                 "response_lengths",
@@ -520,7 +522,7 @@ def run_forward_backward_pass(
             assert not args.enable_witness, "Witness is not supported with combined 1f1b (build_schedule_plan)"
             output_tensor = model.build_schedule_plan(
                 input_ids=batch["tokens"],
-                position_ids=None,
+                position_ids=batch.get("position_ids"),
                 attention_mask=None,
                 labels=None,
                 packed_seq_params=get_packed_seq_params(batch, args),
@@ -529,7 +531,7 @@ def run_forward_backward_pass(
         else:
             forward_kwargs = {
                 "input_ids": batch["tokens"],
-                "position_ids": None,
+                "position_ids": batch.get("position_ids"),
                 "attention_mask": None,
                 "labels": None,
                 "packed_seq_params": get_packed_seq_params(batch, args),
