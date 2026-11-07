@@ -5,7 +5,8 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from miles.backends.megatron_utils.lora import actor as actor_module
+from tests.fast.backends.megatron_utils.test_lora_actor import _lora_actor_module
+
 from miles.backends.megatron_utils.lora import checkpoint as lora_checkpoint
 from miles.backends.megatron_utils.lora import model as lora_model
 from miles.backends.megatron_utils.lora.bridge_adapter_slots import BridgeAdapterSlots
@@ -46,6 +47,8 @@ def actor_and_events(monkeypatch):
         lambda args, model, slot, params: SimpleNamespace(slot=slot, zero_grads=lambda: None),
     )
     monkeypatch.setattr(lora_checkpoint, "load_slot", lambda *args, **kwargs: events.append(("load", args[3])))
+    # the real actor module imports torch_memory_saver, which CPU CI lacks
+    actor_module = _lora_actor_module(monkeypatch, model=lora_model, checkpoint=lora_checkpoint)
     actor = actor_module.MultiLoRATrainRayActor.__new__(actor_module.MultiLoRATrainRayActor)
     actor.args, actor.model, actor.adapter_slots, actor.slot_optimizers = None, [], _RecordedSlots(events), {}
     actor._checkpoint_members = lambda: None
@@ -55,7 +58,7 @@ def actor_and_events(monkeypatch):
 def test_load_state_into_a_created_model_claims_its_slot_again_at_the_sources_alpha(actor_and_events, monkeypatch):
     """create_model claims the slot; load_state then loads into that same live slot."""
     actor, events = actor_and_events
-    monkeypatch.setattr(lora_checkpoint, "find_load_mismatch", lambda *args, **kwargs: None)
+    monkeypatch.setattr(lora_checkpoint, "check_load_source", lambda *args, **kwargs: (None, None))
 
     assert actor.load_slot(1, 8, 16.0) is None
     assert actor.load_slot(1, 8, 32.0, source=_SOURCE) is None
@@ -67,7 +70,9 @@ def test_load_state_into_a_created_model_claims_its_slot_again_at_the_sources_al
 
 def test_a_refused_source_leaves_the_live_slot_and_its_optimizer_alone(actor_and_events, monkeypatch):
     actor, events = actor_and_events
-    monkeypatch.setattr(lora_checkpoint, "find_load_mismatch", lambda *args, **kwargs: "saved with another layout")
+    monkeypatch.setattr(
+        lora_checkpoint, "check_load_source", lambda *args, **kwargs: ("saved with another layout", None)
+    )
     actor.load_slot(1, 8, 16.0)
     optimizer = actor.slot_optimizers[1]
 
