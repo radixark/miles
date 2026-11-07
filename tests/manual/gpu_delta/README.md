@@ -24,9 +24,11 @@ separate from the benchmark.
 
 ## Environment
 
-Use a CUDA 13 Miles development image, the paired SGLang branch on `PYTHONPATH`,
-and eight Blackwell GPUs. This manual workload uses GLM5.2 NVFP4 W4A16, CuTe DSL
-MoE, no MoE A2A and static bundled MTP. The benchmark defaults to two
+GPU-delta's CUDA decoder path, including the default Bitcomp-Zstd codec, does
+not require Blackwell. This GLM5.2 NVFP4 W4A16 benchmark requires eight Blackwell
+GPUs, a CUDA 13 Miles development image and the paired SGLang branch on
+`PYTHONPATH`. It uses CuTe DSL MoE, no MoE A2A and static bundled MTP.
+The benchmark defaults to two
 TP4/attention-DP4/EP4 engines; one `--ports` value selects one TP8/attention-DP8/EP8
 engine. On the current SGLang base, these are one replica per engine with
 `attn_dp_size` equal to its TP size. The existing `dp_size` plus
@@ -65,11 +67,12 @@ user-facing configuration API. Runtime defaults are sufficient for normal use.
 | `GPU_DELTA_SORT_BEFORE_HW_DECOMPRESS=0` | Receiver only. Set `1` to let nvCOMP sort chunks during paused DE submission; default off for all codecs. It does not change publication bytes or move sorting into preparation. |
 | `GPU_DELTA_CPU_WORKERS=32` | CPU workers per rank. Each engine-host cache creator also uses its pool for parallel owner-file read/hash before local payload preparation. Two EP4 engines have eight pools (up to 256 workers at the default). |
 | `GPU_DELTA_SKIP_PAYLOAD_HASH=1` | Miles-only opt-in: omit owner-file SHA256 generation and send `validate_payload_hash=false` with each receiver update. Defaults off. Such publications declare `payload_checksum_format="none"` and null file hashes; SGLang accepts them only with this explicit request option and does not read the environment variable. Manifest SHA256 and native decoder checks remain mandatory. |
-| `GPU_DELTA_HOST_CACHE_DIR` | Tmpfs base for engine-host encoded caches; defaults to `/dev/shm/sglang-gpu-delta-<uid>`. Each engine has separate identities and locks. Its ranks share encoded files, while DE input arenas remain private to each rank. |
+| `GPU_DELTA_HOST_CACHE_DIR` | Tmpfs base for engine-host encoded caches; defaults to `/dev/shm/sglang-gpu-delta-<uid>`. Each engine has separate identities and locks. Its ranks share encoded files, while prepared input arenas remain private to each rank on both decoder paths. |
 
 For Ray launches, set job-level variables through `runtime_env` or
 `execute_train(extra_env_vars=...)`; the submitting shell does not configure
-existing workers. Both trainer and rollout must inherit the shared hash flag.
+existing workers. Miles reads the hash flag and sends the resulting
+`validate_payload_hash` option to SGLang; SGLang workers do not read that flag.
 Trainer-only settings can use `--train-env-vars`; receiver sorting belongs
 on rollout actors. The five-layer E2E explicitly uses Snappy-Zstd for learned
 updates and LZ4-Zstd for initial sync to retain DE coverage. It forwards the hash
@@ -297,8 +300,9 @@ snapshots H2D (3N total), followed by final encoded D2H. Raw targets avoid both
 matrix H2D uploads. Background recovery compression additionally uploads the
 retained HF/current pair and returns its compressed bytes, without a second
 export D2H. Export, bulk compression, publication and activation enclose
-trainer blocking. Receiver preparation runs before pause;
-direct-host DE and in-place mutation run within the serving pause.
+trainer blocking. Receiver preparation runs before pause; inner decompression
+(direct-host DE or H2D plus CUDA decode) and in-place mutation run within the
+serving pause.
 Do not sum nested phases or add sender/receiver times from different workloads.
 
 Publication diagnostics retain `metadata_gather_s` on each sender rank and
@@ -428,8 +432,9 @@ copies plus one full checkpoint, in addition to the arms’ encoded publications
 The source checkpoint is immutable. No Megatron checkpoint, trainer initialization
 or distributed export setup is required.
 
-One invocation uses shared prepared inputs and an optional oracle, with six serial
-codec/hash arms. Each stage releases its CUDA contexts before the next starts:
+One invocation uses shared prepared inputs and an optional oracle, with two serial
+Bitcomp-Zstd arms by default: payload hashing on and off. Each stage releases its
+CUDA contexts before the next starts:
 
 1. For a new cache, start the receiver pair, record its canonical tensor plan,
    then stop it. CPU workers construct each cumulative target once and write
@@ -472,12 +477,12 @@ byte counts or make an oversized individual tensor fit. Wrapped codecs perform
 one owner-wide GPU Zstd finalization per version. Scalar/vector target bytes
 bypass compression.
 
-The default ten arms combine all five codecs with payload
-hashing on and off. Inner frames are 1 MiB; wrapped codecs also use
-1 MiB outer frames, while unwrapped codecs have no outer stage. Every arm uses three
+The default performance proxy uses Bitcomp-Zstd with payload hashing on and off.
+Inner and outer frames are 1 MiB. Explicit `--codecs` selections retain all five
+codecs; unwrapped codecs have no outer stage. Every arm uses three
 cumulative versions and two EP4 receivers. `--codecs`, `--hashing`,
 `--frame-bytes`, `--versions` and `--ports` select the configuration. For a quick
-single arm, use `--codecs snappy-zstd --hashing off`. Hash-on arms generate and
+single arm, use `--hashing on`. Hash-on arms generate and
 verify payload SHA256; hash-off arms skip it on both sides. Host wall clocks and
 scheduler pause timestamps remain available without per-phase CUDA events.
 Use `--profile-version` with an external Nsight Systems launcher for GPU profiling.
@@ -523,7 +528,7 @@ python tests/manual/gpu_delta/bench_gpu_delta.py \
   --reuse-fixtures /data/gpu-delta/original-encoder-run \
   --reuse-producer-spec /data/gpu-delta/original-encoder-run/producer-spec.json \
   --reuse-producer-spec-sha256 ORIGINAL_REVIEWED_SPEC_SHA256 \
-  --codecs snappy-zstd --hashing on --frame-bytes 1048576 \
+  --codecs bitcomp-zstd --hashing on --frame-bytes 1048576 \
   --versions 3 --sender-gpus 8
 ```
 

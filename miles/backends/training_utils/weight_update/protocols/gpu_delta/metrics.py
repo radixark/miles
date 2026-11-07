@@ -130,7 +130,7 @@ def activation_metrics(activation):
             metrics[_PREFIX + "creator_" + name + "/sum"] = sum(row[name] for row in creators)
     # Encoded files are physically shared within each engine-host cache; their
     # retained capacity still counts when this publication has no new creator.
-    # Original DE arenas above are separate physical storage on every rank.
+    # Rank-local input arenas are separate physical storage on both decoder paths.
     for name in ("host_encoded_cache_capacity_bytes", "host_encoded_cache_capacity_generation"):
         if all(name in row for row in timings):
             values = [timing[name] for timing in caches.values()]
