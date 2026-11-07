@@ -68,6 +68,8 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     graceful_ray_stop: bool = True
     # keeps the trainer's compiled programs across runs (torch_tpu's tier-3 cache); a rerun's step 0 then loads them
     compile_cache_dir: str = ""
+    # compiles the first step's programs while the engine starts; off for a run whose options the warmup refuses
+    compile_warmup: bool = True
 
 
 # the associative-scan emitter off: libtpu >= 0.0.44 miscompiles cumulative ops for lengths not a multiple of 1024
@@ -243,6 +245,7 @@ def execute_train(args: ScriptArgs, model: TitanTpuModel, *, launcher_file: str)
         "--micro-batch-size 1 "
         "--gradient-checkpointing "
         "--distributed-backend tpu_dist "
+        f"{'--compile-warmup ' if args.compile_warmup else ''}"
         "--use-dynamic-batch-size "
         f"--max-tokens-per-gpu {SEQ_LEN} "
         f"{model.train_args}"

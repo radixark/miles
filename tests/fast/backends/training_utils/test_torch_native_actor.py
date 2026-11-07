@@ -16,6 +16,7 @@ from miles.backends.training_utils.torch_native.actor import TorchNativeTrainRay
 from miles.backends.training_utils.torch_native.offload import _map_optimizer_state
 from miles.backends.training_utils.torch_native.step_runner import LinearStepRunner, StepMetrics
 from miles.backends.training_utils.weight_update.rollout_cell_updater import _RolloutCellUpdater
+from miles.utils.timer import Timer
 
 register_cpu_ci(est_time=15, suite="stage-a-cpu", labels=[])
 
@@ -239,6 +240,40 @@ def _train_one_dp_rank(rank: int, world_size: int, port: int) -> None:
         expected_grads.append(torch.autograd.grad(_per_token_mean_nll(model, step_samples), model.weight)[0])
         step_start += microbatches
     torch.testing.assert_close(torch.stack(step_grads), torch.stack(expected_grads))
+
+
+def test_the_compile_warmup_runs_the_step_passes_but_leaves_the_weights_logs_and_timers_alone(step, monkeypatch):
+    """--compile-warmup runs a real step's passes on a synthetic shard, and rollout 0 still trains from the same state."""
+    actor = _Provider()
+    actor.ref_runner = object()
+    actor._ref_context = lambda: _recording(step["stages"], "ref")
+    actor.runner = MagicMock()
+    actor.runner.forward_backward_step.side_effect = lambda batches, loss: Timer().add("actor_train", 5.0) or []
+    log_train_step = MagicMock()
+    monkeypatch.setattr(base_module, "log_train_step", log_train_step)
+    monkeypatch.setattr(base_module, "log_rollout_data", MagicMock(side_effect=AssertionError("rollout logged")))
+    monkeypatch.setattr(base_module, "get_data_iterator", lambda args, parts, data: ([_DataIterator()], [1]))
+    monkeypatch.setattr(base_module, "_count_step_loss_tokens", lambda it, n: [None] * len(n))
+    monkeypatch.setattr(base_module.dist, "get_rank", lambda: 0)
+    monkeypatch.setattr(base_module, "response_layout_type", lambda args: SimpleNamespace(sample_device=None))
+    monkeypatch.setattr(base_module, "process_rollout_data_shard", lambda args, shard: {**shard, "processed": True})
+    prepared = []
+    monkeypatch.setattr(
+        base_module, "prepare_rollout_data", lambda args, shard, *, sample_device: prepared.append(shard) or shard
+    )
+    monkeypatch.setattr(Timer(), "timers", {"train_wait": 1.0})
+
+    actor._compile_warmup_passes({"bucket": 2048})
+
+    # the passes scored the processed shard: log-probs and advantages were added to it
+    assert len(prepared) == 1 and prepared[0]["processed"] and prepared[0]["adv"]
+    assert actor.runner.forward_backward_step.call_count == 1
+    actor.runner.apply_step.assert_not_called()
+    log_train_step.assert_not_called()
+    # the gradients are zeroed before the step and freed after it
+    assert actor.runner.zero_grad.call_count == 2
+    assert step["log_probs"] == [(actor.ref_runner, "ref_"), (actor.runner, "")]
+    assert Timer().timers == {"train_wait": 1.0}
 
 
 def test_per_token_loss_gradient_is_the_mean_over_every_token_of_the_step():

@@ -95,19 +95,17 @@ def _install_driver_fakes(
         assert [config.trainer_id for config in trainer_configs] == list(handles)
         return handles
 
-    async def create_rollout_components(
-        _args: SimpleNamespace, *, capability: Any, trainer_handles: dict[str, FakeTrainingModel]
-    ) -> tuple[Any, Any, int]:
+    async def create_components(
+        _args: SimpleNamespace, *, capability: Any, trainer_handles: dict[str, FakeTrainingModel], disposer: Any
+    ) -> tuple[Any, Any, Any]:
         assert trainer_handles is handles
-        return components.inference_controller, components.rollout_executor, num_rollout_per_epoch
-
-    async def create_training_models(
-        _args: SimpleNamespace, _executor: Any, *, handles: dict[str, FakeTrainingModel]
-    ) -> tuple[Any, Any]:
         assert handles["actor"] is components.actor_model
         if args.use_critic:
             assert handles["critic"] is components.critic_model
-        return components.actor_model, components.critic_model
+        disposer.add(components.inference_controller, components.rollout_executor)
+        disposer.add(components.critic_model, components.actor_model)
+        rollout = (components.inference_controller, components.rollout_executor, num_rollout_per_epoch)
+        return rollout, components.actor_model, components.critic_model
 
     async def update_weights(
         _args: Any, _model: Any, _executor: Any, _inference_controller: Any, *, rollout_id: int | None = None
@@ -116,8 +114,7 @@ def _install_driver_fakes(
 
     monkeypatch.setattr(train_driver, "init_orchestration_script", lambda _startup_info, *, disposer: capability)
     monkeypatch.setattr(train_driver, "create_trainer_handles", create_trainer_handles)
-    monkeypatch.setattr(train_driver, "create_rollout_components", create_rollout_components)
-    monkeypatch.setattr(train_driver, "create_training_models", create_training_models)
+    monkeypatch.setattr(train_driver, "create_components", create_components)
     monkeypatch.setattr(train_driver, "maybe_start_mini_ft_controller", lambda _args: None)
     monkeypatch.setattr(train_driver, "update_weights", update_weights)
     monkeypatch.setattr(train_driver, "remove_rollout_data_refs", lambda *_args, **_kwargs: None)
@@ -355,12 +352,14 @@ class TestTerminalLifecycle:
         """Startup failure before the API exists still releases the rollout components."""
         events: list[str] = []
         args = _make_args()
-        _install_driver_fakes(monkeypatch, args, events)
+        components = _install_driver_fakes(monkeypatch, args, events)
 
-        async def fail_creation(*args: Any, handles: dict[str, FakeTrainingModel]) -> None:
+        async def fail_creation(*args: Any, disposer: Any, **kwargs: Any) -> None:
+            # the rollout components exist when the trainers fail, and create_components has handed them over
+            disposer.add(components.inference_controller, components.rollout_executor)
             raise RuntimeError("model creation failed")
 
-        monkeypatch.setattr(train_driver, "create_training_models", fail_creation)
+        monkeypatch.setattr(train_driver, "create_components", fail_creation)
         with pytest.raises(RuntimeError, match="model creation failed"):
             await with_disposer(train_driver.train, _startup_info(args))
 
