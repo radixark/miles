@@ -6,7 +6,7 @@ from tests.fast.fixtures.args_fixtures import parser_defaults, sglang_router_arg
 
 from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig
-from miles.router.backend import _BACKEND_CLASSES, RouterKind, RoutingKeyScope, make_router_backend
+from miles.router.backend import _BACKEND_CLASSES, RouterKind, make_router_backend
 from miles.utils.args.configs.router import RouterConfig
 
 
@@ -130,15 +130,15 @@ def test_a_key_is_sent_when_any_models_router_reads_it(model_cfgs, expected):
 @pytest.mark.parametrize(
     "model_cfg, policies, expected",
     [
-        (_REGULAR, {"sglang_router_policy": "manual", "router_assignment_mode": "min_load"}, RoutingKeyScope.PROMPT),
-        (_REGULAR, {"sglang_router_policy": "manual", "router_assignment_mode": "min_group"}, RoutingKeyScope.PROMPT),
-        (_REGULAR, {"sglang_router_policy": "manual"}, RoutingKeyScope.SAMPLE),
+        (_REGULAR, {"sglang_router_policy": "manual", "router_assignment_mode": "min_load"}, True),
+        (_REGULAR, {"sglang_router_policy": "manual", "router_assignment_mode": "min_group"}, True),
+        (_REGULAR, {"sglang_router_policy": "manual"}, False),
         (
             _REGULAR,
             {"sglang_router_policy": "consistent_hashing", "router_assignment_mode": "min_load"},
-            RoutingKeyScope.SAMPLE,
+            False,
         ),
-        (_REGULAR, {"sglang_router_policy": "cache_aware"}, RoutingKeyScope.SAMPLE),
+        (_REGULAR, {"sglang_router_policy": "cache_aware"}, False),
         (
             _PD,
             {
@@ -146,7 +146,7 @@ def test_a_key_is_sent_when_any_models_router_reads_it(model_cfgs, expected):
                 "router_decode_policy": "cache_aware",
                 "router_assignment_mode": "min_load",
             },
-            RoutingKeyScope.PROMPT,
+            True,
         ),
         (
             _PD,
@@ -155,7 +155,7 @@ def test_a_key_is_sent_when_any_models_router_reads_it(model_cfgs, expected):
                 "router_decode_policy": "consistent_hashing",
                 "router_assignment_mode": "min_load",
             },
-            RoutingKeyScope.SAMPLE,
+            False,
         ),
     ],
     ids=[
@@ -173,7 +173,7 @@ def test_a_prompts_samples_share_a_key_only_when_every_key_router_places_it_by_l
     flags = parser_defaults() | policies
     backend = make_router_backend(Namespace(**flags | RouterConfig.from_args(Namespace(**flags))))
 
-    assert backend.routing_key_scope([model_cfg]) is expected
+    assert backend.shares_routing_key_per_prompt([model_cfg]) is expected
 
 
 def test_the_scope_is_per_sample_when_one_models_key_router_hashes():
@@ -186,5 +186,5 @@ def test_the_scope_is_per_sample_when_one_models_key_router_hashes():
     }
     backend = make_router_backend(Namespace(**flags | RouterConfig.from_args(Namespace(**flags))))
 
-    assert backend.routing_key_scope([_REGULAR]) is RoutingKeyScope.PROMPT
-    assert backend.routing_key_scope([_REGULAR, _PD]) is RoutingKeyScope.SAMPLE
+    assert backend.shares_routing_key_per_prompt([_REGULAR]) is True
+    assert backend.shares_routing_key_per_prompt([_REGULAR, _PD]) is False

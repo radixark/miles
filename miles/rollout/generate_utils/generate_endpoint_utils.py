@@ -18,7 +18,7 @@ from miles.rollout.generate_utils.sampling_mask import (
     read_sampled_logprobs,
     should_return_sampling_mask,
 )
-from miles.router.backend import RoutingKeyScope, make_router_backend
+from miles.router.backend import make_router_backend
 from miles.utils.lora.utils import LORA_ADAPTER_NAME, lora_rollout_enabled
 from miles.utils.output_store.plan import (
     FIELDS,
@@ -84,18 +84,18 @@ def apply_sample_max_response_len(sampling_params: dict[str, Any], sample: Sampl
 
 
 def stamp_prompt_routing_key(args, samples: list[Sample]) -> None:
-    """Key the samples of one prompt for the router, at the scope the router backend decides.
+    """Key the samples of one prompt for the router; the backend decides whether they share one key.
 
     Samples that already carry a key keep it, so re-sampled and derived samples keep their affinity.
     """
     backend = make_router_backend(args)
     if not backend.routes_by_key(args.sglang.models):
         return
-    scope = backend.routing_key_scope(args.sglang.models)
+    shared = backend.shares_routing_key_per_prompt(args.sglang.models)
     shared_key = str(uuid.uuid4())
     for sample in samples:
         if sample.routing_key is None:
-            sample.routing_key = shared_key if scope == RoutingKeyScope.PROMPT else str(uuid.uuid4())
+            sample.routing_key = shared_key if shared else str(uuid.uuid4())
 
 
 def compute_request_payload(

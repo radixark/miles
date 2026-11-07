@@ -30,13 +30,6 @@ class RouterKind(str, enum.Enum):
     MILES = "miles"
 
 
-class RoutingKeyScope(str, enum.Enum):
-    # every sample carries its own key
-    SAMPLE = "sample"
-    # the samples of one prompt share a key, so the prompt is prefilled once and cached for its siblings
-    PROMPT = "prompt"
-
-
 @dataclass(frozen=True)
 class RouterFeatures:
     pd_disaggregation: bool
@@ -83,16 +76,14 @@ class RouterBackend(ABC):
     @abstractmethod
     def _router_routes_by_key(self, model_cfg: "ModelConfig | None") -> bool: ...
 
-    def routing_key_scope(self, model_cfgs: "Sequence[ModelConfig]") -> RoutingKeyScope:
-        """How many samples share one routing key.
+    def shares_routing_key_per_prompt(self, model_cfgs: "Sequence[ModelConfig]") -> bool:
+        """Whether a prompt's samples share one routing key, so the prompt is prefilled once for its siblings.
 
-        A prompt's samples share a key only when every router that reads keys places a new key by
-        load; a router that hashes keys needs one per sample, or a few keys pin most of its ranks idle.
+        Only when every router that reads keys places a new key by load; a router that hashes keys
+        needs one key per sample, or a few keys pin most of its ranks idle.
         """
         keyed = [model_cfg for model_cfg in model_cfgs or [None] if self._router_routes_by_key(model_cfg)]
-        if keyed and all(self._router_places_new_keys_by_load(model_cfg) for model_cfg in keyed):
-            return RoutingKeyScope.PROMPT
-        return RoutingKeyScope.SAMPLE
+        return bool(keyed) and all(self._router_places_new_keys_by_load(model_cfg) for model_cfg in keyed)
 
     @abstractmethod
     def _router_places_new_keys_by_load(self, model_cfg: "ModelConfig | None") -> bool: ...

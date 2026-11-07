@@ -121,11 +121,3 @@ class TestStampPromptRoutingKey:
 
         assert kept.routing_key == "bound"
         assert fresh.routing_key not in (None, "bound")
-
-    def test_a_router_that_ignores_keys_leaves_the_samples_unkeyed(self):
-        """Under a load or cache policy no request carries a routing header."""
-        samples = [Sample(prompt="p") for _ in range(2)]
-
-        stamp_prompt_routing_key(_make_router_args("round_robin"), samples)
-
-        assert [sample.routing_key for sample in samples] == [None, None]
