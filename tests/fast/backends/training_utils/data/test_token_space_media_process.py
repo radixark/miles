@@ -121,17 +121,38 @@ def test_rebuild_runs_in_the_background(monkeypatch):
     assert build.result().mrope_position_ids.shape == (7, 3)
 
 
-def test_a_failed_rebuild_raises_where_the_sample_is_resolved(monkeypatch):
-    """The executor's future carries the error, so a build that fails on its thread never leaves a consumer waiting.
+class _PositionsThatFailToCopy:
+    """Stands in for the [3, num_tokens] positions whose device copy is the last step of a rebuild."""
 
-    background:   rebuild() raises ----> future holds the error
-    main thread:  resolved_multimodal_train_inputs(...) raises it; resolved_mrope_position_ids(...) raises it too
-    """
+    @property
+    def T(self):
+        return self
 
-    def broken_processor(*_):
+    def contiguous(self):
+        return self
+
+    def to(self, device):
         raise RuntimeError("device copy failed")
 
-    monkeypatch.setattr(token_space_media_process, "_trainer_processor", broken_processor)
+
+def test_a_failed_rebuild_raises_where_the_sample_is_resolved(monkeypatch):
+    """A build that fails on its last step, the device copy of the positions, raises at the consumer.
+
+    background:   rebuild(): tensors built, then positions.to(device) raises ----> the executor's future holds it
+    main thread:  build.result() raises it; so do resolved_multimodal_train_inputs and resolved_mrope_position_ids
+
+    Hand-settled futures left this build pending forever: the copy ran after the try that settled them.
+    """
+    monkeypatch.setattr(
+        token_space_media_process,
+        "_trainer_processor",
+        lambda *_: token_space_media_process._TrainerProcessor(core=_RecordingProcessor(), image_device=None),
+    )
+    monkeypatch.setattr(
+        token_space_media_process,
+        "_sample_train_inputs",
+        lambda *args, **kwargs: ({"pixel_values": torch.zeros(1)}, _PositionsThatFailToCopy()),
+    )
 
     pending = token_space_media_process.compute_multimodal_train_inputs(
         object(),
@@ -143,6 +164,9 @@ def test_a_failed_rebuild_raises_where_the_sample_is_resolved(monkeypatch):
         device=torch.device("cpu"),
     )
 
+    (build,) = pending.multimodal_train_inputs
+    with pytest.raises(RuntimeError, match="device copy failed"):
+        build.result(timeout=5)
     with pytest.raises(RuntimeError, match="device copy failed"):
         token_space_media_process.resolved_multimodal_train_inputs(pending.multimodal_train_inputs)
     with pytest.raises(RuntimeError, match="device copy failed"):
