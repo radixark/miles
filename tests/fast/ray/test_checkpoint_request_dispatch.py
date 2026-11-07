@@ -4,7 +4,7 @@ import pytest
 from tests.fast.fixtures.args_fixtures import parse_megatron_test_config
 from tests.fast.ray.test_placement_group import _make_trainer_handle
 
-from miles.ray.placement_group import _init_training_models
+from miles.ray.placement_group import init_training_models
 
 
 class TestSinglePolicyCheckpointDispatch:
@@ -26,7 +26,7 @@ class TestSinglePolicyCheckpointDispatch:
             handle.init.return_value = [8]
             handle.load_state.return_value = [8]
 
-        await _init_training_models(args, handles=handles)
+        await init_training_models(args, handles=handles)
 
         requests = [
             (handle.load_state if initialized else handle.init).call_args.args[0] for handle in handles.values()

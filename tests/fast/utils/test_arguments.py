@@ -4334,6 +4334,8 @@ class TestValidateCompileWarmup:
             ({"pipeline_model_parallel_size": 2}, "--pipeline-model-parallel-size"),
             ({"use_rollout_routing_replay": True}, "--use-rollout-routing-replay"),
             ({"use_critic": True}, "--use-critic"),
+            ({"custom_convert_samples_to_train_data_path": "x.py"}, "--custom-convert-samples-to-train-data-path"),
+            ({"custom_reward_post_process_path": "x.py"}, "--custom-reward-post-process-path"),
         ],
     )
     def test_a_run_the_synthetic_batch_cannot_mirror_is_refused(self, overrides: dict, flag: str) -> None:

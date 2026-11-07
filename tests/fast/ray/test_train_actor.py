@@ -149,7 +149,7 @@ class TestTrainParallelConfigWiring:
             ),
         )
 
-        actor_model, _ = await placement_group._init_training_models(
+        actor_model, _ = await placement_group.init_training_models(
             args, handles={trainer_config.trainer_id: actor_handle}
         )
         await placement_group.attach_trainers_to_rollout(args, rollout_executor, actor_model)

@@ -104,6 +104,7 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
         self.data_source = None
         self.generate_rollout = None
         self.eval_generate_rollout = None
+        self._metric_checker = None
 
     @init_once
     async def init(self) -> None:

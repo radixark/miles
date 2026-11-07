@@ -259,13 +259,15 @@ async def create_components(
     if not overlap:
         components = await create_rollout_components(args, capability=capability, trainer_handles=trainer_handles)
         disposer.add(components.inference_controller, components.rollout_executor)
-        actor_model, critic_model = await _init_training_models(args, handles=trainer_handles)
+        actor_model, critic_model = await init_training_models(args, handles=trainer_handles)
+        disposer.add(critic_model, actor_model)
     else:
-        disposer.add(inference_controller, rollout_executor)
+        # the trainers too: cancelling their task leaves their remote init running, so dispose must reach them
+        disposer.add(inference_controller, rollout_executor, *trainer_handles.values())
         rollout = await eager_create_task(
             create_rollout_components(args, capability=capability, trainer_handles=trainer_handles)
         )
-        trainers = await eager_create_task(_init_training_models(args, handles=trainer_handles))
+        trainers = await eager_create_task(init_training_models(args, handles=trainer_handles))
         # the first failure surfaces at once; the other side is cancelled
         done, pending = await asyncio.wait({rollout, trainers}, return_when=asyncio.FIRST_EXCEPTION)
         if failed := [task for task in done if not task.cancelled() and task.exception() is not None]:
@@ -274,7 +276,6 @@ async def create_components(
             await asyncio.gather(*pending, return_exceptions=True)
             raise failed[0].exception()
         components, (actor_model, critic_model) = rollout.result(), trainers.result()
-    disposer.add(critic_model, actor_model)
     await attach_trainers_to_rollout(args, components.rollout_executor, actor_model)
     return components, actor_model, critic_model
 
@@ -288,7 +289,7 @@ async def attach_trainers_to_rollout(
 
 
 # TODO: move (when reorganizing files)
-async def _init_training_models(
+async def init_training_models(
     args: OrchestratorConfig, *, handles: dict[str, BaseWorkerHandle]
 ) -> tuple[BaseWorkerHandle, BaseWorkerHandle | None]:
     trainer_configs = compute_trainer_configs(args)

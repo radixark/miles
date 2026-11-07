@@ -18,7 +18,7 @@ from tests.fast.fixtures.megatron_config_fixtures import write_megatron_config, 
 from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.ray import placement_group as placement_group_module
 from miles.ray.placement_group import (
-    _init_training_models,
+    init_training_models,
     attach_trainers_to_rollout,
     create_rollout_components,
     create_trainer_handles,
@@ -645,7 +645,7 @@ def _make_trainer_handle(
 
 
 async def _create_training_models(args, rollout_executor, *, handles):
-    actor_model, critic_model = await _init_training_models(args, handles=handles)
+    actor_model, critic_model = await init_training_models(args, handles=handles)
     await attach_trainers_to_rollout(args, rollout_executor, actor_model)
     return actor_model, critic_model
 
@@ -1055,7 +1055,7 @@ class TestCreateComponents:
             return actor, None
 
         monkeypatch.setattr(placement_group_module, "create_rollout_components", create_rollout_components)
-        monkeypatch.setattr(placement_group_module, "_init_training_models", init_training_models)
+        monkeypatch.setattr(placement_group_module, "init_training_models", init_training_models)
         monkeypatch.setattr(placement_group_module, "create_rollout_executor_handle", lambda *, capability: executor)
         monkeypatch.setattr(
             placement_group_module, "create_inference_controller_handle", lambda *, capability: controller
@@ -1074,7 +1074,7 @@ class TestCreateComponents:
         events, components, actor, controller, disposer = self._install(monkeypatch)
 
         result = await placement_group_module.create_components(
-            self._args(), capability=None, trainer_handles={}, disposer=disposer
+            self._args(), capability=None, trainer_handles={"actor": actor}, disposer=disposer
         )
 
         assert result == (components, actor, None)
@@ -1086,8 +1086,8 @@ class TestCreateComponents:
             "rollout_done",
             "attach",
         ]
-        # once the executor's gate passes, the handles reach the disposer before either side can fail
-        assert disposer.added == [controller, components.rollout_executor, None, actor]
+        # once the executor's gate passes, every worker reaches the disposer before either side can fail
+        assert disposer.added == [controller, components.rollout_executor, actor]
 
     @pytest.mark.parametrize(
         ("overrides", "hot_restart"),
@@ -1128,13 +1128,16 @@ class TestCreateComponents:
             await started.wait()
             raise RuntimeError("no engine at that address")
 
-        monkeypatch.setattr(placement_group_module, "_init_training_models", init_training_models_forever)
+        monkeypatch.setattr(placement_group_module, "init_training_models", init_training_models_forever)
         monkeypatch.setattr(placement_group_module, "create_rollout_components", failing_rollout)
 
+        trainer = object()
         with pytest.raises(RuntimeError, match="no engine at that address"):
             await asyncio.wait_for(
                 placement_group_module.create_components(
-                    self._args(), capability=None, trainer_handles={}, disposer=disposer
+                    self._args(), capability=None, trainer_handles={"actor": trainer}, disposer=disposer
                 ),
                 timeout=5,
             )
+        # the cancelled task leaves the trainers' remote init running: the disposer still reaches them
+        assert trainer in disposer.added
