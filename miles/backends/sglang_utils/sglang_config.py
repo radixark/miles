@@ -357,7 +357,12 @@ def _extract_base_args(args: Namespace) -> dict[str, Any]:
     parser = argparse.ArgumentParser(add_help=False)
     _add_prefixed_primary_server_args(parser)
     values = vars(args)
-    return {action.dest.removeprefix("sglang_"): values[action.dest] for action in parser._actions}
+    return {
+        action.dest.removeprefix("sglang_"): values[action.dest]
+        for action in parser._actions
+        # sglang's deprecated choice aliases default to SUPPRESS: no dest unless given
+        if action.default is not argparse.SUPPRESS or action.dest in values
+    }
 
 
 def _add_prefixed_primary_server_args(parser: argparse.ArgumentParser) -> None:
