@@ -1,4 +1,5 @@
 import asyncio
+import weakref
 from argparse import Namespace
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -147,26 +148,50 @@ class TestConnect:
 
 
 class TestColocatedBaseSend:
-    def test_bucket_storage_is_released_after_all_ipc_consumers_finish(self) -> None:
+    @pytest.mark.parametrize("use_distribute", [False, True])
+    def test_bucket_storage_is_released_after_all_ipc_consumers_finish(self, use_distribute) -> None:
         protocol = UpdateWeightFromTensor.__new__(UpdateWeightFromTensor)
-        protocol.use_distribute = False
+        protocol.use_distribute = use_distribute
+        protocol._is_distributed_src_rank = use_distribute
+        protocol.group_name = "miles-colocate"
+        protocol._model_update_groups = MagicMock(name="model_update_groups")
+        protocol.distributed_rollout_engines = [MagicMock(name="remote_engine")]
         protocol._ipc_engine = MagicMock()
         protocol._ipc_gather_src = 0
         protocol._ipc_gather_group = MagicMock(name="ipc_group")
         protocol._selector = "all"
         future = MagicMock(name="engine_future")
+        remote_future = MagicMock(name="remote_engine_future")
+        bucket = [("weight", torch.zeros(1))]
+        tensor_ref = weakref.ref(bucket[0][1])
+        remote_bucket_sizes = []
+        events = []
+
+        def send_to_remote_engines(group_name, groups, engines, named_tensors, *, selector):
+            # Remote engines read the bucket itself, so it must still be populated when this send starts.
+            remote_bucket_sizes.append(len(named_tensors))
+            return [remote_future]
 
         with (
             patch(f"{_TENSOR_MODULE}._send_to_colocated_engine", return_value=([future], object())),
-            patch(f"{_TENSOR_MODULE}.async_utils.wait_futures", return_value=[{"success": True}]) as wait,
+            patch(f"{_TENSOR_MODULE}.update_weights_from_distributed", side_effect=send_to_remote_engines),
+            patch(
+                f"{_TENSOR_MODULE}.async_utils.wait_futures",
+                side_effect=lambda futures: events.append("wait") or [{"success": True}],
+            ) as wait,
             patch(f"{_TENSOR_MODULE}.check_weight_sync_results") as check,
-            patch(f"{_TENSOR_MODULE}.dist.barrier") as barrier,
+            patch(f"{_TENSOR_MODULE}.dist.barrier", side_effect=lambda **kw: events.append("barrier")) as barrier,
         ):
-            protocol.send_bucket([("weight", torch.zeros(1))])
+            protocol.send_bucket(bucket)
 
-        wait.assert_called_once_with([future])
+        # Every rank owns storage the gathered IPC handles reference, so the barrier must follow the engine import.
+        assert events == ["wait", "barrier"]
+        assert remote_bucket_sizes == ([1] if use_distribute else [])
+        wait.assert_called_once_with([future, remote_future] if use_distribute else [future])
         check.assert_called_once_with([{"success": True}], is_lora=False)
         barrier.assert_called_once_with(group=protocol._ipc_gather_group)
+        assert bucket == []
+        assert tensor_ref() is None
 
     def test_multiple_colocated_buckets_are_sent_serially_in_source_order(self) -> None:
         """Two dtype buckets reach the engine one at a time and in the order they were built."""
