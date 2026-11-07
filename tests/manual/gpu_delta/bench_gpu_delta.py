@@ -1881,7 +1881,7 @@ def _end_to_end(args):
     if not args.reuse_fixtures:
         _record_producer(args, prepared)
     if args.reuse_fixtures:
-        from sglang.srt.weight_sync.gpu_delta.host import validate_codec
+        from sglang.srt.weight_sync.gpu_delta.host_worker import validate_codec
 
         started = time.monotonic()
         plan, _ = merge_plans(_read(args.prepared_inputs / "inventory" / "inventory.json")["descriptions"])
