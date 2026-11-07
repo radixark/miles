@@ -9,7 +9,9 @@
             budget ≤ 0 → TRUNCATED; last turn → COMPLETED
 
     legacy      test_generation_uses_caller_state_and_closes_environment_on_every_return   budget 0 / finish length
-    token space test_a_response_past_max_seq_len_is_trimmed_to_it                         [a] trim
+    token space test_a_token_space_turn_records_the_engines_routed_experts                  request: rows = served
+                                                                                             prompt + response − 1
+                test_a_response_past_max_seq_len_is_trimmed_to_it                         [a] trim
                 test_an_observation_whose_media_leaves_no_room_is_rolled_back             [a] roll back, two limits
                 TestObservationStaysOutOfAnEndingSample                                   [b]
                     test_the_last_turn_ends_before_its_observation
@@ -20,6 +22,8 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
+import numpy as np
+import pybase64
 import pytest
 from examples.geo3k_vlm.multi_turn import rollout
 
@@ -52,6 +56,41 @@ async def _run(
     return await rollout.generate(
         GenerateFnInput(state=state, sample=sample, sampling_params={"max_new_tokens": 5}, evaluation=False)
     )
+
+
+@pytest.mark.parametrize("token_space", [True, False])
+async def test_a_token_space_turn_records_the_engines_routed_experts(
+    monkeypatch: pytest.MonkeyPatch, token_space: bool
+) -> None:
+    """A token-space request keeps the routed experts of the prompt the engine served plus the response,
+    so replay (R3) sees one row per token of the expanded sequence; the legacy request leaves them alone."""
+    layers, topk, response = 2, 3, [7, 8]
+    sample = Sample(prompt="", tokens=[1, -101, 2])
+    served_prompt = [1, 5, 5, 5, 5, 2]  # the placeholder became a 4-token image run
+    rows = np.arange((len(served_prompt) + len(response) - 1) * layers * topk, dtype=np.int32)
+    output = {
+        "text": "answer",
+        "prompt_token_ids": served_prompt,
+        "meta_info": {
+            "output_token_logprobs": [(-0.5, t, None) for t in response],
+            "finish_reason": {"type": "stop"},
+            "prompt_tokens": len(served_prompt),
+            "completion_tokens": len(response),
+            "routed_experts": pybase64.b64encode(rows.tobytes()).decode(),
+        },
+    }
+    monkeypatch.setattr(rollout, "post", AsyncMock(return_value=output))
+
+    await rollout._run_inference_step(
+        "url", sample, {}, None, 0 if token_space else None, args=SimpleNamespace(num_layers=layers)
+    )
+
+    if token_space:
+        assert sample.tokens == served_prompt
+        assert sample.rollout_routed_experts.shape == (len(served_prompt) + len(response) - 1, layers, topk)
+    else:
+        assert sample.tokens == [1, -101, 2]
+        assert sample.rollout_routed_experts is None
 
 
 @pytest.mark.parametrize("budget", [0, 1])
@@ -176,7 +215,7 @@ async def test_a_response_past_max_seq_len_is_trimmed_to_it(monkeypatch: pytest.
     env = SimpleNamespace(reset=Mock(), close=Mock())
     sample = Sample(prompt="question", tokens=[10], loss_mask=[], rollout_log_probs=[])
 
-    async def infer(url, sample, sampling_params, image_data, mm_token_expansion_start_len):
+    async def infer(url, sample, sampling_params, image_data, mm_token_expansion_start_len, *, args):
         assert sampling_params["max_new_tokens"] == 3
         sample.tokens = [10, 11, 12]
         return "answer", [20, 21, 22], [-0.1, -0.2, -0.3], "length"
@@ -213,7 +252,7 @@ async def test_an_observation_whose_media_leaves_no_room_is_rolled_back(
     )
     answers = iter([([20], [-0.2]), ([40], [-0.4])])
 
-    async def infer(url, sample, sampling_params, image_data, mm_token_expansion_start_len):
+    async def infer(url, sample, sampling_params, image_data, mm_token_expansion_start_len, *, args):
         if sample.tokens == [10, 20, 30, 31]:
             expanded = {"prompt_token_ids": [10, 20, 30, 9, 9, 9, 9, 9, 9, 31]}
             adopt_expanded_prompt_ids(sample, {"return_prompt_token_ids": True}, expanded)
