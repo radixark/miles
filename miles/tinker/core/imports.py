@@ -67,15 +67,26 @@ def _copy_adapter_files(
             # a file growing while it is copied is still held to its cap
             limit = min(budget, json_max_bytes) if name.endswith(".json") else budget
             source = open(fd, "rb", closefd=False)
-            with source, open(os.path.join(copy_dir, name), "wb") as copy:
+            with source, _writing(open, os.path.join(copy_dir, name), "wb") as copy:
                 while chunk := source.read(min(_COPY_CHUNK_BYTES, limit + 1)):
                     if len(chunk) > limit:
                         raise UserInputError(f"{name} grew past {limit} bytes while it was copied")
-                    copy.write(chunk)
+                    _writing(copy.write, chunk)
                     budget -= len(chunk)
                     limit -= len(chunk)
         finally:
             os.close(fd)
+
+
+class _CopyWriteError(Exception):
+    """An OSError writing the gateway's copy (e.g. a full disk): the server's fault, not the tenant's."""
+
+
+def _writing(write, *args):
+    try:
+        return write(*args)
+    except OSError as error:
+        raise _CopyWriteError from error
 
 
 def copy_import(
@@ -91,7 +102,8 @@ def copy_import(
     """Copy a file:// import's adapter files, opened beneath the import root without following symlinks, into a
     gateway-owned dir under the checkpoint root; returns that dir."""
     root = os.path.normpath(import_root)
-    copy_dir = os.path.join(checkpoint_root, IMPORT_COPIES_DIRNAME, uuid.uuid4().hex)
+    # trainer ranks open the copy, and may not share the gateway's working directory
+    copy_dir = os.path.join(os.path.realpath(checkpoint_root), IMPORT_COPIES_DIRNAME, uuid.uuid4().hex)
     os.makedirs(copy_dir)
     try:
         path = os.path.normpath(uri.removeprefix("file://"))
@@ -111,6 +123,8 @@ def copy_import(
             os.close(source_fd)
     except BaseException as error:
         shutil.rmtree(copy_dir)
+        if isinstance(error, _CopyWriteError):
+            raise error.__cause__ from None
         if isinstance(error, OSError) and error.errno == errno.ELOOP:
             raise UserInputError(f"{uri} is or holds a symlink; import a copy of the adapter's files") from None
         if isinstance(error, OSError | ValueError):

@@ -24,7 +24,7 @@ from safetensors import safe_open
 _FIRST_LAYER_ATTENTION_WEIGHT = re.compile(r"(^|\.)layers\.0\.(.+\.)?[^.]*attn[^.]*\.(.+\.)?weight$")
 
 
-def is_fingerprint_tensor(name: str) -> bool:
+def is_base_check_tensor(name: str) -> bool:
     return name.endswith("norm.weight") or _FIRST_LAYER_ATTENTION_WEIGHT.search(name) is not None
 
 
@@ -32,7 +32,7 @@ def is_fingerprint_tensor(name: str) -> bool:
 _UNQUANTIZED_DTYPES = {"F16", "BF16", "F32", "F64"}
 
 
-def hf_fingerprint_tensors(hf_dir: Path) -> dict[str, torch.Tensor]:
+def read_base_check_tensors(hf_dir: Path) -> dict[str, torch.Tensor]:
     """The fingerprint tensors an HF dir holds unquantized: a quantized copy of the base (FP8, MXFP4) compares by
     the tensors quantization leaves alone."""
     index = hf_dir / "model.safetensors.index.json"
@@ -43,7 +43,7 @@ def hf_fingerprint_tensors(hf_dir: Path) -> dict[str, torch.Tensor]:
     for file in files:
         with safe_open(str(hf_dir / file), "pt") as f:
             for name in f.keys():
-                if is_fingerprint_tensor(name) and f.get_slice(name).get_dtype() in _UNQUANTIZED_DTYPES:
+                if is_base_check_tensor(name) and f.get_slice(name).get_dtype() in _UNQUANTIZED_DTYPES:
                     tensors[name] = f.get_tensor(name)
     return tensors
 
@@ -91,5 +91,5 @@ def assert_same_base_model(source: str, candidates: Iterable[str], run_hf_checkp
     if hf_dir.resolve() == run_dir.resolve():
         return
     assert_same_base_tensors(
-        source, hf_fingerprint_tensors(hf_dir), hf_fingerprint_tensors(run_dir), run_hf_checkpoint
+        source, read_base_check_tensors(hf_dir), read_base_check_tensors(run_dir), run_hf_checkpoint
     )

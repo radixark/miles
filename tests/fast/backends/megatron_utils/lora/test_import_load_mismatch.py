@@ -10,6 +10,7 @@ from tests.fast.dist_utils import find_free_port, init_gloo
 from miles.backends.megatron_utils.lora import checkpoint
 from miles.backends.training_utils.checkpoint.adapter.adapter_exports import write_peft_adapter
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
+from miles.utils import distributed_utils
 from miles.utils.distributed_utils import init_gloo_group
 from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
 
@@ -20,8 +21,10 @@ RUN_SHAPES = {f"{Q}.lora_A": (2, 8), f"{Q}.lora_B": (8, 2), f"{K}.lora_A": (2, 8
 
 
 @pytest.fixture(autouse=True)
-def gloo():
+def gloo(monkeypatch):
     init_gloo(0, 1, port=find_free_port())
+    # the cached group belongs to the previous test's destroyed process group
+    monkeypatch.setattr(distributed_utils, "GLOO_GROUP", None)
     init_gloo_group()
     yield
     dist.destroy_process_group()
@@ -36,7 +39,7 @@ def _write(path, rank_in_tensors=2):
 
 
 def _mismatch(path):
-    return checkpoint.find_load_mismatch(None, 0, str(path), RUN, TARGETS, False, run_shapes=RUN_SHAPES)
+    return checkpoint.check_load_source(None, 0, str(path), RUN, TARGETS, False, run_shapes=RUN_SHAPES)[0]
 
 
 def test_a_fitting_adapter_loads(tmp_path):

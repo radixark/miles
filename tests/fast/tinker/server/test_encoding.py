@@ -212,4 +212,4 @@ def test_bad_age_recipients_are_refused_at_decode(recipients, error):
     assert error in decoded["validation_error"]
     accepted = [_RECIPIENT] * 9 + [_SSH_RECIPIENT]
     _, decoded = decode_command("save_weights_external", payload | {"age_encryption_recipients": accepted})
-    assert "validation_error" not in decoded and decoded["age_recipients"] == accepted
+    assert "validation_error" not in decoded and decoded["age_encryption_recipients"] == accepted

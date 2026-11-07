@@ -48,7 +48,7 @@ class TestAgentPipelineState:
         """Solver, rewriter and selector failures preserve local stage results and reward ownership."""
         args = ImmutableNamespace(
             num_parallel=1,
-            rollout_max_context_len=16,
+            max_seq_len=16,
             sglang_router_ip="localhost",
             sglang_router_port=8000,
             incorrect_reward_weight=0.8,

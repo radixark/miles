@@ -234,9 +234,7 @@ def _train(args: ScriptArgs):
 
     wandb_args = U.get_default_wandb_args(__file__, run_id=args.run_id) if args.enable_wandb else ""
 
-    seq_args = (
-        f"--seq-length {args.seq_window} --rollout-max-context-len {args.seq_window} " if args.seq_window > 0 else ""
-    )
+    seq_args = f"--seq-length {args.seq_window} --max-seq-len {args.seq_window} " if args.seq_window > 0 else ""
 
     train_args = (
         f"{ckpt_args} {lora_args} {rollout_args} {seq_args} {optimizer_args} {grpo_args} {r3_args} "

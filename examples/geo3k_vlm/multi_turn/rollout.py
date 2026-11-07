@@ -188,8 +188,8 @@ def _prepare_start_state(sample: Sample, state, args: Any, sampling_params: dict
     sample.response_length = len(response_tokens)
 
     budget = None
-    if args.rollout_max_context_len is not None:
-        budget = args.rollout_max_context_len - len(sample.tokens)
+    if args.max_seq_len is not None:
+        budget = args.max_seq_len - len(sample.tokens)
     elif sampling_params.get("max_new_tokens") is not None:
         budget = sampling_params["max_new_tokens"] - len(sample.tokens)
     return current_image_data, response_tokens, budget, multimodal_train_inputs_buffer

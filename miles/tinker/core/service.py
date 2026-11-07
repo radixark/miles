@@ -83,6 +83,11 @@ def _is_same_base_model(a: str, b: str) -> bool:
     return a == b or (is_path(a) and is_path(b) and os.path.realpath(a) == os.path.realpath(b))
 
 
+def _staged_failure(error: str) -> dict:
+    # the load never reached the slot, so the model stays usable
+    return {"failure": {"error": error, "error_category": "server", "slot_unchanged": True}}
+
+
 class TinkerService:
     def __init__(self, backend, config: GatewayConfig) -> None:
         self.backend = backend
@@ -252,6 +257,10 @@ class TinkerService:
         self._close_reasons[model_id] = error
         while len(self._close_reasons) > 4 * self.config.n_slots:
             self._close_reasons.pop(next(iter(self._close_reasons)))
+        model_queue = self.scheduler.model_queue(model_id)
+        for command in [*(pending.command for pending in model_queue.queue), *model_queue.pending_by_seq.values()]:
+            if "copy_dir" in command.payload.get("staged_import", {}):
+                self._release_staged_import(record, command.payload["staged_import"])
         self.scheduler.remove_model_queue(model_id)
         for request_id in [record.create_request_id, *record.request_id_by_seq.values()]:
             if self.futures.get(request_id, record.tenant) is not None:
@@ -386,7 +395,7 @@ class TinkerService:
     async def _finish_request(self, model_queue, pending, outcome: dict) -> None:
         if "error" in outcome:
             category = outcome.get("error_category", "server")
-            if pending.command.op.requires_model_close_on_failure(category):
+            if pending.command.op.requires_model_close_on_failure(category) and not outcome.get("slot_unchanged"):
                 await self._close_model(
                     model_queue.model_id,
                     f"model training failed ({outcome['error']}); create a new model and restore from a checkpoint",
@@ -413,58 +422,29 @@ class TinkerService:
             tenant_digest=tenant_digest(record.tenant),
             parametrization_fields=build_parametrization_fields(record, self.config),
         )
-        if isinstance(written, dict):
-            return written
         tinker_path = f"tinker://{record.model_id}/weights/{name}"
-        # a TTL change between the drop and the new expiry would land on the wrong commit
-        async with self._expiry_lock:
-            old_expires_at = self.expiry.expires_at(tinker_path) if payload["overwrite"] else None
-            try:
-                if old_expires_at is not None:
-                    old_commit_id = await asyncio.to_thread(self._live_commit_id, root, name)
-                    # a crash between the commit and the new TTL must not leave the new commit the old one's expiry
-                    await asyncio.to_thread(self.expiry.drop, tinker_path)
-                # the commit's recovery walk and fsyncs hit shared storage; keep the event loop serving
-                await asyncio.to_thread(
-                    self.backend.commit_adapter, root, name, written, overwrite=payload["overwrite"]
-                )
-            except Exception as error:
-                # the commit can fail before or after its link swap; only the old commit keeps the old expiry. An
-                # entry still present means the drop never happened
-                if old_expires_at is not None and self.expiry.expires_at(tinker_path) is None:
-                    try:
-                        if await asyncio.to_thread(self._live_commit_id, root, name) == old_commit_id:
-                            await asyncio.to_thread(self.expiry.restore, tinker_path, old_expires_at)
-                    except (OSError, ValueError):
-                        # the save fails either way; the old commit then only no longer expires
-                        logger.exception(f"could not restore the expiry of {tinker_path}")
-                if isinstance(error, ValueError):
-                    # the commit refuses to replace a link it did not write (e.g. an operator's link to a shared
-                    # adapter)
-                    raise UserInputError(f"cannot commit checkpoint {name!r}: {error}") from None
-                if not isinstance(error, OSError):
-                    raise
-                # a storage failure loses only this save
-                return {"error": f"cannot commit checkpoint {name!r}: {error}", "error_category": "server"}
-            self._delete_retired_outside_the_lock(root)
-            await self._set_expiry_after_commit_locked(tinker_path, payload["ttl_seconds"])
+        # an overwrite's old expiry names the old commit, so it never deletes this one, whether or not the commit lands
+        try:
+            # the commit's recovery walk and fsyncs hit shared storage; keep the event loop serving
+            await asyncio.to_thread(self.backend.commit_adapter, root, name, written, overwrite=payload["overwrite"])
+        except ValueError as error:
+            # the commit refuses to replace a link it did not write (e.g. an operator's link to a shared adapter)
+            raise UserInputError(f"cannot commit checkpoint {name!r}: {error}") from None
+        except OSError as error:
+            # a storage failure loses only this save
+            return {"error": f"cannot commit checkpoint {name!r}: {error}", "error_category": "server"}
+        self._delete_retired_outside_the_lock(root)
+        await self._set_expiry_after_commit(tinker_path, written.commit_id, payload["ttl_seconds"])
         return {"op": "save_state", "path": tinker_path}
 
-    async def _set_expiry_after_commit(self, tinker_path: str, ttl_seconds: int | None) -> None:
-        async with self._expiry_lock:
-            await self._set_expiry_after_commit_locked(tinker_path, ttl_seconds)
-
-    async def _set_expiry_after_commit_locked(self, tinker_path: str, ttl_seconds: int | None) -> None:
+    async def _set_expiry_after_commit(self, tinker_path: str, commit_id: str, ttl_seconds: int | None) -> None:
         try:
-            # two fsyncs on shared storage
-            await asyncio.to_thread(self.expiry.set, tinker_path, ttl_seconds, time.time())
+            async with self._expiry_lock:
+                # two fsyncs on shared storage
+                await asyncio.to_thread(self.expiry.set, tinker_path, commit_id, ttl_seconds, time.time())
         except OSError:
             # failing the request would hide a committed save; without its entry it only does not expire
             logger.exception(f"could not record the expiry of {tinker_path}; it does not expire")
-
-    def _live_commit_id(self, root: str, name: str) -> str | None:
-        files = self.backend.resolve_checkpoint_files(root, name, None)
-        return None if files is None else files["commit_id"]
 
     def _delete_retired_outside_the_lock(self, root: str) -> None:
         task = asyncio.create_task(self._delete_retired(root))
@@ -554,7 +534,7 @@ class TinkerService:
             "op": "save_weights_for_sampler",
             "path": f"tinker://{record.model_id}/sampler_weights/{version}",
         }
-        await self._set_expiry_after_commit(result["path"], payload["ttl_seconds"])
+        await self._set_expiry_after_commit(result["path"], written.commit_id, payload["ttl_seconds"])
         if payload.get("sampler_path") is None:
             # unnamed saves return a sampling session bound to the new version
             result["sampling_session_id"] = self._new_sampling_session(
@@ -565,17 +545,30 @@ class TinkerService:
     async def _stage_import_then_submit(self, record: ModelRecord, model_queue, command: Command) -> None:
         """Copy and check a file:// import without the trainer lock, then queue its load; a failure is the
         request's own and never reaches the trainer."""
+        await record.staged_import_slot.acquire()
+        staged = {}
         try:
-            command.payload["staged_import"] = await self._stage_import(record, command.payload)
+            staged = await self._stage_import(record, command.payload)
         except UserInputError as error:
             command.validation_error = str(error)
-        if self.models.get(record.model_id) is not record:
-            # closed while copying; its future already failed
-            if "copy_dir" in command.payload.get("staged_import", {}):
-                self._remove_import_copy(command.payload["staged_import"]["copy_dir"])
-            return
+        except Exception as error:
+            # a background task's error stops the dispatcher; this one is only this request's
+            logger.exception(f"could not stage {command.payload['path']}")
+            staged = _staged_failure(f"cannot stage {command.payload['path']}: {type(error).__name__}: {error}")
+        command.payload["staged_import"] = staged
+        # closed while copying (its future already failed), or nothing staged to hold
+        if self.models.get(record.model_id) is not record or "copy_dir" not in staged:
+            self._release_staged_import(record, staged)
+            if self.models.get(record.model_id) is not record:
+                return
         model_queue.submit(command)
         self._wake.set()
+
+    def _release_staged_import(self, record: ModelRecord, staged: dict) -> None:
+        """Remove a staged copy, if any, and let the model stage its next import."""
+        if "copy_dir" in staged:
+            self._remove_import_copy(staged.pop("copy_dir"))
+        record.staged_import_slot.release()
 
     async def _stage_import(self, record: ModelRecord, payload: dict) -> dict:
         """An adapter from under --tinker-import-root; it has no Adam state this gateway could resume."""
@@ -588,9 +581,7 @@ class TinkerService:
             )
         except OSError as error:
             # e.g. a full checkpoint disk: only this load fails, the gateway keeps serving
-            return {
-                "failure": {"error": f"cannot copy {payload['path']} to load it: {error}", "error_category": "server"}
-            }
+            return _staged_failure(f"cannot copy {payload['path']} to load it: {error}")
         try:
             source = await asyncio.to_thread(self._read_import_copy, payload["path"], copy_dir)
             if source["lora_alpha"] is None:
@@ -631,7 +622,7 @@ class TinkerService:
                 source={"path": staged["copy_dir"], "load_optimizer": False, "parametrization_fields": fields},
             )
         finally:
-            self._remove_import_copy(staged["copy_dir"])
+            self._release_staged_import(record, staged)
         if failure is not None:
             return failure
         record.lora_alpha = source["lora_alpha"]
@@ -689,17 +680,15 @@ class TinkerService:
             name=name,
             tenant_digest=tenant_digest(record.tenant),
             parametrization_fields=build_parametrization_fields(record, self.config),
-            age_recipients=payload["age_recipients"],
+            age_encryption_recipients=payload["age_encryption_recipients"],
         )
-        if isinstance(written, dict):
-            return written
         try:
             await asyncio.to_thread(self.backend.commit_adapter, root, name, written, overwrite=False)
         except OSError as error:
             # e.g. a full disk: the trainer is healthy, so only this save fails
             return {"error": f"could not commit external weights {name!r}: {error}", "error_category": "server"}
         tinker_path = f"tinker://{record.model_id}/external_weights/{name}"
-        await self._set_expiry_after_commit(tinker_path, payload["ttl_seconds"])
+        await self._set_expiry_after_commit(tinker_path, written.commit_id, payload["ttl_seconds"])
         try:
             size = await asyncio.to_thread(self._checkpoint_size, root, name, record.tenant)
         except OSError:
@@ -737,7 +726,7 @@ class TinkerService:
         tinker_path, _, _, files = await asyncio.to_thread(self._owned_checkpoint, tenant, model_id, checkpoint_id)
         now = time.time()
         expires_at = now + _DOWNLOAD_URL_TTL_S
-        if (checkpoint_expires_at := self.expiry.expires_at(tinker_path)) is not None:
+        if (checkpoint_expires_at := self.expiry.expires_at(tinker_path, files["commit_id"])) is not None:
             # expired, and only not yet swept
             if checkpoint_expires_at <= now:
                 raise NotFoundError(f"checkpoint {tinker_path} has expired")
@@ -777,8 +766,8 @@ class TinkerService:
     async def set_checkpoint_ttl(self, tenant: str, model_id: str, checkpoint_id: str, ttl_seconds) -> None:
         # with deletes, so a TTL never outlives its checkpoint onto a later save of the same name
         async with self._expiry_lock:
-            tinker_path, _, _, _ = await asyncio.to_thread(self._owned_checkpoint, tenant, model_id, checkpoint_id)
-            await asyncio.to_thread(self.expiry.set, tinker_path, ttl_seconds, time.time())
+            tinker_path, _, _, files = await asyncio.to_thread(self._owned_checkpoint, tenant, model_id, checkpoint_id)
+            await asyncio.to_thread(self.expiry.set, tinker_path, files["commit_id"], ttl_seconds, time.time())
 
     async def delete_checkpoint(self, tenant: str, model_id: str, checkpoint_id: str) -> None:
         async with self._trainer_lock, self._expiry_lock:
@@ -813,12 +802,13 @@ class TinkerService:
         if not self.expiry.expired(time.time()):
             return
         async with self._trainer_lock, self._expiry_lock:
-            for tinker_path in self.expiry.expired(time.time()):
+            for tinker_path, entry in self.expiry.expired(time.time()):
                 model_id, kind, name = parse_tinker_path(tinker_path)
                 try:
                     root = os.path.dirname(resolve_checkpoint_dir(self.config.checkpoint_root, model_id, kind, name))
-                    if await asyncio.to_thread(self.backend.resolve_checkpoint_files, root, name, None) is None:
-                        # deleted by hand, or never committed: nothing to remove
+                    files = await asyncio.to_thread(self.backend.resolve_checkpoint_files, root, name, None)
+                    if files is None or files["commit_id"] != entry.commit_id:
+                        # deleted by hand, or the expiry of a commit an overwrite replaced: nothing to remove
                         await asyncio.to_thread(self.expiry.drop, tinker_path)
                     else:
                         await self._delete_checkpoint(tinker_path, root, name, None)
