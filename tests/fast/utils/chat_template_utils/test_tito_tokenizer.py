@@ -11,6 +11,12 @@ TestConfig
 TestCompletionPostprocess
     Verifies that the default completion hook is an identity operation.
 
+TestDeepSeekV4CompletionPostprocess
+    DeepSeek V4 re-derives the stored message from the sampled tokens with the
+    vendored ``encoding_dsv4`` parser, so the render reproduces the sample
+    (newlines after ``</think>``, tool calls), and keeps sglang's message
+    where that parser rejects the sample.
+
 TestMergeTokensBoundary
     Unit tests for the core merge_tokens boundary logic, using *synthetic*
     prefix IDs ([100, 200, ...]) so the assertions are purely about prefix
@@ -73,6 +79,7 @@ from miles.utils.chat_template_utils.tito_tokenizer import (
     ALL_APPEND_ROLES,
     DeepSeekV4TITOTokenizer,
     DeepSeekV32TITOTokenizer,
+    DeepSeekV41TITOTokenizer,
     FixedTemplate,
     GLM47TITOTokenizer,
     GLM53TITOTokenizer,
@@ -669,6 +676,7 @@ class TestCompletionPostprocess:
             choice=choice,
             assistant_message=assistant_message,
             completion_token_ids=[1, 2, 3],
+            template_args={},
         )
 
         assert stored_message is assistant_message
@@ -677,6 +685,146 @@ class TestCompletionPostprocess:
             "finish_reason": "stop",
             "meta_info": {"existing": True},
         }
+
+
+_DSV4_EOS = "<｜end▁of▁sentence｜>"
+_DSV4_TOOL_CALL_BLOCK = (
+    "\n\n<｜DSML｜tool_calls>\n"
+    '<｜DSML｜invoke name="get_weather">\n'
+    '<｜DSML｜parameter name="city" string="true">Paris</｜DSML｜parameter>\n'
+    "</｜DSML｜invoke>\n"
+    "</｜DSML｜tool_calls>"
+)
+
+
+class _DeepSeekV4CharTokenizer:
+    """Code-point ids: ``decode`` reproduces the sampled text exactly, as the real tokenizer does."""
+
+    def __init__(self, name_or_path: str):
+        self.name_or_path = name_or_path
+
+    def encode(self, text, add_special_tokens=False):
+        assert add_special_tokens is False
+        return [ord(c) for c in text]
+
+    def decode(self, token_ids, skip_special_tokens=False):
+        assert skip_special_tokens is False
+        return "".join(chr(i) for i in token_ids)
+
+    def convert_tokens_to_ids(self, token):
+        return {"<｜User｜>": 1, "<｜Assistant｜>": 2, "<think>": 3, "</think>": 4}[token]
+
+
+class TestDeepSeekV4CompletionPostprocess:
+    """The stored message must re-render to the sampled completion: prompt render
+    + completion text == render of the history with the stored turn appended."""
+
+    _USER = [{"role": "user", "content": "q"}]
+
+    def _tito(self, tmp_path, tito_cls=DeepSeekV4TITOTokenizer):
+        model_type = "deepseek_v41" if tito_cls is DeepSeekV41TITOTokenizer else "deepseek_v4"
+        (tmp_path / "config.json").write_text(json.dumps({"model_type": model_type}), encoding="utf-8")
+        return tito_cls(_DeepSeekV4CharTokenizer(str(tmp_path)), chat_template_kwargs={"drop_thinking": False})
+
+    @staticmethod
+    def _postprocess(tito, completion_text, upstream_message, *, thinking=True):
+        choice = {"message": upstream_message, "finish_reason": "stop", "meta_info": {"existing": True}}
+        stored = tito.postprocess_completion(
+            choice=choice,
+            assistant_message=upstream_message,
+            completion_token_ids=tito.tokenizer.encode(completion_text),
+            template_args={"thinking": thinking, "drop_thinking": False},
+        )
+        return choice, stored
+
+    def _assert_round_trip(self, tito, stored, completion_text, *, thinking=True):
+        args = {"thinking": thinking, "drop_thinking": False}
+        prompt = tito.apply_chat_template(self._USER, add_generation_prompt=True, template_args=args)
+        rendered = tito.apply_chat_template(self._USER + [stored], add_generation_prompt=False, template_args=args)
+        assert rendered == prompt + completion_text
+
+    @pytest.mark.parametrize(
+        "content",
+        ["\n\n<final_answer>Hi</final_answer>", "\nHi", " Hi", "Hi\n\n", "Hi"],
+        ids=["two_newlines", "one_newline", "space", "trailing_newlines", "plain"],
+    )
+    def test_restores_the_whitespace_sglang_drops_around_the_content(self, tmp_path, content):
+        tito = self._tito(tmp_path)
+        completion_text = f"r</think>{content}{_DSV4_EOS}"
+        # deepseek-recipe keeps a leading space but drops the newlines (sgl 0.5.23).
+        upstream = {"role": "assistant", "content": content.strip("\n"), "reasoning_content": "r", "tool_calls": None}
+
+        choice, stored = self._postprocess(tito, completion_text, upstream)
+
+        assert stored == {"role": "assistant", "content": content, "reasoning_content": "r", "tool_calls": None}
+        assert choice["message"] is stored
+        assert choice["meta_info"] == {"existing": True, "miles_response_parser": "encoding_dsv4"}
+        self._assert_round_trip(tito, stored, completion_text)
+
+    def test_keeps_sglang_tool_call_ids_with_the_parsed_function(self, tmp_path):
+        tito = self._tito(tmp_path)
+        completion_text = f"r</think>{_DSV4_TOOL_CALL_BLOCK}{_DSV4_EOS}"
+        upstream_call = {
+            "id": "call_0",
+            "index": 0,
+            "type": "function",
+            "function": {"name": "get_weather", "arguments": '{"city":"Paris"}'},
+        }
+        upstream = {"role": "assistant", "content": "", "reasoning_content": "r", "tool_calls": [upstream_call]}
+
+        _choice, stored = self._postprocess(tito, completion_text, upstream)
+
+        assert stored["tool_calls"] == [
+            {
+                "id": "call_0",
+                "index": 0,
+                "type": "function",
+                "function": {"name": "get_weather", "arguments": '{"city": "Paris"}'},
+            }
+        ]
+        assert stored["content"] == ""
+        self._assert_round_trip(tito, stored, completion_text)
+
+    def test_chat_mode_parses_without_a_thinking_block(self, tmp_path):
+        tito = self._tito(tmp_path)
+        completion_text = f"\nHi{_DSV4_EOS}"
+        upstream = {"role": "assistant", "content": "Hi", "reasoning_content": None, "tool_calls": None}
+
+        _choice, stored = self._postprocess(tito, completion_text, upstream, thinking=False)
+
+        assert stored == {"role": "assistant", "content": "\nHi", "reasoning_content": None, "tool_calls": None}
+        self._assert_round_trip(tito, stored, completion_text, thinking=False)
+
+    @pytest.mark.parametrize(
+        ("completion_text", "upstream_tool_calls", "error"),
+        [
+            (f"r{_DSV4_TOOL_CALL_BLOCK}{_DSV4_EOS}", None, "missing </think>"),
+            ("r</think>Hi", None, "missing EOS token"),
+            (f"r</think>{_DSV4_TOOL_CALL_BLOCK}{_DSV4_EOS}", None, "zip()"),
+        ],
+        ids=["tool_call_inside_thinking", "length_truncated", "tool_call_count_differs"],
+    )
+    def test_keeps_sglang_message_where_the_parser_rejects_the_sample(
+        self, tmp_path, completion_text, upstream_tool_calls, error
+    ):
+        tito = self._tito(tmp_path)
+        upstream = {"role": "assistant", "content": "Hi", "reasoning_content": "r", "tool_calls": upstream_tool_calls}
+
+        choice, stored = self._postprocess(tito, completion_text, upstream)
+
+        assert stored is upstream
+        assert choice["message"] is upstream
+        assert choice["meta_info"]["miles_response_parser"] == "encoding_dsv4"
+        assert error in choice["meta_info"]["miles_response_parse_error"]
+
+    def test_v41_keeps_sglang_message(self, tmp_path):
+        tito = self._tito(tmp_path, DeepSeekV41TITOTokenizer)
+        upstream = {"role": "assistant", "content": "Hi", "reasoning_content": "r", "tool_calls": None}
+
+        choice, stored = self._postprocess(tito, f"r</think>\n\nHi{_DSV4_EOS}", upstream)
+
+        assert stored is upstream
+        assert choice["meta_info"] == {"existing": True}
 
 
 class TestInklingComparatorBoundaries:
