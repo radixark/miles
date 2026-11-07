@@ -18,11 +18,11 @@ from tests.fast.fixtures.megatron_config_fixtures import write_megatron_config, 
 from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.ray import placement_group as placement_group_module
 from miles.ray.placement_group import (
-    init_training_models,
     attach_trainers_to_rollout,
     create_rollout_components,
     create_trainer_handles,
     create_training_model,
+    init_training_models,
     take_over_trainers,
 )
 from miles.ray.rollout.eval_fleet import EvalFleetInfo
