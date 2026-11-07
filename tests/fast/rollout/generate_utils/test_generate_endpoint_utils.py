@@ -79,7 +79,6 @@ class TestComputeRequestPayloadOutputStore:
             )
 
 
-# The engine expands each image placeholder of sample.tokens into the image's tokens and routes all of them.
 def test_routed_experts_cover_the_prompt_the_engine_served():
     layers, topk, response = 2, 3, [7, 8]
     sample = Sample(prompt="", tokens=[1, -101, 2])

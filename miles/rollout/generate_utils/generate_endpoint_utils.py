@@ -185,8 +185,6 @@ async def update_sample_from_response(
     meta_info = output["meta_info"]
     sample.rollout_routed_experts = None
     if "routed_experts" in meta_info:
-        # The engine routes the prompt it served: one placeholder per image in sample.tokens is that
-        # image's whole token run there.
         sample.rollout_routed_experts = get_routed_experts_from_response(
             args, output, meta_info["prompt_tokens"] + meta_info["completion_tokens"] - 1
         )
