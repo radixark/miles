@@ -54,12 +54,15 @@ Snappy/LZ4 automatically use the hardware decompression engine on SM100/SM103,
 reading each rank's original host allocation. Other CUDA architectures and
 Bitcomp use GPU compute after double-buffered H2D transfers. GPU-delta itself
 does not require SM100/SM103; model/backend kernels retain their hardware requirements.
-One original rank per engine host reads and verifies the publication, unwraps
-outer Zstd, and stages the full payload in a shared arena. CUDA ranks register
-that arena and transfer only their selected frames. DE ranks copy their selected
-spans into private DE-capable input allocations. The shared arena and its worker
-pool persist across updates; all ranks must finish apply and resume before its
-contents can be replaced.
+One original rank per engine host owns a persistent CPU-only child that reads
+and verifies the publication, unwraps outer Zstd, and builds the shared payload
+and numeric metadata. The child owns the publication lock, reusable worker pool
+and shared-buffer lifetime; IPC carries small descriptors rather than payloads.
+Each rank retains its own layout admission and GPU preparation. CUDA ranks register
+the shared arena and transfer only their selected frames. DE ranks copy selected
+spans into private DE-capable input allocations. Successful all-rank apply precedes
+resume; the owner queues exact-state release after its resume, and ordered cleanup
+completes before the next preparation can reuse the arena.
 LZ4 uses byte input with bitshuffle disabled; Bitcomp uses sparse lossless U8.
 Neither adds a weight layout transform.
 
@@ -71,7 +74,7 @@ user-facing configuration API. Runtime defaults are sufficient for normal use.
 | `GPU_DELTA_CODEC=bitcomp-zstd` | Trainer codec for ordinary learned updates; accepts the codecs listed above. `*-zstd` adds GPU Zstd wrapping; `lz4` and `bitcomp` skip it. Read once at launch. The receiver selects the codec from each authenticated publication. |
 | `GPU_DELTA_INITIAL_SYNC_CODEC=bitcomp-zstd` | Trainer codec for initial sync, engine recovery and checkpoint companions; accepts the same codecs. Initial synchronization is mandatory. |
 | `GPU_DELTA_SORT_BEFORE_HW_DECOMPRESS=0` | Receiver only. Set `1` to let nvCOMP sort chunks during paused DE submission; default off for all codecs. It does not change publication bytes or move sorting into preparation. |
-| `GPU_DELTA_CPU_WORKERS=32` | Persistent CPU workers per engine host on both decoder paths. The same pool reads/hashes files and prepares the full input image. Two single-host TP4 engines use two pools (up to 64 workers). |
+| `GPU_DELTA_CPU_WORKERS=32` | Persistent workers in each engine-host CPU child on both decoder paths. The same pool reads/hashes files and prepares the full input image. Two single-host TP4 engines use two children and two pools (up to 64 payload workers). |
 | `GPU_DELTA_SKIP_PAYLOAD_HASH=1` | Miles-only opt-in: omit owner-file SHA256 generation and send `validate_payload_hash=false` with each receiver update. Defaults off. Such publications declare `payload_checksum_format="none"` and null file hashes; SGLang accepts them only with this explicit request option and does not read the environment variable. Manifest SHA256 and native decoder checks remain mandatory. |
 | `GPU_DELTA_HOST_CACHE_DIR` | Tmpfs base for engine-host caches; defaults to `/dev/shm/sglang-gpu-delta-<uid>`. Each engine has separate identities and locks. Ranks share encoded files and the full prepared input arena. DE additionally retains private hardware-capable input allocations. |
 
@@ -249,8 +252,9 @@ aligned inner arena directly, without trailing padding. Raw tensors and omitted
 zero-XOR frames keep the same representation. SHA-256 authenticates final owner files by default.
 Ordinary updates do not hash old/new weights or intermediate inner-codec bytes;
 checkpoint/recovery artifacts additionally fingerprint the immutable HF base. The receiver reads
-and verifies immutable encoded files once per engine-host. One fixed original
-rank's persistent CPU pool prepares the complete canonical image in shared tmpfs.
+and verifies immutable encoded files once per engine-host. A persistent CPU child
+owned by one fixed original rank prepares the complete canonical image and numeric
+metadata in shared tmpfs, with a separate interpreter/GIL and no CUDA work.
 CUDA ranks register that image and transfer only their selected frames. DE ranks
 map the shared image without registration and copy selected spans into private
 HOST_NUMA allocations with hardware-decompression capability checks; no CUDA
@@ -364,8 +368,8 @@ producer prefixes reuse the existing owner gather.
   These nested spans must not be added. Encoded/decoded bytes, tensors and frames
   have rank distributions and `/sum`; `receiver_host_rank_cpu_workers` records
   each rank's worker count (zero on followers).
-  `receiver_host_rank_prepare_s` encloses cache access, metadata release, allocation
-  or registration, and payload preparation.
+  `receiver_host_rank_prepare_s` encloses publication access and child work or
+  follower wait, rank-local canonical admission, mapping and local input preparation.
 - `host_prepared_cache_*` describes the shared image. Creator build/layout
   timings and allocation work count once per engine-host. Shared capacities have
   `{min,p50,max,sum}`; `host_input_capacity_bytes/sum` combines these physical pages
