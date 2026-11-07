@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -11,7 +12,11 @@ from examples.geo3k_vlm.multi_turn.base_env import BaseInteractionEnv
 
 # When executed as a module: python -m examples.geo3k_vlm.multi_turn.rollout
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
-from miles.rollout.generate_utils.generate_endpoint_utils import adopt_expanded_prompt_ids, token_space_request_fields
+from miles.rollout.generate_utils.generate_endpoint_utils import (
+    adopt_expanded_prompt_ids,
+    token_space_request_fields,
+    truncate_to_max_seq_len,
+)
 from miles.utils.args.schema import A, Arg, BaseConfig
 from miles.utils.http_utils import post
 from miles.utils.media_refs import collect_media_refs, load_media_for_processor
@@ -285,6 +290,30 @@ def _update_multimodal_state(
     return current_image_data
 
 
+@dataclass(frozen=True)
+class _ObservationCheckpoint:
+    """The sample right before an observation is appended in token space: what a roll-back restores."""
+
+    num_tokens: int
+    multimodal_inputs: dict | None
+    media_counts: dict[str, int]
+
+
+def _checkpoint_before_observation(sample: Sample) -> _ObservationCheckpoint:
+    media = sample.multimodal_inputs
+    media_counts = {key: len(refs) for key, refs in (media or {}).items() if isinstance(refs, list)}
+    return _ObservationCheckpoint(len(sample.tokens), media, media_counts)
+
+
+def _roll_back_observation(sample: Sample, checkpoint: _ObservationCheckpoint, tokenizer) -> None:
+    """Drop an observation and the response after it: its media expanded into all the room --max-seq-len had left."""
+    sample.strip_last_output_tokens(len(sample.tokens) - checkpoint.num_tokens, tokenizer)
+    sample.multimodal_inputs = checkpoint.multimodal_inputs
+    for key, count in checkpoint.media_counts.items():
+        del sample.multimodal_inputs[key][count:]
+    sample.status = Sample.Status.TRUNCATED
+
+
 def _should_stop_on_finish(sample: Sample, finish_type: str) -> bool:
     match finish_type:
         case "length":
@@ -332,6 +361,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
             return GenerateFnOutput(samples=sample)
 
         cur_sampling_params = sampling_params
+        checkpoint = None
         for turn_idx in range(config["max_turns"]):
             if budget is not None:
                 cur_sampling_params["max_new_tokens"] = budget
@@ -346,6 +376,17 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
                 budget = _update_budget(budget, num_expanded_tokens)
             _append_to_sample(sample, response_tokens, new_response_tokens, new_response_log_probs, loss_mask_val=1)
             budget = _update_budget(budget, len(new_response_tokens))
+            if args.multimodal_token_space_processing:
+                # max_new_tokens was only an upper bound: this turn's media expanded after it was taken.
+                expanded_prompt_len = len(sample.tokens) - len(new_response_tokens)
+                if checkpoint is not None and args.max_seq_len and expanded_prompt_len >= args.max_seq_len:
+                    # The expanded observation left no room for a response token: the whole turn goes.
+                    _roll_back_observation(sample, checkpoint, state.tokenizer)
+                else:
+                    truncate_to_max_seq_len(args, sample, state.tokenizer)
+                if sample.status == Sample.Status.TRUNCATED:
+                    response_tokens[:] = sample.tokens[len(sample.tokens) - sample.response_length :]
+                    break
 
             if _should_stop_on_finish(sample, finish_type):
                 break
@@ -360,9 +401,18 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
                 sample.status = Sample.Status.COMPLETED
                 break
 
-            if mm_token_expansion_start_len is not None:
-                # Only the new observation still holds unexpanded media placeholders.
-                mm_token_expansion_start_len = len(sample.tokens)
+            if args.multimodal_token_space_processing:
+                # SGLang expands the observation's media placeholders only on the next request, so an observation
+                # that no request follows stays out of the sample; its length here is the unexpanded one.
+                if turn_idx + 1 >= config["max_turns"]:
+                    sample.status = Sample.Status.COMPLETED
+                    break
+                if budget is not None and budget - len(obs_prompt_ids) <= 0:
+                    sample.status = Sample.Status.TRUNCATED
+                    break
+                # The turn is rolled back to this point when the expansion leaves no room for a response.
+                checkpoint = _checkpoint_before_observation(sample)
+                mm_token_expansion_start_len = checkpoint.num_tokens
             obs_log_probs = [0.0] * len(obs_prompt_ids)
             _append_to_sample(sample, response_tokens, obs_prompt_ids, obs_log_probs, loss_mask_val=0)
             budget = _update_budget(budget, len(obs_prompt_ids))
