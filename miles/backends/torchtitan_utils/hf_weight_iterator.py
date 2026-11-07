@@ -61,10 +61,11 @@ class TitanHfWeightIterator(HfWeightIteratorBase):
         return [replace(group, optional=True) for group in groups]
 
     def _iter_hf_adapter_units(self, adapter, *, materialize):
-        assert adapter is None, "the torchtitan backend trains a single LoRA adapter"
-        for name, tensor in hf_adapter_weights(self.model, complete_across_pp=self.placement.gather_pp):
+        """``adapter``: None for single LoRA, else a multi-LoRA slot's ``AdapterSpec``, exported at its rank."""
+        slot = None if adapter is None else adapter.slot
+        for name, tensor in hf_adapter_weights(self.model, complete_across_pp=self.placement.gather_pp, slot=slot):
             if materialize:
-                yield [(name, tensor)]
+                yield [(name, tensor if adapter is None else _narrow_to_rank(name, tensor, adapter.rank))]
 
 
 def hf_weights(
@@ -87,18 +88,34 @@ def hf_weights(
             torch.accelerator.empty_cache()
 
 
-def hf_adapter_weights(trainer, *, complete_across_pp: bool) -> Iterator[tuple[str, torch.Tensor]]:
-    """The LoRA adapter as HF PEFT tensors, gathered like the base weights. Only the adapter
-    tensors visit the GPU, so an offloaded frozen base stays on the host."""
-    adapter_state = {
-        k: v.to(current_platform.current_device())
-        for part in trainer.model_parts
-        for k, v in part.state_dict().items()
-        if lora_names.is_adapter_key(k)
-    }
-    adapter = dict(lora_names.iter_hf_adapter_tensors(_state_dict_adapter(trainer), adapter_state))
+def hf_adapter_weights(
+    trainer, *, complete_across_pp: bool, slot: int | None = None
+) -> Iterator[tuple[str, torch.Tensor]]:
+    """The LoRA adapter (or multi-LoRA slot ``slot``, at its max rank) as HF PEFT tensors, gathered like the base
+    weights. Only the adapter tensors visit the GPU, so an offloaded frozen base stays on the host."""
+    if slot is None:
+        adapter_state = {
+            k: v.to(current_platform.current_device())
+            for part in trainer.model_parts
+            for k, v in part.state_dict().items()
+            if lora_names.is_adapter_key(k)
+        }
+        packings = None
+    else:
+        # lazy: the CPU suite imports this module without torchtitan
+        from miles.backends.torchtitan_utils.multi_lora import slot_adapter_parameters
+
+        params, packings = slot_adapter_parameters(trainer.model_parts, slot)
+        # a canonical B packs whole rows; gather each (small) factor before packing
+        adapter_state = {k: gather_full_param(v.detach()) for k, v in params.items()}
+    adapter = dict(lora_names.iter_hf_adapter_tensors(_state_dict_adapter(trainer), adapter_state, packings))
     layout = _StageLayout.from_trainer(trainer, complete_across_pp=complete_across_pp)
     yield from layout.stream(adapter)
+
+
+def _narrow_to_rank(name: str, tensor: torch.Tensor, rank: int) -> torch.Tensor:
+    rank_dim = 0 if name.endswith(".lora_A.weight") else tensor.dim() - 1
+    return tensor.narrow(rank_dim, 0, rank)
 
 
 def _state_dict_adapter(trainer):
