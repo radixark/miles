@@ -13,13 +13,14 @@ FROM lmsysorg/sglang:${SGLANG_TPU_IMAGE_TAG}
 
 ARG SGLANG_TPU_REPO=sgl-project/sglang-torchtpu
 # sglang-torchtpu main (2026-11-06); swap the commit for a release image tag once one ships.
-ARG SGLANG_TPU_COMMIT=e28b6f6a188de843584528557d4967ae9101a3c3
+ARG SGLANG_TPU_COMMIT=108d775ea43d29f713fb486a496a46fe4e1682e6
 ARG TORCH_VERSION=2.14.1
 ARG TORCHVISION_VERSION=0.29.1
 # the triton torch 2.14 pairs with; torchtitan imports triton unconditionally
 ARG TRITON_VERSION=3.8.0
 ARG TORCHTITAN_REPO=pytorch/torchtitan
-# TORCHTITAN_COMMIT and WHEELS_TAG equal docker/Dockerfile's (tests/fast/test_training_images.py checks it)
+# TORCHTITAN_COMMIT and WHEELS_TAG equal docker/Dockerfile's (tests/fast/test_training_images.py checks it); bumping
+# TORCHTITAN_COMMIT means rebasing docker/tpu_patch/torchtitan_torch_tpu.patch, which applies with --fuzz=0
 ARG TORCHTITAN_COMMIT=45e33cd413b64cb37a7840cfd3c9765d3c639ae1
 ARG MILES_COMMIT=main
 ARG WHEELS_REPO=radixark/miles-wheels
@@ -62,9 +63,11 @@ RUN TORCH_TPU_PIN=$(python3 -c 'import importlib.metadata as m; print(m.version(
 
 # ====================================== Install torchtitan ============================================
 
-# with its own dependencies (the constraints keep torch)
+# with miles' torch_tpu patch and its own dependencies (the constraints keep torch)
+COPY docker/tpu_patch/torchtitan_torch_tpu.patch /tmp/torchtitan_torch_tpu.patch
 RUN git clone https://github.com/${TORCHTITAN_REPO}.git /root/torchtitan && \
     cd /root/torchtitan && git checkout -f ${TORCHTITAN_COMMIT} && \
+    patch --fuzz=0 -p1 < /tmp/torchtitan_torch_tpu.patch && rm /tmp/torchtitan_torch_tpu.patch && \
     pip install -c /opt/torch-constraints.txt -e .
 
 # ====================================== Install main package ============================================
