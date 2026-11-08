@@ -9,7 +9,7 @@ from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.backends.sglang_utils.sglang_config import ServerGroupConfig
 from miles.backends.sglang_utils.sglang_engine import compute_engine_launch_cmd
 from miles.router.dynamo.config import DynamoConfig
-from miles.router.dynamo.sidecar import sidecar_command, sidecar_env, sidecar_overrides
+from miles.router.dynamo.sidecar import sidecar_command, sidecar_env, sidecar_overrides, sidecar_ports
 from miles.utils.workers.worker_spec import HostAndPort
 
 
@@ -132,3 +132,16 @@ def test_sidecar_rejects_group_streaming_opt_out(config, sidecar_ctx, group):
 @pytest.fixture
 def group():
     return ServerGroupConfig(worker_type=WorkerType.REGULAR, num_gpus_per_engine=2, needs_offload=False)
+
+
+@pytest.mark.parametrize("dp_size", [1, 2, 4])
+def test_kv_event_ports_reserve_every_dp_rank(dp_size):
+    ports = {port.name: port for port in sidecar_ports(dp_size=dp_size)}
+    kv = ports["dynamo_kv"]
+    assert kv.allow_dynamic
+    assert kv.num_consecutive == dp_size
+    first = kv.effective_static_port(worker_in_pod_index=0)
+    second = kv.effective_static_port(worker_in_pod_index=1)
+    assert first + dp_size <= second
+    assert ports["dynamo_grpc"].num_consecutive == 1
+    assert ports["dynamo_system"].num_consecutive == 1

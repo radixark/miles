@@ -9,11 +9,12 @@ from miles.utils.workers.argv_utils import _record_field_names
 from miles.utils.workers.worker_spec import PortInfo
 
 
-def sidecar_ports() -> list[PortInfo]:
+def sidecar_ports(*, dp_size: int) -> list[PortInfo]:
     return [
         PortInfo(name="dynamo_grpc", static_port=14000, allow_dynamic=True),
         PortInfo(name="dynamo_system", static_port=15000, allow_dynamic=True),
-        PortInfo(name="dynamo_kv", static_port=16000, allow_dynamic=True),
+        # SGLang adds dp_rank to the KV-event publisher endpoint on each rank.
+        PortInfo(name="dynamo_kv", static_port=16000, allow_dynamic=True, num_consecutive=dp_size),
     ]
 
 
