@@ -1071,6 +1071,11 @@ def _check_multimodal_token_space_processing_args(args, *, sglang: SglangConfig)
                 f"--multimodal-token-space-processing does not support --sglang-{name.replace('_', '-')}: the "
                 "trainer cannot yet build its processor the way the engines then do."
             )
+    if sglang.common_value("mm_attention_backend") is not None:
+        raise ValueError(
+            "--multimodal-token-space-processing does not support --sglang-mm-attention-backend: the trainer runs "
+            "the vision tower with the device's default attention kernel, so the engine must too."
+        )
     # Actor engine groups that disagree on a processor setting fail here, not after the first rollout.
     RolloutEngineProcessorArgs.from_sglang_config(sglang, hf_checkpoint=args.hf_checkpoint)
 

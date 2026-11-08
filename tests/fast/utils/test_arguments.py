@@ -4320,6 +4320,7 @@ class TestMultimodalTokenSpaceProcessingArgs:
         "image_processor_backend": "auto",
         "disable_fast_image_processor": False,
         "mm_process_config": None,
+        "mm_attention_backend": None,
     }
 
     @pytest.mark.parametrize(
@@ -4330,6 +4331,7 @@ class TestMultimodalTokenSpaceProcessingArgs:
             ({"rl_on_policy_target": "fsdp"}, None, "--sglang-rl-on-policy-target"),
             ({"true_on_policy_contract": "qwen3_dense_v1"}, None, "--sglang-true-on-policy-contract"),
             ({"decrypted_config_file": "/ckpt/override.json"}, None, "--sglang-decrypted-config-file"),
+            ({"mm_attention_backend": "triton_attn"}, None, "--sglang-mm-attention-backend"),
         ],
     )
     def test_settings_the_trainer_cannot_follow_are_rejected(self, engine_overrides, external_engines, match):
