@@ -1,9 +1,13 @@
+from types import SimpleNamespace
+
 import pytest
 import torch
 from transformers.models.qwen3_5.configuration_qwen3_5 import Qwen3_5VisionConfig as HFVisionConfig
 from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5VisionModel
 
-from miles_plugins.models.qwen3_5.mm_towers import _scatter_rows
+from miles.backends.sglang_utils.sglang_api_client import WorkerType
+from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig, SglangConfig
+from miles_plugins.models.qwen3_5.mm_towers import _scatter_rows, check_multimodal_setup
 from miles_plugins.models.qwen3_5.vision import Qwen3_5VisionConfig, Qwen3_5VisionTower, _PatchEmbed, _rot_pos_ids
 
 _VISION_CONFIG = dict(
@@ -56,3 +60,46 @@ def test_rows_land_only_in_this_sequence_parallel_window():
     merged = _scatter_rows(decoder_input, rows, torch.tensor([3, 4, 6]), sp_rank=1)
 
     assert merged[:, 0, 0].tolist() == [2.0, 0.0, 3.0, 0.0]
+
+
+def _rope_config(**overrides):
+    return SimpleNamespace(
+        **{"apply_rope_fusion": False, "rotary_interleaved": False, "fused_single_qkv_rope": False, **overrides}
+    )
+
+
+def _engines(*, num_gpus_per_engine, **base_args):
+    group = ServerGroupConfig(
+        worker_type=WorkerType.REGULAR,
+        num_gpus_per_engine=num_gpus_per_engine,
+        needs_offload=False,
+        overrides={"model_path": "/ckpt"},
+    )
+    actor = ModelConfig(name="actor", model_path=None, server_groups=[group], update_weights=True)
+    return SglangConfig(models=[actor], base_args=base_args)
+
+
+def test_rope_fusion_without_the_fused_mrope_kernel_is_rejected(monkeypatch):
+    """Megatron would then hand per-token frequencies to a kernel that reads a position table per sequence."""
+    import megatron.core.fusions.fused_mrope as fused_mrope
+
+    monkeypatch.setattr(fused_mrope, "is_fused_mrope_available", lambda: False)
+    with pytest.raises(ValueError, match="--no-rope-fusion"):
+        check_multimodal_setup(_rope_config(apply_rope_fusion=True), _engines(num_gpus_per_engine=1))
+
+    monkeypatch.setattr(fused_mrope, "is_fused_mrope_available", lambda: True)
+    check_multimodal_setup(_rope_config(apply_rope_fusion=True), _engines(num_gpus_per_engine=1))
+    with pytest.raises(ValueError, match="--no-rope-fusion"):
+        check_multimodal_setup(
+            _rope_config(apply_rope_fusion=True, rotary_interleaved=True), _engines(num_gpus_per_engine=1)
+        )
+
+
+def test_tensor_parallel_engines_need_the_dp_encoder():
+    """An engine that shards the vision tower across TP ranks serves other rows than the trainer's whole tower; the
+    launcher sizes TP from the group's GPUs, so the check reads the group, not the run-wide default."""
+    with pytest.raises(ValueError, match="--sglang-mm-enable-dp-encoder"):
+        check_multimodal_setup(_rope_config(), _engines(num_gpus_per_engine=2, mm_enable_dp_encoder=None))
+
+    check_multimodal_setup(_rope_config(), _engines(num_gpus_per_engine=2, mm_enable_dp_encoder=True))
+    check_multimodal_setup(_rope_config(), _engines(num_gpus_per_engine=1, mm_enable_dp_encoder=None))
