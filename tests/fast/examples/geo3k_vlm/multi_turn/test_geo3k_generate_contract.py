@@ -105,6 +105,25 @@ async def test_a_token_space_turn_records_the_engines_routed_experts(
         assert sample.rollout_routed_experts is None
 
 
+async def test_a_request_aborted_in_the_queue_keeps_the_rows_already_held(monkeypatch: pytest.MonkeyPatch) -> None:
+    """SGLang answers a request aborted before it ran with a synthesized meta_info: no prompt_tokens, no routed
+    experts. Reading them anyway would raise inside the end-of-rollout abort and lose the sample's earlier rows."""
+    held = np.full((4, 2, 3), 9, dtype=np.int32)
+    sample = Sample(prompt="", tokens=[1, 5, 2, 7, 8, 3, 3], rollout_routed_experts=held)
+    output = {
+        "text": "",
+        "prompt_token_ids": list(sample.tokens),
+        "meta_info": {"finish_reason": {"type": "abort"}, "completion_tokens": 0},
+    }
+    monkeypatch.setattr(rollout, "post", AsyncMock(return_value=output))
+
+    await rollout._run_inference_step(
+        "url", sample, {}, None, 5, args=SimpleNamespace(num_layers=2, use_rollout_routing_replay=True)
+    )
+
+    np.testing.assert_array_equal(sample.rollout_routed_experts, held)
+
+
 async def test_a_later_token_space_turn_appends_only_the_rows_after_the_held_ones(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
