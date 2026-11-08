@@ -6,14 +6,11 @@ from miles.router.dynamo.config import Address, DynamoConfig, EtcdDiscovery, Fil
 def frontend_launch(
     config: DynamoConfig,
     *,
-    address: Address | None = None,
+    address: Address,
     interpreter_prefix: Sequence[str],
-    inherited_env: Mapping[str, str],
-) -> tuple[list[str], dict[str, str]]:
+) -> list[str]:
     if not interpreter_prefix:
         raise ValueError("frontend requires a Python interpreter")
-    if address is None:
-        raise ValueError("frontend requires a configured or allocated address")
     managed = {
         "--http-host": address.host,
         "--http-port": str(address.port),
@@ -29,17 +26,18 @@ def frontend_launch(
         managed["--router-mode"] = config.frontend.router_mode
     argv = [*interpreter_prefix, "-m", "dynamo.frontend"]
     argv.extend(launch_args(config.frontend, managed=managed, reserved=("--namespace-prefix", "--interactive")))
-    env = frontend_env(config, inherited_env=inherited_env, address=address)
-    return argv, env
+    return argv
 
 
 def frontend_env(
     config: DynamoConfig,
     *,
     inherited_env: Mapping[str, str],
-    address: Address | None = None,
 ) -> dict[str, str]:
     managed = {
+        # Listener addresses arrive via argv after worker port allocation.
+        "DYN_HTTP_HOST": None,
+        "DYN_HTTP_PORT": None,
         "DYN_ROUTER_MIN_INITIAL_WORKERS": "0",
         "DYN_SGLANG_ENABLE_GENERATE": "1",
         "DYN_HTTP_SVC_SGLANG_GENERATE_PATH": "/generate",
@@ -47,15 +45,7 @@ def frontend_env(
     }
     if config.frontend.router_mode is not None:
         managed["DYN_ROUTER_MODE"] = config.frontend.router_mode
-    if address is not None:
-        managed.update(DYN_HTTP_HOST=address.host, DYN_HTTP_PORT=str(address.port))
-    env = runtime_env(config, inherited_env=inherited_env, options=config.frontend, managed_env=managed)
-    if address is None:
-        # Worker env is built before port allocation. The later launch callback
-        # validates explicit listener settings and supplies the resolved CLI args.
-        env.pop("DYN_HTTP_HOST", None)
-        env.pop("DYN_HTTP_PORT", None)
-    return env
+    return runtime_env(config, inherited_env=inherited_env, options=config.frontend, managed_env=managed)
 
 
 def runtime_env(
