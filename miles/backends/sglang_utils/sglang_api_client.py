@@ -80,21 +80,34 @@ class SGLangApiClient:
     def _headers(self) -> dict[str, str]:
         return _compute_headers(self.api_key)
 
-    async def _make_request(self, endpoint: str, payload: dict | None = None, *, timeout: float | None = None):
+    async def _make_request(
+        self,
+        endpoint: str,
+        payload: dict | None = None,
+        *,
+        timeout: float | None = None,
+        body: bytes | None = None,
+    ):
         """Make a POST request to the specified endpoint with the given payload.
 
         Args:
             endpoint: The API endpoint to call
             payload: The JSON payload to send (default: empty dict)
+            body: An already JSON-encoded payload, sent as is instead of ``payload``
 
         Returns:
             The JSON response from the server
         """
         url = f"{self.server_url}/{endpoint}"
         bound: dict[str, float] = {} if timeout is None else dict(timeout=timeout)
-        response = await GeneralHttpClientProvider.client().post(
-            url, json=payload or {}, headers=self._headers, **bound
-        )
+        if body is None:
+            response = await GeneralHttpClientProvider.client().post(
+                url, json=payload or {}, headers=self._headers, **bound
+            )
+        else:
+            response = await GeneralHttpClientProvider.client().post(
+                url, content=body, headers={**self._headers, "Content-Type": "application/json"}, **bound
+            )
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as e:
@@ -153,6 +166,10 @@ class SGLangApiClient:
             "update_weights_from_tensor",
             payload,
         )
+
+    async def update_weights_from_tensor_encoded(self, body: bytes):
+        """``update_weights_from_tensor`` with the JSON body already encoded, so one encode can serve many engines."""
+        return await self._make_request("update_weights_from_tensor", body=body)
 
     async def get_remote_instance_transfer_engine_info(self, rank: int, role: str):
         # TODO: will be changed to `remote_instance_transfer_engine_info` when the sglang side is ready.

@@ -83,6 +83,9 @@ class _FakeSessionEngine:
             return {"success": False, "error_message": "stash refused"}
         return {"success": True, "message": "Success"}
 
+    async def update_weights_from_tensor_encoded(self, body: bytes):
+        return await self.update_weights_from_tensor(**json.loads(body))
+
 
 def _make_args(tmp_path, **overrides) -> Namespace:
     args = Namespace(
