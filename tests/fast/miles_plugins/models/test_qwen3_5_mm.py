@@ -85,11 +85,15 @@ def test_rope_fusion_without_the_fused_mrope_kernel_is_rejected(monkeypatch):
         )
 
 
-def test_tensor_parallel_engines_need_the_dp_encoder():
+def test_tensor_parallel_engines_without_the_dp_encoder_are_warned_about(caplog):
     """An engine that shards the vision tower across TP ranks serves other rows than the trainer's whole tower; the
     launcher sizes TP from the group's GPUs, so the check reads the group, not the run-wide default."""
-    with pytest.raises(ValueError, match="--sglang-mm-enable-dp-encoder"):
+    with caplog.at_level("WARNING"):
         check_multimodal_setup(_rope_config(), _engines(num_gpus_per_engine=2, mm_enable_dp_encoder=None))
+    assert "--sglang-mm-enable-dp-encoder" in caplog.text
 
-    check_multimodal_setup(_rope_config(), _engines(num_gpus_per_engine=2, mm_enable_dp_encoder=True))
-    check_multimodal_setup(_rope_config(), _engines(num_gpus_per_engine=1, mm_enable_dp_encoder=None))
+    caplog.clear()
+    with caplog.at_level("WARNING"):
+        check_multimodal_setup(_rope_config(), _engines(num_gpus_per_engine=2, mm_enable_dp_encoder=True))
+        check_multimodal_setup(_rope_config(), _engines(num_gpus_per_engine=1, mm_enable_dp_encoder=None))
+    assert "dp-encoder" not in caplog.text
