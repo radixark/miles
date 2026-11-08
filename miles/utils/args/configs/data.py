@@ -117,7 +117,10 @@ class DataConfig(BaseConfig):
     multimodal_token_space_processing: A[
         bool,
         Arg(
-            help="SGLang expands media placeholders and the trainer builds the processor inputs (models with an SGLang token-space strategy)."
+            help=(
+                "SGLang expands media placeholders and the trainer builds the processor inputs "
+                "(models with an SGLang token-space strategy); Megatron backend only for now."
+            )
         ),
     ] = False
     trainer_mm_processor_worker_num: A[

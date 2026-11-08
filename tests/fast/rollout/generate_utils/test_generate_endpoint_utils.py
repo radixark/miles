@@ -28,7 +28,6 @@ import pybase64
 import pytest
 from tests.fast.fixtures.sglang_config_fixtures import make_sglang_config
 
-from miles.rollout.generate_utils import generate_endpoint_utils
 from miles.rollout.generate_utils.generate_endpoint_utils import (
     adopt_expanded_prompt_ids,
     compute_request_payload,
