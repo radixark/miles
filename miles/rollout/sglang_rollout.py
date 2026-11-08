@@ -46,6 +46,7 @@ from .generate_utils.generate_endpoint_utils import (
     get_indexer_topk_from_response,
     router_routes_by_key,
     token_space_request_fields,
+    truncate_to_max_seq_len,
 )
 from .generate_utils.prefill_logprobs import recompute_samples_rollout_logprobs_via_prefill
 from .generate_utils.sample_utils import reward_log_summary, sample_text_preview
@@ -310,6 +311,9 @@ async def generate(
         sample.rollout_indexer_topk = get_indexer_topk_from_response(args, output, sample)
 
     sample.update_from_meta_info(args, output["meta_info"])
+    if token_space:
+        # max_new_tokens was budgeted from the unexpanded prompt; the expansion can carry the sample past the limit.
+        truncate_to_max_seq_len(args, sample, state.tokenizer)
 
     return sample
 
