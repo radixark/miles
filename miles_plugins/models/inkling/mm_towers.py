@@ -124,7 +124,9 @@ def wire_mm_towers(model, hf_checkpoint: str, train: bool = False) -> None:
             sel = (local >= 0) & (local < s_local)
             local, emb = local[sel], embeds[sel]
         else:
-            local, emb = positions, embeds
+            # -1 marks a row whose token another context-parallel rank holds.
+            keep = positions >= 0
+            local, emb = positions[keep], embeds[keep]
         decoder_input = decoder_input.clone()
         if local.numel():
             decoder_input[local, 0] = emb.to(decoder_input.dtype)
