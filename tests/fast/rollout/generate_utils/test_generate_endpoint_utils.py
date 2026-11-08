@@ -6,7 +6,6 @@ import pybase64
 import pytest
 from tests.fast.fixtures.sglang_config_fixtures import make_sglang_config
 
-from miles.rollout.generate_utils import generate_endpoint_utils
 from miles.rollout.generate_utils.generate_endpoint_utils import compute_request_payload, update_sample_from_response
 from miles.utils.output_store.plan import OUTPUT_STORE_REQUEST_KEY, StorePlanError
 from miles.utils.types import Sample
