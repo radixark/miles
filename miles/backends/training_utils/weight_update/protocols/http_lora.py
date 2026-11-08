@@ -19,7 +19,7 @@ from collections.abc import Callable, Sequence
 import torch
 import torch.distributed as dist
 
-from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
+from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient, encode_update_weights_from_tensor_body
 from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
@@ -210,7 +210,7 @@ class UpdateWeightHttpLoraTensors(WeightTransferProtocol):
         blob = base64.b64encode(_pickle_with_torch_globals(named)).decode("ascii")
 
         # one encode for all engines: httpx encodes each request serially on the event loop thread
-        body = SGLangApiClient.encode_update_weights_from_tensor(
+        body = encode_update_weights_from_tensor_body(
             serialized_named_tensors=[blob], flush_cache=False, selector=self._selector
         )
 

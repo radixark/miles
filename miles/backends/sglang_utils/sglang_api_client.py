@@ -90,6 +90,21 @@ def _update_weights_from_tensor_payload(
     return payload
 
 
+def encode_update_weights_from_tensor_body(
+    serialized_named_tensors: list[str],
+    load_format: str | None = None,
+    flush_cache: bool = False,
+    weight_version: str | None = None,
+    selector: str = "all",
+) -> bytes:
+    """The ``update_weights_from_tensor`` body, encoded once to post to many engines."""
+    return orjson.dumps(
+        _update_weights_from_tensor_payload(
+            serialized_named_tensors, load_format, flush_cache, weight_version, selector
+        )
+    )
+
+
 @dataclasses.dataclass(frozen=True)
 class SGLangApiClient:
     server_url: str
@@ -180,23 +195,8 @@ class SGLangApiClient:
             ),
         )
 
-    @staticmethod
-    def encode_update_weights_from_tensor(
-        serialized_named_tensors: list[str],
-        load_format: str | None = None,
-        flush_cache: bool = False,
-        weight_version: str | None = None,
-        selector: str = "all",
-    ) -> bytes:
-        """The ``update_weights_from_tensor`` body, encoded once to post to many engines."""
-        return orjson.dumps(
-            _update_weights_from_tensor_payload(
-                serialized_named_tensors, load_format, flush_cache, weight_version, selector
-            )
-        )
-
     async def update_weights_from_tensor_encoded(self, body: bytes):
-        """``update_weights_from_tensor`` with a body from ``encode_update_weights_from_tensor``."""
+        """``update_weights_from_tensor`` with a body from ``encode_update_weights_from_tensor_body``."""
         return await self._make_request("update_weights_from_tensor", body=body)
 
     async def get_remote_instance_transfer_engine_info(self, rank: int, role: str):
