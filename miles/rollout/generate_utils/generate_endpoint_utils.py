@@ -178,7 +178,7 @@ def truncate_to_max_seq_len(args, sample: Sample, tokenizer) -> None:
 
 
 async def update_sample_from_response(
-    args, sample: Sample, payload: dict, output: dict, update_loss_mask: bool = False, *, tokenizer
+    args, sample: Sample, payload: dict, output: dict, update_loss_mask: bool = False, *, tokenizer=None
 ):
     """Append SGLang's response to the sample.
 
@@ -188,7 +188,8 @@ async def update_sample_from_response(
         payload: The request sent to SGLang.
         output: SGLang's response.
         update_loss_mask: Extend ``sample.loss_mask`` with ones for the new output tokens.
-        tokenizer: Re-decodes ``sample.response`` when a token-space response is trimmed to ``--max-seq-len``.
+        tokenizer: Re-decodes ``sample.response`` when a token-space response is trimmed to ``--max-seq-len``;
+            a request without ``return_prompt_token_ids`` never needs it.
     """
     # Initialize sample.tokens for the first turn
     if (len(sample.response) == 0) and not sample.tokens:
@@ -263,6 +264,7 @@ async def update_sample_from_response(
     sample.update_from_meta_info(args, output["meta_info"])
     if payload.get("return_prompt_token_ids"):
         # Only a token-space media request expands after max_new_tokens was budgeted.
+        assert tokenizer is not None, "a token-space request needs the tokenizer to re-decode a trimmed response"
         truncate_to_max_seq_len(args, sample, tokenizer)
 
 

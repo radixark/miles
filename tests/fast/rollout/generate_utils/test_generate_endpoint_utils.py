@@ -268,6 +268,7 @@ def test_routed_experts_cover_the_prompt_the_engine_served():
         rollout_top_logprobs_num=0, sglang=make_sglang_config(speculative_algorithm=None), num_layers=layers
     )
 
-    asyncio.run(update_sample_from_response(args, sample, {"input_ids": sample.tokens}, output, tokenizer=None))
+    # A request without return_prompt_token_ids never trims, so a custom generate function may omit the tokenizer.
+    asyncio.run(update_sample_from_response(args, sample, {"input_ids": sample.tokens}, output))
 
     assert sample.rollout_routed_experts.shape == (served_prompt_tokens + len(response) - 1, layers, topk)
