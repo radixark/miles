@@ -105,6 +105,22 @@ def test_missing_file_is_rejected(tmp_path):
         materialize_media_ref(str(tmp_path / "missing.png"), media_dir=None)
 
 
+def test_remote_url_is_rejected_with_the_reason():
+    """A URL is not a file, and 'file not found' would send the user looking for a path that never existed."""
+    with pytest.raises(ValueError, match="Remote media URLs are not supported"):
+        materialize_media_ref("https://example.com/a.png", media_dir=None)
+
+
+def test_per_part_resize_options_are_rejected(tmp_path):
+    """A reference keeps only the source: dropping min_pixels/max_pixels silently would change the pixels."""
+    image = tmp_path / "a.png"
+    image.write_bytes(_png_bytes("red"))
+    messages = [{"role": "user", "content": [{"type": "image", "image": str(image), "max_pixels": 1024}]}]
+
+    with pytest.raises(ValueError, match="max_pixels"):
+        collect_media_refs(messages, media_dir=None)
+
+
 def test_video_refs_reach_the_engine_payload_but_not_the_miles_processor(tmp_path):
     video = tmp_path / "clip.mp4"
     video.write_bytes(b"mp4")

@@ -37,6 +37,10 @@ _PART_TYPES = {
 }
 # multimodal_inputs key -> the SGLang GenerateReqInput field that carries those references.
 _TO_SGLANG_MEDIA_FIELDS = {"images": "image_data", "audios": "audio_data", "videos": "video_data"}
+# qwen-vl-utils per-part options; a reference carries only the source, so they would be dropped without notice.
+_PER_PART_OPTIONS = frozenset(
+    {"resized_height", "resized_width", "min_pixels", "max_pixels", "total_pixels", "fps", "nframes", "max_frames"}
+)
 
 
 def has_media(multimodal_inputs: dict[str, list[str]] | None) -> bool:
@@ -63,6 +67,11 @@ def collect_media_refs(messages: Iterable[dict[str, Any]], media_dir: str | None
             if part_type not in _PART_TYPES:
                 continue
             key, fields = _PART_TYPES[part_type]
+            if options := _PER_PART_OPTIONS.intersection(part):
+                raise ValueError(
+                    f"Media part options {sorted(options)} are not supported: a media reference carries only its "
+                    "source, so set them for every media in the processor configuration (--sglang-mm-process-config)."
+                )
             source = next((part[field] for field in fields if part.get(field) is not None), None)
             if isinstance(source, dict) and "url" in source:
                 source = source["url"]
@@ -93,6 +102,11 @@ def materialize_media_ref(source: Any, media_dir: str | None) -> str:
         raise TypeError(f"Unsupported media source type: {type(source).__name__}")
     if source.startswith("data:"):
         return _dump_media_by_hash(base64.b64decode(source.split(",", 1)[1]), media_dir)
+    if source.startswith(("http://", "https://")):
+        raise ValueError(
+            f"Remote media URLs are not supported: {source}; download the media to a filesystem shared with every "
+            "SGLang engine and reference its path."
+        )
     path = Path(source.removeprefix("file://")).resolve()
     if not path.is_file():
         raise FileNotFoundError(f"Media file not found: {source}")
