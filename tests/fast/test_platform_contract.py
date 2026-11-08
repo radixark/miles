@@ -70,6 +70,7 @@ UPPER_LAYER_EXEMPTIONS = {
     "miles/utils/workers/reconcile/k8s_api.py": "the kubernetes client the observing provider is written against",
     "miles/utils/arguments.py": "validates the other flags against the --cluster-backend the composition roots read",
     "miles/utils/args/configs/cluster.py": "declares the --cluster-backend flag the composition roots read",
+    "miles/utils/workers/monarch/slurm.py": "the entrypoint that submits a run, which it starts as --cluster-backend monarch",
     "miles/utils/tracking_utils/base.py": "the prometheus collector is a ray actor and has no kubernetes form",
 }
 

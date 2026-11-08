@@ -11,6 +11,8 @@ MONARCH_USING_MODULES = {
     "miles/utils/workers/monarch/runtime.py": "the runtime spawns every cell as a monarch proc mesh",
     "miles/utils/workers/monarch/manager.py": "the worker manager is a monarch actor that owns every cell",
     "miles/utils/workers/monarch/handles.py": "worker and cell handles that send monarch endpoint calls",
+    "miles/utils/workers/monarch/hosts.py": "attaching to the hosts of the monarch job the run runs in",
+    "miles/utils/workers/monarch/slurm.py": "the entrypoint that submits a multi-node run as a monarch slurm job",
 }
 
 
