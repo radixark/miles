@@ -5,6 +5,7 @@ from enum import Enum
 from typing import Any
 
 import httpx
+import orjson
 
 from miles.utils.http_utils import GeneralHttpClientProvider
 
@@ -69,6 +70,24 @@ async def wait_server_healthy(server_url, api_key):
             pass
 
         await asyncio.sleep(2)
+
+
+def _update_weights_from_tensor_payload(
+    serialized_named_tensors: list[str],
+    load_format: str | None,
+    flush_cache: bool,
+    weight_version: str | None,
+    selector: str,
+) -> dict:
+    payload = {
+        "serialized_named_tensors": serialized_named_tensors,
+        "load_format": load_format,
+        "flush_cache": flush_cache,
+        "selector": selector,
+    }
+    if weight_version is not None:
+        payload["weight_version"] = weight_version
+    return payload
 
 
 @dataclasses.dataclass(frozen=True)
@@ -154,21 +173,30 @@ class SGLangApiClient:
         Note: The model should be on GPUs rather than CPU for this functionality to work properly.
         If you encounter issues, ensure your model is loaded on GPU devices rather than CPU.
         """
-        payload = {
-            "serialized_named_tensors": serialized_named_tensors,
-            "load_format": load_format,
-            "flush_cache": flush_cache,
-            "selector": selector,
-        }
-        if weight_version is not None:
-            payload["weight_version"] = weight_version
         return await self._make_request(
             "update_weights_from_tensor",
-            payload,
+            _update_weights_from_tensor_payload(
+                serialized_named_tensors, load_format, flush_cache, weight_version, selector
+            ),
+        )
+
+    @staticmethod
+    def encode_update_weights_from_tensor(
+        serialized_named_tensors: list[str],
+        load_format: str | None = None,
+        flush_cache: bool = False,
+        weight_version: str | None = None,
+        selector: str = "all",
+    ) -> bytes:
+        """The ``update_weights_from_tensor`` body, encoded once to post to many engines."""
+        return orjson.dumps(
+            _update_weights_from_tensor_payload(
+                serialized_named_tensors, load_format, flush_cache, weight_version, selector
+            )
         )
 
     async def update_weights_from_tensor_encoded(self, body: bytes):
-        """``update_weights_from_tensor`` with the JSON body already encoded, so one encode can serve many engines."""
+        """``update_weights_from_tensor`` with a body from ``encode_update_weights_from_tensor``."""
         return await self._make_request("update_weights_from_tensor", body=body)
 
     async def get_remote_instance_transfer_engine_info(self, rank: int, role: str):

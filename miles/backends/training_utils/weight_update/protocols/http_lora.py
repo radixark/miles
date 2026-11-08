@@ -16,7 +16,6 @@ import time
 from argparse import Namespace
 from collections.abc import Callable, Sequence
 
-import orjson
 import torch
 import torch.distributed as dist
 
@@ -210,10 +209,9 @@ class UpdateWeightHttpLoraTensors(WeightTransferProtocol):
         # not MultiprocessingSerializer: its shared-memory handles do not leave the host
         blob = base64.b64encode(_pickle_with_torch_globals(named)).decode("ascii")
 
-        # one encode serves every engine: encoding per request ran serially on the event loop thread
-        # and made the sync grow linearly with the engine count
-        body = orjson.dumps(
-            {"serialized_named_tensors": [blob], "load_format": None, "flush_cache": False, "selector": self._selector}
+        # one encode for all engines: httpx encodes each request serially on the event loop thread
+        body = SGLangApiClient.encode_update_weights_from_tensor(
+            serialized_named_tensors=[blob], flush_cache=False, selector=self._selector
         )
 
         start = time.perf_counter()
