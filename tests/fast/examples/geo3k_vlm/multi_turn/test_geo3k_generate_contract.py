@@ -105,7 +105,9 @@ async def test_a_token_space_turn_records_the_engines_routed_experts(
         assert sample.rollout_routed_experts is None
 
 
-async def test_a_later_token_space_turn_appends_only_the_rows_after_the_held_ones(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_later_token_space_turn_appends_only_the_rows_after_the_held_ones(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A later turn keeps the routed experts the earlier requests recorded and asks the engine only for the rows
     after them: the request's prefill would route bf16 ties differently from the decode that produced the
     earlier tokens' logprobs, and replay (R3) must use the routing those logprobs came from."""
