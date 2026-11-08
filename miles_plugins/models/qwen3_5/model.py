@@ -136,7 +136,7 @@ def qwen3_5_mm_model_provider(
     conversion and weight sync are the text model's; the tower is loaded from the HF checkpoint by
     ``mm_towers`` and never trained; every weight sync re-sends it from the checkpoint.
     """
-    from miles_plugins.models.qwen3_5.mm_towers import wire_mm_towers
+    from miles_plugins.models.qwen3_5.mm_towers import check_multimodal_setup, wire_mm_towers
 
     if not args.multimodal_token_space_processing:
         raise ValueError(
@@ -159,6 +159,7 @@ def qwen3_5_mm_model_provider(
     rope_parameters = load_hf_config(args.hf_checkpoint).text_config.rope_parameters
     config.mrope_section = rope_parameters["mrope_section"]
     config.mrope_interleaved = rope_parameters["mrope_interleaved"]
+    check_multimodal_setup(config, args.sglang)
     model = GPTModel(
         config=config,
         transformer_layer_spec=get_qwen3_5_spec(args, config, vp_stage),
