@@ -173,7 +173,14 @@ def truncate_to_max_seq_len(args, sample: Sample, tokenizer) -> None:
     overrun = len(sample.tokens) - args.max_seq_len if args.max_seq_len else 0
     if overrun <= 0:
         return
-    sample.strip_last_output_tokens(min(overrun, sample.response_length), tokenizer)
+    if overrun > sample.response_length:
+        # The dataset filter counts text tokens only, so a prompt that expands past the limit reaches here; it would
+        # ship longer than the memory bound --max-seq-len set.
+        raise ValueError(
+            f"the expanded prompt alone ({len(sample.tokens) - sample.response_length} tokens) exceeds --max-seq-len "
+            f"{args.max_seq_len}; lower --rollout-max-prompt-len or raise --max-seq-len"
+        )
+    sample.strip_last_output_tokens(overrun, tokenizer)
     sample.status = Sample.Status.TRUNCATED
 
 
