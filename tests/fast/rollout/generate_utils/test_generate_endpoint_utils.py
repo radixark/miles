@@ -34,7 +34,6 @@ from miles.rollout.generate_utils.generate_endpoint_utils import (
     truncate_to_max_seq_len,
     update_sample_from_response,
 )
-from miles.rollout.generate_utils.generate_endpoint_utils import compute_request_payload, update_sample_from_response
 from miles.utils.output_store.plan import OUTPUT_STORE_REQUEST_KEY, StorePlanError
 from miles.utils.types import Sample
 
@@ -185,16 +184,13 @@ class TestTruncateToMaxSeqLen:
         assert sample.response == "5"
         assert sample.status == Sample.Status.TRUNCATED
 
-    def test_a_prompt_past_the_limit_keeps_no_output(self):
-        # The expanded prompt alone is longer than --max-seq-len: the response goes, the prompt stays.
+    def test_a_prompt_past_the_limit_is_refused(self):
+        # The expanded prompt alone is longer than --max-seq-len: cutting the response could not bring the sample
+        # under the memory bound, so it must not reach the trainer quietly.
         sample = Sample(tokens=[1, 9, 9, 9, 5], response_length=1, loss_mask=[1], rollout_log_probs=[-0.1])
 
-        truncate_to_max_seq_len(SimpleNamespace(max_seq_len=3), sample, _Tokenizer())
-
-        assert sample.tokens == [1, 9, 9, 9]
-        assert sample.response_length == 0
-        assert sample.response == ""
-        assert sample.status == Sample.Status.TRUNCATED
+        with pytest.raises(ValueError, match="expanded prompt alone"):
+            truncate_to_max_seq_len(SimpleNamespace(max_seq_len=3), sample, _Tokenizer())
 
     @pytest.mark.parametrize("max_seq_len", [None, 5, 8])
     def test_a_sample_within_the_limit_is_left_alone(self, max_seq_len):
@@ -269,6 +265,7 @@ def test_routed_experts_cover_the_prompt_the_engine_served():
         rollout_top_logprobs_num=0, sglang=make_sglang_config(speculative_algorithm=None), num_layers=layers
     )
 
-    asyncio.run(update_sample_from_response(args, sample, {"input_ids": sample.tokens}, output, tokenizer=None))
+    # A request without return_prompt_token_ids never trims, so a custom generate function may omit the tokenizer.
+    asyncio.run(update_sample_from_response(args, sample, {"input_ids": sample.tokens}, output))
 
     assert sample.rollout_routed_experts.shape == (served_prompt_tokens + len(response) - 1, layers, topk)
