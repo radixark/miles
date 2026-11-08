@@ -5,7 +5,7 @@ grader reads a flat response and would pick "option is (B)" out of the thinking,
 parses the response tokens with the Inkling response parser and grades only the visible content.
 """
 
-from functools import lru_cache
+from functools import cache
 
 from miles.rollout.rm_hub.gpqa import compute_gpqa_reward
 from miles.utils.chat_template_utils.inkling_parser import InklingResponseParser
@@ -13,7 +13,7 @@ from miles.utils.processing_utils import load_tokenizer
 from miles.utils.types import Sample
 
 
-@lru_cache(maxsize=None)
+@cache
 def _parser(hf_checkpoint: str, chat_template_path: str | None) -> InklingResponseParser:
     tokenizer = load_tokenizer(hf_checkpoint, chat_template_path=chat_template_path, trust_remote_code=True)
     return InklingResponseParser(tokenizer)
