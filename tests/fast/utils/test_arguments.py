@@ -4337,15 +4337,32 @@ class TestMultimodalTokenSpaceProcessingArgs:
             multimodal_token_space_processing=True,
             rollout_external_engine_addrs=external_engines,
             hf_checkpoint="/ckpt",
+            train_backend="megatron",
         )
         sglang = make_sglang_config(**{**self._SUPPORTED, **engine_overrides})
 
         with pytest.raises(ValueError, match=match):
             _check_multimodal_token_space_processing_args(args, sglang=sglang)
 
+    @pytest.mark.parametrize("train_backend", ["fsdp", "torchtitan"])
+    def test_a_trainer_that_never_consumes_the_rebuilt_features_is_rejected(self, train_backend):
+        """torchtitan has no consumer of multimodal_train_inputs, so it would train on placeholder tokens alone."""
+        args = SimpleNamespace(
+            multimodal_token_space_processing=True,
+            rollout_external_engine_addrs=None,
+            hf_checkpoint="/ckpt",
+            train_backend=train_backend,
+        )
+
+        with pytest.raises(ValueError, match="Megatron backend only"):
+            _check_multimodal_token_space_processing_args(args, sglang=make_sglang_config(**self._SUPPORTED))
+
     def test_supported_settings_pass(self):
         args = SimpleNamespace(
-            multimodal_token_space_processing=True, rollout_external_engine_addrs=None, hf_checkpoint="/ckpt"
+            multimodal_token_space_processing=True,
+            rollout_external_engine_addrs=None,
+            hf_checkpoint="/ckpt",
+            train_backend="megatron",
         )
 
         _check_multimodal_token_space_processing_args(args, sglang=make_sglang_config(**self._SUPPORTED))
@@ -4353,7 +4370,10 @@ class TestMultimodalTokenSpaceProcessingArgs:
     def test_engine_groups_that_disagree_on_a_processor_setting_are_rejected_at_startup(self):
         """The trainer builds one processor, so two engine groups with different settings cannot both be mirrored."""
         args = SimpleNamespace(
-            multimodal_token_space_processing=True, rollout_external_engine_addrs=None, hf_checkpoint="/ckpt"
+            multimodal_token_space_processing=True,
+            rollout_external_engine_addrs=None,
+            hf_checkpoint="/ckpt",
+            train_backend="megatron",
         )
         groups = [
             ServerGroupConfig(
