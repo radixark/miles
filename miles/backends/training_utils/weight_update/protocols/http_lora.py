@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import base64
 import io
-import json
 import logging
 import os
 import pickle
@@ -17,7 +16,6 @@ import time
 from argparse import Namespace
 from collections.abc import Callable, Sequence
 
-import safetensors.torch
 import torch
 import torch.distributed as dist
 
@@ -37,7 +35,7 @@ from miles.backends.training_utils.weight_update.session import (
 )
 from miles.utils import async_utils
 from miles.utils.function_registry import load_function
-from miles.utils.lora.utils import LORA_ADAPTER_NAME, build_lora_config
+from miles.utils.lora.utils import LORA_ADAPTER_NAME, build_lora_config, save_adapter_to_disk
 
 logger = logging.getLogger(__name__)
 
@@ -144,15 +142,11 @@ class UpdateWeightHttpLoraPath(WeightTransferProtocol):
     def _write_adapter(self, adapter: dict[str, torch.Tensor], weight_version: int) -> str:
         adapter_dir = os.path.join(self._stage_root, f"{LORA_ADAPTER_NAME}_{self._run_tag}_v{weight_version}")
         os.makedirs(adapter_dir)
-        weights_path = os.path.join(adapter_dir, "adapter_model.safetensors")
-        config_path = os.path.join(adapter_dir, "adapter_config.json")
-        safetensors.torch.save_file(adapter, weights_path, metadata={"format": "pt"})
-        with open(config_path, "w") as f:
-            json.dump(self._lora_config, f, indent=2)
+        save_adapter_to_disk(adapter_dir, self._lora_config, adapter)
         # safetensors writes 0600; engines may read as another user
         os.chmod(adapter_dir, 0o755)
-        os.chmod(weights_path, 0o644)
-        os.chmod(config_path, 0o644)
+        for name in ("adapter_model.safetensors", "adapter_config.json"):
+            os.chmod(os.path.join(adapter_dir, name), 0o644)
         return adapter_dir
 
     def _prune_old_versions(self) -> None:
