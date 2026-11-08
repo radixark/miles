@@ -5,6 +5,7 @@ import json
 import torch
 import torch.nn as nn
 
+from miles.backends.training_utils.data.context_parallel import scatter_cp_rows
 from miles_plugins.models.inkling.vision_encoder import HMLPPatchEncoder, InklingVisionConfig, RMSNorm
 
 
@@ -117,20 +118,12 @@ def wire_mm_towers(model, hf_checkpoint: str, train: bool = False) -> None:
     def _scatter(decoder_input, embeds, positions):
         if embeds is None or positions is None or positions.numel() == 0:
             return decoder_input
-        s_local = decoder_input.shape[0]
-        if model.config.sequence_parallel and ps.get_tensor_model_parallel_world_size() > 1:
-            rank = ps.get_tensor_model_parallel_rank()
-            local = positions - rank * s_local
-            sel = (local >= 0) & (local < s_local)
-            local, emb = local[sel], embeds[sel]
-        else:
-            # -1 marks a row whose token another context-parallel rank holds.
-            keep = positions >= 0
-            local, emb = positions[keep], embeds[keep]
-        decoder_input = decoder_input.clone()
-        if local.numel():
-            decoder_input[local, 0] = emb.to(decoder_input.dtype)
-        return decoder_input
+        sp_rank = (
+            ps.get_tensor_model_parallel_rank()
+            if model.config.sequence_parallel and ps.get_tensor_model_parallel_world_size() > 1
+            else 0
+        )
+        return scatter_cp_rows(decoder_input, embeds, positions, sp_rank=sp_rank)
 
     def _mm_forward(
         *a,

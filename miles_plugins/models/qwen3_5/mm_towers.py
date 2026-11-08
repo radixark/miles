@@ -13,6 +13,7 @@ mRoPE positions reach the model as its ``position_ids``, untouched here.
 
 import torch
 
+from miles.backends.training_utils.data.context_parallel import scatter_cp_rows
 from miles_plugins.models.qwen3_5.vision import load_vision_tower
 
 MM_KWARGS = (
@@ -94,19 +95,8 @@ def wire_mm_towers(model, hf_checkpoint: str) -> None:
             assert (
                 rows.shape[0] == positions.numel()
             ), f"{rows.shape[0]} vision rows vs {positions.numel()} placeholder positions"
-            decoder_input = _scatter_rows(decoder_input, rows, positions.to(decoder_input.device), sp_rank=sp_rank)
+            decoder_input = scatter_cp_rows(decoder_input, rows, positions.to(decoder_input.device), sp_rank=sp_rank)
         kwargs["decoder_input"] = decoder_input
         return orig_forward(*args, **kwargs)
 
     model.forward = mm_forward
-
-
-def _scatter_rows(decoder_input: torch.Tensor, rows: torch.Tensor, positions: torch.Tensor, *, sp_rank: int):
-    """Write ``rows`` at the packed ``positions`` that fall in this rank's [s_local, 1, h] window; -1 skips a row."""
-    s_local = decoder_input.shape[0]
-    local = positions - sp_rank * s_local
-    keep = (local >= 0) & (local < s_local)
-    # Clone instead of writing in place, so the embedding's autograd graph stays intact.
-    decoder_input = decoder_input.clone()
-    decoder_input[local[keep], 0] = rows[keep].to(decoder_input.dtype)
-    return decoder_input

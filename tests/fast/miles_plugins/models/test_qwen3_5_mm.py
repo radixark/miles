@@ -7,7 +7,7 @@ from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5VisionModel
 
 from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig, SglangConfig
-from miles_plugins.models.qwen3_5.mm_towers import _scatter_rows, check_multimodal_setup
+from miles_plugins.models.qwen3_5.mm_towers import check_multimodal_setup
 from miles_plugins.models.qwen3_5.vision import Qwen3_5VisionConfig, Qwen3_5VisionTower, _PatchEmbed, _rot_pos_ids
 
 _VISION_CONFIG = dict(
@@ -50,16 +50,6 @@ def test_patch_embed_gemm_matches_conv3d():
 def test_rotary_positions_follow_the_spatial_merge_block_order():
     # A 2x4 grid arrives as two 2x2 merge blocks, each read row by row.
     assert _rot_pos_ids(2, 4, 2).tolist() == [[0, 0], [0, 1], [1, 0], [1, 1], [0, 2], [0, 3], [1, 2], [1, 3]]
-
-
-def test_rows_land_only_in_this_sequence_parallel_window():
-    decoder_input = torch.zeros(4, 1, 2)
-    rows = torch.tensor([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]])
-
-    # Rank 1 holds packed tokens 4..7.
-    merged = _scatter_rows(decoder_input, rows, torch.tensor([3, 4, 6]), sp_rank=1)
-
-    assert merged[:, 0, 0].tolist() == [2.0, 0.0, 3.0, 0.0]
 
 
 def _rope_config(**overrides):
