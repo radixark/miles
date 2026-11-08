@@ -1,7 +1,7 @@
 import pytest
 
-from miles.router.dynamo.config import DynamoConfig, LaunchOptions
-from miles.router.dynamo.frontend import launch_args, runtime_env
+from miles.router.dynamo.config import Address, DynamoConfig, LaunchOptions
+from miles.router.dynamo.frontend import frontend_env, frontend_launch, launch_args, runtime_env
 
 
 @pytest.fixture
@@ -47,3 +47,25 @@ def test_explicit_options_override_inherited_non_owned_env(config):
     env = runtime_env(config, options=options, inherited_env={"NEW_NATIVE_OPTION": "inherited", "OTHER": "kept"})
     assert env["NEW_NATIVE_OPTION"] == "explicit"
     assert env["OTHER"] == "kept"
+
+
+def test_frontend_listener_is_supplied_only_through_argv(config):
+    env = frontend_env(config, inherited_env={"DYN_HTTP_HOST": "old-host", "DYN_HTTP_PORT": "9999", "OTHER": "kept"})
+    assert "DYN_HTTP_HOST" not in env
+    assert "DYN_HTTP_PORT" not in env
+    assert env["OTHER"] == "kept"
+    argv = frontend_launch(config, address=Address(host="127.0.0.1", port=18000), interpreter_prefix=["python"])
+    assert argv[:3] == ["python", "-m", "dynamo.frontend"]
+    assert argv[argv.index("--http-host") + 1] == "127.0.0.1"
+    assert argv[argv.index("--http-port") + 1] == "18000"
+
+
+@pytest.mark.parametrize("key,value", [("DYN_HTTP_HOST", "127.0.0.1"), ("DYN_HTTP_PORT", "18000")])
+@pytest.mark.parametrize("scope", ["global", "frontend"])
+def test_frontend_rejects_explicit_listener_env(config, key, value, scope):
+    if scope == "global":
+        config = config.model_copy(update={"env": {key: value}})
+    else:
+        config = config.model_copy(update={"frontend": config.frontend.model_copy(update={"env": {key: value}})})
+    with pytest.raises(ValueError, match=key):
+        frontend_env(config, inherited_env={})
