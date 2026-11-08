@@ -216,7 +216,8 @@ async def _run_inference_step(
 
     output = await post(url, payload)
     adopt_expanded_prompt_ids(sample, payload, output)
-    if record_routed_experts:
+    # A request aborted while still queued answers without prompt_tokens or routed experts: no new rows to keep.
+    if record_routed_experts and "routed_experts" in output["meta_info"]:
         meta_info = output["meta_info"]
         new_rows = meta_info["prompt_tokens"] + meta_info["completion_tokens"] - 1 - held_rows
         patch = get_routed_experts_from_response(args, output, new_rows)
