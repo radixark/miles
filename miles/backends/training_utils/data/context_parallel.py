@@ -470,6 +470,22 @@ def natural_to_local_cp_rows(
     return torch.where(on_rank, local, -1)
 
 
+def scatter_cp_rows(decoder_input: torch.Tensor, rows: torch.Tensor, positions: torch.Tensor, *, sp_rank: int):
+    """Write ``rows`` at the packed ``positions`` that fall in this rank's ``[s_local, 1, h]`` window.
+
+    ``positions`` are this CP rank's packed rows from :func:`natural_to_local_cp_rows`: -1 marks a row whose token
+    another context-parallel rank holds, and the window check drops it as it drops the rows of the other
+    sequence-parallel ranks. The input is cloned, so the embedding's autograd graph stays intact.
+    """
+    s_local = decoder_input.shape[0]
+    local = positions - sp_rank * s_local
+    keep = (local >= 0) & (local < s_local)
+    decoder_input = decoder_input.clone()
+    if keep.any():
+        decoder_input[local[keep], 0] = rows[keep].to(decoder_input.dtype)
+    return decoder_input
+
+
 def natural_to_zigzag_slice(tensor: torch.Tensor, dim: int, cp_size: int, cp_rank: int) -> torch.Tensor:
     """Slice a full-length tensor into the zigzag ring-attention CP layout.
 
