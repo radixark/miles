@@ -4018,6 +4018,51 @@ class TestMilesValidateArgsDiskDeltaResume:
         assert "ckpt_step" not in vars(args)
 
 
+class TestMilesValidateArgsHttpLora:
+    """http-lora passes miles_validate_args' transfer-mode allow-list, not only the protocol factory's."""
+
+    @staticmethod
+    def _parse(tmp_path, extra: list[str]) -> argparse.Namespace:
+        # LoRA target resolution reads the HF config of --hf-checkpoint.
+        (tmp_path / "config.json").write_text(json.dumps({"model_type": "qwen3"}))
+        parser = copy.deepcopy(get_megatron_arg_parser())
+        parser.set_defaults(finetune=False)
+        return parser.parse_args(
+            [
+                "--update-weight-transfer-mode",
+                "http-lora",
+                "--lora-rank",
+                "16",
+                "--hf-checkpoint",
+                str(tmp_path),
+                "--num-rollout",
+                "1",
+            ]
+            + extra
+            + REQUIRED_ARGS
+        )
+
+    def test_default_tensors_mode_validates_without_a_staging_directory(self, tmp_path):
+        miles_validate_args(self._parse(tmp_path, []))
+
+    def test_path_mode_validates_with_a_staging_directory(self, tmp_path):
+        args = self._parse(tmp_path, ["--http-lora-ship", "path", "--update-weight-disk-dir", str(tmp_path / "stage")])
+
+        miles_validate_args(args)
+
+    def test_path_mode_requires_a_staging_directory(self, tmp_path):
+        with pytest.raises(AssertionError, match="requires --update-weight-disk-dir"):
+            miles_validate_args(self._parse(tmp_path, ["--http-lora-ship", "path"]))
+
+    def test_path_mode_refuses_check_lora_weight_equal(self, tmp_path):
+        extra = ["--http-lora-ship", "path", "--update-weight-disk-dir", str(tmp_path / "stage")]
+        with pytest.raises(AssertionError, match="check-lora-weight-equal"):
+            miles_validate_args(self._parse(tmp_path, extra + ["--check-lora-weight-equal"]))
+
+    def test_tensors_mode_accepts_check_lora_weight_equal(self, tmp_path):
+        miles_validate_args(self._parse(tmp_path, ["--check-lora-weight-equal"]))
+
+
 class TestWeightUpdateDeadlines:
     def _parse(self, extra: list[str]) -> argparse.Namespace:
         parser = get_megatron_arg_parser()
