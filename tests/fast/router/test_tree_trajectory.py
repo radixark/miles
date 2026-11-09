@@ -7,6 +7,7 @@ import sys
 
 import pytest
 
+from miles.rollout.session.errors import MessageValidationError
 from miles.rollout.session.types import SessionRecord
 from miles.rollout.session.v2 import tree_trajectory
 from miles.rollout.session.v2.tree_trajectory import SessionTree
@@ -201,7 +202,7 @@ class TestModel:
         tree = SessionTree()
         n0 = _commit(tree, None, [U1, A1])
         _commit(tree, n0, [T1, A2])
-        with pytest.raises(ValueError, match="node cap reached"):
+        with pytest.raises(MessageValidationError, match="node cap reached"):
             _commit(tree, n0, [T1, A3])
 
     def test_seq_is_creation_order_not_wall_clock(self):
