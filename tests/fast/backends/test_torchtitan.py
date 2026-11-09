@@ -538,6 +538,20 @@ def test_mla_keeps_its_wrapper_and_runs_tpu_flash_attention_inside_it(on_tpu):
     assert {type(wrapper.inner_attention) for wrapper in mla} == {TpuFlashInnerAttention.Config}
 
 
+def test_gated_delta_layers_get_the_document_gated_delta_and_attention_layers_tpu_flash(on_tpu):
+    pytest.importorskip("torchtitan")
+    from torchtitan.config.parallelism import ParallelismConfig
+
+    from miles.backends.torchtitan_utils.config import TpuFlashInnerAttention, build_model_config
+    from miles.backends.torchtitan_utils.document_gated_delta import DocumentGatedDeltaInnerAttention
+
+    model = build_model_config(
+        _config_args(titan_model_name="qwen3_5", titan_model_flavor="debugmodel"), parallelism=ParallelismConfig()
+    )
+    inner = [type(layer.attention.inner_attention) for layer in model.layers]
+    assert set(inner) == {DocumentGatedDeltaInnerAttention.Config, TpuFlashInnerAttention.Config}
+
+
 def test_context_parallelism_swaps_in_the_all_gather_kv_attention(tmp_path, monkeypatch):
     """torchtitan refuses CP on a plain flex attention; the backend converts every layer's inner attention."""
     pytest.importorskip("torchtitan")

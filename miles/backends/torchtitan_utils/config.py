@@ -19,12 +19,15 @@ from torchtitan.distributed.activation_remat import FullActivationRematConfig
 from torchtitan.models.base import BaseModel
 from torchtitan.models.common.attention import FlexInnerAttention, InnerAttention, MLAAttention
 from torchtitan.models.common.attention.cp_attention import AllGatherKVFlexInnerAttention
+from torchtitan.models.common.attention.gdn import InnerGDN
 from torchtitan.models.common.linear import Linear
 from torchtitan.models.common.moe import MoE
 
 from miles import platforms
 from miles.backends.torchtitan_utils import lora
 from miles.backends.torchtitan_utils.components import TiedCheckpointManager
+from miles.backends.torchtitan_utils.document_attention import document_ids
+from miles.backends.torchtitan_utils.document_gated_delta import DocumentGatedDeltaInnerAttention
 from miles.backends.torchtitan_utils.loss import RLLossAdapter
 from miles.backends.torchtitan_utils.trainer import TitanTrainer
 from miles.utils.args.runtime import TrainerConfig
@@ -68,7 +71,7 @@ def build_model_config(
     model = builder(args.backend.titan_model_flavor, **kwargs)
     _disable_load_balancing(model)
     if not platforms.current_platform.flex_attention:
-        _use_tpu_flash_attention(model)
+        _replace_inner_attention(model)
     if parallelism.context_parallel_degree > 1:
         model = transform_model_config_(
             model, [ContextParallelTransform(inner_attention_map={FlexInnerAttention: AllGatherKVFlexInnerAttention})]
@@ -93,11 +96,7 @@ class TpuFlashInnerAttention(InnerAttention):
             max_num_documents: int | None = None,
             max_context_length: int | None = None,
         ) -> torch.Tensor:
-            # positions restart at 0 in every sequence and the padding tail, so each token's segment is the index of
-            # its sequence's first token; no cumsum: with the scan emitter off, torch_tpu cannot lower an int64 cumsum
-            return torch.arange(positions.shape[-1], device=positions.device, dtype=torch.int32) - positions.to(
-                torch.int32
-            )
+            return document_ids(positions)
 
     def __init__(self, config: Config) -> None:
         super().__init__()
@@ -132,18 +131,24 @@ class TpuFlashInnerAttention(InnerAttention):
         return out.squeeze(0).transpose(0, 1)
 
 
-def _use_tpu_flash_attention(model: BaseModel.Config) -> None:
+def _replace_inner_attention(model: BaseModel.Config) -> None:
+    """Swap in inner attentions keyed on document ids, for platforms without sparse FlexAttention or attn_gym."""
+    replacements: dict[type[InnerAttention.Config], type[InnerAttention.Config]] = {
+        FlexInnerAttention.Config: TpuFlashInnerAttention.Config,
+        InnerGDN.Config: DocumentGatedDeltaInnerAttention.Config,
+    }
     for layer in model.layers:
         for _, inner, parent, field_name in layer.traverse(InnerAttention.Config, recurse=True):
             # MLA wraps the attention kernel it runs
             if isinstance(inner, MLAAttention.Config):
                 continue
-            if type(inner) is not FlexInnerAttention.Config:
+            replacement = replacements.get(type(inner))
+            if replacement is None:
                 raise ValueError(
-                    f"on {platforms.current_platform.device_type} only document-causal FlexAttention has a "
-                    f"replacement; {type(inner).__qualname__} has none"
+                    f"on {platforms.current_platform.device_type} {type(inner).__qualname__} has no replacement; "
+                    f"only {', '.join(c.__qualname__ for c in replacements)} do"
                 )
-            setattr(parent, field_name, TpuFlashInnerAttention.Config())
+            setattr(parent, field_name, replacement())
 
 
 # not FreezeMoERoutingTransform: it also freezes the router gate, which RL trains
