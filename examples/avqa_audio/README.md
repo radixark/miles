@@ -1,4 +1,4 @@
-# AVQA Audio RL on Inkling-Small
+# AVQA Audio RL
 
 GRPO on audio questions: the model hears a clip, reads a four-option question and answers with a letter; the
 reward is 1 when the letter is right. The recipe trains the LoRA of Inkling-Small on [AVQA](https://huggingface.co/datasets/Joysw909/AVQA)
@@ -58,9 +58,6 @@ about 0.70.
 
 ## Notes
 
-- AVQA was written for video: most questions ask what animal appears, where the video takes place or what the
-  people are doing. The model answers them from the audio alone, so part of the gain is learning what the dataset
-  tends to ask about which sounds.
 - The AVQA repack only has the training subset (the official validation set ships YouTube links, not audio), so the
   held-out slice is cut from it: whole clips, a fixed seed, and the same share of every question type.
 - Greedy evaluation of the same checkpoint moves by up to 0.6 points between runs, so single-point differences below
