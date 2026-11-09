@@ -1,3 +1,4 @@
+import contextlib
 import uuid
 from collections.abc import Callable
 from copy import deepcopy
@@ -5,7 +6,8 @@ from unittest.mock import patch
 
 import pytest
 import requests
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import Response
 from tests.session_parity_utils import (
     SESSION_PARITY_SEED,
     V1,
@@ -32,6 +34,7 @@ from miles.utils.test_utils.session_verify_agent import (
     USER_FOLLOWUP_TEXT,
     build_initial_messages,
 )
+from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
 from miles.utils.types import Sample
 
 _MODEL = "Qwen/Qwen3-0.6B"
@@ -121,6 +124,53 @@ def test_unreachable_backend_counts_as_a_backend_failure(version):
     backend_url = f"http://127.0.0.1:{find_available_port(32000)}"
     with _serve_session(backend_url=backend_url, hf_checkpoint=_MODEL, version=version) as args:
         assert _chat_and_read_failures(*_new_session(args)) == (502, 1, True)
+
+
+@pytest.mark.parametrize("version", [V1, V2])
+@pytest.mark.parametrize("route", ["v1/chat/completions", "v1/messages"])
+def test_a_rejected_request_after_an_engine_failure_is_the_last_call(version, route):
+    def engine(_prompt: str) -> ProcessResult:
+        raise HTTPException(status_code=500, detail="engine failed")
+
+    with with_mock_server(model_name=_MODEL, process_fn=engine) as backend:
+        with _serve_session(backend_url=backend.url, hf_checkpoint=_MODEL, version=version) as args:
+            session_url, session_id = _new_session(args)
+            assert _chat_and_read_failures(session_url, session_id) == (500, 1, True)
+            rejected = requests.post(f"{session_url}/sessions/{session_id}/{route}", data=b"{", timeout=10.0)
+            metadata = requests.get(f"{session_url}/sessions/{session_id}", timeout=5.0).json()["metadata"]
+
+    assert (rejected.status_code, metadata["backend_failures"], metadata["last_model_call_failed"]) == (400, 1, False)
+
+
+@pytest.mark.parametrize("version", [V1, V2])
+@pytest.mark.parametrize(
+    "reply",
+    [
+        b"not json",
+        b'{"choices": []}',
+        b'{"choices": [{"message": {"content": ""}, "meta_info": {"output_token_logprobs": []}}]}',
+    ],
+)
+def test_a_malformed_engine_reply_counts_as_a_backend_failure(version, reply):
+    app = FastAPI()
+    app.post("/v1/chat/completions")(lambda: Response(content=reply, media_type="application/json"))
+    port = find_available_port(33000)
+    backend = UvicornThreadServer(app, host="127.0.0.1", port=port)
+    backend.start()
+    try:
+        with _serve_session(backend_url=f"http://127.0.0.1:{port}", hf_checkpoint=_MODEL, version=version) as args:
+            session_url, session_id = _new_session(args)
+            with contextlib.suppress(requests.ConnectionError):
+                requests.post(
+                    f"{session_url}/sessions/{session_id}/v1/chat/completions",
+                    json={"messages": [{"role": "user", "content": "hello"}]},
+                    timeout=10.0,
+                )
+            metadata = requests.get(f"{session_url}/sessions/{session_id}", timeout=5.0).json()["metadata"]
+    finally:
+        backend.stop()
+
+    assert (metadata["backend_failures"], metadata["last_model_call_failed"]) == (1, True)
 
 
 def _new_session(args) -> tuple[str, str]:

@@ -24,9 +24,16 @@ def _config(version: str) -> RolloutEnvConfig:
 
 @pytest.mark.parametrize("rollout_env", [pytest.param(_config(v), id=v) for v in ("v1", "v2")], indirect=True)
 @pytest.mark.parametrize(
-    ("attempts", "dropped"), [pytest.param(1, 1, id="last_call_500"), pytest.param(2, None, id="500_then_200")]
+    ("attempts", "then_reject", "rewards", "dropped"),
+    [
+        pytest.param(1, False, [1], 1, id="last_call_500"),
+        pytest.param(2, False, [1], None, id="500_then_200"),
+        pytest.param(1, True, [0], None, id="500_then_400"),
+    ],
 )
-def test_engine_failure_on_the_last_call_discards_the_episode(rollout_env, monkeypatch, attempts, dropped):
+def test_engine_failure_on_the_last_call_discards_the_episode(
+    rollout_env, monkeypatch, attempts, then_reject, rewards, dropped
+):
     failures = [1]
 
     def engine(prompt: str):
@@ -41,6 +48,8 @@ def test_engine_failure_on_the_last_call_discards_the_episode(rollout_env, monke
                 response = await client.post(url, json=payload)
                 if response.status_code < 500:
                     break
+            if then_reject and response.status_code >= 500:
+                response = await client.post(url, content=b"{")
         response.raise_for_status()
         return response.json()
 
@@ -50,7 +59,7 @@ def test_engine_failure_on_the_last_call_discards_the_episode(rollout_env, monke
 
     assert failures == [0]
     flat = [s for group in out.samples for sub in group for s in (sub if isinstance(sub, list) else [sub])]
-    assert [sample.reward for sample in flat] == [1]
+    assert [sample.reward for sample in flat] == rewards
     assert out.metrics.get(_DROPPED) == dropped
 
 
