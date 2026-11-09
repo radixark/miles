@@ -98,10 +98,6 @@ The multi-turn recipe runs Qwen3.5-35B-A3B in token space, with a result: see [m
 
 ## Notes
 
-### Media Paths
-
-geo3k stores images as base64 data URLs, so the recipes pass [`--shared-media-dir`](../../docs/user-guide/cli-reference.md): Miles writes each image there once and SGLang reads it by path. On a multi-node run, point it to a filesystem every node mounts.
-
 ### Reward Model Configuration
 
 We experimented with three reward model configurations:

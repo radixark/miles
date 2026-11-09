@@ -38,7 +38,9 @@ def save_debug_train_data_for_rank(args, *, rollout_id, rollout_data, rank, cp_r
             dict(
                 rollout_id=rollout_id,
                 rank=rank,
-                rollout_data=_dumpable_fields(rollout_data),
+                rollout_data=(
+                    _dumpable_fields(rollout_data) if args.multimodal_token_space_processing else rollout_data
+                ),
                 cp_rank=cp_rank,
                 cp_size=cp_size,
                 qkv_format=args.qkv_format,
@@ -47,7 +49,8 @@ def save_debug_train_data_for_rank(args, *, rollout_id, rollout_data, rank, cp_r
         )
 
 
-# Rebuilt in background Futures from the media refs, which cannot be pickled, and too large to keep per step;
+# Token space only: rebuilt in background Futures from the media refs, which cannot be pickled, and too large to
+# keep per step;
 # `multimodal_inputs` in the rollout dump is what they are rebuilt from.
 _UNDUMPABLE_KEYS = ("multimodal_train_inputs", "mrope_position_ids")
 

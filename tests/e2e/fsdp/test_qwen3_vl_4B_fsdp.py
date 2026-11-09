@@ -40,9 +40,7 @@ def execute():
     )
 
     # multimodal keys required for vlm datasets
-    multimodal_args = (
-        '--multimodal-keys \'{"image": "images"}\' ' "--shared-media-dir /root/datasets/geo3k_imgurl/media "
-    )
+    multimodal_args = '--multimodal-keys \'{"image": "images"}\' '
 
     eval_args = (
         f"{'--eval-interval 20 ' if ENABLE_EVAL else ''}"
