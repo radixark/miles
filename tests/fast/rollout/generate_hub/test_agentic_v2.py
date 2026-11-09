@@ -1,3 +1,4 @@
+import asyncio
 import functools
 import logging
 from types import SimpleNamespace
@@ -8,14 +9,17 @@ from tests.fast.utils.output_store.test_dropped import sample_owning
 
 import miles.rollout.generate_hub.agentic_tool_call as agentic_tool_call
 from miles.ray.rollout.rollout_data_conversion import validate_compact_rollout_ids
+from miles.rollout import sglang_rollout
 from miles.rollout.agentic.agent_function import InfraAbort
 from miles.rollout.base_types import GenerateFnInput
+from miles.rollout.inference_rollout import inference_rollout_train
 from miles.rollout.session.samples.codec import SamplesReply
 from miles.rollout.session.types import SessionServerInstance
 from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY
 from miles.utils.output_store import dropped
 from miles.utils.output_store.dropped import take_dropped_refs
 from miles.utils.output_store.plan import StorePlanError
+from miles.utils.test_utils import agent_function_stubs as stubs
 from miles.utils.types import Sample
 
 
@@ -46,6 +50,8 @@ def _generate_input(
             "session_server_instances": [SessionServerInstance(addr="127.0.0.1:12345")],
             "custom_agent_function_path": "test.fake_agent",
             "custom_agent_function_mode": "inline",
+            "sglang_router_ip": "127.0.0.1",
+            "sglang_router_port": 30000,
             "max_seq_len": None,
             "partial_rollout": False,
             "use_session_server": "v2",
@@ -241,6 +247,103 @@ async def _abort_for_infra(**kwargs):
 
 async def _fail(**kwargs):
     raise RuntimeError("the agent crashed")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["subproc", "inline"])
+async def test_every_mode_sends_the_call_with_its_router_scope(monkeypatch, mode):
+    sample = Sample(status=Sample.Status.COMPLETED, response="done", response_length=1, tokens=[1])
+    _patch_agent(monkeypatch, _Tracer(SamplesReply(samples=[sample], session_metadata={}, empty_reason=None)))
+    seen: dict = {}
+
+    async def fake_call(fn, **kwargs):
+        seen.update(kwargs)
+        return None
+
+    monkeypatch.setattr(agentic_tool_call, "call_agent_function", fake_call)
+
+    await agentic_tool_call.generate(
+        _generate_input(custom_agent_function_mode=mode, sglang_router_ip="10.0.0.1", sglang_router_port=31000)
+    )
+
+    assert seen["abort_scope"] == "10.0.0.1:31000"
+
+
+def _running_agent_input(monkeypatch, tmp_path, mode):
+    monkeypatch.setattr(dropped, "_dropped", {})
+    collected = sample_owning("collected")
+    collected.status = Sample.Status.COMPLETED
+    _patch_agent(monkeypatch, _Tracer(SamplesReply(samples=[collected], session_metadata={}, empty_reason=None)))
+    monkeypatch.setattr(agentic_tool_call, "load_function", lambda path: stubs.wait_for_metadata_paths)
+    generate_input = _generate_input(custom_agent_function_mode=mode, custom_agent_function_path=None)
+    pid_file = tmp_path / "pid"
+    generate_input.sample.metadata.update(pid_file=str(pid_file), cleaned_up=str(tmp_path / "cleaned_up"))
+    return generate_input, pid_file
+
+
+async def _running_group(generate_input, pid_file) -> set:
+    async def group():
+        return (await agentic_tool_call.generate(generate_input)).samples
+
+    pending = {asyncio.create_task(group())}
+    while not pid_file.exists():
+        await asyncio.sleep(0.05)
+    return pending
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["subproc", "inline"])
+async def test_the_rollout_abort_discards_a_running_agent_and_hands_its_objects_back_once(monkeypatch, tmp_path, mode):
+    generate_input, pid_file = _running_agent_input(monkeypatch, tmp_path, mode)
+    logged: list = []
+
+    async def no_engines(args):
+        return []
+
+    monkeypatch.setattr(inference_rollout_train, "get_worker_urls", no_engines)
+    monkeypatch.setattr(
+        inference_rollout_train.SampleOwnershipRecorder, "log_dropped_samples", lambda **kw: logged.append(kw)
+    )
+    state = SimpleNamespace(args=generate_input.args, aborted=False)
+
+    pending = await _running_group(generate_input, pid_file)
+    returned = await asyncio.wait_for(inference_rollout_train.abort(state, pending, rollout_id=0), timeout=30)
+
+    assert returned == []
+    assert list(take_dropped_refs()) == ["collected"]
+    [drop] = logged
+    [aborted] = drop["samples"]
+    assert aborted.status == Sample.Status.ABORTED
+    assert aborted.metadata["exit_status"] == "Cancelled"
+    assert drop["reason"] == "aborted"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["subproc", "inline"])
+async def test_the_legacy_rollout_abort_discards_a_running_agent_and_hands_its_objects_back_once(
+    monkeypatch, tmp_path, mode
+):
+    generate_input, pid_file = _running_agent_input(monkeypatch, tmp_path, mode)
+    args = generate_input.args
+    args.enable_sample_ownership_checker = True
+    logged: list = []
+
+    async def no_engines(url):
+        return {"workers": []}
+
+    state = SimpleNamespace(aborted=False, pendings=await _running_group(generate_input, pid_file))
+    monkeypatch.setattr(sglang_rollout, "GenerateState", lambda _args: state)
+    monkeypatch.setattr(sglang_rollout, "get", no_engines)
+    monkeypatch.setattr(sglang_rollout.SampleOwnershipRecorder, "log_dropped_groups", lambda **kw: logged.append(kw))
+
+    returned = await asyncio.wait_for(sglang_rollout.abort(args, rollout_id=0), timeout=30)
+
+    assert returned == []
+    assert not state.pendings
+    assert list(take_dropped_refs()) == ["collected"]
+    [drop] = logged
+    [[aborted]] = drop["before"]
+    assert aborted.metadata["exit_status"] == "Cancelled"
 
 
 @pytest.mark.asyncio

@@ -64,6 +64,39 @@ async def wait_until_cancelled(*, pid_file: str, cleaned_up: str, **kwargs) -> N
         raise
 
 
+async def return_when_cancelled(*, pid_file: str, cleaned_up: str, **kwargs) -> str:
+    Path(pid_file).write_text(str(os.getpid()))
+    try:
+        await asyncio.sleep(3600)
+    except asyncio.CancelledError:
+        Path(cleaned_up).touch()
+        return "finished anyway"
+    return "not cancelled"
+
+
+async def fail_when_cancelled(*, pid_file: str, cleaned_up: str, **kwargs) -> None:
+    Path(pid_file).write_text(str(os.getpid()))
+    try:
+        await asyncio.sleep(3600)
+    except asyncio.CancelledError:
+        Path(cleaned_up).touch()
+        raise RuntimeError("closing the sandbox failed") from None
+
+
+async def clean_up_slowly(*, pid_file: str, cleaned_up: str, cleanup_s: float, **kwargs) -> None:
+    Path(pid_file).write_text(str(os.getpid()))
+    try:
+        await asyncio.sleep(3600)
+    except asyncio.CancelledError:
+        await asyncio.sleep(cleanup_s)
+        Path(cleaned_up).touch()
+        raise
+
+
+async def wait_for_metadata_paths(*, metadata: dict, **kwargs) -> None:
+    await wait_until_cancelled(pid_file=metadata["pid_file"], cleaned_up=metadata["cleaned_up"])
+
+
 async def ignore_cancellation(*, pid_file: str, **kwargs) -> None:
     Path(pid_file).write_text(str(os.getpid()))
     while True:
