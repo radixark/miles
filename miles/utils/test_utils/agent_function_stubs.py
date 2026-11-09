@@ -10,7 +10,7 @@ import threading
 import time
 from pathlib import Path
 
-from miles.rollout.agentic.agent_function import InfraAbort
+from miles.rollout.agentic.agent_function import InfraAbort, report_to_caller
 from miles.rollout.agentic.rollout_limits import current_scope, rollout_lock, rollout_semaphore
 
 
@@ -29,6 +29,16 @@ async def report_pid(**kwargs) -> dict:
 async def print_and_return(**kwargs) -> str:
     print("printed by the agent")
     return "returned by the agent"
+
+
+async def read_env(*, names: list[str], **kwargs) -> dict:
+    return {name: os.environ.get(name) for name in names}
+
+
+async def report_then_return(*, items: list, **kwargs) -> str:
+    for item in items:
+        report_to_caller(item)
+    return "done"
 
 
 async def report_limits_scope(**kwargs) -> str:

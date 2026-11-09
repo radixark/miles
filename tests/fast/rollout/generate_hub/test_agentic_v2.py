@@ -1,3 +1,4 @@
+import argparse
 import asyncio
 import functools
 import logging
@@ -5,6 +6,7 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
+from tests.fast.fixtures.hook_consumer_fixtures import _hook
 from tests.fast.fixtures.sglang_config_fixtures import make_sglang_config
 from tests.fast.ray.rollout.conftest import make_args
 from tests.fast.router.test_sessions_v2 import _serve_router
@@ -20,9 +22,11 @@ from miles.rollout.inference_rollout import inference_rollout_train
 from miles.rollout.session.samples.codec import SamplesReply
 from miles.rollout.session.types import SessionServerInstance
 from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY
+from miles.utils.function_registry import function_registry
 from miles.utils.output_store import dropped
 from miles.utils.output_store.dropped import take_dropped_refs
 from miles.utils.output_store.plan import StorePlanError
+from miles.utils.retry_utils import NonRetryableError
 from miles.utils.test_utils import agent_function_stubs as stubs
 from miles.utils.test_utils.mock_sglang_server import MockSGLangServer
 from miles.utils.types import Sample
@@ -275,6 +279,77 @@ async def test_every_mode_sends_the_call_with_its_router_scope(monkeypatch, mode
     )
 
     assert seen["abort_scope"] == "10.0.0.1:31000"
+    assert "worker" not in seen and "extra_env" not in seen
+
+
+@pytest.mark.asyncio
+async def test_worker_mode_sends_the_call_to_the_worker_with_the_runs_env(monkeypatch):
+    sample = Sample(status=Sample.Status.COMPLETED, response="done", response_length=1, tokens=[1])
+    _patch_agent(monkeypatch, _Tracer(SamplesReply(samples=[sample], session_metadata={}, empty_reason=None)))
+    monkeypatch.setenv("TEST_HARNESS_DIR", "/tasks")
+    monkeypatch.setenv("TEST_RECIPE_KNOB", "1")
+    monkeypatch.setenv("E2B_API_URL", "https://sandbox-service.example")
+    monkeypatch.setenv("OTHER_HARNESS_DIR", "/not-this-harness")
+    monkeypatch.setenv("TEST_HARNESS_API_KEY", "not-by-value")
+    seen: dict = {}
+
+    async def fake_call(fn, **kwargs):
+        seen.update(kwargs)
+        return None
+
+    monkeypatch.setattr(agentic_tool_call, "call_agent_function", fake_call)
+
+    with function_registry.temporary("test_harness.agent.WORKER_ENV", ("TEST_HARNESS_*",)):
+        await agentic_tool_call.generate(
+            _generate_input(
+                custom_agent_function_path=_hook("test_harness.agent.run"),
+                custom_agent_function_mode="worker",
+                custom_agent_function_worker="http://worker:11100",
+                custom_agent_function_worker_env=["TEST_RECIPE_*"],
+                sglang_router_ip="10.0.0.1",
+                sglang_router_port=31000,
+            )
+        )
+
+    assert seen["mode"] == "worker"
+    assert seen["worker"] == "http://worker:11100"
+    assert seen["extra_env"]["TEST_HARNESS_DIR"] == "/tasks"
+    assert seen["extra_env"]["TEST_RECIPE_KNOB"] == "1"
+    assert seen["extra_env"]["E2B_API_URL"] == "https://sandbox-service.example"
+    assert "OTHER_HARNESS_DIR" not in seen["extra_env"]
+    assert "TEST_HARNESS_API_KEY" not in seen["extra_env"]
+    assert seen["abort_scope"] == "10.0.0.1:31000"
+
+
+@pytest.mark.asyncio
+async def test_worker_mode_without_a_worker_fails_before_a_session_opens_and_stops_the_rollout(monkeypatch):
+    extra_keys = _patch_agent(monkeypatch, _Tracer())
+
+    with pytest.raises(NonRetryableError, match="--custom-agent-function-worker"):
+        await agentic_tool_call.generate(
+            _generate_input(custom_agent_function_mode="worker", custom_agent_function_worker=None)
+        )
+
+    assert extra_keys == []
+
+
+def test_the_worker_flags_parse():
+    parser = argparse.ArgumentParser(exit_on_error=False)
+    agentic_tool_call.generate.add_arguments(parser)
+
+    args = parser.parse_args(
+        [
+            "--custom-agent-function-mode",
+            "worker",
+            "--custom-agent-function-worker",
+            "http://w:1",
+            "--custom-agent-function-worker-env",
+            "TEST_*",
+        ]
+    )
+
+    assert (args.custom_agent_function_mode, args.custom_agent_function_worker) == ("worker", "http://w:1")
+    assert args.custom_agent_function_worker_env == ["TEST_*"]
 
 
 def _running_agent_input(monkeypatch, tmp_path, mode):

@@ -277,3 +277,12 @@ def provision_provider(env: dict[str, str], spec: dict, *, arg_path: str = "") -
     if spec["target"]:
         var, label, default_desc = spec["target"]
         print(f"{spec['provider']} {label}: {env.get(var, default_desc)}", flush=True)
+
+
+def provider_env_names() -> tuple[str, ...]:
+    """Every env var a provider's sandboxes are configured by: key file paths and address-like vars, never a key."""
+    return tuple(
+        name
+        for spec in PROVIDER_CREDENTIALS.values()
+        for name in (spec["file_env_var"], *spec.get("env_defaults", {}), *spec["forward"])
+    )
