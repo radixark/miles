@@ -113,9 +113,18 @@ def role_content_only_message_matches(stored: dict[str, Any], replayed: dict[str
     return all(_normalize_value(stored.get(key)) == _normalize_value(replayed.get(key)) for key in ("role", "content"))
 
 
+def loose_tool_call_ignore_reasoning_message_matches(stored: dict[str, Any], replayed: dict[str, Any]) -> bool:
+    """Match what ``loose_tool_call`` matches, with ``reasoning_content`` left out of the comparison."""
+    return loose_tool_call_message_matches(
+        {key: value for key, value in stored.items() if key != "reasoning_content"},
+        {key: value for key, value in replayed.items() if key != "reasoning_content"},
+    )
+
+
 _BUILTIN_MESSAGE_MATCHERS: dict[str, SessionMessageMatcher] = {
     "strict": strict_message_matches,
     "loose_tool_call": loose_tool_call_message_matches,
+    "loose_tool_call_ignore_reasoning": loose_tool_call_ignore_reasoning_message_matches,
     "role_content_only": role_content_only_message_matches,
 }
 

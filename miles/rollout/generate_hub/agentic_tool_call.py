@@ -69,7 +69,6 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     )
     abort_scope = rollout_abort_scope(input.args)
     use_v2 = input.args.use_session_server == "v2"
-    collect_spec_metrics = use_v2 and input.args.sglang.common_value("speculative_algorithm") is not None
     tracer = await OpenAIEndpointTracer.create(
         input.args,
         evaluation=input.evaluation,
@@ -151,18 +150,18 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
                 record_dropped_samples(result.samples)
 
     if infra_abort is not None:
-        return _aborted_output(input.sample, infra_abort.exit_status, use_v2, collect_spec_metrics)
+        return _aborted_output(input.sample, infra_abort.exit_status, use_v2)
     if collect_failed:
-        return _aborted_output(input.sample, "CollectFailed", use_v2, collect_spec_metrics)
+        return _aborted_output(input.sample, "CollectFailed", use_v2)
     if not result.samples:
         if result.empty_reason == "all_truncated":
             logger.warning("All samples truncated (prompt already exceeds max_seq_len)")
-            return _aborted_output(input.sample, "AllTruncated", use_v2, collect_spec_metrics)
+            return _aborted_output(input.sample, "AllTruncated", use_v2)
         logger.warning("No model calls recorded for sample")
-        return _aborted_output(input.sample, "NoModelCalls", use_v2, collect_spec_metrics)
+        return _aborted_output(input.sample, "NoModelCalls", use_v2)
 
     session_rollout_metrics = None
-    if collect_spec_metrics:
+    if use_v2:
         session_rollout_metrics = result.session_metadata[SESSION_ROLLOUT_METRICS_KEY]
         if session_rollout_metrics["session_id"] != tracer.session_id:
             raise ValueError(
@@ -173,7 +172,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
             raise ValueError("a successful session collect must carry metrics")
 
     samples = result.samples
-    if collect_spec_metrics:
+    if use_v2:
         for sample in samples:
             sample.metadata.pop(SESSION_ROLLOUT_METRICS_KEY, None)
             sample.metadata[SESSION_ROLLOUT_METRICS_KEY] = session_rollout_metrics
@@ -219,13 +218,11 @@ def _warn_max_seq_len_does_not_stop_the_agent() -> None:
     )
 
 
-def _aborted_output(
-    input_sample: Sample, exit_status: str, use_v2: bool, collect_spec_metrics: bool
-) -> GenerateFnOutput:
+def _aborted_output(input_sample: Sample, exit_status: str, use_v2: bool) -> GenerateFnOutput:
     sample = deepcopy(input_sample)
     sample.status = Sample.Status.ABORTED
     sample.metadata = {**sample.metadata, "exit_status": exit_status}
-    if collect_spec_metrics:
+    if use_v2:
         sample.metadata.pop(SESSION_ROLLOUT_METRICS_KEY, None)
     return GenerateFnOutput(samples=[sample] if use_v2 else sample)
 

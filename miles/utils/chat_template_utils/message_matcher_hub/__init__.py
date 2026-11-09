@@ -17,6 +17,7 @@ append-only validation.
 from miles.utils.chat_template_utils.message_matcher_hub.funcs import (
     SessionMessageMatcherError,
     assert_messages_append_only_with_allowed_role,
+    loose_tool_call_ignore_reasoning_message_matches,
     loose_tool_call_message_matches,
     resolve_session_message_matcher,
     role_content_only_message_matches,
@@ -28,6 +29,7 @@ __all__ = [
     "SessionMessageMatcher",
     "SessionMessageMatcherError",
     "assert_messages_append_only_with_allowed_role",
+    "loose_tool_call_ignore_reasoning_message_matches",
     "loose_tool_call_message_matches",
     "resolve_session_message_matcher",
     "role_content_only_message_matches",
