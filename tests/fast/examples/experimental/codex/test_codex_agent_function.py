@@ -57,6 +57,7 @@ print(json.dumps({{"type": "turn.completed"}}), flush=True)
 """
 
 _REAL_CODEX = shutil.which("codex")
+_SLEEP_SECONDS = "47.2807"
 
 
 def _tool_call(command: str) -> str:
@@ -70,7 +71,7 @@ def _write_42(prompt: str) -> ProcessResult:
 
 
 def _sleep(prompt: str) -> ProcessResult:
-    return ProcessResult(text=_tool_call("sleep 60"), finish_reason="stop")
+    return ProcessResult(text=_tool_call(f"sleep {_SLEEP_SECONDS}"), finish_reason="stop")
 
 
 def _engine_error(prompt: str) -> ProcessResult:
@@ -138,6 +139,13 @@ def test_wall_clock_cap_scores_zero(codex):
     assert sample.status == Sample.Status.COMPLETED
     assert sample.reward == 0.0
     assert sample.metadata["exit_status"] == "TimeLimitExceeded"
+    if codex == "real":
+        assert _sleeping_tools() == []
+
+
+def _sleeping_tools() -> list[psutil.Process]:
+    procs = psutil.process_iter(["cmdline"])
+    return [proc for proc in procs if any(_SLEEP_SECONDS in part for part in proc.info["cmdline"] or [])]
 
 
 def _codex_processes(marker: str) -> list[psutil.Process]:
