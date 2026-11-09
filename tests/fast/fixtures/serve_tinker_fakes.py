@@ -33,7 +33,6 @@ async def tinker_startup(monkeypatch: pytest.MonkeyPatch, tmp_path) -> AsyncIter
         load=None,
         hf_checkpoint="base-model",
         tinker_checkpoint_root=str(tmp_path / "checkpoints"),
-        tinker_import_root=None,
         tinker_public_url=None,
         save=None,
         save_hf=None,
