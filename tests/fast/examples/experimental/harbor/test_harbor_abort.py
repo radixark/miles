@@ -4,12 +4,10 @@ from types import SimpleNamespace
 
 import pytest
 
-pytest.importorskip("harbor")
+from miles.rollout.agentic.agent_function import InfraAbort, call_agent_function
+from miles.utils.misc import call_agent_abort_hook
 
-from miles.rollout.agentic.agent_function import InfraAbort, call_agent_function  # noqa: E402
-from miles.utils.misc import call_agent_abort_hook  # noqa: E402
-
-from .blocking_environment import run_trial  # noqa: E402
+blocking_environment = pytest.importorskip("tests.fast.examples.experimental.harbor.blocking_environment")
 
 TRAINING = SimpleNamespace(custom_agent_function_path=None, sglang_router_ip="127.0.0.1", sglang_router_port=30000)
 
@@ -36,7 +34,7 @@ def test_a_rollout_abort_stops_a_real_harbor_trials_environment_under_subproc(tm
     async def abort_mid_trial():
         call = asyncio.create_task(
             call_agent_function(
-                run_trial,
+                blocking_environment.run_trial,
                 mode="subproc",
                 abort_scope="127.0.0.1:30000",
                 base_url="http://127.0.0.1:1/sessions/s1",

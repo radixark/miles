@@ -136,7 +136,7 @@ async def _run_and_collect(
                     }
                 )
                 generate_input = GenerateFnInput(
-                    state=SimpleNamespace(args=args),
+                    state=SimpleNamespace(args=args, aborted=False),
                     sample=input_sample,
                     sampling_params={
                         "model": hf_checkpoint,

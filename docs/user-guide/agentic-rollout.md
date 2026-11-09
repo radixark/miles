@@ -102,12 +102,16 @@ The function owns one episode and these rules:
   shell could print. The next section says which failures qualify.
 - A cancelled call stops and cleans up: free the sandbox, then let
   `asyncio.CancelledError` propagate. Every mode delivers the cancel, and a
-  rollout abort sends one (see below).
+  rollout abort sends one (see below). A harness that cannot honour it runs
+  under `subproc`, whose SIGTERM and backstop kill end it. An adapter that
+  spawns a CLI also stops the CLI's descendants, since a tool can sit in its own
+  process group.
 - Run blocking code with `asyncio.to_thread`, or the event loop cannot deliver
   the cancel while it runs.
 - Hold a wall-clock cap, such as `asyncio.timeout`, around the episode, because
   a harness's retry loop need not end by itself. A timeout after the agent
-  started is the policy's: return `reward: 0`.
+  started is the policy's: return `reward: 0`. Give a CLI its stdin from
+  `/dev/null`, or it can wait on it forever.
 
 For structured parsing, the payload may use SGLang's
 `ChatCompletionRequest`-compatible fields, which extend the OpenAI format.
@@ -157,11 +161,14 @@ as before; use it for debugging and for agents that keep state across calls.
 
 A rollout abort, such as the one that ends an oversampled round, cancels this
 rollout's calls in every mode and discards their samples (`exit_status`
-`Cancelled`), however the agent then ends. Under `subproc` the abort does not
-wait for the agent process's cleanup, which runs beside the next round to the
-deadlines above. An `inline` agent's cleanup runs on the rollout's loop, so the
-abort waits for it, up to 30 seconds. An evaluation on its own engines
-(`--eval-num-gpus`) keeps its calls through a training abort.
+`Cancelled`), however the agent then ends; an episode whose session opens after
+the abort never starts its agent. Under `subproc` the abort does not wait for
+the agent process's cleanup, which runs beside the next round to the deadlines
+above. An `inline` agent's cleanup runs on the rollout's loop: the abort hook
+waits up to 30 seconds for it before running the teardown hook below, and the
+rollout then waits for the episode to end, however long its cleanup takes. An
+evaluation on its own engines (`--eval-num-gpus`) keeps its calls through a
+training abort.
 
 ### Optional teardown hook
 

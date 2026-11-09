@@ -59,7 +59,7 @@ def _generate_input(
             **args_kwargs,
         }
     )
-    state = SimpleNamespace(args=args)
+    state = SimpleNamespace(args=args, aborted=False)
     sample = Sample(
         group_index=3,
         index=7,
@@ -304,10 +304,10 @@ async def test_the_rollout_abort_discards_a_running_agent_and_hands_its_objects_
     monkeypatch.setattr(
         inference_rollout_train.SampleOwnershipRecorder, "log_dropped_samples", lambda **kw: logged.append(kw)
     )
-    state = SimpleNamespace(args=generate_input.args, aborted=False)
-
     pending = await _running_group(generate_input, pid_file)
-    returned = await asyncio.wait_for(inference_rollout_train.abort(state, pending, rollout_id=0), timeout=30)
+    returned = await asyncio.wait_for(
+        inference_rollout_train.abort(generate_input.state, pending, rollout_id=0), timeout=30
+    )
 
     assert returned == []
     assert list(take_dropped_refs()) == ["collected"]
@@ -316,6 +316,49 @@ async def test_the_rollout_abort_discards_a_running_agent_and_hands_its_objects_
     assert aborted.status == Sample.Status.ABORTED
     assert aborted.metadata["exit_status"] == "Cancelled"
     assert drop["reason"] == "aborted"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["subproc", "inline"])
+async def test_an_episode_whose_session_opens_after_the_rollout_abort_never_starts_its_agent(
+    monkeypatch, tmp_path, mode
+):
+    generate_input, pid_file = _running_agent_input(monkeypatch, tmp_path, mode)
+    logged: list = []
+    opening, open_the_session = asyncio.Event(), asyncio.Event()
+    create = agentic_tool_call.OpenAIEndpointTracer.create
+
+    async def open_when_released(*args, **kwargs):
+        opening.set()
+        await open_the_session.wait()
+        return await create(*args, **kwargs)
+
+    async def no_engines(args):
+        return []
+
+    async def group():
+        return (await agentic_tool_call.generate(generate_input)).samples
+
+    monkeypatch.setattr(agentic_tool_call.OpenAIEndpointTracer, "create", open_when_released)
+    monkeypatch.setattr(inference_rollout_train, "get_worker_urls", no_engines)
+    monkeypatch.setattr(
+        inference_rollout_train.SampleOwnershipRecorder, "log_dropped_samples", lambda **kw: logged.append(kw)
+    )
+
+    pending = {asyncio.create_task(group())}
+    await opening.wait()
+    aborting = asyncio.create_task(inference_rollout_train.abort(generate_input.state, pending, rollout_id=0))
+    while not generate_input.state.aborted:
+        await asyncio.sleep(0.01)
+    open_the_session.set()
+    returned = await asyncio.wait_for(aborting, timeout=10)
+
+    assert returned == []
+    assert not pid_file.exists()
+    assert list(take_dropped_refs()) == ["collected"]
+    [drop] = logged
+    [aborted] = drop["samples"]
+    assert aborted.metadata["exit_status"] == "Cancelled"
 
 
 @pytest.mark.asyncio
@@ -331,7 +374,8 @@ async def test_the_legacy_rollout_abort_discards_a_running_agent_and_hands_its_o
     async def no_engines(url):
         return {"workers": []}
 
-    state = SimpleNamespace(aborted=False, pendings=await _running_group(generate_input, pid_file))
+    state = generate_input.state
+    state.pendings = await _running_group(generate_input, pid_file)
     monkeypatch.setattr(sglang_rollout, "GenerateState", lambda _args: state)
     monkeypatch.setattr(sglang_rollout, "get", no_engines)
     monkeypatch.setattr(sglang_rollout.SampleOwnershipRecorder, "log_dropped_groups", lambda **kw: logged.append(kw))

@@ -100,6 +100,8 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     cancelled = False
     t_start = time.monotonic()
     try:
+        if input.state.aborted:
+            raise InfraAbort("Cancelled", "the rollout aborted before this agent call started")
         logger.debug(f"{log_prefix} Starting agent function call")
         agent_metadata = await call_agent_function(
             custom_agent_function,
