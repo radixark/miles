@@ -49,6 +49,7 @@
         "run-ci-miles-plugin",
         "run-ci-model-scripts",
         "run-ci-mooncake",
+        "run-ci-multimodal",
         "run-ci-multi-policy",
         "run-ci-precision",
         "run-ci-qwen35",
