@@ -7,14 +7,21 @@ Runs on every PR (stage-a-cpu, by the tests/fast/ convention); locally:
 Covers the /run request contract the mini_swe_agent_2 server expects (instance
 fields at the top level, policy_base_url override, sampling mapped onto
 responses_create_params), the response mapping, and the failure semantics
-(transport failure -> None so the sample keeps its recorded session).
+(a failed call discards the sample; a timeout keeps its recorded session).
 """
 
 import asyncio
 import json
+import subprocess
+import sys
 
 import download_and_process_data
 import nemogym_agent_function as naf
+import pytest
+
+from miles.rollout.agentic.agent_function import InfraAbort
+
+from . import EXAMPLE_DIR
 
 
 def run_async(coro):
@@ -97,13 +104,16 @@ def test_reward_and_eval_report_mapping(monkeypatch):
     assert result == {"reward": 1.0, "eval_report": eval_report}
 
 
-def test_transport_failure_returns_none(monkeypatch):
+def test_transport_failure_discards_the_sample(monkeypatch):
     async def failing_post(url, payload, **kwargs):
         raise RuntimeError("connection refused")
 
     monkeypatch.setattr(naf, "post_json", failing_post)
 
-    assert run_async(naf.run(base_url="http://t:1/sessions/s", prompt="", metadata={})) is None
+    with pytest.raises(InfraAbort, match="connection refused") as raised:
+        run_async(naf.run(base_url="http://t:1/sessions/s", prompt="", metadata={}))
+
+    assert raised.value.exit_status == "NemoGymFailed"
 
 
 def test_timeout_returns_none(monkeypatch):
@@ -114,6 +124,15 @@ def test_timeout_returns_none(monkeypatch):
     monkeypatch.setenv("NEMO_GYM_RUN_TIMEOUT", "0.01")
 
     assert run_async(naf.run(base_url="http://t:1/sessions/s", prompt="", metadata={})) is None
+
+
+def test_module_loads_without_torch_or_ray():
+    code = (
+        f"import sys; sys.path[:] = {[str(EXAMPLE_DIR), *sys.path]!r}; "
+        "sys.modules['torch'] = sys.modules['ray'] = None; import nemogym_agent_function"
+    )
+
+    assert subprocess.run([sys.executable, "-c", code], check=False).returncode == 0
 
 
 # --- data conversion ------------------------------------------------------
