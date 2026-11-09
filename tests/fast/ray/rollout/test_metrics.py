@@ -338,46 +338,47 @@ class TestComputeSpecMetrics:
         }
 
 
-class TestSessionTreeMetrics:
-    @staticmethod
-    def _member(session_id, *, roots, leaves, turns):
-        sample = Sample()
-        sample.metadata[SESSION_ROLLOUT_METRICS_KEY] = {
-            "session_id": session_id,
-            "metrics": {"tree": {"roots": roots, "leaves": leaves, "turns": turns}},
-        }
-        return sample
+def _session_member(session_id, *, roots, leaves, turns):
+    sample = Sample()
+    sample.metadata[SESSION_ROLLOUT_METRICS_KEY] = {
+        "session_id": session_id,
+        "metrics": {"tree": {"roots": roots, "leaves": leaves, "turns": turns}},
+    }
+    return sample
 
-    def test_no_session_carrier_emits_no_session_keys(self):
-        out = _compute_metrics_from_samples(make_args(advantage_estimator="ppo"), [make_sample(index=0)])
 
-        assert not any(key.startswith("session/") for key in out)
+def test_no_session_carrier_emits_no_session_keys():
+    out = _compute_metrics_from_samples(make_args(advantage_estimator="ppo"), [make_sample(index=0)])
 
-    def test_counts_each_session_once_and_ignores_single_turn_sessions_in_the_ratio(self, caplog):
-        samples = [
-            self._member("split", roots=3, leaves=3, turns=3),
-            self._member("split", roots=3, leaves=3, turns=3),
-            self._member("clean", roots=1, leaves=1, turns=3),
-            self._member("one-call", roots=1, leaves=1, turns=1),
-        ]
+    assert not any(key.startswith("session/") for key in out)
 
-        out = _compute_session_tree_metrics(samples)
 
-        assert out == {
-            "session/roots_per_episode": pytest.approx(5 / 3),
-            "session/leaves_per_episode": pytest.approx(5 / 3),
-            "session/one_turn_per_root_ratio": 0.5,
-        }
-        assert "opened a new root on every turn" not in caplog.text
+def test_session_tree_counts_each_session_once_and_ignores_single_turn_sessions_in_the_ratio(caplog):
+    samples = [
+        _session_member("split", roots=3, leaves=3, turns=3),
+        _session_member("split", roots=3, leaves=3, turns=3),
+        _session_member("clean", roots=1, leaves=1, turns=3),
+        _session_member("one-call", roots=1, leaves=1, turns=1),
+    ]
 
-    def test_warns_once_when_most_multi_turn_sessions_split(self, caplog):
-        samples = [self._member(f"sid-{i}", roots=3, leaves=3, turns=3) for i in range(2)]
-        samples.append(self._member("clean", roots=1, leaves=1, turns=3))
+    out = _compute_session_tree_metrics(samples)
 
-        out = _compute_session_tree_metrics(samples)
+    assert out == {
+        "session/roots_per_episode": pytest.approx(5 / 3),
+        "session/leaves_per_episode": pytest.approx(5 / 3),
+        "session/one_turn_per_root_ratio": 0.5,
+    }
+    assert "opened a new root on every turn" not in caplog.text
 
-        assert out["session/one_turn_per_root_ratio"] == pytest.approx(2 / 3)
-        assert caplog.text.count("2/3 multi-turn sessions opened a new root on every turn") == 1
+
+def test_session_tree_warns_once_when_most_multi_turn_sessions_split(caplog):
+    samples = [_session_member(f"sid-{i}", roots=3, leaves=3, turns=3) for i in range(2)]
+    samples.append(_session_member("clean", roots=1, leaves=1, turns=3))
+
+    out = _compute_session_tree_metrics(samples)
+
+    assert out["session/one_turn_per_root_ratio"] == pytest.approx(2 / 3)
+    assert caplog.text.count("2/3 multi-turn sessions opened a new root on every turn") == 1
 
 
 class TestTitoMismatchMetrics:
