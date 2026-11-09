@@ -1,0 +1,1471 @@
+{
+  "experiment_id": "261108-eee6fab1",
+  "base_miles": "778794a807",
+  "temperatures": [
+    0.6,
+    1.0,
+    1.4
+  ],
+  "methods": [
+    "ce",
+    "l1",
+    "smooth"
+  ],
+  "nodes": [
+    "10.220.71.47",
+    "10.220.71.62",
+    "10.220.71.52",
+    "10.220.71.33",
+    "10.220.71.55"
+  ],
+  "shards": 40,
+  "jobs": [
+    {
+      "run_id": "261108-679762ea",
+      "stage": "tuning",
+      "temperature": 0.6,
+      "method": "ce",
+      "learning_rate": 1e-05,
+      "seed": 10001,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-6a80c9df",
+      "stage": "tuning",
+      "temperature": 0.6,
+      "method": "ce",
+      "learning_rate": 1e-05,
+      "seed": 10002,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-83d828db",
+      "stage": "tuning",
+      "temperature": 0.6,
+      "method": "ce",
+      "learning_rate": 3e-05,
+      "seed": 10001,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-0fb53557",
+      "stage": "tuning",
+      "temperature": 0.6,
+      "method": "ce",
+      "learning_rate": 3e-05,
+      "seed": 10002,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-4657d411",
+      "stage": "tuning",
+      "temperature": 0.6,
+      "method": "ce",
+      "learning_rate": 0.0001,
+      "seed": 10001,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-8a0a95c8",
+      "stage": "tuning",
+      "temperature": 0.6,
+      "method": "ce",
+      "learning_rate": 0.0001,
+      "seed": 10002,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-5a055ba5",
+      "stage": "tuning",
+      "temperature": 0.6,
+      "method": "l1",
+      "learning_rate": 1e-05,
+      "seed": 10001,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-b75588b4",
+      "stage": "tuning",
+      "temperature": 0.6,
+      "method": "l1",
+      "learning_rate": 1e-05,
+      "seed": 10002,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-65afa4ae",
+      "stage": "tuning",
+      "temperature": 0.6,
+      "method": "l1",
+      "learning_rate": 3e-05,
+      "seed": 10001,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-5d1201bd",
+      "stage": "tuning",
+      "temperature": 0.6,
+      "method": "l1",
+      "learning_rate": 3e-05,
+      "seed": 10002,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-b9e5f459",
+      "stage": "tuning",
+      "temperature": 0.6,
+      "method": "l1",
+      "learning_rate": 0.0001,
+      "seed": 10001,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-95162c04",
+      "stage": "tuning",
+      "temperature": 0.6,
+      "method": "l1",
+      "learning_rate": 0.0001,
+      "seed": 10002,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-6b6f00de",
+      "stage": "tuning",
+      "temperature": 0.6,
+      "method": "smooth",
+      "learning_rate": 1e-05,
+      "seed": 10001,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-9633b937",
+      "stage": "tuning",
+      "temperature": 0.6,
+      "method": "smooth",
+      "learning_rate": 1e-05,
+      "seed": 10002,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-ebaacf71",
+      "stage": "tuning",
+      "temperature": 0.6,
+      "method": "smooth",
+      "learning_rate": 3e-05,
+      "seed": 10001,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-bac13f3c",
+      "stage": "tuning",
+      "temperature": 0.6,
+      "method": "smooth",
+      "learning_rate": 3e-05,
+      "seed": 10002,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-4a32b515",
+      "stage": "tuning",
+      "temperature": 0.6,
+      "method": "smooth",
+      "learning_rate": 0.0001,
+      "seed": 10001,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-44584d92",
+      "stage": "tuning",
+      "temperature": 0.6,
+      "method": "smooth",
+      "learning_rate": 0.0001,
+      "seed": 10002,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-bd16d4ab",
+      "stage": "tuning",
+      "temperature": 1.0,
+      "method": "ce",
+      "learning_rate": 1e-05,
+      "seed": 10001,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-fff82433",
+      "stage": "tuning",
+      "temperature": 1.0,
+      "method": "ce",
+      "learning_rate": 1e-05,
+      "seed": 10002,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-4da12bc1",
+      "stage": "tuning",
+      "temperature": 1.0,
+      "method": "ce",
+      "learning_rate": 3e-05,
+      "seed": 10001,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-1dfd3c32",
+      "stage": "tuning",
+      "temperature": 1.0,
+      "method": "ce",
+      "learning_rate": 3e-05,
+      "seed": 10002,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-cddb6058",
+      "stage": "tuning",
+      "temperature": 1.0,
+      "method": "ce",
+      "learning_rate": 0.0001,
+      "seed": 10001,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-e219a7f4",
+      "stage": "tuning",
+      "temperature": 1.0,
+      "method": "ce",
+      "learning_rate": 0.0001,
+      "seed": 10002,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-d3a93b83",
+      "stage": "tuning",
+      "temperature": 1.0,
+      "method": "l1",
+      "learning_rate": 1e-05,
+      "seed": 10001,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-da980d5b",
+      "stage": "tuning",
+      "temperature": 1.0,
+      "method": "l1",
+      "learning_rate": 1e-05,
+      "seed": 10002,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-792f0a23",
+      "stage": "tuning",
+      "temperature": 1.0,
+      "method": "l1",
+      "learning_rate": 3e-05,
+      "seed": 10001,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-a791ce30",
+      "stage": "tuning",
+      "temperature": 1.0,
+      "method": "l1",
+      "learning_rate": 3e-05,
+      "seed": 10002,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-792b33ca",
+      "stage": "tuning",
+      "temperature": 1.0,
+      "method": "l1",
+      "learning_rate": 0.0001,
+      "seed": 10001,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-e0627659",
+      "stage": "tuning",
+      "temperature": 1.0,
+      "method": "l1",
+      "learning_rate": 0.0001,
+      "seed": 10002,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-0935fce0",
+      "stage": "tuning",
+      "temperature": 1.0,
+      "method": "smooth",
+      "learning_rate": 1e-05,
+      "seed": 10001,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-35d69757",
+      "stage": "tuning",
+      "temperature": 1.0,
+      "method": "smooth",
+      "learning_rate": 1e-05,
+      "seed": 10002,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-88b1a51a",
+      "stage": "tuning",
+      "temperature": 1.0,
+      "method": "smooth",
+      "learning_rate": 3e-05,
+      "seed": 10001,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-d2fffb79",
+      "stage": "tuning",
+      "temperature": 1.0,
+      "method": "smooth",
+      "learning_rate": 3e-05,
+      "seed": 10002,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-76bdf6b9",
+      "stage": "tuning",
+      "temperature": 1.0,
+      "method": "smooth",
+      "learning_rate": 0.0001,
+      "seed": 10001,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-f04fb5d1",
+      "stage": "tuning",
+      "temperature": 1.0,
+      "method": "smooth",
+      "learning_rate": 0.0001,
+      "seed": 10002,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-71ddba76",
+      "stage": "tuning",
+      "temperature": 1.4,
+      "method": "ce",
+      "learning_rate": 1e-05,
+      "seed": 10001,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-a43cfe04",
+      "stage": "tuning",
+      "temperature": 1.4,
+      "method": "ce",
+      "learning_rate": 1e-05,
+      "seed": 10002,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-c55fb6a4",
+      "stage": "tuning",
+      "temperature": 1.4,
+      "method": "ce",
+      "learning_rate": 3e-05,
+      "seed": 10001,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-825cc806",
+      "stage": "tuning",
+      "temperature": 1.4,
+      "method": "ce",
+      "learning_rate": 3e-05,
+      "seed": 10002,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-bf7f7d7f",
+      "stage": "tuning",
+      "temperature": 1.4,
+      "method": "ce",
+      "learning_rate": 0.0001,
+      "seed": 10001,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-a45903ca",
+      "stage": "tuning",
+      "temperature": 1.4,
+      "method": "ce",
+      "learning_rate": 0.0001,
+      "seed": 10002,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-e332ce36",
+      "stage": "tuning",
+      "temperature": 1.4,
+      "method": "l1",
+      "learning_rate": 1e-05,
+      "seed": 10001,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-d7c8ad38",
+      "stage": "tuning",
+      "temperature": 1.4,
+      "method": "l1",
+      "learning_rate": 1e-05,
+      "seed": 10002,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-1ad93b65",
+      "stage": "tuning",
+      "temperature": 1.4,
+      "method": "l1",
+      "learning_rate": 3e-05,
+      "seed": 10001,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-bb8e73d4",
+      "stage": "tuning",
+      "temperature": 1.4,
+      "method": "l1",
+      "learning_rate": 3e-05,
+      "seed": 10002,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-87c23255",
+      "stage": "tuning",
+      "temperature": 1.4,
+      "method": "l1",
+      "learning_rate": 0.0001,
+      "seed": 10001,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-4fdf8259",
+      "stage": "tuning",
+      "temperature": 1.4,
+      "method": "l1",
+      "learning_rate": 0.0001,
+      "seed": 10002,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-cb0f9c09",
+      "stage": "tuning",
+      "temperature": 1.4,
+      "method": "smooth",
+      "learning_rate": 1e-05,
+      "seed": 10001,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-8c4f1543",
+      "stage": "tuning",
+      "temperature": 1.4,
+      "method": "smooth",
+      "learning_rate": 1e-05,
+      "seed": 10002,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-67aa9bde",
+      "stage": "tuning",
+      "temperature": 1.4,
+      "method": "smooth",
+      "learning_rate": 3e-05,
+      "seed": 10001,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-1b831a53",
+      "stage": "tuning",
+      "temperature": 1.4,
+      "method": "smooth",
+      "learning_rate": 3e-05,
+      "seed": 10002,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-1f9211dd",
+      "stage": "tuning",
+      "temperature": 1.4,
+      "method": "smooth",
+      "learning_rate": 0.0001,
+      "seed": 10001,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-5050cd6c",
+      "stage": "tuning",
+      "temperature": 1.4,
+      "method": "smooth",
+      "learning_rate": 0.0001,
+      "seed": 10002,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-f31df34c",
+      "stage": "confirmation",
+      "temperature": 0.6,
+      "method": "ce",
+      "learning_rate": null,
+      "seed": 20001,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-91c93454",
+      "stage": "confirmation",
+      "temperature": 0.6,
+      "method": "ce",
+      "learning_rate": null,
+      "seed": 20002,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-aadd6591",
+      "stage": "confirmation",
+      "temperature": 0.6,
+      "method": "ce",
+      "learning_rate": null,
+      "seed": 20003,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-fe5b1562",
+      "stage": "confirmation",
+      "temperature": 0.6,
+      "method": "ce",
+      "learning_rate": null,
+      "seed": 20004,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-9e7f8ee8",
+      "stage": "confirmation",
+      "temperature": 0.6,
+      "method": "ce",
+      "learning_rate": null,
+      "seed": 20005,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-7882b5ca",
+      "stage": "confirmation",
+      "temperature": 0.6,
+      "method": "ce",
+      "learning_rate": null,
+      "seed": 20006,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-a20d4b3e",
+      "stage": "confirmation",
+      "temperature": 0.6,
+      "method": "ce",
+      "learning_rate": null,
+      "seed": 20007,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-16b9bd6b",
+      "stage": "confirmation",
+      "temperature": 0.6,
+      "method": "ce",
+      "learning_rate": null,
+      "seed": 20008,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-ca6d571e",
+      "stage": "confirmation",
+      "temperature": 0.6,
+      "method": "ce",
+      "learning_rate": null,
+      "seed": 20009,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-42de6a59",
+      "stage": "confirmation",
+      "temperature": 0.6,
+      "method": "ce",
+      "learning_rate": null,
+      "seed": 20010,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-6e66dded",
+      "stage": "confirmation",
+      "temperature": 0.6,
+      "method": "l1",
+      "learning_rate": null,
+      "seed": 20001,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-e1909c5a",
+      "stage": "confirmation",
+      "temperature": 0.6,
+      "method": "l1",
+      "learning_rate": null,
+      "seed": 20002,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-4f08ee77",
+      "stage": "confirmation",
+      "temperature": 0.6,
+      "method": "l1",
+      "learning_rate": null,
+      "seed": 20003,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-2196dc99",
+      "stage": "confirmation",
+      "temperature": 0.6,
+      "method": "l1",
+      "learning_rate": null,
+      "seed": 20004,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-2796027f",
+      "stage": "confirmation",
+      "temperature": 0.6,
+      "method": "l1",
+      "learning_rate": null,
+      "seed": 20005,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-6abe42d4",
+      "stage": "confirmation",
+      "temperature": 0.6,
+      "method": "l1",
+      "learning_rate": null,
+      "seed": 20006,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-085aa071",
+      "stage": "confirmation",
+      "temperature": 0.6,
+      "method": "l1",
+      "learning_rate": null,
+      "seed": 20007,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-119b282c",
+      "stage": "confirmation",
+      "temperature": 0.6,
+      "method": "l1",
+      "learning_rate": null,
+      "seed": 20008,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-d8e3d6d5",
+      "stage": "confirmation",
+      "temperature": 0.6,
+      "method": "l1",
+      "learning_rate": null,
+      "seed": 20009,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-82d7c0f6",
+      "stage": "confirmation",
+      "temperature": 0.6,
+      "method": "l1",
+      "learning_rate": null,
+      "seed": 20010,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-23321a81",
+      "stage": "confirmation",
+      "temperature": 0.6,
+      "method": "smooth",
+      "learning_rate": null,
+      "seed": 20001,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-1ac62cef",
+      "stage": "confirmation",
+      "temperature": 0.6,
+      "method": "smooth",
+      "learning_rate": null,
+      "seed": 20002,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-2e5f62ff",
+      "stage": "confirmation",
+      "temperature": 0.6,
+      "method": "smooth",
+      "learning_rate": null,
+      "seed": 20003,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-e388f14d",
+      "stage": "confirmation",
+      "temperature": 0.6,
+      "method": "smooth",
+      "learning_rate": null,
+      "seed": 20004,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-3d0f505b",
+      "stage": "confirmation",
+      "temperature": 0.6,
+      "method": "smooth",
+      "learning_rate": null,
+      "seed": 20005,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-0cc806e2",
+      "stage": "confirmation",
+      "temperature": 0.6,
+      "method": "smooth",
+      "learning_rate": null,
+      "seed": 20006,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-bb11bfc4",
+      "stage": "confirmation",
+      "temperature": 0.6,
+      "method": "smooth",
+      "learning_rate": null,
+      "seed": 20007,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-426a8b3c",
+      "stage": "confirmation",
+      "temperature": 0.6,
+      "method": "smooth",
+      "learning_rate": null,
+      "seed": 20008,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-e07a9145",
+      "stage": "confirmation",
+      "temperature": 0.6,
+      "method": "smooth",
+      "learning_rate": null,
+      "seed": 20009,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-6fca6c68",
+      "stage": "confirmation",
+      "temperature": 0.6,
+      "method": "smooth",
+      "learning_rate": null,
+      "seed": 20010,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-5ab83192",
+      "stage": "confirmation",
+      "temperature": 1.0,
+      "method": "ce",
+      "learning_rate": null,
+      "seed": 20001,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-9335f438",
+      "stage": "confirmation",
+      "temperature": 1.0,
+      "method": "ce",
+      "learning_rate": null,
+      "seed": 20002,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-408d9ad1",
+      "stage": "confirmation",
+      "temperature": 1.0,
+      "method": "ce",
+      "learning_rate": null,
+      "seed": 20003,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-218f70fe",
+      "stage": "confirmation",
+      "temperature": 1.0,
+      "method": "ce",
+      "learning_rate": null,
+      "seed": 20004,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-2c80c2ba",
+      "stage": "confirmation",
+      "temperature": 1.0,
+      "method": "ce",
+      "learning_rate": null,
+      "seed": 20005,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-b15c72b2",
+      "stage": "confirmation",
+      "temperature": 1.0,
+      "method": "ce",
+      "learning_rate": null,
+      "seed": 20006,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-153ac22d",
+      "stage": "confirmation",
+      "temperature": 1.0,
+      "method": "ce",
+      "learning_rate": null,
+      "seed": 20007,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-361140db",
+      "stage": "confirmation",
+      "temperature": 1.0,
+      "method": "ce",
+      "learning_rate": null,
+      "seed": 20008,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-90776b0e",
+      "stage": "confirmation",
+      "temperature": 1.0,
+      "method": "ce",
+      "learning_rate": null,
+      "seed": 20009,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-2180c911",
+      "stage": "confirmation",
+      "temperature": 1.0,
+      "method": "ce",
+      "learning_rate": null,
+      "seed": 20010,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-ebe7b6b5",
+      "stage": "confirmation",
+      "temperature": 1.0,
+      "method": "l1",
+      "learning_rate": null,
+      "seed": 20001,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-5fad8fe3",
+      "stage": "confirmation",
+      "temperature": 1.0,
+      "method": "l1",
+      "learning_rate": null,
+      "seed": 20002,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-cca7a5a3",
+      "stage": "confirmation",
+      "temperature": 1.0,
+      "method": "l1",
+      "learning_rate": null,
+      "seed": 20003,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-632ad768",
+      "stage": "confirmation",
+      "temperature": 1.0,
+      "method": "l1",
+      "learning_rate": null,
+      "seed": 20004,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-9b25f497",
+      "stage": "confirmation",
+      "temperature": 1.0,
+      "method": "l1",
+      "learning_rate": null,
+      "seed": 20005,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-582ae0ff",
+      "stage": "confirmation",
+      "temperature": 1.0,
+      "method": "l1",
+      "learning_rate": null,
+      "seed": 20006,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-a2c4c29a",
+      "stage": "confirmation",
+      "temperature": 1.0,
+      "method": "l1",
+      "learning_rate": null,
+      "seed": 20007,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-959ed4cc",
+      "stage": "confirmation",
+      "temperature": 1.0,
+      "method": "l1",
+      "learning_rate": null,
+      "seed": 20008,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-18c243e4",
+      "stage": "confirmation",
+      "temperature": 1.0,
+      "method": "l1",
+      "learning_rate": null,
+      "seed": 20009,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-4d0312f9",
+      "stage": "confirmation",
+      "temperature": 1.0,
+      "method": "l1",
+      "learning_rate": null,
+      "seed": 20010,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-d7db1f94",
+      "stage": "confirmation",
+      "temperature": 1.0,
+      "method": "smooth",
+      "learning_rate": null,
+      "seed": 20001,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-f0d0a9c7",
+      "stage": "confirmation",
+      "temperature": 1.0,
+      "method": "smooth",
+      "learning_rate": null,
+      "seed": 20002,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-0e1b5bce",
+      "stage": "confirmation",
+      "temperature": 1.0,
+      "method": "smooth",
+      "learning_rate": null,
+      "seed": 20003,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-54078136",
+      "stage": "confirmation",
+      "temperature": 1.0,
+      "method": "smooth",
+      "learning_rate": null,
+      "seed": 20004,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-a09fb78c",
+      "stage": "confirmation",
+      "temperature": 1.0,
+      "method": "smooth",
+      "learning_rate": null,
+      "seed": 20005,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-bd7622bc",
+      "stage": "confirmation",
+      "temperature": 1.0,
+      "method": "smooth",
+      "learning_rate": null,
+      "seed": 20006,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-c3ccab47",
+      "stage": "confirmation",
+      "temperature": 1.0,
+      "method": "smooth",
+      "learning_rate": null,
+      "seed": 20007,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-900184b9",
+      "stage": "confirmation",
+      "temperature": 1.0,
+      "method": "smooth",
+      "learning_rate": null,
+      "seed": 20008,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-250818be",
+      "stage": "confirmation",
+      "temperature": 1.0,
+      "method": "smooth",
+      "learning_rate": null,
+      "seed": 20009,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-bb286017",
+      "stage": "confirmation",
+      "temperature": 1.0,
+      "method": "smooth",
+      "learning_rate": null,
+      "seed": 20010,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-e391d43f",
+      "stage": "confirmation",
+      "temperature": 1.4,
+      "method": "ce",
+      "learning_rate": null,
+      "seed": 20001,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-870b605b",
+      "stage": "confirmation",
+      "temperature": 1.4,
+      "method": "ce",
+      "learning_rate": null,
+      "seed": 20002,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-20fe20f1",
+      "stage": "confirmation",
+      "temperature": 1.4,
+      "method": "ce",
+      "learning_rate": null,
+      "seed": 20003,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-21da8272",
+      "stage": "confirmation",
+      "temperature": 1.4,
+      "method": "ce",
+      "learning_rate": null,
+      "seed": 20004,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-ab88ae85",
+      "stage": "confirmation",
+      "temperature": 1.4,
+      "method": "ce",
+      "learning_rate": null,
+      "seed": 20005,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-27baef32",
+      "stage": "confirmation",
+      "temperature": 1.4,
+      "method": "ce",
+      "learning_rate": null,
+      "seed": 20006,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-0ca48549",
+      "stage": "confirmation",
+      "temperature": 1.4,
+      "method": "ce",
+      "learning_rate": null,
+      "seed": 20007,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-e471e186",
+      "stage": "confirmation",
+      "temperature": 1.4,
+      "method": "ce",
+      "learning_rate": null,
+      "seed": 20008,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-5c7eb681",
+      "stage": "confirmation",
+      "temperature": 1.4,
+      "method": "ce",
+      "learning_rate": null,
+      "seed": 20009,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-a4d864ff",
+      "stage": "confirmation",
+      "temperature": 1.4,
+      "method": "ce",
+      "learning_rate": null,
+      "seed": 20010,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-908fad6a",
+      "stage": "confirmation",
+      "temperature": 1.4,
+      "method": "l1",
+      "learning_rate": null,
+      "seed": 20001,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-8c75439d",
+      "stage": "confirmation",
+      "temperature": 1.4,
+      "method": "l1",
+      "learning_rate": null,
+      "seed": 20002,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-dc23f39d",
+      "stage": "confirmation",
+      "temperature": 1.4,
+      "method": "l1",
+      "learning_rate": null,
+      "seed": 20003,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-a1eccc92",
+      "stage": "confirmation",
+      "temperature": 1.4,
+      "method": "l1",
+      "learning_rate": null,
+      "seed": 20004,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-a31d915d",
+      "stage": "confirmation",
+      "temperature": 1.4,
+      "method": "l1",
+      "learning_rate": null,
+      "seed": 20005,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-ccc4e69e",
+      "stage": "confirmation",
+      "temperature": 1.4,
+      "method": "l1",
+      "learning_rate": null,
+      "seed": 20006,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-cdf34646",
+      "stage": "confirmation",
+      "temperature": 1.4,
+      "method": "l1",
+      "learning_rate": null,
+      "seed": 20007,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-31fb6a25",
+      "stage": "confirmation",
+      "temperature": 1.4,
+      "method": "l1",
+      "learning_rate": null,
+      "seed": 20008,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-e578427a",
+      "stage": "confirmation",
+      "temperature": 1.4,
+      "method": "l1",
+      "learning_rate": null,
+      "seed": 20009,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-a720642a",
+      "stage": "confirmation",
+      "temperature": 1.4,
+      "method": "l1",
+      "learning_rate": null,
+      "seed": 20010,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-a13c98ca",
+      "stage": "confirmation",
+      "temperature": 1.4,
+      "method": "smooth",
+      "learning_rate": null,
+      "seed": 20001,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-f29f3a01",
+      "stage": "confirmation",
+      "temperature": 1.4,
+      "method": "smooth",
+      "learning_rate": null,
+      "seed": 20002,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-60d91f06",
+      "stage": "confirmation",
+      "temperature": 1.4,
+      "method": "smooth",
+      "learning_rate": null,
+      "seed": 20003,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-72445968",
+      "stage": "confirmation",
+      "temperature": 1.4,
+      "method": "smooth",
+      "learning_rate": null,
+      "seed": 20004,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-41c19010",
+      "stage": "confirmation",
+      "temperature": 1.4,
+      "method": "smooth",
+      "learning_rate": null,
+      "seed": 20005,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-533fca15",
+      "stage": "confirmation",
+      "temperature": 1.4,
+      "method": "smooth",
+      "learning_rate": null,
+      "seed": 20006,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-c5de8a83",
+      "stage": "confirmation",
+      "temperature": 1.4,
+      "method": "smooth",
+      "learning_rate": null,
+      "seed": 20007,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-abb2d74a",
+      "stage": "confirmation",
+      "temperature": 1.4,
+      "method": "smooth",
+      "learning_rate": null,
+      "seed": 20008,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-7407ac8e",
+      "stage": "confirmation",
+      "temperature": 1.4,
+      "method": "smooth",
+      "learning_rate": null,
+      "seed": 20009,
+      "updates": 2000,
+      "status": "pending"
+    },
+    {
+      "run_id": "261108-8a12fded",
+      "stage": "confirmation",
+      "temperature": 1.4,
+      "method": "smooth",
+      "learning_rate": null,
+      "seed": 20010,
+      "updates": 2000,
+      "status": "pending"
+    }
+  ],
+  "smoke_run_id": "261108-c0142c41",
+  "model_revisions": {
+    "Qwen/Qwen3-4B": "1cfa9a7208912126459214e8b04321603b3df60c",
+    "Qwen/Qwen3-0.6B": "c1899de289a04d12100db370d81485cdf75e47ca"
+  },
+  "sglang": "b8d46f2f309fdada4bbb05ef4e90ac4adf7a3bcf",
+  "megatron": "2fbe25a442a539b2796cdf40e77dfb2c90782529"
+}
