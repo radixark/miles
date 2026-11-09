@@ -975,7 +975,10 @@ class TestAnthropicToolFlow:
                 [
                     *messages,
                     {"role": "assistant", "content": [tool_use]},
-                    {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tool_use["id"], "content": "sunny"}]},
+                    {
+                        "role": "user",
+                        "content": [{"type": "tool_result", "tool_use_id": tool_use["id"], "content": "sunny"}],
+                    },
                 ],
                 tools=_TOOLS,
             ),
