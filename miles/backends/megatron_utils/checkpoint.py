@@ -23,14 +23,12 @@ from miles.backends.training_utils.model_companion import (
     ModelCompanionInstallationUtils,
     ModelCompanionSampleConsumptionUtils,
 )
-from miles.backends.training_utils.weight_update.snapshot_publisher import SnapshotPublisher
 from miles.utils import megatron_bridge_utils
 from miles.utils.args.runtime import TrainerConfig
 from miles.utils.audit_utils.config_snapshot.dumper import ConfigSnapshotDumper
 from miles.utils.audit_utils.config_snapshot.enabled import SNAPSHOT_TESTING_ENABLED
 from miles_plugins.models.deepseek_v4.arguments import assert_checkpoint_is_current, is_dsv4_model
 
-from .lora.utils import is_lora_model, save_lora_checkpoint
 from .model_provider import LinearForLastLayer
 
 try:
@@ -113,7 +111,7 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["save_checkpoint", "save_checkpoint_with_lora", "load_checkpoint"]
+__all__ = ["save_checkpoint", "load_checkpoint"]
 
 
 class _CheckpointLoadResult(NamedTuple):
@@ -182,36 +180,6 @@ def load_checkpoint(
     ModelCompanionSampleConsumptionUtils.clear_for_finetune(ddp_model, args=args.backend)
 
     return _CheckpointLoadResult(iteration=result_iteration, restored_trained_iteration=restored_trained_iteration)
-
-
-def save_checkpoint_with_lora(
-    iteration,
-    model,
-    optimizer,
-    opt_param_scheduler,
-    *,
-    args: TrainerConfig,
-    publisher: SnapshotPublisher | None = None,
-):
-    """Extended save that handles LoRA adapters separately."""
-
-    if is_lora_model(model):
-        assert (
-            publisher is not None or args.megatron_to_hf_mode == "raw"
-        ), "Bridge LoRA checkpoint requires a snapshot publisher"
-        save_dir = Path(args.backend.save) / f"iter_{iteration:07d}" / "adapter"
-        logger.info(f"Saving LoRA checkpoint to {save_dir}")
-        save_lora_checkpoint(
-            model,
-            args,
-            str(save_dir),
-            publisher=publisher,
-            optimizer=optimizer,
-            opt_param_scheduler=opt_param_scheduler,
-            iteration=iteration,
-        )
-    else:
-        save_checkpoint(iteration, model, optimizer, opt_param_scheduler)
 
 
 def publish_as_release(save_dir: str) -> None:
@@ -336,12 +304,10 @@ def _load_checkpoint_hf(ddp_model, optimizer, args, load_path: str):
     if args.megatron_to_hf_mode != "bridge":
         _load_hf_weights_with_mbridge(ddp_model, args, load_path)
     else:
-        from megatron.bridge import AutoBridge
-
         logger.info(f"Load checkpoint from HuggingFace model into Megatron (path={load_path})")
 
         with megatron_bridge_utils.patch_megatron_model(ddp_model), _hide_critic_value_head_from_hf_load(ddp_model):
-            bridge = AutoBridge.from_hf_pretrained(load_path, trust_remote_code=True)
+            bridge = megatron_bridge_utils.load_auto_bridge(load_path)
             bridge.load_hf_weights(ddp_model)
 
     # Copied from Megatron-core :: load_checkpoint (with simplifications)

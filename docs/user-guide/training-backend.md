@@ -380,6 +380,10 @@ targets are Megatron-only: both `--offload-train-target disk` and
   you do not need that guarantee.
 - `--attn-implementation` picks the `transformers` attention backend: `flash_attention_2` by
   default, with `flash_attention_3`, `sdpa` and `eager` passed straight through.
+  `flash_attention_4` uses the FlashAttention-4 that SGLang installs, so it trains without a
+  `flash-attn` build. It needs the packed-document boundaries from the architecture's adapter:
+  Qwen3, Qwen3-MoE, Qwen3-VL, GLM-4.7-Flash, Qwen3.5, Qwen3.5-MoE and Qwen3-Next pass them; other
+  architectures (no adapter, or remote code) do not and cannot use it yet.
 - An architecture with fussier numerics can register its own policy, see
   [when an HF model needs help](#going-deeper-when-an-hf-model-needs-help).
 
@@ -607,6 +611,10 @@ Two notes on how they behave here:
 memory is set by the shard, pipeline and tensor degrees together; MoE dispatch buffers do
 *not* shrink with sharding, so adding nodes only helps if it raises the shard degree —
 replication alone does not.
+
+On TPU each transformer block is compiled with `torch.compile(fullgraph=True)`, microbatches are
+padded to power-of-two lengths up to `--seq-length`, and `--max-tokens-per-gpu` may not exceed
+`--seq-length` (`miles/backends/torchtitan_utils/arguments.py`). `scripts/tpu/README.md` runs it.
 
 ### 4. Getting weights in and out
 

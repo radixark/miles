@@ -1,5 +1,7 @@
 import itertools
+import logging
 import re
+import time
 from argparse import Namespace
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -9,6 +11,7 @@ import torch.distributed as dist
 from tqdm import tqdm
 
 from miles.backends.megatron_utils.lora.native import export_lora_hf_named
+from miles.backends.megatron_utils.lora.native.modules.linear import iter_adapters
 from miles.backends.megatron_utils.megatron_to_hf import convert_to_hf
 from miles.backends.megatron_utils.named_weights import named_params_and_buffers
 from miles.backends.megatron_utils.sglang import monkey_patch_torch_reductions
@@ -23,6 +26,8 @@ from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.test_utils.fault_injector.controller import reach_fault_hook
 from miles.utils.test_utils.fault_injector.models import FaultHookName
 from miles.utils.types import ParamInfo
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -129,7 +134,20 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
 
     def _export_pp_local_lora(self, adapter):
         assert adapter is None, "multi-LoRA export requires --megatron-to-hf-mode bridge"
-        return export_lora_hf_named(self.model)
+        started = time.perf_counter()
+        exported = export_lora_hf_named(iter_adapters(self.model))
+        if not dist.is_initialized() or dist.get_rank() == 0:
+            peak_b = max(
+                (tensor.abs().max().item() for name, tensor in exported if name.endswith("lora_B.weight")),
+                default=0.0,
+            )
+            logger.info(
+                "[lora-native] exported %d adapter tensors in %.1f ms (max|lora_B|=%.3e)",
+                len(exported),
+                (time.perf_counter() - started) * 1e3,
+                peak_b,
+            )
+        return exported
 
     def _convert_to_hf_param_units(self, named_params: Sequence[tuple[str, torch.Tensor]]):
         for name, param in named_params:
@@ -402,7 +420,7 @@ def _check_and_fix_partition(args: Namespace, name: str, partition_stride: int, 
     (GLU/SwiGLU interleaved [gate, up]), so assert partition_stride==2 is removed.
     But TEGroupedLinear still does not set partition_stride/partition_dim correctly for grouped moe gemm
     """
-    if "linear_fc1.weight" in name and args.backend.swiglu:
+    if "linear_fc1.weight" in name and (args.backend.swiglu or args.backend.quick_geglu):
         partition_stride = 2
         if partition_dim < 0:
             partition_dim = 0

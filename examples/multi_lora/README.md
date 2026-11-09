@@ -23,10 +23,10 @@ training. Tinker accepts only these group names and rejects `--exclude-modules`.
 
 ## Run
 
-The gateway implements the `tinker==0.26.2` wire schema (newer SDKs renamed protobuf fields); install that exact version on the serving node and the client:
+The gateway validates requests with the `tinker==0.36.0` request models and rejects clients on any other SDK version, patch releases included; install that exact version on the serving node and the client (`tinker-cookbook` only requires `tinker>=0.35`, so pin the SDK explicitly):
 
 ```bash
-pip install "tinker==0.26.2"
+pip install "tinker==0.36.0"
 ```
 
 Start the gateway:
@@ -114,12 +114,36 @@ loading and `update_weights: true` are rejected. Ordinary full-model and
 single-LoRA training continue to use the existing weight updater.
 
 `--tinker-checkpoint-root` must be on storage shared by the trainers, gateway,
-and every inference engine. All trainer ranks participate in adapter gathering;
-rank 0 writes the tensors and config, then `META.json` after all ranks finish.
+and every inference engine. All trainer ranks participate in adapter gathering.
+`sampler_weights/<v>` is a link to `.<v>.<commit_id>/`, which holds the adapter
+files, `tenant.json` (the tenant digest) and `adapter_parametrization.json`; the
+gateway commits the link after all ranks finish writing.
 Existing sampler versions cannot be overwritten. Saving between `forward_backward`
 and `optim_step` neither applies nor discards pending gradients.
 
-Training checkpoint saves and loads are serialized within the gateway. Overwriting
-deletes the previous checkpoint before writing the new one; a failed overwrite does
-not preserve the previous checkpoint. Checkpoints are ordinary directories;
-overwriting does not retain hidden versions.
+Training checkpoint saves and loads are serialized within the gateway, and one
+gateway holds a checkpoint root at a time (an `flock` on the root). That needs a filesystem that
+enforces `flock` across hosts: NFS mounted `nolock` and Lustre with `localflock` lock only within one host,
+so two gateways on different hosts could both hold the root. A save writes a
+new commit and then points the name at it; an overwrite retires the previous commit
+only after the new one is committed, so a failed overwrite keeps the previous
+checkpoint. A load adopts the alpha the checkpoint was trained with.
+
+### Adapter layout
+
+`--lora-type canonical_lora` gives Q, K, V, gate and up independent factors in each slot,
+matching PEFT and the Tinker cookbook; it is the default for `serve_tinker.py`.
+`--lora-type lora` keeps one adapter for each fused QKV or gate/up linear.
+It can be combined with `--experts-shared-outer-loras`: expert gate and up then each
+have their own A matrix shared across experts; their B matrices remain per expert.
+Saving and loading such slots in the committed checkpoint format has not been verified on GPU yet.
+These settings are fixed for the gateway. A training checkpoint saved under another layout loads its
+weights only, converted to this gateway's layout where that is exact: a shared factor splits, but
+per-component or per-expert factors become shared only when they are equal. Its optimizer state, and
+a checkpoint saved before commits, need the same layout.
+Canonical Q/K/V needs every TP rank to hold whole KV heads (`num_query_groups >= tensor_model_parallel_size`),
+and canonical gate/up needs separate HF gate and up tensors in dense MLPs; a model or layout outside that fails at
+startup, so launch it with `--lora-type lora`.
+On Qwen3.5 / 3.6, `canonical_lora` trains the selected GDN `in_proj_q/k/v/z/b/a` components with their own
+`lora_A`, as official Tinker adapters do (the `attn` group takes `in_proj_q/k/v/z`); under `--lora-type lora` the
+`attn` group adapts the fused `in_proj` whole, `in_proj_b` / `in_proj_a` included.

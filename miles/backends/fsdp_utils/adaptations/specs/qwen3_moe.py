@@ -10,6 +10,7 @@ from miles.backends.fsdp_utils.models.replay_routers import install_qwen3_router
 class Qwen3MoeAdapter(ArchAdapter):
     model_types = frozenset({"qwen3_moe"})
     verified = True
+    passes_attention_packing_kwargs = True
     routing_replay = RoutingReplayAdapter(
         name="qwen3_moe", module_cls_name="Qwen3MoeTopKRouter", install=install_qwen3_router_replay
     )

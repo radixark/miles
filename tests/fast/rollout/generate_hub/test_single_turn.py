@@ -10,9 +10,12 @@ from PIL import Image
 from tests.fast.fixtures.generation_fixtures import GenerateEnv, generation_env, listify, make_sample, run_generate
 from transformers import AutoProcessor
 
+from miles.rollout import sglang_rollout
 from miles.rollout.base_types import GenerateFnInput
 from miles.rollout.generate_hub import single_turn
+from miles.rollout.inference_rollout import inference_rollout_common
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
+from miles.utils.async_utils import run
 from miles.utils.processing_utils import encode_image_for_rollout_engine
 from miles.utils.test_utils.mock_sglang_server import ProcessResult, ProcessResultMetaInfo
 from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
@@ -403,6 +406,25 @@ class TestPayloadStructure:
         ]
         assert listify(result.sample) == [expected_sample(variant)]
 
+    def test_sample_max_response_len_reaches_the_engine_request(self, variant, generation_env):
+        """generate_and_rm of each rollout path sends the sample's own budget to the engine."""
+        sample = _make_sample()
+        sample.index = 0
+        sample.max_response_len = 5
+        generation_env.mock_server.request_log.clear()
+        if variant == "old_sglang_rollout":
+            run(sglang_rollout.generate_and_rm(generation_env.args, sample, dict(SAMPLING_PARAMS)))
+        else:
+            run(
+                inference_rollout_common.generate_and_rm(
+                    GenerateState(generation_env.args), sample, dict(SAMPLING_PARAMS)
+                )
+            )
+
+        requests = generation_env.mock_server.request_log
+        assert requests[0]["sampling_params"]["max_new_tokens"] == 5
+        assert all(r["sampling_params"]["max_new_tokens"] <= 5 for r in requests)
+
 
 class TestBoundaryConditions:
     def test_max_new_tokens_zero_returns_truncated(self, variant, generation_env):
@@ -424,10 +446,10 @@ class TestBoundaryConditions:
             weight_versions=[],
         )
 
-    @pytest.mark.parametrize("generation_env", [{"args_kwargs": {"rollout_max_context_len": 5}}], indirect=True)
-    def test_prompt_exceeds_max_context_len_returns_truncated(self, variant, generation_env):
+    @pytest.mark.parametrize("generation_env", [{"args_kwargs": {"max_seq_len": 5}}], indirect=True)
+    def test_prompt_exceeds_max_seq_len_returns_truncated(self, variant, generation_env):
         if variant == "old_sglang_rollout":
-            pytest.skip("old_sglang_rollout does not support rollout_max_context_len")
+            pytest.skip("old_sglang_rollout does not support max_seq_len")
         result = _run_generate(variant, generation_env)
         assert result.requests == []
         tokens = PROMPT_TOKENS if variant == "multi_turn" else []
@@ -448,15 +470,15 @@ class TestBoundaryConditions:
     @pytest.mark.parametrize(
         "generation_env,expected_max_new_tokens",
         [
-            ({"args_kwargs": {"rollout_max_context_len": 10}}, 10 - PROMPT_TOKEN_LEN),
-            ({"args_kwargs": {"rollout_max_context_len": 8}}, 8 - PROMPT_TOKEN_LEN),
-            ({"args_kwargs": {"rollout_max_context_len": 100}}, DEFAULT_MAX_NEW_TOKENS),
+            ({"args_kwargs": {"max_seq_len": 10}}, 10 - PROMPT_TOKEN_LEN),
+            ({"args_kwargs": {"max_seq_len": 8}}, 8 - PROMPT_TOKEN_LEN),
+            ({"args_kwargs": {"max_seq_len": 100}}, DEFAULT_MAX_NEW_TOKENS),
         ],
         indirect=["generation_env"],
     )
     def test_moderate_length_input_adjusts_max_new_tokens(self, variant, generation_env, expected_max_new_tokens):
         if variant == "old_sglang_rollout":
-            pytest.skip("old_sglang_rollout does not support rollout_max_context_len")
+            pytest.skip("old_sglang_rollout does not support max_seq_len")
         result = _run_generate(variant, generation_env)
         assert len(result.requests) == 1
         assert result.requests[0]["sampling_params"]["max_new_tokens"] == expected_max_new_tokens
@@ -465,12 +487,12 @@ class TestBoundaryConditions:
 
     @pytest.mark.parametrize(
         "generation_env",
-        [{"args_kwargs": {"rollout_max_context_len": PROMPT_TOKEN_LEN}}],
+        [{"args_kwargs": {"max_seq_len": PROMPT_TOKEN_LEN}}],
         indirect=True,
     )
     def test_adjusted_max_new_tokens_zero_returns_truncated(self, variant, generation_env):
         if variant == "old_sglang_rollout":
-            pytest.skip("old_sglang_rollout does not support rollout_max_context_len")
+            pytest.skip("old_sglang_rollout does not support max_seq_len")
         result = _run_generate(variant, generation_env)
         assert result.requests == []
         tokens = PROMPT_TOKENS if variant == "multi_turn" else []

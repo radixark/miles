@@ -37,7 +37,7 @@ def inkling_provider_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Ite
         lora_alpha=4,
         lora_dropout=0,
         lora_A_init_method="xavier",
-        lora_type="lora",
+        lora_type="canonical_lora",
         lora_adapter_path=None,
         debug_disable_optimizer=True,
         stream_optimizer_state_to_disk=False,

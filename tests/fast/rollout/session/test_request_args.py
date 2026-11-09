@@ -17,6 +17,7 @@ from miles.rollout.session.request_args import (
 )
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer, extract_template_args
 from miles.utils.lora.utils import LORA_ADAPTER_NAME
+from miles.utils.output_store.plan import OUTPUT_STORE_REQUEST_KEY
 
 
 class TestResolveRequestArgsByConfig:
@@ -156,6 +157,34 @@ class TestPrepareChatRequest:
         )
 
         assert prepared.body["return_sampling_mask"] is True
+
+    @pytest.mark.parametrize(
+        ("store", "routed_experts", "evaluation", "expected"),
+        [
+            (True, True, False, True),
+            (True, True, True, False),
+            (True, False, False, False),
+            (False, True, False, False),
+        ],
+        ids=["training-replay", "evaluation", "no-replay-field", "switch-off"],
+    )
+    def test_the_output_store_follows_the_launch_and_replaces_the_client_value(
+        self, store, routed_experts, evaluation, expected
+    ):
+        config = make_session_server_config(
+            use_rollout_routing_replay=routed_experts,
+            output_store_backend_config={"master_server_address": "unused"} if store else None,
+        )
+
+        prepared = prepare_chat_request(
+            {OUTPUT_STORE_REQUEST_KEY: not expected},
+            self._tito(),
+            config=config,
+            turn_args=None,
+            evaluation=evaluation,
+        )
+
+        assert prepared.body.get(OUTPUT_STORE_REQUEST_KEY, False) is expected
 
     def test_bounded_request_requires_session_sampling_replay(self):
         with pytest.raises(MessageValidationError, match="bounded training-request sampling"):

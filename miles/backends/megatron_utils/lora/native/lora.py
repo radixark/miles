@@ -93,6 +93,8 @@ def _attach_layer(layer: nn.Module, arch_spec: LoRAArchSpec, context: AttachCont
         f"{type(attention).__name__}; the built attention module does not match the registered architecture."
     )
     wrapped = arch_spec.attention.attach(attention, layer, context)
+    if arch_spec.linear_attention is not None:
+        wrapped += arch_spec.linear_attention.attach(attention, layer, context)
 
     # the MLP layout applies to a dense MLP or an MLP-shaped shared expert, not to the MoE block itself
     mlp = layer.mlp

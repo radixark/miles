@@ -12,7 +12,7 @@ class TestRawBackendTraitTransport:
         self, component: type[OrchestratorConfig | RolloutConfig], backend: str, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Both consumers retain the original backend inputs after their independent transport boundary."""
-        monkeypatch.setattr(torch, "__version__", "2.13.0")
+        monkeypatch.setattr(torch, "__version__", "2.14.0")
         config = (
             parse_megatron_test_config("--lr", "0.003")
             if backend == "megatron"

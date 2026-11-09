@@ -108,6 +108,7 @@ class TestTinkerServeParsing:
             assert config.use_dynamic_global_batch_size
             assert config.delay_split_train_data_by_dp
             assert config.tinker_lora_groups == ["attn", "mlp", "unembed"]
+            assert config.lora_type == "canonical_lora"
 
 
 class TestRouterSdkOwnership:

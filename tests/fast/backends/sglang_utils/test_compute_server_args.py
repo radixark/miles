@@ -34,6 +34,7 @@ def make_args(**overrides: object) -> SimpleNamespace:
         multi_lora=False,
         multi_lora_n_adapters=1,
         lora_adapter_targets=[f"model.layers.*.self_attn.{projection}_proj" for projection in ("q", "k", "v")],
+        use_output_store=False,
     )
     defaults.update(overrides)
     return SimpleNamespace(**with_parser_defaults_and_sglang_config(defaults))
@@ -154,6 +155,51 @@ class TestSglangOverridePrecedence:
         assert server_args["dtype"] == "float16"
         assert server_args["enable_lora"] is True
         assert server_args["mem_fraction_static"] == 0.7
+
+
+class TestDecoderSwaBoundedReplay:
+    """SGLang resolves an unset value to on for DeepSeek-V4.1, which breaks rollout/trainer logprob parity."""
+
+    def test_an_unset_value_keeps_full_prefill(self):
+        args = make_args()
+        args.sglang.base_args["enable_decoder_swa_bounded_replay"] = None
+
+        assert compute(args)["enable_decoder_swa_bounded_replay"] is False
+
+    def test_an_explicit_user_choice_is_kept(self):
+        args = make_args()
+        args.sglang.base_args["enable_decoder_swa_bounded_replay"] = True
+
+        assert compute(args)["enable_decoder_swa_bounded_replay"] is True
+
+    def test_a_group_override_still_wins(self):
+        args = make_args()
+        args.sglang.base_args["enable_decoder_swa_bounded_replay"] = None
+
+        server_args = compute(args, sglang_overrides={"enable_decoder_swa_bounded_replay": True})
+
+        assert server_args["enable_decoder_swa_bounded_replay"] is True
+
+
+class TestOutputStore:
+    def test_every_engine_writes_to_the_run_store_with_its_own_host(self, monkeypatch):
+        """The engine's address goes into its store config, without the IPv6 brackets."""
+        hosts = []
+
+        def server_args(args, *, local_hostname):
+            hosts.append(local_hostname)
+            return {"output_store_backend": "mooncake"}
+
+        monkeypatch.setattr(sglang_engine, "sglang_output_store_server_args", server_args)
+        monkeypatch.setattr(sglang_engine, "_record_field_names", lambda record: ("output_store_backend",))
+
+        kwargs = compute(make_args(use_output_store=True), host="[::1]")
+
+        assert hosts == ["::1"]
+        assert kwargs["output_store_backend"] == "mooncake"
+
+    def test_without_the_switch_no_store_is_set(self):
+        assert "output_store_backend" not in compute(make_args())
 
 
 class TestAdapterOwnership:

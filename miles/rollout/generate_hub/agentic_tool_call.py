@@ -29,6 +29,7 @@ Agent function contract:
 """
 
 import argparse
+import functools
 import logging
 import time
 from collections.abc import Callable
@@ -44,6 +45,8 @@ from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
 from miles.rollout.generate_utils.openai_endpoint_utils import OpenAIEndpointTracer
 from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY
 from miles.utils.function_registry import load_function
+from miles.utils.output_store.dropped import record_dropped_samples
+from miles.utils.rollout_data_config import lower_limit
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
@@ -64,17 +67,16 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         extra_key=input.sample.kv_cache_namespace,
     )
 
-    custom_agent_function: Callable = load_function(input.args.custom_agent_function_path)
-    assert (
-        custom_agent_function is not None
-    ), f"Custom agent function {input.args.custom_agent_function_path} not found"
+    # a mixed dataset may name its own agent and a lower length limit
+    agent_function_path = input.sample.agent_function_path or input.args.custom_agent_function_path
+    custom_agent_function: Callable = load_function(agent_function_path)
+    assert custom_agent_function is not None, f"Custom agent function {agent_function_path} not found"
 
-    max_seq_len = getattr(
-        input.args, "max_seq_len", None
-    )  # config-access-exempt: optional length limit registered by custom agent hooks
+    max_seq_len = lower_limit(input.args.max_seq_len, input.sample.max_seq_len)
 
     metadata = input.sample.metadata
     if max_seq_len is not None:
+        _warn_max_seq_len_does_not_stop_the_agent()
         metadata = {**metadata, "max_seq_len": max_seq_len}
     if tracer.session_server_instance_id:
         metadata = {**metadata, "session_server_instance_id": tracer.session_server_instance_id}
@@ -86,6 +88,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
 
     agent_metadata = None
     collect_failed = False
+    cancelled = False
     t_start = time.monotonic()
     try:
         logger.debug(f"{log_prefix} Starting agent function call")
@@ -101,7 +104,9 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         logger.debug(f"{log_prefix} Agent function returned in {time.monotonic()-t_start:.1f}s")
     except Exception as e:
         logger.warning(f"{log_prefix} Agent function failed: {e}", exc_info=True)
-
+    except BaseException:
+        cancelled = True
+        raise
     finally:
         # Collect even if the agent failed.
         logger.debug(f"{log_prefix} Calling collect_samples...")
@@ -110,7 +115,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
             collect_kwargs["agent_metadata"] = agent_metadata
         try:
             result = await tracer.collect_samples(input.sample, **collect_kwargs)
-        # Costs this sample, not the run; a non-2xx still raises RuntimeError.
+        # Costs this sample, not the run; a non-2xx still raises, and a StorePlanError stops the rollout.
         except (TimeoutError, httpx.TransportError) as e:
             collect_failed = True
             logger.warning(f"{log_prefix} Failed collecting samples: {e!r}", exc_info=True)
@@ -119,6 +124,9 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
                 f"{log_prefix} collect_samples done: {len(result.samples)} samples, "
                 f"total_time={time.monotonic()-t_start:.1f}s"
             )
+            if cancelled:
+                # The session handed these samples' output store objects to us; nobody will train them.
+                record_dropped_samples(result.samples)
 
     if collect_failed:
         sample = deepcopy(input.sample)
@@ -167,6 +175,10 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         for s in samples:
             s.metadata.update(agent_metadata or {})
 
+    for sample in samples:
+        # The tracer owns this identity; agent metadata must not replace it.
+        sample.metadata["session_id"] = tracer.session_id
+
     # If the agent function reports wall-clock time spent outside policy generation
     # (env/tool steps), surface it on Sample.non_generation_time so throughput
     # accounting subtracts it.
@@ -183,6 +195,15 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     return GenerateFnOutput(samples=sample)
 
 
+@functools.cache
+def _warn_max_seq_len_does_not_stop_the_agent() -> None:
+    """Once per process: the session server leaves the agent's control flow alone, so the limit only truncates."""
+    logger.warning(
+        "max_seq_len reaches the agent as metadata['max_seq_len'] and truncates the collected samples; "
+        "Miles does not stop the agent at it, so an agent that does not read it runs on past it"
+    )
+
+
 def _add_arguments(parser: argparse.ArgumentParser):
     parser.add_argument(
         "--custom-agent-function-mode",
@@ -191,18 +212,11 @@ def _add_arguments(parser: argparse.ArgumentParser):
         help="Where each agent call runs: subproc, a child process of its own so one episode's "
         "blocking step or crash cannot stall the others; or inline, on the rollout's event loop.",
     )
-    parser.add_argument(
-        "--max-seq-len",
-        type=int,
-        default=None,
-        dest="max_seq_len",
-        help="Max sequence length in tokens (prompt + completion, including env responses) "
-        "per session. Truncation happens inside the session server during sample assembly; "
-        "also forwarded to the Harbor agent server (as max_seq_len) to abort the trial early.",
-    )
 
 
 generate.add_arguments = _add_arguments
+# reads Sample.agent_function_path / max_seq_len; a wrapper that delegates here may set this too
+generate.reads_sample_agent_fields = True
 
 
 # Process keys to match ChatCompletionRequest input

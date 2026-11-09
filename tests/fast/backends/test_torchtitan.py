@@ -1,16 +1,21 @@
+import importlib.util
 import json
+import sys
 from argparse import Namespace
-from types import SimpleNamespace
+from pathlib import Path
+from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 import torch
 from tests.ci.ci_register import register_cpu_ci
 
+from miles import platforms
+from miles.backends.torchtitan_utils import arguments
 from miles.backends.torchtitan_utils import parallel as tp
 from miles.backends.torchtitan_utils.args_namespace import TorchtitanArgsNamespace
-from miles.backends.torchtitan_utils.arguments import build_torchtitan_parser, validate_torchtitan_args
-from miles.utils.arguments import get_miles_extra_args_provider
+from miles.backends.torchtitan_utils.arguments import validate_torchtitan_args
+from miles.utils.arguments import parse_args_and_get_parser
 from miles.utils.hf_utils.weight_mapping import HfWeightMapping
 from miles.utils.lora import arguments as lora_arguments
 
@@ -21,13 +26,22 @@ def _args(**overrides) -> Namespace:
     base = dict(
         titan_model_name="qwen3",
         seq_length=8192,
+        micro_batch_size=1,
+        use_dynamic_batch_size=False,
+        max_tokens_per_gpu=None,
+        log_probs_backend="torch",
+        colocate=False,
+        update_weight_transfer_mode="broadcast",
         pipeline_model_parallel_size=1,
         context_parallel_size=1,
         expert_model_parallel_size=1,
-        rollout_max_context_len=8192,
+        max_seq_len=8192,
         rollout_max_response_len=4096,
         ref_update_interval=None,
         save_debug_train_data=None,
+        ci_test=False,
+        use_routing_replay=False,
+        use_rollout_routing_replay=False,
         optimizer_cpu_offload=False,
         stream_optimizer_state_to_disk=False,
         stream_optimizer_state_moment_dtype="fp32",
@@ -37,74 +51,312 @@ def _args(**overrides) -> Namespace:
         lr_wsd_decay_iters=None,
         lr_decay_iters=None,
         lora_rank=0,
-        lora_type="canonical_lora",
+        lora_type="lora",
         lora_A_init_method="kaiming",
         lora_dropout=0.0,
         lora_adapter_path=None,
         lora_train_only=False,
         colocate_memory_peak_device="cpu",
+        # read by the padded-rows loss layout's startup check on a static-shape platform
+        train_backend="torchtitan",
+        loss_type="policy_loss",
+        qkv_format="thd",
+        advantage_estimator="grpo",
+        entropy_coef=0.0,
+        tensor_model_parallel_size=1,
+        true_on_policy_mode=False,
+        allgather_cp=False,
+        use_sampling_support_replay=False,
+        use_opsm=False,
+        use_tis=False,
+        get_mismatch_metrics=False,
+        use_opd=False,
+        custom_pg_loss_reducer_function_path=None,
+        dump_details=None,
+        multi_lora=False,
     )
     return Namespace(**{**base, **overrides})
 
 
-def test_the_backend_needs_torch_213(monkeypatch):
-    monkeypatch.setattr(torch, "__version__", "2.12.0")
-    with pytest.raises(ValueError, match="torch>=2.13"):
-        validate_torchtitan_args(_args())
+def test_the_backend_needs_torch_214(monkeypatch):
     monkeypatch.setattr(torch, "__version__", "2.13.0")
+    with pytest.raises(ValueError, match="torch>=2.14"):
+        validate_torchtitan_args(_args())
+    monkeypatch.setattr(torch, "__version__", "2.14.0")
     validate_torchtitan_args(_args())
 
 
+def test_ici_weight_sync_needs_the_shared_slice_env(monkeypatch):
+    monkeypatch.setattr(torch, "__version__", "2.14.0")
+    monkeypatch.delenv("MILES_TPU_SHARED_SLICE", raising=False)
+    with pytest.raises(ValueError, match="MILES_TPU_SHARED_SLICE"):
+        validate_torchtitan_args(_args(update_weight_transfer_mode="ici"))
+    monkeypatch.setenv("MILES_TPU_SHARED_SLICE", "0,8,localhost:29600")
+    validate_torchtitan_args(_args(update_weight_transfer_mode="ici"))
+
+
 def test_the_sequence_must_cover_the_rotary_tables(monkeypatch):
-    monkeypatch.setattr(torch, "__version__", "2.13.0")
+    monkeypatch.setattr(torch, "__version__", "2.14.0")
     with pytest.raises(ValueError, match="seq-length"):
-        validate_torchtitan_args(_args(seq_length=8192, rollout_max_context_len=16384))
+        validate_torchtitan_args(_args(seq_length=8192, max_seq_len=16384))
     with pytest.raises(ValueError, match="no room for a prompt"):
-        validate_torchtitan_args(_args(seq_length=8192, rollout_max_context_len=None, rollout_max_response_len=8192))
-    validate_torchtitan_args(_args(seq_length=16384, rollout_max_context_len=None, rollout_max_response_len=8192))
+        validate_torchtitan_args(_args(seq_length=8192, max_seq_len=None, rollout_max_response_len=8192))
+    validate_torchtitan_args(_args(seq_length=16384, max_seq_len=None, rollout_max_response_len=8192))
+
+
+_TPU_FACTS = (
+    "dynamic_shapes",
+    "compile_backend",
+    "triton_kernels",
+    "flex_attention",
+    "rooted_reduce",
+    "premul_sum_reduce",
+    "weight_transfer_modes",
+)
+
+
+@pytest.fixture
+def on_tpu(monkeypatch):
+    """The process platform takes TpuPlatform's facts, read from its module loaded against a stub torch_tpu."""
+    monkeypatch.setitem(sys.modules, "torch_tpu", ModuleType("torch_tpu"))
+    spec = importlib.util.spec_from_file_location("_test_tpu_platform", Path(platforms.__file__).with_name("tpu.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    for fact in _TPU_FACTS:
+        monkeypatch.setattr(platforms.current_platform, fact, getattr(module.TpuPlatform, fact))
+    # TPU trainers sync weights over ICI, which needs the slice they share with the engine
+    monkeypatch.setenv("MILES_TPU_SHARED_SLICE", "0,8,localhost:29600")
+
+
+def _tpu_args(**overrides) -> Namespace:
+    return _args(update_weight_transfer_mode="ici", **overrides)
+
+
+def test_a_tpu_microbatch_cannot_outgrow_the_largest_length_bucket(monkeypatch, on_tpu):
+    monkeypatch.setattr(torch, "__version__", "2.14.0")
+    with pytest.raises(ValueError, match="max-tokens-per-gpu 16384 exceeds"):
+        validate_torchtitan_args(_tpu_args(use_dynamic_batch_size=True, max_tokens_per_gpu=16384))
+    validate_torchtitan_args(_tpu_args(use_dynamic_batch_size=True, max_tokens_per_gpu=8192))
+    # fixed-size microbatches pack micro_batch_size samples, each up to --seq-length
+    with pytest.raises(ValueError, match="micro-batch-size 2"):
+        validate_torchtitan_args(_tpu_args(micro_batch_size=2))
+    validate_torchtitan_args(_tpu_args(micro_batch_size=1))
+
+
+def test_tpu_sequence_length_is_a_whole_number_of_attention_blocks(monkeypatch, on_tpu):
+    """The largest length bucket is --seq-length, and the TPU attention kernel reshapes it into 1024-token blocks."""
+    monkeypatch.setattr(torch, "__version__", "2.14.0")
+    with pytest.raises(ValueError, match="seq-length 3000 must be a multiple of 1024"):
+        validate_torchtitan_args(_tpu_args(seq_length=3000, max_seq_len=None, rollout_max_response_len=2048))
+    validate_torchtitan_args(_tpu_args(seq_length=8192))
+
+
+def test_tpu_refuses_context_and_expert_parallelism(monkeypatch, on_tpu):
+    monkeypatch.setattr(torch, "__version__", "2.14.0")
+    with pytest.raises(ValueError, match="context-parallel-size 2"):
+        validate_torchtitan_args(_tpu_args(context_parallel_size=2))
+    with pytest.raises(ValueError, match="expert-model-parallel-size 2"):
+        validate_torchtitan_args(_tpu_args(expert_model_parallel_size=2))
+
+
+def test_the_triton_log_prob_kernel_is_refused_on_tpu(monkeypatch, on_tpu):
+    monkeypatch.setattr(torch, "__version__", "2.14.0")
+    with pytest.raises(ValueError, match="Triton"):
+        validate_torchtitan_args(_tpu_args(log_probs_backend="fused"))
+
+
+def test_tpu_weights_reach_disaggregated_engines_over_ici_only(monkeypatch, on_tpu):
+    monkeypatch.setattr(torch, "__version__", "2.14.0")
+    for unsupported in (dict(update_weight_transfer_mode="broadcast"), dict(colocate=True)):
+        with pytest.raises(ValueError, match="update-weight-transfer-mode ici"):
+            validate_torchtitan_args(_args(**{"update_weight_transfer_mode": "ici", **unsupported}))
+    validate_torchtitan_args(_tpu_args())
+
+
+def test_gpu_validation_ignores_the_tpu_limits(monkeypatch):
+    monkeypatch.setattr(torch, "__version__", "2.14.0")
+    validate_torchtitan_args(
+        _args(use_dynamic_batch_size=True, max_tokens_per_gpu=16384, log_probs_backend="fused", colocate=True)
+    )
+
+
+@pytest.mark.parametrize("seq_len", [1000, 1024, 3000, 8192])
+def test_the_recompile_limit_counts_every_length_bucket(seq_len):
+    """A bucket the limit misses is one compile too many, which a fullgraph block turns into a crash."""
+    pytest.importorskip("torchtitan")
+    from miles.backends.torchtitan_utils.trainer import fixed_shape_length_bucket, fixed_shape_length_buckets
+
+    buckets = {fixed_shape_length_bucket(n, seq_len) for n in range(1, seq_len + 1)}
+    assert buckets == fixed_shape_length_buckets(seq_len)
+    assert max(buckets) == seq_len
+
+
+@pytest.mark.parametrize(("n_tokens", "padded"), [(1, 1024), (1024, 1024), (1025, 2048), (5000, 8192), (8192, 8192)])
+def test_a_static_shape_platform_pads_each_microbatch_to_a_length_bucket(monkeypatch, n_tokens, padded):
+    pytest.importorskip("torchtitan")
+    from miles.backends.torchtitan_utils.trainer import TitanTrainer
+
+    trainer = SimpleNamespace(
+        parallelism=SimpleNamespace(pp_enabled=False, cp_enabled=False),
+        config=SimpleNamespace(training=SimpleNamespace(max_context_length=8192)),
+    )
+    assert TitanTrainer.padded_length(trainer, n_tokens) == n_tokens, "a dynamic-shape platform keeps the length"
+    monkeypatch.setattr(platforms.current_platform, "dynamic_shapes", False)
+    assert TitanTrainer.padded_length(trainer, n_tokens) == padded
+    with pytest.raises(ValueError, match="largest length bucket"):
+        TitanTrainer.padded_length(trainer, 8193)
+
+
+def test_compiled_blocks_share_one_graph_across_layers():
+    """Each block's forward is compiled in place; a graph per layer would multiply the recompile budget."""
+    pytest.importorskip("torchtitan")
+    from miles.backends.torchtitan_utils.trainer import _compile_blocks
+
+    class Block(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.linear = torch.nn.Linear(8, 8)
+
+        def forward(self, x):
+            return torch.relu(self.linear(x)) + x
+
+    model = torch.nn.Module()
+    model.layers = torch.nn.ModuleDict({str(i): Block() for i in range(3)})
+    torch._dynamo.reset()
+    torch._dynamo.utils.counters.clear()
+    _compile_blocks([model], backend="eager")
+    x = torch.randn(4, 8)
+    for block in model.layers.values():
+        torch.testing.assert_close(block(x), Block.forward(block, x))
+    assert torch._dynamo.utils.counters["stats"]["unique_graphs"] == 1
+
+
+def test_a_static_shape_platform_compiles_static_graphs_for_every_pass_and_bucket(monkeypatch):
+    """Each pass with its own guards compiles once per bucket, and none may turn dynamic, which TPU rejects."""
+    pytest.importorskip("torchtitan")
+    from miles.backends.torchtitan_utils.trainer import TitanTrainer
+
+    trainer = SimpleNamespace(config=SimpleNamespace(training=SimpleNamespace(max_context_length=8192)))
+
+    def configure_fixed_shape_compile(*, num_passes):
+        TitanTrainer.configure_fixed_shape_compile(trainer, num_passes=num_passes)
+
+    # dynamo's own patch: monkeypatch's undo deletes a config key, which hides it from every later compile
+    with torch._dynamo.config.patch(recompile_limit=1, automatic_dynamic_shapes=True):
+        configure_fixed_shape_compile(num_passes=3)
+        assert torch._dynamo.config.recompile_limit == 1, "a dynamic-shape platform compiles one graph per pass"
+        assert torch._dynamo.config.automatic_dynamic_shapes
+
+        monkeypatch.setattr(platforms.current_platform, "dynamic_shapes", False)
+        configure_fixed_shape_compile(num_passes=2)
+        # buckets 1024, 2048, 4096, 8192, and two block variants (dense and MoE) per class
+        assert torch._dynamo.config.recompile_limit == 2 * 2 * 4
+        assert not torch._dynamo.config.automatic_dynamic_shapes
+        configure_fixed_shape_compile(num_passes=3)
+        assert torch._dynamo.config.recompile_limit == 2 * 3 * 4
 
 
 def test_context_parallelism_is_rejected_for_qwen3_5(monkeypatch):
-    monkeypatch.setattr(torch, "__version__", "2.13.0")
+    monkeypatch.setattr(torch, "__version__", "2.14.0")
     with pytest.raises(ValueError, match="context parallelism"):
         validate_torchtitan_args(_args(titan_model_name="qwen3_5", context_parallel_size=2))
 
 
 def test_unsupported_flags_are_rejected_rather_than_ignored(monkeypatch):
-    monkeypatch.setattr(torch, "__version__", "2.13.0")
+    monkeypatch.setattr(torch, "__version__", "2.14.0")
     with pytest.raises(ValueError, match="ref-update-interval"):
         validate_torchtitan_args(_args(ref_update_interval=4))
     with pytest.raises(ValueError, match="save-debug-train-data"):
         validate_torchtitan_args(_args(save_debug_train_data="/tmp/dump"))
 
 
+def test_the_replay_checker_is_refused_where_blocks_compile_fullgraph(monkeypatch):
+    """The checker syncs to the host from inside a block; a static-shape platform compiles blocks fullgraph."""
+    monkeypatch.setattr(torch, "__version__", "2.14.0")
+    monkeypatch.setattr(arguments.current_platform, "dynamic_shapes", False)
+    rollout_replay = dict(use_routing_replay=True, use_rollout_routing_replay=True)
+    validate_torchtitan_args(_args(**rollout_replay))
+    with pytest.raises(ValueError, match="ci-test"):
+        validate_torchtitan_args(_args(ci_test=True, **rollout_replay))
+    monkeypatch.setattr(arguments.current_platform, "dynamic_shapes", True)
+    validate_torchtitan_args(_args(ci_test=True, **rollout_replay))
+
+
+def test_recording_routes_in_a_compiled_block_is_refused_without_dynamic_shapes(monkeypatch):
+    """Recording appends to the queue inside the block, so every microbatch recompiles on a static-shape platform."""
+    monkeypatch.setattr(torch, "__version__", "2.14.0")
+    monkeypatch.setattr(arguments.current_platform, "dynamic_shapes", False)
+    with pytest.raises(ValueError, match="use-rollout-routing-replay"):
+        validate_torchtitan_args(_args(use_routing_replay=True))
+    monkeypatch.setattr(arguments.current_platform, "dynamic_shapes", True)
+    validate_torchtitan_args(_args(use_routing_replay=True))
+
+
 def test_lora_flags_torchtitan_cannot_honor_are_rejected(monkeypatch):
-    monkeypatch.setattr(torch, "__version__", "2.13.0")
+    monkeypatch.setattr(torch, "__version__", "2.14.0")
     validate_torchtitan_args(_args(lora_rank=8))
     with pytest.raises(ValueError, match="qwen3 only"):
         validate_torchtitan_args(_args(lora_rank=8, titan_model_name="glm5_next"))
-    with pytest.raises(ValueError, match="canonical_lora"):
-        validate_torchtitan_args(_args(lora_rank=8, lora_type="lora"))
+    with pytest.raises(ValueError, match="--lora-type lora"):
+        validate_torchtitan_args(_args(lora_rank=8, lora_type="canonical_lora"))
     with pytest.raises(ValueError, match="kaiming"):
         validate_torchtitan_args(_args(lora_rank=8, lora_A_init_method="xavier"))
     with pytest.raises(ValueError, match="no dropout"):
         validate_torchtitan_args(_args(lora_rank=8, lora_dropout=0.05))
-    with pytest.raises(ValueError, match="--lora-adapter-path"):
-        validate_torchtitan_args(_args(lora_rank=8, lora_adapter_path="/adapter"))
     with pytest.raises(ValueError, match="grad buffers"):
         validate_torchtitan_args(_args(lora_rank=8, colocate_memory_peak_device="gpu"))
     validate_torchtitan_args(_args(lora_rank=8, colocate_memory_peak_device="gpu", lora_train_only=True))
 
 
-def test_lora_defaults_are_the_values_torchtitan_honors():
-    """A torchtitan LoRA command without --lora-type or --lora-A-init-method must not hit the refusals."""
-    parser = build_torchtitan_parser(get_miles_extra_args_provider())
-    assert (parser.get_default("lora_type"), parser.get_default("lora_A_init_method")) == ("canonical_lora", "kaiming")
+def test_lora_defaults_are_the_values_torchtitan_honors(tmp_path, monkeypatch):
+    """A torchtitan LoRA command without --lora-type or --lora-A-init-method must not hit the refusals.
+
+    Parsed end to end: validate_torchtitan_args refuses any --lora-type but lora, so it only passes after
+    miles_validate_args has resolved the default. torchtitan runs in the default raw mode, so a default
+    keyed on raw mode alone would pick canonical_lora.
+    """
+    from transformers import Qwen3Config
+
+    Qwen3Config(num_hidden_layers=1).save_pretrained(tmp_path)
+    monkeypatch.setattr(torch, "__version__", "2.14.0")
+    monkeypatch.setattr(
+        lora_arguments.HfWeightMapping,
+        "from_config",
+        lambda config: HfWeightMapping(frozenset({"model.layers.0.self_attn.q_proj.weight"})),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "test",
+            "--train-backend",
+            "torchtitan",
+            "--hf-checkpoint",
+            str(tmp_path),
+            "--lora-rank",
+            "8",
+            "--target-modules",
+            "q_proj",
+            "--rollout-batch-size",
+            "2",
+            "--num-rollout",
+            "1",
+            "--actor-num-gpus-per-node",
+            "1",
+            "--micro-batch-size",
+            "1",
+            "--rollout-max-response-len",
+            "1024",
+        ],
+    )
+
+    args, _ = parse_args_and_get_parser()
+
+    assert (args.lora_type, args.lora_A_init_method) == ("lora", "kaiming")
 
 
 def test_lora_targets_bypass_megatrons_native_spec(monkeypatch):
-    """torchtitan runs in the default raw mode; megatron's native adapter spec, which refuses
-    canonical_lora, must not vet its targets."""
+    """torchtitan runs in the default raw mode; megatron's native adapter spec must not vet its targets."""
     hf_config = SimpleNamespace(model_type="qwen3", to_dict=lambda: {"model_type": "qwen3"})
     monkeypatch.setattr(lora_arguments, "load_hf_config", lambda path: hf_config)
     monkeypatch.setattr(
@@ -122,8 +374,10 @@ def test_lora_targets_bypass_megatrons_native_spec(monkeypatch):
         megatron_to_hf_mode="raw",
         hf_checkpoint="/hf",
         lora_rank=8,
+        lora_alpha=None,
         lora_adapter_path=None,
-        lora_type="canonical_lora",
+        lora_adapter_convert_save=None,
+        lora_type="lora",
         target_modules="q_proj",
         exclude_modules=None,
         experts_shared_outer_loras=False,
@@ -175,14 +429,10 @@ def single_gpu_dims(monkeypatch):
     pytest.importorskip("torchtitan")
     from miles.backends.torchtitan_utils import config as titan_config
 
-    monkeypatch.setattr(
-        titan_config,
-        "parallel_dims_from_config",
-        lambda parallelism: SimpleNamespace(dp_replicate=1, dp_shard=1, pp_enabled=False),
-    )
+    monkeypatch.setattr(titan_config.dist, "get_world_size", lambda group=None: 1)
 
 
-def test_a_tied_checkpoint_is_refused_under_pipeline_parallelism(tmp_path):
+def test_a_tied_checkpoint_is_refused_under_pipeline_parallelism(tmp_path, single_gpu_dims):
     pytest.importorskip("torchtitan")
     from miles.backends.torchtitan_utils.config import build_trainer_config
 
@@ -201,30 +451,112 @@ def test_the_lr_schedule_follows_miles_flags_not_torchtitan_defaults(tmp_path, s
     constant = build_trainer_config(
         _config_args(lr_warmup_iters=3), hf_assets_path=hf, lr_total_steps=10, dump_subdir="x"
     )
-    assert (constant.lr_scheduler.warmup_steps, constant.lr_scheduler.min_lr_factor) == (3, 1.0)
+    assert (constant.optim.lr_scheduler.warmup_steps, constant.optim.lr_scheduler.min_lr_factor) == (3, 1.0)
     cosine = build_trainer_config(
         _config_args(lr_decay_style="cosine", lr=1e-6, min_lr=1e-7),
         hf_assets_path=hf,
         lr_total_steps=10,
         dump_subdir="x",
     )
-    assert cosine.lr_scheduler.decay_type == "cosine"
-    assert cosine.lr_scheduler.min_lr_factor == pytest.approx(0.1)
+    assert cosine.optim.lr_scheduler.decay_type == "cosine"
+    assert cosine.optim.lr_scheduler.min_lr_factor == pytest.approx(0.1)
 
 
-def test_the_trainer_keeps_dtensor_only_on_the_model_parallel_axes(tmp_path, single_gpu_dims):
-    """torchtitan v0.3.0 defaults to the spmd_types backend, whose FSDP wrapping wants every
-    parameter distributed over the full mesh first and rejects a plain-DP model."""
-    pytest.importorskip("torchtitan")
+def _layer_linears_accumulate_in_place(model) -> bool:
+    from torchtitan.models.common.linear import Linear
+
+    return any(
+        linear.inplace_wgrad_accum for layer in model.layers for _, linear, _, _ in layer.traverse(Linear.Config)
+    )
+
+
+def test_a_static_shape_platform_always_compiles_its_blocks(tmp_path, single_gpu_dims, on_tpu):
+    """Eager torch_tpu runs every op as its own program, so TPU compiles its blocks with no flag asking for it."""
     from miles.backends.torchtitan_utils.config import build_trainer_config
 
     config = build_trainer_config(
         _config_args(),
         hf_assets_path=_checkpoint_dir(tmp_path, tie_word_embeddings=False),
+        lr_total_steps=1,
+        dump_subdir="x",
+    )
+    assert config.compile_backend == "tpu"
+    assert config.model.local_compile_regions == []
+    assert not _layer_linears_accumulate_in_place(config.model), "a traced backward cannot add into .grad in place"
+
+
+def test_gpu_runs_its_blocks_eager(tmp_path, single_gpu_dims):
+    from miles.backends.torchtitan_utils.config import build_trainer_config
+
+    hf = _checkpoint_dir(tmp_path, tie_word_embeddings=False)
+    eager = build_trainer_config(_config_args(), hf_assets_path=hf, lr_total_steps=1, dump_subdir="x")
+    assert eager.compile_backend is None and eager.model.local_compile_regions
+    assert _layer_linears_accumulate_in_place(eager.model)
+
+
+def test_a_platform_without_sparse_flex_attention_gets_tpu_flash_attention_in_every_layer(
+    tmp_path, single_gpu_dims, on_tpu
+):
+    from miles.backends.torchtitan_utils.config import TpuFlashInnerAttention, build_trainer_config
+
+    config = build_trainer_config(
+        _config_args(),
+        hf_assets_path=_checkpoint_dir(tmp_path, tie_word_embeddings=False),
+        lr_total_steps=1,
+        dump_subdir="x",
+    )
+    inner = {type(layer.attention.inner_attention) for layer in config.model.layers}
+    assert inner == {TpuFlashInnerAttention.Config}
+
+
+def test_tpu_attention_segments_restart_where_the_positions_do():
+    """The kernel masks across segments, so a segment must start exactly where a packed sequence (or the pad) does."""
+    pytest.importorskip("torchtitan")
+    from miles.backends.torchtitan_utils.config import TpuFlashInnerAttention
+
+    positions = torch.cat([torch.arange(n) for n in (700, 900, 1200, 1296)])
+    segment_ids = TpuFlashInnerAttention.Config().build_attention_metadata(positions)
+    assert segment_ids.dtype == torch.int32
+    assert torch.all(segment_ids[1:] >= segment_ids[:-1]), "the kernel skips blocks assuming non-decreasing ids"
+    starts = (positions == 0).cumsum(-1)
+    assert torch.equal(segment_ids[1:] != segment_ids[:-1], starts[1:] != starts[:-1])
+
+
+def test_mla_keeps_its_wrapper_and_runs_tpu_flash_attention_inside_it(on_tpu):
+    """MLA wraps the flex kernel in its own inner attention; only the kernel has a TPU replacement."""
+    pytest.importorskip("torchtitan")
+    from torchtitan.config.parallelism import ParallelismConfig
+    from torchtitan.models.common.attention import MLAAttention
+
+    from miles.backends.torchtitan_utils.config import TpuFlashInnerAttention, build_model_config
+
+    model = build_model_config(
+        _config_args(titan_model_name="glm4_moe_lite", titan_model_flavor="4layer"), parallelism=ParallelismConfig()
+    )
+    assert len(model.layers) == 4
+    mla = [layer.attention.inner_attention for layer in model.layers]
+    assert {type(wrapper) for wrapper in mla} == {MLAAttention.Config}
+    assert {type(wrapper.inner_attention) for wrapper in mla} == {TpuFlashInnerAttention.Config}
+
+
+def test_context_parallelism_swaps_in_the_all_gather_kv_attention(tmp_path, monkeypatch):
+    """torchtitan refuses CP on a plain flex attention; the backend converts every layer's inner attention."""
+    pytest.importorskip("torchtitan")
+    from torchtitan.models.common.attention.cp_attention import AllGatherKVFlexInnerAttention
+
+    from miles.backends.torchtitan_utils import config as titan_config
+
+    monkeypatch.setattr(titan_config.dist, "get_world_size", lambda group=None: 2)
+    config = titan_config.build_trainer_config(
+        _config_args(context_parallel_size=2),
+        hf_assets_path=_checkpoint_dir(tmp_path, tie_word_embeddings=False),
         lr_total_steps=10,
         dump_subdir="x",
     )
-    assert config.parallelism.spmd_backend == "partial_dtensor"
+    assert config.parallelism.context_parallel_degree == 2
+    assert config.parallelism.context_parallel_load_balancer is None
+    inner = {type(layer.attention.inner_attention) for layer in config.model.layers}
+    assert inner == {AllGatherKVFlexInnerAttention.Config}
 
 
 class _Mesh:
@@ -261,6 +593,7 @@ def dist_stub():
             "new_group",
             lambda ranks, backend=None: "self_group" if backend is None else f"gloo_sub{tuple(ranks)}",
         ),
+        patch.object(tp.dist, "new_subgroups_by_enumeration", lambda ranks_per_subgroup_list: ("self_group", [])),
         patch.object(tp.dist, "get_process_group_ranks", lambda group: list(range(sizes.get(group, 1)))),
         patch.object(
             tp.dist, "all_gather_object", lambda out, obj, group=None: out.__setitem__(slice(None), [obj] * len(out))
@@ -277,16 +610,24 @@ def _state(dist_stub, meshes: dict[str, int], world: int | None = None, **kwargs
     dist_stub["__world__"] = world
     dist_stub["gloo"] = world
     dist_stub["self_group"] = 1
-    dp = meshes.get("batch", 1)
+    dp = meshes.get("dp", 1)
     dist_stub[f"gloo_sub{tuple(range(dp))}"] = dp
     return tp.create_titan_parallel_state(_ParallelDims(meshes), **kwargs)
 
 
 def test_context_parallelism_stays_inside_the_trainer_and_absent_axes_are_trivial(dist_stub):
-    state = _state(dist_stub, {"batch": 4, "loss": 8, "cp": 2})
+    state = _state(dist_stub, {"dp": 4, "loss": 8, "cp": 2})
     assert (state.intra_dp.size, state.intra_dp_cp.size, state.cp.size) == (4, 4, 1)
     for axis in (state.tp, state.pp, state.ep, state.etp, state.indep_dp):
         assert (axis.size, axis.rank) == (1, 0)
+
+
+def test_every_absent_axis_shares_one_collectively_built_singleton_group(dist_stub):
+    """tpu_dist needs every rank to create every subgroup in the same order; a per-rank new_group breaks that."""
+    with patch.object(tp.dist, "new_group", side_effect=AssertionError("a singleton group from new_group")):
+        state = _state(dist_stub, {"dp": 1, "loss": 1})
+    absent_axes = (state.cp, state.tp, state.pp, state.ep, state.etp, state.indep_dp)
+    assert {axis.group for axis in absent_axes} == {"self_group"}
 
 
 def test_the_loss_adapter_undoes_the_summed_dp_and_cp_gradients():
@@ -318,10 +659,10 @@ def test_resume_reads_from_load_and_writes_to_save(tmp_path, single_gpu_dims):
         lr_total_steps=1,
         dump_subdir="actor",
     )
-    assert config.dump_folder == str(save_root / "torchtitan" / "actor")
-    assert config.checkpoint.initial_load_path == str(load_root / "torchtitan" / "actor" / "checkpoint" / "step-12")
-    assert (config.checkpoint.initial_load_model_only, config.checkpoint.initial_load_in_hf) == (False, False)
-    assert config.checkpoint.last_save_model_only is False
+    assert config.output_dir == str(save_root / "torchtitan" / "actor")
+    assert config.checkpointer.initial_load_path == str(load_root / "torchtitan" / "actor" / "checkpoint" / "step-12")
+    assert (config.checkpointer.initial_load_model_only, config.checkpointer.initial_load_in_hf) == (False, False)
+    assert config.checkpointer.last_save_model_only is False
 
     fresh = build_trainer_config(
         _config_args(load=str(tmp_path / "empty"), save=str(save_root)),
@@ -329,24 +670,26 @@ def test_resume_reads_from_load_and_writes_to_save(tmp_path, single_gpu_dims):
         lr_total_steps=1,
         dump_subdir="actor",
     )
-    assert fresh.checkpoint.initial_load_path is None
-    assert (fresh.checkpoint.initial_load_model_only, fresh.checkpoint.initial_load_in_hf) == (True, True)
+    assert fresh.checkpointer.initial_load_path is None
+    assert (fresh.checkpointer.initial_load_model_only, fresh.checkpointer.initial_load_in_hf) == (True, True)
 
 
-def test_the_replayed_router_forward_mirrors_the_pinned_torchtitan_router():
-    """routing_replay._token_router_forward is a copy of TokenChoiceTopKRouter.forward with the
-    top-k swapped for the replayed one; a torchtitan bump that changes the upstream forward must
-    re-sync the copy before this fingerprint is updated."""
-    import ast
-    import hashlib
+def test_routing_replay_hooks_the_router_where_it_picks_experts():
+    """routing_replay swaps TokenChoiceTopKRouter._select_experts per router; that only replays the routing if the
+    upstream forward still looks the method up on the instance and gathers its scores from the returned ids."""
     import inspect
-    import textwrap
 
     moe = pytest.importorskip("torchtitan.models.common.moe")
 
-    source = textwrap.dedent(inspect.getsource(moe.TokenChoiceTopKRouter.forward))
-    fingerprint = hashlib.sha256(ast.dump(ast.parse(source)).encode()).hexdigest()
-    assert fingerprint == "e3c6e10d721ebf5bdc8d968524cc204fbc3c74e775157b30248d6ec2f1aecef9"
+    forward = inspect.getsource(moe.TokenChoiceTopKRouter.forward)
+    assert "self._select_experts," in forward
+    assert "scores_TE.gather(dim=-1, index=topk_expert_ids_TK)" in forward
+    assert list(inspect.signature(moe.TokenChoiceTopKRouter._select_experts).parameters) == [
+        "self",
+        "scores_TE",
+        "expert_bias_E",
+        "router_kwargs",
+    ]
 
 
 _GLM47_FLASH_HF_CONFIG = dict(
@@ -367,6 +710,7 @@ _GLM47_FLASH_HF_CONFIG = dict(
     routed_scaling_factor=1.8,
     norm_topk_prob=True,
     rope_theta=1000000,
+    rms_norm_eps=1e-5,
     vocab_size=154880,
 )
 
@@ -399,19 +743,29 @@ _GLM47_FLASH_CHECKPOINT_KEYS = [
 
 def test_unknown_model_names_name_both_package_roots():
     pytest.importorskip("torchtitan")
-    from miles.backends.torchtitan_utils.config import resolve_model_spec
+    from torchtitan.config.parallelism import ParallelismConfig
+
+    from miles.backends.torchtitan_utils.config import build_model_config
 
     with pytest.raises(ValueError, match="miles.backends.torchtitan_utils.models.nope.*torchtitan.models.nope"):
-        resolve_model_spec(_config_args(titan_model_name="nope", titan_model_flavor="x"))
+        build_model_config(
+            _config_args(titan_model_name="nope", titan_model_flavor="x"), parallelism=ParallelismConfig()
+        )
 
 
 def test_glm4_7_flash_flavor_matches_its_hf_config_and_its_checkpoint_keys():
     pytest.importorskip("torchtitan")
-    from miles.backends.torchtitan_utils.config import resolve_model_spec
+    from torchtitan.config.parallelism import ParallelismConfig
+    from torchtitan.models.common import RMSNorm, Sigmoid
+    from torchtitan.models.common.moe import MoE
+    from torchtitan.models.deepseek_v3 import DeepSeekV3Model
 
-    spec = resolve_model_spec(_config_args(titan_model_name="glm4_moe_lite", titan_model_flavor="30B-A3B"))
+    from miles.backends.torchtitan_utils.config import build_model_config
+
+    model = build_model_config(
+        _config_args(titan_model_name="glm4_moe_lite", titan_model_flavor="30B-A3B"), parallelism=ParallelismConfig()
+    )
     hf = _GLM47_FLASH_HF_CONFIG
-    model = spec.model
     assert (model.dim, model.vocab_size, len(model.layers)) == (
         hf["hidden_size"],
         hf["vocab_size"],
@@ -427,21 +781,25 @@ def test_glm4_7_flash_flavor_matches_its_hf_config_and_its_checkpoint_keys():
         attention.v_head_dim,
     ) == (hf["q_lora_rank"], hf["kv_lora_rank"], hf["qk_nope_head_dim"], hf["qk_rope_head_dim"], hf["v_head_dim"])
     assert attention.rope.theta == hf["rope_theta"] and attention.rope.scaling == "none"
-    assert [layer.moe is None for layer in model.layers] == [i < hf["first_k_dense_replace"] for i in range(47)]
-    assert model.layers[0].feed_forward.w1.out_features == hf["intermediate_size"]
-    moe = model.layers[1].moe
+    assert {norm.eps for _, norm, _, _ in model.traverse(RMSNorm.Config, recurse=True)} == {hf["rms_norm_eps"]}
+    assert [isinstance(layer.feed_forward, MoE.Config) for layer in model.layers] == [
+        i >= hf["first_k_dense_replace"] for i in range(47)
+    ]
+    assert model.layers[0].feed_forward.w2.in_features == hf["intermediate_size"]
+    moe = model.layers[1].feed_forward
     assert moe.num_experts == hf["n_routed_experts"]
-    assert moe.routed_experts.inner_experts.hidden_dim == hf["moe_intermediate_size"]
-    assert moe.shared_experts.w1.out_features == hf["moe_intermediate_size"] * hf["n_shared_experts"]
-    assert (moe.router.top_k, moe.router.score_func, moe.router.route_scale, moe.router.route_norm) == (
+    assert moe.routed_experts.w2.in_features == hf["moe_intermediate_size"]
+    assert moe.shared_experts.w2.in_features == hf["moe_intermediate_size"] * hf["n_shared_experts"]
+    assert (moe.router.top_k, type(moe.router.score_func), moe.router.route_scale, moe.router.route_norm) == (
         hf["num_experts_per_tok"],
-        "sigmoid",
+        Sigmoid.Config,
         hf["routed_scaling_factor"],
         hf["norm_topk_prob"],
     )
+    assert (moe.router.aux_loss, moe.freeze_expert_bias) == (None, True)
     assert model.mtp_layers == []
 
-    adapter = spec.state_dict_adapter(model, None)
+    adapter = DeepSeekV3Model.state_dict_adapter_cls(model, None)
     assert set(_GLM47_FLASH_CHECKPOINT_KEYS) <= set(adapter.from_hf_map)
 
 

@@ -9,7 +9,7 @@ def model_args(nlayers: int | None = None) -> str:
         "--disable-bias-linear "
         f"--num-layers {nlayers} "
         "--hidden-size 4096 "
-        "--ffn-hidden-size 2048 "
+        "--ffn-hidden-size 16384 "
         "--num-attention-heads 32 "
         "--group-query-attention "
         "--num-query-groups 8 "
