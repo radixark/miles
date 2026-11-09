@@ -1,3 +1,4 @@
+import logging
 import socket
 from argparse import Namespace
 from collections.abc import Sequence
@@ -17,6 +18,8 @@ from miles.backends.training_utils.weight_update.rollout_cell_updater import cre
 from miles.utils import async_utils
 from miles.utils.distributed_lock import create_world_ticket_lock
 from miles.utils.distributed_utils import init_process_group
+
+logger = logging.getLogger(__name__)
 
 
 class UpdateWeightFromDistributed(WeightTransferProtocol):
@@ -55,6 +58,7 @@ class UpdateWeightFromDistributed(WeightTransferProtocol):
         """
         Create NCCL "miles-pp_{pp_rank}" if PP source (DP=TP=0). Lock prevents concurrent broadcasts.
         """
+        departed_engines = [engine for engine in self.rollout_engines or [] if engine not in rollout_engines]
         self.rollout_engines = rollout_engines
         self.cell_updaters_of_cell_id = create_rollout_cell_updaters(self.args, self.rollout_engines, engine_cell_ids)
         self._selector = selector
@@ -67,7 +71,7 @@ class UpdateWeightFromDistributed(WeightTransferProtocol):
         if self.is_sender:
             self.group_name = f"miles-pp_{shard}"
             disconnect_rollout_engines_from_distributed(
-                self.group_name, self._model_update_groups, self.rollout_engines
+                self.group_name, self._model_update_groups, self.rollout_engines, departed_engines=departed_engines
             )
             self._model_update_groups = connect_rollout_engines_from_distributed(
                 self.group_name, rollout_engines, engine_gpu_counts=engine_gpu_counts
@@ -134,16 +138,28 @@ def connect_rollout_engines_from_distributed(
     return model_update_groups
 
 
-def disconnect_rollout_engines_from_distributed(group_name, model_update_groups, rollout_engines):
+def disconnect_rollout_engines_from_distributed(
+    group_name, model_update_groups, rollout_engines, departed_engines: Sequence[SGLangApiClient] = ()
+):
     """
     Destroy NCCL on training and engines.
+
+    ``departed_engines`` were in the previous group but are not in ``rollout_engines``: a live one must leave the
+    group too, or destroying it on the trainer waits for it forever.
     """
     futures = [async_utils.submit(client.destroy_weights_update_group(group_name)) for client in rollout_engines]
+    departed_futures = [
+        async_utils.submit(client.destroy_weights_update_group(group_name)) for client in departed_engines
+    ]
     try:
         if model_update_groups is not None:
             dist.destroy_process_group(model_update_groups)
     finally:
         async_utils.wait_futures(futures)
+        # an engine that departed because it died cannot answer; the departure itself is what matters
+        for client, future in zip(departed_engines, departed_futures, strict=True):
+            if (error := future.exception()) is not None:
+                logger.warning(f"Departed engine {client.server_url} did not leave {group_name}: {error!r}")
 
 
 def update_weights_from_distributed(
