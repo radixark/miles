@@ -82,7 +82,7 @@ class State:
                 key = f'{temperature}/{method}'
                 self.state['selected_rates'][key] = {'rate':best,'scores':scores,'boundary':best in [min(scores),max(scores)]}
                 for job in self.state['jobs']:
-                    if job['stage']=='confirmation' and job['temperature']==temperature and job['method']==method and best not in [min(scores),max(scores)]:
+                    if job['stage']=='confirmation' and job['status']=='pending' and job['temperature']==temperature and job['method']==method and best not in [min(scores),max(scores)]:
                         job['learning_rate'] = best
         # A boundary winner requires extending the predeclared rate grid before
         # confirmation, rather than treating an unbracketed search as tuned.

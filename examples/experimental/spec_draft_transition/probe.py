@@ -40,7 +40,8 @@ class ConstantModel:
     def parameters(self):
         yield self.parameter
 
-    def __call__(self, ids, past_key_values=None, use_cache=True, **kwargs):
+    def __call__(self, input_ids, past_key_values=None, use_cache=True, **kwargs):
+        ids = input_ids
         cache = past_key_values or ConstantCache()
         cache.length += ids.shape[1]
         logits=self.logits[None,None,:].expand(ids.shape[0],ids.shape[1],-1)
