@@ -364,8 +364,8 @@ rollout/dynamic_filter/drop_<reason>
 ```
 
 Staleness is measured in published rollout weight versions: with
-`--update-weights-interval 1`, one version normally corresponds to one optimizer step;
-otherwise it does not. The metrics separate three parts of policy provenance:
+`--update-weights-interval 1`, one version corresponds to one trained rollout batch, however
+many optimizer steps it takes. The metrics separate three parts of policy provenance:
 
 - `avg_staleness` and `max_staleness` are the gap from the current version to the
   oldest version in each selected group. `stale_groups_filtered` counts groups that
