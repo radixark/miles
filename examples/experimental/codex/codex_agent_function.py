@@ -1,8 +1,11 @@
 import asyncio
+import contextlib
 import json
 import os
 import tempfile
 from pathlib import Path
+
+import psutil
 
 from miles.rollout.agentic.agent_function import InfraAbort
 
@@ -49,8 +52,12 @@ async def run(base_url: str, prompt: list[dict] | str, request_kwargs: dict, met
             timed_out = True
         finally:
             if proc.returncode is None:
+                tools = psutil.Process(proc.pid).children(recursive=True)
                 proc.terminate()
                 await proc.wait()
+                for tool in tools:
+                    with contextlib.suppress(psutil.NoSuchProcess):
+                        tool.kill()
         events = [json.loads(line) for line in events_path.read_text().splitlines() if line.strip()]
         if timed_out and events and events[-1]["type"] == "error":
             raise InfraAbort("ModelUnreachable", events[-1]["message"])
