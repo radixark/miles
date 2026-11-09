@@ -1,11 +1,13 @@
 ### 0
-source /sgl-workspace/sglang/benchmark/tpu/common_env.sh && SGLANG_TPU_SHARED_SLICE=4,8,localhost:30108 python3 -m sglang.launch_server
+source /sgl-workspace/sglang/benchmark/tpu/common_env.sh && SGLANG_TPU_SHARED_SLICE=4,8,localhost:30108 SGLANG_TPU_USE_SEQ_ALONG_LANE_KV=1 python3 -m sglang.launch_server
   --model-path /root/models/Qwen3-4B
   --device tpu
   --dtype bfloat16
   --grammar-backend none
   --enable-torch-compile
-  --page-size 64
+  --tpu-compile-tracer direct
+  --attention-backend pallas_tpu_rpa_batched
+  --page-size 256
   --kv-cache-dtype bfloat16
   --context-length 8192
   --chunked-prefill-size 2048
@@ -13,5 +15,7 @@ source /sgl-workspace/sglang/benchmark/tpu/common_env.sh && SGLANG_TPU_SHARED_SL
   --base-gpu-id 4
   --gpu-id-step 1
   --mem-fraction-static 0.7
+  --max-running-requests 128
+  --torch-compile-max-bs 128
   --host 0.0.0.0
   --port 30000

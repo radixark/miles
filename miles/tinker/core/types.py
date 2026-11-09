@@ -4,7 +4,6 @@ An internal datum has tokens = model_input + target_tokens[-1:] and explicit tar
 Its target_len counts every label position, including prompt positions; loss inputs align to it.
 """
 
-import asyncio
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -54,16 +53,6 @@ class OwnershipError(Exception):
     """model/checkpoint does not belong to the caller's tenant."""
 
 
-@dataclass(frozen=True)
-class ImportConfig:
-    # load_state reads file:// adapters only from under here (weights only)
-    root: str
-    # bytes a file:// import may copy onto the checkpoint disk
-    max_bytes: int
-    # bytes of one imported JSON, which the gateway and every trainer rank parse whole
-    json_max_bytes: int
-
-
 @dataclass
 class GatewayConfig:
     base_model: str
@@ -87,8 +76,6 @@ class GatewayConfig:
     trains_attn: bool = True
     trains_mlp: bool = True
     trains_unembed: bool = False
-    # None refuses file:// adapters
-    imports: ImportConfig | None = None
     # download URLs are built from it; None: from the URL each request arrived at, wrong behind an ingress
     public_url: str | None = None
     lease_timeout_s: float = 300.0  # sessions stale beyond this lose their sampling, models, and slots
@@ -120,8 +107,6 @@ class ModelRecord:
     slot_initialized: bool = False
     # failed publications burn their version number, leaving gaps
     next_sampler_version: int = 1
-    # one staged file:// copy at a time: each can reach the import's max_bytes on the shared disk
-    staged_import_slot: asyncio.Semaphore = field(default_factory=lambda: asyncio.Semaphore(1))
 
 
 @dataclass
