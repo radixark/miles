@@ -271,7 +271,21 @@ python scripts/tools/verify_session_tito_tokenizer.py \
     --rollout-num-gpus-per-engine 1
 ```
 
-For a family that allows `user` turns, the GPU check also sends one turn with `tool_choice: "none"`, so a tool call stays unparsed in content as when SGLang's parser fails on it. Pass `--no-session-verify-parse-failure` when that reply differs from the family's real parse failure.
+The GPU check runs two rollout steps:
+
+- **Spec rollout.** After a tool call, it appends each role the family can
+  append; after a reply to a prompt that asks for no tool (sent with
+  `tool_choice: "none"` as a guard), it appends a `tool` message. Each gets the
+  status the continuation roles decide, 200 or 400. It also rolls back twice,
+  appends a `system` message and injects `assistant` messages where the family
+  accepts them. Accepted turns must show no special-token or non-assistant
+  mismatch; assistant text is not checked.
+- **Normal rollout.** It answers a tool call with `tool` messages and an answer
+  with the next `user` question, the two continuations agents send most. Its
+  mismatch rates are the ones CI tracks across runs.
+
+Both checks hold only while the sampled tokens stay in the prompt unchanged.
+Pass `--no-session-verify-spec-trajectory` to run the normal rollout alone.
 
 ### Choose replay matching
 

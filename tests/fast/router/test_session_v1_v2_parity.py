@@ -24,57 +24,87 @@ from miles.utils.test_utils.mock_sglang_server import (
 )
 from miles.utils.test_utils.session_verify_agent import (
     ASSISTANT_INPUT_FOLLOWUP_TEXT,
-    FORCE_FINAL_TEXT,
+    ASSISTANT_INPUT_TEXTS,
+    EXPECTATIONS_KEY,
+    INITIAL_USER_PROMPT,
     MOCK_TOOL_RESULTS,
-    PARSE_FAILURE_USER_TEXT,
+    NO_TOOL_CALL_USER_TEXT,
+    SENTINEL_TOOL_RESULT,
     SYSTEM_REMINDER_TEXT,
-    USER_FOLLOWUP_TEXT,
+    USER_FOLLOWUP_TEXTS,
     build_initial_messages,
 )
 from miles.utils.types import Sample
 
 _MODEL = "Qwen/Qwen3-0.6B"
 _BATCH_SIZE = 16
-_REQUESTS_PER_TRAJECTORY = 10
+
+
+def _call(city: str, version: str) -> ProcessResult:
+    return ProcessResult(
+        f'I will check {city}.\n<tool_call>\n{{"name": "get_weather", "arguments": {{"location": "{city}"}}}}\n</tool_call>',
+        meta_info=ProcessResultMetaInfo(weight_version=version),
+    )
+
+
+def _answer(text: str, version: str) -> ProcessResult:
+    return ProcessResult(text, meta_info=ProcessResultMetaInfo(weight_version=version))
+
+
+# The reply to a prompt is keyed on the marker that appears last in it.
 _AGENT_RESPONSES = {
-    "initial": ProcessResult(
-        'I will check Beijing.\n<tool_call>\n{"name": "get_weather", '
-        '"arguments": {"location": "Beijing"}}\n</tool_call>',
-        meta_info=ProcessResultMetaInfo(weight_version="w0"),
-    ),
-    "beijing_result": ProcessResult(
-        "Beijing is 22 degrees Celsius and sunny.",
-        meta_info=ProcessResultMetaInfo(weight_version="w1"),
-    ),
-    "shanghai_call": ProcessResult(
-        'I will check Shanghai.\n<tool_call>\n{"name": "get_weather", '
-        '"arguments": {"location": "Shanghai"}}\n</tool_call>',
-        meta_info=ProcessResultMetaInfo(weight_version="w2"),
-    ),
-    "shanghai_result": ProcessResult(
-        "Shanghai is 15 degrees Celsius and cloudy.",
-        meta_info=ProcessResultMetaInfo(weight_version="w3"),
-    ),
-    "rollback_retry": ProcessResult(
-        "I will answer in one sentence.",
-        meta_info=ProcessResultMetaInfo(weight_version="w4"),
-    ),
-    "hangzhou_call": ProcessResult(
-        'I will check Hangzhou.\n<tool_call>\n{"name": "get_weather", '
-        '"arguments": {"location": "Hangzhou"}}\n</tool_call>',
-        meta_info=ProcessResultMetaInfo(weight_version="w5"),
-    ),
-    "force_final": ProcessResult(
-        "<final_answer>Beijing is sunny and Shanghai is cloudy.</final_answer>",
-        meta_info=ProcessResultMetaInfo(weight_version="w7"),
-    ),
-    "assistant_input": ProcessResult(
-        "<final_answer>Beijing was sunny and Shanghai was rainy.</final_answer>",
-        meta_info=ProcessResultMetaInfo(weight_version="w8"),
+    INITIAL_USER_PROMPT: _call("Beijing", "w0"),
+    USER_FOLLOWUP_TEXTS[0]: _call("Shanghai", "w1"),
+    SYSTEM_REMINDER_TEXT: _answer("I will answer in one sentence.", "w2"),
+    ASSISTANT_INPUT_TEXTS[0]: _answer("Noted.", "w3"),
+    USER_FOLLOWUP_TEXTS[1]: _call("Hangzhou", "w4"),
+    MOCK_TOOL_RESULTS[0]: _answer("Hangzhou is 22 degrees Celsius and sunny.", "w5"),
+    NO_TOOL_CALL_USER_TEXT: _answer("Beijing is the capital of China.", "w6"),
+    SENTINEL_TOOL_RESULT: _answer("The weather service is unavailable.", "w7"),
+    ASSISTANT_INPUT_FOLLOWUP_TEXT: _answer(
+        "<final_answer>Beijing was sunny and Shanghai was rainy.</final_answer>", "w8"
     ),
 }
-_SELECTED_WEIGHT_VERSIONS = ["w0", "w1", "w2", "w3", "w4", "w5", "w7", "w8"]
+# The initial call; the user, system and assistant probes after a call (the system and
+# assistant probes get answers without one, so a question rebuilds the call after each);
+# the tool result; the no-call turn and the tool probe after it; two rollbacks; the
+# system message; the injected assistants.
+_REQUESTS_PER_TRAJECTORY = 13
+_SELECTED_WEIGHT_VERSIONS = ["w0", "w1", "w2", "w1", "w3", "w4", "w5", "w6", "w7", "w2", "w8"]
 _SHARED_PREFIX_VERSION = "p0"
+_EXPECTED_AGENT_METADATA = {
+    "driver_events": [
+        "initial",
+        "probe_user_after_tool_call",
+        "probe_system_after_tool_call",
+        "append_user",
+        "probe_assistant_after_tool_call",
+        "append_user",
+        "append_tool",
+        "append_user",
+        "no_tool_call",
+        "probe_tool_after_no_tool_call",
+        "rollback",
+        "rollback",
+        "append_system",
+        "append_assistant",
+    ],
+    EXPECTATIONS_KEY: [
+        {"step": step, "expected_status": 200, "actual_status": 200}
+        for step in (
+            "user after tool call",
+            "system after tool call",
+            "assistant after tool call",
+            "tool after no tool call",
+        )
+    ],
+    "rollback_count": 2,
+    "user_count": 4,
+    "system_count": 1,
+    "assistant_input_count": 2,
+    "tool_result_count": 1,
+    "tool_call_count": 4,
+}
 
 
 @pytest.mark.parametrize("version", [V1, V2])
@@ -133,6 +163,30 @@ def test_agentic_v2_same_prompt_retries_match_v1_training_payload_bitwise(
         for run in (v1, v2):
             _assert_prefill_spans_follow_the_kept_turns(run.samples[0].weight_versions)
         assert_agentic_retry_trajectory_parity(v1, v2)
+        _assert_scripted_spec_rollout(v1, v2)
+
+
+def _assert_scripted_spec_rollout(v1, v2):
+    """The scripted replies give one exact tree: the two rollbacks branch off the no-call turn."""
+    tree = v2.pre_collect["metadata"]["tree"]
+    assert [(node["id"], node["parent"]) for node in tree["nodes"]] == [
+        (0, None),
+        *((i, i - 1) for i in range(1, 9)),
+        (9, 7),
+        (10, 7),
+        (11, 10),
+        (12, 11),
+    ]
+    kept = [0, 1, 2, 3, 4, 5, 6, 7, 10, 11, 12]
+    assert [(leaf["node_id"], leaf["path_node_ids"]) for leaf in tree["leaves"]] == [
+        (8, [*range(8), 8]),
+        (9, [*range(8), 9]),
+        (12, kept),
+    ]
+    assert v2.samples[0].metadata["leaf"]["path_node_ids"] == kept
+    assert v2.session_metadata["agent"] == _EXPECTED_AGENT_METADATA
+    for key, value in _EXPECTED_AGENT_METADATA.items():
+        assert v1.samples[0].metadata[key] == value
 
 
 def _assert_prefill_spans_follow_the_kept_turns(calls):
@@ -219,18 +273,6 @@ def _stamp_prompt_versions(mock_self: MockSGLangServer, payload: dict) -> dict:
 
 
 def _process_agent_prompt(prompt: str) -> ProcessResult:
-    if ASSISTANT_INPUT_FOLLOWUP_TEXT in prompt:
-        return _AGENT_RESPONSES["assistant_input"]
-    if FORCE_FINAL_TEXT in prompt:
-        return _AGENT_RESPONSES["force_final"]
-    if PARSE_FAILURE_USER_TEXT in prompt:
-        return _AGENT_RESPONSES["hangzhou_call"]
-    if SYSTEM_REMINDER_TEXT in prompt:
-        return _AGENT_RESPONSES["rollback_retry"]
-    if MOCK_TOOL_RESULTS[1] in prompt:
-        return _AGENT_RESPONSES["shanghai_result"]
-    if USER_FOLLOWUP_TEXT in prompt:
-        return _AGENT_RESPONSES["shanghai_call"]
-    if MOCK_TOOL_RESULTS[0] in prompt:
-        return _AGENT_RESPONSES["beijing_result"]
-    return _AGENT_RESPONSES["initial"]
+    marker = max(_AGENT_RESPONSES, key=prompt.rfind)
+    assert prompt.rfind(marker) >= 0, prompt[-300:]
+    return _AGENT_RESPONSES[marker]

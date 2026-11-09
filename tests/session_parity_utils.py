@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import enum
-import json
 import math
 import struct
 from collections.abc import Callable, Iterator
@@ -28,6 +27,7 @@ from miles.rollout.session.server import SessionServer
 from miles.rollout.session.types import SessionServerInstance
 from miles.utils import http_utils
 from miles.utils.http_utils import find_available_port
+from miles.utils.test_utils.session_verify_agent import EXPECTATIONS_KEY, SESSION_VERIFY_KIND_KEY, SessionVerifyKind
 from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
 from miles.utils.types import Sample
 
@@ -39,26 +39,6 @@ _CHAT_TIMEOUT_SECS = 120.0
 _PICKER_PATH = "miles.rollout.session.v2.picker_hub.drop_same_prompt_retries"
 _POSTPROCESSOR_PATH = "miles.rollout.session.v2.postprocessor_hub.default_postprocess"
 _RUNTIME_LIFECYCLE_KEYS = frozenset({"t0", "t1", "req_ts", "prev_t1"})
-_EXPECTED_AGENT_METADATA = {
-    "driver_events": [
-        "initial",
-        "append_tool",
-        "append_user",
-        "append_tool",
-        "append_system",
-        "rollback",
-        "rollback",
-        "parse_failure",
-        "force_final",
-        "append_assistant",
-    ],
-    "rollback_count": 2,
-    "user_count": 3,
-    "system_count": 1,
-    "assistant_input_count": 2,
-    "tool_result_count": 2,
-    "tool_call_count": 2,
-}
 
 
 @dataclasses.dataclass(frozen=True)
@@ -129,11 +109,12 @@ async def _run_and_collect(
                 return reply
 
             async def generate_one(input_sample: Sample):
+                # The spec rollout rolls back and retries, which the v2 tree must keep as branches.
                 input_sample.metadata.update(
                     {
                         "tito_model": args.tito_model,
                         "session_verify_cycles": args.session_verify_cycles,
-                        "tool_call_failure_mode": args.tool_call_failure_mode,
+                        SESSION_VERIFY_KIND_KEY: str(SessionVerifyKind.SPEC),
                     }
                 )
                 generate_input = GenerateFnInput(
@@ -162,44 +143,41 @@ async def _run_and_collect(
 
 
 def assert_agentic_retry_trajectory_parity(v1: SessionParityRun, v2: SessionParityRun) -> None:
-    """Assert agent coverage, retry topology, and training-payload parity."""
+    """Assert agent coverage, retry topology, and training-payload parity.
+
+    Model-independent: the tree shape follows the replies the model gave, so
+    only its retry structure is checked here.
+    """
     assert v1.version == V1
     assert v2.version == V2
     assert v1.empty_reason is None
     assert v2.empty_reason is None
     assert len(v1.samples) == 1
     assert len(v2.samples) == 1
-    assert len(v1.pre_collect["records"]) == 8
-    assert len(v2.pre_collect["records"]) == 8
-    _assert_weather_tool_round_trip(v1.pre_collect)
-    _assert_weather_tool_round_trip(v2.pre_collect)
+    _assert_tool_results_answer_calls(v1.pre_collect)
+    _assert_tool_results_answer_calls(v2.pre_collect)
 
     tree = v2.pre_collect["metadata"]["tree"]
-    assert [(node["id"], node["parent"]) for node in tree["nodes"]] == [
-        (0, None),
-        (1, 0),
-        (2, 1),
-        (3, 2),
-        (4, 3),
-        (5, 3),
-        (6, 3),
-        (7, 6),
-        (8, 7),
-        (9, 8),
-    ]
-    assert [(leaf["node_id"], leaf["path_node_ids"]) for leaf in tree["leaves"]] == [
-        (4, [0, 1, 2, 3, 4]),
-        (5, [0, 1, 2, 3, 5]),
-        (9, [0, 1, 2, 3, 6, 7, 8, 9]),
-    ]
-
+    nodes = {node["id"]: node for node in tree["nodes"]}
     selected_leaf = v2.samples[0].metadata["leaf"]
-    assert selected_leaf["node_id"] == 9
-    assert selected_leaf["parent"] == 8
-    assert selected_leaf["path_node_ids"] == [0, 1, 2, 3, 6, 7, 8, 9]
-    assert selected_leaf["response_id"] == tree["nodes"][9]["response_id"]
-    assert v2.session_metadata["agent"] == _EXPECTED_AGENT_METADATA
-    for key, value in _EXPECTED_AGENT_METADATA.items():
+    path = selected_leaf["path_node_ids"]
+    # v2 picks the latest generation; v1 keeps the same linear history.
+    assert selected_leaf["node_id"] == max(nodes)
+    assert [nodes[node_id]["parent"] for node_id in path] == [None, *path[:-1]]
+    assert selected_leaf["response_id"] == nodes[path[-1]]["response_id"]
+    assert len(v1.pre_collect["records"]) == len(v2.pre_collect["records"]) == len(path)
+    # Every other leaf is a retry the agent sent with the same prompt from a node on the kept path.
+    retries = [leaf for leaf in tree["leaves"] if leaf["node_id"] != path[-1]]
+    assert len(retries) >= 2
+    for leaf in retries:
+        parent = nodes[leaf["node_id"]]["parent"]
+        kept_child = nodes[path[path.index(parent) + 1]]
+        assert nodes[leaf["node_id"]]["completion_span"][0] == kept_child["completion_span"][0]
+
+    agent_metadata = v2.session_metadata["agent"]
+    assert agent_metadata["rollback_count"] == 2
+    assert [(e["expected_status"], e["actual_status"]) for e in agent_metadata[EXPECTATIONS_KEY]] == [(200, 200)] * 4
+    for key, value in agent_metadata.items():
         assert v1.samples[0].metadata[key] == value
         assert v2.samples[0].metadata[key] == value
     assert v1.samples[0].metadata["max_trim_tokens"] == v2.session_metadata["max_trim_tokens"]
@@ -262,7 +240,6 @@ def _serve_session(*, backend_url: str, hf_checkpoint: str, version: str) -> Ite
         partial_rollout=False,
         max_seq_len=None,
         session_verify_cycles=1,
-        tool_call_failure_mode="rollback",
         session_sample_picker_path=_PICKER_PATH,
         session_sample_postprocessor_path=_POSTPROCESSOR_PATH,
     )
@@ -303,19 +280,16 @@ def _training_metadata_projection(metadata: dict[str, Any]) -> dict[str, Any]:
     return projected
 
 
-def _assert_weather_tool_round_trip(snapshot: dict[str, Any]) -> None:
+def _assert_tool_results_answer_calls(snapshot: dict[str, Any]) -> None:
+    """Each answered tool result in the final request references a call the history issued."""
     records = snapshot["records"]
     for record in records:
         assert [tool["function"]["name"] for tool in record["request"]["tools"]] == ["get_weather"]
-
-    for call_index, result_index, location in ((0, 1, "Beijing"), (2, 3, "Shanghai")):
-        [tool_call] = records[call_index]["response"]["choices"][0]["message"]["tool_calls"]
-        assert tool_call["function"]["name"] == "get_weather"
-        assert json.loads(tool_call["function"]["arguments"]) == {"location": location}
-
-        tool_result = records[result_index]["request"]["messages"][-1]
-        assert tool_result["role"] == "tool"
-        assert tool_result["tool_call_id"] == tool_call["id"]
+    messages = records[-1]["request"]["messages"]
+    call_ids = {call["id"] for message in messages for call in message.get("tool_calls") or []}
+    answered = [message for message in messages if message["role"] == "tool" and message["tool_call_id"] != "none"]
+    assert answered
+    assert {message["tool_call_id"] for message in answered} <= call_ids
 
 
 def _project_lifecycle_segment(segment: dict[str, Any]) -> dict[str, Any]:

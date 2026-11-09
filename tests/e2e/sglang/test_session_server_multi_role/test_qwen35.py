@@ -19,7 +19,6 @@ CONFIG = ModelConfig(
     tp_size=2,
     enable_spec=True,
     cycles=2,
-    tool_call_failure_mode="append_tool",
     # Anthropic tool-call conversion changes raw assistant serialization;
     # keep this endpoint-only formatting mismatch soft while hard gates stay at 0.
     anthropic_assistant_text_threshold=1.0,
