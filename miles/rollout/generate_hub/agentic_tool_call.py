@@ -66,6 +66,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         "agentic_tool_call.generate requires session_server_instances. "
         "Pass --use-session-server to start the session server."
     )
+    abort_scope = rollout_abort_scope(input.args)
     use_v2 = input.args.use_session_server == "v2"
     collect_spec_metrics = use_v2 and input.args.sglang.common_value("speculative_algorithm") is not None
     tracer = await OpenAIEndpointTracer.create(
@@ -107,7 +108,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
             custom_agent_function,
             mode=input.args.custom_agent_function_mode,
             on_child_reports=push_sandbox_reports,
-            abort_scope=rollout_abort_scope(input.args),
+            abort_scope=abort_scope,
             base_url=tracer.agent_base_url,
             prompt=input.sample.prompt,
             request_kwargs=build_chat_request_kwargs(input.sampling_params),
