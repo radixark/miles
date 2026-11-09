@@ -40,7 +40,7 @@ Add these to a GRPO launcher, with `examples/experimental/pydantic_ai` on the ro
 ```
 
 - `--use-session-server v2`: v1 keeps one lineage per session and is only right for a strictly linear harness.
-- `--session-message-matcher loose_tool_call`: Pydantic AI parses tool arguments and resends them compact, so the default `strict` matcher opens a new root, and a one-turn sample, on every turn.
+- `--session-message-matcher loose_tool_call`: Pydantic AI 1.64 replays tool arguments as the engine spelled them, but 2.x parses them and resends them compact, and under the default `strict` matcher that opens a new root, and a one-turn sample, on every turn.
 - No `--apply-chat-template`: the session server renders the messages.
 - No `--custom-rm-path`: the session assigns the agent's `reward` to every sample of the episode.
 
