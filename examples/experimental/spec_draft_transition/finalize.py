@@ -41,8 +41,10 @@ def update_tracking(root: Path, node: int, jobs: list[dict]) -> None:
         url = job['result']['wandb_url'].strip()
         base, path = url.split('/radixarkai/', 1)
         parts = path.split('/')
-        api = wandb.Api(api_key=(root / 'wandb-key').read_text().strip(), overrides={'base_url': base})
+        if base == 'https://forge.coreweave.com/wandb':
+            base = 'https://api.forge.coreweave.com'
         try:
+            api = wandb.Api(api_key=(root / 'wandb-key').read_text().strip(), overrides={'base_url': base})
             run = api.run(f'radixarkai/{parts[0]}/{parts[-1]}')
             if job['stage'] == 'confirmation':
                 for draft in [4, 8, 16]:
@@ -57,7 +59,7 @@ def update_tracking(root: Path, node: int, jobs: list[dict]) -> None:
             run.name = f'{day}-{job["run_id"].split("-",1)[1]}-{job["method"]}-t{job["temperature"]}-s{job["seed"]}'
             run.summary.update()
             run.update()
-        except (wandb.errors.Error, AttributeError, ValueError, KeyError) as error:
+        except (wandb.errors.Error, AttributeError, ValueError, KeyError, TypeError) as error:
             errors.append({'run_id': job['run_id'], 'error': str(error)})
     (root / f'report/tracking-node{node}.json').write_text(json.dumps(errors, indent=2))
 
@@ -89,8 +91,8 @@ def main(args: Args) -> None:
         shutil.copyfile(root / 'report' / filename, transfer / filename)
     (transfer / f'collection-node{args.node}.json').write_text(json.dumps({'identity': identity}))
     print('COLLECTION_COMPLETE', args.node, flush=True)
-    update_tracking(root, args.node, state['jobs'])
     if args.node != 0:
+        update_tracking(root, args.node, state['jobs'])
         return
     for node, host in enumerate(manifest['nodes']):
         if node == 0:
@@ -111,6 +113,7 @@ def main(args: Args) -> None:
     analyze(SimpleNamespace(root=str(root / 'report'), resamples=20000, seed=20261108))
     (root / 'report/ANALYSIS_COMPLETE').write_text(identity)
     print('ANALYSIS_COMPLETE', identity, flush=True)
+    update_tracking(root, args.node, state['jobs'])
 
 
 if __name__ == '__main__':
