@@ -7,7 +7,6 @@ the experiment's data partitioning and sampling settings.
 
 import hashlib
 import json
-import os
 from pathlib import Path
 
 import polars as pl
@@ -41,7 +40,8 @@ def prepare(args: Args) -> None:
         identity = hashlib.sha256(messages[0]["content"].strip().encode()).hexdigest()
         if identity in seen:
             continue
-        ids = tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True, enable_thinking=False)
+        ids = tokenizer.apply_chat_template(messages, tokenize=True, return_dict=False,
+                                             add_generation_prompt=True, enable_thinking=False)
         if len(ids) > 1024:
             continue
         seen.add(identity)

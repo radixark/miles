@@ -48,7 +48,7 @@ def main(args: Args) -> None:
     device = torch.accelerator.current_accelerator()
     teacher = AutoModelForCausalLM.from_pretrained(args.teacher, dtype=torch.bfloat16, attn_implementation='sdpa').to(device).eval()
     student = AutoModelForCausalLM.from_pretrained(args.student, dtype=torch.bfloat16, attn_implementation='sdpa').to(device).eval()
-    tokens = teacher_tokenizer.apply_chat_template([{'role':'user','content':'Explain why the sky appears blue in two sentences.'}], enable_thinking=False, add_generation_prompt=True, return_tensors='pt').to(device)
+    tokens = teacher_tokenizer.apply_chat_template([{'role':'user','content':'Explain why the sky appears blue in two sentences.'}], enable_thinking=False, add_generation_prompt=True, return_dict=False, return_tensors='pt').to(device)
     with torch.no_grad():
         generated = teacher.generate(tokens, max_new_tokens=64, do_sample=True, temperature=1.0, top_p=1.0, top_k=0)
         th = teacher.model(generated[:, :-1], use_cache=False).last_hidden_state.flatten(0,1)

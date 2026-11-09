@@ -6,6 +6,7 @@ temperature and seed combinations can occupy separate GPUs concurrently.
 
 import json
 import math
+import os
 import random
 import time
 from pathlib import Path
@@ -87,7 +88,8 @@ def validate(student, teacher, rows: list[dict], tokenizer, args: Args) -> dict[
             break
         ids, attention, mask = batch(rows[start:start + args.micro_batch], tokenizer.pad_token_id,
                                      next(student.parameters()).device, remaining)
-        th, sh = hidden_states(teacher, ids, attention)[mask], hidden_states(student, ids, attention)[mask]
+        th = hidden_states(teacher, ids, attention)[mask].to(torch.bfloat16)
+        sh = hidden_states(student, ids, attention)[mask].to(torch.bfloat16)
         metrics = probability_metrics(sh, student.lm_head.weight, th, teacher.lm_head.weight, args.temperature, args.chunk)
         for key, value in metrics.items():
             totals[key] += value
@@ -120,8 +122,8 @@ def train_update(student, teacher, optimizer, rows: list[dict], tokenizer, args:
         ids, attention, mask = batch(selected, tokenizer.pad_token_id, next(student.parameters()).device, remaining)
         count = int(mask.sum())
         with torch.no_grad():
-            th = hidden_states(teacher, ids, attention)[mask]
-        sh = hidden_states(student, ids, attention)[mask]
+            th = hidden_states(teacher, ids, attention)[mask].to(torch.bfloat16)
+        sh = hidden_states(student, ids, attention)[mask].to(torch.bfloat16)
         loss = ProbabilityLoss.apply(sh, student.lm_head.weight, th, teacher.lm_head.weight,
                                      args.temperature, mix, args.tokens_per_update, args.chunk)
         if not torch.isfinite(loss):
@@ -137,6 +139,8 @@ def train_update(student, teacher, optimizer, rows: list[dict], tokenizer, args:
 
 
 def main(args: Args) -> None:
+    if os.environ.get('WANDB_API_KEY_FILE'):
+        os.environ['WANDB_API_KEY'] = Path(os.environ['WANDB_API_KEY_FILE']).read_text().strip()
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=False)
     (output / 'config.json').write_text(json.dumps(vars(args), indent=2, default=str))
