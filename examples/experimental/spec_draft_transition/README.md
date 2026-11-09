@@ -24,6 +24,9 @@ and the real pretrained model heads. Custom forward saves the BF16 operands
 actually used by the head, and backward recomputes the same probabilities.
 `finalize.py` waits for completion, validates selected rates against actual run
 configs, collects node metrics, updates W&B summaries and builds the final report.
+Completed teacher shards can be reused without loading generation engines.
+The node HTTP server remains alive after training so postprocessing can fetch
+the compact metrics; stop it after collection and reference timing finish.
 After completion, `benchmark_queue.py` times the predeclared seed 20001
 checkpoint in every condition. Three paired teacher/speculative replicates use
 separate free GPUs, 128 shared prompts, a 256-token cap and alternating mode

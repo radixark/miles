@@ -269,7 +269,8 @@ def node(args: Args) -> None:
     manifest=json.loads(Path(args.manifest).read_text())
     handler=functools.partial(http.server.SimpleHTTPRequestHandler,directory=str(root/'data'))
     server=http.server.ThreadingHTTPServer(('0.0.0.0',args.data_port),handler)
-    threading.Thread(target=server.serve_forever,daemon=True).start()
+    # Postprocessing fetches metrics after all workers finish; keep HTTP alive.
+    threading.Thread(target=server.serve_forever,daemon=False).start()
     lock=threading.Lock()
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.slots) as pool:
         futures=[pool.submit(worker,args,gpu,manifest,lock) for gpu in range(args.slots)]

@@ -59,6 +59,12 @@ def prepare(args: Args) -> None:
 
 
 def generate(args: Args) -> None:
+    root = Path(args.root)
+    paths = [root / 'generated' / f't{temperature}-shard{args.shard:02d}.jsonl'
+             for temperature in [0.6, 1.0, 1.4]]
+    if all(path.exists() and path.with_suffix('.done').exists() for path in paths):
+        print('reusing complete teacher trajectories', args.shard, flush=True)
+        return
     # The existing SGLang runtime imports Transformer Engine through an
     # optional Megatron debug plugin. A derived venv needs its library roots
     # explicitly because TE otherwise searches the derived venv's purelib.
@@ -70,7 +76,6 @@ def generate(args: Args) -> None:
             os.environ[variable] = str(found)
             library_dirs.append(str(found/'lib'))
     os.environ['LD_LIBRARY_PATH'] = ':'.join(library_dirs + [os.environ.get('LD_LIBRARY_PATH','')])
-    root = Path(args.root)
     prompts = pl.read_parquet(root / "prompts.parquet").with_row_index("row")
     subset = prompts.filter(pl.col("row") % args.shards == args.shard).to_dicts()
     engine = sgl.Engine(model_path=args.teacher, dtype="bfloat16", mem_fraction_static=0.70,
