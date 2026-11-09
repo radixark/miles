@@ -18,6 +18,10 @@ computes paired bootstrap intervals and fitting curves without moving checkpoint
 the complete reporting path against known paired differences and zero interaction.
 `probe_context.py` checks the sequential sampler against an exactly enumerable
 teacher whose next-token probabilities depend on the last two tokens.
+`probe_amp.py` independently checks BF16-autocast gradients against eager
+autograd, including float32 student hidden states, near-matching distributions
+and the real pretrained model heads. Custom forward saves the BF16 operands
+actually used by the head, and backward recomputes the same probabilities.
 `finalize.py` waits for completion, validates selected rates against actual run
 configs, collects node metrics, updates W&B summaries and builds the final report.
 After completion, `benchmark_queue.py` times the predeclared seed 20001

@@ -21,6 +21,7 @@ def ce_weight(method: str, update: int, updates: int) -> float:
 
 class ProbabilityLoss(torch.autograd.Function):
     @staticmethod
+    @torch.amp.custom_fwd(device_type="cuda", cast_inputs=torch.bfloat16)
     def forward(ctx, hidden, weight, teacher_hidden, teacher_weight, temperature, mix, normalizer, chunk):
         ctx.weight_dtype = weight.dtype
         weight = weight.to(hidden.dtype)
@@ -37,13 +38,14 @@ class ProbabilityLoss(torch.autograd.Function):
         return total / normalizer
 
     @staticmethod
+    @torch.amp.custom_bwd(device_type="cuda")
     def backward(ctx, output_grad):
         hidden, weight, teacher_hidden, teacher_weight = ctx.saved_tensors
         grad_hidden = torch.empty_like(hidden)
         grad_weight = torch.zeros_like(weight, dtype=torch.float32)
         for start in range(0, len(hidden), ctx.chunk):
             h = hidden[start:start + ctx.chunk]
-            q = (h @ weight.T).float().softmax(-1)
+            q = (h @ weight.T).float().log_softmax(-1).exp()
             p = ((teacher_hidden[start:start + ctx.chunk] @ teacher_weight.T).float() / ctx.temperature).softmax(-1)
             sign = (q - p).sign()
             grad = ctx.mix * (q - p) + (1 - ctx.mix) * q * (sign - (q * sign).sum(-1, keepdim=True))
