@@ -14,6 +14,8 @@ path integration and real sequential rejection/correction/bonus sampling.
 `entropy.py` audits positional entropy on held-out trajectories. `collect.py`
 extracts compact seed/prompt metrics on each node after completion; `analyze.py`
 computes paired bootstrap intervals and fitting curves without moving checkpoints.
+`python -m examples.experimental.spec_draft_transition.probe_analysis` checks
+the complete reporting path against known paired differences and zero interaction.
 
 The manifest owns temperatures, seeds, initial rates, budgets and run identities.
 Pure CE, pure L1 and the fixed cosine blend all use the same training token budget.
