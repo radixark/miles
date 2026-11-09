@@ -201,6 +201,21 @@ def extract_completion(result: dict) -> tuple:
     return response, choice, assistant_message, completion_token_ids
 
 
+def extract_counted_completion(session, result: dict) -> tuple | None:
+    try:
+        completion = extract_completion(result) if result["status_code"] == 200 else None
+    except (UpstreamResponseError, UpstreamGenerationAbortedError):
+        _record_model_call(session, failed=True)
+        raise
+    _record_model_call(session, failed=result["status_code"] >= 500)
+    return completion
+
+
+def _record_model_call(session, *, failed: bool) -> None:
+    session.last_model_call_failed = failed
+    session.backend_failures += failed
+
+
 class SessionCore:
     """HTTP session operations over one ``SessionRegistry``."""
 
@@ -310,6 +325,8 @@ class SessionCore:
         metadata["accumulated_token_ids"] = session.token_ids
         metadata["max_trim_tokens"] = self.registry.tito_tokenizer.max_trim_tokens
         metadata["turn_args"] = filter_turn_args(session.turn_args)
+        metadata["backend_failures"] = session.backend_failures
+        metadata["last_model_call_failed"] = session.last_model_call_failed
         return metadata
 
     async def get_session(self, session_id: str) -> Response:
@@ -441,12 +458,13 @@ class SessionCore:
         )
         await self._take_store_ref(session, request_body, result)
 
+        completion = extract_counted_completion(session, result)
         # Non-200 (e.g. 400 context too long) passes through unrecorded so the
         # agent can retry or handle the error.
-        if result["status_code"] != 200:
+        if completion is None:
             return proxy_result_to_response(result)
 
-        response, choice, assistant_message, completion_token_ids = extract_completion(result)
+        response, choice, assistant_message, completion_token_ids = completion
         assistant_message = tito_tokenizer.postprocess_completion(
             choice=choice,
             assistant_message=assistant_message,
