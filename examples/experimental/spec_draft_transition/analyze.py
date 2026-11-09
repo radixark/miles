@@ -96,6 +96,7 @@ def main(args: Args) -> None:
     samples=pl.read_parquet(root/'samples-node*.parquet')
     curves=pl.read_parquet(root/'curves-node*.parquet')
     jobs=pl.read_parquet(root/'jobs-node*.parquet')
+    state=json.loads((root/'state.json').read_text())
     assert jobs['run_id'].n_unique()==90
     accepted,blocks,temperatures,seeds,methods=arrays(samples.filter(pl.col('draft')==8))
     observed=(accepted.sum(-1)/blocks.sum(-1)).mean(-1)
@@ -116,7 +117,7 @@ def main(args: Args) -> None:
         interactions.append({'baseline':baseline,'high_minus_low_gain':float((observed[2,2]-observed[2,j])-(observed[0,2]-observed[0,j])), 'lower95':float(lo),'upper95':float(hi)})
     summary={'means':means,'primary_contrasts':contrasts,'secondary_interactions':interactions,
              'interval':'Crossed bootstrap of training seeds and held-out prompts; six primary contrasts, Bonferroni nominal95% family coverage.',
-             'resamples':args.resamples,'seeds':seeds,'training_source':'42af7e7348'}
+             'resamples':args.resamples,'seeds':seeds,'training_source':state['source_revision']}
     (root/'summary.json').write_text(json.dumps(summary,indent=2))
     pl.DataFrame(means).write_csv(root/'accepted-prefix-means.csv')
     pl.DataFrame(contrasts).write_csv(root/'paired-contrasts.csv')
