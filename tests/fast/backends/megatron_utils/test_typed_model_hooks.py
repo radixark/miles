@@ -49,7 +49,19 @@ class TestTypedModelHooks:
 
         with function_registry.temporary(hook.path, callback), pytest.raises(_HookReached):
             model_module.train_one_step(
-                args, 7, 3, env.data_iterator, env.model, None, None, 1, 1, witness_info=None, attempt=0
+                args=args,
+                input=model_module.TrainOneStepInput(
+                    rollout_id=7,
+                    step_id=3,
+                    data_iterator=env.data_iterator,
+                    model=env.model,
+                    optimizer=None,
+                    opt_param_scheduler=None,
+                    num_microbatches=1,
+                    num_rollouts=1,
+                    witness_info=None,
+                    attempt=0,
+                ),
             )
 
     def test_before_log_prob_hook_receives_backend_fields_and_store_identity(self) -> None:
