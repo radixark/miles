@@ -37,6 +37,7 @@ from megatron.core.transformer.utils import ensure_metadata_has_dp_cp_group, mak
 
 from miles.backends.megatron_utils.fp32_param_utils import mark_param_dtype
 from miles.backends.megatron_utils.megatron_to_hf.linear_attn_layout import LinearAttnHeads
+from miles.backends.megatron_utils.parallel import PackedSeqParamsWithCPLayout
 from miles_plugins.models.cp_utils import build_fla_cp_context, packed_shard_to_zigzag, zigzag_to_packed_shard
 
 try:
@@ -544,8 +545,15 @@ class LinearAttentionLayer(MegatronModule):
 
         global_cu_seqlens = self._global_cu_seqlens(x, packed_seq_params)
         relayout = self.cp_size > 1 and not self.allgather_cp
+        layout = (
+            packed_seq_params.cp_layout_metadata
+            if isinstance(packed_seq_params, PackedSeqParamsWithCPLayout)
+            else None
+        )
         if relayout:
-            x = zigzag_to_packed_shard(x, global_cu_seqlens, self.cp_group, self.cp_group.rank(), self.cp_size)
+            x = zigzag_to_packed_shard(
+                x, global_cu_seqlens, self.cp_group, self.cp_group.rank(), self.cp_size, layout=layout
+            )
         cp_context = None
         cu_seqlens = global_cu_seqlens
         if self.cp_size > 1:
@@ -557,7 +565,9 @@ class LinearAttentionLayer(MegatronModule):
         core = self.linear_attn(x.transpose(0, 1), cu_seqlens, cp_context).transpose(0, 1)
 
         if relayout:
-            core = packed_shard_to_zigzag(core, global_cu_seqlens, self.cp_group, self.cp_group.rank(), self.cp_size)
+            core = packed_shard_to_zigzag(
+                core, global_cu_seqlens, self.cp_group, self.cp_group.rank(), self.cp_size, layout=layout
+            )
         output = self.linear_attn.out_proj(core)
         if self.sequence_parallel:
             output = reduce_scatter_to_sequence_parallel_region(output, group=self.tp_group)
