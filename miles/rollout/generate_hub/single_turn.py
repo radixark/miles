@@ -10,6 +10,7 @@ from miles.rollout.generate_utils.generate_endpoint_utils import (
     update_sample_from_response,
 )
 from miles.utils.http_utils import post
+from miles.utils.media_refs import has_media
 from miles.utils.types import Sample
 
 
@@ -25,7 +26,11 @@ async def generate(input: GenerateFnInput, url: str | None = None) -> GenerateFn
     # Handle Partial Rollout resuming
     if len(sample.response) > 0:
         input_ids = sample.tokens
-        sampling_params["max_new_tokens"] -= sample.response_length
+        # In token space sample.tokens holds the prompt SGLang expanded, which is longer than prompt_ids.
+        token_space = args.multimodal_token_space_processing and has_media(sample.multimodal_inputs)
+        sampling_params["max_new_tokens"] -= (
+            sample.response_length if token_space else len(sample.tokens) - len(prompt_ids)
+        )
 
         assert sampling_params["max_new_tokens"] >= 0
         if sampling_params["max_new_tokens"] == 0:
