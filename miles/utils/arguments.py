@@ -1053,7 +1053,7 @@ def miles_validate_args(args):
 
     validate_length_penalty_args(args)
     mode = args.update_weight_transfer_mode
-    if mode not in ("broadcast", "broadcast_packed", "p2p", "disk-delta", "ici"):
+    if mode not in ("broadcast", "broadcast_packed", "p2p", "disk-delta", "ici", "http-lora"):
         raise ValueError(f"Unknown --update-weight-transfer-mode {mode!r}")
     if mode == "broadcast_packed" and (args.train_backend != "megatron" or args.colocate):
         raise ValueError("broadcast_packed requires Megatron non-colocated weight transfer")
@@ -1527,6 +1527,24 @@ def miles_validate_args(args):
         assert not is_moe or args.sglang_ep_size == args.rollout_num_gpus_per_engine, (
             f"ICI weight transfer of a MoE model needs --sglang-ep-size {args.rollout_num_gpus_per_engine} (one EP "
             f"rank per engine device), got {args.sglang_ep_size}; other expert splits would keep stale experts."
+        )
+
+    if args.update_weight_transfer_mode == "http-lora":
+        assert is_lora_enabled(args) and not args.multi_lora, (
+            "--update-weight-transfer-mode=http-lora publishes a single LoRA adapter: it needs --lora-rank > 0 "
+            "and does not support multi-LoRA."
+        )
+        assert not args.colocate, "--update-weight-transfer-mode=http-lora is for non-colocated engines"
+        assert (
+            args.prefill_num_servers is None
+        ), "--update-weight-transfer-mode=http-lora has not been tested when PD is enabled."
+        assert args.http_lora_ship == "tensors" or args.update_weight_disk_dir, (
+            "--http-lora-ship path requires --update-weight-disk-dir as the staging directory (shared with "
+            "the engines, or replicated by --custom-update-weight-post-write-path)."
+        )
+        assert args.http_lora_ship == "tensors" or not args.check_lora_weight_equal, (
+            "--check-lora-weight-equal verifies the adapter in the weight-update session's end_weight_update, "
+            "which only --http-lora-ship tensors uses; path mode has no checksum to compare against."
         )
 
     if args.colocate:

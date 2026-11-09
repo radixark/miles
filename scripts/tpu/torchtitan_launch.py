@@ -132,6 +132,8 @@ def serve_sglang(args: ScriptArgs, model: TitanTpuModel) -> None:
     U.exec_command_cpu(
         f"source {args.sglang_env_script} && "
         f"SGLANG_TPU_SHARED_SLICE={_shared_slice(args, rank_offset=NUM_TRAINER_DEVICES)} "
+        # the batched ragged paged attention reads this KV layout fastest; the cache stays bf16
+        "SGLANG_TPU_USE_SEQ_ALONG_LANE_KV=1 "
         "python3 -m sglang.launch_server "
         f"--model-path {args.model_dir}/{model.name} "
         "--device tpu "
@@ -139,7 +141,11 @@ def serve_sglang(args: ScriptArgs, model: TitanTpuModel) -> None:
         "--grammar-backend none "
         # disables the piecewise prefill graph, which TPU does not implement
         "--enable-torch-compile "
-        "--page-size 64 "
+        # traces the engine's programs without dynamo: faster decode and a shorter startup
+        "--tpu-compile-tracer direct "
+        # pallas_tpu_rpa_batched needs pages of at least 256 tokens
+        "--attention-backend pallas_tpu_rpa_batched "
+        "--page-size 256 "
         f"--kv-cache-dtype {args.kv_cache_dtype} "
         f"--context-length {SEQ_LEN} "
         "--chunked-prefill-size 2048 "
@@ -148,6 +154,9 @@ def serve_sglang(args: ScriptArgs, model: TitanTpuModel) -> None:
         "--gpu-id-step 1 "
         # the engine has devices 4-7 to itself; the rest of HBM holds XLA's program buffers
         "--mem-fraction-static 0.7 "
+        # the bench and full recipes generate 128 samples per rollout: decode them all at once
+        "--max-running-requests 128 "
+        "--torch-compile-max-bs 128 "
         f"{model.sglang_args}"
         f"--host 0.0.0.0 --port {args.sglang_port}"
     )
