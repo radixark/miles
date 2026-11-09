@@ -158,7 +158,9 @@ def _codex_processes(marker: str) -> list[psutil.Process]:
 
 
 async def _cancel_during_model_call(args, marker: str) -> tuple[list[psutil.Process], list[psutil.Process]]:
-    task = asyncio.create_task(_call_generate(args, _sample(marker), DEFAULT_SAMPLING_PARAMS, variant="agentic_tool_call"))
+    task = asyncio.create_task(
+        _call_generate(args, _sample(marker), DEFAULT_SAMPLING_PARAMS, variant="agentic_tool_call")
+    )
     deadline = time.monotonic() + 30
     while not (procs := _codex_processes(marker)) and time.monotonic() < deadline:
         await asyncio.sleep(0.2)
