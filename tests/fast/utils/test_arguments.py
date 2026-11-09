@@ -4345,3 +4345,40 @@ class TestLoRATypeResolution:
         args = self._parse(tmp_path, ["--megatron-to-hf-mode", "raw", "--lora-type", "lora"])
         with pytest.raises(AssertionError, match="--lora-type lora shares one lora_A"):
             validate_lora_args_after_megatron(args)
+
+
+class TestEvalSourcePath:
+    @staticmethod
+    def _parse(extra: list[str]) -> argparse.Namespace:
+        parser = get_megatron_arg_parser()
+        return parser.parse_args(["--num-rollout", "1", *extra, *REQUIRED_ARGS])
+
+    def test_the_function_supplies_the_eval_datasets(self) -> None:
+        """A run that builds its eval sets at startup gets them from the function, with per-dataset keys kept."""
+        seen = []
+
+        def eval_datasets(args: argparse.Namespace) -> list[dict[str, str]]:
+            seen.append(args)
+            return [{"name": "math", "path": "/data/math.jsonl", "input_key": "messages"}]
+
+        with function_registry.temporary("test:eval_datasets", eval_datasets):
+            args = self._parse(["--eval-source-path", "test:eval_datasets"])
+            miles_validate_args(args)
+
+        assert seen == [args]
+        assert [(dataset.name, dataset.path, dataset.input_key) for dataset in args.eval_datasets] == [
+            ("math", "/data/math.jsonl", "messages")
+        ]
+        assert args.eval_prompt_data == ["math", "/data/math.jsonl"]
+
+    @pytest.mark.parametrize(
+        "other",
+        [["--eval-config", "eval.yaml"], ["--eval-prompt-data", "aime", "/data/aime.jsonl"]],
+        ids=["eval-config", "eval-prompt-data"],
+    )
+    def test_the_function_does_not_combine_with_other_eval_sources(self, other: list[str]) -> None:
+        """Two sources of eval datasets would leave one silently unused."""
+        with function_registry.temporary("test:eval_datasets", lambda args: []):
+            args = self._parse(["--eval-source-path", "test:eval_datasets", *other])
+            with pytest.raises(ValueError, match="--eval-source-path replaces --eval-config and --eval-prompt-data"):
+                miles_validate_args(args)

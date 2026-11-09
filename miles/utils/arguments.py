@@ -456,12 +456,16 @@ def parse_args_train_backend():
 
 def _resolve_eval_datasets(args) -> list[EvalDatasetConfig]:
     """
-    Build evaluation dataset configurations from either --eval-config or --eval-prompt-data.
+    Build evaluation dataset configurations from --eval-source-path, --eval-config or --eval-prompt-data.
     """
     datasets_config = []
     defaults: dict[str, Any] = {}
 
-    if args.eval_config:
+    if args.eval_source_path:
+        if args.eval_config or args.eval_prompt_data:
+            raise ValueError("--eval-source-path replaces --eval-config and --eval-prompt-data; pass only one.")
+        datasets_config = ensure_dataset_list(load_function(args.eval_source_path)(args))
+    elif args.eval_config:
         from omegaconf import OmegaConf
 
         cfg = OmegaConf.create(resolve_file_arg(args.eval_config))

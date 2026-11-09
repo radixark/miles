@@ -15,6 +15,7 @@ and the default it replaces.
 | | `--custom-generate-function-path` | A single sample's generation |
 | | `--data-source-path` | How prompts are loaded |
 | | `--eval-function-path` | The eval rollout |
+| | `--eval-source-path` | Where eval prompts come from |
 | **Session** | `--session-message-matcher` | Prefix-replay equivalence |
 | **Reward** | `--custom-rm-path` | Reward computation |
 | | `--custom-reward-post-process-path` | Reward normalization |
@@ -111,6 +112,21 @@ class CustomDataSource(DataSource):
 
 Same signature as `--rollout-function-path`. Defaults to whatever rollout function is
 configured.
+
+### `--eval-source-path`
+
+```python
+def eval_datasets(args) -> list[dict[str, Any]]: ...
+```
+
+Returns the evaluation datasets, each entry shaped as one item of `eval.datasets` in
+`--eval-config` (`name`, `path`, and optionally `input_key`, `label_key`, sampling
+overrides, ...). Miles calls it once, while it validates the arguments on the driver,
+so it can build the eval sets at startup, for example by writing jsonl files from a
+prompt mix. It replaces `--eval-config` and `--eval-prompt-data`; passing either with it
+is an error.
+
+**Default:** none; eval datasets come from `--eval-config` or `--eval-prompt-data`.
 
 ---
 

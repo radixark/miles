@@ -201,6 +201,7 @@ Sections mirror the launch-script argument groups.
 | Flag | Type | Default | Notes |
 |---|---|---|---|
 | `--eval-prompt-data` | str+ | – | One or more `name path` pairs. |
+| `--eval-source-path` | str | – | Function `(args) -> list[dict]` returning the eval datasets, shaped as `eval.datasets` in `--eval-config`. Replaces `--eval-config` and `--eval-prompt-data`. See [Customization](/user-guide/customization#eval-source-path). |
 | `--eval-interval` | int | – | Rollouts between eval runs. |
 | `--n-samples-per-eval-prompt` | int | `1` | Responses per eval prompt. |
 | `--eval-max-response-len` | int | – | Max eval response length. Inherits from rollout if unset. |
