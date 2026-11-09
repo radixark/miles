@@ -65,7 +65,7 @@ class TestMetricGathererRawReward:
 
 
 def _args(reward_key: str | None = None) -> Namespace:
-    return Namespace(reward_key=reward_key)
+    return Namespace(reward_key=reward_key, length_penalty_coeff=0.0, length_penalty_min_tokens=1)
 
 
 def _sample(reward: float | dict | None) -> Sample:
