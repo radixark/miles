@@ -2,7 +2,7 @@
 
     turn k:  request ─▶ response ─▶ [a] ─▶ env.step ─▶ [b] ─▶ append observation ─▶ [c] ─▶ turn k+1
         [a] token space: expanded prompt ≥ --max-seq-len → roll the turn back (turn ≥ 1; a first prompt
-            past the limit raises); len(tokens) > limit → trim
+            past the limit keeps no response); len(tokens) > limit → trim
             both paths: finish length → TRUNCATED; budget ≤ 0 → TRUNCATED
         [b] token space only: last turn → COMPLETED; budget − len(obs) ≤ 0 → TRUNCATED;
             otherwise checkpoint + append
