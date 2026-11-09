@@ -7,12 +7,12 @@ from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from tests.fast.fixtures.args_fixtures import parser_defaults
+from tests.fast.fixtures.args_fixtures import parse_megatron_test_config, parser_defaults
 from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config
 
 from miles.backends.megatron_utils.megatron_config import MegatronConfig, resolve_megatron_config
 from miles.ray.train.init_request import TrainerControllerInitRequest
-from miles.utils.args.runtime import AllConfig
+from miles.utils.args.runtime import AllConfig, OrchestratorConfig
 from miles.utils.arguments import parse_args
 from miles.utils.multi_policy import utils as multi_policy_utils
 from miles.utils.multi_policy.checkpoint_state import MultiPolicyCheckpointState
@@ -135,6 +135,30 @@ class TestValidateMultiPolicyArgs:
         self._validate(
             _make_args("a", "b", save="/ckpt", save_interval=10, sglang=_sglang_models(("a", True), ("b", True)))
         )
+
+    def test_the_orchestrator_config_of_a_parsed_run_is_accepted(self, tmp_path):
+        """train_multi_policy.py checks its OrchestratorConfig, which lacks the rollout-only fields."""
+        sglang_config = tmp_path / "sglang.yaml"
+        sglang_config.write_text(
+            "sglang:\n"
+            + "".join(
+                f"  - name: {name}\n    update_weights: true\n    server_groups:\n      - worker_type: regular\n        num_gpus: 1\n"
+                for name in ("a", "b")
+            )
+        )
+        all_args = parse_megatron_test_config(
+            "--megatron-config",
+            encode_megatron_config("a", "b"),
+            "--sglang-config",
+            str(sglang_config),
+            "--rollout-num-gpus",
+            "2",
+            "--fully-async",
+        )
+
+        args = OrchestratorConfig.slice_from(all_args)
+
+        multi_policy_utils.validate_multi_policy_args(args, megatron_config=args.raw_megatron)
 
 
 @functools.cache
