@@ -633,7 +633,7 @@ def test_the_actor_starts_after_the_restored_rollout_and_saves_lora_as_adapter_d
         "build_trainer_config": lambda *a, **k: SimpleNamespace(),
         "enable_routing_replay": lambda args: None,
         "TrainProfiler": lambda args: SimpleNamespace(on_init_end=lambda: None),
-        "TitanTrainer": lambda config: trainer,
+        "TitanTrainer": lambda config, **kwargs: trainer,
         "set_parallel_state": lambda state: None,
         "create_titan_parallel_state": lambda *a, **k: None,
         "install_routing_replay": lambda parts: None,

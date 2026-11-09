@@ -190,6 +190,8 @@ def finalize_load(actor: Any, checkpoint_payload: dict[str, Any] | None) -> None
     if metadata:
         actor.global_step = int(metadata.get("global_step", actor.global_step))
         actor.micro_step = int(metadata.get("micro_step", actor.micro_step))
+        # checkpoints saved before the version was persisted resume at version 0
+        actor._published_weight_version = int(metadata.get("published_weight_version", 0))
         next_rollout = metadata.get("next_rollout_id")
         if next_rollout is not None:
             actor.args.start_rollout_id = next_rollout
@@ -256,6 +258,7 @@ def save(actor: Any, iteration: int) -> None:
             "next_rollout_id": iteration + 1,
             "global_step": actor.global_step,
             "micro_step": actor.micro_step,
+            "published_weight_version": actor._published_weight_version,
             "world_size": dist.get_world_size(),
             "timestamp": time.time(),
         }

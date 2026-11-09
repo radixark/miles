@@ -36,5 +36,11 @@ def fsdp_checkpoint_sdk(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Simp
         train_backend="fsdp", save=str(tmp_path), load=str(tmp_path), ckpt_step=4, no_save_optim=False
     )
     return SimpleNamespace(
-        args=args, model=model, optimizer=optimizer, lr_scheduler=scheduler, global_step=7, micro_step=11
+        args=args,
+        model=model,
+        optimizer=optimizer,
+        lr_scheduler=scheduler,
+        global_step=7,
+        micro_step=11,
+        _published_weight_version=0,
     )

@@ -12,6 +12,10 @@ from miles.backends.torchtitan_utils.hf_weight_iterator import TitanHfWeightIter
 from miles.backends.torchtitan_utils.lora_checkpoint import TorchtitanLoraCheckpoint
 from miles.backends.torchtitan_utils.optimizer_state_on_disk import setup_adam_state_on_disk
 from miles.backends.torchtitan_utils.parallel import create_titan_parallel_state, parallelism_context_from_config
+from miles.backends.torchtitan_utils.published_weight_version import (
+    PUBLISHED_WEIGHT_VERSION,
+    PublishedWeightVersionState,
+)
 from miles.backends.torchtitan_utils.routing_replay import install as install_routing_replay
 from miles.backends.torchtitan_utils.trainer import TitanTrainer
 from miles.backends.training_utils.parallel import get_parallel_state, set_parallel_state
@@ -85,7 +89,7 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
         self.prof = TrainProfiler(args)
         self.load_hf_assets()
 
-        self.trainer = TitanTrainer(config)
+        self.trainer = TitanTrainer(config, extra_states={PUBLISHED_WEIGHT_VERSION: PublishedWeightVersionState(self)})
         self.model_parts = self.trainer.model_parts
         self.optimizers = self.trainer.optimizers.optimizers
         self.align_token_side_channel = self.trainer.align_token_side_channel

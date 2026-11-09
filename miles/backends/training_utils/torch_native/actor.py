@@ -75,6 +75,8 @@ class TorchNativeTrainRayActor(TrainRayActor):
     tokenizer: PreTrainedTokenizerBase
     ref_runner: StepRunner | None = None
     align_token_side_channel: Callable[[torch.Tensor, int], torch.Tensor] | None = None
+    # successful weight updates pushed to the engines; backend checkpoints save and restore it
+    _published_weight_version: int = 0
 
     def _step_runner(self) -> StepRunner:
         raise NotImplementedError
@@ -93,7 +95,6 @@ class TorchNativeTrainRayActor(TrainRayActor):
         return get_parallel_state().train_parallel_config(supports_precomputed_schedule=False)
 
     def _build_weight_updater(self, model, iterator_factory: Callable) -> WeightUpdater:
-        self._published_weight_version = 0
         model_name = self.args.model_name
         if model_name is None:
             model_name = type(self.hf_config).__name__.lower()
