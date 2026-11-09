@@ -27,7 +27,11 @@ from typing import Any
 
 from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.errors import MessageValidationError, TokenizationError, TruncatedGenerationError
-from miles.rollout.session.linear_trajectory import SessionRegistry, assert_pretokenized_prefix
+from miles.rollout.session.linear_trajectory import (
+    SessionRegistry,
+    assert_continuation_roles,
+    assert_pretokenized_prefix,
+)
 from miles.rollout.session.request_args import PreparedChatRequest, prepare_chat_request
 from miles.rollout.session.store_refs import SessionStoreRefs
 from miles.rollout.session.types import SessionRecord
@@ -149,6 +153,9 @@ def _render_token_ids(
     stored = parent.path_messages()
     _validate_suffix_roles(request_messages[len(stored) :], tito_tokenizer)
     effective_messages = stored + request_messages[len(stored) :]
+    assert_continuation_roles(
+        effective_messages, appended_from=len(stored), fixed_template=tito_tokenizer.FIXED_TEMPLATE
+    )
     return tito_tokenizer.merge_tokens(
         old_messages=stored,
         new_messages=effective_messages,

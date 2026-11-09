@@ -74,10 +74,14 @@ class _MockTITOTokenizer(TITOTokenizer):
 
 
 def _make_registry(allowed_append_roles: frozenset[str] = ALL_APPEND_ROLES) -> SessionRegistry:
+    return _make_registry_for(FixedTemplate(allowed_append_roles=allowed_append_roles))
+
+
+def _make_registry_for(fixed_template: FixedTemplate) -> SessionRegistry:
     configured_mock_type = type(
         "_ConfiguredMockTITOTokenizer",
         (_MockTITOTokenizer,),
-        {"FIXED_TEMPLATE": FixedTemplate(allowed_append_roles=allowed_append_roles)},
+        {"FIXED_TEMPLATE": fixed_template},
     )
     mock_tito = configured_mock_type(tokenizer=None, assistant_start_str="<|im_start|>assistant")
     return SessionRegistry(tokenizer=None, tito_tokenizer=mock_tito)
@@ -497,6 +501,75 @@ class TestAppendRoleToolUser:
         messages = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1, RETRY_SYS_MSG]
         with pytest.raises(MessageValidationError, match="role='system'.*allowed="):
             _prepare_token_ids(session, messages, tito_tokenizer=registry_with_user.tito_tokenizer)
+
+
+# A family whose renderer takes only tool answers after a tool call and no tool message without one.
+_NARROW_CONTINUATIONS = FixedTemplate(
+    allowed_append_roles=frozenset({"tool", "user", "assistant"}),
+    roles_after_tool_call=frozenset({"tool"}),
+    roles_after_no_tool_call=frozenset({"user", "assistant"}),
+)
+_FOLLOWUP_USER_MSG = {"role": "user", "content": "And Shanghai?"}
+_INJECTED_ASSISTANT_MSG = {"role": "assistant", "content": "The earlier result was sunny."}
+_SENTINEL_TOOL_MSG = {"role": "tool", "content": '{"result": "unavailable"}', "tool_call_id": "none"}
+
+
+class TestContinuationRoles:
+    """The family's continuation roles refuse a message right after an assistant with a 400."""
+
+    @pytest.mark.parametrize(
+        "stored_assistant,appended,accepted",
+        [
+            (ASSISTANT_MSG_1, [TOOL_MSG_1], True),
+            (ASSISTANT_MSG_1, [TOOL_MSG_1, _FOLLOWUP_USER_MSG], True),
+            (ASSISTANT_MSG_1, [_FOLLOWUP_USER_MSG], False),
+            (ASSISTANT_MSG_1, [_INJECTED_ASSISTANT_MSG], False),
+            (ASSISTANT_MSG_FINAL, [_FOLLOWUP_USER_MSG], True),
+            (ASSISTANT_MSG_FINAL, [_SENTINEL_TOOL_MSG], False),
+            (ASSISTANT_MSG_FINAL, [_INJECTED_ASSISTANT_MSG, _SENTINEL_TOOL_MSG], False),
+        ],
+        ids=[
+            "tool-after-call",
+            "user-after-answered-call",
+            "user-after-call",
+            "assistant-after-call",
+            "user-after-answer",
+            "tool-after-answer",
+            "tool-after-injected-assistant",
+        ],
+    )
+    def test_refusal_is_a_400_that_leaves_state_unchanged(self, stored_assistant, appended, accepted):
+        registry = _make_registry_for(_NARROW_CONTINUATIONS)
+        session = registry.get_session(registry.create_session())
+        session.update_pretokenized_state([SYS_MSG, USER_MSG], stored_assistant, [1, 2, 3], [10], max_trim_tokens=0)
+        messages = [SYS_MSG, USER_MSG, stored_assistant, *appended]
+
+        if accepted:
+            _prepare_token_ids(session, messages, tito_tokenizer=registry.tito_tokenizer)
+            return
+        before = (list(session.messages), list(session.trajectory_token_ids), session.num_assistant)
+        with pytest.raises(MessageValidationError, match="after an assistant (with|without) tool_calls") as error:
+            _prepare_token_ids(session, messages, tito_tokenizer=registry.tito_tokenizer)
+        assert error.value.status_code == 400
+        assert (session.messages, session.trajectory_token_ids, session.num_assistant) == before
+
+    def test_refused_retry_does_not_roll_back(self):
+        """A retry whose new suffix is refused keeps the checkpoint it would have discarded."""
+        registry = _make_registry_for(_NARROW_CONTINUATIONS)
+        session = registry.get_session(registry.create_session())
+        session.update_pretokenized_state([SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2, 3], [10], max_trim_tokens=0)
+        answered = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1]
+        _prepare_token_ids(session, answered, tito_tokenizer=registry.tito_tokenizer)
+        session.update_pretokenized_state(answered, ASSISTANT_MSG_FINAL, [1, 2, 3, 10, 11], [20], max_trim_tokens=0)
+
+        with pytest.raises(MessageValidationError, match="role='user' after an assistant with tool_calls"):
+            _prepare_token_ids(
+                session,
+                [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, _FOLLOWUP_USER_MSG],
+                tito_tokenizer=registry.tito_tokenizer,
+            )
+        assert session.num_assistant == 2
+        assert session.messages == [*answered, ASSISTANT_MSG_FINAL]
 
 
 class TestRollback:

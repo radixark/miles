@@ -235,11 +235,29 @@ but treat it as best-effort until it passes the checks below.
 More model families and verification history live in
 [issue #712](https://github.com/radixark/miles/issues/712).
 
+### Know which turn may follow an assistant
+
+Each family's `FIXED_TEMPLATE` states which role may directly follow an
+assistant message: `roles_after_tool_call` after one with `tool_calls`,
+`roles_after_no_tool_call` after one without. Both default to the family's
+append surface, `allowed_append_roles`. The session server refuses any other
+continuation with HTTP 400 before rendering and leaves the session unchanged,
+so the agent can send a different turn. DeepSeek-V4, for example, accepts only
+`tool` messages after a tool call and no `tool` message after a reply without
+one.
+
+These sets state what the runtime accepts, which can be wider than what the
+model was trained on: GLM accepts a `user` turn after a tool call because TITO
+replaces the sampled `<|observation|>` stop token with `<|user|>`.
+
 ### Verify a new model TITO
 
 To add a named family, register its `TITOTokenizer` and `FIXED_TEMPLATE` in
 [`tito_tokenizer.py`](https://github.com/radixark/miles/blob/main/miles/utils/chat_template_utils/tito_tokenizer.py),
-then run both checks. Either failure blocks support.
+add a checkpoint for it to
+`tests/fast/utils/chat_template_utils/test_continuation_roles.py`, which fails
+until the continuation roles match what the renderer accepts, then run both
+checks. Either failure blocks support.
 
 ```bash
 # CPU / fast: rendered token sequences remain append-only
