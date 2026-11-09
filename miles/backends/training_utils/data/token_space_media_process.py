@@ -108,7 +108,7 @@ class RolloutEngineProcessorArgs:
             image_processor_backend=sglang.actor_value("image_processor_backend"),
             disable_fast_image_processor=sglang.actor_value("disable_fast_image_processor"),
             mm_process_config_json=mm_process_config_json,
-            token_space_preprocess_cache_dir=sglang.common_value("token_space_preprocess_cache_dir"),
+            token_space_preprocess_cache_dir=sglang.actor_value("token_space_preprocess_cache_dir"),
         )
 
 
