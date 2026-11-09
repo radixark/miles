@@ -1,7 +1,5 @@
 """Runtime translation preserves datum order, sampling parameters, and token logprobs."""
 
-import json
-
 import httpx
 import pytest
 import torch
@@ -18,8 +16,6 @@ from miles.tinker.runtime import (
     _to_sequence,
     _topk_prompt_logprobs,
     classify_lora_groups,
-    max_adapter_bytes,
-    max_adapter_json_bytes,
 )
 from miles.tinker.server.proto_codec import encode_sample_response
 from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
@@ -280,121 +276,3 @@ def test_a_fused_modules_components_count_as_its_group():
     )
     flags = classify_lora_groups(("model.layers.0.linear_attn.in_proj_q",), gdn)
     assert flags == {"train_attn": True, "train_mlp": False, "train_unembed": False}
-
-
-def test_the_import_bound_is_every_base_weight_targeted_at_the_slot_rank(tmp_path):
-    from safetensors.torch import save_file
-
-    save_file(
-        {"q.weight": torch.zeros(6, 4), "experts.w": torch.zeros(3, 5, 2), "norm.weight": torch.zeros(4)},
-        tmp_path / "model.safetensors",
-    )
-
-    # rank 8 on q (6 + 4) and on each of the 3 experts (5 + 2); the norm is no LoRA target
-    elements = 8 * (6 + 4) + 3 * 8 * (5 + 2)
-    targets = get_hf_lora_targets({"model_type": "qwen3", "num_hidden_layers": 1})
-    # one target_modules entry for q and one per expert
-    json_bytes = (1 << 20) + (len("q") + 64) + 3 * (len("experts.w") + 64)
-    assert max_adapter_json_bytes(str(tmp_path), targets) == json_bytes
-    assert max_adapter_bytes(str(tmp_path), 8, targets) == 4 * elements + json_bytes * 9
-
-
-def test_the_import_json_bound_fits_a_per_expert_moe_bases_peft_config(tmp_path):
-    """A PEFT export lists every expert's modules in target_modules: on a large per-expert MoE base that alone is
-    past a flat MiB, so the bound must grow with the base, and only with it."""
-    from safetensors.torch import save_file
-
-    layers, experts, projections = 94, 128, ("gate_proj", "up_proj", "down_proj")
-    names = [
-        f"model.layers.{layer}.mlp.experts.{expert}.{projection}"
-        for layer in range(layers)
-        for expert in range(experts)
-        for projection in projections
-    ]
-    save_file({f"{name}.weight": torch.zeros(1, 1) for name in names}, tmp_path / "model.safetensors")
-    config = json.dumps({"r": 8, "lora_alpha": 16, "target_modules": names}, indent=2)
-    targets = get_hf_lora_targets({"model_type": "qwen3", "num_hidden_layers": 1})
-
-    bound = max_adapter_json_bytes(str(tmp_path), targets)
-    assert len(config) > 1 << 20, "a flat MiB would refuse it"
-    assert len(config) <= bound < 3 * len(config) + (1 << 20)
-
-
-def test_the_import_bound_counts_one_a_per_component_of_a_fused_matrix(tmp_path):
-    """The export writes in_proj_q / k / v each with its own A; a bound counting the fused matrix's one A refuses
-    the gateway's own max-rank export."""
-    from safetensors.torch import save_file
-
-    hidden, rows, rank = 1 << 15, (2, 2, 3), 64
-    save_file(
-        {"model.layers.0.linear_attn.in_proj_qkv.weight": torch.zeros(sum(rows), hidden)}, tmp_path / "w.safetensors"
-    )
-    targets = get_hf_lora_targets(
-        {
-            "model_type": "qwen3_5_text",
-            "num_hidden_layers": 1,
-            "layer_types": ["linear_attention"],
-            "linear_num_key_heads": 1,
-            "linear_key_head_dim": 2,
-            "linear_num_value_heads": 1,
-            "linear_value_head_dim": 3,
-        }
-    )
-
-    # fp32: each component's A [rank, hidden] and B [rows, rank]
-    exported = 4 * sum(rank * hidden + rows_i * rank for rows_i in rows)
-    assert max_adapter_bytes(str(tmp_path), rank, targets) >= exported
-
-
-def test_the_import_bound_counts_an_a_for_each_half_of_a_packed_gate_up(tmp_path):
-    """A base storing experts packed (``experts.gate_up_proj [E, 2f, h]``) with no declared gate/up layout still exports
-    gate and up apart (official Tinker's w1 / w3), each with its own A."""
-    from safetensors.torch import save_file
-
-    # large enough that the missing A outweighs the bound's per-file JSON allowance, as on a real base
-    experts, ffn, hidden, rank = 64, 4, 1 << 12, 64
-    save_file(
-        {"model.layers.0.mlp.experts.gate_up_proj": torch.zeros(experts, 2 * ffn, hidden)}, tmp_path / "w.safetensors"
-    )
-    targets = get_hf_lora_targets({"model_type": "qwen3", "num_hidden_layers": 1})
-    assert targets.packed_expert_gate_up_layout is None
-
-    # fp32, per expert: w1 and w3 each an A [rank, hidden] and a B [ffn, rank]
-    exported = 4 * experts * 2 * (rank * hidden + ffn * rank)
-    assert max_adapter_bytes(str(tmp_path), rank, targets) >= exported
-
-
-def test_an_mxfp4_copy_of_a_base_bounds_imports_as_its_bf16_copy_does(tmp_path):
-    """MXFP4 stores ``<m>_blocks [E, rows, in / 32, 16]`` (two 4-bit values a byte) and ``<m>_scales``; read as matrices
-    they count E * rows modules and a 16-wide input, so the JSON cap grew to hundreds of MB (gpt-oss)."""
-    from safetensors.torch import save_file
-
-    experts, hidden, rows, layers = 4, 64, 96, 3
-    bf16, mxfp4 = tmp_path / "bf16", tmp_path / "mxfp4"
-    bf16.mkdir()
-    mxfp4.mkdir()
-    prefix = "model.layers.{}.mlp.experts"
-    save_file(
-        {
-            f"{prefix.format(layer)}.{name}": torch.zeros(experts, hidden, rows_out, dtype=torch.bfloat16)
-            for layer in range(layers)
-            for name, rows_out in (("gate_up_proj", rows), ("down_proj", hidden))
-        },
-        bf16 / "model.safetensors",
-    )
-    save_file(
-        {
-            f"{prefix.format(layer)}.{name}_{part}": torch.zeros(
-                (experts, rows_out, hidden // 32, 16) if part == "blocks" else (experts, rows_out, hidden // 32),
-                dtype=torch.uint8,
-            )
-            for layer in range(layers)
-            for name, rows_out in (("gate_up_proj", rows), ("down_proj", hidden))
-            for part in ("blocks", "scales")
-        },
-        mxfp4 / "model.safetensors",
-    )
-    targets = get_hf_lora_targets({"model_type": "qwen3", "num_hidden_layers": 1})
-
-    assert max_adapter_json_bytes(str(mxfp4), targets) == max_adapter_json_bytes(str(bf16), targets)
-    assert max_adapter_bytes(str(mxfp4), 8, targets) == max_adapter_bytes(str(bf16), 8, targets)

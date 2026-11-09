@@ -1,18 +1,12 @@
 """Translate gateway datums to trainer batches and sampling requests to SGLang."""
 
 import asyncio
-import json
-import math
-from collections.abc import Iterator
 from dataclasses import asdict
 from pathlib import Path
 from typing import TextIO
 
 import httpx
-from safetensors import safe_open
 
-from miles.backends.training_utils.checkpoint.adapter.adapter_state import ADAPTER_STATE_DIRNAME
-from miles.backends.training_utils.checkpoint.adapter.base_model_check import resolve_hf_dir
 from miles.backends.training_utils.checkpoint.adapter.commit import TENANT_FILENAME
 from miles.backends.training_utils.checkpoint.adapter.commit import OwnershipError as AdapterOwnershipError
 from miles.backends.training_utils.checkpoint.adapter.commit import (
@@ -25,14 +19,11 @@ from miles.backends.training_utils.checkpoint.adapter.commit import (
     lock_checkpoint_root,
     resolve_adapter_dir,
 )
-from miles.backends.training_utils.checkpoint.adapter.key_mapping import fused_components
 from miles.backends.training_utils.checkpoint.adapter.parametrization import (
     PARAMETRIZATION_FILENAME,
     read_parametrization,
 )
-from miles.backends.training_utils.checkpoint.adapter.readers import PEFT_FILES
 from miles.ray.rollout.train_data_conversion import ROLLOUT_DATA_VALUE_SPEC
-from miles.tinker.core.imports import clear_import_copies
 from miles.tinker.core.types import OwnershipError, UserInputError
 from miles.tinker.core.utils import PRE_COMMIT_META_FILENAME
 from miles.utils import object_store
@@ -86,8 +77,6 @@ def delete_retired_adapters(root: str) -> None:
 def take_checkpoint_root(checkpoint_root: str) -> TextIO:
     """Lock the root for this gateway, then recover every adapter root under it (``<model_id>/<kind>``)."""
     lock = lock_checkpoint_root(Path(checkpoint_root))
-    # the lock means no load reads them
-    clear_import_copies(checkpoint_root)
     for adapter_root in Path(checkpoint_root).glob("*/*"):
         if adapter_root.is_dir():
             delete_unreferenced_adapter_dirs(adapter_root)
@@ -146,133 +135,6 @@ def delete_adapter(root: str, name: str, tenant: str | None) -> None:
         raise OwnershipError(f"checkpoint {name!r} does not belong to this tenant") from error
 
 
-# the files read_imported_adapter reads; weights_info copies only these from a file:// import
-IMPORTED_ADAPTER_FILES = (PARAMETRIZATION_FILENAME, "adapter_config.json")
-# every file a reader opens for a weights-only source; load_state copies only these
-LOADED_ADAPTER_FILES = (PARAMETRIZATION_FILENAME, *PEFT_FILES)
-# entries that make a file:// source something no tenant may import: its name -> why
-REFUSED_IMPORT_ENTRIES = {
-    TENANT_FILENAME: "is a committed checkpoint; import an export of it",
-    # it records its owner only here, so a mounted checkpoint store would otherwise leak it
-    PRE_COMMIT_META_FILENAME: "is a checkpoint saved before commits; import an export of it",
-    # the copy keeps only the bf16 PEFT view, so the fp32 masters a tenant expects would be silently rounded
-    ADAPTER_STATE_DIRNAME: "is a training adapter dir; import its sampler or PEFT export",
-}
-
-
-# beyond its target_modules, an adapter config or parametrization holds a few small fields
-_IMPORT_JSON_BASE_BYTES = 1 << 20
-# one indented, quoted target_modules entry beyond its HF name: PEFT's prefix, an expert index, punctuation
-_IMPORT_JSON_ENTRY_OVERHEAD_BYTES = 64
-
-
-# MXFP4 keeps a weight as <name>_blocks [..., rows, in / 32, 16] (two 4-bit values a byte) and <name>_scales
-_MXFP4_BLOCKS, _MXFP4_SCALES = "_blocks", "_scales"
-
-
-def _mxfp4_logical_shape(key: str, shape: list[int], dtype: str) -> tuple[int, ...]:
-    """The shape of the weight an MXFP4 container holds, as the base's unquantized copy stores it ([..., in, rows])."""
-    assert dtype == "U8" and len(shape) >= 3, f"{key}: {dtype} {shape} is no MXFP4 block container"
-    *lead, rows, blocks, block_bytes = shape
-    return (*lead, blocks * block_bytes * 2, rows)
-
-
-def _lora_matrices(hf_checkpoint: str, targets: HfLoraTargets) -> Iterator[tuple[str, tuple[int, ...], int]]:
-    """(module, shape ``[..., out, in]``, HF-fused components each with its own A) of every base weight a LoRA can
-    target; a norm or bias is none."""
-    hf_dir = resolve_hf_dir(hf_checkpoint)
-    assert hf_dir is not None, f"--hf-checkpoint {hf_checkpoint} has no local weights to bound file:// imports by"
-    files = sorted(hf_dir.glob("*.safetensors"))
-    assert files, f"{hf_dir} holds no .safetensors weights"
-    for file in files:
-        with safe_open(file, framework="pt") as weights:
-            for key in weights.keys():
-                if key.endswith(_MXFP4_SCALES):
-                    continue
-                shape = weights.get_slice(key).get_shape()
-                if key.endswith(_MXFP4_BLOCKS):
-                    shape = _mxfp4_logical_shape(key, shape, weights.get_slice(key).get_dtype())
-                    key = key.removesuffix(_MXFP4_BLOCKS)
-                if len(shape) >= 2:
-                    module = key.removesuffix(".weight")
-                    components = fused_components(module, targets)
-                    if components is None and module.endswith(".experts.gate_up_proj"):
-                        # packed experts export gate and up apart (w1 / w3) even with no declared gate/up layout
-                        components = ("gate", "up")
-                    yield module, tuple(shape), 1 if components is None else len(components)
-
-
-def max_adapter_json_bytes(hf_checkpoint: str, targets: HfLoraTargets) -> int:
-    """The largest JSON an adapter of this base needs: its few fields, plus one target_modules entry for every
-    module path a PEFT export can name (each expert and each fused component apart)."""
-    entries = sum(
-        math.prod(shape[:-2]) * components * (len(module) + _IMPORT_JSON_ENTRY_OVERHEAD_BYTES)
-        for module, shape, components in _lora_matrices(hf_checkpoint, targets)
-    )
-    return _IMPORT_JSON_BASE_BYTES + entries
-
-
-def max_adapter_bytes(hf_checkpoint: str, max_lora_rank: int, targets: HfLoraTargets) -> int:
-    """The largest fp32 adapter any parametrization of this base can have: every weight ``[..., out, in]`` targeted at
-    ``max_lora_rank``, i.e. ``rank * (n * in + out)`` elements per matrix whose HF-fused module exports ``n``
-    components (each with its own A), plus each base file's share of headers and JSON."""
-    elements = sum(
-        math.prod(lead) * max_lora_rank * (out_features + components * in_features)
-        for _, (*lead, out_features, in_features), components in _lora_matrices(hf_checkpoint, targets)
-    )
-    files = len(list(resolve_hf_dir(hf_checkpoint).glob("*.safetensors")))
-    return 4 * elements + max_adapter_json_bytes(hf_checkpoint, targets) * (files + 8)
-
-
-def read_imported_adapter(path: str, shown_path: str) -> dict:
-    """Rank, alpha and base model of an adapter copied in from outside the checkpoint root; alpha and base model None
-    when the source records none. Errors name ``shown_path``, the tenant's path."""
-    config_file = Path(path) / "adapter_config.json"
-    # the source is the client's file: a malformed one is a user error, not a gateway failure
-    try:
-        if (Path(path) / PARAMETRIZATION_FILENAME).is_file():
-            _read_json_object(Path(path) / PARAMETRIZATION_FILENAME)
-            parametrization = read_parametrization(Path(path))
-            source = {
-                "lora_rank": parametrization.lora_rank,
-                "lora_alpha": parametrization.lora_alpha,
-                "base_model": parametrization.base_model,
-            }
-        elif config_file.is_file():
-            config = _read_json_object(config_file)
-            source = {
-                "lora_rank": config["r"],
-                "lora_alpha": config.get("lora_alpha"),
-                "base_model": config.get("base_model_name_or_path"),
-            }
-        else:
-            raise UserInputError(f"{shown_path} holds no adapter ({PARAMETRIZATION_FILENAME} or adapter_config.json)")
-        if source["base_model"] is not None and not isinstance(source["base_model"], str):
-            raise TypeError(f"base model {source['base_model']!r} is not a name")
-        # compared as a path later, where a NUL byte or a lone surrogate raises
-        if source["base_model"] is not None and "\x00" in source["base_model"]:
-            raise ValueError(f"base model {source['base_model']!r} holds a NUL byte")
-        if source["base_model"] is not None:
-            source["base_model"].encode()
-        if type(source["lora_rank"]) is not int:
-            raise TypeError(f"rank {source['lora_rank']!r} is not an integer")
-        if source["lora_alpha"] is not None and type(source["lora_alpha"]) not in (int, float):
-            raise TypeError(f"alpha {source['lora_alpha']!r} is not a number")
-        # alpha scales the slot: NaN, infinite, zero or negative would train NaN or zero updates
-        if source["lora_alpha"] is not None and not (math.isfinite(source["lora_alpha"]) and source["lora_alpha"] > 0):
-            raise ValueError(f"alpha {source['lora_alpha']!r} is not a positive finite number")
-    except (OSError, ValueError, KeyError, TypeError, AssertionError, RecursionError, OverflowError) as error:
-        raise UserInputError(f"{shown_path} is not a readable adapter: {type(error).__name__}: {error}") from error
-    return source
-
-
-def _read_json_object(path: Path) -> dict:
-    data = json.loads(path.read_text())
-    if not isinstance(data, dict):
-        raise TypeError(f"{path.name} holds a JSON {type(data).__name__}, not an object")
-    return data
-
-
 # a fused HF module's adapter is recorded under its components' leaves
 _FUSED_LEAF_BY_COMPONENT = {
     component: leaf for leaf, components in GDN_IN_PROJ_COMPONENTS_BY_MODULE.items() for component in components
@@ -310,10 +172,6 @@ class MilesBackend:
         self.router_url = router_url
         self.lora_layout = lora_layout
         self.dp_size = dp_size
-
-    imported_adapter_files = IMPORTED_ADAPTER_FILES
-    loaded_adapter_files = LOADED_ADAPTER_FILES
-    refused_import_entries = REFUSED_IMPORT_ENTRIES
 
     def lora_groups(self, target_modules) -> dict[str, bool]:
         return classify_lora_groups(target_modules, self.lora_layout)
@@ -421,7 +279,6 @@ class MilesBackend:
     resolve_adapter = staticmethod(resolve_adapter)
     resolve_checkpoint_files = staticmethod(resolve_checkpoint_files)
     delete_adapter = staticmethod(delete_adapter)
-    read_imported_adapter = staticmethod(read_imported_adapter)
 
     # -------- sampling --------
 
