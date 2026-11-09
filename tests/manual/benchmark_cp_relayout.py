@@ -16,17 +16,29 @@ import torch.distributed as dist
 from miles_plugins.models.cp_utils import packed_shard_to_zigzag, zigzag_to_packed_shard
 
 
-def measure(hidden, grad_output, cu_seqlens, mode, warmup, iterations):
+def measure(hidden, grad_output, cu_seqlens, cu_seqlens_host, mode, warmup, iterations):
     rank, cp_size = dist.get_rank(), dist.get_world_size()
     communication = "all_gather" if mode == "main" else "all_to_all"
 
     def step():
         hidden.grad = None
         packed = zigzag_to_packed_shard(
-            hidden, cu_seqlens, dist.group.WORLD, rank, cp_size, communication=communication
+            hidden,
+            cu_seqlens,
+            dist.group.WORLD,
+            rank,
+            cp_size,
+            communication=communication,
+            cu_seqlens_host=cu_seqlens_host,
         )
         output = packed_shard_to_zigzag(
-            packed, cu_seqlens, dist.group.WORLD, rank, cp_size, communication=communication
+            packed,
+            cu_seqlens,
+            dist.group.WORLD,
+            rank,
+            cp_size,
+            communication=communication,
+            cu_seqlens_host=cu_seqlens_host,
         )
         output.backward(grad_output)
 
@@ -59,6 +71,7 @@ def main():
     parser.add_argument("--hidden-size", type=int, default=4096)
     parser.add_argument("--warmup", type=int, default=5)
     parser.add_argument("--iterations", type=int, default=20)
+    parser.add_argument("--sequences", type=int, default=4)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
@@ -67,15 +80,18 @@ def main():
     results = []
     try:
         for tokens in args.tokens:
-            if tokens % (8 * cp_size):
-                raise ValueError("Token count must be divisible by 8 * CP")
-            boundaries = [0, tokens // 4, tokens // 2, 3 * tokens // 4, tokens, tokens + 3 * cp_size]
+            if args.sequences < 1 or tokens % (2 * cp_size * args.sequences):
+                raise ValueError("Token count must be divisible by 2 * CP * sequences")
+            boundaries = [offset * (tokens // args.sequences) for offset in range(args.sequences + 1)]
+            boundaries.append(tokens + 3 * cp_size)
             cu_seqlens = torch.tensor(boundaries, device="cuda", dtype=torch.int32)
             hidden = torch.randn(boundaries[-1] // cp_size, 1, args.hidden_size, device="cuda", dtype=torch.bfloat16)
             hidden.requires_grad_(True)
             grad_output = torch.randn_like(hidden)
             for mode in ("main", "all_to_all"):
-                metrics = measure(hidden, grad_output, cu_seqlens, mode, args.warmup, args.iterations)
+                metrics = measure(
+                    hidden, grad_output, cu_seqlens, tuple(boundaries), mode, args.warmup, args.iterations
+                )
                 per_rank = [None] * cp_size
                 dist.all_gather_object(per_rank, metrics)
                 row = {
@@ -101,6 +117,7 @@ def main():
                         "dtype": "bfloat16",
                         "warmup": args.warmup,
                         "iterations": args.iterations,
+                        "sequences": args.sequences,
                         "results": results,
                     },
                     indent=2,
