@@ -84,11 +84,11 @@ class RolloutEngineProcessorArgs:
 
     @classmethod
     def from_sglang_config(cls, sglang, *, hf_checkpoint: str) -> "RolloutEngineProcessorArgs":
-        """Read the values every rollout engine shares; ``common_value`` rejects one the engine groups disagree on.
+        """Read the values the actor engines share; ``actor_value`` rejects one their groups disagree on.
 
-        Only ``model_path`` differs between engines by design: a frozen reference, reward or eval model loads its
-        own. The trainer rebuilds inputs for samples the actor engines expanded, so it takes theirs; with no
-        actor engine (``--debug-train-only``), the trainer's checkpoint, which is their default ``model_path``.
+        A frozen reference, reward or eval model may load its own checkpoint and processor settings. The trainer
+        rebuilds inputs for samples the actor engines expanded, so it takes theirs; with no actor engine
+        (``--debug-train-only``), the trainer's checkpoint, which is their default ``model_path``.
         """
         actor_model_paths = {
             group.model_path for model in sglang.models if model.update_weights for group in model.server_groups
@@ -96,17 +96,17 @@ class RolloutEngineProcessorArgs:
         assert len(actor_model_paths) <= 1, f"the actor engines load different models: {sorted(actor_model_paths)}"
         model_path = actor_model_paths.pop() if actor_model_paths else hf_checkpoint
         # Canonical JSON so the args can key the processor cache.
-        mm_process_config_json = json.dumps(sglang.common_value("mm_process_config") or {}, sort_keys=True)
+        mm_process_config_json = json.dumps(sglang.actor_value("mm_process_config") or {}, sort_keys=True)
         return cls(
             model_path=model_path,
-            tokenizer_path=sglang.common_value("tokenizer_path") or model_path,
-            tokenizer_mode=sglang.common_value("tokenizer_mode"),
-            tokenizer_backend=sglang.common_value("tokenizer_backend"),
-            revision=sglang.common_value("revision"),
-            model_config_parser=sglang.common_value("model_config_parser"),
-            model_override_args_json=sglang.common_value("json_model_override_args") or "{}",
-            image_processor_backend=sglang.common_value("image_processor_backend"),
-            disable_fast_image_processor=sglang.common_value("disable_fast_image_processor"),
+            tokenizer_path=sglang.actor_value("tokenizer_path") or model_path,
+            tokenizer_mode=sglang.actor_value("tokenizer_mode"),
+            tokenizer_backend=sglang.actor_value("tokenizer_backend"),
+            revision=sglang.actor_value("revision"),
+            model_config_parser=sglang.actor_value("model_config_parser"),
+            model_override_args_json=sglang.actor_value("json_model_override_args") or "{}",
+            image_processor_backend=sglang.actor_value("image_processor_backend"),
+            disable_fast_image_processor=sglang.actor_value("disable_fast_image_processor"),
             mm_process_config_json=mm_process_config_json,
             token_space_preprocess_cache_dir=sglang.common_value("token_space_preprocess_cache_dir"),
         )

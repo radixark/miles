@@ -25,6 +25,7 @@ from miles.backends.sglang_utils.arguments import validate_args as validate_sgla
 from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig, SglangConfig
 from miles.backends.torchtitan_utils.arguments import build_torchtitan_parser
+from miles.backends.training_utils.data.token_space_media_process import RolloutEngineProcessorArgs
 from miles.router.backend import RouterKind
 from miles.utils.args.configs.router import RouterConfig
 from miles.utils.args.trainer_utils import compute_trainer_ckpt_load_config
@@ -4418,6 +4419,48 @@ class TestMultimodalTokenSpaceProcessingArgs:
         )
 
         _check_multimodal_token_space_processing_args(args, sglang=make_sglang_config(**self._SUPPORTED))
+
+    def test_a_frozen_model_may_use_its_own_processor_settings_without_token_space(self):
+        """A reward model with another tokenizer and token space off neither fails the check nor leaks into the
+        processor the trainer builds for the actor engines' samples."""
+        args = SimpleNamespace(
+            multimodal_token_space_processing=True,
+            rollout_external_engine_addrs=None,
+            trainer_mm_processor_worker_num=1,
+            trainer_mm_io_worker_num=0,
+            hf_checkpoint="/ckpt",
+            train_backend="megatron",
+        )
+        actor_group = ServerGroupConfig(
+            worker_type=WorkerType.REGULAR,
+            num_gpus_per_engine=1,
+            needs_offload=False,
+            overrides={"model_path": "/ckpt"},
+        )
+        reward_group = ServerGroupConfig(
+            worker_type=WorkerType.REGULAR,
+            num_gpus_per_engine=1,
+            needs_offload=False,
+            overrides={
+                "model_path": "/reward",
+                "tokenizer_path": "/reward-tokenizer",
+                "json_model_override_args": '{"num_hidden_layers": 2}',
+                "enable_token_space_processor": False,
+            },
+        )
+        sglang = SglangConfig(
+            models=[
+                ModelConfig(name="actor", model_path=None, server_groups=[actor_group], update_weights=True),
+                ModelConfig(name="reward", model_path="/reward", server_groups=[reward_group], update_weights=False),
+            ],
+            base_args=self._SUPPORTED,
+        )
+
+        _check_multimodal_token_space_processing_args(args, sglang=sglang)
+        rollout_engine_args = RolloutEngineProcessorArgs.from_sglang_config(sglang, hf_checkpoint="/ckpt")
+
+        assert (rollout_engine_args.model_path, rollout_engine_args.tokenizer_path) == ("/ckpt", "/ckpt")
+        assert rollout_engine_args.model_override_args_json == "{}"
 
     def test_engine_groups_that_disagree_on_a_processor_setting_are_rejected_at_startup(self):
         """The trainer builds one processor, so two engine groups with different settings cannot both be mirrored."""
