@@ -366,6 +366,16 @@ def parse_args_and_get_parser(
         # After megatron_validate_args, which derives the virtual pipeline size. SGLang stores each replay field in
         # parts split at these layers, so each pipeline stage reads only its own (non-Megatron backends: none).
         args.replay_layer_splits = pp_layer_splits(args)
+        # A stage takes its blocks from Megatron's layout, which these options change and pp_layer_splits ignores.
+        assert not (args.use_output_store and args.pipeline_model_parallel_size > 1) or (
+            args.pipeline_model_parallel_layout is None
+            and not args.account_for_embedding_in_pipeline_split
+            and not args.account_for_loss_in_pipeline_split
+        ), (
+            "--use-output-store with pipeline parallelism does not support --pipeline-model-parallel-layout, "
+            "--account-for-embedding-in-pipeline-split or --account-for-loss-in-pipeline-split: SGLang would store "
+            "the replay fields in parts that are not the layers each stage builds"
+        )
         training_backend_arg_names.update(vars(args).keys() - previous_arg_names)
     elif backend == "torchtitan":
         from miles.backends.torchtitan_utils.arguments import validate_torchtitan_args

@@ -271,12 +271,14 @@ them, and each stage reads only the parts of its layers.
 Requirements:
 
 - SGLang with the output store, including
-  [sgl-project/sglang#46288](https://github.com/sgl-project/sglang/pull/46288), that stores
+  [sgl-project/sglang#46288](https://github.com/sgl-project/sglang/pull/46288) and
+  [sgl-project/sglang#48123](https://github.com/sgl-project/sglang/pull/48123), which stores
   the forward fields in layer parts (`replay_layer_splits`), on every engine, trainer and the
   session server. Miles configures each engine's store; do not
   set `output_store_backend` through `--sglang-*` flags or `sglang_overrides`.
 - `--use-miles-router`, or an `sgl-router` from `radixark/sgl-router-for-miles` that
-  forwards `return_outputs_via_store`; a router that drops it fails the rollout.
+  forwards `return_outputs_via_store` and `replay_layer_splits`; a router that drops either
+  fails the run.
 - An engine buffer (`--output-store-local-buffer-size`, default 16gb) that holds one
   response's arrays. Indexer top-k dominates, about 0.5 MB per token on DeepSeek-V3.2, so
   16gb fits a 32k-token response. A buffer too small for the longest sequence known at
@@ -303,7 +305,10 @@ Rejected at launch: no replay array enabled, `--cluster-backend kubernetes`, PD
 disaggregation, external rollout engines, the legacy rollout, a custom convert function,
 a custom `DataBuffer` (`--custom-async-data-buffer-path`), multi-policy training, split
 deployments, `--debug-rollout-only`, `--multimodal-keys`, and saving (including
-`--dump-details`), loading or injecting debug rollout data.
+`--dump-details`), loading or injecting debug rollout data. With pipeline parallelism also:
+`--pipeline-model-parallel-layout`, `--account-for-embedding-in-pipeline-split`,
+`--account-for-loss-in-pipeline-split`, and a `--megatron-config` trainer that overrides the
+pipeline layout.
 
 Stored objects may not survive a restart, so on resume Miles does not replay untrained
 rollout batches that carry refs, or inline replay arrays saved without the option. It

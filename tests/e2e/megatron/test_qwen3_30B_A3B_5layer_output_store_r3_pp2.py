@@ -6,7 +6,7 @@ differ only in --use-output-store. The store run sends the stage edge, layer 3, 
 routed experts as two parts, and each stage reads only its own part's rows. --save-debug-train-data keeps
 rollout_routed_experts as routing replay consumed it on the last stage's ranks; every sample must come back with the
 same tokens and a byte-identical R3 of layers 3-4 on each CP rank. The first stage reads layers 0-2 through the same
-path, and a missing or misread part fails its run.
+path: a missing part fails its run, but its rows are not compared.
 """
 
 import os
