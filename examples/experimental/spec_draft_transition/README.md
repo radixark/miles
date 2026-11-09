@@ -16,6 +16,10 @@ extracts compact seed/prompt metrics on each node after completion; `analyze.py`
 computes paired bootstrap intervals and fitting curves without moving checkpoints.
 `python -m examples.experimental.spec_draft_transition.probe_analysis` checks
 the complete reporting path against known paired differences and zero interaction.
+`probe_context.py` checks the sequential sampler against an exactly enumerable
+teacher whose next-token probabilities depend on the last two tokens.
+`finalize.py` waits for completion, validates selected rates against actual run
+configs, collects node metrics, updates W&B summaries and builds the final report.
 
 The manifest owns temperatures, seeds, initial rates, budgets and run identities.
 Pure CE, pure L1 and the fixed cosine blend all use the same training token budget.
