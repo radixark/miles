@@ -53,11 +53,14 @@ import time
 from collections.abc import Callable
 from typing import Any
 
+import openenv_sandbox_common as common
 from openai import AsyncOpenAI
 
 from miles.rollout.agentic.session import openai_session_url
 
 logger = logging.getLogger(__name__)
+
+WORKER_ENV = common.WORKER_ENV
 
 # Env slots are finite: hosted spaces admit one session at a time
 # (CAPACITY_REACHED) and the docker-mode tbench2 server caps concurrent envs
