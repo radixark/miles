@@ -239,6 +239,7 @@ class FakeCell:
         )
         self.server_url = url
         self.is_pending_weights_or_serving = alive
+        self.is_eval_pinned = False
 
 
 def _worker_info(name, node, gpus, generation=1):
@@ -479,6 +480,27 @@ async def test_register_engines_republishes_on_cell_liveness_transitions(monkeyp
     assert [[e.addr for e in args[0].engines] for (args, _) in handle.update_topology.calls] == [
         ["http://a:1", "http://b:1"],
         ["http://a:1"],
+        ["http://a:1", "http://b:1"],
+    ]
+
+
+async def test_register_engines_keeps_cells_pinned_for_eval(monkeypatch):
+    """A cell carved out for eval (--eval-pool-num-engines) still serves; it stays in the published topology."""
+    handle = FakeHandle()
+    monkeypatch.setattr(backend, "_handle", handle)
+    infos_by_cell = {
+        "inference-engine-0-0-0": [_worker_info("inference-engine-0-0-0", "node-a", [0])],
+        "inference-engine-0-0-1": [_worker_info("inference-engine-0-1-0", "node-b", [1])],
+    }
+    provider = FakeWorkerProvider(infos_by_cell)
+    first, second = FakeCell("http://a:1", cell_index=0), FakeCell("http://b:1", cell_index=1)
+    servers = _servers([first, second])
+
+    await hooks.register_engines(servers, provider=provider)
+    second.is_pending_weights_or_serving, second.is_eval_pinned = False, True
+    await hooks.register_engines(servers, provider=provider)
+
+    assert [[e.addr for e in args[0].engines] for (args, _) in handle.update_topology.calls] == [
         ["http://a:1", "http://b:1"],
     ]
 
