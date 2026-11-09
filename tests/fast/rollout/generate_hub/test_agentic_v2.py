@@ -582,7 +582,9 @@ async def test_session_roots_reach_rollout_metrics_through_the_session_server(mo
         output = await agentic_tool_call.generate(generate_input)
 
     assert len(output.samples) == roots
-    metrics = _compute_metrics_from_samples(make_args(use_session_server="v2"), output.samples)
+    metrics = _compute_metrics_from_samples(
+        make_args(advantage_estimator="ppo", use_session_server="v2"), output.samples
+    )
     assert metrics["session/roots_per_episode"] == roots
     assert metrics["session/leaves_per_episode"] == roots
     assert metrics["session/one_turn_per_root_ratio"] == (1.0 if roots == 3 else 0.0)
