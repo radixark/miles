@@ -452,8 +452,8 @@ class TestAnthropicRoute:
     @pytest.mark.parametrize(
         "settings",
         [
-            {"thinking": {"type": "enabled", "budget_tokens": 2048}},
-            {"thinking": {"type": "adaptive"}, "output_config": {"effort": "xhigh"}},
+            {"thinking": {"type": "enabled", "budget_tokens": 31999, "display": "updates"}},
+            {"thinking": {"type": "adaptive", "display": "updates"}, "output_config": {"effort": "high"}},
             {"thinking": {"type": "disabled"}},
             {"output_config": {"effort": "low", "format": {"type": "json_schema", "schema": {"type": "object"}}}},
         ],
@@ -688,8 +688,6 @@ class TestAnthropicRoute:
             (
                 _payload(
                     messages,
-                    thinking={"type": "disabled"},
-                    output_config={"effort": "high"},
                     betas=["b-1"],
                     tools=[{"type": "web_search_20250305", "name": "web_search"}],
                     system=[{"type": "image", "source": {"url": "https://x"}}],
