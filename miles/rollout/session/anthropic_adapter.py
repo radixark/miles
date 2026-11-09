@@ -56,6 +56,8 @@ def _parse_anthropic_request(body: bytes) -> AnthropicMessagesRequest:
         payload = json.loads(body)
     except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
         raise ValueError(f"invalid JSON body: {exc}") from exc
+    if isinstance(payload, dict):
+        payload = {key: value for key, value in payload.items() if key not in ("thinking", "output_config")}
     try:
         return AnthropicMessagesRequest.model_validate(payload)
     except ValidationError as exc:
@@ -120,10 +122,7 @@ def _strip_anthropic_reasoning_history(
                 update={"content": [block for block in message.content if block.type != "thinking"]}
             )
         conversion_messages.append(message)
-    conversion_request = anthropic_request.model_copy(
-        update={"messages": conversion_messages, "thinking": None, "output_config": None}
-    )
-    return conversion_request, reasoning_history
+    return anthropic_request.model_copy(update={"messages": conversion_messages}), reasoning_history
 
 
 def _restore_anthropic_reasoning_history(openai_body: dict, reasoning_history: list[str | None]) -> None:
