@@ -23,6 +23,7 @@ def _env_reads(directory: Path, sources: tuple[str, ...]) -> set[str]:
     [
         ("experimental/harbor", "harbor_agent_function", ("harbor_agent_function.py",)),
         ("experimental/nemo-gym", "nemogym_agent_function", ("nemogym_agent_function.py",)),
+        ("experimental/nemo-gym-workspace-assistant", "workplace_agent", ("workplace_agent.py",)),
         ("swe-agent-harbor-docker", "swe_agent_function", ("swe_agent_function.py",)),
         ("experimental/openenv", "openenv_agent_function", ("openenv_agent_function.py",)),
         (

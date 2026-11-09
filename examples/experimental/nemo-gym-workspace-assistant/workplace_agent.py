@@ -14,6 +14,8 @@ from miles.rollout.agentic.session import openai_session_url
 
 logger = logging.getLogger(__name__)
 
+WORKER_ENV = ("WORKPLACE_*",)
+
 
 def chat_tools(params: dict) -> list[dict]:
     return [
