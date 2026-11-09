@@ -35,7 +35,12 @@ def expected_prefix(teacher, student, rows: list[dict], tokenizer, temperature: 
                     repetitions: int = 4, limit: int = 128, draft: int = 8) -> dict[str, float]:
     device = next(student.parameters()).device
     values = []
-    records = rows[:limit] * repetitions
+    prefixes = []
+    for row in rows[:limit]:
+        cut = int(row['prompt_id'][:8], 16) % len(row['response_ids'])
+        cut = min(cut, 2048 - draft - len(row['prompt_ids']))
+        prefixes.append({**row, 'prompt_ids':row['prompt_ids'] + row['response_ids'][:max(0,cut)]})
+    records = prefixes * repetitions
     for start in range(0, len(records), 8):
         part = records[start:start + 8]
         width = max(len(row['prompt_ids']) for row in part)

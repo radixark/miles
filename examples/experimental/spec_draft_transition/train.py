@@ -88,6 +88,13 @@ def validate(student, teacher, rows: list[dict], tokenizer, args: Args) -> dict[
             break
         ids, attention, mask = batch(rows[start:start + args.micro_batch], tokenizer.pad_token_id,
                                      next(student.parameters()).device, remaining)
+        # Spread the fitting curves over many conversations instead of letting
+        # a handful of long responses exhaust the validation token budget.
+        for index in range(len(mask)):
+            positions = mask[index].nonzero().flatten()
+            keep = positions[torch.linspace(0, len(positions)-1, min(32,len(positions)),device=mask.device).long()]
+            mask[index] = False
+            mask[index,keep] = True
         th = hidden_states(teacher, ids, attention)[mask].to(torch.bfloat16)
         sh = hidden_states(student, ids, attention)[mask].to(torch.bfloat16)
         metrics = probability_metrics(sh, student.lm_head.weight, th, teacher.lm_head.weight, args.temperature, args.chunk)

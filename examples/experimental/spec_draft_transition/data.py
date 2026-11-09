@@ -7,6 +7,8 @@ the experiment's data partitioning and sampling settings.
 
 import hashlib
 import json
+import os
+import sys
 from pathlib import Path
 
 import polars as pl
@@ -57,6 +59,17 @@ def prepare(args: Args) -> None:
 
 
 def generate(args: Args) -> None:
+    # The existing SGLang runtime imports Transformer Engine through an
+    # optional Megatron debug plugin. A derived venv needs its library roots
+    # explicitly because TE otherwise searches the derived venv's purelib.
+    library_dirs = []
+    for package, variable in [('cudnn','CUDNN_PATH'),('cublas','CUBLAS_PATH')]:
+        found = next((Path(base)/'nvidia'/package for base in sys.path
+                      if (Path(base)/'nvidia'/package/'lib').exists()),None)
+        if found is not None:
+            os.environ[variable] = str(found)
+            library_dirs.append(str(found/'lib'))
+    os.environ['LD_LIBRARY_PATH'] = ':'.join(library_dirs + [os.environ.get('LD_LIBRARY_PATH','')])
     root = Path(args.root)
     prompts = pl.read_parquet(root / "prompts.parquet").with_row_index("row")
     subset = prompts.filter(pl.col("row") % args.shards == args.shard).to_dicts()
