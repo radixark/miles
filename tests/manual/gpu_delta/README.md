@@ -83,9 +83,9 @@ For Ray launches, set job-level variables through `runtime_env` or
 existing workers. Miles reads the hash flag and sends the resulting
 `validate_payload_hash` option to SGLang; SGLang workers do not read that flag.
 Trainer-only settings can use `--train-env-vars`; receiver sorting belongs
-on rollout actors. The five-layer E2E explicitly uses Snappy-Zstd for learned
-updates and LZ4-Zstd for initial sync to retain DE coverage. It forwards the hash
-and sorting controls and checks each publication's manifest and phase-specific codec.
+on rollout actors. The five-layer E2E leaves both codec settings unset, using the
+default Bitcomp-Zstd for initial sync and learned updates. It forwards the hash
+control and checks each publication's manifest and phase-specific codec.
 
 The five-layer test is dedicated to GPU delta: it prepares checkpoints and data,
 performs the required initial sync, then runs five rollouts with deterministic

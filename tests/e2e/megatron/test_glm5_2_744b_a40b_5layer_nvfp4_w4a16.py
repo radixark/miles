@@ -140,11 +140,7 @@ def prepare():
 
 def _gpu_delta_env():
     # Ray jobs receive an explicit environment, not every variable in this shell.
-    # Keep this E2E on the DE codecs independently of production defaults.
     return {
-        "GPU_DELTA_CODEC": "snappy-zstd",
-        "GPU_DELTA_INITIAL_SYNC_CODEC": "lz4-zstd",
-        "GPU_DELTA_SORT_BEFORE_HW_DECOMPRESS": os.environ.get("GPU_DELTA_SORT_BEFORE_HW_DECOMPRESS", "0"),
         "GPU_DELTA_SKIP_PAYLOAD_HASH": os.environ.get("GPU_DELTA_SKIP_PAYLOAD_HASH", "0"),
         "SGLANG_NVFP4_CKPT_FP8_GEMM_IN_ATTN": "0",
     }
@@ -152,9 +148,10 @@ def _gpu_delta_env():
 
 def _install_gpu_delta_performance_check(args):
     from miles.backends.training_utils.weight_update.protocols.gpu_delta import session
+    from miles.utils.gpu_delta.publication import configured_codec
 
     activate = session.activate_publication
-    ordinary_codec = _gpu_delta_env()["GPU_DELTA_CODEC"]
+    ordinary_codec = configured_codec()
     seen, engines, updates = set(), {}, []
     encoding_seen, encoding_updates = set(), {}
     report_path = Path(args.update_weight_disk_dir) / "ci-performance.json"
@@ -173,8 +170,8 @@ def _install_gpu_delta_performance_check(args):
         for receipt in receipts:
             rank = receipt["identity"]["rank_id"]
             timing = receipt["result"]["timings"]
-            # No-op publications do not warm the DE path or satisfy its performance gate.
-            if timing["compressed_batches"] > 0 and timing["de_host_input_bytes"] > 0:
+            # No-op publications do not warm the compressed path or satisfy its performance gate.
+            if timing["compressed_batches"] > 0:
                 key = rank, codec
                 if key in seen and version > 1:
                     scheduler = receipt["scheduler_timing"]
@@ -305,6 +302,8 @@ def _assert_gpu_delta_weights_changed(args, version_dir, _rollout_engines):
     """Reject a successful-looking E2E whose learned publications were all no-ops."""
     import torch.distributed as dist
 
+    from miles.utils.gpu_delta.publication import configured_codec
+
     if dist.get_rank() != 0:
         return
     version_dir = Path(version_dir)
@@ -316,14 +315,15 @@ def _assert_gpu_delta_weights_changed(args, version_dir, _rollout_engines):
     last_version = startup_publications + args.num_rollout - 1
     if current["target_version"] != last_version:
         return
-    codecs = _gpu_delta_env()
+    initial_codec = configured_codec(initial_sync=True)
+    ordinary_codec = configured_codec()
     changed_bytes = []
     for version in range(1, last_version + 1):
         manifest = json.loads((version_dir.parent / f"weight_v{version:06d}/manifest.json").read_text())
         assert manifest["stream_id"] == current["stream_id"]
         assert manifest["base_version"] == version - 1 and manifest["target_version"] == version
-        codec_key = "GPU_DELTA_INITIAL_SYNC_CODEC" if version <= startup_publications else "GPU_DELTA_CODEC"
-        assert manifest["codec"] == codecs[codec_key], "E2E publication codec differs from configured phase codec"
+        expected_codec = initial_codec if version <= startup_publications else ordinary_codec
+        assert manifest["codec"] == expected_codec, "E2E publication codec differs from configured phase codec"
         raw_tensors = [tensor for tensor in manifest["tensors"] if len(tensor["shape"]) <= 1]
         assert raw_tensors, "E2E must exercise direct scalar/vector targets"
         for tensor in manifest["tensors"]:
