@@ -9,7 +9,6 @@ adds GPU Zstd, then packs the final payload for one D2H transfer.
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import logging
 import time
@@ -32,6 +31,8 @@ from miles.utils import async_utils, disk_delta
 from miles.utils.args.custom_view import compute_custom_function_config
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.gpu_delta import publication as gpu_delta_publication
+from miles.utils.test_utils.fault_injector.controller import reach_fault_hook
+from miles.utils.test_utils.fault_injector.models import FaultHookName
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +97,7 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         selector,
     ):
         self.rollout_engines = rollout_engines
+        self._engine_cell_ids = tuple(engine_cell_ids)
         self.cell_updaters_of_cell_id = create_rollout_cell_updaters(self.args, rollout_engines, engine_cell_ids)
         self._engine_ids = tuple(f"engine-{offset:05d}" for offset in engine_gpu_offsets)
         self.group_name = "miles-gpu-delta"
@@ -104,11 +106,21 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         codec = self.codec
         self._select_codec(self._initial_sync_codec)
         self._select_codec(codec)
-        descriptions = _on_root(lambda: async_utils.run(self._describe()))
+        descriptions = _on_root(self._describe)
+        active = [i for i, description in enumerate(descriptions) if description is not None]
+        self.rollout_engines = [self.rollout_engines[i] for i in active]
+        self._engine_ids = tuple(self._engine_ids[i] for i in active)
+        self._engine_cell_ids = tuple(self._engine_cell_ids[i] for i in active)
+        descriptions = [descriptions[i] for i in active]
         cohort = gpu_delta_session.negotiate_cohort(descriptions)
         if self._baseline_captured and cohort.plan_digest != self._cohort.plan_digest:
             raise RuntimeError("GPU-delta recovery requires the same canonical tensor plan")
         self._cohort = cohort
+        self._fresh_receivers = all(
+            rank["version"] == 0 and rank["state"] == "IDLE"
+            for description in descriptions
+            for rank in description["participants"]
+        )
         self._plan = {tensor["name"]: tensor for tensor in cohort.plan}
 
     def _incarnations(self):
@@ -136,18 +148,12 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         self.codec = codec
         self._gpu_encoder = self._gpu_encoders[codec]
 
-    async def _describe(self):
-        results = await asyncio.gather(
-            *[
-                client.get_gpu_delta_info(engine_id=engine_id)
-                for engine_id, client in zip(self._engine_ids, self.rollout_engines, strict=True)
-            ],
-            return_exceptions=True,
-        )
-        for result in results:
-            if isinstance(result, BaseException):
-                raise result
-        return results
+    def _describe(self):
+        futures = [
+            self.cell_updaters_of_cell_id[cell_id].submit_client_call("get_gpu_delta_info", engine_id=engine_id)
+            for engine_id, cell_id in zip(self._engine_ids, self._engine_cell_ids, strict=True)
+        ]
+        return [future.result() for future in futures]
 
     def begin_sync(self, weight_version, iter_buckets, rollout_id=None):
         if self._uncommitted:
@@ -255,6 +261,8 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         # The startup checkpoint is base version 0, not a learned update. Wait
         # for every engine's scheduler/tokenizer acknowledgement before rollout;
         # an ambiguous partial acknowledgement must not be automatically retried.
+        if not self._fresh_receivers:
+            raise RuntimeError("GPU-delta sender baseline lost; restart the receiver pool from HF")
         self._uncommitted = True
         _on_root(lambda: set_weight_version(list(self.cell_updaters_of_cell_id.values()), 0), broadcast_value=False)
         self._uncommitted = False
@@ -477,7 +485,16 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         self._snapshot, self._next_snapshot = self._next_snapshot, reusable
         self._target_step = None
         self._publication_version = self._target_version
-        self._committed_incarnations = self._incarnations()
+        active = _on_root(
+            lambda: [
+                engine_id
+                for engine_id, cell_id in zip(self._cohort.engine_ids, self._engine_cell_ids, strict=True)
+                if not self.cell_updaters_of_cell_id[cell_id].is_errored
+            ]
+        )
+        self._committed_incarnations = {
+            engine_id: identity for engine_id, identity in self._incarnations().items() if engine_id in active
+        }
         self._uncommitted = False
 
     def _cache_recovery_payload(self):
@@ -592,7 +609,11 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
 
     def _activate_subset(self, publication, engine_ids, weight_version):
         selected = set(engine_ids)
-        indices = [i for i, engine_id in enumerate(self._cohort.engine_ids) if engine_id in selected]
+        indices = [
+            i
+            for i, (engine_id, cell_id) in enumerate(zip(self._cohort.engine_ids, self._engine_cell_ids, strict=True))
+            if engine_id in selected and not self.cell_updaters_of_cell_id[cell_id].is_errored
+        ]
         cohort = gpu_delta_session.ReceiverCohort(
             self._cohort.plan,
             tuple(self._cohort.participants[i] for i in indices),
@@ -600,19 +621,30 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
             self._cohort.plan_digest,
         )
         return gpu_delta_session.activate_publication(
-            [self.rollout_engines[i] for i in indices], cohort, publication, weight_version=str(weight_version)
+            [self.rollout_engines[i] for i in indices],
+            cohort,
+            publication,
+            weight_version=str(weight_version),
+            fault_tolerant="weight_update" in self.args.ft_components,
+            request_timeout=self.args.update_weight_engine_request_timeout,
         )
+
+    def _record_activation_failures(self, result):
+        cells = dict(zip(self._cohort.engine_ids, self._engine_cell_ids, strict=True))
+        for engine_id, message in result["failed_engines"].items():
+            self.cell_updaters_of_cell_id[cells[engine_id]].mark_errored(RuntimeError(message))
 
     async def _update_restarted_engines(self, publication, engine_ids, weight_version):
         started = time.monotonic()
         result = await self._activate_subset(publication, engine_ids, weight_version)
+        self._record_activation_failures(result)
         logger.info(
             "[gpu delta recovery] %s",
             gpu_delta_publication.canonical_json(
                 {
                     "base_version": 0,
                     "target_version": self._target_version,
-                    "engine_ids": engine_ids,
+                    "engine_ids": result["succeeded_engine_ids"],
                     "resumed_receipts": result["resumed_receipts"],
                     "release_state": False,
                 }
@@ -715,6 +747,7 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         )
         future = None
         if dist.get_rank() == 0:
+            reach_fault_hook(FaultHookName.TRAINER_WEIGHT_UPDATE_BEFORE_SEND)
             future = async_utils.submit(self._activate_subset(publication, ordinary, weight_version))
         error = None
         try:
@@ -726,6 +759,7 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
 
         def settle():
             result = future.result()
+            self._record_activation_failures(result)
             logger.info(
                 "[gpu delta activation] %s",
                 gpu_delta_publication.canonical_json(
@@ -733,12 +767,12 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
                         "base_version": publication["base_version"],
                         "target_version": publication["target_version"],
                         "weight_version": weight_version,
-                        "resumed_engine_ids": ordinary,
+                        "resumed_engine_ids": result["succeeded_engine_ids"],
                         "incarnations": incarnations,
                     }
                 ).decode(),
             )
-            return gpu_delta_metrics.activation_metrics(result) if ordinary else {}
+            return gpu_delta_metrics.activation_metrics(result) if result["resumed_receipts"] else {}
 
         # Drain HTTP even on an encoding error; never abandon an in-flight XOR.
         joined = time.monotonic()

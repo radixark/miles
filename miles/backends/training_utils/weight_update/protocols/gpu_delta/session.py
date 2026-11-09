@@ -58,14 +58,21 @@ def negotiate_cohort(descriptions: Sequence[dict]) -> ReceiverCohort:
 
 
 async def activate_publication(
-    clients, cohort: ReceiverCohort, publication, session_id: str | None = None, weight_version: str | None = None
+    clients,
+    cohort: ReceiverCohort,
+    publication,
+    session_id: str | None = None,
+    weight_version: str | None = None,
+    fault_tolerant=False,
+    request_timeout=None,
 ):
     """Activate engines independently; settle all before advancing the trainer.
 
     Each engine owns preparation, all-rank apply acknowledgement and resume.
     An RPC failure settles every other engine request before returning an error.
-    A lost response may hide a completed update: the client never aborts or
-    retries it. External cancellation also leaves an uncertain operation.
+    A failed or ambiguous RPC is returned to the FT controller for quarantine
+    and replacement. A lost reply never triggers an XOR retry. Healthy engines
+    retain their completed activation independently.
     """
     started = time.monotonic()
     session_id = session_id or uuid.uuid4().hex
@@ -77,29 +84,62 @@ async def activate_publication(
     }
     # Serving reports the actor's model version, while publication/receipt
     # versions retain their consecutive XOR-stream identity.
-    common.update(
-        session_id=session_id, weight_version=weight_version, validate_payload_hash=not configured_skip_payload_hash()
-    )
+    common.update(session_id=session_id, weight_version=weight_version)
+    common["validate_payload_hash"] = not configured_skip_payload_hash()
     responses = await asyncio.gather(
         *[
-            client.update_weights_from_gpu_delta(**common, participants=participants)
+            _activate_engine(client, common, participants, request_timeout)
             for client, participants in zip(clients, cohort.participants, strict=True)
         ],
         return_exceptions=True,
     )
-    for response in responses:
-        if isinstance(response, BaseException):
-            raise response
-        if not response["success"]:
-            raise RuntimeError(f"GPU-delta RPC failed: {response['message']}")
+    failures = {
+        engine_id: f"{type(response).__name__}: {response}"
+        for engine_id, response in zip(cohort.engine_ids, responses, strict=True)
+        if isinstance(response, BaseException)
+    }
+    if failures and not fault_tolerant:
+        raise RuntimeError(f"GPU-delta activation requires receiver recovery: {failures}")
+    completed = [
+        (engine_id, response)
+        for engine_id, response in zip(cohort.engine_ids, responses, strict=True)
+        if not isinstance(response, BaseException)
+    ]
     return {
         "coordinator_timings": {"activation_s": time.monotonic() - started},
-        "engine_timings": [
-            {"engine_id": engine_id, **response["timings"]}
-            for engine_id, response in zip(cohort.engine_ids, responses, strict=True)
-        ],
+        "engine_timings": [{"engine_id": engine_id, **response["timings"]} for engine_id, response in completed],
         "session_id": session_id,
-        "receipts": [receipt for response in responses for receipt in response["applied_participants"]],
-        "resumed_receipts": [receipt for response in responses for receipt in response["participants"]],
+        "receipts": [receipt for _, response in completed for receipt in response["applied_participants"]],
+        "resumed_receipts": [receipt for _, response in completed for receipt in response["participants"]],
+        "succeeded_engine_ids": [engine_id for engine_id, _ in completed],
+        "failed_engines": failures,
         "plan_digest": cohort.plan_digest,
     }
+
+
+async def _activate_engine(client, common, participants, timeout):
+    response = await asyncio.wait_for(
+        client.update_weights_from_gpu_delta(**common, participants=participants), timeout
+    )
+    if not response["success"]:
+        raise RuntimeError(f"GPU-delta RPC failed: {response['message']}")
+    check_resumed(response["participants"], participants, common)
+    return response
+
+
+def check_resumed(rows, participants, publication):
+    """Prove completed activation; all other outcomes require receiver replacement."""
+    _check_identities(rows, participants)
+    for receipt in rows:
+        if receipt["state"] != "RESUMED" or any(
+            receipt[key] != publication[key]
+            for key in ("session_id", "stream_id", "manifest_sha256", "target_version", "plan_digest")
+        ):
+            raise RuntimeError("GPU-delta receiver has no matching completed activation")
+
+
+def _check_identities(rows, participants):
+    actual = sorted((row["identity"] for row in rows), key=lambda identity: identity["rank_id"])
+    expected = sorted(participants, key=lambda identity: identity["rank_id"])
+    if actual != expected:
+        raise RuntimeError("GPU-delta receiver incarnation changed during activation")

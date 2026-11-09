@@ -156,8 +156,8 @@ def _install_gpu_delta_performance_check(args):
     encoding_seen, encoding_updates = set(), {}
     report_path = Path(args.update_weight_disk_dir) / "ci-performance.json"
 
-    async def checked_activate(clients, cohort, publication, session_id=None, weight_version=None):
-        result = await activate(clients, cohort, publication, session_id, weight_version)
+    async def checked_activate(clients, cohort, publication, session_id=None, weight_version=None, **kwargs):
+        result = await activate(clients, cohort, publication, session_id, weight_version, **kwargs)
         expected = {identity["rank_id"] for group in cohort.participants for identity in group}
         receipts = result["resumed_receipts"]
         assert len(receipts) == len(expected) and {r["identity"]["rank_id"] for r in receipts} == expected

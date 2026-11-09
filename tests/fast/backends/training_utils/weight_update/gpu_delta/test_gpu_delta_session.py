@@ -59,8 +59,12 @@ class _Engine:
         self.calls = 0
         self.timings = {"prepare_s": 10.0 + index, "apply_s": 2.0, "resume_s": 3.0, "activation_s": 15.0 + index}
 
+    async def get_gpu_delta_status(self, session_id):
+        pytest.fail("A failed update must be quarantined, never reconciled or retried")
+
     async def update_weights_from_gpu_delta(self, **kwargs):
         self.calls += 1
+        assert self.calls == 1, "An uncertain XOR publication was replayed"
         self.args = kwargs
         assert list(kwargs["participants"]) == self.identities
         await asyncio.sleep(0.01 if self.index else 0)
@@ -70,19 +74,28 @@ class _Engine:
         self.events.append((self.index, "prepared"))
         if failure == "rejected":
             return {"success": False, "message": "update rejected"}
+        provenance = {
+            key: kwargs[key]
+            for key in ("session_id", "stream_id", "manifest_sha256", "base_version", "target_version", "plan_digest")
+        }
         applied = [
             {
+                **provenance,
                 "identity": identity,
                 "state": "APPLIED",
                 "result": {"applied": True, "target_version": kwargs["target_version"]},
             }
             for identity in self.identities
         ]
+        self.events.append((self.index, "applied"))
+        if failure == "applied_reply":
+            raise RuntimeError("apply reply lost")
         self.events.append((self.index, "resumed"))
         if failure == "reply":
             raise RuntimeError("update reply lost")
         resumed = [
             {
+                **provenance,
                 "identity": identity,
                 "state": "RESUMED",
                 "scheduler_timing": {"blocked_s": 1.0 + self.index},
@@ -142,7 +155,7 @@ def test_fast_engine_resumes_while_other_engine_still_prepares(monkeypatch, weig
 @pytest.mark.parametrize("failed_engine", [0, 1])
 def test_update_failure_settles_other_engine_without_abort_or_replay(failure, failed_engine):
     clients, descriptions, publication, events = _setup(failure, failed_engine)
-    with pytest.raises(RuntimeError, match="update"):
+    with pytest.raises(RuntimeError, match="requires receiver recovery"):
         asyncio.run(
             session.activate_publication(clients, session.negotiate_cohort(descriptions), publication, session_id="s")
         )
@@ -151,6 +164,52 @@ def test_update_failure_settles_other_engine_without_abort_or_replay(failure, fa
     # A lost reply may hide a completed update. Neither that ambiguity nor an
     # explicit failure authorizes another update request or a client abort.
     assert ((failed_engine, "resumed") in events) == (failure == "reply")
+
+
+@pytest.mark.parametrize("failure", ["transport", "applied_reply", "reply", "rejected"])
+def test_failed_or_lost_reply_quarantines_only_that_engine_without_status_or_replay(failure):
+    clients, descriptions, publication, events = _setup(failure)
+    result = asyncio.run(
+        session.activate_publication(
+            clients, session.negotiate_cohort(descriptions), publication, session_id="s", fault_tolerant=True
+        )
+    )
+    assert set(result["failed_engines"]) == {"engine-1"}
+    assert result["succeeded_engine_ids"] == ["engine-0"]
+    assert [client.calls for client in clients] == [1, 1]
+    assert len(result["resumed_receipts"]) == 2
+    assert events.count((0, "applied")) == events.count((0, "resumed")) == 1
+    assert events.count((1, "applied")) == int(failure in {"applied_reply", "reply"})
+    assert events.count((1, "resumed")) == int(failure == "reply")
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("identity", {"engine_id": "engine-1", "rank_id": "replacement"}),
+        ("stream_id", "eval-or-other-job"),
+        ("state", "APPLIED"),
+    ],
+)
+def test_wrong_receipt_cannot_advance_a_failed_engine(field, value):
+    clients, descriptions, publication, events = _setup()
+    activate = clients[1].update_weights_from_gpu_delta
+
+    async def wrong_receipt(**kwargs):
+        result = await activate(**kwargs)
+        result["participants"][0][field] = value
+        return result
+
+    clients[1].update_weights_from_gpu_delta = wrong_receipt
+    result = asyncio.run(
+        session.activate_publication(
+            clients, session.negotiate_cohort(descriptions), publication, session_id="s", fault_tolerant=True
+        )
+    )
+    assert set(result["failed_engines"]) == {"engine-1"}
+    assert result["succeeded_engine_ids"] == ["engine-0"]
+    assert len(result["resumed_receipts"]) == 2
+    assert [client.calls for client in clients] == [1, 1]
 
 
 def test_common_plan_deduplicates_replicas_and_rejects_invalid_cohorts_before_preparation():

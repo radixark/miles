@@ -167,17 +167,20 @@ captured target and compression batches; it performs no second model export or
 payload gather. Compressed recovery bytes stay on their owners until needed.
 Training resumes after activation and this background work have both drained.
 
-For a fresh engine initialized from the HF checkpoint between successful updates,
+For a fresh engine initialized from the HF checkpoint,
 the next update supplies a base-relative payload; existing engines receive
 the rolling delta. Both use the
 same update endpoint and negotiated participant identities. Recovery keeps the
-receiver cache for later updates. The normal update RPC returns only after all
-engines resume, then commits the rolling
-baseline. This requires live trainer snapshots and the same canonical plan.
-An in-flight activation error follows the existing Miles failure path; GPU delta
-does not retry an uncertain XOR or add a separate trainer recovery mechanism.
-Miles rollout fault tolerance currently requires partial-target P2P updates;
-GPU-delta does not enable that mode.
+receiver cache for later updates. The sender settles every engine request before
+committing its rolling baseline. This requires live trainer snapshots and the
+same canonical plan. With `--use-fault-tolerance`, an in-flight receiver failure
+or lost reply marks only its Miles rollout cell failed. Existing Miles FT replaces
+that cell; healthy cells keep their progress. The next update initializes the
+replacement from its immutable HF baseline, without replaying the uncertain XOR.
+GPU-delta keeps one sender for the complete receiver pool; it does not use P2P's
+partial-target sender dispatch. Losing the sender's canonical baseline requires
+job/checkpoint restart; live trainer failover remains unsupported. Existing
+all-target failure and dedicated-eval FT restrictions are unchanged.
 
 On an ordinary Megatron save, the stable target is captured and compressed ahead
 of the next weight sync, which reuses that capture. A final save also produces a
@@ -206,8 +209,8 @@ activation, preserving the phase receipts, committed version and model weights.
 An explicit `clear_gpu_delta_state` request can also release idle resources.
 APPLIED acknowledgements carry the original rank/publication identity and apply
 result; detailed metrics are returned once in the RESUMED receipts.
-An uncertain update is inspected or handled by the existing engine recovery path,
-never by replaying XOR on that process.
+Status inspection is diagnostic. An uncertain update requires replacing the
+failed receiver; it never triggers reconciliation or XOR replay on that process.
 
 ## Producer and receiver pipeline
 
@@ -303,9 +306,11 @@ temporarily serve different versions.
 The trainer drains every engine coroutine before handling failures. The server
 aborts preparation only before apply dispatch. An update HTTP failure has an
 unknown phase and does not authorize a client abort or retry; the server may have
-already completed and resumed. Successful peers keep their target version, and
-the sender baseline advances only after the whole cohort resumes. Successful
-activation alone does not prove full weight-content equality.
+already completed and resumed. Successful peers keep their target version. With
+weight-update FT enabled, the sender records failed cells for the existing Miles
+controller and commits the target for healthy receivers and future replacements.
+Without it, a receiver error fails the update. Successful activation alone does
+not prove full weight-content equality.
 
 For the ordinary delta of N matrix bytes, the sender transfers N new export bytes D2H plus old/new
 snapshots H2D (3N total), followed by final encoded D2H. Raw targets avoid both

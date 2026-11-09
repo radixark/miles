@@ -20,6 +20,7 @@ def validate_gpu_delta_args(args):
         return
     assert args.update_weight_delta_encoding == "xor", "GPU delta supports only --update-weight-delta-encoding xor"
     assert not args.colocate, "GPU delta requires separate training and rollout GPUs"
+    assert "train" not in args.ft_components, "GPU delta requires job/checkpoint restart after sender baseline loss"
     assert (
         args.train_backend == "megatron" and args.megatron_to_hf_mode != "bridge"
     ), "GPU delta requires the direct Megatron exporter"

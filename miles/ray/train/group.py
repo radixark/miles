@@ -465,6 +465,7 @@ class TrainerController:
         self, info: UpdatableEngines, *, debug_weight_update_id: str, rollout_id: int | None
     ) -> WeightUpdateOutput:
         # Catch with vanilla retry: cells w/ exceptions are auto marked errored, thus retry will find the next one
+        # GPU-delta's XOR baseline cannot be handed to a different sender after failure.
         outputs = await retry(
             lambda _: self._execute_first_alive(
                 "update_weights",
@@ -473,7 +474,7 @@ class TrainerController:
                 debug_weight_update_id=debug_weight_update_id,
                 rollout_id=rollout_id,
             ),
-            max_attempts=_RETRY_MAX_ATTEMPTS,
+            max_attempts=1 if self.args.update_weight_transfer_mode == "gpu-delta" else _RETRY_MAX_ATTEMPTS,
         )
         return _unique(outputs)
 

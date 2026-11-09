@@ -26,6 +26,7 @@ class _Engine:
     def __init__(self, protocol, events, index, fail=False):
         self.protocol, self.events, self.index, self.fail = protocol, events, index, fail
         self.version = "default"
+        self.delta_version = 0
 
     async def get_gpu_delta_info(self, engine_id):
         return {
@@ -33,6 +34,8 @@ class _Engine:
             "participants": [
                 {
                     "identity": {"engine_id": engine_id, "rank_id": str(self.index), "host_cache_id": engine_id},
+                    "state": "IDLE" if self.delta_version == 0 else "RESUMED",
+                    "version": self.delta_version,
                     "plan": {"tensors": list(self.protocol._plan.values())},
                 }
             ],
@@ -75,6 +78,8 @@ def _setup(tmp_path, fail=False, frame_bytes=gpu_delta_publication.FRAME_BYTES):
     protocol._cohort = gpu_delta.gpu_delta_session.ReceiverCohort([], (), (), "plan")
     events = []
     protocol.rollout_engines = [_Engine(protocol, events, 0, fail), _Engine(protocol, events, 1)]
+    protocol._engine_cell_ids = ("cell-0", "cell-1")
+    protocol._fresh_receivers = True
     protocol.cell_updaters_of_cell_id = gpu_delta.create_rollout_cell_updaters(
         protocol.args, protocol.rollout_engines, ["cell-0", "cell-1"]
     )
@@ -361,6 +366,8 @@ def _gpu_pending(monkeypatch, fail_batch=None):
         Namespace(
             update_weight_buffer_size=5,
             custom_update_weight_post_write_path=None,
+            ft_components=[],
+            update_weight_engine_request_timeout=1,
         )
     )
     # Baseline callback order intentionally differs from lexical order.
@@ -372,6 +379,8 @@ def _gpu_pending(monkeypatch, fail_batch=None):
     }
     protocol._uncommitted = True
     protocol._cohort = gpu_delta.gpu_delta_session.ReceiverCohort([], (), (), "plan")
+    protocol._engine_cell_ids = ()
+    protocol.cell_updaters_of_cell_id = {}
     protocol._staging_stream = Mock()
     protocol._started = time.monotonic()
     protocol._match_layout = lambda name, tensor: tensor
@@ -579,6 +588,10 @@ def test_gpu_baseline_swaps_only_after_successful_receiver_activation(monkeypatc
     identity = {"rank_id": "rank0", "engine_id": "engine-00000"}
     protocol._cohort = gpu_delta.gpu_delta_session.ReceiverCohort([], ((identity,),), ("engine-00000",), "plan")
     protocol.rollout_engines = [object()]
+    protocol._engine_cell_ids = ("cell-0",)
+    protocol.cell_updaters_of_cell_id = gpu_delta.create_rollout_cell_updaters(
+        protocol.args, protocol.rollout_engines, protocol._engine_cell_ids
+    )
     protocol._committed_incarnations = protocol._incarnations()
     protocol._target_version = 1
     protocol._recovery_encode_s = 0
@@ -601,7 +614,7 @@ def test_gpu_baseline_swaps_only_after_successful_receiver_activation(monkeypatc
         assert protocol._next_snapshot is current
         if activation_fails:
             raise RuntimeError("uncertain receiver resume")
-        return {"resumed_receipts": [identity]}
+        return _activation_result(protocol._cohort)
 
     monkeypatch.setattr(gpu_delta.gpu_delta_metrics, "activation_metrics", lambda value: {})
     monkeypatch.setattr(protocol, "publish", publish)
@@ -618,7 +631,7 @@ def test_gpu_baseline_swaps_only_after_successful_receiver_activation(monkeypatc
         assert not protocol._uncommitted
 
 
-def _ready_protocol(tmp_path, monkeypatch):
+def _ready_protocol(tmp_path, monkeypatch, receiver_version=0):
     protocol, _ = _setup(tmp_path)
     monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
     monkeypatch.setattr(torch.cuda, "current_stream", Mock)
@@ -637,6 +650,8 @@ def _ready_protocol(tmp_path, monkeypatch):
         return instance
 
     monkeypatch.setattr(gpu_delta_encoder, "GpuBatchEncoder", encoder)
+    for client in protocol.rollout_engines:
+        client.delta_version = receiver_version
     protocol.connect(protocol.rollout_engines, [1, 1], [0, 1], ["cell-0", "cell-1"], None, None, None)
     protocol._error, protocol._seen = None, set()
     protocol._capture_baseline(_buckets)
@@ -644,7 +659,97 @@ def _ready_protocol(tmp_path, monkeypatch):
 
 
 def _activation_result(cohort):
-    return {"resumed_receipts": [{}] if cohort.engine_ids else []}
+    return {
+        "resumed_receipts": [{}] if cohort.engine_ids else [],
+        "failed_engines": {},
+        "succeeded_engine_ids": list(cohort.engine_ids),
+    }
+
+
+def test_failed_receiver_description_keeps_healthy_cohort_and_failed_cell(tmp_path, single_rank, monkeypatch):
+    protocol, _ = _setup(tmp_path)
+    protocol.args.ft_components = ["rollout", "weight_update"]
+    monkeypatch.setattr(protocol, "_select_codec", lambda codec: None)
+    monkeypatch.setattr(gpu_delta, "get_data_replica_rank_and_size", lambda *a: (0, 1))
+    describe = _Engine.get_gpu_delta_info
+    calls = []
+
+    async def describe_once(self, engine_id):
+        calls.append(engine_id)
+        if self.index == 1:
+            raise RuntimeError("receiver exited before discovery")
+        return await describe(self, engine_id)
+
+    monkeypatch.setattr(_Engine, "get_gpu_delta_info", describe_once)
+    original_clients = list(protocol.rollout_engines)
+    protocol.connect(original_clients, [1, 1], [0, 1], ["cell-0", "cell-1"], None, None, None)
+    assert sorted(calls) == ["engine-00000", "engine-00001"]
+    assert protocol.rollout_engines == original_clients[:1]
+    assert protocol._engine_cell_ids == ("cell-0",)
+    assert protocol._cohort.engine_ids == ("engine-00000",)
+    assert set(protocol.cell_updaters_of_cell_id) == {"cell-0", "cell-1"}
+    assert not protocol.cell_updaters_of_cell_id["cell-0"].is_errored
+    assert protocol.cell_updaters_of_cell_id["cell-1"].is_errored
+    assert protocol._fresh_receivers
+
+
+def test_sender_baseline_loss_never_relabels_existing_receiver_weights(tmp_path, single_rank, monkeypatch):
+    async def unexpected_declaration(self, weight_version):
+        pytest.fail("A sender without its rolling baseline must not declare existing weights as version zero")
+
+    monkeypatch.setattr(_Engine, "update_weight_version", unexpected_declaration)
+    with pytest.raises(RuntimeError, match="sender baseline lost"):
+        _ready_protocol(tmp_path, monkeypatch, receiver_version=4)
+
+
+def test_failed_receiver_keeps_healthy_progress_then_new_incarnation_recovers(tmp_path, single_rank, monkeypatch):
+    protocol = _ready_protocol(tmp_path, monkeypatch)
+    protocol.args.ft_components = ["rollout", "weight_update"]
+    calls = []
+
+    async def activate(clients, cohort, publication, weight_version=None, **options):
+        assert options == {"fault_tolerant": True, "request_timeout": 1}
+        calls.append((cohort.engine_ids, publication["base_version"], publication["target_version"]))
+        if publication["target_version"] == 1:
+            # Includes a receiver which applied successfully but lost its reply:
+            # the sender cannot know that and must quarantine it without replay.
+            return {
+                "failed_engines": {"engine-00001": "lost activation reply"},
+                "succeeded_engine_ids": ["engine-00000"],
+                "resumed_receipts": [{"state": "RESUMED", "target_version": 1}],
+            }
+        if publication["base_version"] == 0:
+            assert cohort.engine_ids == ("engine-00001",)
+            assert cohort.participants[0][0]["rank_id"] == "replacement"
+            assert protocol._recovery_payload.raw["w"] == bytes([9, 10, 11, 12])
+        return _activation_result(cohort)
+
+    monkeypatch.setattr(gpu_delta.gpu_delta_session, "activate_publication", activate)
+    assert protocol.begin_sync(1, _buckets, rollout_id=0)
+    protocol.send_bucket(next(_buckets(True)))
+    protocol.after_base_weights()
+    protocol.finalize(1)
+    assert protocol.cell_updaters_of_cell_id["cell-1"].is_errored
+    assert not protocol.cell_updaters_of_cell_id["cell-0"].is_errored
+    assert set(protocol._committed_incarnations) == {"engine-00000"}
+    assert protocol._publication_version == 1 and not protocol._uncommitted
+    assert protocol._snapshot["w"].tolist() == [5, 6, 7, 8]
+
+    protocol.rollout_engines[1].index = "replacement"
+    protocol.connect(protocol.rollout_engines, [1, 1], [0, 1], ["cell-0", "cell-1"], None, None, None)
+    for version, values in ((2, [9, 10, 11, 12]), (3, [13, 14, 15, 16])):
+        assert protocol.begin_sync(version, _buckets, rollout_id=version - 1)
+        protocol.send_bucket([("w", torch.tensor(values, dtype=torch.uint8))])
+        protocol.after_base_weights()
+        protocol.finalize(version)
+        assert protocol._snapshot["w"].tolist() == values
+        assert all(not updater.is_errored for updater in protocol.cell_updaters_of_cell_id.values())
+    assert calls == [
+        (("engine-00000", "engine-00001"), 0, 1),
+        (("engine-00000",), 1, 2),
+        (("engine-00001",), 0, 2),
+        (("engine-00000", "engine-00001"), 2, 3),
+    ]
 
 
 def test_checkpoint_target_reuse_anchor_retention_and_background_overlap(tmp_path, single_rank, monkeypatch):
@@ -667,7 +772,7 @@ def test_checkpoint_target_reuse_anchor_retention_and_background_overlap(tmp_pat
     assert not protocol.requires_export and exports == [True]
     protocol.after_base_weights()
 
-    async def activate(clients, cohort, publication, weight_version=None):
+    async def activate(clients, cohort, publication, weight_version=None, **options):
         return _activation_result(cohort)
 
     monkeypatch.setattr(gpu_delta.gpu_delta_session, "activate_publication", activate)
@@ -685,7 +790,7 @@ def test_checkpoint_target_reuse_anchor_retention_and_background_overlap(tmp_pat
     recovery_finished = threading.Event()
     encode = protocol._cache_recovery_payload
 
-    async def overlapping_activate(clients, cohort, publication, weight_version=None):
+    async def overlapping_activate(clients, cohort, publication, weight_version=None, **options):
         activation_started.set()
         while not recovery_finished.is_set():
             await asyncio.sleep(0.001)
@@ -719,7 +824,7 @@ def test_restarted_engine_uses_negotiated_update_and_retains_cache(
     protocol = _ready_protocol(tmp_path, monkeypatch)
     calls, model_versions = [], []
 
-    async def activate(clients, cohort, publication, weight_version=None):
+    async def activate(clients, cohort, publication, weight_version=None, **options):
         calls.append((cohort.engine_ids, publication["base_version"], publication["target_version"]))
         model_versions.append(weight_version)
         if publication["base_version"] == 0 and publication["target_version"] == 2:
@@ -768,7 +873,11 @@ def test_restarted_engine_uses_negotiated_update_and_retains_cache(
         loads.append((manifest["base_version"], manifest["target_version"], manifest["codec"]))
         if recovery_fails:
             raise RuntimeError("recovery apply failed")
-        return {"resumed_receipts": [{"state": "RESUMED", "target_version": 2}]}
+        return {
+            "resumed_receipts": [{"state": "RESUMED", "target_version": 2}],
+            "failed_engines": {},
+            "succeeded_engine_ids": ["engine-00001"],
+        }
 
     if recovery_fails:
         with pytest.raises(RuntimeError, match="recovery apply failed"):
