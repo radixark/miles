@@ -10,7 +10,7 @@ from tap import Tap
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from examples.experimental.spec_draft_transition.loss import ProbabilityLoss, ce_weight, probability_metrics
-from examples.experimental.spec_draft_transition.evaluate import sample_sequence
+from examples.experimental.spec_draft_transition.evaluate import expected_prefix, sample_sequence
 from examples.experimental.spec_draft_transition.pipeline import State
 
 
@@ -34,17 +34,23 @@ class ConstantModel:
         self.logits = torch.tensor(probabilities).log()
         self.parameter = torch.nn.Parameter(torch.zeros(()))
         self.model = self
+        self.lm_head = torch.nn.Identity()
+        self.generation_config = SimpleNamespace(eos_token_id=1)
 
     def parameters(self):
         yield self.parameter
 
-    def __call__(self, ids, past_key_values=None, use_cache=True):
+    def __call__(self, ids, past_key_values=None, use_cache=True, **kwargs):
         cache = past_key_values or ConstantCache()
         cache.length += ids.shape[1]
-        return SimpleNamespace(past_key_values=cache,logits=self.logits[None,None,:].expand(1,ids.shape[1],-1))
+        logits=self.logits[None,None,:].expand(ids.shape[0],ids.shape[1],-1)
+        return SimpleNamespace(past_key_values=cache,logits=logits,last_hidden_state=logits)
 
 
 def verify_sampler() -> dict[str, float]:
+    row={'prompt_ids':[0,0],'response_ids':[1],'prompt_id':'0'*64}
+    eos_only=expected_prefix(ConstantModel([0.,1.]),ConstantModel([0.,1.]),[row],SimpleNamespace(pad_token_id=0),1.,1,1,8)
+    assert eos_only['expected_prefix']==1.,eos_only
     identical = sample_sequence(ConstantModel([.2,.8]),ConstantModel([.2,.8]),[0,1],1.,set(),8,3)
     assert identical['accepted']==[8,8,8] and identical['emitted']==[9,9,9]
     disjoint = sample_sequence(ConstantModel([1.,0.]),ConstantModel([0.,1.]),[0,1],1.,set(),8,3)

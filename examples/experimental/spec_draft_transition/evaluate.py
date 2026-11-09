@@ -34,6 +34,8 @@ def probabilities(logits: torch.Tensor, temperature: float = 1.0) -> torch.Tenso
 def expected_prefix(teacher, student, rows: list[dict], tokenizer, temperature: float,
                     repetitions: int = 4, limit: int = 128, draft: int = 8) -> dict[str, float]:
     device = next(student.parameters()).device
+    eos_ids = teacher.generation_config.eos_token_id
+    eos_ids = eos_ids if isinstance(eos_ids,list) else [eos_ids]
     values = []
     prefixes = []
     for row in rows[:limit]:
@@ -72,7 +74,12 @@ def expected_prefix(teacher, student, rows: list[dict], tokenizer, temperature: 
         hidden = teacher.model(verify_ids,attention_mask=verify_attention,position_ids=positions,use_cache=False).last_hidden_state[:,width-1:]
         p = probabilities(teacher.lm_head(hidden),temperature)
         ratios = p.gather(-1,proposal.unsqueeze(-1)).squeeze(-1) / torch.cat(q_values,-1)
-        expected = ratios.clamp(max=1).cumprod(-1).sum(-1)
+        is_eos = torch.zeros_like(proposal,dtype=torch.bool)
+        for token in eos_ids:
+            if token is not None:
+                is_eos |= proposal==token
+        valid = torch.cat([torch.ones_like(is_eos[:,:1]),~is_eos[:,:-1]],-1).cumprod(-1)
+        expected = (ratios.clamp(max=1).cumprod(-1)*valid).sum(-1)
         values.extend(expected.cpu().tolist())
     return {'expected_prefix':sum(values)/len(values),'paths':len(values)}
 
