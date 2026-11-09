@@ -8,6 +8,7 @@ from miles.rollout.generate_utils.generate_endpoint_utils import compute_routing
 from miles.utils.http_utils import post
 from miles.utils.lora.utils import LORA_ADAPTER_NAME, lora_rollout_enabled
 from miles.utils.media_refs import has_media, rollout_media_payload
+from miles.utils.processing_utils import encode_image_for_rollout_engine
 from miles.utils.types import Sample
 
 
@@ -48,7 +49,11 @@ def _build_prefill_scoring_payload(
     if (lora_path := _lora_path_for_sample(args, sample)) is not None:
         payload["lora_path"] = lora_path
 
-    payload.update(rollout_media_payload(sample.multimodal_inputs))
+    if args.multimodal_token_space_processing:
+        payload.update(rollout_media_payload(sample.multimodal_inputs))
+    elif sample.multimodal_inputs and sample.multimodal_inputs.get("images"):
+        image_data = sample.multimodal_inputs["images"]
+        payload["image_data"] = [encode_image_for_rollout_engine(image) for image in image_data]
 
     return payload
 
@@ -56,7 +61,9 @@ def _build_prefill_scoring_payload(
 def _can_batch_prefill_score(args: Any, samples: list[Sample]) -> bool:
     if router_routes_by_key(args):
         return False
-    return not any(has_media(sample.multimodal_inputs) for sample in samples)
+    if args.multimodal_token_space_processing and any(has_media(sample.multimodal_inputs) for sample in samples):
+        return False
+    return not any(sample.multimodal_inputs and sample.multimodal_inputs.get("images") for sample in samples)
 
 
 def _build_batch_prefill_scoring_payload(
