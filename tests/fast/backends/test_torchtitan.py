@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import re
 import sys
 from argparse import Namespace
 from pathlib import Path
@@ -846,3 +847,41 @@ def test_sleep_and_wake_leave_cpu_offloaded_training_state_on_the_host(monkeypat
     actor.wake_up()
 
     assert moved == ([] if cpu_offload else [True, False])
+
+
+class _SplittingExpertAdapter:
+    """Converts grouped experts as DeepSeek-V3's adapter does: w13 is split into w1_EFD and w3_EFD before it records
+    each one's local expert range."""
+
+    def __init__(self, start: int, end: int) -> None:
+        self.local_experts_indices: dict[str, tuple[int, int]] = {}
+        self._span = (start, end)
+
+    def to_hf(self, state):
+        (key, value), *_ = state.items()
+        template = re.sub(r"(\d+)", "{}", key, count=1)
+        hf = {}
+        for name in ("w1_EFD", "w3_EFD"):
+            self.local_experts_indices[template.replace("w13.weight", name)] = self._span
+            hf[f"model.layers.1.mlp.experts.{self._span[0]}.{name}"] = value[0]
+        return hf
+
+
+def test_local_experts_find_their_range_under_the_names_the_adapter_converted_to(monkeypatch):
+    """GLM-4.7-Flash's ICI export died on a KeyError: its adapter records w13's range as w1_EFD's and w3_EFD's."""
+    pytest.importorskip("torchtitan")
+    from miles.backends.torchtitan_utils import hf_weight_iterator
+
+    monkeypatch.setattr(hf_weight_iterator.dist, "get_rank", lambda: 1)
+    monkeypatch.setattr(hf_weight_iterator.dist, "get_world_size", lambda: 4)
+    monkeypatch.setattr(
+        hf_weight_iterator, "current_platform", SimpleNamespace(current_device=lambda: torch.device("cpu"))
+    )
+    key = "layers.1.feed_forward.routed_experts.w13.weight"
+    state = {key: torch.zeros(16, 2, 3)}
+
+    exported = dict(hf_weight_iterator._local_experts(_SplittingExpertAdapter(4, 8), state, [key]))
+    assert set(exported) == {"model.layers.1.mlp.experts.4.w1_EFD", "model.layers.1.mlp.experts.4.w3_EFD"}
+
+    with pytest.raises(AssertionError, match="not the engine's even split"):
+        list(hf_weight_iterator._local_experts(_SplittingExpertAdapter(0, 4), state, [key]))
