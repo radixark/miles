@@ -1,4 +1,4 @@
-"""Call a custom agent function on the rollout loop or in a child process of its own.
+"""Call a custom agent function on the rollout loop, in a child process of its own, or in one on an agent worker.
 
 Every sample's agent function runs concurrently in the rollout process. On one
 event loop, a synchronous step in one episode (a large response to parse, a slow
@@ -24,7 +24,9 @@ from typing import Any, BinaryIO, NoReturn
 
 from miles.rollout.agentic import rollout_limits
 from miles.rollout.agentic.errors import InfraAbort, RemoteTraceback
+from miles.rollout.agentic.remote import call_on_worker
 from miles.utils.logging_utils import configure_logger_raw
+from miles.utils.retry_utils import NonRetryableError
 
 __all__ = [
     "AGENT_FUNCTION_MODES",
@@ -33,12 +35,13 @@ __all__ = [
     "cancel_calls",
     "has_calls",
     "report_to_caller",
+    "resolve_worker",
     "rollout_abort_scope",
 ]
 
 logger = logging.getLogger(__name__)
 
-AGENT_FUNCTION_MODES = ("subproc", "inline")
+AGENT_FUNCTION_MODES = ("subproc", "inline", "worker")
 
 # A cancelled agent gets this long to run its own cleanup (closing its sandbox) before its process exits.
 _CANCEL_GRACE_S = 120.0
@@ -100,15 +103,19 @@ async def call_agent_function(
     *,
     mode: str,
     on_child_reports: Callable[[list[Any]], None] | None = None,
+    worker: str | None = None,
+    extra_env: dict[str, str] | None = None,
     abort_scope: str | None = None,
     **kwargs: Any,
 ) -> Any:
-    """Await ``fn(**kwargs)`` on this loop (``inline``) or in a child process of its own (``subproc``).
+    """Await ``fn(**kwargs)`` on this loop (``inline``), in a child process of its own (``subproc``), or in one on
+    the agent worker at the URL ``worker`` (``worker``, see ``miles.rollout.agentic.worker``).
 
-    Under ``subproc``, ``on_child_reports`` receives each item the agent sends with ``report_to_caller``. In every
-    mode, a ``cancel_calls`` that reaches ``abort_scope`` cancels the call, which then raises
-    ``InfraAbort("Cancelled")`` however the agent ended."""
-    task = asyncio.ensure_future(_place(fn, mode, on_child_reports, kwargs))
+    Under ``subproc`` and ``worker``, ``on_child_reports`` receives each item the agent sends with
+    ``report_to_caller``, and ``extra_env`` is added to the agent process's environment. In every mode, a
+    ``cancel_calls`` that reaches ``abort_scope`` cancels the call, which then raises ``InfraAbort("Cancelled")``
+    however the agent ended."""
+    task = asyncio.ensure_future(_place(fn, mode, worker, on_child_reports, extra_env, kwargs))
     call = _calls[task] = {"scope": abort_scope, "aborted": False}
     try:
         result = await task
@@ -152,14 +159,28 @@ def rollout_abort_scope(args) -> str:
     return f"{args.sglang_router_ip}:{args.sglang_router_port}"
 
 
+def resolve_worker(worker: str | None) -> str:
+    if not worker:
+        raise NonRetryableError("--custom-agent-function-mode worker needs --custom-agent-function-worker")
+    if not worker.startswith(("http://", "https://")):
+        raise NonRetryableError(f"--custom-agent-function-worker must be an http(s) URL, got {worker!r}")
+    return worker
+
+
 async def _place(
     fn: Callable[..., Awaitable[Any]],
     mode: str,
+    worker: str | None,
     on_child_reports: Callable[[list[Any]], None] | None,
+    extra_env: dict[str, str] | None,
     kwargs: dict[str, Any],
 ) -> Any:
     if mode == "inline":
         return await fn(**kwargs)
+    if mode == "worker":
+        return await call_on_worker(
+            resolve_worker(worker), fn, kwargs, env=extra_env or {}, on_child_reports=on_child_reports
+        )
     # pickled before the process starts, so an unpicklable argument fails here
     call = pickle.dumps(sys.path) + pickle.dumps((fn, kwargs, _CANCEL_GRACE_S, _LEFTOVER_CLEANUP_S))
     proc = await asyncio.create_subprocess_exec(
@@ -169,7 +190,7 @@ async def _place(
         str(os.getpid()),
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
-        env={**os.environ, rollout_limits.SCOPE_ENV_VAR: rollout_limits.current_scope()},
+        env={**os.environ, rollout_limits.SCOPE_ENV_VAR: rollout_limits.current_scope(), **(extra_env or {})},
     )
     try:
         await _send_call(proc, call)

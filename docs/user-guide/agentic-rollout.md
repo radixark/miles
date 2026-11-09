@@ -176,12 +176,26 @@ a sandbox still runs; an agent still running two minutes later is stopped.
 `--custom-agent-function-mode inline` runs the agent on the rollout's event loop,
 as before; use it for debugging and for agents that keep state across calls.
 
+`--custom-agent-function-mode worker` runs the same child process on an agent
+worker on another host, so the agents' CPU work leaves the rollout host. Start one
+with `python -m miles.rollout.agentic.worker --port 11100` and name it with
+`--custom-agent-function-worker http://<host>:11100`. The agent function must be
+importable on the worker under the same module path, and its arguments and return
+value must be JSON-serializable. Each call carries each sandbox provider's key-file
+and address variables, the env var patterns in a `WORKER_ENV` tuple the agent
+function's module may expose beside it, and any `--custom-agent-function-worker-env`
+adds; credentials are never sent by value, and paths among them must exist on the
+worker. A worker that cannot be reached, or that no longer knows the call, discards
+the sample (`exit_status` `WorkerUnreachable` or `WorkerLost`). A worker cancels a
+call nobody has polled for two minutes.
+
 A rollout abort, such as the one that ends an oversampled round, cancels this
 rollout's calls in every mode and discards their samples (`exit_status`
 `Cancelled`), however the agent then ends; an episode whose session opens after
 the abort never starts its agent. Under `subproc` the abort does not wait for
 the agent process's cleanup, which runs beside the next round to the deadlines
-above. An `inline` agent's cleanup runs on the rollout's loop: the abort hook
+above, and under `worker` it waits only until the worker has the cancel. An
+`inline` agent's cleanup runs on the rollout's loop: the abort hook
 waits up to 30 seconds for it before running the teardown hook below, and the
 rollout then waits for the episode to end, however long its cleanup takes. An
 evaluation on its own engines (`--eval-num-gpus`) keeps its calls through a
