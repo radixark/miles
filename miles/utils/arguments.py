@@ -1055,10 +1055,11 @@ def _check_multimodal_token_space_processing_args(args, *, sglang: SglangConfig)
             f"--multimodal-token-space-processing supports the Megatron backend only, not {args.train_backend}: "
             "the other trainers never consume the rebuilt media features."
         )
-    if not sglang.common_value("enable_token_space_processor"):
+    if not sglang.actor_value("enable_token_space_processor"):
         raise ValueError(
-            "--multimodal-token-space-processing needs the SGLang engines to expand media placeholders in token "
-            "space; set --sglang-enable-token-space-processor."
+            "--multimodal-token-space-processing needs the actor engines to expand media placeholders in token "
+            "space; set --sglang-enable-token-space-processor (a frozen reward or reference engine group that "
+            "serves its own requests may override it off)."
         )
     if args.rollout_external_engine_addrs:
         raise ValueError(
@@ -1072,12 +1073,12 @@ def _check_multimodal_token_space_processing_args(args, *, sglang: SglangConfig)
     if args.trainer_mm_io_worker_num < 0:
         raise ValueError(f"--trainer-mm-io-worker-num must be at least 0, got {args.trainer_mm_io_worker_num}")
     for name in ("rl_on_policy_target", "true_on_policy_contract", "decrypted_config_file"):
-        if sglang.common_value(name) is not None:
+        if sglang.actor_value(name) is not None:
             raise ValueError(
                 f"--multimodal-token-space-processing does not support --sglang-{name.replace('_', '-')}: the "
                 "trainer cannot yet build its processor the way the engines then do."
             )
-    if sglang.common_value("mm_attention_backend") is not None:
+    if sglang.actor_value("mm_attention_backend") is not None:
         raise ValueError(
             "--multimodal-token-space-processing does not support --sglang-mm-attention-backend: the trainer runs "
             "the vision tower with the device's default attention kernel, so the engine must too."
