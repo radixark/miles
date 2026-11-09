@@ -6,7 +6,11 @@ from typing import Any
 
 from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.errors import MessageValidationError, SessionNotFoundError, TokenizationError
-from miles.rollout.session.request_args import PreparedChatRequest, prepare_chat_request
+from miles.rollout.session.request_args import (
+    PreparedChatRequest,
+    chat_template_errors_as_validation_errors,
+    prepare_chat_request,
+)
 from miles.rollout.session.store_refs import SessionStoreRefs
 from miles.rollout.session.types import SessionRecord
 from miles.utils.chat_template_utils.message_matcher_hub import (
@@ -152,13 +156,14 @@ class LinearTrajectory:
             sampling_defaults=self.sampling_defaults,
             sampling_support_replay=self.sampling_support_replay,
         )
-        prepared.body["input_ids"] = self._render_token_ids(
-            request_messages,
-            checkpoint_index=checkpoint_index,
-            template_args=prepared.template_args,
-            tito_tokenizer=tito_tokenizer,
-            message_matcher=matcher,
-        )
+        with chat_template_errors_as_validation_errors():
+            prepared.body["input_ids"] = self._render_token_ids(
+                request_messages,
+                checkpoint_index=checkpoint_index,
+                template_args=prepared.template_args,
+                tito_tokenizer=tito_tokenizer,
+                message_matcher=matcher,
+            )
         self._rollback_to_checkpoint(checkpoint_index)
         return prepared
 

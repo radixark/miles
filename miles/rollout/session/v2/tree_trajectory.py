@@ -8,6 +8,7 @@ concurrency, and tokenization live one layer up in ``session_state``.
 from dataclasses import dataclass, field, replace
 from typing import Any
 
+from miles.rollout.session.errors import MessageValidationError
 from miles.rollout.session.types import SessionRecord
 from miles.utils.chat_template_utils.message_matcher_hub import SessionMessageMatcher, strict_message_matches
 
@@ -80,6 +81,14 @@ class SessionTree:
                 parent.children.append(copied)
         return tree
 
+    def check_node_cap(self) -> None:
+        if len(self.nodes) >= MAX_NODES:
+            raise MessageValidationError(
+                f"node cap reached ({MAX_NODES}): the session cannot branch or extend "
+                f"further — this almost always means the harness is not replaying "
+                f"history verbatim"
+            )
+
     def create_node(
         self,
         parent: TrajectoryNode | None,
@@ -93,12 +102,7 @@ class SessionTree:
         finish_reason: str,
         turn_args: dict[str, Any] | None = None,
     ) -> TrajectoryNode:
-        if len(self.nodes) >= MAX_NODES:
-            raise ValueError(
-                f"node cap reached ({MAX_NODES}): the session cannot branch or extend "
-                f"further — this almost always means the harness is not replaying "
-                f"history verbatim"
-            )
+        self.check_node_cap()
         node = TrajectoryNode(
             delta_messages=list(delta_messages),
             token_ids=list(token_ids),
