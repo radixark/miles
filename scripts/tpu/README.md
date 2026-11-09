@@ -67,13 +67,10 @@ model, dapo-math-17k and aime-2024 there if missing.
 
 wandb is on when `WANDB_API_KEY` is set.
 
-Opt-in speedups, passed through `--extra-args`:
-
-- `--log-probs-backend fused`: scores the padded `[T, V]` logits with one compiled program for the forward
-  and one for the backward; needs the policy loss, TP 1 and `--entropy-coef 0`.
-- `--titan-fsdp-reduce-dtype bfloat16`: reduce-scatters FSDP's gradients in bfloat16, halving the reduce
-  buffers and the bytes over ICI; refused with `--titan-fsdp-gather-once`, which would then accumulate
-  microbatch gradients in bfloat16.
+`--extra-args "--titan-fsdp-reduce-dtype bfloat16 --no-titan-fsdp-gather-once"` reduce-scatters FSDP's
+gradients in bfloat16, halving the reduce buffers and the bytes over ICI. The Qwen3-4B launcher passes
+`--titan-fsdp-gather-once`, which reduces once per step and would accumulate microbatch gradients in the
+reduce dtype, so the two are refused together.
 
 ## Notes
 

@@ -18,7 +18,6 @@ import torch.distributed as dist
 from miles.backends.training_utils.data.context_parallel import get_sum_of_sample_mean
 from miles.backends.training_utils.loss.hub import advantages, response_layout
 from miles.backends.training_utils.loss.hub.advantages import normalize_advantages
-from miles.backends.training_utils.loss.hub.fused_row_log_prob import FusedRowLogProb
 from miles.backends.training_utils.loss.hub.losses import policy_loss_function
 from miles.backends.training_utils.loss.hub.response_layout import (
     PackedSlices,
@@ -301,53 +300,6 @@ def test_score_centering_loss_matches_with_an_empty_response(monkeypatch):
     _assert_both_layouts_match(monkeypatch, score_centering_loss_function, args, inputs, _score_centering_batch)
 
 
-def test_the_fused_log_prob_backend_matches_the_per_sample_policy_loss(monkeypatch):
-    """`--log-probs-backend fused` on PaddedRows only swaps the row scorer; loss, metrics and gradients stay the same."""
-    args = _args(entropy_coef=0.0)
-    inputs = _inputs(args)
-    logits = inputs["policy_logits"].clone().requires_grad_(True)
-    batch = _batch(inputs, "policy_loss")
-    want_loss, want_metrics = policy_loss_function(args, batch, logits, _reducer(args, batch))
-    want_loss.backward()
-
-    monkeypatch.setattr(response_layout, "padded_rows_enabled", lambda args: True)
-    fused_args = _args(entropy_coef=0.0, log_probs_backend="fused")
-    padded = _padded(inputs["policy_logits"]).requires_grad_(True)
-    batch = _batch(inputs, "policy_loss")
-    got_loss, got_metrics = policy_loss_function(fused_args, batch, padded, _reducer(fused_args, batch))
-    got_loss.backward()
-
-    torch.testing.assert_close(got_loss, want_loss, rtol=1e-6, atol=1e-7)
-    for key, want in want_metrics.items():
-        torch.testing.assert_close(got_metrics[key], want, rtol=1e-5, atol=1e-6, msg=key)
-    num_packed = sum(inputs["total_lens"])
-    # with Megatron installed the per-sample side's cross-entropy rounds the logits gradient to bf16
-    torch.testing.assert_close(padded.grad[:, :num_packed], logits.grad, rtol=2**-7, atol=1e-6)
-    assert torch.count_nonzero(padded.grad[:, num_packed:]) == 0
-
-
-@pytest.mark.parametrize("temperature", [1.0, 0.7])
-def test_fused_log_prob_matches_log_softmax(temperature):
-    """Log-probs, entropy and the logits gradient match the fp32 log-softmax path."""
-    torch.manual_seed(0)
-    logits = (torch.randn(PADDED_ROWS, VOCAB) * 3).to(torch.bfloat16).requires_grad_(True)
-    targets = torch.randint(0, VOCAB, (PADDED_ROWS,))
-    weights = torch.randn(PADDED_ROWS)
-
-    log_probs, entropy = FusedRowLogProb.apply(logits, targets, temperature, True)
-    (log_probs * weights).sum().backward()
-    fused_grad, logits.grad = logits.grad, None
-
-    scaled = logits.float() / temperature
-    ref = torch.log_softmax(scaled, -1).gather(-1, targets[:, None]).squeeze(-1)
-    ref_entropy = -(torch.softmax(scaled, -1) * torch.log_softmax(scaled, -1)).sum(-1)
-    (ref * weights).sum().backward()
-
-    torch.testing.assert_close(log_probs, ref, atol=1e-5, rtol=0)
-    torch.testing.assert_close(entropy, ref_entropy.detach(), atol=1e-4, rtol=0)
-    torch.testing.assert_close(fused_grad.float(), logits.grad.float(), atol=1e-6, rtol=0)
-
-
 def _startup_args(**overrides) -> Namespace:
     values = dict(
         train_backend="torchtitan",
@@ -358,8 +310,6 @@ def _startup_args(**overrides) -> Namespace:
         advantage_estimator="grpo",
         true_on_policy_mode=False,
         log_probs_backend="torch",
-        entropy_coef=0.0,
-        tensor_model_parallel_size=1,
         allgather_cp=False,
         use_sampling_support_replay=False,
         use_opsm=False,
@@ -400,9 +350,7 @@ def test_a_static_shape_platform_pads_the_losses_written_on_the_layout(static_sh
         (dict(loss_type="score_centering", use_sampling_support_replay=True), "--use-sampling-support-replay"),
         (dict(context_parallel_size=2), "--context-parallel-size 1"),
         (dict(advantage_estimator="gspo"), "--advantage-estimator"),
-        (dict(log_probs_backend="fused", entropy_coef=0.01), "--log-probs-backend fused with --entropy-coef"),
-        (dict(log_probs_backend="fused", tensor_model_parallel_size=2), "--log-probs-backend fused with --tensor"),
-        (dict(log_probs_backend="fused", loss_type="score_centering"), "--log-probs-backend fused with --loss-type"),
+        (dict(log_probs_backend="fused"), "--log-probs-backend fused"),
     ],
 )
 def test_a_static_shape_platform_refuses_what_padded_rows_cannot_score(static_shapes, overrides, refused):
@@ -414,7 +362,6 @@ def test_a_static_shape_platform_refuses_what_padded_rows_cannot_score(static_sh
 def test_a_supported_run_and_every_dynamic_shape_run_pass_startup(static_shapes, monkeypatch, caplog):
     with caplog.at_level(logging.WARNING, logger=response_layout.__name__):
         validate_response_layout_args(_startup_args())
-        validate_response_layout_args(_startup_args(log_probs_backend="fused"))
         assert not caplog.records
         validate_response_layout_args(_startup_args(loss_type="sft_loss", use_tis=True))  # not on the layout
         assert "per-sample loss path" in caplog.text

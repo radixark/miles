@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import torch
 
 from miles.backends.fsdp_utils.arguments import FSDPArgs, build_dataclass_parser, load_args_from_parser
-from miles.backends.training_utils.loss.hub.response_layout import padded_rows_enabled, validate_response_layout_args
+from miles.backends.training_utils.loss.hub.response_layout import validate_response_layout_args
 from miles.kernels.tpu import FLASH_ATTENTION_BLOCK
 from miles.platforms import current_platform, tpu_shared_slice
 from miles.utils.lora.utils import is_lora_enabled, lora_rollout_enabled
@@ -148,12 +148,9 @@ def _validate_lora_args(args) -> None:
 
 def _validate_platform_args(args) -> None:
     platform = current_platform
-    # without Triton, the fused log-prob op is a compiled program of the padded-rows loss layout
-    if args.log_probs_backend == "fused" and not platform.triton_kernels and not padded_rows_enabled(args):
+    if args.log_probs_backend == "fused" and not platform.triton_kernels:
         raise ValueError(
-            f"--log-probs-backend fused on {platform.device_type} scores padded rows "
-            f"(loss/hub/response_layout.py), which --loss-type {args.loss_type} does not use; "
-            "use --log-probs-backend torch"
+            f"--log-probs-backend fused is a Triton kernel; on {platform.device_type} use --log-probs-backend torch"
         )
     # colocate syncs through CUDA IPC, outside the transfer modes
     modes = platform.weight_transfer_modes

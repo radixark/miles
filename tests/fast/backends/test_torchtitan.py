@@ -161,13 +161,10 @@ def test_tpu_refuses_context_and_expert_parallelism(monkeypatch, on_tpu):
         validate_torchtitan_args(_tpu_args(expert_model_parallel_size=2))
 
 
-def test_the_tpu_fused_log_prob_runs_on_padded_rows_only(monkeypatch, on_tpu):
+def test_the_triton_log_prob_kernel_is_refused_on_tpu(monkeypatch, on_tpu):
     monkeypatch.setattr(torch, "__version__", "2.14.0")
-    validate_torchtitan_args(_tpu_args(log_probs_backend="fused"))
-    with pytest.raises(ValueError, match="scores padded rows"):
-        validate_torchtitan_args(_tpu_args(log_probs_backend="fused", loss_type="sft_loss"))
-    with pytest.raises(ValueError, match="entropy-coef"):
-        validate_torchtitan_args(_tpu_args(log_probs_backend="fused", entropy_coef=0.01))
+    with pytest.raises(ValueError, match="Triton"):
+        validate_torchtitan_args(_tpu_args(log_probs_backend="fused"))
 
 
 def test_tpu_weights_reach_disaggregated_engines_over_ici_only(monkeypatch, on_tpu):
@@ -923,7 +920,7 @@ def test_gather_once_reduces_gradients_on_the_last_microbatch_only(monkeypatch, 
     assert calls == [call for group in per_microbatch for call in group] + [("reshard", None)]
 
 
-def test_the_fsdp_reduce_dtype_reaches_torchtitans_mixed_precision(monkeypatch, tmp_path, single_gpu_dims):
+def test_the_fsdp_reduce_dtype_reaches_torchtitans_training_config(monkeypatch, tmp_path, single_gpu_dims):
     from miles.backends.torchtitan_utils.config import build_trainer_config
 
     monkeypatch.setattr(torch, "__version__", "2.14.0")
