@@ -27,8 +27,7 @@ except ImportError:
     pq = None
 
 from miles.utils import chat_template_utils
-from miles.utils.media_refs import collect_media_refs, has_media, load_media_for_processor
-from miles.utils.processing_utils import call_processor
+from miles.utils.media_refs import collect_media_refs
 from miles.utils.types import MultimodalTypes, Sample
 
 __all__ = ["Dataset"]
@@ -107,7 +106,7 @@ def filter_long_prompt(origin_samples: list[Sample], tokenizer, processor, max_l
         text_only = []
         multimodal = []
         for sample in origin_samples:
-            if has_media(sample.multimodal_inputs):
+            if sample.multimodal_inputs and any(v is not None for v in sample.multimodal_inputs.values()):
                 multimodal.append(sample)
             else:
                 text_only.append(sample)
@@ -119,10 +118,11 @@ def filter_long_prompt(origin_samples: list[Sample], tokenizer, processor, max_l
                 if len(input_ids) <= max_length:
                     filtered_samples.append(sample)
         if multimodal:
+            from miles.utils.processing_utils import process_vision_info
+
             for sample in multimodal:
-                processor_output = call_processor(
-                    processor, sample.prompt, load_media_for_processor(sample.multimodal_inputs)
-                )
+                multimodal_inputs = process_vision_info(sample.prompt, processor)
+                processor_output = processor(text=sample.prompt, **multimodal_inputs)
                 input_ids = processor_output["input_ids"][0]
                 if len(input_ids) <= max_length:
                     filtered_samples.append(sample)
@@ -210,6 +210,7 @@ class Dataset:
         apply_chat_template=False,
         apply_chat_template_kwargs=None,
         media_dir=None,
+        token_space_processing=False,
     ):
         origin_samples = []
         for data in read_file(path):
@@ -240,8 +241,16 @@ class Dataset:
             else:
                 output_prompt = prompt
 
-            # Collected before the chat template turns the messages into text, so the references survive it.
-            multimodal_inputs = collect_media_refs(prompt, media_dir) if isinstance(prompt, list) else None
+            if token_space_processing and isinstance(prompt, list):
+                # Collected before the chat template turns the messages into text. SGLang expands the media
+                # placeholders and the trainer rebuilds the processor tensors from these references.
+                multimodal_inputs = collect_media_refs(prompt, media_dir)
+            elif processor and isinstance(prompt, list):
+                from miles.utils.processing_utils import process_vision_info
+
+                multimodal_inputs = process_vision_info(prompt, processor)
+            else:
+                multimodal_inputs = None
 
             origin_samples.append(
                 Sample(

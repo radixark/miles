@@ -28,6 +28,7 @@ import pybase64
 import pytest
 from tests.fast.fixtures.sglang_config_fixtures import make_sglang_config
 
+from miles.rollout.generate_utils import generate_endpoint_utils
 from miles.rollout.generate_utils.generate_endpoint_utils import (
     adopt_expanded_prompt_ids,
     compute_request_payload,
@@ -95,13 +96,14 @@ class TestComputeRequestPayloadOutputStore:
 
         assert OUTPUT_STORE_REQUEST_KEY not in payload
 
-    def test_a_multimodal_prompt_is_refused(self):
+    def test_a_multimodal_prompt_is_refused(self, monkeypatch):
+        monkeypatch.setattr(generate_endpoint_utils, "encode_image_for_rollout_engine", lambda image: "image")
         with pytest.raises(StorePlanError, match="multimodal"):
             compute_request_payload(
                 self.make_args(use_rollout_routing_replay=True),
                 input_ids=[1, 2],
                 sampling_params={},
-                multimodal_inputs={"images": ["/shared/media/image.png"]},
+                multimodal_inputs={"images": [object()]},
             )
 
 
