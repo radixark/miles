@@ -80,6 +80,8 @@ from miles.rollout.agentic.session import openai_session_url
 
 logger = logging.getLogger(__name__)
 
+WORKER_ENV = ("HARBOR_*", "AGENT_*")
+
 _DEFAULT_AGENT_TRIAL_TIMEOUT_S = 7200
 _SAFE_INSTANCE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
