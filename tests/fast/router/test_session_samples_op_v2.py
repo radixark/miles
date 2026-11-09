@@ -262,7 +262,7 @@ async def test_spec_info_crosses_samples_wire(spec_core):
     }
 
 
-async def test_session_rollout_metrics_are_absent_when_spec_is_disabled(core):
+async def test_session_rollout_metrics_carry_the_tree_without_spec_info_when_spec_is_disabled(core):
     record = _single_turn_record(
         [1, 2, 3],
         [10, 11],
@@ -275,7 +275,10 @@ async def test_session_rollout_metrics_are_absent_when_spec_is_disabled(core):
     (sample,), reply = _new_pipeline(payload, _input_sample())
 
     assert sample.spec_info == Sample.SpecInfo()
-    assert SESSION_ROLLOUT_METRICS_KEY not in reply.session_metadata
+    assert reply.session_metadata[SESSION_ROLLOUT_METRICS_KEY] == {
+        "session_id": sid,
+        "metrics": {"tree": {"roots": 1, "leaves": 1, "turns": 1}},
+    }
 
 
 async def test_assembled_sample_carries_prefill_spans_per_turn(core):
@@ -340,6 +343,7 @@ async def test_session_metadata_matches_get_session(core):
 
     response = await core.get_session(sid)
     assert response.status_code == 200
+    reply.session_metadata.pop(SESSION_ROLLOUT_METRICS_KEY)
     assert reply.session_metadata == json.loads(response.body)["metadata"]
     assert reply.session_metadata["accumulated_token_ids"] == _ACCUMULATED
 
@@ -727,6 +731,7 @@ async def test_session_rollout_metrics_count_every_tree_node_once(spec_core):
     assert reply.session_metadata[SESSION_ROLLOUT_METRICS_KEY] == {
         "session_id": sid,
         "metrics": {
+            "tree": {"roots": 1, "leaves": 3, "turns": 5},
             "spec_info": {
                 "spec_num_correct_drafts": 109,
                 "spec_num_proposed_drafts": 130,
@@ -1075,7 +1080,7 @@ async def test_custom_postprocessor_cannot_replace_session_rollout_metrics():
         reply = decode_samples_and_merge_input_sample(payload, Sample(), fields=COMPUTED_FIELDS_V2)
         assert reply.session_metadata[SESSION_ROLLOUT_METRICS_KEY] == {
             "session_id": sid,
-            "metrics": {"spec_info": Sample.SpecInfo().to_dict()},
+            "metrics": {"tree": {"roots": 1, "leaves": 2, "turns": 3}, "spec_info": Sample.SpecInfo().to_dict()},
         }
 
 
@@ -1262,6 +1267,7 @@ async def test_metadata_omits_payloads_without_changing_stored_turn_args(core):
     status, payload = await _collect_via_op(core, sid)
     assert status == 200
     reply = decode_samples_and_merge_input_sample(payload, Sample(), fields=COMPUTED_FIELDS_V2)
+    reply.session_metadata.pop(SESSION_ROLLOUT_METRICS_KEY)
     assert reply.session_metadata == metadata
     assert reply.samples
     for sample in reply.samples:
