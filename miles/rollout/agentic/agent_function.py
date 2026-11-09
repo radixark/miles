@@ -23,7 +23,18 @@ from collections.abc import Awaitable, Callable
 from typing import Any, BinaryIO, NoReturn
 
 from miles.rollout.agentic import rollout_limits
+from miles.rollout.agentic.errors import InfraAbort, RemoteTraceback
 from miles.utils.logging_utils import configure_logger_raw
+
+__all__ = [
+    "AGENT_FUNCTION_MODES",
+    "InfraAbort",
+    "call_agent_function",
+    "cancel_calls",
+    "has_calls",
+    "report_to_caller",
+    "rollout_abort_scope",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -46,12 +57,6 @@ _PR_SET_PDEATHSIG = 1
 # frames on the child's result pipe: a report sent while the call runs, or the call's outcome
 _REPORT_FRAME, _OUTCOME_FRAME = b"r", b"o"
 _FRAME_HEADER_BYTES = 9  # frame kind + 8-byte payload length
-
-
-class InfraAbort(Exception):
-    def __init__(self, exit_status: str, message: str | None = None):
-        super().__init__(message or exit_status)
-        self.exit_status = exit_status
 
 
 class _ResultPipe:
@@ -77,17 +82,6 @@ class _ResultPipe:
 _result_pipe: _ResultPipe | None = None
 
 _calls: dict[asyncio.Task, dict[str, Any]] = {}
-
-
-class _RemoteTraceback(Exception):
-    """The agent process's traceback, chained under the error it raised, as concurrent.futures does."""
-
-    def __init__(self, tb: str):
-        super().__init__(tb)
-        self.tb = tb
-
-    def __str__(self) -> str:
-        return self.tb
 
 
 def report_to_caller(item: Any) -> bool:
@@ -238,7 +232,7 @@ def _unpack_outcome(output: bytes) -> Any:
     if outcome[0] == "ok":
         return outcome[1]
     _, error, child_traceback = outcome
-    raise error from _RemoteTraceback(f'\n"""\n{child_traceback}"""')
+    raise error from RemoteTraceback(f'\n"""\n{child_traceback}"""')
 
 
 def _child_main(parent_pid: int) -> None:
