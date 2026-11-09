@@ -70,12 +70,13 @@ def _load_prompt_dataset(args, path: str, *, tokenizer, processor, max_length: i
         max_length=max_length,
         prompt_key=args.input_key,
         multimodal_keys=args.multimodal_keys,
-        media_dir=args.shared_media_dir,
         label_key=args.label_key,
         metadata_key=args.metadata_key,
         tool_key=args.tool_key,
         apply_chat_template=args.apply_chat_template,
         apply_chat_template_kwargs=args.apply_chat_template_kwargs,
+        media_dir=args.shared_media_dir,
+        token_space_processing=args.multimodal_token_space_processing,
         seed=args.rollout_seed,
     )
 

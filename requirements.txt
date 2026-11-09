@@ -22,6 +22,7 @@ pylatexenc
 pyrage==1.4.0  # age-encrypted Tinker external weights (save_weights_external)
 pytest-asyncio
 pyyaml
+qwen_vl_utils # for VLM
 # Ray 2.59 removed internal_api.free, which RayObjectStore needs for RPC references.
 ray[default]>=2.56.0,<2.59.0
 ring_flash_attn; platform_system == "Linux"
