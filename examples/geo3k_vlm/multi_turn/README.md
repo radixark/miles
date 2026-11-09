@@ -3,7 +3,7 @@ Training VLM on [geo3k dataset](https://huggingface.co/datasets/hiyouga/geometry
 
 Use the CUDA 13 Miles image from the [installation guide](../../../docs/getting-started/installation.md) and keep its bundled cuDNN version.
 
-The multi-turn rollout is implemented through a [custom generate function](rollout.py), overriding the original generate function.
+The multi-turn rollout is implemented through a [custom generate function](rollout.py#L309), overriding the original generate function.
 
 With `--multimodal-token-space-processing` and `--sglang-enable-token-space-processor`, each request sends the earlier turns as SGLang already expanded them and the newest turn with one placeholder per image, which SGLang expands; this needs an SGLang build with the token-space processor.
 
