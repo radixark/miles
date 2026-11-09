@@ -1,5 +1,3 @@
-from functools import partial
-
 from torchtitan.config.parallelism import ParallelismConfig
 from torchtitan.models.common import ComplexRoPE, Embedding, Linear, RMSNorm, Sigmoid
 from torchtitan.models.common.decoder_sharding import (
@@ -21,15 +19,13 @@ def _use_hf_norm_eps_in_mla(config: DeepSeekV3Model.Config) -> None:
         layer.attention.kv_norm.eps = _RMS_NORM_EPS
 
 
-def _glm4_7_flash(
-    *, n_layers: int, attn_backend: str, seq_len: int, parallelism: ParallelismConfig
-) -> DeepSeekV3Model.Config:
+def _30b_a3b(*, attn_backend: str, seq_len: int, parallelism: ParallelismConfig) -> DeepSeekV3Model.Config:
     dim = 2048
     vocab_size = 154880
     rope_dim = 64
     enable_sp = parallelism.enable_sequence_parallel
     layers = _build_dsv3_layers(
-        n_layers=n_layers,
+        n_layers=47,
         n_dense_layers=1,
         dim=dim,
         n_heads=20,
@@ -82,11 +78,7 @@ def _glm4_7_flash(
     return config
 
 
-MODEL_FLAVORS = {
-    "30B-A3B": (partial(_glm4_7_flash, n_layers=47), 202752),
-    # the first 4 layers (1 dense, 3 MoE), for single-host runs
-    "4layer": (partial(_glm4_7_flash, n_layers=4), 202752),
-}
+MODEL_FLAVORS = {"30B-A3B": (_30b_a3b, 202752)}
 
 
 def build_model_config(

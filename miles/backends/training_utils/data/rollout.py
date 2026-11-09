@@ -40,10 +40,9 @@ def get_rollout_data(
     output_store_read: Callable | None = None,
     sample_device: torch.device | None = None,
 ) -> tuple[RolloutBatch, ObjectStoreGetResult]:
-    """Fetch this rank's rollout shard; per-sample tokens, masks and log-probs go to ``sample_device``.
+    """Fetch this rank's rollout shard; per-sample tokens, masks and log-probs go to `sample_device`.
 
-    ``sample_device`` defaults to the accelerator; `PaddedRows` keeps them on the host
-    (loss/hub/response_layout.py).
+    `sample_device` defaults to the accelerator; `PaddedRows` keeps them on the host.
     """
     if sample_device is None:
         sample_device = current_platform.current_device()
@@ -58,7 +57,6 @@ def get_rollout_data(
         witness_info=witness_info,
         output_store_read=output_store_read,
     )
-    # move per-sample tensors to sample_device in advance
     rollout_data["tokens"] = [torch.tensor(t, dtype=torch.long, device=sample_device) for t in rollout_data["tokens"]]
     rollout_data["loss_masks"] = [
         torch.tensor(t, dtype=torch.int, device=sample_device) for t in rollout_data["loss_masks"]

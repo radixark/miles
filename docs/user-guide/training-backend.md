@@ -612,10 +612,9 @@ memory is set by the shard, pipeline and tensor degrees together; MoE dispatch b
 *not* shrink with sharding, so adding nodes only helps if it raises the shard degree —
 replication alone does not.
 
-`--titan-compile` compiles each transformer block with `torch.compile(fullgraph=True)`. On TPU
-the blocks are always compiled, microbatches are padded to power-of-two lengths up to
-`--seq-length`, and `--max-tokens-per-gpu` may not exceed `--seq-length`
-(`scripts/tpu/README.md`).
+On TPU each transformer block is compiled with `torch.compile(fullgraph=True)`, microbatches are
+padded to power-of-two lengths up to `--seq-length`, and `--max-tokens-per-gpu` may not exceed
+`--seq-length` (`miles/backends/torchtitan_utils/arguments.py`). `scripts/tpu/README.md` runs it.
 
 `--titan-fsdp-gather-once` sets torchtitan's `fsdp_reshard_after_forward="never"` and
 `fsdp_defer_gradient_reduction`: FSDP all-gathers the parameters once per pass and

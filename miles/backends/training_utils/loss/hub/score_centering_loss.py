@@ -17,10 +17,6 @@ from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.types import RolloutBatch
 
 
-def _with_entropy(args: Namespace) -> bool:
-    return args.entropy_coef != 0 or args.observe_training_entropy
-
-
 def score_candidates(
     args: Namespace, logits: torch.Tensor, ids: torch.Tensor, *, chunk_size: int
 ) -> dict[str, torch.Tensor]:
@@ -29,7 +25,7 @@ def score_candidates(
     Returns ``selected`` ``[N, 1 + K]``, plus ``entropy`` and ``kl_log_probs`` ``[N]`` when the args need them.
     """
     parallel = get_parallel_state()
-    with_entropy = _with_entropy(args)
+    with_entropy = args.entropy_coef != 0 or args.observe_training_entropy
     replay = args.use_sampling_support_replay
     support_only = replay and not args.use_kl_loss
     selected, entropy = selected_log_probs_and_entropy(

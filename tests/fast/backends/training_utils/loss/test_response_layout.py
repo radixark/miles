@@ -1,9 +1,6 @@
-"""Each loss gives the same results on both response layouts (loss/hub/response_layout.py).
+"""Each loss gives the same log-probs, entropy, loss, metrics and gradients on `PackedSlices` and `PaddedRows`.
 
-`PackedSlices` scores packed responses sliced out of the logits; `PaddedRows` scores the padded microbatch's
-rows, the layout of a platform without dynamic shapes. On CPU both run directly, so these tests feed one loss
-function the same packed samples on each layout (the padded side gets extra rows of garbage logits) and compare
-log-probs, entropy, loss, metrics and gradients.
+The padded side gets the same packed samples followed by rows of garbage logits.
 """
 
 from __future__ import annotations
@@ -19,7 +16,7 @@ import torch
 import torch.distributed as dist
 
 from miles.backends.training_utils.data.context_parallel import get_sum_of_sample_mean
-from miles.backends.training_utils.loss.hub import response_layout
+from miles.backends.training_utils.loss.hub import advantages, response_layout
 from miles.backends.training_utils.loss.hub.advantages import normalize_advantages
 from miles.backends.training_utils.loss.hub.fused_row_log_prob import FusedRowLogProb
 from miles.backends.training_utils.loss.hub.losses import policy_loss_function
@@ -220,23 +217,27 @@ def test_unbiased_kl_keeps_tokens_outside_the_loss_mask_out_of_the_gradient():
     assert torch.isfinite(logits.grad).all()
 
 
-def test_host_advantages_whiten_over_the_given_gloo_group():
-    """PaddedRows keeps advantages on the host, so the actor whitens them over the gloo DP group it passes in."""
+def test_host_advantages_whiten_over_the_given_group(monkeypatch):
+    """PaddedRows keeps advantages on the host, so the statistics must reduce over the group the actor passes in."""
+    whiten_groups = []
+
+    def fake_whiten(values, masks, *, process_group, shift_mean):
+        whiten_groups.append(process_group)
+        return values
+
+    monkeypatch.setattr(advantages, "distributed_masked_whiten", fake_whiten)
     args = _args(normalize_advantages=True)
     batch = _batch(_inputs(args), "policy_loss")
-    advantages, masks = batch["advantages"], batch["loss_masks"]
-    assert all(a.device.type == "cpu" for a in advantages)
-
-    whitened = normalize_advantages(
-        args, advantages, masks, batch["total_lengths"], batch["response_lengths"], process_group=dist.group.WORLD
+    gloo_group = object()
+    normalize_advantages(
+        args,
+        batch["advantages"],
+        batch["loss_masks"],
+        batch["total_lengths"],
+        batch["response_lengths"],
+        whiten_group=gloo_group,
     )
-
-    values, mask = torch.cat(advantages), torch.cat(masks).float()
-    mean = (values * mask).sum() / mask.sum()
-    var = ((values**2 * mask).sum() / mask.sum() - mean**2) * mask.sum() / (mask.sum() - 1)
-    want = (values - mean) * torch.rsqrt(var + 1e-8)
-    assert all(w.device.type == "cpu" for w in whitened)
-    torch.testing.assert_close(torch.cat(whitened), want, rtol=1e-5, atol=1e-6)
+    assert whiten_groups == [gloo_group]
 
 
 def _score_centering_args(**overrides):

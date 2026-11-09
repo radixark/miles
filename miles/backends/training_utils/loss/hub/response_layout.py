@@ -5,7 +5,7 @@ the layout's `sum_of_sample_mean`; only the layout knows which rows exist. The l
 (`response_layout_type`):
 
 - `PackedSlices`, on a platform with dynamic shapes: the rows are the responses, each sliced out of the packed
-  logits and concatenated, `[sum(R)]` on this CP rank. This is how every loss has always worked.
+  logits and concatenated, `[sum(R)]` on this CP rank.
 - `PaddedRows`, on a platform without dynamic shapes with the torchtitan trainer. TorchTPU compiles every eager
   op per input shape, and RL responses rarely repeat a length, so slicing compiles thousands of programs per
   step. The rows are the `[T]` rows of the padded microbatch, which the trainer rounds to a few lengths:
@@ -184,7 +184,7 @@ def validate_response_layout_args(args: Namespace) -> None:
     if problems:
         raise ValueError(
             f"--loss-type {args.loss_type} on {platforms.current_platform.device_type} scores padded "
-            f"microbatches (loss/hub/response_layout.py), which {' and '.join(problems)}"
+            f"microbatches, which {' and '.join(problems)}"
         )
 
 
@@ -235,7 +235,6 @@ class PackedSlices:
         return results
 
     def rows(self, per_sample, *, fill=0):
-        del fill  # every row is a response row
         return torch.cat([value.to(self.device) for value in per_sample], dim=0)
 
     def rows_at_positions(self, side, *, fill=0):
@@ -263,7 +262,6 @@ class PackedSlices:
         return torch.cat(result["log_probs"], dim=0), entropy
 
     def map_logit_rows(self, logits, fn, side=None, *, side_fill=0):
-        del side_fill  # every row is a response row
         args, batch = self.args, self.batch
         results: dict[str, list[torch.Tensor]] = {}
         chunks = _iter_response_chunks(
@@ -379,7 +377,6 @@ class PaddedRows:
 
     @classmethod
     def build(cls, args, batch, logits, sum_of_sample_mean=None) -> "PaddedRows":
-        del sum_of_sample_mean  # the dispatcher's lazy packed-row reducer; rows reduce with `_mean_denominators`
         assert logits.dim() == 3 and logits.size(0) == 1, f"thd logits are [1, T, V], got {logits.shape}"
         response_lengths = batch["response_lengths"]
         num_rows = logits.size(1)
@@ -472,10 +469,13 @@ class PaddedRows:
     def forward_log_probs(self, logits, *, with_entropy, use_sampling_mask):
         assert not use_sampling_mask, "validate_response_layout_args refuses sampling-support replay"
         log_probs, entropy = self.score(logits, with_entropy=with_entropy, entropy_requires_grad=False)
-        result = {"log_probs": HostRows(log_probs.detach().to("cpu", non_blocking=True), self)}
+        result = {"log_probs": self._to_host(log_probs)}
         if with_entropy:
-            result["entropy"] = HostRows(entropy.detach().to("cpu", non_blocking=True), self)
+            result["entropy"] = self._to_host(entropy)
         return result
+
+    def _to_host(self, rows: torch.Tensor) -> "HostRows":
+        return HostRows(rows.detach().to("cpu", non_blocking=True), self.row_index, self.response_lengths)
 
     @functools.cached_property
     def _targets(self) -> torch.Tensor:
@@ -518,7 +518,8 @@ class HostRows:
     """`[T]` results on their way to the host; read them only after `finish_forward_pass` synchronized."""
 
     values: torch.Tensor
-    layout: PaddedRows
+    row_index: torch.Tensor
+    response_lengths: list[int]
 
     def per_sample(self) -> list[torch.Tensor]:
-        return self.layout.per_sample(self.values)
+        return list(self.values[self.row_index].split(self.response_lengths))

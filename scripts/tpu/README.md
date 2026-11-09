@@ -1,9 +1,9 @@
 # miles on TPU
 
-GRPO training on one TPU v7x 2x2x1 host (2 chips per half, 2 TensorCores per chip):
-the torchtitan trainer runs as 4 ranks on devices 0-3 (chips 0-1), and sglang-torchtpu serves
-rollouts on devices 4-7 (chips 2-3) as an external engine. The two jobs share the host's slice, so
-weights move trainer → server device to device over ICI (`--update-weight-transfer-mode ici`).
+GRPO training on one TPU v7x 2x2x1 host (4 chips, 2 TensorCores each, so 8 devices): the torchtitan trainer runs
+as 4 ranks on devices 0-3 (chips 0-1), and sglang-torchtpu serves rollouts on devices 4-7 (chips 2-3) as an external
+engine. The two jobs share the host's slice, so weights move from trainer to engine device to device over ICI
+(`--update-weight-transfer-mode ici`).
 
 ## Environment
 
@@ -25,40 +25,31 @@ pip install -e . && cd ..
 pip install -e /path/to/miles
 
 # miles' router build (the sglang_router wheel of the radixark/miles-wheels release docker/Dockerfile.tpu
-# names): the PyPI sglang-router drops return_routed_experts, which routing replay (MoE) needs
+# names): the PyPI sglang-router drops return_routed_experts, which routing replay needs
 pip install --no-deps --force-reinstall /path/to/sglang_router-*.whl
 ```
 
-Weight sync over ICI also needs:
+Weight sync over ICI needs a torch_tpu build with job-local worlds (`TORCH_TPU_JOB_DEVICE_IDS`), so each job compiles
+and runs its collectives over its own devices: google-pytorch/torch_tpu#6110, which `docker/Dockerfile.tpu` installs
+as the `TORCH_TPU_WHEELS_TAG` wheel. sglang-torchtpu's shared-slice receiver (sgl-project/sglang-torchtpu#1884) is in
+the pinned sglang-torchtpu. The recipe was tested with libtpu 0.0.50; 0.0.49 was reported to halt the SparseCore when
+two jobs share the slice.
 
-- `--update-weight-transfer-mode ici` in miles (radixark/miles#4587);
-- a torch_tpu build with job-local worlds (`TORCH_TPU_JOB_DEVICE_IDS`), so each job compiles and runs its
-  collectives over its own devices (radixark/miles#4598 puts it in the image);
-- sglang-torchtpu's shared-slice receiver (sgl-project/sglang-torchtpu#1884);
-- libtpu 0.0.50 ran Qwen3-4B this way (2026-11-04). 0.0.49 was reported to halt the SparseCore when two
-  jobs share the slice, which a dense model may not exercise; MoE models on 0.0.49+ are unverified.
-
-Compiled programs are not cached (libtpu cannot load an executable built for part of a slice), so the
-first step of every run compiles everything.
+The first step of a run compiles the trainer's programs, about 20-30 minutes. The trainer's ranks share each compiled
+program, and `--compile-cache-dir <dir>` keeps them across runs, so a rerun with the same model and settings starts
+its first step in seconds. Use a fresh directory for each torch_tpu build: the cache key covers the graph, shapes,
+compiler options, libtpu and kernel bodies, but not torch_tpu's own lowering code.
 
 ## Run
 
-One launcher per model, each with the same `sglang` and `train` commands:
-
-| Launcher | Model | Trainer |
-|---|---|---|
-| `run_qwen3_4b_torchtitan.py` | Qwen3-4B | Adam on the device |
-| `run_qwen3_30b_a3b_torchtitan.py` | Qwen3-30B-A3B | params, grads and Adam on the host (`--optimizer-cpu-offload`), ~120 GB of host RAM per trainer process |
-| `run_glm4_7_flash_4layer_torchtitan.py` | GLM-4.7-Flash cut to its first 4 layers (`tools/prune_hf_layers.py`) | Adam on the device |
-
-The MoE trainers keep every expert on each rank (EP 1); sglang serves them with EP 4. Model and data
+`run_qwen3_4b_torchtitan.py` runs Qwen3-4B with Adam on the device, through its `sglang` and `train`
+commands; `torchtitan_launch.py` holds what a launcher for another model would share. Model and data
 default to `/root/models` and `/root/datasets` (`--model-dir`, `--data-dir`); `train` downloads the
-model, dapo-math-17k and aime-2024 there if missing. The GLM launcher serves the cut checkpoint, so run its
-`prepare` before `sglang`. The steps below use Qwen3-4B.
+model, dapo-math-17k and aime-2024 there if missing.
 
-1. Start sglang on devices 4-7, in its own shell, and wait for
-   `curl localhost:30000/health` to return 200. The engine finishes compiling only after the
-   trainer joins the slice, so start `train` once the server is listening:
+1. Start sglang on devices 4-7, in its own shell. It waits for the trainer to join the slice before it
+   compiles, so `/health` returns 200 only after `train` has started; start `train` a minute or two after
+   sglang, without waiting for it:
 
    ```bash
    python3 scripts/tpu/run_qwen3_4b_torchtitan.py sglang
@@ -70,16 +61,14 @@ model, dapo-math-17k and aime-2024 there if missing. The GLM launcher serves the
    python3 scripts/tpu/run_qwen3_4b_torchtitan.py train --recipe full
    ```
 
-   `--recipe smoke` runs 3 short rollouts to check the setup; `--recipe bench` runs 4 rollouts
-   at full shapes without eval, for timing. Pass extra `train.py` flags through `--extra-args`.
+   `--recipe smoke` runs 3 small rollouts (32 samples each) to check the setup; `--recipe bench` runs 4 rollouts
+   at full shapes without eval, for timing. `--compile-cache-dir <dir>` reuses compiled programs across runs.
+   Pass extra `train.py` flags through `--extra-args`.
 
 wandb is on when `WANDB_API_KEY` is set.
 
 Opt-in speedups, passed through `--extra-args`:
 
-- `--titan-tpu-attention splash`: packed-document attention on JAX's Pallas splash-attention kernel
-  (documents as segment ids, tiles without a same-document pair skipped); needs `--seq-length` to be a
-  multiple of 1024.
 - `--log-probs-backend fused`: scores the padded `[T, V]` logits with one compiled program for the forward
   and one for the backward; needs the policy loss, TP 1 and `--entropy-coef 0`.
 - `--titan-fsdp-reduce-dtype bfloat16`: reduce-scatters FSDP's gradients in bfloat16, halving the reduce
@@ -88,10 +77,11 @@ Opt-in speedups, passed through `--extra-args`:
 
 ## Notes
 
-- **Stop a training run gracefully while sglang is running.** The host's TPU network session is
-  shared, and a `kill -9`'d TPU process can take the other half down with it. Stop a run with
-  `ray stop` (without `--force`) and wait for its devices to be released before starting the next:
-  `train` does the same to any ray processes left from an earlier run, and leaves sglang alone.
+- **Restart sglang with every training run.** Trainer rank 0 hosts the slice's TPU controller, so when a
+  run exits the engine loses it: `/health` still answers 200, but the engine's devices stay in the old
+  session and the next trainer waits forever ("still in session"). Stop the run with `ray stop` (without
+  `--force`; a `kill -9`'d TPU process can take the other half down with it), stop sglang, then start
+  both again.
 - **Do not mask chips with `TPU_VISIBLE_CHIPS`**: it hangs libtpu's session setup. Both jobs
   address the slice through `TORCH_TPU_TOPOLOGY` and the shared-slice specs; the launcher sets them.
 - **Keep crash dumps off small disks** (`ulimit -c 0`): core files from crashed TPU processes

@@ -3,8 +3,11 @@ import inspect
 import logging
 import os
 import tempfile
+from dataclasses import dataclass
+from pathlib import Path
 from types import ModuleType
 
+import torch
 import torch.distributed as dist
 from torchtitan.components.optim import AdamW, LRSchedulersContainer, Optim, OptimizersContainer
 from torchtitan.config import TrainingConfig
@@ -23,7 +26,6 @@ from miles import platforms
 from miles.backends.torchtitan_utils import lora
 from miles.backends.torchtitan_utils.components import TiedCheckpointManager
 from miles.backends.torchtitan_utils.loss import RLLossAdapter
-from miles.backends.torchtitan_utils.sdpa_document_attention import BlockedSdpaInnerAttention
 from miles.backends.torchtitan_utils.trainer import TitanTrainer
 from miles.utils.args.runtime import TrainerConfig
 from miles.utils.hf_utils.config import load_hf_config
@@ -66,7 +68,7 @@ def build_model_config(
     model = builder(args.backend.titan_model_flavor, **kwargs)
     _disable_load_balancing(model)
     if not platforms.current_platform.flex_attention:
-        _replace_flex_attention(model, _document_attention(args.backend.titan_tpu_attention))
+        _use_tpu_flash_attention(model)
     if parallelism.context_parallel_degree > 1:
         model = transform_model_config_(
             model, [ContextParallelTransform(inner_attention_map={FlexInnerAttention: AllGatherKVFlexInnerAttention})]
@@ -74,16 +76,63 @@ def build_model_config(
     return model
 
 
-def _document_attention(backend: str) -> type[BlockedSdpaInnerAttention]:
-    if backend == "splash":
-        # deferred: the kernel imports jax and torch_tpu, which only the TPU image has
-        from miles.backends.torchtitan_utils.tpu_splash_attention import SplashInnerAttention
+class TpuFlashInnerAttention(InnerAttention):
+    """torchtitan's inner attention on miles.kernels.tpu; its metadata is each token's segment id."""
 
-        return SplashInnerAttention
-    return BlockedSdpaInnerAttention
+    @dataclass(kw_only=True, slots=True)
+    class Config(InnerAttention.Config):
+        @property
+        def is_full_attention(self) -> bool:
+            return True
+
+        def build_attention_metadata(
+            self,
+            positions: torch.Tensor,
+            *,
+            padding_mask: torch.Tensor | None = None,
+            max_num_documents: int | None = None,
+            max_context_length: int | None = None,
+        ) -> torch.Tensor:
+            # positions restart at 0 in every sequence and the padding tail, so each token's segment is the index of
+            # its sequence's first token; no cumsum: with the scan emitter off, torch_tpu cannot lower an int64 cumsum
+            return torch.arange(positions.shape[-1], device=positions.device, dtype=torch.int32) - positions.to(
+                torch.int32
+            )
+
+    def __init__(self, config: Config) -> None:
+        super().__init__()
+        # imported here, eagerly and on TPU only: it needs jax and torch_tpu, and registers its torch ops at import,
+        # which a compiled region cannot trace
+        from miles.kernels.tpu.flash_attention import flash_attention
+
+        self.flash_attention = flash_attention
+
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        *,
+        attention_metadata: torch.Tensor,
+        score_mod=None,
+        scale: float | None = None,
+        enable_gqa: bool = False,
+        out_transform=None,
+    ) -> torch.Tensor:
+        if score_mod is not None or out_transform is not None:
+            raise NotImplementedError("the TPU flash attention takes no score_mod or out_transform")
+        # torchtitan passes [tokens, heads, dim]; the kernel takes [batch, heads, tokens, dim] and runs GQA itself
+        out = self.flash_attention(
+            q.transpose(0, 1).unsqueeze(0),
+            k.transpose(0, 1).unsqueeze(0),
+            v.transpose(0, 1).unsqueeze(0),
+            segment_ids=attention_metadata.unsqueeze(0),
+            scale=scale,
+        )
+        return out.squeeze(0).transpose(0, 1)
 
 
-def _replace_flex_attention(model: BaseModel.Config, attention: type[BlockedSdpaInnerAttention]) -> None:
+def _use_tpu_flash_attention(model: BaseModel.Config) -> None:
     for layer in model.layers:
         for _, inner, parent, field_name in layer.traverse(InnerAttention.Config, recurse=True):
             # MLA wraps the attention kernel it runs
@@ -94,7 +143,7 @@ def _replace_flex_attention(model: BaseModel.Config, attention: type[BlockedSdpa
                     f"on {platforms.current_platform.device_type} only document-causal FlexAttention has a "
                     f"replacement; {type(inner).__qualname__} has none"
                 )
-            setattr(parent, field_name, attention.Config())
+            setattr(parent, field_name, TpuFlashInnerAttention.Config())
 
 
 # not FreezeMoERoutingTransform: it also freezes the router gate, which RL trains
@@ -166,8 +215,11 @@ def _optim_config(args: TrainerConfig) -> Optim.Config:
     )
 
 
-def _checkpointer_config(args: TrainerConfig, *, dump_subdir: str) -> TiedCheckpointManager.Config:
+def _checkpointer_config(args: TrainerConfig, *, dump_subdir: str, with_lora: bool) -> TiedCheckpointManager.Config:
     resume_from = _latest_step_dir(args.backend.load, dump_subdir) if args.backend.load else None
+    if with_lora:
+        _assert_lora_not_resumed_by_checkpointer(args, dump_subdir, resume_from)
+        resume_from = None
     if resume_from is None:
         return TiedCheckpointManager.Config(
             last_save_model_only=False, initial_load_model_only=True, initial_load_in_hf=True
@@ -180,12 +232,36 @@ def _checkpointer_config(args: TrainerConfig, *, dump_subdir: str) -> TiedCheckp
     )
 
 
-def _compile_backend(args: TrainerConfig) -> str | None:
+def _assert_lora_not_resumed_by_checkpointer(args: TrainerConfig, dump_subdir: str, load_step: str | None) -> None:
+    # torchtitan's checkpointer resumes from the latest step dir under --save whatever initial_load_path says
+    save_step = args.backend.save and _latest_step_dir(args.backend.save, dump_subdir)
+    if save_step:
+        raise ValueError(
+            f"--save holds the torchtitan checkpoint {save_step}, which torchtitan's checkpointer would resume from "
+            f"on its own: move {save_step} out of --save and pass its new path as --lora-adapter-path"
+        )
+    if args.lora_adapter_path is not None:
+        return
+    # a restart without --lora-adapter-path would start fresh: from the base model, overwriting any adapters
+    if load_step:
+        raise ValueError(
+            f"--load holds the torchtitan checkpoint {load_step}, which LoRA does not resume from: resume it with "
+            f"--lora-adapter-path {load_step}"
+        )
+    for flag, root in (("--load", args.backend.load), ("--save", args.backend.save)):
+        if root and any(Path(root).glob("iter_*/adapter")):
+            raise ValueError(
+                f"{flag} {root} holds LoRA adapter checkpoints (iter_*/adapter): resume one with "
+                f"--lora-adapter-path, or point {flag} elsewhere"
+            )
+
+
+def _compile_backend() -> str | None:
     platform = platforms.current_platform
-    # a static-shape platform (TPU) always compiles, whatever --titan-compile says: eager runs every op separately
-    if args.backend.titan_compile or not platform.dynamic_shapes:
-        return platform.compile_backend
-    return None
+    # a static-shape platform (TPU) compiles each block: eager runs every op as its own program
+    if platform.dynamic_shapes:
+        return None
+    return platform.compile_backend
 
 
 def _prepare_blocks_for_compile(model: BaseModel.Config) -> None:
@@ -225,7 +301,7 @@ def build_trainer_config(
         model = lora.convert_model_config(
             model, hf_targets=args.hf_lora_targets, rank=args.lora_rank, alpha=args.lora_alpha
         )
-    compile_backend = _compile_backend(args)
+    compile_backend = _compile_backend()
     if compile_backend is not None:
         _prepare_blocks_for_compile(model)
 
@@ -246,7 +322,7 @@ def build_trainer_config(
             disable_cuda_graphs=True,
         ),
         optim=_optim_config(args),
-        checkpointer=_checkpointer_config(args, dump_subdir=dump_subdir),
+        checkpointer=_checkpointer_config(args, dump_subdir=dump_subdir, with_lora=with_lora),
         activation_remat=FullActivationRematConfig() if args.backend.gradient_checkpointing else None,
         loss=RLLossAdapter.Config(),
         debug=DebugConfig(seed=args.backend.seed, distinct_seed_mesh_axes=["pp", "dp_shard"]),
