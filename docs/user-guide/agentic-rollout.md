@@ -130,8 +130,11 @@ can, it would learn to trigger to escape a low reward.
 | A step or turn limit, or `max_seq_len` | Yes | return `reward: 0` |
 | The sandbox was lost mid-episode, or the verifier crashed | Yes, the agent controls the sandbox | return `reward: 0` |
 
-Miles itself discards a session that recorded no model call (`NoModelCalls`) or
-whose samples could not be collected (`CollectFailed`).
+Miles itself discards a session that recorded no model call (`NoModelCalls`),
+whose samples could not be collected (`CollectFailed`), or whose last model call
+failed at the engine with a 5xx or a transport error (`ModelCallFailed`), whatever
+the agent function returned. A failed call the agent retried successfully does
+not count, and a 4xx such as a context-length error is the policy's own outcome.
 
 
 ### What the session URL accepts

@@ -454,10 +454,7 @@ class TestAnthropicRoute:
         # patch.object on pre-imported modules: a string-target patch would
         # import v2.core lazily INSIDE the first patch's window and bake the
         # first mock into its from-import binding, leaking it after restore.
-        with (
-            patch.object(core_module, "extract_completion", side_effect=RuntimeError("boom")),
-            patch.object(v2_core_module, "extract_completion", side_effect=RuntimeError("boom")),
-        ):
+        with patch.object(core_module, "extract_completion", side_effect=RuntimeError("boom")):
             resp = _post_messages(anthropic_env.url, session_id, _payload([{"role": "user", "content": "hello"}]))
         assert resp.status_code == 500
         assert resp.headers["content-type"].startswith("application/json")
