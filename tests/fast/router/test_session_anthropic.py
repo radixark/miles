@@ -934,7 +934,6 @@ class TestAnthropicToolFlow:
         second_ids = records[0]["request"]["input_ids"]
         assert second_ids[: len(first_ids)] != first_ids
 
-
     def test_failed_tool_result_reaches_the_model_as_its_text(self, anthropic_env):
         records = {}
         for is_error in (None, True):
