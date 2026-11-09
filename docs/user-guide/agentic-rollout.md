@@ -126,6 +126,7 @@ can, it would learn to trigger to escape a low reward.
 |---|---|---|
 | The sandbox was never ready, or the harness could not be set up, before the agent started | No | raise `InfraAbort` |
 | The model service or the environment host became unreachable | No | raise `InfraAbort` |
+| A remote agent service failed, or answered without a verdict on the episode | Rarely | raise `InfraAbort` |
 | A wall-clock timeout after the agent started | Yes, by stalling | return `reward: 0` |
 | A step or turn limit, or `max_seq_len` | Yes | return `reward: 0` |
 | The sandbox was lost mid-episode, or the verifier crashed | Yes, the agent controls the sandbox | return `reward: 0` |

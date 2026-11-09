@@ -18,6 +18,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
+from miles.rollout.agentic.agent_function import InfraAbort
 from miles.rollout.agentic.session import openai_session_url
 from miles.utils.http_utils import post
 
@@ -27,6 +28,10 @@ WORKER_ENV = ("AGENT_*", "SWE_AGENT_*")
 
 # Backstop for an unreachable agent server; its own --agent-timeout should fire first.
 _DEFAULT_AGENT_TRIAL_TIMEOUT_S = 7200
+
+_TRIAL_VERDICT_STATUSES = frozenset(
+    {"Submitted", "TimeLimitExceeded", "SequenceLengthLimitExceeded", "AgentError", "Unknown"}
+)
 
 _agent_server_client: httpx.AsyncClient | None = None
 
@@ -147,12 +152,15 @@ async def run(
         logger.warning("Agent server call cancelled (sibling task failure?)")
         return None
     except Exception as e:
-        logger.error(f"Agent server call failed: {e}")
-        return None
+        raise InfraAbort("AgentServerFailed", f"Agent server call failed: {e!r}") from e
+
+    exit_status = response.get("exit_status", "")
+    if exit_status not in _TRIAL_VERDICT_STATUSES:
+        raise InfraAbort(exit_status.removeprefix("Error: "), f"Agent server gave no trial verdict: {exit_status!r}")
 
     return {
         "reward": response.get("reward", 0.0),
-        "exit_status": response.get("exit_status", ""),
+        "exit_status": exit_status,
         "eval_report": response.get("eval_report", {}),
         "agent_metrics": response.get("agent_metrics", {}),
     }
