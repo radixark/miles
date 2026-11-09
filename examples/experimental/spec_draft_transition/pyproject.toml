@@ -2,4 +2,4 @@
 name = "spec-draft-transition-experiment"
 version = "0.1.0"
 requires-python = ">=3.11"
-dependencies = ["torch", "transformers", "sglang", "datasets", "polars", "typed-argument-parser", "wandb", "huggingface_hub", "numpy"]
+dependencies = ["torch", "transformers", "sglang", "datasets", "polars", "typed-argument-parser", "wandb", "huggingface_hub", "numpy", "matplotlib"]

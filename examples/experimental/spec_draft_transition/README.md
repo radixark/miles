@@ -11,6 +11,9 @@ and recomputed backward. `probe.py` checks gradients, token mappings and entropy
 `train.py` fine-tunes every student parameter; `evaluate.py` performs validation
 path integration and real sequential rejection/correction/bonus sampling.
 `pipeline.py` assigns one process to each GPU and chooses learning rates centrally.
+`entropy.py` audits positional entropy on held-out trajectories. `collect.py`
+extracts compact seed/prompt metrics on each node after completion; `analyze.py`
+computes paired bootstrap intervals and fitting curves without moving checkpoints.
 
 The manifest owns temperatures, seeds, initial rates, budgets and run identities.
 Pure CE, pure L1 and the fixed cosine blend all use the same training token budget.
