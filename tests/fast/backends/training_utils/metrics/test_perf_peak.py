@@ -7,6 +7,20 @@ from miles.utils.timer import Timer
 
 
 class TestPerformancePeak:
+    def test_quantization_time_uses_existing_perf_namespace_and_is_drained(self, monkeypatch):
+        instance = Timer()
+        monkeypatch.setattr(instance, "timers", {"update_weights_quantization": 0.75})
+        calls = []
+        monkeypatch.setattr(perf.tracking, "log", lambda args, payload, step_key: calls.append((payload, step_key)))
+        args = Namespace(trainer_model_id="actor", wandb_always_use_train_step=False)
+
+        perf.log_perf_data_raw(3, args, is_primary_rank=True, compute_total_fwd_flops=None)
+
+        [(metrics, step_key)] = calls
+        assert metrics == {"actor/perf/update_weights_quantization_time": 0.75, "actor/rollout/step": 3}
+        assert step_key == "actor/rollout/step"
+        assert instance.log_dict() == {}
+
     @pytest.mark.parametrize("configured_peak,detected_peak", [(200.0, 100.0), (None, 100.0), (None, None)])
     def test_mfu_uses_the_configured_peak_or_available_device_peak(
         self,
