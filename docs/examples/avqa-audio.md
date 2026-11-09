@@ -1,5 +1,5 @@
 ---
-title: "AVQA Audio RL on Inkling-Small"
+title: "AVQA Audio RL"
 description: "AVQA audio RL for Inkling-Small with token-space audio and a LoRA on one node."
 # Generated from examples/avqa_audio/README.md by scripts/tools/sync_example_docs.py. Edit that README, not this file.
 ---
@@ -62,9 +62,6 @@ about 0.70.
 
 ## Notes
 
-- AVQA was written for video: most questions ask what animal appears, where the video takes place or what the
-  people are doing. The model answers them from the audio alone, so part of the gain is learning what the dataset
-  tends to ask about which sounds.
 - The AVQA repack only has the training subset (the official validation set ships YouTube links, not audio), so the
   held-out slice is cut from it: whole clips, a fixed seed, and the same share of every question type.
 - Greedy evaluation of the same checkpoint moves by up to 0.6 points between runs, so single-point differences below
