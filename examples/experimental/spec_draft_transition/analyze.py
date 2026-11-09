@@ -18,18 +18,18 @@ class Args(Tap):
     seed: int = 20261108
 
 
-def arrays(samples: pl.DataFrame) -> tuple[np.ndarray, np.ndarray, list[float], list[int], list[str]]:
+def arrays(samples: pl.DataFrame, expected_prompts: int = 2000) -> tuple[np.ndarray, np.ndarray, list[float], list[int], list[str]]:
     temperatures=sorted(samples['temperature'].unique().to_list())
     seeds=sorted(samples['seed'].unique().to_list())
     methods=['ce','l1','smooth']
-    accepted=np.empty((len(temperatures),3,len(seeds),2000))
+    accepted=np.empty((len(temperatures),3,len(seeds),expected_prompts))
     blocks=np.empty_like(accepted)
     identities=None
     for i,temperature in enumerate(temperatures):
         for j,method in enumerate(methods):
             for k,seed in enumerate(seeds):
                 part=samples.filter((pl.col('temperature')==temperature)&(pl.col('method')==method)&(pl.col('seed')==seed)).sort('prompt_id')
-                assert len(part)==2000
+                assert len(part)==expected_prompts
                 if identities is None:
                     identities=part['prompt_id'].to_list()
                 assert part['prompt_id'].to_list()==identities
@@ -115,12 +115,39 @@ def main(args: Args) -> None:
         delta=(draws[2,2]-draws[2,j])-(draws[0,2]-draws[0,j])
         lo,hi=np.quantile(delta,[.025,.975])
         interactions.append({'baseline':baseline,'high_minus_low_gain':float((observed[2,2]-observed[2,j])-(observed[0,2]-observed[0,j])), 'lower95':float(lo),'upper95':float(hi)})
+    ce_l1=[]
+    for i,temperature in enumerate(temperatures):
+        lo,hi=np.quantile(draws[i,0]-draws[i,1],[.025,.975])
+        ce_l1.append({'temperature':temperature,'ce_minus_l1':float(observed[i,0]-observed[i,1]),
+                      'lower95':float(lo),'upper95':float(hi)})
+    delta=(draws[2,0]-draws[2,1])-(draws[0,0]-draws[0,1])
+    lo,hi=np.quantile(delta,[.025,.975])
+    ce_l1_interaction={'high_minus_low_ce_advantage':float((observed[2,0]-observed[2,1])-(observed[0,0]-observed[0,1])),
+                       'lower95':float(lo),'upper95':float(hi)}
+    secondary_decoding=[]
+    for draft in sorted(samples['draft'].unique().to_list()):
+        part=samples.filter(pl.col('draft')==draft)
+        for metric in ['accepted','emitted']:
+            if metric not in part.columns:
+                continue
+            a,b,_,_,_=arrays(part.with_columns(pl.col(metric).alias('accepted')),2000 if draft==8 else 256)
+            estimates=(a.sum(-1)/b.sum(-1)).mean(-1)
+            simulated=draws if draft==8 and metric=='accepted' else bootstrap(a,b,args.resamples,rng)
+            for i,temperature in enumerate(temperatures):
+                for j,method in enumerate(methods):
+                    lo,hi=np.quantile(simulated[i,j],[.025,.975])
+                    secondary_decoding.append({'draft':draft,'metric':metric,'temperature':temperature,'method':method,
+                        'mean':float(estimates[i,j]),'lower95':float(lo),'upper95':float(hi)})
     summary={'means':means,'primary_contrasts':contrasts,'secondary_interactions':interactions,
+             'secondary_ce_minus_l1':ce_l1,'secondary_ce_l1_interaction':ce_l1_interaction,
+             'secondary_decoding':secondary_decoding,
              'interval':'Crossed bootstrap of training seeds and held-out prompts; six primary contrasts, Bonferroni nominal95% family coverage.',
-             'resamples':args.resamples,'seeds':seeds,'training_source':state['source_revision']}
+             'resamples':args.resamples,'seeds':seeds,'evaluation_source':state['source_revision'],
+             'training_sources':sorted({job.get('source_revision','unrecorded') for job in state.get('jobs',[])})}
     (root/'summary.json').write_text(json.dumps(summary,indent=2))
     pl.DataFrame(means).write_csv(root/'accepted-prefix-means.csv')
     pl.DataFrame(contrasts).write_csv(root/'paired-contrasts.csv')
+    pl.DataFrame(secondary_decoding).write_csv(root/'secondary-decoding.csv')
     jobs.write_csv(root/'runs.csv')
     curves.write_parquet(root/'curves.parquet')
     samples.write_parquet(root/'samples.parquet')

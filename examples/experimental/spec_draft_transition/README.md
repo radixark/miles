@@ -45,6 +45,8 @@ for EOS and teacher bonus tokens separately. The six smooth-minus-baseline
 contrasts across temperatures require a familywise interval adjustment. Entropy
 interaction contrasts and throughput are secondary; temperature changes both the
 target probabilities and the teacher's visited histories.
+The report also gives unadjusted secondary CE-minus-L1 contrasts, their
+high-minus-low interaction, and accepted/emitted lengths at K4/K8/K16.
 
 Runtime credentials belong outside the checkout. Only the data directory is
 served for inter-node shard synchronization. Each run saves its full CLI config,
