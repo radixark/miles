@@ -51,7 +51,9 @@ def parse_chat_request(body: bytes) -> dict[str, Any]:
 def chat_template_errors_as_validation_errors() -> Iterator[None]:
     try:
         yield
-    except (TypeError, TemplateError) as e:
+    except (TypeError, TemplateError, ValueError) as e:
+        if isinstance(e, ValueError) and not isinstance(e.__cause__, TemplateError):
+            raise
         raise MessageValidationError(f"the chat template cannot render this request: {e}") from e
 
 
