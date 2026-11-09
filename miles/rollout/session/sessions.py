@@ -55,6 +55,19 @@ from miles.utils.processing_utils import load_tokenizer
 
 logger = logging.getLogger(__name__)
 
+_RECORDED_ROUTES = (("POST", "v1/chat/completions"), ("POST", "v1/messages"))
+_FORWARDED_ROUTES = (("GET", "v1/models"), ("GET", "get_model_info"), ("POST", "v1/messages/count_tokens"))
+
+
+def _unrecorded_route_error(method: str, path: str) -> str:
+    def routes(pairs):
+        return ", ".join(f"{route_method} /{route_path}" for route_method, route_path in pairs)
+
+    return (
+        f"{method} /{path} is not served by the session server: it records only {routes(_RECORDED_ROUTES)} "
+        f"and forwards only {routes(_FORWARDED_ROUTES)}"
+    )
+
 
 def setup_session_routes(app, backend, config: SessionServerConfig, *, use_addition_r3: bool = False):
     if not config.hf_checkpoint:
@@ -263,6 +276,8 @@ def setup_session_routes(app, backend, config: SessionServerConfig, *, use_addit
 
     @app.api_route("/sessions/{session_id}/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
     async def session_proxy(request: Request, session_id: str, path: str):
+        if (request.method, path) not in _FORWARDED_ROUTES:
+            return JSONResponse(status_code=404, content={"error": _unrecorded_route_error(request.method, path)})
         body = await request.body()
         return await core.proxy(
             session_id,

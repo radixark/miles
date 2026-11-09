@@ -134,6 +134,19 @@ Miles itself discards a session that recorded no model call (`NoModelCalls`) or
 whose samples could not be collected (`CollectFailed`).
 
 
+### What the session URL accepts
+
+The session server trains only on what it records, so it refuses what it cannot record instead of passing it through. An agent framework or CLI pointed at `base_url` must fit these rules; where it does not by default, the agent function configures it.
+
+- **Dialects.** `POST /v1/chat/completions` (OpenAI chat) and `POST /v1/messages` (Anthropic Messages) are recorded. `GET /v1/models`, `GET /get_model_info` and `POST /v1/messages/count_tokens` are forwarded to the engine unrecorded, since they generate nothing. Any other path returns HTTP 404 naming these routes, so a client that speaks OpenAI Responses or Gemini `generateContent` needs a conversion to chat.
+- **Streaming.** `stream: true` gets the complete reply as one block in that dialect's stream format, ending with its terminal event.
+- **Refusals.** Each is a client error, since resending the same request cannot succeed: `n` other than 1 is HTTP 400, as the session records one choice per request; a request the chat template cannot render, such as `system` content given as parts to a template that expects a string, is HTTP 400; on v2, a request to a session that already holds 1,024 tree nodes is HTTP 400.
+- **History.** Send the full history on every request; see [Leave token ownership to Miles](#leave-token-ownership-to-miles). Use v2 for anything that is not strictly one linear conversation, such as subagents, parallel conversations, side calls or compaction; v1 is for strictly linear agents only. See [Choose the session behavior](#choose-the-session-behavior).
+- **Matcher and picker.** A recipe names its `--session-message-matcher` when its client re-serializes tool-call arguments or drops `reasoning_content` ([Choose replay matching](#choose-replay-matching)), and its `--session-sample-picker-path` when the client makes side calls, such as title requests, that cannot be turned off. A picker is specific to a harness.
+- **Sampling.** The rollout owns sampling: pass `request_kwargs` through, and keep the client from setting its own `temperature`, `top_p` or `top_k`. A training request whose temperature differs from the session's, or whose `top_p` or `top_k` is bounded without sampling-support replay, is HTTP 400.
+- **Other traffic.** Turn the client's telemetry and tracing off. A model the client uses for anything other than the policy, such as a judge or a memory model, goes to another endpoint, not to `base_url`.
+
+
 ### Where the agent runs
 
 By default (`--custom-agent-function-mode subproc`) every agent call runs in a
