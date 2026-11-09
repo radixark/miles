@@ -84,26 +84,30 @@ def _service(
     address = {}
 
     async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        headers = await reader.readuntil(b"\r\n\r\n")
-        length = next(
-            int(line.split(b":", 1)[1])
-            for line in headers.split(b"\r\n")
-            if line.lower().startswith(b"content-length:")
-        )
-        payload = json.loads(await reader.readexactly(length))
-        status = await model_call(payload["base_url"])
-        if model_statuses is not None:
-            model_statuses.append(status)
-        outcome = outcomes.pop() if outcomes else _SUBMITTED
-        if outcome == _HANG:
-            await asyncio.sleep(3600)
-        elif outcome == _HTTP_500:
-            writer.write(b"HTTP/1.1 500 Internal Server Error\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
-        elif outcome != _DROP_CONNECTION:
-            body = json.dumps(outcome).encode()
-            writer.write(b"HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: %d\r\n\r\n%s" % (len(body), body))
-        await writer.drain()
-        writer.close()
+        try:
+            headers = await reader.readuntil(b"\r\n\r\n")
+            length = next(
+                int(line.split(b":", 1)[1])
+                for line in headers.split(b"\r\n")
+                if line.lower().startswith(b"content-length:")
+            )
+            payload = json.loads(await reader.readexactly(length))
+            status = await model_call(payload["base_url"])
+            if model_statuses is not None:
+                model_statuses.append(status)
+            outcome = outcomes.pop() if outcomes else _SUBMITTED
+            if outcome == _HANG:
+                await asyncio.sleep(3600)
+            elif outcome == _HTTP_500:
+                writer.write(b"HTTP/1.1 500 Internal Server Error\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
+            elif outcome != _DROP_CONNECTION:
+                body = json.dumps(outcome).encode()
+                writer.write(
+                    b"HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: %d\r\n\r\n%s" % (len(body), body)
+                )
+            await writer.drain()
+        finally:
+            writer.close()
 
     def serve() -> None:
         asyncio.set_event_loop(loop)
@@ -111,6 +115,13 @@ def _service(
         address["url"] = f"http://127.0.0.1:{server.sockets[0].getsockname()[1]}"
         started.set()
         loop.run_forever()
+        server.close()
+        pending = asyncio.all_tasks(loop)
+        for task in pending:
+            task.cancel()
+        loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+        loop.run_until_complete(server.wait_closed())
+        loop.close()
 
     thread = threading.Thread(target=serve, daemon=True)
     thread.start()
