@@ -1148,3 +1148,35 @@ class TestCreateComponents:
             )
         # the cancelled task leaves the trainers' remote init running: the disposer still reaches them
         assert trainer in disposer.added
+
+    async def test_cancelling_the_driver_stops_both_sides(self, monkeypatch):
+        """asyncio.wait does not cancel its tasks, so a stopped driver would leave them running under the disposer."""
+        *_, disposer = self._install(monkeypatch)
+        cancelled = []
+        started = {"rollout": asyncio.Event(), "trainers": asyncio.Event()}
+
+        def forever(name):
+            async def run(*_args, **_kwargs):
+                started[name].set()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    cancelled.append(name)
+                    raise
+
+            return run
+
+        monkeypatch.setattr(placement_group_module, "init_training_models", forever("trainers"))
+        monkeypatch.setattr(placement_group_module, "create_rollout_components", forever("rollout"))
+
+        driver = asyncio.create_task(
+            placement_group_module.create_components(
+                self._args(), capability=None, trainer_handles={}, disposer=disposer
+            )
+        )
+        await asyncio.wait_for(asyncio.gather(*(event.wait() for event in started.values())), timeout=5)
+        driver.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await driver
+
+        assert sorted(cancelled) == ["rollout", "trainers"]

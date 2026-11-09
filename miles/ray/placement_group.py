@@ -275,7 +275,15 @@ async def create_components(
         )
         trainers = await eager_create_task(init_training_models(args, handles=trainer_handles))
         # the first failure surfaces at once; the other side is cancelled
-        done, pending = await asyncio.wait({rollout, trainers}, return_when=asyncio.FIRST_EXCEPTION)
+        try:
+            done, pending = await asyncio.wait({rollout, trainers}, return_when=asyncio.FIRST_EXCEPTION)
+        except BaseException:
+            # asyncio.wait leaves its tasks running when the driver itself is cancelled; stop them before the
+            # disposer reaches their handles
+            for task in (rollout, trainers):
+                task.cancel()
+            await asyncio.gather(rollout, trainers, return_exceptions=True)
+            raise
         if failed := [task for task in done if not task.cancelled() and task.exception() is not None]:
             for task in pending:
                 task.cancel()
