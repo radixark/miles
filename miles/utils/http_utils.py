@@ -257,7 +257,9 @@ async def _post(client, url, payload, max_retries=60, action="post", headers=Non
     return output
 
 
-async def wait_http_ok(url: str, *, json_payload=None, timeout: float = 180.0, request_timeout: float = 60.0) -> None:
+async def wait_http_ok(
+    url: str, *, json_payload=None, headers=None, timeout: float = 180.0, request_timeout: float = 60.0
+) -> None:
     """Poll ``url`` until it answers HTTP 200 (POST when ``json_payload`` is given,
     else GET); raise ``TimeoutError`` past the deadline."""
     deadline = time.time() + timeout
@@ -266,7 +268,7 @@ async def wait_http_ok(url: str, *, json_payload=None, timeout: float = 180.0, r
         while True:
             try:
                 if json_payload is not None:
-                    response = await client.post(url, json=json_payload, timeout=request_timeout)
+                    response = await client.post(url, json=json_payload, headers=headers, timeout=request_timeout)
                 else:
                     response = await client.get(url, timeout=request_timeout)
                 if response.status_code == 200:

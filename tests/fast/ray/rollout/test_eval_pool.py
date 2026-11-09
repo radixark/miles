@@ -6,13 +6,16 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
+from tests.fast.fixtures.args_fixtures import sglang_router_args
 from tests.fast.ray.rollout.conftest import make_args
 
 from miles.ray.rollout import eval_pool as eval_pool_module
 from miles.ray.rollout import server_cell as server_cell_module
 from miles.ray.rollout.cell_state import CellAddrInfo, StateServing
 from miles.ray.rollout.eval_dispatch import EvalDispatcher
+from miles.ray.rollout.eval_fleet import wait_router_generate_ready
 from miles.ray.rollout.eval_pool import EvalPoolCarveOut, InferenceControllerEvalPool
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
 from miles.utils.context_lock import ContextLock
@@ -207,9 +210,16 @@ def router_always_ready(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(eval_pool_module, "wait_router_generate_ready", AsyncMock())
 
 
-def _pool(cells: list[SimpleNamespace], num_engines: int = 2) -> tuple[InferenceControllerEvalPool, _FakeServer]:
+def _pool(
+    cells: list[SimpleNamespace], num_engines: int = 2, router_policy: str | None = None
+) -> tuple[InferenceControllerEvalPool, _FakeServer]:
     srv = _FakeServer(cells)
-    args = SimpleNamespace(eval_pool_num_engines=num_engines, rollout_num_gpus_per_engine=1)
+    args = SimpleNamespace(
+        eval_pool_num_engines=num_engines,
+        rollout_num_gpus_per_engine=1,
+        sglang=SimpleNamespace(models=[SimpleNamespace(has_pd_disaggregation=False)]),
+        **sglang_router_args(router_policy),
+    )
     return InferenceControllerEvalPool(args, srv=srv, router=HostAndPort(host="10.0.0.9", port=31000)), srv
 
 
@@ -302,6 +312,45 @@ class TestCarveOut:
 
         assert info.engine_gpu_counts == [1, 1, 1]
         assert info.router == HostAndPort(host="10.0.0.9", port=31000)
+
+
+class TestRouterProbe:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("router_policy", "headers"),
+        [("manual", {"X-SMG-Routing-Key": "router-generate-probe"}), ("cache_aware", {})],
+        ids=["key-routed", "not-key-routed"],
+    )
+    async def test_the_probe_carries_a_routing_key_only_for_a_key_routed_router(
+        self, monkeypatch: pytest.MonkeyPatch, router_policy, headers
+    ):
+        """A session-server run routes by key (--policy manual); the router 400s a probe without one."""
+        probe = AsyncMock()
+        monkeypatch.setattr(eval_pool_module, "wait_router_generate_ready", probe)
+        pool, _ = _pool(
+            [_fake_cell(cell_id=f"engine-{i}", gpu_offset=i) for i in range(4)], router_policy=router_policy
+        )
+
+        await pool.carve_out()
+        await pool.check_version("7")
+
+        assert [call.kwargs["headers"] for call in probe.await_args_list] == [headers, headers]
+
+    @pytest.mark.asyncio
+    async def test_a_key_routed_router_answers_the_probe_once_it_carries_the_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        def sgl_router_manual_policy(request: httpx.Request) -> httpx.Response:
+            if "X-SMG-Routing-Key" not in request.headers:
+                return httpx.Response(400, json={"error": {"code": "missing_routing_key"}})
+            return httpx.Response(200, json={"text": ""})
+
+        transport, client_class = httpx.MockTransport(sgl_router_manual_policy), httpx.AsyncClient
+        monkeypatch.setattr("miles.utils.http_utils.httpx.AsyncClient", lambda: client_class(transport=transport))
+
+        await wait_router_generate_ready(EVAL_ROUTER_URL, headers={"X-SMG-Routing-Key": "probe"}, timeout=0)
+        with pytest.raises(TimeoutError, match="HTTP 400"):
+            await wait_router_generate_ready(EVAL_ROUTER_URL, headers={}, timeout=0)
 
 
 class TestWeightReceivers:

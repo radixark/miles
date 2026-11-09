@@ -102,8 +102,8 @@ class HangingEngine(FakeEngine):
 def router_probes(monkeypatch):
     probes: list[SimpleNamespace] = []
 
-    async def record_probe(url, *, json_payload=None, timeout=180.0):
-        probes.append(SimpleNamespace(url=url, json_payload=json_payload, timeout=timeout))
+    async def record_probe(url, *, json_payload=None, headers=None, timeout=180.0):
+        probes.append(SimpleNamespace(url=url, json_payload=json_payload, headers=headers, timeout=timeout))
 
     monkeypatch.setattr(eval_fleet_mod, "wait_http_ok", record_probe)
     return probes
@@ -330,6 +330,16 @@ class TestRouterProbe:
         assert pin == EvalFleetPin(skip_reason=None)
         assert [probe.url for probe in router_probes] == ["http://10.9.9.9:39999/generate"]
         assert router_probes[0].json_payload["sampling_params"]["max_new_tokens"] == 1
+        assert router_probes[0].headers == {}
+
+    async def test_pin_probes_a_key_routed_router_with_a_routing_key(self, router_probes):
+        """A session-server run routes by key (--policy manual); the router 400s a probe without one."""
+        fleet = InferenceControllerEvalFleet(
+            make_args(sglang_router_policy="manual"), srv=FakeEvalServer([FakeEngine([])])
+        )
+
+        assert await fleet.pin("/snap/step_5", "5") == EvalFleetPin(skip_reason=None)
+        assert [probe.headers for probe in router_probes] == [{"X-SMG-Routing-Key": "router-generate-probe"}]
 
 
 class FakeInferenceController:

@@ -18,6 +18,7 @@ from miles.ray.rollout.eval_fleet import (
     EVAL_WEIGHT_LOAD_TIMEOUT_SECS,
     EvalFleetInfo,
     EvalFleetPin,
+    compute_probe_headers,
     wait_router_generate_ready,
 )
 from miles.ray.rollout.rollout_server import RolloutServer
@@ -46,6 +47,7 @@ class InferenceControllerEvalPool:
         self._num_gpus_per_engine = args.rollout_num_gpus_per_engine
         self._srv = srv
         self._router = router
+        self._probe_headers = compute_probe_headers(args)
 
     @property
     def _router_url(self) -> str:
@@ -80,7 +82,7 @@ class InferenceControllerEvalPool:
             for cell in cells:
                 await cell.pin_for_eval(eval_router_url=self._router_url)
                 pinned.append(cell)
-            await wait_router_generate_ready(self._router_url)
+            await wait_router_generate_ready(self._router_url, headers=self._probe_headers)
         except Exception:
             logger.exception("Carving out engines for eval failed; giving back the ones already pinned")
             for cell in pinned:
@@ -100,7 +102,7 @@ class InferenceControllerEvalPool:
             versions = await _weight_versions(cells)
             if not versions or any(version != weight_version for version in versions):
                 return EvalFleetPin(skip_reason="pin_violation")
-            await wait_router_generate_ready(self._router_url)
+            await wait_router_generate_ready(self._router_url, headers=self._probe_headers)
         except Exception as e:
             logger.warning(f"Carved-out eval engines are not ready: {e}")
             return EvalFleetPin(skip_reason="unhealthy")
