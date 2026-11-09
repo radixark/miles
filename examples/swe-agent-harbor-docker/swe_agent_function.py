@@ -122,7 +122,7 @@ async def run(
 
     request: dict[str, Any] = {
         **metadata,
-        "base_url": session_url,
+        "base_url": base_url if metadata.get("agent_name") == "claude-code" else session_url,
         "model": f"openai/{model_name}",
         "sampling_params": request_kwargs,
     }
