@@ -64,6 +64,7 @@ def test_a_harness_declares_every_env_var_it_reads(monkeypatch, directory, modul
 @pytest.mark.parametrize(("directory", "module", "sources"), _HARNESSES)
 def test_a_harness_env_reaches_its_agent_on_a_worker(monkeypatch, directory, module, sources):
     monkeypatch.syspath_prepend(_EXAMPLES / directory)
+    importlib.import_module(module)
     reads = sorted(_env_reads(_EXAMPLES / directory, sources) - _CREDENTIALS - _ROLLOUT_SIDE_ONLY)
     for name in reads:
         monkeypatch.setenv(name, f"set-{name}")
