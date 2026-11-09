@@ -39,8 +39,8 @@ Topologies:
 
 Tasks:
   - dapo_math  text (dapo-math-17k), chat template, aime25 eval.
-  - geo3k      vision (geo3k), structured-message rendering, frozen towers,
-               geo3k-val eval.
+  - geo3k      vision (chenhegu/geo3k_imgurl parquet, as examples/geo3k_vlm), frozen towers,
+               geo3k test-split eval.
   - avqa_audio audio multiple choice (AVQA, examples/avqa_audio/prepare_avqa_audio.py),
                structured-message rendering, frozen towers, held-out AVQA eval.
   Multimodal tasks run on SGLang's token-space processor; --no-token-space-mm keeps
@@ -282,13 +282,22 @@ def _train(args: ScriptArgs):
                     f"--eval-max-response-len {args.rollout_max_response_len} "
                 )
         case "geo3k":
-            rollout_args += f"--prompt-data {args.data_dir}/geo3k/geo3k_train.jsonl " "--rm-type math "
+            # The parquet carries the image bytes; Miles writes each image once under --shared-media-dir and
+            # the engines and the trainer read it by path (the same data path as examples/geo3k_vlm).
+            geo3k_dir = f"{args.data_dir}/geo3k_imgurl"
+            rollout_args += (
+                f"--prompt-data {geo3k_dir}/train.parquet "
+                "--input-key problem --label-key answer "
+                """--multimodal-keys '{"image": "images"}' """
+                f"--shared-media-dir {geo3k_dir}/media "
+                "--rm-type math "
+            )
             if args.enable_eval:
                 eval_args = (
                     "--eval-interval 5 "
-                    f"--eval-prompt-data geo3kval {args.data_dir}/geo3k/geo3k_val.jsonl "
-                    "--eval-input-key prompt --eval-label-key label "
-                    "--n-samples-per-eval-prompt 1 --eval-temperature 1 "
+                    f"--eval-prompt-data geo3k {geo3k_dir}/test.parquet "
+                    "--eval-input-key problem --eval-label-key answer "
+                    "--n-samples-per-eval-prompt 1 --eval-temperature 0 "
                     f"--eval-max-response-len {args.rollout_max_response_len} "
                 )
         case "avqa_audio":

@@ -63,7 +63,7 @@ This section explains what the launcher does under the hood, and how to drive ea
 # inside the container
 hf download thinkingmachines/Inkling --local-dir /root/models/Inkling
 hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/datasets/dapo-math-17k
-hf download --repo-type dataset hiyouga/geometry3k --local-dir /root/datasets/geo3k
+hf download --repo-type dataset chenhegu/geo3k_imgurl --local-dir /root/datasets/geo3k_imgurl
 ```
 
 Pass `--hf-checkpoint <path>` to the launcher when the weights are already on a shared filesystem.
@@ -203,4 +203,13 @@ After each optimizer step, Miles exports a serving-ready adapter directly from t
 
 ## 7. Multimodal RL
 
-`--task geo3k` switches to the vision-language recipe: structured multimodal rollouts, Megatron-side vision and audio towers, and routing replay preserved across the media-expanded sequence. Each image or audio sentinel in the rendered prompt expands into its patch/frame positions before packing, and the R3 trace is indexed over the expanded sequence, so replay stays aligned even though SGLang made its routing decisions after expansion. Production recipes keep the vision and audio towers frozen and train the language model (or its adapter) around their embeddings; training the towers is available as an experimental option. The same path supports audio inputs and both full-parameter and LoRA training.
+`--task geo3k` switches to the vision-language recipe on the token-space processor: the prompt renders one placeholder token per image, SGLang expands it into the image's patch positions and computes the features, and every trainer rank rebuilds the same tensors from the shared image files in the background. Routing replay is recorded over the expanded sequence, so the trainer replays the experts the engine chose for every position. The data is the `chenhegu/geo3k_imgurl` parquet that `examples/geo3k_vlm` trains on; `--task avqa_audio` runs the audio recipe of `examples/avqa_audio` the same way. `--no-token-space-mm` keeps the Miles-side Inkling processor (sentinel rendering and expansion at training).
+
+```bash
+# Inkling-Small, LoRA, geo3k on one node of 8 GPUs
+python scripts/run_inkling.py train \
+   --model-name Inkling-Small --train-mode lora --task geo3k \
+   --num-gpus-per-node 8 --rollout-num-gpus-per-engine 8 \
+   --lr 2e-4 --rollout-batch-size 32 --n-samples-per-prompt 8 --global-batch-size 128 --enable-eval
+```
+
