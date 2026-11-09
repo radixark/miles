@@ -622,7 +622,7 @@ def _load_legacy_slot(shells: dict, slot_optimizer: SlotOptimizer, path: str, lo
 def build_adapter_slots(args, model, iterator, targets) -> BridgeAdapterSlots | NativeAdapterSlots:
     """Collective: the run's adapter checkpoint view, Bridge's (single or multi-LoRA) or native's."""
     if args.megatron_to_hf_mode == "raw":
-        return NativeAdapterSlots(model, iterator, targets)
+        return NativeAdapterSlots(model, iterator, targets, multi_lora=args.multi_lora)
     return BridgeAdapterSlots(model, iterator, targets, multi_lora=args.multi_lora)
 
 
