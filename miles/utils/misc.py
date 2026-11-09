@@ -53,6 +53,19 @@ def merge_asserting_consistency(a: dict[_K, _V], b: dict[_K, _V]) -> dict[_K, _V
     return a | b
 
 
+def load_agent_sibling(agent_function_path, name: str) -> Any | None:
+    """What the module of the configured agent function holds under ``name``, or None if it holds nothing there."""
+    if not agent_function_path:
+        return None
+    module_path, _, _ = agent_function_path.path.rpartition(".")
+    if not module_path:
+        return None
+    try:
+        return load_function(f"{module_path}.{name}")
+    except (AttributeError, ModuleNotFoundError):
+        return None
+
+
 async def call_agent_abort_hook(args) -> None:
     """Cancel this rollout's agent calls, then invoke the optional abort hook of every agent function the run can call.
 
@@ -78,19 +91,18 @@ async def call_agent_abort_hook(args) -> None:
     called: list[tuple[str, Any]] = []
     for agent_function in agent_functions:
         module_path, _, _ = agent_function.path.rpartition(".")
-        if not module_path or (module_path, agent_function.config) in called:
+        if (module_path, agent_function.config) in called:
             continue
         called.append((module_path, agent_function.config))
-        try:
-            abort_hook = load_function(f"{module_path}.abort")
-        except (AttributeError, ModuleNotFoundError):
-            continue  # plugin doesn't expose an abort hook; nothing to tear down
+        abort_hook = load_agent_sibling(agent_function, "abort")
+        if abort_hook is None:
+            continue
 
         try:
             fn_args = compute_custom_function_config(args, agent_function)
             await abort_hook(fn_args)
         except Exception as e:
-            logger.warning(f"Agent abort hook {module_path}.abort failed: {e}")
+            logger.warning(f"The abort hook beside {agent_function.path} failed: {e}")
 
 
 class SingletonMeta(type):
