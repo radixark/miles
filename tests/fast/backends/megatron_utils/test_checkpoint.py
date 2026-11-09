@@ -151,6 +151,9 @@ class TestRawMbridgeCompanionIsolation:
         """HF loading must not map training metadata or discard it when loading fails."""
         observed = raw_mbridge_loader(fail)
         models = [torch.nn.Linear(2, 2), torch.nn.Linear(2, 2)]
+        for model in models:
+            # GPTModel's vocab rows
+            model.vocab_size = 2
         companions = [ModelCompanion(pipeline_rank=0, chunk_index=i, replica_id=(0, 0, 0)) for i in range(2)]
         for model, companion in zip(models, companions, strict=True):
             companion.weight_version.fill_(7)

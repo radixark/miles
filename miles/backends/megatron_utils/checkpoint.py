@@ -246,14 +246,29 @@ def _hide_critic_value_head_from_hf_load(ddp_model):
             setattr(chunk, name, head)
 
 
+def create_mbridge_for_model(model, hf_path: str):
+    """An mbridge bridge for ``hf_path`` that loads into ``model``, which miles built rather than mbridge."""
+    import miles_plugins.mbridge  # noqa: F401
+    from mbridge import AutoBridge
+
+    # the built model's rows, not Megatron's padded_vocab_size: Inkling builds unpadded
+    model_vocab_rows = unwrap_model(model)[0].vocab_size
+    # any non-None value turns on mbridge's pad on load
+    bridge = AutoBridge.from_pretrained(hf_path, trust_remote_code=True, make_vocab_size_divisible_by=model_vocab_rows)
+    hf_vocab_size = bridge.hf_config.get_text_config().vocab_size
+    assert (
+        model_vocab_rows >= hf_vocab_size
+    ), f"the model was built with fewer vocab rows ({model_vocab_rows}) than {hf_path} holds ({hf_vocab_size})"
+    # mbridge sets these only in its own model provider
+    bridge.vocab_size, bridge.padded_vocab_size = hf_vocab_size, model_vocab_rows
+    return bridge
+
+
 def _load_hf_weights_with_mbridge(ddp_model, args, load_path: str) -> None:
     """Raw-mode HF load through mbridge for models Megatron-Bridge lacks; staging copies bypass the memory saver."""
     from contextlib import nullcontext
 
     import torch
-
-    import miles_plugins.mbridge  # noqa: F401
-    from mbridge import AutoBridge
 
     from miles.backends.megatron_utils.lora.native.modules.linear import adapters_hidden_context
 
@@ -276,7 +291,7 @@ def _load_hf_weights_with_mbridge(ddp_model, args, load_path: str) -> None:
         adapters_hidden_context(ddp_model),
         bypass,
     ):
-        bridge = AutoBridge.from_pretrained(load_path, trust_remote_code=True)
+        bridge = create_mbridge_for_model(ddp_model, load_path)
         bridge.load_weights(ddp_model, load_path, memory_efficient=True)
     torch.cuda.synchronize()
 
