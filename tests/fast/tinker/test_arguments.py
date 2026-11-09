@@ -1,4 +1,3 @@
-import os
 from argparse import Namespace
 
 import pytest
@@ -16,7 +15,6 @@ def _tinker_args(**overrides) -> Namespace:
         save=None,
         save_hf=None,
         tinker_checkpoint_root="/checkpoints/tinker",
-        tinker_import_root=None,
     )
     for key, value in overrides.items():
         setattr(args, key, value)
@@ -49,14 +47,3 @@ class TestTinkerCheckpointOwnership:
     def test_checkpoint_root_is_required(self) -> None:
         with pytest.raises(AssertionError, match="--tinker-checkpoint-root"):
             validate_tinker_args(_tinker_args(tinker_checkpoint_root=None))
-
-    @pytest.mark.parametrize("import_root", ["/checkpoints", "/checkpoints/tinker", "/checkpoints/tinker/imports"])
-    def test_an_import_root_overlapping_the_checkpoint_root_is_refused(self, import_root: str) -> None:
-        """file:// loads skip ownership checks; overlapping roots would open other tenants' checkpoints."""
-        with pytest.raises(ValueError, match="must not contain one another"):
-            validate_tinker_args(_tinker_args(tinker_import_root=import_root))
-        validate_tinker_args(_tinker_args(tinker_import_root="/checkpoints/imports"))
-        # file:// paths are absolute, so a relative root would refuse every import
-        relative = _tinker_args(tinker_import_root="imports")
-        validate_tinker_args(relative)
-        assert relative.tinker_import_root == os.path.abspath("imports")
