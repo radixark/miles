@@ -27,6 +27,14 @@ on:
         type: string
         required: false
         default: ''
+      test_timeout_minutes:
+        # Same budget as the sgl-project/sglang Miles ROCm nightly gives each
+        # suite part. Without it a stuck test holds the runner until the 6 h
+        # job limit, as the scheduled runs of 2026-10-27 to 10-30 all did.
+        description: 'Time limit of the test step, in minutes.'
+        type: number
+        required: false
+        default: 180
     secrets:
       WANDB_API_KEY:
         required: false
@@ -220,5 +228,6 @@ jobs:
           done
 
       - name: Run tests
+        timeout-minutes: ${{ inputs.test_timeout_minutes }}
         shell: bash
         run: ${{ inputs.execute_command }}
