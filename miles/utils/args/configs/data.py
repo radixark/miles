@@ -137,7 +137,10 @@ class DataConfig(BaseConfig):
     ] = 0
     shared_media_dir: A[
         str | None,
-        Arg(help="Directory shared with every SGLang engine; media that is not a file path yet is written here."),
+        Arg(
+            help="Token space only: directory shared with every SGLang engine and every trainer rank; media that "
+            "is not a file path yet is written here."
+        ),
     ] = None
     metadata_key: A[str, Arg(help="JSON dataset key")] = "metadata"
     tool_key: A[

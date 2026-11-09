@@ -1,9 +1,10 @@
 """Media references shared between Miles and the rollout engine.
 
 A media reference is an absolute path on a filesystem that Miles and every SGLang
-engine mount. ``Sample.multimodal_inputs`` holds one ordered list of references per
-modality for the whole conversation, and requests carry these paths instead of the
-media bytes.
+engine mount. In token space ``Sample.multimodal_inputs`` holds one ordered list of
+references per modality for the whole conversation, requests carry these paths instead
+of the media bytes, and the trainer rebuilds the processor tensors from the same files.
+The Miles-side processor path keeps its own media handling and never sees a reference.
 
 Sources that are not already shared paths (data URLs, raw bytes, PIL images) are
 written once under ``media_dir``, named by content hash.
@@ -116,41 +117,6 @@ def materialize_media_ref(source: Any, media_dir: str | None) -> str:
 def rollout_media_payload(multimodal_inputs: dict[str, list[str]] | None) -> dict[str, list[str]]:
     """Request fields carrying every media reference of the conversation, in order."""
     return {_TO_SGLANG_MEDIA_FIELDS[key]: refs for key, refs in (multimodal_inputs or {}).items() if refs}
-
-
-def load_media_for_processor(multimodal_inputs: dict[str, list[str]] | None) -> dict[str, list[Any]]:
-    """Decode the references for the Miles-side processor.
-
-    Transitional: only the legacy path, where Miles runs the processor at rollout, calls this. The token-space
-    processor loads media with SGLang's own loaders and never calls it.
-
-    Args:
-        multimodal_inputs: References per modality, as held by ``Sample.multimodal_inputs``.
-
-    Returns:
-        Processor keyword inputs: PIL images decoded as SGLang's CPU loader decodes them, and raw audio bytes.
-    """
-    loaded: dict[str, list[Any]] = {}
-    for key, refs in (multimodal_inputs or {}).items():
-        if not refs:
-            continue
-        if key == "images":
-            loaded[key] = [_load_image(ref) for ref in refs]
-        elif key == "audios":
-            loaded[key] = [Path(ref).read_bytes() for ref in refs]
-        elif key == "videos":
-            # Frame sampling and timestamps must match the engine's, which the Miles-side processor cannot guarantee.
-            raise NotImplementedError("Video inputs are not supported by the Miles-side processor.")
-        else:
-            raise ValueError(f"Unsupported multimodal input key: {key}")
-    return loaded
-
-
-def _load_image(path: str) -> Image.Image:
-    # No resize and no RGB conversion: the processor owns both, on Miles and on SGLang.
-    image = Image.open(path)
-    image.load()
-    return image
 
 
 def _dump_media_by_hash(data: bytes, media_dir: str | None) -> str:
