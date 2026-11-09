@@ -1,6 +1,6 @@
 {
-  "experiment_id": "261108-eee6fab1",
-  "base_miles": "778794a807",
+  "experiment_id": "261109-5a68be2c",
+  "base_miles": "778794a807866a4f51f34d5e87dda3e55d9e85ad",
   "temperatures": [
     0.6,
     1.0,
@@ -21,1452 +21,1600 @@
   "shards": 40,
   "jobs": [
     {
-      "run_id": "261108-679762ea",
+      "run_id": "261109-f89e8660",
       "stage": "tuning",
       "temperature": 0.6,
       "method": "ce",
       "learning_rate": 1e-05,
       "seed": 10001,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-6a80c9df",
+      "run_id": "261109-2fc94370",
       "stage": "tuning",
       "temperature": 0.6,
       "method": "ce",
       "learning_rate": 1e-05,
       "seed": 10002,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-83d828db",
+      "run_id": "261109-6d408ba9",
       "stage": "tuning",
       "temperature": 0.6,
       "method": "ce",
       "learning_rate": 3e-05,
       "seed": 10001,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-0fb53557",
+      "run_id": "261109-45228d60",
       "stage": "tuning",
       "temperature": 0.6,
       "method": "ce",
       "learning_rate": 3e-05,
       "seed": 10002,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-4657d411",
+      "run_id": "261109-4e2c2c14",
       "stage": "tuning",
       "temperature": 0.6,
       "method": "ce",
       "learning_rate": 0.0001,
       "seed": 10001,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-8a0a95c8",
+      "run_id": "261109-64c488c5",
       "stage": "tuning",
       "temperature": 0.6,
       "method": "ce",
       "learning_rate": 0.0001,
       "seed": 10002,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-5a055ba5",
+      "run_id": "261109-ac3c7868",
       "stage": "tuning",
       "temperature": 0.6,
       "method": "l1",
       "learning_rate": 1e-05,
       "seed": 10001,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-b75588b4",
+      "run_id": "261109-0090dff7",
       "stage": "tuning",
       "temperature": 0.6,
       "method": "l1",
       "learning_rate": 1e-05,
       "seed": 10002,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-65afa4ae",
+      "run_id": "261109-d59452d7",
       "stage": "tuning",
       "temperature": 0.6,
       "method": "l1",
       "learning_rate": 3e-05,
       "seed": 10001,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-5d1201bd",
+      "run_id": "261109-9d5a7059",
       "stage": "tuning",
       "temperature": 0.6,
       "method": "l1",
       "learning_rate": 3e-05,
       "seed": 10002,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-b9e5f459",
+      "run_id": "261109-a8d77d5d",
       "stage": "tuning",
       "temperature": 0.6,
       "method": "l1",
       "learning_rate": 0.0001,
       "seed": 10001,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-95162c04",
+      "run_id": "261109-7182c7ce",
       "stage": "tuning",
       "temperature": 0.6,
       "method": "l1",
       "learning_rate": 0.0001,
       "seed": 10002,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-6b6f00de",
+      "run_id": "261109-6efac3d9",
       "stage": "tuning",
       "temperature": 0.6,
       "method": "smooth",
       "learning_rate": 1e-05,
       "seed": 10001,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-9633b937",
+      "run_id": "261109-6dd1e22b",
       "stage": "tuning",
       "temperature": 0.6,
       "method": "smooth",
       "learning_rate": 1e-05,
       "seed": 10002,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-ebaacf71",
+      "run_id": "261109-c877b6f6",
       "stage": "tuning",
       "temperature": 0.6,
       "method": "smooth",
       "learning_rate": 3e-05,
       "seed": 10001,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-bac13f3c",
+      "run_id": "261109-2fb26012",
       "stage": "tuning",
       "temperature": 0.6,
       "method": "smooth",
       "learning_rate": 3e-05,
       "seed": 10002,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-4a32b515",
+      "run_id": "261109-ba497100",
       "stage": "tuning",
       "temperature": 0.6,
       "method": "smooth",
       "learning_rate": 0.0001,
       "seed": 10001,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-44584d92",
+      "run_id": "261109-4273373f",
       "stage": "tuning",
       "temperature": 0.6,
       "method": "smooth",
       "learning_rate": 0.0001,
       "seed": 10002,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-bd16d4ab",
+      "run_id": "261109-a89b078e",
       "stage": "tuning",
       "temperature": 1.0,
       "method": "ce",
       "learning_rate": 1e-05,
       "seed": 10001,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-fff82433",
+      "run_id": "261109-7af43ad7",
       "stage": "tuning",
       "temperature": 1.0,
       "method": "ce",
       "learning_rate": 1e-05,
       "seed": 10002,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-4da12bc1",
+      "run_id": "261109-2e886367",
       "stage": "tuning",
       "temperature": 1.0,
       "method": "ce",
       "learning_rate": 3e-05,
       "seed": 10001,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-1dfd3c32",
+      "run_id": "261109-4b2303fe",
       "stage": "tuning",
       "temperature": 1.0,
       "method": "ce",
       "learning_rate": 3e-05,
       "seed": 10002,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-cddb6058",
+      "run_id": "261109-a9b1b2e8",
       "stage": "tuning",
       "temperature": 1.0,
       "method": "ce",
       "learning_rate": 0.0001,
       "seed": 10001,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-e219a7f4",
+      "run_id": "261109-a8372c42",
       "stage": "tuning",
       "temperature": 1.0,
       "method": "ce",
       "learning_rate": 0.0001,
       "seed": 10002,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-d3a93b83",
+      "run_id": "261109-f3bd3b4e",
       "stage": "tuning",
       "temperature": 1.0,
       "method": "l1",
       "learning_rate": 1e-05,
       "seed": 10001,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-da980d5b",
+      "run_id": "261109-13872bc5",
       "stage": "tuning",
       "temperature": 1.0,
       "method": "l1",
       "learning_rate": 1e-05,
       "seed": 10002,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-792f0a23",
+      "run_id": "261109-0f77e9f5",
       "stage": "tuning",
       "temperature": 1.0,
       "method": "l1",
       "learning_rate": 3e-05,
       "seed": 10001,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-a791ce30",
+      "run_id": "261109-2e53d08c",
       "stage": "tuning",
       "temperature": 1.0,
       "method": "l1",
       "learning_rate": 3e-05,
       "seed": 10002,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-792b33ca",
+      "run_id": "261109-5486b117",
       "stage": "tuning",
       "temperature": 1.0,
       "method": "l1",
       "learning_rate": 0.0001,
       "seed": 10001,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-e0627659",
+      "run_id": "261109-40cb43aa",
       "stage": "tuning",
       "temperature": 1.0,
       "method": "l1",
       "learning_rate": 0.0001,
       "seed": 10002,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-0935fce0",
+      "run_id": "261109-4d811929",
       "stage": "tuning",
       "temperature": 1.0,
       "method": "smooth",
       "learning_rate": 1e-05,
       "seed": 10001,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-35d69757",
+      "run_id": "261109-07e3d9e7",
       "stage": "tuning",
       "temperature": 1.0,
       "method": "smooth",
       "learning_rate": 1e-05,
       "seed": 10002,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-88b1a51a",
+      "run_id": "261109-28f2d331",
       "stage": "tuning",
       "temperature": 1.0,
       "method": "smooth",
       "learning_rate": 3e-05,
       "seed": 10001,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-d2fffb79",
+      "run_id": "261109-7ddc0147",
       "stage": "tuning",
       "temperature": 1.0,
       "method": "smooth",
       "learning_rate": 3e-05,
       "seed": 10002,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-76bdf6b9",
+      "run_id": "261109-a7657890",
       "stage": "tuning",
       "temperature": 1.0,
       "method": "smooth",
       "learning_rate": 0.0001,
       "seed": 10001,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-f04fb5d1",
+      "run_id": "261109-b2ee6b6a",
       "stage": "tuning",
       "temperature": 1.0,
       "method": "smooth",
       "learning_rate": 0.0001,
       "seed": 10002,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-71ddba76",
+      "run_id": "261109-033b7ded",
       "stage": "tuning",
       "temperature": 1.4,
       "method": "ce",
       "learning_rate": 1e-05,
       "seed": 10001,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-a43cfe04",
+      "run_id": "261109-957f9233",
       "stage": "tuning",
       "temperature": 1.4,
       "method": "ce",
       "learning_rate": 1e-05,
       "seed": 10002,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-c55fb6a4",
+      "run_id": "261109-96da2957",
       "stage": "tuning",
       "temperature": 1.4,
       "method": "ce",
       "learning_rate": 3e-05,
       "seed": 10001,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-825cc806",
+      "run_id": "261109-ac47e77a",
       "stage": "tuning",
       "temperature": 1.4,
       "method": "ce",
       "learning_rate": 3e-05,
       "seed": 10002,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-bf7f7d7f",
+      "run_id": "261109-a226365f",
       "stage": "tuning",
       "temperature": 1.4,
       "method": "ce",
       "learning_rate": 0.0001,
       "seed": 10001,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-a45903ca",
+      "run_id": "261109-995c8997",
       "stage": "tuning",
       "temperature": 1.4,
       "method": "ce",
       "learning_rate": 0.0001,
       "seed": 10002,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-e332ce36",
+      "run_id": "261109-eef66179",
       "stage": "tuning",
       "temperature": 1.4,
       "method": "l1",
       "learning_rate": 1e-05,
       "seed": 10001,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-d7c8ad38",
+      "run_id": "261109-5caa1462",
       "stage": "tuning",
       "temperature": 1.4,
       "method": "l1",
       "learning_rate": 1e-05,
       "seed": 10002,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-1ad93b65",
+      "run_id": "261109-ed69235d",
       "stage": "tuning",
       "temperature": 1.4,
       "method": "l1",
       "learning_rate": 3e-05,
       "seed": 10001,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-bb8e73d4",
+      "run_id": "261109-2490be7d",
       "stage": "tuning",
       "temperature": 1.4,
       "method": "l1",
       "learning_rate": 3e-05,
       "seed": 10002,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-87c23255",
+      "run_id": "261109-4766c4ee",
       "stage": "tuning",
       "temperature": 1.4,
       "method": "l1",
       "learning_rate": 0.0001,
       "seed": 10001,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-4fdf8259",
+      "run_id": "261109-14b1fc2f",
       "stage": "tuning",
       "temperature": 1.4,
       "method": "l1",
       "learning_rate": 0.0001,
       "seed": 10002,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-cb0f9c09",
+      "run_id": "261109-6429f945",
       "stage": "tuning",
       "temperature": 1.4,
       "method": "smooth",
       "learning_rate": 1e-05,
       "seed": 10001,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-8c4f1543",
+      "run_id": "261109-a0f3a5a9",
       "stage": "tuning",
       "temperature": 1.4,
       "method": "smooth",
       "learning_rate": 1e-05,
       "seed": 10002,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-67aa9bde",
+      "run_id": "261109-ac878af6",
       "stage": "tuning",
       "temperature": 1.4,
       "method": "smooth",
       "learning_rate": 3e-05,
       "seed": 10001,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-1b831a53",
+      "run_id": "261109-43c74f6b",
       "stage": "tuning",
       "temperature": 1.4,
       "method": "smooth",
       "learning_rate": 3e-05,
       "seed": 10002,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-1f9211dd",
+      "run_id": "261109-c8f48580",
       "stage": "tuning",
       "temperature": 1.4,
       "method": "smooth",
       "learning_rate": 0.0001,
       "seed": 10001,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-5050cd6c",
+      "run_id": "261109-cb814d62",
       "stage": "tuning",
       "temperature": 1.4,
       "method": "smooth",
       "learning_rate": 0.0001,
       "seed": 10002,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-f31df34c",
+      "run_id": "261109-24c4890c",
       "stage": "confirmation",
       "temperature": 0.6,
       "method": "ce",
       "learning_rate": null,
       "seed": 20001,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-91c93454",
+      "run_id": "261109-c71780e3",
       "stage": "confirmation",
       "temperature": 0.6,
       "method": "ce",
       "learning_rate": null,
       "seed": 20002,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-aadd6591",
+      "run_id": "261109-4c9a15cc",
       "stage": "confirmation",
       "temperature": 0.6,
       "method": "ce",
       "learning_rate": null,
       "seed": 20003,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-fe5b1562",
+      "run_id": "261109-a06143c5",
       "stage": "confirmation",
       "temperature": 0.6,
       "method": "ce",
       "learning_rate": null,
       "seed": 20004,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-9e7f8ee8",
+      "run_id": "261109-637161cc",
       "stage": "confirmation",
       "temperature": 0.6,
       "method": "ce",
       "learning_rate": null,
       "seed": 20005,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-7882b5ca",
+      "run_id": "261109-6f1fe7e7",
       "stage": "confirmation",
       "temperature": 0.6,
       "method": "ce",
       "learning_rate": null,
       "seed": 20006,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-a20d4b3e",
+      "run_id": "261109-71961a1e",
       "stage": "confirmation",
       "temperature": 0.6,
       "method": "ce",
       "learning_rate": null,
       "seed": 20007,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-16b9bd6b",
+      "run_id": "261109-c0585d25",
       "stage": "confirmation",
       "temperature": 0.6,
       "method": "ce",
       "learning_rate": null,
       "seed": 20008,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-ca6d571e",
+      "run_id": "261109-508dc15e",
       "stage": "confirmation",
       "temperature": 0.6,
       "method": "ce",
       "learning_rate": null,
       "seed": 20009,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-42de6a59",
+      "run_id": "261109-a95f13d3",
       "stage": "confirmation",
       "temperature": 0.6,
       "method": "ce",
       "learning_rate": null,
       "seed": 20010,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-6e66dded",
+      "run_id": "261109-845ef45c",
       "stage": "confirmation",
       "temperature": 0.6,
       "method": "l1",
       "learning_rate": null,
       "seed": 20001,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-e1909c5a",
+      "run_id": "261109-e491b2e9",
       "stage": "confirmation",
       "temperature": 0.6,
       "method": "l1",
       "learning_rate": null,
       "seed": 20002,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-4f08ee77",
+      "run_id": "261109-63785dc6",
       "stage": "confirmation",
       "temperature": 0.6,
       "method": "l1",
       "learning_rate": null,
       "seed": 20003,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-2196dc99",
+      "run_id": "261109-2e2571b0",
       "stage": "confirmation",
       "temperature": 0.6,
       "method": "l1",
       "learning_rate": null,
       "seed": 20004,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-2796027f",
+      "run_id": "261109-492a06c5",
       "stage": "confirmation",
       "temperature": 0.6,
       "method": "l1",
       "learning_rate": null,
       "seed": 20005,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-6abe42d4",
+      "run_id": "261109-02b74c81",
       "stage": "confirmation",
       "temperature": 0.6,
       "method": "l1",
       "learning_rate": null,
       "seed": 20006,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-085aa071",
+      "run_id": "261109-95b83710",
       "stage": "confirmation",
       "temperature": 0.6,
       "method": "l1",
       "learning_rate": null,
       "seed": 20007,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-119b282c",
+      "run_id": "261109-1b2ca746",
       "stage": "confirmation",
       "temperature": 0.6,
       "method": "l1",
       "learning_rate": null,
       "seed": 20008,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-d8e3d6d5",
+      "run_id": "261109-9576caee",
       "stage": "confirmation",
       "temperature": 0.6,
       "method": "l1",
       "learning_rate": null,
       "seed": 20009,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-82d7c0f6",
+      "run_id": "261109-48f36554",
       "stage": "confirmation",
       "temperature": 0.6,
       "method": "l1",
       "learning_rate": null,
       "seed": 20010,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-23321a81",
+      "run_id": "261109-f1176205",
       "stage": "confirmation",
       "temperature": 0.6,
       "method": "smooth",
       "learning_rate": null,
       "seed": 20001,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-1ac62cef",
+      "run_id": "261109-dedd022b",
       "stage": "confirmation",
       "temperature": 0.6,
       "method": "smooth",
       "learning_rate": null,
       "seed": 20002,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-2e5f62ff",
+      "run_id": "261109-7f743475",
       "stage": "confirmation",
       "temperature": 0.6,
       "method": "smooth",
       "learning_rate": null,
       "seed": 20003,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-e388f14d",
+      "run_id": "261109-51be14db",
       "stage": "confirmation",
       "temperature": 0.6,
       "method": "smooth",
       "learning_rate": null,
       "seed": 20004,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-3d0f505b",
+      "run_id": "261109-5140e184",
       "stage": "confirmation",
       "temperature": 0.6,
       "method": "smooth",
       "learning_rate": null,
       "seed": 20005,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-0cc806e2",
+      "run_id": "261109-e3c739a4",
       "stage": "confirmation",
       "temperature": 0.6,
       "method": "smooth",
       "learning_rate": null,
       "seed": 20006,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-bb11bfc4",
+      "run_id": "261109-782242a4",
       "stage": "confirmation",
       "temperature": 0.6,
       "method": "smooth",
       "learning_rate": null,
       "seed": 20007,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-426a8b3c",
+      "run_id": "261109-a57469a5",
       "stage": "confirmation",
       "temperature": 0.6,
       "method": "smooth",
       "learning_rate": null,
       "seed": 20008,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-e07a9145",
+      "run_id": "261109-d8489355",
       "stage": "confirmation",
       "temperature": 0.6,
       "method": "smooth",
       "learning_rate": null,
       "seed": 20009,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-6fca6c68",
+      "run_id": "261109-394646e5",
       "stage": "confirmation",
       "temperature": 0.6,
       "method": "smooth",
       "learning_rate": null,
       "seed": 20010,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-5ab83192",
+      "run_id": "261109-101f9848",
       "stage": "confirmation",
       "temperature": 1.0,
       "method": "ce",
       "learning_rate": null,
       "seed": 20001,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-9335f438",
+      "run_id": "261109-554282f2",
       "stage": "confirmation",
       "temperature": 1.0,
       "method": "ce",
       "learning_rate": null,
       "seed": 20002,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-408d9ad1",
+      "run_id": "261109-1c0b32a0",
       "stage": "confirmation",
       "temperature": 1.0,
       "method": "ce",
       "learning_rate": null,
       "seed": 20003,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-218f70fe",
+      "run_id": "261109-cee993bb",
       "stage": "confirmation",
       "temperature": 1.0,
       "method": "ce",
       "learning_rate": null,
       "seed": 20004,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-2c80c2ba",
+      "run_id": "261109-c06ec231",
       "stage": "confirmation",
       "temperature": 1.0,
       "method": "ce",
       "learning_rate": null,
       "seed": 20005,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-b15c72b2",
+      "run_id": "261109-19000e74",
       "stage": "confirmation",
       "temperature": 1.0,
       "method": "ce",
       "learning_rate": null,
       "seed": 20006,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-153ac22d",
+      "run_id": "261109-3ccd32a6",
       "stage": "confirmation",
       "temperature": 1.0,
       "method": "ce",
       "learning_rate": null,
       "seed": 20007,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-361140db",
+      "run_id": "261109-a6e9dc62",
       "stage": "confirmation",
       "temperature": 1.0,
       "method": "ce",
       "learning_rate": null,
       "seed": 20008,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-90776b0e",
+      "run_id": "261109-1dde932d",
       "stage": "confirmation",
       "temperature": 1.0,
       "method": "ce",
       "learning_rate": null,
       "seed": 20009,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-2180c911",
+      "run_id": "261109-0a48bed2",
       "stage": "confirmation",
       "temperature": 1.0,
       "method": "ce",
       "learning_rate": null,
       "seed": 20010,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-ebe7b6b5",
+      "run_id": "261109-7106f53e",
       "stage": "confirmation",
       "temperature": 1.0,
       "method": "l1",
       "learning_rate": null,
       "seed": 20001,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-5fad8fe3",
+      "run_id": "261109-47ef3528",
       "stage": "confirmation",
       "temperature": 1.0,
       "method": "l1",
       "learning_rate": null,
       "seed": 20002,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-cca7a5a3",
+      "run_id": "261109-eb595817",
       "stage": "confirmation",
       "temperature": 1.0,
       "method": "l1",
       "learning_rate": null,
       "seed": 20003,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-632ad768",
+      "run_id": "261109-585314c4",
       "stage": "confirmation",
       "temperature": 1.0,
       "method": "l1",
       "learning_rate": null,
       "seed": 20004,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-9b25f497",
+      "run_id": "261109-7a138932",
       "stage": "confirmation",
       "temperature": 1.0,
       "method": "l1",
       "learning_rate": null,
       "seed": 20005,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-582ae0ff",
+      "run_id": "261109-2c27c18c",
       "stage": "confirmation",
       "temperature": 1.0,
       "method": "l1",
       "learning_rate": null,
       "seed": 20006,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-a2c4c29a",
+      "run_id": "261109-f7f30664",
       "stage": "confirmation",
       "temperature": 1.0,
       "method": "l1",
       "learning_rate": null,
       "seed": 20007,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-959ed4cc",
+      "run_id": "261109-b36bd859",
       "stage": "confirmation",
       "temperature": 1.0,
       "method": "l1",
       "learning_rate": null,
       "seed": 20008,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-18c243e4",
+      "run_id": "261109-e2f839f2",
       "stage": "confirmation",
       "temperature": 1.0,
       "method": "l1",
       "learning_rate": null,
       "seed": 20009,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-4d0312f9",
+      "run_id": "261109-6b57a828",
       "stage": "confirmation",
       "temperature": 1.0,
       "method": "l1",
       "learning_rate": null,
       "seed": 20010,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-d7db1f94",
+      "run_id": "261109-1d85ab7f",
       "stage": "confirmation",
       "temperature": 1.0,
       "method": "smooth",
       "learning_rate": null,
       "seed": 20001,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-f0d0a9c7",
+      "run_id": "261109-69ba08c1",
       "stage": "confirmation",
       "temperature": 1.0,
       "method": "smooth",
       "learning_rate": null,
       "seed": 20002,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-0e1b5bce",
+      "run_id": "261109-e8e8ef72",
       "stage": "confirmation",
       "temperature": 1.0,
       "method": "smooth",
       "learning_rate": null,
       "seed": 20003,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-54078136",
+      "run_id": "261109-e527a154",
       "stage": "confirmation",
       "temperature": 1.0,
       "method": "smooth",
       "learning_rate": null,
       "seed": 20004,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-a09fb78c",
+      "run_id": "261109-7f423345",
       "stage": "confirmation",
       "temperature": 1.0,
       "method": "smooth",
       "learning_rate": null,
       "seed": 20005,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-bd7622bc",
+      "run_id": "261109-b18b0ec4",
       "stage": "confirmation",
       "temperature": 1.0,
       "method": "smooth",
       "learning_rate": null,
       "seed": 20006,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-c3ccab47",
+      "run_id": "261109-6c8a117d",
       "stage": "confirmation",
       "temperature": 1.0,
       "method": "smooth",
       "learning_rate": null,
       "seed": 20007,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-900184b9",
+      "run_id": "261109-568d10f9",
       "stage": "confirmation",
       "temperature": 1.0,
       "method": "smooth",
       "learning_rate": null,
       "seed": 20008,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-250818be",
+      "run_id": "261109-12f27e91",
       "stage": "confirmation",
       "temperature": 1.0,
       "method": "smooth",
       "learning_rate": null,
       "seed": 20009,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-bb286017",
+      "run_id": "261109-f56bbb01",
       "stage": "confirmation",
       "temperature": 1.0,
       "method": "smooth",
       "learning_rate": null,
       "seed": 20010,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-e391d43f",
+      "run_id": "261109-0b817804",
       "stage": "confirmation",
       "temperature": 1.4,
       "method": "ce",
       "learning_rate": null,
       "seed": 20001,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-870b605b",
+      "run_id": "261109-a7569e75",
       "stage": "confirmation",
       "temperature": 1.4,
       "method": "ce",
       "learning_rate": null,
       "seed": 20002,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-20fe20f1",
+      "run_id": "261109-06fe517b",
       "stage": "confirmation",
       "temperature": 1.4,
       "method": "ce",
       "learning_rate": null,
       "seed": 20003,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-21da8272",
+      "run_id": "261109-a181295a",
       "stage": "confirmation",
       "temperature": 1.4,
       "method": "ce",
       "learning_rate": null,
       "seed": 20004,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-ab88ae85",
+      "run_id": "261109-abde5039",
       "stage": "confirmation",
       "temperature": 1.4,
       "method": "ce",
       "learning_rate": null,
       "seed": 20005,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-27baef32",
+      "run_id": "261109-7db87423",
       "stage": "confirmation",
       "temperature": 1.4,
       "method": "ce",
       "learning_rate": null,
       "seed": 20006,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-0ca48549",
+      "run_id": "261109-0a2af129",
       "stage": "confirmation",
       "temperature": 1.4,
       "method": "ce",
       "learning_rate": null,
       "seed": 20007,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-e471e186",
+      "run_id": "261109-73b61c74",
       "stage": "confirmation",
       "temperature": 1.4,
       "method": "ce",
       "learning_rate": null,
       "seed": 20008,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-5c7eb681",
+      "run_id": "261109-187ecdf4",
       "stage": "confirmation",
       "temperature": 1.4,
       "method": "ce",
       "learning_rate": null,
       "seed": 20009,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-a4d864ff",
+      "run_id": "261109-78abb639",
       "stage": "confirmation",
       "temperature": 1.4,
       "method": "ce",
       "learning_rate": null,
       "seed": 20010,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-908fad6a",
+      "run_id": "261109-8bdf64f6",
       "stage": "confirmation",
       "temperature": 1.4,
       "method": "l1",
       "learning_rate": null,
       "seed": 20001,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-8c75439d",
+      "run_id": "261109-3cfa40b4",
       "stage": "confirmation",
       "temperature": 1.4,
       "method": "l1",
       "learning_rate": null,
       "seed": 20002,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-dc23f39d",
+      "run_id": "261109-e16ab9e8",
       "stage": "confirmation",
       "temperature": 1.4,
       "method": "l1",
       "learning_rate": null,
       "seed": 20003,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-a1eccc92",
+      "run_id": "261109-9b55c062",
       "stage": "confirmation",
       "temperature": 1.4,
       "method": "l1",
       "learning_rate": null,
       "seed": 20004,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-a31d915d",
+      "run_id": "261109-f56025d2",
       "stage": "confirmation",
       "temperature": 1.4,
       "method": "l1",
       "learning_rate": null,
       "seed": 20005,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-ccc4e69e",
+      "run_id": "261109-f1d29292",
       "stage": "confirmation",
       "temperature": 1.4,
       "method": "l1",
       "learning_rate": null,
       "seed": 20006,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-cdf34646",
+      "run_id": "261109-a194f5e1",
       "stage": "confirmation",
       "temperature": 1.4,
       "method": "l1",
       "learning_rate": null,
       "seed": 20007,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-31fb6a25",
+      "run_id": "261109-3dedbf22",
       "stage": "confirmation",
       "temperature": 1.4,
       "method": "l1",
       "learning_rate": null,
       "seed": 20008,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-e578427a",
+      "run_id": "261109-fdf0cf1a",
       "stage": "confirmation",
       "temperature": 1.4,
       "method": "l1",
       "learning_rate": null,
       "seed": 20009,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-a720642a",
+      "run_id": "261109-41a5daeb",
       "stage": "confirmation",
       "temperature": 1.4,
       "method": "l1",
       "learning_rate": null,
       "seed": 20010,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-a13c98ca",
+      "run_id": "261109-5e8de463",
       "stage": "confirmation",
       "temperature": 1.4,
       "method": "smooth",
       "learning_rate": null,
       "seed": 20001,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-f29f3a01",
+      "run_id": "261109-cfdaacd6",
       "stage": "confirmation",
       "temperature": 1.4,
       "method": "smooth",
       "learning_rate": null,
       "seed": 20002,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-60d91f06",
+      "run_id": "261109-1c395a4c",
       "stage": "confirmation",
       "temperature": 1.4,
       "method": "smooth",
       "learning_rate": null,
       "seed": 20003,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-72445968",
+      "run_id": "261109-0ae5d8e0",
       "stage": "confirmation",
       "temperature": 1.4,
       "method": "smooth",
       "learning_rate": null,
       "seed": 20004,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-41c19010",
+      "run_id": "261109-2c11742e",
       "stage": "confirmation",
       "temperature": 1.4,
       "method": "smooth",
       "learning_rate": null,
       "seed": 20005,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-533fca15",
+      "run_id": "261109-70bd91b6",
       "stage": "confirmation",
       "temperature": 1.4,
       "method": "smooth",
       "learning_rate": null,
       "seed": 20006,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-c5de8a83",
+      "run_id": "261109-d02ab63d",
       "stage": "confirmation",
       "temperature": 1.4,
       "method": "smooth",
       "learning_rate": null,
       "seed": 20007,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-abb2d74a",
+      "run_id": "261109-626cca98",
       "stage": "confirmation",
       "temperature": 1.4,
       "method": "smooth",
       "learning_rate": null,
       "seed": 20008,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-7407ac8e",
+      "run_id": "261109-1815ee23",
       "stage": "confirmation",
       "temperature": 1.4,
       "method": "smooth",
       "learning_rate": null,
       "seed": 20009,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     },
     {
-      "run_id": "261108-8a12fded",
+      "run_id": "261109-143d34a1",
       "stage": "confirmation",
       "temperature": 1.4,
       "method": "smooth",
       "learning_rate": null,
       "seed": 20010,
       "updates": 2000,
-      "status": "pending"
+      "status": "pending",
+      "experiment_id": "261109-5a68be2c"
     }
   ],
-  "smoke_run_id": "261108-c0142c41",
+  "smoke_run_id": "261109-6fb7de17",
   "model_revisions": {
     "Qwen/Qwen3-4B": "1cfa9a7208912126459214e8b04321603b3df60c",
     "Qwen/Qwen3-0.6B": "c1899de289a04d12100db370d81485cdf75e47ca"
   },
   "sglang": "b8d46f2f309fdada4bbb05ef4e90ac4adf7a3bcf",
   "megatron": "2fbe25a442a539b2796cdf40e77dfb2c90782529",
-  "benchmark_run_id": "261108-e5098516"
+  "benchmark_run_id": "261109-ed8341f8",
+  "supersedes_invalid_experiment_id": "261108-eee6fab1",
+  "data_source_experiment_id": "261108-eee6fab1",
+  "amp_probe_source": "793810e7261a2f6176286cd3edb0cb9e5a2531d0",
+  "precision_note": "BF16 custom_fwd saved operands; matching custom_bwd; eager AMP reference checked."
 }
