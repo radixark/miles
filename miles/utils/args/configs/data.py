@@ -119,7 +119,9 @@ class DataConfig(BaseConfig):
         Arg(
             help=(
                 "SGLang expands media placeholders and the trainer builds the processor inputs "
-                "(models with an SGLang token-space strategy); Megatron backend only for now."
+                "(models with an SGLang token-space strategy); Megatron backend only for now. Engines that serve "
+                "Miles's multimodal prompts need --sglang-enable-token-space-processor; a frozen reward or reference "
+                "engine group that serves its own requests may override it off."
             )
         ),
     ] = False
