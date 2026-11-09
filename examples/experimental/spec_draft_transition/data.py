@@ -25,7 +25,7 @@ class Args(Tap):
     teacher: str
     shard: int = 0
     shards: int = 40
-    batch: int = 64
+    batch: int = 256
     maximum_response: int = 1024
     seed: int = 71319
 
@@ -74,8 +74,8 @@ def generate(args: Args) -> None:
     prompts = pl.read_parquet(root / "prompts.parquet").with_row_index("row")
     subset = prompts.filter(pl.col("row") % args.shards == args.shard).to_dicts()
     engine = sgl.Engine(model_path=args.teacher, dtype="bfloat16", mem_fraction_static=0.70,
-                        context_length=2048, max_running_requests=64, random_seed=args.seed + args.shard,
-                        disable_cuda_graph=True, log_level="warning")
+                        context_length=2048, max_running_requests=128, random_seed=args.seed + args.shard,
+                        disable_cuda_graph=False, log_level="warning")
     output = root / "generated"
     output.mkdir(exist_ok=True)
     for temperature in [0.6, 1.0, 1.4]:
