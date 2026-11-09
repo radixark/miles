@@ -26,6 +26,7 @@ from miles.rollout.generate_utils.openai_endpoint_utils import OpenAIEndpointTra
 from miles.rollout.session.samples.codec import SamplesReply
 from miles.rollout.session.server import SessionServer
 from miles.rollout.session.types import SessionServerInstance
+from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY
 from miles.utils import http_utils
 from miles.utils.http_utils import find_available_port
 from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
@@ -204,7 +205,11 @@ def assert_agentic_retry_trajectory_parity(v1: SessionParityRun, v2: SessionPari
     assert isinstance(v1.samples[0].metadata["session_id"], str)
     assert isinstance(v2.samples[0].metadata["session_id"], str)
 
-    v2_linear_metadata = {key: value for key, value in v2.session_metadata.items() if key not in ("agent", "tree")}
+    v2_linear_metadata = {
+        key: value
+        for key, value in v2.session_metadata.items()
+        if key not in ("agent", "tree", SESSION_ROLLOUT_METRICS_KEY)
+    }
     _assert_bits_equal(v1.session_metadata, v2_linear_metadata, path="session_metadata")
     assert_sample_bitwise_equal(
         v1.samples[0],
@@ -296,6 +301,7 @@ def _training_metadata_projection(metadata: dict[str, Any]) -> dict[str, Any]:
     # each path opens its own session, so the ids differ by construction
     if "session_id" in projected:
         projected["session_id"] = "<session>"
+    projected.pop(SESSION_ROLLOUT_METRICS_KEY, None)
     lifecycle = projected.get("lifecycle")
     if lifecycle is not None:
         segments = lifecycle if isinstance(lifecycle, list) else [lifecycle]
