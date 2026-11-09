@@ -45,6 +45,14 @@ from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.core import JSON_MEDIA_TYPE, SessionCore, _render_json
 from miles.rollout.session.errors import SessionError
 from miles.rollout.session.linear_trajectory import SessionRegistry
+from miles.rollout.session.responses_adapter import (
+    _chat_to_response,
+    _responses_error_message,
+    _responses_error_response,
+    _responses_sse_body,
+    _responses_to_chat_body,
+    responses_adapter_available,
+)
 from miles.rollout.session.types import CreateSessionRequest
 from miles.utils.chat_template_utils import get_tito_tokenizer
 from miles.utils.chat_template_utils.message_matcher_hub import (
@@ -271,6 +279,48 @@ def setup_session_routes(app, backend, config: SessionServerConfig, *, use_addit
             # Post-commit failures keep the record and return JSON 500, never partial SSE.
             logger.exception("Anthropic response conversion failed for session %s", session_id)
             return _anthropic_error_response(500, b"")
+
+    @app.post("/sessions/{session_id}/v1/responses")
+    async def openai_responses(request: Request, session_id: str):
+        if not responses_adapter_available():
+            return _responses_error_response(501, "The installed SGLang does not support the Responses adapter")
+        try:
+            responses_request, chat_body, custom_names = _responses_to_chat_body(
+                await request.body(), merge_inline_system=merge_inline_system
+            )
+        except (ValueError, KeyError, TypeError, AttributeError) as exc:
+            return _responses_error_response(400, str(exc))
+
+        try:
+            core_response = await core.chat_completions(
+                session_id,
+                method=request.method,
+                query=request.url.query,
+                headers=dict(request.headers),
+                body=_render_json(chat_body),
+            )
+        except SessionError as exc:
+            return _responses_error_response(exc.status_code, str(exc))
+        except Exception:
+            logger.exception("Responses chat processing failed for session %s", session_id)
+            return _responses_error_response(500, "internal error")
+
+        if core_response.status_code != 200:
+            return _responses_error_response(core_response.status_code, _responses_error_message(core_response.body))
+
+        try:
+            response = _chat_to_response(json.loads(core_response.body), responses_request, custom_names)
+            if responses_request.get("stream"):
+                return Response(
+                    content=_responses_sse_body(response),
+                    status_code=200,
+                    headers={"cache-control": "no-cache", "x-accel-buffering": "no"},
+                    media_type="text/event-stream",
+                )
+            return Response(content=_render_json(response), status_code=200, media_type=JSON_MEDIA_TYPE)
+        except Exception:
+            logger.exception("Responses conversion failed for session %s", session_id)
+            return _responses_error_response(500, "internal error")
 
     @app.post("/sessions/{session_id}/samples")
     async def collect_samples(request: Request, session_id: str):
