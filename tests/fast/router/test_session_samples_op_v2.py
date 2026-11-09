@@ -737,7 +737,7 @@ async def test_session_rollout_metrics_count_every_tree_node_once(spec_core):
                 "spec_num_proposed_drafts": 130,
                 "spec_verify_ct": 5,
                 "completion_tokens": 5,
-            }
+            },
         },
     }
 
