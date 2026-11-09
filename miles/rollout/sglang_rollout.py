@@ -171,7 +171,7 @@ async def generate(
         sample.status == Sample.Status.PENDING or sample.status == Sample.Status.ABORTED
     ), f"Sample status is {sample.status}"
 
-    token_space = has_media(sample.multimodal_inputs) and args.multimodal_token_space_processing
+    token_space = args.multimodal_token_space_processing and has_media(sample.multimodal_inputs)
     if token_space:
         # Without --apply-chat-template the dataset keeps the raw messages, so render them here. SGLang
         # expands the media placeholders and the trainer builds the processor tensors.
@@ -666,6 +666,8 @@ async def eval_rollout_single_dataset(
             tool_key=dataset_cfg.tool_key,
             apply_chat_template=args.apply_chat_template,
             apply_chat_template_kwargs=args.apply_chat_template_kwargs,
+            media_dir=args.shared_media_dir,
+            token_space_processing=args.multimodal_token_space_processing,
         )
     dataset = EVAL_PROMPT_DATASET[cache_key]
 

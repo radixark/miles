@@ -21,6 +21,7 @@ from miles.rollout.generate_utils.generate_endpoint_utils import (
 )
 from miles.utils.args.schema import A, Arg, BaseConfig
 from miles.utils.http_utils import post
+from miles.utils.media_refs import collect_media_refs
 from miles.utils.processing_utils import encode_image_for_rollout_engine
 from miles.utils.types import Sample
 
@@ -73,6 +74,8 @@ def _encode_observation_for_generation(
     metadata: dict | None,
     apply_chat_template: bool,
     apply_chat_template_kwargs: dict | None,
+    token_space: bool,
+    media_dir: str | None,
 ):
     """
     Encode a single observation turn that may include images/videos in the content list.
@@ -116,15 +119,23 @@ def _encode_observation_for_generation(
             k: v for k, v in processor_output.items() if k not in ["input_ids", "attention_mask"]
         } or None
     else:
+        # Token space: the media ride along as references and SGLang expands the placeholders on the next request.
+        multimodal_inputs = collect_media_refs([message], media_dir) if token_space else None
         prompt_ids = tokenizer.encode(formatted_prompt, add_special_tokens=False)
 
     if trim_length:
         prompt_ids = prompt_ids[trim_length:]
 
-    image_data = []
-    if multimodal_inputs and multimodal_inputs.get("images"):
-        image_data = [encode_image_for_rollout_engine(img) for img in multimodal_inputs["images"]]
+    image_data = _image_data_for_engine(multimodal_inputs, token_space)
     return prompt_ids, image_data, multimodal_inputs, multimodal_train_inputs
+
+
+def _image_data_for_engine(multimodal_inputs: dict | None, token_space: bool) -> list:
+    """The request's image_data: the references as they are in token space, else base64 of the PIL images."""
+    images = (multimodal_inputs or {}).get("images")
+    if not images:
+        return []
+    return list(images) if token_space else [encode_image_for_rollout_engine(img) for img in images]
 
 
 def _merge_multimodal_train_inputs(chunks: list[dict | None]) -> dict | None:
@@ -165,7 +176,7 @@ def _initialize_resources(args: Any, sample: Sample):
     return env, env_module, config, url
 
 
-def _prepare_initial_inputs(sample: Sample, processor, tokenizer):
+def _prepare_initial_inputs(sample: Sample, processor, tokenizer, token_space: bool):
     if processor:
         processor_output = processor(text=sample.prompt, **(sample.multimodal_inputs or {}))
         prompt_ids = processor_output["input_ids"][0]
@@ -175,14 +186,14 @@ def _prepare_initial_inputs(sample: Sample, processor, tokenizer):
     else:
         prompt_ids = tokenizer.encode(sample.prompt, add_special_tokens=False)
 
-    image_data = []
-    if sample.multimodal_inputs and sample.multimodal_inputs.get("images"):
-        image_data = [encode_image_for_rollout_engine(img) for img in sample.multimodal_inputs["images"]]
+    image_data = _image_data_for_engine(sample.multimodal_inputs, token_space)
     return prompt_ids, image_data, sample.multimodal_train_inputs
 
 
 def _prepare_start_state(sample: Sample, state, processor, args: Any, sampling_params: dict):
-    prompt_ids, image_data, init_mm_train = _prepare_initial_inputs(sample, processor, state.tokenizer)
+    prompt_ids, image_data, init_mm_train = _prepare_initial_inputs(
+        sample, processor, state.tokenizer, args.multimodal_token_space_processing
+    )
     current_image_data = image_data
     multimodal_train_inputs_buffer: list[dict | None] = []
     if init_mm_train:
@@ -256,6 +267,8 @@ def _process_env_step(env: BaseInteractionEnv, response_text: str, tokenizer, pr
             sample_metadata,
             args.apply_chat_template,
             args.apply_chat_template_kwargs,
+            args.multimodal_token_space_processing,
+            args.shared_media_dir,
         )
     )
 
