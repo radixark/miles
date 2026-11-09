@@ -16,7 +16,7 @@ in the background (`--multimodal-token-space-processing`).
 hf download --repo-type dataset TencentARC/TimeLens-Bench --local-dir /root/datasets/timelens/TimeLens-Bench
 hf download --repo-type dataset JungleGym/TimeLens-Qwen3-VL-8B-filter-data --local-dir /root/datasets/timelens/filter-data
 hf download --repo-type dataset TencentARC/TimeLens-100K --local-dir /root/datasets/timelens/TimeLens-100K
-# unpack each dataset's video_shards/*.tar.gz into <dataset>/videos as the TimeLens README does, then:
+# unpack each dataset's video_shards/*/*.tar.gz into <dataset>/videos (the shards carry <subset>/<video>.mp4), then:
 python examples/timelens_video/prepare_data.py /root/datasets/timelens
 ```
 
@@ -35,6 +35,11 @@ parameter names), and trains 300 steps of 16 prompts x 8 samples on 8 GPUs, eval
 The trainer and the engines share the GPUs and offload in turn. The vision tower is frozen, and every weight sync
 re-sends it from the checkpoint, so the engines get it back after each offload.
 
+`--model-name Qwen3.5-35B-A3B` runs the MoE on the same node: the trainer trains TP2 x EP4 with the Adam state on
+the host and replays the engines' expert routing, the engines take 2 GPUs each, run the vision tower unsharded like
+the trainer (`--sglang-mm-enable-dp-encoder`) and cache the per-video features on disk, and each step samples
+32 prompts x 8.
+
 ## Results
 
 Qwen3.5-9B, 300 steps on 8 H200 (TP4), scored every 10 steps on 600 held-out Charades-STA items (none of the
@@ -42,6 +47,12 @@ training videos come from Charades): tIoU 0.48 at step 0, 0.56-0.57 from step 15
 
 <img src="timelens_qwen35_9b_eval.png" alt="eval/charades" width="800">
 <img src="timelens_qwen35_9b_reward.png" alt="rollout/raw_reward" width="800">
+
+Qwen3.5-35B-A3B, 100 steps on 8 H200 (TP2 x EP4), scored every 10 steps on the same 600 items: tIoU 0.46 at step 0,
+0.53-0.55 from step 50 on, best 0.545.
+
+<img src="timelens_qwen35_35b_a3b_eval.png" alt="eval/charades" width="800">
+<img src="timelens_qwen35_35b_a3b_reward.png" alt="rollout/raw_reward" width="800">
 
 Three held-out Charades items, answered by the model at step 0 and at step 299. Each strip shows eight frames of the
 video and, below them, the ground-truth span (green), the step-0 prediction (gray) and the step-299 prediction (blue).
