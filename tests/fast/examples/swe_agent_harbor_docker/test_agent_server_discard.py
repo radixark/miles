@@ -3,7 +3,7 @@ import importlib.util
 import json
 import sys
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from types import ModuleType
@@ -63,8 +63,21 @@ async def _chat_call(url: str) -> int:
     return response.status_code
 
 
+async def _anthropic_call(url: str) -> int:
+    async with httpx.AsyncClient(timeout=60) as client:
+        response = await client.post(
+            f"{url}/v1/messages",
+            json={"model": "default", "max_tokens": 16, "messages": [{"role": "user", "content": "hi"}]},
+        )
+    if response.status_code != 200:
+        await _chat_call(url)
+    return response.status_code
+
+
 @contextmanager
-def _service(first_outcome) -> Iterator[str]:
+def _service(
+    first_outcome, *, model_call: Callable = _chat_call, model_statuses: list[int] | None = None
+) -> Iterator[str]:
     outcomes = [first_outcome]
     loop = asyncio.new_event_loop()
     started = threading.Event()
@@ -78,7 +91,9 @@ def _service(first_outcome) -> Iterator[str]:
             if line.lower().startswith(b"content-length:")
         )
         payload = json.loads(await reader.readexactly(length))
-        await _chat_call(payload["base_url"])
+        status = await model_call(payload["base_url"])
+        if model_statuses is not None:
+            model_statuses.append(status)
         outcome = outcomes.pop() if outcomes else _SUBMITTED
         if outcome == _HANG:
             await asyncio.sleep(3600)
@@ -198,3 +213,18 @@ def test_agent_server_client_timeout_stays_scored_zero(rollout_env, swe):
         out = _rollout(rollout_env, agent_function.run, reward_hook)
 
     _assert_scored_zero(out)
+
+
+@pytest.mark.parametrize("rollout_env", [pytest.param(_config(), id="rollout")], indirect=True)
+def test_claude_code_through_the_agent_server_reaches_the_session_route(rollout_env, swe):
+    agent_function, reward_hook, monkeypatch = swe
+    statuses: list[int] = []
+
+    async def agent(**kwargs):
+        return await agent_function.run(**{**kwargs, "metadata": {**kwargs["metadata"], "agent_name": "claude-code"}})
+
+    with _service(_SUBMITTED, model_call=_anthropic_call, model_statuses=statuses) as url:
+        monkeypatch.setenv("AGENT_SERVER_URL", url)
+        _rollout(rollout_env, agent, reward_hook)
+
+    assert statuses == [200, 200]
