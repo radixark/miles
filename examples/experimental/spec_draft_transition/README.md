@@ -40,6 +40,9 @@ contrasts across temperatures require a familywise interval adjustment. Entropy
 interaction contrasts and throughput are secondary; temperature changes both the
 target probabilities and the teacher's visited histories.
 
+Validation path integration counts an accepted EOS proposal, then excludes every
+later proposal. Its termination rule therefore matches sequential test decoding.
+
 Runtime credentials belong outside the checkout. Only the data directory is
 served for inter-node shard synchronization. Each run saves its full CLI config,
 W&B URL, fitting curves and final checkpoint; the manifest and source revision
