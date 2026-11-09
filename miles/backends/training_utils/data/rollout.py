@@ -31,6 +31,21 @@ def _rollout_logprob_dtype(args: Namespace) -> torch.dtype:
     return torch.float32
 
 
+def bshd_max_seq_lens(total_lengths: Sequence[int], pad_size: int, micro_batch_size: int) -> list[int]:
+    """Length each sample is padded to under bshd, a multiple of `pad_size`.
+
+    With one sample per micro-batch each sample keeps its own length, since micro-batches of different lengths are
+    supported (Megatron runs with `variable_seq_lengths`); otherwise every sample is padded to the longest.
+    """
+    if micro_batch_size == 1:
+        return [_round_up(n, pad_size) for n in total_lengths]
+    return [_round_up(max(total_lengths), pad_size)] * len(total_lengths)
+
+
+def _round_up(n: int, multiple: int) -> int:
+    return (n + multiple - 1) // multiple * multiple
+
+
 def get_rollout_data(
     args: Namespace,
     rollout_data_ref: Box,
@@ -84,18 +99,15 @@ def get_rollout_data(
         ]
 
     if args.qkv_format == "bshd":
-        # TODO: micro-batch wise dynamic, possibly move to @data.py:get_data_iterator
-        max_seq_len = max(rollout_data["total_lengths"])
-
         # pad to reduce memory fragmentation and maybe make the computation faster
         pad_size = parallel_state.tp.size * args.data_pad_size_multiplier
         max_compress_ratio = max(args.backend.compress_ratios) if args.backend.compress_ratios else 0
         if max_compress_ratio:
             local_seqlen_multiple = max_compress_ratio * (2 if parallel_state.cp.size > 1 else 1)
             pad_size = max(pad_size, local_seqlen_multiple * parallel_state.cp.size)
-        max_seq_len = (max_seq_len + pad_size - 1) // pad_size * pad_size
-
-        rollout_data["max_seq_lens"] = [max_seq_len] * len(rollout_data["tokens"])
+        rollout_data["max_seq_lens"] = bshd_max_seq_lens(
+            rollout_data["total_lengths"], pad_size, args.backend.micro_batch_size
+        )
 
     # Full-response SGLang OPD fields share rollout CP slicing but retain float32 precision.
     for key in ("rollout_log_probs", "teacher_log_probs", "opd_reverse_kl"):

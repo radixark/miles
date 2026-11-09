@@ -176,3 +176,11 @@ class TestGetRolloutDataParallelWiring:
         assert seen == [(2, config, None)]
         assert rollout["tokens"][0].device.type == "cpu"
         assert result is store_result
+
+
+class TestBshdMaxSeqLens:
+    def test_one_sample_per_micro_batch_pads_each_sample_to_its_own_length(self):
+        assert data_utils.bshd_max_seq_lens([5, 130, 64], pad_size=64, micro_batch_size=1) == [64, 192, 64]
+
+    def test_larger_micro_batches_pad_every_sample_to_the_longest(self):
+        assert data_utils.bshd_max_seq_lens([5, 130, 64], pad_size=64, micro_batch_size=2) == [192, 192, 192]
