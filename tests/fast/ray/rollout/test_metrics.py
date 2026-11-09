@@ -10,6 +10,7 @@ from miles.ray.rollout.metrics import (
     _compute_metrics_from_samples,
     _compute_passrate_from_samples,
     _compute_perf_metrics_from_samples,
+    _compute_session_tree_metrics,
     _compute_spec_metrics,
     _compute_training_sample_metrics,
     _compute_zero_std_metrics,
@@ -335,6 +336,48 @@ class TestComputeSpecMetrics:
             "spec_accept_rate": pytest.approx(3 / 5),
             "spec_accept_length": pytest.approx(5 / 2),
         }
+
+
+class TestSessionTreeMetrics:
+    @staticmethod
+    def _member(session_id, *, roots, leaves, turns):
+        sample = Sample()
+        sample.metadata[SESSION_ROLLOUT_METRICS_KEY] = {
+            "session_id": session_id,
+            "metrics": {"tree": {"roots": roots, "leaves": leaves, "turns": turns}},
+        }
+        return sample
+
+    def test_no_session_carrier_emits_no_session_keys(self):
+        out = _compute_metrics_from_samples(make_args(advantage_estimator="ppo"), [make_sample(index=0)])
+
+        assert not any(key.startswith("session/") for key in out)
+
+    def test_counts_each_session_once_and_ignores_single_turn_sessions_in_the_ratio(self, caplog):
+        samples = [
+            self._member("split", roots=3, leaves=3, turns=3),
+            self._member("split", roots=3, leaves=3, turns=3),
+            self._member("clean", roots=1, leaves=1, turns=3),
+            self._member("one-call", roots=1, leaves=1, turns=1),
+        ]
+
+        out = _compute_session_tree_metrics(samples)
+
+        assert out == {
+            "session/roots_per_episode": pytest.approx(5 / 3),
+            "session/leaves_per_episode": pytest.approx(5 / 3),
+            "session/one_turn_per_root_ratio": 0.5,
+        }
+        assert "opened a new root on every turn" not in caplog.text
+
+    def test_warns_once_when_most_multi_turn_sessions_split(self, caplog):
+        samples = [self._member(f"sid-{i}", roots=3, leaves=3, turns=3) for i in range(2)]
+        samples.append(self._member("clean", roots=1, leaves=1, turns=3))
+
+        out = _compute_session_tree_metrics(samples)
+
+        assert out["session/one_turn_per_root_ratio"] == pytest.approx(2 / 3)
+        assert caplog.text.count("2/3 multi-turn sessions opened a new root on every turn") == 1
 
 
 class TestTitoMismatchMetrics:

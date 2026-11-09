@@ -178,8 +178,9 @@ class SessionCoreV2(SessionCore):
             return _samples_response(encode_samples([], metadata, empty_reason="all_truncated", fields=fields))
         # Hooks may inspect or mutate session metadata, so publish the
         # authoritative server-owned value only at the wire boundary.
-        if self.config.sglang_speculative_algorithm is not None:
-            metadata[SESSION_ROLLOUT_METRICS_KEY] = build_session_rollout_metrics(session_id, session.tree.nodes)
+        metadata[SESSION_ROLLOUT_METRICS_KEY] = build_session_rollout_metrics(
+            session_id, session.tree, with_spec_info=self.config.sglang_speculative_algorithm is not None
+        )
         response = _samples_response(encode_samples(samples, metadata, fields=fields))
         session.store_refs.hand_over(samples)
         return response
