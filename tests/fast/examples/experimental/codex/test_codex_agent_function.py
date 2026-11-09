@@ -135,7 +135,7 @@ def test_engine_failure_discards_the_episode(codex):
 
 def test_wall_clock_cap_scores_zero(codex):
     with _codex_env(_sleep) as args:
-        (sample,) = _generate(args, _sample(uuid.uuid4().hex, timeout_s=5))
+        (sample,) = _generate(args, _sample(uuid.uuid4().hex, timeout_s=3))
     assert sample.status == Sample.Status.COMPLETED
     assert sample.reward == 0.0
     assert sample.metadata["exit_status"] == "TimeLimitExceeded"
@@ -162,7 +162,7 @@ async def _cancel_during_model_call(args, marker: str) -> tuple[list[psutil.Proc
     deadline = time.monotonic() + 30
     while not (procs := _codex_processes(marker)) and time.monotonic() < deadline:
         await asyncio.sleep(0.2)
-    await asyncio.sleep(2)
+    await asyncio.sleep(1)
     task.cancel()
     _, alive = await asyncio.to_thread(psutil.wait_procs, procs, timeout=10)
     with pytest.raises(asyncio.CancelledError):
