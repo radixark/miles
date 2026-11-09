@@ -3,11 +3,15 @@ import functools
 import logging
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from tests.fast.fixtures.sglang_config_fixtures import make_sglang_config
+from tests.fast.ray.rollout.conftest import make_args
+from tests.fast.router.test_sessions_v2 import _serve_router
 from tests.fast.utils.output_store.test_dropped import sample_owning
 
 import miles.rollout.generate_hub.agentic_tool_call as agentic_tool_call
+from miles.ray.rollout.metrics import _compute_metrics_from_samples
 from miles.ray.rollout.rollout_data_conversion import validate_compact_rollout_ids
 from miles.rollout import sglang_rollout
 from miles.rollout.agentic.agent_function import InfraAbort
@@ -20,6 +24,7 @@ from miles.utils.output_store import dropped
 from miles.utils.output_store.dropped import take_dropped_refs
 from miles.utils.output_store.plan import StorePlanError
 from miles.utils.test_utils import agent_function_stubs as stubs
+from miles.utils.test_utils.mock_sglang_server import MockSGLangServer
 from miles.utils.types import Sample
 
 
@@ -102,7 +107,7 @@ def _patch_agent(monkeypatch, tracer) -> list[str | None]:
 @pytest.mark.parametrize("evaluation", [False, True])
 async def test_success_returns_list_and_forwards_agent_metadata(monkeypatch, evaluation):
     sample = Sample(status=Sample.Status.COMPLETED, response="done", response_length=1, tokens=[1])
-    tracer = _Tracer(SamplesReply(samples=[sample], session_metadata={}, empty_reason=None))
+    tracer = _Tracer(SamplesReply(samples=[sample], session_metadata=_session_metadata(), empty_reason=None))
     _patch_agent(monkeypatch, tracer)
 
     generate_input = _generate_input(evaluation=evaluation, sampling_params={"temperature": 0.7, "max_new_tokens": 8})
@@ -119,7 +124,7 @@ async def test_success_returns_list_and_forwards_agent_metadata(monkeypatch, eva
 @pytest.mark.parametrize("version", ["v1", "v2"])
 async def test_session_identity_for_penalty_logs_is_owned_by_tracer(monkeypatch, version: str) -> None:
     sample = Sample(status=Sample.Status.COMPLETED, response_length=1, tokens=[1], metadata={"session_id": "spoofed"})
-    tracer = _Tracer(SamplesReply(samples=[sample], session_metadata={}, empty_reason=None))
+    tracer = _Tracer(SamplesReply(samples=[sample], session_metadata=_session_metadata(), empty_reason=None))
     _patch_agent(monkeypatch, tracer)
     await agentic_tool_call.generate(_generate_input(use_session_server=version))
     assert sample.metadata["session_id"] == "sid-1"
@@ -149,7 +154,7 @@ async def test_success_assigns_shared_rollout_id_to_v2_leaves(monkeypatch, input
         Sample(status=Sample.Status.COMPLETED, response="one", response_length=1, tokens=[1]),
         Sample(status=Sample.Status.COMPLETED, response="two", response_length=1, tokens=[2]),
     ]
-    tracer = _Tracer(SamplesReply(samples=leaves, session_metadata={}, empty_reason=None))
+    tracer = _Tracer(SamplesReply(samples=leaves, session_metadata=_session_metadata(), empty_reason=None))
     _patch_agent(monkeypatch, tracer)
     generate_input = _generate_input()
     generate_input.sample.rollout_id = input_rollout_id
@@ -166,7 +171,7 @@ async def test_v2_requires_input_rollout_identity(monkeypatch):
         Sample(status=Sample.Status.COMPLETED, response="one", response_length=1, tokens=[1]),
         Sample(status=Sample.Status.COMPLETED, response="two", response_length=1, tokens=[2]),
     ]
-    tracer = _Tracer(SamplesReply(samples=leaves, session_metadata={}, empty_reason=None))
+    tracer = _Tracer(SamplesReply(samples=leaves, session_metadata=_session_metadata(), empty_reason=None))
     _patch_agent(monkeypatch, tracer)
     generate_input = _generate_input()
     generate_input.sample.index = None
@@ -439,7 +444,7 @@ async def test_v2_rejects_missing_server_session_metrics(monkeypatch):
     _patch_agent(monkeypatch, tracer)
 
     with pytest.raises(KeyError, match=SESSION_ROLLOUT_METRICS_KEY):
-        await agentic_tool_call.generate(_generate_input(speculative_algorithm="EAGLE"))
+        await agentic_tool_call.generate(_generate_input())
 
 
 @pytest.mark.asyncio
@@ -522,3 +527,48 @@ async def test_collection_error_propagates(monkeypatch, error_type):
 
     with pytest.raises(error_type, match="samples unavailable"):
         await agentic_tool_call.generate(_generate_input())
+
+
+async def _agent_dropping_reasoning(*, base_url, **kwargs):
+    messages = [{"role": "user", "content": "turn 0"}]
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        for turn in range(3):
+            response = await client.post(f"{base_url}/v1/chat/completions", json={"messages": messages})
+            response.raise_for_status()
+            reply = response.json()["choices"][0]["message"]
+            assert reply["reasoning_content"] == "thought about it"
+            messages += [
+                {"role": "assistant", "content": reply["content"]},
+                {"role": "user", "content": f"turn {turn + 1}"},
+            ]
+    return None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("matcher", "roots"),
+    [("strict", 3), ("loose_tool_call", 3), ("loose_tool_call_ignore_reasoning", 1)],
+)
+async def test_session_roots_reach_rollout_metrics_through_the_session_server(monkeypatch, matcher, roots):
+    original_response = MockSGLangServer._compute_chat_completions_response
+
+    def reasoning_response(mock_self, payload: dict) -> dict:
+        response = original_response(mock_self, payload)
+        response["choices"][0]["message"]["reasoning_content"] = "thought about it"
+        return response
+
+    monkeypatch.setattr(MockSGLangServer, "_compute_chat_completions_response", reasoning_response)
+    monkeypatch.setattr(agentic_tool_call, "load_function", lambda path: _agent_dropping_reasoning)
+    with _serve_router({"session_message_matcher": matcher}) as env:
+        generate_input = _generate_input(
+            session_server_instances=[SessionServerInstance(addr=env.url.removeprefix("http://"))],
+            use_sampling_support_replay=False,
+            rollout_temperature=1.0,
+        )
+        output = await agentic_tool_call.generate(generate_input)
+
+    assert len(output.samples) == roots
+    metrics = _compute_metrics_from_samples(make_args(use_session_server="v2"), output.samples)
+    assert metrics["session/roots_per_episode"] == roots
+    assert metrics["session/leaves_per_episode"] == roots
+    assert metrics["session/one_turn_per_root_ratio"] == (1.0 if roots == 3 else 0.0)
