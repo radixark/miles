@@ -34,6 +34,8 @@ def probabilities(logits: torch.Tensor, temperature: float = 1.0) -> torch.Tenso
 def expected_prefix(teacher, student, rows: list[dict], tokenizer, temperature: float,
                     repetitions: int = 4, limit: int = 128, draft: int = 8) -> dict[str, float]:
     device = next(student.parameters()).device
+    eos_ids = teacher.generation_config.eos_token_id
+    eos_ids = eos_ids if isinstance(eos_ids,list) else [eos_ids]
     values = []
     prefixes = []
     for row in rows[:limit]:
@@ -72,14 +74,20 @@ def expected_prefix(teacher, student, rows: list[dict], tokenizer, temperature: 
         hidden = teacher.model(verify_ids,attention_mask=verify_attention,position_ids=positions,use_cache=False).last_hidden_state[:,width-1:]
         p = probabilities(teacher.lm_head(hidden),temperature)
         ratios = p.gather(-1,proposal.unsqueeze(-1)).squeeze(-1) / torch.cat(q_values,-1)
-        expected = ratios.clamp(max=1).cumprod(-1).sum(-1)
+        is_eos = torch.zeros_like(proposal,dtype=torch.bool)
+        for token in eos_ids:
+            if token is not None:
+                is_eos |= proposal==token
+        # The EOS proposal itself can be accepted; later positions cannot.
+        valid = torch.cat([torch.ones_like(is_eos[:,:1]),~is_eos[:,:-1]],-1).cumprod(-1)
+        expected = (ratios.clamp(max=1).cumprod(-1)*valid).sum(-1)
         values.extend(expected.cpu().tolist())
     return {'expected_prefix':sum(values)/len(values),'paths':len(values)}
 
 
 @torch.no_grad()
 def sample_sequence(teacher, student, prompt: list[int], temperature: float, eos: set[int],
-                    draft: int, rounds: int) -> dict:
+                    draft: int, rounds: int, max_tokens: int | None = None) -> dict:
     device = next(student.parameters()).device
     history = list(prompt)
     teacher_cache, student_cache = None, None
@@ -90,10 +98,19 @@ def sample_sequence(teacher, student, prompt: list[int], temperature: float, eos
         student_cache = student.model(prefix,use_cache=True).past_key_values
     accepted_lengths, emitted_lengths, corrections, bonuses = [], [], 0, 0
     for block in range(rounds):
+        remaining = None if max_tokens is None else max_tokens-(len(history)-len(prompt))
+        if remaining is not None and remaining<=0:
+            break
+        current_draft = draft if remaining is None else min(draft,remaining-1)
+        if current_draft==0:
+            result=teacher(torch.tensor([[history[-1]]],device=device),past_key_values=teacher_cache,use_cache=True)
+            token=int(torch.multinomial(probabilities(result.logits[0,-1],temperature),1))
+            history.append(token);accepted_lengths.append(0);emitted_lengths.append(1);bonuses+=1
+            break
         old_length = len(history)
         proposals, qs = [], []
         token = history[-1]
-        for _ in range(draft):
+        for _ in range(current_draft):
             output = student(torch.tensor([[token]],device=device),past_key_values=student_cache,use_cache=True)
             student_cache = output.past_key_values
             q = probabilities(output.logits[0,-1])
