@@ -196,6 +196,8 @@ def execute_job(args: Args, job: dict, gpu: int, environment: dict) -> dict:
 def worker(args: Args, gpu: int, manifest: dict, sync_lock: threading.Lock) -> None:
     root=Path(args.root)
     slot=args.node*args.slots+gpu
+    while slot == 0 and manifest.get('benchmark_run_id') and not (root/'benchmark-gate.json').exists():
+        time.sleep(5)
     environment={**os.environ,'CUDA_VISIBLE_DEVICES':str(gpu),'WANDB_API_KEY_FILE':str(root/'wandb-key'),
                  'HF_HOME':str(root/'hf-cache'),'HF_HUB_CACHE':str(root/'hf-cache/hub'),
                  'HF_DATASETS_CACHE':str(root/'hf-cache/datasets'),'OMP_NUM_THREADS':'4','TOKENIZERS_PARALLELISM':'false'}

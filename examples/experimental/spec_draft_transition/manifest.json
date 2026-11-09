@@ -1467,5 +1467,6 @@
     "Qwen/Qwen3-0.6B": "c1899de289a04d12100db370d81485cdf75e47ca"
   },
   "sglang": "b8d46f2f309fdada4bbb05ef4e90ac4adf7a3bcf",
-  "megatron": "2fbe25a442a539b2796cdf40e77dfb2c90782529"
+  "megatron": "2fbe25a442a539b2796cdf40e77dfb2c90782529",
+  "benchmark_run_id": "261108-e5098516"
 }
