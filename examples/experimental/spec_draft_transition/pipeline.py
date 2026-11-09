@@ -50,6 +50,7 @@ class State:
         self.lock = threading.Lock()
         self.state = json.loads(self.path.read_text()) if self.path.exists() else {
             'generation':{},'jobs':self.manifest['jobs'],'phase':'generation','selected_rates':{}}
+        self.state['source_revision']=(self.root/'repo/SOURCE_REVISION').read_text().strip() if (self.root/'repo/SOURCE_REVISION').exists() else 'unrecorded'
         self.save()
 
     def save(self) -> None:
@@ -58,11 +59,15 @@ class State:
         temporary.replace(self.path)
 
     def finish_tuning(self) -> None:
-        tuning = [job for job in self.state['jobs'] if job['stage']=='tuning']
-        if not all(job['status']=='complete' for job in tuning):
+        if any(job['status']=='failed' for job in self.state['jobs']):
+            self.state['phase']='failure_attention'
             return
+        tuning = [job for job in self.state['jobs'] if job['stage']=='tuning']
         for temperature in self.manifest['temperatures']:
             for method in self.manifest['methods']:
+                group = [job for job in tuning if job['temperature']==temperature and job['method']==method]
+                if not all(job['status']=='complete' for job in group):
+                    continue
                 candidates = {}
                 for job in tuning:
                     if job['temperature']==temperature and job['method']==method:
@@ -72,11 +77,13 @@ class State:
                 key = f'{temperature}/{method}'
                 self.state['selected_rates'][key] = {'rate':best,'scores':scores,'boundary':best in [min(scores),max(scores)]}
                 for job in self.state['jobs']:
-                    if job['stage']=='confirmation' and job['temperature']==temperature and job['method']==method:
+                    if job['stage']=='confirmation' and job['temperature']==temperature and job['method']==method and best not in [min(scores),max(scores)]:
                         job['learning_rate'] = best
         # A boundary winner requires extending the predeclared rate grid before
         # confirmation, rather than treating an unbracketed search as tuned.
-        if any(item['boundary'] for item in self.state['selected_rates'].values()):
+        if not all(job['status']=='complete' for job in tuning):
+            self.state['phase']='tuning'
+        elif any(item['boundary'] for item in self.state['selected_rates'].values()):
             self.state['phase']='rate_boundary_attention'
         else:
             self.state['phase']='confirmation'
@@ -91,9 +98,10 @@ class State:
                 return {'ok':True}
             if path=='/claim':
                 phase=self.state['phase']
-                if phase in ['tuning','confirmation']:
-                    for job in self.state['jobs']:
-                        if job['stage']==phase and job['status']=='pending':
+                if phase in ['tuning','confirmation','rate_boundary_attention']:
+                    for job in sorted(self.state['jobs'], key=lambda item:item['stage']!='tuning'):
+                        ready = job['stage']=='tuning' or (job['stage']=='confirmation' and job['learning_rate'] is not None)
+                        if ready and job['status']=='pending':
                             job.update(status='running',slot=payload['slot'],started=time.time())
                             self.save()
                             return {'job':job}
@@ -107,6 +115,16 @@ class State:
                     self.finish_tuning()
                 elif all(item['status']=='complete' for item in self.state['jobs']):
                     self.state['phase']='complete'
+                self.save()
+                return {'ok':True}
+            if path=='/extend':
+                assert self.state['phase'] in ['rate_boundary_attention','tuning']
+                existing = {job['run_id'] for job in self.state['jobs']}
+                for job in payload['jobs']:
+                    assert job['run_id'] not in existing and job['stage']=='tuning' and job['status']=='pending'
+                    existing.add(job['run_id'])
+                    self.state['jobs'].append(job)
+                self.state['phase']='tuning'
                 self.save()
                 return {'ok':True}
             if path=='/state':

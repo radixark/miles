@@ -18,7 +18,8 @@ The blend is `w*CE + (1-w)*L1`, with
 `w=(1+cos(pi*u/(T-1)))/2`, zero-based update `u`, and no loss rescaling.
 Two dedicated tuning seeds select initial rates by mean validation expected K8
 accepted-prefix length. Ten separate confirmation seeds then use the chosen rates.
-A boundary rate winner pauses confirmation pending an extended grid.
+A boundary rate winner pauses that condition pending an extended grid. Conditions
+with completed, interior rate selection can begin confirmation while others tune.
 
 The teacher is frozen Qwen3-4B, the student is pretrained Qwen3-0.6B, and teacher
 temperatures are 0.6/1.0/1.4. All generation uses unrestricted sampling, non-thinking
@@ -46,6 +47,6 @@ W&B URL, fitting curves and final checkpoint; the manifest and source revision
 must be archived before launching fits. Keep artifacts on a sufficiently large
 scratch volume and pin all model/dataset revisions in the runtime provenance.
 
-Install with `uv pip install -e .` from this directory in a GPU environment that
+Install dependencies with `uv pip install -r pyproject.toml` from this directory in a GPU environment that
 already has a compatible SGLang/PyTorch runtime. Worker CLI fields use underscores;
 run each module with `--help` for the complete argument list.

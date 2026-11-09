@@ -8,8 +8,11 @@ import json
 import math
 import os
 import random
+import sys
 import time
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import torch
 import wandb
@@ -150,7 +153,15 @@ def main(args: Args) -> None:
         os.environ['WANDB_API_KEY'] = Path(os.environ['WANDB_API_KEY_FILE']).read_text().strip()
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=False)
-    (output / 'config.json').write_text(json.dumps(vars(args), indent=2, default=str))
+    manifest_path = Path(__file__).with_name('manifest.json')
+    manifest = json.loads(manifest_path.read_text())
+    entry = next((job for job in manifest['jobs'] if job['run_id']==args.run_id),None)
+    tuning_seeds = {job['seed'] for job in manifest['jobs'] if job['stage']=='tuning'}
+    stage = entry['stage'] if entry else 'tuning' if args.seed in tuning_seeds else 'preflight'
+    revision_file = Path(__file__).resolve().parents[3]/'SOURCE_REVISION'
+    configuration = {**args.as_dict(), 'stage':stage, 'argv':sys.argv,
+                     'source_revision':revision_file.read_text().strip() if revision_file.exists() else 'unrecorded'}
+    (output / 'config.json').write_text(json.dumps(configuration, indent=2, default=str))
     torch.manual_seed(args.seed)
     random.seed(args.seed)
     torch.set_num_threads(4)
@@ -170,8 +181,9 @@ def main(args: Args) -> None:
     train_rows = load_rows(args.data, args.temperature, 'train')
     validation_rows = load_rows(args.data, args.temperature, 'validation')
     run = wandb.init(entity=args.wandb_entity, project=args.wandb_project, id=args.run_id,
-                     name=f'{args.run_id}-{args.method}-t{args.temperature}-s{args.seed}',
-                     config=vars(args), mode=args.wandb_mode, dir=str(output))
+                     name=f"{datetime.now(ZoneInfo('America/Los_Angeles')).strftime('%y%m%d')}-{args.method}-t{args.temperature}-s{args.seed}-{args.run_id.rsplit('-',1)[-1]}",
+                     config=configuration, group=manifest['experiment_id'], job_type=stage,
+                     mode=args.wandb_mode, dir=str(output))
     (output / 'wandb-url.txt').write_text(str(run.url))
     rng = random.Random(args.seed)
     started = time.monotonic()
