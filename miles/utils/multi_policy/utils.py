@@ -121,6 +121,7 @@ def validate_multi_policy_args(args, *, megatron_config: MegatronConfig) -> None
         f"mode drives one policy per rollout round"
     )
     assert not args.use_critic, "multi policy training does not support --use-critic"
+    assert args.keep_recent_checkpoints is None, "multi policy training does not support --keep-recent-checkpoints"
     assert not args.debug_rollout_only, (
         "multi policy training does not support --debug-rollout-only: it sizes the placement group for one "
         "trainer, while every policy still asks for a slice of its own"
