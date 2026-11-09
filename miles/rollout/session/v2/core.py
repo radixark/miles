@@ -14,7 +14,7 @@ from miles.rollout.session.core import (
     _chat_client_response,
     _render_json,
     _samples_response,
-    extract_completion,
+    extract_counted_completion,
     proxy_result_to_response,
 )
 from miles.rollout.session.errors import OutputStoreContractError, SessionNotFoundError, TokenizationError
@@ -78,6 +78,8 @@ class SessionCoreV2(SessionCore):
         metadata["max_trim_tokens"] = self.registry.tito_tokenizer.max_trim_tokens
         metadata["tree"] = tree_metadata(session)
         metadata["turn_args"] = filter_turn_args(latest.turn_args) if latest is not None else {}
+        metadata["backend_failures"] = session.backend_failures
+        metadata["last_model_call_failed"] = session.last_model_call_failed
         return metadata
 
     async def get_session(self, session_id: str) -> Response:
@@ -234,12 +236,13 @@ class SessionCoreV2(SessionCore):
         )
         await self._take_store_ref(session, request_body, result)
 
+        completion = extract_counted_completion(session, result)
         # Non-200 (e.g. 400 context too long) passes through unrecorded so the
         # agent can retry or handle the error.
-        if result["status_code"] != 200:
+        if completion is None:
             return proxy_result_to_response(result)
 
-        response, choice, assistant_message, completion_token_ids = extract_completion(result)
+        response, choice, assistant_message, completion_token_ids = completion
         assistant_message = tito_tokenizer.postprocess_completion(
             choice=choice,
             assistant_message=assistant_message,

@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 import pytest
 import requests
+from fastapi import HTTPException
 from tests.session_parity_utils import (
     SESSION_PARITY_SEED,
     V1,
@@ -16,6 +17,7 @@ from tests.session_parity_utils import (
     run_agentic_retry_trajectories,
 )
 
+from miles.utils.http_utils import find_available_port
 from miles.utils.test_utils.mock_sglang_server import (
     MockSGLangServer,
     ProcessResult,
@@ -90,6 +92,50 @@ def test_aborted_generation_is_not_committed(version):
             assert response.json() == {"error": "upstream generation aborted before completion"}
             session = requests.get(f"{session_url}/sessions/{session_id}", timeout=5.0).json()
             assert session["records"] == []
+            assert session["metadata"]["backend_failures"] == 1
+            assert session["metadata"]["last_model_call_failed"] is True
+
+
+@pytest.mark.parametrize("version", [V1, V2])
+def test_session_counts_backend_failures_and_whether_the_last_call_failed(version):
+    outcomes = iter(["ok", "fail", "reject", "fail", "ok"])
+
+    def engine(_prompt: str) -> ProcessResult:
+        outcome = next(outcomes)
+        if outcome == "fail":
+            raise HTTPException(status_code=500, detail="engine failed")
+        if outcome == "reject":
+            raise HTTPException(status_code=400, detail="context too long")
+        return ProcessResult(text="hi")
+
+    with with_mock_server(model_name=_MODEL, process_fn=engine) as backend:
+        with _serve_session(backend_url=backend.url, hf_checkpoint=_MODEL, version=version) as args:
+            session_url, session_id = _new_session(args)
+            seen = [_chat_and_read_failures(session_url, session_id) for _ in range(5)]
+
+    assert seen == [(200, 0, False), (500, 1, True), (400, 1, False), (500, 2, True), (200, 2, False)]
+
+
+@pytest.mark.parametrize("version", [V1, V2])
+def test_unreachable_backend_counts_as_a_backend_failure(version):
+    backend_url = f"http://127.0.0.1:{find_available_port(32000)}"
+    with _serve_session(backend_url=backend_url, hf_checkpoint=_MODEL, version=version) as args:
+        assert _chat_and_read_failures(*_new_session(args)) == (502, 1, True)
+
+
+def _new_session(args) -> tuple[str, str]:
+    session_url = args.session_server_instances[0].url
+    return session_url, requests.post(f"{session_url}/sessions", timeout=5.0).json()["session_id"]
+
+
+def _chat_and_read_failures(session_url: str, session_id: str) -> tuple[int, int, bool]:
+    response = requests.post(
+        f"{session_url}/sessions/{session_id}/v1/chat/completions",
+        json={"messages": [{"role": "user", "content": "hello"}]},
+        timeout=10.0,
+    )
+    metadata = requests.get(f"{session_url}/sessions/{session_id}", timeout=5.0).json()["metadata"]
+    return response.status_code, metadata["backend_failures"], metadata["last_model_call_failed"]
 
 
 @pytest.mark.parametrize("random_tool_ids", [False, True])
