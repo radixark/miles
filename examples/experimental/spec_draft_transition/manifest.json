@@ -1613,8 +1613,7 @@
   "sglang": "b8d46f2f309fdada4bbb05ef4e90ac4adf7a3bcf",
   "megatron": "2fbe25a442a539b2796cdf40e77dfb2c90782529",
   "benchmark_run_id": "261109-ed8341f8",
-  "supersedes_invalid_experiment_id": "261108-eee6fab1",
   "data_source_experiment_id": "261108-eee6fab1",
-  "amp_probe_source": "793810e7261a2f6176286cd3edb0cb9e5a2531d0",
-  "precision_note": "BF16 custom_fwd saved operands; matching custom_bwd; eager AMP reference checked."
+  "precision_note": "Ordinary PyTorch autograd with BF16 model operations, FP32 parameters/moments/probabilities/losses; actual loss inputs checked.",
+  "restarts_experiment_id": "261108-eee6fab1"
 }

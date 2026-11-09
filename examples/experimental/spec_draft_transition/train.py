@@ -19,7 +19,7 @@ import wandb
 from tap import Tap
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from examples.experimental.spec_draft_transition.loss import ProbabilityLoss, ce_weight, probability_metrics
+from examples.experimental.spec_draft_transition.loss import probability_loss, ce_weight, probability_metrics
 
 
 class Args(Tap):
@@ -39,7 +39,7 @@ class Args(Tap):
     warmup: int = 100
     validation_interval: int = 200
     validation_tokens: int = 4096
-    chunk: int = 32
+    chunk: int = 1024
     wandb_entity: str = 'radixarkai'
     wandb_project: str = 'spec-draft-transition'
     wandb_mode: str = 'online'
@@ -134,7 +134,7 @@ def train_update(student, teacher, optimizer, rows: list[dict], tokenizer, args:
         with torch.no_grad():
             th = hidden_states(teacher, ids, attention)[mask].to(torch.bfloat16)
         sh = hidden_states(student, ids, attention)[mask].to(torch.bfloat16)
-        loss = ProbabilityLoss.apply(sh, student.lm_head.weight, th, teacher.lm_head.weight,
+        loss = probability_loss(sh, student.lm_head.weight, th, teacher.lm_head.weight,
                                      args.temperature, mix, args.tokens_per_update, args.chunk)
         if not torch.isfinite(loss):
             raise FloatingPointError(f'nonfinite loss update={update}')
@@ -206,7 +206,8 @@ def main(args: Args) -> None:
             handle.write(json.dumps(record) + '\n'); handle.flush()
             run.log({f'train/{key}':value for key,value in metrics.items()}, step=update + 1)
             print(json.dumps(record), flush=True)
-    (output / 'complete.json').write_text(json.dumps({'seconds':time.monotonic()-started,'updates':args.updates}))
+    (output / 'complete.json').write_text(json.dumps({'seconds':time.monotonic()-started,'updates':args.updates,
+        'peak_cuda_memory_bytes':torch.cuda.max_memory_allocated()}))
     run.finish()
 
 

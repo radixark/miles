@@ -1,13 +1,14 @@
-"""Compare custom gradients with eager autograd in the actual BF16 training path."""
+"""Check the loss and gradients in the actual BF16 training path."""
 
 import json
 from pathlib import Path
 
 import torch
+import torch.nn.functional as F
 from tap import Tap
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from examples.experimental.spec_draft_transition.loss import ProbabilityLoss
+from examples.experimental.spec_draft_transition.loss import probability_loss
 
 
 class Args(Tap):
@@ -20,16 +21,16 @@ def reference_loss(hidden: torch.Tensor, weight: torch.Tensor, teacher_hidden: t
                    teacher_weight: torch.Tensor, temperature: float, mix: float, chunk: int) -> torch.Tensor:
     total = hidden.new_zeros((), dtype=torch.float32)
     for h, th in zip(hidden.split(chunk), teacher_hidden.split(chunk), strict=True):
-        logq = (h @ weight.T).float().log_softmax(-1)
+        logits = (h @ weight.T).float()
         p = ((th @ teacher_weight.T).float() / temperature).softmax(-1)
-        total = total + mix * -(p * logq).sum() + (1 - mix) * (p - logq.exp()).abs().sum()
+        total = total + mix * F.cross_entropy(logits, p, reduction='sum') + (1 - mix) * F.l1_loss(logits.softmax(-1), p, reduction='sum')
     return total / len(hidden)
 
 
 def compare(hidden: torch.Tensor, weight: torch.Tensor, teacher_hidden: torch.Tensor,
             teacher_weight: torch.Tensor, temperature: float, mix: float, chunk: int) -> dict:
     with torch.autocast('cuda', dtype=torch.bfloat16):
-        custom = ProbabilityLoss.apply(hidden, weight, teacher_hidden, teacher_weight, temperature, mix, len(hidden), chunk)
+        custom = probability_loss(hidden, weight, teacher_hidden, teacher_weight, temperature, mix, len(hidden), chunk)
         reference = reference_loss(hidden, weight, teacher_hidden, teacher_weight, temperature, mix, chunk)
     actual = torch.autograd.grad(custom, (hidden, weight))
     expected = torch.autograd.grad(reference, (hidden, weight))
@@ -62,15 +63,16 @@ def main(args: Args) -> None:
     tokens = tokenizer.apply_chat_template([{'role': 'user', 'content': 'Explain why the sky is blue.'}],
         enable_thinking=False, add_generation_prompt=True, return_dict=False, return_tensors='pt').cuda()
     with torch.no_grad(), torch.autocast('cuda', dtype=torch.bfloat16):
-        sh = student.model(tokens, use_cache=False).last_hidden_state[0, -11:]
+        raw_sh = student.model(tokens, use_cache=False).last_hidden_state[0, -11:]
+        sh = raw_sh.to(torch.bfloat16)
         th = teacher.model(tokens, use_cache=False).last_hidden_state[0, -11:]
-    assert sh.dtype == torch.float32 and th.dtype == torch.bfloat16
+    assert raw_sh.dtype == torch.float32 and sh.dtype == th.dtype == torch.bfloat16
     for mix in [0.0, 0.37, 1.0]:
         results.append({'real_model': True, **compare(sh.detach().requires_grad_(), student.lm_head.weight,
             th, teacher.lm_head.weight, 1.0, mix, 3)})
     Path(args.output).write_text(json.dumps(results, indent=2))
     print(json.dumps({'amp_cases': len(results), 'maximum_relative_l2': max(e['relative_l2'] for r in results for e in r['gradient_errors']),
-                      'actual_student_hidden_dtype': str(sh.dtype), 'status': 'passed'}), flush=True)
+                      'raw_student_hidden_dtype': str(raw_sh.dtype), 'actual_loss_input_dtype': str(sh.dtype), 'status': 'passed'}), flush=True)
 
 
 if __name__ == '__main__':

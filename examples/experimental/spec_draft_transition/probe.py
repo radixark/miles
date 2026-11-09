@@ -9,7 +9,7 @@ import torch
 from tap import Tap
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from examples.experimental.spec_draft_transition.loss import ProbabilityLoss, ce_weight, probability_metrics
+from examples.experimental.spec_draft_transition.loss import probability_loss, ce_weight, probability_metrics
 from examples.experimental.spec_draft_transition.evaluate import expected_prefix, sample_sequence
 from examples.experimental.spec_draft_transition.pipeline import State
 
@@ -92,7 +92,7 @@ def verify_gradients() -> dict[str, float]:
             hidden = torch.randn(11, 7, requires_grad=True)
             weight = torch.randn(19, 7, requires_grad=True)
             teacher_hidden, teacher_weight = torch.randn(11, 9), torch.randn(19, 9)
-            actual = ProbabilityLoss.apply(hidden, weight, teacher_hidden, teacher_weight, temperature, mix, 17, 3)
+            actual = probability_loss(hidden, weight, teacher_hidden, teacher_weight, temperature, mix, 17, 3)
             actual_grads = torch.autograd.grad(actual, (hidden, weight))
             logq = (hidden @ weight.T).log_softmax(-1)
             p = ((teacher_hidden @ teacher_weight.T) / temperature).softmax(-1)

@@ -1,8 +1,4 @@
-"""Exact full-vocabulary CE/L1 with bounded logit memory.
-
-The custom backward recomputes head logits in token chunks. It differentiates
-both the student hidden states and head weights; teacher inputs remain frozen.
-"""
+"""Full-vocabulary CE/L1 using ordinary PyTorch autograd and AMP."""
 
 import math
 
@@ -19,40 +15,21 @@ def ce_weight(method: str, update: int, updates: int) -> float:
     return (1.0 + math.cos(math.pi * update / (updates - 1))) / 2.0
 
 
-class ProbabilityLoss(torch.autograd.Function):
-    @staticmethod
-    @torch.amp.custom_fwd(device_type="cuda", cast_inputs=torch.bfloat16)
-    def forward(ctx, hidden, weight, teacher_hidden, teacher_weight, temperature, mix, normalizer, chunk):
-        ctx.weight_dtype = weight.dtype
-        weight = weight.to(hidden.dtype)
-        teacher_weight = teacher_weight.to(teacher_hidden.dtype)
-        ctx.save_for_backward(hidden, weight, teacher_hidden, teacher_weight)
-        ctx.temperature, ctx.mix, ctx.normalizer, ctx.chunk = temperature, mix, normalizer, chunk
-        total = hidden.new_zeros((), dtype=torch.float32)
-        for start in range(0, len(hidden), chunk):
-            logq = (hidden[start:start + chunk] @ weight.T).float().log_softmax(-1)
+def probability_loss(hidden: torch.Tensor, weight: torch.Tensor, teacher_hidden: torch.Tensor,
+                     teacher_weight: torch.Tensor, temperature: float, mix: float,
+                     normalizer: int, chunk: int) -> torch.Tensor:
+    """Differentiate student probabilities through the actual autocast forward."""
+    total = hidden.new_zeros((), dtype=torch.float32)
+    for start in range(0, len(hidden), chunk):
+        logits = (hidden[start:start + chunk] @ weight.T).float()
+        logq = logits.log_softmax(-1)
+        q = logits.softmax(-1)
+        with torch.no_grad():
             p = ((teacher_hidden[start:start + chunk] @ teacher_weight.T).float() / temperature).softmax(-1)
-            ce = -(p * logq).sum()
-            l1 = (p - logq.exp()).abs().sum()
-            total += mix * ce + (1 - mix) * l1
-        return total / normalizer
-
-    @staticmethod
-    @torch.amp.custom_bwd(device_type="cuda")
-    def backward(ctx, output_grad):
-        hidden, weight, teacher_hidden, teacher_weight = ctx.saved_tensors
-        grad_hidden = torch.empty_like(hidden)
-        grad_weight = torch.zeros_like(weight, dtype=torch.float32)
-        for start in range(0, len(hidden), ctx.chunk):
-            h = hidden[start:start + ctx.chunk]
-            q = (h @ weight.T).float().log_softmax(-1).exp()
-            p = ((teacher_hidden[start:start + ctx.chunk] @ teacher_weight.T).float() / ctx.temperature).softmax(-1)
-            sign = (q - p).sign()
-            grad = ctx.mix * (q - p) + (1 - ctx.mix) * q * (sign - (q * sign).sum(-1, keepdim=True))
-            grad = (grad * (output_grad / ctx.normalizer)).to(hidden.dtype)
-            grad_hidden[start:start + ctx.chunk] = grad @ weight
-            grad_weight.addmm_(grad.T.float(), h.float())
-        return grad_hidden, grad_weight.to(ctx.weight_dtype), None, None, None, None, None, None
+        ce = -(p * logq).sum()
+        l1 = (p - q).abs().sum()
+        total = total + mix * ce + (1 - mix) * l1
+    return total / normalizer
 
 
 @torch.no_grad()
@@ -62,11 +39,12 @@ def probability_metrics(hidden: torch.Tensor, weight: torch.Tensor, teacher_hidd
     weight = weight.to(hidden.dtype)
     teacher_weight = teacher_weight.to(teacher_hidden.dtype)
     for start in range(0, len(hidden), chunk):
-        logq = (hidden[start:start + chunk] @ weight.T).float().log_softmax(-1)
-        logp = ((teacher_hidden[start:start + chunk] @ teacher_weight.T).float() / temperature).log_softmax(-1)
-        p = logp.exp()
+        logits = (hidden[start:start + chunk] @ weight.T).float()
+        teacher_logits = (teacher_hidden[start:start + chunk] @ teacher_weight.T).float() / temperature
+        logq, q = logits.log_softmax(-1), logits.softmax(-1)
+        logp, p = teacher_logits.log_softmax(-1), teacher_logits.softmax(-1)
         totals["ce"] += float(-(p * logq).sum())
         totals["kl"] += float((p * (logp - logq)).sum())
-        totals["l1"] += float((p - logq.exp()).abs().sum())
+        totals["l1"] += float((p - q).abs().sum())
         totals["entropy"] += float(-(p * logp).sum())
     return totals
