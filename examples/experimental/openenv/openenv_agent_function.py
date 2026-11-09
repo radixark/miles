@@ -56,6 +56,7 @@ from typing import Any
 import openenv_sandbox_common as common
 from openai import AsyncOpenAI
 
+from miles.rollout.agentic.agent_function import InfraAbort
 from miles.rollout.agentic.session import openai_session_url
 
 logger = logging.getLogger(__name__)
@@ -418,7 +419,7 @@ async def run_for_training(
     request_kwargs: dict[str, Any] | None,
     metadata: dict[str, Any] | None,
     run_episode_fn: Callable[..., Any],
-) -> dict[str, Any] | None:
+) -> dict[str, Any]:
     """miles-side wrapper around one episode: session-server policy wiring plus
     training failure semantics (timeout -> reward 0, no verdict -> drop sample).
 
@@ -454,7 +455,7 @@ async def run_for_training(
         }
     except Exception as e:
         logger.error(f"OpenEnv tbench2 episode failed: {e}", exc_info=True)
-        return None
+        raise InfraAbort("EpisodeFailed", f"OpenEnv tbench2 episode failed: {e!r}") from e
     finally:
         await policy.close()
 
@@ -463,8 +464,7 @@ async def run_for_training(
     # sample: returning it as reward 0.0 would inject a false negative into
     # training.
     if reward is None:
-        logger.warning("OpenEnv tbench2 episode produced no canonical reward; dropping sample")
-        return None
+        raise InfraAbort("NoVerdict", "OpenEnv tbench2 episode produced no canonical reward")
 
     # eval_report is intentionally empty: the server's evaluate reports only
     # the scalar reward (plus the harness marker). The detailed pytest CTRF
@@ -485,6 +485,6 @@ async def run(
     request_kwargs: dict[str, Any] | None = None,
     metadata: dict[str, Any] | None = None,
     **kwargs,
-) -> dict[str, Any] | None:
+) -> dict[str, Any]:
     """Run one OpenEnv tbench2 episode via the trained policy (shared env server)."""
     return await run_for_training(base_url, prompt, request_kwargs, metadata, run_episode)
