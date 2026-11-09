@@ -50,6 +50,11 @@ class State:
         self.lock = threading.Lock()
         self.state = json.loads(self.path.read_text()) if self.path.exists() else {
             'generation':{},'jobs':self.manifest['jobs'],'phase':'generation','selected_rates':{}}
+        previous_revision=self.state.get('source_revision','42af7e7348')
+        for job in self.state['jobs']:
+            if job['status']!='pending':
+                job.setdefault('source_revision',previous_revision)
+        self.state.setdefault('claims_held',False)
         self.state['source_revision']=(self.root/'repo/SOURCE_REVISION').read_text().strip() if (self.root/'repo/SOURCE_REVISION').exists() else 'unrecorded'
         self.save()
 
@@ -98,11 +103,14 @@ class State:
                 return {'ok':True}
             if path=='/claim':
                 phase=self.state['phase']
+                if self.state['claims_held']:
+                    return {'phase':phase,'job':None}
                 if phase in ['tuning','confirmation','rate_boundary_attention']:
                     for job in sorted(self.state['jobs'], key=lambda item:item['stage']!='tuning'):
                         ready = job['stage']=='tuning' or (job['stage']=='confirmation' and job['learning_rate'] is not None)
                         if ready and job['status']=='pending':
                             job.update(status='running',slot=payload['slot'],started=time.time())
+                            job['source_revision']=self.state['source_revision']
                             self.save()
                             return {'job':job}
                 return {'phase':phase,'job':None}
@@ -125,6 +133,16 @@ class State:
                     existing.add(job['run_id'])
                     self.state['jobs'].append(job)
                 self.state['phase']='tuning'
+                self.save()
+                return {'ok':True}
+            if path=='/hold':
+                self.state['claims_held']=bool(payload['held'])
+                self.save()
+                return {'ok':True,'claims_held':self.state['claims_held']}
+            if path=='/source':
+                assert self.state['claims_held']
+                assert (self.root/'repo/SOURCE_REVISION').read_text().strip()==payload['revision']
+                self.state['source_revision']=payload['revision']
                 self.save()
                 return {'ok':True}
             if path=='/state':
