@@ -7,6 +7,7 @@ sequence. The sequence boundary falls inside a CP shard, so the recurrent state 
 
 import os
 import sys
+from argparse import Namespace
 from datetime import timedelta
 
 import torch
@@ -17,6 +18,9 @@ from megatron.core.transformer.transformer_config import TransformerConfig
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 from miles.backends.megatron_utils.megatron_to_hf.linear_attn_layout import LinearAttnHeads
+from miles.backends.megatron_utils.parallel import get_packed_seq_params
+from miles_plugins.models.cp_layout import build_cp_layout_metadata
+from miles_plugins.models.cp_utils import _relayout_indices
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "fast-gpu"))
 from linear_attn_reference import ReplicatedGDN, ReplicatedKDA, build_layer, packed, rel_err  # noqa: E402
@@ -58,6 +62,42 @@ def check(ref, config, rank, world_size):
     )
 
 
+def check_planned_relayout(ref, config, rank, world_size):
+    layer = build_layer(ref, config, allgather_cp=False)
+    boundaries = (0, 64 * world_size, 192 * world_size, 195 * world_size)
+    cu_seqlens = torch.tensor(boundaries, device="cuda", dtype=torch.int32)
+    layout = build_cp_layout_metadata(boundaries, world_size, rank)
+    torch.manual_seed(123)
+    full = torch.randn(boundaries[-1], 1, HIDDEN, device="cuda", dtype=torch.bfloat16)
+    _, to_zigzag = _relayout_indices(cu_seqlens, rank, world_size, boundaries[-1])
+    hidden = full.index_select(0, to_zigzag)
+    grad_output = torch.randn_like(hidden)
+    reference_input = hidden.detach().requires_grad_(True)
+    reference, _ = layer(reference_input, packed_seq_params=packed(cu_seqlens))
+    assert torch.isfinite(reference).all(), "Unplanned reference output is non-finite"
+    reference.backward(grad_output)
+    reference_grads = {name: param.grad.clone() for name, param in layer.named_parameters() if param.grad is not None}
+    layer.zero_grad(set_to_none=True)
+    params = get_packed_seq_params(
+        {
+            "cu_seqlens": cu_seqlens,
+            "cu_seqlens_host": boundaries,
+            "max_seqlen": 128 * world_size,
+            "cp_layout_metadata": layout,
+        },
+        Namespace(qkv_format="thd"),
+    )
+    candidate_input = hidden.detach().requires_grad_(True)
+    candidate, _ = layer(candidate_input, packed_seq_params=params)
+    assert torch.isfinite(candidate).all(), "Planned relayout output is non-finite"
+    candidate.backward(grad_output)
+    torch.testing.assert_close(candidate, reference, atol=0, rtol=0)
+    torch.testing.assert_close(candidate_input.grad, reference_input.grad, atol=0, rtol=0)
+    for name, param in layer.named_parameters():
+        if name in reference_grads:
+            torch.testing.assert_close(param.grad, reference_grads[name], atol=0, rtol=0)
+
+
 def main():
     rank, world_size = int(os.environ["RANK"]), int(os.environ["WORLD_SIZE"])
     torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
@@ -81,6 +121,9 @@ def main():
     failed = False
     try:
         for name, ref in refs.items():
+            check_planned_relayout(ref, config, rank, world_size)
+            if rank == 0:
+                print(f"[{name} CP={world_size}] planned layout output/input/parameter gradients match main exactly")
             out_diff, grad_diff = check(ref, config, rank, world_size)
             ok = out_diff < 1e-2 and grad_diff < 1e-2
             failed |= not ok

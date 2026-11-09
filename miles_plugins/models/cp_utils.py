@@ -14,6 +14,7 @@ import torch
 import torch.distributed as dist
 import torch.nn as nn
 
+from miles_plugins.models.cp_layout import CPLayoutMetadata, CPTransferPlan
 
 try:
     from fla.ops.cp import build_cp_context as _fla_build_cp_context
@@ -105,11 +106,82 @@ class _Relayout(torch.autograd.Function):
         return _gather_select(grad_output, inverse_index, ctx.cp_group), None, None, None
 
 
-def zigzag_to_packed_shard(hidden_states, cu_seqlens, cp_group, cp_rank, cp_size):
+def _planned_relayout(hidden_states, layout: CPLayoutMetadata, cp_group, plan: CPTransferPlan, communication):
+    if hidden_states.size(0) != layout.local_total_len:
+        raise ValueError(f"Expected local total length {layout.local_total_len}, got {hidden_states.size(0)}")
+    if (dist.get_world_size(cp_group), dist.get_rank(cp_group)) != (layout.cp_size, layout.cp_rank):
+        raise ValueError("CP layout metadata does not match the current process group")
+    if communication not in ("all_gather", "all_to_all"):
+        raise ValueError(f"Unsupported CP communication: {communication}")
+    if layout.cp_size == 1:
+        return hidden_states
+    if communication == "all_gather":
+        gathered = hidden_states.new_empty((layout.cp_size * layout.local_total_len, *hidden_states.shape[1:]))
+        dist.all_gather_into_tensor(gathered, hidden_states.contiguous(), group=cp_group)
+        gathered = gathered.view(layout.cp_size, *hidden_states.shape)
+        output = hidden_states.new_empty(hidden_states.shape)
+        for peer, intervals in enumerate(plan.recv):
+            for src, dst, length in intervals:
+                output[dst : dst + length].copy_(gathered[peer][src : src + length])
+        return output
+
+    send_buffer = hidden_states.new_empty(hidden_states.shape)
+    offset = 0
+    for intervals in plan.send:
+        for src, _, length in intervals:
+            send_buffer[offset : offset + length].copy_(hidden_states[src : src + length])
+            offset += length
+    recv_buffer = torch.empty_like(send_buffer)
+    dist.all_to_all_single(
+        recv_buffer,
+        send_buffer,
+        output_split_sizes=list(plan.recv_sizes),
+        input_split_sizes=list(plan.send_sizes),
+        group=cp_group,
+    )
+    output = hidden_states.new_empty(hidden_states.shape)
+    offset = 0
+    for intervals in plan.recv:
+        for _, dst, length in intervals:
+            output[dst : dst + length].copy_(recv_buffer[offset : offset + length])
+            offset += length
+    return output
+
+
+class _PlannedRelayout(torch.autograd.Function):
+    """A permutation's backward is its inverse transport, without CP reduction or scaling."""
+
+    @staticmethod
+    def forward(ctx, hidden_states, layout, cp_group, to_packed, communication):
+        ctx.layout = layout
+        ctx.cp_group = cp_group
+        ctx.to_packed = to_packed
+        ctx.communication = communication
+        plan = layout.zigzag_to_contiguous if to_packed else layout.contiguous_to_zigzag
+        return _planned_relayout(hidden_states, layout, cp_group, plan, communication)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        plan = ctx.layout.contiguous_to_zigzag if ctx.to_packed else ctx.layout.zigzag_to_contiguous
+        result = _planned_relayout(grad_output, ctx.layout, ctx.cp_group, plan, ctx.communication)
+        return result, None, None, None, None
+
+
+def zigzag_to_packed_shard(
+    hidden_states, cu_seqlens, cp_group, cp_rank, cp_size, *, layout=None, communication="all_to_all"
+):
+    """Use a microbatch's CPU plan when supplied; preserve the device-map path for other callers."""
+    if layout is not None:
+        return _PlannedRelayout.apply(hidden_states, layout, cp_group, True, communication)
     to_packed, to_zigzag = _relayout_indices(cu_seqlens, cp_rank, cp_size, hidden_states.size(0) * cp_size)
     return _Relayout.apply(hidden_states, to_packed, to_zigzag, cp_group)
 
 
-def packed_shard_to_zigzag(hidden_states, cu_seqlens, cp_group, cp_rank, cp_size):
+def packed_shard_to_zigzag(
+    hidden_states, cu_seqlens, cp_group, cp_rank, cp_size, *, layout=None, communication="all_to_all"
+):
+    """Undo the packed-stream permutation using the same microbatch plan and transport."""
+    if layout is not None:
+        return _PlannedRelayout.apply(hidden_states, layout, cp_group, False, communication)
     to_packed, to_zigzag = _relayout_indices(cu_seqlens, cp_rank, cp_size, hidden_states.size(0) * cp_size)
     return _Relayout.apply(hidden_states, to_zigzag, to_packed, cp_group)
