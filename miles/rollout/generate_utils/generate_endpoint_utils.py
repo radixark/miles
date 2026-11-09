@@ -176,18 +176,14 @@ def truncate_to_max_seq_len(args, sample: Sample, tokenizer) -> None:
     ``max_new_tokens`` was budgeted from the unexpanded prompt, so in token space the expanded prompt plus the
     response can exceed the limit. The cut is taken from the end of the output; a multi-turn caller whose
     observations carry media decides on the expanded observation before calling, so the cut stays in the response.
+
+    The dataset filter counts text tokens only, so a prompt can expand past the limit on its own. Such a sample
+    keeps no response, like one whose prompt left no budget before the request.
     """
     overrun = len(sample.tokens) - args.max_seq_len if args.max_seq_len else 0
     if overrun <= 0:
         return
-    if overrun > sample.response_length:
-        # The dataset filter counts text tokens only, so a prompt that expands past the limit reaches here; it would
-        # ship longer than the memory bound --max-seq-len set.
-        raise ValueError(
-            f"the expanded prompt alone ({len(sample.tokens) - sample.response_length} tokens) exceeds --max-seq-len "
-            f"{args.max_seq_len}; lower --rollout-max-prompt-len or raise --max-seq-len"
-        )
-    sample.strip_last_output_tokens(overrun, tokenizer)
+    sample.strip_last_output_tokens(min(overrun, sample.response_length), tokenizer)
     sample.status = Sample.Status.TRUNCATED
 
 
