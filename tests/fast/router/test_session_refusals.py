@@ -76,7 +76,8 @@ def test_node_cap_is_refused_before_generating(monkeypatch):
     with _serve_v2() as env:
         session_id = _create_session(env.url)
         for text in ("one", "two"):
-            assert _post_chat(env.url, session_id, {"messages": [{"role": "user", "content": text}]}).status_code == 200
+            accepted = _post_chat(env.url, session_id, {"messages": [{"role": "user", "content": text}]})
+            assert accepted.status_code == 200
 
         response = _post_chat(env.url, session_id, {"messages": [{"role": "user", "content": "three"}]})
 
