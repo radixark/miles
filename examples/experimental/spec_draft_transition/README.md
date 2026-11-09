@@ -20,6 +20,10 @@ the complete reporting path against known paired differences and zero interactio
 teacher whose next-token probabilities depend on the last two tokens.
 `finalize.py` waits for completion, validates selected rates against actual run
 configs, collects node metrics, updates W&B summaries and builds the final report.
+After completion, `benchmark_queue.py` times the predeclared seed 20001
+checkpoint in every condition. Three paired teacher/speculative replicates use
+separate free GPUs, 128 shared prompts, a 256-token cap and alternating mode
+order. These are reference implementation timings, not a production speed claim.
 
 The manifest owns temperatures, seeds, initial rates, budgets and run identities.
 Pure CE, pure L1 and the fixed cosine blend all use the same training token budget.

@@ -24,6 +24,7 @@ class Args(Tap):
     temperature: float
     prompts: int = 128
     repetitions: int = 3
+    repetition_start: int = 0
     max_tokens: int = 256
     seed: int = 22931
 
@@ -55,7 +56,7 @@ def main(args: Args) -> None:
         teacher_sequence(teacher,row['prompt_ids'],args.temperature,eos,32)
         sample_sequence(teacher,student,row['prompt_ids'],args.temperature,eos,8,32,32)
     results=[]
-    for repetition in range(args.repetitions):
+    for repetition in range(args.repetition_start,args.repetition_start+args.repetitions):
         order=['teacher','speculative'] if repetition%2==0 else ['speculative','teacher']
         for mode in order:
             torch.manual_seed(args.seed+repetition)

@@ -63,5 +63,19 @@ def verify_context() -> None:
     print({'contextual_three_token_maximum_error': error, 'corrections': corrections, 'bonuses': bonuses})
 
 
+def verify_caps() -> None:
+    teacher = ContextModel(torch.tensor([[0.2, 0.3, 0.5]] * 9))
+    for table in [torch.tensor([[0.2, 0.3, 0.5]] * 9), torch.tensor([[0.6, 0.3, 0.1]] * 9)]:
+        student = ContextModel(table)
+        for cap in [*range(1, 18), 32]:
+            result = sample_sequence(teacher, student, [0, 2], 1.0, set(), 8, cap, max_tokens=cap)
+            assert len(result['generated_ids']) == sum(result['emitted']) == cap, (cap, result)
+    eos_model = ContextModel(torch.tensor([[0.0, 1.0, 0.0]] * 9))
+    result = sample_sequence(eos_model, eos_model, [0, 2], 1.0, {1}, 8, 32, max_tokens=17)
+    assert result['generated_ids'] == [1]
+    print('Reference benchmark output-cap and EOS cases passed.')
+
+
 if __name__ == '__main__':
     verify_context()
+    verify_caps()
