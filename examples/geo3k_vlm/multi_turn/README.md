@@ -5,7 +5,7 @@ Use the CUDA 13 Miles image from the [installation guide](../../../docs/getting-
 
 The multi-turn rollout is implemented through a [custom generate function](rollout.py), overriding the original generate function.
 
-With `--multimodal-token-space-processing` and `--sglang-enable-token-space-processor`, each request sends the earlier turns as SGLang already expanded them and the newest turn with one placeholder per image, which SGLang expands; this needs an SGLang build with the token-space processor.
+With `--multimodal-token-space-processing` and `--sglang-enable-token-space-processor`, each request sends the earlier turns as SGLang already expanded them and the newest turn with one placeholder per image, which SGLang expands; this needs an SGLang build with the token-space processor, and `--shared-media-dir` (a directory every SGLang engine and trainer rank mounts) because geo3k stores its images as base64 data URLs.
 
 In terms of the environment interaction, this example initializes a [custom interactive environment](env_geo3k.py) with the APIs below.
 <details>

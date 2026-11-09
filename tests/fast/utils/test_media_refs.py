@@ -1,13 +1,13 @@
 """Media references: how a dataset's media reaches SGLang as shared paths.
 
     chat messages ──collect_media_refs──▶ {"images": [p0, p1], "audios": [p2], "videos": [p3]}
-         │                                           │                        │
-         │ path / file:// URL ─▶ as is               ├─rollout_media_payload─▶ {"image_data": [...], ...}  (SGLang)
-         │ data URL / bytes / PIL ─▶ written         └─load_media_for_processor─▶ PIL images, audio bytes   (Miles)
-         ▼   once under media_dir by content hash                              videos rejected
+         │                                           │
+         │ path / file:// URL ─▶ as is               └─rollout_media_payload─▶ {"image_data": [...], ...}  (SGLang)
+         │ data URL / bytes / PIL ─▶ written
+         ▼   once under media_dir by content hash
 
 The tests pin the order and duplicates of the references, that non-path sources are written once by content
-hash, the rejections, and that the Miles-side processor sees the original pixels.
+hash, and the rejections.
 """
 
 import base64
@@ -17,13 +17,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from miles.utils.media_refs import (
-    collect_media_refs,
-    has_media,
-    load_media_for_processor,
-    materialize_media_ref,
-    rollout_media_payload,
-)
+from miles.utils.media_refs import collect_media_refs, has_media, materialize_media_ref, rollout_media_payload
 
 
 def _png_bytes(color: str) -> bytes:
@@ -121,7 +115,7 @@ def test_per_part_resize_options_are_rejected(tmp_path):
         collect_media_refs(messages, media_dir=None)
 
 
-def test_video_refs_reach_the_engine_payload_but_not_the_miles_processor(tmp_path):
+def test_video_refs_reach_the_engine_payload(tmp_path):
     video = tmp_path / "clip.mp4"
     video.write_bytes(b"mp4")
 
@@ -130,18 +124,3 @@ def test_video_refs_reach_the_engine_payload_but_not_the_miles_processor(tmp_pat
     )
 
     assert rollout_media_payload(multimodal_inputs) == {"video_data": [str(video)]}
-    with pytest.raises(NotImplementedError, match="Video"):
-        load_media_for_processor(multimodal_inputs)
-
-
-def test_processor_loads_original_pixels_without_resizing(tmp_path):
-    path = tmp_path / "big.png"
-    Image.new("RGBA", (37, 23), color=(1, 2, 3, 4)).save(path)
-    audio = tmp_path / "clip.wav"
-    audio.write_bytes(b"audio-bytes")
-
-    loaded = load_media_for_processor({"images": [str(path)], "audios": [str(audio)]})
-
-    (image,) = loaded["images"]
-    assert image.size == (37, 23) and image.mode == "RGBA"
-    assert loaded["audios"] == [b"audio-bytes"]

@@ -175,7 +175,7 @@ class Sample:
     # prompt
     prompt: str | list[dict[str, str]] = ""
     tokens: list[int] = field(default_factory=list)
-    multimodal_inputs: dict[str, Any] = None  # shared media paths per modality, see miles/utils/media_refs.py
+    multimodal_inputs: dict[str, Any] = None  # raw media; in token space the shared paths (media_refs.py)
     multimodal_train_inputs: dict[str, Any] = None  # processed multimodal data, e.g. pixel_values, etc.
     # response
     response: str = ""
