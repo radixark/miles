@@ -77,7 +77,7 @@ class _ServerStub:
         self.health_checker_activeness = ActivenessTracker(active=True)
 
     @property
-    def normal_server_cells(self) -> dict[str, _ColocatedCellStub]:
+    def weight_receiver_cells(self) -> dict[str, _ColocatedCellStub]:
         return {cell_id: cell for cell_id, cell in self.all_server_cells.items() if not cell.is_errored}
 
 

@@ -3,6 +3,7 @@ import logging
 from collections.abc import Sequence
 
 from miles.ray.specs.inference import (
+    compute_eval_pool_router_worker_name,
     compute_router_worker_name,
     compute_session_server_instance_id,
     session_server_worker_name,
@@ -69,7 +70,15 @@ async def resolve_router_addrs(args, *, router_providers: Sequence[BaseWorkerPro
 
 async def wait_router_ready(*, model_idx: int, provider: BaseWorkerProvider) -> HostAndPort:
     """Wait until the model's router, launched by the platform, is reachable and return its address."""
-    worker_name = compute_router_worker_name(model_idx)
+    return await _wait_router_worker_ready(worker_name=compute_router_worker_name(model_idx), provider=provider)
+
+
+async def wait_eval_pool_router_ready(*, provider: BaseWorkerProvider) -> HostAndPort:
+    """Wait until the router of the engines carved out for eval is reachable and return its address."""
+    return await _wait_router_worker_ready(worker_name=compute_eval_pool_router_worker_name(), provider=provider)
+
+
+async def _wait_router_worker_ready(*, worker_name: str, provider: BaseWorkerProvider) -> HostAndPort:
     router_addr = (await provider.get_addrs(worker_name=worker_name))["primary"]
     await wait_tcp_ready_async(router_addr.host, router_addr.port, timeout=_ROUTER_READY_TIMEOUT_SECONDS)
     logger.info(f"Router ready at {router_addr}")

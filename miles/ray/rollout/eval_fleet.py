@@ -170,11 +170,15 @@ class InferenceControllerEvalFleet:
         async with self._srv.context_lock:
             return list(self._srv.api_clients)
 
-    async def _wait_router_ready(self, timeout: float = 180.0) -> None:
-        """After a revival the router 503s until its health cycle evicts the dead
-        worker; a retried one-token probe proves the route is usable before dispatch."""
-        await wait_http_ok(
-            f"http://{self._srv.router_ip}:{self._srv.router_port}/generate",
-            json_payload={"input_ids": [0], "sampling_params": {"max_new_tokens": 1, "temperature": 0}},
-            timeout=timeout,
-        )
+    async def _wait_router_ready(self) -> None:
+        await wait_router_generate_ready(f"http://{self._srv.router_ip}:{self._srv.router_port}")
+
+
+async def wait_router_generate_ready(router_url: str, timeout: float = 180.0) -> None:
+    """After a revival the router 503s until its health cycle evicts the dead
+    worker; a retried one-token probe proves the route is usable before dispatch."""
+    await wait_http_ok(
+        f"{router_url}/generate",
+        json_payload={"input_ids": [0], "sampling_params": {"max_new_tokens": 1, "temperature": 0}},
+        timeout=timeout,
+    )

@@ -240,11 +240,13 @@ follow, which backend runs the eval and where that backend gets its weights.
 
 | Backend | Selected by | Cost |
 |---|---|---|
-| Shared engines | Neither flag below, which is the default | Rollout production pauses for the eval duration |
+| Shared engines | None of the flags below, which is the default | Rollout production pauses for the eval duration |
+| Carved-out engines | `--eval-pool-num-engines K` | K rollout engines leave training while an eval runs; training never pauses |
 | Dedicated fleet | `--eval-num-gpus N` | N GPUs carved out of the job; training never pauses |
 | External backend | `--eval-function-path` pointing at a `CheckpointEvalFn` | Nothing from the training job beyond the snapshot export |
 
-The fleet and an external backend each select a backend, so passing both is an error.
+The carved-out engines, the fleet and an external backend each select a backend, so passing two of them is an
+error.
 
 ### Mode 1: Shared engines
 
@@ -257,7 +259,38 @@ weights the step's `update_weights` broadcast pushed. Production stalls for roug
 eval duration, which is acceptable for a small debug set and for points that must land
 strictly on time.
 
-### Mode 2: Dedicated fleet
+### Mode 2: Carved-out engines
+
+The implementation lives in [`miles/ray/rollout/eval_pool.py`](https://github.com/radixark/miles/blob/main/miles/ray/rollout/eval_pool.py).
+
+Eval runs on rollout engines, but only on K of them, and only while it runs:
+
+```bash
+--eval-pool-num-engines 2  # engines lent to each eval
+--eval-interval K
+--eval-prompt-data aime /path/to/aime.jsonl
+```
+
+At an eval-due step, right after `update_weights`, the trainer moves the last K serving
+engines from the training router to an eval router, which starts empty. Those engines
+keep the weights of that step and receive no weight update while the eval runs, so every
+eval token comes from one version. Training never waits: the producer keeps submitting,
+the other engines keep generating, and every later `update_weights` reaches exactly the
+engines still in training, so training staleness is the same as without eval. Evaluation
+sessions of the session server go to the eval router; training sessions never do. When the
+eval settles, whatever its outcome, the engines leave the eval router as engines pending
+weights; the next `update_weights` reaches them and only then do they rejoin the training
+router.
+
+Choosing K trades eval duration for training throughput: during an eval, training runs on
+the remaining engines. Only one eval holds engines at a time, so `--eval-max-in-flight` must be 1,
+and `--eval-overflow-policy` decides whether a point that comes due while the previous eval
+is still running waits for it (`backpressure`) or is skipped (`skip`). The point lands at the
+right step and `eval/lag_steps` reports how late it was. The mode needs `train_async.py`
+with `--fully-async`, one served model without prefill/decode disaggregation, engines of
+`--rollout-num-gpus-per-engine` GPUs, and no rollout fault tolerance.
+
+### Mode 3: Dedicated fleet
 
 The implementation lives in [`miles/ray/rollout/eval_fleet.py`](https://github.com/radixark/miles/blob/main/miles/ray/rollout/eval_fleet.py).
 
@@ -293,7 +326,7 @@ differ those four default to 1 instead of being inherited; inheriting them acros
 different TP produces an engine that fails SGLang's own validation at boot. You can set
 them explicitly with `--eval-sglang-*` if the fleet is large enough to want them.
 
-### Mode 3: External backend
+### Mode 4: External backend
 
 The contract lives in [`miles/rollout/checkpoint_eval.py`](https://github.com/radixark/miles/blob/main/miles/rollout/checkpoint_eval.py), with a
 reference implementation in [`examples/infra_features/fully_async/external_eval_fn.py`](https://github.com/radixark/miles/blob/main/examples/infra_features/fully_async/external_eval_fn.py).
@@ -401,6 +434,9 @@ Every skipped point is logged at the step it would have landed on, with the reas
 | `eval/skipped_busy` | At `--eval-max-in-flight` under `--eval-overflow-policy skip` |
 | `eval/skipped_export_failed` | The snapshot export raised |
 | `eval/skipped_ckpt_missing` | No `.complete` marker in the snapshot directory |
+| `eval/skipped_insufficient_engines` | Carved-out engines: too few engines are serving to lend K and keep one for training |
+| `eval/skipped_pin_violation` | Carved-out engines: the engines to carve out, or the carved engines at dispatch, did not all hold one weight version |
+| `eval/skipped_unhealthy` | Carved-out engines: moving an engine to the eval router failed, or the eval router did not serve |
 | `eval/skipped_crashed` | Anything else the eval raised |
 | `eval/skipped_<reason>` | A `CheckpointEvalFn` raised `EvalSkip(reason)` |
 

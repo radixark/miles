@@ -175,6 +175,31 @@ def _resolve_rollout_functions(args) -> None:
         args.eval_num_gpus > 0 and _compute_rollout_external(args)
     ), "eval_num_gpus cannot be set with external rollout engines."
     args.eval_uses_snapshots = args.eval_num_gpus > 0 or checkpoint_backend
+    _validate_eval_pool(args, checkpoint_backend=checkpoint_backend)
+
+
+def _validate_eval_pool(args, *, checkpoint_backend: bool) -> None:
+    """The engine-independent constraints of --eval-pool-num-engines; the engine layout is checked with sglang."""
+    assert args.eval_pool_num_engines >= 0, f"--eval-pool-num-engines must be >= 0, got {args.eval_pool_num_engines}"
+    if args.eval_pool_num_engines == 0:
+        return
+    reason = "--eval-pool-num-engines"
+    assert args.fully_async, f"{reason} needs --fully-async: synchronous training has no rollout to overlap eval with"
+    assert not args.colocate, f"{reason} does not support --colocate: training and engines take turns on the GPUs"
+    assert args.eval_num_gpus == 0, f"{reason} and --eval-num-gpus each select the engines eval runs on"
+    assert not checkpoint_backend, f"{reason} and a CheckpointEvalFn --eval-function-path each select an eval backend"
+    assert not _compute_rollout_external(args), f"{reason} carves miles' own engines; external engines are not ours"
+    assert args.eval_interval is not None, f"{reason} without --eval-interval carves nothing"
+    assert args.eval_max_in_flight == 1, (
+        f"{reason} needs --eval-max-in-flight 1: one eval holds the carved engines until it settles, "
+        "so a second pending eval has no engines to run on"
+    )
+    assert "rollout" not in args.ft_components, f"{reason} is untested with rollout fault tolerance"
+    assert args.update_weights_interval == 1, (
+        f"{reason} needs --update-weights-interval 1: given-back engines rejoin training through the weight update "
+        "before the next eval point"
+    )
+    assert not use_legacy_rollout_v1(), f"{reason} requires the class-based rollout API"
 
 
 def _add_miles_ext_kernels_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
@@ -412,6 +437,7 @@ def parse_args_and_get_parser(
     raw_megatron = resolve_megatron_config(args, base_args=backend_values if backend == "megatron" else {})
     check_output_store_args(args, sglang=sglang, megatron=raw_megatron)
     _check_stop_token_replace_streaming_session(args, sglang=sglang)
+    _check_eval_pool_engines(args, sglang=sglang, sglang_scaling=sglang_scaling)
     values = {name: value for name, value in vars(args).items() if name in AllConfig.model_fields} | {
         "raw_megatron": raw_megatron,
         "raw_fsdp": FsdpArgsNamespace(**backend_values) if backend == "fsdp" else None,
@@ -610,6 +636,25 @@ def _validate_rollout_data_yaml_config(args) -> None:
             f"--rollout-data-yaml-config selects its own data source; drop --data-source-path {args.data_source_path}"
         )
     args.data_source_path = "miles.rollout.data_source.MixedRolloutDataSource"
+
+
+def _check_eval_pool_engines(
+    args: argparse.Namespace, *, sglang: SglangConfig, sglang_scaling: SglangScalingConfig
+) -> None:
+    if args.eval_pool_num_engines == 0:
+        return
+    reason = f"--eval-pool-num-engines {args.eval_pool_num_engines}"
+    assert (
+        len(sglang.models) == 1
+    ), f"{reason} is untested with several served models: {[m.name for m in sglang.models]}"
+    (model,) = sglang.models
+    assert not model.has_pd_disaggregation, f"{reason} carves whole engines; prefill/decode pairs are not supported"
+    assert all(g.num_gpus_per_engine == args.rollout_num_gpus_per_engine for g in model.server_groups), (
+        f"{reason} sizes the eval engines by --rollout-num-gpus-per-engine {args.rollout_num_gpus_per_engine}, "
+        f"but the engine groups use {[g.num_gpus_per_engine for g in model.server_groups]}"
+    )
+    num_engines = model.num_server_cells(sglang_scaling)
+    assert args.eval_pool_num_engines < num_engines, f"{reason} leaves training none of the {num_engines} engines"
 
 
 def _compute_init_expected_num_cells(
