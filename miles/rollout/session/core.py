@@ -204,7 +204,7 @@ def extract_completion(result: dict) -> tuple:
 def extract_counted_completion(session, result: dict) -> tuple | None:
     try:
         completion = extract_completion(result) if result["status_code"] == 200 else None
-    except (UpstreamResponseError, UpstreamGenerationAbortedError):
+    except Exception:
         _record_model_call(session, failed=True)
         raise
     _record_model_call(session, failed=result["status_code"] >= 500)
@@ -309,6 +309,11 @@ class SessionCore:
             extra_key=extra_key,
         )
         return Response(content=_render_json({"session_id": session_id}), status_code=200, media_type=JSON_MEDIA_TYPE)
+
+    def record_rejected_call(self, session_id: str) -> None:
+        session = self.registry.sessions.get(session_id)
+        if session is not None:
+            _record_model_call(session, failed=False)
 
     def _session_metadata(self, session_id: str, session) -> dict:
         """The per-session assembly/inspection metadata dict, shared by

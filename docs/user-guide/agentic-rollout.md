@@ -134,7 +134,8 @@ Miles itself discards a session that recorded no model call (`NoModelCalls`),
 whose samples could not be collected (`CollectFailed`), or whose last model call
 failed at the engine with a 5xx or a transport error (`ModelCallFailed`), whatever
 the agent function returned. A failed call the agent retried successfully does
-not count, and a 4xx such as a context-length error is the policy's own outcome.
+not count, and a 4xx, whether the engine's context-length error or the session
+rejecting the request, is the policy's own outcome.
 
 
 ### What the session URL accepts
