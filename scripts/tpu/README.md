@@ -50,7 +50,9 @@ One launcher per model, each with the same `sglang` and `train` commands:
 | `run_qwen3_30b_a3b_torchtitan.py` | Qwen3-30B-A3B | params, grads and Adam on the host (`--optimizer-cpu-offload`), ~120 GB of host RAM per trainer process |
 | `run_glm4_7_flash_4layer_torchtitan.py` | GLM-4.7-Flash cut to its first 4 layers (`tools/prune_hf_layers.py`) | Adam on the device |
 
-The MoE trainers keep every expert on each rank (EP 1); sglang serves them with EP 4. Model and data
+The MoE trainers keep every expert on each rank (EP 1); sglang serves them with EP 4. Neither MoE launcher has
+run on TPU with the current engine flags (batched RPA, page 256, seq-along-lane KV, 128 running requests), which
+were validated on Qwen3-4B only; GLM's MLA backend is the least certain. Model and data
 default to `/root/models` and `/root/datasets` (`--model-dir`, `--data-dir`); `train` downloads the
 model, dapo-math-17k and aime-2024 there if missing. The GLM launcher serves the cut checkpoint, so run its
 `prepare` before `sglang`. The steps below use Qwen3-4B.
