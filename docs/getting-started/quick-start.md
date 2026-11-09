@@ -112,7 +112,7 @@ perf 0: {'perf/train_wait_time': 101.2, 'perf/actor_train_time': 41.3, ...}
 ```
 
 `rollout/raw_reward` is the number to watch: the mean reward before dynamic
-sampling filters, including responses dropped from training. You have a live RL run.
+sampling filters, including the groups they drop. You have a live RL run.
 
 ## What's happening
 
