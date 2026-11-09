@@ -36,12 +36,15 @@ from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
 # so a replay whose input object uses the REVERSED key order re-serializes to
 # a different spelling — the matcher-gate scenario from the design doc.
 _TOOL_CALL_TEXT = '<tool_call>\n{"name": "get_weather", "arguments": {"city": "Paris", "unit": "C"}}\n</tool_call>'
+_NON_ASCII_TOOL_CALL_TEXT = '<tool_call>\n{"name": "get_weather", "arguments": {"city": "北京"}}\n</tool_call>'
 _TOOLS = [{"name": "get_weather", "description": "weather", "input_schema": {"type": "object", "properties": {}}}]
 
 
 def _process_fn(prompt: str) -> ProcessResult:
     if "sunny" in prompt:
         return ProcessResult(text="final-answer", finish_reason="stop")
+    if "weather in chinese" in prompt:
+        return ProcessResult(text=_NON_ASCII_TOOL_CALL_TEXT, finish_reason="stop")
     if "use the weather tool" in prompt:
         return ProcessResult(text=_TOOL_CALL_TEXT, finish_reason="stop")
     return ProcessResult(text="anthropic-echo", finish_reason="stop")
@@ -446,6 +449,28 @@ class TestAnthropicRoute:
         assert anthropic_record["request"]["tools"] == openai_record["request"]["tools"]
         assert anthropic_record["request"]["input_ids"] == openai_record["request"]["input_ids"]
 
+    @pytest.mark.parametrize(
+        "settings",
+        [
+            {"thinking": {"type": "enabled", "budget_tokens": 2048}},
+            {"thinking": {"type": "adaptive"}, "output_config": {"effort": "xhigh"}},
+            {"thinking": {"type": "disabled"}},
+            {"output_config": {"effort": "low", "format": {"type": "json_schema", "schema": {"type": "object"}}}},
+        ],
+    )
+    def test_rollout_owned_settings_are_accepted_and_ignored(self, anthropic_env, settings):
+        messages = [{"role": "user", "content": "hello"}]
+        bare_session = _create_session(anthropic_env.url)
+        settings_session = _create_session(anthropic_env.url)
+
+        assert _post_messages(anthropic_env.url, bare_session, _payload(messages)).status_code == 200
+        resp = _post_messages(anthropic_env.url, settings_session, _payload(messages, **settings))
+        assert resp.status_code == 200
+        assert resp.json()["content"] == [{"type": "text", "text": "anthropic-echo"}]
+
+        bare_request = _records(anthropic_env.url, bare_session)[0]["request"]
+        assert _records(anthropic_env.url, settings_session)[0]["request"] == bare_request
+
     def test_unexpected_core_exception_wears_anthropic_envelope(self, anthropic_env):
         """Unexpected (non-SessionError) processing failures keep the frozen
         wire behavior: a scrubbed generic Anthropic api_error envelope, not
@@ -528,14 +553,6 @@ class TestAnthropicRoute:
     def test_fixed_feature_policy_rejects_before_core(self, anthropic_env):
         messages = [{"role": "user", "content": "q"}]
         cases = [
-            (
-                _payload(messages, thinking={"type": "disabled"}),
-                "thinking is not supported by this endpoint",
-            ),
-            (
-                _payload(messages, output_config={"effort": "high"}),
-                "output_config is not enabled for this deployment",
-            ),
             (_payload(messages, betas=["b-1"]), "betas is not enabled for this deployment"),
             (
                 _payload(messages, tools=[{"type": "web_search_20250305", "name": "web_search"}]),
@@ -597,24 +614,6 @@ class TestAnthropicRoute:
             (
                 _payload([{"role": "user", "content": [{"type": "search_result", "title": "t"}]}]),
                 "search_result content blocks are not enabled for this deployment",
-            ),
-            (
-                _payload(
-                    [
-                        {
-                            "role": "user",
-                            "content": [
-                                {
-                                    "type": "tool_result",
-                                    "tool_use_id": "t",
-                                    "content": "failed",
-                                    "is_error": True,
-                                }
-                            ],
-                        }
-                    ]
-                ),
-                "tool_result is_error=true is not supported by this endpoint",
             ),
             (
                 _payload(
@@ -691,25 +690,6 @@ class TestAnthropicRoute:
                     messages,
                     thinking={"type": "disabled"},
                     output_config={"effort": "high"},
-                    betas=["b-1"],
-                    tools=[{"type": "web_search_20250305", "name": "web_search"}],
-                    system=[{"type": "image", "source": {"url": "https://x"}}],
-                ),
-                "thinking is not supported by this endpoint",
-            ),
-            (
-                _payload(
-                    messages,
-                    output_config={"effort": "high"},
-                    betas=["b-1"],
-                    tools=[{"type": "web_search_20250305", "name": "web_search"}],
-                    system=[{"type": "image", "source": {"url": "https://x"}}],
-                ),
-                "output_config is not enabled for this deployment",
-            ),
-            (
-                _payload(
-                    messages,
                     betas=["b-1"],
                     tools=[{"type": "web_search_20250305", "name": "web_search"}],
                     system=[{"type": "image", "source": {"url": "https://x"}}],
@@ -955,6 +935,64 @@ class TestAnthropicToolFlow:
         assert [m["role"] for m in records[0]["request"]["messages"]] == ["user", "assistant", "tool"]
         second_ids = records[0]["request"]["input_ids"]
         assert second_ids[: len(first_ids)] != first_ids
+
+
+    def test_failed_tool_result_reaches_the_model_as_its_text(self, anthropic_env):
+        records = {}
+        for is_error in (None, True):
+            session_id = _create_session(anthropic_env.url)
+            tool_use = _tool_turn1(anthropic_env.url, session_id)
+            tool_result = {"type": "tool_result", "tool_use_id": tool_use["id"], "content": "sunny"}
+            if is_error:
+                tool_result["is_error"] = True
+            payload = _payload(
+                [
+                    {"role": "user", "content": "please use the weather tool"},
+                    {"role": "assistant", "content": [tool_use]},
+                    {"role": "user", "content": [tool_result]},
+                ],
+                tools=_TOOLS,
+            )
+            resp = _post_messages(anthropic_env.url, session_id, payload)
+            assert resp.status_code == 200
+            assert resp.json()["content"] == [{"type": "text", "text": "final-answer"}]
+            records[is_error] = _records(anthropic_env.url, session_id)[-1]["request"]
+
+        assert records[True]["messages"][-1] == {"role": "tool", "content": "sunny", "tool_call_id": tool_use["id"]}
+        assert records[True]["input_ids"] == records[None]["input_ids"]
+
+    def test_strict_matcher_keeps_non_ascii_tool_arguments_on_one_lineage(self, anthropic_env):
+        url = anthropic_env.url
+        session_id = _create_session(url)
+        messages = [{"role": "user", "content": "the weather in chinese"}]
+        turn1 = _post_messages(url, session_id, _payload(messages, tools=_TOOLS))
+        assert turn1.status_code == 200
+        tool_use = next(block for block in turn1.json()["content"] if block["type"] == "tool_use")
+        assert tool_use["input"] == {"city": "北京"}
+
+        turn2 = _post_messages(
+            url,
+            session_id,
+            _payload(
+                [
+                    *messages,
+                    {"role": "assistant", "content": [tool_use]},
+                    {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tool_use["id"], "content": "sunny"}]},
+                ],
+                tools=_TOOLS,
+            ),
+        )
+        assert turn2.status_code == 200
+
+        snapshot = requests.get(f"{url}/sessions/{session_id}", timeout=5.0).json()
+        records = snapshot["records"]
+        assert len(records) == 2
+        first_ids = records[0]["request"]["input_ids"]
+        assert records[1]["request"]["input_ids"][: len(first_ids)] == first_ids
+        replayed = next(m for m in records[1]["request"]["messages"] if m["role"] == "assistant")
+        assert replayed["tool_calls"][0]["function"]["arguments"] == '{"city": "北京"}'
+        if anthropic_env.version == "v2":
+            assert [node["parent"] for node in snapshot["metadata"]["tree"]["nodes"]].count(None) == 1
 
 
 class TestAnthropicCloseRace:

@@ -75,15 +75,9 @@ def _validate_anthropic_content_block(block, *, allow_thinking: bool = False) ->
         raise ValueError("tool_reference content blocks are not enabled for this deployment")
     if block.type == "search_result":
         raise ValueError("search_result content blocks are not enabled for this deployment")
-    if block.type == "tool_result" and block.is_error is True:
-        raise ValueError("tool_result is_error=true is not supported by this endpoint")
 
 
 def _validate_anthropic_features(request: AnthropicMessagesRequest) -> None:
-    if request.thinking is not None:
-        raise ValueError("thinking is not supported by this endpoint")
-    if request.output_config is not None:
-        raise ValueError("output_config is not enabled for this deployment")
     if request.betas:
         raise ValueError("betas is not enabled for this deployment")
     if request.tools:
@@ -126,7 +120,10 @@ def _strip_anthropic_reasoning_history(
                 update={"content": [block for block in message.content if block.type != "thinking"]}
             )
         conversion_messages.append(message)
-    return anthropic_request.model_copy(update={"messages": conversion_messages}), reasoning_history
+    conversion_request = anthropic_request.model_copy(
+        update={"messages": conversion_messages, "thinking": None, "output_config": None}
+    )
+    return conversion_request, reasoning_history
 
 
 def _restore_anthropic_reasoning_history(openai_body: dict, reasoning_history: list[str | None]) -> None:
@@ -140,3 +137,10 @@ def _restore_anthropic_reasoning_history(openai_body: dict, reasoning_history: l
     for message, reasoning_content in zip(assistants, reasoning_history, strict=True):
         if reasoning_content is not None:
             message["reasoning_content"] = reasoning_content
+
+
+def _unescape_anthropic_tool_arguments(openai_body: dict) -> None:
+    for message in openai_body["messages"]:
+        for tool_call in message.get("tool_calls") or []:
+            function = tool_call["function"]
+            function["arguments"] = json.dumps(json.loads(function["arguments"]), ensure_ascii=False)
