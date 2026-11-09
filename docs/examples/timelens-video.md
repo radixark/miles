@@ -6,7 +6,7 @@ description: "Video temporal-grounding RL for Qwen3.5 with token-space media and
 GRPO on [TimeLens](https://github.com/TencentARC/TimeLens) temporal grounding: given a video and a sentence, the model
 answers the start and end time of the event, and the reward is the IoU of its first predicted span with the ground
 truth. The recipe follows TimeLens GRPO (tIoU reward, no KL, no std normalization, constant lr 1e-6) on Qwen3.5-9B,
-plus one training-reward step of ours (see Notes).
+plus one training-reward step (see Notes).
 
 The model is the plugin Qwen3.5 text model with the frozen vision tower
 (`miles_plugins.models.qwen3_5.qwen3_5_mm_model_provider`). Videos travel as shared file paths: SGLang samples the
@@ -41,14 +41,11 @@ re-sends it from the checkpoint, so the engines get it back after each offload.
 ## Results
 
 Qwen3.5-9B, 300 steps on 8 H200 (TP4), scored every 10 steps on 600 held-out Charades-STA items (none of the
-training videos come from Charades): tIoU 0.48 at step 0, 0.56-0.57 from step 150 on, best 0.573. The train vs
-rollout logprob gap is 0.010-0.016 over the first 40 steps and 0.004-0.008 after that.
+training videos come from Charades): tIoU 0.48 at step 0, 0.56-0.57 from step 150 on, best 0.573.
 
 ![eval/charades](https://raw.githubusercontent.com/radixark/miles/main/examples/timelens_video/timelens_qwen35_9b_eval.png)
 
 ![rollout/raw_reward](https://raw.githubusercontent.com/radixark/miles/main/examples/timelens_video/timelens_qwen35_9b_reward.png)
-
-![train/train_rollout_logprob_abs_diff](https://raw.githubusercontent.com/radixark/miles/main/examples/timelens_video/timelens_qwen35_9b_logprob_diff.png)
 
 Three held-out Charades items, answered by the model at step 0 and at step 299. Each strip shows eight frames of the
 video and, below them, the ground-truth span (green), the step-0 prediction (gray) and the step-299 prediction (blue).
@@ -62,10 +59,7 @@ Over the 600 items, 180 improve by more than 0.2 tIoU and 68 get worse by more t
 
 ## Notes
 
-- Responses cut at the 512-token limit score 0 in training (`zero_truncated_rewards`). This step is ours, not part
-  of the TimeLens recipe: the tIoU reward reads only the first predicted span, so text after it is free, and without
-  this step a run grew its answers to the 512-token limit for the second half of training. Eval keeps the TimeLens
-  scoring.
-- Videos decode on CPU (`video_preprocessing_device` in `--sglang-mm-process-config`), on the engines and the
-  trainer alike: on the GPU, the engines' concurrent float32 frame resizes ran the colocated engines out of memory.
+- Responses cut at the 512-token limit score 0 in training (`zero_truncated_rewards`): the tIoU reward reads only
+  the first predicted span, so text after it is free, and without this step a run grew its answers to the 512-token
+  limit for the second half of training. Eval keeps the TimeLens scoring.
 - 300 steps x 16 prompts is about two passes over the 2.5K prompts.
