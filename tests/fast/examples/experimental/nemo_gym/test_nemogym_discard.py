@@ -5,8 +5,6 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 
 import httpx
-import nemogym_agent_function
-import nemogym_generate
 import pytest
 from tests.fast.fixtures.generation_fixtures import extra_argv_for_variant
 from tests.fast.fixtures.rollout_fixtures import RolloutEnvConfig
@@ -21,9 +19,7 @@ _HTTP_500 = 500
 
 
 def _config() -> RolloutEnvConfig:
-    argv = extra_argv_for_variant(
-        "agentic_tool_call", custom_agent_function_path="nemogym_agent_function.run"
-    )
+    argv = extra_argv_for_variant("agentic_tool_call", custom_agent_function_path="nemogym_agent_function.run")
     return RolloutEnvConfig(
         extra_argv=MODULAR_ROLLOUT_BASE_ARGV
         + argv
