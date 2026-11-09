@@ -13,7 +13,6 @@ from examples.experimental.spec_draft_transition.analyze import main
 
 def verify_analysis() -> None:
     samples, curves, jobs = [], [], []
-    rng = np.random.default_rng(573)
     for temperature in [0.6, 1.0, 1.4]:
         for index, method in enumerate(['ce', 'l1', 'smooth']):
             for seed in range(20001, 20011):
@@ -21,10 +20,11 @@ def verify_analysis() -> None:
                           'temperature': temperature, 'method': method, 'seed': seed,
                           'learning_rate': 3e-5}
                 jobs.append({**common, 'wandb_url': 'fixture'})
-                blocks = rng.integers(1, 33, size=2000)
+                blocks = np.random.default_rng(seed).integers(1, 33, size=2000)
                 for prompt, count in enumerate(blocks):
                     samples.append({**common, 'draft': 8, 'prompt_id': f'{prompt:08d}',
-                                    'blocks': int(count), 'accepted': int(count) * (2 + index)})
+                                    'blocks': int(count),
+                                    'accepted': int(count) * (2 + index + prompt % 2 + seed % 2)})
                 for update in [0, 500, 1000, 2000]:
                     curves.append({**common, 'update': update,
                                    'overlap': 0.5 + index * 0.05 + update * 0.0001,
