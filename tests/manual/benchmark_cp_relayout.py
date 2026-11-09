@@ -13,17 +13,21 @@ from pathlib import Path
 import torch
 import torch.distributed as dist
 
-from miles_plugins.models.cp_layout import build_cp_layout_metadata
 from miles_plugins.models.cp_utils import packed_shard_to_zigzag, zigzag_to_packed_shard
 
 
-def measure(hidden, grad_output, cu_seqlens, layout, mode, warmup, iterations):
-    kwargs = {} if mode == "main" else {"layout": layout, "communication": mode}
+def measure(hidden, grad_output, cu_seqlens, mode, warmup, iterations):
+    rank, cp_size = dist.get_rank(), dist.get_world_size()
+    communication = "all_gather" if mode == "main" else "all_to_all"
 
     def step():
         hidden.grad = None
-        packed = zigzag_to_packed_shard(hidden, cu_seqlens, dist.group.WORLD, layout.cp_rank, layout.cp_size, **kwargs)
-        output = packed_shard_to_zigzag(packed, cu_seqlens, dist.group.WORLD, layout.cp_rank, layout.cp_size, **kwargs)
+        packed = zigzag_to_packed_shard(
+            hidden, cu_seqlens, dist.group.WORLD, rank, cp_size, communication=communication
+        )
+        output = packed_shard_to_zigzag(
+            packed, cu_seqlens, dist.group.WORLD, rank, cp_size, communication=communication
+        )
         output.backward(grad_output)
 
     for _ in range(warmup):
@@ -42,7 +46,7 @@ def measure(hidden, grad_output, cu_seqlens, layout, mode, warmup, iterations):
     end_event.record()
     torch.cuda.synchronize()
     return {
-        "rank": layout.cp_rank,
+        "rank": rank,
         "cuda_ms": start_event.elapsed_time(end_event) / iterations,
         "wall_ms": (time.perf_counter() - wall_start) * 1000 / iterations,
         "incremental_peak_mib": (torch.cuda.max_memory_allocated() - allocated_before) / 2**20,
@@ -66,13 +70,12 @@ def main():
             if tokens % (8 * cp_size):
                 raise ValueError("Token count must be divisible by 8 * CP")
             boundaries = [0, tokens // 4, tokens // 2, 3 * tokens // 4, tokens, tokens + 3 * cp_size]
-            layout = build_cp_layout_metadata(boundaries, cp_size, rank)
             cu_seqlens = torch.tensor(boundaries, device="cuda", dtype=torch.int32)
-            hidden = torch.randn(layout.local_total_len, 1, args.hidden_size, device="cuda", dtype=torch.bfloat16)
+            hidden = torch.randn(boundaries[-1] // cp_size, 1, args.hidden_size, device="cuda", dtype=torch.bfloat16)
             hidden.requires_grad_(True)
             grad_output = torch.randn_like(hidden)
-            for mode in ("main", "all_gather", "all_to_all"):
-                metrics = measure(hidden, grad_output, cu_seqlens, layout, mode, args.warmup, args.iterations)
+            for mode in ("main", "all_to_all"):
+                metrics = measure(hidden, grad_output, cu_seqlens, mode, args.warmup, args.iterations)
                 per_rank = [None] * cp_size
                 dist.all_gather_object(per_rank, metrics)
                 row = {

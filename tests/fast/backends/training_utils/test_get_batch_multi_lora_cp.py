@@ -85,9 +85,6 @@ def test_thd_cp2_adapter_token_counts(monkeypatch, cp_rank):
     out = get_batch(_FakeIterator(_make_batch(), N_ADAPTERS), KEYS, pad_multiplier=8, qkv_format="thd")
 
     counts = out["adapter_token_counts"]
-    layout = out["cp_layout_metadata"]
-    assert layout.global_boundaries == out["cu_seqlens_host"]
-    assert (layout.cp_size, layout.cp_rank, layout.local_total_len) == (2, cp_rank, out["tokens"].numel())
     local_total = out["tokens"].numel()
     assert counts.dtype == torch.int32
     assert counts.tolist() == _expected_thd_counts(state, local_total).tolist()

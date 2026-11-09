@@ -10,7 +10,6 @@ from megatron.core.utils import get_model_config
 from megatron.training.global_vars import get_args
 
 from miles.utils.ft_utils.process_group_utils import GroupInfo
-from miles_plugins.models.cp_layout import CPLayoutMetadata
 
 from ..training_utils.parallel import ParallelState, get_parallel_state
 
@@ -109,20 +108,9 @@ class PackedSeqParamsWithHostCuSeqlens(PackedSeqParams):
     cu_seqlens_host: tuple[int, ...] = field(kw_only=True)
 
 
-class PackedSeqParamsWithCPLayout(PackedSeqParamsWithHostCuSeqlens):
-    """Own CPU layout metadata without adding it to Transformer Engine's dataclass fields."""
-
-    __slots__ = ("cp_layout_metadata",)
-    cp_layout_metadata: CPLayoutMetadata
-
-    def __init__(self, *, cp_layout_metadata: CPLayoutMetadata, **kwargs):
-        super().__init__(**kwargs)
-        self.cp_layout_metadata = cp_layout_metadata
-
-
 def get_packed_seq_params(batch: dict[str, torch.Tensor], args: Namespace) -> PackedSeqParams:
     if args.qkv_format == "thd":
-        params_kwargs = dict(
+        packed_seq_params = PackedSeqParamsWithHostCuSeqlens(
             cu_seqlens_q=batch["cu_seqlens"],
             cu_seqlens_kv=batch["cu_seqlens"],
             max_seqlen_q=batch["max_seqlen"],
@@ -131,12 +119,6 @@ def get_packed_seq_params(batch: dict[str, torch.Tensor], args: Namespace) -> Pa
             cu_seqlens_host=batch["cu_seqlens_host"],
             total_tokens=batch["cu_seqlens_host"][-1],
         )
-        if "cp_layout_metadata" in batch:
-            packed_seq_params = PackedSeqParamsWithCPLayout(
-                cp_layout_metadata=batch["cp_layout_metadata"], **params_kwargs
-            )
-        else:
-            packed_seq_params = PackedSeqParamsWithHostCuSeqlens(**params_kwargs)
         batch["packed_seq_params"] = packed_seq_params
         return packed_seq_params
     else:

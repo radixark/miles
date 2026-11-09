@@ -18,7 +18,6 @@ from miles.utils.object_store import ObjectStoreGetResult
 from miles.utils.ray_utils import Box
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
 from miles.utils.types import RolloutBatch
-from miles_plugins.models.cp_layout import build_cp_layout_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -305,8 +304,6 @@ def get_batch(
         batch["cu_seqlens"] = cu_seqlens
         # the same boundaries on the host, for consumers that must not sync the device to read them
         batch["cu_seqlens_host"] = cu_seqlens_host
-        if cp_size > 1 and not allgather_cp:
-            batch["cp_layout_metadata"] = build_cp_layout_metadata(cu_seqlens_host, cp_size, cp_rank)
         batch["max_seqlen"] = max_seqlen
     else:
         raise ValueError(f"Unsupported qkv_format: {qkv_format}")

@@ -17,7 +17,6 @@ register_cuda_ci(
 )
 register_rocm_ci(est_time=30, suite="nightly-stage-c-4-gpu-mi350", labels=["precision"])
 
-from miles_plugins.models.cp_layout import build_cp_layout_metadata
 from miles_plugins.models.cp_utils import packed_shard_to_zigzag, zigzag_to_packed_shard
 
 
@@ -74,12 +73,11 @@ def test_relayout(rank: int, world_size: int, cp_group):
     device = torch.device("cuda", torch.cuda.current_device())
 
     zigzag, expected_packed_shard, cu_seqlens = _build_rank_inputs(rank, world_size, device)
-    layout = build_cp_layout_metadata(cu_seqlens.cpu().tolist(), world_size, rank)
 
     for communication in ("all_gather", "all_to_all"):
         zigzag.grad = None
         packed_shard = zigzag_to_packed_shard(
-            zigzag, None, cp_group, rank, world_size, layout=layout, communication=communication
+            zigzag, cu_seqlens, cp_group, rank, world_size, communication=communication
         )
         torch.testing.assert_close(packed_shard, expected_packed_shard, atol=0, rtol=0)
         (packed_shard * expected_packed_shard).sum().backward()
@@ -87,37 +85,34 @@ def test_relayout(rank: int, world_size: int, cp_group):
 
         packed_leaf = expected_packed_shard.clone().requires_grad_(True)
         roundtrip = packed_shard_to_zigzag(
-            packed_leaf, None, cp_group, rank, world_size, layout=layout, communication=communication
+            packed_leaf, cu_seqlens, cp_group, rank, world_size, communication=communication
         )
         torch.testing.assert_close(roundtrip, zigzag.detach(), atol=0, rtol=0)
         (roundtrip * zigzag.detach()).sum().backward()
         torch.testing.assert_close(packed_leaf.grad, expected_packed_shard, atol=0, rtol=0)
 
     if rank == 0:
-        print(f"CP={world_size}: planned all-gather/all-to-all layout, inverse and gradients PASS")
+        print(f"CP={world_size}: all-gather/all-to-all layout, inverse and gradients PASS")
 
 
-def test_against_unplanned_relayout(rank, cp_size, cp_group):
+def test_against_all_gather(rank, cp_size, cp_group):
     device = torch.device("cuda", torch.cuda.current_device())
     for boundaries in ([0, cp_size], [0, 8 * cp_size, 10 * cp_size, 13 * cp_size]):
-        layout = build_cp_layout_metadata(boundaries, cp_size, rank)
+        local_length = boundaries[-1] // cp_size
         cu_seqlens = torch.tensor(boundaries, device=device, dtype=torch.int32)
         for dtype in (torch.float32, torch.bfloat16):
             torch.manual_seed(17 + rank)
-            hidden = torch.randn(layout.local_total_len, 3, 2, device=device, dtype=dtype).transpose(1, 2)
+            hidden = torch.randn(local_length, 3, 2, device=device, dtype=dtype).transpose(1, 2)
             grad_output = torch.randn_like(hidden.transpose(1, 2)).transpose(1, 2)
             for transform in (zigzag_to_packed_shard, packed_shard_to_zigzag):
                 reference_input = hidden.detach().requires_grad_(True)
-                reference = transform(reference_input, cu_seqlens, cp_group, rank, cp_size)
+                reference = transform(reference_input, cu_seqlens, cp_group, rank, cp_size, communication="all_gather")
                 reference.backward(grad_output)
-                for communication in ("all_gather", "all_to_all"):
-                    candidate_input = hidden.detach().requires_grad_(True)
-                    candidate = transform(
-                        candidate_input, None, cp_group, rank, cp_size, layout=layout, communication=communication
-                    )
-                    candidate.backward(grad_output)
-                    torch.testing.assert_close(candidate, reference, atol=0, rtol=0)
-                    torch.testing.assert_close(candidate_input.grad, reference_input.grad, atol=0, rtol=0)
+                candidate_input = hidden.detach().requires_grad_(True)
+                candidate = transform(candidate_input, cu_seqlens, cp_group, rank, cp_size)
+                candidate.backward(grad_output)
+                torch.testing.assert_close(candidate, reference, atol=0, rtol=0)
+                torch.testing.assert_close(candidate_input.grad, reference_input.grad, atol=0, rtol=0)
     if rank == 0:
         print(f"CP={cp_size}: FP32/BF16, noncontiguous tensors, zero splits, forward/backward match main exactly")
 
@@ -131,7 +126,7 @@ def main():
                 cp_group = dist.new_group(ranks)
                 if rank in ranks:
                     test_relayout(rank - start, cp_size, cp_group)
-                    test_against_unplanned_relayout(rank - start, cp_size, cp_group)
+                    test_against_all_gather(rank - start, cp_size, cp_group)
                     dist.destroy_process_group(cp_group)
     finally:
         dist.destroy_process_group()
