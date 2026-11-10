@@ -260,11 +260,10 @@ def _compute_training_sample_metrics(args: Any, samples: list[Sample]) -> dict[s
     metric weight merely because they produced more samples.
     """
     rewards_by_rollout: dict[tuple[str, int | None, int], list[float]] = {}
-    use_metadata_reward = bool(samples and samples[0].metadata and "raw_reward" in samples[0].metadata)
     for position, sample in enumerate(samples):
         rollout_key = _get_rollout_key(sample, position)
 
-        raw_reward = sample.metadata["raw_reward"] if use_metadata_reward else sample.get_reward_value(args)
+        raw_reward = sample.get_reward_value(args)
         if isinstance(raw_reward, Number):
             rewards_by_rollout.setdefault(rollout_key, []).append(raw_reward)
 
