@@ -144,7 +144,13 @@ def _local_experts(sd_adapter, state, keys: list[str]) -> Iterator[tuple[str, to
         converted = sd_adapter.to_hf({key: _on_device(state[key], device)})
         assert not any(isinstance(v, DTensor) for v in converted.values()), f"{key} is sharded within an expert"
         num_experts = state[key].shape[0]
-        start, end = sd_adapter.local_experts_indices[re.sub(r"(\d+)", "{}", key, count=1)]
+        # the adapter records the split under the names it converts to, which may not be the grouped key's own
+        # (DeepSeek-V3's splits w13 into w1_EFD and w3_EFD first)
+        template = re.sub(r"(\d+)", "{}", key, count=1)
+        experts_prefix = template[: template.index(_GROUPED_EXPERTS) + len(_GROUPED_EXPERTS)]
+        splits = {span for name, span in sd_adapter.local_experts_indices.items() if name.startswith(experts_prefix)}
+        assert len(splits) == 1, f"the adapter split {key} into expert ranges {sorted(splits)}, expected one"
+        ((start, end),) = splits
         # the engine skips experts it does not own, so a different split would leave them stale silently
         assert (start, end) == (
             rank * num_experts // world,

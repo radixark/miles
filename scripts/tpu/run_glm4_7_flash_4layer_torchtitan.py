@@ -41,7 +41,8 @@ MODEL = TitanTpuModel(
     name=f"{_FULL_MODEL}-{_NUM_LAYERS}layer",
     titan_model_name="glm4_moe_lite",
     titan_model_flavor=f"{_NUM_LAYERS}layer",
-    sglang_args="--ep-size 4 --attention-backend pallas_tpu_mla ",
+    # the direct tracer fails a torch_tpu argument check compiling the MLA backend and aborts the engine
+    sglang_args="--ep-size 4 --attention-backend pallas_tpu_mla --tpu-compile-tracer dynamo ",
     # ICI sends each engine rank its own experts, so the trainer must know the engine runs one EP rank per device
     train_args="--sglang-ep-size 4 ",
 )
