@@ -9,7 +9,12 @@ on:
       runs_on:
         type: string
         required: true
-        description: 'JSON-encoded list of runner labels (all required). e.g. ''["amd", "mi350", "4gpu"]'' picks runners that carry ALL the listed labels.'
+        description: 'JSON-encoded list of runner labels (all required). e.g. ''["linux-miles-mi35x-spur"]'' picks the Spur login-node runners.'
+      num_gpus:
+        description: 'GPUs per shard: the cluster job asks the scheduler for this many (1, 2, 4 or 8).'
+        type: number
+        required: false
+        default: 4
       container_image:
         # No default: pr-test-rocm.yml's resolve-ci-image is the single
         # source of the image name, so a dated tag can't rot here.
@@ -58,41 +63,17 @@ jobs:
   run:
     needs: plan
     if: needs.plan.result == 'success' && needs.plan.outputs.has_tests == 'true'
+    # The runners are Spur (Slurm) login-node runners on AMD's MI355X cluster:
+    # the job itself does no GPU work. launch.sh submits one cluster job per
+    # shard, and that job runs container_steps.sh in the ROCm CI image with
+    # only the GPUs the scheduler assigned it (see .github/workflows/scripts/spur/).
+    #
     # fromJSON parses the input list so `runs-on` receives an actual array.
     # Without this, GitHub treats the string verbatim as one label literal
-    # (e.g. the label name '["amd", "mi350", "4gpu"]' with brackets), which no
-    # runner carries, and the job queues forever.
+    # (e.g. the label name '["linux-miles-mi35x-spur"]' with brackets), which
+    # no runner carries, and the job queues forever.
     runs-on: ${{ fromJSON(inputs.runs_on) }}
-    container:
-      image: ${{ inputs.container_image }}
-      options: >
-        --device=/dev/kfd
-        --device=/dev/dri
-        --env HIP_VISIBLE_DEVICES
-        --security-opt seccomp=unconfined
-        --group-add video
-        --group-add render
-        --cap-add=SYS_PTRACE
-        --ipc=host
-        --shm-size=32g
-        --ulimit memlock=-1
-        --ulimit stack=67108864
-        --memory=0
-        --memory-swap=0
-        -v /data/miles_ci:/data/miles_ci
-        -v /data/miles_ci/models:/root/models
-        -v /data/miles_ci/datasets:/root/datasets
-        -v /data/miles_ci/hf_cache:/root/.cache/huggingface
-        --privileged
-        --ulimit nofile=65535:65535
-    defaults:
-      run:
-        working-directory: ${{ github.workspace }}
-    env:
-      PYTHONPATH: ${{ github.workspace }}
-      MILES_HARDWARE_PLATFORM: rocm
-      GITHUB_COMMIT_NAME: ${{ github.event.pull_request.head.sha || github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
-      WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+    timeout-minutes: 250
 
     steps:
       - name: Checkout repository
@@ -101,54 +82,16 @@ jobs:
           ref: ${{ needs.plan.outputs.ref }}
           persist-credentials: false
 
-      - name: Cleanup Ray processes
-        shell: bash
-        run: |
-          pkill -9 -f 'ray::' 2>/dev/null || true
-          pkill -9 -f raylet 2>/dev/null || true
-          pkill -9 -f gcs_server 2>/dev/null || true
-          pkill -9 -f 'ray-dashboard' 2>/dev/null || true
-          pkill -9 sglang 2>/dev/null || true
-          ray stop --force 2>/dev/null || true
-          sleep 3
-
-      - name: Wait for GPU ready
-        shell: bash
-        run: |
-          # When a self-hosted runner accepts a new job seconds after the
-          # previous job's container exits, the AMD GPU driver subsystem may
-          # still be tearing down its prior context. Block here until
-          # rocm-smi succeeds, with a bounded retry budget so a
-          # genuinely-broken GPU fails fast.
-          for i in $(seq 1 60); do
-            if rocm-smi --showproductname >/dev/null 2>&1; then
-              echo "GPU ready after $((i-1)) retry(s)"
-              rocm-smi --showproductname 2>&1 | head -20 || true
-              exit 0
-            fi
-            sleep 2
-          done
-          echo "ERROR: rocm-smi did not become ready after 120s" >&2
-          rocm-smi 2>&1 | tail -20 || true
-          exit 1
-
       - name: Resolve dependency refs
-        if: ${{ !inputs.skip_dependency_install }}
         id: resolve-refs
         shell: bash
         env:
+          SKIP_DEPENDENCY_INSTALL: ${{ inputs.skip_dependency_install }}
           PR_BODY: ${{ github.event.pull_request.body || '' }}
           INPUT_MEGATRON_PR: ${{ github.event.inputs.ci_megatron_pr || '' }}
           INPUT_SGLANG_PR: ${{ github.event.inputs.ci_sglang_pr || '' }}
+          INPUT_BRIDGE_PR: ${{ github.event.inputs.ci_megatron_bridge_pr || '' }}
         run: |
-          MEGATRON_PR="${INPUT_MEGATRON_PR}"
-          SGLANG_PR="${INPUT_SGLANG_PR}"
-          if [ -n "$PR_BODY" ]; then
-            PR_MEGATRON_PR=$(echo "$PR_BODY" | grep -m1 -oP '^ci-megatron-pr:\s+\K\S+' || true)
-            PR_SGLANG_PR=$(echo "$PR_BODY" | grep -m1 -oP '^ci-sglang-pr:\s+\K\S+' || true)
-            [ -z "$MEGATRON_PR" ] && [ -n "$PR_MEGATRON_PR" ] && MEGATRON_PR="$PR_MEGATRON_PR"
-            [ -z "$SGLANG_PR" ] && [ -n "$PR_SGLANG_PR" ] && SGLANG_PR="$PR_SGLANG_PR"
-          fi
           resolve_fetch_ref() {
             local ref="$1"
             if [[ "$ref" =~ ^#([0-9]+)$ ]]; then
@@ -157,68 +100,64 @@ jobs:
               echo "$ref"
             fi
           }
+          MEGATRON_PR=""
+          SGLANG_PR=""
+          if [ "$SKIP_DEPENDENCY_INSTALL" != "true" ]; then
+            MEGATRON_PR="${INPUT_MEGATRON_PR}"
+            SGLANG_PR="${INPUT_SGLANG_PR}"
+            if [ -n "$PR_BODY" ]; then
+              PR_MEGATRON_PR=$(echo "$PR_BODY" | grep -m1 -oP '^ci-megatron-pr:\s+\K\S+' || true)
+              PR_SGLANG_PR=$(echo "$PR_BODY" | grep -m1 -oP '^ci-sglang-pr:\s+\K\S+' || true)
+              [ -z "$MEGATRON_PR" ] && [ -n "$PR_MEGATRON_PR" ] && MEGATRON_PR="$PR_MEGATRON_PR"
+              [ -z "$SGLANG_PR" ] && [ -n "$PR_SGLANG_PR" ] && SGLANG_PR="$PR_SGLANG_PR"
+            fi
+          fi
+          # Same directive as .github/actions/install-megatron-bridge, which
+          # can't run here; container_steps.sh does its install and check.
+          BRIDGE_PR="${INPUT_BRIDGE_PR}"
+          if [ -z "$BRIDGE_PR" ] && [ -n "$PR_BODY" ]; then
+            BRIDGE_PR=$(printf '%s\n' "$PR_BODY" | grep -m1 -oP '^ci-megatron-bridge-pr:\s+\K\S+' || true)
+          fi
+          if [ -n "$BRIDGE_PR" ] && [[ ! "$BRIDGE_PR" =~ ^#[0-9]+$ ]] && [[ ! "$BRIDGE_PR" =~ ^[A-Za-z0-9_][A-Za-z0-9_./-]*$ ]]; then
+            echo "::error::Invalid Megatron Bridge ref: $BRIDGE_PR"
+            exit 1
+          fi
           MEGATRON_FETCH=$(resolve_fetch_ref "$MEGATRON_PR")
           SGLANG_FETCH=$(resolve_fetch_ref "$SGLANG_PR")
+          BRIDGE_FETCH=$(resolve_fetch_ref "$BRIDGE_PR")
           echo "ci_megatron_pr=$MEGATRON_FETCH" >> $GITHUB_OUTPUT
           echo "ci_sglang_pr=$SGLANG_FETCH" >> $GITHUB_OUTPUT
-          echo "Resolved: megatron=$MEGATRON_PR -> fetch=$MEGATRON_FETCH, sglang=$SGLANG_PR -> fetch=$SGLANG_FETCH"
+          echo "ci_bridge_pr=$BRIDGE_FETCH" >> $GITHUB_OUTPUT
+          echo "Resolved: megatron=$MEGATRON_PR -> fetch=$MEGATRON_FETCH, sglang=$SGLANG_PR -> fetch=$SGLANG_FETCH, bridge=$BRIDGE_PR -> fetch=$BRIDGE_FETCH"
 
-      - name: Install dependencies
-        if: ${{ !inputs.skip_dependency_install }}
+      # HF_TOKEN and the Docker Hub login come from the runner's .env, not repo
+      # secrets; do not set them here, since even an empty value overrides the
+      # runner's.
+      - name: Run tests on a cluster node
+        timeout-minutes: 240
         shell: bash
         env:
+          CI_IMAGE: ${{ inputs.container_image }}
+          CI_COMMAND: ${{ inputs.execute_command }}
+          CI_SKIP_DEPENDENCY_INSTALL: ${{ inputs.skip_dependency_install }}
           MEGATRON_PR: ${{ steps.resolve-refs.outputs.ci_megatron_pr }}
           SGLANG_PR: ${{ steps.resolve-refs.outputs.ci_sglang_pr }}
-        run: |
-          if command -v rustup >/dev/null 2>&1; then
-            rustup default stable
-          fi
-          if ! command -v protoc >/dev/null 2>&1; then
-            apt-get update
-            apt-get install -y protobuf-compiler
-          fi
-          rustc --version
-          protoc --version
-          if [ -n "$SGLANG_PR" ]; then
-            cd /sgl-workspace/sglang && git reset --hard HEAD && git clean -fd && git fetch origin "$SGLANG_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e python --no-deps --break-system-packages && \
-              pip install -e radix_transfer_plugins --no-deps --break-system-packages
-          fi
-          if [ -n "$MEGATRON_PR" ]; then
-            cd /root/Megatron-LM
-            git reset --hard HEAD
-            git clean -fd
-            git fetch origin "$MEGATRON_PR"
-            git checkout -f FETCH_HEAD
-            git log --oneline -1
-            pip install -e . --no-deps --break-system-packages
-          fi
-          cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
-          pip install polars zstandard xxhash blake3 "numba==0.65.1" --break-system-packages
+          BRIDGE_REF: ${{ steps.resolve-refs.outputs.ci_bridge_pr }}
+          MILES_HARDWARE_PLATFORM: rocm
+          GITHUB_COMMIT_NAME: ${{ github.event.pull_request.head.sha || github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
+          WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+        run: bash .github/workflows/scripts/spur/launch.sh --gpus "${{ inputs.num_gpus }}"
 
-      - name: Install (miles only)
-        if: ${{ inputs.skip_dependency_install }}
+      - name: Cancel cluster jobs on failure/cancel
+        if: failure() || cancelled()
+        continue-on-error: true
         shell: bash
         run: |
-          cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
-          pip install polars zstandard xxhash blake3 "numba==0.65.1" --break-system-packages
-
-      - name: Install Megatron Bridge override
-        if: ${{ github.event.inputs.ci_megatron_bridge_pr != '' || contains(github.event.pull_request.body, 'ci-megatron-bridge-pr:') }}
-        uses: ./.github/actions/install-megatron-bridge
-        with:
-          ref: ${{ github.event.inputs.ci_megatron_bridge_pr || '' }}
-          pr_body: ${{ github.event.pull_request.body || '' }}
-
-      - name: Load one HIP runtime
-        shell: bash
-        run: |
-          torch_lib="$(python3 -c 'import os, torch; print(os.path.join(os.path.dirname(torch.__file__), "lib"))')"
-          for lib in libamdhip64.so libhsa-runtime64.so; do
-            target="$(readlink -f "/opt/rocm/lib/${lib}")"
-            [ -f "$torch_lib/$lib" ] && [ -f "$target" ] && ln -sfn "$target" "$torch_lib/$lib"
-            ls -l "$torch_lib/$lib"
-          done
-
-      - name: Run tests
-        shell: bash
-        run: ${{ inputs.execute_command }}
+          # Same prefix launch.sh names its jobs with. %200j widens the name
+          # column; Spur's squeue does not accept --me.
+          PREFIX="miles-ci-${RUNNER_NAME}-${GITHUB_RUN_ID}-"
+          JOBS=$(squeue --noheader --format="%i %200j" | grep -F "$PREFIX" | awk '{print $1}' || true)
+          if [ -n "$JOBS" ]; then
+            echo "Cancelling: $JOBS"
+            scancel $JOBS
+          fi
