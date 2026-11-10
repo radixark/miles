@@ -211,7 +211,7 @@ def convert_samples_to_train_data(
 
     if any(sample.multimodal_train_inputs is not None for sample in samples):
         train_data["multimodal_train_inputs"] = [sample.multimodal_train_inputs for sample in samples]
-    if args.multimodal_token_space_processing and any(has_media(sample.multimodal_inputs) for sample in samples):
+    if any(has_media(sample.multimodal_inputs) for sample in samples) and args.multimodal_token_space_processing:
         # The trainer rebuilds the processor tensors from these references.
         train_data["multimodal_inputs"] = [sample.multimodal_inputs for sample in samples]
 
