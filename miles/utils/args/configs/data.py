@@ -114,6 +114,24 @@ class DataConfig(BaseConfig):
             ),
         ),
     ] = None
+    multimodal_token_space_processing: A[
+        bool,
+        Arg(
+            help=(
+                "SGLang expands media placeholders and the trainer builds the processor inputs "
+                "(models with an SGLang token-space strategy); Megatron backend only for now. Engines that serve "
+                "Miles's multimodal prompts need --sglang-enable-token-space-processor; a frozen reward or reference "
+                "engine group that serves its own requests may override it off."
+            )
+        ),
+    ] = False
+    shared_media_dir: A[
+        str | None,
+        Arg(
+            help="Token space only: directory shared with every SGLang engine and every trainer rank; media that "
+            "is not a file path yet is written here."
+        ),
+    ] = None
     metadata_key: A[str, Arg(help="JSON dataset key")] = "metadata"
     tool_key: A[
         str,
