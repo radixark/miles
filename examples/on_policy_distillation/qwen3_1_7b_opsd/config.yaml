@@ -1,0 +1,3 @@
+opsd_top_k: 256
+opsd_kl_coef: 1.0
+opsd_kl_clip: 0.05
