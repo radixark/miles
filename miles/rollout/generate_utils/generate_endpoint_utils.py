@@ -93,7 +93,7 @@ def compute_request_payload(
 ) -> tuple[dict[str, Any] | None, Sample.Status | None]:
     sampling_params = deepcopy(sampling_params)
     max_new_tokens = sampling_params.pop("max_new_tokens", args.rollout_max_response_len)
-    if x := args.rollout_max_context_len:
+    if x := args.max_seq_len:
         max_new_tokens = min(max_new_tokens, x - len(input_ids))
     if max_new_tokens <= 0:
         return None, Sample.Status.TRUNCATED
@@ -182,7 +182,12 @@ async def update_sample_from_response(
         sample.loss_mask += [1] * len(new_response_tokens)
 
     # TODO handle multi-turn cases (may need concat instead of assignment)
-    sample.rollout_routed_experts = get_routed_experts_from_response(args, output, len(sample.tokens) - 1)
+    meta_info = output["meta_info"]
+    sample.rollout_routed_experts = None
+    if "routed_experts" in meta_info:
+        sample.rollout_routed_experts = get_routed_experts_from_response(
+            args, output, meta_info["prompt_tokens"] + meta_info["completion_tokens"] - 1
+        )
     sample.rollout_indexer_topk = get_indexer_topk_from_response(args, output, sample)
     if via_store:
         # This response's routed experts, indexer top-k and mask are in the output store: record its rows.

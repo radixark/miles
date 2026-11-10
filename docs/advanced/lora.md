@@ -43,9 +43,9 @@ the torchtitan backend's. All are separate from SGLang's serving-side
 
 | Implementation | How the adapter is built | Model coverage on current `main` | Status |
 |---|---|---|---|
-| **Megatron-Bridge PEFT** | `AutoBridge` builds the provider, applies Bridge LoRA before DDP, and exports HF-named adapter tensors. Select it with `--megatron-to-hf-mode bridge`. | Qwen2.5, Qwen3, GPT-OSS, Kimi K2.5, GLM-5/5.1/5.2/5.3, and Qwen3.5/3.6, subject to the evidence and module caveats below. | General production path. Current multi-LoRA also requires this path. |
-| **Native / raw-mode LoRA** | Under `--megatron-to-hf-mode raw`, miles builds the model with its own Megatron provider and the `miles.backends.megatron_utils.lora.native` plugin attaches adapter modules directly before DDP. | Architectures registered in `miles/backends/megatron_utils/lora/native/registry.py`: fused-QKV GQA (Llama, Qwen2/3, GLM-4), Qwen3.5/3.6 hybrids (GQA and GDN layers), Qwen3-Next (GQA layers), MLA (DeepSeek-V3/V3.2, Kimi K2/K2.5, GLM-4.7-Flash, GLM-5.x), Inkling, and Kimi K3. | Single-LoRA. Unregistered models fail at startup. |
-| **torchtitan LoRA** | Under `--train-backend torchtitan`, torchtitan's own `LoRATransform` adapts the Linear projections the HF targets name before the model is built and parallelized; the model's state-dict adapter names the adapters back as HF PEFT tensors. | Single-adapter LoRA on Linear projections of `--titan-model-name qwen3` (other torchtitan models are refused): dense attention and MLP; attention-only on Qwen3 MoE is checked at config level but not yet run end to end. torchtitan fuses q/k/v and gate/up into one projection each, sharing one `lora_A`, so a target set takes all of a fused projection or none of it, and each HF projection exports a copy of the shared `lora_A` with its own rows of `lora_B`. Routed experts are not adapted. Defaults to `--lora-type lora` (one `lora_A` per fused projection) and `--lora-A-init-method kaiming` (torchtitan's init); other values are refused. No dropout, no `--lora-adapter-path`. | New; covered by the Qwen3-4B E2E below. |
+| **Megatron-Bridge PEFT** | `AutoBridge` builds the provider, applies Bridge LoRA before DDP, and exports HF-named adapter tensors. Select it with `--megatron-to-hf-mode bridge`. | Qwen2.5, Qwen3, GPT-OSS, Kimi K2.5, GLM-5/5.1/5.2/5.3, and Qwen3.5/3.6, subject to the evidence and module caveats below. | General production path, single LoRA and multi-LoRA. |
+| **Native / raw-mode LoRA** | Under `--megatron-to-hf-mode raw`, miles builds the model with its own Megatron provider and the `miles.backends.megatron_utils.lora.native` plugin attaches adapter modules directly before DDP. | Architectures registered in `miles/backends/megatron_utils/lora/native/registry.py`: fused-QKV GQA (Llama, Qwen2/3, GLM-4), Qwen3.5/3.6 hybrids (GQA and GDN layers), Qwen3-Next (GQA layers), MLA (DeepSeek-V3/V3.2, Kimi K2/K2.5, GLM-4.7-Flash, GLM-5.x), Inkling, and Kimi K3. | Single LoRA, and multi-LoRA on dense projections and lm_head (see [multi-LoRA supported models](/advanced/multi-lora#supported-models)). Unregistered models fail at startup. |
+| **torchtitan LoRA** | Under `--train-backend torchtitan`, torchtitan's own `LoRATransform` adapts the Linear projections the HF targets name before the model is built and parallelized; the model's state-dict adapter names the adapters back as HF PEFT tensors. | Single-adapter LoRA on Linear projections of `--titan-model-name qwen3` (other torchtitan models are refused): dense attention and MLP; attention-only on Qwen3 MoE is checked at config level but not yet run end to end. torchtitan fuses q/k/v and gate/up into one projection each, sharing one `lora_A`, so a target set takes all of a fused projection or none of it, and each HF projection exports a copy of the shared `lora_A` with its own rows of `lora_B`. Routed experts are not adapted. Defaults to `--lora-type lora` (one `lora_A` per fused projection) and `--lora-A-init-method kaiming` (torchtitan's init); other values are refused. No dropout. Saves `{save}/iter_N/adapter` adapter dirs like single LoRA on Megatron and resumes only through `--lora-adapter-path`. | New; covered by the Qwen3-4B E2E below. |
 
 <Note>
 The planned maintenance direction is native-first: after the generalized native plugin
@@ -139,17 +139,22 @@ Ordinary LoRA also accepts specific HF targets mixed with group names, such as
 | Flag | Default | Purpose |
 |---|---:|---|
 | `--lora-rank` | `0` | Adapter rank; a positive value enables LoRA. Supplying an adapter path also marks LoRA enabled, but still requires matching positive-rank configuration. |
-| `--lora-alpha` | `16` | Adapter scaling factor. |
+| `--lora-alpha` | source's, else `16` | Adapter scaling factor. Defaults to the alpha `--lora-adapter-path` records, else 16; it may only repeat a recorded alpha, and a source that records none (torchtitan) needs it. |
 | `--lora-dropout` | `0.0` | Dropout on the adapter path. |
 | `--lora-type` | per backend | `lora` shares one `lora_A` across each fused projection; `canonical_lora` gives Q/K/V, gate/up and the Qwen3.5 / 3.6 GDN `in_proj` components their own. Native gives every projection its spec declares its own `lora_A`, so it defaults to and accepts only `canonical_lora`; `serve_tinker.py` defaults to `canonical_lora`; Bridge otherwise defaults to `lora`; torchtitan fuses q/k/v and gate/up, so it defaults to and accepts only `lora`. The gpt-oss MoE LoRA CI test trains both expert layouts with `canonical_lora`. |
 | `--target-modules` | none | Uses HF model defaults when omitted. Accepts `all-linear`, `attn/mlp/unembed` groups, HF leaf names or scoped HF paths; Bridge also accepts Megatron selectors. |
 | `--exclude-modules` | none | Comma-separated HF leaf names or scoped HF paths removed after selection; Bridge also accepts Megatron selectors. |
-| `--lora-adapter-path` | none | Warm-start/resume path. Also provide the matching positive rank, alpha, and target modules. Bridge training resume currently requires miles' per-rank adapter shards and the same parallel topology; an HF PEFT-only adapter cannot yet be loaded directly into the Bridge model. Inkling native has its own HF adapter loader. |
+| `--lora-adapter-path` | none | Warm-start/resume path. Also provide the matching positive rank and target modules. Single LoRA (Bridge or native) reads an adapter dir (any parallel layout; with optimizer state unless `--no-load-optim`), an HF PEFT pair, including miles' older native `--save-hf` export (sglang expert names) (weights only, needs `--no-load-optim`), or miles' older per-rank shards (same parallel layout). Under `--megatron-to-hf-mode bridge` it also reads a Megatron-Bridge PEFT `iter_N/`; see below the table. torchtitan reads an adapter dir (its own or Megatron's), an HF PEFT pair (weights only, needs `--no-load-optim`), or a torchtitan DCP step dir (`step-N/`, any parallel layout). A full DCP resumes its moments and schedule only at a whole rollout of this run's optimizer steps (`rollout_batch_size * n_samples_per_prompt / global_batch_size`, one under `--use-dynamic-global-batch-size`); off that grid it needs `--no-load-optim` and starts the schedule fresh. A Megatron adapter dir resumes the schedule after its rollout under any steps per rollout, so it needs no `--no-load-optim`. A torchtitan adapter dir must come from a run with the same steps per rollout; from another, `--no-load-optim` loads its weights and iteration and starts the schedule fresh. torchtitan refuses a step dir under `--save` always, and a step dir under `--load` or `iter_*/adapter` under either without `--lora-adapter-path`, since its checkpointer would otherwise resume or start fresh silently. |
+| `--lora-adapter-convert-save` | none | Single LoRA (Bridge, native or torchtitan) only: commit `--lora-adapter-path`, as loaded, to this path as an adapter dir. With `--num-rollout 0` it converts a source rollout-only cannot serve (older per-rank shards, official Tinker-named weights, torchtitan DCP step dirs). |
 | `--lora-base-cpu-backup` | off | Colocated mode only: keep a CPU mirror of the frozen SGLang base and avoid re-sending base weights. This trades host RAM for faster and more reliable pause/resume. |
 | `--lora-train-only` | off | Train the adapter while keeping ordinary rollout engines on the frozen base policy. |
 | `--experts-shared-outer-loras` | off | Use shared outer factors for grouped MoE experts. This layout is not checkpoint-compatible with per-expert LoRA. |
 | `--check-lora-weight-equal` | off | Verify each synchronized adapter tensor with SHA-256. |
 | `--update-weights-interval` | `1` | Publish new weights every N rollout/train iterations. This is not LoRA-specific, but it controls when the live adapter is synchronized. |
+
+A Megatron-Bridge PEFT `iter_N/` (`torch_dist`, `LoRA` or `CanonicalLoRA` matching this run's rank, type and targets) loads under `--megatron-to-hf-mode bridge` only. On GPU, a TP2 EP2 save was validated loading under TP2 EP2 and TP1 EP4; PP > 1, virtual pipeline chunks, `--optimizer-cpu-offload` and the `torch_dist` base check below have not run on GPU. Other backends need it converted first with `--lora-adapter-convert-save` under Bridge. Its Adam state loads only into the DistributedOptimizer from a fully reshardable save (else `--no-load-optim`); its iteration, scheduler and RNG are not resumed.
+
+Its base model must match `--hf-checkpoint`. A `checkpoint.pretrained_checkpoint` that is a `torch_dist` on this machine has its norm weights and the unquantized attention weights of each model chunk's first layer compared bitwise with the run's model. Otherwise the local HF files of the base its `run_config.yaml` records (`checkpoint.pretrained_checkpoint`, else the first set of `checkpoint.hf_source_path`, `model.hf_model_id`, `tokenizer.tokenizer_model`), from a local dir or the HF cache (nothing is downloaded), are compared by their norm and first-layer attention weights. Not detected: a LoRA merged only into MLP or expert weights, or only into layers past the first; a base fine-tuned in Megatron whose `torch_dist` is not on this machine; and, against an FP8 or MXFP4 base, anything but the norms, the only weights both sides hold unquantized.
 
 ### HF target source of truth
 
@@ -160,12 +165,12 @@ hybrid attention. Vision towers, routers, norms, and GDN convolutions are exclud
 
 | Model layout | Attention | MLP | Ordinary LoRA default |
 |---|---|---|---|
-| Llama, Qwen2/2.5, Qwen3 | Q/K/V/O | Dense gate/up/down | Attention + MLP |
+| Llama, Qwen2/2.5, Qwen3, MiMo | Q/K/V/O | Dense gate/up/down | Attention + MLP |
 | Qwen3 MoE | Q/K/V/O | Routed experts; dense layers when configured | Attention + MLP |
 | Qwen3-Next | Q/K/V/O + GDN qkvz/ba/out | Routed + shared experts; configured dense layers | Attention + MLP |
 | Qwen3.5/3.6, text and multimodal | Q/K/V/O + GDN qkv/z/b/a/out | Dense or packed routed + shared experts | Attention + MLP |
 | GPT-OSS | Q/K/V/O | Packed gate_up/down experts | Attention + MLP |
-| DeepSeek V2/V3, Kimi K2/K2.5 | MLA | Dense + routed + shared experts as configured | Attention + MLP |
+| DeepSeek V2/V3, Kimi K2/K2.5, JoyAI-LLM-Flash | MLA | Dense + routed + shared experts as configured | Attention + MLP |
 | DeepSeek V3.2, GLM-5/5.1/5.2 | MLA + DSA indexer | Dense + routed + shared experts as configured | Attention + MLP, excluding indexer |
 | GLM-4 MoE | Q/K/V/O | Dense + routed + shared experts as configured | Attention + MLP |
 | Inkling | Q/K/V/R/O | Dense + packed routed + shared expert projections | Attention + MLP + output head |
@@ -301,17 +306,21 @@ alternative aligned-expert path.
   does not yet have a dedicated LoRA-SFT E2E test. Shared actor/critic PPO with
   Bridge LoRA is untested: the critic is always built as a full model without
   adapters.
-- **Checkpoints.** miles saves native per-rank adapter shards and
-  optimizer/scheduler state. Exact resume expects the same TP/PP topology. It
-  also attempts a best-effort HF PEFT `adapter_model.safetensors` plus
-  `adapter_config.json` export in Bridge mode, through the same snapshot publisher
-  used by Tinker. HF export errors are logged while native checkpoint saving
-  continues. Raw mode saves native shards and a rank-sharded adapter config without
-  HF export. `--save-hf` exports a merged model and an HF adapter without native
-  training shards; native LoRA merges each adapter into its host weights before the
-  ordinary base-weight conversion, so the merged model uses the same converters as
-  full-model exports. Direct HF PEFT-to-Bridge resume is not implemented yet;
-  native LoRA imports HF adapters through `--lora-adapter-path`.
+- **Checkpoints.** Single LoRA (Bridge or native) saves `{save}/iter_N/adapter`
+  as an adapter dir: whole fp32 masters, Adam moments and step (resumable under
+  any parallel layout; masters only with `--no-save-optim`), the iteration and scheduler state, and an HF PEFT
+  `adapter_model.safetensors` plus `adapter_config.json` export. A failed PEFT
+  export fails the save; the committed checkpoint is kept. `{save}/iter_N/adapter`
+  is a symlink to the hidden dir `{save}/iter_N/.adapter.<commit_id>/`, so copy it
+  with symlinks followed (e.g. `cp -rL`, `rsync -L`). Saving or loading one needs
+  `--optimizer adam` with fp32 masters and moments, the distributed optimizer with
+  Gloo process groups, and neither train fault tolerance (`--indep-dp` / in-memory
+  checkpoints) nor `--stream-optimizer-state-to-disk`; other settings are refused at
+  launch. `--save-hf` exports a
+  merged model and an HF adapter; native LoRA merges each adapter into its host
+  weights before the ordinary base-weight conversion, so the merged model uses the
+  same converters as full-model exports. Both need the family's HF LoRA target
+  layout in `miles/utils/lora/hf_lora_targets.py`.
 - **Weight synchronization.** Colocated IPC and remote NCCL broadcast both ship
   adapter tensors at each configured update boundary without merging them into
   the base. `--check-lora-weight-equal` verifies them with SHA-256.
@@ -431,14 +440,21 @@ per tenant. The key identifies ownership of models, futures, and checkpoints.
 Each adapter accumulates gradients until its client submits an optimizer step;
 saving weights for sampling publishes an immutable adapter version.
 
-`--experts-shared-outer-loras` also works with multi-LoRA: routed experts share
+`--experts-shared-outer-loras` also works with multi-LoRA on Bridge: routed experts share
 the hidden-side factor within each adapter, while tenants remain independent.
 The flag applies to the whole server and preserves the single-LoRA export format.
+Its `save_state` / `load_state` checkpoints have not been verified on GPU yet.
 SGLang currently rejects combining this layout with fused shared experts.
 
 `save_state` saves adapter parameters and optimizer state, including FP32 masters.
 It waits for preceding commands but neither steps nor saves pending gradients;
 call it after `optim_step` to save the effect of the accumulated training work.
+A save commits a new adapter directory and then points the name at it, so an
+overwrite that fails keeps the previous checkpoint; one gateway holds a checkpoint
+root at a time, through an `flock` that the root's filesystem must enforce across hosts (NFS
+mounted `nolock` and Lustre with `localflock` do not). `load_state` adopts the checkpoint's alpha, and a checkpoint saved
+under another adapter layout loads its weights only, where the conversion is exact
+(factors become shared only when they are equal).
 Sampler saves commit an immutable adapter directory on shared storage, without
 contacting inference engines. Engines load the same frozen base at startup and
 load adapter snapshots from disk on demand. A failed engine load fails sampling
