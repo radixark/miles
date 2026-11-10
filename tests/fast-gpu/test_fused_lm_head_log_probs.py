@@ -266,6 +266,70 @@ def _tp_worker(rank: int, world_size: int, port: int, padding: int) -> None:
         dist.destroy_process_group()
 
 
+def _sequence_parallel_worker(rank: int, world_size: int, port: int) -> None:
+    from megatron.core import ModelParallelConfig
+    from megatron.core.tensor_parallel import ColumnParallelLinear
+
+    from miles.backends.megatron_utils.lm_head import LMHeadContext, hidden_states_output_processor
+
+    os.environ["MASTER_ADDR"] = "localhost"
+    os.environ["MASTER_PORT"] = str(port)
+    torch.cuda.set_device(rank)
+    dist.init_process_group(backend="nccl", rank=rank, world_size=world_size)
+    try:
+        tokens, vocab = 256, 32_768
+        hidden, weight, rows, targets, upstream = _inputs(tokens, 512, vocab, torch.float32, seed=7)
+        config = ModelParallelConfig(
+            tensor_model_parallel_size=world_size, sequence_parallel=True, perform_initialization=False
+        )
+        layer = ColumnParallelLinear(
+            hidden.size(1), vocab, config=config, init_method=None, bias=False, tp_group=dist.group.WORLD
+        ).cuda()
+        width = vocab // world_size
+        with torch.no_grad():
+            layer.weight.copy_(weight[rank * width : (rank + 1) * width])
+
+        # under sequence parallelism each rank holds its slice of the [s, b, h] decoder output
+        span = tokens // world_size
+        local = hidden[rank * span : (rank + 1) * span].unsqueeze(1).clone().requires_grad_(True)
+        context = LMHeadContext()
+        gathered = hidden_states_output_processor(
+            hidden_states=local, output_layer=layer, output_weight=None, context=context
+        )
+        log_probs, entropy = fused_lm_head_log_probs_and_entropy(
+            gathered.squeeze(0),
+            context.project,
+            rows,
+            targets,
+            tp_group=dist.group.WORLD,
+            temperature=0.9,
+            with_entropy=True,
+            tile_rows=64,
+        )
+        g, c = upstream
+        ((log_probs * g).sum() + (entropy * c).sum()).backward()
+
+        ref = _run(
+            _materialized, hidden, weight, rows, targets, upstream, tp_group=None, temperature=0.9, with_entropy=True
+        )
+        torch.testing.assert_close(log_probs.detach(), ref[0], rtol=1e-5, atol=2e-5)
+        torch.testing.assert_close(entropy.detach(), ref[1], rtol=1e-5, atol=5e-5)
+        # no all-reduce here: the layer's backward must sum the hidden gradient over TP exactly once
+        torch.testing.assert_close(
+            local.grad.squeeze(1), ref[2][rank * span : (rank + 1) * span], rtol=1e-4, atol=1e-4
+        )
+        torch.testing.assert_close(layer.weight.grad, ref[3][rank * width : (rank + 1) * width], rtol=1e-4, atol=1e-4)
+        assert layer.sequence_parallel  # project turns it off only for its own call
+    finally:
+        dist.destroy_process_group()
+
+
+def test_sequence_parallel_output_layer_sums_the_hidden_gradient_once():
+    if torch.cuda.device_count() < _WORLD_SIZE:
+        raise RuntimeError(f"requires {_WORLD_SIZE} GPUs, found {torch.cuda.device_count()}")
+    mp.spawn(_sequence_parallel_worker, args=(_WORLD_SIZE, find_free_port()), nprocs=_WORLD_SIZE, join=True)
+
+
 @pytest.mark.parametrize("padding", [0, 1_000, 129_280 // _WORLD_SIZE], ids=["none", "partial", "whole_shard"])
 def test_vocab_shards_over_nccl_match_the_fused_op(padding):
     if torch.cuda.device_count() < _WORLD_SIZE:
