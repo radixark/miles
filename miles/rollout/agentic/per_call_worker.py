@@ -32,8 +32,14 @@ async def create_once(start_fn: StartFn, task_id: str, tasks_dir: str, *, logger
     """One sandbox-create attempt, safe against cancellation mid-create."""
     result: list[tuple[Any, str]] = []
     done = threading.Event()
+    claim = threading.Lock()
+    began, abandoned = threading.Event(), threading.Event()
 
-    def _start() -> tuple[Any, str]:
+    def _start() -> tuple[Any, str] | None:
+        with claim:
+            if abandoned.is_set():
+                return None
+            began.set()
         try:
             result.append(start_fn(task_id, tasks_dir))
         finally:
@@ -43,6 +49,10 @@ async def create_once(start_fn: StartFn, task_id: str, tasks_dir: str, *, logger
     try:
         return await asyncio.to_thread(_start)
     except asyncio.CancelledError:
+        with claim:
+            abandoned.set()
+        if not began.is_set():
+            raise
 
         def _reap() -> None:
             done.wait()
