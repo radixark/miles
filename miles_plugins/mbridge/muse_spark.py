@@ -11,7 +11,8 @@ register_muse_spark_config()
 class MuseSpark1xBridge:
     """Offline HF initialization; Miles constructs and trains this model in raw mode."""
 
-    def __init__(self, hf_config):
+    def __init__(self, hf_config, make_vocab_size_divisible_by=None):
+        # create_mbridge_for_model passes the model's vocab rows; the slice loader reads the checkpoint unpadded.
         self.hf_config = hf_config
         source = hf_config.to_dict()
         for name, default in (("is_encoder_decoder", False), ("chunk_size_feed_forward", 0)):
