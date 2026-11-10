@@ -31,9 +31,10 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
                 rollout_data_ref=rollout_data_ref,
                 output_store_read=self.output_store_read,
                 train_parallel_config=get_parallel_state().train_parallel_config(supports_precomputed_schedule=True),
+                token_space_processor=self.token_space_processor,
             )
             stack.enter_context(store_get_result)
-            result = lora_model.run_forward_backward(self.args, batch_id, self.model, rollout_data)
+            result = lora_model.run_forward_backward(self.args, batch_id, self.model, self.adapter_slots, rollout_data)
         self.prof.step(rollout_id=batch_id)
         return result
 
@@ -53,9 +54,12 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
                 rollout_data_ref=rollout_data_ref,
                 output_store_read=self.output_store_read,
                 train_parallel_config=get_parallel_state().train_parallel_config(supports_precomputed_schedule=True),
+                token_space_processor=self.token_space_processor,
             )
             stack.enter_context(store_get_result)
-            result = lora_model.run_forward_backward(self.args, batch_id, self.model, rollout_data, forward_only=True)
+            result = lora_model.run_forward_backward(
+                self.args, batch_id, self.model, self.adapter_slots, rollout_data, forward_only=True
+            )
         self.prof.step(rollout_id=batch_id)
         return result
 
@@ -77,7 +81,9 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
             )
             if mismatch is not None:
                 return {"error": mismatch, "error_category": "user"}
-        self.slot_optimizers[slot] = lora_model.load_slot(self.args, self.model, slot, rank, alpha)
+            # load_state lands in the slot create_model claimed; it is claimed again at the source's alpha
+            lora_model.unload_slot(self.adapter_slots, self.slot_optimizers.pop(slot))
+        self.slot_optimizers[slot] = lora_model.load_slot(self.args, self.model, self.adapter_slots, slot, rank, alpha)
         if source is not None:
             lora_checkpoint.load_slot(
                 self.model,
@@ -160,5 +166,5 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
     @with_logs
     def unload_slot(self, slot: int) -> dict | None:
         slot_optimizer = self.slot_optimizers.pop(slot)
-        lora_model.unload_slot(self.model, slot_optimizer)
+        lora_model.unload_slot(self.adapter_slots, slot_optimizer)
         return None

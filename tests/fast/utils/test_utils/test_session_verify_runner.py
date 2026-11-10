@@ -464,14 +464,16 @@ def test_session_verify_metrics_rejects_verifier_error(
 
 def test_session_verify_metrics_keeps_assistant_text_soft(tmp_path):
     metrics_path = tmp_path / "metrics.jsonl"
+    example = {"segment_index": 4, "expected_text": "</think>\n\n\n<DSML>", "actual_text": "</think>\n<DSML>"}
     _write_metrics(
         metrics_path,
-        [{"driver_events": ["append_tool"], "had_assistant_mismatch": True}],
+        [{"driver_events": ["append_tool"], "had_assistant_mismatch": True, "assistant_mismatch_example": example}],
     )
 
     assert_session_verify_metrics(str(metrics_path), assistant_text_threshold=1.0)
-    with pytest.raises(AssertionError, match="assistant_text mismatch ratio"):
+    with pytest.raises(AssertionError, match="assistant_text mismatch ratio") as excinfo:
         assert_session_verify_metrics(str(metrics_path), assistant_text_threshold=0.0)
+    assert repr(example) in str(excinfo.value)
 
 
 @pytest.mark.parametrize("failure_phase", ["execute_train", "post_gate"])

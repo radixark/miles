@@ -277,6 +277,8 @@
       "pages": [
        "examples/geo3k-vlm",
        "examples/geo3k-vlm/multi-turn",
+       "examples/timelens-video",
+       "examples/avqa-audio",
        "examples/multi-lora",
        "examples/multi-lora/harbor-tinker",
        "examples/multi-lora/tinker-agent",

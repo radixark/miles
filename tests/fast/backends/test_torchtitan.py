@@ -535,8 +535,9 @@ def test_mla_keeps_its_wrapper_and_runs_tpu_flash_attention_inside_it(on_tpu):
     from miles.backends.torchtitan_utils.config import TpuFlashInnerAttention, build_model_config
 
     model = build_model_config(
-        _config_args(titan_model_name="glm4_moe_lite", titan_model_flavor="30B-A3B"), parallelism=ParallelismConfig()
+        _config_args(titan_model_name="glm4_moe_lite", titan_model_flavor="4layer"), parallelism=ParallelismConfig()
     )
+    assert len(model.layers) == 4
     mla = [layer.attention.inner_attention for layer in model.layers]
     assert {type(wrapper) for wrapper in mla} == {MLAAttention.Config}
     assert {type(wrapper.inner_attention) for wrapper in mla} == {TpuFlashInnerAttention.Config}
@@ -856,23 +857,6 @@ def test_fsdp_gather_once_is_refused_under_pipeline_parallelism(monkeypatch):
     with pytest.raises(ValueError, match="gather-once"):
         validate_torchtitan_args(_args(titan_fsdp_gather_once=True, pipeline_model_parallel_size=2))
     validate_torchtitan_args(_args(titan_fsdp_gather_once=True))
-
-
-@pytest.mark.parametrize("gather_once", [False, True])
-def test_fsdp_gather_once_maps_onto_torchtitans_fsdp_policies(tmp_path, single_gpu_dims, gather_once):
-    from miles.backends.torchtitan_utils.config import build_trainer_config
-
-    config = build_trainer_config(
-        _config_args(titan_fsdp_gather_once=gather_once),
-        hf_assets_path=_checkpoint_dir(tmp_path, tie_word_embeddings=False),
-        lr_total_steps=1,
-        dump_subdir="x",
-    )
-    expected = ("never", True) if gather_once else ("default", False)
-    assert (
-        config.parallelism.fsdp_reshard_after_forward,
-        config.parallelism.fsdp_defer_gradient_reduction,
-    ) == expected
 
 
 @pytest.mark.parametrize("gather_once", [False, True])

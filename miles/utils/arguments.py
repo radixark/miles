@@ -23,6 +23,7 @@ from miles.backends.sglang_utils.arguments import validate_args as sglang_valida
 from miles.backends.sglang_utils.sglang_config import SglangConfig
 from miles.backends.sglang_utils.sglang_scaling_config import SglangScalingConfig
 from miles.backends.torchtitan_utils.args_namespace import TorchtitanArgsNamespace
+from miles.backends.training_utils.data.token_space_media_process import RolloutEngineProcessorArgs
 from miles.dashboard.args import validate_dashboard_args
 from miles.ray.specs.train import external_trainer_controller_addrs
 from miles.rollout.checkpoint_eval import is_checkpoint_eval_fn
@@ -412,6 +413,7 @@ def parse_args_and_get_parser(
     raw_megatron = resolve_megatron_config(args, base_args=backend_values if backend == "megatron" else {})
     check_output_store_args(args, sglang=sglang, megatron=raw_megatron)
     _check_stop_token_replace_streaming_session(args, sglang=sglang)
+    _check_multimodal_token_space_processing_args(args, sglang=sglang)
     values = {name: value for name, value in vars(args).items() if name in AllConfig.model_fields} | {
         "raw_megatron": raw_megatron,
         "raw_fsdp": FsdpArgsNamespace(**backend_values) if backend == "fsdp" else None,
@@ -1044,6 +1046,47 @@ def _apply_custom_config(args, data: dict) -> None:
         setattr(args, k, v)
 
 
+def _check_multimodal_token_space_processing_args(args, *, sglang: SglangConfig) -> None:
+    """Reject launch settings under which the trainer cannot rebuild the rollout engines' media features."""
+    if not args.multimodal_token_space_processing:
+        return
+    if args.train_backend != "megatron":
+        raise ValueError(
+            f"--multimodal-token-space-processing supports the Megatron backend only, not {args.train_backend}: "
+            "the other trainers never consume the rebuilt media features."
+        )
+    if not sglang.actor_value("enable_token_space_processor"):
+        raise ValueError(
+            "--multimodal-token-space-processing needs the actor engines to expand media placeholders in token "
+            "space; set --sglang-enable-token-space-processor (a frozen reward or reference engine group that "
+            "serves its own requests may override it off)."
+        )
+    if args.rollout_external_engine_addrs:
+        raise ValueError(
+            "--multimodal-token-space-processing builds the trainer's processor from the server args Miles "
+            "launches its engines with, which external engines do not share."
+        )
+    if args.trainer_mm_processor_worker_num < 1:
+        raise ValueError(
+            f"--trainer-mm-processor-worker-num must be at least 1, got {args.trainer_mm_processor_worker_num}"
+        )
+    if args.trainer_mm_io_worker_num < 0:
+        raise ValueError(f"--trainer-mm-io-worker-num must be at least 0, got {args.trainer_mm_io_worker_num}")
+    for name in ("rl_on_policy_target", "true_on_policy_contract", "decrypted_config_file"):
+        if sglang.actor_value(name) is not None:
+            raise ValueError(
+                f"--multimodal-token-space-processing does not support --sglang-{name.replace('_', '-')}: the "
+                "trainer cannot yet build its processor the way the engines then do."
+            )
+    if sglang.actor_value("mm_attention_backend") is not None:
+        raise ValueError(
+            "--multimodal-token-space-processing does not support --sglang-mm-attention-backend: the trainer runs "
+            "the vision tower with the device's default attention kernel, so the engine must too."
+        )
+    # Actor engine groups that disagree on a processor setting fail here, not after the first rollout.
+    RolloutEngineProcessorArgs.from_sglang_config(sglang, hf_checkpoint=args.hf_checkpoint)
+
+
 def miles_validate_args(args):
     from miles.backends.training_utils.weight_update.session import weight_update_selector
 
@@ -1053,7 +1096,7 @@ def miles_validate_args(args):
 
     validate_length_penalty_args(args)
     mode = args.update_weight_transfer_mode
-    if mode not in ("broadcast", "broadcast_packed", "p2p", "disk-delta", "ici"):
+    if mode not in ("broadcast", "broadcast_packed", "p2p", "disk-delta", "ici", "http-lora"):
         raise ValueError(f"Unknown --update-weight-transfer-mode {mode!r}")
     if mode == "broadcast_packed" and (args.train_backend != "megatron" or args.colocate):
         raise ValueError("broadcast_packed requires Megatron non-colocated weight transfer")
@@ -1527,6 +1570,24 @@ def miles_validate_args(args):
         assert not is_moe or args.sglang_ep_size == args.rollout_num_gpus_per_engine, (
             f"ICI weight transfer of a MoE model needs --sglang-ep-size {args.rollout_num_gpus_per_engine} (one EP "
             f"rank per engine device), got {args.sglang_ep_size}; other expert splits would keep stale experts."
+        )
+
+    if args.update_weight_transfer_mode == "http-lora":
+        assert is_lora_enabled(args) and not args.multi_lora, (
+            "--update-weight-transfer-mode=http-lora publishes a single LoRA adapter: it needs --lora-rank > 0 "
+            "and does not support multi-LoRA."
+        )
+        assert not args.colocate, "--update-weight-transfer-mode=http-lora is for non-colocated engines"
+        assert (
+            args.prefill_num_servers is None
+        ), "--update-weight-transfer-mode=http-lora has not been tested when PD is enabled."
+        assert args.http_lora_ship == "tensors" or args.update_weight_disk_dir, (
+            "--http-lora-ship path requires --update-weight-disk-dir as the staging directory (shared with "
+            "the engines, or replicated by --custom-update-weight-post-write-path)."
+        )
+        assert args.http_lora_ship == "tensors" or not args.check_lora_weight_equal, (
+            "--check-lora-weight-equal verifies the adapter in the weight-update session's end_weight_update, "
+            "which only --http-lora-ship tensors uses; path mode has no checksum to compare against."
         )
 
     if args.colocate:
