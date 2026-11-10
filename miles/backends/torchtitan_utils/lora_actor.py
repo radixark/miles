@@ -5,6 +5,7 @@ from functools import partial
 from pathlib import Path
 
 import torch
+from torch.distributed.fsdp import FSDPModule
 import torch.distributed as dist
 from safetensors import SafetensorError
 
@@ -122,6 +123,10 @@ class TorchtitanMultiLoRATrainRayActor(TorchtitanTrainRayActor):
                         logs += self.trainer.run_forward([batch], lambda logits, b: loss(logits, b)[1])
                 else:
                     logs += self.trainer.run_forward_backward([batch], loss)
+            if forward_only:
+                # FSDP keeps the last block (norm, lm_head) gathered after a forward until a backward reshards it;
+                # the slot RPCs read every parameter's local shard
+                reshard_parameters(self.model_parts)
         self.prof.step(rollout_id=batch_id)
         per_datum = [output for log in logs for output in log["per_datum"]]
         if get_parallel_state().is_pp_last_stage:
@@ -265,6 +270,13 @@ class TorchtitanMultiLoRATrainRayActor(TorchtitanTrainRayActor):
         """The slot's optimizer and gradients die with it."""
         self.slot_optimizers.pop(slot).zero_grads()
         self.adapter_slots.clear(slot)
+
+
+def reshard_parameters(model_parts) -> None:
+    for part in model_parts:
+        for module in part.modules():
+            if isinstance(module, FSDPModule):
+                module.reshard()
 
 
 def _slot_loss(args, num_microbatches: int, logits: torch.Tensor, batch: dict) -> tuple[torch.Tensor, dict]:
