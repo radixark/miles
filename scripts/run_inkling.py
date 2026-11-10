@@ -11,6 +11,8 @@ Supports:
                           attention layer, the full model's pattern); the 4-GPU CI lane.
   - Inkling-Small    42-layer 276B MoE. Verified profile: 4 nodes x 8 GPUs
                           (TP4 SP PP8 EP4, ctx 4096 / response 2048) on H200.
+                          Single node x 8 GPUs (TP4 SP PP2 EP4) serves LoRA only, with
+                          the trainer and the engine offloaded in turn.
                           Full: --lr 5e-5, --rollout-batch-size 64 --global-batch-size 128
                           (reward +0.006/rollout). LoRA: --lr 2e-4 with the same batch
                           shape (reward +0.011/rollout); at the 5e-6 default the
@@ -39,6 +41,9 @@ Tasks:
   - dapo_math  text (dapo-math-17k), chat template, aime25 eval.
   - geo3k      vision (geo3k), structured-message rendering, frozen towers,
                geo3k-val eval.
+  - avqa_audio audio multiple choice (AVQA, examples/avqa_audio/prepare_avqa_audio.py),
+               structured-message rendering, frozen towers, held-out AVQA eval.
+  Multimodal tasks run on SGLang's token-space processor.
 
 Usage patterns:
 
@@ -88,7 +93,7 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     ] = "Inkling"
 
     train_mode: Literal["full", "lora"] = "full"
-    task: Literal["dapo_math", "geo3k"] = "dapo_math"
+    task: Literal["dapo_math", "geo3k", "avqa_audio"] = "dapo_math"
     fully_async: bool = False
     rollout_num_nodes: int = 4
     enable_eval: bool = False
@@ -147,7 +152,7 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
 
     @property
     def is_mm(self):
-        return self.task == "geo3k"
+        return self.task in ("geo3k", "avqa_audio")
 
 
 def _get_parallel_config(args: ScriptArgs) -> str:
@@ -165,6 +170,17 @@ def _get_parallel_config(args: ScriptArgs) -> str:
             "--sequence-parallel "
             "--pipeline-model-parallel-size 2 "
             "--expert-model-parallel-size 16 "
+            "--expert-tensor-parallel-size 1 "
+        )
+
+    if args.model_name == "Inkling-Small" and total_gpus == 8:
+        # One node, LoRA only: the frozen bf16 weights are 69 GB per GPU; full-parameter
+        # Adam state (3.3 TB) fits neither the GPUs nor the host. 42 = 21 + 21; EP<=TP*DP=4.
+        return (
+            "--tensor-model-parallel-size 4 "
+            "--sequence-parallel "
+            "--pipeline-model-parallel-size 2 "
+            "--expert-model-parallel-size 4 "
             "--expert-tensor-parallel-size 1 "
         )
 
@@ -239,7 +255,6 @@ def _train(args: ScriptArgs):
         "--input-key prompt "
         "--label-key label "
         "--rollout-shuffle "
-        "--rm-type math "
         f"--num-rollout {args.num_rollout} "
         f"--rollout-batch-size {args.rollout_batch_size} "
         f"--n-samples-per-prompt {args.n_samples_per_prompt} "
@@ -252,7 +267,9 @@ def _train(args: ScriptArgs):
     match args.task:
         case "dapo_math":
             rollout_args += (
-                f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl " "--apply-chat-template "
+                f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl "
+                "--apply-chat-template "
+                "--rm-type math "
             )
             if args.enable_eval:
                 eval_args = (
@@ -263,7 +280,7 @@ def _train(args: ScriptArgs):
                     f"--eval-max-response-len {args.rollout_max_response_len} "
                 )
         case "geo3k":
-            rollout_args += f"--prompt-data {args.data_dir}/geo3k/geo3k_train.jsonl "
+            rollout_args += f"--prompt-data {args.data_dir}/geo3k/geo3k_train.jsonl " "--rm-type math "
             if args.enable_eval:
                 eval_args = (
                     "--eval-interval 5 "
@@ -271,6 +288,23 @@ def _train(args: ScriptArgs):
                     "--eval-input-key prompt --eval-label-key label "
                     "--n-samples-per-eval-prompt 1 --eval-temperature 1 "
                     f"--eval-max-response-len {args.rollout_max_response_len} "
+                )
+        case "avqa_audio":
+            # Over half of the AVQA groups come back all-right or all-wrong (no advantage), so the
+            # rollout keeps sampling until the batch is made of groups with a reward spread.
+            rollout_args += (
+                f"--prompt-data {args.data_dir}/avqa_audio/train.jsonl "
+                "--custom-rm-path examples.avqa_audio.reward.reward_func "
+                "--dynamic-sampling-filter-path miles.rollout.filter_hub.common_filters.apply_reward_nonzero_std_filter "
+            )
+            if args.enable_eval:
+                eval_args = (
+                    "--eval-interval 5 "
+                    f"--eval-prompt-data avqa_heldout {args.data_dir}/avqa_audio/avqa_heldout.jsonl "
+                    "--eval-input-key prompt --eval-label-key label "
+                    "--n-samples-per-eval-prompt 1 --eval-temperature 0 "
+                    # Twice the training budget, so a greedy answer's thinking is not cut short.
+                    "--eval-max-response-len 2048 "
                 )
 
     grpo_args = (
@@ -367,7 +401,12 @@ def _train(args: ScriptArgs):
     if args.is_mm:
         # The mm provider wires the frozen HF vision/audio towers; it overrides the
         # text provider from the model sh (MODEL_ARGS precede train_args; last one wins).
-        inkling_args = "--custom-model-provider-path miles_plugins.models.inkling.model.inkling_mm_model_provider "
+        # The engines expand the template's media placeholders and the trainer rebuilds
+        # the tower inputs with the same strategy, from the media paths in the prompts.
+        inkling_args = (
+            "--custom-model-provider-path miles_plugins.models.inkling.model.inkling_mm_model_provider "
+            "--multimodal-token-space-processing --sglang-enable-token-space-processor "
+        )
 
     misc_args = (
         "--transformer-impl transformer_engine "

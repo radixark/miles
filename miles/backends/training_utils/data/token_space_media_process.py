@@ -8,8 +8,8 @@ so training sees the features the rollout engines saw.
 For models that take them instead of computing their own, each sample also gets what SGLang computes from the
 expanded tokens:
 
-- ``mm_image_positions`` / ``mm_video_positions``: [num_rows] sample-local token index of every vision tower
-  output row, from the processor's ``mm_spans``;
+- ``mm_image_positions`` / ``mm_video_positions`` / ``mm_audio_positions``: [num_rows] sample-local token index
+  of every tower output row, from the processor's ``mm_spans``;
 - its mRoPE positions, [num_tokens, 3], text-only samples included. They are not multimodal inputs but the
   model's ``position_ids``, so they travel apart; ``get_batch`` packs them like the tokens.
 
@@ -264,7 +264,9 @@ def _image_device(hf_processor, *, image_processor_backend: str, device: torch.d
     )
     from transformers import BaseImageProcessor
 
-    if image_processor_backend == "pil" or not isinstance(hf_processor.image_processor, BaseImageProcessor):
+    # A model whose strategy decodes its own media has no HF processor, only a tokenizer.
+    image_processor = getattr(hf_processor, "image_processor", None)  # config-access-exempt: tokenizer-only processors
+    if image_processor_backend == "pil" or not isinstance(image_processor, BaseImageProcessor):
         return None
     image_device = fast_image_processor_device(
         hf_processor, base_gpu_id=device.index, rl_on_policy_target=None, true_on_policy_enabled=False
@@ -305,7 +307,11 @@ def _sample_train_inputs(
     if not with_sglang_placement:
         return train_inputs, None
     # The token index of every tower output row, from where SGLang placed each media (half-open spans).
-    for modality, key in ((Modality.IMAGE, "mm_image_positions"), (Modality.VIDEO, "mm_video_positions")):
+    for modality, key in (
+        (Modality.IMAGE, "mm_image_positions"),
+        (Modality.VIDEO, "mm_video_positions"),
+        (Modality.AUDIO, "mm_audio_positions"),
+    ):
         rows = [
             torch.arange(start, end)
             for media, media_spans in zip(modalities, spans, strict=True)
