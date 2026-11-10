@@ -3896,10 +3896,13 @@ class TestWeightTransferModeSelection:
         with pytest.raises(ValueError, match=error):
             miles_validate_args(args)
 
-    def test_mxfp4_routed_experts_cross_nccl_only_in_packed_buckets(self):
+    @pytest.mark.parametrize("mode", ["broadcast", "p2p", "disk-delta"])
+    def test_mxfp4_routed_experts_cross_nccl_only_in_packed_buckets(self, mode):
         """NCCL rejects float8_e8m0fnu, so the MXFP4 scales can only travel as bucket bytes."""
         with pytest.raises(ValueError, match="use --update-weight-transfer-mode broadcast_packed"):
-            miles_validate_args(self._parse(["--rollout-routed-expert-format", "mxfp4"]))
+            miles_validate_args(
+                self._parse(["--rollout-routed-expert-format", "mxfp4", "--update-weight-transfer-mode", mode])
+            )
 
         for extra in (["--colocate"], ["--update-weight-transfer-mode", "broadcast_packed"]):
             args = self._parse(["--rollout-routed-expert-format", "mxfp4", *extra])
