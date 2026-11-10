@@ -67,7 +67,7 @@ async def test_post_does_not_retry_permanent_client_errors(status):
         return httpx.Response(status, text="invalid request")
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
-        with pytest.raises(httpx.HTTPStatusError, match=str(status)):
+        with pytest.raises(httpx.HTTPStatusError, match=rf"{status}.*invalid request"):
             await http_utils._post(client, "http://engine/generate", {})
     assert len(calls) == 1
 
