@@ -26,7 +26,9 @@ separates the two halves:
       ``(sandbox, base_url)``. The sandbox carries ownership metadata and a
       TTL armed as a dead-man's switch: a keepalive thread re-arms the
       timeout while the creating process lives, so a hard-killed caller's
-      orphans are reclaimed instead of running forever.
+      orphans are reclaimed instead of running forever. Its metadata also
+      carries a max lifetime past the episode cap, for servers that end a
+      sandbox at that age.
   bake CLI (``python tb2_sandbox_e2b.py ...``)  pre-build templates for a
       task list so the first training episode doesn't pay the image build.
 
@@ -181,6 +183,19 @@ _READY_TIMEOUT_S = float(os.getenv("OPENENV_E2B_READY_TIMEOUT_S", "300"))
 _KEEPALIVE_INTERVAL_S = _SANDBOX_TTL_S / 6.0
 _KEEPALIVE_MAX_CONSECUTIVE_FAILURES = 3
 
+# The keepalive re-arms a sandbox for as long as this process lives, so one the
+# episode failed to kill would outlive it. Servers that enforce the
+# max_lifetime_secs metadata end it this much past the episode cap instead (an
+# estimate).
+_MAX_LIFETIME_SLACK_S = 30 * 60
+
+
+def _max_lifetime_s() -> int:
+    # imported on use: the bake CLI runs without the agent loop's dependencies (openai)
+    import openenv_agent_function
+
+    return int(openenv_agent_function.MAX_ROLLOUT_TIME_S) + _MAX_LIFETIME_SLACK_S
+
 
 def _start_keepalive(sandbox, task_id: str) -> None:
     """Re-arm the sandbox TTL for as long as THIS process lives.
@@ -223,10 +238,12 @@ def create_task_sandbox(
     # The TTL is deliberately not a parameter: the keepalive thread re-arms
     # _SANDBOX_TTL_S, so a different value passed here would be silently
     # overwritten at the first beat.
+    max_lifetime_s = _max_lifetime_s()
     sandbox = Sandbox.create(
         template=alias,
-        timeout=_SANDBOX_TTL_S,
-        metadata=sandbox_labels(task_dir),
+        # a server enforcing max_lifetime_secs refuses a longer timeout
+        timeout=min(_SANDBOX_TTL_S, max_lifetime_s),
+        metadata={**sandbox_labels(task_dir), "max_lifetime_secs": str(max_lifetime_s)},
         **opts,
     )
     try:
