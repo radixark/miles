@@ -5,9 +5,9 @@ from functools import partial
 from pathlib import Path
 
 import torch
-from torch.distributed.fsdp import FSDPModule
 import torch.distributed as dist
 from safetensors import SafetensorError
+from torch.distributed.fsdp import FSDPModule
 
 from miles.backends.torchtitan_utils.actor import TorchtitanTrainRayActor
 from miles.backends.torchtitan_utils.hf_weight_iterator import TitanHfWeightIterator
