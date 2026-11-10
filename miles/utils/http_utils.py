@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import ipaddress
 import json
 import logging
@@ -10,6 +11,7 @@ import socket
 import subprocess
 import time
 import urllib.parse
+from collections.abc import Iterator
 
 import aiohttp
 import httpx
@@ -297,10 +299,27 @@ async def post_buffer_no_retry(url: str, payload: dict, *, timeout: float) -> np
     return await asyncio.wait_for(_post_buffer(url, payload), timeout=timeout)
 
 
+@contextlib.contextmanager
+def _as_httpx_errors(request: httpx.Request | None = None) -> Iterator[None]:
+    """Raise aiohttp's errors as the httpx errors that callers tell apart."""
+    try:
+        yield
+    except aiohttp.ConnectionTimeoutError as exc:
+        raise httpx.ConnectTimeout(str(exc), request=request) from exc
+    except aiohttp.ClientConnectorError as exc:
+        raise httpx.ConnectError(str(exc), request=request) from exc
+    except aiohttp.ServerDisconnectedError as exc:
+        raise httpx.RemoteProtocolError(str(exc), request=request) from exc
+    except TimeoutError as exc:
+        raise httpx.ReadTimeout(str(exc), request=request) from exc
+    except aiohttp.ClientError as exc:
+        raise httpx.ReadError(str(exc), request=request) from exc
+
+
 async def _post_buffer(url: str, payload: dict) -> np.ndarray:
     if urllib.parse.urlsplit(url).scheme != "http":
         raise ValueError(f"post_buffer_no_retry supports http:// only, got {url}")
-    try:
+    with _as_httpx_errors():
         async with aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=None),
             auto_decompress=False,
@@ -340,10 +359,6 @@ async def _post_buffer(url: str, payload: dict) -> np.ndarray:
                 if filled != length:
                     raise httpx.ReadError(f"connection closed after {filled} of {length} body bytes")
                 return reply
-    except aiohttp.ClientConnectorError as exc:
-        raise httpx.ConnectError(str(exc)) from exc
-    except aiohttp.ClientError as exc:
-        raise httpx.ReadError(str(exc)) from exc
 
 
 def init_http_client(args):
@@ -417,6 +432,54 @@ def _init_ray_distributed_post(args):
     _post_actors = created
 
 
+class _AiohttpTransport(httpx.AsyncBaseTransport):
+    """Sends httpx requests through one aiohttp connection pool and returns each body undecoded, for httpx to decode.
+
+    It replaces httpcore's pool, which scans every connection per request: https://github.com/encode/httpcore/pull/1035
+    """
+
+    def __init__(self, *, max_connections: int) -> None:
+        # Built on the running loop, which the session binds to; keep-alive matches httpx's 5 s default.
+        self._session = aiohttp.ClientSession(
+            connector=aiohttp.TCPConnector(limit=max_connections, keepalive_timeout=5),
+            timeout=aiohttp.ClientTimeout(total=None),
+            auto_decompress=False,
+            # A request carries exactly the headers httpx built.
+            skip_auto_headers={"Accept", "Accept-Encoding", "User-Agent", "Content-Type"},
+            cookie_jar=aiohttp.DummyCookieJar(),
+        )
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        with _as_httpx_errors(request):
+            async with self._session.request(
+                request.method,
+                str(request.url),
+                # The body goes whole with its Content-Length, so httpx's chunked marker must not go with it.
+                headers=[
+                    (name, value) for name, value in request.headers.multi_items() if name != "transfer-encoding"
+                ],
+                data=await request.aread() or None,
+                allow_redirects=False,
+                timeout=_aiohttp_timeout(request.extensions.get("timeout", {})),
+            ) as response:
+                content = await response.read()
+        return httpx.Response(response.status, headers=response.raw_headers, content=content, request=request)
+
+    async def aclose(self) -> None:
+        await self._session.close()
+
+
+def _aiohttp_timeout(deadlines: dict[str, float | None]) -> aiohttp.ClientTimeout:
+    # aiohttp's connect deadline includes the wait for a pooled connection, which httpx calls the pool deadline.
+    # aiohttp has no write deadline.
+    return aiohttp.ClientTimeout(
+        total=None,
+        connect=deadlines.get("pool"),
+        sock_connect=deadlines.get("connect"),
+        sock_read=deadlines.get("read"),
+    )
+
+
 def _rollout_client() -> httpx.AsyncClient:
     # a process where init_http_client never ran, such as a subproc agent call, gets a default client
     if _client_concurrency == 0:
@@ -425,11 +488,17 @@ def _rollout_client() -> httpx.AsyncClient:
     loop = asyncio.get_running_loop()
     if (client := _http_clients.get(loop)) is None:
         client = httpx.AsyncClient(
-            limits=httpx.Limits(max_connections=_client_concurrency),
+            transport=_AiohttpTransport(max_connections=_client_concurrency),
             timeout=httpx.Timeout(None),
         )
         _http_clients[loop] = client
     return client
+
+
+async def close_rollout_client() -> None:
+    """Close the rollout client of the running event loop; a later request opens a new one."""
+    if (client := _http_clients.pop(asyncio.get_running_loop(), None)) is not None:
+        await client.aclose()
 
 
 # TODO may generalize the name since it now contains http DELETE/GET etc (with retries and remote-execution)
