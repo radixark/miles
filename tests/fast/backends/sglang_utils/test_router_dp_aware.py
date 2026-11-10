@@ -6,7 +6,6 @@ import argparse
 
 from miles.backends.sglang_utils.arguments import add_sglang_arguments, validate_args
 from miles.utils.args.configs.router import RouterConfig
-from miles.utils.http_utils import router_worker_base_urls
 
 
 def _args(argv):
@@ -31,21 +30,3 @@ def test_dp_attention_turns_on_router_dp_aware():
 
 def test_router_dp_aware_untouched_without_dp_attention():
     assert _args([]).router_dp_aware is False
-
-
-def test_dp_rank_suffix_stripped_and_engines_deduplicated():
-    # dp-aware routing reports one entry per DP rank; they share one addressable server.
-    assert router_worker_base_urls(["http://h:8080@0", "http://h:8080@1"]) == ["http://h:8080"]
-
-
-def test_plain_worker_urls_pass_through_in_order():
-    assert router_worker_base_urls(["http://h:8080", "http://h:8081"]) == ["http://h:8080", "http://h:8081"]
-
-
-def test_ipv6_dp_rank_suffix_stripped():
-    assert router_worker_base_urls(["http://[::1]:8080@0"]) == ["http://[::1]:8080"]
-
-
-def test_non_numeric_suffix_is_not_a_dp_rank():
-    # userinfo, not a rank: stripping it would change which host is addressed.
-    assert router_worker_base_urls(["http://user:pass@h:8080"]) == ["http://user:pass@h:8080"]

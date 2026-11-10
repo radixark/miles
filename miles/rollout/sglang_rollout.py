@@ -26,7 +26,7 @@ from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRec
 from miles.utils.data import Dataset
 from miles.utils.eval_config import EvalDatasetConfig
 from miles.utils.function_registry import load_function
-from miles.utils.http_utils import get, post, router_worker_base_urls
+from miles.utils.http_utils import post
 from miles.utils.lifecycle import TrajectoryLifecycle
 from miles.utils.lora.utils import LORA_ADAPTER_NAME, lora_rollout_enabled
 from miles.utils.misc import SingletonMeta, call_agent_abort_hook
@@ -432,9 +432,7 @@ async def abort(args: Namespace, rollout_id: int) -> list[list[Sample]]:
     assert not state.aborted
     state.aborted = True
 
-    response = await get(f"http://{args.sglang_router_ip}:{args.sglang_router_port}/workers")
-    urls = router_worker_base_urls([worker["url"] for worker in response["workers"]])
-
+    urls = args.inference_runtime_mut_state.engine_urls
     logger.info(f"Abort request for {urls}")
     abort_tasks = [post(f"{url}/abort_request", {"abort_all": True}) for url in urls]
     abort_results = await asyncio.gather(*abort_tasks, return_exceptions=True)

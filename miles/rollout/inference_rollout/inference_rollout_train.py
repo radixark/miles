@@ -1,6 +1,5 @@
 import asyncio
 import logging
-from argparse import Namespace
 from collections.abc import Callable
 
 from tqdm import tqdm
@@ -15,7 +14,7 @@ from miles.rollout.submission_scheduler import make_submission_scheduler
 from miles.utils import dumper_utils
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
 from miles.utils.function_registry import load_function
-from miles.utils.http_utils import get, post, router_worker_base_urls
+from miles.utils.http_utils import post
 from miles.utils.misc import as_completed_async, call_agent_abort_hook
 from miles.utils.output_store.dropped import record_dropped_samples
 from miles.utils.retry_utils import NonRetryableError
@@ -30,7 +29,7 @@ async def abort(state: GenerateState, pendings: set, rollout_id: int) -> list[li
     assert not state.aborted
     state.aborted = True
 
-    urls = await get_worker_urls(args)
+    urls = args.inference_runtime_mut_state.engine_urls
     logger.info(f"Abort request for {urls}")
     results = await asyncio.gather(
         *[post(f"{url}/abort_request", {"abort_all": True}) for url in urls], return_exceptions=True
@@ -65,11 +64,6 @@ async def abort(state: GenerateState, pendings: set, rollout_id: int) -> list[li
         logger.info(f"Collected {sum(len(x) for x in aborted_samples)} partial samples into the data buffer")
 
     return aborted_samples
-
-
-async def get_worker_urls(args: Namespace):
-    response = await get(f"http://{args.sglang_router_ip}:{args.sglang_router_port}/workers")
-    return router_worker_base_urls([worker["url"] for worker in response["workers"]])
 
 
 def submit_generate_tasks(

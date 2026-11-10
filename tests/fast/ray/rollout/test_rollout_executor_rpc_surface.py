@@ -109,8 +109,10 @@ class TestInferenceRuntimeRefresh:
 
         snapshots = iter(
             [
-                InferenceRuntimeImmutState(engine_count=2, gpu_count=4, eval_engine_count=1),
-                InferenceRuntimeImmutState(engine_count=1, gpu_count=2, eval_engine_count=0),
+                InferenceRuntimeImmutState(
+                    engine_count=2, gpu_count=4, eval_engine_count=1, engine_urls=["http://a", "http://b"]
+                ),
+                InferenceRuntimeImmutState(engine_count=1, gpu_count=2, eval_engine_count=0, engine_urls=["http://a"]),
             ]
         )
 
@@ -124,7 +126,17 @@ class TestInferenceRuntimeRefresh:
         worker._inference_controller_provider = SimpleNamespace(get_handle=lambda name: Controller())
 
         await worker._refresh_inference_runtime_mut_state()
-        assert state.model_dump() == {"engine_count": 2, "gpu_count": 4, "eval_engine_count": 1}
+        assert state.model_dump() == {
+            "engine_count": 2,
+            "gpu_count": 4,
+            "eval_engine_count": 1,
+            "engine_urls": ["http://a", "http://b"],
+        }
         await worker._refresh_inference_runtime_mut_state()
         assert worker.args.inference_runtime_mut_state is state
-        assert state.model_dump() == {"engine_count": 1, "gpu_count": 2, "eval_engine_count": 0}
+        assert state.model_dump() == {
+            "engine_count": 1,
+            "gpu_count": 2,
+            "eval_engine_count": 0,
+            "engine_urls": ["http://a"],
+        }
