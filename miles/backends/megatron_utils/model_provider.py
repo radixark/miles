@@ -99,7 +99,7 @@ def _apply_bridge_runtime_config(provider, args: TrainerConfig) -> None:
     # the target model. An explicit runtime value, including None, overrides it.
     provider.mtp_num_layers = args.backend.mtp_num_layers
 
-    # TEGroupedLinear rounds the routed-expert weights onto this format's grid in every forward.
+    # TEGroupedLinear rounds the routed-expert weights onto this format's grid once per forward-backward pass.
     provider.moe_expert_fake_quant = args.routed_expert_qat
     if provider.moe_expert_fake_quant is not None:
         validate_moe_expert_fake_quant_config(provider)

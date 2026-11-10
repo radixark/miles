@@ -99,10 +99,11 @@ class TrainConfig(BaseConfig):
         Arg(
             choices=["mxfp4"],
             help=(
-                "Round the routed-expert weights onto this format's grid in every Megatron forward "
-                "(quantization-aware training), to match a rollout that serves them in that format "
-                "(see --rollout-routed-expert-format). The BF16 parameters are rounded in place; the fp32 "
-                "master weights and optimizer states keep their precision."
+                "Round the routed-expert weights onto this format's grid at the start of every Megatron "
+                "forward-backward pass, so that each forward computes with them (quantization-aware "
+                "training), to match a rollout that serves them in that format (see "
+                "--rollout-routed-expert-format). The BF16 parameters are rounded in place; the fp32 master "
+                "weights and optimizer states keep their precision."
             ),
         ),
     ] = None
