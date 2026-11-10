@@ -65,10 +65,11 @@ class TestEngineInputIds:
 def model_path():
     from huggingface_hub import snapshot_download
 
+    # The tokenizer, chat template and processor configs only: the token-space processor needs no weights.
     try:
-        return snapshot_download(MODEL, local_files_only=True)
-    except Exception as e:  # noqa: BLE001 - no cache
-        pytest.skip(f"{MODEL} is not in the HF cache: {e}")
+        return snapshot_download(MODEL, allow_patterns=["*.json", "*.jinja", "*.txt"])
+    except Exception as e:  # noqa: BLE001 - no network and no cache
+        pytest.skip(f"cannot fetch {MODEL}'s tokenizer and processor files: {e}")
 
 
 @pytest.fixture(scope="module")
@@ -99,15 +100,24 @@ def engine_args(model_path):
         image_processor_backend="pil",
         disable_fast_image_processor=False,
         mm_process_config_json="{}",
+        token_space_preprocess_cache_dir=None,
     )
 
 
 @pytest.fixture(scope="module")
-def processor_core(engine_args):
-    """SGLang's token-space processor for the model, built the way the trainer builds it."""
-    from miles.backends.training_utils.data.token_space_media_process import _trainer_processor
+def trainer_processor(engine_args):
+    """The trainer's copy of the engines' token-space processor, built the way the training actor builds it."""
+    from miles.backends.training_utils.data.token_space_media_process import build_trainer_processor
 
-    return _trainer_processor(engine_args, torch.device("cpu")).core
+    return build_trainer_processor(
+        engine_args, mm_processor_worker_num=1, mm_io_worker_num=1, device=torch.device("cpu")
+    )
+
+
+@pytest.fixture(scope="module")
+def processor_core(trainer_processor):
+    """SGLang's token-space processor for the model."""
+    return trainer_processor.core
 
 
 def _data_url(width: int, height: int, color: tuple[int, int, int]) -> str:
@@ -228,9 +238,12 @@ def _samples(core, session_id: str, version: str) -> list[Sample]:
 
 @pytest.mark.parametrize("version", ["v1", "v2"])
 def test_images_flow_through_the_session_server_in_token_space(
-    version, tokenizer, processor_core, engine_args, tmp_path
+    version, tokenizer, processor_core, trainer_processor, tmp_path
 ):
-    from miles.backends.training_utils.data.token_space_media_process import compute_multimodal_train_inputs
+    from miles.backends.training_utils.data.token_space_media_process import (
+        compute_multimodal_train_inputs,
+        resolved_multimodal_train_inputs,
+    )
 
     pad_id = tokenizer.convert_tokens_to_ids(IMAGE_PAD)
     engine = TokenSpaceEngine(processor_core, tokenizer)
@@ -268,9 +281,15 @@ def test_images_flow_through_the_session_server_in_token_space(
     assert sample.tokens == engine.prompts[1] + engine.output_ids
 
     # The trainer rebuilds from the references and the expanded tokens what the engine computed.
-    (train_inputs,) = compute_multimodal_train_inputs(
-        engine_args, [sample.multimodal_inputs], [torch.tensor(sample.tokens)], device=torch.device("cpu")
+    built = compute_multimodal_train_inputs(
+        trainer_processor,
+        [sample.multimodal_inputs],
+        [torch.tensor(sample.tokens)],
+        mm_processor_worker_num=1,
+        with_sglang_placement=False,
+        device=torch.device("cpu"),
     )
+    (train_inputs,) = resolved_multimodal_train_inputs(built.multimodal_train_inputs)
     assert torch.equal(train_inputs["pixel_values"], engine.pixel_values[-1])
     assert train_inputs["image_grid_thw"].shape[0] == 2
 
@@ -339,6 +358,44 @@ def test_a_client_cannot_set_the_expansion_offset(tokenizer, processor_core, tmp
     body = json.dumps({"messages": [_user("hi")], "mm_token_expansion_start_len": 3}).encode()
     with pytest.raises(MessageValidationError, match="mm_token_expansion_start_len"):
         asyncio.run(core.chat_completions(session_id, method="POST", query="", headers={}, body=body))
+
+
+def test_per_part_media_options_are_refused_with_the_turn(tokenizer, processor_core, tmp_path):
+    """A part option such as max_pixels is refused on the turn that carries it (400), not at the samples op
+    after every turn ran: a media reference carries only its source, so the option would be dropped."""
+    engine = TokenSpaceEngine(processor_core, tokenizer)
+    core, registry = _make_core("v2", tokenizer, engine, tmp_path)
+    session_id = registry.create_session()
+    message = _user("look", _data_url(64, 64, (1, 2, 3)))
+    message["content"][1]["max_pixels"] = 1024
+    with pytest.raises(MessageValidationError, match="max_pixels"):
+        asyncio.run(_chat(core, session_id, [message]))
+    assert engine.bodies == [], "nothing reached the engine"
+
+
+def test_a_v1_retry_whose_engine_rewrite_fails_leaves_the_session_unchanged(
+    tokenizer, processor_core, tmp_path, monkeypatch
+):
+    """The rewrite into the engine's form runs before the retry's rollback, so its error discards nothing."""
+    from miles.rollout.session import linear_trajectory
+
+    engine = TokenSpaceEngine(processor_core, tokenizer)
+    core, registry = _make_core("v1", tokenizer, engine, tmp_path)
+    session_id = registry.create_session()
+    turn1 = [_user("look", _data_url(64, 64, (1, 2, 3)))]
+    assistant = json.loads(asyncio.run(_chat(core, session_id, turn1)).body)["choices"][0]["message"]
+    assert asyncio.run(_chat(core, session_id, turn1 + [assistant, _user("next")])).status_code == 200
+    session = registry.get_session(session_id)
+    before = (list(session.messages), list(session.records), list(session.trajectory_token_ids))
+
+    def refuse(*args, **kwargs):
+        raise TokenizationError("cuts into its prompt")
+
+    monkeypatch.setattr(linear_trajectory, "prepare_engine_request", refuse)
+    # A new second turn is a retry: it would roll the session back to turn 1.
+    with pytest.raises(TokenizationError):
+        asyncio.run(_chat(core, session_id, turn1 + [assistant, _user("retry")]))
+    assert (session.messages, session.records, session.trajectory_token_ids) == before
 
 
 def test_a_client_that_asks_for_the_prompt_gets_the_expanded_one(tokenizer, processor_core, tmp_path):
@@ -453,6 +510,12 @@ def test_addition_r3_rows_follow_the_expanded_media_across_turns_and_branches(to
 
     samples = _samples(core, session_id, "v2")
     assert len(samples) == 2, "one sample per leaf"
+    # Turn 1's reply is the first response tokens of both leaves; it trains in the earlier leaf only. The
+    # spans that place it are in the engine's form, like the tokens, so turn 1's image does not shift them.
+    first, second = sorted(samples, key=lambda sample: sample.metadata["leaf"]["node_id"])
+    shared = len(engine.output_ids)
+    assert first.loss_mask[:shared] == [1] * shared
+    assert second.loss_mask[:shared] == [0] * shared, "the shared reply is masked in the later leaf"
     pad_id = tokenizer.convert_tokens_to_ids(IMAGE_PAD)
     for sample in samples:
         rows = sample.rollout_routed_experts

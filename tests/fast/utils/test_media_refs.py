@@ -173,6 +173,13 @@ def test_message_media_become_shared_paths_and_text_messages_stay_as_they_are(tm
     assert collect_media_refs(out, None) == {"images": [part_image["image"]] * 2}
 
 
+def test_message_media_options_are_refused_before_anything_is_stored():
+    data_url = "data:image/png;base64," + base64.b64encode(_png_bytes("red")).decode()
+    part = {"type": "image_url", "image_url": {"url": data_url}, "max_pixels": 1024}
+    with pytest.raises(ValueError, match="max_pixels"):
+        materialize_message_media([{"role": "user", "content": [part]}], None)
+
+
 def test_message_media_without_a_shared_dir_are_refused():
     data_url = "data:image/png;base64," + base64.b64encode(_png_bytes("red")).decode()
     with pytest.raises(ValueError, match="--shared-media-dir"):

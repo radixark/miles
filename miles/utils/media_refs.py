@@ -48,6 +48,25 @@ def has_media(multimodal_inputs: dict[str, list[str]] | None) -> bool:
     return bool(multimodal_inputs) and any(multimodal_inputs.values())
 
 
+def _media_source(part: Any) -> tuple[str, str | None, Any] | None:
+    """A media part's modality, the field holding its source, and the source; None for any other part.
+
+    Raises:
+        ValueError: The part carries per-part options; a reference carries only its source.
+    """
+    part_type = part.get("type") if isinstance(part, dict) else None
+    if part_type not in _PART_TYPES:
+        return None
+    key, fields = _PART_TYPES[part_type]
+    if options := _PER_PART_OPTIONS.intersection(part):
+        raise ValueError(
+            f"Media part options {sorted(options)} are not supported: a media reference carries only its "
+            "source, so set them for every media in the processor configuration (--sglang-mm-process-config)."
+        )
+    field = next((field for field in fields if part.get(field) is not None), None)
+    return key, field, (part[field] if field is not None else None)
+
+
 def collect_media_refs(messages: Iterable[dict[str, Any]], media_dir: str | None) -> dict[str, list[str]] | None:
     """Collect every media part of ``messages`` as a shared-path reference, in conversation order.
 
@@ -64,16 +83,9 @@ def collect_media_refs(messages: Iterable[dict[str, Any]], media_dir: str | None
         if not isinstance(content, list):
             continue
         for part in content:
-            part_type = part.get("type") if isinstance(part, dict) else None
-            if part_type not in _PART_TYPES:
+            if (media := _media_source(part)) is None:
                 continue
-            key, fields = _PART_TYPES[part_type]
-            if options := _PER_PART_OPTIONS.intersection(part):
-                raise ValueError(
-                    f"Media part options {sorted(options)} are not supported: a media reference carries only its "
-                    "source, so set them for every media in the processor configuration (--sglang-mm-process-config)."
-                )
-            source = next((part[field] for field in fields if part.get(field) is not None), None)
+            key, _, source = media
             if isinstance(source, dict) and "url" in source:
                 source = source["url"]
             multimodal_inputs.setdefault(key, []).append(materialize_media_ref(source, media_dir))
@@ -105,12 +117,10 @@ def materialize_message_media(messages: list[dict[str, Any]], media_dir: str | N
             continue
         parts = []
         for part in content:
-            if not isinstance(part, dict) or part.get("type") not in _PART_TYPES:
+            if (media := _media_source(part)) is None:
                 parts.append(part)
                 continue
-            _, fields = _PART_TYPES[part["type"]]
-            field = next((field for field in fields if part.get(field) is not None), None)
-            source = part[field] if field is not None else None
+            _, field, source = media
             if isinstance(source, dict) and "url" in source:
                 part = {**part, field: {**source, "url": materialize_media_ref(source["url"], media_dir)}}
             else:

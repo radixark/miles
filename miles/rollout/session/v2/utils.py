@@ -91,7 +91,7 @@ def build_leaf_material(
             sample = merge_samples(turns, registry.tokenizer)
         adopt_session_records(sample, records)
         flat: dict[str, Any] = {
-            "accumulated_token_ids": list(leaf.token_ids),
+            "accumulated_token_ids": engine_token_ids(leaf.token_ids, leaf.record),
             "turn_args": filter_turn_args(leaf.turn_args),
             "leaf": {
                 "node_id": leaf.seq,

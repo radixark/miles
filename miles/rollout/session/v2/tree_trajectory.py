@@ -20,7 +20,7 @@ class TrajectoryNode:
 
     delta_messages: list[dict[str, Any]]
     token_ids: list[int]  # full root->node snapshot
-    completion_span: tuple[int, int]  # this node's sampled completion within token_ids
+    completion_span: tuple[int, int]  # this node's completion, in the engine's form of token_ids (token_space)
     seq: int  # per-session logical commit order — THE ordering key
     committed_at: float  # wall clock, decoration only (NTP-unsafe; never order by this)
     response_id: str  # upstream response id: the agent-branch <-> leaf join key

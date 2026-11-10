@@ -38,13 +38,7 @@ from miles.rollout.session.samples.merge import (
     truncate_samples_by_total_tokens,
 )
 from miles.rollout.session.store_refs import response_store_ref
-from miles.rollout.session.token_space import (
-    check_engine_prompt,
-    engine_token_ids,
-    lcp_len,
-    prepare_engine_request,
-    store_message_media,
-)
+from miles.rollout.session.token_space import check_engine_prompt, engine_token_ids, lcp_len, store_message_media
 from miles.rollout.session.types import GetSessionResponse, SessionRecord
 from miles.utils.output_store.plan import StorePlanError
 
@@ -426,18 +420,13 @@ class SessionCore:
             request_body, tito_tokenizer = prepared.body, self.registry.tito_tokenizer
             response_intent = prepared.response_intent
             request_messages = request_body.get("messages", [])
-            prompt_token_ids = request_body["input_ids"]
+            prompt_token_ids = prepared.prompt_token_ids  # TITO's form; the body may hold the engine's
             logger.debug("Using TITO input_ids: %d tokens", len(prompt_token_ids))
 
             # prepare_token_ids_and_request_args applied any retry rollback, so token_ids is
             # the checkpoint this request builds on.
+            # It also rewrote a request with media into the engine's form (token_space).
             checkpoint_record = session.records[-1] if session.records else None
-            prepare_engine_request(
-                request_body,
-                checkpoint_token_ids=session.token_ids,
-                checkpoint_record=checkpoint_record,
-                token_space=self.config.multimodal_token_space_processing,
-            )
             # R3 rows count the tokens the engine runs: the offset uses the engine's form.
             self._maybe_request_addition_r3(
                 request_body,

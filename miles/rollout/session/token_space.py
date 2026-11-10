@@ -18,6 +18,7 @@ path (``miles.utils.media_refs``); the trainer rebuilds the processor inputs fro
 
 from typing import Any
 
+from miles.rollout.generate_utils.generate_endpoint_utils import token_space_request_fields
 from miles.rollout.session.errors import MessageValidationError, TokenizationError, UpstreamResponseError
 from miles.rollout.session.types import SessionRecord
 from miles.utils.media_refs import has_message_media, materialize_message_media
@@ -117,8 +118,7 @@ def prepare_engine_request(
         completion_len,
     )
     request_body["input_ids"] = input_ids
-    request_body[MM_TOKEN_EXPANSION_START_LEN] = start_len
-    request_body["return_prompt_token_ids"] = True
+    request_body.update(token_space_request_fields(start_len))
 
 
 def check_engine_prompt(request_body: dict[str, Any], choice: dict[str, Any]) -> None:

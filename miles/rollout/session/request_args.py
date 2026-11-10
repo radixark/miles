@@ -67,6 +67,9 @@ class PreparedChatRequest:
     body: dict[str, Any]
     template_args: dict[str, Any]
     response_intent: ClientResponseIntent
+    # The rendered prompt in TITO's form, set by a session that then rewrites ``body["input_ids"]`` into the
+    # engine's form for a request with media (token_space.prepare_engine_request).
+    prompt_token_ids: list[int] | None = None
 
 
 def prepare_chat_request(

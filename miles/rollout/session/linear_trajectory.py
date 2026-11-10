@@ -8,6 +8,7 @@ from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.errors import MessageValidationError, SessionNotFoundError, TokenizationError
 from miles.rollout.session.request_args import PreparedChatRequest, prepare_chat_request
 from miles.rollout.session.store_refs import SessionStoreRefs
+from miles.rollout.session.token_space import prepare_engine_request
 from miles.rollout.session.types import SessionRecord
 from miles.utils.chat_template_utils.message_matcher_hub import (
     SessionMessageMatcher,
@@ -132,10 +133,12 @@ class LinearTrajectory:
         In order: select the checkpoint *client_args*'s messages continue
         (``_find_rollback_checkpoint``); decide the request args
         (``request_args.prepare_chat_request``, which may raise a 400); render
-        the prompt with those template args; then roll back to the checkpoint
-        (``_rollback_to_checkpoint``). The args come before the render because
-        they change the token ids. Both steps precede rollback so a validation
-        or rendering error leaves session state unchanged.
+        the prompt with those template args; rewrite a request with media into
+        the engine's form (``token_space.prepare_engine_request``); then roll
+        back to the checkpoint (``_rollback_to_checkpoint``). The args come
+        before the render because they change the token ids. Every step
+        precedes rollback so a validation or rendering error leaves session
+        state unchanged.
 
         The caller must hold `self.lock`.
         """
@@ -158,6 +161,15 @@ class LinearTrajectory:
             template_args=prepared.template_args,
             tito_tokenizer=tito_tokenizer,
             message_matcher=matcher,
+        )
+        prepared.prompt_token_ids = prepared.body["input_ids"]
+        # The record of the selected checkpoint; a session built from token ids alone (tests) has none.
+        checkpoint_record = self.records[checkpoint_index] if 0 <= checkpoint_index < len(self.records) else None
+        prepare_engine_request(
+            prepared.body,
+            checkpoint_token_ids=self.trajectory_token_ids[checkpoint_index] if checkpoint_index >= 0 else [],
+            checkpoint_record=checkpoint_record,
+            token_space=config.multimodal_token_space_processing,
         )
         self._rollback_to_checkpoint(checkpoint_index)
         return prepared
