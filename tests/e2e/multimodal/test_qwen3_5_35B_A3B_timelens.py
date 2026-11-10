@@ -1,9 +1,10 @@
 """Qwen3.5-35B-A3B on the TimeLens video recipe, in token space.
 
 Runs `examples/timelens_video/run_timelens_qwen3_5.py --model-name Qwen3.5-35B-A3B` as committed, cut to two
-steps of 8 prompts. The data is the Charades shard of TimeLens-Bench alone (6.5 GB instead of the 210 GB of the
-full recipe): 64 held-out items for eval and the next 256 for training, disjoint, both written with the
-recipe's own `prepare_data.py` helpers. Functionality, not accuracy.
+steps of 8 prompts on 4 GPUs (the recipe's TP2 x EP4, with two TP2 engines). The data is the Charades shard of
+TimeLens-Bench alone (6.5 GB instead of the 210 GB of the full recipe): 64 held-out items for eval and the next
+256 for training, disjoint, both written with the recipe's own `prepare_data.py` helpers. Functionality, not
+accuracy.
 """
 
 from pathlib import Path
@@ -15,10 +16,10 @@ from tests.ci.metric_history import register_ci_gate
 
 register_cuda_ci(
     est_time=1200,
-    suite="stage-c-8-gpu-h200",
+    suite="stage-c-4-gpu-h200",
     labels=["megatron", "multimodal"],
     hardware=["hopper"],
-    num_gpus=8,
+    num_gpus=4,
 )
 
 register_ci_gate(metric_key="train/grad_norm")
@@ -37,7 +38,7 @@ TRAIN_ITEMS = 256
 def _args() -> ScriptArgs:
     return ScriptArgs.from_env(
         model_name="Qwen3.5-35B-A3B",
-        num_gpus_per_node=8,
+        num_gpus_per_node=4,
         num_rollout=2,
         data_dir=DATA_DIR,
         extra_args="--rollout-batch-size 8 --global-batch-size 64 --ci-test ",
