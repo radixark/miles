@@ -222,8 +222,8 @@ in completion order:
 - With `N = 0` nothing generates during a training step: rollout is synchronous and no
   group is stale.
 
-The flag counts staleness in training steps, so it requires `--update-weights-interval 1`
-and one optimizer step per rollout.
+The flag counts staleness in trained rollouts, one weight version each, so it requires
+`--update-weights-interval 1`; a rollout may take any number of optimizer steps.
 
 When those knobs are not enough, `--custom-async-data-buffer-path` replaces the buffer
 itself. This is a larger step than setting any flag above: your `DataBuffer` subclass
@@ -364,8 +364,8 @@ rollout/dynamic_filter/drop_<reason>
 ```
 
 Staleness is measured in published rollout weight versions: with
-`--update-weights-interval 1`, one version normally corresponds to one optimizer step;
-otherwise it does not. The metrics separate three parts of policy provenance:
+`--update-weights-interval 1`, one version corresponds to one trained rollout batch, however
+many optimizer steps it takes. The metrics separate three parts of policy provenance:
 
 - `avg_staleness` and `max_staleness` are the gap from the current version to the
   oldest version in each selected group. `stale_groups_filtered` counts groups that
