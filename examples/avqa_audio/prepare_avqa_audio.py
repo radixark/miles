@@ -84,7 +84,7 @@ def avqa_rows() -> tuple[list[dict], list[dict]]:
             (
                 item["question_type"],
                 {
-                    "prompt": prompt(str(audio_path.resolve()), item["question_text"], item["multi_choice"]),
+                    "prompt": prompt(str(audio_path.absolute()), item["question_text"], item["multi_choice"]),
                     "label": string.ascii_uppercase[item["answer"]],
                 },
             )
