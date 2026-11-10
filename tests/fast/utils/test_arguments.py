@@ -25,12 +25,14 @@ from miles.backends.sglang_utils.arguments import validate_args as validate_sgla
 from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig, SglangConfig
 from miles.backends.torchtitan_utils.arguments import build_torchtitan_parser
+from miles.backends.training_utils.data.token_space_media_process import RolloutEngineProcessorArgs
 from miles.router.backend import RouterKind
 from miles.utils.args.configs.router import RouterConfig
 from miles.utils.args.trainer_utils import compute_trainer_ckpt_load_config
 from miles.utils.arguments import (
     CAKE_BACKEND_ARGS,
     FULLY_ASYNC_ROLLOUT_PATH,
+    _check_multimodal_token_space_processing_args,
     _check_stop_token_replace_streaming_session,
     _compute_custom_inference_engine_provider_path,
     _compute_rollout_external,
@@ -4345,3 +4347,143 @@ class TestLoRATypeResolution:
         args = self._parse(tmp_path, ["--megatron-to-hf-mode", "raw", "--lora-type", "lora"])
         with pytest.raises(AssertionError, match="--lora-type lora shares one lora_A"):
             validate_lora_args_after_megatron(args)
+
+
+class TestMultimodalTokenSpaceProcessingArgs:
+    """The trainer rebuilds the rollout engines' media features, so it must reject settings it cannot follow."""
+
+    _SUPPORTED = {
+        "enable_token_space_processor": True,
+        "rl_on_policy_target": None,
+        "true_on_policy_contract": None,
+        "decrypted_config_file": None,
+        "tokenizer_path": None,
+        "tokenizer_mode": "auto",
+        "tokenizer_backend": "huggingface",
+        "revision": None,
+        "model_config_parser": "auto",
+        "json_model_override_args": "{}",
+        "image_processor_backend": "auto",
+        "disable_fast_image_processor": False,
+        "mm_process_config": None,
+        "token_space_preprocess_cache_dir": None,
+        "mm_attention_backend": None,
+    }
+
+    @pytest.mark.parametrize(
+        ("engine_overrides", "external_engines", "match"),
+        [
+            ({"enable_token_space_processor": False}, None, "--sglang-enable-token-space-processor"),
+            ({}, ["10.0.0.1:30000"], "external engines"),
+            ({"rl_on_policy_target": "fsdp"}, None, "--sglang-rl-on-policy-target"),
+            ({"true_on_policy_contract": "qwen3_dense_v1"}, None, "--sglang-true-on-policy-contract"),
+            ({"decrypted_config_file": "/ckpt/override.json"}, None, "--sglang-decrypted-config-file"),
+            ({"mm_attention_backend": "triton_attn"}, None, "--sglang-mm-attention-backend"),
+        ],
+    )
+    def test_settings_the_trainer_cannot_follow_are_rejected(self, engine_overrides, external_engines, match):
+        args = SimpleNamespace(
+            multimodal_token_space_processing=True,
+            rollout_external_engine_addrs=external_engines,
+            trainer_mm_processor_worker_num=1,
+            trainer_mm_io_worker_num=0,
+            hf_checkpoint="/ckpt",
+            train_backend="megatron",
+        )
+        sglang = make_sglang_config(**{**self._SUPPORTED, **engine_overrides})
+
+        with pytest.raises(ValueError, match=match):
+            _check_multimodal_token_space_processing_args(args, sglang=sglang)
+
+    @pytest.mark.parametrize("train_backend", ["fsdp", "torchtitan"])
+    def test_a_trainer_that_never_consumes_the_rebuilt_features_is_rejected(self, train_backend):
+        """torchtitan has no consumer of multimodal_train_inputs, so it would train on placeholder tokens alone."""
+        args = SimpleNamespace(
+            multimodal_token_space_processing=True,
+            rollout_external_engine_addrs=None,
+            hf_checkpoint="/ckpt",
+            train_backend=train_backend,
+        )
+
+        with pytest.raises(ValueError, match="Megatron backend only"):
+            _check_multimodal_token_space_processing_args(args, sglang=make_sglang_config(**self._SUPPORTED))
+
+    def test_supported_settings_pass(self):
+        args = SimpleNamespace(
+            multimodal_token_space_processing=True,
+            rollout_external_engine_addrs=None,
+            trainer_mm_processor_worker_num=1,
+            trainer_mm_io_worker_num=0,
+            hf_checkpoint="/ckpt",
+            train_backend="megatron",
+        )
+
+        _check_multimodal_token_space_processing_args(args, sglang=make_sglang_config(**self._SUPPORTED))
+
+    def test_a_frozen_model_may_use_its_own_processor_settings_without_token_space(self):
+        """A reward model with another tokenizer and token space off neither fails the check nor leaks into the
+        processor the trainer builds for the actor engines' samples."""
+        args = SimpleNamespace(
+            multimodal_token_space_processing=True,
+            rollout_external_engine_addrs=None,
+            trainer_mm_processor_worker_num=1,
+            trainer_mm_io_worker_num=0,
+            hf_checkpoint="/ckpt",
+            train_backend="megatron",
+        )
+        actor_group = ServerGroupConfig(
+            worker_type=WorkerType.REGULAR,
+            num_gpus_per_engine=1,
+            needs_offload=False,
+            overrides={"model_path": "/ckpt"},
+        )
+        reward_group = ServerGroupConfig(
+            worker_type=WorkerType.REGULAR,
+            num_gpus_per_engine=1,
+            needs_offload=False,
+            overrides={
+                "model_path": "/reward",
+                "tokenizer_path": "/reward-tokenizer",
+                "json_model_override_args": '{"num_hidden_layers": 2}',
+                "enable_token_space_processor": False,
+            },
+        )
+        sglang = SglangConfig(
+            models=[
+                ModelConfig(name="actor", model_path=None, server_groups=[actor_group], update_weights=True),
+                ModelConfig(name="reward", model_path="/reward", server_groups=[reward_group], update_weights=False),
+            ],
+            base_args=self._SUPPORTED,
+        )
+
+        _check_multimodal_token_space_processing_args(args, sglang=sglang)
+        rollout_engine_args = RolloutEngineProcessorArgs.from_sglang_config(sglang, hf_checkpoint="/ckpt")
+
+        assert (rollout_engine_args.model_path, rollout_engine_args.tokenizer_path) == ("/ckpt", "/ckpt")
+        assert rollout_engine_args.model_override_args_json == "{}"
+
+    def test_engine_groups_that_disagree_on_a_processor_setting_are_rejected_at_startup(self):
+        """The trainer builds one processor, so two engine groups with different settings cannot both be mirrored."""
+        args = SimpleNamespace(
+            multimodal_token_space_processing=True,
+            rollout_external_engine_addrs=None,
+            trainer_mm_processor_worker_num=1,
+            trainer_mm_io_worker_num=0,
+            hf_checkpoint="/ckpt",
+            train_backend="megatron",
+        )
+        groups = [
+            ServerGroupConfig(
+                worker_type=WorkerType.REGULAR,
+                num_gpus_per_engine=1,
+                needs_offload=False,
+                overrides={"model_path": "/ckpt", "image_processor_backend": backend},
+            )
+            for backend in ("pil", "auto")
+        ]
+        actor = ModelConfig(name="actor", model_path=None, server_groups=groups, update_weights=True)
+
+        with pytest.raises(AssertionError, match="Field 'image_processor_backend' differs"):
+            _check_multimodal_token_space_processing_args(
+                args, sglang=SglangConfig(models=[actor], base_args=self._SUPPORTED)
+            )

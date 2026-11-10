@@ -815,6 +815,43 @@ class TestCommonValueBoundaries:
             SglangConfig(models=[model], base_args={}).common_value("x")
 
 
+class TestActorValue:
+    @staticmethod
+    def _group(**overrides):
+        return ServerGroupConfig(
+            worker_type="regular", num_gpus_per_engine=1, needs_offload=False, overrides=overrides
+        )
+
+    def test_frozen_models_do_not_take_part(self):
+        """A reward or reference engine with its own setting must not block the actor engines' value."""
+        actor = ModelConfig(name="actor", model_path=None, server_groups=[self._group(x=2)], update_weights=True)
+        reward = ModelConfig(
+            name="reward", model_path="/reward", server_groups=[self._group(x=3)], update_weights=False
+        )
+        cfg = SglangConfig(models=[actor, reward], base_args={"x": 1})
+
+        assert cfg.actor_value("x") == 2
+        with pytest.raises(AssertionError, match="Field 'x' differs"):
+            cfg.common_value("x")
+
+    def test_disagreeing_actor_groups_are_still_rejected(self):
+        actor = ModelConfig(
+            name="actor", model_path=None, server_groups=[self._group(x=2), self._group(x=3)], update_weights=True
+        )
+
+        with pytest.raises(AssertionError, match="Field 'x' differs"):
+            SglangConfig(models=[actor], base_args={"x": 1}).actor_value("x")
+
+    def test_without_actor_engines_the_cli_value_stands_in(self):
+        """--debug-train-only starts no engine; a frozen model alone does not change that."""
+        reward = ModelConfig(
+            name="reward", model_path="/reward", server_groups=[self._group(x=3)], update_weights=False
+        )
+
+        assert SglangConfig(models=[], base_args={"x": 1}).actor_value("x") == 1
+        assert SglangConfig(models=[reward], base_args={"x": 1}).actor_value("x") == 1
+
+
 def test_a_suppress_default_server_arg_is_extracted_only_when_given(monkeypatch):
     """A SUPPRESS-default action leaves no dest on the namespace; reading it raised KeyError at startup."""
 

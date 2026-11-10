@@ -27,7 +27,7 @@ Stage names follow `stage-<tier>-<gpus>-<hw>` (or `stage-<tier>-<hw>` for CPU, e
 | `stage-c-8-gpu-h200` | 8× H200 | `["h200","8gpu"]` | 4 regular / 5 otherwise | both resolvers, `stage-a-cpu` |
 | `stage-c-8-gpu-b200` | B200 pool | `["b200","<num_gpus>gpu"]` | one job per file | both resolvers, `stage-a-cpu` |
 | `stage-c-4-gpu-b200` | same B200 pool | `["b200","<num_gpus>gpu"]` | one job per file | same plan, no 8-GPU stage barrier |
-| `stage-c-4-gpu-mi350` | 4× MI350 | `["self-hosted","amd","mi350","4gpu"]` | 2 | both resolvers |
+| `stage-c-4-gpu-mi350` | 4× MI355X | `["linux-miles-mi35x-spur"]` | 2 | both resolvers |
 | `nightly-stage-c-2-gpu-mi350` | 2× MI350 | external nightly | — | — |
 | `nightly-stage-c-4-gpu-mi350` | 4× MI350 | external nightly | — | — |
 | `nightly-stage-c-8-gpu-mi350` | 8× MI350 | external nightly | — | — |
@@ -118,6 +118,12 @@ An 8-GPU CUDA case needs a separate 4-GPU `test_amd_<name>.py` variant rather th
 Both runner containers can see all eight host GPUs through `/dev/dri`. Each runner restricts itself to four GPUs with `HIP_VISIBLE_DEVICES`, which `_run-ci-rocm.yml` forwards into the container.
 
 **External MI350 nightly.** Miles declares `nightly-stage-c-2-gpu-mi350`, `nightly-stage-c-4-gpu-mi350`, and `nightly-stage-c-8-gpu-mi350` in `CI_SUITES` for the external nightly, and keeps the unprefixed `stage-c-4-gpu-mi350` for its own `pr-test-rocm.yml`. The three prefixed suites are run by the external [`sgl-project/sglang` ROCm 10 nightly workflow](https://github.com/sgl-project/sglang/blob/main/.github/workflows/nightly-test-amd-miles-rocm10.yml).
+
+## TPU contract job
+
+`tpu-contract.yml` is outside the stage inventory: it runs `tests/fast/backends/tpu` on a hosted CPU runner
+against the sglang-torchtpu commit `docker/Dockerfile.tpu` pins, on PRs only. Those files skip in
+`stage-a-cpu`, which has the CUDA sglang instead.
 
 ## Assumptions
 

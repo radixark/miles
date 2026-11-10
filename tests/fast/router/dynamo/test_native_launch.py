@@ -9,7 +9,7 @@ from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.backends.sglang_utils.sglang_config import ServerGroupConfig
 from miles.backends.sglang_utils.sglang_engine import compute_engine_launch_cmd
 from miles.router.dynamo.config import DynamoConfig
-from miles.router.dynamo.sidecar import sidecar_overrides
+from miles.router.dynamo.sidecar import sidecar_command, sidecar_env, sidecar_overrides, sidecar_ports
 from miles.utils.workers.worker_spec import HostAndPort
 
 
@@ -20,6 +20,34 @@ def config():
         discovery={"backend": "etcd", "endpoints": [{"host": "localhost", "port": 2379}]},
         pins={"dynamo": "a" * 40, "sglang": "b" * 40},
     )
+
+
+def test_sidecar_does_not_accept_conflicting_admission_env(config):
+    config = config.model_copy(
+        update={"sidecar": config.sidecar.model_copy(update={"env": {"DYN_SGLANG_CONTROLLER_MANAGED": "false"}})}
+    )
+    with pytest.raises(ValueError, match="CONTROLLER_MANAGED"):
+        sidecar_env(config, api_key=None)
+
+
+@pytest.mark.parametrize("api_key", [None, "test-key"])
+def test_sidecar_env_uses_engine_credentials(config, monkeypatch, api_key):
+    monkeypatch.setenv("DYN_SGLANG_API_KEY", "inherited-key")
+    env = sidecar_env(config, api_key=api_key)
+    assert env.get("DYN_SGLANG_API_KEY") == api_key
+
+
+def test_allocated_listener_replaces_inherited_address_without_changing_engine_argv(config, monkeypatch):
+    monkeypatch.setenv("DYN_SYSTEM_HOST", "old-host")
+    monkeypatch.setenv("DYN_SYSTEM_PORT", "9999")
+    env = sidecar_env(config, api_key=None)
+    assert "DYN_SYSTEM_HOST" not in env
+    assert "DYN_SYSTEM_PORT" not in env
+
+    ctx = SimpleNamespace(self_addrs={"dynamo_system": HostAndPort(host="[::1]", port=18003)})
+    engine_argv = ["python", "-m", "sglang.launch_server", "--model-path", "/models/a b;$HOME"]
+    command = sidecar_command(shlex.join(engine_argv), ctx=ctx)
+    assert shlex.split(command) == ["env", "DYN_SYSTEM_PORT=18003", "DYN_SYSTEM_HOST=::1", *engine_argv]
 
 
 @pytest.mark.parametrize("api_key", [None, "test-key"])
@@ -104,3 +132,16 @@ def test_sidecar_rejects_group_streaming_opt_out(config, sidecar_ctx, group):
 @pytest.fixture
 def group():
     return ServerGroupConfig(worker_type=WorkerType.REGULAR, num_gpus_per_engine=2, needs_offload=False)
+
+
+@pytest.mark.parametrize("dp_size", [1, 2, 4])
+def test_kv_event_ports_reserve_every_dp_rank(dp_size):
+    ports = {port.name: port for port in sidecar_ports(dp_size=dp_size)}
+    kv = ports["dynamo_kv"]
+    assert kv.allow_dynamic
+    assert kv.num_consecutive == dp_size
+    first = kv.effective_static_port(worker_in_pod_index=0)
+    second = kv.effective_static_port(worker_in_pod_index=1)
+    assert first + dp_size <= second
+    assert ports["dynamo_grpc"].num_consecutive == 1
+    assert ports["dynamo_system"].num_consecutive == 1

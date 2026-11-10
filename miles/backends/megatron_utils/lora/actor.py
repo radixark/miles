@@ -31,6 +31,7 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
                 rollout_data_ref=rollout_data_ref,
                 output_store_read=self.output_store_read,
                 train_parallel_config=get_parallel_state().train_parallel_config(supports_precomputed_schedule=True),
+                token_space_processor=self.token_space_processor,
             )
             stack.enter_context(store_get_result)
             result = lora_model.run_forward_backward(self.args, batch_id, self.model, self.adapter_slots, rollout_data)
@@ -53,6 +54,7 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
                 rollout_data_ref=rollout_data_ref,
                 output_store_read=self.output_store_read,
                 train_parallel_config=get_parallel_state().train_parallel_config(supports_precomputed_schedule=True),
+                token_space_processor=self.token_space_processor,
             )
             stack.enter_context(store_get_result)
             result = lora_model.run_forward_backward(

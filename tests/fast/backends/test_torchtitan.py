@@ -33,6 +33,7 @@ def _args(**overrides) -> Namespace:
         log_probs_backend="torch",
         colocate=False,
         update_weight_transfer_mode="broadcast",
+        titan_fsdp_gather_once=False,
         pipeline_model_parallel_size=1,
         context_parallel_size=1,
         expert_model_parallel_size=1,
@@ -58,6 +59,7 @@ def _args(**overrides) -> Namespace:
         lora_adapter_path=None,
         lora_train_only=False,
         colocate_memory_peak_device="cpu",
+        titan_fsdp_reduce_dtype="float32",
         # read by the padded-rows loss layout's startup check on a static-shape platform
         train_backend="torchtitan",
         loss_type="policy_loss",
@@ -413,6 +415,8 @@ def _config_args(**overrides: object) -> Namespace:
         seed=1,
         gradient_checkpointing=False,
         optimizer_cpu_offload=False,
+        titan_fsdp_gather_once=False,
+        titan_fsdp_reduce_dtype="float32",
         save=None,
         load=None,
     )
@@ -885,3 +889,73 @@ def test_local_experts_find_their_range_under_the_names_the_adapter_converted_to
 
     with pytest.raises(AssertionError, match="not the engine's even split"):
         list(hf_weight_iterator._local_experts(_SplittingExpertAdapter(0, 4), state, [key]))
+
+
+def test_fsdp_gather_once_is_refused_under_pipeline_parallelism(monkeypatch):
+    monkeypatch.setattr(torch, "__version__", "2.14.0")
+    with pytest.raises(ValueError, match="gather-once"):
+        validate_torchtitan_args(_args(titan_fsdp_gather_once=True, pipeline_model_parallel_size=2))
+    validate_torchtitan_args(_args(titan_fsdp_gather_once=True))
+
+
+@pytest.mark.parametrize("gather_once", [False, True])
+def test_gather_once_reduces_gradients_on_the_last_microbatch_only(monkeypatch, gather_once):
+    """One reduce-scatter per step: earlier microbatches keep params gathered and gradients local."""
+    pytest.importorskip("torchtitan")
+    from miles.backends.torchtitan_utils import trainer as titan_trainer
+    from miles.backends.torchtitan_utils.trainer import TitanTrainer
+
+    calls = []
+
+    class Root(torch.nn.Module):
+        def set_is_last_backward(self, value):
+            calls.append(("is_last_backward", value))
+
+        def set_reshard_after_backward(self, value):
+            calls.append(("reshard_after_backward", value))
+
+        def set_requires_gradient_sync(self, value):
+            calls.append(("requires_gradient_sync", value))
+
+        def reshard(self):
+            calls.append(("reshard", None))
+
+    monkeypatch.setattr(titan_trainer, "FSDPModule", Root)
+    trainer = SimpleNamespace(
+        model_parts=[Root()],
+        config=SimpleNamespace(
+            parallelism=SimpleNamespace(
+                fsdp_defer_gradient_reduction=gather_once,
+                fsdp_reshard_after_forward="never" if gather_once else "default",
+            )
+        ),
+    )
+    for is_last in (False, False, True):
+        TitanTrainer._defer_gradient_reduction(trainer, is_last_microbatch=is_last)
+    TitanTrainer._reshard_kept_params(trainer)
+    if not gather_once:
+        assert calls == []
+        return
+    per_microbatch = [
+        [("is_last_backward", last), ("reshard_after_backward", last), ("requires_gradient_sync", last)]
+        for last in (False, False, True)
+    ]
+    assert calls == [call for group in per_microbatch for call in group] + [("reshard", None)]
+
+
+def test_the_fsdp_reduce_dtype_reaches_torchtitans_training_config(monkeypatch, tmp_path, single_gpu_dims):
+    from miles.backends.torchtitan_utils.config import build_trainer_config
+
+    monkeypatch.setattr(torch, "__version__", "2.14.0")
+    with pytest.raises(ValueError, match="fsdp-reduce-dtype"):
+        validate_torchtitan_args(_args(titan_fsdp_reduce_dtype="float16"))
+    with pytest.raises(ValueError, match="accumulate microbatch gradients"):
+        validate_torchtitan_args(_args(titan_fsdp_reduce_dtype="bfloat16", titan_fsdp_gather_once=True))
+    validate_torchtitan_args(_args(titan_fsdp_reduce_dtype="bfloat16"))
+    config = build_trainer_config(
+        _config_args(titan_fsdp_reduce_dtype="bfloat16"),
+        hf_assets_path=_checkpoint_dir(tmp_path, tie_word_embeddings=False),
+        lr_total_steps=1,
+        dump_subdir="x",
+    )
+    assert config.training.mixed_precision_reduce == "bfloat16"

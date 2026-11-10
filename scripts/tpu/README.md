@@ -78,6 +78,11 @@ model, dapo-math-17k and aime-2024 there if missing. The GLM launcher serves the
 
 wandb is on when `WANDB_API_KEY` is set.
 
+`--extra-args "--titan-fsdp-reduce-dtype bfloat16 --no-titan-fsdp-gather-once"` reduce-scatters FSDP's
+gradients in bfloat16, halving the reduce buffers and the bytes over ICI. The Qwen3-4B launcher passes
+`--titan-fsdp-gather-once`, which reduces once per step and would accumulate microbatch gradients in the
+reduce dtype, so the two are refused together.
+
 ## Notes
 
 - **Restart sglang with every training run.** Trainer rank 0 hosts the slice's TPU controller, so when a
