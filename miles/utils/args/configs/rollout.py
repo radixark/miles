@@ -548,8 +548,8 @@ class RolloutRelatedRolloutOnlyConfig(BaseConfig):
                 "Also apply --max-weight-staleness N when the fully async producer submits a group: the default "
                 "data buffer admits one only while the buffered and in-flight groups number fewer than "
                 "N * rollout_batch_size, plus one rollout_batch_size while a training step waits for its batch. "
-                "N = 0 makes generation synchronous. Requires one weight version per training step, and a data "
-                "buffer that implements admits()."
+                "N = 0 makes generation synchronous. Requires --update-weights-interval 1, so that each trained "
+                "rollout publishes one weight version, and a data buffer that implements admits()."
             )
         ),
     ] = False
