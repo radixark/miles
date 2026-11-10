@@ -80,6 +80,7 @@ class RolloutEngineProcessorArgs:
     image_processor_backend: str
     disable_fast_image_processor: bool
     mm_process_config_json: str
+    token_space_preprocess_cache_dir: str | None
 
     @classmethod
     def from_sglang_config(cls, sglang, *, hf_checkpoint: str) -> "RolloutEngineProcessorArgs":
@@ -107,6 +108,7 @@ class RolloutEngineProcessorArgs:
             image_processor_backend=sglang.actor_value("image_processor_backend"),
             disable_fast_image_processor=sglang.actor_value("disable_fast_image_processor"),
             mm_process_config_json=mm_process_config_json,
+            token_space_preprocess_cache_dir=sglang.actor_value("token_space_preprocess_cache_dir"),
         )
 
 
@@ -197,6 +199,7 @@ def build_trainer_processor(
     device: torch.device,
 ) -> TrainerProcessor:
     # Deferred: only SGLang builds with the token-space processor provide these modules.
+    from sglang.srt.multimodal.cache import DiskPreprocessCache
     from sglang.srt.multimodal.processors.processor_config import MultimodalProcessorConfig
     from sglang.srt.multimodal.token_space_mm_process.processor import TokenSpaceProcessor
     from sglang.srt.multimodal.token_space_mm_process.registry import register_token_space_models, strategy_for
@@ -229,6 +232,12 @@ def build_trainer_processor(
     )
     # SGLang's worker threads decode on bare "cuda", which a new thread resolves to GPU 0.
     worker_thread_device = device if device.type == "cuda" else None
+    # The engines' disk cache, so this rank reuses the features they computed.
+    item_feature_cache = (
+        None
+        if rollout_engine_args.token_space_preprocess_cache_dir is None
+        else DiskPreprocessCache(rollout_engine_args.token_space_preprocess_cache_dir)
+    )
     core = TokenSpaceProcessor.for_strategy(strategy_class)(
         hf_config,
         hf_processor,
@@ -241,6 +250,7 @@ def build_trainer_processor(
             mm_io_worker_num=mm_io_worker_num,
         ),
         worker_thread_device=worker_thread_device,
+        item_feature_cache=item_feature_cache,
     )
     image_device = _image_device(hf_processor, image_processor_backend=image_processor_backend, device=device)
     return TrainerProcessor(core=core, image_device=image_device)
