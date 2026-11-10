@@ -7,7 +7,7 @@ register_rocm_ci(est_time=60, suite="stage-c-4-gpu-mi350", labels=["amd"])
 
 import torch
 
-from miles.dashboard.gpu_sampler import GpuSampler
+from miles_dashboard.gpu_sampler import GpuSampler
 
 
 class PushSpy:
