@@ -203,7 +203,7 @@ After each optimizer step, Miles exports a serving-ready adapter directly from t
 
 ## 7. Multimodal RL
 
-`--task geo3k` switches to the vision-language recipe on the token-space processor: the prompt renders one placeholder token per image, SGLang expands it into the image's patch positions and computes the features, and every trainer rank rebuilds the same tensors from the shared image files in the background. Routing replay is recorded over the expanded sequence, so the trainer replays the experts the engine chose for every position. The data is the `chenhegu/geo3k_imgurl` parquet that `examples/geo3k_vlm` trains on; `--task avqa_audio` runs the audio recipe of `examples/avqa_audio` the same way. `--no-token-space-mm` keeps the Miles-side Inkling processor (sentinel rendering and expansion at training).
+`--task geo3k` switches to the vision-language recipe on the token-space processor: the prompt renders one placeholder token per image, SGLang expands it into the image's patch positions and computes the features, and every trainer rank rebuilds the same tensors from the shared image files in the background. Routing replay is recorded over the expanded sequence, so the trainer replays the experts the engine chose for every position. The data is the `chenhegu/geo3k_imgurl` parquet that `examples/geo3k_vlm` trains on; `--task avqa_audio` runs the audio recipe of `examples/avqa_audio` the same way.
 
 ```bash
 # Inkling-Small, LoRA, geo3k on one node of 8 GPUs
