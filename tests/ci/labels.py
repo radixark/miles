@@ -40,7 +40,7 @@ KNOWN_LABELS: dict[str, str] = {
     "multi-policy": "Multi policy training tests (several policy models in one run)",
     "replay": "Routing / indexer replay tests",
     "qwen35": "Qwen3.5-35B-A3B MTP / spec-v2 e2e tests",
-    "multimodal": "Multimodal RL e2e tests (image, video, audio) on the token-space processor",
+    "multimodal": "Multimodal RL e2e tests (image, video, audio)",
     "mooncake": "Mooncake object-store rollout transfer tests",
     "miles-plugin": "miles_plugins extension tests (optimizers, model plugins)",
     "agentic": "Agentic sandbox e2e tests (need a sandbox-service route and key on the runner)",
