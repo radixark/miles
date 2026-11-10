@@ -1,6 +1,5 @@
 import json
 import os
-import shutil
 import statistics
 import time
 
@@ -592,7 +591,6 @@ def test_pre_span_dump_survives_the_full_reader_pipeline(tmp_path):
     import torch
 
     dump_dummy_run(tmp_path, steps=1, dp_size=2, tp_dup=2, with_eval=False)
-    shutil.rmtree(tmp_path / "dashboard_columns")
     for path in (tmp_path / "rollout_data").glob("*.pt"):
         pack = torch.load(path, weights_only=False)
         for data in pack["samples"]:

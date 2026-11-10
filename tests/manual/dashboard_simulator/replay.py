@@ -1,8 +1,9 @@
 """Replay a calibration run widened to N GPUs through the dashboard's real write path.
 
 Every telemetry row of the calibration run is mapped onto ``replicas`` copies
-of its lane / engine / train rank and pushed through the real ``PhaseSink`` /
-``TrajectorySink`` batching into ``DashboardCollector``, which flushes hourly
+of its lane / engine / train rank and pushed through the real dashboard
+observer of each process (sample lifecycles through the run observers'
+trajectory reporter) into ``DashboardCollector``, which flushes hourly
 partitions; a virtual clock stands in for wall time. Each rollout step carries
 ``replicas`` times the samples: replica j of step k replays calibration step
 k+j, shifted onto step k's consume time. Runs longer than the calibration
@@ -12,6 +13,7 @@ repeat it.
 from __future__ import annotations
 
 import calendar
+import contextlib
 import heapq
 import json
 import time
@@ -29,9 +31,10 @@ from tests.manual.dashboard_simulator.calibration import (
 )
 from tests.manual.dashboard_simulator.dumps import ActorLayout, TrainDumpWriter
 
-from miles.dashboard import hooks
+from miles.dashboard import observer as dashboard_observer
 from miles.dashboard.collector import CollectorConfig, DashboardCollector
 from miles.dashboard.gpu_sampler import GpuSampler
+from miles.dashboard.observer import DashboardObserver
 from miles.dashboard.store import (
     DataBufferSample,
     EngineInfo,
@@ -46,13 +49,15 @@ from miles.dashboard.store import (
     TrajectoryEvent,
 )
 from miles.ray.rollout.debug_data import save_debug_rollout_data
+from miles.utils import observers as run_observers
 from miles.utils.types import Sample
 
 _CYCLE_GAP_S = 60.0
 
 
 class VirtualClock:
-    """Stands in for the ``time`` module inside ``hooks``, whose sink batching reads it."""
+    """Stands in for the ``time`` module inside the dashboard observer and the run observers,
+    whose batching and event timestamps read it."""
 
     def __init__(self, now: float):
         self.now = now
@@ -72,6 +77,20 @@ class _InProcessCollectorHandle:
 
     def __getattr__(self, method_name: str):
         return SimpleNamespace(remote=getattr(self._collector, method_name))
+
+
+class _OnlyObserver:
+    """The part of ``Observers`` the trajectory reporter calls, delivering to one observer."""
+
+    def __init__(self, observer: DashboardObserver):
+        self._observer = observer
+
+    def trajectory_event(self, event) -> None:
+        self._observer.trajectory_event(event)
+
+    @contextlib.contextmanager
+    def isolated(self, what: str):
+        yield
 
 
 class ReplicaLayout:
@@ -127,7 +146,8 @@ class Replay:
             None if rollout_dumps_last_hours is None else self.end_ts - rollout_dumps_last_hours * 3600
         )
         self.clock = VirtualClock(calibration.start_ts)
-        hooks.time = self.clock
+        dashboard_observer.time = self.clock
+        run_observers.time = self.clock
         run_args = calibration.store.meta.args
         self.config = CollectorConfig(
             dashboard_dir=str(out / "dashboard"),
@@ -138,11 +158,11 @@ class Replay:
         )
         self.collector = DashboardCollector(config=self.config)
         handle = _InProcessCollectorHandle(self.collector)
-        self.train_sinks_by_rank = self._build_train_sinks(handle)
-        self.rollout_manager_sink = self._build_sink(
-            handle, Role.ROLLOUT_MANAGER, node=_rollout_manager_node(calibration), gpus=[], rank=-1
+        self.train_observers_by_rank = self._build_train_observers(handle)
+        self.rollout_manager_observer = self._build_observer(
+            handle, "rollout_manager", node=_rollout_manager_node(calibration), gpus=[], rank=-1
         )
-        self.trajectory_sink = hooks.TrajectorySink(handle)
+        self.trajectory_reporter = run_observers._TrajectoryReporter(_OnlyObserver(self.rollout_manager_observer))
         self.dump_args = _make_args(
             out,
             num_prompts=run_args["rollout_batch_size"] * replicas,
@@ -163,22 +183,24 @@ class Replay:
         self.queued = 0
         self.telemetry_rows = 0
 
-    def _build_sink(self, handle, role: Role, *, node: str, gpus: list[int], rank: int) -> hooks.PhaseSink:
-        sink = hooks.PhaseSink(handle, role)
-        sink._identity = hooks._Identity(node=node, gpus=gpus, rank=rank)
-        sink._flusher = True  # the per-process flusher thread is _flush_idle_sinks
-        return sink
+    def _build_observer(self, handle, role: str, *, node: str, gpus: list[int], rank: int) -> DashboardObserver:
+        observer = DashboardObserver()
+        observer._collector = handle
+        observer.start_process(dict(role=role, node=node, rank=rank, gpus=gpus))
+        # the per-process pusher thread is _flush_idle_observers
+        observer._phases._pusher = observer._trajectories._pusher = True
+        return observer
 
-    def _build_train_sinks(self, handle) -> dict[int, hooks.PhaseSink]:
-        sinks_by_rank = {}
+    def _build_train_observers(self, handle) -> dict[int, DashboardObserver]:
+        observers_by_rank = {}
         for lane in self.calibration.lanes:
             for calibration_rank in lane["ranks"]:
                 for replica in range(self.replicas):
                     rank = self.layout.train_rank(calibration_rank, replica)
-                    sinks_by_rank[rank] = self._build_sink(
-                        handle, Role.TRAIN, node=self.layout.node(lane["node"], replica), gpus=[lane["gpu"]], rank=rank
+                    observers_by_rank[rank] = self._build_observer(
+                        handle, "train", node=self.layout.node(lane["node"], replica), gpus=[lane["gpu"]], rank=rank
                     )
-        return sinks_by_rank
+        return observers_by_rank
 
     # ------------------------------ event loop ------------------------------
 
@@ -195,7 +217,7 @@ class Replay:
             cycle += 1
         for interval, action in (
             (self.config.flush_interval_seconds, self._flush_collector),
-            (hooks.BATCH_MAX_SECONDS, self._flush_idle_sinks),
+            (dashboard_observer.BATCH_MAX_SECONDS, self._flush_idle_observers),
         ):
             for k in range(1, int((self.end_ts - start) // interval) + 2):
                 self.schedule_at(start + k * interval, action)
@@ -216,9 +238,9 @@ class Replay:
                     flush=True,
                 )
         self.clock.now = self.end_ts
-        for sink in [*self.train_sinks_by_rank.values(), self.rollout_manager_sink]:
-            sink.flush()
-        self.trajectory_sink.flush()
+        for observer in [*self.train_observers_by_rank.values(), self.rollout_manager_observer]:
+            observer._phases.flush()
+        self.rollout_manager_observer._trajectories.flush()
         self.collector.flush()
 
     def _cycle_from_ts(self, cycle: int) -> float:
@@ -323,18 +345,18 @@ class Replay:
 
     def _push_phase(self, ts: float, event: PhaseEvent, shift_s: float) -> None:
         if event.role == Role.ROLLOUT_MANAGER:
-            sinks = [self.rollout_manager_sink]
+            observers = [self.rollout_manager_observer]
         else:
-            sinks = [
-                self.train_sinks_by_rank[self.layout.train_rank(event.rank, replica)]
+            observers = [
+                self.train_observers_by_rank[self.layout.train_rank(event.rank, replica)]
                 for replica in range(self.replicas)
             ]
-        for sink in sinks:
+        for observer in observers:
             if event.open:
-                sink.begin(event.name, event.t0 + shift_s)
+                observer.phase_start(event.name, event.t0 + shift_s)
             else:
-                sink(event.name, event.t0 + shift_s, event.t1 + shift_s)
-        self.telemetry_rows += len(sinks)
+                observer.phase_end(event.name, event.t0 + shift_s, event.t1 + shift_s)
+        self.telemetry_rows += len(observers)
 
     def _push_metrics(self, ts: float, record: MetricsRecord, step: int | None, shift_s: float) -> None:
         self.collector.push_metrics(
@@ -345,13 +367,11 @@ class Replay:
         self.collector.push_data_buffer(DataBufferSample(ts=ts, length=length * self.replicas))
 
     def _flush_collector(self, ts: float) -> None:
-        self.collector._sync_external_topology()
         self.collector.flush()
 
-    def _flush_idle_sinks(self, ts: float) -> None:
-        for sink in [*self.train_sinks_by_rank.values(), self.rollout_manager_sink]:
-            if sink._buffer:
-                sink.flush()
+    def _flush_idle_observers(self, ts: float) -> None:
+        for observer in [*self.train_observers_by_rank.values(), self.rollout_manager_observer]:
+            observer._phases.flush()
 
     def _widened_topology(self, ts: float) -> TopologySnapshot:
         engines = [
@@ -420,7 +440,7 @@ class Replay:
         weight_version_shift: int,
         shift_s: float,
     ) -> SimpleNamespace:
-        """The fields ``TrajectorySink`` reads off a sample, without its tokens."""
+        """The fields the trajectory reporter reads off a sample, without its tokens."""
         index = self._sample_index(rollout_id, replica, trajectory.slot)
         return SimpleNamespace(
             index=index,
@@ -435,8 +455,8 @@ class Replay:
     def _attempt_start(self, ts: float, lifecycle_sample: SimpleNamespace) -> None:
         # no weight version before the first turn finishes
         starting = SimpleNamespace(**(vars(lifecycle_sample) | dict(all_weight_version_spans=[])))
-        self.trajectory_sink.attempt_start(starting)
-        self.trajectory_sink.gen_start(starting)
+        self.trajectory_reporter.attempt_start(starting)
+        self.trajectory_reporter.gen_start(starting)
         self.telemetry_rows += 2
 
     def _replay_trajectory_event(
@@ -451,11 +471,11 @@ class Replay:
                 | dict(all_weight_version_spans=[SimpleNamespace(version=version)] if version else [])
             )
         )
-        self.trajectory_sink._emit(event.kind, sample, ts=ts, turn=event.turn, detail=event.detail)
+        self.trajectory_reporter._emit(event.kind, sample, ts=ts, turn=event.turn, detail=event.detail)
         self.telemetry_rows += 1
 
     def _attempt_end(self, ts: float, lifecycle_sample: SimpleNamespace) -> None:
-        self.trajectory_sink.attempt_end(lifecycle_sample)
+        self.trajectory_reporter.attempt_end(lifecycle_sample)
         self.telemetry_rows += 4 * len(lifecycle_sample.metadata["lifecycle"])
 
     def _dump_rollout_step(self, ts: float, rollout_id: int, sources: list[tuple[int, float]]) -> None:

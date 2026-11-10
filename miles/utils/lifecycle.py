@@ -1,9 +1,9 @@
 """Trajectory-lifecycle seam callable from core rollout code.
 
-Core generation paths read ``TrajectoryLifecycle().sink`` unconditionally, so
-this module must never import from the dashboard extra. The dashboard or the run
-observers (``miles.utils.observers.start_process``) install the sink; while it
-is ``None`` every probe site is a no-op.
+Core generation paths read ``TrajectoryLifecycle().sink`` unconditionally.
+The run observers install the sink in the rollout manager
+(``miles.utils.observers.start_process``); while it is ``None`` every probe
+site is a no-op.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from miles.utils.misc import SingletonMeta
 
 class TrajectoryLifecycle(metaclass=SingletonMeta):
     def __init__(self):
-        self.sink = None  # the dashboard's TrajectorySink or the observers' reporter (duck-typed); None = off
+        self.sink = None  # the observers' trajectory reporter (duck-typed); None = off
 
 
 def attach_lifecycle_metadata(sample, record, prev_record, turn: int) -> None:

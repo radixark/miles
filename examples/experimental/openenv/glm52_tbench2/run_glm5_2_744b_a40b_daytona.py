@@ -258,11 +258,7 @@ def _execute_train(args: ScriptArgs):
     if args.fp8_rollout and not balanced:
         sglang_args += "--sglang-moe-runner-backend flashinfer_trtllm_routed "
 
-    dashboard_args = (
-        f"--dump-details {args.output_dir}/{args.run_id}/dump_details "
-        "--use-miles-dashboard "
-        "--dashboard-sglang-scrape-mode direct "
-    )
+    dashboard_args = f"--dump-details {args.output_dir}/{args.run_id}/dump_details "
 
     misc_args = (
         "--attention-dropout 0.0 "
@@ -304,6 +300,7 @@ def _execute_train(args: ScriptArgs):
     )
 
     extra_env_vars = {
+        "MILES_DASHBOARD": "1",
         # FullyAsyncRolloutFn is the class-based rollout API
         # On a watchdog timeout every rank dumps its recent collectives, which
         # identifies the rank that never arrived. Must reach the train actors,
