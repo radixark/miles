@@ -11,7 +11,6 @@ import torch
 
 from miles_plugins.models.muse_spark import checkpoint
 from miles_plugins.models.muse_spark.config import map_to_megatron_fields, parse_muse_spark_1x_config
-from miles_plugins.models.muse_spark.hf_config import MuseSparkHFConfig
 from miles_plugins.models.muse_spark.weight_mapping import (
     build_mappings,
     hf_tensor_specs,
@@ -250,16 +249,17 @@ def test_load_and_export_round_trip_bit_exact():
         torch.testing.assert_close(exported[name], tensor, rtol=0, atol=0)
 
 
-def test_hf_config_class_exposes_flat_view():
-    config = MuseSparkHFConfig(**checkpoint_config())
-    assert (config.hidden_size, config.num_hidden_layers, config.vocab_size) == (HIDDEN, LAYERS, VOCAB)
-    assert (config.num_attention_heads, config.head_dim, config.rope_theta) == (HEADS, HEAD_DIM, 500000.0)
-    assert not hasattr(config, "text_config")
-    assert config.to_dict()["text_config"]["layer_types"][0] == "sliding_attention"
-    assert config.to_dict()["model_type"] == "muse_spark"
-    assert config.architectures == ["MuseSparkForConditionalGeneration"]
-    assert parse_muse_spark_1x_config(config.to_dict()) == parse_muse_spark_1x_config(checkpoint_config())
-    assert MuseSparkHFConfig().model_type == "muse_spark"  # transformers builds a default instance for diffs
+def test_sglang_config_selects_the_muse_converter(tmp_path):
+    pytest.importorskip("sglang.srt.configs.muse_spark")
+    from miles.backends.megatron_utils.megatron_to_hf import converter_model_name
+    from miles.utils.hf_utils.config import load_hf_config
+
+    (tmp_path / "config.json").write_text(json.dumps(checkpoint_config()))
+    config = load_hf_config(str(tmp_path))
+    # _convert_to_hf_core dispatches on the class name, the bridge registry on model_type.
+    assert converter_model_name(SimpleNamespace(model_name=None), config) == "musesparkconfig"
+    assert config.model_type == "muse_spark"
+    assert (config.text_config.hidden_size, config.text_config.num_hidden_layers) == (HIDDEN, LAYERS)
 
 
 def test_raw_export_uses_checkpoint_names(tmp_path):
