@@ -43,7 +43,7 @@ class TestTrainProcessGroupBackendSelection:
                 bind_device_before_process_group=lambda _rank: None,
                 bind_device_after_process_group=lambda: None,
                 nvml_numa_affinity=False,
-                device_type="cpu",
+                device_type="cuda",
             ),
         )
         monkeypatch.setattr(
