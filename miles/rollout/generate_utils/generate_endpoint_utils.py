@@ -150,7 +150,7 @@ def compute_request_payload(
         payload["return_sampling_mask"] = True
     if lora_rollout_enabled(args):
         payload["lora_path"] = LORA_ADAPTER_NAME
-    if args.multimodal_token_space_processing and has_media(multimodal_inputs):
+    if has_media(multimodal_inputs) and args.multimodal_token_space_processing:
         payload.update(rollout_media_payload(multimodal_inputs))
         payload.update(token_space_request_fields(mm_token_expansion_start_len))
     elif image_data := (multimodal_inputs or {}).get("images"):
