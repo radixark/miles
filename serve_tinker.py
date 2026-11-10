@@ -34,19 +34,23 @@ async def serve(args, *, disposer: Disposer):
     trainer_configs = compute_trainer_configs(args)
     [actor_config] = [config for config in trainer_configs if config.role == ACTOR_ROLE]
     ckpt_load_config = compute_trainer_ckpt_load_config(args, actor_config)
-    assert ckpt_load_config is not None
-    assert ckpt_load_config.load == args.hf_checkpoint, "Tinker trainers and engines must load the same frozen HF base"
+    # torchtitan loads the base from --hf-checkpoint itself
+    if args.train_backend == "megatron":
+        assert (
+            ckpt_load_config.load == args.hf_checkpoint
+        ), "Tinker trainers and engines must load the same frozen HF base"
+    tp_size, pp_size, cp_size = _trainer_parallel_sizes(args)
     full_hf_config = load_hf_config(args.hf_checkpoint)
     hf_config = full_hf_config.get_text_config()
     max_tokens_per_datum = hf_config.max_position_embeddings
     if args.max_tokens_per_gpu is not None:
         # The trainer pads each packed microbatch to this multiple.
-        pad_size = args.raw_megatron.base_args["tensor_model_parallel_size"] * args.data_pad_size_multiplier
+        pad_size = tp_size * args.data_pad_size_multiplier
         local_token_limit = args.max_tokens_per_gpu // pad_size * pad_size
-        if args.raw_megatron.base_args["context_parallel_size"] > 1:
+        if cp_size > 1:
             # each rank holds two equal zigzag chunks per datum
             local_token_limit -= local_token_limit % 2
-        trainer_token_limit = local_token_limit * args.raw_megatron.base_args["context_parallel_size"]
+        trainer_token_limit = local_token_limit * cp_size
         max_tokens_per_datum = min(max_tokens_per_datum, trainer_token_limit)
     assert max_tokens_per_datum > 0, "trainer token budget must fit at least one padding block"
     engine_context_length = args.sglang.common_value("context_length") or hf_config.max_position_embeddings
@@ -98,11 +102,7 @@ async def serve(args, *, disposer: Disposer):
     )
     router_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
     actor_world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
-    dp_size = actor_world_size // (
-        args.raw_megatron.base_args["tensor_model_parallel_size"]
-        * args.raw_megatron.base_args["pipeline_model_parallel_size"]
-        * args.raw_megatron.base_args["context_parallel_size"]
-    )
+    dp_size = actor_world_size // (tp_size * pp_size * cp_size)
     service = TinkerService(MilesBackend(trainer, router_url, lora_layout, dp_size=dp_size), config)
 
     server = uvicorn.Server(
@@ -124,6 +124,18 @@ async def serve(args, *, disposer: Disposer):
             task.cancel()
             with suppress(asyncio.CancelledError):
                 await task
+
+
+def _trainer_parallel_sizes(args) -> tuple[int, int, int]:
+    if args.train_backend == "megatron":
+        megatron = args.raw_megatron.base_args
+        return (
+            megatron["tensor_model_parallel_size"],
+            megatron["pipeline_model_parallel_size"],
+            megatron["context_parallel_size"],
+        )
+    titan = args.raw_torchtitan
+    return titan.tensor_model_parallel_size, titan.pipeline_model_parallel_size, titan.context_parallel_size
 
 
 if __name__ == "__main__":

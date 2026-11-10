@@ -174,6 +174,10 @@ def _parallelism_config(args: TrainerConfig) -> ParallelismConfig:
 
 
 def _num_pipeline_microbatches(args: TrainerConfig) -> int:
+    if args.backend.global_batch_size is None:
+        # the Tinker gateway sizes each step by its request, and multi-LoRA runs one pipeline stage
+        assert args.backend.pipeline_model_parallel_size == 1, "pipeline parallelism needs --global-batch-size"
+        return 1
     model_parallel_size = (
         args.backend.tensor_model_parallel_size
         * args.backend.pipeline_model_parallel_size

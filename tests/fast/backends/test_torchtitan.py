@@ -103,6 +103,8 @@ def test_the_sequence_must_cover_the_rotary_tables(monkeypatch):
     with pytest.raises(ValueError, match="no room for a prompt"):
         validate_torchtitan_args(_args(seq_length=8192, max_seq_len=None, rollout_max_response_len=8192))
     validate_torchtitan_args(_args(seq_length=16384, max_seq_len=None, rollout_max_response_len=8192))
+    # the Tinker gateway serves no rollouts
+    validate_torchtitan_args(_args(seq_length=8192, max_seq_len=None, rollout_max_response_len=None))
 
 
 _TPU_FACTS = (
@@ -851,3 +853,14 @@ def test_sleep_and_wake_leave_cpu_offloaded_training_state_on_the_host(monkeypat
     actor.wake_up()
 
     assert moved == ([] if cpu_offload else [True, False])
+
+
+def test_a_step_sized_by_its_request_runs_one_pipeline_microbatch(single_gpu_dims):
+    """The Tinker gateway sets no --global-batch-size; only a pipeline schedule would need one."""
+    from miles.backends.torchtitan_utils import config as titan_config
+
+    sizes = dict(tensor_model_parallel_size=1, context_parallel_size=1, micro_batch_size=1, global_batch_size=None)
+    one_stage = Namespace(backend=Namespace(pipeline_model_parallel_size=1, **sizes))
+    assert titan_config._num_pipeline_microbatches(one_stage) == 1
+    with pytest.raises(AssertionError, match="pipeline parallelism needs --global-batch-size"):
+        titan_config._num_pipeline_microbatches(Namespace(backend=Namespace(pipeline_model_parallel_size=2, **sizes)))

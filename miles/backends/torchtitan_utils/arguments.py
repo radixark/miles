@@ -47,7 +47,8 @@ def validate_torchtitan_args(args) -> None:
                 f"--max-seq-len {args.max_seq_len}: torchtitan builds its "
                 "rotary embeddings for the former, so a longer sequence would index past them"
             )
-    elif args.seq_length <= args.rollout_max_response_len:
+    # the Tinker gateway serves no rollouts
+    elif args.rollout_max_response_len is not None and args.seq_length <= args.rollout_max_response_len:
         raise ValueError(
             f"--seq-length {args.seq_length} leaves no room for a prompt ahead of "
             f"--rollout-max-response-len {args.rollout_max_response_len}: torchtitan builds its "
