@@ -39,8 +39,23 @@ cd /root/miles
 python examples/geo3k_vlm/multi_turn/run_geo3k_vlm_multi_turn.py
 ```
 
+## Qwen3.5-35B-A3B in token space
+
+`run_geo3k_vlm_multi_turn_token_space.py` runs the same three-turn task on the plugin Qwen3.5 text model with its
+frozen vision tower. SGLang expands each turn's image placeholders in token space, runs the vision tower
+unsharded (`--sglang-mm-enable-dp-encoder`) and caches the per-image features on disk; every trainer rank rebuilds
+the same tensors from the shared image files in the background. Routing replay (R3) records each turn's own rows,
+so the trainer replays the experts the engine chose for every turn of the conversation.
+
+```bash
+python examples/geo3k_vlm/multi_turn/run_geo3k_vlm_multi_turn_token_space.py
+```
+
+<img src="geo3k_qwen3_5_35b_a3b_reward.png" alt="rollout/raw_reward_unfiltered" width="800">
+
 ## What each file does
 - `examples/geo3k_vlm/multi_turn/run_geo3k_vlm_multi_turn.py`: downloads model, sets training/rollout args, and launches the run.
+- `examples/geo3k_vlm/multi_turn/run_geo3k_vlm_multi_turn_token_space.py`: the same run for Qwen3.5-35B-A3B in token space.
 - `examples/geo3k_vlm/multi_turn/geo3k_vlm_multi_turn_config.yaml`: specifies `max_turns` and `rollout_interaction_env_path` for the multi-turn rollout.
 - `examples/geo3k_vlm/multi_turn/rollout.py`: custom multi-turn rollout that calls SGLang for token generation, builds loss masks/log_probs, enforces max_turns, and early-stops on max_new_tokens.
 - `examples/geo3k_vlm/multi_turn/env_geo3k.py`: geo3k tool-calling env that parses <tool_call>{...}</tool_call>, scores math answers, and returns tool feedback per turn.
