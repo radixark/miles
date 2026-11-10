@@ -38,6 +38,7 @@ class TestLoraBridgeBackendConfiguration:
             "moe_router_use_torch_mm",
         ):
             assert vars(provider)[field] == vars(bridge_args.backend)[field]
+        assert provider.cp_comm_type == "a2a"
         assert provider.bias_activation_fusion is True
         assert provider.apply_rope_fusion is False
         assert provider.num_layers_in_first_pipeline_stage == 2

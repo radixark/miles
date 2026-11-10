@@ -13,6 +13,7 @@ def _runtime_args(**overrides):
         "expert_tensor_parallel_size": 1,
         "sequence_parallel": False,
         "context_parallel_size": 1,
+        "cp_comm_type": ["p2p"],
         "calculate_per_token_loss": False,
         "variable_seq_lengths": True,
         "attention_softmax_in_fp32": True,
