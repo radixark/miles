@@ -1,9 +1,12 @@
 import argparse
 import asyncio
 import concurrent.futures
+import subprocess
 import sys
+import textwrap
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -418,3 +421,47 @@ async def test_a_rollout_abort_during_boot_closes_the_worker_and_discards_the_sa
     assert list(take_dropped_refs()) == ["collected-task-3"]
     assert ("POST", "/calls") not in sandboxes.requests
     assert await asyncio.to_thread(_until, lambda: sandboxes.closed == ["task-3"])
+
+
+def test_a_process_whose_start_was_aborted_while_queued_for_a_thread_still_exits():
+    code = textwrap.dedent(
+        """
+        import asyncio, concurrent.futures, threading
+        from miles.rollout.agentic.agent_function import InfraAbort, call_agent_function, cancel_calls
+        from miles.utils.test_utils import agent_function_stubs as stubs
+
+        async def main():
+            loop = asyncio.get_running_loop()
+            loop.set_default_executor(concurrent.futures.ThreadPoolExecutor(max_workers=1))
+            release = threading.Event()
+            occupied = loop.run_in_executor(None, release.wait)
+            call = asyncio.create_task(
+                call_agent_function(
+                    stubs.report_pid,
+                    mode="worker",
+                    worker="examples.experimental.agent_sandbox.local_start.start",
+                    abort_scope="scope",
+                )
+            )
+            await asyncio.sleep(0.5)
+            await cancel_calls("scope")
+            try:
+                await call
+            except InfraAbort as abort:
+                print(abort.exit_status)
+            release.set()
+            await occupied
+
+        asyncio.run(main())
+        """
+    )
+    done = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=Path(__file__).resolve().parents[4],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.split() == ["Cancelled"]
