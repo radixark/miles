@@ -58,6 +58,7 @@ def _args(**overrides) -> Namespace:
         lora_adapter_path=None,
         lora_train_only=False,
         colocate_memory_peak_device="cpu",
+        titan_fsdp_reduce_dtype="float32",
         # read by the padded-rows loss layout's startup check on a static-shape platform
         train_backend="torchtitan",
         loss_type="policy_loss",
@@ -414,6 +415,7 @@ def _config_args(**overrides: object) -> Namespace:
         gradient_checkpointing=False,
         optimizer_cpu_offload=False,
         titan_fsdp_gather_once=False,
+        titan_fsdp_reduce_dtype="float32",
         save=None,
         load=None,
     )
@@ -900,3 +902,21 @@ def test_gather_once_reduces_gradients_on_the_last_microbatch_only(monkeypatch, 
         for last in (False, False, True)
     ]
     assert calls == [call for group in per_microbatch for call in group] + [("reshard", None)]
+
+
+def test_the_fsdp_reduce_dtype_reaches_torchtitans_training_config(monkeypatch, tmp_path, single_gpu_dims):
+    from miles.backends.torchtitan_utils.config import build_trainer_config
+
+    monkeypatch.setattr(torch, "__version__", "2.14.0")
+    with pytest.raises(ValueError, match="fsdp-reduce-dtype"):
+        validate_torchtitan_args(_args(titan_fsdp_reduce_dtype="float16"))
+    with pytest.raises(ValueError, match="accumulate microbatch gradients"):
+        validate_torchtitan_args(_args(titan_fsdp_reduce_dtype="bfloat16", titan_fsdp_gather_once=True))
+    validate_torchtitan_args(_args(titan_fsdp_reduce_dtype="bfloat16"))
+    config = build_trainer_config(
+        _config_args(titan_fsdp_reduce_dtype="bfloat16"),
+        hf_assets_path=_checkpoint_dir(tmp_path, tie_word_embeddings=False),
+        lr_total_steps=1,
+        dump_subdir="x",
+    )
+    assert config.training.mixed_precision_reduce == "bfloat16"

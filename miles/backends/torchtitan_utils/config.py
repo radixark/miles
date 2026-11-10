@@ -316,6 +316,7 @@ def build_trainer_config(
         training=TrainingConfig(
             num_tokens_per_microbatch_per_dp_rank=args.backend.seq_length,
             max_context_length=args.backend.seq_length,
+            mixed_precision_reduce=args.backend.titan_fsdp_reduce_dtype,
             steps=max(lr_total_steps, 1),
             enable_cpu_offload=args.backend.optimizer_cpu_offload,
             disable_cuda_graphs=True,

@@ -8,6 +8,8 @@ from miles.kernels.tpu import FLASH_ATTENTION_BLOCK
 from miles.platforms import current_platform, tpu_shared_slice
 from miles.utils.lora.utils import is_lora_enabled, lora_rollout_enabled
 
+_FSDP_REDUCE_DTYPES = ("float32", "bfloat16")
+
 
 @dataclass
 class TorchtitanArgs(FSDPArgs):
@@ -24,6 +26,8 @@ class TorchtitanArgs(FSDPArgs):
     # FSDP all-gathers params once per pass and reduce-scatters grads once per step; each rank holds full
     # bf16 params and fp32 grads for the pass
     titan_fsdp_gather_once: bool = False
+    # FSDP's gradient reduce dtype: bfloat16 halves the reduce-scatter buffers and bytes
+    titan_fsdp_reduce_dtype: str = "float32"
 
 
 def build_torchtitan_parser(extra_args_provider=None):
@@ -59,6 +63,10 @@ def validate_torchtitan_args(args) -> None:
             "inside the rope kernel"
         )
 
+    if args.titan_fsdp_reduce_dtype not in _FSDP_REDUCE_DTYPES:
+        raise ValueError(
+            f"--titan-fsdp-reduce-dtype {args.titan_fsdp_reduce_dtype!r}: expected one of {_FSDP_REDUCE_DTYPES}"
+        )
     _validate_platform_args(args)
     if args.update_weight_transfer_mode == "ici" and tpu_shared_slice.spec() is None:
         raise ValueError(
@@ -67,6 +75,12 @@ def validate_torchtitan_args(args) -> None:
         )
     if args.titan_fsdp_gather_once and args.pipeline_model_parallel_size > 1:
         raise ValueError("--titan-fsdp-gather-once does not apply to the pipeline schedule; drop it under PP")
+    # with gradient sync off until the last microbatch, FSDP accumulates the unsharded gradients in the reduce dtype
+    if args.titan_fsdp_gather_once and args.titan_fsdp_reduce_dtype != "float32":
+        raise ValueError(
+            f"--titan-fsdp-gather-once would accumulate microbatch gradients in --titan-fsdp-reduce-dtype "
+            f"{args.titan_fsdp_reduce_dtype}; use float32 with it"
+        )
     if args.ref_update_interval is not None:
         raise ValueError("--ref-update-interval is not supported by the torchtitan backend")
     if args.fp16:
