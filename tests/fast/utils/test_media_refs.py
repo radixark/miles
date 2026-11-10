@@ -6,8 +6,8 @@
          │ data URL / bytes / PIL ─▶ written
          ▼   once under media_dir by content hash
 
-The tests pin the order and duplicates of the references, that non-path sources are written once by content
-hash, and the rejections.
+The tests pin the order and duplicates of the references, that a path stays as written when it goes through a
+symlink, that non-path sources are written once by content hash, and the rejections.
 """
 
 import base64
@@ -87,6 +87,19 @@ def test_non_path_sources_are_written_once_by_content_hash(tmp_path, make_source
     assert first == second
     assert Path(first).is_absolute() and Path(first).is_relative_to(tmp_path)
     assert Image.open(first).getpixel((0, 0)) == (255, 0, 0)
+
+
+def test_a_path_through_a_symlink_stays_as_written(tmp_path):
+    """This node may reach the shared disk through a symlink that the engine nodes do not have: a reference that
+    followed it would name a path only this node can open."""
+    real_dir = tmp_path / "real"
+    real_dir.mkdir()
+    (real_dir / "a.png").write_bytes(b"a")
+    mount = tmp_path / "mount"
+    mount.symlink_to(real_dir, target_is_directory=True)
+
+    assert materialize_media_ref(str(mount / "a.png"), media_dir=None) == str(mount / "a.png")
+    assert materialize_media_ref(b"b", media_dir=str(mount)).startswith(f"{mount}/")
 
 
 def test_non_path_source_without_media_dir_is_rejected():
