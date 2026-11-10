@@ -41,14 +41,14 @@ _SOURCE = {"path": "/ckpt", "load_optimizer": True, "parametrization_fields": {}
 @pytest.fixture
 def actor_and_events(monkeypatch):
     events = []
-    monkeypatch.setattr(
-        lora_model,
-        "SlotOptimizer",
-        lambda args, model, slot, params: SimpleNamespace(slot=slot, zero_grads=lambda: None),
-    )
     monkeypatch.setattr(lora_checkpoint, "load_slot", lambda *args, **kwargs: events.append(("load", args[3])))
     # the real actor module imports torch_memory_saver, which CPU CI lacks
     actor_module = _lora_actor_module(monkeypatch, model=lora_model, checkpoint=lora_checkpoint)
+    monkeypatch.setattr(
+        actor_module,
+        "SlotOptimizer",
+        lambda args, model, slot, params: SimpleNamespace(slot=slot, zero_grads=lambda: None),
+    )
     actor = actor_module.MultiLoRATrainRayActor.__new__(actor_module.MultiLoRATrainRayActor)
     actor.args, actor.model, actor.adapter_slots, actor.slot_optimizers = None, [], _RecordedSlots(events), {}
     actor._checkpoint_members = lambda: None

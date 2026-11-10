@@ -42,8 +42,8 @@ def test_a_source_the_slot_cannot_take_is_a_user_error_and_leaves_the_slot_alone
         check_load_source=lambda *args, **shapes: ("rank 4 != 8", None),
         load_slot=lambda *args: loaded.append("checkpoint"),
     )
-    model = SimpleNamespace(load_slot=lambda *args: loaded.append("model"))
-    module = _lora_actor_module(monkeypatch, model=model, checkpoint=checkpoint)
+    module = _lora_actor_module(monkeypatch, model=SimpleNamespace(), checkpoint=checkpoint)
+    module.SlotOptimizer = lambda *args: loaded.append("optimizer")
     actor = module.MultiLoRATrainRayActor()
     actor.args, actor.model, actor.slot_optimizers = None, [], {}
     actor.adapter_slots = SimpleNamespace(
