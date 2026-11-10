@@ -2047,6 +2047,7 @@ def validate_compile_warmup(args) -> None:
             ("--pipeline-model-parallel-size", args.pipeline_model_parallel_size > 1),
             ("--context-parallel-size", args.context_parallel_size > 1),
             ("--multimodal-keys", args.multimodal_keys is not None),
+            ("--multimodal-token-space-processing", args.multimodal_token_space_processing),
             ("--use-rollout-routing-replay", args.use_rollout_routing_replay),
             ("--use-routing-replay", args.use_routing_replay),
             ("--use-opd", args.use_opd),

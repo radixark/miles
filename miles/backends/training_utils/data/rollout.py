@@ -65,11 +65,18 @@ def get_rollout_data(
         witness_info=witness_info,
         output_store_read=output_store_read,
     )
-    return prepare_rollout_data(args, rollout_data, sample_device=sample_device), store_get_result
+    rollout_data = prepare_rollout_data(
+        args, rollout_data, sample_device=sample_device, token_space_processor=token_space_processor
+    )
+    return rollout_data, store_get_result
 
 
 def prepare_rollout_data(
-    args: Namespace, rollout_data: RolloutBatch, *, sample_device: torch.device | None = None
+    args: Namespace,
+    rollout_data: RolloutBatch,
+    *,
+    sample_device: torch.device | None = None,
+    token_space_processor: TrainerProcessor | None = None,
 ) -> RolloutBatch:
     """This rank's shard, with its per-sample lists as tensors; see `get_rollout_data` for `sample_device`."""
     if sample_device is None:
