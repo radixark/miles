@@ -14,7 +14,6 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-ROOT = Path(sys.argv[1])
 PROMPT = (
     "Please find the visual event described by the sentence '{}', determining its starting and ending times. "
     "The format should be: 'The event happens in <start time> - <end time> seconds'."
@@ -39,8 +38,8 @@ def write(rows, path):
     print(f"{path}: {len(rows)} rows, {len({r['video'] for r in rows})} videos")
 
 
-def train_rows():
-    filter_file = next((ROOT / "filter-data").glob("*/gemini_refined_data.jsonl"))
+def train_rows(root: Path):
+    filter_file = next((root / "filter-data").glob("*/gemini_refined_data.jsonl"))
     annos = []
     for line in filter_file.open():
         a = json.loads(line)
@@ -75,19 +74,19 @@ def train_rows():
     for i, a in enumerate(annos):
         if i not in kept:
             continue
-        video = ROOT / a["video_path"].removeprefix("data/")
+        video = root / a["video_path"].removeprefix("data/")
         rows.append({"query": parse_query(a["query"]), "video": str(video.absolute()), "span": list(a["span"][0])})
     missing = [r for r in rows if not Path(r["video"]).is_file()]
     assert not missing, f"{len(missing)} sampled videos are missing, e.g. {missing[0]['video']}"
     return rows
 
 
-def eval_rows(name: str, limit: int):
-    bench = json.load(open(ROOT / "TimeLens-Bench" / f"{name}-timelens.json"))
+def eval_rows(root: Path, name: str, limit: int | None):
+    bench = json.load(open(root / "TimeLens-Bench" / f"{name}-timelens.json"))
     rows = []
     for vid, item in bench.items():
         # The layout the official README's extraction produces: TimeLens-Bench/videos/<dataset>/<vid>.mp4.
-        video = ROOT / "TimeLens-Bench" / "videos" / name / f"{vid}.mp4"
+        video = root / "TimeLens-Bench" / "videos" / name / f"{vid}.mp4"
         for query, span in zip(item["queries"], item["spans"], strict=True):
             rows.append({"query": parse_query(query), "video": str(video.absolute()), "span": list(span)})
     random.Random(0).shuffle(rows)
@@ -98,5 +97,6 @@ def eval_rows(name: str, limit: int):
 
 
 if __name__ == "__main__":
-    write(train_rows(), ROOT / "timelens_grpo_train.parquet")
-    write(eval_rows("charades", 600), ROOT / "timelens_bench_charades_600.parquet")
+    root = Path(sys.argv[1])
+    write(train_rows(root), root / "timelens_grpo_train.parquet")
+    write(eval_rows(root, "charades", 600), root / "timelens_bench_charades_600.parquet")
