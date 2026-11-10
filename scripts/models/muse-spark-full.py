@@ -27,7 +27,7 @@ def model_args(num_layers=62, **kwargs) -> str:
         f"--moe-layer-freq {moe_layer_freq} --moe-grouped-gemm --moe-token-dispatcher-type alltoall "
         "--moe-router-score-function sigmoid --moe-router-dtype fp32 --moe-router-use-torch-mm "
         "--moe-router-enable-expert-bias --freeze-e-score-correction-bias --moe-router-topk-scaling-factor 1 "
-        "--moe-combine-in-fp32 --moe-deterministic-combine "
+        "--moe-combine-in-fp32 "
         "--expert-tensor-parallel-size 1 --microbatch-group-size-per-virtual-pipeline-stage 1 "
         "--moe-router-load-balancing-type none --moe-aux-loss-coeff 0 "
         "--fp32-residual-connection --accumulate-allreduce-grads-in-fp32 "
