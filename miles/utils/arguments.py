@@ -44,6 +44,7 @@ from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
 from miles.utils.environ import use_legacy_rollout_v1
 from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
+from miles.utils.ext_kernel_pins import log_miles_ext_kernels_pins
 from miles.utils.file_arg_utils import resolve_file_arg
 from miles.utils.function_registry import load_function
 from miles.utils.hf_utils.config import is_dsa, load_hf_config
@@ -1059,6 +1060,8 @@ def miles_validate_args(args):
         raise ValueError("broadcast_packed requires Megatron non-colocated weight transfer")
     validate_dashboard_args(args)
     validate_miles_ext_kernels_args(args)
+    if args.use_miles_ext_kernels:
+        log_miles_ext_kernels_pins()
 
     args.ft_components = _resolve_ft_components(args)
     assert "rollout" not in args.ft_components or supports_partial_target_weight_update(args), (
