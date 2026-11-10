@@ -110,7 +110,7 @@ jobs:
             exit 1
           fi
           echo "ci_bridge_pr=$BRIDGE_PR" >> "$GITHUB_OUTPUT"
-          echo "Resolved: bridge=${BRIDGE_PR:-<image's own>}"
+          echo "Resolved: bridge=${BRIDGE_PR:-none}"
 
       # HF_TOKEN and the Docker Hub login come from the runner's .env, not repo
       # secrets; do not set them here, since even an empty value overrides the
