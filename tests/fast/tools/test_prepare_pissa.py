@@ -1,6 +1,7 @@
 """PiSSA identity, artifact loading, and first updates on dense and hybrid Qwen models."""
 
 import json
+from dataclasses import replace
 
 import pytest
 import torch
@@ -9,6 +10,11 @@ from tools.prepare_pissa import pissa_decompose, prepare
 from transformers import Qwen3_5ForCausalLM, Qwen3_5TextConfig, Qwen3Config, Qwen3ForCausalLM
 
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
+from miles.backends.training_utils.checkpoint.adapter.parametrization_conversion import (
+    apply_parametrization_conversion,
+    assert_parametrization_matches_run,
+    plan_parametrization_conversion,
+)
 from miles.backends.training_utils.checkpoint.adapter.readers import PeftAdapterReader
 from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
 
@@ -71,6 +77,16 @@ def test_saved_hybrid_or_dense_model_loads_in_miles_and_trains(tmp_path, kind):
     )
     reader = PeftAdapterReader(adapter_dir, run, get_hf_lora_targets(model.config.to_dict()))
     assert reader.read_weights() and not reader.source.has_optimizer_state
+    source = reader.source.parametrization
+    target = replace(source, lora_type="canonical_lora", shared_lora_a_groups=())
+    weights = reader.read_weights()
+    steps = plan_parametrization_conversion(source, target, source_dtype=next(iter(weights.values())).dtype)
+    assert_parametrization_matches_run(source, target, steps, load_optimizer=False, has_optimizer_state=False)
+    converted = apply_parametrization_conversion(weights, steps)
+    for group in source.shared_lora_a_groups:
+        for module in group:
+            torch.testing.assert_close(converted[f"{module}.lora_A"], weights[f"{group[0]}.lora_A"], rtol=0, atol=0)
+            torch.testing.assert_close(converted[f"{module}.lora_B"], weights[f"{module}.lora_B"], rtol=0, atol=0)
     if kind == "qwen3_5":
         assert any("in_proj_q.lora_B" in k for k in reader.read_weights())
         assert reader.source.parametrization.shared_lora_a_groups

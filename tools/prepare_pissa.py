@@ -12,7 +12,8 @@ Example (local, unquantized dense Qwen3 checkpoint):
     python -m tools.prepare_pissa /models/Qwen3-0.6B /models/Qwen3-0.6B-pissa-r32 --rank 32
 
 For Qwen3.5, the default attn/mlp groups include GDN in_proj_qkv and in_proj_z.
-Use --lora-type lora in Miles to keep the HF-fused projections' shared A factors.
+Use --lora-type canonical_lora in Miles; its existing importer can split the
+HF-fused GDN factors into per-component adapters with the same initial weights.
 MoE, quantized checkpoints, and output-head adaptation are deliberately unsupported.
 """
 
