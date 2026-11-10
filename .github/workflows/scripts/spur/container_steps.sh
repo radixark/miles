@@ -51,6 +51,12 @@ if [[ "${CI_SKIP_DEPENDENCY_INSTALL:-true}" != "true" ]]; then
   if [ -n "${SGLANG_PR:-}" ]; then
     cd /sgl-workspace/sglang && git reset --hard HEAD && git clean -fd && git fetch origin "$SGLANG_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e python --no-deps --break-system-packages && \
       pip install -e radix_transfer_plugins --no-deps --break-system-packages
+    # SGLang builds its Rust extensions on demand under rust/, which pins a
+    # toolchain the image lacks. Install it now so the server's first
+    # `cargo --version` does not fail.
+    if [ -f rust/rust-toolchain.toml ]; then
+      (cd rust && cargo --version --verbose)
+    fi
   fi
   if [ -n "${MEGATRON_PR:-}" ]; then
     cd /root/Megatron-LM
