@@ -167,17 +167,3 @@ def muse_spark_1x_model_provider(pre_process=True, post_process=True, vp_stage=N
         post_process=post_process,
         vp_stage=vp_stage,
     )
-
-
-def muse_spark_1x_omni_model_provider(pre_process=True, post_process=True, vp_stage=None, *, args):
-    """Multimodal provider: the text model plus the frozen NaViT vision tower (Inkling pattern).
-
-    A separate entry point instead of a CLI switch; VLM launch scripts pass it as
-    --custom-model-provider-path. The tower is built on pre_process ranks from
-    args.hf_checkpoint and merged into decoder_input by ``vision.mm_towers``.
-    """
-    from miles_plugins.models.muse_spark.vision.mm_towers import wire_mm_towers
-
-    model = muse_spark_1x_model_provider(pre_process, post_process, vp_stage, args=args)
-    wire_mm_towers(model, args.hf_checkpoint)
-    return model

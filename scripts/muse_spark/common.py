@@ -1,4 +1,4 @@
-"""Train full Muse Spark with GRPO: DAPO-Math-17k, or Geometry3K images with --vlm.
+"""Train full Muse Spark with GRPO on DAPO-Math-17k.
 
 The recipe is shared by the entry points scripts/run_muse_spark_<gpus>x<hardware>.py, which set the cluster size,
 parallelism and engine sizing; this module only inserts those values. Requires storage shared by all nodes under model_dir (and under output_dir to save weights), and
@@ -28,8 +28,6 @@ Args:
     pin_rollout_manager_to_head: Run the rollout executor, router and session servers on the Ray head node.
     log_probs_chunk_size: Defaults 4096; -1 disables log-prob chunking.
     sglang_text_only: Serve only the language model from the omni checkpoint; defaults False.
-    vlm: Train on geo3k images instead of DAPO-Math (frozen vision tower); defaults False.
-    eval_interval / n_samples_per_eval_prompt: geo3k test-split eval cadence (vlm only) and samples per prompt.
     reasoning_effort: Optional chat-template override.
     save_interval: Save the weights without optimizer state every N rollouts and after the last one, under
         <run_dir>/checkpoints on storage shared by all nodes. After training, the last save is converted
@@ -94,12 +92,6 @@ class ScriptArgs(U.ExecuteTrainConfig):
     sglang_enable_dp_attention: bool = False
     # Serve only the language model (skips the vision/audio towers of the omni checkpoint).
     sglang_text_only: bool = False
-    # Image-grounded math on geo3k (scripts/muse_spark/prepare_geo3k.py under data_dir/geo3k): the
-    # omni provider runs the frozen NaViT tower on the first pipeline stage, and the weight iterator re-sends the
-    # towers from the HF checkpoint after every update.
-    vlm: bool = False
-    eval_interval: int | None = None
-    n_samples_per_eval_prompt: int = 4
     save_interval: int | None = None
     extra_args: str = ""
     partial: bool = False
@@ -118,18 +110,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
             self.rollout_max_response_len, self.rollout_max_context_len = 1024, 4096
         if self.optimizer == "muon" and self.offload_train_disk_dir is not None:
             raise ValueError("--offload-train-disk-dir requires --optimizer adam")
-        if self.vlm and self.sglang_text_only:
-            raise ValueError("--vlm needs the omni engine; drop --sglang-text-only")
-        if self.eval_interval is not None and not self.vlm:
-            raise ValueError("--eval-interval evaluates the geo3k test split and needs --vlm")
         if self.chat_template_path is None:
-            # The checkpoint's template renders an image part as a bare <|patch|>; the repo template renders the
-            # <image> placeholder the train processor expands (its text rendering is identical).
-            self.chat_template_path = (
-                str(U.repo_base_dir / "miles/utils/chat_template_utils/templates/muse_spark_fixed.jinja")
-                if self.vlm
-                else f"{self.model_dir}/{self.model_name}/chat_template.jinja"
-            )
+            self.chat_template_path = f"{self.model_dir}/{self.model_name}/chat_template.jinja"
 
     @property
     def run_dir(self) -> str:
@@ -173,15 +155,7 @@ def prepare(args: ScriptArgs):
         hf_checkpoint=str(hf_checkpoint),
         megatron_path=args.megatron_path,
     )
-    if not args.vlm:
-        U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
-        return
-    script = Path(__file__).resolve().parent / "prepare_geo3k.py"
-    for split in ("train", "test"):
-        U.exec_command_cpu(
-            f"python3 {shlex.quote(str(script))} --out {shlex.quote(str(Path(args.data_dir) / 'geo3k'))} "
-            f"--split {split} --max-samples 1000000"
-        )
+    U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
 
 
 def execute(args: ScriptArgs, entry_script: str):
@@ -192,19 +166,9 @@ def execute(args: ScriptArgs, entry_script: str):
     )
     if args.save_interval is not None:
         ckpt_args += f"--save {shlex.quote(args.run_dir + '/checkpoints')} --save-interval {args.save_interval} "
-    geo3k = Path(args.data_dir) / "geo3k"
-    if args.vlm:
-        rollout_args = (
-            f"--prompt-data {shlex.quote(str(geo3k / 'train_rl.jsonl'))} "
-            "--input-key messages "
-            f"--multimodal-keys {shlex.quote(json.dumps({'image': 'images'}))} "
-        )
-    else:
-        rollout_args = (
-            f"--prompt-data {shlex.quote(str(Path(args.data_dir) / 'dapo-math-17k/dapo-math-17k.jsonl'))} "
-            "--input-key prompt "
-        )
-    rollout_args += (
+    rollout_args = (
+        f"--prompt-data {shlex.quote(str(Path(args.data_dir) / 'dapo-math-17k/dapo-math-17k.jsonl'))} "
+        "--input-key prompt "
         "--label-key label "
         "--apply-chat-template "
         f"--chat-template-path {shlex.quote(args.chat_template_path)} "
@@ -229,11 +193,6 @@ def execute(args: ScriptArgs, entry_script: str):
     if args.reasoning_effort is not None:
         template_kwargs = json.dumps({"reasoning_effort": args.reasoning_effort})
         rollout_args += f"--apply-chat-template-kwargs {shlex.quote(template_kwargs)} "
-    if args.eval_interval is not None:
-        rollout_args += (
-            f"--eval-prompt-data geo3k {shlex.quote(str(geo3k / 'test_rl.jsonl'))} "
-            f"--eval-interval {args.eval_interval} --n-samples-per-eval-prompt {args.n_samples_per_eval_prompt} "
-        )
     grpo_args = (
         "--loss-type policy_loss "
         "--advantage-estimator grpo "
@@ -325,14 +284,7 @@ def execute(args: ScriptArgs, entry_script: str):
         # the language model only; otherwise it looks for a multimodal processor of the text architecture.
         text_only = json.dumps({"architectures": ["MuseSpark1xForCausalLM"]})
         sglang_args += f"--sglang-json-model-override-args {shlex.quote(text_only)} --sglang-language-model-only "
-    if args.vlm:
-        # Overrides the text provider of the model args, which precede the train args.
-        misc_args = (
-            "--custom-model-provider-path miles_plugins.models.muse_spark.provider.muse_spark_1x_omni_model_provider "
-        )
-    else:
-        misc_args = ""
-    misc_args += (
+    misc_args = (
         f"--actor-num-nodes {args.num_nodes} "
         f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
         f"--num-gpus-per-node {args.num_gpus_per_node} "
@@ -341,13 +293,12 @@ def execute(args: ScriptArgs, entry_script: str):
     if args.pin_rollout_manager_to_head:
         misc_args += "--pin-rollout-manager-to-head "
     if args.partial:
-        misc_args += "--ci-test "
-        if not args.vlm:
-            # The text recipe's colocated engines zero the omni towers at startup and never receive them again.
-            misc_args += (
-                "--check-weight-update-skip-list "
-                "model.vision_tower. model.vision_adapter. model.vision_projection. model.audio_tower. "
-            )
+        # The colocated engines zero the omni towers at startup and never receive them again.
+        misc_args += (
+            "--ci-test "
+            "--check-weight-update-skip-list "
+            "model.vision_tower. model.vision_adapter. model.vision_projection. model.audio_tower. "
+        )
 
     train_args = (
         f"{ckpt_args} "

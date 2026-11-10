@@ -320,7 +320,7 @@ def test_load_hf_checkpoint_ignores_non_text_tensors_and_rejects_wrong_names(tmp
         checkpoint.load_hf_checkpoint(_WeightOnlyModel(spark), bad)
 
 
-def test_hf_config_class_exposes_flat_view(tmp_path):
+def test_hf_config_class_exposes_flat_view():
     config = MuseSparkHFConfig(**checkpoint_config())
     assert (config.hidden_size, config.num_hidden_layers, config.vocab_size) == (HIDDEN, LAYERS, VOCAB)
     assert (config.num_attention_heads, config.head_dim, config.rope_theta) == (HEADS, HEAD_DIM, 500000.0)
@@ -330,10 +330,6 @@ def test_hf_config_class_exposes_flat_view(tmp_path):
     assert config.architectures == ["MuseSparkForConditionalGeneration"]
     assert parse_muse_spark_1x_config(config.to_dict()) == parse_muse_spark_1x_config(checkpoint_config())
     assert MuseSparkHFConfig().model_type == "muse_spark"  # transformers builds a default instance for diffs
-    from miles.utils.chat_template_utils.muse_spark_omni import is_muse_spark_omni_checkpoint
-
-    (tmp_path / "config.json").write_text(json.dumps(checkpoint_config()))
-    assert is_muse_spark_omni_checkpoint(str(tmp_path))
 
 
 def test_raw_export_uses_checkpoint_names(tmp_path):
