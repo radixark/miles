@@ -1,5 +1,6 @@
 """PiSSA identity, artifact loading, and first updates on dense and hybrid Qwen models."""
 
+import inspect
 import json
 from dataclasses import replace
 
@@ -8,6 +9,7 @@ import torch
 from peft import PeftModel
 from tools.prepare_pissa import pissa_decompose, prepare
 from transformers import Qwen3_5ForCausalLM, Qwen3_5TextConfig, Qwen3Config, Qwen3ForCausalLM
+from transformers.models.qwen3_5 import modeling_qwen3_5
 
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
 from miles.backends.training_utils.checkpoint.adapter.parametrization_conversion import (
@@ -34,7 +36,12 @@ def test_scaled_principal_component_preserves_initial_weight(alpha, dtype):
 
 
 @pytest.mark.parametrize("kind", ["qwen3", "qwen3_5"])
-def test_saved_hybrid_or_dense_model_loads_in_miles_and_trains(tmp_path, kind):
+def test_saved_hybrid_or_dense_model_loads_in_miles_and_trains(tmp_path, monkeypatch, kind):
+    # This is a CPU test, including on hosts with CUDA-only optional kernels installed.
+    # Use Transformers' actual PyTorch implementations, without changing the model math.
+    if kind == "qwen3_5":
+        for name in ("causal_conv1d_fn", "torch_chunk_gated_delta_rule", "torch_recurrent_gated_delta_rule"):
+            monkeypatch.setattr(modeling_qwen3_5, name, inspect.unwrap(getattr(modeling_qwen3_5, name)))
     torch.manual_seed(11)
     common = dict(
         vocab_size=64,
