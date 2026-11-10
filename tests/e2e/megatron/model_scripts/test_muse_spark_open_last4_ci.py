@@ -15,17 +15,18 @@ from run_muse_spark_64xh200 import ScriptArgs  # noqa: E402
 # est_time is an upper bound until a /rerun-test run measures it.
 register_cuda_ci(
     est_time=2400,
-    suite="stage-c-8-gpu-h200",
+    suite="stage-c-4-gpu-h200",
     labels=["megatron", "model-scripts"],
     hardware=["hopper"],
-    num_gpus=8,
+    num_gpus=4,
 )
 
 
 def _args() -> ScriptArgs:
-    # --partial selects the partial checkpoint, the one-node layout, 3 rollouts of 4x4 samples, a random reward
-    # (the partial is not a language model, so a math reward would be all zeros) and --ci-test.
-    return ScriptArgs(partial=True, num_gpus_per_node=8)
+    # --partial selects the partial checkpoint, the one-node layout (TP2/PP2/EP2 on 4 GPUs), 3 rollouts of 4x4
+    # samples, a random reward (the partial is not a language model, so a math reward would be all zeros) and
+    # --ci-test.
+    return ScriptArgs(partial=True, num_gpus_per_node=4)
 
 
 if __name__ == "__main__":
