@@ -146,6 +146,9 @@ jobs:
           MILES_HARDWARE_PLATFORM: rocm
           GITHUB_COMMIT_NAME: ${{ github.event.pull_request.head.sha || github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
           WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+          # The CI partition is shared with SGLang's CI and sgl-amd-mono; Miles
+          # owns crsuse2-m2m-v3-025 and v3-090, so keep its jobs off the rest.
+          SLURM_EXCLUDE: crsuse2-m2m-v3-010,crsuse2-m2m-v3-022,crsuse2-m2m-v3-060,crsuse2-m2m-v3-123
         run: bash .github/workflows/scripts/spur/launch.sh --gpus "${{ inputs.num_gpus }}"
 
       - name: Cancel cluster jobs on failure/cancel

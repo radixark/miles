@@ -25,7 +25,8 @@
 #   CI_NODE_SCRATCH  node-local directory for the checkout copy and the
 #                    persistent model / dataset / HF cache
 # Optional:
-#   SLURM_EXCLUDE    comma-separated nodes to keep the scheduler off
+#   SLURM_EXCLUDE    comma-separated nodes to keep the scheduler off (set by
+#                    _run-ci-rocm.yml: every CI-partition node but Miles' own)
 #   SLURM_WHOLE_NODE_ONLY
 #                    nodes kept for 8-GPU jobs; smaller jobs stay off them
 #   TIME_LIMIT       default 03:00:00
@@ -171,6 +172,9 @@ for attempt in $(seq 1 "$SUBMIT_ATTEMPTS"); do
         exit 1
     fi
     echo "Job $JOB_ID never started (${state:-gone} ${reason:-}); resubmitting"
+    # The controller may only have lost track of it for a while; a job left
+    # queued could start later and write into this run's exit-code file.
+    scancel "$JOB_ID" 2>/dev/null || true
     JOB_ID=""
 done
 echo "ERROR: no job started after $SUBMIT_ATTEMPTS attempts" >&2
