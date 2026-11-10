@@ -1,4 +1,3 @@
-import os
 from copy import deepcopy
 
 import pytest
@@ -16,14 +15,15 @@ TOOLS = [{"type": "function", "function": {"name": "lookup", "parameters": {"typ
 CALL = {"id": "call_1", "type": "function", "function": {"name": "lookup", "arguments": {}}}
 
 
+# The public partial checkpoint carries the released tokenizer.
+_TOKENIZER_REPO = "RadixArk/Muse-Spark-Open-last4-partial"
+
+
 @pytest.fixture(scope="module")
 def tokenizer():
-    checkpoint = os.environ.get("MUSE_SPARK_TOKENIZER_PATH")
-    if checkpoint is None:
-        pytest.skip("MUSE_SPARK_TOKENIZER_PATH must point to the NDA Muse Spark tokenizer")
     path, _ = resolve_fixed_chat_template("muse_spark")
     assert path.endswith("/muse_spark_fixed.jinja")
-    return load_tokenizer(checkpoint, chat_template_path=path, trust_remote_code=True)
+    return load_tokenizer(_TOKENIZER_REPO, chat_template_path=path, trust_remote_code=True)
 
 
 def history(tool_prefix):
@@ -42,25 +42,23 @@ def test_production_family_construction(tokenizer):
     assert not tito.trailing_token_ids
     assert tito.chat_template_kwargs == {}
     assert resolve_reasoning_and_tool_call_parser("muse_spark") == ("muse", "muse")
-    assert tito.clone_with_chat_template_kwargs({"reasoning_effort": "high"}).chat_template_kwargs == {
-        "reasoning_effort": "high"
-    }
 
 
 @pytest.mark.parametrize("effort", ["low", "medium", "high", "xhigh"])
 @pytest.mark.parametrize("tool_prefix", [False, True])
 @pytest.mark.parametrize("role", ["tool", "user", "system", "assistant"])
 def test_fixed_append_roles(tokenizer, effort, tool_prefix, role):
-    tito = get_tito_tokenizer(tokenizer, "muse_spark", chat_template_kwargs={"reasoning_effort": effort})
+    tito = get_tito_tokenizer(tokenizer, "muse_spark")
+    template_args = {"reasoning_effort": effort, "tools": TOOLS}
     old = history(tool_prefix)
     appendix = {"role": role, "content": "Next"}
     if role == "tool":
         appendix.update(name="lookup", tool_call_id="call_1")
     new = old + [appendix]
-    prefix = tito.apply_chat_template(old, add_generation_prompt=False, tools=TOOLS)
-    expected = tito.apply_chat_template(new, add_generation_prompt=True, tools=TOOLS)
+    prefix = tito.apply_chat_template(old, add_generation_prompt=False, template_args=template_args)
+    expected = tito.apply_chat_template(new, add_generation_prompt=True, template_args=template_args)
     prefix_ids = tokenizer.encode(prefix, add_special_tokens=False)
-    merged = tito.merge_tokens(old, new, prefix_ids, tools=TOOLS)
+    merged = tito.merge_tokens(old, new, prefix_ids, template_args=template_args)
     assert merged[: len(prefix_ids)] == prefix_ids
     assert tokenizer.decode(merged) == expected
 
