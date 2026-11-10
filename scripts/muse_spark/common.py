@@ -30,9 +30,7 @@ Args:
     sglang_text_only: Serve only the language model from the omni checkpoint; defaults False.
     reasoning_effort: Optional chat-template override.
     save_interval: Save the weights without optimizer state every N rollouts and after the last one, under
-        <run_dir>/checkpoints on storage shared by all nodes. After training, the last save is converted
-        on CPU into an HF checkpoint in the released layout under <run_dir>/hf;
-        tools/convert_muse_spark_torch_dist_to_hf.py converts any other save. Defaults None: nothing is saved.
+        <run_dir>/checkpoints on storage shared by all nodes. Defaults None: nothing is saved.
     extra_args / extra_env_vars: Additional training flags and runtime environment.
     partial: Smoke-test the recipe on one node with the last-four-layer checkpoint
         RadixArk/Muse-Spark-Open-last4-partial. Replaces the model, the cluster size, the layout (TP and EP of half
@@ -326,20 +324,6 @@ def execute(args: ScriptArgs, entry_script: str):
     )
 
 
-def export_hf(args: ScriptArgs):
-    # The last save is iteration num_rollout - 1; the conversion runs on CPU once training has finished.
-    last_save = f"{args.run_dir}/checkpoints/iter_{args.num_rollout - 1:07d}"
-    U.exec_command_cpu(
-        f"PYTHONPATH={shlex.quote(f'{U.repo_base_dir}:{args.megatron_path}')}${{PYTHONPATH:+:$PYTHONPATH}} "
-        f"python3 {shlex.quote(str(U.repo_base_dir / 'tools/convert_muse_spark_torch_dist_to_hf.py'))} "
-        f"--input-dir {shlex.quote(last_save)} "
-        f"--hf-checkpoint {shlex.quote(str(Path(args.model_dir) / args.model_name))} "
-        f"--output-dir {shlex.quote(args.run_dir + '/hf')}"
-    )
-
-
 def run(args: ScriptArgs, entry_script: str):
     prepare(args)
     execute(args, entry_script)
-    if args.save_interval is not None:
-        export_hf(args)

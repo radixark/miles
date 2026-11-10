@@ -1,14 +1,8 @@
 """Convert already gathered MCore tensors to Spark's streaming HF weight names."""
 
 import json
-import math
-import re
 from functools import lru_cache
 from pathlib import Path
-
-from miles.backends.training_utils.checkpoint.hf_layout import CheckpointLayout
-
-_EXPERT_NAME = re.compile(r"(.+\.experts)\.(\d+)\.(gate_proj|up_proj|down_proj)\.weight")
 
 
 @lru_cache(maxsize=8)
@@ -49,25 +43,3 @@ def convert_muse_spark_1x_to_hf(args, name, param):
         gate, up = tensor.chunk(2, dim=0)
         return [(f"{expert_prefix}.gate_proj.weight", gate), (f"{expert_prefix}.up_proj.weight", up)]
     return [(f"{expert_prefix}.down_proj.weight", tensor)]
-
-
-def muse_spark_1x_checkpoint_layout(hf_checkpoint):
-    """Write :func:`convert_muse_spark_1x_to_hf` output back into the released checkpoint: each per-expert tensor
-    is one expert's slice of the stacked ``gate_up_proj`` / ``down_proj``, the inverse of the split above."""
-    # Local: the non-text prefixes live next to Spark's MCore configuration dependency.
-    from miles_plugins.models.muse_spark.weight_mapping import NON_TEXT_PREFIXES
-
-    _, specs = _checkpoint_layout(hf_checkpoint)
-
-    def locate(name):
-        match = _EXPERT_NAME.fullmatch(name)
-        if match is None:
-            return name, 0
-        prefix, expert, projection = match.groups()
-        stacked = f"{prefix}.{'down_proj' if projection == 'down_proj' else 'gate_up_proj'}"
-        spec = specs[stacked]
-        expert_bytes = math.prod(spec.shape[1:]) * spec.dtype.itemsize
-        # Each expert's gate_up_proj rows are its gate rows followed by its up rows.
-        return stacked, int(expert) * expert_bytes + (expert_bytes // 2 if projection == "up_proj" else 0)
-
-    return CheckpointLayout(locate=locate, frozen_prefixes=NON_TEXT_PREFIXES)
