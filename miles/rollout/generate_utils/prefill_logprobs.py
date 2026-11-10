@@ -49,7 +49,7 @@ def _build_prefill_scoring_payload(
     if (lora_path := _lora_path_for_sample(args, sample)) is not None:
         payload["lora_path"] = lora_path
 
-    if args.multimodal_token_space_processing:
+    if has_media(sample.multimodal_inputs) and args.multimodal_token_space_processing:
         payload.update(rollout_media_payload(sample.multimodal_inputs))
     elif sample.multimodal_inputs and sample.multimodal_inputs.get("images"):
         image_data = sample.multimodal_inputs["images"]
@@ -61,7 +61,7 @@ def _build_prefill_scoring_payload(
 def _can_batch_prefill_score(args: Any, samples: list[Sample]) -> bool:
     if router_routes_by_key(args):
         return False
-    if args.multimodal_token_space_processing and any(has_media(sample.multimodal_inputs) for sample in samples):
+    if any(has_media(sample.multimodal_inputs) for sample in samples) and args.multimodal_token_space_processing:
         return False
     return not any(sample.multimodal_inputs and sample.multimodal_inputs.get("images") for sample in samples)
 
