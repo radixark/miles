@@ -83,7 +83,9 @@ def get_rollout_data(
             for t, sid in zip(rollout_data["tokens"], seq_witness_ids, strict=True)
         ]
 
-    if args.multimodal_token_space_processing:
+    if args.multimodal_token_space_processing and args.debug_rollout_only:
+        rollout_data.pop("multimodal_inputs", None)
+    elif args.multimodal_token_space_processing:
         # A rollout without media ships no references, but its tokens still need the model's mRoPE positions.
         multimodal_inputs = rollout_data.pop("multimodal_inputs", [None] * len(rollout_data["tokens"]))
         token_space_train_inputs = compute_multimodal_train_inputs(
