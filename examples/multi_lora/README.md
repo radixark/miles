@@ -40,7 +40,9 @@ Checkpoints default to `<output_dir>/checkpoints/<run_id>`; use `--save-dir` to 
 
 Adapters run on Megatron-Bridge by default. `--megatron-to-hf-mode raw` runs them as miles-native LoRA
 instead, which serves dense models only: download one, pass it as `--hf-checkpoint` with its `--model-type` (a `scripts/models` entry) and `--ep 1`
-(`prepare` fetches only Qwen3-30B-A3B).
+(`prepare` fetches only Qwen3-30B-A3B). `--train-backend torchtitan --titan-model-flavor <flavor>` runs them
+on torchtitan instead (dense Qwen3; an untied checkpoint such as Qwen3-8B trains the unembed the SDK
+asks for by default).
 
 The launcher sets `--log-probs-chunk-size 1024`, which computes log-probs in 1024-token chunks
 to bound peak GPU memory on long sequences. To override it, add

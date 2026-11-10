@@ -2,7 +2,7 @@ from miles.utils.lora.hf_lora_targets import LORA_TARGET_GROUPS, parse_lora_targ
 
 
 def configure_tinker_args(args):
-    assert args.train_backend == "megatron", "Tinker requires the Megatron backend"
+    assert args.train_backend in ("megatron", "torchtitan"), "Tinker requires the Megatron or torchtitan backend"
     assert args.exclude_modules is None, "Tinker selects complete training groups; --exclude-modules is not supported"
     groups = parse_lora_targets(args.target_modules)
     if groups is None:
