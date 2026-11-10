@@ -45,7 +45,11 @@ class DataSource(abc.ABC):
 
 def _load_prompt_tokenizer_and_processor(args):
     tokenizer = load_tokenizer(args.hf_checkpoint, chat_template_path=args.chat_template_path, trust_remote_code=True)
-    processor = load_processor(args.hf_checkpoint, trust_remote_code=True)
+    # In token space Miles never runs the processor: media prompts are measured by their text tokens.
+    # TODO: mark a sample whose expanded prompt exceeds the context as truncated; SGLang rejects it now.
+    processor = (
+        None if args.multimodal_token_space_processing else load_processor(args.hf_checkpoint, trust_remote_code=True)
+    )
 
     # TODO move (during the refactor)
     if (d := args.dump_details) is not None:
@@ -71,6 +75,8 @@ def _load_prompt_dataset(args, path: str, *, tokenizer, processor, max_length: i
         tool_key=args.tool_key,
         apply_chat_template=args.apply_chat_template,
         apply_chat_template_kwargs=args.apply_chat_template_kwargs,
+        media_dir=args.shared_media_dir,
+        token_space_processing=args.multimodal_token_space_processing,
         seed=args.rollout_seed,
     )
 
