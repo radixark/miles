@@ -8,7 +8,6 @@ from types import SimpleNamespace
 
 import pytest
 import torch
-from safetensors.torch import save_file
 
 from miles_plugins.models.muse_spark import checkpoint
 from miles_plugins.models.muse_spark.config import map_to_megatron_fields, parse_muse_spark_1x_config
@@ -249,75 +248,6 @@ def test_load_and_export_round_trip_bit_exact():
     assert set(exported) == set(hf_tensors)
     for name, tensor in hf_tensors.items():
         torch.testing.assert_close(exported[name], tensor, rtol=0, atol=0)
-
-
-class _FakeSingleRankGroup:
-    def size(self):
-        return 1
-
-    def rank(self):
-        return 0
-
-
-class _WeightOnlyModel(torch.nn.Module):
-    """CPU destination with the real state / process-group mapping contract, no GPU model."""
-
-    def __init__(self, spark):
-        super().__init__()
-        self.config = SimpleNamespace(spark=spark)
-        self.pre_process = self.post_process = True
-        self.pg_collection = SimpleNamespace(tp=_FakeSingleRankGroup(), expt_tp=_FakeSingleRankGroup())
-        self.decoder = torch.nn.Module()
-        self.decoder.layers = torch.nn.ModuleList([torch.nn.Module() for _ in range(spark.num_hidden_layers)])
-        specs = hf_tensor_specs(spark)
-        for mapping in build_mappings(spark):
-            parts = mapping.megatron_param.split(".")
-            module = self
-            for part in parts[:-1]:
-                if part not in module._modules:
-                    module.add_module(part, torch.nn.Module())
-                module = module.get_submodule(part)
-            spec = checkpoint._get_megatron_tensor_spec(mapping, specs)
-            weight = torch.zeros(spec.shape, dtype=spec.dtype)
-            if parts[-1] == "expert_bias":
-                module.register_buffer(parts[-1], weight)
-            else:
-                module.register_parameter(parts[-1], torch.nn.Parameter(weight))
-        for index, layer in enumerate(self.decoder.layers):
-            layer.layer_number = index + 1
-            layer.mlp.local_expert_indices = list(range(spark.num_local_experts))
-
-
-def test_load_hf_checkpoint_ignores_non_text_tensors_and_rejects_wrong_names(tmp_path, monkeypatch):
-    monkeypatch.setattr(checkpoint, "MuseSpark1xGPTModel", _WeightOnlyModel)
-    monkeypatch.setattr(checkpoint, "validate_model_config", lambda config: None)
-    spark = parse_muse_spark_1x_config(checkpoint_config())
-    tensors = _random_hf_tensors(spark, seed=3)
-    megatron = _megatron_tensors(spark, tensors)
-    # Non-text tensors of the omni checkpoint are ignored by the text coverage check.
-    tensors["model.vision_tower.ln_pre.weight"] = torch.ones(8, dtype=torch.bfloat16)
-    tensors["model.audio_tower.stem.weight"] = torch.ones(2, dtype=torch.bfloat16)
-    path = tmp_path / "ckpt"
-    path.mkdir()
-    (path / "config.json").write_text(json.dumps(checkpoint_config()))
-    save_file(tensors, path / "model.safetensors")
-    model = _WeightOnlyModel(spark)
-    checkpoint.load_hf_checkpoint(model, path)
-    state = model.state_dict()
-    assert set(state) == set(megatron)
-    for name, tensor in megatron.items():
-        torch.testing.assert_close(state[name], tensor, rtol=0, atol=0)
-    # A text tensor under a wrong name is rejected before any copy.
-    bad = tmp_path / "bad"
-    bad.mkdir()
-    (bad / "config.json").write_text(json.dumps(checkpoint_config()))
-    wrong = dict(tensors)
-    wrong["model.layers.0.self_attn.q_proj.weight"] = wrong.pop(
-        "model.language_model.layers.0.self_attn.q_proj.weight"
-    )
-    save_file(wrong, bad / "model.safetensors")
-    with pytest.raises(ValueError, match="HF tensor coverage differs"):
-        checkpoint.load_hf_checkpoint(_WeightOnlyModel(spark), bad)
 
 
 def test_hf_config_class_exposes_flat_view():

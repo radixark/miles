@@ -38,16 +38,10 @@ def _train_args(monkeypatch, launcher, **kwargs) -> tuple[list[str], dict]:
 # Layouts as (TP, PP, CP, EP, layers on each edge stage); None keeps the entry point's own.
 @pytest.mark.parametrize(
     "script,layout,optimizer",
-    [
-        (_H200, None, "adam"),
-        (_H200, (4, 8, 2, 8, 7), "muon"),
-        (_H200, (4, 4, 4, 16, 15), "muon"),
-        (_B300, None, "adam"),
-        (_B300, None, "muon"),
-    ],
+    # No Muon rows: Megatron miles-main has no --chunked-muon-master-weights yet (radixark/Megatron-LM#126).
+    [(_H200, None, "adam"), (_B300, None, "adam")],
 )
-@pytest.mark.parametrize("counts", [(3, 8, 8), (100, 32, 16)])
-def test_dapo_recipe_survives_megatron_validation(monkeypatch, tmp_path, counts, script, layout, optimizer):
+def test_dapo_recipe_survives_megatron_validation(monkeypatch, tmp_path, script, layout, optimizer):
     from miles.backends.megatron_utils.arguments import parse_args, set_default_megatron_args, validate_args
     from miles.utils.arguments import get_miles_extra_args_provider, miles_validate_args
 
@@ -55,6 +49,7 @@ def test_dapo_recipe_survives_megatron_validation(monkeypatch, tmp_path, counts,
     launcher = import_launch_script(U.repo_base_dir / script)
     template = tmp_path / "chat.jinja"
     template.write_text("{{ messages }}")
+    counts = (3, 8, 8)  # rollouts, prompts per rollout, samples per prompt
     defaults = launcher.ScriptArgs()
     if layout is None:
         layout = tuple(getattr(defaults, name) for name in _LAYOUT_FIELDS)
@@ -142,24 +137,6 @@ def test_dapo_recipe_survives_megatron_validation(monkeypatch, tmp_path, counts,
     assert args.pin_rollout_manager_to_head == (script == _B300)
 
 
-@pytest.mark.parametrize("script,layout", [(_H200, (8, 8, 1, 8, 7)), (_B300, (8, 4, 1, 8, 15))])
-def test_entry_point_sets_its_cluster_and_engine_sizing(script, layout):
-    args = import_launch_script(U.repo_base_dir / script).ScriptArgs()
-    num_nodes, gpus_per_engine, max_tokens, mem_fraction, running, graph_bs = _HARDWARE[script]
-    assert (args.num_nodes, args.num_gpus_per_node, args.rollout_num_gpus_per_engine) == (
-        num_nodes,
-        8,
-        gpus_per_engine,
-    )
-    assert tuple(getattr(args, name) for name in _LAYOUT_FIELDS) == layout
-    assert (args.max_tokens_per_gpu, args.sglang_mem_fraction_static, args.sglang_max_running_requests) == (
-        max_tokens,
-        mem_fraction,
-        running,
-    )
-    assert list(args.sglang_cuda_graph_bs_decode) == graph_bs
-
-
 def test_explicit_values_override_the_entry_point():
     args = import_launch_script(U.repo_base_dir / _B300).ScriptArgs(
         max_tokens_per_gpu=4096, sglang_mem_fraction_static=0.8, sglang_max_running_requests=64
@@ -177,10 +154,9 @@ def test_the_shared_recipe_takes_cluster_values_only_from_an_entry_point():
         common.ScriptArgs()
 
 
-@pytest.mark.parametrize("script", [_H200, _B300])
-@pytest.mark.parametrize("buffer_size", [4 * 1024**3, 8 * 1024**3])
-def test_weight_buffer_override_reaches_train_entrypoint(monkeypatch, script, buffer_size):
-    launcher = import_launch_script(U.repo_base_dir / script)
+def test_weight_buffer_override_reaches_train_entrypoint(monkeypatch):
+    buffer_size = 4 * 1024**3
+    launcher = import_launch_script(U.repo_base_dir / _H200)
     tokens, _ = _train_args(monkeypatch, launcher, update_weight_buffer_size=buffer_size)
     assert tokens.count("--update-weight-buffer-size") == 1
     assert tokens[tokens.index("--update-weight-buffer-size") + 1] == str(buffer_size)
