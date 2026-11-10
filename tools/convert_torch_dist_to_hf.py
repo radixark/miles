@@ -11,6 +11,7 @@ from pathlib import Path
 import safetensors.torch
 import torch
 import torch.distributed.checkpoint as dist_cp
+from megatron.core.dist_checkpointing.serialization import load_common_state_dict
 from typing_extensions import override
 
 from miles.backends.megatron_utils.megatron_to_hf import convert_to_hf, remove_padding
@@ -201,7 +202,7 @@ if __name__ == "__main__":
     state_dict = {}
     print(f"loading model from {args.input_dir}")
     t = time.time()
-    megatron_args = torch.load(os.path.join(args.input_dir, "common.pt"), weights_only=False)["args"]
+    megatron_args = load_common_state_dict(args.input_dir)["args"]
     if args.origin_hf_dir:
         with (
             megatron_args.force_all_mutable()
