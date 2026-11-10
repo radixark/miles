@@ -17,6 +17,7 @@ def test_lora_pass_emits_scheduled_trace(monkeypatch, method):
     actor.output_store_read = None
     actor.token_space_processor = None
     actor.model = []
+    actor.adapter_slots = None
     actor._heartbeat = SimpleNamespace(bump=lambda: None)
     actor.prof = TrainProfiler(
         SimpleNamespace(backend=SimpleNamespace(use_pytorch_profiler=False, record_memory_history=False))
