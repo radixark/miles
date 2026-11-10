@@ -181,13 +181,17 @@ class TorchtitanAdapterSlots(SlotComputeMembers, ProbedAdapterSlots):
         return self._params
 
     def slot_parameters(self, slot: int) -> list[torch.Tensor]:
+        return [_local(p) for p in self.slot_params(slot)]
+
+    def slot_params(self, slot: int) -> list[torch.nn.Parameter]:
+        """``slot_parameters(slot)`` as the parameters themselves (DTensors under FSDP)."""
         if self._multi_lora:
             from miles.backends.torchtitan_utils.multi_lora import slot_adapter_parameters
 
             self._assert_slot(slot)
-            return [_local(p) for p in slot_adapter_parameters(self._model_parts, slot)[0].values()]
+            return list(slot_adapter_parameters(self._model_parts, slot)[0].values())
         assert slot == 0, "single LoRA has only slot 0"
-        return [_local(p) for p in self._params.values()]
+        return list(self._params.values())
 
     def slot_spec(self, slot: int) -> AdapterSpec | None:
         if not self._multi_lora:
@@ -249,19 +253,22 @@ class TorchtitanOptimizerMembers:
     def get_local_shard_specs(self, slot: int):
         return self._slots.get_local_shard_specs(slot)
 
-    def adam_states(self) -> list[dict]:
+    def _optimizers_of(self, slot: int) -> list[torch.optim.Optimizer]:
+        return self._optimizers
+
+    def adam_states(self, slot: int = 0) -> list[dict]:
         """Each adapter parameter's AdamW state, created (zero, step 0) where no step has run yet."""
         # lazy: actor.py imports this module, and its CPU tests run without torchtitan
         from torchtitan.components.optim.utils import init_optim_state
 
         state_of = {}
-        for optimizer in self._optimizers:
+        for optimizer in self._optimizers_of(slot):
             init_optim_state(optimizer)
             state_of |= {id(p): optimizer.state[p] for group in optimizer.param_groups for p in group["params"]}
-        return [state_of[id(p)] for p in self._slots.parameters.values()]
+        return [state_of[id(p)] for p in self._slots.slot_params(slot)]
 
     def export_adapter_state(self, slot: int) -> AdapterState:
-        states = self.adam_states()
+        states = self.adam_states(slot)
         steps = {int(state["step"]) for state in states}
         assert len(steps) == 1, f"the adapter parameters disagree on the AdamW step: {steps}"
         specs = self._slots.get_local_shard_specs(slot)
@@ -285,7 +292,7 @@ class TorchtitanOptimizerMembers:
 
     def import_adapter_state(self, slot: int, state: AdapterState) -> None:
         """In place, into the AdamW state."""
-        states = self.adam_states()
+        states = self.adam_states(slot)
         params = self._slots.slot_parameters(slot)
         with torch.no_grad():
             for (index, offsets), *pieces in zip(
@@ -300,6 +307,17 @@ class TorchtitanOptimizerMembers:
     def finish_import_adapter_state(self, slot: int) -> None:
         # each rank wrote its own shards of the parameters and moments in place: nothing is left to gather
         pass
+
+
+class TorchtitanSlotOptimizerMembers(TorchtitanOptimizerMembers):
+    """Checkpoint members of torchtitan multi-LoRA slots, each trained by its own ``TorchtitanSlotOptimizer``."""
+
+    def __init__(self, adapter_slots: TorchtitanAdapterSlots, slot_optimizers: dict):
+        super().__init__(adapter_slots, [], save_moments=True)
+        self._slot_optimizers = slot_optimizers
+
+    def _optimizers_of(self, slot: int) -> list[torch.optim.Optimizer]:
+        return [self._slot_optimizers[slot].optimizer]
 
 
 _TRAINING_STATE_KEYS = ("train_state.step", "train_state.ntokens_seen", "lr_scheduler.last_epoch")

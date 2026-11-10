@@ -107,10 +107,16 @@ def _validate_lora_args(args) -> None:
             f"torchtitan LoRA is validated on --titan-model-name qwen3 only; {args.titan_model_name} builds "
             "projections whose module paths or HF names the LoRA target mapping does not handle yet"
         )
-    if args.lora_type != "lora":
+    if args.lora_type != "lora" and not (args.lora_type == "canonical_lora" and args.multi_lora_n_adapters > 0):
         raise ValueError(
-            "torchtitan fuses q/k/v and gate/up and shares one lora_A across each, which is --lora-type lora; "
-            f"--lora-type {args.lora_type} gives each projection its own lora_A"
+            "torchtitan single LoRA fuses q/k/v and gate/up and shares one lora_A across each, which is --lora-type "
+            f"lora; --lora-type {args.lora_type} gives each projection its own lora_A (multi-LoRA slots support "
+            "canonical_lora)"
+        )
+    if args.multi_lora_n_adapters > 0 and args.context_parallel_size != 1:
+        raise ValueError(
+            "torchtitan multi-LoRA routes each slot's tokens by the counts taken before the trainer pads the "
+            f"microbatch for context parallelism; --context-parallel-size {args.context_parallel_size} is unsupported"
         )
     if args.lora_A_init_method != "kaiming":
         raise ValueError(
