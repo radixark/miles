@@ -147,6 +147,11 @@ def qwen3_5_mm_model_provider(
         raise ValueError(
             "the Qwen3.5 multimodal model packs its mRoPE positions per sample; use --qkv-format thd without --allgather-cp"
         )
+    if args.megatron_to_hf_mode != "raw":
+        raise ValueError(
+            "the Qwen3.5 multimodal model takes its media row placement and mRoPE positions from the trainer, "
+            "which builds them under --megatron-to-hf-mode raw only"
+        )
     backend = args.backend
     if backend.mtp_num_layers:
         raise ValueError("the Qwen3.5 multimodal model is built without MTP layers")
