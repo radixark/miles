@@ -70,7 +70,9 @@ def test_clip_zero_leaves_the_gradients_unclipped():
     _grads(params, seed=2, scale=100.0)
     grads = [p.grad.clone() for p in params]
     outcome = optimizer.clip_and_step(0.0)
-    assert outcome["grad_norm"] == pytest.approx(torch.linalg.vector_norm(torch.cat([g.flatten() for g in grads])).item())
+    assert outcome["grad_norm"] == pytest.approx(
+        torch.linalg.vector_norm(torch.cat([g.flatten() for g in grads])).item()
+    )
     assert all(torch.equal(p.grad, g) for p, g in zip(params, grads, strict=True))
 
 
