@@ -108,7 +108,8 @@ def materialize_media_ref(source: Any, media_dir: str | None) -> str:
             f"Remote media URLs are not supported: {source}; download the media to a filesystem shared with every "
             "SGLang engine and reference its path."
         )
-    path = Path(source.removeprefix("file://")).resolve()
+    # Not resolve(): engines and trainer ranks mount the path as written, not the target of a symlink on this node.
+    path = Path(os.path.abspath(source.removeprefix("file://")))
     if not path.is_file():
         raise FileNotFoundError(f"Media file not found: {source}")
     return str(path)
@@ -127,7 +128,7 @@ def _dump_media_by_hash(data: bytes, media_dir: str | None) -> str:
             "shared with every SGLang engine so Miles can write it there."
         )
     digest = hashlib.sha256(data).hexdigest()
-    path = Path(media_dir).resolve() / digest[:2] / digest
+    path = Path(os.path.abspath(media_dir)) / digest[:2] / digest
     if not path.is_file():
         os.makedirs(path.parent, exist_ok=True)
         atomic_write_bytes(path, data)
