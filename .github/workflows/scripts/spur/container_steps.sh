@@ -97,9 +97,15 @@ fi
 
 echo "::group::Load one HIP runtime"
 torch_lib="$(python3 -c 'import os, torch; print(os.path.join(os.path.dirname(torch.__file__), "lib"))')"
+# Torch wheels that bundle their own copy get it pointed at /opt/rocm's; the
+# ROCm 10 image's torch bundles none and already uses /opt/rocm's.
 for lib in libamdhip64.so libhsa-runtime64.so; do
+  if [ ! -e "$torch_lib/$lib" ]; then
+    echo "$lib: not bundled with torch, using /opt/rocm/lib"
+    continue
+  fi
   target="$(readlink -f "/opt/rocm/lib/${lib}")"
-  [ -f "$torch_lib/$lib" ] && [ -f "$target" ] && ln -sfn "$target" "$torch_lib/$lib"
+  [ -f "$target" ] && ln -sfn "$target" "$torch_lib/$lib"
   ls -l "$torch_lib/$lib"
 done
 echo "::endgroup::"
