@@ -74,6 +74,8 @@ def _quantization_args(**overrides):
                 "fp8_param_gather": False,
                 "lora_rank": 0,
                 "lora_adapter_path": None,
+                "custom_model_provider_path": None,
+                "cuda_graph_impl": "none",
             }
             | overrides
         )
@@ -99,6 +101,24 @@ def test_routed_expert_quantization_flags_reach_a_consumer():
         validate_routed_expert_quantization_args(
             _quantization_args(rollout_routed_expert_format="mxfp8"),
             SimpleNamespace(model_type="deepseek_v4", quantization_config={"quant_method": "mxfp8"}),
+        )
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"custom_model_provider_path": "pkg.model_provider"}, "--custom-model-provider-path replaces"),
+        ({"cuda_graph_impl": "local"}, "CUDA graphs"),
+        ({"cuda_graph_impl": "transformer_engine"}, "CUDA graphs"),
+        ({"cuda_graph_impl": "full_iteration"}, "CUDA graphs"),
+        ({"enable_cuda_graph": True}, "CUDA graphs"),
+        ({"external_cuda_graph": True}, "CUDA graphs"),
+    ],
+)
+def test_routed_expert_qat_rejects_paths_that_would_skip_the_rounding(overrides, message):
+    with pytest.raises(ValueError, match=message):
+        validate_routed_expert_quantization_args(
+            _quantization_args(routed_expert_qat="mxfp4", **overrides), _fp8_checkpoint_config()
         )
 
 

@@ -2182,6 +2182,18 @@ def _validate_routed_expert_qat_args(args, hf_config) -> None:
         raise ValueError(
             "--routed-expert-qat is configured through the Megatron-Bridge provider; use --megatron-to-hf-mode bridge."
         )
+    if args.custom_model_provider_path is not None:
+        raise ValueError(
+            "--routed-expert-qat is configured through the Megatron-Bridge provider, which "
+            "--custom-model-provider-path replaces."
+        )
+    # Whether to round is decided in Python on each forward, which a captured graph does not re-evaluate.
+    if (
+        args.cuda_graph_impl != "none"
+        or getattr(args, "enable_cuda_graph", False)
+        or getattr(args, "external_cuda_graph", False)
+    ):  # config-access-exempt: Megatron's validate_args maps these deprecated flags to cuda_graph_impl and deletes them
+        raise ValueError("--routed-expert-qat does not support Megatron CUDA graphs (--cuda-graph-impl).")
     if hf_config.model_type not in _ROUTED_EXPERT_QAT_MODEL_TYPES:
         raise ValueError(
             f"--routed-expert-qat supports model types {_ROUTED_EXPERT_QAT_MODEL_TYPES}, "
