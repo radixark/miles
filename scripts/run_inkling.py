@@ -43,8 +43,7 @@ Tasks:
                geo3k test-split eval.
   - avqa_audio audio multiple choice (AVQA, examples/avqa_audio/prepare_avqa_audio.py),
                structured-message rendering, frozen towers, held-out AVQA eval.
-  Multimodal tasks run on SGLang's token-space processor; --no-token-space-mm keeps
-  the Miles-side Inkling processor (sentinel rendering and expansion at training).
+  Multimodal tasks run on SGLang's token-space processor.
 
 Usage patterns:
 
@@ -126,7 +125,6 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     lora_adapter_path: str | None = None
 
     enable_r3: bool = True
-    token_space_mm: bool = True
 
     extra_args: str = ""
 
@@ -412,11 +410,12 @@ def _train(args: ScriptArgs):
     if args.is_mm:
         # The mm provider wires the frozen HF vision/audio towers; it overrides the
         # text provider from the model sh (MODEL_ARGS precede train_args; last one wins).
-        inkling_args = "--custom-model-provider-path miles_plugins.models.inkling.model.inkling_mm_model_provider "
-        if args.token_space_mm:
-            # The engines expand the template's media placeholders and the trainer rebuilds
-            # the tower inputs with the same strategy, from the media paths in the prompts.
-            inkling_args += "--multimodal-token-space-processing " "--sglang-enable-token-space-processor "
+        # The engines expand the template's media placeholders and the trainer rebuilds
+        # the tower inputs with the same strategy, from the media paths in the prompts.
+        inkling_args = (
+            "--custom-model-provider-path miles_plugins.models.inkling.model.inkling_mm_model_provider "
+            "--multimodal-token-space-processing --sglang-enable-token-space-processor "
+        )
 
     misc_args = (
         "--transformer-impl transformer_engine "
