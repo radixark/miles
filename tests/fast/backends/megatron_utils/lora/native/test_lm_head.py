@@ -311,7 +311,7 @@ def test_native_declares_its_head_rows_under_the_models_own_head_name(monkeypatc
     head.hf_prefix = "language_model.lm_head."
     monkeypatch.setattr(native_checkpoint, "iter_adapters", lambda model: [head])
     slots = native_checkpoint.NativeAdapterSlots.__new__(native_checkpoint.NativeAdapterSlots)
-    slots._model = []
+    slots._model, slots._multi_lora = [], False
     slots.targets = dataclasses.replace(
         get_hf_lora_targets({"model_type": "qwen3", "num_hidden_layers": 1}), vocab_size=16
     )

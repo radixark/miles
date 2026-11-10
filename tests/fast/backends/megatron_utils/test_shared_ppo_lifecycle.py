@@ -208,6 +208,7 @@ class TestTrainParallelConfigWiring:
         worker = object.__new__(lora_actor_module.MultiLoRATrainRayActor)
         worker.args = make_trainer_args()
         worker.model = object()
+        worker.adapter_slots = None
         worker._heartbeat = Mock()
         worker.prof = Mock()
         trivial = GroupInfo(rank=0, size=1, group=None)

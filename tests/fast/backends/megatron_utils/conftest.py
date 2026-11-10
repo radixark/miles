@@ -24,7 +24,8 @@ def raw_mbridge_loader(monkeypatch: pytest.MonkeyPatch) -> Callable[[bool], list
             if fail:
                 raise RuntimeError("HF loading failed")
 
-        bridge = Mock(load_weights=load_weights)
+        # an HF vocab of 2, the vocab rows the tests build their models with
+        bridge = Mock(load_weights=load_weights, hf_config=Mock(get_text_config=lambda: Mock(vocab_size=2)))
         mbridge = ModuleType("mbridge")
         mbridge.AutoBridge = Mock(from_pretrained=Mock(return_value=bridge))
         monkeypatch.setitem(sys.modules, "mbridge", mbridge)
