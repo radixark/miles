@@ -9,7 +9,7 @@ because the reward reads only the first predicted span and the policy otherwise 
 Needs the data from ``prepare_data.py`` under ``<data-dir>/timelens``.
 
 Args:
-    --model-name: A Qwen3.5 checkpoint on the Hub (default Qwen3.5-9B).
+    --model-name: Qwen3.5-9B (default) or Qwen3.5-35B-A3B.
     --num-gpus-per-node: GPUs on the node, shared by the trainer and the engines.
     --num-rollout: Training steps (default 300).
 
@@ -30,6 +30,50 @@ from miles.utils.external_utils import command_utils
 _MM_PROCESS_CONFIG = {
     "video": {"fps": 2.0, "max_frames": 448, "min_pixels": 65536, "total_pixels": 14680064},
     "video_preprocessing_device": "cpu",
+}
+
+# What differs between the two models; everything else in execute() is shared. The 35B-A3B MoE trains TP2 x EP4
+# with the Adam state on the host and replays the engines' expert routing (R3); its engines take 2 GPUs each, run
+# the vision tower unsharded like the trainer (DP encoder) and cache the per-video features on disk.
+_MODEL_PROFILES = {
+    "Qwen3.5-9B": dict(
+        rollout_batch_size=16,
+        global_batch_size=128,
+        weight_decay=0.0,
+        eps_clip_high=0.2,
+        adam_beta2=0.999,
+        optimizer_offload_args="",
+        parallel_args="--tensor-model-parallel-size 4 ",
+        max_tokens_per_gpu=20480,
+        routing_replay_args="",
+        gpus_per_engine=1,
+        sglang_mm_workers=16,
+        trainer_mm_workers=16,
+        engine_vision_args="",
+    ),
+    "Qwen3.5-35B-A3B": dict(
+        rollout_batch_size=32,
+        global_batch_size=256,
+        weight_decay=0.1,
+        eps_clip_high=0.28,
+        adam_beta2=0.98,
+        optimizer_offload_args="--optimizer-cpu-offload --overlap-cpu-optimizer-d2h-h2d --use-precision-aware-optimizer ",
+        parallel_args=(
+            "--tensor-model-parallel-size 2 --expert-model-parallel-size 4 --expert-tensor-parallel-size 1 "
+        ),
+        max_tokens_per_gpu=8192,
+        routing_replay_args="--use-rollout-routing-replay --log-probs-chunk-size 4096 ",
+        gpus_per_engine=2,
+        sglang_mm_workers=8,
+        trainer_mm_workers=4,
+        engine_vision_args=(
+            "--sglang-mm-enable-dp-encoder "
+            "--sglang-enable-token-space-preprocess-cache "
+            "--sglang-token-space-preprocess-cache-dir {data_dir}/feature_cache "
+            "--sglang-mm-preprocess-cache-size-mb 16384 "
+            "--sglang-token-space-preprocess-cache-trust-url "
+        ),
+    ),
 }
 
 
@@ -68,6 +112,7 @@ def prepare(args: ScriptArgs):
 def execute(args: ScriptArgs):
     U = args.create_backend()
     data_dir = f"{args.data_dir}/timelens"
+    profile = _MODEL_PROFILES[args.model_name]
 
     # A fresh --load directory starts the run from the --ref-load weights at rollout 0.
     ckpt_args = (
@@ -87,20 +132,22 @@ def execute(args: ScriptArgs):
         "--rollout-shuffle "
         "--custom-rm-path examples.timelens_video.reward.timelens_tiou "
         f"--num-rollout {args.num_rollout} "
-        "--rollout-batch-size 16 "
+        f"--rollout-batch-size {profile['rollout_batch_size']} "
         "--n-samples-per-prompt 8 "
         "--rollout-max-response-len 512 "
         "--rollout-temperature 1.0 "
-        "--global-batch-size 128 "
+        f"--global-batch-size {profile['global_batch_size']} "
     )
 
     # SGLang samples and expands the videos; the trainer rebuilds the same tensors from the shared files.
     multimodal_args = (
         """--multimodal-keys '{"video": "videos"}' """
         "--multimodal-token-space-processing "
-        "--trainer-mm-processor-worker-num 16 --trainer-mm-io-worker-num 16 "
+        f"--trainer-mm-processor-worker-num {profile['trainer_mm_workers']} "
+        f"--trainer-mm-io-worker-num {profile['trainer_mm_workers']} "
         "--sglang-enable-token-space-processor "
         f"--sglang-mm-process-config '{json.dumps(_MM_PROCESS_CONFIG)}' "
+        f"{profile['engine_vision_args'].format(data_dir=data_dir)}"
     )
 
     eval_args = (
@@ -118,7 +165,7 @@ def execute(args: ScriptArgs):
         "--kl-coef 0.00 "
         "--entropy-coef 0.00 "
         "--eps-clip 0.2 "
-        "--eps-clip-high 0.2 "
+        f"--eps-clip-high {profile['eps_clip_high']} "
         "--custom-reward-post-process-path examples.timelens_video.reward.zero_truncated_rewards "
         "--use-tis "
     )
@@ -127,17 +174,19 @@ def execute(args: ScriptArgs):
         "--optimizer adam "
         "--lr 1e-6 "
         "--lr-decay-style constant "
-        "--weight-decay 0.0 "
+        f"--weight-decay {profile['weight_decay']} "
         "--adam-beta1 0.9 "
-        "--adam-beta2 0.999 "
+        f"--adam-beta2 {profile['adam_beta2']} "
+        f"{profile['optimizer_offload_args']}"
     )
 
     sglang_args = (
-        "--rollout-num-gpus-per-engine 1 --sglang-mem-fraction-static 0.6 --sglang-mm-processor-worker-num 16 "
+        f"--rollout-num-gpus-per-engine {profile['gpus_per_engine']} --sglang-mem-fraction-static 0.6 "
+        f"--sglang-mm-processor-worker-num {profile['sglang_mm_workers']} "
     )
 
     perf_args = (
-        "--tensor-model-parallel-size 4 "
+        f"{profile['parallel_args']}"
         "--sequence-parallel "
         "--pipeline-model-parallel-size 1 "
         "--context-parallel-size 1 "
@@ -145,7 +194,8 @@ def execute(args: ScriptArgs):
         "--recompute-method uniform "
         "--recompute-num-layers 1 "
         "--use-dynamic-batch-size "
-        "--max-tokens-per-gpu 20480 "
+        f"--max-tokens-per-gpu {profile['max_tokens_per_gpu']} "
+        f"{profile['routing_replay_args']}"
     )
 
     misc_args = (
