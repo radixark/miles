@@ -47,10 +47,15 @@ def validate_moe_expert_fake_quant_config(config) -> None:
         config, "use_transformer_engine_op_fuser", False
     ):  # config-access-exempt: Megatron-Core versions differ in which TransformerConfig fields exist
         raise ValueError("MXFP4 fake QAT does not support the Transformer Engine op fuser.")
-    if getattr(
-        config, "delay_wgrad_compute", False
+    if (
+        getattr(config, "cuda_graph_impl", "none") != "none"
+        or getattr(config, "enable_cuda_graph", False)
+        or getattr(config, "external_cuda_graph", False)
     ):  # config-access-exempt: Megatron-Core versions differ in which TransformerConfig fields exist
-        raise ValueError("MXFP4 fake QAT does not support delayed weight-gradient computation.")
+        raise ValueError(
+            "MXFP4 fake QAT does not support CUDA graphs: whether to round is decided in Python on each "
+            "forward, which a captured graph does not re-evaluate when it replays."
+        )
     if config.fp8 is None and config.fp4 is None:
         raise ValueError(
             "MXFP4 fake QAT rounds the weights on the first microbatch of each forward-backward pass, "

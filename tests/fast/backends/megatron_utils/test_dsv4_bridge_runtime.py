@@ -57,6 +57,10 @@ class _Provider:
     moe_grouped_gemm: bool = True
     use_transformer_engine_op_fuser: bool = False
     delay_wgrad_compute: bool = False
+    overlap_dispatch_backward_with_experts_wgrad: bool = False
+    cuda_graph_impl: str = "none"
+    enable_cuda_graph: bool = False
+    external_cuda_graph: bool = False
     fp4: str | None = None
 
 
@@ -106,7 +110,11 @@ def test_bridge_runtime_sets_routed_expert_fake_quant_when_enabled():
     [
         ("moe_grouped_gemm", False, "grouped-GEMM routed experts"),
         ("use_transformer_engine_op_fuser", True, "op fuser"),
-        ("delay_wgrad_compute", True, "delayed weight-gradient"),
+        ("cuda_graph_impl", "local", "CUDA graphs"),
+        ("cuda_graph_impl", "transformer_engine", "CUDA graphs"),
+        ("cuda_graph_impl", "full_iteration", "CUDA graphs"),
+        ("enable_cuda_graph", True, "CUDA graphs"),
+        ("external_cuda_graph", True, "CUDA graphs"),
     ],
 )
 def test_bridge_runtime_rejects_fake_quant_that_would_bypass_the_hook(field, value, message):
@@ -115,6 +123,17 @@ def test_bridge_runtime_rejects_fake_quant_that_would_bypass_the_hook(field, val
 
     with pytest.raises(ValueError, match=message):
         _apply_bridge_runtime_config(provider, _runtime_args(routed_expert_qat="mxfp4"))
+
+
+@pytest.mark.parametrize("field", ["delay_wgrad_compute", "overlap_dispatch_backward_with_experts_wgrad"])
+def test_bridge_runtime_accepts_fake_quant_with_delayed_weight_gradients(field):
+    """Delayed wgrad reads the saved activations and output gradients, not the rounded weights."""
+    provider = _provider()
+    setattr(provider, field, True)
+
+    _apply_bridge_runtime_config(provider, _runtime_args(routed_expert_qat="mxfp4"))
+
+    assert provider.moe_expert_fake_quant == "mxfp4"
 
 
 def test_bridge_runtime_rejects_fake_quant_without_a_first_microbatch_signal():

@@ -134,7 +134,7 @@ def _megatron_ddp_hook(param):
     param.grad = None
 
 
-def _grouped_linear(te, *, fake_quant: bool, fuse_wgrad_accumulation: bool):
+def _grouped_linear(te, *, fake_quant: bool, fuse_wgrad_accumulation: bool, delay_wgrad_compute: bool = False):
     """A TE GroupedLinear, optionally with the fake-quantization hook of Megatron's TEGroupedLinear."""
     base = te.GroupedLinear
 
@@ -153,16 +153,39 @@ def _grouped_linear(te, *, fake_quant: bool, fuse_wgrad_accumulation: bool):
         params_dtype=torch.bfloat16,
         device="cuda",
         fuse_wgrad_accumulation=fuse_wgrad_accumulation,
+        delay_wgrad_compute=delay_wgrad_compute,
     )
 
 
-@pytest.mark.parametrize("fuse_wgrad_accumulation", [False, True])
-def test_te_grouped_linear_trains_on_rounded_weights_and_refreshes_them_each_pass(fuse_wgrad_accumulation):
+def _compute_delayed_wgrad(module, params):
+    """What Megatron does for a delayed-wgrad module: compute the weight gradients, then run the DDP hook."""
+    module.backward_dw()
+    for param in params:
+        _megatron_ddp_hook(param)
+
+
+# Without fused accumulation, TE hands autograd the delayed weight-gradient buffers before backward_dw fills
+# them, so delayed wgrad is checked with fused accumulation only.
+@pytest.mark.parametrize(
+    ("fuse_wgrad_accumulation", "delay_wgrad_compute"),
+    [(False, False), (True, False), (True, True)],
+    ids=["unfused", "fused", "fused-delayed-wgrad"],
+)
+def test_te_grouped_linear_trains_on_rounded_weights_and_refreshes_them_each_pass(
+    fuse_wgrad_accumulation, delay_wgrad_compute
+):
     te = pytest.importorskip("transformer_engine.pytorch")
     torch.manual_seed(3)
     m_splits = [24, 40]
-    module = _grouped_linear(te, fake_quant=True, fuse_wgrad_accumulation=fuse_wgrad_accumulation)
-    reference = _grouped_linear(te, fake_quant=False, fuse_wgrad_accumulation=fuse_wgrad_accumulation)
+    module, reference = (
+        _grouped_linear(
+            te,
+            fake_quant=fake_quant,
+            fuse_wgrad_accumulation=fuse_wgrad_accumulation,
+            delay_wgrad_compute=delay_wgrad_compute,
+        )
+        for fake_quant in (True, False)
+    )
     params = list(te.GroupedLinear._get_weight_tensors(module))
     ref_params = list(reference._get_weight_tensors())
     masters = [param.detach().float().clone() for param in params]
@@ -180,6 +203,7 @@ def test_te_grouped_linear_trains_on_rounded_weights_and_refreshes_them_each_pas
                 param.main_grad.zero_()
                 ref_param.main_grad.zero_()
         module.is_first_microbatch = True
+        pending_wgrad = False
         for _ in range(2):
             inp = torch.randn((sum(m_splits), 4 * MXFP4_GROUP_SIZE), device="cuda", dtype=torch.bfloat16)
             grad_out = torch.randn((sum(m_splits), 64), device="cuda", dtype=torch.bfloat16)
@@ -187,8 +211,17 @@ def test_te_grouped_linear_trains_on_rounded_weights_and_refreshes_them_each_pas
             module.is_first_microbatch = False
             ref_out = reference(inp, m_splits)
             assert torch.equal(out, ref_out)
+            # As with overlapped schedules, the previous microbatch's weight gradient is computed after this
+            # microbatch's forward.
+            if pending_wgrad:
+                _compute_delayed_wgrad(module, params)
+                _compute_delayed_wgrad(reference, ref_params)
             out.backward(grad_out)
             ref_out.backward(grad_out)
+            pending_wgrad = delay_wgrad_compute
+        if pending_wgrad:
+            _compute_delayed_wgrad(module, params)
+            _compute_delayed_wgrad(reference, ref_params)
 
         for param, ref_param, master in zip(params, ref_params, masters, strict=True):
             assert torch.equal(param.detach(), ref_param.detach())
