@@ -1,3 +1,5 @@
+import threading
+
 import pytest
 import torch
 from sglang.srt.multimodal.modality import Modality
@@ -38,19 +40,21 @@ class _RecordingProcessor:
 
 def _rebuild(monkeypatch, multimodal_inputs, tokens, *, with_sglang_placement=True):
     processor = _RecordingProcessor()
-    monkeypatch.setattr(
-        token_space_media_process,
-        "_trainer_processor",
-        lambda rollout_engine_args, device: token_space_media_process._TrainerProcessor(
-            core=processor, image_device="cuda:3"
-        ),
-    )
-    train_inputs = token_space_media_process.compute_multimodal_train_inputs(
-        object(),
+    pending = token_space_media_process.compute_multimodal_train_inputs(
+        token_space_media_process.TrainerProcessor(core=processor, image_device="cuda:3"),
         multimodal_inputs,
         tokens,
+        mm_processor_worker_num=1,
         with_sglang_placement=with_sglang_placement,
         device=torch.device("cpu"),
+    )
+    train_inputs = token_space_media_process.TokenSpaceTrainInputs(
+        token_space_media_process.resolved_multimodal_train_inputs(pending.multimodal_train_inputs),
+        (
+            None
+            if pending.mrope_position_ids is None
+            else token_space_media_process.resolved_mrope_position_ids(pending.mrope_position_ids)
+        ),
     )
     return processor, train_inputs
 
@@ -70,6 +74,85 @@ def test_trainer_rebuilds_tensors_without_expanding_the_rollout_tokens(monkeypat
     assert "video_device" not in call
     assert call["compute_mrope_positions"] is True
     assert torch.equal(train_inputs.multimodal_train_inputs[0]["image_grid_thw"], torch.tensor([[1, 2, 2], [1, 2, 2]]))
+
+
+def test_rebuild_runs_in_the_background(monkeypatch):
+    """compute_multimodal_train_inputs returns before the processor ran; resolving an entry waits for it.
+
+    main thread:  compute(...) --returns build futures--> ... resolved_*(...) --waits--> payload
+    background:                 process() blocks here ---release---> build returned
+    """
+    release = threading.Event()
+    processor = _RecordingProcessor()
+    unblocked_process = processor.process
+
+    async def blocking_process(**kwargs):
+        release.wait()
+        return await unblocked_process(**kwargs)
+
+    processor.process = blocking_process
+
+    pending = token_space_media_process.compute_multimodal_train_inputs(
+        token_space_media_process.TrainerProcessor(core=processor, image_device=None),
+        [{"images": ["/shared/a.png", "/shared/b.png"]}],
+        [torch.tensor([1, 9, 9, 9, 9, 2, 5])],
+        mm_processor_worker_num=1,
+        with_sglang_placement=True,
+        device=torch.device("cpu"),
+    )
+
+    (build,) = pending.multimodal_train_inputs
+    assert pending.mrope_position_ids == [build]
+    assert not build.done()
+    release.set()
+    assert set(build.result().multimodal_train_inputs) == {"pixel_values", "image_grid_thw", "mm_image_positions"}
+    assert build.result().mrope_position_ids.shape == (7, 3)
+
+
+class _PositionsThatFailToCopy:
+    """Stands in for the [3, num_tokens] positions whose device copy is the last step of a rebuild."""
+
+    @property
+    def T(self):
+        return self
+
+    def contiguous(self):
+        return self
+
+    def to(self, device):
+        raise RuntimeError("device copy failed")
+
+
+def test_a_failed_rebuild_raises_where_the_sample_is_resolved(monkeypatch):
+    """A build that fails on its last step, the device copy of the positions, raises at the consumer.
+
+    background:   rebuild(): tensors built, then positions.to(device) raises ----> the executor's future holds it
+    main thread:  build.result() raises it; so do resolved_multimodal_train_inputs and resolved_mrope_position_ids
+
+    Hand-settled futures left this build pending forever: the copy ran after the try that settled them.
+    """
+    monkeypatch.setattr(
+        token_space_media_process,
+        "_sample_train_inputs",
+        lambda *args, **kwargs: ({"pixel_values": torch.zeros(1)}, _PositionsThatFailToCopy()),
+    )
+
+    pending = token_space_media_process.compute_multimodal_train_inputs(
+        token_space_media_process.TrainerProcessor(core=_RecordingProcessor(), image_device=None),
+        [{"images": ["/shared/a.png"]}],
+        [torch.tensor([1, 9, 2])],
+        mm_processor_worker_num=1,
+        with_sglang_placement=True,
+        device=torch.device("cpu"),
+    )
+
+    (build,) = pending.multimodal_train_inputs
+    with pytest.raises(RuntimeError, match="device copy failed"):
+        build.result(timeout=5)
+    with pytest.raises(RuntimeError, match="device copy failed"):
+        token_space_media_process.resolved_multimodal_train_inputs(pending.multimodal_train_inputs)
+    with pytest.raises(RuntimeError, match="device copy failed"):
+        token_space_media_process.resolved_mrope_position_ids(pending.mrope_position_ids)
 
 
 def test_rollout_engine_args_read_the_parsed_engine_config():

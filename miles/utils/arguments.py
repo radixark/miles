@@ -1066,6 +1066,12 @@ def _check_multimodal_token_space_processing_args(args, *, sglang: SglangConfig)
             "--multimodal-token-space-processing builds the trainer's processor from the server args Miles "
             "launches its engines with, which external engines do not share."
         )
+    if args.trainer_mm_processor_worker_num < 1:
+        raise ValueError(
+            f"--trainer-mm-processor-worker-num must be at least 1, got {args.trainer_mm_processor_worker_num}"
+        )
+    if args.trainer_mm_io_worker_num < 0:
+        raise ValueError(f"--trainer-mm-io-worker-num must be at least 0, got {args.trainer_mm_io_worker_num}")
     for name in ("rl_on_policy_target", "true_on_policy_contract", "decrypted_config_file"):
         if sglang.actor_value(name) is not None:
             raise ValueError(

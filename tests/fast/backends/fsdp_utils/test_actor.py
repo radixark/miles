@@ -150,6 +150,7 @@ class TestFSDPTrainParallelConfigWiring:
             train_parallel_config: TrainParallelConfig,
             output_store_read: object,
             sample_device: torch.device | None,
+            token_space_processor: object,
         ) -> tuple[dict[str, list], object]:
             received.append(train_parallel_config)
             return {"tokens": []}, nullcontext()

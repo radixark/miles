@@ -177,6 +177,8 @@ Sections mirror the launch-script argument groups.
 | `--apply-chat-template` | flag | off | Apply tokenizer chat template. |
 | `--shared-media-dir` | path | – | Token space only: directory shared with every SGLang engine and every trainer rank; media that is not a file path yet (data URL, bytes, PIL image) is written here. |
 | `--multimodal-token-space-processing` | flag | off | SGLang expands media placeholders and the trainer builds the processor inputs (models with an SGLang token-space strategy); Megatron backend only for now. Needs `--sglang-enable-token-space-processor` on every engine that serves Miles's multimodal prompts (a frozen reward or reference engine group that serves its own requests may override it off); the trainer builds its processor from the actor engines' server args, so external engines, `--sglang-rl-on-policy-target`, `--sglang-true-on-policy-contract` and `--sglang-decrypted-config-file` are rejected. `--rollout-max-prompt-len` counts text tokens only. |
+| `--trainer-mm-processor-worker-num` | int | 1 | Workers each trainer rank processes multimodal inputs with: threads building token-space inputs, and the SGLang processor's media workers. |
+| `--trainer-mm-io-worker-num` | int | 0 | Media I/O threads (decoding) of each trainer rank's SGLang processor; 0 lets SGLang choose. |
 | `--rollout-shuffle` | flag | on | Shuffle prompts once per epoch (seeded by `--rollout-seed`). `--no-rollout-shuffle` keeps file order. |
 | `--num-rollout` | int | – | Total rollout iterations. If unset, derived from dataset size. |
 | `--rollout-batch-size` | int | – | Prompts per rollout. |
