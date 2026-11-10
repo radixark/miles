@@ -14,8 +14,8 @@ from torchtitan.training_engine import TrainingEngine
 
 from miles import platforms
 from miles.backends.torchtitan_utils import routing_replay
-from miles.backends.torchtitan_utils.length_buckets import fixed_shape_length_bucket, fixed_shape_length_buckets
 from miles.backends.training_utils.torch_native.step_runner import StepMetrics
+from miles.utils.data import fixed_shape_length_bucket, fixed_shape_length_buckets
 
 _FLEX_BLOCK = 128
 _CP_LENGTH_BUCKET = 1024

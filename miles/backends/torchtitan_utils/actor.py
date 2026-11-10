@@ -8,10 +8,9 @@ import torch.distributed as dist
 from miles.backends.megatron_utils.checkpoint_request import MegatronCkptLoadConfig
 from miles.backends.torchtitan_utils import compat
 from miles.backends.torchtitan_utils.args_namespace import TorchtitanArgsNamespace
-from miles.backends.torchtitan_utils.compile_warmup import warmup_rollout_data, warmup_sample_lengths
+from miles.backends.torchtitan_utils.compile_warmup import warmup_shards
 from miles.backends.torchtitan_utils.config import build_trainer_config
 from miles.backends.torchtitan_utils.hf_weight_iterator import TitanHfWeightIterator
-from miles.backends.torchtitan_utils.length_buckets import fixed_shape_length_buckets
 from miles.backends.torchtitan_utils.lora_checkpoint import TorchtitanLoraCheckpoint
 from miles.backends.torchtitan_utils.optimizer_state_on_disk import setup_adam_state_on_disk
 from miles.backends.torchtitan_utils.parallel import create_titan_parallel_state, parallelism_context_from_config
@@ -149,17 +148,15 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
         state = get_parallel_state()
         pad_size = state.tp.size * args.data_pad_size_multiplier  # as get_batch pads a packed microbatch
         seconds_per_bucket = {}
-        for bucket in sorted(fixed_shape_length_buckets(args.backend.seq_length)):
-            lengths = warmup_sample_lengths(
-                bucket=bucket,
-                pad_size=pad_size,
-                max_tokens_per_gpu=args.max_tokens_per_gpu,
-                num_samples=args.backend.global_batch_size // state.effective_dp.size,
-            )
-            if lengths is None:
-                continue
+        shards = warmup_shards(
+            seq_len=args.backend.seq_length,
+            pad_size=pad_size,
+            max_tokens_per_gpu=args.max_tokens_per_gpu,
+            num_samples=args.backend.global_batch_size // state.effective_dp.size,
+        )
+        for bucket, shard in shards:
             start = time.monotonic()
-            self._compile_warmup_passes(warmup_rollout_data(lengths))
+            self._compile_warmup_passes(shard)
             seconds_per_bucket[bucket] = round(time.monotonic() - start, 1)
         assert seconds_per_bucket, f"--compile-warmup warmed no length bucket of {args.backend.seq_length}"
         logger.info(f"Compiled the first step's programs; seconds per length bucket: {seconds_per_bucket}")

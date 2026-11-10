@@ -1,9 +1,8 @@
 import pytest
 
-from miles.backends.torchtitan_utils.compile_warmup import warmup_rollout_data, warmup_sample_lengths
-from miles.backends.torchtitan_utils.length_buckets import fixed_shape_length_bucket, fixed_shape_length_buckets
+from miles.backends.torchtitan_utils.compile_warmup import warmup_shards
 from miles.backends.training_utils.data.rollout import _num_microbatches_within_cap
-from miles.utils.data import padded_token_count
+from miles.utils.data import fixed_shape_length_bucket, fixed_shape_length_buckets, padded_token_count
 
 
 def _microbatch_buckets(lengths: list[int], *, max_tokens_per_gpu: int, pad_size: int, seq_length: int) -> list[int]:
@@ -37,12 +36,11 @@ def _microbatch_buckets(lengths: list[int], *, max_tokens_per_gpu: int, pad_size
 def test_each_bucket_gets_a_microbatch_of_its_own(seq_length, max_tokens_per_gpu, num_samples, pad_size, unwarmed):
     """The trainer then compiles exactly the programs of each bucket, for one optimizer step's worth of samples."""
     warmed = set()
-    for bucket in fixed_shape_length_buckets(seq_length):
-        lengths = warmup_sample_lengths(
-            bucket=bucket, pad_size=pad_size, max_tokens_per_gpu=max_tokens_per_gpu, num_samples=num_samples
-        )
-        if lengths is None:
-            continue
+    shards = warmup_shards(
+        seq_len=seq_length, pad_size=pad_size, max_tokens_per_gpu=max_tokens_per_gpu, num_samples=num_samples
+    )
+    for bucket, shard in shards:
+        lengths = shard["total_lengths"]
         assert len(lengths) == num_samples and min(lengths) >= 2
         buckets = _microbatch_buckets(
             lengths, max_tokens_per_gpu=max_tokens_per_gpu, pad_size=pad_size, seq_length=seq_length
@@ -53,12 +51,12 @@ def test_each_bucket_gets_a_microbatch_of_its_own(seq_length, max_tokens_per_gpu
 
 
 def test_the_shard_looks_like_a_rollout_of_zero_tokens():
-    shard = warmup_rollout_data([4, 3])
+    (_, shard), *_ = warmup_shards(seq_len=1024, pad_size=128, max_tokens_per_gpu=1024, num_samples=2)
 
-    assert shard["tokens"] == [[0, 0, 0, 0], [0, 0, 0]]
-    assert shard["response_lengths"] == [3, 2]
-    assert shard["loss_masks"] == [[1, 1, 1], [1, 1]]
-    assert shard["rollout_mask_sums"] == [3, 2]
-    assert shard["rollout_log_probs"] == [[0.0] * 3, [0.0] * 2]
-    assert shard["total_lengths"] == [4, 3] and shard["partition"] == [0, 1]
+    assert shard["tokens"] == [[0] * 512, [0] * 512]
+    assert shard["response_lengths"] == [511, 511]
+    assert shard["loss_masks"] == [[1] * 511, [1] * 511]
+    assert shard["rollout_mask_sums"] == [511, 511]
+    assert shard["rollout_log_probs"] == [[0.0] * 511, [0.0] * 511]
+    assert shard["total_lengths"] == [512, 512] and shard["partition"] == [0, 1]
     assert shard["rewards"] == [0.0, 0.0] and shard["sample_indices"] == [0, 1]
