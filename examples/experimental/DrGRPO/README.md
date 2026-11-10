@@ -14,6 +14,8 @@ Use `--custom-pg-loss-reducer-function-path` to apply the custom reducer **only 
 --custom-pg-loss-reducer-function-path examples.experimental.DrGRPO.custom_reducer.get_pg_loss_reducer
 ```
 
+The reducer works with the Megatron, FSDP and torchtitan training backends, with `--context-parallel-size 1`.
+
 ## Customization
 
 You can modify the `DIVISOR` constant in `custom_reducer.py` to use a different value:
@@ -43,7 +45,7 @@ Instead of dividing by `loss_mask_i.sum()` (the number of effective tokens), it 
 ```bash
 GRPO_ARGS=(
    --advantage-estimator grpo
-   --custom-pg-loss-reducer-function-path examples.experimental.DrGRPO.custom_reducer:get_pg_loss_reducer
+   --custom-pg-loss-reducer-function-path examples.experimental.DrGRPO.custom_reducer.get_pg_loss_reducer
    # ... other arguments
 )
 ```
