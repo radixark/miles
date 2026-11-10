@@ -10,10 +10,10 @@ from scripts.run_inkling import _MODEL_REGISTRY, ScriptArgs, _train
 from tests.ci.ci_register import register_cuda_ci
 from tests.ci.metric_history import register_ci_gate
 
-# The first run on a runner fetches and converts the 8.5K clips, about 17 minutes without a Hub token; later runs
-# reuse them from the runner's dataset volume.
+# The first run on a runner also fetches and converts the 8.5K clips (781 s in all on CI); later runs reuse them
+# from the runner's dataset volume.
 register_cuda_ci(
-    est_time=2000,
+    est_time=1200,
     suite="stage-c-4-gpu-h200",
     labels=["megatron", "multimodal", "lora"],
     hardware=["hopper"],
