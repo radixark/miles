@@ -1292,7 +1292,8 @@ def _fused_lm_head_args(extra):
     args = parser.parse_args(["--log-probs-backend", "fused_lm_head", "--num-rollout", "1"] + extra + REQUIRED_ARGS)
     args.vocab_size = 151_936  # a Megatron flag, absent from this parser
     args.use_sampling_support_replay = False  # derived by miles_validate_args
-    args.overlap_moe_expert_parallel_comm = False  # a Megatron flag
+    args.overlap_moe_expert_parallel_comm = False  # Megatron flags
+    args.defer_embedding_wgrad_compute = False
     return args
 
 
@@ -1312,10 +1313,17 @@ def test_fused_lm_head_backend_rejects_what_it_does_not_cover(extra, message):
         validate_log_probs_backend_args(_fused_lm_head_args(extra))
 
 
-def test_fused_lm_head_backend_rejects_the_combined_1f1b_schedule():
+@pytest.mark.parametrize(
+    ("megatron_flag", "message"),
+    [
+        ("overlap_moe_expert_parallel_comm", "does not support --overlap-moe-expert-parallel-comm"),
+        ("defer_embedding_wgrad_compute", "does not support --defer-embedding-wgrad-compute"),
+    ],
+)
+def test_fused_lm_head_backend_rejects_megatron_schedules_it_breaks(megatron_flag, message):
     args = _fused_lm_head_args(["--train-backend", "megatron"])
-    args.overlap_moe_expert_parallel_comm = True
-    with pytest.raises(ValueError, match="does not support --overlap-moe-expert-parallel-comm"):
+    setattr(args, megatron_flag, True)
+    with pytest.raises(ValueError, match=message):
         validate_log_probs_backend_args(args)
 
 

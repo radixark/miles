@@ -957,6 +957,9 @@ def _validate_fused_lm_head_args(args) -> None:
         raise ValueError(
             "--log-probs-backend fused_lm_head does not support --overlap-moe-expert-parallel-comm (combined 1F1B)"
         )
+    # Megatron stashes the output layer's input on each call; the tiles' checkpoint replay stashes it twice per gradient
+    if args.defer_embedding_wgrad_compute:
+        raise ValueError("--log-probs-backend fused_lm_head does not support --defer-embedding-wgrad-compute")
     # Megatron computes the MTP loss inside GPTModel's postprocess, before the output_processor runs
     if args.enable_mtp_training:
         logger.warning(
