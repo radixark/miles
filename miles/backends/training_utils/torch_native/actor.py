@@ -173,6 +173,7 @@ class TorchNativeTrainRayActor(TrainRayActor):
                 witness_info=None,
                 train_parallel_config=self.train_parallel_config,
                 sample_device=response_layout_type(self.args).sample_device,
+                token_space_processor=self.token_space_processor,
             )
             with store_get_result:
                 if self.args.debug_rollout_only:

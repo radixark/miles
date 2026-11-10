@@ -43,8 +43,8 @@ the torchtitan backend's. All are separate from SGLang's serving-side
 
 | Implementation | How the adapter is built | Model coverage on current `main` | Status |
 |---|---|---|---|
-| **Megatron-Bridge PEFT** | `AutoBridge` builds the provider, applies Bridge LoRA before DDP, and exports HF-named adapter tensors. Select it with `--megatron-to-hf-mode bridge`. | Qwen2.5, Qwen3, GPT-OSS, Kimi K2.5, GLM-5/5.1/5.2/5.3, and Qwen3.5/3.6, subject to the evidence and module caveats below. | General production path. Current multi-LoRA also requires this path. |
-| **Native / raw-mode LoRA** | Under `--megatron-to-hf-mode raw`, miles builds the model with its own Megatron provider and the `miles.backends.megatron_utils.lora.native` plugin attaches adapter modules directly before DDP. | Architectures registered in `miles/backends/megatron_utils/lora/native/registry.py`: fused-QKV GQA (Llama, Qwen2/3, GLM-4), Qwen3.5/3.6 hybrids (GQA and GDN layers), Qwen3-Next (GQA layers), MLA (DeepSeek-V3/V3.2, Kimi K2/K2.5, GLM-4.7-Flash, GLM-5.x), Inkling, and Kimi K3. | Single-LoRA. Unregistered models fail at startup. |
+| **Megatron-Bridge PEFT** | `AutoBridge` builds the provider, applies Bridge LoRA before DDP, and exports HF-named adapter tensors. Select it with `--megatron-to-hf-mode bridge`. | Qwen2.5, Qwen3, GPT-OSS, Kimi K2.5, GLM-5/5.1/5.2/5.3, and Qwen3.5/3.6, subject to the evidence and module caveats below. | General production path, single LoRA and multi-LoRA. |
+| **Native / raw-mode LoRA** | Under `--megatron-to-hf-mode raw`, miles builds the model with its own Megatron provider and the `miles.backends.megatron_utils.lora.native` plugin attaches adapter modules directly before DDP. | Architectures registered in `miles/backends/megatron_utils/lora/native/registry.py`: fused-QKV GQA (Llama, Qwen2/3, GLM-4), Qwen3.5/3.6 hybrids (GQA and GDN layers), Qwen3-Next (GQA layers), MLA (DeepSeek-V3/V3.2, Kimi K2/K2.5, GLM-4.7-Flash, GLM-5.x), Inkling, and Kimi K3. | Single LoRA, and multi-LoRA on dense projections and lm_head (see [multi-LoRA supported models](/advanced/multi-lora#supported-models)). Unregistered models fail at startup. |
 | **torchtitan LoRA** | Under `--train-backend torchtitan`, torchtitan's own `LoRATransform` adapts the Linear projections the HF targets name before the model is built and parallelized; the model's state-dict adapter names the adapters back as HF PEFT tensors. | Single-adapter LoRA on Linear projections of `--titan-model-name qwen3` (other torchtitan models are refused): dense attention and MLP; attention-only on Qwen3 MoE is checked at config level but not yet run end to end. torchtitan fuses q/k/v and gate/up into one projection each, sharing one `lora_A`, so a target set takes all of a fused projection or none of it, and each HF projection exports a copy of the shared `lora_A` with its own rows of `lora_B`. Routed experts are not adapted. Defaults to `--lora-type lora` (one `lora_A` per fused projection) and `--lora-A-init-method kaiming` (torchtitan's init); other values are refused. No dropout. Saves `{save}/iter_N/adapter` adapter dirs like single LoRA on Megatron and resumes only through `--lora-adapter-path`. | New; covered by the Qwen3-4B E2E below. |
 
 <Note>
@@ -440,7 +440,7 @@ per tenant. The key identifies ownership of models, futures, and checkpoints.
 Each adapter accumulates gradients until its client submits an optimizer step;
 saving weights for sampling publishes an immutable adapter version.
 
-`--experts-shared-outer-loras` also works with multi-LoRA: routed experts share
+`--experts-shared-outer-loras` also works with multi-LoRA on Bridge: routed experts share
 the hidden-side factor within each adapter, while tenants remain independent.
 The flag applies to the whole server and preserves the single-LoRA export format.
 Its `save_state` / `load_state` checkpoints have not been verified on GPU yet.

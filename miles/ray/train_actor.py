@@ -14,6 +14,11 @@ import torch.distributed as dist
 
 import miles.utils.eval_config
 from miles.backends.megatron_utils.checkpoint_request import MegatronCkptLoadConfig
+from miles.backends.training_utils.data.token_space_media_process import (
+    RolloutEngineProcessorArgs,
+    TrainerProcessor,
+    build_trainer_processor,
+)
 from miles.backends.training_utils.types import TrainStepOutput
 from miles.platforms import current_platform, tpu_shared_slice
 from miles.ray.rollout.inference_controller import UpdatableEngines
@@ -87,6 +92,8 @@ def _get_nvml_pci_bus_id(device: int) -> str:
 
 
 class TrainRayActor(NodeProbeMixin):
+    # The trainer's token-space processor, built once in load_hf_assets when --multimodal-token-space-processing is on.
+    token_space_processor: TrainerProcessor | None = None
     # This worker's reader of the SGLang output store; set in __init__ with --use-output-store.
     output_store_read: Callable | None = None
 
@@ -172,6 +179,17 @@ class TrainRayActor(NodeProbeMixin):
                 self.hf_config, "vision_config"
             ):  # config-access-exempt: HF text-only configurations omit vision_config
                 self.processor = load_processor(self.args.hf_checkpoint, trust_remote_code=True)
+        # Built once per rank: it carries the processor clones and I/O threads every rebuild shares.
+        self.token_space_processor = (
+            build_trainer_processor(
+                RolloutEngineProcessorArgs.from_sglang_config(self.args.sglang, hf_checkpoint=self.args.hf_checkpoint),
+                mm_processor_worker_num=self.args.trainer_mm_processor_worker_num,
+                mm_io_worker_num=self.args.trainer_mm_io_worker_num,
+                device=current_platform.current_device(),
+            )
+            if self.args.multimodal_token_space_processing
+            else None
+        )
 
     def propose_master_addr_and_port(self) -> tuple[str, int]:
         low, high = service_port_range()
