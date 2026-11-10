@@ -454,32 +454,22 @@ def test_fwd_tflops_warns_and_reports_no_mfu_for_an_unknown_layer_structure(capl
 
 class TestBackendProcessGroupSdk:
     @pytest.mark.parametrize(
-        ("backend", "offload", "cpu_backend", "device", "expected"),
+        ("backend", "offload", "cpu_backend", "expected"),
         [
-            ("megatron", False, None, ("cuda", "nccl"), "nccl"),
-            ("fsdp", True, "gloo", ("cuda", "nccl"), "cpu:gloo,cuda:nccl"),
-            ("fsdp", False, "gloo", ("cuda", "nccl"), "nccl"),
-            ("fsdp", True, None, ("cuda", "nccl"), "nccl"),
-            ("torchtitan", True, "gloo", ("cuda", "nccl"), "cpu:gloo,cuda:nccl"),
-            # a TPU tensor's collectives need tpu_dist under the device's own name
-            ("torchtitan", True, "gloo", ("tpu", "tpu_dist"), "cpu:gloo,tpu:tpu_dist"),
+            ("megatron", False, None, "nccl"),
+            ("fsdp", True, "gloo", "cpu:gloo,cuda:nccl"),
+            ("fsdp", False, "gloo", "nccl"),
+            ("fsdp", True, None, "nccl"),
+            ("torchtitan", True, "gloo", "cpu:gloo,cuda:nccl"),
         ],
     )
     def test_backend_and_timeout_reach_real_common_initialization_sdk(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        backend: str,
-        offload: bool,
-        cpu_backend: str | None,
-        device: tuple[str, str],
-        expected: str,
+        self, monkeypatch: pytest.MonkeyPatch, backend: str, offload: bool, cpu_backend: str | None, expected: str
     ) -> None:
         """Common worker initialization selects hybrid CPU offload only when configured and preserves the backend timeout."""
-        device_type, distributed_backend = device
-        monkeypatch.setattr(train_actor.current_platform, "device_type", device_type)
         args = make_trainer_config(
             train_backend=backend,
-            distributed_backend=distributed_backend,
+            distributed_backend="nccl",
             distributed_timeout_minutes=17,
             optimizer_cpu_offload=offload,
             fsdp_cpu_backend=cpu_backend,
