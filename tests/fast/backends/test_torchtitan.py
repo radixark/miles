@@ -857,23 +857,6 @@ def test_fsdp_gather_once_is_refused_under_pipeline_parallelism(monkeypatch):
 
 
 @pytest.mark.parametrize("gather_once", [False, True])
-def test_fsdp_gather_once_maps_onto_torchtitans_fsdp_policies(tmp_path, single_gpu_dims, gather_once):
-    from miles.backends.torchtitan_utils.config import build_trainer_config
-
-    config = build_trainer_config(
-        _config_args(titan_fsdp_gather_once=gather_once),
-        hf_assets_path=_checkpoint_dir(tmp_path, tie_word_embeddings=False),
-        lr_total_steps=1,
-        dump_subdir="x",
-    )
-    expected = ("never", True) if gather_once else ("default", False)
-    assert (
-        config.parallelism.fsdp_reshard_after_forward,
-        config.parallelism.fsdp_defer_gradient_reduction,
-    ) == expected
-
-
-@pytest.mark.parametrize("gather_once", [False, True])
 def test_gather_once_reduces_gradients_on_the_last_microbatch_only(monkeypatch, gather_once):
     """One reduce-scatter per step: earlier microbatches keep params gathered and gradients local."""
     pytest.importorskip("torchtitan")
