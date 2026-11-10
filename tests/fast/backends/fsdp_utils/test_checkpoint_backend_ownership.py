@@ -59,6 +59,7 @@ class TestBackendCheckpointOwnership:
         actor.optimizer.param_groups[0]["lr"] = 0.9
         actor.global_step = 0
         actor.micro_step = 0
+        actor._published_weight_version = 0
 
         try:
             payload = checkpoint.load(actor=actor)
@@ -77,6 +78,21 @@ class TestBackendCheckpointOwnership:
             assert bool(actor.optimizer.state) is (save_optimizer and load_optimizer)
         assert actor.global_step == 11
         assert actor.micro_step == 13
+        assert actor._published_weight_version == 5
+        assert actor.args.start_rollout_id == 7
+
+    def test_metadata_without_a_published_weight_version_resumes_at_version_zero(
+        self, cpu_checkpoint_actor: SimpleNamespace
+    ) -> None:
+        """Checkpoints saved before the version was persisted keep today's resume at version 0."""
+        actor = cpu_checkpoint_actor
+        legacy_metadata = {"global_step": 11, "micro_step": 13, "next_rollout_id": 7}
+
+        checkpoint.finalize_load(
+            actor=actor, checkpoint_payload={"rng": None, "metadata": legacy_metadata, "iteration": 7}
+        )
+
+        assert actor._published_weight_version == 0
         assert actor.args.start_rollout_id == 7
 
     @pytest.mark.parametrize("restore_rng", [False, True])

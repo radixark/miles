@@ -5,6 +5,7 @@ import torch.distributed.checkpoint as dcp
 from torchtitan.components.checkpointer import MODEL, CheckpointManager
 
 from miles.backends.torchtitan_utils import lora_names
+from miles.backends.torchtitan_utils.published_weight_version import PUBLISHED_WEIGHT_VERSION, saved_in
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +17,9 @@ class TiedCheckpointManager(CheckpointManager):
 
     def _load_checkpoint(self, states, checkpoint_id, *, from_hf, from_quantized):
         if not from_hf:
+            if PUBLISHED_WEIGHT_VERSION in states and not saved_in(checkpoint_id):
+                # checkpoints saved before the version was persisted resume at version 0
+                states = {key: value for key, value in states.items() if key != PUBLISHED_WEIGHT_VERSION}
             return super()._load_checkpoint(states, checkpoint_id, from_hf=from_hf, from_quantized=from_quantized)
 
         assert self.sd_adapter is not None

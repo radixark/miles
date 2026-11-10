@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import spmd_types as spmd
 import torch
 import torch.distributed as dist
+from torch.distributed.checkpoint.stateful import Stateful
 from torch.distributed.fsdp import FSDPModule
 from torch.distributed.pipelining.schedules import PipelineScheduleSingle
 from torchtitan.config import Configurable
@@ -67,7 +68,13 @@ class TitanTrainer(Configurable):
                 max_num_documents=None,
             )
 
-    def __init__(self, config: Config, *, parallelism: ParallelismContext | None = None):
+    def __init__(
+        self,
+        config: Config,
+        *,
+        parallelism: ParallelismContext | None = None,
+        extra_states: dict[str, Stateful] | None = None,
+    ):
         self.config = config
         torch.autograd.set_multithreading_enabled(False)
         self.engine = TrainingEngine(
@@ -75,7 +82,7 @@ class TitanTrainer(Configurable):
         )
         if parallelism is not None:
             self.engine.parallelism_context = parallelism
-        self.engine.initialize(hf_assets_path=config.hf_assets_path)
+        self.engine.initialize(hf_assets_path=config.hf_assets_path, extra_states=extra_states)
         self.parallelism = self.engine.parallelism_context
         self.model_parts = self.engine.model_parts
         if not platforms.current_platform.premul_sum_reduce:

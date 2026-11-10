@@ -41,4 +41,5 @@ def cpu_checkpoint_actor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Sim
         ),
         global_step=11,
         micro_step=13,
+        _published_weight_version=5,
     )
