@@ -4345,3 +4345,28 @@ class TestLoRATypeResolution:
         args = self._parse(tmp_path, ["--megatron-to-hf-mode", "raw", "--lora-type", "lora"])
         with pytest.raises(AssertionError, match="--lora-type lora shares one lora_A"):
             validate_lora_args_after_megatron(args)
+
+
+class TestAsyncSubmitWithinStaleness:
+    def _parse(self, extra: list[str]) -> argparse.Namespace:
+        parser = get_megatron_arg_parser()
+        return parser.parse_args(
+            ["--fully-async", "--async-submit-within-staleness", "--max-weight-staleness", "1", "--num-rollout", "1"]
+            + extra
+            + REQUIRED_ARGS
+        )
+
+    def test_a_rollout_may_take_several_optimizer_steps(self):
+        """A trained rollout publishes one weight version however many optimizer steps it takes."""
+        args = self._parse(["--n-samples-per-prompt", "4", "--global-batch-size", "128"])
+
+        miles_validate_args(args)
+
+        assert args.global_batch_size * 2 == args.rollout_batch_size * args.n_samples_per_prompt
+
+    def test_a_weight_update_interval_above_one_is_rejected(self):
+        """Skipped weight updates would let a buffered group train more than N versions later."""
+        args = self._parse(["--update-weights-interval", "2"])
+
+        with pytest.raises(AssertionError, match="--update-weights-interval 1"):
+            miles_validate_args(args)
