@@ -26,6 +26,9 @@ def prune_checkpoints(
     A step is megatron's `iter_NNNNNNN` directory plus the rollout side's `rollout/N`; both go together. Steps
     above `saved_step` (left by a run resumed from an earlier `--ckpt-step`) are not touched.
 
+    A step that cannot be removed (a symlink, an NFS busy file) is logged and kept, so housekeeping never ends a
+    run whose new checkpoint is already written. `iter_NNNNNNN` goes first, so a failure keeps `rollout/N`.
+
     A step with a sibling `iter_NNNNNNN.keep` marker is never removed. `pin_saved` writes that marker for
     `saved_step` first (used for sentinel-triggered saves); a marker can also be created or deleted by hand.
     """
@@ -38,7 +41,10 @@ def prune_checkpoints(
     for step in steps[:-keep_recent]:
         if misc.should_run_periodic_action(step, keep_every) or _pin_marker(root, step).exists():
             continue
-        for directory in (root / f"iter_{step:07d}", root / "rollout" / str(step)):
-            if directory.is_dir():
-                logger.info(f"checkpoint decay: removing {directory}")
-                shutil.rmtree(directory)
+        try:
+            for directory in (root / f"iter_{step:07d}", root / "rollout" / str(step)):
+                if directory.is_dir():
+                    logger.info(f"checkpoint decay: removing {directory}")
+                    shutil.rmtree(directory)
+        except OSError:
+            logger.exception(f"checkpoint decay: could not remove step {step}; keeping it")

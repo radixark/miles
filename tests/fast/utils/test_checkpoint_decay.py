@@ -1,5 +1,3 @@
-import pytest
-
 from miles.utils import checkpoint_decay
 
 
@@ -64,18 +62,20 @@ def test_removing_the_marker_lets_the_step_be_pruned(tmp_path):
     assert sorted(p.name for p in tmp_path.glob("iter_???????")) == ["iter_0000008", "iter_0000009"]
 
 
-def test_a_symlinked_step_is_refused_and_its_target_survives(tmp_path):
+def test_a_step_that_cannot_be_removed_is_kept_and_the_rest_are_pruned(tmp_path):
     outside = tmp_path / "outside"
     (outside / "keep").mkdir(parents=True)
     save = tmp_path / "save"
     save.mkdir()
     (save / "iter_0000001").symlink_to(outside)
+    (save / "rollout" / "1").mkdir(parents=True)
     _make_steps(save, range(2, 10))
 
-    with pytest.raises(OSError):
-        checkpoint_decay.prune_checkpoints(str(save), saved_step=9, keep_recent=2, keep_every=100)
+    checkpoint_decay.prune_checkpoints(str(save), saved_step=9, keep_recent=2, keep_every=100)
 
     assert (outside / "keep").is_dir()
+    assert (save / "rollout" / "1").is_dir()
+    assert sorted(p.name for p in save.glob("iter_???????")) == ["iter_0000001", "iter_0000008", "iter_0000009"]
 
 
 def test_with_a_save_interval_it_keeps_every_nth_saved_step(tmp_path):
