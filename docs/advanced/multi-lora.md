@@ -93,10 +93,16 @@ projections and lm_head: grouped expert adapters are refused at startup, and so 
 and GLM-5.3 KDA slots under context parallelism. The gateway has not yet been run end to end on
 native.
 
+On torchtitan (`--train-backend torchtitan`, dense Qwen3) the slots cover the attention and MLP
+projections and an untied lm_head; routed experts are refused. With `--lora-type canonical_lora`
+each projection of a fused `wqkv` / `w13` has its own adapter, as on native LoRA, so a checkpoint
+saved on either backend loads into the other.
+
 | Model | Launcher / CI |
 |---|---|
 | Qwen2.5-0.5B | |
 | Qwen3-4B-Instruct-2507 | Gateway CI ([`tests/e2e/lora`](https://github.com/radixark/miles/tree/main/tests/e2e/lora)) |
+| Qwen3-8B | Gateway CI on torchtitan, and native / torchtitan checkpoint import |
 | Qwen3-30B-A3B | [Gateway example](/examples/multi-lora), [agentic example](/examples/multi-lora/tinker-agent) |
 | Qwen3.5-35B-A3B | |
 | Qwen3.6-35B-A3B | [Harbor example](/examples/multi-lora/harbor-tinker) |
@@ -111,6 +117,7 @@ The trainer rejects a multi-LoRA launch that breaks any of these constraints:
 
 - On native LoRA (`--megatron-to-hf-mode raw`): no expert adapters, and context parallel size 1 for GDN
   `in_proj` / GLM-5.3 KDA slots.
+- On torchtitan: dense Qwen3, context parallel size 1, and an untied lm_head to train the unembed.
 - Separate training and sampling GPUs: no `--colocate` and no `--offload-train`,
   because each adapter's gradients stay in GPU buffers between calls.
 - `--pipeline-model-parallel-size 1` and `--qkv-format thd`.
