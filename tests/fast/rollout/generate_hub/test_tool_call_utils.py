@@ -1,7 +1,16 @@
+import asyncio
+
 import pytest
 from huggingface_hub import snapshot_download
 
-from miles.rollout.generate_utils.tool_call_utils import _DUMMY_USER, _build_dummy_assistant, tokenize_tool_responses
+from sglang.srt.function_call.core_types import ToolCallItem
+
+from miles.rollout.generate_utils.tool_call_utils import (
+    _DUMMY_USER,
+    _build_dummy_assistant,
+    execute_tool_calls,
+    tokenize_tool_responses,
+)
 from miles.utils.processing_utils import load_tokenizer
 
 TOOL_CALL_TEST_MODELS = [
@@ -119,3 +128,30 @@ class TestTokenizeToolResponses:
         )
         text_without = tokenizer.apply_chat_template(base_messages, tokenize=False, add_generation_prompt=False)
         return text_with[len(text_without) :]
+
+
+class TestExecuteToolCalls:
+    @staticmethod
+    def _run(parameters: str) -> tuple[list[dict], list[dict]]:
+        calls = []
+
+        async def execute_one(name, params):
+            calls.append(params)
+            return "ok"
+
+        item = ToolCallItem(tool_index=0, name="code_interpreter", parameters=parameters)
+        return asyncio.run(execute_tool_calls([item], execute_one)), calls
+
+    def test_object_arguments_reach_the_tool(self):
+        messages, calls = self._run('{"code": "print(1)"}')
+
+        assert calls == [{"code": "print(1)"}]
+        assert messages[0]["content"] == "ok"
+
+    @pytest.mark.parametrize("parameters,type_name", [('"print(1)"', "str"), ('["print(1)"]', "list")])
+    def test_non_object_arguments_return_an_error_to_the_model(self, parameters, type_name):
+        messages, calls = self._run(parameters)
+
+        assert calls == []
+        assert messages[0]["role"] == "tool"
+        assert messages[0]["content"] == f"Error: tool arguments must be a JSON object, got {type_name}"
