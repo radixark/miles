@@ -175,7 +175,7 @@ class Sample:
     # prompt
     prompt: str | list[dict[str, str]] = ""
     tokens: list[int] = field(default_factory=list)
-    multimodal_inputs: dict[str, Any] = None  # raw multimodal data, e.g. images, videos, etc.
+    multimodal_inputs: dict[str, Any] = None  # raw media; in token space the shared paths (media_refs.py)
     multimodal_train_inputs: dict[str, Any] = None  # processed multimodal data, e.g. pixel_values, etc.
     # response
     response: str = ""
@@ -213,6 +213,12 @@ class Sample:
 
     metadata: dict = field(default_factory=dict)
     generate_function_path: str | None = None
+    # may only lower the run's max_new_tokens
+    max_response_len: int | None = None
+    # a mixed dataset's agent for agentic_tool_call, else --custom-agent-function-path
+    agent_function_path: str | None = None
+    # a mixed dataset's agentic sequence limit; it may only lower --max-seq-len
+    max_seq_len: int | None = None
     # metadata used during training, e.g., what loss to use for this sample.
     train_metadata: dict | None = None
 
@@ -452,8 +458,8 @@ class Sample:
         """Reset generated outputs so the original prompt can be re-sampled.
 
         Keeps identity / prompt fields (group_index, index, prompt, label,
-        multimodal_inputs, metadata, generate_function_path, routing_key) and
-        restores everything else to dataclass defaults.
+        multimodal_inputs, metadata, generate_function_path, max_response_len,
+        agent_function_path, max_seq_len, routing_key) and restores everything else to dataclass defaults.
         """
         self.tokens = []
         self.multimodal_train_inputs = None

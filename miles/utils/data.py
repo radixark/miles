@@ -27,6 +27,7 @@ except ImportError:
     pq = None
 
 from miles.utils import chat_template_utils
+from miles.utils.media_refs import collect_media_refs
 from miles.utils.types import MultimodalTypes, Sample
 
 __all__ = ["Dataset"]
@@ -209,6 +210,8 @@ class Dataset:
         seed=42,
         apply_chat_template=False,
         apply_chat_template_kwargs=None,
+        media_dir=None,
+        token_space_processing=False,
     ):
         origin_samples = []
         for data in read_file(path):
@@ -239,7 +242,11 @@ class Dataset:
             else:
                 output_prompt = prompt
 
-            if processor and isinstance(prompt, list):
+            if token_space_processing and isinstance(prompt, list):
+                # Collected before the chat template turns the messages into text. SGLang expands the media
+                # placeholders and the trainer rebuilds the processor tensors from these references.
+                multimodal_inputs = collect_media_refs(prompt, media_dir)
+            elif processor and isinstance(prompt, list):
                 from miles.utils.processing_utils import process_vision_info
 
                 multimodal_inputs = process_vision_info(prompt, processor)

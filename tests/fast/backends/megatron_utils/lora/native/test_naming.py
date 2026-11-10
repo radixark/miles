@@ -133,3 +133,26 @@ def test_a_converter_name_outside_the_hf_namespace_fails_instead_of_never_being_
 
     with pytest.raises(AssertionError, match=r"model.language_model.layers.0.self_attn.q_proj.weight"):
         naming.block_prefix(layer, qkv, ["q_proj", "k_proj", "v_proj"])
+
+
+def test_qwen3_5_gdn_hosts_name_the_linear_attn_block(tmp_path):
+    """The GDN adapter takes its prefix from the converter's name for the group-major in_proj_qkv host."""
+    (tmp_path / "config.json").write_text(
+        '{"model_type": "qwen3_5_text", "linear_num_key_heads": 2, "linear_num_value_heads": 4, '
+        '"linear_key_head_dim": 2, "linear_value_head_dim": 2, "hidden_size": 8}'
+    )
+    args = make_trainer_config(
+        hidden_size=8, num_attention_heads=4, num_query_groups=2, kv_channels=2, hf_checkpoint=str(tmp_path)
+    )
+    # TP=2: one of two key-head groups, each 2 * 2 (q, k) + 2 * 2 (two value heads) rows
+    layer = _layer(
+        2,
+        self_attention__linear_attn__in_proj_qkv__weight=((8, 8), 0, False),
+        self_attention__linear_attn__out_proj__weight=((8, 4), 1, False),
+    )
+    naming = ConverterNaming(args, "qwen3_5textconfig", tp_size=2, is_hf_name=_ANY)
+
+    qkv = _weight(layer, "self_attention__linear_attn__in_proj_qkv__weight")
+    assert naming.block_prefix(layer, qkv, ["in_proj_qkv"]) == "model.language_model.layers.1.linear_attn."
+    out_proj = _weight(layer, "self_attention__linear_attn__out_proj__weight")
+    assert naming.block_prefix(layer, out_proj, ["out_proj"]) == "model.language_model.layers.1.linear_attn."

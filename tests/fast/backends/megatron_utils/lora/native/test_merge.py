@@ -158,8 +158,8 @@ def test_grouped_routed_experts():
     common = dict(reference=experts.linear_fc1.weight0, context=context, num_local_experts=3, moe_intermediate=5)
     experts.lora_fc1_adapter = LoRAGroupedFC1(hf_prefix="e.", is_ep=False, width=HIDDEN, **common)
     experts.lora_fc2_adapter = LoRAGroupedFC2(hf_prefix="e.", is_ep=False, width=HIDDEN, **common)
-    attach_adapter_forward(experts.linear_fc1, experts.lora_fc1_adapter, context.lora.scale)
-    attach_adapter_forward(experts.linear_fc2, experts.lora_fc2_adapter, context.lora.scale)
+    attach_adapter_forward(experts.linear_fc1, experts.lora_fc1_adapter)
+    attach_adapter_forward(experts.linear_fc2, experts.lora_fc2_adapter)
     module = nn.Module()
     module.experts = experts
     _assert_merge_matches_forward(
@@ -210,7 +210,7 @@ def test_output_head_with_mup_input_scaling():
         vocab_local=12,
         mup_width_multiplier=4.0,
     )
-    attach_adapter_forward(module.output_layer, module.head, context.lora.scale)
+    attach_adapter_forward(module.output_layer, module.head)
     _assert_merge_matches_forward(module, [("output_layer", module.output_layer)])
 
 

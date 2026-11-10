@@ -1,12 +1,14 @@
 """HTTP responses preserve the SDK conversation and retry/error contract."""
 
 import asyncio
+import json
 
 import httpx
 import pytest
 from tests.fast.tinker.harness import ADAM
 
 from miles.tinker.server.app import build_app
+from miles.tinker.server.encoding import TINKER_SDK_VERSION
 
 
 @pytest.fixture
@@ -139,6 +141,18 @@ async def test_capabilities_and_telemetry_shapes(client):
     assert (await client.post("/api/v1/telemetry", json={})).json() == {"status": "accepted"}
 
 
+async def test_only_the_pinned_sdk_version_connects(client):
+    accepted = await client.post("/api/v1/client/config", json={"sdk_version": TINKER_SDK_VERSION})
+    assert accepted.json() == {}
+    rejected = await client.post("/api/v1/client/config", json={"sdk_version": "0.26.2"})
+    assert rejected.status_code == 400
+    assert f"client is 0.26.2, this gateway serves the tinker=={TINKER_SDK_VERSION}" in rejected.json()["error"]
+    assert (await client.post("/api/v1/client/config", json={})).status_code == 400
+    assert (await client.post("/api/v1/client/config", content=b"")).status_code == 400
+    newer = await client.post("/api/v1/client/config", json={"sdk_version": "0.37.0", "new_field": 1})
+    assert "client is 0.37.0" in newer.json()["error"]
+
+
 async def test_a_request_without_an_api_key_is_rejected(client):
     response = await client.post("/api/v1/create_session", json={})
     assert response.status_code == 400
@@ -181,3 +195,169 @@ async def test_retrieve_long_polls_until_settlement(client):
     client.service.futures.resolve(future.request_id, {"op": "optim_step", "metrics": {"grad_norm": 1.0}})
     response = await asyncio.wait_for(poll, timeout=2)
     assert response.json() == {"type": "optim_step", "metrics": {"grad_norm": 1.0}}
+
+
+async def test_sdk_close_frees_the_slot_without_waiting_for_the_lease(client):
+    """SDK ServiceClient.close(status) POSTs this body and expects 204; the lease sweep must not be needed."""
+    body = await _model_body(client)
+    session_id = body["session_id"]
+    created = (await client.post("/api/v1/create_model", json=body, headers=_headers())).json()
+    await _poll(client, created["request_id"])
+    model_id = created["model_id"]
+    slot = client.service.models[model_id].slot
+    sampler = (
+        await client.post(
+            "/api/v1/create_sampling_session",
+            json={"session_id": session_id, "sampling_session_seq_id": 0, "base_model": "base"},
+            headers=_headers(),
+        )
+    ).json()["sampling_session_id"]
+
+    finished = await client.post(
+        f"/api/v1/sessions/{session_id}/finish",
+        json={"reason": {"type": "success"}, "detail": None},
+        headers=_headers(),
+    )
+
+    assert finished.status_code == 204
+    assert slot in client.service.free_slots
+    assert client.service.backend.named("unload_slot") == [{"slot": slot}]
+    assert (await client.get(f"/api/v1/samplers/{sampler}", headers=_headers())).status_code == 400
+    info = await client.post("/api/v1/get_info", json={"model_id": model_id}, headers=_headers())
+    assert "session finished (success)" in info.json()["error"]
+
+
+async def test_finishing_another_tenants_session_is_refused(client):
+    session_id = (await _model_body(client))["session_id"]
+
+    finished = await client.post(
+        f"/api/v1/sessions/{session_id}/finish",
+        json={"reason": {"type": "success"}, "detail": None},
+        headers=_headers("tenant-b"),
+    )
+
+    assert finished.status_code == 400
+    assert session_id in client.service.sessions
+
+
+async def test_a_retried_finish_is_accepted_and_a_finish_after_lease_expiry_is_refused(client):
+    """SDK close() retries on timeouts, so a repeat finish must not fail; a lost lease must not pass silently."""
+    finish_body = {"reason": {"type": "success"}, "detail": None}
+    finished = (await _model_body(client))["session_id"]
+    expired = (await _model_body(client))["session_id"]
+    await client.post(f"/api/v1/sessions/{finished}/finish", json=finish_body, headers=_headers())
+    client.service.sessions[expired].last_heartbeat -= client.service.config.lease_timeout_s + 1
+    await client.service._expire_sessions()
+
+    retried = await client.post(f"/api/v1/sessions/{finished}/finish", json=finish_body, headers=_headers())
+    foreign = await client.post(f"/api/v1/sessions/{finished}/finish", json=finish_body, headers=_headers("tenant-b"))
+    late = await client.post(f"/api/v1/sessions/{expired}/finish", json=finish_body, headers=_headers())
+
+    assert retried.status_code == 204
+    assert foreign.status_code == 400
+    assert late.status_code == 410
+
+
+async def test_a_finished_session_is_remembered_for_one_lease(client):
+    """A retried finish within a lease is accepted; once the record ages out the session is unknown."""
+    finish_body = {"reason": {"type": "success"}, "detail": None}
+    aged = (await _model_body(client))["session_id"]
+    fresh = (await _model_body(client))["session_id"]
+    for session_id in (aged, fresh):
+        await client.post(f"/api/v1/sessions/{session_id}/finish", json=finish_body, headers=_headers())
+    service = client.service
+    service._ended_sessions[aged] = service._ended_sessions[aged]._replace(
+        ended_at=service._ended_sessions[aged].ended_at - service.config.lease_timeout_s
+    )
+    await service._expire_sessions()
+
+    aged_retry = await client.post(f"/api/v1/sessions/{aged}/finish", json=finish_body, headers=_headers())
+    fresh_retry = await client.post(f"/api/v1/sessions/{fresh}/finish", json=finish_body, headers=_headers())
+
+    assert aged_retry.status_code == 400
+    assert fresh_retry.status_code == 204
+
+
+async def test_a_finish_retried_past_a_short_lease_is_still_accepted(client):
+    """The SDK retries finish for 300 s, so a lease shorter than that must not turn a retry into a 400."""
+    finish_body = {"reason": {"type": "success"}, "detail": None}
+    session_id = (await _model_body(client))["session_id"]
+    await client.post(f"/api/v1/sessions/{session_id}/finish", json=finish_body, headers=_headers())
+    service = client.service
+    service.config.lease_timeout_s = 10.0
+    service._ended_sessions[session_id] = service._ended_sessions[session_id]._replace(
+        ended_at=service._ended_sessions[session_id].ended_at - 11.0
+    )
+    await service._expire_sessions()
+
+    retried = await client.post(f"/api/v1/sessions/{session_id}/finish", json=finish_body, headers=_headers())
+
+    assert retried.status_code == 204
+
+
+async def test_external_weights_download_ttl_and_delete_over_http(client):
+    """The SDK's export -> get_external_weights_urls -> download (no credentials) -> set ttl -> delete flow."""
+    created = (
+        await client.post(
+            "/api/v1/create_model", json=await _model_body(client, lora_config={"rank": 8}), headers=_headers()
+        )
+    ).json()
+    await _poll(client, created["request_id"])
+    model_id = created["model_id"]
+    saved = (
+        await client.post(
+            "/api/v1/save_weights_external",
+            json={"model_id": model_id, "seq_id": 1, "path": "export", "ttl_seconds": 7200},
+            headers=_headers(),
+        )
+    ).json()
+    result = await _poll(client, saved["request_id"])
+    assert (
+        result["type"] == "save_weights_external" and result["path"] == f"tinker://{model_id}/external_weights/export"
+    )
+
+    checkpoint = f"/api/v1/training_runs/{model_id}/checkpoints/external_weights/export"
+    urls = (await client.get(f"{checkpoint}/external_weights_urls", headers=_headers())).json()
+    assert sorted(urls["urls"]) == ["adapter_config.json", "adapter_model.safetensors"] and urls["expires"]
+    download = await client.get(urls["urls"]["adapter_config.json"])
+    assert download.status_code == 200 and int(download.headers["content-length"]) == len(download.content)
+    assert json.loads(download.content)["r"] == 8
+    assert (await client.get(f"{checkpoint}/external_weights_urls", headers=_headers("tenant-b"))).status_code == 403
+
+    assert (await client.put(f"{checkpoint}/ttl", json={"ttl_seconds": None}, headers=_headers())).status_code == 200
+    assert (await client.put(f"{checkpoint}/ttl", json={"ttl_seconds": 5}, headers=_headers())).status_code == 400
+    assert (await client.delete(checkpoint, headers=_headers())).status_code == 200
+    assert (await client.get(urls["urls"]["adapter_config.json"])).status_code == 404
+    assert (await client.delete(checkpoint, headers=_headers())).status_code == 404
+
+
+@pytest.mark.parametrize("public_url", ["https://gw.example.com/tinker", "https://gw.example.com/tinker/"])
+async def test_download_urls_use_the_operator_set_public_url(client, public_url):
+    """Behind a TLS or path-prefix ingress, the URL a request arrived at is not the one clients reach."""
+    client.service.config.public_url = public_url
+    created = (
+        await client.post(
+            "/api/v1/create_model", json=await _model_body(client, lora_config={"rank": 8}), headers=_headers()
+        )
+    ).json()
+    await _poll(client, created["request_id"])
+    model_id = created["model_id"]
+    saved = (
+        await client.post(
+            "/api/v1/save_weights_external",
+            json={"model_id": model_id, "seq_id": 1, "path": "export", "ttl_seconds": None},
+            headers=_headers(),
+        )
+    ).json()
+    await _poll(client, saved["request_id"])
+    checkpoint = f"/api/v1/training_runs/{model_id}/checkpoints/external_weights/export"
+    urls = (await client.get(f"{checkpoint}/external_weights_urls", headers=_headers())).json()["urls"]
+    assert all(url.startswith("https://gw.example.com/tinker/api/v1/external_weights/") for url in urls.values())
+
+
+async def test_a_file_deleted_between_resolve_and_open_is_a_404(client, service, monkeypatch, tmp_path):
+    async def download_path(token, filename):
+        return str(tmp_path / "deleted")
+
+    monkeypatch.setattr(service, "download_path", download_path)
+    assert (await client.get("/api/v1/external_weights/token/adapter_config.json")).status_code == 404

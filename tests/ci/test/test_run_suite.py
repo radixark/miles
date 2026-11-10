@@ -723,8 +723,10 @@ class TestRocmWorkflowScopeSeam:
         assert "MILES_HARDWARE_PLATFORM: rocm" in reusable
 
     def test_megatron_override_installs_the_checked_out_ref_unpatched(self):
-        reusable = (Path(__file__).resolve().parents[3] / ".github" / "workflows" / "_run-ci-rocm.yml").read_text()
-        override = reusable.split('if [ -n "$MEGATRON_PR" ]; then', 1)[1].split("          cd $GITHUB_WORKSPACE", 1)[0]
+        steps = (
+            Path(__file__).resolve().parents[3] / ".github" / "workflows" / "scripts" / "spur" / "container_steps.sh"
+        ).read_text()
+        override = steps.split('if [ -n "${MEGATRON_PR:-}" ]; then', 1)[1].split('cd "$GITHUB_WORKSPACE"', 1)[0]
 
         checkout = override.index("git checkout -f FETCH_HEAD")
         install = override.index("pip install -e . --no-deps --break-system-packages")
