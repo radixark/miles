@@ -186,8 +186,7 @@ def test_gpu_validation_ignores_the_tpu_limits(monkeypatch):
 @pytest.mark.parametrize("seq_len", [1000, 1024, 3000, 8192])
 def test_the_recompile_limit_counts_every_length_bucket(seq_len):
     """A bucket the limit misses is one compile too many, which a fullgraph block turns into a crash."""
-    pytest.importorskip("torchtitan")
-    from miles.backends.torchtitan_utils.trainer import fixed_shape_length_bucket, fixed_shape_length_buckets
+    from miles.utils.data import fixed_shape_length_bucket, fixed_shape_length_buckets
 
     buckets = {fixed_shape_length_bucket(n, seq_len) for n in range(1, seq_len + 1)}
     assert buckets == fixed_shape_length_buckets(seq_len)

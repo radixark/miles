@@ -38,7 +38,12 @@ two jobs share the slice.
 The first step of a run compiles the trainer's programs, about 20-30 minutes. The trainer's ranks share each compiled
 program, and `--compile-cache-dir <dir>` keeps them across runs, so a rerun with the same model and settings starts
 its first step in seconds. Use a fresh directory for each torch_tpu build: the cache key covers the graph, shapes,
-compiler options, libtpu and kernel bodies, but not torch_tpu's own lowering code.
+compiler options, libtpu and kernel bodies, but not torch_tpu's own lowering code. The launcher also passes
+`--compile-warmup` (`--no-compile-warmup` turns it off): the trainer compiles its passes on a synthetic batch per
+length bucket at the end of its init, while the engine starts, so a cold run's first step no longer waits for them.
+With the launcher's settings (Qwen3-4B, sequence length 8192, the smoke recipe) a cold run's step 0 ends 34:40 after
+launch instead of 40:48, and the step itself takes 16 s instead of 31 min; the warmup's four buckets take 32 min of
+the trainer's init.
 
 ## Run
 

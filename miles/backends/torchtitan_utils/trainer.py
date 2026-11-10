@@ -15,18 +15,10 @@ from torchtitan.training_engine import TrainingEngine
 from miles import platforms
 from miles.backends.torchtitan_utils import routing_replay
 from miles.backends.training_utils.torch_native.step_runner import StepMetrics
+from miles.utils.data import fixed_shape_length_bucket, fixed_shape_length_buckets
 
 _FLEX_BLOCK = 128
 _CP_LENGTH_BUCKET = 1024
-_MIN_FIXED_SHAPE_BUCKET = 1024
-
-
-def fixed_shape_length_bucket(n_tokens: int, seq_len: int) -> int:
-    return min(max(_MIN_FIXED_SHAPE_BUCKET, 1 << (n_tokens - 1).bit_length()), seq_len)
-
-
-def fixed_shape_length_buckets(seq_len: int) -> set[int]:
-    return {fixed_shape_length_bucket(1 << k, seq_len) for k in range(seq_len.bit_length() + 1)}
 
 
 def _force_sum_reduction(model_parts: list[torch.nn.Module]) -> None:
