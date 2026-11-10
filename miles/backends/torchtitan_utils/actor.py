@@ -90,6 +90,8 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
         self.optimizers = self.trainer.optimizers.optimizers
         self.align_token_side_channel = self.trainer.align_token_side_channel
         self.trainer.configure_loss_reduction()
+        # actor train and actor log-probs differ in grad mode; the frozen ref model differs in requires_grad
+        self.trainer.configure_fixed_shape_compile(num_passes=2 + int(with_ref))
         set_parallel_state(
             create_titan_parallel_state(self.trainer.parallelism, is_pp_last_stage=self.trainer.has_last_stage())
         )

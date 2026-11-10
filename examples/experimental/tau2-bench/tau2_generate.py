@@ -2,7 +2,10 @@
 
 ``generate`` is ``miles.rollout.generate_hub.agentic_tool_call.generate`` with the
 rollout router's OpenAI endpoint added to the sample metadata, so the tau2 user
-simulator can run on the policy engines without going through the traced session.
+simulator can run on the policy engines without going through the traced session,
+and with an invalid episode (``tau2_episode_valid`` False: the simulation raised, or the
+agent process never reported) marked ``ABORTED`` so its group is dropped; the generic
+generate would keep it as a scored sample. See the README's "Episode outcomes".
 
 The reward is computed by the tau2 evaluator inside the episode and stored in
 ``sample.metadata["reward"]`` by ``tau2_agent_function.run``.
@@ -17,7 +20,14 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     input.sample.metadata["tau2_user_api_base"] = (
         f"http://{input.args.sglang_router_ip}:{input.args.sglang_router_port}/v1"
     )
-    return await agentic_tool_call.generate(input)
+    output = await agentic_tool_call.generate(input)
+    samples = output.samples if isinstance(output.samples, list) else [output.samples]
+    for sample in samples:
+        if sample.status == Sample.Status.ABORTED:
+            continue
+        if not sample.metadata.get("tau2_episode_valid"):
+            sample.status = Sample.Status.ABORTED
+    return output
 
 
 generate.add_arguments = agentic_tool_call.generate.add_arguments

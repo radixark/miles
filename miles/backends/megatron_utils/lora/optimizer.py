@@ -113,10 +113,9 @@ class SlotOptimizer:
     only this slot's parameters and state: reloads cannot round other tenants'
     FP32 masters, and the parameter all-gather moves only this slot."""
 
-    def __init__(self, args: Namespace, model, slot: int) -> None:
+    def __init__(self, args: Namespace, model, slot: int, slot_params: list[torch.nn.Parameter]) -> None:
         self.slot = slot
-        self._model = model
-        slot_params = adapter_slot_parameters(model, slot)
+        self._slot_params = slot_params
         assert slot_params, f"adapter slot {slot} has no parameters; is this a multi-LoRA model?"
 
         config = OptimizerConfig(
@@ -195,7 +194,7 @@ class SlotOptimizer:
     def zero_grads(self) -> None:
         """Zero the slot's gradients everywhere they live: the DDP ``main_grad``
         buffer views and any lingering ``grad``/``main_param.grad`` references."""
-        for param in adapter_slot_parameters(self._model, self.slot):
+        for param in self._slot_params:
             if (
                 main_grad := getattr(param, "main_grad", None)
             ) is not None:  # config-access-exempt: main_grad is optional backend-attached tensor metadata
