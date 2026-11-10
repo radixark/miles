@@ -332,9 +332,10 @@ MXFP4 grid in place, with the block layout and rounding of the rollout encoder
 (round to nearest, ties to even). MXFP4 and MXFP8 share the 1×32 block, so the
 MXFP8 GEMMs receive the rounded weights unchanged, which are the weights rollout
 serves. The optimizer updates the fp32 master weights and overwrites the BF16
-weights after every step, so the weight gradient passes straight through (STE)
-and no rounded copy is kept. Master weights and optimizer state keep their
-precision, and nothing outside the routed-expert weights is rounded to MXFP4.
+weights after every step, so the weight gradient reaches the master weights
+unchanged, as with a straight-through estimator, and no rounded copy is kept.
+Master weights and optimizer state keep their precision, and nothing outside the
+routed-expert weights is rounded to MXFP4.
 
 ![Routed-expert MXFP4 QAT on the MXFP8 recipe](/assets/images/low-precision/mxfp4-qat.png)
 
@@ -352,6 +353,24 @@ python scripts/run_deepseek_v4.py full-train \
    --train-precision mxfp8-mxfp4-routed-expert \
    --rollout-precision mxfp8-mxfp4-routed-expert
 ```
+
+On top of the MXFP8 training path of mode 3, this passes:
+
+```bash
+--megatron-to-hf-mode bridge
+--routed-expert-qat mxfp4
+--rollout-routed-expert-format mxfp4
+```
+
+On the rollout side, the launcher sets `SGLANG_DSV4_FP4_EXPERTS=1` and the
+`flashinfer_mxfp4` MoE runner. Without `--colocate`, MXFP4 routed experts also
+need `--update-weight-transfer-mode broadcast_packed`, which sends their UE8M0
+scales as bytes.
+
+`--routed-expert-qat` supports DeepSeek-V4 through the Megatron-Bridge provider.
+It requires `--bf16` or `--fp16` with fp32 master weights and a Megatron-LM whose
+`TransformerConfig` has the `moe_expert_fake_quant` field. It does not support
+Megatron FSDP, the Transformer Engine op fuser, or CUDA graphs.
 
 See [Training and rollout precision](/models/deepseek/deepseek-v4-flash#35-training-and-rollout-precision)
 for the option values and their constraints.
