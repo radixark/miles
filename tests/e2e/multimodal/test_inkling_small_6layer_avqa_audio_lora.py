@@ -13,7 +13,7 @@ from tests.ci.metric_history import register_ci_gate
 # The first run on a runner also fetches and converts the 8.5K clips (781 s in all on CI); later runs reuse them
 # from the runner's dataset volume.
 register_cuda_ci(
-    est_time=1200,
+    est_time=1500,
     suite="stage-c-4-gpu-h200",
     labels=["megatron", "multimodal", "lora"],
     hardware=["hopper"],
