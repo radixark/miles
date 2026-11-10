@@ -60,6 +60,7 @@ from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY
 from miles.utils.function_registry import load_function
 from miles.utils.misc import load_agent_sibling
 from miles.utils.output_store.dropped import record_dropped_samples
+from miles.utils.retry_utils import NonRetryableError
 from miles.utils.rollout_data_config import lower_limit
 from miles.utils.types import Sample
 
@@ -241,8 +242,9 @@ def _worker_options(args) -> dict[str, Any]:
     if args.custom_agent_function_mode != "worker":
         return {}
     worker_secret()
+    resolve_worker(args.custom_agent_function_worker)
     return {
-        "worker": resolve_worker(args.custom_agent_function_worker),
+        "worker": args.custom_agent_function_worker,
         "extra_env": forwarded_env(_worker_env_patterns(args)),
     }
 
@@ -252,6 +254,14 @@ def _worker_env_patterns(args) -> tuple[str, ...]:
         *provider_env_names(),
         *(load_agent_sibling(args.custom_agent_function_path, "WORKER_ENV") or ()),
     )
+
+
+def _checked_worker(value: str) -> str:
+    try:
+        resolve_worker(value)
+    except NonRetryableError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+    return value
 
 
 def _add_arguments(parser: argparse.ArgumentParser):
@@ -266,9 +276,12 @@ def _add_arguments(parser: argparse.ArgumentParser):
     )
     parser.add_argument(
         "--custom-agent-function-worker",
-        type=str,
+        type=_checked_worker,
         default=None,
-        help="The agent worker for --custom-agent-function-mode worker: its URL.",
+        help="The agent worker for --custom-agent-function-mode worker: a fixed worker's http(s) URL, or a start "
+        "function (module.fn) that starts one for each call, as fn(label, '') -> (close_fn, worker_url), the shape "
+        "of miles.rollout.agentic.per_call_worker.StartFn. close_fn runs when the call ends, however it ends. "
+        "Examples: examples/experimental/agent_sandbox.",
     )
 
 
