@@ -46,6 +46,9 @@ def _args() -> ScriptArgs:
         rollout_max_response_len=512,
         sglang_context_length=4096,
         extra_args=(
+            # The 6-layer slice scores every answer alike, so the recipe's zero-spread filter would drop every
+            # group and the rollout would resample forever; the later flag wins.
+            "--dynamic-sampling-filter-path miles.rollout.filter_hub.common_filters.apply_aborted_filter "
             "--ci-test --no-enable-sample-ownership-checker "
             "--ci-disable-kl-checker "
             # frozen towers and the engine-derived adapter buffers never match the snapshot
