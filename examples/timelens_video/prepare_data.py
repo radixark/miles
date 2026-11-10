@@ -75,7 +75,7 @@ def train_rows(root: Path):
         if i not in kept:
             continue
         video = root / a["video_path"].removeprefix("data/")
-        rows.append({"query": parse_query(a["query"]), "video": str(video.resolve()), "span": list(a["span"][0])})
+        rows.append({"query": parse_query(a["query"]), "video": str(video.absolute()), "span": list(a["span"][0])})
     missing = [r for r in rows if not Path(r["video"]).is_file()]
     assert not missing, f"{len(missing)} sampled videos are missing, e.g. {missing[0]['video']}"
     return rows
@@ -88,7 +88,7 @@ def eval_rows(root: Path, name: str, limit: int | None):
         # The layout the official README's extraction produces: TimeLens-Bench/videos/<dataset>/<vid>.mp4.
         video = root / "TimeLens-Bench" / "videos" / name / f"{vid}.mp4"
         for query, span in zip(item["queries"], item["spans"], strict=True):
-            rows.append({"query": parse_query(query), "video": str(video.resolve()), "span": list(span)})
+            rows.append({"query": parse_query(query), "video": str(video.absolute()), "span": list(span)})
     random.Random(0).shuffle(rows)
     rows = rows[:limit]
     missing = [r for r in rows if not Path(r["video"]).is_file()]
