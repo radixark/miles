@@ -9,6 +9,15 @@ turn is recorded as token ids + logprobs + loss masks, while tau2 keeps owning
 the user simulator, the user-side tools (telecom), the stop conditions and the
 evaluator. The evaluator's reward is returned and lands in ``sample.metadata``.
 
+Whether the episode is valid is recorded in the returned metadata so
+``tau2_generate.generate`` can set the sample status: a scored episode carries tau2's own
+``tau2_termination_reason``; a policy reply tau2 rejected as empty (its thinking spent the
+whole turn) is a scored episode too, ``tau2_termination_reason`` ``"empty_reply"`` with reward
+0; anything else the simulation raised (user simulator or judge endpoint down, engine 5xx,
+the agent process, ...) makes it invalid, ``tau2_episode_valid`` is False and the sample is
+dropped. ``--max-seq-len`` does not stop the episode: it runs to its natural end and sample
+assembly truncates it (see the README's "Episode outcomes").
+
 The user simulator and the NL-assertion judge (retail rewards are DB x
 NL_ASSERTION) are reached at ``metadata["tau2_user_api_base"]``, which
 ``tau2_generate.generate`` fills with the rollout router: the policy model also
@@ -44,6 +53,15 @@ from miles.rollout.agentic.session import openai_session_url
 logger = logging.getLogger(__name__)
 
 _POLICY_MODEL = "openai/policy"
+# tau2's ``AssistantMessage.validate`` (tau2/data_model/message.py) raises a plain ValueError with this
+# message when the policy's reply has neither content nor tool calls: its thinking spent the whole turn
+# (``--rollout-max-response-len``), which the session recorded as a length-truncated turn.
+_EMPTY_REPLY_REJECTION = "AssistantMessage must have either content or tool_calls"
+
+
+def is_empty_reply_rejection(exc: BaseException) -> bool:
+    """Whether *exc* is tau2 rejecting an empty policy reply: the policy's outcome, not a failure."""
+    return type(exc) is ValueError and str(exc).startswith(_EMPTY_REPLY_REJECTION)
 
 
 def _side_llm(
@@ -103,7 +121,7 @@ async def run(
         "num_retries": 0,
     }
     timeout_s = float(os.getenv("TAU2_EPISODE_TIMEOUT_S", "1800"))
-    result = {"reward": 0.0, "tau2_domain": domain, "tau2_task_id": task_id}
+    result = {"reward": 0.0, "tau2_domain": domain, "tau2_task_id": task_id, "tau2_episode_valid": True}
     try:
         simulation = await asyncio.wait_for(
             asyncio.to_thread(
@@ -125,6 +143,12 @@ async def run(
     except asyncio.TimeoutError:
         logger.error(f"tau2 {domain}/{task_id} timed out after {timeout_s:.0f}s")
         return {**result, "tau2_termination_reason": "episode_timeout"}
+    except Exception as exc:
+        if is_empty_reply_rejection(exc):
+            logger.info(f"tau2 {domain}/{task_id} ended on an empty policy reply: its thinking spent the whole turn")
+            return {**result, "tau2_termination_reason": "empty_reply"}
+        logger.error(f"tau2 {domain}/{task_id} failed: {exc!r}", exc_info=True)
+        return {**result, "tau2_episode_valid": False}
 
     reward = simulation.reward_info.reward if simulation.reward_info is not None else 0.0
     return {

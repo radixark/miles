@@ -8,6 +8,7 @@ import torch.nn as nn
 
 from miles.backends.megatron_utils.lora.native.config import LoRAConfig
 from miles.backends.megatron_utils.lora.native.hf_adapter import export_lora_hf_named, load_lora_adapter_hf
+from miles.backends.megatron_utils.lora.native.modules.linear import assert_every_adapter_slotted
 from miles.backends.megatron_utils.lora.native.naming import ConverterNaming
 from miles.backends.megatron_utils.lora.native.registry import resolve_checkpoint_spec
 from miles.backends.megatron_utils.lora.native.spec.base import AttachContext, LoRAArchSpec
@@ -30,6 +31,8 @@ def apply_native_lora(model, args):
     wrapped = sum(_attach_layer(layer, arch_spec, context) for layer in model.decoder.layers)
     if arch_spec.lm_head is not None:
         wrapped += arch_spec.lm_head.attach(model, args, context)
+    if context.lora.num_slots is not None:
+        assert_every_adapter_slotted([model])
 
     trainable = sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad)
     total = sum(parameter.numel() for parameter in model.parameters())
