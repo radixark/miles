@@ -8,7 +8,7 @@ from argparse import Namespace
 import pytest
 
 from miles.rollout.filter_hub import dynamic_sampling_filters
-from miles.rollout.filter_hub.base_types import DynamicFilterOutput, FilterOutput, iter_samples
+from miles.rollout.filter_hub.base_types import DynamicFilterOutput, FilterOutput, MetricGatherer, iter_samples
 from miles.rollout.filter_hub.common_filters import (
     apply_aborted_filter,
     apply_missing_reward_filter,
@@ -186,6 +186,26 @@ def test_preput_missing_reward_wins_before_dynamic_filter(reward_key, group):
 
     assert output == FilterOutput(keep=False, reason="group_has_missing_reward")
     assert custom_calls == []
+
+
+def test_preput_counts_raw_reward_only_for_groups_the_dynamic_filter_decides_on():
+    """A group the dynamic filter drops is a generation result; an aborted or unscored group is not."""
+    args = Namespace(length_penalty_coeff=0.0, length_penalty_min_tokens=1, reward_key=None)
+    gatherer = MetricGatherer()
+    groups = [
+        [make_sample(reward=1.0), make_sample(reward=None, status=Sample.Status.ABORTED)],
+        [make_sample(reward=1.0), make_sample(reward=None)],
+        [make_sample(reward=0.0), make_sample(reward=0.0)],
+        [make_sample(reward=1.0), make_sample(reward=0.0)],
+    ]
+
+    outputs = [
+        apply_preput_filters(args, apply_reward_nonzero_std_filter, group, metric_gatherer=gatherer)
+        for group in groups
+    ]
+
+    assert [bool(output.keep) for output in outputs] == [False, False, False, True]
+    assert gatherer.collect()["rollout/raw_reward"] == 0.25
 
 
 def test_preput_selected_reward_missing_key_propagates():
