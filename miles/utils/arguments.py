@@ -1087,6 +1087,23 @@ def _check_multimodal_token_space_processing_args(args, *, sglang: SglangConfig)
     RolloutEngineProcessorArgs.from_sglang_config(sglang, hf_checkpoint=args.hf_checkpoint)
 
 
+# built-in rm types whose grader returns a dict, and the key that holds the reward to train on
+_DICT_REWARD_KEYS = {"dapo": "score", "boxed_dapo": "score"}
+
+
+def default_reward_key_for_dict_rewards(args) -> None:
+    """Pick --reward-key for a built-in grader that returns a dict, so training gets a scalar.
+
+    Without it the rewards reach advantage computation as dicts and the run fails after its first rollout.
+    """
+    if args.reward_key is not None or args.custom_rm_path is not None:
+        return
+    rm_type = (args.rm_type or "").strip()
+    if rm_type in _DICT_REWARD_KEYS:
+        args.reward_key = _DICT_REWARD_KEYS[rm_type]
+        logger.info(f"--rm-type {rm_type} returns a dict reward; training on --reward-key {args.reward_key}")
+
+
 def miles_validate_args(args):
     from miles.backends.training_utils.weight_update.session import weight_update_selector
 
@@ -1408,6 +1425,7 @@ def miles_validate_args(args):
     if args.eps_clip_high is None:
         args.eps_clip_high = args.eps_clip
 
+    default_reward_key_for_dict_rewards(args)
     if args.eval_reward_key is None:
         args.eval_reward_key = args.reward_key
 
