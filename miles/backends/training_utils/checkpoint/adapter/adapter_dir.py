@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any, Literal, Protocol
 
 import torch
+import torch.distributed as dist
+from safetensors import SafetensorError
 
 from miles.backends.training_utils.checkpoint.adapter.adapter_exports import (
     has_plain_peft_form,
@@ -26,6 +28,7 @@ from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
     gloo_group,
     is_rank0,
     is_vocab_padding,
+    raise_if_any_rank_failed,
     read_adapter_state_shapes,
 )
 from miles.backends.training_utils.checkpoint.adapter.commit import (
@@ -547,6 +550,55 @@ def check_adapter_source(
         if differing:
             raise AdapterSourceError(f"tensor shapes differ from this model's, e.g. {differing[:3]}")
     return CheckedSource(kind, reader, source, steps, weights)
+
+
+# a source the user named that is absent, unreadable, malformed or refused; any other failure is the gateway's
+SOURCE_ERRORS = (
+    AdapterSourceError,
+    FileNotFoundError,
+    NotADirectoryError,
+    IsADirectoryError,
+    PermissionError,
+    json.JSONDecodeError,
+    SafetensorError,
+)
+
+
+def agree_on_adapter_source(
+    path: Path,
+    run: AdapterParametrization,
+    targets: HfLoraTargets,
+    *,
+    load_optimizer: bool,
+    run_shapes: dict[str, tuple[int, ...]],
+    head_rows: HeadRows | None = None,
+) -> tuple[AdapterSourceKind | None, str | None, CheckedSource | None]:
+    """Collective: rank 0 runs ``check_adapter_source`` over every rank's ``run_shapes``; every rank gets the
+    source's kind, or why ``path`` cannot load into this model, and rank 0 the checked source.
+
+    A source the user named that is missing, malformed or refused is theirs; raised after the slot reset, it would
+    kill the trainer cell. Only rank 0 reads it, so only rank 0 can tell the user's fault from the gateway's.
+    """
+    checked, verdict, server_error = None, (None, None), None
+    shapes_by_rank = [None] * dist.get_world_size() if dist.get_rank() == 0 else None
+    dist.gather_object(run_shapes, shapes_by_rank, dst=0, group=gloo_group())
+    if dist.get_rank() == 0:
+        try:
+            all_shapes = {key: shape for shapes in shapes_by_rank for key, shape in shapes.items()}
+            checked = check_adapter_source(
+                path, run, targets, load_optimizer=load_optimizer, run_shapes=all_shapes, head_rows=head_rows
+            )
+            verdict = (checked.kind, None)
+        except SOURCE_ERRORS as error:
+            verdict = (None, f"{path} cannot load into this model: {error}")
+        except Exception as error:
+            # storage faults (EIO, ESTALE) and bugs are the gateway's
+            server_error = error
+    raise_if_any_rank_failed(server_error)
+    verdict = [verdict]
+    dist.broadcast_object_list(verdict, src=0, group=gloo_group())
+    kind, mismatch = verdict[0]
+    return kind, mismatch, (None if mismatch is not None else checked)
 
 
 def load_adapter_source(

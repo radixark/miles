@@ -19,7 +19,6 @@ from megatron.core.dist_checkpointing.mapping import apply_factories
 from megatron.core.distributed import DistributedDataParallel as DDP
 from megatron.core.optimizer.cpu_offloading.hybrid_optimizer import HybridDeviceOptimizer
 from megatron.core.utils import unwrap_model
-from safetensors import SafetensorError
 
 from miles.backends.megatron_utils.lora.bridge_adapter_slots import BridgeAdapterSlots
 from miles.backends.megatron_utils.lora.bridge_checkpoint_loader import MegatronBridgeCheckpointLoader
@@ -35,9 +34,10 @@ from miles.backends.megatron_utils.lora.utils import (
 )
 from miles.backends.megatron_utils.rematerialize_utils import _build_cast_main_to_params_fn
 from miles.backends.training_utils.checkpoint.adapter.adapter_dir import (
+    SOURCE_ERRORS,
     CheckedSource,
     HeadRows,
-    check_adapter_source,
+    agree_on_adapter_source,
     load_adapter_source,
     read_training_state,
     save_and_commit_adapter_dir,
@@ -427,29 +427,12 @@ def check_load_source(
     ``run_shapes``: the whole shape of each HF-keyed tensor this rank loads.
     """
     path = Path(path)
-    checked, verdict, server_error = None, (None, None), None
-    # a source the user named that is missing, malformed or refused is theirs; raised after the slot reset, it kills
-    # the trainer cell. Only rank 0 reads it, so only rank 0 can tell the user's fault from the gateway's
-    shapes_by_rank = [None] * dist.get_world_size() if dist.get_rank() == 0 else None
-    dist.gather_object(run_shapes, shapes_by_rank, dst=0, group=gloo_group())
-    if dist.get_rank() == 0:
-        try:
-            all_shapes = {key: shape for shapes in shapes_by_rank for key, shape in shapes.items()}
-            checked = check_adapter_source(
-                path, run, targets, load_optimizer=load_optimizer, run_shapes=all_shapes, head_rows=head_rows
-            )
-            verdict = (checked.kind, None)
-        except _SOURCE_ERRORS as error:
-            verdict = (None, f"{path} cannot load into this model: {error}")
-        except Exception as error:
-            # storage faults (EIO, ESTALE) and bugs are the gateway's
-            server_error = error
-    raise_if_any_rank_failed(server_error)
-    verdict = [verdict]
-    dist.broadcast_object_list(verdict, src=0, group=gloo_group())
-    kind, mismatch = verdict[0]
+    kind, mismatch, checked = agree_on_adapter_source(
+        path, run, targets, load_optimizer=load_optimizer, run_shapes=run_shapes, head_rows=head_rows
+    )
     if mismatch is not None:
         return mismatch, None
+    server_error = None
     saved = None
     try:
         if kind == AdapterSourceKind.LEGACY_TINKER_CHECKPOINT:
@@ -465,7 +448,7 @@ def check_load_source(
         elif kind.is_read_into_model():
             # load_adapter_source refuses it only after the slot reset
             mismatch = f"{path} is a {kind.value} source, which this backend cannot load"
-    except _SOURCE_ERRORS as error:
+    except SOURCE_ERRORS as error:
         mismatch = f"{path} cannot load into this model: {error}"
     except Exception as error:
         # storage faults (EIO, ESTALE) and bugs are the gateway's
@@ -496,18 +479,6 @@ def check_load_source(
     dist.all_gather_object(gathered, mismatch, group=gloo_group())
     mismatch = next((m for m in gathered if m is not None), None)
     return mismatch, (None if mismatch is not None else checked)
-
-
-# a source the user named that is absent, unreadable, malformed or refused; any other failure is the gateway's
-_SOURCE_ERRORS = (
-    AdapterSourceError,
-    FileNotFoundError,
-    NotADirectoryError,
-    IsADirectoryError,
-    PermissionError,
-    json.JSONDecodeError,
-    SafetensorError,
-)
 
 
 def _legacy_slot_layout(model, slot: int) -> dict[str, tuple[int, ...]]:
