@@ -654,15 +654,13 @@ class TestRocmWorkflowScopeSeam:
             in workflow
         )
         assert "cancel-in-progress: true" in workflow
-        for job in ("resolve-ci-policy", "resolve-ci-deps"):
-            header = workflow.split(f"  {job}:\n", 1)[1].split("    runs-on:", 1)[0]
-            assert "if: github.event.action != 'closed'" in header
+        header = workflow.split("  resolve-ci-policy:\n", 1)[1].split("    runs-on:", 1)[0]
+        assert "if: github.event.action != 'closed'" in header
         image = workflow.split("  resolve-ci-image:\n", 1)[1].split("    runs-on:", 1)[0]
         assert "needs: [resolve-ci-policy]" in image
         assert "always()" not in image
         stage = workflow.split("  stage-c-4-gpu-mi350:\n", 1)[1]
         assert "needs.resolve-ci-policy.result == 'success'" in stage
-        assert "needs.resolve-ci-deps.result == 'success'" in stage
 
     def test_pr_schedules_and_dispatch_share_policy(self):
         workflow = self._workflow()
@@ -693,7 +691,7 @@ class TestRocmWorkflowScopeSeam:
         stage = workflow.split("  stage-c-4-gpu-mi350:", 1)[1]
         command = stage.split("execute_command:", 1)[1].split("secrets:", 1)[0]
 
-        assert "needs: [resolve-ci-policy, resolve-ci-image, resolve-ci-deps]" in stage
+        assert "needs: [resolve-ci-policy, resolve-ci-image]" in stage
         assert "allow_self_hosted" not in stage
         assert "partition_id: [0, 1]" in stage
         assert "max-parallel:" not in stage
@@ -705,10 +703,9 @@ class TestRocmWorkflowScopeSeam:
         assert "WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}" in stage
         assert "needs.resolve-ci-policy.result == 'success'" in stage
         assert "needs.resolve-ci-image.result == 'success'" in stage
-        assert "needs.resolve-ci-deps.result == 'success'" in stage
-        assert (
-            "skip_dependency_install: ${{ needs.resolve-ci-deps.outputs.skip_dependency_install == 'true' }}" in stage
-        )
+        # Like pr-test.yml, every run installs the resolved SGLang / Megatron-LM refs.
+        assert "skip_dependency_install" not in stage
+        assert "resolve-ci-deps" not in workflow
         assert (
             "!contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-4-gpu-mi350')"
             in stage

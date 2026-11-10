@@ -314,7 +314,7 @@ def test_image_jobs_require_their_selected_gpu_stages():
     assert "needs.docker-build.result == 'success'" in resolver
 
     rocm = WORKFLOW.with_name("pr-test-rocm.yml").read_text()
-    resolver = rocm.split("\n  resolve-ci-image:\n", 1)[1].split("\n  resolve-ci-deps:\n", 1)[0]
+    resolver = rocm.split("\n  resolve-ci-image:\n", 1)[1].split("\n  stage-c-4-gpu-mi350:\n", 1)[0]
     assert "needs: [resolve-ci-policy]" in resolver
     assert (
         "if: ${{ !contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-4-gpu-mi350') }}"
