@@ -22,6 +22,7 @@ from tests.ci.ci_utils import (
 )
 from tests.ci.hardware import CUDA_STAGES, dispatch_targets
 from tests.ci.labels import KNOWN_LABELS, PERF_LABEL
+from tests.ci.rocm import ROCM_STAGES
 
 from miles.utils.audit_utils.config_snapshot.enabled import SNAPSHOT_TESTING_ENABLED
 
@@ -43,14 +44,7 @@ CI_SUITES = {
         "stage-b-cpu",
     ],
     HWBackend.CUDA: list(CUDA_STAGES),
-    HWBackend.ROCM: [
-        # Consumed by pr-test-rocm.yml.
-        "stage-c-4-gpu-mi350",
-        # Consumed by the external sgl-project/sglang MI350 nightly.
-        "nightly-stage-c-8-gpu-mi350",
-        "nightly-stage-c-4-gpu-mi350",
-        "nightly-stage-c-2-gpu-mi350",
-    ],
+    HWBackend.ROCM: list(ROCM_STAGES),
 }
 
 

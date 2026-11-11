@@ -54,7 +54,7 @@ on:
         description: 'ROCm Docker image tag (default: miles-rocm10-mi35x, the undated tag each nightly image build overwrites)'
         required: false
         type: string
-        default: 'miles-rocm10-mi35x'
+        default: ''
   workflow_call:
     inputs:
       ref:
@@ -123,20 +123,14 @@ jobs:
     outputs:
       container_image: ${{ steps.resolve.outputs.container_image }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Resolve CI image
         id: resolve
-        shell: bash
         env:
           INPUT_CI_IMAGE_TAG: ${{ github.event.inputs.ci_image_tag || '' }}
-        run: |
-          CI_IMAGE_TAG="${INPUT_CI_IMAGE_TAG}"
-          [ -z "$CI_IMAGE_TAG" ] && CI_IMAGE_TAG="miles-rocm10-mi35x"
-          if [[ ! "$CI_IMAGE_TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
-            echo "::error::ci-image-tag must be a Docker tag, not a full image name: $CI_IMAGE_TAG"
-            exit 1
-          fi
-          echo "container_image=rocm/sgl-dev:${CI_IMAGE_TAG}" >> "$GITHUB_OUTPUT"
-          echo "Resolved CI image: rocm/sgl-dev:${CI_IMAGE_TAG}"
+        run: python3 -S -m tests.ci.rocm
 
   resolve-ci-deps:
     if: github.event.action != 'closed'

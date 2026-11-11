@@ -16,8 +16,7 @@ on:
         required: false
         default: 4
       container_image:
-        # No default: pr-test-rocm.yml's resolve-ci-image is the single
-        # source of the image name, so a dated tag can't rot here.
+        # The callers use the shared default in tests/ci/rocm.py.
         type: string
         required: true
       skip_dependency_install:
@@ -27,6 +26,16 @@ on:
         type: boolean
         required: false
         default: true
+      plan_already_resolved:
+        description: 'Skip hosted planning when a trusted caller already selected one enabled test at an exact ref.'
+        type: boolean
+        required: false
+        default: false
+      withhold_runner_secrets:
+        description: 'Withhold runner credentials from fork-head file runs.'
+        type: boolean
+        required: false
+        default: false
       ref:
         description: 'Git ref to check out (empty = the triggering commit). Set by release CI to test a release branch.'
         type: string
@@ -38,6 +47,7 @@ on:
 
 jobs:
   plan:
+    if: ${{ !inputs.plan_already_resolved }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -62,7 +72,10 @@ jobs:
 
   run:
     needs: plan
-    if: needs.plan.result == 'success' && needs.plan.outputs.has_tests == 'true'
+    if: |
+      !cancelled() &&
+      (inputs.plan_already_resolved ||
+        (needs.plan.result == 'success' && needs.plan.outputs.has_tests == 'true'))
     # The runners are Spur (Slurm) login-node runners on AMD's MI355X cluster:
     # the job itself does no GPU work. launch.sh submits one cluster job per
     # shard, and that job runs container_steps.sh in the ROCm CI image with
@@ -76,10 +89,21 @@ jobs:
     timeout-minutes: 250
 
     steps:
+      # Launch scripts run on the login runner from the workflow revision.
+      # /rerun-test uses main, and pull_request runs use the merge commit.
+      - name: Checkout trusted cluster launcher
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+          sparse-checkout: .github/workflows/scripts/spur
+          sparse-checkout-cone-mode: false
+
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ needs.plan.outputs.ref }}
+          ref: ${{ inputs.plan_already_resolved && inputs.ref || needs.plan.outputs.ref }}
+          path: pr-source
           persist-credentials: false
 
       - name: Resolve dependency refs
@@ -137,6 +161,8 @@ jobs:
         timeout-minutes: 240
         shell: bash
         env:
+          CI_SRC: ${{ github.workspace }}/pr-source
+          WITHHOLD_RUNNER_SECRETS: ${{ inputs.withhold_runner_secrets }}
           CI_IMAGE: ${{ inputs.container_image }}
           CI_COMMAND: ${{ inputs.execute_command }}
           CI_SKIP_DEPENDENCY_INSTALL: ${{ inputs.skip_dependency_install }}
@@ -144,12 +170,16 @@ jobs:
           SGLANG_PR: ${{ steps.resolve-refs.outputs.ci_sglang_pr }}
           BRIDGE_REF: ${{ steps.resolve-refs.outputs.ci_bridge_pr }}
           MILES_HARDWARE_PLATFORM: rocm
-          GITHUB_COMMIT_NAME: ${{ github.event.pull_request.head.sha || github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
+          GITHUB_COMMIT_NAME: ${{ inputs.ref || github.event.pull_request.head.sha || github.sha }}_${{ github.event.pull_request.number || github.event.inputs.pull_number || 'non-pr' }}
           WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
           # The CI partition is shared with SGLang's CI and sgl-amd-mono; Miles
           # owns crsuse2-m2m-v3-025 and v3-090, so keep its jobs off the rest.
           SLURM_EXCLUDE: crsuse2-m2m-v3-010,crsuse2-m2m-v3-022,crsuse2-m2m-v3-060,crsuse2-m2m-v3-123
-        run: bash .github/workflows/scripts/spur/launch.sh --gpus "${{ inputs.num_gpus }}"
+        run: |
+          if [ "$WITHHOLD_RUNNER_SECRETS" = "true" ]; then
+            unset HF_TOKEN WANDB_API_KEY
+          fi
+          bash .github/workflows/scripts/spur/launch.sh --gpus "${{ inputs.num_gpus }}"
 
       - name: Cancel cluster jobs on failure/cancel
         if: failure() || cancelled()
