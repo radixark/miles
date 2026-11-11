@@ -98,7 +98,6 @@ class LinearTrajectory:
     evaluation: bool = False
     sampling_defaults: dict[str, Any] = field(default_factory=dict)
     sampling_support_replay: bool = False
-    backend_failures: int = 0
     last_model_call_failed: bool = False
 
     def snapshot(self) -> "LinearTrajectory":
