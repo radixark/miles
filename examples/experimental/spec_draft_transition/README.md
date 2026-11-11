@@ -66,6 +66,9 @@ The analysis runs from an independently archived checkout; training stays frozen
 With `--remote_data_url`, analysis gathers only the second node's compact completed
 run records over its data server, verifies their identities/source, and collects
 both node partitions before computing the comparison. Checkpoints stay on their node.
+`mirror_compact` mirrors complete JSON records once per minute during execution so
+interim analyses can include the remote node. It never copies checkpoint weights;
+final collection still fetches and verifies the completed records independently.
 
 `publish_adaptive` runs on the Mac, reads only completed small report artifacts
 from the devbox, and updates the existing comparison gist. GitHub credentials
