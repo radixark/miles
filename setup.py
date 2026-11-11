@@ -10,7 +10,7 @@ def _fetch_requirements(path):
 setup(
     author="miles Team",
     name="miles",
-    version="0.1.3",
+    version="0.2.0",
     packages=find_packages(include=["miles*", "miles_plugins*"]),
     include_package_data=True,
     package_data={
@@ -46,6 +46,11 @@ setup(
         ],
         "modal": [
             "modal>=1.5.5",
+        ],
+        # the openenv novita sandbox backend, imported only when that backend is
+        # selected; 2.0.7 is the release the recipe was written against
+        "novita": [
+            "novita-sandbox>=2.0.7",
         ],
     },
     # sglang needs 3.11; nvidia-resiliency-ext 0.6 has no 3.13 wheel

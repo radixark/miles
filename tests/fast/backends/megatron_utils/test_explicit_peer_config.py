@@ -51,6 +51,7 @@ class TestExplicitPeerCheckpointConfig:
         peer.model = [model]
         peer.optimizer = object()
         peer.opt_param_scheduler = None
+        peer.adapter_slots = None
         context = {"local_checkpoint_manager": manager}
         request = MegatronCkptLoadConfig.for_peer_recovery()
 

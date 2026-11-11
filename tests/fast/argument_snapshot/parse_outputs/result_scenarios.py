@@ -52,12 +52,6 @@ def result_scenarios() -> dict[str, ResultScenario]:
         error=NotImplementedError,
         message="not supported on the megatron backend",
     )
-    scenarios["megatron_reject_native_lora_non_colocate"] = ResultScenario(
-        backend="megatron",
-        arguments=(*_HF_CHECKPOINT, "--lora-rank", "8"),
-        error=AssertionError,
-        message="native LoRA syncs adapters only to colocated engines",
-    )
     scenarios["fsdp_reject_lora"] = ResultScenario(
         backend="fsdp",
         arguments=("--lora-rank", "8", "--target-modules", "q_proj,v_proj"),
@@ -136,14 +130,12 @@ def _shared_variants() -> dict[str, tuple[str, ...]]:
             "--eps-clip-high",
             "0.4",
         ),
-        "context_length": ("--rollout-max-context-len", "1024"),
+        "context_length": ("--max-seq-len", "1024"),
         "context_length_overrides": (
-            "--rollout-max-context-len",
+            "--max-seq-len",
             "1024",
             "--rollout-max-prompt-len",
             "512",
-            "--eval-max-context-len",
-            "2048",
         ),
         "single_sample": ("--n-samples-per-prompt", "1"),
         "multiple_steps": ("--rollout-batch-size", "4", "--n-samples-per-prompt", "2", "--num-steps-per-rollout", "2"),
@@ -304,7 +296,7 @@ def _rejected_variants() -> dict[str, tuple[tuple[str, ...], type[Exception], st
             "--opd-teacher-load is required",
         ),
         "prompt_context_length": (
-            ("--rollout-max-context-len", "16", "--rollout-max-prompt-len", "16"),
+            ("--max-seq-len", "16", "--rollout-max-prompt-len", "16"),
             AssertionError,
             "must be smaller",
         ),

@@ -42,7 +42,6 @@ from miles.backends.training_utils.model_companion import (
     SampleIdentityExtractor,
 )
 from miles.backends.training_utils.types import TrainStepOutcome
-from miles.backends.training_utils.weight_update.snapshot_publisher import SnapshotPublisher
 from miles.utils.args.runtime import TrainerConfig
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.audit_utils.witness.module import witness_dump_and_clear_stale
@@ -56,7 +55,7 @@ from miles.utils.types import SampleLineage
 
 from ...utils.misc import filter_keys
 from ..training_utils.parallel import get_parallel_state
-from .checkpoint import load_checkpoint, save_checkpoint, save_checkpoint_with_lora
+from .checkpoint import load_checkpoint, save_checkpoint
 from .ci_utils import (
     check_model_hashes,
     check_peak_gpu_memory_after_load,
@@ -64,12 +63,10 @@ from .ci_utils import (
     save_model_hashes,
 )
 from .initialize import is_first_replica_megatron_main_rank
-from .lora.utils import (
-    is_lora_enabled,
-    is_lora_model,
-    patch_param_grad_buffer_for_colocate_mode_lora,
-    restore_lora_adapter,
-)
+from .lora.bridge_adapter_slots import BridgeAdapterSlots
+from .lora.checkpoint import restore_single_lora, save_single_lora
+from .lora.native.checkpoint import NativeAdapterSlots
+from .lora.utils import is_lora_enabled, is_lora_model, patch_param_grad_buffer_for_colocate_mode_lora
 from .model_provider import get_model_provider_func
 from .parallel import get_packed_seq_params
 
@@ -96,13 +93,16 @@ def get_optimizer_param_scheduler(args: TrainerConfig, optimizer: MegatronOptimi
         optimizer (MegatronOptimizer): Megatron optimizer bound to the model.
 
     Returns:
-        OptimizerParamScheduler: Initialized scheduler bound to ``optimizer``.
+        OptimizerParamScheduler | None: None when the run trains no step.
     """
     # Iteration-based training.
     with args.backend.mutable():
         args.backend.train_iters = (
             args.num_rollout * args.rollout_batch_size * args.n_samples_per_prompt // args.backend.global_batch_size
         )
+        # a convert-save (--num-rollout 0) trains no step: no schedule, and a loaded one passes through untouched
+        if args.backend.train_iters == 0 and args.lora_adapter_convert_save is not None:
+            return None
         if args.backend.lr_decay_iters is None:
             args.backend.lr_decay_iters = args.backend.train_iters
     lr_decay_steps = args.backend.lr_decay_iters * args.backend.global_batch_size
@@ -169,7 +169,7 @@ def setup_model_and_optimizer(
     lora_attached = is_multi_lora_enabled(args) or (is_lora_enabled(args) and role == "actor")
     # Multi-LoRA and single-LoRA (actor, bridge) both build via the bridge helper,
     # which picks the adapter type internally.
-    if is_multi_lora_enabled(args) or (lora_attached and args.megatron_to_hf_mode == "bridge"):
+    if lora_attached and args.megatron_to_hf_mode == "bridge":
         model = _setup_lora_model_via_bridge(args)
         enforce_marked_param_dtypes(model)
     else:
@@ -299,8 +299,8 @@ def forward_only(
 ) -> dict[str, list[torch.Tensor]]:
     """Run forward passes only and collect non-loss outputs (e.g., logprobs).
 
-    The model is put into evaluation mode, a forward-only pipeline pass is
-    executed, and relevant outputs are aggregated and returned.
+    Runs a forward-only pipeline pass (in train mode unless the model has
+    dropout) and aggregates and returns the relevant outputs.
 
     Args:
         f: Post-forward callback used to compute and package outputs to collect.
@@ -338,6 +338,7 @@ def forward_only(
             "tokens",
             "loss_masks",
             "multimodal_train_inputs",
+            "mrope_position_ids",
             "total_lengths",
             "response_lengths",
             "max_seq_lens",
@@ -359,14 +360,11 @@ def forward_only(
         response_lengths = batch["response_lengths"]
         rollout_sampling_mask = get_rollout_sampling_masks(batch) if use_rollout_sampling_mask else None
 
-        if "adapter_token_counts" in batch:
-            from megatron.bridge.peft.multi_lora_layers import set_tokens_per_adapter_slot
-
-            set_tokens_per_adapter_slot(model, batch["adapter_token_counts"])
+        assert "adapter_token_counts" not in batch, "multi-LoRA forwards run through run_forward_backward_pass"
 
         output_tensor = model(
             input_ids=tokens,
-            position_ids=None,
+            position_ids=batch.get("position_ids"),
             attention_mask=None,
             labels=None,
             packed_seq_params=packed_seq_params,
@@ -389,9 +387,11 @@ def forward_only(
 
         return output_tensor, partial(f, **callback_kwargs)
 
-    # Turn on evaluation mode which disables dropout.
-    for model_module in model:
-        model_module.eval()
+    # eval() switches off dropout but also selects inference kernels (TE attention), so the log probs
+    # would come from a different function than the training forward; call it only for dropout
+    if config.hidden_dropout or config.attention_dropout or args.lora_dropout:
+        for model_module in model:
+            model_module.eval()
 
     if (x := args.custom_megatron_before_log_prob_hook_path) is not None:
         from miles.utils.args.custom_view import compute_custom_function_config
@@ -442,7 +442,14 @@ def _zero_grads(model: Sequence[DDP], optimizer: MegatronOptimizer | None, disab
 
 
 def run_forward_backward_pass(
-    args, dumper_phase_util, data_iterator, model, num_microbatches, num_rollouts, forward_only=False
+    args,
+    dumper_phase_util,
+    data_iterator,
+    model,
+    num_microbatches,
+    num_rollouts,
+    forward_only=False,
+    adapter_slots: BridgeAdapterSlots | None = None,
 ):
     """One pipeline forward/backward pass over the microbatches; no optimizer interaction."""
 
@@ -475,6 +482,7 @@ def run_forward_backward_pass(
             [
                 "tokens",
                 "multimodal_train_inputs",
+                "mrope_position_ids",
                 "packed_seq_params",
                 "total_lengths",
                 "response_lengths",
@@ -503,9 +511,8 @@ def run_forward_backward_pass(
         )
 
         if "adapter_token_counts" in batch:
-            from megatron.bridge.peft.multi_lora_layers import set_tokens_per_adapter_slot
-
-            set_tokens_per_adapter_slot(model, batch["adapter_token_counts"])
+            assert adapter_slots is not None, "a multi-LoRA micro-batch is routed by the model's AdapterSlots"
+            adapter_slots.route_tokens(batch["adapter_token_counts"])
 
         from miles.utils.replay_base import all_replay_managers
 
@@ -518,7 +525,7 @@ def run_forward_backward_pass(
             assert not args.enable_witness, "Witness is not supported with combined 1f1b (build_schedule_plan)"
             output_tensor = model.build_schedule_plan(
                 input_ids=batch["tokens"],
-                position_ids=None,
+                position_ids=batch.get("position_ids"),
                 attention_mask=None,
                 labels=None,
                 packed_seq_params=get_packed_seq_params(batch, args),
@@ -527,7 +534,7 @@ def run_forward_backward_pass(
         else:
             forward_kwargs = {
                 "input_ids": batch["tokens"],
-                "position_ids": None,
+                "position_ids": batch.get("position_ids"),
                 "attention_mask": None,
                 "labels": None,
                 "packed_seq_params": get_packed_seq_params(batch, args),
@@ -743,7 +750,7 @@ def setup_train_iteration_config(args, model, optimizer, disable_optimizer):
         param_sync_funcs = [model_chunk.start_param_sync for model_chunk in model]
         config.param_sync_func = param_sync_funcs[0] if len(model) == 1 else param_sync_funcs
     finalize = finalize_model_grads
-    if is_multi_lora_enabled(args) or (is_lora_enabled(args) and args.megatron_to_hf_mode == "bridge"):
+    if is_lora_enabled(args) and args.megatron_to_hf_mode == "bridge":
         # Bridge expert adapters sum their EP-replicated grads in finalize; other runs need no Bridge
         from megatron.bridge.peft.utils import finalize_model_grads_with_expert_adapter_sync as finalize
     config.finalize_model_grads_func = partial(finalize_model_grads_with_empty_cache, finalize=finalize)
@@ -932,7 +939,8 @@ def save(
     checkpointing_context: dict | None = None,
     non_persistent_ckpt: bool = False,
     *,
-    snapshot_publisher: SnapshotPublisher | None = None,
+    adapter_slots: BridgeAdapterSlots | NativeAdapterSlots | None = None,
+    schedule_first_rollout: int | None = None,
 ) -> None:
     """Persist a training checkpoint safely with forward hooks disabled.
 
@@ -952,9 +960,9 @@ def save(
         disable_forward_pre_hook(model)
 
     if is_lora_model(model):
-        save_checkpoint_with_lora(
-            iteration, model, optimizer, opt_param_scheduler, args=args, publisher=snapshot_publisher
-        )
+        assert adapter_slots is not None, "a LoRA --save needs the model's adapter slots"
+        assert schedule_first_rollout is not None, "a LoRA --save records the rollout its schedule counts from"
+        save_single_lora(model, optimizer, opt_param_scheduler, adapter_slots, args, iteration, schedule_first_rollout)
     else:
         save_checkpoint(
             iteration,
@@ -1020,6 +1028,9 @@ def build_model_and_optimizer(
 class LoadCheckpointOutput:
     loaded_rollout_id: int
     start_rollout_id: int
+    # the rollout the LR schedule counts from: --start-rollout-id less the rollouts it completed, else a restored
+    # adapter's, else 0
+    schedule_first_rollout: int
 
 
 def load_model_state(
@@ -1031,10 +1042,12 @@ def load_model_state(
     role: str,
     checkpointing_context: dict | None,
     resume_from_ckpt: bool,
+    adapter_slots: BridgeAdapterSlots | NativeAdapterSlots | None = None,
 ) -> LoadCheckpointOutput:
-    if is_multi_lora_enabled(args):
+    if is_multi_lora_enabled(args) and args.megatron_to_hf_mode == "bridge":
         # Hide adapter params so the bridge's conversion-task walk doesn't see them
-        # while loading the base checkpoint.
+        # while loading the base checkpoint; native adapters hold no checkpoint state.
+        # A mode check, not AdapterSlots.adapters_hidden_context: the slots are built after this load.
         from megatron.bridge.peft.multi_lora_layers import hide_adapters
 
         load_ctx = hide_adapters(model)
@@ -1071,15 +1084,16 @@ def load_model_state(
         restored_trained_iteration = not args.backend.finetune
         scheduler_restored = False
 
-    adapter_iteration = None
+    adapter_iteration, adapter_first_rollout = None, 0
     if is_lora_enabled(args) and role == "actor" and args.lora_adapter_path is not None:
-        adapter_iteration = restore_lora_adapter(
-            model, args, optimizer=optimizer, opt_param_scheduler=opt_param_scheduler
+        restored = restore_single_lora(
+            model, args, adapter_slots=adapter_slots, optimizer=optimizer, opt_param_scheduler=opt_param_scheduler
         )
+        adapter_iteration, adapter_first_rollout = restored.iteration, restored.first_rollout
         if adapter_iteration is not None:
             iteration = adapter_iteration
             restored_trained_iteration = True
-            scheduler_restored = True
+            scheduler_restored = restored.scheduler_restored
 
     check_peak_gpu_memory_after_load(args)
     clear_memory()
@@ -1087,7 +1101,25 @@ def load_model_state(
     check_model_hashes(args, model, iteration)
 
     if opt_param_scheduler is not None and not scheduler_restored:
-        opt_param_scheduler.step(increment=iteration * args.backend.global_batch_size)
+        if adapter_iteration is not None:
+            # the scheduler counts trained samples: a rollout trains whole global batches and trims the rest
+            rollout_samples = args.rollout_batch_size * args.n_samples_per_prompt
+            if args.use_dynamic_global_batch_size:
+                # one step on the rollout rounded down to the DP size
+                batch_size = get_parallel_state().effective_dp.size
+            else:
+                batch_size = args.backend.global_batch_size
+            # an adapter's iteration is its last completed rollout; its run trained from its first rollout on
+            increment = (adapter_iteration + 1 - adapter_first_rollout) * (rollout_samples // batch_size * batch_size)
+        else:
+            increment = iteration * args.backend.global_batch_size
+        opt_param_scheduler.step(increment=increment)
+
+    schedule_first_rollout = adapter_first_rollout
+    if args.start_rollout_id is not None:
+        # the run starts at --start-rollout-id, not after the restored rollout: the schedule's origin moves with it
+        completed_rollouts = 0 if adapter_iteration is None else adapter_iteration + 1 - adapter_first_rollout
+        schedule_first_rollout = args.start_rollout_id - completed_rollouts
 
     if not restored_trained_iteration:
         assert iteration == 0, f"Weight initialization returned a trained iteration: {iteration}"
@@ -1097,4 +1129,6 @@ def load_model_state(
     else:
         start_rollout_id = 0
 
-    return LoadCheckpointOutput(loaded_rollout_id=iteration, start_rollout_id=start_rollout_id)
+    return LoadCheckpointOutput(
+        loaded_rollout_id=iteration, start_rollout_id=start_rollout_id, schedule_first_rollout=schedule_first_rollout
+    )

@@ -10,7 +10,9 @@ name: PR Test (ROCm)
 # runs and the full scope for weekly or explicitly called release runs; manual
 # dispatch keeps the full regular MI350 suite.
 #
-# The MI350 host is split into two 4-GPU runners, so this stage is 4-GPU.
+# The stage runs on AMD's MI355X cluster: two Spur login-node runners each
+# submit a 4-GPU cluster job per shard (see _run-ci-rocm.yml), so this stage
+# is 4-GPU.
 # CUDA tests that need 8 GPUs get a standalone test_amd_<name>.py with its
 # own 4-GPU CaseConfig rather than an IS_HIP branch in the original.
 #
@@ -172,7 +174,7 @@ jobs:
       needs.resolve-ci-image.result == 'success' &&
       needs.resolve-ci-deps.result == 'success' &&
       !contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-4-gpu-mi350')
-    # One shard per 4-GPU runner, so the pair works the suite in parallel.
+    # One shard per runner, so the pair works the suite in parallel.
     # run_suite.py balances the shards by est_time. fail-fast: false so one
     # shard's failure does not cancel the other mid-run.
     strategy:
@@ -181,7 +183,8 @@ jobs:
         partition_id: [0, 1]
     uses: ./.github/workflows/_run-ci-rocm.yml
     with:
-      runs_on: '["self-hosted", "amd", "mi350", "4gpu"]'
+      runs_on: '["linux-miles-mi35x-spur"]'
+      num_gpus: 4
       container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
       skip_dependency_install: ${{ needs.resolve-ci-deps.outputs.skip_dependency_install == 'true' }}
       ref: ${{ inputs.ref || '' }}

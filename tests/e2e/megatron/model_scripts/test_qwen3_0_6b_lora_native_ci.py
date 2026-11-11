@@ -21,6 +21,9 @@ def _args() -> ScriptArgs:
         num_nodes=1,
         num_gpus_per_node=2,
         num_rollout=2,
+        # tied embeddings under TP2 + SP: the output-side head adapter and its served copy
+        target_modules="attn,mlp,unembed",
+        check_lora_weight_equal=True,
         enable_wandb=False,
         extra_args="--ci-test --no-enable-sample-ownership-checker ",
     )

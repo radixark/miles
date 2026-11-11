@@ -10,16 +10,23 @@ from miles.utils.init_once import InitOnce
 
 class TestTrainProcessGroupBackendSelection:
     @pytest.mark.parametrize(
-        "backend,offload,expected",
+        "backend,offload,device_type,distributed_backend,expected",
         [
-            ("megatron", False, "nccl"),
-            ("fsdp", False, "nccl"),
-            ("fsdp", True, "cpu:gloo,cuda:nccl"),
-            ("torchtitan", True, "cpu:gloo,cuda:nccl"),
+            ("megatron", False, "cuda", "nccl", "nccl"),
+            ("fsdp", False, "cuda", "nccl", "nccl"),
+            ("fsdp", True, "cuda", "nccl", "cpu:gloo,cuda:nccl"),
+            ("torchtitan", True, "cuda", "nccl", "cpu:gloo,cuda:nccl"),
+            ("torchtitan", True, "tpu", "tpu_dist", "cpu:gloo,tpu:tpu_dist"),
         ],
     )
     def test_only_fsdp2_cpu_offload_selects_a_hybrid_process_group(
-        self, monkeypatch: pytest.MonkeyPatch, backend: str, offload: bool, expected: str
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        backend: str,
+        offload: bool,
+        device_type: str,
+        distributed_backend: str,
+        expected: str,
     ) -> None:
         """Megatron initialization never reads FSDP2 settings while FSDP / torchtitan offload enables both transports."""
         overrides = (
@@ -27,7 +34,7 @@ class TestTrainProcessGroupBackendSelection:
         )
         args = make_trainer_config(
             train_backend=backend,
-            distributed_backend="nccl",
+            distributed_backend=distributed_backend,
             distributed_timeout_minutes=1,
             debug_deterministic_collective=False,
             **overrides,
@@ -43,7 +50,7 @@ class TestTrainProcessGroupBackendSelection:
                 bind_device_before_process_group=lambda _rank: None,
                 bind_device_after_process_group=lambda: None,
                 nvml_numa_affinity=False,
-                device_type="cpu",
+                device_type=device_type,
             ),
         )
         monkeypatch.setattr(

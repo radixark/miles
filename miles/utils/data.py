@@ -27,6 +27,7 @@ except ImportError:
     pq = None
 
 from miles.utils import chat_template_utils
+from miles.utils.media_refs import collect_media_refs
 from miles.utils.types import MultimodalTypes, Sample
 
 __all__ = ["Dataset"]
@@ -208,6 +209,8 @@ class Dataset:
         seed=42,
         apply_chat_template=False,
         apply_chat_template_kwargs=None,
+        media_dir=None,
+        token_space_processing=False,
     ):
         origin_samples = []
         for data in read_file(path):
@@ -238,7 +241,11 @@ class Dataset:
             else:
                 output_prompt = prompt
 
-            if processor and isinstance(prompt, list):
+            if token_space_processing and isinstance(prompt, list):
+                # Collected before the chat template turns the messages into text. SGLang expands the media
+                # placeholders and the trainer rebuilds the processor tensors from these references.
+                multimodal_inputs = collect_media_refs(prompt, media_dir)
+            elif processor and isinstance(prompt, list):
                 from miles.utils.processing_utils import process_vision_info
 
                 multimodal_inputs = process_vision_info(prompt, processor)
@@ -278,6 +285,23 @@ class Dataset:
 
     def __len__(self):
         return len(self.samples)
+
+
+def padded_token_count(num_tokens: int, pad_size: int) -> int:
+    """The length a packed microbatch of `num_tokens` tokens is padded to (get_batch)."""
+    return -(-num_tokens // pad_size) * pad_size
+
+
+_MIN_FIXED_SHAPE_BUCKET = 1024
+
+
+def fixed_shape_length_bucket(n_tokens: int, seq_len: int) -> int:
+    """The length a fixed-shape (TPU) microbatch of `n_tokens` is padded to: one compiled program per bucket."""
+    return min(max(_MIN_FIXED_SHAPE_BUCKET, 1 << (n_tokens - 1).bit_length()), seq_len)
+
+
+def fixed_shape_length_buckets(seq_len: int) -> set[int]:
+    return {fixed_shape_length_bucket(1 << k, seq_len) for k in range(seq_len.bit_length() + 1)}
 
 
 def get_minimum_num_micro_batch_size(total_lengths, max_tokens_per_gpu):

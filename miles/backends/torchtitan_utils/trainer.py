@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import spmd_types as spmd
 import torch
 import torch.distributed as dist
+from torch.distributed.fsdp import FSDPModule
 from torch.distributed.pipelining.schedules import PipelineScheduleSingle
 from torchtitan.config import TORCH_DTYPE_MAP, Configurable
 from torchtitan.config.validation import validate_model_training_config
@@ -13,13 +14,30 @@ from torchtitan.distributed import ParallelismContext
 from torchtitan.models.base import BaseModel
 from torchtitan.training_engine import TrainingEngine
 
+from miles import platforms
 from miles.backends.torchtitan_utils import routing_replay
 from miles.backends.training_utils.torch_native.step_runner import StepMetrics
+from miles.utils.data import fixed_shape_length_bucket, fixed_shape_length_buckets
 
 _FLEX_BLOCK = 128
 _CP_LENGTH_BUCKET = 1024
 # the multimodal_train_inputs keys a vision model's forward takes: pixel tensors, or PNG bytes rebuilt per microbatch
 _IMAGE_INPUT_KEYS = ("pixel_values", "image_grid_thw", "image_png", "image_png_lengths")
+
+
+def _force_sum_reduction(model_parts: list[torch.nn.Module]) -> None:
+    """torchtitan sets every FSDP gradient divide factor to 1, so a plain SUM reduce gives the same gradients."""
+    for model in model_parts:
+        for module in model.modules():
+            if isinstance(module, FSDPModule):
+                module.set_force_sum_reduction_for_comms(True)
+
+
+def _compile_blocks(model_parts: list[torch.nn.Module], *, backend: str) -> None:
+    # the forward only: FSDP's hooks stay eager around each compiled block
+    for model in model_parts:
+        for block in model.get_submodule("layers").children():
+            block.forward = torch.compile(block.forward, backend=backend, fullgraph=True)
 
 
 class TitanTrainer(Configurable):
@@ -31,6 +49,8 @@ class TitanTrainer(Configurable):
         model: BaseModel.Config
         hf_assets_path: str
         output_dir: str
+        # torch.compile backend for each transformer block; None runs them eager
+        compile_backend: str | None = None
 
         def __post_init__(self) -> None:
             TrainingEngine.Config.__post_init__(self)
@@ -54,6 +74,10 @@ class TitanTrainer(Configurable):
         self.engine.initialize(hf_assets_path=config.hf_assets_path)
         self.parallelism = self.engine.parallelism_context
         self.model_parts = self.engine.model_parts
+        if not platforms.current_platform.premul_sum_reduce:
+            _force_sum_reduction(self.model_parts)
+        if config.compile_backend is not None:
+            _compile_blocks(self.model_parts, backend=config.compile_backend)
         self.optimizers = self.engine.optim.optimizers
         self.device = self.engine.device
         self.loss_fn = self.engine.loss_fn
@@ -90,6 +114,14 @@ class TitanTrainer(Configurable):
                     f"{target}, which is the fixed shape PP stages exchange"
                 )
             return target
+        if not platforms.current_platform.dynamic_shapes:
+            # one compiled program per shape, so microbatches pad to a few power-of-two buckets
+            target = self.config.training.max_context_length
+            if n_tokens > target:
+                raise ValueError(
+                    f"packed microbatch of {n_tokens} tokens exceeds --seq-length {target}, the largest length bucket"
+                )
+            return fixed_shape_length_bucket(n_tokens, target)
         if self.parallelism.cp_enabled:
             align = max(self.parallelism.cp * _FLEX_BLOCK, _CP_LENGTH_BUCKET)
             return n_tokens + (align - n_tokens % align) % align
@@ -181,7 +213,8 @@ class TitanTrainer(Configurable):
                 for loss in microbatches["losses"] or []:
                     self.engine.loss += loss.detach()
             else:
-                for inputs, labels, model_kwargs, _ in prepared:
+                for index, (inputs, labels, model_kwargs, _) in enumerate(prepared):
+                    self._defer_gradient_reduction(is_last_microbatch=index == len(prepared) - 1)
                     pred = self.model_parts[0](inputs, **model_kwargs)
                     loss, _ = self.loss_fn(pred, labels)
                     del pred
@@ -201,7 +234,24 @@ class TitanTrainer(Configurable):
             else:
                 for inputs, labels, model_kwargs, _ in prepared:
                     self.loss_fn(self.model_parts[0](inputs, **model_kwargs), labels)
+                self._reshard_kept_params()
         return self.loss_fn.collect() if self.has_last_stage() else []
+
+    def _defer_gradient_reduction(self, *, is_last_microbatch: bool) -> None:
+        # as TrainingEngine's own loop does: params stay gathered and grads local until the last microbatch
+        root = self.model_parts[0]
+        if self.config.parallelism.fsdp_defer_gradient_reduction and isinstance(root, FSDPModule):
+            root.set_is_last_backward(is_last_microbatch)
+            root.set_reshard_after_backward(is_last_microbatch)
+            root.set_requires_gradient_sync(is_last_microbatch)
+
+    def _reshard_kept_params(self) -> None:
+        # params a forward-only pass left gathered (fsdp_reshard_after_forward="never") are freed once at its end
+        if self.config.parallelism.fsdp_reshard_after_forward != "never":
+            return
+        for module in self.model_parts[0].modules():
+            if isinstance(module, FSDPModule):
+                module.reshard()
 
     def zero_grad(self) -> None:
         self.optimizers.zero_grad(set_to_none=True)
@@ -223,6 +273,17 @@ class TitanTrainer(Configurable):
             2 * (self.config.training.max_context_length // _CP_LENGTH_BUCKET + 1),
         )
         self.loss_fn.set_context_parallel(self.parallelism.get_mesh("cp"))
+
+    def configure_fixed_shape_compile(self, *, num_passes: int) -> None:
+        """Each pass compiles once per length bucket; fullgraph blocks fail past dynamo's recompile limit."""
+        if platforms.current_platform.dynamic_shapes:
+            return
+        # a second length would otherwise make dynamo mark the dimension dynamic, which the backend rejects
+        torch._dynamo.config.automatic_dynamic_shapes = False
+        # blocks of one class share a forward, and a class can guard on a per-block flag (DeepSeek-V3-style dense
+        # first layers before MoE ones), so each class may hold two graphs per pass and bucket
+        num_graphs = 2 * num_passes * len(fixed_shape_length_buckets(self.config.training.max_context_length))
+        torch._dynamo.config.recompile_limit = max(torch._dynamo.config.recompile_limit, num_graphs)
 
     def has_last_stage(self) -> bool:
         return (not self.parallelism.pp_enabled) or self.engine.pp_has_last_stage
