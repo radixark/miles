@@ -3,14 +3,14 @@
 ``num_layers`` serves the last-N-layer partials, whose schedules also count from the top.
 """
 
+from model_args_utils import moe_layer_freq
+
 
 def model_args(num_layers=62, **kwargs) -> str:
     no_rope_freq = "[" + ",".join(str(int((num_layers - layer - 1) % 4 == 0)) for layer in range(num_layers)) + "]"
     window_attn_skip_freq = (
         "[" + ",".join(str(int((num_layers - layer - 1) % 4 != 0)) for layer in range(num_layers)) + "]"
     )
-    # The converted checkpoint stores each layer under its own numbered key.
-    moe_layer_freq = "[" + ",".join("1" for _ in range(num_layers)) + "]"
     return (
         "--custom-model-provider-path miles_plugins.models.muse_spark.muse_spark_1x_model_provider "
         "--megatron-to-hf-mode raw "
@@ -24,7 +24,8 @@ def model_args(num_layers=62, **kwargs) -> str:
         f"--window-size 2047,0 --window-attn-skip-freq {window_attn_skip_freq} "
         "--post-self-attn-layernorm --post-mlp-layernorm "
         "--num-experts 256 --moe-router-topk 8 --moe-ffn-hidden-size 4096 --moe-latent-size 4096 "
-        f"--moe-layer-freq {moe_layer_freq} --moe-grouped-gemm --moe-token-dispatcher-type alltoall "
+        f"--moe-layer-freq {moe_layer_freq(nlayers=num_layers, first_k_dense_replace=0)} "
+        "--moe-grouped-gemm --moe-token-dispatcher-type alltoall "
         "--moe-router-score-function sigmoid --moe-router-dtype fp32 --moe-router-use-torch-mm "
         "--moe-router-enable-expert-bias --freeze-e-score-correction-bias --moe-router-topk-scaling-factor 1 "
         "--moe-combine-in-fp32 "
