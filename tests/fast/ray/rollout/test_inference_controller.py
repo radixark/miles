@@ -29,6 +29,7 @@ from miles.utils.workers.rpc.client.handle import RpcWorkerHandle
 from miles.utils.workers.rpc.common.metadata import collect_rpc_method_specs
 from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, CellReconcileFn, StopWatchFn
+from miles.utils.workers.worker_provider.ray import RayWorkerProvider
 from miles.utils.workers.worker_spec import HostAndPort, NamedHostAndPorts
 
 _RUN_UUID = "run-uuid-1"
@@ -312,7 +313,9 @@ def _make_controller(
     *,
     engine_provider: BaseWorkerProvider | None = None,
     registration_hub: RegistrationHub | None = None,
+    ft_components: list[str] | None = None,
 ) -> InferenceController:
+    ft_components = [] if ft_components is None else ft_components
     engines = registration_hub if registration_hub is not None else engine_provider
     engines = engines if engines is not None else _FakeWorkerProvider([])
 
@@ -324,6 +327,7 @@ def _make_controller(
         colocate=False,
         offload_rollout_level=["kv_cache", "weight"],
         run_uuid=_RUN_UUID,
+        ft_components=ft_components,
     )
     controller.servers = servers
     controller.context_lock = ContextLock("InferenceController")
@@ -512,6 +516,92 @@ class TestReconcile:
 
         assert servers["model-a"].calls == []
         assert servers["model-b"].calls == []
+
+
+class _NonRestartingWorkerProvider(_FakeWorkerProvider):
+    """Ray's provider: a cell that lost its workers stays down unless fault tolerance restarts it."""
+
+    @property
+    def restarts_lost_cells(self) -> bool:
+        return False
+
+
+class TestALostEngineFailsTheRun:
+    @staticmethod
+    def _controller_tracking_one_cell(
+        *, engine_provider: BaseWorkerProvider, ft_components: list[str] | None = None
+    ) -> tuple[InferenceController, _RecordingServer, CellInfo]:
+        info = _make_cell_info()
+        srv = _RecordingServer()
+        srv.all_server_cells[info.cell_id] = SimpleNamespace(meta=_make_cell_meta(info), is_errored=False)
+        controller = _make_controller({"model-a": srv}, engine_provider=engine_provider, ft_components=ft_components)
+        return controller, srv, info
+
+    @pytest.mark.asyncio
+    async def test_the_next_rollout_fails_once_a_cell_nothing_restarts_has_died(self, monkeypatch):
+        """Without rollout fault tolerance a dead engine stays dead, so the run must stop, not shrink silently."""
+        monkeypatch.setattr(dashboard_hooks, "register_engines", _no_dashboard_registration)
+        controller, srv, info = self._controller_tracking_one_cell(engine_provider=_NonRestartingWorkerProvider([]))
+
+        await controller._reconcile(info.cell_id, None)
+
+        assert srv.calls == [("remove", info.cell_id)]
+        with pytest.raises(RuntimeError, match=rf"\['{info.cell_id}'\] died during the run"):
+            await controller.prepare_rollout(rollout_id=3)
+        with pytest.raises(RuntimeError, match="died during the run"):
+            await controller.prepare_eval()
+
+    @pytest.mark.asyncio
+    async def test_the_next_weight_update_fails_and_releases_the_lock(self):
+        """A weight update would otherwise push to the survivors only; the lock must not stay held."""
+        controller, _, info = self._controller_tracking_one_cell(engine_provider=_NonRestartingWorkerProvider([]))
+
+        await controller._reconcile(info.cell_id, None)
+
+        with pytest.raises(RuntimeError, match="died during the run"):
+            await controller.start_update_weights()
+        assert not controller.context_lock.locked
+
+    @pytest.mark.asyncio
+    async def test_a_relaunched_cell_without_fault_tolerance_also_fails_the_run(self, monkeypatch):
+        """A new workers_hash means the old engine died; its replacement holds none of the trained weights."""
+        monkeypatch.setattr(dashboard_hooks, "register_engines", _no_dashboard_registration)
+        controller, _, info = self._controller_tracking_one_cell(engine_provider=_NonRestartingWorkerProvider([]))
+
+        await controller._reconcile(info.cell_id, _make_cell_info(workers_hash="pseudo-hash-1"))
+
+        with pytest.raises(RuntimeError, match="died during the run"):
+            await controller.prepare_rollout(rollout_id=3)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "engine_provider, ft_components",
+        [
+            pytest.param(_NonRestartingWorkerProvider([]), ["rollout"], id="rollout-fault-tolerance-restarts-it"),
+            pytest.param(_FakeWorkerProvider([]), [], id="the-provider-restarts-it"),
+        ],
+    )
+    async def test_a_cell_that_will_be_restarted_does_not_fail_the_run(
+        self, monkeypatch, engine_provider: BaseWorkerProvider, ft_components: list[str]
+    ):
+        """Fault tolerance (or a provider such as Kubernetes) brings the cell back, so the run keeps going."""
+        monkeypatch.setattr(dashboard_hooks, "register_engines", _no_dashboard_registration)
+        controller, srv, info = self._controller_tracking_one_cell(
+            engine_provider=engine_provider, ft_components=ft_components
+        )
+
+        await controller._reconcile(info.cell_id, None)
+        await controller.prepare_rollout(rollout_id=3)
+
+        assert srv.calls == [("remove", info.cell_id)]
+
+    def test_rays_provider_does_not_restart_lost_cells(self):
+        """The Ray worker manager tears a cell down when a worker dies and starts it again only when asked."""
+        assert RayWorkerProvider(worker_manager_handle=None).restarts_lost_cells is False
+
+
+async def _no_dashboard_registration(servers: dict, *, provider: BaseWorkerProvider) -> None:
+    return None
 
 
 def _patch_init(monkeypatch: pytest.MonkeyPatch, *, servers: dict[str, _RecordingServer]) -> None:
