@@ -61,31 +61,18 @@ class TestEngineInputIds:
             engine_input_ids([1, 4], [1, 9, 2], [1, 9, 9, 2], 0)
 
 
-@pytest.fixture(scope="module")
-def model_path():
+def _model_files(model: str) -> str:
+    """The model's tokenizer, chat template and processor configs: the token-space processor needs no weights."""
     from huggingface_hub import snapshot_download
 
-    # The tokenizer, chat template and processor configs only: the token-space processor needs no weights.
     try:
-        return snapshot_download(MODEL, allow_patterns=["*.json", "*.jinja", "*.txt"])
+        return snapshot_download(model, allow_patterns=["*.json", "*.jinja", "*.txt", "*.model"])
     except Exception as e:  # noqa: BLE001 - no network and no cache
-        pytest.skip(f"cannot fetch {MODEL}'s tokenizer and processor files: {e}")
+        pytest.skip(f"cannot fetch {model}'s tokenizer and processor files: {e}")
 
 
-@pytest.fixture(scope="module")
-def tokenizer(model_path):
-    """The Qwen3.8 tokenizer with the qwen38small fixed template, as ``--chat-template-path`` installs it."""
-    from transformers import AutoTokenizer
-
-    from miles.utils.chat_template_utils.tito_tokenizer import TEMPLATE_DIR, Qwen38SmallTITOTokenizer
-
-    tok = AutoTokenizer.from_pretrained(model_path)
-    tok.chat_template = (TEMPLATE_DIR / Qwen38SmallTITOTokenizer.FIXED_TEMPLATE.template).read_text(encoding="utf-8")
-    return tok
-
-
-@pytest.fixture(scope="module")
-def engine_args(model_path):
+def _engine_args(model_path: str):
+    """The rollout engines' processor settings, as the training actor reads them from the server args."""
     pytest.importorskip("sglang.srt.multimodal.token_space_mm_process.processor")
     from miles.backends.training_utils.data.token_space_media_process import RolloutEngineProcessorArgs
 
@@ -102,6 +89,28 @@ def engine_args(model_path):
         mm_process_config_json="{}",
         token_space_preprocess_cache_dir=None,
     )
+
+
+@pytest.fixture(scope="module")
+def model_path():
+    return _model_files(MODEL)
+
+
+@pytest.fixture(scope="module")
+def tokenizer(model_path):
+    """The Qwen3.8 tokenizer with the qwen38small fixed template, as ``--chat-template-path`` installs it."""
+    from transformers import AutoTokenizer
+
+    from miles.utils.chat_template_utils.tito_tokenizer import TEMPLATE_DIR, Qwen38SmallTITOTokenizer
+
+    tok = AutoTokenizer.from_pretrained(model_path)
+    tok.chat_template = (TEMPLATE_DIR / Qwen38SmallTITOTokenizer.FIXED_TEMPLATE.template).read_text(encoding="utf-8")
+    return tok
+
+
+@pytest.fixture(scope="module")
+def engine_args(model_path):
+    return _engine_args(model_path)
 
 
 @pytest.fixture(scope="module")
@@ -150,15 +159,17 @@ class TokenSpaceEngine:
     media and the request's ``input_ids`` go through the token-space processor, from
     ``mm_token_expansion_start_len`` on, and the expanded prompt is returned when asked for."""
 
-    def __init__(self, core, tokenizer, *, reply: str = "ok", return_prompt: bool = True):
+    def __init__(
+        self, core, tokenizer, *, reply: str = "ok", return_prompt: bool = True, end_token: str = "<|im_end|>"
+    ):
         self.core = core
         self.reply = reply
         self.output_ids = tokenizer.encode(reply, add_special_tokens=False) + [
-            tokenizer.convert_tokens_to_ids("<|im_end|>")
+            tokenizer.convert_tokens_to_ids(end_token)
         ]
         self.return_prompt = return_prompt
         self.bodies: list[dict] = []
-        self.pixel_values: list[torch.Tensor] = []
+        self.outputs: list[dict] = []  # the processor's output per request with media: pixels, grids, ...
         self.prompts: list[list[int]] = []  # the prompt each request ran
 
     async def do_proxy(self, request, path, *, body, headers):
@@ -173,7 +184,7 @@ class TokenSpaceEngine:
                 mm_token_expansion_start_len=payload.get("mm_token_expansion_start_len", 0),
             )
             prompt_ids = output["input_ids"][0].tolist()
-            self.pixel_values.append(output["pixel_values"])
+            self.outputs.append(output)
         self.prompts.append(prompt_ids)
         choice = {
             "index": 0,
@@ -201,14 +212,23 @@ class TokenSpaceEngine:
 
 
 def _make_core(
-    version: str, tokenizer, engine, media_dir, *, token_space: bool = True, addition_r3: bool = False, **overrides
+    version: str,
+    tokenizer,
+    engine,
+    media_dir,
+    *,
+    token_space: bool = True,
+    addition_r3: bool = False,
+    model: str = MODEL,
+    tito_model: str = "qwen38small",
+    **overrides,
 ):
-    tito = get_tito_tokenizer(tokenizer, tokenizer_type="qwen38small")
+    tito = get_tito_tokenizer(tokenizer, tokenizer_type=tito_model)
     config = make_session_server_config(
         **{
             "use_session_server": version,
-            "hf_checkpoint": MODEL,
-            "tito_model": "qwen38small",
+            "hf_checkpoint": model,
+            "tito_model": tito_model,
             "instance_id": uuid.uuid4().hex,
             "session_sample_picker_path": "miles.rollout.session.v2.picker_hub.drop_rolled_back_leaves",
             "session_sample_postprocessor_path": "miles.rollout.session.v2.postprocessor_hub.default_postprocess",
@@ -290,7 +310,7 @@ def test_images_flow_through_the_session_server_in_token_space(
         device=torch.device("cpu"),
     )
     (train_inputs,) = resolved_multimodal_train_inputs(built.multimodal_train_inputs)
-    assert torch.equal(train_inputs["pixel_values"], engine.pixel_values[-1])
+    assert torch.equal(train_inputs["pixel_values"], engine.outputs[-1]["pixel_values"])
     assert train_inputs["image_grid_thw"].shape[0] == 2
 
 
