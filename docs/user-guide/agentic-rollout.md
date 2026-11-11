@@ -187,7 +187,12 @@ function's module may expose beside it, and any `--custom-agent-function-worker-
 adds; credentials are never sent by value, and paths among them must exist on the
 worker. A worker that cannot be reached, or that no longer knows the call, discards
 the sample (`exit_status` `WorkerUnreachable` or `WorkerLost`). A worker cancels a
-call nobody has polled for two minutes.
+call nobody has polled for two minutes. To keep anyone else from submitting calls,
+set the same secret on the worker and on the rollout host, in
+`MILES_AGENT_WORKER_SECRET` or in a file named by `MILES_AGENT_WORKER_SECRET_FILE`;
+the worker then refuses requests without it, and a call it refuses discards the
+sample (`exit_status` `WorkerUnauthorized`). Without a secret the worker accepts
+any request, so run it on a private network.
 
 A rollout abort, such as the one that ends an oversampled round, cancels this
 rollout's calls in every mode and discards their samples (`exit_status`

@@ -8,6 +8,9 @@ reports and outcome, and cancels it when its own task is cancelled. Every worker
     GET    /calls/{id}?after=n&wait=s   -> {state: running|done, reports: [b64 pickle, ...], next, outcome?}
     DELETE /calls/{id}          cancel: the worker's child gets SIGTERM, as a cancelled subproc call's does
     GET    /health
+
+When ``MILES_AGENT_WORKER_SECRET`` or the file ``MILES_AGENT_WORKER_SECRET_FILE`` names holds a secret, every request
+carries it as a bearer token and the worker refuses requests without it.
 """
 
 import asyncio
@@ -21,6 +24,7 @@ import pickle
 import socket
 import uuid
 from collections.abc import Callable, Sequence
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -32,11 +36,20 @@ from miles.rollout.agentic.errors import InfraAbort, RemoteTraceback
 logger = logging.getLogger(__name__)
 
 MAX_POLL_WAIT_S = 25.0
+SECRET_ENV_VAR = "MILES_AGENT_WORKER_SECRET"
+SECRET_FILE_ENV_VAR = "MILES_AGENT_WORKER_SECRET_FILE"
 _POLL_WAIT_S = 20.0
 _REQUEST_ATTEMPTS = 3
 _CANCEL_TIMEOUT_S = 10.0
 _SECRET_PATTERNS = ("*SECRET", "*SECRET_KEY", "*TOKEN", "*PASSWORD", "*API_KEY")
 _CREDENTIAL_NAMES = frozenset(name for spec in PROVIDER_CREDENTIALS.values() for name in spec["key_env_vars"])
+
+
+def worker_secret() -> str | None:
+    secret = os.environ.get(SECRET_ENV_VAR, "").strip()
+    if not secret and (path := os.environ.get(SECRET_FILE_ENV_VAR, "").strip()):
+        secret = Path(path).read_text().strip()
+    return secret or None
 
 
 def function_path(fn: Callable) -> str:
@@ -136,6 +149,12 @@ async def _request(client: httpx.AsyncClient, method: str, path: str, **kwargs: 
                 raise InfraAbort("WorkerUnreachable", f"agent worker {client.base_url}: {exc!r}") from exc
             await asyncio.sleep(2**attempt)
             continue
+        if response.status_code == 401:
+            raise InfraAbort(
+                "WorkerUnauthorized",
+                f"agent worker {client.base_url} refused the call: "
+                f"set the same {SECRET_ENV_VAR} or {SECRET_FILE_ENV_VAR} here and on the worker",
+            )
         if response.status_code == 404 and method == "GET":
             raise InfraAbort("WorkerLost", f"agent worker {client.base_url} no longer has the call (restarted?)")
         if response.status_code >= 400:
@@ -161,8 +180,10 @@ def _client(worker_url: str) -> httpx.AsyncClient:
         (socket.IPPROTO_TCP, getattr(socket, "TCP_KEEPINTVL", 5), 30),
         (socket.IPPROTO_TCP, getattr(socket, "TCP_KEEPCNT", 6), 5),
     ]  # config-access-exempt: TCP keepalive constant names vary across supported host platforms
+    secret = worker_secret()
     return httpx.AsyncClient(
         base_url=worker_url.rstrip("/"),
+        headers={"Authorization": f"Bearer {secret}"} if secret else None,
         transport=httpx.AsyncHTTPTransport(socket_options=socket_options),
         timeout=httpx.Timeout(MAX_POLL_WAIT_S + 30.0),
     )
