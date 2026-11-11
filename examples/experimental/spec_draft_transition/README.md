@@ -2,7 +2,8 @@
 
 This extension reuses the frozen Qwen3-4B → Qwen3-0.6B teacher-generated
 UltraChat corpus and existing CE, L1, cosine-transition and constant-mixture
-baselines. It runs independent single-GPU fits on shi-h200-2 (8 H200).
+baselines. It runs independent single-GPU fits on shi-h200-2 and shi-h200-4
+(8 H200 each), with the same central coordinator assigning unique reserved runs.
 Teacher temperatures: 0.6, 1.0, 1.4; student temperature: 1.
 Full vocabulary: 151,936. No entropy filtering, top-k or top-p truncation.
 Training: 2,000 updates × 16,384 response positions; microbatch 2; FP32 master
@@ -62,6 +63,9 @@ It writes five-method bars (mean ± one crossed-bootstrap SE, y-range 2.4–3.0)
 training curves, switch-step summaries and a concise report. Twelve new paired
 comparisons use Bonferroni-adjusted 95% intervals separately from plot error bars.
 The analysis runs from an independently archived checkout; training stays frozen.
+With `--remote_data_url`, analysis gathers only the second node's compact completed
+run records over its data server, verifies their identities/source, and collects
+both node partitions before computing the comparison. Checkpoints stay on their node.
 
 `publish_adaptive` runs on the Mac, reads only completed small report artifacts
 from the devbox, and updates the existing comparison gist. GitHub credentials

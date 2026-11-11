@@ -27,6 +27,31 @@ class Args(Tap):
     control_url: str = 'http://127.0.0.1:19088'
     resamples: int = 20000
     seed: int = 20261108
+    remote_data_url: str = ''
+
+
+def collect_remote(root: Path, state: dict, url: str, control_url: str) -> None:
+    """Copy compact completed-run records, leaving checkpoints on their node."""
+    names=['config.json','complete.json','metrics.jsonl','transition.json',
+           'wandb-url.txt','validation-prefix.json','test-k8.jsonl','test-k4.jsonl','test-k16.jsonl']
+    for job in state['jobs']:
+        if job['stage']!='confirmation' or job['slot']//8==0:
+            continue
+        assert job['slot']//8==1 and job['status']=='complete'
+        directory=root/'runs'/job['run_id']
+        directory.mkdir(exist_ok=True)
+        for name in names:
+            destination=directory/name
+            temporary=destination.with_suffix(destination.suffix+'.download')
+            with urllib.request.urlopen(url.rstrip('/')+'/results/'+job['run_id']+'/'+name,timeout=60) as response:
+                temporary.write_bytes(response.read())
+            temporary.replace(destination)
+        config=json.loads((directory/'config.json').read_text())
+        assert config['run_id']==job['run_id'] and config['seed']==job['seed']
+        assert config['temperature']==job['temperature'] and config['stage']=='confirmation'
+        assert config['source_revision']==state['source_revision']
+    subprocess.run([sys.executable,'-m','examples.experimental.spec_draft_transition.collect',
+                    '--root',str(root),'--control_url',control_url,'--node','1'],check=True)
 
 
 def audit_switch(directory: Path) -> dict:
@@ -67,6 +92,8 @@ def main(args: Args) -> None:
         time.sleep(15)
     subprocess.run([sys.executable,'-m','examples.experimental.spec_draft_transition.collect',
                     '--root',str(root),'--control_url',args.control_url,'--node','0'],check=True)
+    if args.remote_data_url:
+        collect_remote(root,state,args.remote_data_url,args.control_url)
     report=root/'report'
     sources=[root/'baseline/original',root/'baseline/mixture',report]
     samples=pl.concat([read_shards(source,'samples') for source in sources],how='diagonal_relaxed')
@@ -163,7 +190,7 @@ Frozen Qwen3-4B teacher → pretrained Qwen3-0.6B drafter. Teacher temperatures
 and 2,000 held-out test prompts as the four existing baselines; no entropy filtering.
 Each method uses ten paired confirmation seeds per temperature. Each fit trains
 for 2,000 updates × 16,384 response positions, with independently validation-tuned
-learning rates. New fits run on eight H200 GPUs on shi-h200-2.
+learning rates. New fits run across two eight-H200 boxes, shi-h200-2 and shi-h200-4.
 
 ## New schedule
 
