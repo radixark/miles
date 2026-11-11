@@ -7,9 +7,10 @@ engine. The two jobs share the host's slice, so weights move from trainer to eng
 
 ## Environment
 
-The engine and the trainer share one Python environment. `docker/Dockerfile.tpu` (`python docker/build.py
---variant tpu`, `radixark/miles:dev-tpu`) builds it on sglang-torchtpu's release image with the torch that
-`docker/Dockerfile` uses (the torchtitan backend needs torch >= 2.14). To set it up by hand, on that image:
+The engine and the trainer share one Python environment. `docker/Dockerfile.tpu` builds it on sglang-torchtpu's
+release image with the torch that `docker/Dockerfile` uses (the torchtitan backend needs torch >= 2.14); CI publishes
+it as `radixark/miles:dev-tpu` (see [Image](../../docs/hardware-platforms/google-tpus.md#image)). To set it up by
+hand, on that image:
 
 ```bash
 # the CUDA image's torch (CPU wheel; the image's torch_tpu ships glue for torch 2.11-2.15)

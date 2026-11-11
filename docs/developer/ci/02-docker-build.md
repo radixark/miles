@@ -106,17 +106,18 @@ This path requires `build-fork-ci-image.yml` and its trusted helpers on the defa
 
 ## Rolling Docker build (`docker-build.yml`)
 
-This workflow owns the rolling `dev` / `latest` (CUDA) and `dev-tpu` / `latest-tpu` (TPU) image families. It has three jobs:
+This workflow owns the rolling `dev` / `latest` (CUDA) and `dev-tpu` / `latest-tpu` (TPU) image families. It has four jobs:
 
 - **`check-upstream`** (schedule / `simulate_schedule` only) — polls the inputs the image bakes: the HEAD SHA of sglang `sglang-miles` (`sgl-project/sglang`) and Megatron-LM `miles-main` (`radixark/Megatron-LM`) — the source branches it builds — plus a fingerprint of the selected `radixark/miles-wheels` rolling release, so a rebuilt sgl-router or other wheel also triggers a build (re-uploads to the same tag are caught by fingerprint, not commit SHA). It compares against the values cached from the last build and sets `should_build=true` if any moved. `miles` itself is intentionally not polled — that would rebuild far too often. The cron polls every 10 minutes (off the top of the hour), so an upstream move starts a build within about 30 minutes, and this check is what stops those polls from rebuilding an unchanged image, with one staleness bound: because the image also bakes a `miles` checkout, `should_build` is forced to `true` once the last triggered build is **12h** old, so `dev` never drifts more than half a day behind the `miles` repo even when sglang / Megatron / wheels are quiet. A lookup that still fails after three attempts, or returns a malformed value, fails that poll (the run goes red) without building or saving state, and the next poll retries, so a lookup that keeps failing shows up as red runs rather than silently stopping rebuilds. (The cache file's last line records the epoch of the last triggered build; it is only re-saved when a build fires.)
-- **`build-and-push`** (self-hosted `docker-build` runner) — one matrix job per variant (`cu13` and `tpu` on automatic runs, the picked one on a manual dispatch) calls `docker/build.py` to build + push, then conditionally points that variant's `latest` at its new `dev` and prunes its old timestamped tags. The TPU image's moving inputs are miles and the x86 wheels release, both covered by `check-upstream`, so it shares the cu13 gate.
+- **`push-variants`** (push only) — diffs the push against its `before` commit and picks the variants whose inputs it touched: `cu13` for `docker/Dockerfile` and `docker/verify_transformer_engine.py`, `tpu` for `docker/Dockerfile.tpu` and `docker/tpu_patch/**`, both for `docker/install-kube-tools.sh` and `requirements.txt`. A TPU-only change therefore never rebuilds the multi-arch cu13 image.
+- **`build-and-push`** (self-hosted `docker-build` runner) — one matrix job per variant (`cu13` and `tpu` on a schedule, the `push-variants` pick on a push, the picked one on a manual dispatch) calls `docker/build.py` to build + push, then conditionally points that variant's `latest` at its new `dev` and prunes its old timestamped tags. The TPU image pins its sglang-torchtpu, torch_tpu and torchtitan sources, so its only moving inputs are the baked miles checkout (bounded by the 12h rebuild) and the x86 wheels release (fingerprinted by `check-upstream`); it shares the cu13 gate.
 - **`notify-build-failure`** — when an automatic build (schedule or push) fails, posts one card to the Miles CI Lark group with the failed job and step (`lark_notify.py docker-build-failure`). A failed manual dispatch is not reported.
 
-`build-and-push` runs when `check-upstream` was skipped, or ran and reported `should_build=true`. Automatic builds (schedule, push) share one concurrency group per variant, so each variant builds one at a time and at most one waits; a newer waiting build replaces an older one, and it still builds the newest heads because the Dockerfile clones them when the build starts. Manual dispatches stay outside that group.
+`build-and-push` runs when `check-upstream` was skipped, or ran and reported `should_build=true`, and on a push only after `push-variants` succeeded. Automatic builds (schedule, push) share one concurrency group per variant, so each variant builds one at a time and at most one waits; a newer waiting build replaces an older one, and it still builds the newest heads because the Dockerfile clones them when the build starts. Manual dispatches stay outside that group.
 
 ### Triggers: automatic vs manual
 
-- **Automatic** (no human) — the **schedule** (10-minute poll, gated by `check-upstream`) and any **push to `main` that touches `docker/Dockerfile`, `docker/Dockerfile.tpu`, `docker/tpu_patch/**`, `docker/install-kube-tools.sh`, `docker/verify_transformer_engine.py`, or `requirements.txt`**. Both build `cu13` → `radixark/miles:dev` (multi-arch) and `tpu` → `radixark/miles:dev-tpu` (amd64).
+- **Automatic** (no human) — the **schedule** (10-minute poll, gated by `check-upstream`) and any **push to `main` that touches `docker/Dockerfile`, `docker/Dockerfile.tpu`, `docker/tpu_patch/**`, `docker/install-kube-tools.sh`, `docker/verify_transformer_engine.py`, or `requirements.txt`**. The schedule builds `cu13` → `radixark/miles:dev` (multi-arch) and `tpu` → `radixark/miles:dev-tpu` (amd64); a push builds only the variants whose inputs it touched (see `push-variants` above).
 - **Manual** — `workflow_dispatch` (pick one variant — see Trigger a build yourself below) or running `docker/build.py` locally. The `rubin` and ROCm images (`rocm*-mi35x`, `rocm10-mi30x`) have **no automatic path in this repo** (ROCm nightlies live in sgl-project/sglang) (`cu13-x86` / `cu13-aarch64` just rebuild the same `dev` image single-arch).
 
 `docker/build.py` and `docker/patch/**` participate in PR image validation but are not `main`-push triggers; [Release a Version](/developer/ci/04-release) treats them as manual preflight cases.
@@ -125,7 +126,7 @@ This workflow owns the rolling `dev` / `latest` (CUDA) and `dev-tpu` / `latest-t
 | Trigger                                     | `check-upstream`                   | builds                | `latest` move     | prune      |
 | ------------------------------------------- | ---------------------------------- | --------------------- | ----------------- | ---------- |
 | schedule (10-minute poll)                   | runs; build if upstream moved or last build ≥ 12h ago | `cu13`, `tpu` | yes        | yes |
-| push to `main` touching `docker/Dockerfile`, `docker/Dockerfile.tpu`, `docker/tpu_patch/**`, `docker/install-kube-tools.sh`, `docker/verify_transformer_engine.py`, or `requirements.txt` | skipped                            | `cu13`, `tpu` | no                | no         |
+| push to `main` touching `docker/Dockerfile`, `docker/Dockerfile.tpu`, `docker/tpu_patch/**`, `docker/install-kube-tools.sh`, `docker/verify_transformer_engine.py`, or `requirements.txt` | skipped                            | the touched variants (`push-variants`) | no                | no         |
 | `workflow_dispatch`                         | skipped                            | the one input variant | no                | no         |
 | `workflow_dispatch` + `simulate_schedule`   | runs                               | the one input variant | no                | no         |
 
@@ -168,7 +169,7 @@ gh workflow run docker-build.yml -f variant=cu13-x86 -f image_tag=custom -f cust
 ### Steps (`build-and-push`)
 
 1. checkout → Buildx → install Python + typer → Docker Hub login.
-2. **Build + push** via `build.py` — automatic runs build `cu13` and `tpu` as two matrix jobs; a manual dispatch builds only the one variant you picked.
+2. **Build + push** via `build.py` — a schedule builds `cu13` and `tpu` as two matrix jobs, a push only the variants it touched, and a manual dispatch builds only the one variant you picked.
 3. **schedule only** — point `latest`→`dev` (`latest-tpu`→`dev-tpu` for `tpu`).
 4. **schedule only** — prune that variant's `dev-<timestamp>` or `dev-tpu-<timestamp>` series to the newest 20, keeping every tag younger than 14 days.
 
