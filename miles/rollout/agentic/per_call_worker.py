@@ -16,7 +16,7 @@ from typing import Any
 import httpx
 
 from miles.rollout.agentic.errors import InfraAbort
-from miles.rollout.agentic.remote import call_on_worker
+from miles.rollout.agentic.remote import auth_headers, call_on_worker
 from miles.rollout.agentic.rollout_limits import UNSHARED_ENV_VAR
 
 logger = logging.getLogger(__name__)
@@ -99,7 +99,7 @@ async def _start(start_fn: StartFn, label: str) -> tuple[Callable[[], None], str
 
 async def _wait_healthy(worker_url: str, label: str) -> None:
     deadline = time.monotonic() + _HEALTH_DEADLINE_S
-    async with httpx.AsyncClient(base_url=worker_url, timeout=10) as client:
+    async with httpx.AsyncClient(base_url=worker_url, timeout=10, headers=auth_headers()) as client:
         while True:
             if await _is_healthy(client):
                 return
