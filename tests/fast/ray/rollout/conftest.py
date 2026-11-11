@@ -28,6 +28,7 @@ def make_args(**overrides: Any) -> Namespace:
     router_defaults: dict[str, Any] = vars(parser.parse_args([]))
     defaults: dict[str, Any] = dict(
         # rollout core
+        rollout_data_yaml_config=None,
         rollout_num_gpus=8,
         rollout_num_gpus_per_engine=1,
         eval_num_gpus=0,
@@ -121,6 +122,7 @@ def make_args(**overrides: Any) -> Namespace:
         sglang_server_concurrency=512,
         use_session_server=False,
         use_rollout_routing_replay=False,
+        multimodal_token_space_processing=False,
         sglang_enable_prefill_weight_versions=False,
         session_server_ip=None,
         session_server_external_host=None,

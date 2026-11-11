@@ -11,7 +11,7 @@ from megatron.training.checkpointing import get_checkpoint_tracker_filename, sav
 from megatron.training.training import get_model
 
 from miles.backends.megatron_utils.arguments import set_default_megatron_args
-from miles.backends.megatron_utils.checkpoint import publish_as_release
+from miles.backends.megatron_utils.checkpoint import create_mbridge_for_model, publish_as_release
 from miles.backends.megatron_utils.fp32_param_utils import enforce_marked_param_dtypes
 from miles.backends.megatron_utils.initialize import init
 from miles.backends.megatron_utils.megatron_config import MegatronArgsNamespace
@@ -137,9 +137,6 @@ def _configure_pipeline_parallel(args: Namespace, *, world_size: int) -> None:
 
 
 def main():
-    import miles_plugins.mbridge  # noqa: F401
-    from mbridge import AutoBridge
-
     configure_logger_raw()
 
     # Initialize distributed environment
@@ -169,7 +166,7 @@ def main():
 
     # Load model
     hf_model_path = args.hf_checkpoint
-    bridge = AutoBridge.from_pretrained(hf_model_path, trust_remote_code=True)
+    bridge = create_mbridge_for_model(model, hf_model_path)
 
     with ModelCompanionInstallationUtils.hide(model):
         bridge.load_weights(model, hf_model_path, memory_efficient=True)

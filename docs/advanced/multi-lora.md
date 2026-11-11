@@ -87,8 +87,11 @@ documents failure handling.
 ## Supported models
 
 Multi-LoRA runs on models with [Megatron-Bridge LoRA](/advanced/lora#lora-training-implementations)
-support that SGLang can serve LoRA for, within the constraints below. Models with only
-[native LoRA](/advanced/lora#native-lora) support train a single adapter today.
+support that SGLang can serve LoRA for, within the constraints below. On
+[native LoRA](/advanced/lora#native-lora) (`--megatron-to-hf-mode raw`) the slots cover dense
+projections and lm_head: grouped expert adapters are refused at startup, and so are GDN `in_proj`
+and GLM-5.3 KDA slots under context parallelism. The gateway has not yet been run end to end on
+native.
 
 | Model | Launcher / CI |
 |---|---|
@@ -106,12 +109,13 @@ support that SGLang can serve LoRA for, within the constraints below. Models wit
 
 The trainer rejects a multi-LoRA launch that breaks any of these constraints:
 
-- `--megatron-to-hf-mode bridge`: the adapter slots are Megatron-Bridge adapters.
+- On native LoRA (`--megatron-to-hf-mode raw`): no expert adapters, and context parallel size 1 for GDN
+  `in_proj` / GLM-5.3 KDA slots.
 - Separate training and sampling GPUs: no `--colocate` and no `--offload-train`,
   because each adapter's gradients stay in GPU buffers between calls.
 - `--pipeline-model-parallel-size 1` and `--qkv-format thd`.
 - Adam optimizer in BF16, without the distributed optimizer.
-- For adapters on MoE experts: grouped-GEMM experts, expert tensor parallel size 1,
+- On Bridge, for adapters on MoE experts: grouped-GEMM experts, expert tensor parallel size 1,
   BF16 experts (no FP8/FP4 training), and all of `gate_proj`, `up_proj` and
   `down_proj` targeted. The rollout engines may still serve a quantized base.
 - SGLang without attention DP, and with one tokenizer worker.
@@ -135,12 +139,18 @@ cookbook only requires `tinker>=0.35`, so install the SDK pin explicitly. It sup
   [Context window](/examples/multi-lora#context-window)). Outputs are sampled
   tokens with their logprobs, `prompt_logprobs`, and `topk_prompt_logprobs`.
 
-Checkpoint download (`save_weights_external`, `get_external_weights_urls`) is not
-served.
+- Checkpoints: `ttl_seconds` on every save, `set_checkpoint_ttl`, and
+  `delete_checkpoint`. Expired checkpoints are deleted by the gateway.
+- Download: `save_weights_external` (the official Tinker format, F32 from the
+  trainer's fp32 masters, optionally age-encrypted to `age1...` or `ssh-...`
+  recipients) and `get_external_weights_urls`, whose URLs carry no credential,
+  last at most an hour, and stop working once the checkpoint is deleted or the
+  gateway restarts (sign them again). Behind a TLS or path-prefix ingress, set
+  `--tinker-public-url` to the URL clients reach; by default URLs use the one
+  each request arrived at.
 
-Cookbook recipes default to a 7-day checkpoint TTL, which the gateway does not
-serve; pass `ttl_seconds=None`. `rl_loop` also defaults to the `stable_reinforce`
-loss; pass `loss_fn="importance_sampling"` (or `"cispo"`).
+`rl_loop` defaults to the `stable_reinforce` loss; pass
+`loss_fn="importance_sampling"` (or `"cispo"`).
 
 Futures, model leases, and request deduplication live in gateway memory and do
 not survive a restart; saved checkpoints do.

@@ -33,7 +33,7 @@ def _tower_keys_by_shard(hf_checkpoint: str) -> dict[str, list[str]]:
 
 
 @functools.cache
-def _load_towers(hf_checkpoint: str) -> tuple[tuple[str, torch.Tensor], ...]:
+def load_checkpoint_towers(hf_checkpoint: str) -> tuple[tuple[str, torch.Tensor], ...]:
     towers = []
     for shard, keys in sorted(_tower_keys_by_shard(hf_checkpoint).items()):
         with safe_open(os.path.join(hf_checkpoint, shard), framework="pt", device="cpu") as f:
@@ -44,5 +44,5 @@ def _load_towers(hf_checkpoint: str) -> tuple[tuple[str, torch.Tensor], ...]:
 def iter_checkpoint_tower_units(hf_checkpoint: str, *, materialize: bool):
     if not materialize:
         return
-    for name, tensor in _load_towers(hf_checkpoint):
+    for name, tensor in load_checkpoint_towers(hf_checkpoint):
         yield [(name, tensor.to(current_platform.current_device()))]

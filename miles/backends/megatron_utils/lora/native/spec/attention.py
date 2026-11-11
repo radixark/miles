@@ -215,6 +215,7 @@ class Glm5NextAttentionSpec(MLAAttentionSpec):
 
     def attach(self, block: nn.Module, layer: nn.Module, context: AttachContext) -> int:
         if hasattr(block, "kda"):  # config-access-exempt: only KDA layers carry the HF-style KDA module
+            L.assert_no_slots_under_cp_relayout(context)
             return attach_layout(block.kda, self.kda_layout, layer, context)
         return attach_layout(block, self.layout, layer, context)
 
@@ -355,7 +356,7 @@ class DeepSeekV41AttentionSpec(AttentionSpecBase):
             in_features=weight.shape[1],
             out_features=weight.shape[0],
         )
-        attach_adapter_forward(block.o_group_matmul, block.lora_o_a_adapter, context.lora.scale)
+        attach_adapter_forward(block.o_group_matmul, block.lora_o_a_adapter)
         return count + 1
 
 

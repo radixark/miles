@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 
 from miles.backends.megatron_utils.lora.native.distributed import apply_lora_dropout
-from miles.backends.megatron_utils.lora.native.modules.linear import LoRASplitAdapter
+from miles.backends.megatron_utils.lora.native.modules.linear import LoRASplitAdapter, NativeMultiLoRAAdapter
 from miles.backends.megatron_utils.lora.native.spec.base import AttachContext, ProjectionSpec
 
 
@@ -82,15 +82,15 @@ class LoRAGDNInProj(LoRASplitAdapter):
         return self.context.lora.scale * delta
 
 
-def attach_projection_delta(gdn: nn.Module, adapter: LoRAGDNInProj, scale: float) -> None:
-    """Add ``scale * adapter(x)`` to the GDN's q/k/v, z, b and a projections, which ``project`` computes."""
+def attach_projection_delta(gdn: nn.Module, adapter: LoRAGDNInProj | NativeMultiLoRAAdapter) -> None:
+    """Add the adapter's delta to the GDN's q/k/v, z, b and a projections, which ``project`` computes."""
     original = gdn.project
 
     def project(x):
         projections = original(x)
         deltas = adapter(x, gdn).split(gdn.in_proj_widths, dim=-1)
         return type(projections)(
-            *(torch.add(projection, delta, alpha=scale) for projection, delta in zip(projections, deltas, strict=True))
+            *(adapter.add_delta(projection, delta) for projection, delta in zip(projections, deltas, strict=True))
         )
 
     gdn.project = project

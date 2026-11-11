@@ -149,11 +149,10 @@ class TestTrainParallelConfigWiring:
             ),
         )
 
-        await placement_group.create_training_models(
-            args,
-            rollout_executor=rollout_executor,
-            handles={trainer_config.trainer_id: actor_handle},
+        actor_model, _ = await placement_group.init_training_models(
+            args, handles={trainer_config.trainer_id: actor_handle}
         )
+        await placement_group.attach_trainers_to_rollout(args, rollout_executor, actor_model)
 
         assert rollout_executor.received_config is train_parallel_config
 
