@@ -13,9 +13,8 @@ from run_muse_spark_64xh200 import ScriptArgs  # noqa: E402
 # Smoke test of Muse Spark Open on the last-four-layer partial on one node: download and torch_dist conversion,
 # then three rollout/train/sync cycles with the --ci-test KL and routing-replay checks and the post-update weight
 # check.
-# est_time is an upper bound until a /rerun-test run measures it.
 register_cuda_ci(
-    est_time=2400,
+    est_time=840,
     suite="stage-c-4-gpu-h200",
     labels=["megatron", "model-scripts"],
     hardware=["hopper"],
