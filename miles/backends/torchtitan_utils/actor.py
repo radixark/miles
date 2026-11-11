@@ -16,6 +16,7 @@ from miles.backends.torchtitan_utils.optimizer_state_on_disk import setup_adam_s
 from miles.backends.torchtitan_utils.parallel import create_titan_parallel_state, parallelism_context_from_config
 from miles.backends.torchtitan_utils.routing_replay import install as install_routing_replay
 from miles.backends.torchtitan_utils.trainer import TitanTrainer
+from miles.backends.training_utils.loss.hub.response_layout import response_layout_type
 from miles.backends.training_utils.parallel import get_parallel_state, set_parallel_state
 from miles.backends.training_utils.replay.routing_replay import enable as enable_routing_replay
 from miles.backends.training_utils.torch_native.actor import TorchNativeTrainRayActor
@@ -91,7 +92,9 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
         self.model_parts = self.trainer.model_parts
         self.optimizers = self.trainer.optimizers.optimizers
         self.align_token_side_channel = self.trainer.align_token_side_channel
-        self.trainer.configure_loss_reduction()
+        self.trainer.configure_loss_reduction(
+            layout_scores_logit_row_shards=response_layout_type(args).scores_logit_row_shards
+        )
         # actor train and actor log-probs differ in grad mode; the frozen ref model differs in requires_grad
         self.trainer.configure_fixed_shape_compile(num_passes=2 + int(with_ref))
         set_parallel_state(
@@ -169,7 +172,9 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
             raise ValueError("--ref-load is required to build a torchtitan reference model")
         ref_config = build_trainer_config(args, hf_assets_path=args.ref_load, lr_total_steps=1, dump_subdir="ref")
         ref_trainer = TitanTrainer(ref_config, parallelism=self.trainer.parallelism)
-        ref_trainer.configure_loss_reduction()
+        ref_trainer.configure_loss_reduction(
+            layout_scores_logit_row_shards=response_layout_type(args).scores_logit_row_shards
+        )
         ref_trainer.engine.load_checkpoint()
         for part in ref_trainer.model_parts:
             part.eval()

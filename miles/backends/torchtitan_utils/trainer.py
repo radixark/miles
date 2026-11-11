@@ -239,7 +239,7 @@ class TitanTrainer(Configurable):
             grad_norm=float(grad_norm.item()), extra_metrics=self.engine.optim.lr_schedulers.get_metrics()
         )
 
-    def configure_loss_reduction(self) -> None:
+    def configure_loss_reduction(self, *, layout_scores_logit_row_shards: bool) -> None:
         dims = self.parallelism
         self.loss_fn.set_gradient_scale(1.0 / (dims.dp_replicate * dims.dp_shard * dims.cp))
         if not dims.cp_enabled:
@@ -248,7 +248,9 @@ class TitanTrainer(Configurable):
             torch._dynamo.config.recompile_limit,
             2 * (self.config.training.max_context_length // _CP_LENGTH_BUCKET + 1),
         )
-        self.loss_fn.set_context_parallel(self.parallelism.get_mesh("cp"))
+        self.loss_fn.set_context_parallel(
+            self.parallelism.get_mesh("cp"), gather_logits=not layout_scores_logit_row_shards
+        )
 
     def configure_fixed_shape_compile(self, *, num_passes: int) -> None:
         """Each pass compiles once per length bucket; fullgraph blocks fail past dynamo's recompile limit."""
