@@ -55,9 +55,9 @@ curl -fsSL https://github.com/kvcache-ai/AgentENV/releases/latest/download/insta
 
 The script installs into `/usr/local/bin` when it can write there and into
 `~/.local/bin` otherwise. When the workers' `PATH` has neither, give the script
-a directory it does have, as `| INSTALL_DIR=<dir> bash`. The launcher refuses
-to start without a new enough `aenv` on its own `PATH`, but it cannot check
-other nodes.
+a directory it does have, as `| INSTALL_DIR=<dir> bash`. Without a new enough
+`aenv` on its `PATH`, the launcher refuses to start and a rollout worker stops
+the run before its first trial.
 
 Task directories: `HARBOR_TASKS_DIR` must contain one Harbor task dir per
 `metadata.instance_id` in the training data (same as the agent-server example);

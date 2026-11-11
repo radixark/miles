@@ -12,6 +12,7 @@ from miles.rollout.session.samples.codec import SamplesReply
 from miles.rollout.session.types import SessionServerInstance
 from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY
 from miles.utils.output_store.plan import StorePlanError
+from miles.utils.retry_utils import NonRetryableError
 from miles.utils.types import Sample
 
 
@@ -305,4 +306,31 @@ async def test_collection_error_propagates(monkeypatch, error_type):
     _patch_agent(monkeypatch, tracer)
 
     with pytest.raises(error_type, match="samples unavailable"):
+        await agentic_tool_call.generate(_generate_input())
+
+
+@pytest.mark.asyncio
+async def test_a_failing_agent_aborts_only_its_sample(monkeypatch):
+    tracer = _Tracer(SamplesReply(samples=[], session_metadata={}, empty_reason="no_records"))
+    _patch_agent(monkeypatch, tracer)
+
+    async def failing_agent(**kwargs):
+        raise RuntimeError("sandbox exploded")
+
+    monkeypatch.setattr(agentic_tool_call, "load_function", lambda path: failing_agent)
+    (sample,) = (await agentic_tool_call.generate(_generate_input())).samples
+    assert sample.status == Sample.Status.ABORTED
+
+
+@pytest.mark.asyncio
+async def test_an_agent_nonretryable_error_reaches_the_rollout_loop(monkeypatch):
+    """A setup that fails every sample must stop the rollout; aborting each sample refills the batch forever."""
+    tracer = _Tracer(SamplesReply(samples=[], session_metadata={}, empty_reason="no_records"))
+    _patch_agent(monkeypatch, tracer)
+
+    async def misconfigured_agent(**kwargs):
+        raise NonRetryableError("aenv is not on PATH")
+
+    monkeypatch.setattr(agentic_tool_call, "load_function", lambda path: misconfigured_agent)
+    with pytest.raises(NonRetryableError, match="aenv is not on PATH"):
         await agentic_tool_call.generate(_generate_input())
