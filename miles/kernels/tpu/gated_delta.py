@@ -161,9 +161,11 @@ class _ChunkRecurrence(torch.autograd.Function):
             return next_state, (q_n @ state + a_qk_n @ v_new, state.clone())  # scan outputs may not alias the carry
 
         initial = q.new_zeros(q.shape[0], q.shape[-1], u.shape[-1])
-        _, (out, states) = scan(step, initial, (u, w, q, a_qk, k_to_last_T, decay), dim=1)
-        ctx.save_for_backward(u, w, q, a_qk, k_to_last_T, decay, states)
-        return out
+        # scan chunk-first: torch 2.11 stacks scan outputs on dim 0 whatever `dim` is, later versions on `dim`
+        chunks = tuple(x.movedim(1, 0) for x in (u, w, q, a_qk, k_to_last_T, decay))
+        _, (out, states) = scan(step, initial, chunks)
+        ctx.save_for_backward(u, w, q, a_qk, k_to_last_T, decay, states.movedim(0, 1))
+        return out.movedim(0, 1)
 
     @staticmethod
     def backward(ctx, d_out):
