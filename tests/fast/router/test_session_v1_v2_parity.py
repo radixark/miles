@@ -95,12 +95,11 @@ def test_aborted_generation_is_not_committed(version):
             assert response.json() == {"error": "upstream generation aborted before completion"}
             session = requests.get(f"{session_url}/sessions/{session_id}", timeout=5.0).json()
             assert session["records"] == []
-            assert session["metadata"]["backend_failures"] == 1
             assert session["metadata"]["last_model_call_failed"] is True
 
 
 @pytest.mark.parametrize("version", [V1, V2])
-def test_session_counts_backend_failures_and_whether_the_last_call_failed(version):
+def test_session_flags_whether_the_last_model_call_failed(version):
     outcomes = iter(["ok", "fail", "reject", "fail", "ok"])
 
     def engine(_prompt: str) -> ProcessResult:
@@ -116,14 +115,14 @@ def test_session_counts_backend_failures_and_whether_the_last_call_failed(versio
             session_url, session_id = _new_session(args)
             seen = [_chat_and_read_failures(session_url, session_id) for _ in range(5)]
 
-    assert seen == [(200, 0, False), (500, 1, True), (400, 1, False), (500, 2, True), (200, 2, False)]
+    assert seen == [(200, False), (500, True), (400, False), (500, True), (200, False)]
 
 
 @pytest.mark.parametrize("version", [V1, V2])
 def test_unreachable_backend_counts_as_a_backend_failure(version):
     backend_url = f"http://127.0.0.1:{find_available_port(32000)}"
     with _serve_session(backend_url=backend_url, hf_checkpoint=_MODEL, version=version) as args:
-        assert _chat_and_read_failures(*_new_session(args)) == (502, 1, True)
+        assert _chat_and_read_failures(*_new_session(args)) == (502, True)
 
 
 @pytest.mark.parametrize("version", [V1, V2])
@@ -135,11 +134,11 @@ def test_a_rejected_request_after_an_engine_failure_is_the_last_call(version, ro
     with with_mock_server(model_name=_MODEL, process_fn=engine) as backend:
         with _serve_session(backend_url=backend.url, hf_checkpoint=_MODEL, version=version) as args:
             session_url, session_id = _new_session(args)
-            assert _chat_and_read_failures(session_url, session_id) == (500, 1, True)
+            assert _chat_and_read_failures(session_url, session_id) == (500, True)
             rejected = requests.post(f"{session_url}/sessions/{session_id}/{route}", data=b"{", timeout=10.0)
             metadata = requests.get(f"{session_url}/sessions/{session_id}", timeout=5.0).json()["metadata"]
 
-    assert (rejected.status_code, metadata["backend_failures"], metadata["last_model_call_failed"]) == (400, 1, False)
+    assert (rejected.status_code, metadata["last_model_call_failed"]) == (400, False)
 
 
 @pytest.mark.parametrize("version", [V1, V2])
@@ -170,7 +169,7 @@ def test_a_malformed_engine_reply_counts_as_a_backend_failure(version, reply):
     finally:
         backend.stop()
 
-    assert (metadata["backend_failures"], metadata["last_model_call_failed"]) == (1, True)
+    assert metadata["last_model_call_failed"] is True
 
 
 def _new_session(args) -> tuple[str, str]:
@@ -178,14 +177,14 @@ def _new_session(args) -> tuple[str, str]:
     return session_url, requests.post(f"{session_url}/sessions", timeout=5.0).json()["session_id"]
 
 
-def _chat_and_read_failures(session_url: str, session_id: str) -> tuple[int, int, bool]:
+def _chat_and_read_failures(session_url: str, session_id: str) -> tuple[int, bool]:
     response = requests.post(
         f"{session_url}/sessions/{session_id}/v1/chat/completions",
         json={"messages": [{"role": "user", "content": "hello"}]},
         timeout=10.0,
     )
     metadata = requests.get(f"{session_url}/sessions/{session_id}", timeout=5.0).json()["metadata"]
-    return response.status_code, metadata["backend_failures"], metadata["last_model_call_failed"]
+    return response.status_code, metadata["last_model_call_failed"]
 
 
 @pytest.mark.parametrize("random_tool_ids", [False, True])
