@@ -24,7 +24,7 @@ from typing import Any, BinaryIO, NoReturn
 
 from miles.rollout.agentic import rollout_limits
 from miles.rollout.agentic.errors import InfraAbort, RemoteTraceback
-from miles.rollout.agentic.remote import call_on_worker
+from miles.rollout.agentic.remote import SECRET_ENV_VAR, SECRET_FILE_ENV_VAR, call_on_worker
 from miles.utils.logging_utils import configure_logger_raw
 from miles.utils.retry_utils import NonRetryableError
 
@@ -190,7 +190,15 @@ async def _place(
         str(os.getpid()),
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
-        env={**os.environ, rollout_limits.SCOPE_ENV_VAR: rollout_limits.current_scope(), **(extra_env or {})},
+        env={
+            name: value
+            for name, value in {
+                **os.environ,
+                rollout_limits.SCOPE_ENV_VAR: rollout_limits.current_scope(),
+                **(extra_env or {}),
+            }.items()
+            if name not in (SECRET_ENV_VAR, SECRET_FILE_ENV_VAR)
+        },
     )
     try:
         await _send_call(proc, call)
