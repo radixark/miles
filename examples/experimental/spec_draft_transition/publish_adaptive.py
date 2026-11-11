@@ -23,9 +23,12 @@ def github_token() -> str:
     if token:
         return token
     result = subprocess.run(['git','credential','fill'],input='protocol=https\nhost=github.com\n\n',
-                            text=True,capture_output=True,check=True)
+                            env={**os.environ,'GIT_TERMINAL_PROMPT':'0'},
+                            text=True,capture_output=True,check=False,timeout=20)
     fields=dict(line.split('=',1) for line in result.stdout.splitlines() if '=' in line)
-    return fields['password']
+    if result.returncode==0 and fields.get('password'):
+        return fields['password']
+    return subprocess.check_output(['gh','auth','token'],text=True,timeout=20).strip()
 
 
 def github(payload: dict | None = None) -> dict:
