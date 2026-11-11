@@ -616,6 +616,11 @@ On TPU each transformer block is compiled with `torch.compile(fullgraph=True)`, 
 padded to power-of-two lengths up to `--seq-length`, and `--max-tokens-per-gpu` may not exceed
 `--seq-length` (`miles/backends/torchtitan_utils/arguments.py`). `scripts/tpu/README.md` runs it.
 
+`--titan-fsdp-gather-once` sets torchtitan's `fsdp_reshard_after_forward="never"` and
+`fsdp_defer_gradient_reduction`: FSDP all-gathers the parameters once per pass and
+reduce-scatters the gradients once per step instead of once per microbatch, at the cost of
+holding the full parameters and gradients on every rank. Pipeline parallelism refuses it.
+
 ### 4. Getting weights in and out
 
 Nothing to configure: weights are streamed to SGLang under HF names through the model's own

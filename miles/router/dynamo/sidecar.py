@@ -1,9 +1,39 @@
 import json
+import os
+import shlex
 from sglang.srt.server_args import ServerArgs
 from miles.backends.sglang_utils.sglang_config import ServerGroupConfig, SglangConfig
 from miles.router.dynamo.config import Address
-from miles.router.dynamo.frontend import launch_args
+from miles.router.dynamo.frontend import launch_args, runtime_env
 from miles.utils.workers.argv_utils import _record_field_names
+from miles.utils.workers.worker_spec import PortInfo
+
+
+def sidecar_ports(*, dp_size: int) -> list[PortInfo]:
+    return [
+        PortInfo(name="dynamo_grpc", static_port=14000, allow_dynamic=True),
+        PortInfo(name="dynamo_system", static_port=15000, allow_dynamic=True),
+        # SGLang adds dp_rank to the KV-event publisher endpoint on each rank.
+        PortInfo(name="dynamo_kv", static_port=16000, allow_dynamic=True, num_consecutive=dp_size),
+    ]
+
+
+def sidecar_env(config, *, api_key: str | None) -> dict[str, str]:
+    return runtime_env(
+        config,
+        inherited_env=os.environ,
+        options=config.sidecar,
+        managed_env={
+            "DYN_SGLANG_CONTROLLER_MANAGED": "true",
+            "DYN_SGLANG_UNREGISTER_ON_PAUSE": "true",
+            "DYN_SGLANG_API_KEY": api_key,
+            "DYN_COMPONENT": "backend",
+            "DYN_ENDPOINT": "generate",
+            "DYN_SYSTEM_HOST": None,
+            "DYN_SYSTEM_PORT": None,
+            "DYN_SYSTEM_STARTING_HEALTH_STATUS": "notready",
+        },
+    )
 
 
 def sidecar_overrides(config, *, sglang: SglangConfig, group: ServerGroupConfig, ctx) -> dict:
@@ -41,3 +71,15 @@ def sidecar_overrides(config, *, sglang: SglangConfig, group: ServerGroupConfig,
     if sglang.get_value("grpc_mode", group=group) or sglang.get_value("smg_grpc_mode", group=group):
         raise ValueError("Dynamo needs native --grpc-port alongside HTTP, not legacy gRPC mode")
     return {**group.overrides, **managed}
+
+
+def sidecar_command(command: str, *, ctx) -> str:
+    # Listener addresses are allocated after env_var; env exec preserves the native process lifecycle.
+    return shlex.join(
+        [
+            "env",
+            f"DYN_SYSTEM_PORT={ctx.self_addrs['dynamo_system'].port}",
+            f"DYN_SYSTEM_HOST={ctx.self_addrs['dynamo_system'].host.strip('[]')}",
+            *shlex.split(command),
+        ]
+    )

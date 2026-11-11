@@ -38,7 +38,12 @@ two jobs share the slice.
 The first step of a run compiles the trainer's programs, about 20-30 minutes. The trainer's ranks share each compiled
 program, and `--compile-cache-dir <dir>` keeps them across runs, so a rerun with the same model and settings starts
 its first step in seconds. Use a fresh directory for each torch_tpu build: the cache key covers the graph, shapes,
-compiler options, libtpu and kernel bodies, but not torch_tpu's own lowering code.
+compiler options, libtpu and kernel bodies, but not torch_tpu's own lowering code. The launcher also passes
+`--compile-warmup` (`--no-compile-warmup` turns it off): the trainer compiles its passes on a synthetic batch per
+length bucket at the end of its init, while the engine starts, so a cold run's first step no longer waits for them.
+With the launcher's settings (Qwen3-4B, sequence length 8192, the smoke recipe) a cold run's step 0 ends 34:40 after
+launch instead of 40:48, and the step itself takes 16 s instead of 31 min; the warmup's four buckets take 32 min of
+the trainer's init.
 
 ## Run
 
@@ -50,9 +55,10 @@ One launcher per model, each with the same `sglang` and `train` commands:
 | `run_qwen3_30b_a3b_torchtitan.py` | Qwen3-30B-A3B | params, grads and Adam on the host (`--optimizer-cpu-offload`), ~120 GB of host RAM per trainer process |
 | `run_glm4_7_flash_4layer_torchtitan.py` | GLM-4.7-Flash cut to its first 4 layers (`tools/prune_hf_layers.py`) | Adam on the device |
 
-The MoE trainers keep every expert on each rank (EP 1); sglang serves them with EP 4. Neither MoE launcher has
-run on TPU with the current engine flags (batched RPA, page 256, seq-along-lane KV, 128 running requests), which
-were validated on Qwen3-4B only; GLM's MLA backend is the least certain. Model and data
+The MoE trainers keep every expert on each rank (EP 1); sglang serves them with EP 4. Both MoE launchers run the
+smoke recipe end to end on one v7x 2x2x1 host (cold compile caches; steps 1-2): Qwen3-30B-A3B at 266-313 s a step
+with 14 s weight syncs, GLM-4.7-Flash 4-layer at 80-82 s with 0.6-0.9 s syncs. The GLM engine traces with dynamo:
+the direct tracer aborts the MLA backend at startup. Model and data
 default to `/root/models` and `/root/datasets` (`--model-dir`, `--data-dir`); `train` downloads the
 model, dapo-math-17k and aime-2024 there if missing. The GLM launcher serves the cut checkpoint, so run its
 `prepare` before `sglang`. The steps below use Qwen3-4B.
@@ -76,6 +82,11 @@ model, dapo-math-17k and aime-2024 there if missing. The GLM launcher serves the
    Pass extra `train.py` flags through `--extra-args`.
 
 wandb is on when `WANDB_API_KEY` is set.
+
+`--extra-args "--titan-fsdp-reduce-dtype bfloat16 --no-titan-fsdp-gather-once"` reduce-scatters FSDP's
+gradients in bfloat16, halving the reduce buffers and the bytes over ICI. The Qwen3-4B launcher passes
+`--titan-fsdp-gather-once`, which reduces once per step and would accumulate microbatch gradients in the
+reduce dtype, so the two are refused together.
 
 ## Notes
 

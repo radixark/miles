@@ -188,6 +188,16 @@ class TrainConfig(BaseConfig):
         ),
     ] = False
     allgather_cp: A[bool, Arg()] = False
+    compile_warmup: A[
+        bool,
+        Arg(
+            help=(
+                "Compile every training pass for every length bucket on a synthetic batch at the end of the "
+                "trainer's init, while the rollout engines start, instead of during the first train step. For "
+                "platforms that compile one program per static shape (TPU)."
+            )
+        ),
+    ] = False
     mfu_peak_tflops: A[
         float | None,
         Arg(

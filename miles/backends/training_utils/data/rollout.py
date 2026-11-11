@@ -21,7 +21,7 @@ from miles.backends.training_utils.data.token_space_media_process import (
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.platforms import current_platform
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
-from miles.utils.data import get_minimum_num_micro_batch_size, process_rollout_data
+from miles.utils.data import get_minimum_num_micro_batch_size, padded_token_count, process_rollout_data
 from miles.utils.dp_schedule import TrainParallelConfig
 from miles.utils.ft_utils.process_group_utils import GeneralPGUtil
 from miles.utils.object_store import ObjectStoreGetResult
@@ -55,19 +55,33 @@ def get_rollout_data(
 
     `sample_device` defaults to the accelerator; `PaddedRows` keeps them on the host.
     """
-    if sample_device is None:
-        sample_device = current_platform.current_device()
-    parallel_state = get_parallel_state()
     # Fetch data through ray on CPU, not sure if this will be performance bottleneck.
     # Both first pp stage and the last pp stage will receive the data.
     rollout_data, store_get_result = process_rollout_data(
         args,
         rollout_data_ref,
-        dp_rank=parallel_state.effective_dp.rank,
+        dp_rank=get_parallel_state().effective_dp.rank,
         train_parallel_config=train_parallel_config,
         witness_info=witness_info,
         output_store_read=output_store_read,
     )
+    rollout_data = prepare_rollout_data(
+        args, rollout_data, sample_device=sample_device, token_space_processor=token_space_processor
+    )
+    return rollout_data, store_get_result
+
+
+def prepare_rollout_data(
+    args: Namespace,
+    rollout_data: RolloutBatch,
+    *,
+    sample_device: torch.device | None = None,
+    token_space_processor: TrainerProcessor | None = None,
+) -> RolloutBatch:
+    """This rank's shard, with its per-sample lists as tensors; see `get_rollout_data` for `sample_device`."""
+    if sample_device is None:
+        sample_device = current_platform.current_device()
+    parallel_state = get_parallel_state()
     rollout_data["tokens"] = [torch.tensor(t, dtype=torch.long, device=sample_device) for t in rollout_data["tokens"]]
     rollout_data["loss_masks"] = [
         torch.tensor(t, dtype=torch.int, device=sample_device) for t in rollout_data["loss_masks"]
@@ -154,7 +168,7 @@ def get_rollout_data(
         rollout_data["rollout_routed_experts"] = [torch.from_numpy(r) for r in rollout_data["rollout_routed_experts"]]
     if "rollout_indexer_topk" in rollout_data:
         rollout_data["rollout_indexer_topk"] = [torch.from_numpy(r) for r in rollout_data["rollout_indexer_topk"]]
-    return rollout_data, store_get_result
+    return rollout_data
 
 
 def _prepare_loss_masks(
@@ -317,7 +331,7 @@ def get_batch(
             tokens = torch.cat(tokens)
 
             # Always pad to reduce memory fragmentation and maybe make the computation faster
-            pad = (pad_size - tokens.size(0) % pad_size) % pad_size
+            pad = padded_token_count(tokens.size(0), pad_size) - tokens.size(0)
             if pad != 0:
                 tokens = F.pad(tokens, (0, pad), value=pad_token_id)
                 cu_seqlens.append(cu_seqlens[-1] + pad)

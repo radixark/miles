@@ -2003,6 +2003,9 @@ def miles_validate_args(args):
     if args.skip_actor_forward_only:
         validate_skip_actor_forward_only(args)
 
+    if args.compile_warmup:
+        validate_compile_warmup(args)
+
     validate_score_centering_args(args)
 
     _maybe_apply_dumper_overrides(args)
@@ -2073,6 +2076,44 @@ def validate_skip_actor_forward_only(args) -> None:
             f"{option} requires exactly one optimizer step for {samples_per_rollout} rollout samples; "
             f"got --global-batch-size {args.global_batch_size}"
         )
+
+
+def validate_compile_warmup(args) -> None:
+    """The warmup batch is plain text that each DP rank packs into one microbatch of a separate trainer."""
+    option = "--compile-warmup"
+    if args.train_backend != "torchtitan":
+        raise ValueError(f"{option} only supports --train-backend torchtitan")
+    if not args.use_dynamic_batch_size:
+        raise ValueError(
+            f"{option} packs each DP rank's samples into one microbatch: it needs --use-dynamic-batch-size"
+        )
+    incompatible_options = [
+        name
+        for name, enabled in (
+            ("--colocate", args.colocate),
+            ("--pipeline-model-parallel-size", args.pipeline_model_parallel_size > 1),
+            ("--context-parallel-size", args.context_parallel_size > 1),
+            ("--multimodal-keys", args.multimodal_keys is not None),
+            ("--multimodal-token-space-processing", args.multimodal_token_space_processing),
+            ("--use-rollout-routing-replay", args.use_rollout_routing_replay),
+            ("--use-routing-replay", args.use_routing_replay),
+            ("--use-opd", args.use_opd),
+            ("--use-critic", args.use_critic),
+            ("--enable-witness", args.enable_witness),
+            ("--enable-sample-ownership-checker", args.enable_sample_ownership_checker),
+            ("--use-dynamic-global-batch-size", args.use_dynamic_global_batch_size),
+            ("--rollout-top-logprobs-num", args.rollout_top_logprobs_num > 0),
+            ("--rollout-top-p below 1 or a positive --rollout-top-k", args.use_sampling_support_replay),
+            (
+                "--custom-convert-samples-to-train-data-path",
+                args.custom_convert_samples_to_train_data_path is not None,
+            ),
+            ("--custom-reward-post-process-path", args.custom_reward_post_process_path is not None),
+        )
+        if enabled
+    ]
+    if incompatible_options:
+        raise ValueError(f"{option} is incompatible with: {', '.join(incompatible_options)}")
 
 
 def validate_async_off_policy_correction(args) -> None:

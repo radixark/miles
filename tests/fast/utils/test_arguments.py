@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 import pytest
 import torch
-from tests.fast.fixtures.args_fixtures import parse_megatron_test_config
+from tests.fast.fixtures.args_fixtures import parse_megatron_test_config, parser_defaults
 from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config, write_megatron_config_trainers
 from tests.fast.fixtures.sglang_config_fixtures import make_sglang_config
 
@@ -52,6 +52,7 @@ from miles.utils.arguments import (
     resolve_rollout_function_paths,
     supports_partial_target_weight_update,
     validate_async_off_policy_correction,
+    validate_compile_warmup,
     validate_log_probs_backend_args,
     validate_miles_ext_kernels_args,
     validate_skip_actor_forward_only,
@@ -2787,6 +2788,13 @@ class TestTitoFixedTemplateConfiguration:
         assert args.chat_template_path.endswith("/qwen3_fixed.jinja")
         assert args.apply_chat_template_kwargs == {"clear_thinking": False}
 
+    def test_muse_spark_resolves_family(self):
+        args = self._parse(["--use-session-server", "--tito-model", "muse_spark"])
+        miles_validate_args(args)
+        assert args.chat_template_path.endswith("/muse_spark_fixed.jinja")
+        assert args.sglang_chat_template == args.chat_template_path
+        assert args.apply_chat_template_kwargs == {}
+
     @pytest.mark.parametrize(
         ("family", "template"),
         [("qwen35", "qwen3.5_fixed.jinja"), ("qwen36", "qwen3.6_fixed.jinja")],
@@ -4429,6 +4437,49 @@ class TestLoRATypeResolution:
         args = self._parse(tmp_path, ["--megatron-to-hf-mode", "raw", "--lora-type", "lora"])
         with pytest.raises(AssertionError, match="--lora-type lora shares one lora_A"):
             validate_lora_args_after_megatron(args)
+
+
+def _compile_warmup_args(**overrides) -> SimpleNamespace:
+    defaults = dict(
+        train_backend="torchtitan",
+        use_dynamic_batch_size=True,
+        pipeline_model_parallel_size=1,
+        context_parallel_size=1,
+    )
+    return SimpleNamespace(**{**parser_defaults(), **defaults, **overrides})
+
+
+class TestValidateCompileWarmup:
+    def test_the_torchtitan_parse_path_reads_every_argument_it_checks(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(torch, "__version__", "2.14.0")  # the backend's floor; CI's torch is older
+        argv = ["test", "--train-backend", "torchtitan", "--rollout-batch-size", "2", "--num-rollout", "1"]
+        argv += ["--actor-num-gpus-per-node", "1", "--rollout-max-response-len", "1024"]
+        argv += ["--use-dynamic-batch-size", "--max-tokens-per-gpu", "4096", "--compile-warmup"]
+        monkeypatch.setattr(sys, "argv", argv)
+
+        args, _ = parse_args_and_get_parser()
+
+        assert args.compile_warmup
+
+    @pytest.mark.parametrize(
+        ("overrides", "flag"),
+        [
+            ({"train_backend": "fsdp"}, "--train-backend torchtitan"),
+            ({"use_dynamic_batch_size": False}, "--use-dynamic-batch-size"),
+            ({"colocate": True}, "--colocate"),
+            ({"pipeline_model_parallel_size": 2}, "--pipeline-model-parallel-size"),
+            ({"multimodal_token_space_processing": True}, "--multimodal-token-space-processing"),
+            ({"use_rollout_routing_replay": True}, "--use-rollout-routing-replay"),
+            ({"use_critic": True}, "--use-critic"),
+            ({"custom_convert_samples_to_train_data_path": "x.py"}, "--custom-convert-samples-to-train-data-path"),
+            ({"custom_reward_post_process_path": "x.py"}, "--custom-reward-post-process-path"),
+        ],
+    )
+    def test_a_run_the_synthetic_batch_cannot_mirror_is_refused(self, overrides: dict, flag: str) -> None:
+        validate_compile_warmup(_compile_warmup_args())
+
+        with pytest.raises(ValueError, match=re.escape(flag)):
+            validate_compile_warmup(_compile_warmup_args(**overrides))
 
 
 class TestMultimodalTokenSpaceProcessingArgs:
