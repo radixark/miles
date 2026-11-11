@@ -13,19 +13,29 @@ class EvalDispatcher:
 
     Exports a snapshot per point, fires the eval, and reclaims the snapshot once the
     point settles. Failures degrade to a skipped point outside CI; under ``--ci-test``,
-    every skipped point fails the run. Shared-engine eval takes the plain blocking call
-    instead.
+    every skipped point fails the run. Shared-engine eval takes the plain blocking
+    call instead. Supplying an inference controller opts into synchronizing the
+    dedicated eval pool directly, then blocking until its evaluation completes.
     """
 
-    def __init__(self, args, actor_model, rollout_manager):
+    def __init__(self, args, actor_model, rollout_manager, inference_controller=None):
         self.args = args
         self.actor_model = actor_model
         self.rollout_manager = rollout_manager
+        self.inference_controller = inference_controller
         self.pending: deque[tuple[int, asyncio.Task, str | None]] = deque()
         self._exported: list[str] = []
 
     async def dispatch(self, rollout_id: int, hf_dir: str | None = None, force: bool = False) -> None:
-        """A caller-supplied ``hf_dir`` is an existing checkpoint, not one of our exports."""
+        """Dispatch using the mode selected at construction.
+
+        In snapshot mode, ``hf_dir`` supplies an existing checkpoint and ``force``
+        bypasses the skip policy. Direct synchronization always uses current trainer
+        weights and waits for evaluation; these snapshot options do not apply.
+        """
+        if self.inference_controller is not None:
+            await self._dispatch_synced(rollout_id)
+            return
         if not self.args.eval_uses_snapshots:
             await self.rollout_manager.eval(rollout_id)
             return
@@ -59,6 +69,23 @@ class EvalDispatcher:
             )
         )
         self.pending.append((rollout_id, task, exported_dir))
+
+    async def _dispatch_synced(self, rollout_id):
+        # Wait for generation so the next update cannot overwrite eval weights in flight.
+        controller = self.inference_controller
+        info = await controller.start_update_weights(receiver_pool="eval")
+        try:
+            output = await self.actor_model.update_weights(info=info, rollout_id=rollout_id)
+            if output.weight_version is None:
+                raise RuntimeError("Eval synchronization did not produce a weight version")
+        except BaseException:
+            await controller.abort_update_weights()
+            raise
+        await controller.end_update_weights(
+            snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes,
+            failed_cell_ids=output.failed_cell_ids,
+        )
+        await self.rollout_manager.eval(rollout_id, weight_version=str(output.weight_version))
 
     async def drain(self) -> None:
         while self.pending:

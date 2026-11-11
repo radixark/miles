@@ -6,6 +6,7 @@ register_cpu_ci(est_time=60, suite="stage-b-cpu", labels=["eval"])
 import asyncio
 from argparse import Namespace
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -23,6 +24,8 @@ def make_args(**overrides) -> Namespace:
         **sglang_router_args(),
         rollout_num_gpus=4,
         rollout_num_gpus_per_engine=2,
+        update_weight_transfer_mode="broadcast",
+        sglang=SimpleNamespace(models=[]),
         eval_num_gpus=1,
         eval_num_gpus_per_engine=1,
         eval_uses_snapshots=True,
@@ -621,6 +624,80 @@ async def test_dispatcher_shared_engine_blocks_like_today(dispatcher_env):
     await dispatcher.dispatch(3)
     assert manager.eval.calls == [3]
     assert len(dispatcher.pending) == 0
+
+
+class TestSynchronizedEvalDispatch:
+    @staticmethod
+    def _make(dispatcher_env):
+        info = SimpleNamespace(receiver_pool="eval", snapshot_cell_id_to_hashes={"eval-cell": "incarnation"})
+        controller = SimpleNamespace(
+            start_update_weights=AsyncMock(return_value=info),
+            end_update_weights=AsyncMock(),
+            abort_update_weights=AsyncMock(),
+        )
+        actor = SimpleNamespace(update_weights=AsyncMock(), export_hf=AsyncMock())
+        manager = SimpleNamespace(eval=AsyncMock())
+        return dispatcher_env.EvalDispatcher(make_args(), actor, manager, inference_controller=controller), info
+
+    @pytest.mark.parametrize("failed_cell_ids", [(), ("failed-eval-cell",)])
+    async def test_sync_precedes_generation_without_snapshot_export(self, dispatcher_env, failed_cell_ids):
+        dispatcher, info = self._make(dispatcher_env)
+        info.snapshot_cell_id_to_hashes.update({cell_id: "failed-incarnation" for cell_id in failed_cell_ids})
+        events = []
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def update(**kwargs):
+            assert kwargs == {"info": info, "rollout_id": 9}
+            events.append("sync")
+            return SimpleNamespace(weight_version=2, failed_cell_ids=failed_cell_ids)
+
+        async def end(**kwargs):
+            assert kwargs == {
+                "snapshot_cell_id_to_hashes": info.snapshot_cell_id_to_hashes,
+                "failed_cell_ids": failed_cell_ids,
+            }
+            events.append("unlock")
+
+        async def evaluate(rollout_id, **kwargs):
+            assert rollout_id == 9 and kwargs == {"weight_version": "2"}
+            assert events == ["sync", "unlock"]
+            entered.set()
+            await release.wait()
+            events.append("generate")
+
+        dispatcher.actor_model.update_weights.side_effect = update
+        dispatcher.inference_controller.end_update_weights.side_effect = end
+        dispatcher.rollout_manager.eval.side_effect = evaluate
+        task = asyncio.create_task(dispatcher.dispatch(9, hf_dir="unused-checkpoint", force=True))
+        try:
+            await asyncio.wait_for(entered.wait(), timeout=5)
+            assert not task.done()
+        finally:
+            release.set()
+            await task
+        assert events == ["sync", "unlock", "generate"]
+        dispatcher.inference_controller.start_update_weights.assert_awaited_once_with(receiver_pool="eval")
+        dispatcher.inference_controller.abort_update_weights.assert_not_awaited()
+        dispatcher.actor_model.export_hf.assert_not_awaited()
+        assert not dispatcher.pending
+
+    @pytest.mark.parametrize(
+        "error",
+        [RuntimeError("sync failed"), asyncio.CancelledError(), None],
+        ids=["failed", "cancelled", "missing-version"],
+    )
+    async def test_failed_sync_aborts_without_eval_or_retry(self, dispatcher_env, error):
+        dispatcher, _ = self._make(dispatcher_env)
+        dispatcher.actor_model.update_weights.side_effect = error
+        dispatcher.actor_model.update_weights.return_value = SimpleNamespace(weight_version=None, failed_cell_ids=())
+        with pytest.raises(
+            type(error) if error is not None else RuntimeError, match=None if error is not None else "did not produce"
+        ):
+            await dispatcher.dispatch(3)
+        dispatcher.actor_model.update_weights.assert_awaited_once()
+        dispatcher.inference_controller.abort_update_weights.assert_awaited_once()
+        dispatcher.inference_controller.end_update_weights.assert_not_awaited()
+        dispatcher.rollout_manager.eval.assert_not_awaited()
 
 
 # ------- example fn (examples/infra_features/fully_async/external_eval_fn.py) -------
