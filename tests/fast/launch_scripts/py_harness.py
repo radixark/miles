@@ -15,7 +15,7 @@ from tests.fast.launch_scripts.sh_harness import REPO_ROOT, sanitize
 from tests.fast.utils.command_recorder import record_commands
 
 from miles.utils.external_utils import command_utils
-from miles.utils.external_utils.command_utils import base_backend
+from miles.utils.external_utils.command_utils import base_backend, legacy
 from miles.utils.external_utils.model_args_utils import _import_module_from_path
 
 FROZEN_RUN_ID = "260101-000000-000"
@@ -142,6 +142,8 @@ def install_command_recorder(monkeypatch) -> Recording:
         return f"base64:<frozen-pseudo-file-{len(recording.pseudo_files)}>"
 
     monkeypatch.setattr(command_utils, "create_run_id", lambda: FROZEN_RUN_ID)
+    # A launcher on the legacy API reads the name bound there.
+    monkeypatch.setattr(legacy, "create_run_id", lambda: FROZEN_RUN_ID)
     monkeypatch.setattr(command_utils, "encode_pseudo_file", fake_encode_pseudo_file)
 
     return recording

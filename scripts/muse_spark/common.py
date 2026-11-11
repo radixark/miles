@@ -66,7 +66,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     sglang_cuda_graph_bs_decode: tuple[int, ...]
     # Runs the rollout executor, router and session servers on the Ray head node.
     pin_rollout_manager_to_head: bool
-    run_id: str = field(default_factory=U.create_run_id)
+    # Looked up per instance: this module is imported once, and the snapshot suite freezes the run id later.
+    run_id: str = field(default_factory=lambda: U.create_run_id())
     model_org: str = "meta-models"
     model_name: str = "Muse-Spark-Open-816B-A42B"
     megatron_model_type: str = "muse-spark-full"
@@ -335,8 +336,3 @@ def execute(args: ScriptArgs, entry_script: str):
             "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:False",
         },
     )
-
-
-def run(args: ScriptArgs, entry_script: str):
-    prepare(args)
-    execute(args, entry_script)

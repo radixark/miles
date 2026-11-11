@@ -35,9 +35,18 @@ class ScriptArgs(common.ScriptArgs):
     pin_rollout_manager_to_head: bool = True
 
 
+def prepare(args: ScriptArgs):
+    common.prepare(args)
+
+
+def execute(args: ScriptArgs):
+    common.execute(args, __file__)
+
+
 @U.dataclass_cli
 def main(args: ScriptArgs):
-    common.run(args, __file__)
+    prepare(args)
+    execute(args)
 
 
 if __name__ == "__main__":
