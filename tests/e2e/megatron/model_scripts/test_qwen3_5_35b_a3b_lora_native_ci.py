@@ -4,8 +4,8 @@ from examples.lora.run_lora_native import ScriptArgs, _prepare, _train
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 # Native (raw-mode) LoRA on Qwen3.5-35B-A3B: the hybrid GQA+GDN registry —
-# gated fused-QKV adapters on the full-attention layers, mixer-only layers
-# legitimately carrying none. Covers prepare (download + torch_dist
+# gated fused-QKV adapters on the full-attention layers and per-component
+# in_proj / out_proj adapters on the GDN layers. Covers prepare (download + torch_dist
 # conversion) and the full rollout -> train -> adapter-sync loop with the CI
 # checkers on. Also guards the raw-mode GDN backward: the registry's historical
 # instability note surfaces as grad_norm explosions from step 1 if it regresses.

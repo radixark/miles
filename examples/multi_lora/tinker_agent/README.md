@@ -13,8 +13,8 @@ Miles gateway or the hosted Tinker service.
 
 - A Tinker endpoint: the Miles gateway from [Multi-LoRA Tinker Gateway](../README.md) (port
   `10613`), or the hosted Tinker service.
-- Python 3.12 or newer, with the client package installed. The package pins `tinker==0.26.2` and
-  `tinker-cookbook`:
+- Python 3.12 or newer, with the client package installed. The package pins `tinker==0.36.0` and
+  `tinker-cookbook==0.5.9`:
 
   ```bash
   uv pip install ./examples/multi_lora/tinker_agent

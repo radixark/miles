@@ -160,7 +160,7 @@ def test_non_materializing_ranks_yield_nothing_and_read_nothing(tmp_path):
 
 def test_the_checkpoint_is_read_once_per_path(tmp_path):
     ckpt = _tower_checkpoint(tmp_path, indexed=True)
-    checkpoint_towers._load_towers.cache_clear()
+    checkpoint_towers.load_checkpoint_towers.cache_clear()
     with patch(f"{_TOWERS_MODULE}.current_platform.current_device", return_value=torch.device("cpu")):
         list(checkpoint_towers.iter_checkpoint_tower_units(ckpt, materialize=True))
         with patch(f"{_TOWERS_MODULE}.safe_open") as opened:

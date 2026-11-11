@@ -52,7 +52,7 @@ from miles.backends.megatron_utils.lora.native.lora import (
     load_lora_adapter_hf,
 )
 from miles.backends.megatron_utils.lora.native.merge import merge_lora_into_weights
-from miles.backends.megatron_utils.lora.native.modules.linear import NativeLoRAAdapter
+from miles.backends.megatron_utils.lora.native.modules.linear import NativeLoRAAdapter, iter_adapters
 from miles.backends.megatron_utils.lora.utils import reduce_marked_lora_grads
 
 torch.backends.cuda.matmul.allow_tf32 = False
@@ -153,6 +153,7 @@ class Args:
     lora_alpha = 16
     lora_dropout = 0.0
     lora_A_init_method = "xavier"
+    multi_lora = False
     hf_lora_targets = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
     mla_hf_lora_targets = [
         "q_a_proj",
@@ -382,7 +383,7 @@ def main():
         r_a = e_a / max(ref_a.abs().max().item(), 1e-9)
         check(f"{label} MLA kv_a_proj delta == dense reference", r_a < 1e-5, f"max|d|={e_a:.3e} rel={r_a:.2e}")
 
-    exported = export_lora_hf_named([lora_model])
+    exported = export_lora_hf_named(iter_adapters([lora_model]))
     expect_tensors = 2 * n_tensors_per_layer
     check(
         f"{label} export covers all adapters",

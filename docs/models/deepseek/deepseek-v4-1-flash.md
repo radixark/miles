@@ -169,6 +169,19 @@ An 8 x 8 H200 bring-up (TP 8, 16-GPU engines) also trains the full model; on SM9
 
 The indexer top-k is **not** replayed into the trainer by default (`--enable-indexer-replay` exists; it pins ~300 GB of host memory per engine rank for the replay capture and measured no parity gain, so the residual 0.02 nats gap is kernel numerics).
 
+For smaller-index top-k ties, merge these settings into the `scripts/run_deepseek_v4_1.py train` launch options:
+
+```bash
+--extra-env-vars 'SGLANG_TOPK_V2_MODE=2 SGLANG_DSA_TOPK_FLASHINFER_TIE_BREAK=small' \
+--extra-args '--miles-dsa-topk-backend flashinfer'
+```
+
+- **Selection:** the trainer uses FlashInfer with smaller logical indices winning tied cutoff scores for both candidate blocks and final compressed keys. The newest candidate block remains mandatory.
+- **Rollout:** `SGLANG_TOPK_V2_MODE=2` selects smaller-index ties in SGLang's native top-k v2, requiring [SGLang #47960](https://github.com/sgl-project/sglang/pull/47960). FlashInfer top-k is not wired for V4.1 in SGLang; mode 2 does not control its BF16 sparse, DeepSelect or Torch fallback selectors.
+- **Replay:** candidate blocks are computed independently; only final key indices are replayed. Score computation retains query chunking, while final indices are recorded or consumed once per layer-forward to match imported records.
+- **Defaults:** the `canonical` and `torch` backends retain Torch candidate selection.
+- **Scope:** `--extra-env-vars` reaches Miles-launched rollout and training workers; `--extra-args` selects the trainer backend. For direct `train.py` / `train_async.py` launches, set mode 2 in the rollout worker environment and pass `--miles-dsa-topk-backend flashinfer --train-env-vars '{"SGLANG_DSA_TOPK_FLASHINFER_TIE_BREAK":"small"}'`.
+
 ### 4.3 Rollout & SGLang
 
 ```bash

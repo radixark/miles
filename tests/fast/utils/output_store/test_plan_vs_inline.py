@@ -59,7 +59,12 @@ def generate(
 ) -> Response:
     """One SGLang response to ``num_tokens`` input tokens, as inline meta_info and as a stored object."""
     if abort:
-        meta_info = {"output_token_logprobs": [], "finish_reason": {"type": "abort"}}
+        meta_info = {
+            "output_token_logprobs": [],
+            "finish_reason": {"type": "abort"},
+            "prompt_tokens": num_tokens,
+            "completion_tokens": 0,
+        }
         return Response([], meta_info, dict(meta_info), None)
     max_support = k if mode == "support" else SELECTED_MAX_SUPPORT
     tokens, supports, support_logprobs = [], [], []
@@ -73,6 +78,8 @@ def generate(
     common = {
         "output_token_logprobs": [(lp, t, None) for lp, t in zip(sampled, tokens, strict=True)],
         "finish_reason": {"type": "stop"},
+        "prompt_tokens": num_tokens,
+        "completion_tokens": len(tokens),
     }
     inline = {
         **common,
@@ -109,10 +116,15 @@ def respond(sample: Sample, meta_info: dict, *, mode: str, k: int, routed_expert
     if via_store:
         payload[OUTPUT_STORE_REQUEST_KEY] = True
     args = Namespace(
-        rollout_top_logprobs_num=k, sglang=make_sglang_config(speculative_algorithm=None), num_layers=LAYERS
+        rollout_top_logprobs_num=k,
+        sglang=make_sglang_config(speculative_algorithm=None),
+        num_layers=LAYERS,
+        max_seq_len=None,
     )
     output = {"text": "", "meta_info": meta_info}
-    asyncio.run(update_sample_from_response(args, sample, payload, output, update_loss_mask=True))
+    asyncio.run(
+        update_sample_from_response(args, sample, payload, output, update_loss_mask=True, tokenizer=Tokenizer())
+    )
 
 
 def tokens_of(rng: np.random.Generator, low: int, high: int) -> list[int]:

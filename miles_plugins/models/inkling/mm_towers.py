@@ -5,6 +5,7 @@ import json
 import torch
 import torch.nn as nn
 
+from miles.backends.training_utils.data.context_parallel import scatter_cp_rows
 from miles_plugins.models.inkling.vision_encoder import HMLPPatchEncoder, InklingVisionConfig, RMSNorm
 
 
@@ -83,6 +84,22 @@ def build_mm_towers(
     return visual, audio
 
 
+# Token-space field -> the field name the Inkling towers read. SGLang's Inkling strategy names the
+# features as its processors do and places every modality's rows as mm_<modality>_positions.
+_TOKEN_SPACE_MEDIA_FIELDS = {
+    "vision_patches_bthwc": "mm_vision_patches",
+    "mm_image_positions": "mm_vision_positions",
+    "dmel_bins": "mm_audio_dmel",
+}
+
+
+def _tower_media_kwargs(kwargs: dict) -> dict:
+    """Pop the token-space media fields of ``kwargs`` and return them under the towers' names."""
+    return {
+        tower_name: kwargs.pop(field) for field, tower_name in _TOKEN_SPACE_MEDIA_FIELDS.items() if field in kwargs
+    }
+
+
 def wire_mm_towers(model, hf_checkpoint: str, train: bool = False) -> None:
     """Wrap an InklingGPTModel's forward for multimodal training (pre_process builds+merges;
     later stages pass through). train=True trains the towers instead of freezing them
@@ -105,6 +122,7 @@ def wire_mm_towers(model, hf_checkpoint: str, train: bool = False) -> None:
             mm_audio_num_tokens=None,
             **kw,
         ):
+            _tower_media_kwargs(kw)
             return _orig_forward(*a, **kw)
 
         model.forward = _mm_passthrough
@@ -117,18 +135,12 @@ def wire_mm_towers(model, hf_checkpoint: str, train: bool = False) -> None:
     def _scatter(decoder_input, embeds, positions):
         if embeds is None or positions is None or positions.numel() == 0:
             return decoder_input
-        s_local = decoder_input.shape[0]
-        if model.config.sequence_parallel and ps.get_tensor_model_parallel_world_size() > 1:
-            rank = ps.get_tensor_model_parallel_rank()
-            local = positions - rank * s_local
-            sel = (local >= 0) & (local < s_local)
-            local, emb = local[sel], embeds[sel]
-        else:
-            local, emb = positions, embeds
-        decoder_input = decoder_input.clone()
-        if local.numel():
-            decoder_input[local, 0] = emb.to(decoder_input.dtype)
-        return decoder_input
+        sp_rank = (
+            ps.get_tensor_model_parallel_rank()
+            if model.config.sequence_parallel and ps.get_tensor_model_parallel_world_size() > 1
+            else 0
+        )
+        return scatter_cp_rows(decoder_input, embeds, positions, sp_rank=sp_rank)
 
     def _mm_forward(
         *a,
@@ -140,6 +152,10 @@ def wire_mm_towers(model, hf_checkpoint: str, train: bool = False) -> None:
         mm_audio_num_tokens=None,
         **kw,
     ):
+        token_space = _tower_media_kwargs(kw)
+        mm_vision_patches = token_space.get("mm_vision_patches", mm_vision_patches)
+        mm_vision_positions = token_space.get("mm_vision_positions", mm_vision_positions)
+        mm_audio_dmel = token_space.get("mm_audio_dmel", mm_audio_dmel)
         input_ids = kw.get("input_ids", a[0] if a else None)
         position_ids = kw.get("position_ids")
         if mm_vision_patches is not None:

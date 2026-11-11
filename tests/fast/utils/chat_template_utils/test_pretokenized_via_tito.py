@@ -5,9 +5,9 @@ that omits the ``\\n`` insertion at the ``<|im_end|>`` boundary.
 """
 
 from copy import deepcopy
-from pathlib import Path
 
 import pytest
+from huggingface_hub import snapshot_download
 from tests.ci.ci_register import register_cpu_ci
 from transformers import AutoTokenizer
 
@@ -15,7 +15,7 @@ register_cpu_ci(est_time=120, suite="stage-b-cpu", labels=["rollout"])
 
 
 from miles.utils.chat_template_utils import TITOTokenizerType, resolve_fixed_chat_template
-from miles.utils.chat_template_utils.tito_tokenizer import Qwen3TITOTokenizer
+from miles.utils.chat_template_utils.tito_tokenizer import GLM47TITOTokenizer, Qwen3TITOTokenizer
 from miles.utils.test_utils.chat_template_verify import run_all_checks_via_tito, verify_append_only_via_tito_instance
 from miles.utils.test_utils.mock_trajectories import SingleToolTrajectory
 
@@ -81,33 +81,60 @@ def test_via_tito_pass_on_registered_families(family, model_id):
     )
 
 
-# ---------------------------------------------------------------------------
-# (1b) PASS on DeepSeek V4 (official-encoder family, local checkpoint only)
-# ---------------------------------------------------------------------------
-
-
-_DEEPSEEK_V4_MODEL = "/cluster-storage/models/deepseek-ai/DeepSeek-V4-Flash"
-
-
-def test_via_tito_pass_on_deepseek_v4():
-    """DSv4's encoder folds contiguous tool/user turns into one ``<｜User｜>``
-    block and auto-appends the assistant opener after a user tail; the
-    subclass's real-history diff + opener strip must round-trip on both
-    registered surfaces (the ``{tool, user}`` cuts land mid-user-block).
-    """
-    if not Path(_DEEPSEEK_V4_MODEL).exists():
-        pytest.skip(f"DeepSeek V4 tokenizer not found: {_DEEPSEEK_V4_MODEL}")
-    tokenizer = AutoTokenizer.from_pretrained(_DEEPSEEK_V4_MODEL, trust_remote_code=True)
-    _fixed_path, extra_kwargs = resolve_fixed_chat_template(TITOTokenizerType.DEEPSEEKV4)
+@pytest.mark.parametrize(
+    "family,model_id",
+    [
+        pytest.param(TITOTokenizerType.GLM47, "zai-org/GLM-4.7-Flash", id="glm47"),
+        pytest.param(TITOTokenizerType.GLM53, "zai-org/GLM-5.3", id="glm53"),
+    ],
+)
+def test_via_tito_glm_never_replaces_a_stop_token(monkeypatch, family, model_id):
+    """The verifier trims the boundary token before merging, so it passes even with stop-token replacement off."""
+    monkeypatch.setattr(GLM47TITOTokenizer, "allow_stop_token_replace", False)
+    tokenizer, extra_kwargs = _setup_tokenizer_with_registered_template(model_id, family)
     results = run_all_checks_via_tito(
         tokenizer,
-        TITOTokenizerType.DEEPSEEKV4,
+        family,
+        thinking="on" if family == TITOTokenizerType.GLM53 else "both",
+        extra_template_kwargs=extra_kwargs,
+    )
+    failures = [r for r in results if not r.passed]
+    assert results and not failures, "\n".join(f"  [{r.case_name}] {r.error}" for r in failures[:5])
+
+
+# ---------------------------------------------------------------------------
+# (1b) PASS on DeepSeek V4 / V4.1 (deepseek-recipe families, tokenizer only)
+# ---------------------------------------------------------------------------
+
+
+_DEEPSEEK_RECIPE_CHECKPOINTS = {
+    TITOTokenizerType.DEEPSEEKV4: ("deepseek-ai/DeepSeek-V4-Flash", "60d8d70770c6776ff598c94bb586a859a38244f1"),
+    TITOTokenizerType.DEEPSEEKV41: ("deepseek-ai/DeepSeek-V4.1-Flash", "314113f8a7dadb388215396ba5fbee2c610a04d6"),
+}
+
+
+@pytest.mark.parametrize("family", list(_DEEPSEEK_RECIPE_CHECKPOINTS), ids=lambda family: family.value)
+def test_via_tito_pass_on_deepseek_recipe_families(family):
+    """V4 folds contiguous tool/user turns into one ``<｜User｜>`` block and
+    always opens the next assistant turn; the subclass's real-history diff and
+    opener strip must round-trip on both registered surfaces (the
+    ``{tool, user}`` cuts land mid-user-block, on a plain-text junction).
+    """
+    repo, revision = _DEEPSEEK_RECIPE_CHECKPOINTS[family]
+    path = snapshot_download(
+        repo, revision=revision, allow_patterns=["config.json", "tokenizer.json", "tokenizer_config.json"]
+    )
+    tokenizer = AutoTokenizer.from_pretrained(path)
+    _fixed_path, extra_kwargs = resolve_fixed_chat_template(family)
+    results = run_all_checks_via_tito(
+        tokenizer,
+        family,
         thinking="both",
         extra_template_kwargs=dict(extra_kwargs),
     )
     failures = [r for r in results if not r.passed]
     assert not failures, (
-        f"Expected all PASS for deepseekv4 via TITO primitive; "
+        f"Expected all PASS for {family.value} via TITO primitive; "
         f"got {len(failures)} FAIL(s) out of {len(results)}:\n"
         + "\n".join(f"  [{r.case_name}] {r.error}" for r in failures[:5])
     )

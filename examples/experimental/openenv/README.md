@@ -127,6 +127,26 @@ carries the snippet for sweeping a shared workspace). And for the Docker Hub
 limit above, Modal takes registry credentials directly: hand
 `Image.from_registry` a `modal.Secret`.
 
+### Novita
+
+Builds one **named template** per task, like E2B, and starts every episode's
+sandbox from it.
+
+```bash
+pip install -e '<miles>[novita]'   # novita-sandbox>=2.0.7
+export OPENENV_TB2_TASKS_DIR=/workspace/terminal-bench-2
+OPENENV_SANDBOX_BACKEND=novita python run-openenv-tbench2.py
+```
+
+As with E2B, templates can be built ahead of the run:
+
+```bash
+python tb2_sandbox_novita.py --tasks-dir /workspace/terminal-bench-2 --all
+```
+
+For the Docker Hub limit above, `Template.from_image` takes `username` /
+`password` for a private registry; the recipe pulls anonymously.
+
 ### Alternative: one shared env server
 
 Rather than a sandbox per episode, one long-lived server can serve them all,
@@ -171,7 +191,7 @@ also gives a baseline solve-rate to compare training against.
 
 ```bash
 export OPENENV_TB2_TASKS_DIR=/workspace/terminal-bench-2
-OPENENV_SANDBOX_BACKEND=e2b python run-openenv-tbench2.py   # or daytona / modal
+OPENENV_SANDBOX_BACKEND=e2b python run-openenv-tbench2.py   # or daytona / modal / novita
 ```
 
 Against a shared env server instead, name its URL and leave
@@ -199,18 +219,18 @@ fails.
 | `WANDB_KEY`, `--wandb-project`, `--wandb-team` | — | W&B logging |
 
 Per-episode sandbox mode (step 2). The two switches come first, then the
-knobs — the ones shared by every backend (`<BACKEND>` is `DAYTONA`, `E2B`, or
-`MODAL`), then each provider's own.
+knobs — the ones shared by every backend (`<BACKEND>` is `DAYTONA`, `E2B`,
+`MODAL`, or `NOVITA`), then each provider's own.
 
 | Flag / env var | Default | Purpose |
 | --- | --- | --- |
 | `OPENENV_TB2_TASKS_DIR` | off | Switches on per-episode sandbox mode and overrides `--openenv-env-url`. Point it at the terminal-bench-2 checkout from step 1 |
-| `OPENENV_SANDBOX_BACKEND` | — | Required whenever `OPENENV_TB2_TASKS_DIR` is set: `agentenv` (alias for `e2b`), `daytona`, `e2b`, or `modal`. Only the selected backend's settings below are read — the others are ignored silently |
-| Provider credential and endpoint variables (`*_API_KEY`, `*_API_KEY_FILE`, `E2B_API_URL`, `MODAL_*`, ...) | — | Read by the selected backend only; names, defaults and semantics are in [Sandbox Providers](../../../docs/user-guide/sandbox-providers.md) |
+| `OPENENV_SANDBOX_BACKEND` | — | Required whenever `OPENENV_TB2_TASKS_DIR` is set: `agentenv` (alias for `e2b`), `daytona`, `e2b`, `modal`, or `novita`. Only the selected backend's settings below are read — the others are ignored silently |
+| Provider credential and endpoint variables (`*_API_KEY`, `*_API_KEY_FILE`, `E2B_API_URL`, `MODAL_*`, `NOVITA_DOMAIN`, ...) | — | Read by the selected backend only; names, defaults and semantics are in [Sandbox Providers](../../../docs/user-guide/sandbox-providers.md) |
 | `OPENENV_<BACKEND>_CREATE_CONCURRENCY` | `4` | Max in-flight creates. Size it to what the endpoint can host — one self-hosted AgentENV machine took 16; on Modal the ceiling above it is the plan's container concurrency |
 | `OPENENV_<BACKEND>_CREATE_MAX_RETRIES` | `8` | How many throttled creates to retry before giving up (the backoff curve itself is not tunable) |
 | `OPENENV_<BACKEND>_READY_TIMEOUT_S` | `300` | How long the env server has to become ready after its sandbox exists. Modal records a TCP readiness event first; every backend then verifies /health through the client-facing URL |
-| `OPENENV_E2B_SANDBOX_TTL_S` | `1800` | E2B sandbox TTL, re-armed by a keepalive thread while the creating process lives (Daytona's equivalent backstop is its own auto-stop/auto-delete, not a knob) |
+| `OPENENV_E2B_SANDBOX_TTL_S` / `OPENENV_NOVITA_SANDBOX_TTL_S` | `1800` | E2B and Novita sandbox TTL, re-armed by a keepalive thread while the creating process lives (Daytona's equivalent backstop is its own auto-stop/auto-delete, not a knob). Novita refuses a value above 3600 without its `long_running` marker |
 | `OPENENV_E2B_THROTTLE_PATTERNS` | — | Extra comma-separated lowercase substrings that count as retryable capacity errors. Exists for self-hosted AgentENV, which words "at capacity" however its operator deployed it |
 | `OPENENV_E2B_URL_SCHEME` | `https` | Scheme for the per-sandbox URL — set `http` for a plain-HTTP self-hosted AgentENV gateway |
 | `OPENENV_MODAL_APP` | `openenv-tbench2` | App the sandboxes are created under; what a sweep scopes to in a shared workspace |

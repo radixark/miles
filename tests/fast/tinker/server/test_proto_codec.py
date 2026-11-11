@@ -110,6 +110,7 @@ def test_the_sdk_parses_our_sample_response():
     assert (list(sequence.tokens), sequence.stop_reason) == ([5, 6], "length")
     assert list(sequence.logprobs) == pytest.approx([-0.5, -0.6])
     assert list(parsed.prompt_logprobs) == pytest.approx([-1.0, -2.0])
+    assert parsed.topk_prompt_logprobs == [[(1, pytest.approx(-0.1)), (2, pytest.approx(-0.2))]]
 
 
 @pytest.mark.parametrize("forward_only", [False, True])

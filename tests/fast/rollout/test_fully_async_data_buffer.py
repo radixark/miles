@@ -136,9 +136,9 @@ class TestPerPolicyMetrics:
 
         await buffer.put(DataBufferInput(prompt_group=group, group=group))
 
-        assert buffer.get_metrics("solver")["rollout/raw_reward_unfiltered"] == 1.0
-        assert buffer.get_metrics("verifier")["rollout/raw_reward_unfiltered"] == 3.0
-        assert "rollout/raw_reward_unfiltered" not in buffer.get_metrics("verifier")
+        assert buffer.get_metrics("solver")["rollout/raw_reward"] == 1.0
+        assert buffer.get_metrics("verifier")["rollout/raw_reward"] == 3.0
+        assert "rollout/raw_reward" not in buffer.get_metrics("verifier")
 
 
 # ================================ test setup ================================
@@ -493,13 +493,13 @@ class TestMetricWindows:
         first = under_test.buffer.get_metrics()
         assert first["rollout/fully_async/aborted_groups_filtered"] == 1
         assert first["rollout/fully_async/stale_groups_filtered"] == 1
-        assert first["rollout/raw_reward_unfiltered"] == 1.0
+        assert first["rollout/raw_reward"] == 1.0
 
         second = under_test.buffer.get_metrics()
         assert second["rollout/fully_async/aborted_groups_filtered"] == 0
         assert second["rollout/fully_async/stale_groups_filtered"] == 0
         assert "rollout/fully_async/avg_staleness" not in second
-        assert "rollout/raw_reward_unfiltered" not in second
+        assert "rollout/raw_reward" not in second
 
     async def test_the_queue_size_metric_survives_the_window_reset(self) -> None:
         """Queue depth is a snapshot of what is held, not something accumulated since the last step."""
