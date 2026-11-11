@@ -69,7 +69,9 @@ class TestRequiredArgumentConstraints:
         self, field: str, message: str
     ) -> None:
         """Multi-adapter validation rejects incompatible optimizer lifecycles before model construction."""
-        args = _parse_megatron_args(["--multi-lora-n-adapters", "2", "--lora-rank", "8"])
+        args = _parse_megatron_args(
+            ["--multi-lora-n-adapters", "2", "--lora-rank", "8", "--megatron-to-hf-mode", "bridge"]
+        )
         args.ft_components = []
         setattr(args, field, True)
 

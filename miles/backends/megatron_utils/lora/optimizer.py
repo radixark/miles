@@ -2,9 +2,8 @@
 
 Each live slot owns an independent LayerWiseDistributedOptimizer over exactly
 its adapter parameters, built at load and destroyed with the slot, so a fresh
-tenant never inherits optimizer state. Requires plain DDP all-reduce
-(use_distributed_optimizer OFF) so cross-batch gradient retention stays
-idempotent."""
+tenant never inherits optimizer state. Plain DDP all-reduce keeps full gradients
+available to each slot's optimizer."""
 
 import logging
 import math
@@ -27,8 +26,7 @@ def validate_multi_lora_optimizer_args(args: Namespace) -> None:
     """Reject launch options the per-slot optimizers cannot honor."""
     assert not args.backend.use_distributed_optimizer, (
         "multi-LoRA per-slot optimizers require use_distributed_optimizer=False: "
-        "gradient retention relies on all-reduce idempotency, and LayerWise "
-        "sharding replaces byte-level ZeRO"
+        "LayerWise sharding requires full parameter gradients instead of byte-level ZeRO shards"
     )
     assert (
         args.backend.bf16 and not args.backend.fp16
@@ -115,10 +113,9 @@ class SlotOptimizer:
     only this slot's parameters and state: reloads cannot round other tenants'
     FP32 masters, and the parameter all-gather moves only this slot."""
 
-    def __init__(self, args: Namespace, model, slot: int) -> None:
+    def __init__(self, args: Namespace, model, slot: int, slot_params: list[torch.nn.Parameter]) -> None:
         self.slot = slot
-        self._model = model
-        slot_params = adapter_slot_parameters(model, slot)
+        self._slot_params = slot_params
         assert slot_params, f"adapter slot {slot} has no parameters; is this a multi-LoRA model?"
 
         config = OptimizerConfig(
@@ -141,6 +138,11 @@ class SlotOptimizer:
         # params are scattered whole across DP ranks; per-child norm/clip reductions must span the world
         for child in self._inner.chained_optimizers:
             child.grad_stats_parallel_group = None
+
+    @property
+    def chained_optimizers(self) -> list:
+        """The slot's Float16 children: masters in ``fp32_from_float16_groups``, Adam state in ``.optimizer``."""
+        return self._inner.chained_optimizers
 
     def apply_adam_params(self, adam_params: dict) -> None:
         for child in self._inner.chained_optimizers:
@@ -175,10 +177,6 @@ class SlotOptimizer:
     def allgather_params(self) -> None:
         self._inner.allgather_params()
 
-    def reload_masters(self) -> None:
-        """Refresh this slot's FP32 masters from its model parameters."""
-        self._inner.reload_model_params()
-
     def sharded_state(self, model_sharded_state_dict: dict, *, is_loading: bool) -> dict:
         """torch_dist form: every state tensor carries its param's global coordinates."""
         return self._inner.sharded_state_dict(model_sharded_state_dict, is_loading=is_loading)
@@ -186,10 +184,17 @@ class SlotOptimizer:
     def load_sharded_state(self, loaded: dict) -> None:
         self._inner.load_state_dict(loaded)
 
+    def reset_adam_state(self) -> None:
+        """Drop the Adam moments and step, keeping the masters: the state of a slot that never stepped."""
+        for child in self._inner.chained_optimizers:
+            child.optimizer.state.clear()
+            for group in child.optimizer.param_groups:
+                group.pop("step", None)
+
     def zero_grads(self) -> None:
         """Zero the slot's gradients everywhere they live: the DDP ``main_grad``
         buffer views and any lingering ``grad``/``main_param.grad`` references."""
-        for param in adapter_slot_parameters(self._model, self.slot):
+        for param in self._slot_params:
             if (
                 main_grad := getattr(param, "main_grad", None)
             ) is not None:  # config-access-exempt: main_grad is optional backend-attached tensor metadata
@@ -201,16 +206,22 @@ class SlotOptimizer:
                 main_param.grad = None
 
 
-def reset_grad_metadata_keep_grads(model_chunks) -> None:
-    """Reset DDP bookkeeping while retaining each slot's gradient accumulation window."""
-    for model_chunk in model_chunks:
-        if (
-            getattr(model_chunk.config, "cuda_graph_impl", "none") != "transformer_engine"
-        ):  # config-access-exempt: third-party providers differ in cuda_graph_impl support
-            for param in model_chunk.params_with_grad:
-                param.grad_added_to_main_grad = False
-        for bucket_group in model_chunk.bucket_groups + model_chunk.expert_parallel_bucket_groups:
-            bucket_group.reset()
+@contextmanager
+def accumulate_gradients(model_chunks):
+    # Synchronizing retained expert gradients would scale earlier requests again.
+    buffers = [buffer for chunk in model_chunks for buffer in chunk.buffers + chunk.expert_parallel_buffers]
+    accumulated = [buffer.grad_data.clone() for buffer in buffers]
+    for chunk in model_chunks:
+        chunk.zero_grad_buffer()
+    try:
+        yield
+    except BaseException:
+        for buffer, previous in zip(buffers, accumulated, strict=True):
+            buffer.grad_data.copy_(previous)
+        raise
+    else:
+        for buffer, previous in zip(buffers, accumulated, strict=True):
+            buffer.grad_data.add_(previous)
 
 
 def step_slot_optimizers(

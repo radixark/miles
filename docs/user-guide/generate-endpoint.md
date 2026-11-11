@@ -87,7 +87,9 @@ parsed into `input.args` and available everywhere in your generator.
 Helpers:
 
 - `compute_prompt_ids_from_sample` and `compute_request_payload` from
-  `miles/rollout/generate_utils/generate_endpoint_utils.py` build `/generate` requests.
+  `miles/rollout/generate_utils/generate_endpoint_utils.py` build `/generate` requests. With
+  `--multimodal-token-space-processing`, the request asks SGLang to expand media placeholders, and
+  `update_sample_from_response` adopts the expanded prompt ids.
 - A generate function can set `GenerateFnOutput.samples` to a `Sample` or `list[Sample]`.
 
 ## Reference generators

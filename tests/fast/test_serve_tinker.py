@@ -6,9 +6,10 @@ import pytest
 import serve_tinker
 from tests.fast.fixtures.serve_tinker_fakes import tinker_startup
 
-from miles.tinker.runtime import MilesBackend
+from miles.tinker.runtime import MilesBackend, take_checkpoint_root
 from miles.utils import http_utils
 from miles.utils.async_utils import with_disposer
+from tinker import types as tinker_types
 
 _ = tinker_startup
 
@@ -26,11 +27,13 @@ class TestServe:
         assert args.inference_runtime_mut_state.engine_count == 2
         assert not http_utils._http_clients
         assert http_utils._client_concurrency == 24
-        result = await MilesBackend(trainer=tinker_startup.trainer, router_url="http://router:30000").sample(
+        result = await MilesBackend(
+            trainer=tinker_startup.trainer, router_url="http://router:30000", lora_layout=None
+        ).sample(
             payload={
                 "prompt_tokens": [1, 2],
                 "num_samples": 1,
-                "sampling_params": {"max_tokens": 1},
+                "sampling_params": tinker_types.SamplingParams(max_tokens=1).model_dump(),
                 "prompt_logprobs": False,
                 "topk_prompt_logprobs": 0,
             },
@@ -71,6 +74,15 @@ class TestServe:
         assert http_utils._http_clients == {}
         assert http_utils._client_concurrency == 0
 
+    async def test_a_save_flag_is_rejected_before_startup(self, tinker_startup: SimpleNamespace) -> None:
+        """serve() checks the final arguments, since --custom-config-path merges after preprocessing."""
+        tinker_startup.args.save = "/ckpt"
+
+        with pytest.raises(AssertionError, match="--save"):
+            await with_disposer(serve_tinker.serve, tinker_startup.args)
+
+        assert tinker_startup.orchestration_calls == []
+
     async def test_different_resolved_trainer_base_is_rejected_before_startup(
         self, tinker_startup: SimpleNamespace
     ) -> None:
@@ -79,6 +91,21 @@ class TestServe:
 
         with pytest.raises(AssertionError, match="same frozen HF base"):
             await with_disposer(serve_tinker.serve, tinker_startup.args)
+
+        assert not tinker_startup.orchestration_calls
+        assert not tinker_startup.controller.initialized
+        assert tinker_startup.trainer.request is None
+
+    async def test_a_second_gateway_on_the_root_fails_before_startup(
+        self, tinker_startup: SimpleNamespace, tmp_path
+    ) -> None:
+        tinker_startup.args.tinker_checkpoint_root = str(tmp_path)
+        held = take_checkpoint_root(str(tmp_path))
+        try:
+            with pytest.raises(RuntimeError, match="another process already commits"):
+                await with_disposer(serve_tinker.serve, tinker_startup.args)
+        finally:
+            held.close()
 
         assert not tinker_startup.orchestration_calls
         assert not tinker_startup.controller.initialized

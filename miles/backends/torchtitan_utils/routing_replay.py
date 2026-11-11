@@ -1,69 +1,28 @@
 import contextlib
 import functools
 import logging
-import types
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from torch.distributed.tensor import DTensor
 
 from miles.backends.training_utils.replay.routing_replay import FALLTHROUGH, REPLAY_BACKWARD, REPLAY_FORWARD, stage
-from miles.utils.replay_base import routing_replay_manager
+from miles.utils.replay_base import Replay, routing_replay_manager
 
 logger = logging.getLogger(__name__)
 
 
-def _local(tensor: torch.Tensor) -> torch.Tensor:
-    return tensor.to_local() if isinstance(tensor, DTensor) else tensor
+def _replay_expert_selection(router: nn.Module) -> None:
+    select_experts = router._select_experts
 
+    def selected_experts(scores_TE, top_k, expert_bias_E, router_kwargs):
+        return select_experts(scores_TE, expert_bias_E, **router_kwargs)
 
-def _like(local: torch.Tensor, reference: torch.Tensor) -> torch.Tensor:
-    if not isinstance(reference, DTensor):
-        return local
-    expert_dim = reference.ndim - 1
-    for placement in reference.placements:
-        if placement.is_shard() and placement.dim in (expert_dim, -1):
-            raise RuntimeError(
-                f"router scores are sharded over experts ({reference.placements}); replayed "
-                "expert ids have no shard of that axis to live in"
-            )
-    return DTensor.from_local(local, reference.device_mesh, reference.placements)
+    replay_topk = routing_replay_manager.get_topk_fn(selected_experts, return_probs=False)
 
+    def replayed_select_experts(scores_TE, expert_bias_E=None, **router_kwargs):
+        return replay_topk(scores_TE, router.top_k, expert_bias_E, router_kwargs)
 
-def _token_router_forward(self, x_BLD: torch.Tensor, expert_bias_E: torch.Tensor | None = None):
-    with torch.autocast(device_type=x_BLD.device.type, dtype=torch.float32):
-        scores_BLE = self.gate(x_BLD)
-
-    if self.score_func == "sigmoid":
-        scores_BLE = torch.sigmoid(scores_BLE)
-    elif self.score_func == "softmax":
-        scores_BLE = F.softmax(scores_BLE, dim=-1)
-    else:
-        raise NotImplementedError(f"Unknown score function {self.score_func}")
-
-    scores_for_choice_BLE = scores_BLE if expert_bias_E is None else scores_BLE + expert_bias_E
-    if self.num_expert_groups is not None:
-        scores_for_choice_BLE = self._get_node_limited_routing_scores(scores_for_choice_BLE)
-
-    local_choice = _local(scores_for_choice_BLE)
-    b, seq_len, _ = local_choice.shape
-    topk_expert_ids_BLK = _like(
-        self._miles_replay_topk(local_choice.reshape(b * seq_len, -1), self.top_k).reshape(b, seq_len, self.top_k),
-        scores_for_choice_BLE,
-    )
-
-    topk_scores_BLK = scores_BLE.gather(dim=-1, index=topk_expert_ids_BLK)
-
-    if self._debug_force_load_balance:
-        topk_expert_ids_BLK, topk_scores_BLK = self._debug_force_load_balance_routing(scores_BLE)
-
-    if self.route_norm:
-        denominator = topk_scores_BLK.sum(dim=-1, keepdim=True) + 1e-20
-        topk_scores_BLK = topk_scores_BLK / denominator
-    topk_scores_BLK = topk_scores_BLK * self.route_scale
-
-    return topk_scores_BLK, topk_expert_ids_BLK, scores_BLE
+    router._select_experts = replayed_select_experts
 
 
 _INSTALLED_ATTR = "_miles_replay_installed"
@@ -71,44 +30,51 @@ _INSTALLED_ATTR = "_miles_replay_installed"
 _initializing: dict | None = None
 
 
-def install(model_parts: list[nn.Module]) -> int:
-    if not routing_replay_manager.enabled:
-        return 0
-
+def _part_routers(part: nn.Module) -> list[tuple[int, nn.Module]]:
     from torchtitan.models.common.moe import TokenChoiceTopKRouter
 
     routers: list[tuple[int, nn.Module]] = []
-    for part in model_parts:
-        for name, module in part.named_modules():
-            if not isinstance(module, TokenChoiceTopKRouter):
-                continue
-            layer_key = next((p for p in name.split(".") if p.isdigit()), None)
-            if layer_key is None:
-                raise ValueError(f"cannot derive a decoder-layer index from router path {name!r}")
-            routers.append((int(layer_key), module))
+    for name, module in part.named_modules():
+        if not isinstance(module, TokenChoiceTopKRouter):
+            continue
+        layer_key = next((p for p in name.split(".") if p.isdigit()), None)
+        if layer_key is None:
+            raise ValueError(f"cannot derive a decoder-layer index from router path {name!r}")
+        routers.append((int(layer_key), module))
+    return sorted(routers, key=lambda pair: pair[0])
 
-    if not routers:
+
+def _allow_forward_side_effects_in_compiled_checkpoints() -> None:
+    # the router pre-hook writes Python state inside the block; a compiled checkpoint refuses that
+    # unless the write stays out of the recompute, which reuses the saved ids anyway
+    torch._dynamo.config.skip_fwd_side_effects_in_bwd_under_checkpoint = True
+
+
+def install(model_parts: list[nn.Module]) -> int:
+    if not routing_replay_manager.enabled:
+        return 0
+    _allow_forward_side_effects_in_compiled_checkpoints()
+
+    part_routers = [_part_routers(part) for part in model_parts]
+    if not any(part_routers):
         raise ValueError(
             "routing replay is enabled but this model has no torchtitan TokenChoiceTopKRouter; "
             "R3 applies to MoE models only"
         )
 
-    for part in model_parts:
-        _bracket_real_forward(part)
+    for part, routers in zip(model_parts, part_routers, strict=True):
+        replays = []
+        for layer_idx, router in routers:
+            _replay_expert_selection(router)
+            replays.append(routing_replay_manager.register_to_module(router, "routing_replay", stream_idx=layer_idx))
+        _bracket_real_forward(part, replays)
         setattr(part, _INSTALLED_ATTR, True)
 
-    for layer_idx, router in sorted(routers, key=lambda pair: pair[0]):
-        router._miles_replay_topk = routing_replay_manager.get_topk_fn(
-            lambda scores, k: torch.topk(scores, k, dim=-1, sorted=False)[1], return_probs=False
-        )
-        router.forward = types.MethodType(_token_router_forward, router)
-        routing_replay_manager.register_to_module(router, "routing_replay", stream_idx=layer_idx)
-
-    indices = sorted(idx for idx, _ in routers)
+    indices = [layer_idx for routers in part_routers for layer_idx, _ in routers]
     logger.info(
-        f"[titan routing_replay] registered {len(routers)} MoE layers " f"(global indices {indices[0]}..{indices[-1]})"
+        f"[titan routing_replay] registered {len(indices)} MoE layers (global indices {min(indices)}..{max(indices)})"
     )
-    return len(routers)
+    return len(indices)
 
 
 def _is_installed(model_parts: list[nn.Module]) -> bool:
@@ -164,7 +130,21 @@ def consumption_guard(model_parts: list[nn.Module], expected: int):
             )
 
 
-def _bracket_real_forward(part: nn.Module) -> None:
+@contextlib.contextmanager
+def _stage_forward_ids(replays: list[Replay]):
+    """Pop a part's ids for this microbatch before its blocks run, so a compiled block does not pop inside the graph."""
+    try:
+        for replay in replays:
+            replay.staged_forward_ids = replay.pop_forward()
+        yield
+    finally:
+        # unstaged reads (eager recompute in backward) pop their own
+        for replay in replays:
+            replay.staged_forward_ids = None
+
+
+def _bracket_real_forward(part: nn.Module, replays: list[Replay]) -> None:
+    """Wrap the part's forward: the train pass replays as a forward, with the microbatch's ids staged."""
     inner = part.forward
 
     @functools.wraps(inner)
@@ -174,8 +154,8 @@ def _bracket_real_forward(part: nn.Module) -> None:
                 _initializing["unprobed"].discard(id(part))
                 return inner(*args, **kwargs)
             _end_initialization()
-        if routing_replay_manager.stage == REPLAY_BACKWARD:
-            with stage(REPLAY_FORWARD):
+        if routing_replay_manager.stage in (REPLAY_FORWARD, REPLAY_BACKWARD):
+            with stage(REPLAY_FORWARD), _stage_forward_ids(replays):
                 return inner(*args, **kwargs)
         return inner(*args, **kwargs)
 

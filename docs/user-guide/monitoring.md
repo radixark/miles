@@ -46,6 +46,8 @@ should be supplied via Ray's `env_vars` rather than baked into the launch script
 | `rollout_time` / `train_time` | Roughly balanced | One ≫ other → resource imbalance |
 | `train/pg_clipfrac` | < 0.2 | > 0.5 means policy is moving fast → drop LR |
 
+`rollout/raw_reward` is the mean reward before dynamic sampling filters, including the groups they drop; aborted groups and groups missing a reward are not counted. Earlier Miles versions logged the retained-batch mean under that name; it is now `rollout/raw_reward_filtered`, so dashboards and alerts built on the old meaning should switch to it. Both keys are the reward model's score: the length penalty and reward normalization appear only in `rollout/rewards`.
+
 Panel names follow what `loss.py` and the rollout logger emit; Miles's wandb metrics
 live under `train/`, `rollout/`, `perf/`, `multi_turn/`, `passrate/` namespaces.
 
@@ -106,6 +108,8 @@ The router exposes a small FastAPI surface used internally by Miles:
 
 | Endpoint | Method | What |
 |---|---|---|
-| `/add_worker` | POST | Register an SGLang engine |
-| `/list_workers` | GET | List registered workers |
+| `/workers` | POST | Register an SGLang engine (`{"url": ...}`), as on sgl-router |
+| `/workers` | GET | List registered workers with their ids |
+| `/workers/{id}` | DELETE | Unregister a worker |
+| `/add_worker`, `/remove_worker`, `/list_workers` | POST / POST / GET | The same, in sgl-router's pre-0.2.2 API |
 | any other path | GET / POST / PUT / DELETE | Proxied to a selected SGLang worker — e.g. `/generate`, `/v1/chat/completions`, `/health`. |

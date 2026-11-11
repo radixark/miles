@@ -57,6 +57,7 @@
        "user-guide/launch-script",
        "user-guide/argument-groups",
        "user-guide/fully-async",
+       "user-guide/mixing-datasets",
        "user-guide/training-backend",
        "user-guide/monitoring",
        "user-guide/customization",
@@ -176,6 +177,7 @@
         "pages": [
          "models/kimi/index",
          "models/kimi/kimi-k3",
+         "models/kimi/kimi-k31",
          "models/kimi/kimi-k2.5",
          "models/kimi/kimi-k2"
         ],
@@ -208,6 +210,8 @@
        },
        "models/gpt-oss/gpt-oss",
        "models/mimo/mimo-v2-6-flash",
+       "models/minimax/minimax-m3",
+       "models/minimax/minimax-m3-1-flash",
        "models/stepfun/step5",
        "models/muse-spark/muse-spark-open",
        "models/reflection/beam"
@@ -227,6 +231,7 @@
        "advanced/speculative-decoding",
        "advanced/sampling-support-replay",
        "advanced/lora",
+       "advanced/multi-lora",
        "advanced/on-policy-distillation"
       ]
      },
@@ -252,6 +257,14 @@
       "pages": [
        "advanced/cluster-backend"
       ]
+     },
+     {
+      "group": "Algorithm",
+      "pages": [
+       "examples/infra-features/score-centering",
+       "examples/infra-features/train-infer-mismatch-helper",
+       "advanced/algorithms/length-penalties"
+      ]
      }
     ]
    },
@@ -264,6 +277,8 @@
       "pages": [
        "examples/geo3k-vlm",
        "examples/geo3k-vlm/multi-turn",
+       "examples/timelens-video",
+       "examples/avqa-audio",
        "examples/multi-lora",
        "examples/multi-lora/harbor-tinker",
        "examples/multi-lora/tinker-agent",
@@ -272,7 +287,8 @@
        "examples/on-policy-distillation/qwen3-5-35b-selfdistill",
        "examples/ppo",
        "examples/retool-v2",
-       "examples/swe-agent-harbor-docker"
+       "examples/swe-agent-harbor-docker",
+       "examples/text-to-sql"
       ]
      },
      {

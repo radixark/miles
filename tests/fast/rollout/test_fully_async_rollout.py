@@ -1,4 +1,5 @@
 from tests.ci.ci_register import register_cpu_ci
+from tests.fast.fixtures.args_fixtures import sglang_router_args
 from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config
 from tests.fast.fixtures.sglang_config_fixtures import make_sglang_config
 
@@ -50,6 +51,7 @@ class FakeGenerateState(GenerateState):
         self.aborted = False
         self.generate_fn_semaphore = asyncio.Semaphore(2)
         self.generate_function = None
+        self.sample_generate_functions = {}
 
 
 class FakeDataSource:
@@ -103,6 +105,7 @@ def make_args(**overrides) -> Namespace:
         rollout_batch_size=2,
         n_samples_per_prompt=N_SAMPLES_PER_PROMPT,
         max_weight_staleness=None,
+        async_submit_within_staleness=False,
         async_max_concurrent_samples=None,
         async_data_buffer_capacity_factor=1000.0,
         async_unused_samples_handler="drop",
@@ -118,9 +121,11 @@ def make_args(**overrides) -> Namespace:
         sglang_router_ip="127.0.0.1",
         sglang_router_port=30000,
         sglang_router_request_timeout_secs=14400,
+        **sglang_router_args(),
         eval_num_gpus=0,
         namespaced_radix_cache=True,
         use_critic=False,
+        use_output_store=False,
         sglang=make_sglang_config(enable_deterministic_inference=False),
     )
     defaults.update(overrides)
@@ -489,7 +494,7 @@ async def test_sample_cancellation_aborts_group_without_stopping_worker(
         return sample
 
     monkeypatch.setattr(rollout_common, "generate_and_rm", generate_sample)
-    monkeypatch.setattr(rollout_common, "policy_uses_routing_key", lambda args: False)
+    monkeypatch.setattr(rollout_common, "router_routes_by_key", lambda args: False)
     args = make_args(
         rollout_batch_size=1,
         async_max_concurrent_samples=N_SAMPLES_PER_PROMPT,
@@ -715,8 +720,8 @@ async def get_one(buffer, **context):
     return entry
 
 
-async def test_buffer_reports_unfiltered_raw_reward_across_kept_and_dropped():
-    """The accepted-only raw_reward is conditioned by the filter, so this mean must still see dropped groups."""
+async def test_buffer_reports_raw_reward_across_kept_and_dropped():
+    """raw_reward includes dropped groups even though only accepted groups reach training."""
     args = make_args(rollout_batch_size=1, dynamic_sampling_filter_path=f"{__name__}.reject_group_1")
     buffer = data_buffer.DefaultDataBuffer(
         data_buffer.DataBufferConstructorInput(args=args, unused_handler_fn=lambda group, reason: None)
@@ -726,9 +731,9 @@ async def test_buffer_reports_unfiltered_raw_reward_across_kept_and_dropped():
     await put_group(buffer, make_group(2, reward=1))
 
     metrics = buffer.get_metrics()
-    assert metrics["rollout/raw_reward_unfiltered"] == 0.5
+    assert metrics["rollout/raw_reward"] == 0.5
     assert metrics["rollout/dynamic_filter/drop_rejected"] == 1
-    assert "rollout/raw_reward_unfiltered" not in buffer.get_metrics()
+    assert "rollout/raw_reward" not in buffer.get_metrics()
 
 
 async def test_dynamic_filter_records_the_prompt_as_explicitly_dropped(sample_flow_event_dir: Path) -> None:
@@ -1843,6 +1848,68 @@ class TestInFlightBudget:
         assert all(x.task.done() for x in fn._running_tasks)
 
         await fn.dispose()
+
+
+class TestStalenessAdmission:
+    @pytest.mark.parametrize("max_weight_staleness", [0, 1])
+    async def test_the_producer_runs_at_most_max_weight_staleness_batches_ahead_of_training(
+        self, monkeypatch, max_weight_staleness: int
+    ) -> None:
+        """Each step opens room for one more batch, however large the in-flight budget is."""
+        source = FakeDataSource()
+        args = make_args(
+            rollout_batch_size=2,
+            async_max_concurrent_samples=64,
+            max_weight_staleness=max_weight_staleness,
+            async_submit_within_staleness=True,
+        )
+        fn = make_fn(monkeypatch, args, source)
+        try:
+            for rollout_id in range(3):
+                await asyncio.wait_for(fn(train_input(rollout_id=rollout_id, weight_version=rollout_id)), timeout=5)
+                await _settle()
+                assert source.num_get_calls == (max_weight_staleness + 1 + rollout_id) * 2
+        finally:
+            await fn.dispose()
+
+    @pytest.mark.parametrize("handler", ["drop", "retry"])
+    async def test_a_group_rejected_as_stale_frees_its_place_for_a_new_one(self, monkeypatch, handler: str) -> None:
+        """The producer is already waiting when the drain rejects the group, so the rejection must wake it."""
+        calls = 0
+
+        async def generate_stale_once(state, group, sampling_params=None, evaluation=False, sample_done_callback=None):
+            nonlocal calls
+            calls += 1
+            for sample in group:
+                sample.status = Sample.Status.COMPLETED
+                sample.reward = 1
+                if calls == 1:
+                    sample.weight_versions = make_group(0, weight_versions=["0"])[0].weight_versions
+            return group
+
+        args = make_args(
+            rollout_batch_size=1,
+            max_weight_staleness=0,
+            async_submit_within_staleness=True,
+            async_unused_samples_handler=handler,
+        )
+        fn = make_fn(monkeypatch, args, FakeDataSource(), generate=generate_stale_once)
+        try:
+            output = await asyncio.wait_for(fn(train_input(rollout_id=0, weight_version=5)), timeout=5)
+        finally:
+            await fn.dispose()
+
+        assert output.metrics["rollout/fully_async/stale_groups_filtered"] == 1
+        assert calls == 2
+
+    def test_a_custom_buffer_without_admits_is_rejected_at_construction(self, monkeypatch) -> None:
+        args = make_args(
+            custom_async_data_buffer_path=f"{__name__}.WedgedBuffer",
+            max_weight_staleness=1,
+            async_submit_within_staleness=True,
+        )
+        with pytest.raises(AssertionError, match="admits"):
+            make_fn(monkeypatch, args, FakeDataSource())
 
 
 # ============================== unused handler ==============================

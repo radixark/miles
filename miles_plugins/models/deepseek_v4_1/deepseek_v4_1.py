@@ -37,6 +37,7 @@ from miles_plugins.models.deepseek_v4.ops.cp_utils import (
     get_q_positions_for_cp,
     get_window_topk_idxs_cp,
 )
+from miles_plugins.models.deepseek_v4.ops.grouped_matmul import GroupedMatmul
 from miles_plugins.models.deepseek_v4.ops.rope import wrapped_precompute_freqs_cis
 from miles_plugins.models.deepseek_v4_1.engram import DeepSeekV41Engram
 from miles_plugins.models.deepseek_v4_1.ops.compressor import DeepSeekV41Compressor
@@ -430,6 +431,7 @@ class DeepSeekV41Attention(MegatronModule):
         config.init_method(o_group_proj)
         self.linear_o_group_proj = nn.Parameter(o_group_proj)
         set_tensor_model_parallel_attributes(self.linear_o_group_proj, is_parallel=True, dim=0, stride=1)
+        self.o_group_matmul = GroupedMatmul()
         self.linear_proj = TERowParallelLinear(
             self.n_groups * self.o_lora_rank,
             self.dim,
@@ -563,9 +565,7 @@ class DeepSeekV41Attention(MegatronModule):
         )
         o = torch.cat((o[..., :-rd], apply_rotary_emb(o[..., -rd:].clone(), freqs_cis, inverse=True)), dim=-1)
 
-        o = o.view(bsz, seqlen, self.n_local_groups, -1)
-        wo_a = self.linear_o_group_proj.view(self.n_local_groups, self.o_lora_rank, -1)
-        o = torch.einsum("bsgd,grd->bsgr", o, wo_a)
+        o = self.o_group_matmul(o.view(bsz, seqlen, self.n_local_groups, -1), self.linear_o_group_proj)
         out, _ = self.linear_proj(o.flatten(2))
         output = einops.rearrange(out, "b s d -> s b d")
         if self.sequence_parallel:

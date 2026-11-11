@@ -7,7 +7,7 @@ from typing import Any
 import numpy as np
 import pybase64
 
-from miles.utils.rollout_topk_logprobs import validate_rollout_topk_logprobs_sampling
+from miles.utils.rollout_topk_logprobs import requests_support_logprobs, validate_rollout_topk_logprobs_sampling
 from miles.utils.sampling_mask import RolloutSamplingMask
 from miles.utils.types import Sample
 
@@ -27,7 +27,7 @@ def configure_rollout_topk_logprobs_request(args: Namespace, request: dict[str, 
         if sampling.get(key) is None:
             sampling[key] = default
     validate_rollout_topk_logprobs_sampling(sampling, temperature=args.rollout_temperature, candidate_count=k)
-    if args.rollout_sampling_logprobs_mode == "support":
+    if requests_support_logprobs(args):
         # SGLang's support mode returns the actual post-filter behavior distribution.
         for key in (
             "top_logprobs",

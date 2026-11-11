@@ -25,7 +25,11 @@ from tests.fast.train_args import (
 
 from miles.ray.specs.inference import INFERENCE_CONTROLLER_ADDR_FLAG
 from miles.ray.specs.train import TRAINER_CONTROLLER_ADDRS_FLAG
-from miles.utils.external_utils.command_utils.common import MOONCAKE_INIT_KWARGS_FLAG, OBJECT_STORE_BACKEND_FLAG
+from miles.utils.external_utils.command_utils.common import (
+    MOONCAKE_INIT_KWARGS_FLAG,
+    OBJECT_STORE_BACKEND_FLAG,
+    create_run_id,
+)
 from miles.utils.file_arg_utils import resolve_file_arg
 from miles.utils.workers.types import ClusterBackend, DeployComponent
 
@@ -211,6 +215,14 @@ class TestBuildDeploymentTrainArgs:
         """helm refuses such a release name too, but only once the releases installed before it are up."""
         with pytest.raises(AssertionError, match="before helm refuses the release name"):
             build_deployment_train_args(dataclasses.replace(args, run_id="r" * 64))
+
+    def test_a_generated_run_id_names_a_release_after_every_policy(self, args):
+        """A launch that sets no MILES_SCRIPT_RUN_ID gets the generated id, so that id must fit too."""
+        generated = dataclasses.replace(args, run_id=create_run_id())
+        for component, instance_id in compute_deployment_identities(generated):
+            build_deployment_train_args(
+                dataclasses.replace(generated, deploy_component=component, deploy_instance_id=instance_id)
+            )
 
     def test_a_command_naming_no_component_of_the_run_is_refused(self, args):
         """An unsplit launch installs everything under one release, which is the shape this example is not."""

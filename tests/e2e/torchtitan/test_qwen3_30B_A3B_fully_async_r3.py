@@ -27,6 +27,7 @@ CASE = CaseConfig(
     seq_len=8192,
     max_response_len=4096,
     use_r3=True,
+    use_output_store=True,
     colocate=False,
     rollout_num_gpus=4,
     fully_async=True,

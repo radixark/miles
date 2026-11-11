@@ -2,13 +2,7 @@ import asyncio
 import logging
 import os
 
-from miles.ray.placement_group import (
-    create_rollout_components,
-    create_trainer_handles,
-    create_training_models,
-    maybe_start_api_server,
-    update_weights,
-)
+from miles.ray.placement_group import create_components, create_trainer_handles, maybe_start_api_server, update_weights
 from miles.ray.rollout.eval_dispatch import EvalDispatcher
 from miles.ray.specs.train import compute_trainer_configs
 from miles.utils.arguments import validate_async_off_policy_correction
@@ -35,16 +29,11 @@ async def train(startup_info: OrchestratorStartupInfo, *, disposer: Disposer):
         args, trainer_configs=compute_trainer_configs(args), capability=capability
     )
 
-    # create the rollout manager, with sglang engines inside.
-    # need to initialize rollout manager first to calculate num_rollout
-    inference_controller, rollout_executor, num_rollout_per_epoch = await create_rollout_components(
-        args, capability=capability, trainer_handles=trainer_handles
+    # the rollout manager, with sglang engines inside, and the actor and critic models
+    components, actor_model, critic_model = await create_components(
+        args, capability=capability, trainer_handles=trainer_handles, disposer=disposer
     )
-    disposer.add(inference_controller, rollout_executor)
-
-    # create the actor and critic models
-    actor_model, critic_model = await create_training_models(args, rollout_executor, handles=trainer_handles)
-    disposer.add(critic_model, actor_model)
+    inference_controller, rollout_executor, num_rollout_per_epoch = components
 
     disposer.add(
         maybe_start_api_server(
@@ -133,6 +122,7 @@ async def train(startup_info: OrchestratorStartupInfo, *, disposer: Disposer):
         else:
             await actor_model.train(rollout_id, rollout_data_curr_ref)
         remove_rollout_data_refs(args, rollout_data_curr_ref)
+        await rollout_executor.release(rollout_id)
 
         external_save = args.save_trigger_sentinel is not None and os.path.exists(args.save_trigger_sentinel)
         if external_save or should_run_periodic_action(

@@ -10,14 +10,12 @@ from miles.utils.types import Sample
 
 
 class TestMultiAgentRolloutWrapper:
-    @pytest.mark.parametrize("evaluation,expected_context", [(False, 32), (True, 12)])
+    @pytest.mark.parametrize("evaluation", [False, True])
     async def test_wrapper_preserves_caller_configuration_and_isolates_each_agent_state(
-        self, monkeypatch: pytest.MonkeyPatch, evaluation: bool, expected_context: int
+        self, monkeypatch: pytest.MonkeyPatch, evaluation: bool
     ) -> None:
         """Train and eval calls preserve caller state while forwarding immutable config and isolated agent inputs."""
-        args = ImmutableNamespace(
-            hf_checkpoint="model", chat_template_path="template", rollout_max_context_len=32, eval_max_context_len=12
-        )
+        args = ImmutableNamespace(hf_checkpoint="model", chat_template_path="template", max_seq_len=32)
         original = dict(args)
         sampling_params = {"max_new_tokens": 9, "nested": {"temperatures": [0.7]}}
         tokenizer = object()
@@ -33,7 +31,8 @@ class TestMultiAgentRolloutWrapper:
 
         async def run_agents(config: ImmutableNamespace, *, state: AgentState) -> list[Sample]:
             assert isinstance(config, ImmutableNamespace)
-            assert config.rollout_max_context_len == expected_context
+            # train and eval share --max-seq-len
+            assert config.max_seq_len == 32
             assert config.num_parallel == 5
             assert config.incorrect_reward_weight == 0.8
             assert config.correct_reward_weight == 1.2

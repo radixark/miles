@@ -14,7 +14,7 @@ class TestReconnect:
         running_shard = make_remote_shard(cell_id="old-running")
         queued_shard = make_remote_shard(cell_id="old-queued")
         replacement_shard = make_remote_shard(cell_id="replacement")
-        hold = p2p_sender.transfer_engine.hold(running_shard.session_id)
+        hold = p2p_sender.transfer_engine.hold(running_shard.transport_peer)
         running, queued = transport.write(
             [running_shard, queued_shard], {"w": tensor}, run_write=lambda shard, write: write()
         )
@@ -30,15 +30,15 @@ class TestReconnect:
                 [replacement_shard], {"w": tensor}, run_write=lambda shard, write: write()
             )
             replacement.result(timeout=5)
-            assert p2p_sender.transfer_engine.written_sessions() == [replacement_shard.session_id]
+            assert p2p_sender.transfer_engine.written_sessions() == [replacement_shard.transport_peer]
         finally:
             hold.release.set()
             running.result(timeout=5)
 
         assert queued.cancelled()
         assert p2p_sender.transfer_engine.written_sessions() == [
-            replacement_shard.session_id,
-            running_shard.session_id,
+            replacement_shard.transport_peer,
+            running_shard.transport_peer,
         ]
         transport.unregister_memory(tensor)
         assert p2p_sender.transfer_engine.registered == []

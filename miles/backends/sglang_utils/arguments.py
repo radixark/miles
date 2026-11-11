@@ -2,8 +2,10 @@ import argparse
 
 from sglang.srt.server_args import ServerArgs
 
+from miles.platforms import current_platform
 from miles.utils.args.utils import config_values
 from miles.utils.http_utils import wrap_ipv6
+from miles.utils.output_store.config import SGLANG_OUTPUT_STORE_FIELDS
 
 
 _SKIPPED_SERVER_ARGS = [
@@ -27,6 +29,7 @@ _SKIPPED_SERVER_ARGS = [
     "skip_server_warmup",
     "enable_return_routed_experts",
     "enable_return_indexer_topk",
+    *SGLANG_OUTPUT_STORE_FIELDS,
 ]
 
 # tp_size comes from --eval-num-gpus-per-engine, which also places the engines.
@@ -129,6 +132,10 @@ def add_sglang_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentPa
 
 def validate_args(args):
     args.sglang_tp_size = args.rollout_num_gpus_per_engine
+
+    # "auto" given explicitly counts as unset: on TPU it would mean fp8, which needs an explicit fp8_e4m3
+    if args.sglang_kv_cache_dtype == "auto" and current_platform.rollout_kv_cache_dtype is not None:
+        args.sglang_kv_cache_dtype = current_platform.rollout_kv_cache_dtype
 
     if args.loss_type == "score_centering":
         # Score centering forces the base LM-head setting on, overriding the parsed

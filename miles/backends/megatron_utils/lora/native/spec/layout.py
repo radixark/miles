@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import functools
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -12,6 +13,7 @@ from miles.backends.megatron_utils.lora.native.modules.linear import (
     LoRALinear,
     NativeLoRAAdapter,
     attach_adapter_forward,
+    build_adapter,
 )
 from miles.backends.megatron_utils.lora.native.spec.base import AttachContext, AttentionFamily, ProjectionSpec
 
@@ -162,6 +164,14 @@ class ModuleLayout:
         return frozenset(projection.hf_leaf for group in self.fused for projection in group.projections)
 
 
+def assert_no_slots_under_cp_relayout(context: AttachContext) -> None:
+    """Linear attention moves its CP shard to packed order before its input projections; routing counts this
+    rank's zigzag tokens."""
+    assert (
+        context.lora.num_slots is None or context.transformer_config.context_parallel_size == 1
+    ), "multi-LoRA slots on linear-attention projections need context parallel size 1"
+
+
 def layout_applies_to(block: nn.Module, layout: ModuleLayout) -> bool:
     return layout.present_when_attr is None or hasattr(
         block, layout.present_when_attr
@@ -188,9 +198,9 @@ def attach_layout(block: nn.Module, layout: ModuleLayout, layer: nn.Module, cont
         )
         if not active:
             continue
-        adapter = group.build(block, hf_prefix, context, active)
+        adapter = build_adapter(functools.partial(group.build, block, hf_prefix, context, active), context)
         setattr(block, group.adapter_attr, adapter)
-        attach_adapter_forward(host, adapter, context.lora.scale)
+        attach_adapter_forward(host, adapter)
         count += 1
 
     for binding in layout.singles:
@@ -203,16 +213,20 @@ def attach_layout(block: nn.Module, layout: ModuleLayout, layer: nn.Module, cont
         out_features = binding.out_dim(block, context)
         if binding.guard is not None:
             binding.guard(host, context, binding.projection, out_features)
-        adapter = binding.adapter_class(
-            hf_prefix=hf_prefix,
-            projection=binding.projection,
-            reference=host.weight,
-            context=context,
-            in_features=binding.in_dim(block, context),
-            out_features=out_features,
+        adapter = build_adapter(
+            functools.partial(
+                binding.adapter_class,
+                hf_prefix=hf_prefix,
+                projection=binding.projection,
+                reference=host.weight,
+                context=context,
+                in_features=binding.in_dim(block, context),
+                out_features=out_features,
+            ),
+            context,
         )
         setattr(block, binding.adapter_attr, adapter)
-        attach_adapter_forward(host, adapter, context.lora.scale)
+        attach_adapter_forward(host, adapter)
         count += 1
     return count
 

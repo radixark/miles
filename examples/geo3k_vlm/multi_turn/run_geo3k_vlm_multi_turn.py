@@ -39,7 +39,7 @@ def prepare():
         raise FileNotFoundError(f"Dataset not found. Expected local dataset at {TRAIN_DATA_PATH}; ")
 
 
-def execute():
+def execute(extra_args: str = ""):
     ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME} "
 
     wandb_args = (
@@ -157,6 +157,7 @@ def execute():
         f"{misc_args} "
         f"{wandb_args} "
         # f"{get_default_wandb_args(__file__)} "
+        f"{extra_args} "
     )
 
     command_utils.default_config().create_backend().execute_train(

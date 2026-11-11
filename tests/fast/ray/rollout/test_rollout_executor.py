@@ -8,6 +8,7 @@ import pytest
 import torch
 from tests.fast.ray.rollout.conftest import FakeInferenceTopologyProvider, make_args, make_rollout_config, make_sample
 from tests.fast.train_parallel_config_utils import make_train_parallel_config
+from tests.fast.utils.output_store.test_dropped import sample_owning
 
 from miles.backends.training_utils.types import TrainStepOutcome
 from miles.ray.rollout import rollout_executor as rollout_executor_module
@@ -37,7 +38,10 @@ from miles.utils.audit_utils.event_logger.models import (
 )
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
+from miles.utils.init_once import InitOnce
 from miles.utils.object_store import _MooncakeStoreObjectRef
+from miles.utils.output_store import dropped
+from miles.utils.output_store.dropped import take_dropped_refs
 from miles.utils.types import Sample
 from miles.utils.workers.worker_spec import HostAndPort
 
@@ -77,6 +81,15 @@ class FakeEvalFunction:
         return RolloutFnEvalOutput(data={})
 
 
+def _inited_executor() -> RolloutExecutor:
+    """An executor built as init leaves it, so dispose tears it down."""
+    executor = RolloutExecutor.__new__(RolloutExecutor)
+    executor._init_once = InitOnce("RolloutExecutor")
+    with executor._init_once.guarding():
+        pass
+    return executor
+
+
 class _SynchronousDisposable:
     def __init__(self, disposed: list[str], name: str) -> None:
         self._disposed = disposed
@@ -92,7 +105,7 @@ class TestDispose:
         self, tmp_path: Path, issued_rollout_id: int
     ) -> None:
         """Shutdown defers only immature losses and never fabricates drops for prefetched output."""
-        executor = RolloutExecutor.__new__(RolloutExecutor)
+        executor = _inited_executor()
         executor._disposed = False
         executor.use_legacy_rollout_v1 = False
         executor.generate_rollout = None
@@ -105,6 +118,7 @@ class TestDispose:
             enable_event_analyzer=False,
         )
         executor._metric_checker = None
+        executor._delete_store_refs = None
         executor._output_snapshotter = _RolloutExecutorOutputSnapshotter(args=_make_runtime_args())
         executor._output_snapshotter.capture(trainer_model_id=None, rollout_id=6, data=[Sample(index=10)], metadata={})
         event_logger = EventLogger(log_dir=tmp_path, source=SimpleProcessIdentity(component="rollout_executor"))
@@ -150,7 +164,7 @@ class TestDispose:
     ) -> None:
         """Out-of-tree rollout hooks may tear down synchronously without returning an awaitable."""
         disposed: list[str] = []
-        executor = RolloutExecutor.__new__(RolloutExecutor)
+        executor = _inited_executor()
         executor._disposed = False
         executor.use_legacy_rollout_v1 = False
         executor.generate_rollout = _SynchronousDisposable(disposed, "train")
@@ -158,6 +172,7 @@ class TestDispose:
         executor.data_source = object()
         executor.args = Namespace()
         executor._metric_checker = None
+        executor._delete_store_refs = None
         monkeypatch.setattr(rollout_executor_module, "CheckpointEvalFn", _SynchronousDisposable)
         monkeypatch.setattr(rollout_executor_module.event_analyzer, "run_analysis_from_args", lambda _args: None)
         monkeypatch.setattr(
@@ -169,10 +184,37 @@ class TestDispose:
 
         assert disposed == ["train", "eval"]
 
+    async def test_a_run_with_the_output_store_sweeps_it_once_after_the_rest_of_dispose(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Last, so the producers have stopped writing and a failed CI check raises after the other teardown."""
+        disposed: list[str] = []
+        executor = _inited_executor()
+        executor._disposed = False
+        executor.use_legacy_rollout_v1 = False
+        executor.generate_rollout = _SynchronousDisposable(disposed, "train")
+        executor.eval_generate_rollout = _SynchronousDisposable(disposed, "eval")
+        executor.data_source = object()
+        executor.args = make_args(ci_test=True, fully_async=False, partial_rollout=False)
+        executor._metric_checker = None
+        executor._delete_store_refs = lambda refs: None
+        executor._unreleased_store_refs = {}
+        monkeypatch.setattr(rollout_executor_module, "CheckpointEvalFn", _SynchronousDisposable)
+        monkeypatch.setattr(rollout_executor_module.event_analyzer, "run_analysis_from_args", lambda _args: None)
+        monkeypatch.setattr(
+            rollout_executor_module.event_analyzer, "run_sample_ownership_analysis", lambda *, args: None
+        )
+        monkeypatch.setattr(rollout_executor_module, "sweep_output_store", lambda args: disposed.append("sweep") or 0)
+
+        await executor.dispose()
+        await executor.dispose()
+
+        assert disposed == ["train", "eval", "sweep"]
+
     async def test_the_final_ownership_check_runs_before_the_run_ends(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Violations that only mature after the last get would otherwise never be checked."""
         checked: list[Namespace] = []
-        executor = RolloutExecutor.__new__(RolloutExecutor)
+        executor = _inited_executor()
         executor._disposed = False
         executor.use_legacy_rollout_v1 = False
         executor.generate_rollout = None
@@ -180,6 +222,7 @@ class TestDispose:
         executor.data_source = object()
         executor.args = Namespace()
         executor._metric_checker = None
+        executor._delete_store_refs = None
         monkeypatch.setattr(rollout_executor_module, "CheckpointEvalFn", _SynchronousDisposable)
         monkeypatch.setattr(rollout_executor_module.event_analyzer, "run_analysis_from_args", lambda _args: None)
         monkeypatch.setattr(
@@ -203,7 +246,7 @@ class TestSetEvalFleetInfo:
         controller = FakeInferenceController()
         provider = FakeInferenceControllerProvider(controller)
         eval_function = FakeEvalFunction()
-        executor = RolloutExecutor.__new__(RolloutExecutor)
+        executor = _inited_executor()
         executor._disposed = False
         executor.args = make_rollout_config(
             chat_template_path=None,
@@ -305,7 +348,7 @@ class _FakeObjectStore:
 
 
 def _make_executor(tmp_path: Path, rollout_fn: _CountingRolloutFn) -> RolloutExecutor:
-    executor = RolloutExecutor.__new__(RolloutExecutor)
+    executor = _inited_executor()
     executor.args = _make_runtime_args(load=str(tmp_path), save=str(tmp_path))
     executor.use_legacy_rollout_v1 = True
     executor.generate_rollout = rollout_fn
@@ -314,6 +357,7 @@ def _make_executor(tmp_path: Path, rollout_fn: _CountingRolloutFn) -> RolloutExe
     executor._train_parallel_configs_of_model_id = {None: make_train_parallel_config()}
     executor._weight_versions_of_model_id = {}
     executor.last_get_rollout_id_of_model_id = {}
+    executor._unreleased_store_refs = {}
     executor.custom_convert_samples_to_train_data_func = None
     executor.custom_reward_post_process_func = None
     executor._output_snapshotter = _RolloutExecutorOutputSnapshotter(args=executor.args)
@@ -639,6 +683,46 @@ class TestOneDirectoryPerRolloutCheckpoint:
         await executor.load(5, load=str(tmp_path))
 
         assert not (compute_rollout_checkpoint_dir(tmp_path, rollout_id=5) / "data_source").exists()
+
+    @pytest.mark.parametrize(
+        ("store_client", "log"),
+        [
+            ("works", None),
+            ("fails", "Failed to delete 1 output store refs"),
+            (None, "Not deleting 1 restored output store refs"),
+        ],
+        ids=["store", "failing-store", "no-store"],
+    )
+    async def test_restored_output_store_refs_are_settled_when_loading_ends(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        store_client: str | None,
+        log: str | None,
+    ) -> None:
+        """A dropped restored batch's refs are deleted at load; a failed delete or a run without a client only logs."""
+        monkeypatch.setattr(dropped, "_dropped", {})
+        saved = _make_executor(tmp_path, _CountingRolloutFn())
+        saved._output_snapshotter.capture(
+            trainer_model_id=None, rollout_id=6, data=[sample_owning("stored")], metadata={}
+        )
+        await saved.save(5)
+
+        deleted: list[list[str]] = []
+
+        def delete(refs):
+            if store_client == "fails":
+                raise RuntimeError("Mooncake remove failed")
+            deleted.append([ref.key for ref in refs])
+
+        executor = _make_executor(tmp_path, _CountingRolloutFn())
+        executor._delete_store_refs = None if store_client is None else delete
+        await executor.load(5, load=str(tmp_path))
+
+        assert deleted == ([["stored"]] if store_client == "works" else [])
+        assert take_dropped_refs() == {}
+        assert log is None or log in caplog.text
 
     async def test_a_run_that_saves_nowhere_refuses_to_save(self, tmp_path: Path) -> None:
         """Without --save the orchestration never asks for a checkpoint, so a save is a bug."""

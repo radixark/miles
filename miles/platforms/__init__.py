@@ -13,10 +13,26 @@ class Platform:
     """CUDA, and the base other platforms override: every method is the call main makes on CUDA."""
 
     device_type = "cuda"
+    # the torch.compile backend for model code
+    compile_backend = "inductor"
+    # Triton kernels (e.g. --log-probs-backend fused) run here
+    triton_kernels = True
+    # FlexAttention compiles to a block-sparse kernel here
+    flex_attention = True
+    # the process group has a rooted reduce
+    rooted_reduce = True
+    # the process group has PREMUL_SUM, which FSDP picks for a gradient divide factor other than the group size
+    premul_sum_reduce = True
+    # the --update-weight-transfer-mode values an engine on this platform can receive; None: all of them
+    weight_transfer_modes: frozenset[str] | None = None
+    # the engine reports the weight version each prompt's KV was computed under (--sglang-enable-prefill-weight-versions)
+    prefill_weight_versions = True
     # torch.compile(dynamic=True) works here; a platform without it runs dynamic-shape helpers eager
     dynamic_shapes = True
     # NVML sees the devices, so each training rank is pinned to its GPU's NUMA node
     nvml_numa_affinity = True
+    # the rollout engines' KV cache dtype when --sglang-kv-cache-dtype is left at "auto"; None keeps the engine's choice
+    rollout_kv_cache_dtype: str | None = None
 
     def bind_device_before_process_group(self, local_rank: int) -> None:
         torch.cuda.set_device(f"cuda:{local_rank}")

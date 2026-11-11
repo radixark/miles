@@ -18,6 +18,12 @@ class ScriptArgs(U.ExecuteTrainConfig):
     model_name: Literal["DeepSeek-V4.1", "DeepSeek-V4.1-4layer"] = "DeepSeek-V4.1"
     task: Literal["dapo_aime", "gsm8k"] = "gsm8k"
     enable_eval: bool = False
+    train_mode: Literal["full", "lora"] = "full"
+    lora_rank: int = 16
+    lora_alpha: int = 32
+    target_modules: str = "attn,mlp"
+    # native LoRA has no routed-expert adapter
+    exclude_modules: str = "*.ffn.experts.*"
 
     hf_checkpoint: str | None = None
     data_dir: str = "/root/datasets"
@@ -172,6 +178,7 @@ def prepare_download(args: ScriptArgs):
 
 def _train(args: ScriptArgs):
     assert args.hf_checkpoint is not None
+    is_lora = args.train_mode == "lora"
     load_save_path = f"{args.save_dir}/{args.run_id}/checkpoints"
     ref_load = args.hf_checkpoint if args.load_from_hf else f"{args.model_dir}/{args.torch_dist_name}"
     ckpt_args = f"--hf-checkpoint {args.hf_checkpoint} " f"--ref-load {ref_load} "
@@ -229,9 +236,21 @@ def _train(args: ScriptArgs):
         "--eps-clip 0.2 "
         "--eps-clip-high 0.28 "
     )
+    lora_args = ""
+    if is_lora:
+        lora_args = (
+            f"--lora-rank {args.lora_rank} "
+            f"--lora-alpha {args.lora_alpha} "
+            f'--target-modules "{args.target_modules}" '
+            f'--exclude-modules "{args.exclude_modules}" '
+            "--no-gradient-accumulation-fusion "
+            # host mirror of the rollout base, so releasing it does not re-ship the base every step
+            "--lora-base-cpu-backup "
+            "--check-lora-weight-equal "
+        )
     optimizer_args = (
         "--optimizer adam "
-        "--lr 1e-6 "
+        f"--lr {'1e-5' if is_lora else '1e-6'} "
         "--lr-decay-style constant "
         "--weight-decay 0.1 "
         "--adam-beta1 0.9 "
@@ -262,6 +281,8 @@ def _train(args: ScriptArgs):
         "--router-health-check-interval-secs 15 "
         "--router-health-failure-threshold 40 "
     )
+    if is_lora:
+        sglang_args += f"--sglang-lora-backend triton --sglang-max-lora-rank {args.lora_rank} "
     extra_env_vars = {
         "SGLANG_SKIP_CHECKPOINT_LOAD_CHECK": "1",
         "NCCL_CUMEM_ENABLE": "1",
@@ -289,6 +310,8 @@ def _train(args: ScriptArgs):
     }
 
     peak_device = args.colocate_memory_peak_device or ("gpu" if args.hardware == "GB300" else "cpu")
+    # checking the full weights makes every LoRA sync re-send the whole base
+    check_base_weights = args.check_weight_update and not is_lora
     misc_args = (
         "--attention-dropout 0.0 "
         "--hidden-dropout 0.0 "
@@ -306,7 +329,7 @@ def _train(args: ScriptArgs):
         "--qkv-format bshd "
         "--moe-router-freeze-gate "
         "--freeze-e-score-correction-bias "
-        f"{'--check-weight-update-equal --check-weight-update-skip-list engram_hasher. engram.embed. ' if args.check_weight_update else ''}"
+        f"{'--check-weight-update-equal --check-weight-update-skip-list engram_hasher. engram.embed. ' if check_base_weights else ''}"
         "--rollout-health-check-interval 300 "
         "--rollout-health-check-timeout 300 "
         "--transformer-impl transformer_engine "
@@ -342,6 +365,7 @@ def _train(args: ScriptArgs):
 
     train_args = (
         f"{ckpt_args} "
+        f"{lora_args} "
         f"{rollout_args} "
         f"{optimizer_args} "
         f"{grpo_args} "

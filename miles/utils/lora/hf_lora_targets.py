@@ -17,6 +17,17 @@ class HfLoraTargets:
     mlp: tuple[str, ...]
     unembed: tuple[str, ...]
     default_train_unembed: bool = False
+    # attention targets added when the backend shares one lora_A across a fused projection (--lora-type lora)
+    whole_fused_attention: tuple[str, ...] = ()
+    # (official Tinker name fragment, HF fragment) pairs; empty when no official export of the family was checked
+    tinker_name_renames: tuple[tuple[str, str], ...] = ()
+    # HF-fused module leaf -> its components' output rows, in HF row order
+    component_rows_by_fused_module: tuple[tuple[str, tuple[int, ...]], ...] = ()
+    # set when the family's adapters name routed experts packed and stacked (experts.gate_up_proj / down_proj, 3D);
+    # the value is how gate and up rows share gate_up_proj
+    packed_expert_gate_up_layout: str | None = None
+    # the HF vocab: the most head lora_B rows an HF-shaped source may hold
+    vocab_size: int | None = None
 
 
 @dataclass(frozen=True)
@@ -26,6 +37,19 @@ class _HfLoraModelSpec:
     unembed: str = "lm_head"
     unwrap_text_config: bool = False
     default_train_unembed: bool = False
+    build_whole_fused_attention: Callable[[dict], tuple[str, ...]] = lambda config: ()
+    tinker_name_renames: tuple[tuple[str, str], ...] = ()
+    component_rows_by_fused_module: Callable[[dict], tuple[tuple[str, tuple[int, ...]], ...]] = lambda config: ()
+    packed_expert_gate_up_layout: str | None = None
+
+
+# official Tinker exports (checked against SDK 0.36 exports): HF names except the head and the stacked 3D experts
+_TINKER_RENAMES = (
+    (".experts.w1", ".experts.gate_proj"),
+    (".experts.w3", ".experts.up_proj"),
+    (".experts.w2", ".experts.down_proj"),
+)
+_GPT_OSS_TINKER_RENAMES = (*_TINKER_RENAMES, (".attn.", ".self_attn."))
 
 
 def _prefix_paths(prefix, *paths):
@@ -39,7 +63,19 @@ _SHARED_EXPERTS = _prefix_paths("mlp.shared_experts", "gate_proj", "up_proj", "d
 _QWEN_SHARED_EXPERT = _prefix_paths("mlp.shared_expert", "gate_proj", "up_proj", "down_proj")
 _PACKED_EXPERTS = _prefix_paths("mlp.experts", "gate_up_proj", "down_proj")
 _GDN_NEXT = _prefix_paths("linear_attn", "in_proj_qkvz", "in_proj_ba", "out_proj")
-_GDN_35 = _prefix_paths("linear_attn", "in_proj_qkv", "in_proj_z", "in_proj_b", "in_proj_a", "out_proj")
+# official Tinker adapts no in_proj_b / in_proj_a; they stay targetable by name
+_GDN_35 = _prefix_paths("linear_attn", "in_proj_qkv", "in_proj_z", "out_proj")
+# a fused adapter takes the GDN in_proj whole, so it adapts in_proj_b / in_proj_a with in_proj_qkv / in_proj_z
+_GDN_35_WHOLE_FUSED = _prefix_paths("linear_attn", "in_proj_b", "in_proj_a")
+# GDN in_proj HF module -> the components a canonical adapter exports; official Tinker trains q / k / v / z apart
+GDN_IN_PROJ_COMPONENTS_BY_MODULE = {
+    "in_proj_qkv": ("in_proj_q", "in_proj_k", "in_proj_v"),
+    "in_proj_z": ("in_proj_z",),
+    "in_proj_b": ("in_proj_b",),
+    "in_proj_a": ("in_proj_a",),
+}
+# SGLang stacks the components into in_proj_qkvz and in_proj_ba only as complete groups
+GDN_IN_PROJ_SERVED_GROUPS = (frozenset({"in_proj_qkv", "in_proj_z"}), frozenset({"in_proj_b", "in_proj_a"}))
 _KDA = _prefix_paths(
     "self_attn",
     "q_proj",
@@ -82,6 +118,14 @@ def _deepseek_targets(config):
     return _mla_attention_targets(config), _deepseek_mlp_targets(config)
 
 
+def _deepseek_v41_targets(config):
+    # every V4.1 layer is MoE
+    mlp = list(_prefix_paths("ffn.experts.*", "w1", "w2", "w3"))
+    if config["n_shared_experts"]:
+        mlp.extend(_prefix_paths("ffn.shared_experts", "w1", "w2", "w3"))
+    return _prefix_paths("attn", "wq_a", "wq_b", "wkv", "wo_a", "wo_b"), tuple(mlp)
+
+
 def _kimi_targets(config):
     # Kimi's custom HF implementation retains per-expert modules and interleaved dense layers.
     num_moe_layers = sum(
@@ -114,6 +158,11 @@ def _kimi_k3_targets(config):
         if config["num_shared_experts"] is not None:
             mlp.extend(_prefix_paths("block_sparse_moe.shared_experts", "gate_proj", "up_proj", "down_proj"))
     return attention, tuple(mlp)
+
+
+def _glm4_targets(config):
+    # HF GLM-4 keeps gate / up fused in one dense gate_up_proj
+    return _QKVO_ATTENTION, _prefix_paths("mlp", "gate_up_proj", "down_proj")
 
 
 def _glm4_moe_targets(config):
@@ -183,6 +232,15 @@ def _qwen3_5_targets(config):
     return _hybrid_attention_targets(config, _GDN_35), _DENSE_MLP
 
 
+def _qwen3_5_whole_fused_attention(config):
+    return _GDN_35_WHOLE_FUSED if "linear_attention" in config["layer_types"] else ()
+
+
+def _gdn_35_component_rows(config):
+    qk = config["linear_num_key_heads"] * config["linear_key_head_dim"]
+    return (("in_proj_qkv", (qk, qk, config["linear_num_value_heads"] * config["linear_value_head_dim"])),)
+
+
 def _qwen3_5_moe_targets(config):
     mlp = _PACKED_EXPERTS
     if config["shared_expert_intermediate_size"]:
@@ -221,22 +279,49 @@ def _mimo_v2_targets(config):
 _HF_LORA_MODELS = {
     "llama": _HfLoraModelSpec(_dense_targets),
     "qwen2": _HfLoraModelSpec(_dense_targets),
-    "qwen3": _HfLoraModelSpec(_dense_targets),
-    "qwen3_moe": _HfLoraModelSpec(_qwen3_moe_targets),
+    # MiMo-7B: a Qwen2 body; its MTP layers sit under model.mtp_layers
+    "mimo": _HfLoraModelSpec(_dense_targets),
+    "qwen3": _HfLoraModelSpec(_dense_targets, tinker_name_renames=_TINKER_RENAMES),
+    "qwen3_moe": _HfLoraModelSpec(_qwen3_moe_targets, tinker_name_renames=_TINKER_RENAMES),
     "qwen3_next": _HfLoraModelSpec(_qwen3_next_targets),
-    "qwen3_5_text": _HfLoraModelSpec(_qwen3_5_targets),
-    "qwen3_5_moe_text": _HfLoraModelSpec(_qwen3_5_moe_targets),
+    "qwen3_5_text": _HfLoraModelSpec(
+        _qwen3_5_targets,
+        build_whole_fused_attention=_qwen3_5_whole_fused_attention,
+        tinker_name_renames=_TINKER_RENAMES,
+        component_rows_by_fused_module=_gdn_35_component_rows,
+    ),
+    "qwen3_5_moe_text": _HfLoraModelSpec(
+        _qwen3_5_moe_targets,
+        build_whole_fused_attention=_qwen3_5_whole_fused_attention,
+        tinker_name_renames=_TINKER_RENAMES,
+        component_rows_by_fused_module=_gdn_35_component_rows,
+    ),
     "qwen3_5": _HfLoraModelSpec(
-        _qwen3_5_targets, layer_prefix="model.language_model.layers.*", unwrap_text_config=True
+        _qwen3_5_targets,
+        layer_prefix="model.language_model.layers.*",
+        unwrap_text_config=True,
+        build_whole_fused_attention=_qwen3_5_whole_fused_attention,
+        tinker_name_renames=_TINKER_RENAMES,
+        component_rows_by_fused_module=_gdn_35_component_rows,
     ),
     "qwen3_5_moe": _HfLoraModelSpec(
-        _qwen3_5_moe_targets, layer_prefix="model.language_model.layers.*", unwrap_text_config=True
+        _qwen3_5_moe_targets,
+        layer_prefix="model.language_model.layers.*",
+        unwrap_text_config=True,
+        build_whole_fused_attention=_qwen3_5_whole_fused_attention,
+        tinker_name_renames=_TINKER_RENAMES,
+        component_rows_by_fused_module=_gdn_35_component_rows,
     ),
-    "gpt_oss": _HfLoraModelSpec(_gpt_oss_targets),
+    "gpt_oss": _HfLoraModelSpec(
+        _gpt_oss_targets, tinker_name_renames=_GPT_OSS_TINKER_RENAMES, packed_expert_gate_up_layout="interleaved"
+    ),
     "deepseek_v2": _HfLoraModelSpec(_deepseek_targets),
     "deepseek_v3": _HfLoraModelSpec(_deepseek_targets),
     "deepseek_v32": _HfLoraModelSpec(_deepseek_targets),
+    "deepseek_v41": _HfLoraModelSpec(_deepseek_v41_targets, layer_prefix="layers.*", unembed="head"),
     "kimi_k2": _HfLoraModelSpec(_kimi_targets),
+    # JoyAI-LLM-Flash ships the remote DeepSeek-V3 code Kimi K2 does: per-expert modules, a leading dense layer
+    "joyai_llm_flash": _HfLoraModelSpec(_kimi_targets),
     "kimi_k25": _HfLoraModelSpec(
         _kimi_targets,
         layer_prefix="language_model.model.layers.*",
@@ -249,7 +334,10 @@ _HF_LORA_MODELS = {
         unembed="language_model.lm_head",
         unwrap_text_config=True,
     ),
+    "glm4": _HfLoraModelSpec(_glm4_targets),
     "glm4_moe": _HfLoraModelSpec(_glm4_moe_targets),
+    # GLM-4.7-Flash: MLA attention with dense / sparse MLPs chosen per layer, as GLM-5's DSA stack
+    "glm4_moe_lite": _HfLoraModelSpec(_glm_dsa_targets),
     "glm_moe_dsa": _HfLoraModelSpec(_glm_dsa_targets),
     "glm5_next": _HfLoraModelSpec(
         _glm5_next_targets, layer_prefix="model.language_model.layers.*", unwrap_text_config=True
@@ -266,6 +354,11 @@ _HF_LORA_MODELS = {
 }
 
 
+def has_hf_lora_targets(hf_config: dict) -> bool:
+    """Explicit --target-modules train any family; the adapter checkpoint and export need its layout."""
+    return hf_config["model_type"] in _HF_LORA_MODELS
+
+
 def get_hf_lora_targets(hf_config: dict) -> HfLoraTargets:
     model_type = hf_config["model_type"]
     assert model_type in _HF_LORA_MODELS, f"HF LoRA target layout is not defined for model_type={model_type!r}"
@@ -277,10 +370,19 @@ def get_hf_lora_targets(hf_config: dict) -> HfLoraTargets:
         mlp=_prefix_paths(spec.layer_prefix, *mlp),
         unembed=(spec.unembed,),
         default_train_unembed=spec.default_train_unembed,
+        whole_fused_attention=_prefix_paths(spec.layer_prefix, *spec.build_whole_fused_attention(text_config)),
+        tinker_name_renames=spec.tinker_name_renames,
+        component_rows_by_fused_module=spec.component_rows_by_fused_module(text_config),
+        vocab_size=text_config.get("vocab_size"),
+        packed_expert_gate_up_layout=spec.packed_expert_gate_up_layout,
     )
 
 
-def resolve_hf_lora_targets(hf_config: dict, *, target_modules: list[str] | None = None) -> list[str]:
+def resolve_hf_lora_targets(
+    hf_config: dict, *, target_modules: list[str] | None = None, whole_fused: bool = False
+) -> list[str]:
+    """`whole_fused`: the backend shares one lora_A across a fused projection (--lora-type lora), so the attn
+    group adapts a Qwen3.5 GDN in_proj whole, in_proj_b / in_proj_a included."""
     if target_modules is None or target_modules == ["all-linear"]:
         layout = get_hf_lora_targets(hf_config)
         target_modules = ["attn", "mlp", *(["unembed"] if layout.default_train_unembed else [])]
@@ -289,7 +391,8 @@ def resolve_hf_lora_targets(hf_config: dict, *, target_modules: list[str] | None
         return list(target_modules)
 
     layout = get_hf_lora_targets(hf_config)
-    groups = dict(zip(LORA_TARGET_GROUPS, (layout.attention, layout.mlp, layout.unembed), strict=True))
+    attention = layout.attention + (layout.whole_fused_attention if whole_fused else ())
+    groups = dict(zip(LORA_TARGET_GROUPS, (attention, layout.mlp, layout.unembed), strict=True))
     targets = [module for target in target_modules for module in groups.get(target, (target,))]
     assert targets, "At least one trainable LoRA module group is required"
     return list(dict.fromkeys(targets))
@@ -338,3 +441,32 @@ def expand_hf_lora_targets(targets: list[str], layout: HfLoraTargets) -> list[st
             matches_lora_target(module, target) for module in available
         ), f"LoRA target {target!r} is not an HF target of this model"
     return [module for module in available if any(matches_lora_target(module, target) for target in targets)]
+
+
+def gdn_in_proj_served_targets(modules: list[str], hf_targets: list[str], hf_block: str = "linear_attn") -> list[str]:
+    """Check the GDN in_proj selection of canonical adapters and name its targets after the exported components.
+
+    ``modules`` are the HF modules the targets select (the targets themselves when the model lists none).
+    """
+    leaves_by_block: dict[str, set[str]] = {}
+    for module in modules:
+        block, _, leaf = module.rpartition(".")
+        if block.endswith(hf_block) or not block:
+            leaves_by_block.setdefault(block, set()).add(leaf)
+    for block, leaves in leaves_by_block.items():
+        for group in GDN_IN_PROJ_SERVED_GROUPS:
+            assert leaves & group in (set(), group), (
+                f"GDN LoRA needs {sorted(group)} selected together in {block or hf_block} "
+                f"(got {sorted(leaves & group)}): SGLang serves the components only as a stacked group"
+            )
+    gdn_modules = [module for module in modules if module.rpartition(".")[0].endswith(hf_block)]
+    served = []
+    for target in hf_targets:
+        block, dot, leaf = target.rpartition(".")
+        # a wildcard block (``*.in_proj_qkv``) is a GDN target when it reaches a GDN module
+        in_gdn = any(matches_lora_target(module, target) for module in gdn_modules) or block.endswith(hf_block)
+        if leaf in GDN_IN_PROJ_COMPONENTS_BY_MODULE and (in_gdn or not block):
+            served.extend(f"{block}{dot}{component}" for component in GDN_IN_PROJ_COMPONENTS_BY_MODULE[leaf])
+        else:
+            served.append(target)
+    return served

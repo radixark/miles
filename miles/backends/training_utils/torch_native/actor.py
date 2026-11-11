@@ -2,20 +2,26 @@ import logging
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import AbstractContextManager, nullcontext
 from functools import partial
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import torch
 import torch.distributed as dist
 from tqdm import tqdm
 from transformers import PretrainedConfig, PreTrainedTokenizerBase
 
-from miles.backends.training_utils.data.rollout import DataIterator, get_batch, get_data_iterator, get_rollout_data
-from miles.backends.training_utils.data.sampling_mask import get_rollout_sampling_masks
+from miles import platforms
+from miles.backends.training_utils.data.rollout import (
+    DataIterator,
+    get_batch,
+    get_data_iterator,
+    get_rollout_data,
+    prepare_rollout_data,
+)
 from miles.backends.training_utils.loss.hub.logit_processors import get_rollout_topk_mismatch
+from miles.backends.training_utils.loss.hub.response_layout import response_layout_type
 from miles.backends.training_utils.loss.objective import (
     compute_advantages_and_returns,
     count_loss_tokens,
-    get_log_probs_and_entropy,
     loss_function,
 )
 from miles.backends.training_utils.metrics import perf
@@ -33,14 +39,16 @@ from miles.backends.training_utils.torch_native.step_runner import StepRunner
 from miles.backends.training_utils.types import TrainStepOutcome, TrainStepOutput
 from miles.backends.training_utils.weight_update.updater import WeightUpdater
 from miles.ray.rollout.inference_controller import UpdatableEngines
+from miles.ray.rollout.train_data_conversion import process_rollout_data_shard
 from miles.ray.train_actor import TrainRayActor, WeightUpdateOutput
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.dp_schedule import TrainParallelConfig
+from miles.utils.lora.utils import build_lora_config, lora_rollout_enabled
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.object_store import StoreObjectRef
 from miles.utils.profile_utils import TrainProfiler
-from miles.utils.timer import inverse_timer, timer
+from miles.utils.timer import Timer, inverse_timer, timer
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +104,7 @@ class TorchNativeTrainRayActor(TrainRayActor):
         model_name = self.args.model_name
         if model_name is None:
             model_name = type(self.hf_config).__name__.lower()
+        is_lora = lora_rollout_enabled(self.args)
         return WeightUpdater(
             self.args,
             model,
@@ -106,7 +115,10 @@ class TorchNativeTrainRayActor(TrainRayActor):
             ),  # config-access-exempt: unquantized HF checkpoints omit quantization_config
             iterator_factory=iterator_factory,
             parallel_state=get_parallel_state(),
-            is_lora=False,
+            is_lora=is_lora,
+            lora_sync_config=(
+                build_lora_config(self.args, target_modules=self.args.lora_adapter_targets) if is_lora else None
+            ),
         )
 
     def save_model(self, rollout_id: int, force_sync: bool = False) -> None:
@@ -157,8 +169,11 @@ class TorchNativeTrainRayActor(TrainRayActor):
             rollout_data, store_get_result = get_rollout_data(
                 args=self.args,
                 rollout_data_ref=rollout_data_ref,
+                output_store_read=self.output_store_read,
                 witness_info=None,
                 train_parallel_config=self.train_parallel_config,
+                sample_device=response_layout_type(self.args).sample_device,
+                token_space_processor=self.token_space_processor,
             )
             with store_get_result:
                 if self.args.debug_rollout_only:
@@ -175,7 +190,42 @@ class TorchNativeTrainRayActor(TrainRayActor):
         self._heartbeat.bump()
         return TrainStepOutput(outcome=TrainStepOutcome.NORMAL)
 
+    def _compile_warmup_passes(self, shard: dict[str, Any]) -> None:
+        """Run the per-rollout passes on a synthetic shard (as the rollout side packages one), leaving the weights
+        alone, so their programs are compiled before rollout 0 arrives (--compile-warmup)."""
+        rollout_data = prepare_rollout_data(
+            self.args,
+            process_rollout_data_shard(self.args, shard),
+            sample_device=response_layout_type(self.args).sample_device,
+        )
+        # rollout 0's perf metrics read every timer: keep the passes' timers out
+        timers = dict(Timer().timers)
+        try:
+            runner = self._step_runner()
+            data_iterator, num_microbatches = self._score_rollout(runner, rollout_data)
+            with routing_replay.stage(routing_replay.REPLAY_BACKWARD):
+                # without the optimizer step the weights stay as rollout 0 was generated with
+                self._forward_backward_steps(
+                    runner, data_iterator, num_microbatches, finish_step=lambda step_id, losses_reduced: None
+                )
+            routing_replay.reset()
+        finally:
+            Timer().timers = timers
+
     def _train_core(self, rollout_id: int, rollout_data: dict) -> None:
+        runner = self._step_runner()
+        data_iterator, num_microbatches = self._score_rollout(runner, rollout_data)
+        log_rollout_data(rollout_id, self.args, rollout_data)
+
+        with routing_replay.stage(routing_replay.REPLAY_BACKWARD), timer("actor_train"):
+            self._optimizer_steps(runner, data_iterator, num_microbatches, rollout_id)
+        routing_replay.reset()
+
+        self.prof.step(rollout_id=rollout_id)
+        self._after_rollout(rollout_id, rollout_data)
+
+    def _score_rollout(self, runner: StepRunner, rollout_data: dict) -> tuple[DataIterator, list[int]]:
+        """The passes before the optimizer steps: ref and actor log-probs, then advantages."""
         data_iterators, num_microbatches = get_data_iterator(self.args, self.model_parts, rollout_data)
         assert num_microbatches, f"empty microbatch schedule for micro_batch_size={self.args.micro_batch_size}"
         routing_replay.fill(
@@ -187,7 +237,6 @@ class TorchNativeTrainRayActor(TrainRayActor):
             align=self.align_token_side_channel,
         )
         data_iterator = data_iterators[0]
-        runner = self._step_runner()
 
         if self.ref_runner is not None:
             with routing_replay.stage(routing_replay.FALLTHROUGH), self._ref_context():
@@ -196,15 +245,11 @@ class TorchNativeTrainRayActor(TrainRayActor):
             rollout_data.update(self._log_probs(runner, data_iterator, num_microbatches))
         routing_replay.rewind()
 
-        compute_advantages_and_returns(self.args, rollout_data)
-        log_rollout_data(rollout_id, self.args, rollout_data)
-
-        with routing_replay.stage(routing_replay.REPLAY_BACKWARD), timer("actor_train"):
-            self._optimizer_steps(runner, data_iterator, num_microbatches, rollout_id)
-        routing_replay.reset()
-
-        self.prof.step(rollout_id=rollout_id)
-        self._after_rollout(rollout_id, rollout_data)
+        # PaddedRows keeps the per-sample tensors on the host, so their whitening reduces over the gloo group
+        on_host = response_layout_type(self.args).sample_device is not None
+        whiten_group = get_parallel_state().effective_dp.gloo_group if on_host else None
+        compute_advantages_and_returns(self.args, rollout_data, whiten_group=whiten_group)
+        return data_iterator, num_microbatches
 
     @torch.no_grad()
     def _log_probs(
@@ -222,16 +267,11 @@ class TorchNativeTrainRayActor(TrainRayActor):
         if check_rollout_topk:
             keys = keys + ROLLOUT_TOPK_KEYS
 
+        layout_type = response_layout_type(args)
+
         def compute(logits: torch.Tensor, batch: dict) -> dict:
-            result = get_log_probs_and_entropy(
-                logits=logits,
-                args=args,
-                unconcat_tokens=batch["unconcat_tokens"],
-                total_lengths=batch["total_lengths"],
-                response_lengths=batch["response_lengths"],
-                with_entropy=(store_prefix == ""),
-                max_seq_lens=batch.get("max_seq_lens"),
-                rollout_sampling_mask=get_rollout_sampling_masks(batch) if use_rollout_sampling_mask else None,
+            result = layout_type.build(args, batch, logits).forward_log_probs(
+                logits, with_entropy=(store_prefix == ""), use_sampling_mask=use_rollout_sampling_mask
             )
             entry = {f"{store_prefix}log_probs": result["log_probs"]}
             if "entropy" in result:
@@ -245,6 +285,8 @@ class TorchNativeTrainRayActor(TrainRayActor):
                 progress = tqdm(range(microbatches), desc=f"{store_prefix}log_probs", disable=dist.get_rank() != 0)
                 batches = self._fetch_batches(self.prof.iterate_train_log_probs(progress), data_iterator, keys)
                 forward_store.extend(runner.forward_only_step(batches, compute))
+            # PaddedRows only started each microbatch's device-to-host copies; it waits for all of them once
+            forward_store = layout_type.finish_forward_pass(forward_store)
 
         return aggregate_forward_results(forward_store, data_iterator, args, store_prefix)
 
@@ -252,20 +294,10 @@ class TorchNativeTrainRayActor(TrainRayActor):
         self, runner: StepRunner, data_iterator: DataIterator, num_microbatches: list[int], rollout_id: int
     ) -> None:
         args = self.args
-        num_step_tokens = _count_step_loss_tokens(data_iterator, num_microbatches)
-        data_iterator.reset()
         state = get_parallel_state()
-        keys = TRAIN_KEYS + SAMPLING_MASK_KEYS if args.use_sampling_support_replay else TRAIN_KEYS
 
-        for step_id, microbatches in enumerate(num_microbatches):
-            runner.zero_grad()
-            progress = tqdm(range(microbatches), desc="actor_train", disable=dist.get_rank() != 0)
-            batches = self._fetch_batches(self.prof.iterate_train_actor(progress), data_iterator, keys)
-            losses_reduced = runner.forward_backward_step(
-                batches, partial(_step_loss, args, microbatches, num_step_tokens[step_id])
-            )
+        def apply_step(step_id: int, losses_reduced: list[dict]) -> None:
             metrics = runner.apply_step()
-
             if args.ci_test:
                 check_grad_norm(
                     args=args,
@@ -286,6 +318,32 @@ class TorchNativeTrainRayActor(TrainRayActor):
                 extra_metrics=metrics.extra_metrics,
                 should_log=state.is_metrics_rank,
             )
+
+        self._forward_backward_steps(runner, data_iterator, num_microbatches, finish_step=apply_step)
+
+    def _forward_backward_steps(
+        self,
+        runner: StepRunner,
+        data_iterator: DataIterator,
+        num_microbatches: list[int],
+        *,
+        finish_step: Callable[[int, list[dict]], None],
+    ) -> None:
+        args = self.args
+        num_step_tokens = _count_step_loss_tokens(data_iterator, num_microbatches)
+        data_iterator.reset()
+        keys = TRAIN_KEYS + SAMPLING_MASK_KEYS if args.use_sampling_support_replay else TRAIN_KEYS
+
+        for step_id, microbatches in enumerate(num_microbatches):
+            runner.zero_grad()
+            progress = tqdm(range(microbatches), desc="actor_train", disable=dist.get_rank() != 0)
+            batches = self._fetch_batches(self.prof.iterate_train_actor(progress), data_iterator, keys)
+            losses_reduced = runner.forward_backward_step(
+                batches, partial(_step_loss, args, microbatches, num_step_tokens[step_id])
+            )
+            finish_step(step_id, losses_reduced)
+        # free the last step's gradients before the log-prob passes and the weight sync hold device memory
+        runner.zero_grad()
 
     def _fetch_batches(self, progress, data_iterator: DataIterator, keys: list[str]) -> Iterator[dict]:
         for _ in progress:
@@ -327,7 +385,8 @@ def _count_step_loss_tokens(data_iterator: DataIterator, num_microbatches: list[
         for _ in range(microbatches):
             step_loss_masks.extend(data_iterator.get_next(["loss_masks"])["loss_masks"])
         local_counts.append(count_loss_tokens(step_loss_masks))
-    counts = torch.stack(local_counts)
+    # PaddedRows keeps loss masks on the host, and the DP group reduces device tensors
+    counts = torch.stack(local_counts).to(platforms.current_platform.current_device())
     dist.all_reduce(counts, group=get_parallel_state().intra_dp.group)
     return counts
 
