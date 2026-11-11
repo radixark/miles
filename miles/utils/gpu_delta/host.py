@@ -42,6 +42,7 @@ from miles.utils.gpu_delta.host_worker import (
     _CAPACITY_ALIGNMENT,
     _map_cache,
     _metadata_views,
+    _write_record,
     configured_cpu_workers,
     copy_bytes,
     new_metrics,
@@ -96,11 +97,12 @@ def host_cache_id(engine_id):
 class CpuWorker:
     """One clean interpreter per owner, with descriptor-only request/reply IPC."""
 
-    def __init__(self, directory, device):
+    def __init__(self, directory, device, owner):
         self.configuration = {
             "directory": str(directory),
             "workers": configured_cpu_workers(),
             "backends": {name: decoder_backend(device, name) for name in ("snappy", "lz4", "bitcomp")},
+            "owner": owner,
         }
         local, child = socket.socketpair()
         parent_fd = None
@@ -234,10 +236,18 @@ class HostArena:
         self.owner = False
         self._metadata_mapping = self._metadata_capacity = None
         self._worker = None
+        self._dtype_path = None
 
     @cached_property
     def root(self):
         return _cache_root(self.engine_id)
+
+    def register_dtypes(self, records):
+        # Discovery returns only after every original rank has published these
+        # immutable facts. The CPU child therefore needs no admission barrier.
+        name = f"dtypes-{self.identity['rank_id']}"
+        _write_record(self.root, name, records | {"identity": self.identity})
+        self._dtype_path = self.root / (name + ".json")
 
     def _reserve_rank_arena(self, size, metrics):
         import torch
@@ -340,7 +350,7 @@ class HostArena:
         metrics = new_metrics()
         if self.owner:
             if self._worker is None:
-                self._worker = CpuWorker(self.directory, self.device)
+                self._worker = CpuWorker(self.directory, self.device, self.identity)
             index = self._worker.prepare(expected, namespace, metrics, cancelled)
         else:
             token = publication_token(expected)
@@ -358,7 +368,9 @@ class HostArena:
                         state = orjson.loads(state_path.read_bytes()) if state_path.exists() else None
                         if state is not None and state["token"] == token:
                             if state["state"] != "READY":
-                                raise ValueError("encoded publication is failed or already released")
+                                raise ValueError(
+                                    state.get("error", "encoded publication is failed or already released")
+                                )
                             index = orjson.loads((self.directory / "index.json").read_bytes())
                             if index["namespace"] != namespace or index["token"] != token:
                                 raise ValueError("encoded cache publication differs")
@@ -478,6 +490,11 @@ class HostArena:
         self._close_private()
         self._close_shared()
         self._metadata_mapping = self._metadata_capacity = None
+        if self._dtype_path is not None:
+            # Clear closes all ranks before shared cache removal. A replacement
+            # publishes a new incarnation; another rank's facts are never removed.
+            self._dtype_path.unlink(missing_ok=True)
+            self._dtype_path = None
 
 
 class HostPublication:

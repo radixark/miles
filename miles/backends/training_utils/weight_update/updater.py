@@ -149,7 +149,13 @@ class WeightUpdater:
     @torch.no_grad()
     def save_checkpoint_delta(self, checkpoint_dir: str, rollout_id: int, weight_version: int) -> None:
         if self._uses_gpu_delta:
+            self.protocol.initialize_export(self.parallel_state, self._hf_weight_iterator.placement)
             self.protocol.prepare_checkpoint(checkpoint_dir, rollout_id, weight_version, self._iter_base_buckets)
+
+    @torch.no_grad()
+    def export_gpu_delta_snapshot(self, path: str, rollout_id: int | None, weight_version: int) -> dict:
+        self.protocol.initialize_export(self.parallel_state, self._hf_weight_iterator.placement)
+        return self.protocol.export_snapshot(path, rollout_id, weight_version, self._iter_base_buckets)
 
     def finish_checkpoint_delta(self) -> None:
         if self._uses_gpu_delta:
@@ -228,7 +234,6 @@ class WeightUpdater:
                     self.args,
                     metrics,
                     rollout_id=rollout_id,
-                    receiver_pool=self._receiver_pools.active,
                     is_primary_rank=self.parallel_state.is_metrics_rank,
                 )
         return True

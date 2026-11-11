@@ -456,8 +456,8 @@ def _publication_accounting(publication):
     }
     sizes = {
         **metadata_bytes,
-        "raw_tensor_count": sum(tensor["encoding"] == "raw_bytes" for tensor in manifest["tensors"]),
-        "raw_target_bytes": raw_bytes,
+        "raw_tensor_count": sum(tensor["encoding"] == "xor_raw_bytes" for tensor in manifest["tensors"]),
+        "raw_mask_bytes": raw_bytes,
         "matrix_payload_bytes": outer_bytes,
         "inner_arena_bytes": sum(tensor.get("outer", {}).get("decoded_bytes", 0) for tensor in manifest["tensors"]),
         "outer_zstd_frames": sum(len(tensor.get("outer", {}).get("frames", [])) for tensor in manifest["tensors"]),
@@ -508,7 +508,7 @@ def _partition_plan(plan, owner_count):
 
 def _encode_version(args, owner, index, encoder, metadata, version):
     tensors = owner["tensors"]
-    raw_plan = [tensor for tensor in tensors if tensor["encoding"] == "raw_bytes"]
+    raw_plan = [tensor for tensor in tensors if tensor["encoding"] == "xor_raw_bytes"]
     matrix_plan = [tensor for tensor in tensors if tensor["encoding"] == "xor_bytes"]
     writer = PublicationWriter(
         args.output / metadata["codec"] / f"v{version}",
@@ -527,10 +527,9 @@ def _encode_version(args, owner, index, encoder, metadata, version):
             before, after = _fixture_snapshot(args, index, tensor, version)
             input_read_s += time.monotonic() - reading
             writing = time.monotonic()
-            entry = writer.add_raw_tensor(
+            entry = writer.add_raw_xor_tensor(
                 tensor["name"],
-                before,
-                after,
+                np.bitwise_xor(before, after),
                 dtype=tensor["dtype"],
                 shape=tensor["shape"],
                 format=tensor.get("format"),

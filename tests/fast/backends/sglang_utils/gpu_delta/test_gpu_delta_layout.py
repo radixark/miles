@@ -10,6 +10,7 @@ import torch
 from miles.backends.sglang_utils.gpu_delta import bindings as byte_layout
 from miles.backends.sglang_utils.gpu_delta import layout
 from miles.backends.sglang_utils.gpu_delta.flashinfer import FlashInferLayout
+from miles.utils.gpu_delta.host_worker import validate_dtype_records
 
 
 def _nvfp4_method():
@@ -185,6 +186,16 @@ class TestFlashInferDeltaLayout(unittest.TestCase):
             attn.q_b_proj_qrep_weight = attention_before["q_b_proj"][16:].clone()
             attn.w_kc_qrep = attention_before["kv_b_proj"][20:].reshape(2, 10, hidden)[:, :4].clone()
         plan = layout.GpuDeltaLayout(root, inventory)
+        validate_dtype_records(plan.dtype_records)
+        if dcp:
+            # Discovery must pin auxiliary consumers before child admission;
+            # deferred finishing cannot silently accept a replacement image.
+            original_qrep = attn.q_b_proj_qrep_weight
+            attn.q_b_proj_qrep_weight = original_qrep.clone()
+            with self.assertRaisesRegex(RuntimeError, "consumer storage changed"):
+                plan.finish()
+            attn.q_b_proj_qrep_weight = original_qrep
+        plan.finish()
         for binding in plan.bindings:
             if ".self_attn." in binding.name:
                 key = binding.name.split(".")[-2]
@@ -341,11 +352,75 @@ class TestFlashInferDeltaLayout(unittest.TestCase):
             name = f"{prefix}.0.{projection}_proj.weight_scale_2"
             binding = plan.bind(name, meta, name)
             after = torch.tensor(0.5)
-            self.assertEqual(binding.encoding, "raw_bytes")
+            self.assertEqual(binding.encoding, "xor_raw_bytes")
             torch._foreach_copy_([binding.storage[0]], [after])
             torch.testing.assert_close(_bytes(binding.storage[0]), _bytes(after))
         self.assertTrue(torch.all(layer.w13_input_scale == 7))
         self.assertTrue(torch.all(layer.w2_input_scale == 11))
+
+    def test_admission_reports_all_incompatible_dtypes_without_changing_weights(self):
+        root = torch.nn.Module()
+        root.config = SimpleNamespace(num_hidden_layers=1, architectures=["GlmMoeDsaForCausalLM"])
+        root.num_fused_shared_experts = 0
+        root.model = torch.nn.Module()
+        root.model.layers = torch.nn.ModuleList([torch.nn.Module()])
+        layer = root.model.layers[0]
+        layer.self_attn = torch.nn.Module()
+        layer.self_attn.indexer = torch.nn.Module()
+        layer.self_attn.indexer.k_norm = torch.nn.LayerNorm(3)
+        for name, value in (
+            ("downcast_scalar", torch.tensor(1.0, dtype=torch.bfloat16)),
+            ("downcast_vector", torch.ones(3, dtype=torch.float16)),
+            ("upcast_matrix", torch.ones(2, 3, dtype=torch.float32)),
+            ("downcast_matrix", torch.ones(2, 3, dtype=torch.bfloat16)),
+            ("unchanged_scalar", torch.tensor(0.0, dtype=torch.bfloat16)),
+            ("valid_bf16_scalar", torch.tensor(2.0, dtype=torch.float32)),
+            ("valid_vector", torch.ones(3, dtype=torch.float32)),
+        ):
+            layer.register_parameter(name, torch.nn.Parameter(value, requires_grad=False))
+        prefix = "model.layers.0."
+        mismatches = {
+            prefix + "self_attn.indexer.k_norm.weight": ("F16", "F32"),
+            prefix + "downcast_scalar": ("F32", "BF16"),
+            prefix + "downcast_vector": ("F32", "F16"),
+            prefix + "upcast_matrix": ("BF16", "F32"),
+            prefix + "downcast_matrix": ("F32", "BF16"),
+            # Admission checks the complete inventory, even if this tensor's
+            # subsequent delta would be empty because it remains zero.
+            prefix + "unchanged_scalar": ("F32", "BF16"),
+        }
+        compatible = {
+            prefix + "self_attn.indexer.k_norm.bias": "BF16",
+            prefix + "valid_bf16_scalar": "BF16",
+            prefix + "valid_vector": "F32",
+        }
+        parameters = dict(root.named_parameters())
+        inventory = {
+            name: {
+                "dtype": mismatches[name][0] if name in mismatches else compatible[name],
+                "shape": list(value.shape),
+            }
+            for name, value in parameters.items()
+        }
+        before = {name: (_bytes(value).clone(), value.data_ptr()) for name, value in parameters.items()}
+
+        plan = layout.GpuDeltaLayout(root, inventory)
+        with self.assertRaises(ValueError) as caught:
+            validate_dtype_records(plan.dtype_records)
+
+        message = str(caught.exception)
+        for name, (checkpoint_dtype, served_dtype) in mismatches.items():
+            rows = [row for row in message.splitlines() if name in row]
+            self.assertEqual(len(rows), 1, message)
+            self.assertIn(f"checkpoint={checkpoint_dtype}", rows[0])
+            self.assertIn("served=", rows[0])
+            self.assertIn(served_dtype, rows[0].split("served=", 1)[1])
+        for name in compatible:
+            self.assertNotIn(name, message)
+        for name, value in parameters.items():
+            expected, pointer = before[name]
+            self.assertTrue(torch.equal(_bytes(value), expected), name)
+            self.assertEqual(value.data_ptr(), pointer)
 
     def test_glm_mapping_matches_loader_views_and_preserves_consumers(self):
         root = torch.nn.Module()
@@ -440,6 +515,8 @@ class TestFlashInferDeltaLayout(unittest.TestCase):
             ) as require_topology,
         ):
             plan = layout.GpuDeltaLayout(root, inventory)
+            validate_dtype_records(plan.dtype_records)
+            plan.finish()
         require_topology.assert_called_once_with(moe)
         self.assertEqual(len(plan.excluded), 2)
         for binding in plan.bindings:
@@ -459,22 +536,24 @@ class TestFlashInferDeltaLayout(unittest.TestCase):
             self.assertEqual(image.source.data_ptr(), source.data_ptr())
             self.assertEqual(image.source.stride(), source.stride())
         values = torch.tensor(
-            [0.0, -0.0, float("inf"), float("nan"), 1.25, -3.5, 0.125, -16],
+            [0.0, -0.0, float("inf"), float("-inf"), 1.25, -3.5, 2.0**-133, -16],
             dtype=torch.bfloat16,
         ).repeat(16)
         with torch.no_grad():
             for binding in plan.bindings:
                 if ".k_norm." not in binding.name:
                     continue
-                self.assertEqual(binding.encoding, "raw_bytes")
+                self.assertEqual(binding.encoding, "xor_raw_bytes")
                 target = getattr(norm, binding.name.rsplit(".", 1)[1])
-                # An all-zero target is a replacement, not an omitted XOR.
+                # A zero target still needs the old-byte XOR mask.
                 source = torch.zeros_like(values) if binding.name.endswith("bias") else values
                 target.fill_(7)
                 pointer = target.data_ptr()
                 expected = torch.empty_like(target)
                 expected.copy_(source)  # The ordinary default_weight_loader.
-                torch._foreach_copy_([binding.storage[0]], [source.to(target.dtype)])
+                mask = _bytes(target.to(source.dtype)) ^ _bytes(source)
+                for destination, physical_mask, _ in byte_layout.prepare_raw_xor([(binding, mask)]):
+                    destination.view(torch.uint8).bitwise_xor_(physical_mask.view(destination.view(torch.uint8).shape))
                 torch.testing.assert_close(_bytes(target), _bytes(expected), rtol=0, atol=0)
                 self.assertEqual(target.data_ptr(), pointer)
         plan.check_identity()

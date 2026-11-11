@@ -18,6 +18,7 @@ import torch
 
 from miles.backends.sglang_utils.gpu_delta.flashinfer import (
     DestinationSegment,
+    _DtypeMismatch,
     expert_destinations,
     expert_scale_target,
     expert_slices,
@@ -58,6 +59,7 @@ class TensorBinding:
     segments: tuple[DestinationSegment, ...] = ()
     format: str | None = None
     checkpoint_dtype: str | None = None
+    dtype_checks: tuple[dict, ...] = ()
 
     def __post_init__(self):
         # The admitted binding is immutable for the session. Keep dtype and
@@ -65,7 +67,7 @@ class TensorBinding:
         self.torch_dtype = _TORCH_DTYPES[self.dtype]
         self.raw_ue8m0 = self.format == "fp8-block128-ue8m0" and self.dtype == "U8"
         if self.raw_ue8m0 and (
-            self.encoding != "raw_bytes" or any(target.dtype != torch.float32 for target in self.storage)
+            self.encoding != "xor_raw_bytes" or any(target.dtype != torch.float32 for target in self.storage)
         ):
             raise ValueError("block128 UE8M0 requires the admitted FP32 API image")
         self._selection = tuple(slice(start, stop) for start, stop in self.slices)
@@ -95,18 +97,6 @@ class TensorBinding:
             for segment in self.segments
         )
 
-    def raw_sources(self, payload, expanded=None):
-        """Bind complete values; UE8M0 expansion is batched by the preparer."""
-        if self.encoding != "raw_bytes":
-            raise ValueError("raw sources require a complete-value binding")
-        if self.raw_ue8m0:
-            if expanded is None:
-                raise ValueError("UE8M0 scales require a prepared FP32 payload")
-            value = expanded.reshape(self.shape)[self._selection]
-            return tuple((target, value.reshape(target.shape)) for target in self.storage)
-        value = self.selected_bytes(payload).view(self.torch_dtype)
-        return tuple((target, value.reshape(target.shape).to(target.dtype)) for target in self.storage)
-
     def selected_bytes(self, canonical_bytes):
         value = canonical_bytes.view(self.torch_dtype).reshape(self.shape)
         # Keep column-sharded selections as views of reusable decoded scratch.
@@ -114,12 +104,54 @@ class TensorBinding:
         return _byte_view(value[self._selection])
 
 
-def validate_ue8m0_payload(payload):
-    """Validate the complete packed scale prefix on CPU before its single H2D."""
-    if payload.device.type != "cpu" or payload.dtype != torch.uint8:
-        raise ValueError("UE8M0 admission requires a CPU byte payload")
-    if payload.numpy().max(initial=0) == 255:
-        raise ValueError("UE8M0 scale payload contains NaN")
+def prepare_raw_xor(items, derived_targets=()):
+    """Materialize small physical XOR masks before pausing, without live writes.
+
+    Served values are lossless checkpoint images. Dtype admission permits BF16
+    scalar/vector widening and the explicit UE8M0-to-FP32 scale representation.
+    Ordinary byte-identical targets reuse their mask without reading live values
+    unless a derived update needs the predicted value.
+    """
+    groups, prepared = {}, []
+    for binding, payload in items:
+        selected = binding.selected_bytes(payload)
+        for target in binding.storage:
+            mask = selected.reshape(-1)
+            if not binding.raw_ue8m0 and binding.torch_dtype == target.dtype and id(target) not in derived_targets:
+                prepared.append((target, mask, None))
+            else:
+                key = binding.torch_dtype, target.dtype, binding.raw_ue8m0
+                groups.setdefault(key, []).append((target, mask))
+    for (canonical_dtype, target_dtype, ue8m0), members in groups.items():
+        targets, masks = zip(*members, strict=True)
+        mask = torch.cat(masks)
+        if canonical_dtype == torch.bfloat16 and target_dtype == torch.float32:
+            # Lossless BF16 widening embeds its bits in the upper FP32 half.
+            # Widen the XOR mask directly: no live read or numerical round trip.
+            physical_mask = (mask.view(torch.int16).to(torch.int32) << 16).view(torch.uint8)
+            new = None
+            if any(id(target) in derived_targets for target in targets):
+                old = torch.cat([target.detach().reshape(-1) for target in targets])
+                new = old.view(torch.uint8).bitwise_xor(physical_mask).view(target_dtype)
+        else:
+            old = torch.cat([target.detach().reshape(-1) for target in targets])
+            canonical = old.to(torch.float8_e8m0fnu if ue8m0 else canonical_dtype)
+            updated = canonical.view(torch.uint8).bitwise_xor(mask)
+            new = updated.view(canonical.dtype).to(target_dtype)
+            physical_mask = old.view(torch.uint8).bitwise_xor(new.view(torch.uint8)) if ue8m0 else mask
+        offset = 0
+        for target in targets:
+            count = target.numel()
+            byte_start, byte_stop = offset * target.element_size(), (offset + count) * target.element_size()
+            prepared.append(
+                (
+                    target,
+                    physical_mask[byte_start:byte_stop],
+                    None if new is None else new[offset : offset + count].view(target.shape),
+                )
+            )
+            offset += count
+    return prepared
 
 
 def _byte_view(tensor):
@@ -133,10 +165,9 @@ def _byte_view(tensor):
 
 
 def _direct_binding(name, meta, target, slices=None):
-    dtype = _TORCH_DTYPES[meta["dtype"]]
     slices = _full_slices(meta["shape"]) if slices is None else slices
     view_shape = tuple(stop - start for start, stop in slices)
-    if target.dtype != dtype or target.numel() != math.prod(view_shape):
+    if target.numel() != math.prod(view_shape):
         raise ValueError(
             f"canonical/live dtype or shape mismatch for {name}: "
             f"canonical={meta['dtype']}{view_shape}, "
@@ -149,7 +180,7 @@ def _direct_binding(name, meta, target, slices=None):
         tuple(meta["shape"]),
         slices,
         (target,),
-        encoding="raw_bytes" if direct else "xor_bytes",
+        encoding="xor_raw_bytes" if direct else "xor_bytes",
         destinations=() if direct else (_byte_view(target),),
         format=meta.get("format"),
         checkpoint_dtype=meta.get("checkpoint_dtype"),
@@ -161,14 +192,14 @@ def _normalize_expert_meta(meta, layout, suffix):
         return
     if suffix == "weight":
         if meta["dtype"] != "F8_E4M3":
-            raise ValueError("block128 FP8 requires canonical E4M3 weights")
+            raise _DtypeMismatch(f"checkpoint={meta['dtype']}; block128 FP8 requires canonical E4M3 weights")
     elif suffix == "weight_scale_inv":
         if meta["dtype"] == "F32":
             meta["checkpoint_dtype"] = "F32"
             meta["dtype"] = "U8"
         elif meta["dtype"] != "U8":
-            raise ValueError("block128 FP8 requires exact UE8M0 scale values")
-        meta["encoding"] = "raw_bytes"
+            raise _DtypeMismatch(f"checkpoint={meta['dtype']}; block128 FP8 requires exact UE8M0 scale values")
+        meta["encoding"] = "xor_raw_bytes"
     else:
         raise ValueError(f"unclassified block128 FP8 expert tensor: {suffix}")
     meta["format"] = layout.format
@@ -205,15 +236,17 @@ def _moe_binding(name, meta, layer, expert, projection, suffix, layout):
             tuple(meta["shape"]),
             slices,
             (target,),
-            encoding="raw_bytes",
+            encoding="xor_raw_bytes",
             format=meta["format"],
             checkpoint_dtype=meta.get("checkpoint_dtype"),
+            dtype_checks=({"served": [str(target.dtype)], "allowed_served": [str(torch.float32)]},),
         )
     byte_suffix = suffix
     if layout.format == "mxfp8" and suffix == "weight_scale_inv":
         byte_suffix = "weight_scale"
     elif layout.format == "mxfp4" and suffix == "weight_packed":
         byte_suffix = "weight"
+    dtype_checks = []
     segments = expert_destinations(
         layer,
         layout,
@@ -222,6 +255,7 @@ def _moe_binding(name, meta, layer, expert, projection, suffix, layout):
         byte_suffix,
         local_shape,
         meta["dtype"],
+        dtype_checks,
     )
     segments = tuple(
         DestinationSegment(
@@ -244,8 +278,9 @@ def _moe_binding(name, meta, layer, expert, projection, suffix, layout):
         slices,
         tuple(storage.values()),
         segments=segments,
-        format=meta.get("format"),
+        format=layout.format,
         checkpoint_dtype=meta.get("checkpoint_dtype"),
+        dtype_checks=tuple(dtype_checks),
     )
 
 
@@ -380,7 +415,7 @@ class ParameterBindings:
 
     def bind(self, name, meta, target_name, target=None):
         if meta["dtype"] not in _DTYPES.values():
-            raise ValueError(f"unsupported canonical dtype for {name}: {meta['dtype']}")
+            raise _DtypeMismatch(f"unsupported checkpoint dtype: {meta['dtype']}")
         match = re.fullmatch(r"(.+\.experts)\.(\d+)\.(gate|up|down)_proj\.(.+)", target_name)
         if match:
             prefix, expert, projection, suffix = match.groups()

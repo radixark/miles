@@ -49,7 +49,7 @@ def fixture_columns(entries, files):
     columns.update({group + "." + field: [] for group in ("frames", "outer_frames") for field in fields})
     columns.update({"gaps.offset": [], "gaps.nbytes": []})
     for entry in entries:
-        raw = entry["encoding"] == "raw_bytes"
+        raw = entry["encoding"] == "xor_raw_bytes"
         payload = entry.get("raw" if raw else "outer", {})
         for field, value in {
             "changed_bytes": entry.get("changed_bytes", 0),
@@ -110,7 +110,7 @@ def write_manifest(path, manifest, version=1):
 
 def numeric_arena_inputs(entries, file_spans):
     return (
-        np.array([entry["encoding"] == "raw_bytes" for entry in entries]),
+        np.array([entry["encoding"] == "xor_raw_bytes" for entry in entries]),
         np.asarray(list(file_spans.values()), dtype=np.int64).reshape(-1, 2),
         fixture_columns(entries, list(file_spans)),
         np.arange(len(entries)),
@@ -131,7 +131,7 @@ def fixture(directory, raw_repeat=1):
         blob.extend(encoded)
         entry = {
             "name": name,
-            "encoding": "raw_bytes" if name == "raw" else "xor_bytes",
+            "encoding": "xor_raw_bytes" if name == "raw" else "xor_bytes",
             "nbytes": len(data),
             "changed_bytes": len(data),
             "frames": (
@@ -223,7 +223,7 @@ def fixture(directory, raw_repeat=1):
     }
     for entry in tensors:
         size = 1 << 20 if entry["name"] == "dense" else entry["nbytes"]
-        shape = [size] if entry["encoding"] == "raw_bytes" else [1, size]
+        shape = [size] if entry["encoding"] == "xor_raw_bytes" else [1, size]
         entry.update(
             dtype="U8",
             shape=shape,
@@ -284,12 +284,13 @@ class FakeHostMapping:
 class InlineCpuWorker:
     """Use the real CPU builder for deterministic unit fault injection."""
 
-    def __init__(self, directory, device, pool):
+    def __init__(self, directory, device, owner, pool):
         with patch.object(worker, "HostPayloadPool", return_value=pool):
             self.builder = worker.HostBuilder(
                 directory,
                 pool.workers,
                 {name: host.decoder_backend(device, name) for name in ("snappy", "lz4", "bitcomp")},
+                owner,
             )
 
     def prepare(self, expected, namespace, metrics, cancelled):
@@ -328,6 +329,7 @@ def shared_participants(engine="a"):
 def _shared_child(rank, publications, barrier, output):
     participants = shared_participants()
     arena = host.HostArena("a", 0, participants[rank])
+    arena.register_dtypes({"checks": [], "errors": []})
     records, reads = [], []
     read_bytes = Path.read_bytes
 
@@ -418,7 +420,7 @@ class TestHostSnapshot(unittest.TestCase):
             patch.object(
                 host,
                 "CpuWorker",
-                side_effect=lambda directory, device: InlineCpuWorker(directory, device, self.pool),
+                side_effect=lambda directory, device, owner: InlineCpuWorker(directory, device, owner, self.pool),
             ),
             patch.object(host, "HostAllocation", FakeHostAllocation),
             patch.object(host, "HostMapping", FakeHostMapping),
@@ -434,9 +436,11 @@ class TestHostSnapshot(unittest.TestCase):
             self.addCleanup(replacement.stop)
 
     def arena(self, engine="a", rank=0):
-        arena = host.HostArena(engine, 0, shared_participants(engine)[rank])
-        self.addCleanup(arena.close)
-        return arena
+        arenas = [host.HostArena(engine, 0, identity) for identity in shared_participants(engine)]
+        for arena in arenas:
+            arena.register_dtypes({"checks": [], "errors": []})
+            self.addCleanup(arena.close)
+        return arenas[rank]
 
     def test_empty_publication_authenticates_sidecars_without_allocating_payload(self):
         path, digest = write_manifest(
@@ -836,6 +840,8 @@ class TestHostSnapshot(unittest.TestCase):
         path, digest, manifest, _ = shared_publication(self.root)
         participants = shared_participants()
         owner, peer = [host.HostArena("a", 0, identity) for identity in participants]
+        for arena in (owner, peer):
+            arena.register_dtypes({"checks": [], "errors": []})
         self.addCleanup(owner.close)
         self.addCleanup(peer.close)
         request = metadata() | dict(participants=participants)
@@ -1233,7 +1239,7 @@ def decode_fixture(codec):
         entries.append(
             {
                 "name": name,
-                "encoding": "raw_bytes",
+                "encoding": "xor_raw_bytes",
                 "nbytes": len(value),
                 "changed_bytes": len(value),
                 "frames": [],
@@ -1428,7 +1434,34 @@ runpy.run_path(entry, run_name='__main__')
         return process
 
     monkeypatch.setattr(host.subprocess, "Popen", launch)
-    client = host.CpuWorker(cache, 0)
+    participants = shared_participants()
+    namespace = {"stream_id": "stream", "participants": participants}
+    dtype_paths = []
+    for identity in participants:
+        name = f"dtypes-{identity['rank_id']}"
+        worker._write_record(
+            tmp_path,
+            name,
+            {
+                "identity": identity,
+                "checks": [
+                    dict(name="scalar", checkpoint_dtype="BF16", dtype="BF16", served=["F32"], shape=[]),
+                    dict(name="norm", checkpoint_dtype="BF16", dtype="BF16", served=["BF16", "F32"], shape=[4]),
+                    dict(name="matrix", checkpoint_dtype="F32", dtype="F32", served=["F32"], shape=[2, 2]),
+                    dict(
+                        name="packed",
+                        checkpoint_dtype="F8_E4M3",
+                        dtype="F8_E4M3",
+                        served=["U8", "F8_E4M3"],
+                        allowed_served=["U8", "I8", "F8_E4M3"],
+                        shape=[2, 2],
+                    ),
+                ],
+                "errors": [],
+            },
+        )
+        dtype_paths.append(tmp_path / (name + ".json"))
+    client = host.CpuWorker(cache, 0, participants[0])
     previous, identities, metrics_by_version = None, [], []
     try:
         for version in (1, 2):
@@ -1445,7 +1478,11 @@ runpy.run_path(entry, run_name='__main__')
                 "skip_payload_hash": False,
             }
             metrics = {}
-            current = client.prepare(expected_publication, {}, metrics, None)
+            current = client.prepare(expected_publication, namespace, metrics, None)
+            if version == 1:
+                # Immutable discovery facts are consumed only once by this child.
+                for dtype_path in dtype_paths:
+                    dtype_path.unlink()
             assert current["cpu_worker"]["pid"] == client.process.pid != os.getpid()
             identities.append(current["cpu_worker"])
             catalog = json.loads((cache / current["catalog"]["file"]).read_bytes())
@@ -1484,9 +1521,9 @@ runpy.run_path(entry, run_name='__main__')
                 "target_version": 3,
             }
             with pytest.raises(ValueError, match="manifest SHA256 mismatch"):
-                client.prepare(bad, {}, {}, None)
+                client.prepare(bad, namespace, {}, None)
             with pytest.raises(RuntimeError, match="cannot restart"):
-                client.prepare(expected_publication, {}, {}, None)
+                client.prepare(expected_publication, namespace, {}, None)
         client.close()
         assert client.process.poll() is not None and len(launches) == 1
         with pytest.raises(ChildProcessError):
@@ -1495,6 +1532,72 @@ runpy.run_path(entry, run_name='__main__')
         if client.process.poll() is None:
             client.close(terminate=True)
         client.close()
+
+
+@pytest.mark.parametrize("fault", ["mismatches", "missing", "identity"])
+def test_cpu_process_dtype_admission_rejects_all_ranks_before_payload_build(tmp_path, monkeypatch, fault):
+    monkeypatch.setattr(host, "_cache_base", lambda: tmp_path / "cache")
+    (tmp_path / "cache").mkdir()
+    monkeypatch.setattr(host, "configured_cpu_workers", lambda: 2)
+    monkeypatch.setattr(host, "decoder_backend", lambda device, codec: "cuda")
+    participants = shared_participants()
+    owner, peer = [host.HostArena("a", 0, identity) for identity in participants]
+    for rank, arena in enumerate((owner, peer)):
+        records = {"checks": [], "errors": []}
+        if fault == "mismatches":
+            records["checks"].append(
+                dict(
+                    name=f"unchanged.layers.{rank}.weight",
+                    checkpoint_dtype="BF16",
+                    dtype="BF16",
+                    served=["F32"],
+                    shape=[2, 2],
+                )
+            )
+            if rank == 1:
+                records["checks"].append(
+                    dict(
+                        name="packed.weight",
+                        checkpoint_dtype="F8_E4M3",
+                        dtype="F8_E4M3",
+                        served=["F8_E5M2"],
+                        allowed_served=["U8", "I8", "F8_E4M3"],
+                        shape=[2, 2],
+                    )
+                )
+                records["errors"].append("packed.scale: expected one-byte storage, served=F32")
+        arena.register_dtypes(records)
+    path, digest, _, _ = shared_publication(tmp_path)
+    request = metadata() | dict(manifest_path=str(path), manifest_sha256=digest)
+    try:
+        if fault == "missing":
+            peer._dtype_path.unlink()
+        elif fault == "identity":
+            record = json.loads(peer._dtype_path.read_bytes())
+            record["identity"]["pid"] += 1
+            peer._dtype_path.write_text(json.dumps(record))
+        with pytest.raises(ValueError) as failure:
+            owner.prepare_publication(request, {})
+        message = str(failure.value)
+        if fault == "mismatches":
+            assert all(
+                name in message
+                for name in ("unchanged.layers.0.weight", "unchanged.layers.1.weight", "packed.weight", "packed.scale")
+            )
+            assert "checkpoint=BF16" in message and "served=['F32']" in message
+        else:
+            assert ("missing" if fault == "missing" else "identity differs") in message
+        assert not (owner.directory / "index.json").exists()
+        assert json.loads((owner.directory / "state.json").read_bytes())["state"] == "FAILED"
+        with pytest.raises(ValueError) as follower_failure:
+            peer.prepare_publication(request, {})
+        assert str(follower_failure.value) == message
+        assert peer._worker is None and owner._worker.process.poll() is not None
+    finally:
+        paths = [arena._dtype_path for arena in (owner, peer)]
+        owner.close()
+        peer.close()
+        assert all(not path.exists() for path in paths)
 
 
 @pytest.mark.parametrize("abort", ["cancel", "child-exit"])
@@ -1539,6 +1642,7 @@ with (directory / '.lock').open('a+b') as lock:
     monkeypatch.setattr(host.subprocess, "Popen", launch)
     path, digest, _, _ = shared_publication(tmp_path)
     arena = host.HostArena("a", 0, shared_participants()[0])
+    arena.register_dtypes({"checks": [], "errors": []})
 
     def build():
         try:

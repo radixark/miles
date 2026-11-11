@@ -44,9 +44,10 @@ class EvalConfig(BaseConfig):
         str | None,
         Arg(
             help=(
-                "Staging directory for per-eval HF snapshots (written to "
+                "Staging directory for per-eval immutable snapshots (written to "
                 "`{eval_hf_dir}/step_{rollout_id}`). Point at tmpfs (e.g. /dev/shm/...) to "
-                "avoid disk. When unset and --save-hf is set, eval reuses the --save-hf "
+                "avoid disk. Dedicated GPU-delta eval writes base-relative publications; "
+                "other eval backends write HF checkpoints. When unset and --save-hf is set, eval reuses the --save-hf "
                 "checkpoints instead of exporting its own snapshots."
             )
         ),

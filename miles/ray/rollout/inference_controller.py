@@ -26,7 +26,6 @@ from miles.utils.context_lock import (
     requires_lock,
     with_lock,
 )
-from miles.utils.eval_config import uses_synced_eval
 from miles.utils.ft_utils.api_server.models import CellStatus
 from miles.utils.init_once import InitOnce, init_once
 from miles.utils.logging_utils import configure_logger
@@ -223,8 +222,6 @@ class InferenceController:
                 raise ValueError("This run has no dedicated eval pool")
             if model_id is not None:
                 raise ValueError("Dedicated eval synchronization does not select a training model")
-            if not uses_synced_eval(self.args.update_weight_transfer_mode, self._eval_fleet is not None):
-                raise ValueError("Separate eval synchronization requires a supported eval pool")
             model_id = "eval"
         await self._health_monitoring_pause(model_id)
         await self._ensure_cells_ready(model_id=model_id)
@@ -365,13 +362,6 @@ class InferenceController:
             self._eval_fleet is not None
         ), "this run deploys no eval fleet, so nothing asked this controller to pin one"
         return await self._eval_fleet.pin(checkpoint_dir=checkpoint_dir, weight_version=weight_version)
-
-    @lock_exempt
-    async def check_eval_fleet_version(self, weight_version: str) -> EvalFleetPin:
-        """Check the already-synchronized eval pool without loading a checkpoint."""
-        if self._eval_fleet is None:
-            raise ValueError("This run has no dedicated eval fleet")
-        return await self._eval_fleet.check_version(weight_version)
 
     # -------------------------- misc APIs -----------------------------
 

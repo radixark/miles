@@ -1,8 +1,9 @@
 import importlib
+import inspect
 import sys
 from argparse import Namespace
 from collections.abc import Iterator
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from functools import partial
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -64,6 +65,94 @@ class TestCriticValuesValueSpec:
     def test_critic_values_are_shipped_as_a_typed_ragged_field(self, actor_module: ModuleType) -> None:
         """Variable-length critic sequences require the typed ragged object-store codec."""
         assert actor_module.CRITIC_VALUES_VALUE_SPEC["values"].codec == "typed_ragged"
+
+
+class TestEvalSnapshotExport:
+    @pytest.mark.parametrize("mode,eval_gpus", [("broadcast", 2), ("gpu-delta", 0)])
+    def test_regular_and_custom_checkpoint_eval_keep_full_hf_export(self, actor_module, mode, eval_gpus):
+        actor = object.__new__(actor_module.MegatronTrainRayActor)
+        actor.args = SimpleNamespace(
+            update_weight_transfer_mode=mode,
+            sglang=SimpleNamespace(models=[SimpleNamespace(name="eval")] if eval_gpus else []),
+        )
+        actor.export_hf = Mock()
+
+        inspect.unwrap(actor_module.MegatronTrainRayActor.export_eval_snapshot)(actor, 9, "/snapshot")
+
+        actor.export_hf.assert_called_once_with(9, "/snapshot")
+
+    @pytest.mark.parametrize("fails", [False, True])
+    def test_gpu_snapshot_completion_follows_publication_and_preserves_source_identity(
+        self, actor_module, monkeypatch, tmp_path, fails
+    ):
+        actor = object.__new__(actor_module.MegatronTrainRayActor)
+        actor.args = SimpleNamespace(
+            update_weight_transfer_mode="gpu-delta",
+            offload_train=False,
+            sglang=SimpleNamespace(models=[SimpleNamespace(name="eval")]),
+        )
+        actor._heartbeat = Mock()
+        actor._last_rollout_id = 7
+        actor._get_actor_weight_version = Mock(return_value=42)
+        actor.weight_updater = Mock()
+        monkeypatch.setattr(torch.distributed, "is_initialized", lambda: False)
+        path = tmp_path / "snapshot"
+
+        def publish(directory, rollout_id, version):
+            assert (rollout_id, version) == (7, 42)
+            assert not (directory / ".complete").exists()
+            if fails:
+                raise RuntimeError("publication failed")
+            (directory / "gpu_delta").mkdir()
+            (directory / "gpu_delta" / "READY.json").write_text("{}")
+
+        actor.weight_updater.export_gpu_delta_snapshot.side_effect = publish
+        export = inspect.unwrap(actor_module.MegatronTrainRayActor.export_eval_snapshot)
+        if fails:
+            with pytest.raises(RuntimeError, match="publication failed"):
+                export(actor, 9, str(path))
+            assert not path.exists()
+        else:
+            export(actor, 9, str(path))
+            assert (path / "gpu_delta" / "READY.json").exists()
+            assert (path / ".complete").exists()
+
+    def test_gpu_export_excludes_codec_allocations_from_the_model_allocator(self, actor_module, monkeypatch, tmp_path):
+        actor = object.__new__(actor_module.MegatronTrainRayActor)
+        actor.args = SimpleNamespace(
+            update_weight_transfer_mode="gpu-delta",
+            offload_train=True,
+            sglang=SimpleNamespace(models=[SimpleNamespace(name="eval")]),
+        )
+        actor._heartbeat = Mock()
+        actor._last_rollout_id = 7
+        actor._get_actor_weight_version = Mock(return_value=42)
+        actor.weight_updater = Mock()
+        events = []
+
+        @contextmanager
+        def disable():
+            events.append("disable")
+            try:
+                yield
+            finally:
+                events.append("restore")
+
+        def publish(*args):
+            assert events == ["disable"]
+            raise RuntimeError("failed")
+
+        actor.weight_updater.export_gpu_delta_snapshot.side_effect = publish
+        monkeypatch.setattr(actor_module.torch_memory_saver, "disable", disable)
+        monkeypatch.setattr(torch.distributed, "is_initialized", lambda: False)
+        monkeypatch.setattr(actor_module, "reload_process_groups", lambda: pytest.fail("dispatcher already onloaded"))
+        monkeypatch.setattr(actor_module, "destroy_process_groups", lambda: pytest.fail("dispatcher owns offload"))
+
+        with pytest.raises(RuntimeError):
+            inspect.unwrap(actor_module.MegatronTrainRayActor.export_eval_snapshot)(
+                actor, 9, str(tmp_path / "snapshot")
+            )
+        assert events == ["disable", "restore"]
 
 
 class TestMaterializeCriticValues:

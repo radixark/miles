@@ -6,7 +6,7 @@ import unittest
 import weakref
 from contextlib import nullcontext
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 import torch
@@ -43,6 +43,7 @@ class TestCanonicalPlanCache(unittest.TestCase):
             batch_plan=None,
             layers_per_batch=1,
             layout=SimpleNamespace(
+                finish=Mock(),
                 inventory={name: {"dtype": "U8", "shape": [2, 4]} for name in ("local", "foreign")},
                 excluded={"foreign": "expert projection owned by another EP/TP rank"},
                 bindings=[
@@ -99,10 +100,10 @@ class TestCanonicalPlanCache(unittest.TestCase):
         backend, publication = self.publication()
         definitions = []
         for entry in publication["tensors"]:
-            entry["encoding"] = "raw_bytes"
+            entry["encoding"] = "xor_raw_bytes"
             canonical = backend.layout.inventory[entry["name"]]
             canonical.update(
-                encoding="raw_bytes",
+                encoding="xor_raw_bytes",
                 format="fp8-block128-ue8m0",
                 checkpoint_dtype="F32",
             )
@@ -284,6 +285,7 @@ class TestReceiverPreparation(unittest.TestCase):
         )
         with self.assertRaisesRegex(RuntimeError, "local preparation boundary"):
             receiver.PreparedDelta(backend).prepare({})
+        backend.layout.finish.assert_called_once_with()
 
     def test_layer_batch_cache_tracks_active_rows_and_grouping(self):
         names = [
@@ -345,7 +347,7 @@ class TestReceiverPreparation(unittest.TestCase):
                 (1,),
                 [[0, 1]],
                 (torch.zeros(1),),
-                encoding="raw_bytes",
+                encoding="xor_raw_bytes",
                 format="fp8-block128-ue8m0",
             ),
         ]
@@ -362,7 +364,7 @@ class TestReceiverPreparation(unittest.TestCase):
         tensors["frame_count"] = [0, 0, 1, 0]
         matrices, raw, derived = table.select(tensors)
         np.testing.assert_array_equal(matrices, [0])
-        np.testing.assert_array_equal(raw, [3, 2])
+        np.testing.assert_array_equal(raw, [2, 3])
         self.assertEqual(derived, [])
         tensors["frame_count"][0] = 1
         tensors["changed_bytes"][1] = 0
@@ -374,6 +376,8 @@ class TestReceiverPreparation(unittest.TestCase):
     def test_backend_reads_inventory_once_and_drains_all_streams_on_failure(self):
         fake_plan = SimpleNamespace(
             check_identity=lambda: None,
+            finish=Mock(),
+            dtype_records={"checks": [], "errors": []},
             bindings=[],
             excluded={},
         )
@@ -388,6 +392,7 @@ class TestReceiverPreparation(unittest.TestCase):
             ) as read_inventory,
         ):
             backend = receiver.GpuDeltaBackend(SimpleNamespace(model=fake_model), {"engine_id": "test-engine"})
+            backend.host_arena.register_dtypes.assert_called_once_with(fake_plan.dtype_records)
             self.assertEqual(backend.decoders, {})
             self.assertIsNone(backend.apply_stream)
             self.assertIsNone(backend.io_stream)
@@ -401,6 +406,7 @@ class TestReceiverPreparation(unittest.TestCase):
             with patch.object(torch.cuda, "device", return_value=nullcontext()):
                 with self.assertRaisesRegex(ValueError, "bad manifest"):
                     backend.prepare({})
+            fake_plan.finish.assert_not_called()
             backend.host_arena.close.assert_called_once()
 
         drains = []

@@ -18,6 +18,8 @@ def _args(tmp_path, **overrides):
                 "update_weight_transfer_mode": "gpu-delta",
                 "update_weight_delta_encoding": "xor",
                 "colocate": False,
+                "debug_train_only": False,
+                "eval_num_gpus": 0,
                 "ft_components": [],
                 "train_backend": "megatron",
                 "megatron_to_hf_mode": "raw",
@@ -51,6 +53,8 @@ def test_dummy_target_or_draft_cannot_establish_delta_baseline(tmp_path, field):
 
 
 def test_sender_failover_trainable_draft_and_invalid_initial_codec_fail_before_startup(tmp_path, monkeypatch):
+    with pytest.raises(AssertionError, match="snapshot publisher"):
+        validate_gpu_delta_args(_args(tmp_path, debug_train_only=True, eval_num_gpus=2))
     with pytest.raises(AssertionError, match="sender baseline loss"):
         validate_gpu_delta_args(_args(tmp_path, ft_components=["train"]))
     with pytest.raises(AssertionError, match="static receiver MTP"):

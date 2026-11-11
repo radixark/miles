@@ -41,6 +41,10 @@ from miles.backends.training_utils.model_companion import (
 from miles.backends.training_utils.replay.data import fill_replay_data, register_replay_list_sequential
 from miles.backends.training_utils.types import TrainStepOutput
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
+from miles.backends.training_utils.weight_update.protocols.gpu_delta.eval import (
+    uses_gpu_delta_eval,
+    write_eval_snapshot,
+)
 from miles.backends.training_utils.weight_update.snapshot_publisher import SnapshotPublisher
 from miles.backends.training_utils.weight_update.updater import WeightUpdater
 from miles.dashboard import hooks as dashboard_hooks
@@ -975,7 +979,14 @@ class MegatronTrainRayActor(TrainRayActor):
                     self.model,
                     publisher=self.snapshot_publisher,
                     adapter_slots=self.adapter_slots,
+                    raise_on_error=uses_gpu_delta_eval(self.args),
                 )
+                if uses_gpu_delta_eval(self.args):
+                    self.weight_updater.export_gpu_delta_snapshot(
+                        self.args.save_hf.format(rollout_id=rollout_id),
+                        self._last_rollout_id,
+                        self._get_actor_weight_version(),
+                    )
 
             if (
                 force_sync
@@ -1018,6 +1029,19 @@ class MegatronTrainRayActor(TrainRayActor):
             path=path,
             raise_on_error=True,
         )
+
+    @with_logs
+    @timer
+    def export_eval_snapshot(self, rollout_id: int, path: str) -> None:
+        """Export an immutable publication for dedicated GPU-delta eval, otherwise HF."""
+        if not uses_gpu_delta_eval(self.args):
+            self.export_hf(rollout_id, path)
+            return
+        self._heartbeat.bump()
+        # EvalDispatcher onloads the trainer before exporting. Keep persistent
+        # codec allocations outside its offloaded model allocator.
+        with torch_memory_saver.disable() if self.args.offload_train else nullcontext():
+            write_eval_snapshot(self.weight_updater, path, self._last_rollout_id, self._get_actor_weight_version())
 
     def _named_actor_weights(self, *, translate_gpu_to_cpu: bool = False, include_model_companion: bool = False):
         return named_params_and_buffers(

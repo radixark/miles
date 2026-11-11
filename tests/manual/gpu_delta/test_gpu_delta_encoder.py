@@ -327,14 +327,14 @@ def _replay(publication, state, codec):
     for item in manifest["files"]:
         assert sha256(payloads[item["name"]]) == item["sha256"]
     for tensor in manifest["tensors"]:
-        if tensor["encoding"] == "raw_bytes":
+        if tensor["encoding"] == "xor_raw_bytes":
             if not tensor["changed_bytes"]:
                 assert "raw" not in tensor
                 continue
             raw = tensor["raw"]
-            target = payloads[raw["file"]][raw["encoded_offset"] : raw["encoded_offset"] + raw["encoded_bytes"]]
+            mask = payloads[raw["file"]][raw["encoded_offset"] : raw["encoded_offset"] + raw["encoded_bytes"]]
             assert not tensor["frames"] and "outer" not in tensor
-            state[tensor["name"]] = np.frombuffer(target, dtype=np.uint8).copy()
+            state[tensor["name"]] ^= np.frombuffer(mask, dtype=np.uint8)
             continue
         mask = np.zeros_like(state[tensor["name"]])
         outer = tensor.get("outer")
@@ -356,17 +356,17 @@ def _replay(publication, state, codec):
             assert len(raw) == frame["decoded_bytes"]
             start = frame["decoded_offset"]
             mask[start : start + frame["decoded_bytes"]] = np.frombuffer(raw, dtype=np.uint8)
-        state[tensor["name"]] = state[tensor["name"]] ^ mask if tensor["encoding"] == "xor_bytes" else mask
+        state[tensor["name"]] ^= mask
 
 
 def _write_and_replay(payload, directory, plan, base, expected):
     metadata = dict(stream_id="recovery-test", base_version=0, target_version=7, plan_digest="b" * 64)
-    shard = payload.write(directory, metadata, owner=0, plan=plan, base=base)
+    shard = payload.write(directory, metadata, owner=0, plan=plan)
     descriptor = seal_publication(directory, [shard])
     assert descriptor["base_version"] == 0 and descriptor["target_version"] == 7
     state = {name: value.numpy().copy() for name, value in base.items()}
     # Existing independent CPU oracle authenticates the manifest/payload and
-    # replays omitted frames, matrix XOR and full raw targets from the HF base.
+    # replays omitted frames and both compressed and uncompressed XOR masks.
     _replay(descriptor, state, payload.codec)
     for name in state:
         np.testing.assert_array_equal(state[name], expected[name])
@@ -397,7 +397,7 @@ def test_cached_recovery_payload_survives_target_and_encoder_reuse(tmp_path, mon
     first = _write_and_replay(cached, tmp_path / "first", plan, base, expected)
 
     # Reuse the same canonical target storage and encoder for a later step.
-    # Recovery must still describe version 7, including its copied raw targets.
+    # Recovery must still describe version 7, including its copied small masks.
     for i, value in enumerate(target.values()):
         value.fill_(i + 41)
     later = gpu_delta_encoder.RecoveryPayload.encode(encoder, codec, batches, raw, base, target)

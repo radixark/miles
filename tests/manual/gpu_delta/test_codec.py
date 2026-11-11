@@ -190,7 +190,8 @@ def test_batched_plans_share_metadata_and_reuse_tensor_scratch(codec, sort_chunk
     prepared._allocate_paused = lambda: None
     prepared._apply_batch = observe
     prepared.timings, prepared.events = {}, {}
-    prepared.raw_copies, prepared.derived = {}, []
+    prepared.raw_apply = prepared.raw_apply_inputs = prepared.raw_apply_group = None
+    prepared.derived = []
     prepared.batches = list(prepared_batches)
     prepared.status_checks, prepared.apply_bindings, prepared.apply_source_patches = (
         [],
@@ -269,7 +270,7 @@ def test_batched_plans_share_metadata_and_reuse_tensor_scratch(codec, sort_chunk
     prepared.status_checks = []
     prepared.apply_bindings, prepared.apply_source_patches = [], []
     prepared.apply_fallback_groups = set()
-    prepared.raw_copies = {}
+    prepared.raw_apply = prepared.raw_apply_inputs = prepared.raw_apply_group = None
     prepared.decoded = decoded
     prepared.workspace = workspace
     prepared.decode_plan = None

@@ -652,7 +652,7 @@ def test_clear_drains_release_before_private_close_and_shared_unlink(make_sessio
     result = control.handle(delta_io.PrepareGpuDeltaReqInput(**request([session.identity])))
     assert result is None
     rejected, success, message = replies[0]
-    assert not success and "base version" in message
+    assert not success and "must not be replayed" in message
     assert rejected["state"] == "CLEARED" and rejected["version"] == 7
     assert rejected["identity"] == session.identity
     for current_receipt in (receipt, session.status(), rejected):
@@ -999,3 +999,18 @@ def test_nvtx_pause_ends_only_after_successful_unpause(make_session, monkeypatch
         assert not any(event[0] == "end" for event in events)
         assert session._update.nvtx_pause_id == 17
         assert session.status()["scheduler_timing"]["blocked_s"] is None
+
+
+def test_explicit_mask_cancellation_requires_a_fresh_transaction(make_session):
+    session, backend = make_session()
+    backend.ready.set()
+    first = request([session.identity])
+    assert session.prepare(first).result()["state"] == "PREPARED"
+    session.apply(first["session_id"], lambda: None, lambda: None, lambda: True)
+    session.resume(first["session_id"], lambda version: None)
+    with pytest.raises(ValueError, match="must not be replayed"):
+        session.prepare(first)
+    with pytest.raises(ValueError, match="another delta stream"):
+        session.prepare(first | {"session_id": "cancel", "stream_id": "another-stream"})
+    # Reusing an immutable mask to cancel it is an explicit new transaction.
+    assert session.prepare(first | {"session_id": "cancel"}).result()["state"] == "PREPARED"

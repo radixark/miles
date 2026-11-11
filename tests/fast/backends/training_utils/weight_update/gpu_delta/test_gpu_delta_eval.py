@@ -1,192 +1,195 @@
-"""Dedicated eval pool ownership, synchronization, locking and generation admission."""
+"""Immutable GPU-delta eval snapshots use the ordinary asynchronous eval queue."""
 
 import asyncio
+import hashlib
+import json
+import shutil
+from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock
 
 import pytest
 
-from miles.backends.training_utils.weight_update import receiver_pool as pools_module
-from miles.backends.training_utils.weight_update import updater as updater_module
-from miles.backends.training_utils.weight_update.conn_status import ConnStatusManager
-from miles.backends.training_utils.weight_update.protocols.gpu_delta.protocol import UpdateWeightFromGpuDelta
+from miles.backends.training_utils.weight_update.protocols.gpu_delta.eval import EvalSnapshotUpdater
 from miles.ray.rollout.eval_dispatch import EvalDispatcher
-from miles.ray.rollout.inference_controller import InferenceController
-from miles.ray.train_actor import WeightUpdateOutput
-from miles.utils.context_lock import ContextLock
 
 
-def make_updater(monkeypatch):
-    updater = object.__new__(updater_module.WeightUpdater)
-    updater.args = SimpleNamespace(update_weight_transfer_mode="gpu-delta")
-    updater.protocol = Mock(spec=UpdateWeightFromGpuDelta, supports_receiver_pools=True)
-    updater._uses_gpu_delta = True
-    updater.conn_status = ConnStatusManager()
-    updater.protocol._publication_version = 4
-    updater._receiver_pools = updater_module.ReceiverPools()
-    updater._hf_weight_iterator = SimpleNamespace()
-    updater._registered_adapters = {"rollout-adapter"}
-    protocols = []
-
-    def create(_args):
-        protocol = Mock(spec=UpdateWeightFromGpuDelta, supports_receiver_pools=True)
-        protocol._publication_version = 0
-        protocols.append(protocol)
-        return protocol
-
-    monkeypatch.setattr(pools_module, "get_weight_transfer_protocol", create)
-    return updater, protocols
-
-
-def test_pool_switch_rebinds_gpu_iterator_and_reuses_committed_state(monkeypatch):
-    assert UpdateWeightFromGpuDelta.supports_receiver_pools is True
-    updater, created = make_updater(monkeypatch)
-    bind_iterator = Mock(wraps=updater._bind_protocol_iterator)
-    monkeypatch.setattr(updater, "_bind_protocol_iterator", bind_iterator)
-    rollout_protocol = updater.protocol
-    with updater.receiver_pool("rollout"):
-        pass
-    bind_iterator.assert_not_called()
-    with updater.receiver_pool("eval"):
-        assert updater.protocol._publication_version == 0
-        updater.protocol._publication_version = 1
-        assert updater._hf_weight_iterator.local_consumer == updater.protocol.send_bucket
-        assert updater._hf_weight_iterator.local_error_consumer == updater.protocol.record_export_error
-        assert updater._hf_weight_iterator.local_plan_getter == updater.protocol.get_export_plan
-        with updater.receiver_pool("eval"):
-            assert updater.protocol is created[0]
-        bind_iterator.assert_called_once_with()
-    assert updater.protocol is rollout_protocol
-    assert updater._hf_weight_iterator.local_consumer == rollout_protocol.send_bucket
-    assert updater._hf_weight_iterator.local_error_consumer == rollout_protocol.record_export_error
-    assert updater._hf_weight_iterator.local_plan_getter == rollout_protocol.get_export_plan
-    assert bind_iterator.call_count == 2
-    with updater.receiver_pool("eval"):
-        assert updater.protocol is created[0]
-        assert updater.protocol._publication_version == 1
-    assert updater.protocol._publication_version == 4
-    assert len(created) == 1
+def write_snapshot(path, hf_checkpoint, **overrides):
+    directory = path.parent / "shared-publications" / path.name
+    directory.mkdir(parents=True)
+    descriptor_dir = path / "gpu_delta"
+    descriptor_dir.mkdir(parents=True)
+    manifest = {
+        "stream_id": "job-stream",
+        "publication_id": path.name,
+        "base_version": 0,
+        "target_version": 1,
+        "plan_digest": "plan",
+        "base_checkpoint": str(hf_checkpoint),
+    } | overrides
+    content = json.dumps(manifest).encode()
+    (directory / "manifest.json").write_bytes(content)
+    descriptor = manifest | {
+        "manifest_path": str(directory / "manifest.json"),
+        "manifest_sha256": hashlib.sha256(content).hexdigest(),
+    }
+    (descriptor_dir / "READY.json").write_text(json.dumps(descriptor))
+    (path / ".complete").touch()
+    return descriptor
 
 
-def test_failed_eval_restores_gpu_iterator_without_rolling_back_commit(monkeypatch):
-    updater, _ = make_updater(monkeypatch)
-    original = updater.protocol
-    with pytest.raises(RuntimeError, match="post-commit"):
-        with updater.receiver_pool("eval"):
-            updater.protocol._publication_version = 2
-            raise RuntimeError("post-commit")
-    assert updater.protocol is original
-    assert updater._hf_weight_iterator.local_consumer == original.send_bucket
-    assert updater._hf_weight_iterator.local_error_consumer == original.record_export_error
-    assert updater._hf_weight_iterator.local_plan_getter == original.get_export_plan
-    with updater.receiver_pool("eval"):
-        assert updater.protocol._publication_version == 2
+def make_client(engine_id, version=0):
+    identity = {"engine_id": engine_id, "rank_id": f"{engine_id}-rank"}
+
+    async def apply(**request):
+        receipt = {
+            key: request[key]
+            for key in ("session_id", "stream_id", "manifest_sha256", "target_version", "plan_digest")
+        } | {"identity": identity, "state": "RESUMED"}
+        return {
+            "success": True,
+            "participants": [receipt],
+            "applied_participants": [receipt | {"state": "APPLIED"}],
+            "timings": {},
+        }
+
+    return SimpleNamespace(
+        server_url=f"http://{engine_id}",
+        get_gpu_delta_info=AsyncMock(
+            return_value={
+                "success": True,
+                "participants": [{"identity": identity, "state": "IDLE", "version": version}],
+            }
+        ),
+        update_weight_version=AsyncMock(),
+        update_weights_from_gpu_delta=AsyncMock(side_effect=apply),
+    )
 
 
-@pytest.mark.parametrize("mode", ["broadcast", "disk-delta"])
 @pytest.mark.asyncio
-async def test_eval_admission_failure_releases_update_lock(mode):
-    controller = object.__new__(InferenceController)
-    controller.context_lock = ContextLock("test")
-    controller.args = SimpleNamespace(update_weight_transfer_mode=mode, eval_num_gpus=4)
-    controller._eval_fleet = object()
-    with pytest.raises(ValueError, match="requires a supported"):
-        await controller.start_update_weights(receiver_pool="eval")
-    assert not controller.context_lock.locked
+async def test_nonconsecutive_eval_points_pin_independent_base_relative_snapshots(tmp_path):
+    base = tmp_path / "base"
+    clients = [make_client("e0"), make_client("e1")]
+    updater = EvalSnapshotUpdater(base, "job")
+    previous_staging = None
+    for step in (3, 9):
+        if previous_staging is not None:
+            shutil.rmtree(previous_staging)
+        path = tmp_path / f"step_{step}"
+        descriptor = write_snapshot(path, base)
+        await updater.pin(clients, path, str(step), 5)
+        for client in clients:
+            request = client.update_weights_from_gpu_delta.call_args.kwargs
+            assert (request["base_version"], request["target_version"]) == (0, 1)
+            assert request["weight_version"] == str(step)
+            assert request["manifest_sha256"] == descriptor["manifest_sha256"]
+            assert request["participants"] == tuple(
+                row["identity"] for row in client.get_gpu_delta_info.return_value["participants"]
+            )
+        previous_staging = path
+    for client in clients:
+        calls = [call.kwargs for call in client.update_weights_from_gpu_delta.await_args_list]
+        assert [call["weight_version"] for call in calls] == ["3", "0", "9"]
+        assert calls[0]["manifest_path"] == calls[1]["manifest_path"]
+        assert Path(calls[1]["manifest_path"]).exists()
+        assert len({call["session_id"] for call in calls}) == 3
 
 
-def make_dispatcher(mode="gpu-delta"):
+@pytest.mark.parametrize("invalid", ["hash", "base", "prior"])
+@pytest.mark.asyncio
+async def test_invalid_snapshot_never_reaches_xor_apply(tmp_path, invalid):
+    base, path = tmp_path / "base", tmp_path / "snapshot"
+    overrides = {"base_version": 2} if invalid == "base" else {}
+    descriptor = write_snapshot(path, tmp_path / "other" if invalid == "prior" else base, **overrides)
+    if invalid == "hash":
+        with Path(descriptor["manifest_path"]).open("ab") as out:
+            out.write(b" ")
+    client = make_client("e0")
+    with pytest.raises(ValueError):
+        await EvalSnapshotUpdater(base, "job").pin([client], path, "5", 5)
+    client.update_weights_from_gpu_delta.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_failed_pin_settles_other_engines_without_replaying_xor(tmp_path):
+    base, path = tmp_path / "base", tmp_path / "snapshot"
+    write_snapshot(path, base)
+    failed, healthy = make_client("failed"), make_client("healthy")
+    updater = EvalSnapshotUpdater(base, "job")
+    finished = asyncio.Event()
+
+    async def fail(**request):
+        raise TimeoutError("applied, but reply lost")
+
+    healthy_apply = healthy.update_weights_from_gpu_delta.side_effect
+
+    async def finish(**request):
+        await asyncio.sleep(0)
+        finished.set()
+        return await healthy_apply(**request)
+
+    failed.update_weights_from_gpu_delta.side_effect = fail
+    healthy.update_weights_from_gpu_delta.side_effect = finish
+    with pytest.raises(RuntimeError):
+        await updater.pin([failed, healthy], path, "5", 5)
+    assert finished.is_set()
+    failed.update_weights_from_gpu_delta.assert_awaited_once()
+    healthy.update_weights_from_gpu_delta.assert_awaited_once()
+    # A later eval may advance healthy engines, but never retries the uncertain
+    # incarnation. A replacement rank starts directly from the immutable base.
+    with pytest.raises(RuntimeError):
+        await updater.pin([failed, healthy], path, "9", 5)
+    failed.update_weights_from_gpu_delta.assert_awaited_once()
+    assert healthy.update_weights_from_gpu_delta.await_count == 3
+    replacement = make_client("failed")
+    replacement.get_gpu_delta_info.return_value["participants"][0]["identity"]["rank_id"] = "new-rank"
+    await updater.pin([replacement, healthy], path, "12", 5)
+    replacement.update_weights_from_gpu_delta.assert_awaited_once()
+
+
+@pytest.mark.parametrize("version", [0, 1])
+@pytest.mark.asyncio
+async def test_initial_hf_eval_only_labels_fresh_base_engines(tmp_path, version):
+    client = make_client("e0", version)
+    updater = EvalSnapshotUpdater(tmp_path, "job")
+    if version == 0:
+        await updater.pin([client], tmp_path, "0", 5)
+        client.update_weight_version.assert_awaited_once_with("0")
+    else:
+        with pytest.raises(RuntimeError, match="require restart"):
+            await updater.pin([client], tmp_path, "0", 5)
+        client.update_weight_version.assert_not_awaited()
+    client.update_weights_from_gpu_delta.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_gpu_delta_eval_exports_coherent_snapshot_then_queues_generation(tmp_path):
     args = SimpleNamespace(
-        update_weight_transfer_mode=mode,
+        update_weight_transfer_mode="gpu-delta",
         eval_uses_snapshots=True,
-        sglang=SimpleNamespace(models=[SimpleNamespace(name="eval")]),
+        eval_hf_dir=str(tmp_path),
+        eval_max_in_flight=1,
+        eval_overflow_policy="skip",
+        eval_keep_snapshots=0,
+        offload_train=False,
     )
-    info = SimpleNamespace(receiver_pool="eval", snapshot_cell_id_to_hashes={"eval-cell": "incarnation"})
-    controller = SimpleNamespace(
-        start_update_weights=AsyncMock(return_value=info),
-        end_update_weights=AsyncMock(),
-        abort_update_weights=AsyncMock(),
-    )
-    actor = SimpleNamespace(
-        update_weights=AsyncMock(return_value=WeightUpdateOutput(weight_version=2, failed_cell_ids=())),
-        export_hf=AsyncMock(),
-    )
-    executor = SimpleNamespace(eval=AsyncMock())
-    return EvalDispatcher(args, actor, executor, inference_controller=controller), info
-
-
-@pytest.mark.parametrize("failed_cell_ids", [(), ("failed-eval-cell",)])
-@pytest.mark.asyncio
-async def test_eval_sync_runs_before_generation_without_snapshot_export(failed_cell_ids):
-    dispatcher, info = make_dispatcher()
-    info.snapshot_cell_id_to_hashes.update({cell_id: "failed-incarnation" for cell_id in failed_cell_ids})
-    events = []
+    actor = SimpleNamespace(export_eval_snapshot=AsyncMock(), update_weights=AsyncMock())
     entered, release = asyncio.Event(), asyncio.Event()
 
-    async def update(**kwargs):
-        assert kwargs == {"info": info, "rollout_id": 9}
-        events.append("sync")
-        return WeightUpdateOutput(weight_version=2, failed_cell_ids=failed_cell_ids)
-
-    async def end(**kwargs):
-        assert kwargs == {
-            "snapshot_cell_id_to_hashes": info.snapshot_cell_id_to_hashes,
-            "failed_cell_ids": failed_cell_ids,
-        }
-        events.append("unlock")
-
-    async def evaluate(rollout_id, **kwargs):
-        assert rollout_id == 9 and kwargs == {"weight_version": "2"}
-        assert events == ["sync", "unlock"]
+    async def evaluate(*args, **kwargs):
         entered.set()
         await release.wait()
-        events.append("generate")
 
-    dispatcher.actor_model.update_weights.side_effect = update
-    dispatcher.inference_controller.end_update_weights.side_effect = end
-    dispatcher.rollout_manager.eval.side_effect = evaluate
-    task = asyncio.create_task(dispatcher.dispatch(9, hf_dir="unused-initial-checkpoint"))
+    executor = SimpleNamespace(eval=AsyncMock(side_effect=evaluate), report_eval_skip=AsyncMock())
+    dispatcher = EvalDispatcher(args, actor, executor)
     try:
-        await asyncio.wait_for(entered.wait(), timeout=5)
-        assert not task.done()
+        await dispatcher.dispatch(3)
+        await asyncio.wait_for(entered.wait(), 5)
+        actor.export_eval_snapshot.assert_awaited_once_with(3, str(tmp_path / "step_3"))
+        actor.update_weights.assert_not_awaited()
+        await dispatcher.dispatch(9)
+        executor.report_eval_skip.assert_awaited_once_with(9, "busy")
+        assert actor.export_eval_snapshot.await_count == 1
     finally:
         release.set()
-        await task
-    assert events == ["sync", "unlock", "generate"]
-    dispatcher.inference_controller.start_update_weights.assert_awaited_once_with(receiver_pool="eval")
-    dispatcher.actor_model.export_hf.assert_not_awaited()
-    assert not dispatcher.pending
-
-
-@pytest.mark.parametrize(
-    "error",
-    [RuntimeError("sync failed"), asyncio.CancelledError(), None],
-    ids=["failed", "cancelled", "missing-version"],
-)
-@pytest.mark.asyncio
-async def test_failed_or_cancelled_sync_unlocks_once_without_eval_or_retry(error):
-    dispatcher, _ = make_dispatcher()
-    dispatcher.actor_model.update_weights.side_effect = error
-    dispatcher.actor_model.update_weights.return_value = WeightUpdateOutput(weight_version=None, failed_cell_ids=())
-    with pytest.raises(
-        type(error) if error is not None else RuntimeError, match=None if error is not None else "did not produce"
-    ):
-        await dispatcher.dispatch(3)
-    dispatcher.actor_model.update_weights.assert_awaited_once()
-    dispatcher.inference_controller.abort_update_weights.assert_awaited_once()
-    dispatcher.inference_controller.end_update_weights.assert_not_awaited()
-    dispatcher.rollout_manager.eval.assert_not_awaited()
-
-
-@pytest.mark.parametrize("mode", ["disk-delta", "broadcast"])
-@pytest.mark.asyncio
-async def test_unsupported_protocol_keeps_existing_snapshot_eval(mode):
-    dispatcher, _ = make_dispatcher(mode)
-    dispatcher.args.eval_max_in_flight = 1
-    await dispatcher.dispatch(3, hf_dir="existing-hf-export")
-    await dispatcher.drain()
-    dispatcher.inference_controller.start_update_weights.assert_not_awaited()
-    dispatcher.actor_model.update_weights.assert_not_awaited()
-    dispatcher.rollout_manager.eval.assert_awaited_once_with(
-        3, hf_dir="existing-hf-export", export_time_seconds=None, require_marker=False
-    )
+        await dispatcher.drain()

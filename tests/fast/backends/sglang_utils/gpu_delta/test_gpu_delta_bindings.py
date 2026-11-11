@@ -10,9 +10,10 @@ from miles.backends.sglang_utils.gpu_delta.bindings import (
     ConsumerSnapshot,
     TensorBinding,
     _moe_binding,
-    validate_ue8m0_payload,
+    prepare_raw_xor,
 )
 from miles.backends.sglang_utils.gpu_delta.flashinfer import DestinationSegment, FlashInferLayout
+from miles.utils.gpu_delta.host_worker import validate_dtype_records
 
 
 def _block_scale_layer():
@@ -36,13 +37,13 @@ def test_block_scale_prior_is_identical_on_local_and_foreign_ranks(
         "dtype": "U8",
         "shape": [17, 15],
         "format": "fp8-block128-ue8m0",
-        "encoding": "raw_bytes",
+        "encoding": "xor_raw_bytes",
     }
     if checkpoint_dtype == "F32":
         expected["checkpoint_dtype"] = "F32"
     assert local == foreign == expected
     assert binding.dtype == "U8" and binding.shape == (17, 15)
-    assert binding.encoding == "raw_bytes" and binding.format == "fp8-block128-ue8m0"
+    assert binding.encoding == "xor_raw_bytes" and binding.format == "fp8-block128-ue8m0"
     assert binding.checkpoint_dtype == ("F32" if checkpoint_dtype == "F32" else None)
     with pytest.raises(ValueError, match="exact UE8M0"):
         _moe_binding(
@@ -56,42 +57,56 @@ def test_block_scale_prior_is_identical_on_local_and_foreign_ranks(
         )
 
 
-@pytest.mark.parametrize("experts", [1, 2])
-def test_ue8m0_expansion_is_exact_shared_and_private(experts):
-    layer = SimpleNamespace(
-        moe_tp_size=1,
-        _map_global_expert_id_to_local_expert_id=lambda expert: expert,
-        w2_weight_scale_inv=torch.full((experts, 17, 15), -3.0),
-    )
-    original = layer.w2_weight_scale_inv.clone()
-    payload = torch.arange(255, dtype=torch.uint8).repeat(experts)
-    validate_ue8m0_payload(payload)
-    expanded = payload.view(torch.float8_e8m0fnu).float()
-    expected_bits = torch.arange(255, dtype=torch.int32) << 23
-    expected_bits[0] = 0x00400000
-    for expert in range(experts):
-        binding = _moe_binding(
-            f"scale{expert}",
-            {"dtype": "U8", "shape": [17, 15]},
-            layer,
-            expert,
-            "down",
-            "weight_scale_inv",
-            FlashInferLayout("fp8-block128-ue8m0", "trtllm", True),
+@pytest.mark.parametrize("kind", ["ue8m0", "bf16-scalar", "bf16-vector", "scalar", "vector"])
+def test_small_xor_is_reversible_without_live_preparation_writes(kind):
+    if kind == "ue8m0":
+        before = torch.arange(255, dtype=torch.uint8)
+        after = before.flip(0)
+        target = before.view(torch.float8_e8m0fnu).float().reshape(17, 15)
+        binding = TensorBinding(
+            "scale",
+            "U8",
+            (17, 15),
+            [[0, 17], [0, 15]],
+            (target,),
+            encoding="xor_raw_bytes",
+            format="fp8-block128-ue8m0",
         )
-        start = expert * 255
-        incoming = payload[start : start + 255]
-        ((target, source),) = binding.raw_sources(incoming, expanded[start : start + 255])
-        assert torch.equal(source.view(torch.int32).flatten(), expected_bits)
-        assert source.untyped_storage().data_ptr() == expanded.untyped_storage().data_ptr()
-        assert source.storage_offset() == start
-        assert target.data_ptr() == layer.w2_weight_scale_inv[expert].data_ptr()
-        assert source.data_ptr() != target.data_ptr()
-        with pytest.raises(ValueError, match="prepared FP32"):
-            binding.raw_sources(incoming)
-    with pytest.raises(ValueError, match="NaN"):
-        validate_ue8m0_payload(torch.full_like(payload, 255))
-    assert torch.equal(layer.w2_weight_scale_inv, original)
+        expected = after.view(torch.float8_e8m0fnu).float().reshape(target.shape)
+    else:
+        before = torch.tensor([1.5, 2.0, 4.0], dtype=torch.bfloat16 if kind.startswith("bf16-") else torch.float32)
+        if kind.endswith("scalar"):
+            before = before[0]
+        after = before * 2
+        target = before.float().clone()
+        binding = TensorBinding(
+            kind,
+            "BF16" if kind.startswith("bf16-") else "F32",
+            tuple(before.shape),
+            [[0, n] for n in before.shape],
+            (target,),
+            encoding="xor_raw_bytes",
+        )
+        expected = after.float()
+        before, after = (value.reshape(-1).view(torch.uint8) for value in (before, after))
+    original = target.clone()
+    mask = before ^ after
+    for wanted in (expected, original):
+        current = target.clone()
+        ((actual, physical_mask, predicted),) = prepare_raw_xor(
+            [(binding, mask)], {id(target)} if kind.endswith("scalar") else ()
+        )
+        assert actual is target and torch.equal(target, current)
+        if kind.endswith("vector"):
+            assert predicted is None
+            if kind == "vector":
+                assert physical_mask.data_ptr() == mask.data_ptr()
+        else:
+            assert torch.equal(predicted, wanted)
+        target.reshape(-1).view(torch.uint8).bitwise_xor_(physical_mask)
+        assert torch.equal(target, wanted)
+    if kind == "ue8m0":
+        assert target.reshape(-1).view(torch.int32)[0].item() == 0x00400000
 
 
 def test_apply_segments_keep_one_canonical_view_and_select_original_payload():
@@ -224,6 +239,66 @@ def test_weight_views_share_one_layout_for_both_activation_modes():
             for start in range(0, 128, 64):
                 expected[1, 2 * start + half * 64 : 2 * start + (half + 1) * 64] ^= mask[start : start + 64]
         assert torch.equal(layer.w13_weight, expected)
+
+
+@pytest.mark.parametrize("image", ["weight", "scale", "mma"])
+@pytest.mark.parametrize("served_dtype", [torch.uint8, torch.int8, torch.float8_e5m2])
+def test_packed_dtype_admission_preserves_original_storage_types(image, served_dtype):
+    weight = torch.zeros((1, 128, 32), dtype=torch.uint8)
+    primary = torch.zeros((128, 4), dtype=torch.uint8)
+    mma = primary.view(1, 1, 32, 4, 4).permute(2, 3, 0, 4, 1).unsqueeze(-1)
+    mma = mma.clone(memory_format=torch.preserve_format)
+    if image == "weight":
+        weight = weight.view(served_dtype)
+    elif image == "scale":
+        primary = primary.view(served_dtype)
+    else:
+        mma = mma.view(served_dtype)
+    layer = SimpleNamespace(
+        moe_tp_size=1,
+        _map_global_expert_id_to_local_expert_id=lambda expert: expert,
+        w2_weight=weight,
+        w2_weight_scale=primary.unsqueeze(0),
+        w2_blockscale_swizzled=primary.unsqueeze(0),
+        w2_blockscale_mma=mma,
+    )
+    suffix, canonical_dtype, shape = (
+        ("weight", "U8", [128, 32]) if image == "weight" else ("weight_scale", "F8_E4M3", [128, 4])
+    )
+    tensors = (weight, primary, mma)
+    before = [tensor.contiguous().view(torch.uint8).clone() for tensor in tensors]
+    binding = _moe_binding(
+        "projection",
+        {"dtype": canonical_dtype, "shape": shape},
+        layer,
+        0,
+        "down",
+        suffix,
+        FlashInferLayout("nvfp4", "cutedsl", True),
+    )
+    records = {
+        "checks": [
+            {
+                "name": binding.name,
+                "checkpoint_dtype": canonical_dtype,
+                "dtype": binding.dtype,
+                "shape": shape,
+                **check,
+            }
+            for check in binding.dtype_checks
+        ],
+        "errors": [],
+    }
+    # Admission uses original images, even when the payload has no changed
+    # bytes and the secondary MMA view has already been reinterpreted as U8.
+    assert any(str(served_dtype) in row["served"] for row in records["checks"])
+    if served_dtype == torch.float8_e5m2:
+        with pytest.raises(ValueError, match="torch.float8_e5m2"):
+            validate_dtype_records(records)
+    else:
+        validate_dtype_records(records)
+    for tensor, original in zip(tensors, before, strict=True):
+        assert torch.equal(tensor.contiguous().view(torch.uint8), original)
 
 
 def test_layout_admission_rejects_conversion_and_unsupported_pairs():

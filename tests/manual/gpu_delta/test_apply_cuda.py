@@ -275,7 +275,8 @@ def prepared(groups):
     owner.apply_host_metadata = torch.empty(size, dtype=torch.int64, pin_memory=True)
     owner.apply_metadata = torch.empty(size, dtype=torch.int64, device="cuda")
     owner.error = torch.ones(1, dtype=torch.int32, device="cuda")
-    owner.batches, owner.status_checks, owner.raw_copies = [], [], {}
+    owner.batches, owner.status_checks = [], []
+    owner.raw_apply = owner.raw_apply_inputs = owner.raw_apply_group = None
     owner._prepare_apply_bindings()
     return owner
 

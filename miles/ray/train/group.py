@@ -421,6 +421,13 @@ class TrainerController:
             max_attempts=_RETRY_MAX_ATTEMPTS,
         )
 
+    async def export_eval_snapshot(self, rollout_id: int, path: str) -> None:
+        """Export one immutable eval snapshot using the first available trainer cell."""
+        await retry(
+            lambda _: self._execute_first_alive("export_eval_snapshot", rollout_id=rollout_id, path=path),
+            max_attempts=_RETRY_MAX_ATTEMPTS,
+        )
+
     async def update_weights(self, info: UpdatableEngines, rollout_id: int | None = None) -> WeightUpdateOutput:
         """Broadcast weights to rollout engines and return which of them now serve which version."""
         log_structured(logger.info, tag="ft", op="update_weights", phase="start", rollout=rollout_id)

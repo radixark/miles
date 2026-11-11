@@ -104,6 +104,65 @@ def _apply_prepared_masks(bindings, masks, derived=()):
     return group
 
 
+@pytest.mark.parametrize("kind", ["ue8m0", "bf16-norm"])
+def test_converted_small_xor_uses_prebound_kernel_and_is_exactly_reversible(kind):
+    from unittest.mock import patch
+
+    from miles.backends.sglang_utils.gpu_delta.bindings import TensorBinding, prepare_raw_xor
+    from miles.backends.sglang_utils.gpu_delta.receiver import PreparedDelta
+    from miles.utils.gpu_delta import apply
+
+    device = torch.device("cuda", torch.cuda.current_device())
+    if kind == "ue8m0":
+        old = torch.arange(255, dtype=torch.uint8, device=device)
+        new = old.flip(0)
+        target = old.view(torch.float8_e8m0fnu).float().reshape(17, 15)
+        expected = new.view(torch.float8_e8m0fnu).float().reshape(target.shape)
+        binding = TensorBinding(
+            "scales",
+            "U8",
+            (17, 15),
+            [[0, 17], [0, 15]],
+            (target,),
+            encoding="xor_raw_bytes",
+            format="fp8-block128-ue8m0",
+        )
+    else:
+        bits = torch.arange(65536, dtype=torch.int32, device=device)
+        nan = ((bits & 0x7F80) == 0x7F80) & ((bits & 0x007F) != 0)
+        bits = bits[~nan]
+        old = bits.to(torch.int16).view(torch.bfloat16)
+        new = old.flip(0)
+        target, expected = old.float(), new.float()
+        # Cover every finite/subnormal value, both signed zeros and infinities.
+        # Exclude NaN payloads whose cast canonicalization is implementation dependent.
+        assert torch.equal(target.view(torch.int32), bits << 16)
+        binding = TensorBinding(
+            "norm", "BF16", (old.numel(),), [[0, old.numel()]], (target,), encoding="xor_raw_bytes"
+        )
+        old, new = old.view(torch.uint8), new.view(torch.uint8)
+    original = target.clone()
+    mask = old ^ new
+    backend = SimpleNamespace(device=device, raw_plan=None)
+    first_group = None
+    for wanted in (expected, original):
+        prepared = PreparedDelta(backend)
+        prepared.error = torch.zeros(1, dtype=torch.int32, device=device)
+        before = target.clone()
+        updates = prepare_raw_xor([(binding, mask)])
+        prepared._prepare_raw_apply(updates)
+        assert torch.equal(target, before)
+        if first_group is None:
+            first_group = backend.raw_plan[1]
+        else:
+            assert backend.raw_plan[1] is first_group
+        with patch.object(apply, "_compiled", side_effect=AssertionError("paused compilation")):
+            prepared.raw_apply()
+        assert torch.equal(target.view(torch.uint8), wanted.view(torch.uint8))
+    if kind == "ue8m0":
+        assert target.flatten().view(torch.int32)[0].item() == 0x00400000
+
+
 def _reference_layer(values, independent_mma=False, tp_rank=0, tp_size=1):
     from flashinfer.cute_dsl.utils import convert_sf_to_mma_layout
     from sglang.srt.layers.moe.moe_runner.flashinfer_cutedsl import (
@@ -209,8 +268,9 @@ def _canonical(seed):
 @pytest.mark.parametrize("independent_mma", [False, True])
 @pytest.mark.parametrize("tp_size,tp_rank", [(1, 0), (2, 1)])
 def test_expert_delta_matches_full_loader_layout_and_scale_refresh(monkeypatch, independent_mma, tp_size, tp_rank):
-    from miles.backends.sglang_utils.gpu_delta.bindings import _moe_binding
+    from miles.backends.sglang_utils.gpu_delta.bindings import _moe_binding, prepare_raw_xor
     from miles.backends.sglang_utils.gpu_delta.derived import nvfp4_derived_update, plan_updates, prepare_updates
+    from miles.backends.sglang_utils.gpu_delta.receiver import PreparedDelta
 
     monkeypatch.setenv("SGLANG_FLASHINFER_CUTEDSL_NVFP4_W4A16", "1")
     old, new = _canonical(13), _canonical(29)
@@ -221,7 +281,7 @@ def test_expert_delta_matches_full_loader_layout_and_scale_refresh(monkeypatch, 
     images = {name: parameter for name, parameter in live.named_parameters(remove_duplicate=False)}
     images.update({f"wrapper.{i}": tensor for i, tensor in enumerate(live._cutedsl_scales)})
     pointers = {name: tensor.data_ptr() for name, tensor in images.items()}
-    bindings, masks, raw_copies = [], [], {}
+    bindings, masks, raw_items = [], [], []
     for (projection, suffix), before in old.items():
         after = new[projection, suffix]
         for local in range(2):
@@ -242,22 +302,29 @@ def test_expert_delta_matches_full_loader_layout_and_scale_refresh(monkeypatch, 
                 FlashInferLayout("nvfp4", "cutedsl", True, "w4a16", up_first=True),
             )
             mask = value.reshape(-1).view(torch.uint8) ^ after[local].reshape(-1).view(torch.uint8)
-            if binding.encoding == "raw_bytes":
-                target = binding.storage[0]
-                targets, sources = raw_copies.setdefault(target.dtype, ([], []))
-                targets.append(target)
-                sources.append(after[local].reshape(target.shape))
+            if binding.encoding == "xor_raw_bytes":
+                raw_items.append((binding, mask))
             else:
                 bindings.append(binding)
                 masks.append(mask)
     update = nvfp4_derived_update(live, "cutedsl")
-    plans = plan_updates([update], [t for ts, _ in raw_copies.values() for t in ts])
+    targets = [target for binding, _ in raw_items for target in binding.storage]
+    raw_updates = prepare_raw_xor(raw_items, {id(target) for target in targets})
+    raw_copies = {}
+    for target, _, predicted in raw_updates:
+        destinations, sources = raw_copies.setdefault(target.dtype, ([], []))
+        destinations.append(target)
+        sources.append(predicted)
+    plans = plan_updates([update], targets)
     before = [target.clone() for target in update.destinations]
     derived = prepare_updates(plans, raw_copies)
     for target, original in zip(update.destinations, before, strict=False):
         torch.testing.assert_close(target, original, rtol=0, atol=0)
-    for targets, sources in raw_copies.values():
-        torch._foreach_copy_(targets, sources)
+    device = torch.device("cuda", torch.cuda.current_device())
+    prepared = PreparedDelta(SimpleNamespace(device=device, raw_plan=None))
+    prepared.error = torch.zeros(1, dtype=torch.int32, device=device)
+    prepared._prepare_raw_apply(raw_updates)
+    prepared.raw_apply()
     _apply_prepared_masks(bindings, masks, derived)
     from miles.backends.sglang_utils.gpu_delta.bindings import _direct_binding
 
@@ -636,7 +703,7 @@ def _matrix_loader_reference(values, layout, hidden, intermediate):
 def test_flashinfer_matrix_matches_native_preprocessing(
     format, backend, intermediate, quant_mode, tp_size, tp_rank, monkeypatch
 ):
-    from miles.backends.sglang_utils.gpu_delta.bindings import _moe_binding, validate_ue8m0_payload
+    from miles.backends.sglang_utils.gpu_delta.bindings import _moe_binding, prepare_raw_xor
 
     monkeypatch.setenv("SGLANG_MXFP4_USE_OFFICIAL_SHUFFLE", "true")
     hidden = 384
@@ -684,10 +751,9 @@ def test_flashinfer_matrix_matches_native_preprocessing(
                 layout,
             )
             payload = updated.contiguous().view(torch.uint8)
-            if binding.encoding == "raw_bytes":
-                validate_ue8m0_payload(payload.cpu())
-                expanded = payload.view(torch.float8_e8m0fnu).float()
-                complete.extend(binding.raw_sources(payload, expanded))
+            if binding.encoding == "xor_raw_bytes":
+                mask = value.contiguous().view(torch.uint8) ^ payload
+                complete.extend(prepare_raw_xor([(binding, mask)]))
             else:
                 bindings.append(binding)
                 masks.append((value.contiguous().view(torch.uint8) ^ payload).flatten())
@@ -695,7 +761,8 @@ def test_flashinfer_matrix_matches_native_preprocessing(
     for name, value in images.items():
         torch.testing.assert_close(value.contiguous().view(torch.uint8), before[name], rtol=0, atol=0)
     if complete:
-        torch._foreach_copy_([target for target, _ in complete], [source for _, source in complete])
+        for target, mask, _ in complete:
+            target.view(torch.uint8).bitwise_xor_(mask.view(target.view(torch.uint8).shape))
     assert _apply_prepared_masks(bindings, masks) is not None
     for name, value in expected.named_parameters():
         if format == "mxfp4" and name.endswith("_weight_scale_inv"):

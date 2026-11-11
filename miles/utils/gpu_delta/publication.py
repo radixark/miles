@@ -1,6 +1,7 @@
 """Immutable, independently framed canonical publications for direct GPU apply.
 
-Matrix payloads contain GPU Snappy/LZ4/Bitcomp frames with optional GPU Zstd wrapping.
+All mutable tensors carry XOR masks. Matrix masks use GPU Snappy/LZ4/Bitcomp
+frames with optional GPU Zstd wrapping; scalar and vector masks are uncompressed.
 These publications are not checkpoint patches for the disk-delta loader.
 """
 
@@ -117,7 +118,7 @@ def read_checkpoint_plan(checkpoint):
         ):
             continue
         spec = dict(
-            name=name, dtype=dtype, shape=list(shape), encoding="raw_bytes" if len(shape) <= 1 else "xor_bytes"
+            name=name, dtype=dtype, shape=list(shape), encoding="xor_raw_bytes" if len(shape) <= 1 else "xor_bytes"
         )
         weight_name = name.removesuffix("_scale_inv")
         projection = re.search(r"\.(?:experts\.\d+|shared_experts)\.(?:gate|up|down)_proj\.weight$", weight_name)
@@ -128,7 +129,7 @@ def read_checkpoint_plan(checkpoint):
                     spec["checkpoint_dtype"] = dtype
                 elif dtype != "U8":
                     raise ValueError(f"Block128 scales require exact UE8M0 storage: {name}")
-                spec.update(dtype="U8", encoding="raw_bytes")
+                spec.update(dtype="U8", encoding="xor_raw_bytes")
             elif not name.endswith(".weight") or dtype != "F8_E4M3":
                 raise ValueError(f"Unsupported block128 canonical tensor: {name}")
         plan.append(spec)
@@ -211,7 +212,7 @@ def _write_exclusive(path: Path, content: bytes) -> None:
 class PublicationWriter:
     """One owner's append-only payload; manifest is sealed after all owners finish.
 
-    A CPU worker writes raw scalar/vector targets while matrix compression runs
+    A CPU worker writes scalar/vector XOR masks while matrix compression runs
     on the GPU. The lock serializes final byte appends and optional CPU hashes.
     Partial files are preserved on failure and never overwritten by a retry.
     """
@@ -251,18 +252,16 @@ class PublicationWriter:
         self._lock = threading.Lock()
         self._entries: dict[str, dict] = {}
 
-    def add_raw_tensor(self, name, old, new, dtype, shape, format=None, checkpoint_dtype=None):
-        """Write complete scalar/vector targets without XOR, frames or codecs."""
-        entry = tensor_metadata(name, dtype, shape, "raw_bytes", format, checkpoint_dtype)
-        previous, current = np.frombuffer(old, dtype=np.uint8), np.frombuffer(new, dtype=np.uint8)
-        if previous.size != entry["nbytes"] or current.size != entry["nbytes"]:
+    def add_raw_xor_tensor(self, name, mask, dtype, shape, format=None, checkpoint_dtype=None):
+        """Write an uncompressed scalar/vector XOR mask, omitting all-zero masks."""
+        entry = tensor_metadata(name, dtype, shape, "xor_raw_bytes", format, checkpoint_dtype)
+        mask = np.frombuffer(mask, dtype=np.uint8)
+        if mask.size != entry["nbytes"]:
             raise ValueError(f"Canonical tensor byte count differs for {name}")
-        # CPU-only comparison preserves update-density metrics and omits
-        # unchanged scalars. Changed tensors replace all bytes without a mask.
-        entry["changed_bytes"] = int(np.count_nonzero(previous != current))
+        entry["changed_bytes"] = int(np.count_nonzero(mask))
         with self._lock:
             if entry["changed_bytes"]:
-                payload = memoryview(current)
+                payload = memoryview(mask)
                 padding = bytes((-self._file.tell()) % 16)
                 self._file.write(padding)
                 if self._hash is not None:
@@ -378,7 +377,7 @@ def write_publication_metadata(directory, manifest):
     columns.update({group + "." + field: [] for group in ("frames", "outer_frames") for field in _FRAME_FIELDS})
     columns.update({"gaps.offset": [], "gaps.nbytes": []})
     for entry in entries:
-        raw = entry["encoding"] == "raw_bytes"
+        raw = entry["encoding"] == "xor_raw_bytes"
         payload = entry.get("raw" if raw else "outer")
         values = {
             "changed_bytes": entry["changed_bytes"],
@@ -462,7 +461,7 @@ def read_publication_metadata(path):
                 "encoded_offset": int(columns["tensors.payload_offset"][i]),
                 "encoded_bytes": int(columns["tensors.payload_nbytes"][i]),
             }
-            if entry["encoding"] == "raw_bytes":
+            if entry["encoding"] == "xor_raw_bytes":
                 entry["raw"] = payload
             else:
                 entry["outer"] = payload | {
@@ -473,6 +472,6 @@ def read_publication_metadata(path):
 
 
 def write_checkpoint_ready(directory, descriptor):
-    """Publish paired completion only after the Megatron checkpoint writer drains."""
+    """Publish completion after the payload and any paired checkpoint are sealed."""
     path = Path(directory) / "READY.json"
     _write_exclusive(path, canonical_json(descriptor))

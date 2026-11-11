@@ -11,7 +11,7 @@ class TestEvalFleetTopology:
         lock = asyncio.Lock()
         counts = [2]
         server = SimpleNamespace(context_lock=lock, engine_gpu_counts=counts, router_ip="127.0.0.1", router_port=8000)
-        fleet = InferenceControllerEvalFleet(argparse.Namespace(), srv=server)
+        fleet = InferenceControllerEvalFleet(argparse.Namespace(update_weight_transfer_mode="broadcast"), srv=server)
 
         async with lock:
             pending = asyncio.create_task(fleet.info())
@@ -30,6 +30,8 @@ class TestEvalFleetTopology:
         server = SimpleNamespace(
             context_lock=asyncio.Lock(), engine_gpu_counts=[], router_ip="127.0.0.1", router_port=8000
         )
-        fleet = InferenceControllerEvalFleet(argparse.Namespace(eval_num_gpus=16), srv=server)
+        fleet = InferenceControllerEvalFleet(
+            argparse.Namespace(eval_num_gpus=16, update_weight_transfer_mode="broadcast"), srv=server
+        )
 
         assert (await fleet.info()).engine_gpu_counts == []

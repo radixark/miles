@@ -11,9 +11,9 @@ from __future__ import annotations
 
 from itertools import chain
 
-from miles.backends.sglang_utils.gpu_delta.bindings import ConsumerSnapshot, _tensor_identity
+from miles.backends.sglang_utils.gpu_delta.bindings import ConsumerSnapshot, _dtype_name, _tensor_identity
 from miles.backends.sglang_utils.gpu_delta.derived import nvfp4_derived_update, plan_updates
-from miles.backends.sglang_utils.gpu_delta.flashinfer import consumer_objects
+from miles.backends.sglang_utils.gpu_delta.flashinfer import _DtypeMismatch, consumer_objects
 from miles.backends.sglang_utils.gpu_delta.models import model_mapping
 from miles.utils.gpu_delta import profiling
 
@@ -31,40 +31,87 @@ class GpuDeltaLayout:
         mapping = model_mapping(model)
         self.bindings = []
         self.excluded = mapping.parameters.excluded
+        self.dtype_records = {"checks": [], "errors": []}
         for name, meta in self.inventory.items():
-            binding = mapping.bind(name, meta)
+            try:
+                binding = mapping.bind(name, meta)
+            except _DtypeMismatch as error:
+                # Invalid packed storage cannot form safe views. Collect its
+                # diagnostic without preventing admission of the other tensors.
+                self.dtype_records["errors"].append(
+                    f"{name}: checkpoint={meta.get('checkpoint_dtype', meta['dtype'])}, "
+                    f"canonical={meta['dtype']}; {error}"
+                )
+                continue
             if binding is not None:
                 self.bindings.append(binding)
+                if binding.format is None:
+                    # Pure metadata collected during the existing mapping walk.
+                    # The shared CPU prepare process checks it once, before any
+                    # payload work, including tensors with an empty delta.
+                    self.dtype_records["checks"].append(
+                        {
+                            "name": name,
+                            "checkpoint_dtype": meta.get("checkpoint_dtype", meta["dtype"]),
+                            "dtype": binding.dtype,
+                            "served": list(dict.fromkeys(_dtype_name(t.dtype) for t in binding.storage)),
+                            "shape": list(binding.shape),
+                        }
+                    )
+                else:
+                    self.dtype_records["checks"].extend(
+                        {
+                            "name": name,
+                            "checkpoint_dtype": meta.get("checkpoint_dtype", meta["dtype"]),
+                            "dtype": binding.dtype,
+                            "shape": list(binding.shape),
+                            **check,
+                        }
+                        for check in binding.dtype_checks
+                    )
         self.bindings.sort(key=lambda b: _natural_key(b.name))
-        if mapping.parameters.moe_layers:
-            from sglang.srt.runtime_context import get_exec
-
-            _require_fixed_moe_topology(get_exec().moe)
-        self.derived = []
-        self.derived_updates = []
-        self._consumers = []
-        for prefix, layer in mapping.parameters.moe_layers.items():
-            layout = mapping.parameters.moe_layouts[prefix]
-            if layout.format == "nvfp4":
-                self.derived_updates.append(nvfp4_derived_update(layer, layout.backend, layout.quant_mode))
-            self._consumers.append(
-                ConsumerSnapshot(lambda layer=layer, layout=layout: consumer_objects(layer, layout))
-            )
-        self.derived_updates = plan_updates(
-            self.derived_updates,
-            [target for binding in self.bindings if binding.encoding == "raw_bytes" for target in binding.storage],
-        )
-        mapping.finish()
-        self.derived.extend(mapping.derived)
-        self._consumers.extend(mapping.consumers)
         self._parameter_roots = [
             (module, name, tensor, _tensor_identity(tensor))
             for module in mapping.parameters.modules.values()
             for name, tensor in module._parameters.items()
             if tensor is not None
         ]
+        self._consumers = list(mapping.consumers)
+        for prefix, layer in mapping.parameters.moe_layers.items():
+            layout = mapping.parameters.moe_layouts[prefix]
+            self._consumers.append(
+                ConsumerSnapshot(lambda layer=layer, layout=layout: consumer_objects(layer, layout))
+            )
         self._prepare_identity_checks()
+        self._mapping = mapping
+
+    def finish(self):
+        """Finish rank-local consumers only after CPU-process dtype admission."""
+        mapping = self._mapping
+        if mapping is None:
+            return
+        self.check_identity()
+        if mapping.parameters.moe_layers:
+            from sglang.srt.runtime_context import get_exec
+
+            _require_fixed_moe_topology(get_exec().moe)
+        self.derived = []
+        self.derived_updates = []
+        for prefix, layer in mapping.parameters.moe_layers.items():
+            layout = mapping.parameters.moe_layouts[prefix]
+            if layout.format == "nvfp4":
+                self.derived_updates.append(nvfp4_derived_update(layer, layout.backend, layout.quant_mode))
+        self.derived_updates = plan_updates(
+            self.derived_updates,
+            [target for binding in self.bindings if binding.encoding == "xor_raw_bytes" for target in binding.storage],
+        )
+        self.derived_targets = frozenset(
+            id(target) for plan in self.derived_updates for source in plan.sources for target in source.targets
+        )
+        mapping.finish()
+        self.derived.extend(mapping.derived)
         self._reject_overlaps(mapping.aliases)
+        self._mapping = None
 
     def _prepare_identity_checks(self):
         # Deduplicate geometry once, not in the per-update validation loop.

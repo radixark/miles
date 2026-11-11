@@ -252,7 +252,6 @@ def actor_update(monkeypatch):
         primary=True,
         update_error=None,
         completed_metrics=None,
-        receiver_pool="rollout",
     ):
         parallel.is_metrics_rank = primary
         args = Namespace(
@@ -293,7 +292,6 @@ def actor_update(monkeypatch):
         updater.args = args
         updater.conn_status = SimpleNamespace(needs_reconnect=lambda _: False)
         updater._receiver_pools = updater_module.ReceiverPools()
-        updater._receiver_pools.active = receiver_pool
         updater._registered_adapters = set()
         updater.is_lora = False
         updater.weights_getter = lambda: {}
@@ -319,7 +317,7 @@ def actor_update(monkeypatch):
         result = namespace["update_weights"](
             instance,
             SimpleNamespace(
-                rollout_engines=[], engine_cell_ids=[], snapshot_cell_id_to_hashes={}, receiver_pool=receiver_pool
+                rollout_engines=[], engine_cell_ids=[], snapshot_cell_id_to_hashes={}, receiver_pool="rollout"
             ),
             debug_weight_update_id="metrics-update",
             rollout_id=rollout_id,
@@ -340,7 +338,7 @@ def test_final_update_logs_once_at_its_trained_rollout_without_resetting_timers(
     reset = Mock(side_effect=AssertionError("completion logging must not reset training timers"))
     monkeypatch.setattr(Timer(), "reset", reset)
 
-    # No train call follows this final evaluation publication.
+    # No train call follows this final rollout publication.
     result, updater = actor_update(completed_metrics=completed)
     assert result == WeightUpdateOutput(weight_version=17, failed_cell_ids=())
     submit.assert_called_once()
@@ -358,18 +356,9 @@ def test_final_update_logs_once_at_its_trained_rollout_without_resetting_timers(
     reset.assert_not_called()
 
 
-@pytest.mark.parametrize(
-    "case,receiver_pool",
-    [
-        ("nonprimary", "rollout"),
-        ("nonprimary", "eval"),
-        ("no_trained_rollout", "rollout"),
-        ("no_trained_rollout", "eval"),
-        ("ordinary", "rollout"),
-    ],
-)
+@pytest.mark.parametrize("case", ["nonprimary", "no_trained_rollout", "ordinary"])
 def test_completion_logging_preserves_rank_startup_and_other_protocol_semantics(
-    actor_update, monkeypatch, case, receiver_pool, caplog
+    actor_update, monkeypatch, case, caplog
 ):
     completed = metrics.activation_metrics(_activation())
     submit = Mock()
@@ -390,13 +379,12 @@ def test_completion_logging_preserves_rank_startup_and_other_protocol_semantics(
         "ordinary": {"mode": "disk-delta"},
     }
     with caplog.at_level(logging.INFO):
-        _, updater = actor_update(completed_metrics=completed, receiver_pool=receiver_pool, **overrides[case])
+        _, updater = actor_update(completed_metrics=completed, **overrides[case])
     submit.assert_not_called()
     assert updater.pop_metrics() == (completed if case == "ordinary" else {})
     if case == "no_trained_rollout":
         assert "initial sync completed before the first rollout" in caplog.text
-        assert f"pool={receiver_pool}" in caplog.text
-        summary = next(record.args[-1] for record in caplog.records if "initial sync" in record.msg)
+        summary = next(record.args for record in caplog.records if "initial sync" in record.msg)
         assert summary == dict(
             wire_bytes=128,
             raw_bytes=7,
@@ -449,19 +437,3 @@ def test_kernel_preparation_and_metadata_require_complete_rank_coverage():
     result = metrics.activation_metrics(activation)
     assert prefix + "apply_kernel_cache_misses/max" not in result
     assert result[prefix + "apply_kernel_cache_reused/min"] == 1
-
-
-def test_eval_metrics_do_not_collide_with_rollout_at_same_training_step(actor_update, monkeypatch):
-    submit = Mock()
-    monkeypatch.setattr(metrics.tracking, "log", submit)
-    completed = {"perf/update_weights_gpu_delta_s": 2.0}
-    _, rollout_updater = actor_update(completed_metrics=completed, rollout_id=3)
-    _, eval_updater = actor_update(completed_metrics=completed, rollout_id=3, receiver_pool="eval")
-    assert rollout_updater.pop_metrics() == eval_updater.pop_metrics() == {}
-    rollout, evaluation = [call.args[1] for call in submit.call_args_list]
-    assert rollout["actor/perf/update_weights_gpu_delta_s"] == 2.0
-    assert "actor/eval/perf/update_weights_gpu_delta_s" not in rollout
-    assert evaluation["actor/eval/perf/update_weights_gpu_delta_s"] == 2.0
-    assert "actor/perf/update_weights_gpu_delta_s" not in evaluation
-    assert rollout["actor/rollout/step"] == evaluation["actor/rollout/step"]
-    assert completed == {"perf/update_weights_gpu_delta_s": 2.0}

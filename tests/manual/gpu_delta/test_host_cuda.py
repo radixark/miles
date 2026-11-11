@@ -26,7 +26,7 @@ import zstandard as zstd
 
 @pytest.mark.parametrize("codec", ["bitcomp", "bitcomp-zstd"])
 def test_bitcomp_receiver_double_buffer_exact_updates_and_stale_target(codec, monkeypatch):
-    """Real producer/receiver, five batches, omitted frames and raw replacement."""
+    """Real producer/receiver, five batches, omitted frames and small XOR masks."""
     import torch
 
     from miles.backends.sglang_utils.gpu_delta import checkpoint
@@ -74,7 +74,7 @@ def test_bitcomp_receiver_double_buffer_exact_updates_and_stale_target(codec, mo
             dict(
                 name=name,
                 **meta,
-                encoding="raw_bytes" if len(meta["shape"]) <= 1 else "xor_bytes",
+                encoding="xor_raw_bytes" if len(meta["shape"]) <= 1 else "xor_bytes",
             )
             for name, meta in inventory.items()
         ]
@@ -114,10 +114,9 @@ def test_bitcomp_receiver_double_buffer_exact_updates_and_stale_target(codec, mo
                             shape=row["shape"],
                         )
                     raw = next(row for row in definitions if row["name"] == "model.raw")
-                    writer.add_raw_tensor(
+                    writer.add_raw_xor_tensor(
                         raw["name"],
-                        before[raw["name"]].numpy(),
-                        after[raw["name"]].numpy(),
+                        np.bitwise_xor(before[raw["name"]].numpy(), after[raw["name"]].numpy()),
                         raw["dtype"],
                         raw["shape"],
                     )
@@ -164,6 +163,137 @@ def test_bitcomp_receiver_double_buffer_exact_updates_and_stale_target(codec, mo
         finally:
             if prepared is not None:
                 prepared.close()
+            backend.close()
+
+
+def test_hf_relative_snapshots_are_reversible_with_the_same_update_api(monkeypatch):
+    """Apply A, cancel A, skip B, apply C, cancel C, and apply an HF no-op."""
+    import shutil
+    from unittest.mock import patch
+
+    import torch
+
+    from miles.backends.sglang_utils.gpu_delta import checkpoint
+    from miles.backends.sglang_utils.gpu_delta.derived import DerivedUpdate, plan_updates
+    from miles.backends.sglang_utils.gpu_delta.receiver import GpuDeltaBackend
+    from miles.backends.sglang_utils.gpu_delta.session import DeltaSession
+    from miles.utils.gpu_delta import apply, publication
+    from miles.utils.gpu_delta.encoder import GpuBatchEncoder
+    from miles.utils.gpu_delta.host import host_cache_id
+    from miles.utils.gpu_delta.publication import PublicationWriter
+
+    device = torch.device("cuda", torch.cuda.current_device())
+    frame_bytes = 1 << 16
+    model = torch.nn.Module()
+    model.config = SimpleNamespace(architectures=["DeepseekV3ForCausalLM"], num_hidden_layers=2)
+    model.num_fused_shared_experts = 0
+    model.model = torch.nn.Module()
+    model.model.layers = torch.nn.ModuleList([torch.nn.Module() for _ in range(2)])
+    for layer in model.model.layers:
+        layer.weight = torch.nn.Parameter(
+            torch.zeros((1, frame_bytes + 7), dtype=torch.uint8, device=device), requires_grad=False
+        )
+    model.model.vector = torch.nn.Parameter(torch.arange(17, dtype=torch.uint8, device=device), requires_grad=False)
+    model.model.scalar = torch.nn.Parameter(torch.tensor(1.5, device=device), requires_grad=False)
+    inventory = {
+        name: {"dtype": "F32" if value.dtype == torch.float32 else "U8", "shape": list(value.shape)}
+        for name, value in model.named_parameters()
+    }
+    monkeypatch.setattr(checkpoint, "read_canonical_checkpoint_inventory", lambda _: inventory)
+    monkeypatch.setenv("GPU_DELTA_CPU_WORKERS", "4")
+    encoder = GpuBatchEncoder(device, codec="bitcomp-zstd", frame_bytes=frame_bytes)
+    with tempfile.TemporaryDirectory(prefix="gpu-delta-snapshot-", dir="/dev/shm") as directory:
+        root = Path(directory)
+        monkeypatch.setenv("GPU_DELTA_HOST_CACHE_DIR", str(root / "cache"))
+        identity = dict(
+            engine_id=directory,
+            host_cache_id=host_cache_id(directory),
+            tp_rank=0,
+            dp_rank=0,
+            pid=os.getpid(),
+            rank_id="snapshot-original",
+        )
+        backend = GpuDeltaBackend(SimpleNamespace(model=model), identity)
+        derived = torch.empty_like(model.model.scalar)
+        backend.layout.finish()
+        backend.layout.derived_updates = plan_updates(
+            [DerivedUpdate((model.model.scalar,), (derived,), lambda values: (values[0] * 2,))],
+            [model.model.scalar],
+        )
+        backend.layout.derived_targets = frozenset({id(model.model.scalar)})
+        session = DeltaSession(identity, backend)
+        definitions = [
+            dict(name=name, **meta, encoding="xor_raw_bytes" if len(meta["shape"]) <= 1 else "xor_bytes")
+            for name, meta in inventory.items()
+        ]
+        digest = publication.plan_digest(definitions)
+        base = {
+            name: value.detach().reshape(-1).view(torch.uint8).cpu().pin_memory()
+            for name, value in model.named_parameters()
+        }
+        published = {}
+        worker = None
+        try:
+            for operation in ("A", "undo-A", "C", "undo-C", "HF"):
+                undo = operation.startswith("undo-")
+                label = operation.removeprefix("undo-")
+                values = {name: value.clone().pin_memory() for name, value in base.items()}
+                if label != "HF" and not undo:
+                    values["model.layers.1.weight"][::127].bitwise_xor_(13 if label == "A" else 27)
+                    if label == "A":
+                        values["model.layers.0.weight"][::19].bitwise_xor_(6)
+                        values["model.vector"].bitwise_xor_(43)
+                    scalar = torch.tensor(3.0 if label == "A" else 7.5).reshape(-1).view(torch.uint8)
+                    values["model.scalar"].copy_(scalar)
+                if undo:
+                    descriptor = published[label]
+                else:
+                    writer = PublicationWriter(
+                        root / label, "eval-snapshots", 0, 1, digest, "bitcomp-zstd", frame_bytes=frame_bytes
+                    )
+                    matrices = [row for row in definitions if row["encoding"] == "xor_bytes"]
+                    encoded = encoder.finish_device(
+                        encoder.encode_device([(base[row["name"]], values[row["name"]]) for row in matrices])
+                    )
+                    try:
+                        for row, result in zip(matrices, encoded, strict=True):
+                            writer.add_encoded_tensor(row["name"], *result[:4], dtype=row["dtype"], shape=row["shape"])
+                        for row in definitions:
+                            if row["encoding"] == "xor_raw_bytes":
+                                writer.add_raw_xor_tensor(
+                                    row["name"],
+                                    np.bitwise_xor(base[row["name"]].numpy(), values[row["name"]].numpy()),
+                                    row["dtype"],
+                                    row["shape"],
+                                )
+                        descriptor = published[label] = writer.finish()
+                    finally:
+                        writer.close()
+                request = dict(descriptor, session_id=operation, validate_payload_hash=True, participants=[identity])
+                before = {name: value.detach().clone() for name, value in model.named_parameters()}
+                assert session.prepare(request).result()["state"] == "PREPARED"
+                prepared = session._update.prepared
+                for name, value in model.named_parameters():
+                    assert torch.equal(value, before[name])
+                if worker is None:
+                    worker = backend.host_arena._worker
+                assert backend.host_arena._worker is worker
+                if operation != "A":
+                    assert prepared.timings["apply_kernel_cache_misses"] == 0
+                with patch.object(apply, "_compiled", side_effect=AssertionError("paused compilation")):
+                    assert session.apply(operation, lambda: None, lambda: None, lambda: True)["state"] == "APPLIED"
+                assert session.resume(operation, lambda version: None)["state"] == "RESUMED"
+                session._update.release_future.result()
+                for name, value in model.named_parameters():
+                    assert torch.equal(value.detach().reshape(-1).view(torch.uint8).cpu(), values[name])
+                assert derived.item() == model.model.scalar.item() * 2
+                if undo or label == "HF":
+                    shutil.rmtree(root / label)
+            assert session.clear()["state"] == "CLEARED"
+        finally:
+            session._executor.shutdown(wait=True)
+            if session._update.prepared is not None:
+                session._update.prepared.close()
             backend.close()
 
 
@@ -227,7 +357,7 @@ def test_bitcomp_failed_transaction_requires_fresh_receiver_recovery(failure, mo
                     name=name,
                     dtype="U8",
                     shape=list(value.shape),
-                    encoding="raw_bytes" if value.ndim <= 1 else "xor_bytes",
+                    encoding="xor_raw_bytes" if value.ndim <= 1 else "xor_bytes",
                 )
                 for name, value in model.named_parameters()
             ]
@@ -253,10 +383,9 @@ def test_bitcomp_failed_transaction_requires_fresh_receiver_recovery(failure, mo
                         shape=row["shape"],
                     )
                 raw = next(row for row in definitions if row["name"] == "model.raw")
-                writer.add_raw_tensor(
+                writer.add_raw_xor_tensor(
                     raw["name"],
-                    before[raw["name"]].numpy(),
-                    after[raw["name"]].numpy(),
+                    np.bitwise_xor(before[raw["name"]].numpy(), after[raw["name"]].numpy()),
                     raw["dtype"],
                     raw["shape"],
                 )
@@ -464,7 +593,7 @@ def _publication(directory, version, repeat, codec):
         blob.extend(encoded)
         entry = {
             "name": name,
-            "encoding": "raw_bytes" if name == "raw" else "xor_bytes",
+            "encoding": "xor_raw_bytes" if name == "raw" else "xor_bytes",
             "nbytes": len(value),
             "changed_bytes": len(value),
             "frames": (
@@ -498,7 +627,7 @@ def _publication(directory, version, repeat, codec):
     (directory / "owner.bin").write_bytes(blob)
     for entry in entries:
         size = len(expected["raw"]) if entry["name"] == "raw" else 1 << 20
-        shape = [size] if entry["encoding"] == "raw_bytes" else [1, size]
+        shape = [size] if entry["encoding"] == "xor_raw_bytes" else [1, size]
         entry.update(
             dtype="U8",
             shape=shape,
@@ -553,6 +682,7 @@ def _consumer(rank, engine, workers, publications, cache, barrier, output):
         for local in range(2)
     ]
     arena = host.HostArena(engine, device.index, participants[rank % 2])
+    arena.register_dtypes({"checks": [], "errors": []})
     stream = torch.cuda.Stream(device=device)
     records = []
     try:

@@ -7,8 +7,8 @@ Miles' SGLang adapter owns preparation, application and resume within each engin
 remains a separate checkpoint handoff path. GPU-delta supports `snappy-zstd`,
 `lz4-zstd`, `lz4`, `bitcomp-zstd` (default) and `bitcomp`, with
 `--update-weight-delta-encoding xor`. Bitcomp always uses the sparse algorithm,
-lossless U8 byte interpretation and no quantization. Changed scalar/vector tensors
-carry complete target bytes; the `overwrite` transport option belongs to disk-delta.
+lossless U8 byte interpretation and no quantization. Scalars/vectors carry
+uncompressed XOR masks; the `overwrite` transport option belongs to disk-delta.
 
 See [GPU-accelerated weight teleportation](https://humansand.ai/blog/gpu-accelerated-weight-teleportation)
 for the design and motivation.
@@ -132,36 +132,45 @@ advanced checkpoint is not reset by the version-0 pull.
 Completed training updates report the final delta payload size through the existing
 `perf/update_weights_wire_bytes` metric to W&B when enabled, with the normal trainer
 namespace. This sums payload files across every owner, including compressed matrix
-data, raw scalar/vector replacements and alignment padding, excluding the JSON
+data, uncompressed scalar/vector XOR masks and alignment padding, excluding the JSON
 manifest. Initial sync has no trained rollout step, so it logs a payload-only
-summary once on the logging rank, separately for rollout and eval. The breakdown
-includes raw replacements, final matrix payload, file alignment, canonical and
+summary once on the logging rank for rollout. The breakdown
+includes uncompressed masks, final matrix payload, file alignment, canonical and
 changed bytes, and the aligned inner-codec arena size before optional Zstd. The
 inner size is not additive with wire bytes. These owner totals also accompany
 trained W&B metrics under `perf/gpu_delta/payload_*`; receiver fanout is not counted.
 All counters reuse the existing owner gather, without another payload scan,
 collective or CUDA synchronization.
 
-## Dedicated eval synchronization
+## Dedicated eval snapshots
 
-With `--update-weight-transfer-mode gpu-delta` and dedicated eval GPUs, each
-receiver pool keeps its own protocol, baseline, connection and transfer version.
-Eval synchronization blocks until its receivers have applied and resumed, then
-the eval executor checks that pool's version before generation. It uses live
-trainer weights without exporting an HF checkpoint or requiring snapshot-save
-cadence. Rollout and eval updates remain serialized; existing engine launch
-settings are unchanged. Eval completion metrics use an `eval/` prefix in the
-trainer namespace.
+Dedicated GPU-delta eval uses the ordinary asynchronous snapshot queue, including
+its in-flight limit, overflow policy and snapshot retention. An eval snapshot
+contains a `gpu_delta/READY.json` descriptor referencing the target's delta from
+the immutable HF checkpoint in the existing shared publication directory,
+rather than a full HF weight export. The sender reuses the rollout protocol's HF-relative
+recovery payload; eval has no separate rolling baseline or transfer counter.
+Full HF exports remain available for custom checkpoint evaluators.
 
-The shared eval and receiver-pool interfaces admit protocols through one capability
-query. GPU-delta currently provides that capability; disk-delta keeps its existing
-snapshot-based eval path.
+The eval executor holds its existing eval lock across pinning and generation.
+To pin a new snapshot, the controller calls the ordinary delta update API twice:
+apply the previous snapshot again to return to the HF base, then apply the new
+snapshot. No eval generation runs between those calls. Scalars/vectors and compact
+UE8M0 scales also carry XOR masks, so cancellation uses the same operation.
+Derived scalar values are prepared before each pause. Skipped eval points require
+no intermediate updates.
+
+Queue cleanup removes staging descriptors; the underlying publications remain in
+shared storage for cancellation, with the same lifetime as other GPU-delta
+publications. The receiver uses its ordinary single host arena and resource lifecycle. A failed or uncertain
+activation is never retried on that receiver incarnation; it requires a fresh
+engine. This does not add automatic dedicated-eval fault tolerance.
 
 ## Recovery and checkpoint companions
 
 Each trainer owner keeps an immutable copy of its canonical HF-base bytes in
 addition to the rolling committed snapshot and pending target. Owners compress
-HF-base → current bytes only when a replacement or checkpoint needs them, using
+HF-base → current bytes only when a replacement, checkpoint or eval needs them, using
 the initial-sync codec and the already captured target. Healthy updates perform
 no recovery compression. The result is cached for reuse at the same target step.
 
@@ -274,7 +283,7 @@ not prove full weight-content equality.
 
 For the ordinary delta of N matrix bytes, the sender transfers N export bytes D2H
 and N previous-snapshot bytes H2D, plus current-snapshot H2D for batches that
-cannot reuse the active export bucket. Final encoded bytes return D2H. Raw targets
+cannot reuse the active export bucket. Final encoded bytes return D2H. Small masks
 avoid matrix H2D uploads. Recovery, when requested, additionally uploads the
 retained HF/current pair without a second export D2H. Export, bulk compression, publication and activation enclose
 trainer blocking. Receiver preparation runs before pause; inner decompression
@@ -353,7 +362,7 @@ producer prefixes reuse the existing owner gather.
 - `receiver_host_plan_cache_reused/{min,p50,max}` reports per-rank static-plan
   reuse.
 - `receiver_de_host_input_bytes` counts compressed bytes read directly by DE;
-  `receiver_h2d_bytes` counts explicit raw-target, metadata and CUDA compressed-input
+  `receiver_h2d_bytes` counts explicit small-mask, metadata and CUDA compressed-input
   uploads. They are different traffic categories, not a throughput estimate.
   `receiver_raw_h2d_bytes`, `receiver_decoder_metadata_h2d_bytes` and
   `receiver_apply_metadata_h2d_bytes` expose raw/metadata components; the CUDA
@@ -463,7 +472,7 @@ Pinned old/new input batches target 512 MiB; a larger tensor stays whole. Each
 GPU retains only its owner's compact inner-codec payload through finalization.
 Group-count balancing reduces per-GPU residency but does not guarantee equal
 byte counts or make an oversized individual tensor fit. Wrapped codecs perform
-one owner-wide GPU Zstd finalization per version. Scalar/vector target bytes
+one owner-wide GPU Zstd finalization per version. Scalar/vector XOR masks
 bypass compression.
 
 The default performance proxy uses Bitcomp-Zstd with payload hashing on and off.

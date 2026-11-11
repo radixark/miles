@@ -10,6 +10,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 
+import numpy as np
 import torch
 import triton
 import triton.language as tl
@@ -409,7 +410,7 @@ def append_encoded_tensor(writer, name, result, spec):
 
 @dataclass
 class RecoveryPayload:
-    """Compressed matrices own their pinned wire buffers; raw targets own bytes.
+    """Compressed matrices own pinned wire buffers; small XOR masks own bytes.
 
     No tensor export, payload gathering, hashing or filesystem work is needed
     until an engine recovery or checkpoint save requests a publication.
@@ -429,21 +430,20 @@ class RecoveryPayload:
         finalized = encoder.finish_device(encoded)
         return cls(
             list(zip(names, finalized, strict=True)),
-            {name: target[name].numpy().tobytes() for name in raw_names},
+            {name: np.bitwise_xor(base[name].numpy(), target[name].numpy()).tobytes() for name in raw_names},
             codec,
             encoder.frame_bytes,
         )
 
-    def write(self, directory, metadata, owner, plan, base):
+    def write(self, directory, metadata, owner, plan):
         writer = PublicationWriter(directory, owner=owner, codec=self.codec, frame_bytes=self.frame_bytes, **metadata)
         try:
             for name, result in self.matrices:
                 append_encoded_tensor(writer, name, result, plan[name])
             for name, value in self.raw.items():
                 spec = plan[name]
-                writer.add_raw_tensor(
+                writer.add_raw_xor_tensor(
                     name,
-                    base[name].numpy(),
                     value,
                     spec["dtype"],
                     spec["shape"],

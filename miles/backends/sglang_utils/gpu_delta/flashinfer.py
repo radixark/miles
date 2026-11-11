@@ -23,6 +23,10 @@ from enum import Enum
 import torch
 
 
+class _DtypeMismatch(ValueError):
+    """A logical or physical dtype mismatch, collected by layout admission."""
+
+
 @dataclass(frozen=True)
 class FlashInferLayout:
     format: str
@@ -163,15 +167,21 @@ def _unique_images(images):
     return unique
 
 
-def _cutedsl_scale_images(layer, stem, expert):
+def _cutedsl_scale_images(layer, stem, expert, dtype_checks):
     primary = getattr(layer, f"{stem}_blockscale_swizzled")[
         expert
     ]  # config-access-exempt: Select the admitted gate/up or down CuTe scale image.
+    if primary.element_size() != 1:
+        raise _DtypeMismatch(f"NVFP4 scales require one-byte storage, served={primary.dtype}")
     images = [primary]
+    served_dtypes = [str(primary.dtype)]
     mma = getattr(
         layer, f"{stem}_blockscale_mma", None
     )  # config-access-exempt: CuTe may retain an additional MMA scale image for this projection.
     if mma is not None:
+        if mma.element_size() != 1:
+            raise _DtypeMismatch(f"NVFP4 MMA scales require one-byte storage, served={mma.dtype}")
+        served_dtypes.append(str(mma.dtype))
         # Public MMA axes: (32,4,mtiles,4,ktiles,E). This permutation
         # recovers physical order and creates no temporary scale tensor.
         physical = mma[..., expert].permute(2, 4, 0, 1, 3)
@@ -182,6 +192,13 @@ def _cutedsl_scale_images(layer, stem, expert):
     source = getattr(layer, f"{stem}_weight_scale")[
         expert
     ]  # config-access-exempt: Select the admitted gate/up or down scale parameter.
+    served_dtypes.append(str(source.dtype))
+    dtype_checks.append(
+        {
+            "served": served_dtypes,
+            "allowed_served": [str(torch.float8_e4m3fn), str(torch.uint8), str(torch.int8)],
+        }
+    )
     if not any(_same_image(source, image) for image in images):
         raise ValueError("NVFP4 source scale does not alias a prepared scale image")
     return images
@@ -300,10 +317,17 @@ def _weight_image(layer, stem, expert, layout):
         expert
     ]  # config-access-exempt: Select the admitted gate/up or down weight image.
     if layout.format == "bf16":
-        if image.dtype != torch.bfloat16 or image.ndim != 3 or image.shape[-1] != 64:
+        if image.element_size() != 2:
+            raise _DtypeMismatch(f"BF16 weight layout requires two-byte storage, served={image.dtype}")
+        if image.ndim != 3 or image.shape[-1] != 64:
             raise ValueError("unexpected TRTLLM BF16 blocked weight geometry")
-    elif image.ndim != 2 or image.element_size() != 1:
-        raise ValueError("unexpected FlashInfer packed weight geometry")
+    else:
+        if image.element_size() != 1:
+            raise _DtypeMismatch(
+                f"{layout.format} packed weight layout requires one-byte storage, served={image.dtype}"
+            )
+        if image.ndim != 2:
+            raise ValueError("unexpected FlashInfer packed weight geometry")
 
     if layout.backend == "trtllm":
         if layout.format == "bf16":
@@ -371,8 +395,8 @@ def _mapping(layout, projection):
 def expert_scale_target(layer, layout, local_expert, projection, canonical_shape):
     """Existing FP32 API storage for lossless block-128 UE8M0 expansion.
 
-    The binding prepares complete FP32 values separately; XOR byte views cannot
-    express the change of representation from an exponent byte to FP32.
+    Preparation translates the canonical exponent XOR to a physical FP32 XOR;
+    ordinary byte-layout views cannot express this change of representation.
     """
     if layout.format != "fp8-block128-ue8m0" or layout.backend != "trtllm":
         raise ValueError("FP32 scale target requires native block-128 UE8M0")
@@ -389,7 +413,9 @@ def expert_scale_target(layer, layout, local_expert, projection, canonical_shape
     target = getattr(layer, f"{stem}_weight_scale_inv")[
         local_expert
     ]  # config-access-exempt: Select the admitted block128 projection scale parameter.
-    if target.dtype != torch.float32 or target.ndim != 2:
+    if target.dtype != torch.float32:
+        raise _DtypeMismatch(f"block128 UE8M0 layout requires served=F32 (torch.float32), found {target.dtype}")
+    if target.ndim != 2:
         raise ValueError("unexpected block-128 FP32 scale image")
     rows, cols = canonical_shape
     if layout.gated and projection != "down":
@@ -435,15 +461,19 @@ def expert_slices(layer, layout, projection, suffix, shape):
     return slices
 
 
-def expert_destinations(layer, layout, local_expert, projection, suffix, canonical_shape, canonical_dtype):
+def expert_destinations(
+    layer, layout, local_expert, projection, suffix, canonical_shape, canonical_dtype, dtype_checks=None
+):
     """Return disjoint canonical rectangles and live bit-preserving views.
 
     Canonical shapes are the local logical projection, excluding padding.
-    Scalar calibration and lossless FP32 scale expansion use a separate complete
-    value refresh; they cannot be represented by XOR destinations.
+    Scalar calibration and FP32 scale expansion use separately prepared physical
+    XOR masks; they cannot use the canonical mask's byte-layout destinations.
     """
     if projection not in {"gate", "up", "down"}:
         raise ValueError(f"unknown expert projection: {projection}")
+    if dtype_checks is None:
+        dtype_checks = []
     if not layout.gated and projection == "gate":
         raise ValueError("non-gated experts have no gate projection")
     if (
@@ -458,13 +488,10 @@ def expert_destinations(layer, layout, local_expert, projection, suffix, canonic
     stem = "w2" if projection == "down" else "w13"
     if layout.backend == "cutedsl" and layout.format == "nvfp4" and suffix == "weight_scale":
         if canonical_dtype != "F8_E4M3":
-            raise ValueError("NVFP4 block scales require canonical F8_E4M3 bytes")
-        images = _cutedsl_scale_images(layer, stem, local_expert)
+            raise _DtypeMismatch(f"checkpoint={canonical_dtype}; NVFP4 block scales require canonical F8_E4M3 bytes")
+        images = _cutedsl_scale_images(layer, stem, local_expert, dtype_checks)
         primary = images[0]
-        if primary.ndim != 2 or any(
-            image.element_size() != 1 or not image.is_contiguous() or image.numel() != primary.numel()
-            for image in images
-        ):
+        if primary.ndim != 2 or any(not image.is_contiguous() or image.numel() != primary.numel() for image in images):
             raise ValueError("unexpected CuTe DSL block-scale padding geometry")
         padded_rows, padded_cols = primary.shape
         if padded_rows % 128 or padded_cols % 4 or cols > padded_cols:
@@ -480,6 +507,16 @@ def expert_destinations(layer, layout, local_expert, projection, suffix, canonic
         segments = _factored_segments(images, rows, cols, 1, scale_row_offset, 4, 1, 512)
     else:
         weight, physical_rows, physical_cols = _weight_image(layer, stem, local_expert, layout)
+        if suffix == "weight":
+            if layout.format == "bf16":
+                allowed = [torch.bfloat16]
+            elif layout.format in {"nvfp4", "mxfp4"}:
+                allowed = [torch.uint8, torch.int8]
+            elif layout.format in {"mxfp8", "fp8-block128-ue8m0"}:
+                allowed = [torch.float8_e4m3fn, torch.uint8, torch.int8]
+            else:
+                raise ValueError(f"unsupported FlashInfer weight format: {layout.format}")
+            dtype_checks.append({"served": [str(weight.dtype)], "allowed_served": [str(dtype) for dtype in allowed]})
         if not weight.is_contiguous():
             raise ValueError("unexpected noncontiguous FlashInfer physical storage")
         half_rows = physical_rows // (2 if layout.gated and projection != "down" else 1)
@@ -494,8 +531,12 @@ def expert_destinations(layer, layout, local_expert, projection, suffix, canonic
             return _row_map(row, group, half, shuffle)
 
         if layout.format == "fp8-block128-ue8m0":
-            if suffix != "weight" or canonical_dtype != "F8_E4M3":
+            if suffix != "weight":
                 raise ValueError("block-128 scales require complete-value expansion")
+            if canonical_dtype != "F8_E4M3":
+                raise _DtypeMismatch(
+                    f"checkpoint={canonical_dtype}; block128 weights require canonical F8_E4M3, served={weight.dtype}"
+                )
             start = half_rows if layout.gated and projection == "up" else 0
             if cols > physical_cols:
                 raise ValueError("canonical weight exceeds FlashInfer column storage")
@@ -515,7 +556,9 @@ def expert_destinations(layer, layout, local_expert, projection, suffix, canonic
             else:
                 raise ValueError(f"unsupported FlashInfer weight format: {layout.format}")
             if canonical_dtype != dtype:
-                raise ValueError(f"{layout.format} weights require canonical {dtype}")
+                raise _DtypeMismatch(
+                    f"checkpoint={canonical_dtype}; {layout.format} weights require canonical {dtype}, served={weight.dtype}"
+                )
             element_size = 2 if layout.format == "bf16" else 1
             if cols * element_size > physical_cols:
                 raise ValueError("canonical weight exceeds FlashInfer column storage")
@@ -577,7 +620,9 @@ def expert_destinations(layer, layout, local_expert, projection, suffix, canonic
             else:
                 raise ValueError(f"unsupported FlashInfer block-scale format: {layout.format}")
             if canonical_dtype != dtype:
-                raise ValueError(f"{layout.format} block scales require canonical {dtype}")
+                raise _DtypeMismatch(
+                    f"checkpoint={canonical_dtype}; {layout.format} block scales require canonical {dtype}"
+                )
             if physical_cols % scale_divisor:
                 raise ValueError("weight columns do not cover complete scale groups")
             scale_cols = physical_cols // scale_divisor
@@ -585,12 +630,29 @@ def expert_destinations(layer, layout, local_expert, projection, suffix, canonic
                 raise ValueError("canonical scales exceed FlashInfer column storage")
             images = [_scale_parameter(layer, stem, layout)[local_expert]]
             if layout.backend == "megamoe" and layout.format == "mxfp4":
+                allowed = [torch.int32]
+            elif layout.format == "nvfp4":
+                allowed = [torch.float8_e4m3fn, torch.uint8, torch.int8]
+            elif layout.format in {"mxfp4", "mxfp8"}:
+                allowed = [torch.uint8, torch.int8, torch.float8_e8m0fnu]
+            else:
+                raise ValueError(f"unsupported FlashInfer scale format: {layout.format}")
+            dtype_checks.append(
+                {
+                    "served": [str(image.dtype) for image in images],
+                    "allowed_served": [str(dtype) for dtype in allowed],
+                }
+            )
+            if layout.backend == "megamoe" and layout.format == "mxfp4":
                 # DeepGEMM packs four UE8M0 bytes per int32 in MN-major storage;
                 # MegaMoE then transposes each [4,32] row group for UTCCP.
                 scale = images[0]
+                if scale.dtype != torch.int32:
+                    raise _DtypeMismatch(
+                        f"checkpoint={canonical_dtype}; packed UE8M0 scale layout requires served=torch.int32, found {scale.dtype}"
+                    )
                 if (
-                    scale.dtype != torch.int32
-                    or scale.ndim != 2
+                    scale.ndim != 2
                     or tuple(scale.shape) != (physical_rows, (scale_cols + 3) // 4)
                     or scale.stride() != (1, physical_rows)
                     or physical_rows % 128
@@ -617,11 +679,11 @@ def expert_destinations(layer, layout, local_expert, projection, suffix, canonic
                 padded_rows = (physical_rows + 127) // 128 * 128
                 padded_cols = (scale_cols + 3) // 4 * 4
                 for image in images:
-                    if (
-                        image.element_size() != 1
-                        or not image.is_contiguous()
-                        or image.numel() != padded_rows * padded_cols
-                    ):
+                    if image.element_size() != 1:
+                        raise _DtypeMismatch(
+                            f"checkpoint={canonical_dtype}; {layout.format} block scales require one-byte storage, served={image.dtype}"
+                        )
+                    if not image.is_contiguous() or image.numel() != padded_rows * padded_cols:
                         raise ValueError("unexpected FlashInfer block-scale padding geometry")
 
                 def row_offset(row):

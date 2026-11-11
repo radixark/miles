@@ -318,7 +318,8 @@ def owner(groups):
     value.apply_host_metadata = torch.empty(size, dtype=torch.int64)
     value.apply_metadata = torch.empty(size, dtype=torch.int64)
     value.error = torch.zeros(1, dtype=torch.int32)
-    value.batches, value.status_checks, value.raw_copies = [], [], {}
+    value.batches, value.status_checks = [], []
+    value.raw_apply = value.raw_apply_inputs = value.raw_apply_group = None
     value._prepare_apply_bindings()
     return value
 

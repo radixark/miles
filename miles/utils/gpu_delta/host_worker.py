@@ -84,6 +84,30 @@ def configured_cpu_workers():
     return value
 
 
+def validate_dtype_records(records):
+    """Admit full-inventory logical dtypes without importing model or CUDA code."""
+    errors = list(records["errors"])
+    for row in records["checks"]:
+        if "allowed_served" in row:
+            allowed = set(row["allowed_served"])
+        else:
+            allowed = {row["dtype"]}
+            if row["dtype"] == "BF16" and len(row["shape"]) <= 1:
+                allowed.add("F32")
+        if any(dtype not in allowed for dtype in row["served"]):
+            errors.append(
+                f"{row['name']}: checkpoint={row['checkpoint_dtype']}, canonical={row['dtype']}, "
+                f"served={row['served']}, allowed_served={sorted(allowed)}, shape={row['shape']}"
+            )
+    if errors:
+        raise ValueError(
+            "GPU-delta XOR apply/cancel requires matching checkpoint and served dtypes "
+            "or an explicit lossless representation (including BF16->FP32 scalar/vector widening). "
+            f"Found {len(errors)} mismatched tensors while planning the full checkpoint "
+            "(including unchanged tensors); no delta has been applied:\n" + "\n".join(errors)
+        )
+
+
 def copy_bytes(destination, source):
     """Copy between retained byte buffers without holding the GIL for large spans."""
     if len(source) < 64 << 10:
@@ -434,9 +458,11 @@ def _write_record(directory, name, record):
 class HostBuilder:
     """Persistent CPU state; no device, model, CUDA registration or rank objects."""
 
-    def __init__(self, directory, workers, backends):
+    def __init__(self, directory, workers, backends, owner):
         self.directory = Path(directory)
         self.backends = backends
+        self.owner = owner
+        self._dtypes_admitted = False
         self._shared_order = self._raw = None
         self._index = None
         self._metadata_mapping = self._metadata_capacity = None
@@ -449,6 +475,32 @@ class HostBuilder:
             "start_ticks": int(stat[stat.rfind(")") + 2 :].split()[19]),
             "workers": workers,
         }
+
+    def _admit_dtypes(self, namespace):
+        if self._dtypes_admitted:
+            return
+        participants = [
+            identity
+            for identity in namespace["participants"]
+            if identity["engine_id"] == self.owner["engine_id"]
+            and identity["host_cache_id"] == self.owner["host_cache_id"]
+        ]
+        if not participants:
+            raise ValueError("GPU-delta dtype admission requires the original local participants")
+        combined = {"checks": [], "errors": []}
+        for identity in participants:
+            path = self.directory.parent / f"dtypes-{identity['rank_id']}.json"
+            try:
+                record = orjson.loads(path.read_bytes())
+            except FileNotFoundError as error:
+                raise ValueError(f"GPU-delta dtype metadata missing for rank {identity['rank_id']}") from error
+            if record["identity"] != identity:
+                raise ValueError(f"GPU-delta dtype metadata identity differs for rank {identity['rank_id']}")
+            prefix = f"rank {identity['rank_id']}: "
+            combined["checks"].extend(row | {"name": prefix + row["name"]} for row in record["checks"])
+            combined["errors"].extend(prefix + error for error in record["errors"])
+        validate_dtype_records(combined)
+        self._dtypes_admitted = True
 
     def prepare(self, expected, namespace):
         token = publication_token(expected)
@@ -463,6 +515,11 @@ class HostBuilder:
             previous = self._index
             if previous and previous["namespace"] != namespace:
                 raise ValueError("encoded cache namespace differs")
+            try:
+                self._admit_dtypes(namespace)
+            except ValueError as error:
+                _write_record(self.directory, "state", {"token": token, "state": "FAILED", "error": str(error)})
+                raise
             if previous and previous["token"] == token:
                 if state is None or state["state"] != "READY" or state["token"] != token:
                     raise ValueError("encoded publication is failed or already released")
@@ -473,7 +530,6 @@ class HostBuilder:
                     state is None
                     or state["state"] != "REUSABLE"
                     or state["token"] != previous["token"]
-                    or previous["publication"]["target_version"] != expected["base_version"]
                     or previous["publication"]["plan_digest"] != expected["plan_digest"]
                 ):
                     raise ValueError("encoded cache requires prior engine APPLIED release before overwrite")
@@ -539,7 +595,7 @@ class HostBuilder:
             if catalog is None:
                 catalog = orjson.loads((self.directory / "catalog.json").read_bytes())
             entries = catalog["tensors"]
-            self._raw = np.array([entry["encoding"] == "raw_bytes" for entry in entries], dtype=bool)
+            self._raw = np.array([entry["encoding"] == "xor_raw_bytes" for entry in entries], dtype=bool)
             self._shared_order = np.array(
                 sorted(
                     range(len(entries)),

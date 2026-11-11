@@ -304,12 +304,9 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
         hf_dir: str | None = None,
         export_time_seconds: float | None = None,
         require_marker: bool = True,
-        weight_version: str | None = None,
     ) -> None:
-        if weight_version is not None or self.args.eval_uses_snapshots:
-            return await self._eval_checkpoint(
-                rollout_id, hf_dir, export_time_seconds, require_marker, weight_version=weight_version
-            )
+        if self.args.eval_uses_snapshots:
+            return await self._eval_checkpoint(rollout_id, hf_dir, export_time_seconds, require_marker)
 
         if self.args.debug_train_only:
             return
@@ -340,30 +337,18 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
         hf_dir: str | None,
         export_time_seconds: float | None,
         require_marker: bool,
-        weight_version: str | None = None,
     ):
-        """Evaluate a snapshot or an already-synchronized fleet version.
-
-        Log at ``rollout_id``; the lock serializes pins against a single backend.
-        A live version never loads or inspects a checkpoint. The caller must keep
-        that version stable until evaluation finishes.
-        """
-        if weight_version is None:
-            assert hf_dir is not None, "checkpoint eval requires an HF snapshot dir"
-        elif self._eval_fleet is None:
-            raise ValueError("A live eval version requires a dedicated synchronized fleet")
+        """Evaluate an immutable snapshot, serializing pins against one backend."""
+        assert hf_dir is not None, "checkpoint eval requires an HF snapshot dir"
         start_time = time.time()
         async with self._eval_lock:
-            if weight_version is None and require_marker and not is_complete_hf_export(hf_dir):
+            if require_marker and not is_complete_hf_export(hf_dir):
                 logger.warning(f"Eval snapshot {hf_dir} missing or incomplete, skipping eval {rollout_id}")
                 return self.report_eval_skip(rollout_id, "ckpt_missing")
 
-            version = str(rollout_id) if weight_version is None else weight_version
+            version = str(rollout_id)
             try:
-                if weight_version is not None:
-                    state = await self._eval_fleet.current(version)
-                else:
-                    state = await self._eval_fleet.pin(hf_dir, version) if self._eval_fleet else None
+                state = await self._eval_fleet.pin(hf_dir, version) if self._eval_fleet else None
                 eval_input = RolloutFnEvalInput(
                     rollout_id=rollout_id, weight_version=version, hf_dir=hf_dir, generate_state=state
                 )

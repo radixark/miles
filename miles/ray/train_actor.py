@@ -319,6 +319,10 @@ class TrainRayActor(NodeProbeMixin):
         """Export current weights as an HF checkpoint to ``path`` (eval snapshots)."""
         raise NotImplementedError(f"{type(self).__name__} does not support HF export")
 
+    def export_eval_snapshot(self, rollout_id: int, path: str) -> None:
+        """Export a completed snapshot for the configured eval backend."""
+        self.export_hf(rollout_id, path)
+
     @abc.abstractmethod
     def update_weights(
         self, info: UpdatableEngines, debug_weight_update_id: str, rollout_id: int | None

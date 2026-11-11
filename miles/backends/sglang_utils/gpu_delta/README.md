@@ -1,7 +1,8 @@
 # GPU delta receiver
 
 The experimental receiver applies canonical XOR deltas directly to existing
-execution-layout buffers. Small complete-value targets use overwrite semantics.
+execution-layout buffers, including scalars and vectors. Derived calibration
+buffers are recomputed from the updated scalar values.
 It does not requantize weights, change checkpoint loading, replace the ordinary
 allocator, or alter the independent disk update API.
 
@@ -40,8 +41,8 @@ catalog once, checks that all its mutable tensors are present, and reuses the
 binding table on later updates.
 
 `models.py` maps the DeepSeek MLA/DSA family, including GLM's shared runtime
-implementation: canonical name mutation, unequal Q/KV-A fusion, indexer fusion
-and BF16-to-FP32 norm replacement, MLA consumer views and static draft exclusions.
+implementation: canonical name mutation, unequal Q/KV-A fusion, indexer fusion,
+MLA consumer views and static draft exclusions.
 Bundled MTP layer weights and activation calibration stay static; its shared embedding/head buffers follow
 the target. A new model family supplies startup bindings and derived views through
 the same mapping interface. GDN/KDA and other model mappings are not implemented.
@@ -118,7 +119,7 @@ tokenizer owns the following internal phases:
 
 1. **Prepare:** the CPU process authenticates the manifest and builds shared
    payloads and numeric metadata. Rank-local background work qualifies the canonical
-   plan and prepares small GPU metadata, raw targets and derived calibration.
+   plan and prepares small GPU metadata, uncompressed XOR masks and derived calibration.
    It takes no model-update writer
    lock and neither writes model/KV storage nor pauses generation.
 2. **Apply:** close generation admission, pause scheduling, fence readers, retract
@@ -129,6 +130,14 @@ tokenizer owns the following internal phases:
    sends the internal resume message. SGLang records the model version and reopens
    generation. Miles advances its baseline only after all engines finish.
    Independent engines need not pause together.
+
+Dedicated eval uses the same API, prepare/apply/resume phases and single host
+arena. Miles owns the sequence: apply the previous HF-relative publication again
+to cancel it, then apply the new publication. Its eval lock excludes generation
+across both calls. Each request uses a fresh session ID; a failed or uncertain
+operation requires receiver replacement. The receiver does not interpret eval
+or rollout modes. Snapshot scheduling and shared publication storage are described in the
+[eval contract](../../../../tests/manual/gpu_delta/README.md#dedicated-eval-snapshots).
 
 Preparation failure aborts that engine's preparation while old-version serving
 continues. Failed or aborted delta sessions require restart before another update.
@@ -184,8 +193,22 @@ LZ4/Bitcomp has an empty outer `frames` list and equal encoded/decoded extents;
 workers copy the inner compressed bytes. DE reads its host arena directly;
 CUDA decoders receive batch-sized H2D copies through two GPU slots.
 There is no full-publication HBM copy.
-Unchanged frames are omitted. Scalars/vectors use `raw_bytes`: complete target
-values, no XOR/compression, and no payload when unchanged.
+Unchanged frames are omitted. Scalars/vectors and compact UE8M0 scales use
+`xor_raw_bytes`: uncompressed canonical XOR masks, omitted when unchanged.
+Preparation computes complete scalar targets for derived calibration without
+changing live weights. Discovery records dtype metadata for the full local
+checkpoint inventory, including unchanged tensors. The engine-host CPU prepare
+process checks all ranks' records once and reports incompatible dtypes together
+before processing a payload. Packed-layout safety checks remain part of binding
+construction. Matrices require matching logical dtypes; no matrix values are
+scanned for cast compatibility. BF16 scalars/vectors may use FP32 storage:
+the dtype policy is independent of model or parameter name. It relies on
+served values remaining lossless checkpoint images and masks using checkpoint
+dtypes; arbitrary edits to served FP32 buffers are outside this contract.
+Preparation performs no live-value validation or host synchronization for dtype
+admission. BF16 widening and the explicit UE8M0-to-FP32 scale representation
+produce physical XOR masks before pause; apply kernels still consume only bytes
+and runtime layout metadata. Downcasts and other numerical casts are not supported.
 
 One engine-host creator reads and optionally SHA256-checks owner files in parallel
 into retained tmpfs slices. Source identity/extent is checked across each read;
@@ -239,7 +262,7 @@ views and canonical offsets are cached, while frame lengths, arena offsets and
 omitted ranges are rebuilt from each publication.
 
 Preparation builds one numeric frame table, validates workspace/output geometry,
-uploads small metadata/raw targets and prepares derived values. It loads the three
+uploads small metadata/XOR masks and prepares derived values. It loads the three
 fixed Triton families and caches occupancy per module/device, then prebinds launch
 closures. No model geometry enters compilation-cache keys. The families cover
 packed contiguous/two-axis word access, contiguous-source word-affine targets and
@@ -251,7 +274,7 @@ After the reader fence, exactly two largest-batch decoded HBM slots are allocate
 when compressed work exists. One DE stream shares temporary workspace; each slot
 has its own status/size row. One apply stream owns the sticky error gate. DE slot
 `i % 2` is reused only after its prior apply completes. DE0 starts first, overlapping
-small raw-target copies. Apply i is queued before host submission of DE i+1 because
+small uncompressed XOR updates. Apply i is queued before host submission of DE i+1 because
 nvCOMP's Async call can wait for prior work on its calling stream.
 
 The CUDA path uses one compute stream for decode, status checks and Triton apply.
@@ -272,9 +295,11 @@ attempts to drain both streams. Foreign tensor aliases retain allocations and re
 producer/consumer streams are fenced before free in their original CUDA context.
 The ordinary Torch allocator and its settings remain unchanged.
 
-Raw targets are packed once into an aligned pinned arena and uploaded during
-prepare, including batched lossless UE8M0 expansion and BF16 norm conversion where
-admitted. Dtype-grouped copies update existing buffers during pause. The canonical
+Small XOR masks are packed once into an aligned pinned arena and uploaded during
+prepare, including lossless UE8M0 expansion and BF16 widening where admitted.
+BF16 XOR masks widen by shifting their bits into the upper FP32 half, with no
+live-value read unless derived calibration needs the predicted value.
+Prepared XOR kernels update existing buffers during pause. The canonical
 plan digest is qualified once, but fresh frames and native decode status are
 validated every update. Before apply, identity checks cover every live parameter
 slot and consumer object, with tensor geometry deduplicated at admission. Pointer
@@ -364,7 +389,7 @@ CPU slab construction and launch prebinding are outside
   full-image wrapped work only on the owner and zero on followers.
   Plain LZ4/Bitcomp uses `host_rank_encoded_copy_s` and
   `host_rank_encoded_copy_{worker_sum_s,bytes,tensors}` instead; copy counters
-  exclude raw targets. Inactive codec counters are zero.
+  exclude uncompressed XOR masks. Inactive codec counters are zero.
 - `host_rank_{arena_bytes,capacity_bytes,capacity_generation,mapping_reused}` and
   `host_rank_allocation_{s,calls,bytes}` describe local mappings and required bytes.
   CUDA ranks share physical capacity; its allocation calls count registrations.

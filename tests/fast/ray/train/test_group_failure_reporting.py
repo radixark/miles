@@ -325,12 +325,13 @@ class TestTrainWithoutAnyCell:
 
 
 class TestExportHf:
-    async def test_export_stops_once_no_cell_is_left_to_take_it(self):
+    @pytest.mark.parametrize("method", ["export_hf", "export_eval_snapshot"])
+    async def test_export_stops_once_no_cell_is_left_to_take_it(self, method):
         """Retrying an export forever would hide the crash behind a run that never finishes the checkpoint."""
-        group = _make_failing_controller("export_hf")
+        group = _make_failing_controller(method)
 
         with pytest.raises(NonRetryableError):
-            await group.export_hf(3, "/ckpt/hf-3")
+            await getattr(group, method)(3, "/ckpt/hf-3")
 
 
 class _ActivenessRecordingCell:

@@ -325,17 +325,17 @@ def _assert_gpu_delta_weights_changed(args, version_dir, _rollout_engines):
         expected_codec = initial_codec if version <= startup_publications else ordinary_codec
         assert manifest["codec"] == expected_codec, "E2E publication codec differs from configured phase codec"
         raw_tensors = [tensor for tensor in manifest["tensors"] if len(tensor["shape"]) <= 1]
-        assert raw_tensors, "E2E must exercise direct scalar/vector targets"
+        assert raw_tensors, "E2E must exercise uncompressed scalar/vector XOR masks"
         for tensor in manifest["tensors"]:
             direct = len(tensor["shape"]) <= 1
             assert tensor["encoding"] == (
-                "raw_bytes" if direct else "xor_bytes"
+                "xor_raw_bytes" if direct else "xor_bytes"
             ), "E2E tensor encoding differs from its shape"
             if direct:
                 assert not tensor["frames"] and "outer" not in tensor
                 assert tensor.get("raw", {}).get("encoded_bytes", 0) == (
                     tensor["nbytes"] if tensor["changed_bytes"] else 0
-                ), "E2E direct target is incomplete"
+                ), "E2E uncompressed scalar/vector XOR mask is incomplete"
         if version > startup_publications:
             changed_bytes.append(sum(tensor["changed_bytes"] for tensor in manifest["tensors"]))
     assert any(count > 0 for count in changed_bytes), (

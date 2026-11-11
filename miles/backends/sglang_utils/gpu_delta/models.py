@@ -18,10 +18,7 @@ from miles.backends.sglang_utils.gpu_delta.bindings import (
     ConsumerSnapshot,
     DerivedImage,
     ParameterBindings,
-    TensorBinding,
     _byte_view,
-    _full_slices,
-    dense_target,
 )
 from miles.backends.sglang_utils.gpu_delta.flashinfer import DestinationSegment
 
@@ -53,12 +50,7 @@ def _with_replicated_projection(binding, target, rows_per_head, key_rows=None):
             (0, binding.shape[1]),
         )
         expected = (heads, key_rows, binding.shape[1])
-    if (
-        target.dtype != binding.torch_dtype
-        or tuple(target.shape) != expected
-        or start + span > binding.shape[0]
-        or binding.shape[0] % rows_per_head
-    ):
+    if tuple(target.shape) != expected or start + span > binding.shape[0] or binding.shape[0] % rows_per_head:
         raise ValueError("unsupported DCP replicated projection geometry")
     return replace(
         binding,
@@ -69,27 +61,6 @@ def _with_replicated_projection(binding, target, rows_per_head, key_rows=None):
             DestinationSegment(tuple(tuple(axis) for axis in binding.slices), binding.destinations),
             DestinationSegment(slices, (_byte_view(target),), source_shape),
         ),
-    )
-
-
-def _indexer_norm_binding(name, meta, target):
-    """Match the CUDA indexer's ordinary BF16-checkpoint -> FP32 load.
-
-    A numeric cast is not a byte permutation. These small parameters receive
-    complete canonical target values, then use the normal loader's conversion
-    while retaining the live FP32 parameter and graph address.
-    """
-    # The mapping selects this helper only for BF16 -> FP32 indexer norms.
-    if tuple(meta["shape"]) != tuple(target.shape):
-        raise ValueError(f"unsupported canonical indexer norm: {name}")
-
-    return TensorBinding(
-        name,
-        meta["dtype"],
-        tuple(meta["shape"]),
-        _full_slices(meta["shape"]),
-        (target,),
-        encoding="raw_bytes",
     )
 
 
@@ -155,18 +126,6 @@ class DeepSeekMlaMapping:
                         target = target[-rows:] if at_end else target[:rows]
                         target_name = candidate
                     break
-        if (
-            target is not None
-            and target.dtype == torch.float32
-            and meta["dtype"] == "BF16"
-            and re.fullmatch(
-                r"model\.layers\.\d+\.self_attn\.indexer\.k_norm\.(weight|bias)",
-                name,
-            )
-        ):
-            module = self.parameters.modules[target_name.rsplit(".", 1)[0]]
-            target, _ = dense_target(name, meta, module, target, _full_slices(meta["shape"]))
-            return _indexer_norm_binding(name, meta, target)
         binding = self.parameters.bind(name, meta, target_name, target)
         if name.endswith((".q_b_proj.weight", ".q_proj.weight")):
             prefix = target_name.rsplit(".", 2)[0]
@@ -179,6 +138,17 @@ class DeepSeekMlaMapping:
             prefix = target_name.rsplit(".kv_b_proj.weight", 1)[0]
             attn = self.parameters.modules[prefix]
             self.mla_layers[prefix] = attn
+            self.consumers.append(
+                ConsumerSnapshot(
+                    lambda attn=attn: (
+                        attn.w_kc,
+                        attn.w_vc,
+                        attn.w_kc_qrep,
+                        attn.q_b_proj_qrep_weight,
+                        attn.q_b_proj_qrep,
+                    )
+                )
+            )
             if attn.w_kc_qrep is not None:
                 binding = _with_replicated_projection(
                     binding,
@@ -191,17 +161,6 @@ class DeepSeekMlaMapping:
     def finish(self):
         for prefix, attn in self.mla_layers.items():
             self._add_derived(prefix, attn)
-            self.consumers.append(
-                ConsumerSnapshot(
-                    lambda attn=attn: (
-                        attn.w_kc,
-                        attn.w_vc,
-                        attn.w_kc_qrep,
-                        attn.q_b_proj_qrep_weight,
-                        attn.q_b_proj_qrep,
-                    )
-                )
-            )
 
     def _add_derived(self, prefix, attn):
         if attn.kv_b_proj.weight.dtype != torch.bfloat16:

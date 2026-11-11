@@ -18,6 +18,9 @@ def validate_gpu_delta_args(args):
     """Validate the effective launch configuration after custom overrides."""
     if args.update_weight_transfer_mode != "gpu-delta":
         return
+    assert not (
+        args.debug_train_only and args.eval_num_gpus > 0
+    ), "Dedicated GPU-delta eval requires a live trainer snapshot publisher"
     assert args.update_weight_delta_encoding == "xor", "GPU delta supports only --update-weight-delta-encoding xor"
     assert not args.colocate, "GPU delta requires separate training and rollout GPUs"
     assert "train" not in args.ft_components, "GPU delta requires job/checkpoint restart after sender baseline loss"

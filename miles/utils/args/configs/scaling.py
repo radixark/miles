@@ -23,8 +23,8 @@ class ScalingConfig(BaseConfig):
         Arg(
             help=(
                 "Number of GPUs for a dedicated eval engine pool. When > 0, eval runs on "
-                "its own engines behind its own router, using an independent GPU-delta "
-                "receiver pool or loading HF checkpoint snapshots for other transfer modes. "
+                "its own engines behind its own router, loading immutable eval snapshots. "
+                "GPU-delta uses HF-base-relative publications; other modes use HF checkpoints. "
                 "0 keeps shared-engine eval. The dedicated engines' "
                 "settings inherit every --sglang-* value; override individually with "
                 "--eval-sglang-* (e.g. --eval-sglang-mem-fraction-static 0.9)."

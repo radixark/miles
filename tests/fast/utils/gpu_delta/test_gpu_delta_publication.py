@@ -69,11 +69,11 @@ def test_framed_publication_preserves_payload_ranges_and_final_file_hash(tmp_pat
         writer = _writer(directory, codec=codec)
         # Changing the environment after construction must not change this file's policy.
         monkeypatch.setenv("GPU_DELTA_SKIP_PAYLOAD_HASH", "0" if skip_hash else "1")
-        writer.add_raw_tensor("raw_prefix", b"\0\0\0", b"abc", "U8", [3])
+        writer.add_raw_xor_tensor("raw_prefix", b"abc", "U8", [3])
         entry = _add(writer, "w")
         for name, shape in (("unchanged", [1, 2 * publication.FRAME_BYTES + 139]), ("empty", [1, 0])):
             writer.add_encoded_tensor(name, [], b"", None, changed_bytes=0, dtype="U8", shape=shape)
-        writer.add_raw_tensor("raw_tail", b"\0\0\0\0", b"1234", "F32", [])
+        writer.add_raw_xor_tensor("raw_tail", b"1234", "F32", [])
         descriptor = writer.finish()
         manifest_bytes = (directory / "manifest.json").read_bytes()
         manifest = publication.read_publication_metadata(directory / "manifest.json")
@@ -145,7 +145,7 @@ def test_unicode_manifest_authenticates_written_bytes_without_changing_plan_json
     expected_plan_bytes = b'{"name":"\\u5c42.\\u00e9.weight_scale"}'
     assert publication.canonical_json(plan) == expected_plan_bytes
     writer = _writer(tmp_path)
-    writer.add_raw_tensor(name, b"\0\0\0\0", b"1234", dtype="F32", shape=[])
+    writer.add_raw_xor_tensor(name, b"1234", dtype="F32", shape=[])
     descriptor = writer.finish()
     manifest_bytes = (tmp_path / "manifest.json").read_bytes()
     manifest = publication.read_publication_metadata(tmp_path / "manifest.json")
@@ -158,7 +158,7 @@ def test_unicode_manifest_authenticates_written_bytes_without_changing_plan_json
 @pytest.mark.parametrize("conflict", ["tensor", "metadata", "file", "checksum-policy"])
 def test_conflicting_owner_shards_cannot_publish(tmp_path, conflict):
     writer = _writer(tmp_path)
-    writer.add_raw_tensor("scale", b"\0\0\0\0", b"1234", dtype="F32", shape=[])
+    writer.add_raw_xor_tensor("scale", b"1234", dtype="F32", shape=[])
     shard = writer.finish_shard()
     duplicate = copy.deepcopy(shard)
     if conflict == "metadata":
@@ -174,19 +174,24 @@ def test_conflicting_owner_shards_cannot_publish(tmp_path, conflict):
 
 
 @pytest.mark.parametrize("dtype,shape,size", [("F32", [], 4), ("BF16", [6144], 12288), ("U8", [0], 0)])
-def test_raw_targets_bypass_compression_and_omit_unchanged(tmp_path, dtype, shape, size):
+def test_raw_masks_bypass_compression_omit_unchanged_and_cancel(tmp_path, dtype, shape, size):
     writer = _writer(tmp_path)
-    previous = np.zeros(size, np.uint8)
+    previous = np.full(size, 3, np.uint8)
     current = np.full(size, 7, np.uint8)
-    changed = writer.add_raw_tensor("changed", previous, current, dtype=dtype, shape=shape)
-    same = writer.add_raw_tensor("same", current, current, dtype=dtype, shape=shape)
+    mask = np.bitwise_xor(previous, current)
+    changed = writer.add_raw_xor_tensor("changed", mask, dtype=dtype, shape=shape)
+    same = writer.add_raw_xor_tensor("same", np.zeros_like(mask), dtype=dtype, shape=shape)
     writer.finish()
     assert changed["frames"] == same["frames"] == []
     assert "outer" not in changed and "raw" not in same
     if size:
         raw = changed["raw"]
         blob = (tmp_path / raw["file"]).read_bytes()
-        assert blob[raw["encoded_offset"] : raw["encoded_offset"] + raw["encoded_bytes"]] == current.tobytes()
+        stored = blob[raw["encoded_offset"] : raw["encoded_offset"] + raw["encoded_bytes"]]
+        assert stored == mask.tobytes()
+        applied = previous ^ np.frombuffer(stored, dtype=np.uint8)
+        np.testing.assert_array_equal(applied, current)
+        np.testing.assert_array_equal(applied ^ np.frombuffer(stored, dtype=np.uint8), previous)
     assert writer.payload_metrics["matrix_inner_arena_bytes"] == writer.payload_metrics["matrix_payload_bytes"] == 0
 
 
@@ -240,12 +245,12 @@ def test_checkpoint_prior_is_receiver_independent_and_keeps_frozen_tensors_out(t
         "name": stem + ".weight_scale_inv",
         "dtype": "U8",
         "shape": [1, 1],
-        "encoding": "raw_bytes",
+        "encoding": "xor_raw_bytes",
         "format": "fp8-block128-ue8m0",
         "checkpoint_dtype": "F32",
     }
     assert by_name[stem + ".weight"]["encoding"] == "xor_bytes"
-    assert by_name["model.norm.weight"]["encoding"] == "raw_bytes"
+    assert by_name["model.norm.weight"]["encoding"] == "xor_raw_bytes"
     assert all("views" not in spec for spec in plan)
     assert publication.plan_digest(plan) == publication.plan_digest(plan[::-1])
     reader = publication.make_checkpoint_reader(tmp_path)

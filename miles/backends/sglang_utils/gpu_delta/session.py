@@ -107,10 +107,12 @@ class DeltaSession:
             if previous is not None:
                 if previous.state not in {"RESUMED", "CLEARED"}:
                     raise ValueError("unsettled delta session requires restart")
+                if request["session_id"] == previous.request["session_id"]:
+                    raise ValueError("completed delta session must not be replayed")
                 if request["stream_id"] != previous.request["stream_id"]:
                     raise ValueError("receiver incarnation belongs to another delta stream")
-            if request["base_version"] != self.version or request["target_version"] <= self.version:
-                raise ValueError("delta base version differs from committed local version")
+            # Miles owns mask ordering, including explicit cancellation of a
+            # successfully applied mask. Descriptor versions are provenance.
             session = self._update = _Update(request=request)
             released = previous.release_future if previous is not None else None
             return self._executor.submit(self._prepare, session, released)

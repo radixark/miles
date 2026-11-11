@@ -43,12 +43,7 @@ from miles.utils.audit_utils.config_snapshot.generated_value_registry import gen
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
 from miles.utils.environ import use_legacy_rollout_v1
-from miles.utils.eval_config import (
-    EvalDatasetConfig,
-    build_eval_dataset_configs,
-    ensure_dataset_list,
-    uses_synced_eval,
-)
+from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
 from miles.utils.file_arg_utils import resolve_file_arg
 from miles.utils.function_registry import load_function
 from miles.utils.gpu_delta.admission import validate_gpu_delta_args
@@ -1753,13 +1748,10 @@ def miles_validate_args(args):
             not use_legacy_rollout_v1()
         ), "Snapshot eval requires the class-based rollout API; unset MILES_USE_LEGACY_ROLLOUT_V1"
         assert args.eval_interval is not None, "Snapshot eval requires --eval-interval."
-        if uses_synced_eval(args.update_weight_transfer_mode, args.eval_num_gpus > 0):
-            assert not args.debug_train_only, "Synchronized eval requires live trainer weight synchronization."
-        else:
-            assert args.eval_hf_dir is not None or args.save_hf is not None, (
-                "Snapshot eval requires a snapshot source: set --eval-hf-dir (staging exports) "
-                "or --save-hf (reuse periodic HF checkpoints)."
-            )
+        assert args.eval_hf_dir is not None or args.save_hf is not None, (
+            "Snapshot eval requires a snapshot source: set --eval-hf-dir (staging exports) "
+            "or --save-hf (reuse periodic HF checkpoints)."
+        )
         assert not args.colocate, "Snapshot eval is not supported with --colocate."
         assert not args.debug_rollout_only, "Snapshot eval is not supported with debug_rollout_only."
         assert (
@@ -1770,7 +1762,7 @@ def miles_validate_args(args):
                 "Snapshot eval during --debug-train-only requires an explicit --eval-function-path; "
                 "the training rollout function cannot evaluate snapshots."
             )
-        if args.eval_hf_dir is None and not uses_synced_eval(args.update_weight_transfer_mode, args.eval_num_gpus > 0):
+        if args.eval_hf_dir is None:
             if not any(field == "rollout_id" for _, field, _, _ in Formatter().parse(args.save_hf)):
                 args.save_hf = os.path.join(args.save_hf, "step_{rollout_id}")
                 logger.info(f"Using per-step checkpoints for snapshot eval: --save-hf={args.save_hf}")
