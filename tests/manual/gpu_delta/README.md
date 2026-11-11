@@ -2,7 +2,8 @@
 
 The experimental `--update-weight-transfer-mode gpu-delta` uses SGLang's
 `update_weights_from_gpu_delta` endpoint for both rolling updates and recovery.
-SGLang owns preparation, application and resume within each engine. `disk-delta`
+Miles' SGLang adapter owns preparation, application and resume within each engine.
+`disk-delta`
 remains a separate checkpoint handoff path. GPU-delta supports `snappy-zstd`,
 `lz4-zstd`, `lz4`, `bitcomp-zstd` (default) and `bitcomp`, with
 `--update-weight-delta-encoding xor`. Bitcomp always uses the sparse algorithm,
@@ -12,15 +13,19 @@ carry complete target bytes; the `overwrite` transport option belongs to disk-de
 See [GPU-accelerated weight teleportation](https://humansand.ai/blog/gpu-accelerated-weight-teleportation)
 for the design and motivation.
 
-Backend-neutral admission, encoding, cached recovery payloads and publication
-live in `miles.utils.gpu_delta`. Training protocol, session, and metrics live in
+`miles.utils.gpu_delta` owns canonical publication/encoding and reusable CUDA
+apply, codec, memory and host-staging primitives. The serving adapter lives in
+`miles.backends.sglang_utils.gpu_delta`; see its
+[receiver contract](../../../miles/backends/sglang_utils/gpu_delta/README.md) for
+layout admission, control APIs, cache lifecycle and decoder scheduling. SGLang
+retains optional registration hooks, so GPU-delta engines need the matching Miles
+package available in every serving process.
+
+Training protocol, session and metrics live in
 `miles.backends.training_utils.weight_update.protocols.gpu_delta`; Megatron export
 ownership stays in `miles.backends.megatron_utils.update_weight.gpu_delta`.
-Fast tests use matching `gpu_delta/` subdirectories: utility tests cover admission
-and publication; training tests cover protocol lifecycle, session, metrics and
-eval synchronization. The manual encoder suite includes cached recovery coverage;
-the separate nvCOMP entrypoint checks native codec conformance. Both remain
-separate from the benchmark.
+Fast tests follow these ownership boundaries. Manual encoder, codec and receiver
+CUDA tests remain separate from the benchmark.
 
 ## Environment
 
@@ -54,15 +59,9 @@ Snappy/LZ4 automatically use the hardware decompression engine on SM100/SM103,
 reading each rank's original host allocation. Other CUDA architectures and
 Bitcomp use GPU compute after double-buffered H2D transfers. GPU-delta itself
 does not require SM100/SM103; model/backend kernels retain their hardware requirements.
-One original rank per engine host owns a persistent CPU-only child that reads
-and verifies the publication, unwraps outer Zstd, and builds the shared payload
-and numeric metadata. The child owns the publication lock, reusable worker pool
-and shared-buffer lifetime; IPC carries small descriptors rather than payloads.
-Each rank retains its own layout admission and GPU preparation. CUDA ranks register
-the shared arena and transfer only their selected frames. DE ranks copy selected
-spans into private DE-capable input allocations. Successful all-rank apply precedes
-resume; the owner queues exact-state release after its resume, and ordered cleanup
-completes before the next preparation can reuse the arena.
+Receiver host sharing, CPU-process ownership, capacity reuse and the fixed
+DE/CUDA pipelines are described in the
+[receiver contract](../../../miles/backends/sglang_utils/gpu_delta/README.md#payload-and-cache-contracts).
 LZ4 uses byte input with bitshuffle disabled; Bitcomp uses sparse lossless U8.
 Neither adds a weight layout transform.
 
@@ -73,10 +72,10 @@ user-facing configuration API. Runtime defaults are sufficient for normal use.
 | --- | --- |
 | `GPU_DELTA_CODEC=bitcomp-zstd` | Trainer codec for ordinary learned updates; accepts the codecs listed above. `*-zstd` adds GPU Zstd wrapping; `lz4` and `bitcomp` skip it. Read once at launch. The receiver selects the codec from each authenticated publication. |
 | `GPU_DELTA_INITIAL_SYNC_CODEC=bitcomp-zstd` | Trainer codec for initial sync, engine recovery and checkpoint companions; accepts the same codecs. Initial synchronization is mandatory. |
-| `GPU_DELTA_SORT_BEFORE_HW_DECOMPRESS=0` | Receiver only. Set `1` to let nvCOMP sort chunks during paused DE submission; default off for all codecs. It does not change publication bytes or move sorting into preparation. |
-| `GPU_DELTA_CPU_WORKERS=32` | Persistent workers in each engine-host CPU child on both decoder paths. The same pool reads/hashes files and prepares the full input image. Two single-host TP4 engines use two children and two pools (up to 64 payload workers). |
 | `GPU_DELTA_SKIP_PAYLOAD_HASH=1` | Miles-only opt-in: omit owner-file SHA256 generation and send `validate_payload_hash=false` with each receiver update. Defaults off. Such publications declare `payload_checksum_format="none"` and null file hashes; SGLang accepts them only with this explicit request option and does not read the environment variable. Manifest SHA256 and native decoder checks remain mandatory. |
-| `GPU_DELTA_HOST_CACHE_DIR` | Tmpfs base for engine-host caches; defaults to `/dev/shm/sglang-gpu-delta-<uid>`. Each engine has separate identities and locks. Ranks share encoded files and the full prepared input arena. DE additionally retains private hardware-capable input allocations. |
+
+Receiver development settings are documented in the
+[receiver configuration table](../../../miles/backends/sglang_utils/gpu_delta/README.md#configuration-and-observations).
 
 For Ray launches, set job-level variables through `runtime_env` or
 `execute_train(extra_env_vars=...)`; the submitting shell does not configure
@@ -190,29 +189,11 @@ the Megatron writer finishes. The manifest records the HF-base path, owner byte
 fingerprints, training step and separate transfer version. Ship the completed
 directory together with that unchanged HF base.
 
-The SGLang control endpoints are an internal interface to Miles: `get_gpu_delta_info`
-reports original participant identities and current stream state; `update_weights_from_gpu_delta`
-accepts those participants, a session ID and the publication descriptor;
-`clear_gpu_delta_state` releases idle delta resources. The descriptor carries
-manifest path/SHA256, stream, base/target versions and plan digest. There is no separate manifest-only loading path.
-The `validate_payload_hash` request option defaults to `true`; Miles supplies its
-configured policy for ordinary, recovery and eval updates through the shared
-activation path. SGLang uses the request policy instead of process environment.
-Updates preserve an existing caller pause. `flush_cache` defaults to `true` for KV
-and multimodal caches; set it to `false` only when the caller already owns cache invalidation.
-`abort_all_requests` defaults to `false`: in-flight requests are retracted and
-requeued at apply. Set it to `true` to abort them after preparation succeeds.
-Preparation leaves serving state unchanged. Each rank replies on completion from
-its preparation worker; the tokenizer waits for the original participant set
-before dispatching apply. Preparation does not poll rank status or run planning
-on the scheduler thread. Delta buffers and codec setup are
-retained by default (`release_state=false`); `true` releases them after successful
-activation, preserving the phase receipts, committed version and model weights.
-An explicit `clear_gpu_delta_state` request can also release idle resources.
-APPLIED acknowledgements carry the original rank/publication identity and apply
-result; detailed metrics are returned once in the RESUMED receipts.
-An uncertain update requires replacing the failed receiver; it never triggers
-reconciliation or XOR replay on that process.
+Receiver update fields, pause behavior and resource release are defined in the
+[control and lifecycle contract](../../../miles/backends/sglang_utils/gpu_delta/README.md#ownership-and-lifecycle).
+Ordinary updates, recovery and eval all use that same activation path and explicit
+payload-hash policy. An uncertain update requires replacing the failed receiver;
+it never triggers reconciliation or XOR replay on that process.
 
 ## Producer and receiver pipeline
 
@@ -263,32 +244,9 @@ has `frames=[]` and equal encoded/decoded byte lengths: its payload is the
 aligned inner arena directly, without trailing padding. Raw tensors and omitted
 zero-XOR frames keep the same representation. SHA-256 authenticates final owner files by default.
 Ordinary updates do not hash old/new weights or intermediate inner-codec bytes;
-checkpoint/recovery artifacts additionally fingerprint the immutable HF base. The receiver reads
-and verifies immutable encoded files once per engine-host. A persistent CPU child
-owned by one fixed original rank prepares the complete canonical image and numeric
-metadata in shared tmpfs, with a separate interpreter/GIL and no CUDA work.
-CUDA ranks register that image and transfer only their selected frames. DE ranks
-map the shared image without registration and copy selected spans into private
-HOST_NUMA allocations with hardware-decompression capability checks; no CUDA
-handles are exported or imported. Fitting updates reuse host capacity and CUDA
-registrations; growth reserves twice the new requirement. DE allocations also
-round capacity to the device allocation granularity. Encoded-file staging uses
-a separate retained tmpfs mapping for every codec.
-
-Preparation builds CPU plans and small GPU metadata/workspace, and uploads raw
-scalar/vector targets without writing model weights. After the serving pause and
-reader fence, the fixed double buffer allocates two decoded HBM slots sized for
-the largest batch. Hardware Snappy or LZ4 reads compressed bytes directly from the rank-owned host arena;
-there is no encoded HBM ring or explicit compressed H2D copy on this path. A DE
-stream decodes the next batch while the apply stream checks status and applies
-the current masks. The CUDA path instead overlaps the next batch's compressed
-H2D copy with the current batch's decode and apply on one compute stream, using
-two encoded/decoded slots. Events protect slot and status-row reuse. Slots are
-released after GPU completion before resume; static plans and host arena capacity
-remain cached.
-`GPU_DELTA_LAYERS_PER_BATCH` defaults to 1 and groups adjacent active model layers;
-embeddings, the language-model head and other standalone tensors form three
-separate groups, omitting empty groups. GPU Zstd decompression is not part of this path.
+checkpoint/recovery artifacts additionally fingerprint the immutable HF base.
+Receiver preparation and the fixed DE/CUDA streaming pipeline are described in the
+[receiver contract](../../../miles/backends/sglang_utils/gpu_delta/README.md#fixed-decodeapply-pipeline).
 
 The agreed prior is the immutable checkpoint inventory and canonical export format.
 Miles derives names, shapes, dtypes and encoding from that prior; it never requests
@@ -296,25 +254,14 @@ layout plans or tensor views from rollout. SGLang independently binds canonical
 tensors to its local TP/EP slices, backend layouts and live buffers. Connection
 queries establish only participant identity and version state. Learned updates
 reuse the canonical contract and local bindings.
-Participant identities include an opaque engine-host encoded-cache identity.
-Independent engines have separate caches and no shared release barrier. The
-owner pool bounds queued payload groups to `4 * GPU_DELTA_CPU_WORKERS`. For wrapped
-codecs, each worker uses native Zstd `multi_decompress_to_buffer(threads=0)`,
-then scatters the temporary ordinary CPU output into the persistent shared image.
-The existing pool supplies concurrency; native decoding creates no extra workers.
 The global canonical inventory must have complete, unique owner coverage. Duplicate
 exports, including overlapping PP/MTP names, are rejected rather than deduplicated.
 
-One Miles coordinator exclusively owns the engine endpoints during an update.
-It submits one update request per engine. Each engine's tokenizer independently
-prepares while its old version serves, waits for its own original ranks to be
-PREPARED, then closes admission, pauses, fences readers, retracts requests,
-flushes caches and applies. A failed reader fence never reclaims KV. The tokenizer
-awaits the successful all-rank apply reply before sending the internal resume
-message; the engine records the new version and resumes without waiting for other
-engines. Ordinary pause/continue APIs remain unchanged. Each engine's local TP/EP
-participants still synchronize for safe activation; independent replicas may
-temporarily serve different versions.
+One Miles coordinator exclusively owns the engine endpoints during an update and
+submits one update request per engine. Engines prepare and activate independently;
+each waits for its own original ranks before resuming. Independent replicas may
+temporarily serve different versions. The receiver's internal phases are defined
+in the [lifecycle contract](../../../miles/backends/sglang_utils/gpu_delta/README.md#ownership-and-lifecycle).
 
 The trainer drains every engine coroutine before handling failures. The server
 aborts preparation only before apply dispatch. An update HTTP failure has an
