@@ -182,10 +182,9 @@ with `python -m miles.rollout.agentic.worker --port 11100` and name it with
 `--custom-agent-function-worker http://<host>:11100`. The agent function must be
 importable on the worker under the same module path, and its arguments and return
 value must be JSON-serializable. Each call carries each sandbox provider's key-file
-and address variables, the env var patterns in a `WORKER_ENV` tuple the agent
-function's module may expose beside it, and any `--custom-agent-function-worker-env`
-adds; credentials are never sent by value, and paths among them must exist on the
-worker. A worker that cannot be reached, or that no longer knows the call, discards
+and address variables and the env vars matching the patterns in a `WORKER_ENV`
+tuple the agent function's module may expose beside it; credentials are never sent
+by value, and paths among them must exist on the worker. A worker that cannot be reached, or that no longer knows the call, discards
 the sample (`exit_status` `WorkerUnreachable` or `WorkerLost`). A worker cancels a
 call nobody has polled for two minutes. To keep anyone else from submitting calls,
 set the same secret on the worker and on the rollout host, in

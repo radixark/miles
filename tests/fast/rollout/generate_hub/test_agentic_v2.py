@@ -287,7 +287,7 @@ async def test_worker_mode_sends_the_call_to_the_worker_with_the_runs_env(monkey
     sample = Sample(status=Sample.Status.COMPLETED, response="done", response_length=1, tokens=[1])
     _patch_agent(monkeypatch, _Tracer(SamplesReply(samples=[sample], session_metadata={}, empty_reason=None)))
     monkeypatch.setenv("TEST_HARNESS_DIR", "/tasks")
-    monkeypatch.setenv("TEST_RECIPE_KNOB", "1")
+    monkeypatch.setenv("TEST_RECIPE_KNOB", "not-in-worker-env")
     monkeypatch.setenv("E2B_API_URL", "https://sandbox-service.example")
     monkeypatch.setenv("OTHER_HARNESS_DIR", "/not-this-harness")
     monkeypatch.setenv("TEST_HARNESS_API_KEY", "not-by-value")
@@ -305,7 +305,6 @@ async def test_worker_mode_sends_the_call_to_the_worker_with_the_runs_env(monkey
                 custom_agent_function_path=_hook("test_harness.agent.run"),
                 custom_agent_function_mode="worker",
                 custom_agent_function_worker="http://worker:11100",
-                custom_agent_function_worker_env=["TEST_RECIPE_*"],
                 sglang_router_ip="10.0.0.1",
                 sglang_router_port=31000,
             )
@@ -314,7 +313,7 @@ async def test_worker_mode_sends_the_call_to_the_worker_with_the_runs_env(monkey
     assert seen["mode"] == "worker"
     assert seen["worker"] == "http://worker:11100"
     assert seen["extra_env"]["TEST_HARNESS_DIR"] == "/tasks"
-    assert seen["extra_env"]["TEST_RECIPE_KNOB"] == "1"
+    assert "TEST_RECIPE_KNOB" not in seen["extra_env"]
     assert seen["extra_env"]["E2B_API_URL"] == "https://sandbox-service.example"
     assert "OTHER_HARNESS_DIR" not in seen["extra_env"]
     assert "TEST_HARNESS_API_KEY" not in seen["extra_env"]
@@ -333,23 +332,17 @@ async def test_worker_mode_without_a_worker_fails_before_a_session_opens_and_sto
     assert extra_keys == []
 
 
-def test_the_worker_flags_parse():
+def test_the_worker_flags_parse_and_the_worker_env_flag_is_gone():
     parser = argparse.ArgumentParser(exit_on_error=False)
     agentic_tool_call.generate.add_arguments(parser)
 
     args = parser.parse_args(
-        [
-            "--custom-agent-function-mode",
-            "worker",
-            "--custom-agent-function-worker",
-            "http://w:1",
-            "--custom-agent-function-worker-env",
-            "TEST_*",
-        ]
+        ["--custom-agent-function-mode", "worker", "--custom-agent-function-worker", "http://w:1"]
     )
 
     assert (args.custom_agent_function_mode, args.custom_agent_function_worker) == ("worker", "http://w:1")
-    assert args.custom_agent_function_worker_env == ["TEST_*"]
+    with pytest.raises((argparse.ArgumentError, SystemExit)):
+        parser.parse_args(["--custom-agent-function-worker-env", "TEST_*"])
 
 
 def _running_agent_input(monkeypatch, tmp_path, mode):
