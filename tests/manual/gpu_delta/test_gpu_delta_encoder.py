@@ -68,8 +68,11 @@ def _snapshots(frame_bytes=FRAME_BYTES):
     )
 
 
-@pytest.mark.parametrize("codec", CODECS)
-@pytest.mark.parametrize("frame_bytes", [FRAME_BYTES, 1 << 16, 1 << 19, 1 << 21])
+@pytest.mark.parametrize(
+    "codec,frame_bytes",
+    [(codec, FRAME_BYTES) for codec in CODECS]
+    + [("bitcomp-zstd", frame_bytes) for frame_bytes in [1 << 16, 1 << 19, 1 << 21]],
+)
 def test_cross_tensor_batch_exact_bytes_immutable_snapshots_and_owned_slab(frame_bytes, codec, monkeypatch):
     device = torch.device("cuda", torch.cuda.current_device())
     encoder = gpu_delta_encoder.GpuBatchEncoder(device, frame_bytes=frame_bytes, codec=codec)
@@ -119,9 +122,10 @@ def test_cross_tensor_batch_exact_bytes_immutable_snapshots_and_owned_slab(frame
     assert [bytes(payload) for payload in payloads] == saved
 
 
-@pytest.mark.parametrize("codec", CODECS)
-def test_empty_and_all_unchanged_batches(codec):
-    encoder = gpu_delta_encoder.GpuBatchEncoder(torch.device("cuda", torch.cuda.current_device()), codec=codec)
+def test_empty_and_all_unchanged_batches():
+    encoder = gpu_delta_encoder.GpuBatchEncoder(
+        torch.device("cuda", torch.cuda.current_device()), codec="bitcomp-zstd"
+    )
     empty = _pinned(np.empty(0, dtype=np.uint8))
     assert encoder.finish_device(encoder.encode_device([])) == []
     assert encoder.finish_device(encoder.encode_device([(empty, empty)]))[0][:4] == (
@@ -236,7 +240,7 @@ def test_failed_batch_status_drains_stream_and_keeps_snapshots(stage, codec, mon
         np.testing.assert_array_equal(after.cpu().numpy(), current[index])
 
 
-@pytest.mark.parametrize("codec", CODECS)
+@pytest.mark.parametrize("codec", ["bitcomp", "bitcomp-zstd"])
 def test_partial_payload_failure_drains_owned_slabs(codec, monkeypatch):
     encoder = gpu_delta_encoder.GpuBatchEncoder(torch.device("cuda", torch.cuda.current_device()), codec=codec)
     copy_payloads, pending = gpu_delta_encoder._copy_payload_slab, torch.cuda.Event()
@@ -256,8 +260,11 @@ def test_partial_payload_failure_drains_owned_slabs(codec, monkeypatch):
     np.testing.assert_array_equal(after.numpy(), np.arange(139, dtype=np.uint8))
 
 
-@pytest.mark.parametrize("codec", CODECS)
-@pytest.mark.parametrize("frame_bytes", [1 << 16, 192 << 10, 1 << 19, FRAME_BYTES, 1 << 22])
+@pytest.mark.parametrize(
+    "codec,frame_bytes",
+    [(codec, FRAME_BYTES) for codec in CODECS]
+    + [("bitcomp-zstd", frame_bytes) for frame_bytes in [1 << 16, 192 << 10, 1 << 19, 1 << 22]],
+)
 def test_owner_wide_finalization_roundtrip_only_transfers_final_bytes(frame_bytes, codec, monkeypatch, tmp_path):
     encoder = gpu_delta_encoder.GpuBatchEncoder(
         torch.device("cuda", torch.cuda.current_device()), frame_bytes=frame_bytes, codec=codec

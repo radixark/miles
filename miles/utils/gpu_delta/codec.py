@@ -12,7 +12,6 @@ CUDA decoding uses two compressed device slots so H2D can overlap decode/apply.
 from __future__ import annotations
 
 import ctypes
-import importlib.metadata
 import os
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -22,6 +21,7 @@ import numpy as np
 import torch
 
 from miles.utils.gpu_delta import profiling
+from miles.utils.gpu_delta.nvcomp import _Alignments, _load_library
 
 
 class _SnappyOptions(ctypes.Structure):
@@ -83,14 +83,6 @@ def _require_hardware_device(device: torch.device, algorithm: str) -> int:
     return maximum
 
 
-class _Alignments(ctypes.Structure):
-    _fields_ = [
-        ("input", ctypes.c_size_t),
-        ("output", ctypes.c_size_t),
-        ("temp", ctypes.c_size_t),
-    ]
-
-
 @dataclass
 class DecodeWorkspace:
     temporary: torch.Tensor
@@ -119,12 +111,7 @@ class NvcompDecoder:
         sorting = os.environ.get("GPU_DELTA_SORT_BEFORE_HW_DECOMPRESS", "0")
         if sorting not in {"0", "1"}:
             raise ValueError("GPU_DELTA_SORT_BEFORE_HW_DECOMPRESS must be 0 or 1")
-        cuda_major = torch.version.cuda.split(".")[0]
-        package = f"nvidia-libnvcomp-cu{cuda_major}"
-        distribution = importlib.metadata.distribution(package)
-        major_version = int(distribution.version.split(".")[0])
-        if major_version != 6 or ctypes.sizeof(ctypes.c_size_t) != 8:
-            raise RuntimeError("Direct GPU deltas require the 64-bit nvCOMP 6 ABI")
+        self._library, _ = _load_library()
         self.backend = decoder_backend(self.device, inner_codec)
         hardware = self.backend == "hardware"
         self._options = options_type()
@@ -135,7 +122,6 @@ class NvcompDecoder:
             self._options.data_type = 0  # NVCOMP_TYPE_CHAR
             self._options.bitshuffle_mode = 0  # NVCOMP_BITSHUFFLE_NONE
         self.maximum_chunk_bytes = _require_hardware_device(self.device, self._algorithm) if hardware else _INT64_MAX
-        self._library = ctypes.CDLL(str(distribution.locate_file("nvidia/libnvcomp/lib64/libnvcomp.so.6")))
         pointer, size = ctypes.c_void_p, ctypes.c_size_t
         self._temporary = self._bind(
             "GetTempSize",

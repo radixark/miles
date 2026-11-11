@@ -19,10 +19,11 @@ from dataclasses import dataclass
 import numpy as np
 import torch
 
-from miles.backends.sglang_utils.gpu_delta.bindings import _ITEMSIZES, _digest, validate_ue8m0_payload
+from miles.backends.sglang_utils.gpu_delta.bindings import validate_ue8m0_payload
 from miles.backends.sglang_utils.gpu_delta.derived import prepare_updates
 from miles.backends.sglang_utils.gpu_delta.layout import GpuDeltaLayout
 from miles.utils.gpu_delta import profiling
+from miles.utils.gpu_delta.publication import DTYPE_BYTES, plan_digest
 
 
 class GpuDeltaBackend:
@@ -233,14 +234,14 @@ def _qualify_canonical_plan(backend, publication):
         ):
             raise ValueError(f"canonical tensor metadata mismatch: {name}")
         if entry["byte_order"] != "little" or entry["nbytes"] != (
-            math.prod(canonical["shape"]) * _ITEMSIZES[canonical["dtype"]]
+            math.prod(canonical["shape"]) * DTYPE_BYTES[canonical["dtype"]]
         ):
             raise ValueError(f"unsupported canonical tensor size/encoding: {name}")
         definitions.append(definition)
     missing = {binding.name for binding in backend.layout.bindings} - entries.keys()
     if missing:
         raise ValueError(f"publication is missing local tensors: {sorted(missing)}")
-    if _digest(sorted(definitions, key=lambda entry: entry["name"])) != digest:
+    if plan_digest(definitions) != digest:
         raise ValueError("publication does not match its canonical tensor plan")
     # Tensor selection and physical layout are receiver-local. The publication
     # never contains TP/EP slices, backend permutations or receiver identities.

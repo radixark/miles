@@ -1,4 +1,4 @@
-"""Owner-local GPU delta publication with in-place SGLang activation.
+"""CUDA-only owner-local GPU delta publication with in-place SGLang activation.
 
 Ordinary layers are consumed by their PP-local owners after TP reconstruction.
 ETP1 routed experts are consumed by their exporter owners before the usual gather.
@@ -30,6 +30,7 @@ from miles.backends.training_utils.weight_update.session import set_weight_versi
 from miles.utils import async_utils
 from miles.utils.args.custom_view import compute_custom_function_config
 from miles.utils.distributed_utils import get_gloo_group
+from miles.utils.gpu_delta import encoder as gpu_delta_encoder
 from miles.utils.gpu_delta import publication as gpu_delta_publication
 from miles.utils.test_utils.fault_injector.controller import reach_fault_hook
 from miles.utils.test_utils.fault_injector.models import FaultHookName
@@ -155,10 +156,10 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         error = None
         try:
             if codec not in self._gpu_encoders:
-                from miles.utils.gpu_delta.encoder import GpuBatchEncoder
-
                 device = torch.device("cuda", torch.cuda.current_device())
-                self._gpu_encoders[codec] = GpuBatchEncoder(device, frame_bytes=self._frame_bytes, codec=codec)
+                self._gpu_encoders[codec] = gpu_delta_encoder.GpuBatchEncoder(
+                    device, frame_bytes=self._frame_bytes, codec=codec
+                )
         except Exception as caught:
             error = caught
         _collective_check(error, "nvCOMP producer admission")
@@ -374,8 +375,6 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
 
     def _finish_encoding(self):
         """Drain inner batches, optionally wrap with Zstd, then publish final bytes."""
-        from miles.utils.gpu_delta.encoder import append_encoded_tensor
-
         # This enclosing span overlaps export; the caller's tail wait is separate.
         started = time.monotonic() if self._encoding_started is None else self._encoding_started
         names, encoded = [], []
@@ -396,7 +395,7 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
                 self._encode_wall_s += metrics["encode_wall_s"]
                 for key in self._encoded_transfer_bytes:
                     self._encoded_transfer_bytes[key] += metrics[key]
-                append_encoded_tensor(self._writer, name, result, self._plan[name])
+                gpu_delta_encoder.append_encoded_tensor(self._writer, name, result, self._plan[name])
         finally:
             if pool is not None:
                 # Always drain the one raw writer before closing payloads or
@@ -511,11 +510,8 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         """Compress the captured target without export, publication or collectives."""
         if self._recovery_step == self._source_step:
             return
-        # Keep Triton imports out of metadata-only protocol setup.
-        from miles.utils.gpu_delta.encoder import RecoveryPayload
-
         started = time.monotonic()
-        self._recovery_payload = RecoveryPayload.encode(
+        self._recovery_payload = gpu_delta_encoder.RecoveryPayload.encode(
             self._gpu_encoders[self._initial_sync_codec],
             self._initial_sync_codec,
             self._gpu_batch_names,

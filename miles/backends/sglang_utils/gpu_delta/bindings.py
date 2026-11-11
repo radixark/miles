@@ -9,8 +9,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import math
 import re
 from dataclasses import dataclass, replace
@@ -38,15 +36,10 @@ _DTYPES = {
 }
 
 _TORCH_DTYPES = {name: dtype for dtype, name in _DTYPES.items()}
-_ITEMSIZES = {name: dtype.itemsize for name, dtype in _TORCH_DTYPES.items()}
 
 
 def _dtype_name(dtype):
     return _DTYPES.get(dtype, str(dtype))
-
-
-def _digest(value) -> str:
-    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 def _full_slices(shape):
@@ -360,11 +353,6 @@ class ConsumerSnapshot:
     def check_objects(self):
         current = self.read()
         if len(current) != len(self.objects) or any(a is not b for a, b in zip(current, self.objects, strict=False)):
-            raise RuntimeError("GPU delta consumer storage changed; readmission required")
-
-    def check(self):
-        self.check_objects()
-        if any(_tensor_identity(self.objects[index]) != expected for index, expected in self.tensors):
             raise RuntimeError("GPU delta consumer storage changed; readmission required")
 
 

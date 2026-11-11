@@ -72,7 +72,8 @@ class GpuDeltaCommunicator:
                 return
             self._pending_ranks.difference_update(ranks)
         self._results.append(reply)
-        if not self._pending_ranks if self._pending_ranks is not None else len(self._results) == self._expected:
+        complete = not self._pending_ranks if self._pending_ranks is not None else len(self._results) == self._expected
+        if complete:
             self._event.set()
 
     def set_fan_out(self, fan_out: int):
@@ -126,7 +127,7 @@ class GpuDeltaTokenizerControl:
             self.manager.is_pause = True
             if obj.abort_all_requests:
                 self.manager.abort_request(abort_all=True)
-            result = await self._request(obj)
+            result = await self._request(ApplyGpuDeltaReqInput(session_id=obj.session_id, flush_cache=obj.flush_cache))
             if result["success"] and obj.flush_cache and self.manager.mm_processor is not None:
                 self.manager.mm_processor.clear_preprocess_cache()
             return result, was_paused
@@ -158,13 +159,7 @@ class GpuDeltaTokenizerControl:
             await self._request(AbortGpuDeltaReqInput(session_id=obj.session_id))
             return result
         prepared_at = time.monotonic()
-        applied, was_paused = await self._apply(
-            ApplyGpuDeltaReqInput(
-                session_id=obj.session_id,
-                flush_cache=obj.flush_cache,
-                abort_all_requests=obj.abort_all_requests,
-            ),
-        )
+        applied, was_paused = await self._apply(obj)
         if not applied["success"]:
             return applied
         applied_at = time.monotonic()

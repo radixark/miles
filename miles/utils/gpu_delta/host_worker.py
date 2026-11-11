@@ -129,6 +129,16 @@ def _identity(info):
     return [info.st_dev, info.st_ino, info.st_size]
 
 
+def _map_cache(directory, allocation, flags=mmap.MAP_SHARED):
+    """Attach the exact retained cache inode, without resizing its storage."""
+    with (directory / allocation["file"]).open("r+b") as source:
+        if _identity(os.fstat(source.fileno())) != allocation["identity"]:
+            raise ValueError("host cache inode or extent changed")
+        return (
+            mmap.mmap(source.fileno(), allocation["capacity"], flags=flags) if allocation["capacity"] else bytearray()
+        )
+
+
 # Cold capacity fits the required extent; growth reserves twice the new extent.
 _CAPACITY_ALIGNMENT = 64 << 20
 
@@ -365,17 +375,12 @@ def _prepare_arena(destination, tensors, raw, backing, file_spans, columns, orde
 
 
 def _map_encoded(directory, encoded, definitions):
-    with (directory / encoded["file"]).open("r+b") as source:
-        if _identity(os.fstat(source.fileno())) != encoded["identity"]:
-            raise ValueError("encoded cache inode or extent changed")
-        mapping = mmap.mmap(source.fileno(), 0) if encoded["capacity"] else None
     file_spans, position = {}, 0
     for name, record in definitions.items():
         file_spans[name] = (position, record["nbytes"])
         position += record["nbytes"]
     # The view owns its mmap, including while drained failure tracebacks retain it.
-    backing = memoryview(mapping) if mapping is not None else memoryview(b"")
-    return backing, file_spans
+    return memoryview(_map_cache(directory, encoded)), file_spans
 
 
 def new_metrics():
@@ -508,24 +513,12 @@ class HostBuilder:
     def _attach_prepared(self, allocation):
         if self._prepared_capacity != allocation:
             self._prepared_view.release()
-            if allocation["capacity"]:
-                with (self.directory / allocation["file"]).open("r+b") as source:
-                    if _identity(os.fstat(source.fileno())) != allocation["identity"]:
-                        raise ValueError("prepared cache inode or extent changed")
-                    mapping = mmap.mmap(source.fileno(), allocation["capacity"])
-                self._prepared_view = memoryview(mapping)
-            else:
-                self._prepared_view = memoryview(b"")
+            self._prepared_view = memoryview(_map_cache(self.directory, allocation))
             self._prepared_capacity = allocation
 
     def _attach_metadata(self, allocation):
         if self._metadata_capacity != allocation:
-            with (self.directory / allocation["file"]).open("r+b") as source:
-                if _identity(os.fstat(source.fileno())) != allocation["identity"]:
-                    raise ValueError("metadata cache inode or extent changed")
-                self._metadata_mapping = (
-                    mmap.mmap(source.fileno(), allocation["capacity"]) if allocation["capacity"] else bytearray()
-                )
+            self._metadata_mapping = _map_cache(self.directory, allocation)
             self._metadata_capacity = allocation
 
     def _catalog(self, publication, manifest, previous):

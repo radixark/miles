@@ -1,4 +1,4 @@
-"""Optional SGLang hooks; register request types before IPC receive loops start."""
+"""SGLang hooks; register request types before IPC receive loops start."""
 
 from miles.backends.sglang_utils.gpu_delta import io  # noqa: F401
 

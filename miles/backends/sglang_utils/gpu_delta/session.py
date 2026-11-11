@@ -26,7 +26,6 @@ from miles.utils.gpu_delta import profiling
 @dataclass
 class _Update:
     request: dict
-    prepare_future: Future | None = None
     release_future: Future | None = None
     cancelled: threading.Event = field(default_factory=threading.Event)
     state: str = "PREPARING"
@@ -113,8 +112,8 @@ class DeltaSession:
             if request["base_version"] != self.version or request["target_version"] <= self.version:
                 raise ValueError("delta base version differs from committed local version")
             session = self._update = _Update(request=request)
-            session.prepare_future = self._executor.submit(self._prepare, session, previous)
-            return session.prepare_future
+            released = previous.release_future if previous is not None else None
+            return self._executor.submit(self._prepare, session, released)
 
     def _transaction(self, session_id: str) -> _Update:
         session = self._update
@@ -123,15 +122,13 @@ class DeltaSession:
         return session
 
     @profiling.annotate("gpu_delta.prepare")
-    def _prepare(self, session: _Update, previous: _Update | None) -> dict:
+    def _prepare(self, session: _Update, released: Future | None) -> dict:
         prepared = None
         try:
             # The FIFO worker has finished the previous update. Propagate any
             # failed release before reusing its persistent backend resources.
-            if previous is not None:
-                for future in (previous.prepare_future, previous.release_future):
-                    if future is not None:
-                        future.result()
+            if released is not None:
+                released.result()
             prepared = self.backend.prepare(session.request, session.cancelled)
             with self._lock:
                 if session.state != "ABORTED":
@@ -261,10 +258,8 @@ class DeltaSession:
         # queued resume release must finish before closing the arena or unlinking
         # the shared READY state that other ranks' releases still need.
         self._executor.shutdown(wait=True)
-        if self._update is not None:
-            for future in (self._update.prepare_future, self._update.release_future):
-                if future is not None:
-                    future.result()
+        if self._update is not None and self._update.release_future is not None:
+            self._update.release_future.result()
         if self.backend is not None:
             self._closed_cache = self.backend.host_arena.directory
             self.backend.close()
@@ -273,7 +268,7 @@ class DeltaSession:
             if self._update is not None:
                 self._update.state = "CLEARED"
                 self._update.result = {}
-                self._update.prepare_future = self._update.release_future = None
+                self._update.release_future = None
             return self.status()
 
     def release_cache(self, owner: bool) -> dict:

@@ -1,11 +1,9 @@
 """CPU codec admission, outer payload integrity and prepared metadata ownership."""
 
 import ctypes
-import importlib.util
 import sys
 import unittest
 from contextlib import nullcontext
-from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -13,14 +11,8 @@ import pytest
 import torch
 import zstandard as zstd
 
+from miles.utils.gpu_delta import codec, nvcomp
 from miles.utils.gpu_delta.host_worker import HostPayloadPool, validate_codec
-
-
-_path = Path(importlib.util.find_spec("miles.utils.gpu_delta.codec").origin)
-_spec = importlib.util.spec_from_file_location("gpu_delta_codec_under_test", _path)
-codec = importlib.util.module_from_spec(_spec)
-sys.modules[_spec.name] = codec
-_spec.loader.exec_module(codec)
 
 
 def _frame_table(batches):
@@ -110,7 +102,7 @@ def test_codec_abi_and_frozen_hardware_options(
         for suffix in ("GetRequiredAlignments", "GetTempSize", "Async")
     }
     distribution = SimpleNamespace(version="6.0.0.12", locate_file=lambda path: path)
-    monkeypatch.setattr(codec.importlib.metadata, "distribution", lambda _: distribution)
+    monkeypatch.setattr(nvcomp.importlib.metadata, "distribution", lambda _: distribution)
 
     def load_library(path):
         assert path == "nvidia/libnvcomp/lib64/libnvcomp.so.6"
@@ -415,10 +407,10 @@ def test_cuda_input_packing_preserves_frame_bytes_and_alignment():
 class TestOuterZstd(unittest.TestCase):
     def test_manifest_codec_and_frame_geometry_admission(self):
         admitted = dict(codec="snappy-zstd", frame_bytes=1 << 20)
-        for codec in ("snappy-zstd", "lz4-zstd", "lz4", "bitcomp", "bitcomp-zstd"):
+        for codec_name in ("snappy-zstd", "lz4-zstd", "lz4", "bitcomp", "bitcomp-zstd"):
             for size in (1 << 16, 192 << 10, 1 << 19, 1 << 20, 2 << 20, 4 << 20):
-                with self.subTest(codec=codec, size=size):
-                    validate_codec(admitted | {"codec": codec, "frame_bytes": size})
+                with self.subTest(codec=codec_name, size=size):
+                    validate_codec(admitted | {"codec": codec_name, "frame_bytes": size})
         for patch_value in (
             {"codec": "zstd"},
             {"codec": None},

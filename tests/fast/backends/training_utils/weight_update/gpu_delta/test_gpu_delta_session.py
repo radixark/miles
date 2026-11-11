@@ -223,11 +223,16 @@ recorder = test_sglang_api_client.recorder
     "options",
     [
         pytest.param({}, id="defaults"),
-        pytest.param({"release_state": True}, id="release-state"),
-        pytest.param({"flush_cache": False}, id="no-flush"),
-        pytest.param({"abort_all_requests": True}, id="abort-inflight"),
-        pytest.param({"weight_version": "actor-42"}, id="model-version"),
-        pytest.param({"validate_payload_hash": False}, id="skip-payload-hash"),
+        pytest.param(
+            {
+                "release_state": True,
+                "flush_cache": False,
+                "abort_all_requests": True,
+                "weight_version": "actor-42",
+                "validate_payload_hash": False,
+            },
+            id="overrides",
+        ),
     ],
 )
 async def test_gpu_delta_request_identity_and_cache_policy(client, recorder, options):

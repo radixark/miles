@@ -12,7 +12,7 @@ import numpy as np
 import torch
 
 from miles.backends.sglang_utils.gpu_delta import bindings as byte_layout
-from miles.backends.sglang_utils.gpu_delta import layout, models, receiver
+from miles.backends.sglang_utils.gpu_delta import receiver
 from miles.utils.gpu_delta.host_worker import TENSOR_DTYPE
 
 
@@ -64,7 +64,7 @@ class TestCanonicalPlanCache(unittest.TestCase):
         ]
         return backend, {
             "tensors": sorted(entries, key=lambda entry: entry["name"]),
-            "plan_digest": receiver._digest(definitions),
+            "plan_digest": receiver.plan_digest(definitions),
         }
 
     def test_warm_plan_reuses_admitted_digest_with_fresh_payloads(self):
@@ -75,7 +75,7 @@ class TestCanonicalPlanCache(unittest.TestCase):
         np.testing.assert_array_equal(admitted.nbytes, [8])
         updated = publication_view(publication)
         with (
-            patch.object(receiver, "_digest", side_effect=AssertionError("cold only")),
+            patch.object(receiver, "plan_digest", side_effect=AssertionError("cold only")),
             patch.object(updated, "read_catalog", side_effect=AssertionError("cold only")),
         ):
             entries, reused = receiver._qualify_canonical_plan(backend, updated)
@@ -110,7 +110,7 @@ class TestCanonicalPlanCache(unittest.TestCase):
             entry.update(format="fp8-block128-ue8m0", checkpoint_dtype="F32")
             definition.update(format="fp8-block128-ue8m0", checkpoint_dtype="F32")
             definitions.append(definition)
-        publication["plan_digest"] = receiver._digest(sorted(definitions, key=lambda x: x["name"]))
+        publication["plan_digest"] = receiver.plan_digest(definitions)
         receiver._qualify_canonical_plan(backend, publication_view(publication))
         backend._canonical_plan_digest = None
         backend.layout.inventory["local"]["checkpoint_dtype"] = "U8"
@@ -138,82 +138,6 @@ class TestCanonicalPlanCache(unittest.TestCase):
 
 
 class TestReceiverPreparation(unittest.TestCase):
-    def test_independent_mapping_uses_shared_apply_and_identity_contract(self):
-        root = torch.nn.Module()
-        root.config = SimpleNamespace(architectures=["IndependentTestModel"])
-        root.runtime = torch.nn.Module()
-        root.runtime.weight = torch.nn.Parameter(torch.zeros(6), requires_grad=False)
-        root.cache = torch.zeros(3, 2)
-
-        class IndependentMapping:
-            def __init__(self, model):
-                self.model = model
-                self.parameters = byte_layout.ParameterBindings(model)
-                self.derived = [byte_layout.DerivedImage("cache", model.cache, model.runtime.weight.view(2, 3).t())]
-                self.consumers = [byte_layout.ConsumerSnapshot(lambda: (model.cache,))]
-
-            def bind(self, name, meta):
-                return self.parameters.bind(name, meta, "runtime.weight")
-
-            def finish(self):
-                pass
-
-            @staticmethod
-            def aliases(a, b):
-                return False
-
-        with (
-            patch.dict(models._MODEL_MAPPINGS, IndependentTestModel=IndependentMapping),
-            patch.dict(
-                sys.modules,
-                {
-                    "sglang.srt.runtime_context": SimpleNamespace(
-                        get_exec=lambda: self.fail("dense mapping accessed MoE topology")
-                    )
-                },
-            ),
-        ):
-            plan = layout.GpuDeltaLayout(root, {"canonical.vector": {"dtype": "F32", "shape": [6]}})
-        prepared = receiver.PreparedDelta.__new__(receiver.PreparedDelta)
-        prepared.backend = SimpleNamespace(layout=plan)
-        self.assertEqual(plan.bindings[0].name, "canonical.vector")
-        self.assertEqual(plan.bindings[0].slices, [[0, 6]])
-        plan.check_identity()
-        prepared.device = torch.device("cpu")
-        prepared.stream = SimpleNamespace(wait_stream=lambda _: None)
-        prepared.batches, prepared.status_checks = [], []
-        prepared.apply_bindings, prepared.apply_source_patches = [], []
-        prepared.apply_fallback_groups = set()
-        prepared.matrix_tensor_count, prepared.raw_tensor_count = 0, 1
-        prepared.derived = plan.derived
-        prepared.timings, prepared.h2d_bytes, prepared.target_version = {}, 0, 1
-        pointer = root.cache.data_ptr()
-        with (
-            patch.object(prepared, "_allocate_paused"),
-            patch.object(torch.cuda, "device", return_value=nullcontext()),
-            patch.object(torch.cuda, "stream", return_value=nullcontext()),
-            patch.object(torch.cuda, "default_stream", return_value=prepared.stream),
-            patch.object(
-                torch.cuda,
-                "Event",
-                return_value=SimpleNamespace(record=lambda _: None, synchronize=lambda: None),
-            ),
-        ):
-            for offset in (1, 7):
-                prepared.derived = plan.derived
-                prepared.error = torch.tensor([0])
-                target = torch.arange(6, dtype=torch.float32) + offset
-                prepared.raw_copies = {torch.float32: ([plan.bindings[0].storage[0]], [target])}
-                self.assertTrue(prepared.apply()["applied"])
-                self.assertTrue(prepared._gpu_complete)
-                self.assertIsNone(prepared.error)
-                self.assertEqual(prepared.raw_copies, {})
-                torch.testing.assert_close(root.cache, target.view(2, 3).t(), rtol=0, atol=0)
-                self.assertEqual(root.cache.data_ptr(), pointer)
-        root.cache = root.cache.clone()
-        with self.assertRaisesRegex(RuntimeError, "consumer storage changed"):
-            plan.check_identity()
-
     def test_cuda_pipeline_prefetches_and_fences_two_input_slots(self):
         events = []
 

@@ -1,4 +1,4 @@
-"""Cross-tensor GPU XOR/compression from immutable canonical byte snapshots.
+"""CUDA-only cross-tensor XOR/compression from immutable canonical byte snapshots.
 
 One owner uploads pinned baselines and reuses current GPU tensors when available.
 Owner-wide finalization optionally adds Zstd and returns one pinned wire slab.
@@ -11,17 +11,15 @@ import time
 from dataclasses import dataclass
 
 import torch
+import triton
+import triton.language as tl
 
+from miles.utils.gpu_delta.nvcomp import NvcompCompressor
 from miles.utils.gpu_delta.publication import CODECS, FRAME_BYTES, PublicationWriter
 
-try:
-    import triton
-    import triton.language as tl
-except ImportError:
-    # Metadata-only tests do not require Triton.
-    triton = tl = None
 
-
+# Batch cardinality is runtime data, not a new compilation per batch shape.
+@triton.jit(do_not_specialize=["nframes"])
 def _xor_count_kernel(parameters, counts, nframes, TILE: tl.constexpr, BLOCK: tl.constexpr):
     frame = tl.program_id(0)
     tile = tl.program_id(1)
@@ -37,11 +35,6 @@ def _xor_count_kernel(parameters, counts, nframes, TILE: tl.constexpr, BLOCK: tl
         tl.store(previous + offset, delta, valid)
         changed += tl.sum(((delta != 0) & valid).to(tl.int32), axis=0)
     tl.store(counts + frame * tl.num_programs(1) + tile, changed)
-
-
-if triton is not None:
-    # Batch cardinality is runtime data, not a new compilation per batch shape.
-    _xor_count_kernel = triton.jit(_xor_count_kernel, do_not_specialize=["nframes"])
 
 
 def _validate_snapshots(tensors, device):
@@ -205,11 +198,6 @@ class GpuBatchEncoder:
     """
 
     def __init__(self, device: torch.device, codec: str, frame_bytes: int = FRAME_BYTES):
-        # Metadata-only imports need neither nvCOMP nor a CUDA context.
-        from miles.utils.gpu_delta.nvcomp import NvcompCompressor
-
-        if triton is None:
-            raise RuntimeError("GPU batch XOR/compression requires Triton")
         if type(frame_bytes) is not int or not 0 < frame_bytes <= 4 << 20:
             raise ValueError("GPU delta frame_bytes must be a positive integer at most 4 MiB")
         self.device, self.frame_bytes = torch.device(device), frame_bytes

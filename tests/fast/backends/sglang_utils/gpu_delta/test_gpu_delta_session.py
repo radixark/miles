@@ -161,7 +161,7 @@ def test_prepare_and_status_do_not_wait_for_file_io(make_session, abort_state, d
     replies, replied = [], threading.Event()
 
     def reply(request, receipt, success, message=""):
-        replies.append((receipt, success))
+        replies.append((receipt, success, message))
         replied.set()
 
     control._reply_prepare = reply
@@ -182,7 +182,6 @@ def test_prepare_and_status_do_not_wait_for_file_io(make_session, abort_state, d
     if abort_state == "PREPARED":
         backend.ready.set()
         wait_state(session, "PREPARED")
-        session._update.prepare_future.result(timeout=2)
         assert replied.wait(2)
         assert len(replies) == 1 and replies[0][1]
         assert replies[0][0]["state"] == "PREPARED"
@@ -206,8 +205,8 @@ def test_prepare_and_status_do_not_wait_for_file_io(make_session, abort_state, d
     backend.ready.set()
     session._executor.submit(lambda: None).result(timeout=2)
     if drain_failure:
-        with pytest.raises(RuntimeError, match="GPU drain failed"):
-            session._update.prepare_future.result()
+        assert replied.wait(2)
+        assert not replies[-1][1] and "GPU drain failed" in replies[-1][2]
         assert cleanup == ["drain"]
         assert not backend.closed and not backend.payload.closed.is_set()
     else:
@@ -638,7 +637,7 @@ def test_clear_drains_release_before_private_close_and_shared_unlink(make_sessio
     assert backend.closed and backend.payload.closed.is_set()
     assert session.backend is None and session._update.state == "CLEARED"
     assert session._update.prepared is None and session._update.result == {}
-    assert session._update.prepare_future is session._update.release_future is None
+    assert session._update.release_future is None
     # Closing all rank-local resources does not itself unlink the shared cache.
     assert directory.exists()
     session.release_cache(owner=True)

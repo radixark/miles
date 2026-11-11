@@ -18,14 +18,9 @@ import torch
 from safetensors import SafetensorError, safe_open
 from safetensors.torch import save_file
 
+from miles.backends.sglang_utils.gpu_delta import checkpoint
 
 _root = Path(importlib.util.find_spec("sglang").origin).parent / "srt"
-_spec = importlib.util.spec_from_file_location(
-    "gpu_delta_checkpoint_under_test",
-    importlib.util.find_spec("miles.backends.sglang_utils.gpu_delta.checkpoint").origin,
-)
-checkpoint = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(checkpoint)
 
 
 class DefaultModelLoader:

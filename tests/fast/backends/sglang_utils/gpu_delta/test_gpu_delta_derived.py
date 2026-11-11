@@ -3,7 +3,6 @@
 import ast
 import importlib.util
 import logging
-import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,14 +11,9 @@ from unittest.mock import patch
 
 import torch
 
+from miles.backends.sglang_utils.gpu_delta import derived
 
 _root = Path(importlib.util.find_spec("sglang").origin).parent / "srt"
-_spec = importlib.util.spec_from_file_location(
-    "gpu_delta_derived_under_test", importlib.util.find_spec("miles.backends.sglang_utils.gpu_delta.derived").origin
-)
-derived = importlib.util.module_from_spec(_spec)
-sys.modules[_spec.name] = derived
-_spec.loader.exec_module(derived)
 
 
 def _production_helpers(relative_path, names):

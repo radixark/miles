@@ -18,8 +18,8 @@ apply, codec, memory and host-staging primitives. The serving adapter lives in
 `miles.backends.sglang_utils.gpu_delta`; see its
 [receiver contract](../../../miles/backends/sglang_utils/gpu_delta/README.md) for
 layout admission, control APIs, cache lifecycle and decoder scheduling. SGLang
-retains optional registration hooks, so GPU-delta engines need the matching Miles
-package available in every serving process.
+imports its registration hooks directly from Miles; the paired SGLang branch
+requires the matching Miles package in every serving process.
 
 Training protocol, session and metrics live in
 `miles.backends.training_utils.weight_update.protocols.gpu_delta`; Megatron export

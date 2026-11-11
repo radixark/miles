@@ -30,8 +30,8 @@ def test_bitcomp_receiver_double_buffer_exact_updates_and_stale_target(codec, mo
     import torch
 
     from miles.backends.sglang_utils.gpu_delta import checkpoint
-    from miles.backends.sglang_utils.gpu_delta.bindings import _digest
     from miles.backends.sglang_utils.gpu_delta.receiver import GpuDeltaBackend
+    from miles.utils.gpu_delta import publication
     from miles.utils.gpu_delta.encoder import GpuBatchEncoder
     from miles.utils.gpu_delta.host import host_cache_id
     from miles.utils.gpu_delta.publication import PublicationWriter
@@ -78,7 +78,7 @@ def test_bitcomp_receiver_double_buffer_exact_updates_and_stale_target(codec, mo
             )
             for name, meta in inventory.items()
         ]
-        plan_digest = _digest(sorted(definitions, key=lambda row: row["name"]))
+        plan_digest = publication.plan_digest(definitions)
         prepared = None
         try:
             for version in range(1, 4):
@@ -173,9 +173,9 @@ def test_bitcomp_failed_transaction_requires_fresh_receiver_recovery(failure, mo
     import torch
 
     from miles.backends.sglang_utils.gpu_delta import checkpoint
-    from miles.backends.sglang_utils.gpu_delta.bindings import _digest
     from miles.backends.sglang_utils.gpu_delta.receiver import GpuDeltaBackend
     from miles.backends.sglang_utils.gpu_delta.session import DeltaSession
+    from miles.utils.gpu_delta import publication
     from miles.utils.gpu_delta.encoder import GpuBatchEncoder
     from miles.utils.gpu_delta.host import host_cache_id
     from miles.utils.gpu_delta.publication import PublicationWriter
@@ -240,7 +240,7 @@ def test_bitcomp_failed_transaction_requires_fresh_receiver_recovery(failure, mo
                 "native-ft-stream",
                 version - 1,
                 version,
-                _digest(sorted(definitions, key=lambda row: row["name"])),
+                publication.plan_digest(definitions),
                 "bitcomp-zstd",
                 frame_bytes=frame_bytes,
             )

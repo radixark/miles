@@ -8,10 +8,9 @@ allocator, or alter the independent disk update API.
 See [GPU-accelerated Weight Teleportation](https://humansand.ai/blog/gpu-accelerated-weight-teleportation)
 for the end-to-end design and performance motivation.
 
-The receiver implementation is maintained in Miles. SGLang retains optional
-hooks for HTTP routes, tokenizer coordination and scheduler dispatch; ordinary
-serving does not require Miles. GPU-delta engines need the matching Miles package
-available in every serving process.
+The receiver implementation is maintained in Miles. SGLang imports its HTTP,
+tokenizer and scheduler hooks directly from Miles. The paired SGLang branch
+requires the matching Miles package in every serving process.
 
 `miles.backends.sglang_utils.gpu_delta` owns checkpoint admission, model bindings,
 consumer layouts, preparation, session state and SGLang controls. Shared CUDA

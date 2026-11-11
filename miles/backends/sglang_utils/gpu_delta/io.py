@@ -40,7 +40,6 @@ class UpdateWeightsFromGpuDeltaReqInput(PrepareGpuDeltaReqInput, kw_only=True):
 class ApplyGpuDeltaReqInput(BaseReq, kw_only=True):
     session_id: str
     flush_cache: bool = True
-    abort_all_requests: bool = False
 
 
 class AbortGpuDeltaReqInput(BaseReq, kw_only=True):

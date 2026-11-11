@@ -612,7 +612,7 @@ def test_consumer_snapshot_tracks_live_scale_and_clamp_storage(backend):
         changed = ("g1_alphas", "g2_alphas", "w2_input_scale_quant")
     for name in changed:
         snapshot = ConsumerSnapshot(lambda: fi.consumer_objects(layer, layout))
-        snapshot.check()
+        snapshot.check_objects()
         setattr(layer, name, getattr(layer, name).clone())
         with pytest.raises(RuntimeError, match="consumer storage changed"):
-            snapshot.check()
+            snapshot.check_objects()

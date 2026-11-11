@@ -302,11 +302,8 @@ class TestFlashInferDeltaLayout(unittest.TestCase):
         root.view.transpose_(0, 1)
         with self.assertRaisesRegex(RuntimeError, "consumer storage changed"):
             plan.check_identity()
-        with self.assertRaisesRegex(RuntimeError, "consumer storage changed"):
-            plan._consumers[0].check()
         root.view.transpose_(0, 1)
         plan.check_identity()
-        plan._consumers[0].check()
         root.weight.transpose_(0, 1)
         with self.assertRaisesRegex(RuntimeError, "parameter identity changed"):
             plan.check_identity()

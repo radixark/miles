@@ -1,11 +1,7 @@
 """GPU-delta HTTP contract and tokenizer transaction coordination, without engines."""
 
 import asyncio
-import builtins
-import importlib.util
-import runpy
 import sys
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -26,29 +22,6 @@ from miles.backends.sglang_utils.gpu_delta.io import (
     UpdateWeightsFromGpuDeltaReqInput,
 )
 from miles.backends.sglang_utils.gpu_delta.tokenizer import GpuDeltaCommunicator
-
-
-@pytest.mark.parametrize("missing", [None, "miles", "miles.backends.sglang_utils.gpu_delta", "numpy"])
-def test_optional_extension_only_ignores_an_absent_miles_package(monkeypatch, missing):
-    path = Path(importlib.util.find_spec("sglang").origin).parent / "srt/weight_sync/gpu_delta.py"
-    marker, original_import = object(), builtins.__import__
-    failure = ModuleNotFoundError(f"No module named {missing!r}", name=missing)
-
-    def import_extension(name, globals=None, locals=None, fromlist=(), level=0):
-        if name == "miles.backends.sglang_utils.gpu_delta":
-            if missing is not None:
-                raise failure
-            return SimpleNamespace(integration=marker)
-        return original_import(name, globals, locals, fromlist, level)
-
-    monkeypatch.setattr(builtins, "__import__", import_extension)
-    if missing in (None, "miles"):
-        loaded = runpy.run_path(str(path))
-        assert loaded["integration"] is (marker if missing is None else None)
-    else:
-        with pytest.raises(ModuleNotFoundError) as error:
-            runpy.run_path(str(path))
-        assert error.value is failure
 
 
 @pytest.fixture
@@ -334,7 +307,6 @@ def test_update_preserves_receipts_options_and_failure_boundaries(
             elif isinstance(obj, io.ApplyGpuDeltaReqInput):
                 assert facade.manager.is_pause
                 assert obj.flush_cache is flush_cache
-                assert obj.abort_all_requests is abort_all_requests
                 assert aborted == (["abort"] if abort_all_requests else [])
                 if failure == "uncertain_apply":
                     raise OSError("lost apply acknowledgment")

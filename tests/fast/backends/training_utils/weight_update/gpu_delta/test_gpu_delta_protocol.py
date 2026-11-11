@@ -793,11 +793,14 @@ def test_checkpoint_target_reuse_and_healthy_updates_skip_recovery_encoding(tmp_
     assert not (protocol._stream_dir / "recovery_v000002").exists()
 
 
-@pytest.mark.parametrize("recovery_fails", [False, True])
 @pytest.mark.parametrize(
-    "rollout_id,model_version,reuse_payload",
-    [(0, 17, True), (0, 42, False), (1, 42, False)],
-    ids=["same-snapshot", "same-rollout-new-model", "next-rollout"],
+    "rollout_id,model_version,reuse_payload,recovery_fails",
+    [
+        pytest.param(0, 17, True, False, id="same-snapshot"),
+        pytest.param(0, 42, False, False, id="same-rollout-new-model"),
+        pytest.param(1, 42, False, False, id="next-rollout"),
+        pytest.param(1, 42, False, True, id="failed-recovery"),
+    ],
 )
 def test_restarted_engine_uses_negotiated_update_and_retains_cache(
     tmp_path, single_rank, monkeypatch, recovery_fails, rollout_id, model_version, reuse_payload

@@ -40,7 +40,7 @@ from miles.utils.gpu_delta import profiling
 from miles.utils.gpu_delta.codec import decoder_backend
 from miles.utils.gpu_delta.host_worker import (
     _CAPACITY_ALIGNMENT,
-    _identity,
+    _map_cache,
     _metadata_views,
     configured_cpu_workers,
     copy_bytes,
@@ -279,14 +279,7 @@ class HostArena:
         if replace:
             self._close_shared()
             if prepared["capacity"]:
-                with (self.directory / prepared["file"]).open("r+b") as source:
-                    if _identity(os.fstat(source.fileno())) != prepared["identity"]:
-                        raise ValueError("prepared cache inode or extent changed")
-                    mapping = mmap.mmap(
-                        source.fileno(),
-                        prepared["capacity"],
-                        flags=mmap.MAP_SHARED | mmap.MAP_POPULATE,
-                    )
+                mapping = _map_cache(self.directory, prepared, flags=mmap.MAP_SHARED | mmap.MAP_POPULATE)
                 self.shared_allocation = HostMapping(mapping, pinned=False)
             self.shared_capacity = prepared
         if not hardware:
@@ -304,12 +297,7 @@ class HostArena:
 
     def _attach_metadata(self, allocation):
         if self._metadata_capacity != allocation:
-            with (self.directory / allocation["file"]).open("r+b") as source:
-                if _identity(os.fstat(source.fileno())) != allocation["identity"]:
-                    raise ValueError("metadata cache inode or extent changed")
-                self._metadata_mapping = (
-                    mmap.mmap(source.fileno(), allocation["capacity"]) if allocation["capacity"] else bytearray()
-                )
+            self._metadata_mapping = _map_cache(self.directory, allocation)
             self._metadata_capacity = allocation
 
     @profiling.annotate("gpu_delta.host.prepare_encoded")

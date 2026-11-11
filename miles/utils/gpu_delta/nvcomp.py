@@ -1,4 +1,4 @@
-"""Asynchronous CUDA compression using nvCOMP 6's prebuilt batched C API.
+"""Shared nvCOMP 6 ABI and asynchronous CUDA compression.
 
 Compression runs on CUDA SMs. The receiver uses SMs for Bitcomp and other
 non-DE decoding, or Blackwell's fixed-function engine for Snappy/LZ4.
@@ -37,6 +37,15 @@ class _Alignments(ctypes.Structure):
     _fields_ = [("input", ctypes.c_size_t), ("output", ctypes.c_size_t), ("temp", ctypes.c_size_t)]
 
 
+def _load_library():
+    package = f"nvidia-libnvcomp-cu{torch.version.cuda.split('.')[0]}"
+    distribution = importlib.metadata.distribution(package)
+    if int(distribution.version.split(".")[0]) != 6 or ctypes.sizeof(ctypes.c_size_t) != 8:
+        raise RuntimeError("GPU deltas require the 64-bit nvCOMP 6 ABI")
+    library = ctypes.CDLL(str(distribution.locate_file("nvidia/libnvcomp/lib64/libnvcomp.so.6")))
+    return library, distribution.version
+
+
 @dataclass(frozen=True)
 class CompressionBatch:
     """Retain until sizes/statuses and payload transfers finish on the caller stream."""
@@ -61,13 +70,7 @@ class NvcompCompressor:
         self.codec, self.device = codec, torch.device(device)
         if self.device.type != "cuda" or self.device.index is None:
             raise ValueError("GPU delta compressor requires an explicit CUDA device")
-        package = f"nvidia-libnvcomp-cu{torch.version.cuda.split('.')[0]}"
-        distribution = importlib.metadata.distribution(package)
-        major = int(distribution.version.split(".")[0])
-        if major != 6 or ctypes.sizeof(ctypes.c_size_t) != 8:
-            raise RuntimeError("GPU deltas require the 64-bit nvCOMP 6 ABI")
-        self.version = distribution.version
-        self._library = ctypes.CDLL(str(distribution.locate_file("nvidia/libnvcomp/lib64/libnvcomp.so.6")))
+        self._library, self.version = _load_library()
         self._symbol, options = {
             "snappy": ("Snappy", _Options),
             "lz4": ("LZ4", _LZ4Options),
