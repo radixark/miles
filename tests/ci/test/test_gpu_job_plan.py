@@ -169,13 +169,42 @@ def test_gpu_workflow_requires_a_successful_hosted_plan(workflow):
     assert "needs.plan.result == 'success'" in run["if"]
     assert "needs.plan.outputs.has_tests == 'true'" in run["if"]
     assert not any("--list-only" in step.get("run", "") for step in run["steps"])
-    checkout = next(step for step in run["steps"] if step.get("uses", "").startswith("actions/checkout@"))
-    assert "needs.plan.outputs.ref" in checkout["with"]["ref"]
-    if workflow == "_run-ci.yml":
-        assert plan["if"] == "${{ !inputs.plan_already_resolved }}"
-        assert "inputs.plan_already_resolved ||" in run["if"]
-        assert "!cancelled()" in run["if"]
-        assert "inputs.plan_already_resolved && inputs.ref" in checkout["with"]["ref"]
+    checkouts = [step["with"] for step in run["steps"] if step.get("uses", "").startswith("actions/checkout@")]
+    checkout = next(with_args for with_args in checkouts if "needs.plan.outputs.ref" in with_args["ref"])
+    assert plan["if"] == "${{ !inputs.plan_already_resolved }}"
+    assert "inputs.plan_already_resolved ||" in run["if"]
+    assert "!cancelled()" in run["if"]
+    assert "inputs.plan_already_resolved && inputs.ref" in checkout["ref"]
+    if workflow == "_run-ci-rocm.yml":
+        assert checkouts[0]["ref"] == "${{ github.workflow_sha }}"
+        assert checkout["path"] == "pr-source"
+        assert all(with_args["persist-credentials"] is False for with_args in checkouts)
+
+
+@pytest.mark.parametrize("num_gpus", [2, 4, 8])
+@pytest.mark.parametrize("fork", [False, True])
+def test_rocm_file_step_passes_source_and_allocation_to_spur_without_fork_credentials(tmp_path, num_gpus, fork):
+    workflow = ROOT / ".github/workflows/_run-ci-rocm.yml"
+    steps = yaml.safe_load(workflow.read_text())["jobs"]["run"]["steps"]
+    step = next(step for step in steps if step["name"] == "Run tests on a cluster node")
+    launcher = tmp_path / ".github/workflows/scripts/spur/launch.sh"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text(
+        'printf "%s\n" "$CI_SRC" "$@" "${HF_TOKEN-unset}" "${WANDB_API_KEY-unset}" '
+        '"${DOCKERHUB_USERNAME-unset}" "${DOCKERHUB_TOKEN-unset}"\n'
+    )
+    source = tmp_path / "pr-source"
+    env = {
+        "PATH": os.defpath,
+        "CI_SRC": str(source),
+        "WITHHOLD_RUNNER_SECRETS": str(fork).lower(),
+        **dict.fromkeys(("HF_TOKEN", "WANDB_API_KEY", "DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN"), "stub"),
+    }
+    command = step["run"].replace("${{ inputs.num_gpus }}", str(num_gpus))
+    result = subprocess.run(["bash", "-e", "-c", command], cwd=tmp_path, env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    credential_state = ["unset" if fork else "stub"] * 2 + ["stub", "stub"]
+    assert result.stdout.splitlines() == [str(source), "--gpus", str(num_gpus), *credential_state]
 
 
 @pytest.mark.parametrize(

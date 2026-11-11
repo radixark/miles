@@ -227,6 +227,7 @@ def policy(
             "clear_labels": {"group": "repo_write_access"},
             "rerun_failed_ci": {"group": "prior_contributor_access"},
             "run_test_file": {"group": "prior_contributor_access"},
+            "run_test_file_rocm": {"group": "add_label_access"},
         },
     }
 
@@ -274,6 +275,9 @@ def workflow_run(
         "/rerun-test",
         "/rerun-test ",
         "/rerun-test tests/e2e/test_a.py extra",
+        "/rerun-test tests/e2e/test_a.py --hw cuda",
+        "/rerun-test tests/e2e/test_a.py --hw rocm extra",
+        "/rerun-test tests/e2e/test_a.py\n--hw rocm",
         "/rerun-test tests/e2e/test_a.py\n/run-ci-short",
         "please /rerun-test tests/e2e/test_a.py",
         "/rerun-test tests/unit/test_a.py",
@@ -340,6 +344,7 @@ def test_static_registry_owns_policy_capability_and_handler_routing():
         HANDLER.ClearLabels: ("clear_labels", "issues", HANDLER._handle_clear_labels, "none"),
         HANDLER.RerunFailedCI: ("rerun_failed_ci", "actions", HANDLER._handle_rerun_failed_ci, "none"),
         HANDLER.RunTestFile: ("run_test_file", "actions", HANDLER._handle_run_test_file, "+1"),
+        HANDLER.RunRocmTestFile: ("run_test_file_rocm", "actions", HANDLER._handle_run_test_file, "+1"),
     }
     assert set(HANDLER.COMMAND_REGISTRY) == set(expected)
     for request_type, (policy_key, capability, handler, success_reaction) in expected.items():
@@ -383,6 +388,7 @@ def raw_policy():
             "clear_labels": {"group": "repo_write_access"},
             "rerun_failed_ci": {"group": "prior_contributor_access"},
             "run_test_file": {"group": "prior_contributor_access"},
+            "run_test_file_rocm": {"group": "add_label_access"},
         },
     }
 
@@ -614,6 +620,7 @@ def test_checked_in_policy_exposes_exact_labels_and_access_groups():
     assert loaded["commands"]["clear_labels"] == {"group": "repo_write_access"}
     assert loaded["commands"]["rerun_failed_ci"] == {"group": "prior_contributor_access"}
     assert loaded["commands"]["run_test_file"] == {"group": "prior_contributor_access"}
+    assert loaded["commands"]["run_test_file_rocm"] == {"group": "add_label_access"}
     assert all(HANDLER.LABEL_PATTERN.fullmatch(label) for label in labels)
 
 
@@ -1681,6 +1688,39 @@ def test_repository_writer_dispatches_a_file_run(permission):
     }
 
 
+def test_rocm_file_command_dispatches_the_requested_backend():
+    api = FakeAPI(pull(), permission="write")
+    HANDLER.process_event(event(body=f"{RUN_FILE_BODY} --hw rocm"), policy(), api)
+
+    assert api.dispatch_calls == [
+        (
+            "run-ci-file.yml",
+            "main",
+            {"pull_number": "123", "head_sha": HEAD_SHA, "test_file": RUN_FILE_PATH, "hw": "rocm"},
+        )
+    ]
+
+
+def test_rocm_file_command_leaves_cuda_image_pin_out_of_dispatch():
+    target = pull()
+    target["body"] = "ci-image-tag: pr-42\nci-sglang-pr: #77"
+    api = FakeAPI(target, permission="write")
+    HANDLER.process_event(event(body=f"{RUN_FILE_BODY} --hw rocm"), policy(), api)
+    inputs = api.dispatch_calls[0][2]
+    assert "ci_image_tag" not in inputs
+    assert inputs["ci_sglang_pr"] == "#77"
+
+
+def test_rocm_fork_file_command_uses_the_label_access_tier():
+    api = FakeAPI(pull(head_repository_id=HANDLER.REPOSITORY_ID + 1), permission="read")
+    request = event(body=f"{RUN_FILE_BODY} --hw rocm", author_association="CONTRIBUTOR")
+    with pytest.raises(HANDLER.CommentCommandError, match="not authorized"):
+        HANDLER.process_event(request, policy(prior_user_ids=(ACTOR_ID,)), api)
+    assert api.dispatch_calls == []
+    HANDLER.process_event(request, policy(user_ids=(ACTOR_ID,)), api)
+    assert api.dispatch_calls[0][2]["hw"] == "rocm"
+
+
 def test_file_run_main_reports_the_dispatched_run_without_writing_an_output(monkeypatch, tmp_path, capsys):
     api = FakeAPI(pull())
     output_path = tmp_path / "github-output"
@@ -2289,6 +2329,36 @@ def test_announce_posts_a_running_status_comment_keyed_to_the_run(monkeypatch):
     }
 
 
+@pytest.mark.parametrize(
+    ("rocm_result", "decision"),
+    [("success", "FILE_RUN_PASSED"), ("failure", "FILE_RUN_FAILED"), ("cancelled", "FILE_RUN_CANCELLED")],
+)
+def test_report_consumes_rocm_result(monkeypatch, rocm_result, decision):
+    api = FakeAPI(pull())
+    monkeypatch.setattr(HANDLER, "_utc_now", lambda: REPORT_NOW)
+    status = file_run_status(
+        FILE_RUN_CUDA_RESULT="skipped",
+        FILE_RUN_ROCM_RESULT=rocm_result,
+        FILE_RUN_SUITE="nightly-stage-c-2-gpu-mi350",
+    )
+    result = HANDLER.report_file_run(api, status, EXISTING_COMMENT_ID)
+    assert result["decision"] == decision
+    assert "nightly-stage-c-2-gpu-mi350" in api.update_calls[0][1]
+
+
+def test_report_explains_rocm_timeout_rejection(monkeypatch):
+    api = FakeAPI(pull())
+    monkeypatch.setattr(HANDLER, "_utc_now", lambda: REPORT_NOW)
+    status = file_run_status(
+        FILE_RUN_RESOLVE_RESULT="failure",
+        FILE_RUN_CUDA_RESULT="skipped",
+        FILE_RUN_ROCM_TIMEOUT="30000/9900",
+    )
+    result = HANDLER.report_file_run(api, status, EXISTING_COMMENT_ID)
+    assert result["decision"] == "FILE_RUN_FAILED"
+    assert "The ROCm file needs 30000 s but the Spur file budget is 9900 s" in api.update_calls[0][1]
+
+
 def test_report_updates_the_announced_comment_with_the_result_and_duration(monkeypatch):
     api = FakeAPI(pull())
     monkeypatch.setattr(HANDLER, "_utc_now", lambda: REPORT_NOW)
@@ -2343,7 +2413,7 @@ def test_report_updates_the_announced_comment_with_the_result_and_duration(monke
             {"FILE_RUN_CUDA_RESULT": "skipped", "FILE_RUN_CPU_RESULT": "skipped"},
             "FILE_RUN_FAILED",
             "\u274c",
-            "No execution job ran: the resolved plan selected neither the CUDA nor the CPU job.",
+            "No CPU, CUDA, or ROCm execution job ran.",
         ),
     ],
 )
