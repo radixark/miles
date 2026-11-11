@@ -1,6 +1,11 @@
 name: Docker Build & Push
 
 on:
+  # TEST ONLY (#4796, never merge): run the automatic cu13 + tpu matrix from a draft PR.
+  pull_request:
+    paths:
+      - '.github/workflows/docker-build.yml'
+
   push:
     branches:
       - main
@@ -192,7 +197,7 @@ jobs:
     # start. Manual dispatches and polls that skip the build get a per-run group, so
     # they never wait on, or cancel, an automatic build.
     concurrency:
-      group: ${{ github.event_name != 'workflow_dispatch' && (github.event_name != 'schedule' || needs.check-upstream.outputs.should_build == 'true') && format('docker-build-auto-{0}', matrix.variant) || format('docker-build-{0}-{1}', github.run_id, matrix.variant) }}
+      group: ${{ github.event_name != 'pull_request' && github.event_name != 'workflow_dispatch' && (github.event_name != 'schedule' || needs.check-upstream.outputs.should_build == 'true') && format('docker-build-auto-{0}', matrix.variant) || format('docker-build-{0}-{1}', github.run_id, matrix.variant) }}
       cancel-in-progress: false
     # The build itself never touches a GPU (buildx sandboxes RUN steps); docker-build
     # nodes are CI machines carrying a second runner instance dedicated to builds, so
@@ -237,7 +242,7 @@ jobs:
         run: |
           python3 docker/build.py \
             --variant ${{ matrix.variant }} \
-            --image-tag ${{ inputs.image_tag || 'dev' }} \
+            --image-tag ${{ github.event_name == 'pull_request' && format('custom --custom-tag pr-{0}', github.event.pull_request.number) || inputs.image_tag || 'dev' }} \
             --dockerfile ${{ inputs.dockerfile || 'docker/Dockerfile' }} \
             ${{ inputs.custom_tag && format('--custom-tag {0}', inputs.custom_tag) || '' }} \
             --push
@@ -245,12 +250,12 @@ jobs:
       - name: Point latest to current dev
         # schedule only: latest is published registry state, so — like prune — a [DEBUG]
         # simulate_schedule must not move it.
-        if: github.event_name == 'schedule'
+        if: github.event_name == 'schedule' || github.event_name == 'pull_request'
         run: |
-          docker buildx imagetools create -t "radixark/miles:latest${TAG_POSTFIX}" "radixark/miles:dev${TAG_POSTFIX}"
+          ${{ github.event_name == 'pull_request' && 'echo DRY-RUN:' || '' }} docker buildx imagetools create -t "radixark/miles:latest${TAG_POSTFIX}" "radixark/miles:dev${TAG_POSTFIX}"
 
       - name: Prune old dev tags
-        if: github.event_name == 'schedule'
+        if: github.event_name == 'schedule' || github.event_name == 'pull_request'
         run: |
           KEEP=20
           # A pinned dev-<ts> tag (see docs/developer/versions.md) must outlive this many
@@ -294,6 +299,7 @@ jobs:
                 echo "  Keeping ${TAG} (younger than ${MIN_AGE_DAYS} days)"
                 continue
               fi
+              if [ "${{ github.event_name }}" = "pull_request" ]; then echo "  DRY-RUN: would delete ${TAG}"; continue; fi
               HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
                 -H "Authorization: JWT ${TOKEN}" \
                 "https://hub.docker.com/v2/repositories/${IMAGE}/tags/${TAG}/")
@@ -314,7 +320,7 @@ jobs:
     needs: [build-and-push]
     if: |
       always() && github.repository == 'radixark/miles' &&
-      needs.build-and-push.result == 'failure' && github.event_name != 'workflow_dispatch'
+      needs.build-and-push.result == 'failure' && github.event_name != 'workflow_dispatch' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
