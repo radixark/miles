@@ -96,6 +96,8 @@ def _sparse_attention_bwd_kernel(
     num_stages,
     split_store,
     block_size=32,
+    max_block_H=None,
+    threads=None,
     indices_dtype=T.int32,
     dtype=T.bfloat16,
     accum_dtype=T.float32,
@@ -126,11 +128,13 @@ def _sparse_attention_bwd_kernel(
     H = H_kv
     padded_H = max(tilelang.math.next_power_of_2(H_kv), 16)
     is_rocm = os.getenv("MILES_HARDWARE_PLATFORM") == "rocm"
-    max_block_H = 32 if is_rocm and padded_H >= 64 else 64
+    if max_block_H is None:
+        max_block_H = 32 if is_rocm and padded_H >= 64 else 64
     block_H = min(max_block_H, padded_H)
     assert padded_H % block_H == 0
     NH = padded_H // block_H
-    threads = 256 if block_H >= (64 if is_rocm else 32) else 128
+    if threads is None:
+        threads = 256 if block_H >= (64 if is_rocm else 32) else 128
     BS = block_size
     NS = tilelang.cdiv(topk, block_size)
 
@@ -283,7 +287,22 @@ def _sparse_attention_bwd_kernel(
     return sparse_mla_bwd_kernel
 
 
-def sparse_attention_bwd(q, kv, o, do, indices, lse, d_v, *, sm_scale, num_stages, split_store):
+def sparse_attention_bwd(
+    q,
+    kv,
+    o,
+    do,
+    indices,
+    lse,
+    d_v,
+    *,
+    sm_scale,
+    num_stages,
+    split_store,
+    block_size=32,
+    max_block_H=None,
+    threads=None
+):
     """Shapes as in sparse_attention_fwd, plus o/do [B, S, H, d_v] and lse [B, S, H].
     Returns dq [B, S, H, d_v + d_tail] bf16, dkv [B, S_kv, G, d_v + d_tail] bf16 and delta [B, S, H] fp32
     (rowsum(o * do), which the caller needs for the attention-sink gradient)."""
@@ -300,7 +319,17 @@ def sparse_attention_bwd(q, kv, o, do, indices, lse, d_v, *, sm_scale, num_stage
     delta = _bwd_preprocess_kernel(H, d_v)(o, do)
     dkv = torch.zeros_like(kv, dtype=torch.float32)
     dq = _sparse_attention_bwd_kernel(
-        H, d_v, D_tail, topk, kv_group, sm_scale, num_stages=num_stages, split_store=split_store
+        H,
+        d_v,
+        D_tail,
+        topk,
+        kv_group,
+        sm_scale,
+        num_stages=num_stages,
+        split_store=split_store,
+        block_size=block_size,
+        max_block_H=max_block_H,
+        threads=threads,
     )(q, kv, do, indices, lse, delta, dkv)
     dkv = _bwd_postprocess_kernel(d_v, D_tail, kv_group)(dkv)
     return dq, dkv, delta
