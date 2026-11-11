@@ -464,6 +464,20 @@ def test_a_caller_and_worker_sharing_the_secret_by_file_run_the_call(serve, monk
     assert httpx.get(f"{url}/health").status_code == 401
 
 
+def test_an_agent_on_a_worker_with_a_secret_cannot_read_it(serve, monkeypatch, tmp_path):
+    secret_file = tmp_path / "worker_secret"
+    secret_file.write_text("worker-s3cret")
+    monkeypatch.setenv("MILES_AGENT_WORKER_SECRET", "worker-s3cret")
+    monkeypatch.setenv("MILES_AGENT_WORKER_SECRET_FILE", str(secret_file))
+    names = ["MILES_AGENT_WORKER_SECRET", "MILES_AGENT_WORKER_SECRET_FILE"]
+
+    seen = _on_worker(
+        serve(), stubs.read_env, extra_env={"MILES_AGENT_WORKER_SECRET_FILE": "/forwarded"}, names=names
+    )
+
+    assert seen == {name: None for name in names}
+
+
 def test_the_worker_secret_is_never_forwarded_to_an_agent_by_value(monkeypatch):
     monkeypatch.setenv("MILES_AGENT_WORKER_SECRET", "worker-s3cret")
     monkeypatch.setenv("MILES_AGENT_WORKER_SECRET_FILE", "/secrets/worker")
