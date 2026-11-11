@@ -6,6 +6,8 @@ on:
       - main
     paths:
       - 'docker/Dockerfile'
+      - 'docker/Dockerfile.tpu'
+      - 'docker/tpu_patch/**'
       - 'docker/install-kube-tools.sh'
       - 'docker/verify_transformer_engine.py'
       - 'requirements.txt'
@@ -178,13 +180,22 @@ jobs:
     if: |
       always() &&
       (github.event_name != 'schedule' || needs.check-upstream.outputs.should_build == 'true')
-    # Automatic builds (schedule, push) run one at a time: a build outlasts the poll
-    # interval, and overlapping ones race to push dev / latest. A newer pending build
+    # Automatic builds (schedule, push) keep every rolling image current; a manual
+    # dispatch builds only the variant it picks.
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: ${{ fromJSON(github.event_name == 'workflow_dispatch' && format('["{0}"]', inputs.variant) || '["cu13", "tpu"]') }}
+    env:
+      # build.py's tag_postfix for the automatic variants: dev / latest, or dev-tpu / latest-tpu
+      TAG_POSTFIX: ${{ matrix.variant == 'tpu' && '-tpu' || '' }}
+    # Automatic builds of a variant run one at a time: a build outlasts the poll
+    # interval, and overlapping ones race to push its dev / latest. A newer pending build
     # replaces an older one, which is safe because builds clone branch HEADs when they
     # start. Manual dispatches and polls that skip the build get a per-run group, so
     # they never wait on, or cancel, an automatic build.
     concurrency:
-      group: ${{ github.event_name != 'workflow_dispatch' && (github.event_name != 'schedule' || needs.check-upstream.outputs.should_build == 'true') && 'docker-build-auto' || format('docker-build-{0}', github.run_id) }}
+      group: ${{ github.event_name != 'workflow_dispatch' && (github.event_name != 'schedule' || needs.check-upstream.outputs.should_build == 'true') && format('docker-build-auto-{0}', matrix.variant) || format('docker-build-{0}-{1}', github.run_id, matrix.variant) }}
       cancel-in-progress: false
     # The build itself never touches a GPU (buildx sandboxes RUN steps); docker-build
     # nodes are CI machines carrying a second runner instance dedicated to builds, so
@@ -222,7 +233,7 @@ jobs:
       - name: Build and push
         run: |
           python3 docker/build.py \
-            --variant ${{ inputs.variant || 'cu13' }} \
+            --variant ${{ matrix.variant }} \
             --image-tag ${{ inputs.image_tag || 'dev' }} \
             --dockerfile ${{ inputs.dockerfile || 'docker/Dockerfile' }} \
             ${{ inputs.custom_tag && format('--custom-tag {0}', inputs.custom_tag) || '' }} \
@@ -233,7 +244,7 @@ jobs:
         # simulate_schedule must not move it.
         if: github.event_name == 'schedule'
         run: |
-          docker buildx imagetools create -t radixark/miles:latest radixark/miles:dev
+          docker buildx imagetools create -t "radixark/miles:latest${TAG_POSTFIX}" "radixark/miles:dev${TAG_POSTFIX}"
 
       - name: Prune old dev tags
         if: github.event_name == 'schedule'
@@ -291,7 +302,7 @@ jobs:
             done
           }
 
-          prune_series '^dev-[0-9]{12}$'
+          prune_series "^dev${TAG_POSTFIX}-[0-9]{12}\$"
 
   # A failed automatic build leaves the published images behind their inputs until a
   # later build succeeds, so report it to the Miles CI Lark group on the first failure.
