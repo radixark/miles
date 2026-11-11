@@ -251,7 +251,6 @@ def _worker_env_patterns(args) -> tuple[str, ...]:
     return (
         *provider_env_names(),
         *(load_agent_sibling(args.custom_agent_function_path, "WORKER_ENV") or ()),
-        *args.custom_agent_function_worker_env,
     )
 
 
@@ -270,14 +269,6 @@ def _add_arguments(parser: argparse.ArgumentParser):
         type=str,
         default=None,
         help="The agent worker for --custom-agent-function-mode worker: its URL.",
-    )
-    parser.add_argument(
-        "--custom-agent-function-worker-env",
-        nargs="*",
-        default=[],
-        help="Env var names (fnmatch patterns) a recipe adds to those sent with each worker call for its agent "
-        "process: each sandbox provider's key-file and address vars, and the WORKER_ENV tuple beside the agent "
-        "function. Credentials are never sent by value. Paths among them must exist on the worker.",
     )
 
 
