@@ -152,10 +152,21 @@ def test_daytona_reclaim_timer_outlasts_the_trial_cap(tasks_dir, monkeypatch):
         haf.build_trial_config({"instance_id": "task-1", "agent_name": "mini-swe-agent"}, "http://s/v1", {})
 
 
-def test_reclaim_timers_are_daytona_only(tasks_dir, monkeypatch):
+def test_e2b_max_lifetime_outlasts_the_trial_cap(tasks_dir, monkeypatch):
+    """A sandbox Harbor keeps renewing must still end soon after the longest
+    trial could, and never while a trial runs."""
     monkeypatch.setenv("HARBOR_ENV_TYPE", "e2b")
+    monkeypatch.setenv("AGENT_TRIAL_TIMEOUT", "1200")
     cfg = haf.build_trial_config({"instance_id": "task-1", "agent_name": "mini-swe-agent"}, "http://s/v1", {})
-    assert cfg.environment.kwargs == {}
+    assert cfg.environment.kwargs == {"max_lifetime_secs": 3000}  # and none of Daytona's reclaim timers
+
+    monkeypatch.setenv("HARBOR_ENV_KWARGS", '{"max_lifetime_secs": 2400}')
+    cfg = haf.build_trial_config({"instance_id": "task-1", "agent_name": "mini-swe-agent"}, "http://s/v1", {})
+    assert cfg.environment.kwargs == {"max_lifetime_secs": 2400}  # the caller's value wins when it is safe
+
+    monkeypatch.setenv("HARBOR_ENV_KWARGS", '{"max_lifetime_secs": 1200}')
+    with pytest.raises(ValueError, match="mid-trial"):
+        haf.build_trial_config({"instance_id": "task-1", "agent_name": "mini-swe-agent"}, "http://s/v1", {})
 
 
 @pytest.mark.parametrize(
