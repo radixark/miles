@@ -6,12 +6,22 @@ import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 
-from miles.backends.training_utils.data.context_parallel import slice_log_prob_with_cp, slice_with_cp
+from miles.backends.training_utils.data.context_parallel import (
+    natural_to_local_cp_rows,
+    slice_log_prob_with_cp,
+    slice_with_cp,
+)
 from miles.backends.training_utils.data.multimodal import expand_multimodal_rollout_data_in_place
+from miles.backends.training_utils.data.token_space_media_process import (
+    TrainerProcessor,
+    compute_multimodal_train_inputs,
+    resolved_mrope_position_ids,
+    resolved_multimodal_train_inputs,
+)
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.platforms import current_platform
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
-from miles.utils.data import get_minimum_num_micro_batch_size, process_rollout_data
+from miles.utils.data import get_minimum_num_micro_batch_size, padded_token_count, process_rollout_data
 from miles.utils.dp_schedule import TrainParallelConfig
 from miles.utils.ft_utils.process_group_utils import GeneralPGUtil
 from miles.utils.object_store import ObjectStoreGetResult
@@ -38,28 +48,47 @@ def get_rollout_data(
     *,
     train_parallel_config: TrainParallelConfig,
     output_store_read: Callable | None = None,
+    sample_device: torch.device | None = None,
+    token_space_processor: TrainerProcessor | None = None,
 ) -> tuple[RolloutBatch, ObjectStoreGetResult]:
-    parallel_state = get_parallel_state()
+    """Fetch this rank's rollout shard; per-sample tokens, masks and log-probs go to `sample_device`.
+
+    `sample_device` defaults to the accelerator; `PaddedRows` keeps them on the host.
+    """
     # Fetch data through ray on CPU, not sure if this will be performance bottleneck.
     # Both first pp stage and the last pp stage will receive the data.
     rollout_data, store_get_result = process_rollout_data(
         args,
         rollout_data_ref,
-        dp_rank=parallel_state.effective_dp.rank,
+        dp_rank=get_parallel_state().effective_dp.rank,
         train_parallel_config=train_parallel_config,
         witness_info=witness_info,
         output_store_read=output_store_read,
     )
-    # move tokens to the device in advance
-    rollout_data["tokens"] = [
-        torch.tensor(t, dtype=torch.long, device=current_platform.current_device()) for t in rollout_data["tokens"]
-    ]
+    rollout_data = prepare_rollout_data(
+        args, rollout_data, sample_device=sample_device, token_space_processor=token_space_processor
+    )
+    return rollout_data, store_get_result
+
+
+def prepare_rollout_data(
+    args: Namespace,
+    rollout_data: RolloutBatch,
+    *,
+    sample_device: torch.device | None = None,
+    token_space_processor: TrainerProcessor | None = None,
+) -> RolloutBatch:
+    """This rank's shard, with its per-sample lists as tensors; see `get_rollout_data` for `sample_device`."""
+    if sample_device is None:
+        sample_device = current_platform.current_device()
+    parallel_state = get_parallel_state()
+    rollout_data["tokens"] = [torch.tensor(t, dtype=torch.long, device=sample_device) for t in rollout_data["tokens"]]
     rollout_data["loss_masks"] = [
-        torch.tensor(t, dtype=torch.int, device=current_platform.current_device()) for t in rollout_data["loss_masks"]
+        torch.tensor(t, dtype=torch.int, device=sample_device) for t in rollout_data["loss_masks"]
     ]
     if "rollout_mask_sums" in rollout_data:
         rollout_data["rollout_mask_sums"] = torch.tensor(
-            rollout_data["rollout_mask_sums"], dtype=torch.float32, device=current_platform.current_device()
+            rollout_data["rollout_mask_sums"], dtype=torch.float32, device=sample_device
         )
     if args.enable_witness:
         seq_witness_ids = rollout_data.pop("seq_witness_ids")
@@ -68,7 +97,24 @@ def get_rollout_data(
             for t, sid in zip(rollout_data["tokens"], seq_witness_ids, strict=True)
         ]
 
-    if "multimodal_train_inputs" in rollout_data:
+    if args.multimodal_token_space_processing and args.debug_rollout_only:
+        rollout_data.pop("multimodal_inputs", None)
+    elif args.multimodal_token_space_processing:
+        # A rollout without media ships no references, but its tokens still need the model's mRoPE positions.
+        multimodal_inputs = rollout_data.pop("multimodal_inputs", [None] * len(rollout_data["tokens"]))
+        token_space_train_inputs = compute_multimodal_train_inputs(
+            token_space_processor,
+            multimodal_inputs,
+            rollout_data["tokens"],
+            mm_processor_worker_num=args.trainer_mm_processor_worker_num,
+            # Megatron-Bridge and torch-native models place their media rows and rotate by themselves.
+            with_sglang_placement=args.train_backend == "megatron" and args.megatron_to_hf_mode == "raw",
+            device=current_platform.current_device(),
+        )
+        rollout_data["multimodal_train_inputs"] = token_space_train_inputs.multimodal_train_inputs
+        if token_space_train_inputs.mrope_position_ids is not None:
+            rollout_data["mrope_position_ids"] = token_space_train_inputs.mrope_position_ids
+    elif "multimodal_train_inputs" in rollout_data:
         # Move multimodal training tensors to the device in advance
         rollout_data["multimodal_train_inputs"] = [
             (
@@ -106,7 +152,7 @@ def get_rollout_data(
                         args.qkv_format,
                         rollout_data["max_seq_lens"][i] if args.qkv_format == "bshd" else None,
                     ),
-                    device=current_platform.current_device(),
+                    device=sample_device,
                     dtype=dtype,
                 )
                 for i, (value, total_length, response_length) in enumerate(
@@ -122,7 +168,7 @@ def get_rollout_data(
         rollout_data["rollout_routed_experts"] = [torch.from_numpy(r) for r in rollout_data["rollout_routed_experts"]]
     if "rollout_indexer_topk" in rollout_data:
         rollout_data["rollout_indexer_topk"] = [torch.from_numpy(r) for r in rollout_data["rollout_indexer_topk"]]
-    return rollout_data, store_get_result
+    return rollout_data
 
 
 def _prepare_loss_masks(
@@ -218,8 +264,9 @@ def get_batch(
         if unit_key in data_iterator.rollout_data:
             batch[unit_key] = data_iterator.rollout_data[unit_key]
 
-    # No-op safety net if batches reach get_batch without rollout-level preprocessing.
-    expand_multimodal_rollout_data_in_place(batch, qkv_format=qkv_format)
+    # Token-space train inputs rebuild in the background; wait for this micro-batch's samples.
+    if (multimodal_train_inputs := batch.get("multimodal_train_inputs")) is not None:
+        batch["multimodal_train_inputs"] = resolved_multimodal_train_inputs(multimodal_train_inputs)
 
     tokens = batch["tokens"]
     # use 0 as the pad token id should be fine?
@@ -284,7 +331,7 @@ def get_batch(
             tokens = torch.cat(tokens)
 
             # Always pad to reduce memory fragmentation and maybe make the computation faster
-            pad = (pad_size - tokens.size(0) % pad_size) % pad_size
+            pad = padded_token_count(tokens.size(0), pad_size) - tokens.size(0)
             if pad != 0:
                 tokens = F.pad(tokens, (0, pad), value=pad_token_id)
                 cu_seqlens.append(cu_seqlens[-1] + pad)
@@ -336,6 +383,11 @@ def get_batch(
             raise NotImplementedError
         return ids
 
+    mrope_position_ids = batch.pop("mrope_position_ids", None)
+    if mrope_position_ids is not None and (mrope_position_ids := resolved_mrope_position_ids(mrope_position_ids)):
+        assert qkv_format == "thd" and not allgather_cp, "mRoPE positions need the per-sample THD CP layout"
+        batch["position_ids"] = _pack_natural_position_ids(mrope_position_ids, cu_seqlens_host)
+
     if get_position_ids:
         position_ids_list = []
         for t in batch["unconcat_tokens"]:
@@ -368,13 +420,28 @@ def get_batch(
         sample_offsets = [0]
         for t in batch["unconcat_tokens"]:
             sample_offsets.append(sample_offsets[-1] + t.size(0))
+
+        def packed_rows(positions: torch.Tensor, sample_index: int) -> torch.Tensor:
+            if qkv_format == "thd" and not allgather_cp:
+                return natural_to_local_cp_rows(
+                    positions,
+                    sample_start=cu_seqlens_host[sample_index],
+                    sample_end=cu_seqlens_host[sample_index + 1],
+                    cp_size=cp_size,
+                    cp_rank=parallel_state.cp.rank,
+                )
+            return positions + sample_offsets[sample_index]
+
         multimodal_data = {}  # key -> concatenated tensor
         multimodal_num_items = {}  # key -> list of item counts per sequence
         for i, mm_input_dict in enumerate(multimodal_train_inputs):
             if mm_input_dict is not None:
                 for key, mm_tensor in mm_input_dict.items():
+                    # Sample-local token indices of tower output rows, one long entry per row in tower output order:
+                    # mm_image_positions and mm_video_positions from the token-space processor, mm_vision_positions
+                    # and mm_audio_positions from the Inkling expansion.
                     if key.endswith("_positions"):
-                        mm_tensor = mm_tensor + sample_offsets[i]
+                        mm_tensor = packed_rows(mm_tensor, i)
                     if key not in multimodal_data:
                         multimodal_data[key] = mm_tensor
                         multimodal_num_items[key] = [mm_tensor.size(0)]
@@ -385,6 +452,20 @@ def get_batch(
         batch["multimodal_num_items"] = multimodal_num_items
 
     return batch
+
+
+def _pack_natural_position_ids(sample_positions: list[torch.Tensor], cu_seqlens_host: tuple[int, ...]) -> torch.Tensor:
+    """Pack each sample's [num_tokens, 3] positions into the [3, 1, T] natural (not CP-sliced) packed row.
+
+    Each sample starts at its ``cu_seqlens`` boundary, the same packing the tokens get before the CP split;
+    Megatron's THD rotary picks each CP rank's rows from it. Padding keeps position 0: it only follows the
+    real tokens, so causal attention never lets them see it.
+    """
+    positions = sample_positions[0].new_zeros(cu_seqlens_host[-1], sample_positions[0].size(1))
+    for sample, start, end in zip(sample_positions, cu_seqlens_host, cu_seqlens_host[1:], strict=False):
+        assert sample.size(0) <= end - start, f"{sample.size(0)} positions for a {end - start}-token segment"
+        positions[start : start + sample.size(0)] = sample
+    return positions.T.unsqueeze(1)
 
 
 class DataIterator:
@@ -477,7 +558,9 @@ def get_data_iterator(
     - `data_iterators`: list of `DataIterator`, one per VPP stage (size 1 if VPP disabled)
     - `num_microbatches`: list[int], one per local step in the rollout (length = steps)
     """
-    expand_multimodal_rollout_data_in_place(rollout_data, qkv_format=args.qkv_format)
+    # Token-space tokens arrive expanded, and their train inputs may still be rebuilding.
+    if not args.multimodal_token_space_processing:
+        expand_multimodal_rollout_data_in_place(rollout_data, qkv_format=args.qkv_format)
 
     parallel_state = get_parallel_state()
 
@@ -532,11 +615,13 @@ def get_data_iterator(
         samples = rollout_data["total_lengths"]
         assert len(samples) == num_local_samples
         num_microbatches = []
+        # a fixed-shape trainer cannot run a microbatch above the cap, which the balanced partition ignores
+        num_microbatches_for = (
+            get_minimum_num_micro_batch_size if current_platform.dynamic_shapes else _num_microbatches_within_cap
+        )
         for i in range(num_steps_per_rollout):
             start, end = i * num_local_gbs, (i + 1) * num_local_gbs
-            num_microbatches.append(
-                get_minimum_num_micro_batch_size(samples[start:end], args.max_tokens_per_gpu * cp_size)
-            )
+            num_microbatches.append(num_microbatches_for(samples[start:end], args.max_tokens_per_gpu * cp_size))
 
         num_microbatches = torch.tensor(num_microbatches, dtype=torch.int, device=current_platform.current_device())
         GeneralPGUtil.create(dp_group).all_reduce(num_microbatches, dp_group, op=dist.ReduceOp.MAX)
@@ -575,3 +660,20 @@ def get_data_iterator(
         data_iterator,
         num_microbatches,
     )
+
+
+def _num_microbatches_within_cap(lengths: list[int], max_tokens: int) -> int:
+    """The fewest microbatches whose seqlen-balanced partition keeps each one within `max_tokens`.
+
+    First-fit only bounds the count from below: the balanced partition ignores the cap.
+    """
+    cap = max(max_tokens, max(lengths))
+    num = get_minimum_num_micro_batch_size(lengths, max_tokens)
+    while num < len(lengths) and _largest_partition(lengths, num) > cap:
+        num += 1
+    return num
+
+
+def _largest_partition(lengths: list[int], num_partitions: int) -> int:
+    partitions = get_seqlen_balanced_partitions(lengths, num_partitions, equal_size=False)
+    return max(sum(lengths[i] for i in partition) for partition in partitions)

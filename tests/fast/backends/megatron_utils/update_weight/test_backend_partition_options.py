@@ -34,21 +34,22 @@ class TestExportBackendOptions:
             )
 
     @pytest.mark.parametrize(
-        "swiglu,name,stride,dimension,expected",
+        "swiglu,quick_geglu,name,stride,dimension,expected",
         [
-            (True, "linear_fc1.weight", 1, -1, (2, 0)),
-            (True, "linear_fc1.weight", 2, 1, (2, 1)),
-            (False, "linear_fc1.weight", 1, -1, (1, -1)),
-            (True, "linear_fc2.weight", 1, 0, (1, 1)),
+            (True, False, "linear_fc1.weight", 1, -1, (2, 0)),
+            (True, False, "linear_fc1.weight", 2, 1, (2, 1)),
+            (False, True, "linear_fc1.weight", 1, -1, (2, 0)),
+            (False, False, "linear_fc1.weight", 1, -1, (1, -1)),
+            (True, False, "linear_fc2.weight", 1, 0, (1, 1)),
         ],
     )
-    def test_export_partition_metadata_follows_backend_swiglu_without_rewriting_valid_dimensions(
-        self, swiglu: bool, name: str, stride: int, dimension: int, expected: tuple[int, int]
+    def test_export_partition_metadata_follows_the_gated_activation_without_rewriting_valid_dimensions(
+        self, swiglu: bool, quick_geglu: bool, name: str, stride: int, dimension: int, expected: tuple[int, int]
     ) -> None:
-        """SwiGLU fixes missing grouped-FC1 metadata while preserving an explicit partition dimension."""
+        """A gated FC1 (SwiGLU or quick-GeGLU) fixes missing grouped-FC1 metadata but keeps an explicit dimension."""
         assert (
             _check_and_fix_partition(
-                args=Namespace(backend=Namespace(swiglu=swiglu)),
+                args=Namespace(backend=Namespace(swiglu=swiglu, quick_geglu=quick_geglu)),
                 name=name,
                 partition_stride=stride,
                 partition_dim=dimension,

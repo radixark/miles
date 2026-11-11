@@ -163,7 +163,10 @@ def get_debug_dump_args(*, dump_dir: str, enable_dumper: bool) -> str:
             f"--dumper-source-patcher-config-train {shlex.quote(str(_source_patcher_path()))} "
         )
 
-    return f"--save-debug-event-data {shlex.quote(str(Path(dump_dir) / EVENTS_DIRNAME))} {dumper_args}"
+    return (
+        f"--save-debug-event-data {shlex.quote(str(Path(dump_dir) / EVENTS_DIRNAME))} "
+        f"--log-inference-engine-weight-checksums {dumper_args}"
+    )
 
 
 def get_ft_args(

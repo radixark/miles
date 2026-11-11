@@ -1,7 +1,7 @@
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
@@ -31,7 +31,10 @@ class _ConversionRuntime:
         self.backend.model_type = model_type
         if self.fails:
             raise RuntimeError("model SDK failed")
-        return [torch.nn.Linear(1, 1)]
+        model = torch.nn.Linear(1, 1)
+        # GPTModel's vocab rows
+        model.vocab_size = 1
+        return [model]
 
     def save(self, *args: Any) -> None:
         assert self.backend is not None
@@ -102,8 +105,12 @@ def conversion_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _Conv
     monkeypatch.setattr(converter, "save_checkpoint", runtime.save)
 
     class _Bridge:
+        hf_config = SimpleNamespace(get_text_config=lambda: SimpleNamespace(vocab_size=1))
+
         @classmethod
-        def from_pretrained(cls, path: str, *, trust_remote_code: bool) -> "_Bridge":
+        def from_pretrained(
+            cls, path: str, *, trust_remote_code: bool, make_vocab_size_divisible_by: int
+        ) -> "_Bridge":
             runtime.bridge_calls.append((path, trust_remote_code))
             return cls()
 

@@ -1,5 +1,9 @@
-"""HF PEFT names for the torchtitan backend's LoRA adapter params, through the model's own
-state-dict adapter. Needs only torch, so the weight iterator imports without torchtitan."""
+"""HF PEFT names for the torchtitan backend's LoRA adapter params, through the model's own state-dict adapter.
+
+A fused projection (q/k/v, gate/up) carries one ``lora_a`` for all the HF projections it holds and stacks their
+``lora_b`` rows exactly like its base weight, so ``lora_b`` splits through the adapter the way the base weight does
+and each HF projection gets a copy of the shared ``lora_A``. Needs only torch, so the weight iterator imports without
+torchtitan."""
 
 from collections.abc import Iterator, Mapping
 
@@ -10,12 +14,16 @@ _PEFT_FACTOR_BY_TITAN_NAME = {"lora_a": "lora_A", "lora_b": "lora_B"}
 
 def iter_hf_adapter_tensors(sd_adapter, model_state: Mapping[str, torch.Tensor]) -> Iterator[tuple[str, torch.Tensor]]:
     """The adapter params in ``model_state`` under HF PEFT names (``...q_proj.lora_A.weight``)."""
-    for key, tensor in model_state.items():
+    for key, lora_b in model_state.items():
         parts = split_adapter_key(key)
-        if parts is None:
+        if parts is None or parts[1] != "lora_b":
             continue
-        projection, factor = parts
-        yield f"{hf_projection_name(sd_adapter, projection)}.{_PEFT_FACTOR_BY_TITAN_NAME[factor]}.weight", tensor
+        projection = parts[0]
+        lora_a = model_state[f"{projection}.lora_a.weight"]
+        for hf_name, hf_lora_b in sd_adapter.to_hf({f"{projection}.weight": lora_b}).items():
+            module = hf_name.removesuffix(".weight")
+            yield f"{module}.{_PEFT_FACTOR_BY_TITAN_NAME['lora_a']}.weight", lora_a
+            yield f"{module}.{_PEFT_FACTOR_BY_TITAN_NAME['lora_b']}.weight", hf_lora_b
 
 
 def is_adapter_key(key: str) -> bool:
@@ -31,18 +39,7 @@ def split_adapter_key(key: str) -> tuple[str, str] | None:
     return None
 
 
-def hf_projection_name(sd_adapter, projection: str) -> str:
-    """The HF module a titan projection exports as; LoRA needs a pure rename, since
-    the adapter factors cannot go through a split, a fuse or a permutation."""
-    probe = torch.empty(0)
-    hf_state = sd_adapter.to_hf({f"{projection}.weight": probe})
-    if len(hf_state) != 1 or next(iter(hf_state.values())) is not probe:
-        raise ValueError(
-            f"{projection} exports as {sorted(hf_state)} rather than one renamed HF projection; "
-            "the torchtitan backend cannot name a LoRA adapter for it"
-        )
-    return next(iter(hf_state)).removesuffix(".weight")
-
-
-def hf_export_names(sd_adapter, projection: str) -> list[str]:
-    return [name.removesuffix(".weight") for name in sd_adapter.to_hf({f"{projection}.weight": torch.empty(0)})]
+def hf_export_names(sd_adapter, projection: str, weight_shape: tuple[int, ...]) -> list[str]:
+    """The HF modules a titan projection's weight exports as; several for a fused projection."""
+    probe = torch.empty(weight_shape, device="meta")
+    return [name.removesuffix(".weight") for name in sd_adapter.to_hf({f"{projection}.weight": probe})]

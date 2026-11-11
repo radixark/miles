@@ -275,9 +275,11 @@ Requirements:
   forwards `return_outputs_via_store`; a router that drops it fails the rollout.
 - An engine buffer (`--output-store-local-buffer-size`, default 16gb) that holds one
   response's arrays. Indexer top-k dominates, about 0.5 MB per token on DeepSeek-V3.2, so
-  16gb fits a 32k-token response. A buffer too small for the longest sequence that
-  `--rollout-max-context-len`, or else `--rollout-max-response-len`, allows is rejected at
-  launch. Under RDMA, each engine pins its whole buffer in
+  16gb fits a 32k-token response. A buffer too small for the longest sequence known at
+  launch is rejected: `--max-seq-len` on `/generate`, one `--rollout-max-response-len`
+  response more under the session server, where an agent that stops at `--max-seq-len`
+  can still get a full response past it, or else `--rollout-max-response-len`. An agent
+  that ignores `--max-seq-len` can still send more than the check assumes. Under RDMA, each engine pins its whole buffer in
   host memory when it starts.
 - For RDMA engines, `device_name` in `--mooncake-store-init-kwargs`: SGLang reads no
   `MOONCAKE_*` variable.
@@ -295,8 +297,9 @@ can still store an object for one after that. A periodic sweep during the run is
 
 Rejected at launch: no replay array enabled, `--cluster-backend kubernetes`, PD
 disaggregation, external rollout engines, the legacy rollout, a custom convert function,
-multi-policy training, split deployments, `--debug-rollout-only`, `--multimodal-keys`, and
-saving (including `--dump-details`), loading or injecting debug rollout data.
+a custom `DataBuffer` (`--custom-async-data-buffer-path`), multi-policy training, split
+deployments, `--debug-rollout-only`, `--multimodal-keys`, and saving (including
+`--dump-details`), loading or injecting debug rollout data.
 
 Stored objects may not survive a restart, so on resume Miles does not replay untrained
 rollout batches that carry refs, or inline replay arrays saved without the option. It

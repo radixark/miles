@@ -56,7 +56,9 @@ class TestBackendIterationHooks:
         assert config.no_sync_func == (expected_no_sync if overlap else None)
         assert config.grad_sync_func == (expected_grad_sync if overlap and align else None)
         assert config.param_sync_func == (expected_param_sync if param_overlap and param_align else None)
-        assert config.finalize_model_grads_func is model_sdk.module.finalize_model_grads_with_empty_cache
+        assert config.finalize_model_grads_func.func is model_sdk.module.finalize_model_grads_with_empty_cache
+        # non-LoRA runs need no Bridge: they finalize with Megatron core
+        assert config.finalize_model_grads_func.keywords == {"finalize": model_sdk.module.finalize_model_grads}
 
 
 class TestBackendTrainLoopOptions:

@@ -195,6 +195,7 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
             if key in [
                 "tokens",
                 "multimodal_train_inputs",
+                "mrope_position_ids",
                 "loss_masks",
                 "sample_indices",
                 "rollout_ids",
@@ -266,6 +267,10 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
             else:
                 raise ValueError(f"Unsupported type: {type(val)} for key: {key}")
 
+        # The rollout producer owns raw_reward before filtering. Training sees only
+        # retained samples, possibly with post-processed rewards, so log it separately.
+        if "raw_reward" in log_dict:
+            log_dict["raw_reward_filtered"] = log_dict.pop("raw_reward")
         reduced_log_dict = gather_log_data("rollout", args, rollout_id, log_dict)
         if args.ci_test and not args.ci_disable_logprobs_checker and reduced_log_dict is not None:
             reduced_log_dict = strip_metrics_namespace(reduced_log_dict, trainer_model_id=args.trainer_model_id)
@@ -559,6 +564,7 @@ def log_train_step(
         for key, val in extra_metrics.items():
             log_dict_out[f"train/{role_tag}{key}"] = val
 
+    log_dict_out["rollout/step"] = compute_rollout_step(args, rollout_id)
     log_dict_out, step_key = namespace_metrics(
         log_dict_out,
         trainer_model_id=args.trainer_model_id,

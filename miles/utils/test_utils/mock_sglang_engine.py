@@ -8,7 +8,7 @@ from typing import Any
 
 import ray
 
-from miles.utils.misc import NodeProbeMixin, get_free_port
+from miles.utils.misc import NodeProbeMixin
 from miles.utils.test_utils.mock_sglang_http_server import MockSGLangHttpServer
 
 logger = logging.getLogger(__name__)
@@ -87,9 +87,9 @@ class MockSGLangEngine:
         if self._http_server is not None:
             self._http_server.close()
 
-    def _get_free_port_block(self, *, start_port: int, count: int) -> int:
+    def _get_free_port_block(self, *, start_port: int | None, count: int) -> int:
         self._record("_get_free_port_block", (), {"start_port": start_port, "count": count})
-        return get_free_port(start_port=start_port, consecutive=count)
+        return NodeProbeMixin._get_free_port_block(start_port=start_port, count=count)
 
     def _get_node_ip(self):
         self._record("_get_node_ip", (), {})

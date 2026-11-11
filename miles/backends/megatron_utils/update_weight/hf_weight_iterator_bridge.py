@@ -27,10 +27,8 @@ class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        from megatron.bridge import AutoBridge
-
         bridge_checkpoint = _select_bridge_checkpoint(self.args)
-        self._bridge = AutoBridge.from_hf_pretrained(bridge_checkpoint, trust_remote_code=True)
+        self._bridge = megatron_bridge_utils.load_auto_bridge(bridge_checkpoint)
         # Bridge may export official DSV4 checkpoint names, e.g. layers.0.attn.wq_a.weight,
         # while SGLang's model uses model.layers.0.self_attn.wq_a.weight.
         # Resolve the mapping once so postprocessing, quantization, and bucketing
@@ -105,6 +103,10 @@ class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
         return [(h, slice_lora_to_rank(h, w, adapter.rank)) for h, w in named_tensors]
 
     def _export_current_adapter(self) -> list:
+        return list(self.iter_current_adapter())
+
+    def iter_current_adapter(self):
+        """The exposed adapter's HF-named tensors, TP/EP gathered; Bridge broadcasts every PP stage's adapters to all stages."""
         with megatron_bridge_utils.patch_megatron_model(self.model):
             named_weights = self._bridge.export_adapter_weights(
                 self.model,
@@ -112,8 +114,9 @@ class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
                 show_progress=False,
                 **self._source_name_kwargs(self._bridge.export_adapter_weights),
             )
-            named_weights = self._postprocess_and_quantize(named_weights, "lora")
-            return [(h, w) for h, w, _m in named_weights if is_lora_weight_name(h)]
+            for h, w, _m in self._postprocess_and_quantize(named_weights, "lora"):
+                if is_lora_weight_name(h):
+                    yield h, w
 
     @staticmethod
     def _source_name_kwargs(export_fn) -> dict:
