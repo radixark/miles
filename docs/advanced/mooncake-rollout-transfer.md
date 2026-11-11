@@ -31,9 +31,11 @@ Before starting a Miles job:
 
 This backend imports the structured-object API from `mooncake.structured_object_store`
 (`FieldSchema`, `MooncakeBundleTransfer`, `export_ref`, `import_ref`), which Mooncake
-provides from 0.3.12.post1 on; earlier releases ship the module without these names. The
-Miles CUDA images use the Mooncake package that ships in the SGLang base image, and the
-ROCm images add Mooncake's Python files from `mooncake-transfer-engine-non-cuda` (see
+provides from 0.3.12.post1 on; earlier releases ship the module without these names. Use
+0.3.13 or newer for cleanup of already-removed bundle manifests
+([Mooncake#3374](https://github.com/kvcache-ai/Mooncake/pull/3374)). The Miles CUDA images
+use the Mooncake package that ships in the SGLang base image, and the ROCm images add
+Mooncake's Python files from `mooncake-transfer-engine-non-cuda` (see
 `docker/Dockerfile.rocm`). For a custom environment, install a Mooncake package that
 matches the CUDA runtime and is compatible with the Miles revision. Follow the
 [Mooncake installation guide](https://kvcache-ai.github.io/Mooncake/getting_started/build.html)
