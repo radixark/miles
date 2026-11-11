@@ -19,7 +19,7 @@ from miles.rollout.base_types import (
     compute_kv_cache_namespace,
 )
 from miles.rollout.generate_hub.single_turn import generate
-from miles.rollout.generate_utils.generate_endpoint_utils import policy_uses_routing_key
+from miles.rollout.generate_utils.generate_endpoint_utils import apply_sample_max_response_len, router_routes_by_key
 from miles.rollout.inference_rollout.compatibility import load_generate_function
 from miles.rollout.rm_hub import async_rm, batched_async_rm
 from miles.utils.async_utils import DynamicLimitSemaphore
@@ -52,8 +52,17 @@ class GenerateState:
         )
 
         self.generate_function = load_generate_function(args.custom_generate_function_path) or generate
+        self.sample_generate_functions: dict[str, Any] = {}
 
         self.reset()
+
+    def generate_function_for(self, path: str | None):
+        """The generate function a sample names, built once per path like the flag's; else the run-wide one."""
+        if path is None:
+            return self.generate_function
+        if path not in self.sample_generate_functions:
+            self.sample_generate_functions[path] = load_generate_function(path) or self.generate_function
+        return self.sample_generate_functions[path]
 
     def reset(self) -> None:
         self.aborted = False
@@ -79,6 +88,8 @@ async def generate_and_rm(
             assert sample.reward is not None
         return sample
 
+    sampling_params = apply_sample_max_response_len(sampling_params, sample)
+
     # dashboard lifecycle probe: the semaphore wait is the queue; attempt_end fires before reward
     sink = None if evaluation else TrajectoryLifecycle().sink
     if sink is not None:
@@ -97,7 +108,7 @@ async def generate_and_rm(
             if sink is not None:
                 sink.gen_start(sample)
             # per-sample override, e.g. an eval dataset naming its own generate function
-            generate_fn = load_generate_function(sample.generate_function_path) or state.generate_function
+            generate_fn = state.generate_function_for(sample.generate_function_path)
             output = await generate_fn(
                 GenerateFnInput(
                     state=state,
@@ -158,7 +169,7 @@ async def generate_and_rm_group(
     if state.aborted:
         return group
 
-    if policy_uses_routing_key(args):
+    if router_routes_by_key(args):
         for sample in group:
             if sample.routing_key is None:
                 sample.routing_key = str(uuid.uuid4())

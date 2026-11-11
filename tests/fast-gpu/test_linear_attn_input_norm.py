@@ -4,13 +4,14 @@ import sys
 
 import pytest
 import torch
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 register_cuda_ci(est_time=60, suite="stage-b-2-gpu-h200", labels=["precision"], hardware=["hopper", "blackwell"])
+register_rocm_ci(est_time=40, suite="nightly-stage-c-2-gpu-mi350", labels=["precision"])
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 
-from miles_plugins.models.qwen3_5 import gdn_input_layernorm  # noqa: E402
+from miles_plugins.models.qwen3_5.model import gdn_input_layernorm  # noqa: E402
 
 HIDDEN, EPS = 2048, 1e-6
 

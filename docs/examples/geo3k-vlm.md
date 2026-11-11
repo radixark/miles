@@ -82,6 +82,21 @@ MILES_SCRIPT_MODEL_NAME=Qwen3-VL-4B-Instruct ./examples/geo3k_vlm/run_geo3k_vlm.
 - `Qwen3-VL-30B-A3B-Thinking`
 - `Qwen3-VL-235B-A22B-Thinking`
 
+## Training with Token Space Processing
+
+Models whose SGLang build has a token-space strategy can run on the token-space processor instead of the Miles-side
+HF processor: SGLang expands one placeholder token per image and computes the vision features, and every trainer
+rank rebuilds the same tensors from the files under `--shared-media-dir` (`--multimodal-token-space-processing` with
+`--sglang-enable-token-space-processor`; Megatron backend only; on multi-node runs that directory must be a shared filesystem).
+One processor on both sides (zero train/rollout diff), one shared custom preprocessing cache, token-in/token-out (TITO) engines.
+
+```bash
+# Qwen3.8-27B (the Qwen3.5-27B architecture) on the plugin Qwen3.5 text model with its frozen vision tower
+python examples/geo3k_vlm/run_geo3k_qwen3_8_27b.py
+```
+
+The multi-turn recipe runs Qwen3.5-35B-A3B in token space, with a result: see [multi_turn](/examples/geo3k-vlm/multi-turn).
+
 ## Notes
 
 ### Reward Model Configuration

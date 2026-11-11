@@ -5,28 +5,29 @@ from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from miles.utils.external_utils import command_utils
 
 # MoE-expert LoRA smoke test on gpt-oss-20b (expert-only targets, bridge mode; CI-sized
-# version of examples/lora/run-gpt-oss-20B-megatron-moe-lora.sh). Runs both serving
-# combinations — {shared-outer + virtual-experts, per-expert + no-virtual-experts} — and
-# every combination must pass. Functionality, not accuracy; 2 GPUs (TP=2, EP=1).
+# version of examples/lora/run-gpt-oss-20B-megatron-moe-lora.sh). Runs every combination in
+# _CONFIGS and each must pass. Functionality, not accuracy; 2 GPUs (TP=2, EP=1).
 
 
 register_cuda_ci(
-    est_time=1600,
+    est_time=2000,
     suite="stage-c-2-gpu-h200",
     labels=["megatron", "model-scripts", "lora"],
     hardware=["hopper", "blackwell"],
     num_gpus=2,
 )
-register_rocm_ci(est_time=1600, suite="nightly-stage-c-2-gpu-mi350", labels=["megatron", "model-scripts", "lora"])
+register_rocm_ci(est_time=2000, suite="nightly-stage-c-2-gpu-mi350", labels=["megatron", "model-scripts", "lora"])
 
 MODEL_NAME = "gpt-oss-20b-bf16"
 MODEL_TYPE = "gpt-oss-20b"
 NUM_GPUS = 2
 
-# (name, experts_shared_outer_loras, virtual_experts_serving)
+# (name, lora_type, experts_shared_outer_loras, virtual_experts_serving)
 _CONFIGS = [
-    ("shared-outer + virtual-experts", True, True),
-    ("per-expert + no-virtual-experts", False, False),
+    # the only PR-tier model whose HF gate_up_proj is row-interleaved
+    ("lora + shared-outer + virtual-experts", "lora", True, True),
+    ("canonical + shared-outer + virtual-experts", "canonical_lora", True, True),
+    ("canonical + per-expert + no-virtual-experts", "canonical_lora", False, False),
 ]
 
 
@@ -39,7 +40,7 @@ def prepare():
     )
 
 
-def execute(shared_outer: bool, virtual_experts: bool):
+def execute(lora_type: str, shared_outer: bool, virtual_experts: bool):
     U = command_utils.default_config().create_backend()
     ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " "--megatron-to-hf-mode bridge "
 
@@ -47,6 +48,7 @@ def execute(shared_outer: bool, virtual_experts: bool):
         "--lora-rank 32 "
         "--lora-alpha 32 "
         "--lora-dropout 0.0 "
+        f"--lora-type {lora_type} "
         '--target-modules "gate_up_proj,down_proj" '
         "--sglang-lora-backend triton "
         f"{'--experts-shared-outer-loras ' if shared_outer else ''}"
@@ -130,11 +132,11 @@ if __name__ == "__main__":
     prepare()
     for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
         os.environ.pop(proxy_var, None)
-    for name, shared_outer, virtual_experts in _CONFIGS:
+    for name, lora_type, shared_outer, virtual_experts in _CONFIGS:
         print(f"[gpt-oss-moe-lora-ci] ===== combo: {name} =====", flush=True)
         # fresh ray/sglang between combos
         command_utils.default_config().create_backend().exec_command_cpu(
             "ray stop --force || true; pkill -9 sglang || true; sleep 10"
         )
-        execute(shared_outer, virtual_experts)
+        execute(lora_type, shared_outer, virtual_experts)
         print(f"[gpt-oss-moe-lora-ci] ===== combo PASSED: {name} =====", flush=True)

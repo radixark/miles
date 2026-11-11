@@ -21,6 +21,44 @@ def _make_generate_args() -> Namespace:
     return resolve_parse_boundary_configs(Namespace(**values))
 
 
+class TestTokenSpaceMaxSeqLen:
+    async def test_an_expanded_prompt_that_carries_the_sample_past_max_seq_len_is_trimmed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The engine expands <img> (9) into three tokens after max_new_tokens was budgeted from [1, 9, 2]; without
+        the cut the sample would reach the trainer longer than --max-seq-len."""
+        tokenizer = SimpleNamespace(
+            encode=lambda prompt, add_special_tokens: [1, 9, 2], decode=lambda ids, **kwargs: " ".join(map(str, ids))
+        )
+        monkeypatch.setattr(
+            sglang_rollout, "GenerateState", lambda state_args: SimpleNamespace(tokenizer=tokenizer, processor=None)
+        )
+
+        async def fake_post(url: str, payload: dict, headers: dict | None = None) -> dict:
+            return {
+                "text": "5 6 7",
+                "prompt_token_ids": [1, 9, 9, 9, 2],
+                "meta_info": {
+                    "finish_reason": {"type": "stop"},
+                    "output_token_logprobs": [(-0.1, 5), (-0.2, 6), (-0.3, 7)],
+                    "prompt_tokens": 5,
+                    "completion_tokens": 3,
+                },
+            }
+
+        monkeypatch.setattr(sglang_rollout, "post", fake_post)
+        args = _make_generate_args()
+        args.multimodal_token_space_processing = True
+        args.max_seq_len = 6
+        sample = Sample(prompt="p", multimodal_inputs={"images": ["/shared/a.png"]})
+
+        await sglang_rollout.generate(args, sample, {"max_new_tokens": 3})
+
+        assert sample.tokens == [1, 9, 9, 9, 2, 5]
+        assert sample.response_length == 1
+        assert sample.status == Sample.Status.TRUNCATED
+
+
 class TestGenerateExtraKey:
     def _patch(self, monkeypatch: pytest.MonkeyPatch) -> list[dict]:
         payloads: list[dict] = []

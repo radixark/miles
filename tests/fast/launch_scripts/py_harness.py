@@ -3,6 +3,7 @@ import inspect
 import os
 import re
 import subprocess
+import sys
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -14,7 +15,7 @@ from tests.fast.launch_scripts.sh_harness import REPO_ROOT, sanitize
 from tests.fast.utils.command_recorder import record_commands
 
 from miles.utils.external_utils import command_utils
-from miles.utils.external_utils.command_utils import base_backend
+from miles.utils.external_utils.command_utils import base_backend, legacy
 from miles.utils.external_utils.model_args_utils import _import_module_from_path
 
 FROZEN_RUN_ID = "260101-000000-000"
@@ -75,7 +76,12 @@ class PyLaunchScript:
 
 def iter_py_launch_scripts() -> list[PyLaunchScript]:
     paths = sorted(
-        [*(REPO_ROOT / "scripts").rglob("run_*.py"), REPO_ROOT / "examples/multi_lora/serve_qwen3_30b_a3b_tinker.py"]
+        [
+            *(REPO_ROOT / "scripts").rglob("run_*.py"),
+            REPO_ROOT / "examples/multi_lora/serve_qwen3_30b_a3b_tinker.py",
+            REPO_ROOT / "examples/geo3k_vlm/run_geo3k_qwen3_8_27b.py",
+            REPO_ROOT / "examples/geo3k_vlm/multi_turn/run_geo3k_vlm_multi_turn_token_space.py",
+        ]
     )
     return [PyLaunchScript(path=path, entrypoints=tuple(_entrypoint_names(path))) for path in paths]
 
@@ -141,6 +147,8 @@ def install_command_recorder(monkeypatch) -> Recording:
         return f"base64:<frozen-pseudo-file-{len(recording.pseudo_files)}>"
 
     monkeypatch.setattr(command_utils, "create_run_id", lambda: FROZEN_RUN_ID)
+    # A launcher on the legacy API reads the name bound there.
+    monkeypatch.setattr(legacy, "create_run_id", lambda: FROZEN_RUN_ID)
     monkeypatch.setattr(command_utils, "encode_pseudo_file", fake_encode_pseudo_file)
 
     return recording
@@ -148,7 +156,12 @@ def install_command_recorder(monkeypatch) -> Recording:
 
 def import_launch_script(path: Path) -> ModuleType:
     name = "miles_launch_script_" + path.relative_to(REPO_ROOT).with_suffix("").as_posix().replace("/", "_")
-    return _import_module_from_path(path, name)
+    # Run as `python scripts/<launcher>.py`, a launcher imports its helpers (scripts/muse_spark) from its own directory.
+    sys.path.insert(0, str(path.parent))
+    try:
+        return _import_module_from_path(path, name)
+    finally:
+        sys.path.remove(str(path.parent))
 
 
 @contextmanager
