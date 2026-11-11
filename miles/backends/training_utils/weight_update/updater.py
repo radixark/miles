@@ -75,7 +75,10 @@ class WeightUpdater:
             model_name=model_name,
             quantization_config=quantization_config,
         )
-        self._bind_protocol_iterator()
+        if self._uses_gpu_delta:
+            self._hf_weight_iterator.local_consumer = self.protocol.send_bucket
+            self._hf_weight_iterator.local_error_consumer = self.protocol.record_export_error
+            self._hf_weight_iterator.local_plan_getter = self.protocol.get_export_plan
         self.weights_getter = weights_getter
         self.is_lora = is_lora
         if is_lora:
@@ -83,12 +86,6 @@ class WeightUpdater:
         self._lora_sync_config = lora_sync_config
         self._registered_adapters: set[str] = set()
         self._receiver_pools = ReceiverPools()
-
-    def _bind_protocol_iterator(self):
-        if self._uses_gpu_delta:
-            self._hf_weight_iterator.local_consumer = self.protocol.send_bucket
-            self._hf_weight_iterator.local_error_consumer = self.protocol.record_export_error
-            self._hf_weight_iterator.local_plan_getter = self.protocol.get_export_plan
 
     def receiver_pool(self, pool_id: str):
         return self._receiver_pools.activate(self, pool_id)

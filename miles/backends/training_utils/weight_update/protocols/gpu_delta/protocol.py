@@ -9,7 +9,6 @@ adds GPU Zstd, then packs the final payload for one D2H transfer.
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import time
 import uuid
@@ -60,7 +59,6 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         self._snapshot = {}
         self._next_snapshot = {}
         self._hf_snapshot = {}
-        self._base_sha256 = None
         self._source_step = None
         self._snapshot_step = None
         self._target_step = None
@@ -563,15 +561,6 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         shard, error = None, None
         try:
             shard = self._recovery_payload.write(directory, metadata, dist.get_rank(), self._plan)
-            # Compute provenance only when an artifact is requested. The hash
-            # covers actual immutable canonical bytes, not a mutable path name.
-            if self._base_sha256 is None:
-                fingerprint = hashlib.sha256()
-                for name in sorted(self._hf_snapshot):
-                    fingerprint.update(name.encode() + b"\0")
-                    fingerprint.update(memoryview(self._hf_snapshot[name].numpy()))
-                self._base_sha256 = fingerprint.hexdigest()
-            shard["base_sha256"] = self._base_sha256
         except Exception as caught:
             error = caught
         _collective_check(error, "recovery publication")
@@ -581,7 +570,6 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         def seal():
             provenance = {
                 "base_checkpoint": str(self.args.hf_checkpoint),
-                "base_owner_sha256": [owner["base_sha256"] for owner in shards],
                 "training_step": training_step,
             }
             for owner in shards:

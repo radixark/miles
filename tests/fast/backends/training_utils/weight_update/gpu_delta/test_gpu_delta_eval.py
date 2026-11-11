@@ -12,6 +12,7 @@ import pytest
 
 from miles.backends.training_utils.weight_update.protocols.gpu_delta.eval import EvalSnapshotUpdater
 from miles.ray.rollout.eval_dispatch import EvalDispatcher
+from miles.ray.rollout.eval_fleet import EVAL_WEIGHT_LOAD_TIMEOUT_SECS, InferenceControllerEvalFleet
 
 
 def write_snapshot(path, hf_checkpoint, **overrides):
@@ -193,3 +194,28 @@ async def test_gpu_delta_eval_exports_coherent_snapshot_then_queues_generation(t
     finally:
         release.set()
         await dispatcher.drain()
+
+
+@pytest.mark.parametrize("outcome", ["success", "lost_reply", "stale_version"])
+@pytest.mark.asyncio
+async def test_eval_fleet_pins_gpu_delta_once_and_verifies_serving_version(outcome):
+    client = SimpleNamespace(
+        get_weight_version=AsyncMock(return_value="5" if outcome == "success" else "4"),
+        update_weights_from_disk=AsyncMock(),
+    )
+    fleet = InferenceControllerEvalFleet(
+        SimpleNamespace(update_weight_transfer_mode="gpu-delta", hf_checkpoint="/base", run_uuid="job"),
+        srv=SimpleNamespace(context_lock=asyncio.Lock(), api_clients=[client]),
+    )
+    fleet._gpu_delta.pin = AsyncMock(
+        side_effect=TimeoutError("lost activation reply") if outcome == "lost_reply" else None
+    )
+
+    assert await fleet._pin_fleet("/snap/step_5", "5") is (outcome == "success")
+
+    fleet._gpu_delta.pin.assert_awaited_once_with([client], "/snap/step_5", "5", EVAL_WEIGHT_LOAD_TIMEOUT_SECS)
+    client.update_weights_from_disk.assert_not_awaited()
+    if outcome == "lost_reply":
+        client.get_weight_version.assert_not_awaited()
+    else:
+        client.get_weight_version.assert_awaited_once()

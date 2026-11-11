@@ -194,9 +194,9 @@ of the next weight sync, which reuses that capture. A final save also produces a
 companion when no later sync runs. Owner payloads, `catalog.json`, named numeric
 columns in `metadata.safetensors`, and `manifest.json` live under the
 checkpoint iteration's `gpu_delta/` directory; `READY.json` appears only after
-the Megatron writer finishes. The manifest records the HF-base path, owner byte
-fingerprints, training step and separate transfer version. Ship the completed
-directory together with that unchanged HF base.
+the Megatron writer finishes. The manifest records the HF-base path, training step
+and separate transfer version. Both sides trust the same immutable HF prior;
+ship the completed directory together with that unchanged HF base.
 
 Receiver update fields, pause behavior and resource release are defined in the
 [control and lifecycle contract](../../../miles/backends/sglang_utils/gpu_delta/README.md#ownership-and-lifecycle).
@@ -252,8 +252,8 @@ For unwrapped codecs, the outer descriptor
 has `frames=[]` and equal encoded/decoded byte lengths: its payload is the
 aligned inner arena directly, without trailing padding. Raw tensors and omitted
 zero-XOR frames keep the same representation. SHA-256 authenticates final owner files by default.
-Ordinary updates do not hash old/new weights or intermediate inner-codec bytes;
-checkpoint/recovery artifacts additionally fingerprint the immutable HF base.
+Updates and checkpoint/recovery artifacts trust the immutable HF prior. They do
+not hash old/new weights or intermediate inner-codec bytes.
 Receiver preparation and the fixed DE/CUDA streaming pipeline are described in the
 [receiver contract](../../../miles/backends/sglang_utils/gpu_delta/README.md#fixed-decodeapply-pipeline).
 

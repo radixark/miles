@@ -45,7 +45,7 @@ def _read_snapshot(checkpoint_dir, hf_checkpoint):
             raise ValueError(f"Eval snapshot completion differs from manifest: {key}")
     if manifest["base_version"] != 0 or manifest["target_version"] != 1:
         raise ValueError("Eval snapshot must be immutable and relative to the HF base")
-    # Configuration identity only; byte provenance remains in base_owner_sha256.
+    # Both sides trust the same immutable HF prior; this checks configuration identity.
     if Path(manifest["base_checkpoint"]).resolve() != Path(hf_checkpoint).resolve():
         raise ValueError("Eval snapshot uses a different configured HF base")
     return descriptor

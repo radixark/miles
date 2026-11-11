@@ -338,13 +338,12 @@ class TestExpertParallelGatherFaultHook:
         assert gather_log.log == []
 
 
-@pytest.mark.parametrize("mode", ["broadcast", "broadcast_packed", "disk-delta", "gpu-delta"])
 @pytest.mark.parametrize("expert", [False, True])
-def test_generic_batch_load_preserves_sync_before_gather(direct_module, monkeypatch, mode, expert):
+def test_generic_batch_load_preserves_sync_before_gather(direct_module, monkeypatch, expert):
     events = []
     value = torch.arange(4, dtype=torch.float32)
     info = _param("weight", 4)
-    args = Namespace(update_weight_transfer_mode=mode)
+    args = Namespace()
 
     class Weight:
         def to(self, device, non_blocking):

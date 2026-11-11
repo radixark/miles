@@ -1,5 +1,6 @@
-"""GPU-delta companion saves share the Megatron checkpoint completion boundary."""
+"""GPU-delta checkpoints and eval snapshots share the ordinary completion boundary."""
 
+import inspect
 from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -138,3 +139,65 @@ def test_failed_checkpoint_delta_releases_temporary_offload_runtime(actor_module
     assert events == ["disable", "reload", "destroy", "enable"]
     # Only the previous save was finalized; a failed companion is never announced ready.
     worker.weight_updater.finish_checkpoint_delta.assert_called_once_with()
+
+
+@pytest.mark.parametrize("mode,eval_model", [("broadcast", True), ("gpu-delta", False)])
+def test_other_eval_modes_keep_full_hf_export(actor_module, mode, eval_model):
+    worker = _checkpoint_worker(
+        actor_module,
+        update_weight_transfer_mode=mode,
+        sglang=SimpleNamespace(models=[SimpleNamespace(name="eval")] if eval_model else []),
+    )
+    worker.export_hf = Mock()
+
+    inspect.unwrap(actor_module.MegatronTrainRayActor.export_eval_snapshot)(worker, 9, "/snapshot")
+
+    worker.export_hf.assert_called_once_with(9, "/snapshot")
+
+
+@pytest.mark.parametrize("offload_train,fails", [(False, False), (True, False), (True, True)])
+def test_eval_snapshot_preserves_identity_completion_and_allocator_lifetime(
+    actor_module, monkeypatch, tmp_path, offload_train, fails
+):
+    worker = _checkpoint_worker(
+        actor_module,
+        offload_train=offload_train,
+        sglang=SimpleNamespace(models=[SimpleNamespace(name="eval")]),
+    )
+    worker._last_rollout_id = 7
+    monkeypatch.setattr(actor_module.dist, "is_initialized", lambda: False)
+    monkeypatch.setattr(actor_module, "reload_process_groups", lambda: pytest.fail("dispatcher already onloaded"))
+    monkeypatch.setattr(actor_module, "destroy_process_groups", lambda: pytest.fail("dispatcher owns offload"))
+    events = []
+
+    @contextmanager
+    def disable():
+        events.append("disable")
+        try:
+            yield
+        finally:
+            events.append("restore")
+
+    monkeypatch.setattr(actor_module, "torch_memory_saver", SimpleNamespace(disable=disable))
+    path = tmp_path / "snapshot"
+
+    def publish(directory, rollout_id, version):
+        assert (rollout_id, version) == (7, 42)
+        assert events == (["disable"] if offload_train else [])
+        assert not (directory / ".complete").exists()
+        if fails:
+            raise RuntimeError("publication failed")
+        (directory / "gpu_delta").mkdir()
+        (directory / "gpu_delta" / "READY.json").write_text("{}")
+
+    worker.weight_updater.export_gpu_delta_snapshot.side_effect = publish
+    export = inspect.unwrap(actor_module.MegatronTrainRayActor.export_eval_snapshot)
+    if fails:
+        with pytest.raises(RuntimeError, match="publication failed"):
+            export(worker, 9, str(path))
+        assert not path.exists()
+    else:
+        export(worker, 9, str(path))
+        assert (path / "gpu_delta" / "READY.json").exists()
+        assert (path / ".complete").exists()
+    assert events == (["disable", "restore"] if offload_train else [])
