@@ -56,6 +56,8 @@ def compute_engine_launch_cmd(
     random_seed: int,
 ) -> str:
     _assert_launch_gate_served()
+    if args.use_sampling_support_replay:
+        _assert_sampling_support_replay_served()
 
     server_args_dict = _compute_server_args(
         args,
@@ -238,3 +240,26 @@ def _assert_launch_gate_served() -> None:
         "this sglang has no --gated-launch-port, and miles launches every inference engine through "
         "that gate; upgrade sglang to one that serves it"
     )
+
+
+# Request fields sampling-support replay sends on every training request (`--rollout-top-p` < 1 or
+# `--rollout-top-k` > 0): the realized support, and its log-probs in support mode.
+_SAMPLING_SUPPORT_REPLAY_REQUEST_FIELDS = ("return_sampling_mask", "sampling_logprobs_mode")
+
+
+@functools.cache
+def _assert_sampling_support_replay_served() -> None:
+    # Checked when the engine is launched: otherwise the run starts, and the first rollout fails on a
+    # request the engine rejects or a response without per-support log-probs.
+    from sglang.srt.managers.io_struct import GenerateReqInput
+
+    missing = [
+        name for name in _SAMPLING_SUPPORT_REPLAY_REQUEST_FIELDS if name not in _record_field_names(GenerateReqInput)
+    ]
+    if missing:
+        raise RuntimeError(
+            "sampling-support replay (--rollout-top-p below 1 or a positive --rollout-top-k) needs an sglang "
+            f"whose generate requests take {', '.join(missing)}, and this sglang does not "
+            "(sglang-miles before v0.5.20 lacks support-mode log-probs). Upgrade sglang, or sample with "
+            "--rollout-top-p 1 --rollout-top-k -1."
+        )
