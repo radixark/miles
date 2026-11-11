@@ -25,6 +25,7 @@ from miles.rollout.agentic.agent_function import (
     resolve_worker,
     rollout_abort_scope,
 )
+from miles.rollout.agentic.remote import SECRET_ENV_VAR
 from miles.rollout.agentic.rollout_limits import UNSHARED_ENV_VAR
 from miles.rollout.agentic.worker import create_app
 from miles.rollout.generate_hub import agentic_tool_call
@@ -465,3 +466,12 @@ def test_a_process_whose_start_was_aborted_while_queued_for_a_thread_still_exits
 
     assert done.returncode == 0, done.stderr
     assert done.stdout.split() == ["Cancelled"]
+
+
+def test_a_started_worker_that_holds_the_rollouts_secret_is_reached_with_it(monkeypatch):
+    monkeypatch.setenv(SECRET_ENV_VAR, "per-call-secret")
+    monkeypatch.setattr(per_call_worker, "_HEALTH_DEADLINE_S", 15.0)
+
+    reported = _on_started_worker(stubs.report_pid, worker="examples.experimental.agent_sandbox.local_start.start")
+
+    assert reported["pid"]
