@@ -36,7 +36,6 @@ class _Engine:
                     "identity": {"engine_id": engine_id, "rank_id": str(self.index), "host_cache_id": engine_id},
                     "state": "IDLE" if self.delta_version == 0 else "RESUMED",
                     "version": self.delta_version,
-                    "plan": {"tensors": list(self.protocol._plan.values())},
                 }
             ],
         }
@@ -54,6 +53,7 @@ class _Engine:
 
 def _setup(tmp_path, fail=False, frame_bytes=gpu_delta_publication.FRAME_BYTES):
     safetensors.numpy.save_file({"w": np.array([1, 2, 3, 4], dtype=np.uint8)}, tmp_path / "model.safetensors")
+    (tmp_path / "config.json").write_text("{}")
     protocol = gpu_delta.UpdateWeightFromGpuDelta(
         Namespace(
             hf_checkpoint=str(tmp_path),
@@ -65,17 +65,9 @@ def _setup(tmp_path, fail=False, frame_bytes=gpu_delta_publication.FRAME_BYTES):
         ),
         frame_bytes=frame_bytes,
     )
-    protocol._plan = {
-        "w": {
-            "name": "w",
-            "dtype": "U8",
-            "shape": [4],
-            "encoding": "raw_bytes",
-            "views": [{"id": "full", "slices": [[0, 4]]}],
-        }
-    }
+    protocol.get_export_plan()  # Read locally before any engine exists.
     protocol.is_sender = True
-    protocol._cohort = gpu_delta.gpu_delta_session.ReceiverCohort([], (), (), "plan")
+    protocol._receivers = gpu_delta.gpu_delta_session.ReceiverPool((), ())
     events = []
     protocol.rollout_engines = [_Engine(protocol, events, 0, fail), _Engine(protocol, events, 1)]
     protocol._engine_cell_ids = ("cell-0", "cell-1")
@@ -187,7 +179,7 @@ def test_checkpoint_reader_rejects_different_canonical_layout_before_rollout(tmp
     protocol, events = _setup(tmp_path)
     protocol._plan["w"].update(dtype=dtype, shape=shape)
     tensor = torch.zeros(shape, dtype=torch.float32 if dtype == "F32" else torch.uint8)
-    with pytest.raises(RuntimeError, match="Checkpoint tensor 'w' has dtype=U8, shape="):
+    with pytest.raises(RuntimeError, match="Checkpoint tensor metadata changed: w"):
         protocol.begin_sync(1, lambda materialize: [[("w", tensor)]])
     assert not protocol._baseline_captured and not events
 
@@ -196,14 +188,14 @@ def test_ue8m0_canonical_baseline_losslessly_reads_every_finite_exponent(tmp_pat
     exponents = np.arange(255, dtype=np.uint8)
     scales = np.exp2(exponents.astype(np.float64) - 127).astype(np.float32)
     safetensors.numpy.save_file({"scale": scales}, tmp_path / "model.safetensors")
-    reader = gpu_delta.disk_delta.make_tensor_reader(str(tmp_path))
+    reader = gpu_delta_publication.make_checkpoint_reader(str(tmp_path))
     spec = {"dtype": "U8", "shape": [255], "format": "fp8-block128-ue8m0", "checkpoint_dtype": "F32"}
     actual = gpu_delta_publication.read_canonical_tensor(reader, "scale", spec)
     np.testing.assert_array_equal(actual, exponents)
     assert actual.dtype == np.uint8
     with pytest.raises(ValueError, match="Unsupported GPU-delta checkpoint representation"):
         gpu_delta_publication.read_canonical_tensor(reader, "scale", {k: v for k, v in spec.items() if k != "format"})
-    with pytest.raises(ValueError, match="Checkpoint tensor 'scale' has dtype=F32"):
+    with pytest.raises(ValueError, match="Checkpoint tensor metadata changed: scale"):
         gpu_delta_publication.read_canonical_tensor(
             reader, "scale", {k: v for k, v in spec.items() if k != "checkpoint_dtype"}
         )
@@ -212,7 +204,7 @@ def test_ue8m0_canonical_baseline_losslessly_reads_every_finite_exponent(tmp_pat
 @pytest.mark.parametrize("value", [0.0, -1.0, 1.5, float("nan"), float("inf"), 2.0**-128])
 def test_ue8m0_canonical_baseline_rejects_rounding_or_invalid_values(tmp_path, value):
     safetensors.numpy.save_file({"scale": np.array([value], dtype=np.float32)}, tmp_path / "model.safetensors")
-    reader = gpu_delta.disk_delta.make_tensor_reader(str(tmp_path))
+    reader = gpu_delta_publication.make_checkpoint_reader(str(tmp_path))
     spec = {"dtype": "U8", "shape": [1], "format": "fp8-block128-ue8m0", "checkpoint_dtype": "F32"}
     with pytest.raises(ValueError, match="not exact positive finite UE8M0"):
         gpu_delta_publication.read_canonical_tensor(reader, "scale", spec)
@@ -298,8 +290,8 @@ def test_initial_delta_publishes_loaded_trainer_then_switches_to_cached_update_c
     monkeypatch.setattr(torch.Tensor, "record_stream", lambda *args: None)
     monkeypatch.setattr(gpu_delta.dist, "get_world_size", lambda: 1)
     monkeypatch.setattr(gpu_delta.dist, "gather_object", lambda shard, shards, **kwargs: shards.__setitem__(0, shard))
-    read_baseline = Mock(wraps=gpu_delta.disk_delta.make_tensor_reader(str(tmp_path)))
-    monkeypatch.setattr(gpu_delta.disk_delta, "make_tensor_reader", lambda _: read_baseline)
+    read_baseline = Mock(wraps=gpu_delta_publication.make_checkpoint_reader(str(tmp_path)))
+    monkeypatch.setattr(gpu_delta_publication, "make_checkpoint_reader", lambda _: read_baseline)
 
     protocol.connect(protocol.rollout_engines, None, [0, 1], ["cell-0", "cell-1"], None, None, None)
     assert set(protocol.cell_updaters_of_cell_id) == {"cell-0", "cell-1"}
@@ -323,7 +315,7 @@ def test_initial_delta_publishes_loaded_trainer_then_switches_to_cached_update_c
         publication = protocol.publish()
         assert protocol.codec == publication["codec"] == expected_codec
         assert publication["frame_bytes"] == frame_bytes
-        assert publication["plan_digest"] == protocol._cohort.plan_digest
+        assert publication["plan_digest"] == protocol._plan_digest
         assert publication["base_version"] == version - 1 and publication["target_version"] == version
         assert (
             protocol.publication_metrics["encoded_hash_write_s"]
@@ -374,11 +366,10 @@ def _gpu_pending(monkeypatch, fail_batch=None):
     sizes = {"d": 1, "b": 3, "c": 7, "a": 2}
     protocol._snapshot = {name: torch.zeros(size, dtype=torch.uint8) for name, size in sizes.items()}
     protocol._next_snapshot = {name: torch.empty(size, dtype=torch.uint8) for name, size in sizes.items()}
-    protocol._plan = {
-        name: {"dtype": "U8", "shape": [size], "views": [], "encoding": "xor_bytes"} for name, size in sizes.items()
-    }
+    protocol._plan = {name: {"dtype": "U8", "shape": [size], "encoding": "xor_bytes"} for name, size in sizes.items()}
     protocol._uncommitted = True
-    protocol._cohort = gpu_delta.gpu_delta_session.ReceiverCohort([], (), (), "plan")
+    protocol._plan_digest = "plan"
+    protocol._receivers = gpu_delta.gpu_delta_session.ReceiverPool((), ())
     protocol._engine_cell_ids = ()
     protocol.cell_updaters_of_cell_id = {}
     protocol._staging_stream = Mock()
@@ -433,20 +424,11 @@ def _gpu_pending(monkeypatch, fail_batch=None):
 
 
 def _start_update(protocol):
+    writer = protocol._writer
+    protocol._reset_sync()
+    protocol._writer = writer
     protocol._target_version = protocol._publication_version + 1
-    protocol._seen = set()
-    protocol._error = None
-    protocol._encode_wall_s = 0.0
-    protocol._encoded_transfer_bytes = dict.fromkeys(
-        ("baseline_h2d_bytes", "current_h2d_bytes", "baseline_d2h_bytes", "encoded_d2h_bytes"), 0
-    )
-    protocol._encoding_jobs = []
-    protocol._encoding_started = None
-    protocol._batch_remaining = [len(names) for names in protocol._gpu_batch_names]
     protocol._encoder_pool = ThreadPoolExecutor(max_workers=1)
-    protocol._gpu_batch_count = 0
-    protocol._bulk_encode_s = 0.0
-    protocol._raw_tail_wait_s = protocol._raw_cpu_write_s = 0.0
 
 
 def _export(protocol, names=None, value=7):
@@ -460,18 +442,23 @@ def test_ready_batches_overlap_export_without_waiting_for_earlier_incomplete_bat
     encoding_started, later_exported = threading.Event(), threading.Event()
     encode = protocol._gpu_encoder.encode_device.side_effect
     caller = threading.get_ident()
+    inputs = []
+    exported = {name: torch.full_like(value, 7) for name, value in protocol._snapshot.items()}
 
     def encode_while_exporting(tensors):
         assert threading.get_ident() != caller
+        inputs.extend(current for _, current in tensors)
         encoding_started.set()
         assert later_exported.wait(2)
         return encode(tensors)
 
     protocol._gpu_encoder.encode_device.side_effect = encode_while_exporting
-    _export(protocol, ["d", "c"])
+    for name in ("d", "c"):
+        protocol.send_bucket([(name, exported[name])])
     assert encoding_started.wait(2)  # c is ready; incomplete d+b must not block it.
     assert protocol._seen != protocol._snapshot.keys()
-    _export(protocol, ["b", "a"])
+    for name in ("b", "a"):
+        protocol.send_bucket([(name, exported[name])])
     later_exported.set()
     protocol.after_base_weights()
     assert protocol._encode_wall_s == sum([0.01] * 4)
@@ -491,12 +478,18 @@ def test_ready_batches_overlap_export_without_waiting_for_earlier_incomplete_bat
     )
     assert protocol._gpu_batch_count == 3 and not protocol._encoding_jobs
     assert all(torch.count_nonzero(value) == 0 for value in protocol._snapshot.values())
+    # The immediately ready batch reuses its current export allocation. Batches
+    # queued while it runs use snapshots, without retaining more GPU exports.
+    assert inputs[0].data_ptr() == exported["c"].data_ptr()
+    assert [value.data_ptr() for value in inputs[1:]] == [
+        protocol._next_snapshot[name].data_ptr() for name in ("d", "b", "a")
+    ]
 
 
 @pytest.mark.parametrize("fail_raw", [False, True])
 def test_raw_cpu_write_bypasses_gpu_batches_and_overlaps_compression(monkeypatch, single_rank, fail_raw):
     protocol, events = _gpu_pending(monkeypatch)
-    protocol._plan["scale"] = {"dtype": "F32", "shape": [], "views": [], "encoding": "raw_bytes"}
+    protocol._plan["scale"] = {"dtype": "F32", "shape": [], "encoding": "raw_bytes"}
     protocol._snapshot["scale"] = torch.zeros(4, dtype=torch.uint8)
     protocol._next_snapshot["scale"] = torch.empty(4, dtype=torch.uint8)
     protocol._prepare_gpu_schedule()
@@ -586,7 +579,7 @@ def test_gpu_baseline_swaps_only_after_successful_receiver_activation(monkeypatc
     protocol.after_base_weights()
     old, current = protocol._snapshot, protocol._next_snapshot
     identity = {"rank_id": "rank0", "engine_id": "engine-00000"}
-    protocol._cohort = gpu_delta.gpu_delta_session.ReceiverCohort([], ((identity,),), ("engine-00000",), "plan")
+    protocol._receivers = gpu_delta.gpu_delta_session.ReceiverPool(((identity,),), ("engine-00000",))
     protocol.rollout_engines = [object()]
     protocol._engine_cell_ids = ("cell-0",)
     protocol.cell_updaters_of_cell_id = gpu_delta.create_rollout_cell_updaters(
@@ -614,7 +607,7 @@ def test_gpu_baseline_swaps_only_after_successful_receiver_activation(monkeypatc
         assert protocol._next_snapshot is current
         if activation_fails:
             raise RuntimeError("uncertain receiver resume")
-        return _activation_result(protocol._cohort)
+        return _activation_result(protocol._receivers)
 
     monkeypatch.setattr(gpu_delta.gpu_delta_metrics, "activation_metrics", lambda value: {})
     monkeypatch.setattr(protocol, "publish", publish)
@@ -686,7 +679,7 @@ def test_failed_receiver_description_keeps_healthy_cohort_and_failed_cell(tmp_pa
     assert sorted(calls) == ["engine-00000", "engine-00001"]
     assert protocol.rollout_engines == original_clients[:1]
     assert protocol._engine_cell_ids == ("cell-0",)
-    assert protocol._cohort.engine_ids == ("engine-00000",)
+    assert protocol._receivers.engine_ids == ("engine-00000",)
     assert set(protocol.cell_updaters_of_cell_id) == {"cell-0", "cell-1"}
     assert not protocol.cell_updaters_of_cell_id["cell-0"].is_errored
     assert protocol.cell_updaters_of_cell_id["cell-1"].is_errored
@@ -734,6 +727,7 @@ def test_failed_receiver_keeps_healthy_progress_then_new_incarnation_recovers(tm
     assert set(protocol._committed_incarnations) == {"engine-00000"}
     assert protocol._publication_version == 1 and not protocol._uncommitted
     assert protocol._snapshot["w"].tolist() == [5, 6, 7, 8]
+    assert protocol._recovery_payload is None  # No replacement or checkpoint requested it yet.
 
     protocol.rollout_engines[1].index = "replacement"
     protocol.connect(protocol.rollout_engines, [1, 1], [0, 1], ["cell-0", "cell-1"], None, None, None)
@@ -752,7 +746,7 @@ def test_failed_receiver_keeps_healthy_progress_then_new_incarnation_recovers(tm
     ]
 
 
-def test_checkpoint_target_reuse_anchor_retention_and_background_overlap(tmp_path, single_rank, monkeypatch):
+def test_checkpoint_target_reuse_and_healthy_updates_skip_recovery_encoding(tmp_path, single_rank, monkeypatch):
     protocol = _ready_protocol(tmp_path, monkeypatch)
     exports = []
 
@@ -786,29 +780,16 @@ def test_checkpoint_target_reuse_anchor_retention_and_background_overlap(tmp_pat
     assert protocol.begin_sync(2, export, rollout_id=1) and protocol.requires_export
     protocol.send_bucket([("w", torch.tensor([9, 10, 11, 12], dtype=torch.uint8))])
     protocol.after_base_weights()
-    activation_started = threading.Event()
-    recovery_finished = threading.Event()
-    encode = protocol._cache_recovery_payload
-
-    async def overlapping_activate(clients, cohort, publication, weight_version=None, **options):
-        activation_started.set()
-        while not recovery_finished.is_set():
-            await asyncio.sleep(0.001)
-        return _activation_result(cohort)
-
-    def overlapping_encode():
-        assert activation_started.wait(2), "HTTP activation must start before recovery encoding finishes"
-        encode()
-        recovery_finished.set()
-
-    monkeypatch.setattr(gpu_delta.gpu_delta_session, "activate_publication", overlapping_activate)
-    monkeypatch.setattr(protocol, "_cache_recovery_payload", overlapping_encode)
+    encode = Mock(side_effect=AssertionError("Healthy updates must not encode an unused HF-relative payload"))
+    monkeypatch.setattr(protocol, "_cache_recovery_payload", encode)
     protocol.finalize(2)
+    encode.assert_not_called()
     assert protocol._hf_snapshot["w"].tolist() == [1, 2, 3, 4]
     assert protocol._snapshot["w"].tolist() == [9, 10, 11, 12]
     assert cached.raw["w"] == bytes([5, 6, 7, 8])
-    assert protocol._recovery_payload.raw["w"] == bytes([9, 10, 11, 12])
-    # Ordinary updates retain recovery bytes locally without writing an artifact.
+    assert protocol._recovery_payload is cached
+    assert protocol.update_weight_metrics["perf/gpu_delta/recovery_owner_encode_s"] == 0
+    # The earlier checkpoint remains intact; no recovery publication is needed.
     assert not (protocol._stream_dir / "recovery_v000002").exists()
 
 
@@ -830,14 +811,17 @@ def test_restarted_engine_uses_negotiated_update_and_retains_cache(
         if publication["base_version"] == 0 and publication["target_version"] == 2:
             assert clients == [protocol.rollout_engines[1]]
             assert cohort.engine_ids == ("engine-00001",)
-            assert cohort.participants == (protocol._cohort.participants[1],)
+            assert cohort.participants == (protocol._receivers.participants[1],)
             assert cohort.participants[0][0]["rank_id"] == "2"
             return await load(publication, weight_version)
         return _activation_result(cohort)
 
     monkeypatch.setattr(gpu_delta.gpu_delta_session, "activate_publication", activate)
+    # Checkpoints remain an explicit consumer of the cached HF-relative target.
+    protocol.prepare_checkpoint(tmp_path / "checkpoint-initial", 0, 17, _buckets)
+    protocol.finalize_checkpoint()
     assert protocol.begin_sync(17, _buckets, rollout_id=0)
-    protocol.send_bucket(next(_buckets(True)))
+    assert not protocol.requires_export
     protocol.after_base_weights()
     protocol.finalize(17)
     assert calls == [(("engine-00000", "engine-00001"), 0, 1)]
@@ -903,11 +887,11 @@ def test_restarted_engine_uses_negotiated_update_and_retains_cache(
 
 def test_participant_reply_order_does_not_change_engine_incarnation(tmp_path):
     protocol, _ = _setup(tmp_path)
-    cohort_type = gpu_delta.gpu_delta_session.ReceiverCohort
+    cohort_type = gpu_delta.gpu_delta_session.ReceiverPool
     participants = ({"rank_id": "a", "process": "one"}, {"rank_id": "b", "process": "two"})
-    protocol._cohort = cohort_type([], (participants,), ("engine",), "plan")
+    protocol._receivers = cohort_type((participants,), ("engine",))
     initial = protocol._incarnations()
-    protocol._cohort = cohort_type([], (participants[::-1],), ("engine",), "plan")
+    protocol._receivers = cohort_type((participants[::-1],), ("engine",))
     assert initial == protocol._incarnations()
 
 

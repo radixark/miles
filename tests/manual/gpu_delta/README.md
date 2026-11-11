@@ -107,8 +107,9 @@ python tests/e2e/megatron/test_glm5_2_744b_a40b_5layer_nvfp4_w4a16.py
 
 Publications use `/root/delta-updates/<run_id>/gpu_delta`. The test saves Megatron
 checkpoints with delta companions. It does not enable rollout fault tolerance or
-exercise engine restart: Miles currently requires partial-target P2P updates for
-that mode. Attention FP8 conversion remains disabled.
+exercise engine restart. GPU-delta receiver recovery uses the existing Miles
+rollout/weight-update fault-tolerance lifecycle; the ordinary five-layer test does
+not cover it. Attention FP8 conversion remains disabled.
 
 ## Startup delta
 
@@ -160,17 +161,15 @@ snapshot-based eval path.
 ## Recovery and checkpoint companions
 
 Each trainer owner keeps an immutable copy of its canonical HF-base bytes in
-addition to the rolling committed snapshot and pending target. After publishing
-an ordinary delta, receiver activation starts asynchronously while each owner
-compresses HF-base → current bytes with the initial-sync codec. This reuses the
-captured target and compression batches; it performs no second model export or
-payload gather. Compressed recovery bytes stay on their owners until needed.
-Training resumes after activation and this background work have both drained.
+addition to the rolling committed snapshot and pending target. Owners compress
+HF-base → current bytes only when a replacement or checkpoint needs them, using
+the initial-sync codec and the already captured target. Healthy updates perform
+no recovery compression. The result is cached for reuse at the same target step.
 
 For a fresh engine initialized from the HF checkpoint,
 the next update supplies a base-relative payload; existing engines receive
 the rolling delta. Both use the
-same update endpoint and negotiated participant identities. Recovery keeps the
+same update endpoint and captured participant identities. Recovery keeps the
 receiver cache for later updates. The sender settles every engine request before
 committing its rolling baseline. This requires live trainer snapshots and the
 same canonical plan. With `--use-fault-tolerance`, an in-flight receiver failure
@@ -184,18 +183,18 @@ all-target failure and dedicated-eval FT restrictions are unchanged.
 
 On an ordinary Megatron save, the stable target is captured and compressed ahead
 of the next weight sync, which reuses that capture. A final save also produces a
-companion when no later sync runs. Owner files and `manifest.json` live under the
+companion when no later sync runs. Owner payloads, `catalog.json`, named numeric
+columns in `metadata.safetensors`, and `manifest.json` live under the
 checkpoint iteration's `gpu_delta/` directory; `READY.json` appears only after
 the Megatron writer finishes. The manifest records the HF-base path, owner byte
 fingerprints, training step and separate transfer version. Ship the completed
 directory together with that unchanged HF base.
 
 The SGLang control endpoints are an internal interface to Miles: `get_gpu_delta_info`
-negotiates the plan and original participants; `update_weights_from_gpu_delta`
+reports original participant identities and current stream state; `update_weights_from_gpu_delta`
 accepts those participants, a session ID and the publication descriptor;
-`get_gpu_delta_status` inspects that session; `clear_gpu_delta_state` releases idle
-delta resources. The descriptor carries manifest path/SHA256, stream, base/target
-versions and plan digest. There is no separate manifest-only loading path.
+`clear_gpu_delta_state` releases idle delta resources. The descriptor carries
+manifest path/SHA256, stream, base/target versions and plan digest. There is no separate manifest-only loading path.
 The `validate_payload_hash` request option defaults to `true`; Miles supplies its
 configured policy for ordinary, recovery and eval updates through the shared
 activation path. SGLang uses the request policy instead of process environment.
@@ -203,14 +202,17 @@ Updates preserve an existing caller pause. `flush_cache` defaults to `true` for 
 and multimodal caches; set it to `false` only when the caller already owns cache invalidation.
 `abort_all_requests` defaults to `false`: in-flight requests are retracted and
 requeued at apply. Set it to `true` to abort them after preparation succeeds.
-Preparation leaves serving state unchanged. Delta buffers and codec setup are
+Preparation leaves serving state unchanged. Each rank replies on completion from
+its preparation worker; the tokenizer waits for the original participant set
+before dispatching apply. Preparation does not poll rank status or run planning
+on the scheduler thread. Delta buffers and codec setup are
 retained by default (`release_state=false`); `true` releases them after successful
 activation, preserving the phase receipts, committed version and model weights.
 An explicit `clear_gpu_delta_state` request can also release idle resources.
 APPLIED acknowledgements carry the original rank/publication identity and apply
 result; detailed metrics are returned once in the RESUMED receipts.
-Status inspection is diagnostic. An uncertain update requires replacing the
-failed receiver; it never triggers reconciliation or XOR replay on that process.
+An uncertain update requires replacing the failed receiver; it never triggers
+reconciliation or XOR replay on that process.
 
 ## Producer and receiver pipeline
 
@@ -227,8 +229,10 @@ Raw target writes run on one CPU worker concurrently with matrix GPU compression
 there is no scalar/vector branch inside the matrix compression loop.
 
 Matrix batches follow baseline callback order. When a batch's export D2H event
-completes, the encoder uploads its old/new bytes, computes XOR/change counts,
-and compresses all independent inner-codec frames in one call. Encoding can
+completes, the encoder uploads its old bytes and computes XOR/change counts.
+An immediately ready batch reuses current GPU tensors from the active export
+bucket; queued batches upload their pinned current snapshots. This bounds retained
+exporter allocations to one encoding batch. The encoder compresses all independent inner-codec frames in one call. Encoding can
 overlap later exports. Unchanged frames are omitted; incompressible changed
 frames retain the selected codec. Compact, 16-byte-aligned inner-codec tensor
 arenas remain in HBM across batches.
@@ -247,8 +251,13 @@ positive integer sizes at most 4 MiB, subject to nvCOMP alignment requirements.
 The receiver also checks actual encoded and decoded lengths against its device
 limit. Outer Zstd chunks remain at most 1 MiB.
 
-The manifest records the selected `codec`,
-explicit `frame_bytes`, natural tensor identity and outer chunk offsets/lengths.
+The manifest records the selected `codec`, explicit `frame_bytes`, publication
+identity, payload files, and authenticated catalog/metadata sidecars. `catalog.json`
+holds immutable tensor names, dtypes, shapes and canonical encodings;
+`metadata.safetensors`
+holds named numeric tensor, frame, outer-chunk and zero-gap columns. The receiver
+uses those columns directly and caches its rank-local binding table. Only changed
+tensors contribute work tiles; the Triton kernels remain independent of model shapes.
 For unwrapped codecs, the outer descriptor
 has `frames=[]` and equal encoded/decoded byte lengths: its payload is the
 aligned inner arena directly, without trailing padding. Raw tensors and omitted
@@ -281,8 +290,12 @@ remain cached.
 embeddings, the language-model head and other standalone tensors form three
 separate groups, omitting empty groups. GPU Zstd decompression is not part of this path.
 
-Miles negotiates the immutable plan and original participant cohort once when
-connecting; learned updates reuse that plan rather than sort and hash it again.
+The agreed prior is the immutable checkpoint inventory and canonical export format.
+Miles derives names, shapes, dtypes and encoding from that prior; it never requests
+layout plans or tensor views from rollout. SGLang independently binds canonical
+tensors to its local TP/EP slices, backend layouts and live buffers. Connection
+queries establish only participant identity and version state. Learned updates
+reuse the canonical contract and local bindings.
 Participant identities include an opaque engine-host encoded-cache identity.
 Independent engines have separate caches and no shared release barrier. The
 owner pool bounds queued payload groups to `4 * GPU_DELTA_CPU_WORKERS`. For wrapped
@@ -312,11 +325,11 @@ controller and commits the target for healthy receivers and future replacements.
 Without it, a receiver error fails the update. Successful activation alone does
 not prove full weight-content equality.
 
-For the ordinary delta of N matrix bytes, the sender transfers N new export bytes D2H plus old/new
-snapshots H2D (3N total), followed by final encoded D2H. Raw targets avoid both
-matrix H2D uploads. Background recovery compression additionally uploads the
-retained HF/current pair and returns its compressed bytes, without a second
-export D2H. Export, bulk compression, publication and activation enclose
+For the ordinary delta of N matrix bytes, the sender transfers N export bytes D2H
+and N previous-snapshot bytes H2D, plus current-snapshot H2D for batches that
+cannot reuse the active export bucket. Final encoded bytes return D2H. Raw targets
+avoid matrix H2D uploads. Recovery, when requested, additionally uploads the
+retained HF/current pair without a second export D2H. Export, bulk compression, publication and activation enclose
 trainer blocking. Receiver preparation runs before pause; inner decompression
 (direct-host DE or H2D plus CUDA decode) and in-place mutation run within the
 serving pause.
@@ -465,9 +478,9 @@ One invocation uses shared prepared inputs and an optional oracle, with two seri
 Bitcomp-Zstd arms by default: payload hashing on and off. Each stage releases its
 CUDA contexts before the next starts:
 
-1. For a new cache, start the receiver pair, record its canonical tensor plan,
-   then stop it. CPU workers construct each cumulative target once and write
-   disjoint cached ranges and the final oracle checkpoint.
+1. For a new cache, read the immutable checkpoint headers and config directly.
+   CPU workers construct each cumulative target once and write disjoint cached
+   ranges and the final oracle checkpoint; no receiver is needed for encoding.
 2. For each arm, read the prepared versions into bounded pinned buffers and
    encode them with Miles’ production `GpuBatchEncoder` and `PublicationWriter`,
    using that arm’s hash policy. Construction is shared; pinned input loading
@@ -485,7 +498,7 @@ requires the same base path/file sizes/modification times, canonical plan,
 seed, mutation algorithm, target ratio and version count, plus matching cached
 file sizes. This assumes immutable local artifacts; it does not rehash an entire
 checkpoint or every raw snapshot. Incomplete or mismatched caches fail without
-being overwritten. Fresh receivers still check the loaded canonical plan for
+being overwritten. Fresh receivers independently check canonical metadata and local bindings for
 every arm.
 
 Sender compression uses all visible GPUs by default; `--sender-gpus N` limits
@@ -597,7 +610,7 @@ sealed manifest SHA, canonical plan and original owner records before any receiv
 starts. It rejects symlinks, path escapes, partial seals, missing owners, changed
 settings and incomplete producer workflow. Missing prepared inputs fail without
 starting preparation or encoding. The existing production receiver rechecks the
-publication and its negotiated plan when consuming it. Prepared checkpoint bytes
+publication against its checkpoint inventory and local bindings when consuming it. Prepared checkpoint bytes
 retain the existing metadata/settings/size boundary; this does not claim every
 checkpoint byte was rehashed or that selected generation proves all weights equal.
 

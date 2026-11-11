@@ -8,58 +8,40 @@ import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from miles.utils.gpu_delta.publication import canonical_json, configured_skip_payload_hash, sha256
-
-
-def merge_plans(descriptions: Sequence[dict]) -> tuple[list[dict], str]:
-    """Merge canonical views, never receiver-specific physical layout maps."""
-    entries, rank_ids = {}, set()
-    for description in descriptions:
-        if not description["success"]:
-            raise RuntimeError(f"GPU-delta describe failed: {description['message']}")
-        for participant in description["participants"]:
-            rank_id = participant["identity"]["rank_id"]
-            if rank_id in rank_ids:
-                raise ValueError("Missing or duplicate original receiver identities")
-            rank_ids.add(rank_id)
-            for tensor in participant["plan"]["tensors"]:
-                name = tensor["name"]
-                spec = {key: tensor[key] for key in ("name", "dtype", "shape", "encoding")}
-                spec.update({key: tensor[key] for key in ("format", "checkpoint_dtype") if key in tensor})
-                entry = entries.setdefault(name, spec | {"views": {}})
-                if {key: value for key, value in entry.items() if key != "views"} != spec:
-                    raise ValueError(f"Receiver canonical plans differ for {name}")
-                for view in tensor["views"]:
-                    previous = entry["views"].setdefault(view["id"], view)
-                    if previous != view:
-                        raise ValueError(f"Receiver view IDs conflict for {name}")
-    if not rank_ids:
-        raise ValueError("Missing or duplicate original receiver identities")
-    plan = [entry | {"views": sorted(entry["views"].values(), key=lambda v: v["id"])} for entry in entries.values()]
-    plan.sort(key=lambda x: x["name"])
-    return plan, sha256(canonical_json(plan))
+from miles.utils.gpu_delta.publication import configured_skip_payload_hash
 
 
 @dataclass(frozen=True)
-class ReceiverCohort:
-    """Negotiated immutable engine membership and plan for one update stream."""
+class ReceiverPool:
+    """Current receiver identities; independent of the publication contract."""
 
-    plan: list[dict]
     participants: tuple[tuple[dict, ...], ...]
     engine_ids: tuple[str, ...]
-    plan_digest: str
 
 
-def negotiate_cohort(descriptions: Sequence[dict]) -> ReceiverCohort:
-    plan, digest = merge_plans(descriptions)
-    participants = tuple(tuple(p["identity"] for p in d["participants"]) for d in descriptions)
-    engine_ids = tuple(group[0]["engine_id"] for group in participants)
-    return ReceiverCohort(plan, participants, engine_ids, digest)
+def receiver_pool(descriptions: Sequence[dict]) -> ReceiverPool:
+    participants, engine_ids, rank_ids = [], [], set()
+    for description in descriptions:
+        if not description["success"]:
+            raise RuntimeError(f"GPU-delta admission failed: {description['message']}")
+        identities = tuple(row["identity"] for row in description["participants"])
+        if not identities:
+            raise ValueError("Missing or duplicate original receiver identities")
+        engine_id = identities[0]["engine_id"]
+        for identity in identities:
+            if identity["rank_id"] in rank_ids or identity["engine_id"] != engine_id:
+                raise ValueError("Missing or duplicate original receiver identities")
+            rank_ids.add(identity["rank_id"])
+        participants.append(identities)
+        engine_ids.append(engine_id)
+    if not participants or len(set(engine_ids)) != len(engine_ids):
+        raise ValueError("Missing or duplicate original receiver identities")
+    return ReceiverPool(tuple(participants), tuple(engine_ids))
 
 
 async def activate_publication(
     clients,
-    cohort: ReceiverCohort,
+    pool: ReceiverPool,
     publication,
     session_id: str | None = None,
     weight_version: str | None = None,
@@ -76,8 +58,8 @@ async def activate_publication(
     """
     started = time.monotonic()
     session_id = session_id or uuid.uuid4().hex
-    if len(clients) != len(cohort.engine_ids) or len(clients) != len(cohort.participants):
-        raise ValueError("GPU-delta client and cohort sizes differ")
+    if len(clients) != len(pool.engine_ids) or len(clients) != len(pool.participants):
+        raise ValueError("GPU-delta client and pool sizes differ")
     common = {
         key: publication[key]
         for key in ("manifest_path", "manifest_sha256", "stream_id", "base_version", "target_version", "plan_digest")
@@ -89,20 +71,20 @@ async def activate_publication(
     responses = await asyncio.gather(
         *[
             _activate_engine(client, common, participants, request_timeout)
-            for client, participants in zip(clients, cohort.participants, strict=True)
+            for client, participants in zip(clients, pool.participants, strict=True)
         ],
         return_exceptions=True,
     )
     failures = {
         engine_id: f"{type(response).__name__}: {response}"
-        for engine_id, response in zip(cohort.engine_ids, responses, strict=True)
+        for engine_id, response in zip(pool.engine_ids, responses, strict=True)
         if isinstance(response, BaseException)
     }
     if failures and not fault_tolerant:
         raise RuntimeError(f"GPU-delta activation requires receiver recovery: {failures}")
     completed = [
         (engine_id, response)
-        for engine_id, response in zip(cohort.engine_ids, responses, strict=True)
+        for engine_id, response in zip(pool.engine_ids, responses, strict=True)
         if not isinstance(response, BaseException)
     ]
     return {
@@ -113,7 +95,7 @@ async def activate_publication(
         "resumed_receipts": [receipt for _, response in completed for receipt in response["participants"]],
         "succeeded_engine_ids": [engine_id for engine_id, _ in completed],
         "failed_engines": failures,
-        "plan_digest": cohort.plan_digest,
+        "plan_digest": publication["plan_digest"],
     }
 
 

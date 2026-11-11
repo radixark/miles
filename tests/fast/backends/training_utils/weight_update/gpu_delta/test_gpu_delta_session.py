@@ -1,7 +1,6 @@
 """Independent engine update requests and failure boundaries without GPUs or HTTP."""
 
 import asyncio
-import copy
 from dataclasses import replace
 
 import pytest
@@ -20,25 +19,13 @@ def _setup(failure=None, failed_engine=1):
             }
             for rank in range(2)
         ]
-        views = [{"id": f"tp-{rank}", "slices": [[rank * 2, rank * 2 + 2]]} for rank in range(2)]
         descriptions.append(
             {
                 "success": True,
-                "participants": [
-                    {
-                        "identity": identity,
-                        "plan": {
-                            "tensors": [
-                                {"name": "w", "dtype": "U8", "shape": [4], "encoding": "xor_bytes", "views": [view]}
-                            ],
-                        },
-                    }
-                    for identity, view in zip(identities, views, strict=True)
-                ],
+                "participants": [{"identity": identity, "version": 0, "state": "IDLE"} for identity in identities],
             }
         )
         clients.append(_Engine(engine, identities, events, failure, failed_engine))
-    _, digest = session.merge_plans(descriptions)
     publication = {
         "codec": "snappy-zstd",
         "manifest_path": "/shared/version/manifest.json",
@@ -46,7 +33,7 @@ def _setup(failure=None, failed_engine=1):
         "stream_id": "stream",
         "base_version": 0,
         "target_version": 1,
-        "plan_digest": digest,
+        "plan_digest": "canonical-checkpoint-digest",
     }
     return clients, descriptions, publication, events
 
@@ -58,9 +45,6 @@ class _Engine:
         self.args = None
         self.calls = 0
         self.timings = {"prepare_s": 10.0 + index, "apply_s": 2.0, "resume_s": 3.0, "activation_s": 15.0 + index}
-
-    async def get_gpu_delta_status(self, session_id):
-        pytest.fail("A failed update must be quarantined, never reconciled or retried")
 
     async def update_weights_from_gpu_delta(self, **kwargs):
         self.calls += 1
@@ -119,10 +103,9 @@ def test_fast_engine_resumes_while_other_engine_still_prepares(monkeypatch, weig
     else:
         monkeypatch.delenv("GPU_DELTA_SKIP_PAYLOAD_HASH", raising=False)
     clients, descriptions, publication, events = _setup()
-    cohort = session.negotiate_cohort(descriptions)
-    monkeypatch.setattr(session, "merge_plans", lambda *args, **kwargs: pytest.fail("Immutable plan renegotiated"))
+    pool = session.receiver_pool(descriptions)
     result = asyncio.run(
-        session.activate_publication(clients, cohort, publication, session_id="s", weight_version=weight_version)
+        session.activate_publication(clients, pool, publication, session_id="s", weight_version=weight_version)
     )
     for client in clients:
         assert client.calls == 1
@@ -157,7 +140,7 @@ def test_update_failure_settles_other_engine_without_abort_or_replay(failure, fa
     clients, descriptions, publication, events = _setup(failure, failed_engine)
     with pytest.raises(RuntimeError, match="requires receiver recovery"):
         asyncio.run(
-            session.activate_publication(clients, session.negotiate_cohort(descriptions), publication, session_id="s")
+            session.activate_publication(clients, session.receiver_pool(descriptions), publication, session_id="s")
         )
     assert [client.calls for client in clients] == [1, 1]
     assert (1 - failed_engine, "resumed") in events
@@ -171,7 +154,7 @@ def test_failed_or_lost_reply_quarantines_only_that_engine_without_status_or_rep
     clients, descriptions, publication, events = _setup(failure)
     result = asyncio.run(
         session.activate_publication(
-            clients, session.negotiate_cohort(descriptions), publication, session_id="s", fault_tolerant=True
+            clients, session.receiver_pool(descriptions), publication, session_id="s", fault_tolerant=True
         )
     )
     assert set(result["failed_engines"]) == {"engine-1"}
@@ -203,7 +186,7 @@ def test_wrong_receipt_cannot_advance_a_failed_engine(field, value):
     clients[1].update_weights_from_gpu_delta = wrong_receipt
     result = asyncio.run(
         session.activate_publication(
-            clients, session.negotiate_cohort(descriptions), publication, session_id="s", fault_tolerant=True
+            clients, session.receiver_pool(descriptions), publication, session_id="s", fault_tolerant=True
         )
     )
     assert set(result["failed_engines"]) == {"engine-1"}
@@ -212,43 +195,24 @@ def test_wrong_receipt_cannot_advance_a_failed_engine(field, value):
     assert [client.calls for client in clients] == [1, 1]
 
 
-def test_common_plan_deduplicates_replicas_and_rejects_invalid_cohorts_before_preparation():
+def test_receiver_pool_contains_only_identity_and_rejects_duplicate_membership():
     clients, descriptions, publication, events = _setup()
-    plan, digest = session.merge_plans(descriptions)
-    assert len(plan) == 1 and len(plan[0]["views"]) == 2
-    assert digest == publication["plan_digest"]
-    broken = copy.deepcopy(descriptions)
-    broken[1]["participants"][0]["plan"]["tensors"][0]["views"][0]["slices"] = [[1, 2]]
-    with pytest.raises(ValueError, match="conflict"):
-        asyncio.run(session.activate_publication(clients, session.negotiate_cohort(broken), publication))
+    pool = session.receiver_pool(descriptions)
+    assert pool.engine_ids == ("engine-0", "engine-1")
+    assert pool.participants == tuple(tuple(client.identities) for client in clients)
+    assert set(vars(pool)) == {"engine_ids", "participants"}
     for invalid in ([], descriptions + descriptions):
         with pytest.raises(ValueError, match="Missing or duplicate original receiver identities"):
-            session.negotiate_cohort(invalid)
-    cohort = session.negotiate_cohort(descriptions)
-    for selected_clients, selected_cohort in (
-        (clients[:1], cohort),
-        (clients, replace(cohort, engine_ids=cohort.engine_ids[:1])),
-        (clients, replace(cohort, participants=cohort.participants[:1])),
+            session.receiver_pool(invalid)
+    for selected_clients, selected_pool in (
+        (clients[:1], pool),
+        (clients, replace(pool, engine_ids=pool.engine_ids[:1])),
+        (clients, replace(pool, participants=pool.participants[:1])),
     ):
-        with pytest.raises(ValueError, match="client and cohort sizes differ"):
-            asyncio.run(session.activate_publication(selected_clients, selected_cohort, publication))
+        with pytest.raises(ValueError, match="client and pool sizes differ"):
+            asyncio.run(session.activate_publication(selected_clients, selected_pool, publication))
     assert not events
     assert all(client.args is None for client in clients)
-
-
-@pytest.mark.parametrize("field,value", [("format", "fp8-block128-ue8m0"), ("checkpoint_dtype", "F32")])
-def test_common_plan_binds_optional_canonical_representation(field, value):
-    _, descriptions, _, _ = _setup()
-    previous, previous_digest = session.merge_plans(descriptions)
-    for description in descriptions:
-        for participant in description["participants"]:
-            participant["plan"]["tensors"][0][field] = value
-    plan, digest = session.merge_plans(descriptions)
-    assert field not in previous[0] and plan[0][field] == value and digest != previous_digest
-    del descriptions[1]["participants"][0]["plan"]["tensors"][0][field]
-    for ordered in (descriptions, descriptions[::-1]):
-        with pytest.raises(ValueError, match="Receiver canonical plans differ"):
-            session.merge_plans(ordered)
 
 
 client = test_sglang_api_client.client

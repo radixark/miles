@@ -10,6 +10,8 @@ import hashlib
 import json
 import math
 import os
+import re
+import struct
 import threading
 import time
 import uuid
@@ -18,6 +20,8 @@ from pathlib import Path
 
 import numpy as np
 import orjson
+from safetensors.numpy import load as load_columns
+from safetensors.numpy import save as save_columns
 
 FRAME_BYTES = 1 << 20
 CODECS = {
@@ -46,6 +50,95 @@ DTYPE_BYTES = {
     "I64": 8,
     "F64": 8,
 }
+
+
+def _checkpoint_locations(checkpoint):
+    """Select indexed checkpoint shards and reject ambiguous tensor names."""
+    checkpoint = Path(checkpoint)
+    index = checkpoint / "model.safetensors.index.json"
+    files = (
+        [checkpoint / name for name in sorted(set(json.loads(index.read_text())["weight_map"].values()))]
+        if index.exists()
+        else sorted(checkpoint.glob("*.safetensors"))
+    )
+    locations = {}
+    for path in files:
+        with path.open("rb") as source:
+            header_bytes = struct.unpack("<Q", source.read(8))[0]
+            header = json.loads(source.read(header_bytes))
+        for name, metadata in header.items():
+            if name == "__metadata__":
+                continue
+            if name in locations:
+                raise ValueError(f"Ambiguous canonical checkpoint tensor: {name}")
+            start, end = metadata["data_offsets"]
+            locations[name] = (
+                path,
+                8 + header_bytes + start,
+                end - start,
+                metadata["dtype"],
+                tuple(metadata["shape"]),
+            )
+    return locations
+
+
+def make_checkpoint_reader(checkpoint):
+    """Read bytes from the same indexed prior used by the canonical contract."""
+    locations = _checkpoint_locations(checkpoint)
+
+    def read(name, expected_dtype, expected_shape):
+        path, offset, size, dtype, shape = locations[name]
+        if dtype != expected_dtype or shape != expected_shape:
+            raise ValueError(f"Checkpoint tensor metadata changed: {name}")
+        with path.open("rb") as source:
+            source.seek(offset)
+            return np.frombuffer(source.read(size), dtype=np.uint8)
+
+    return read
+
+
+def read_checkpoint_plan(checkpoint):
+    """Canonical bytes agreed by the immutable HF checkpoint, not a receiver.
+
+    Frozen draft weights, computed rotary buffers and static activation
+    calibration are not trainer updates. Rank slicing and backend layouts are
+    receiver-local and never appear in this contract.
+    """
+    checkpoint = Path(checkpoint)
+    config = json.loads((checkpoint / "config.json").read_text())
+    quantization = config.get("quantization_config") or {}
+    block_fp8 = quantization.get("quant_method") == "fp8" and quantization.get("weight_block_size") == [128, 128]
+    locations = _checkpoint_locations(checkpoint)
+    plan = []
+    for name, (_, _, _, dtype, shape) in sorted(locations.items()):
+        layer = re.search(r"(?:^|\.)layers\.(\d+)\.", name)
+        if (layer and int(layer[1]) >= config["num_hidden_layers"]) or name.endswith(
+            ("rotary_emb.inv_freq", ".input_scale")
+        ):
+            continue
+        spec = dict(
+            name=name, dtype=dtype, shape=list(shape), encoding="raw_bytes" if len(shape) <= 1 else "xor_bytes"
+        )
+        weight_name = name.removesuffix("_scale_inv")
+        projection = re.search(r"\.(?:experts\.\d+|shared_experts)\.(?:gate|up|down)_proj\.weight$", weight_name)
+        if block_fp8 and projection and locations[weight_name][3] == "F8_E4M3":
+            spec["format"] = "fp8-block128-ue8m0"
+            if name.endswith(".weight_scale_inv"):
+                if dtype == "F32":
+                    spec["checkpoint_dtype"] = dtype
+                elif dtype != "U8":
+                    raise ValueError(f"Block128 scales require exact UE8M0 storage: {name}")
+                spec.update(dtype="U8", encoding="raw_bytes")
+            elif not name.endswith(".weight") or dtype != "F8_E4M3":
+                raise ValueError(f"Unsupported block128 canonical tensor: {name}")
+        plan.append(spec)
+    if not plan:
+        raise ValueError("GPU-delta checkpoint has no canonical tensors")
+    return plan
+
+
+def plan_digest(plan):
+    return sha256(canonical_json(sorted(plan, key=lambda spec: spec["name"])))
 
 
 def read_canonical_tensor(reader, name, spec):
@@ -90,18 +183,22 @@ def configured_skip_payload_hash() -> bool:
     return os.environ.get("GPU_DELTA_SKIP_PAYLOAD_HASH") == "1"
 
 
-def tensor_metadata(name: str, dtype: str, shape: list[int], views=None, encoding="xor_bytes") -> dict:
-    """Describe a canonical tensor from the negotiated receiver plan."""
-    return {
+def tensor_metadata(name, dtype, shape, encoding="xor_bytes", format=None, checkpoint_dtype=None):
+    """Describe canonical bytes without any receiver topology or layout."""
+    metadata = {
         "name": name,
         "dtype": dtype,
         "shape": list(shape),
         "nbytes": math.prod(shape) * DTYPE_BYTES[dtype],
         "byte_order": "little",
         "encoding": encoding,
-        "views": views if views is not None else [{"id": "full", "slices": [[0, n] for n in shape]}],
         "frames": [],
     }
+    if format is not None:
+        metadata["format"] = format
+    if checkpoint_dtype is not None:
+        metadata["checkpoint_dtype"] = checkpoint_dtype
+    return metadata
 
 
 def _write_exclusive(path: Path, content: bytes) -> None:
@@ -154,9 +251,9 @@ class PublicationWriter:
         self._lock = threading.Lock()
         self._entries: dict[str, dict] = {}
 
-    def add_raw_tensor(self, name: str, old, new, dtype: str, shape: list[int], views=None):
+    def add_raw_tensor(self, name, old, new, dtype, shape, format=None, checkpoint_dtype=None):
         """Write complete scalar/vector targets without XOR, frames or codecs."""
-        entry = tensor_metadata(name, dtype=dtype, shape=shape, views=views, encoding="raw_bytes")
+        entry = tensor_metadata(name, dtype, shape, "raw_bytes", format, checkpoint_dtype)
         previous, current = np.frombuffer(old, dtype=np.uint8), np.frombuffer(new, dtype=np.uint8)
         if previous.size != entry["nbytes"] or current.size != entry["nbytes"]:
             raise ValueError(f"Canonical tensor byte count differs for {name}")
@@ -177,9 +274,11 @@ class PublicationWriter:
             self._entries[name] = entry
         return entry
 
-    def add_encoded_tensor(self, name, frames, payload, outer, changed_bytes, dtype, shape, views=None):
+    def add_encoded_tensor(
+        self, name, frames, payload, outer, changed_bytes, dtype, shape, format=None, checkpoint_dtype=None
+    ):
         """Publish finalized matrix bytes; optional CPU hashing covers only final wire bytes."""
-        entry = tensor_metadata(name, dtype=dtype, shape=shape, views=views)
+        entry = tensor_metadata(name, dtype, shape, "xor_bytes", format, checkpoint_dtype)
         entry["changed_bytes"] = changed_bytes
         # The encoder owns frame construction and checks native sizes/statuses.
         entry["frames"] = frames
@@ -242,24 +341,135 @@ def seal_publication(directory, shards: Iterable[Mapping]) -> dict:
     files = [f for shard in shards for f in shard["files"]]
     if len({f["name"] for f in files}) != len(files):
         raise ValueError("Duplicate owner payload path")
-    manifest = metadata | {
-        "tensors": sorted(tensors, key=lambda t: t["name"]),
-        "files": sorted(files, key=lambda f: f["name"]),
-    }
-    # The descriptor authenticates these exact bytes. Keep canonical_json
-    # unchanged for the public plan-digest contract.
-    content = orjson.dumps(manifest, option=orjson.OPT_SORT_KEYS)
+    return write_publication_metadata(directory, metadata | {"tensors": tensors, "files": files})
+
+
+_CATALOG_FIELDS = ("name", "dtype", "shape", "nbytes", "encoding", "byte_order", "format", "checkpoint_dtype")
+_FRAME_FIELDS = ("encoded_offset", "encoded_bytes", "decoded_offset", "decoded_bytes")
+
+
+def write_publication_metadata(directory, manifest):
+    """Seal readable static catalog and named numeric columns, then the manifest.
+
+    Payload files already exist. This also supports explicit metadata-only conversion
+    of saved benchmark publications; receivers accept only the current wire format.
+    """
     directory = Path(directory)
+    entries = sorted(manifest["tensors"], key=lambda entry: entry["name"])
+    files = sorted(manifest["files"], key=lambda entry: entry["name"])
+    file_ids = {entry["name"]: i for i, entry in enumerate(files)}
+    catalog = {
+        "plan_digest": manifest["plan_digest"],
+        "tensors": [{key: entry[key] for key in _CATALOG_FIELDS if key in entry} for entry in entries],
+    }
+    columns = {
+        "tensors." + key: []
+        for key in (
+            "changed_bytes",
+            "payload_file",
+            "payload_offset",
+            "payload_nbytes",
+            "inner_nbytes",
+            "frame_end",
+            "outer_end",
+            "gap_end",
+        )
+    }
+    columns.update({group + "." + field: [] for group in ("frames", "outer_frames") for field in _FRAME_FIELDS})
+    columns.update({"gaps.offset": [], "gaps.nbytes": []})
+    for entry in entries:
+        raw = entry["encoding"] == "raw_bytes"
+        payload = entry.get("raw" if raw else "outer")
+        values = {
+            "changed_bytes": entry["changed_bytes"],
+            "payload_file": file_ids[payload["file"]] if payload else -1,
+            "payload_offset": payload["encoded_offset"] if payload else 0,
+            "payload_nbytes": payload["encoded_bytes"] if payload else 0,
+            "inner_nbytes": payload["decoded_bytes"] if payload and not raw else 0,
+        }
+        for key, value in values.items():
+            columns["tensors." + key].append(value)
+        for group, frames in (
+            ("frames", entry["frames"]),
+            ("outer_frames", payload.get("frames", []) if payload else []),
+        ):
+            for field in _FRAME_FIELDS:
+                columns[group + "." + field].extend(frame[field] for frame in frames)
+        columns["tensors.frame_end"].append(len(columns["frames.encoded_offset"]))
+        columns["tensors.outer_end"].append(len(columns["outer_frames.encoded_offset"]))
+        if not raw:
+            cursor = 0
+            for frame in entry["frames"]:
+                if cursor < frame["decoded_offset"]:
+                    columns["gaps.offset"].append(cursor)
+                    columns["gaps.nbytes"].append(frame["decoded_offset"] - cursor)
+                cursor = frame["decoded_offset"] + frame["decoded_bytes"]
+            if cursor < entry["nbytes"]:
+                columns["gaps.offset"].append(cursor)
+                columns["gaps.nbytes"].append(entry["nbytes"] - cursor)
+        columns["tensors.gap_end"].append(len(columns["gaps.offset"]))
+    header = {key: value for key, value in manifest.items() if key not in {"tensors", "files"}}
+    records = {}
+    for kind, filename, content in (
+        ("catalog", "catalog.json", orjson.dumps(catalog, option=orjson.OPT_SORT_KEYS)),
+        (
+            "metadata",
+            "metadata.safetensors",
+            save_columns({key: np.asarray(values, dtype="<i8") for key, values in columns.items()}),
+        ),
+    ):
+        _write_exclusive(directory / filename, content)
+        records[kind] = {"file": filename, "nbytes": len(content), "sha256": sha256(content)}
+    content = orjson.dumps(header | {"files": files, **records}, option=orjson.OPT_SORT_KEYS)
     temporary = directory / "manifest.json.pending"
     _write_exclusive(temporary, content)
-    # link is exclusive: even another completed writer cannot replace a version.
     os.link(temporary, directory / "manifest.json")
     temporary.unlink()
-    descriptor = metadata | {
-        "manifest_path": str((directory / "manifest.json").resolve()),
-        "manifest_sha256": sha256(content),
-    }
-    return descriptor
+    return header | {"manifest_path": str((directory / "manifest.json").resolve()), "manifest_sha256": sha256(content)}
+
+
+def read_publication_metadata(path):
+    """Expand named columns for benchmark/oracle inspection, not receiver preparation."""
+    path = Path(path)
+    manifest = orjson.loads(path.read_bytes())
+    values = {}
+    for kind in ("catalog", "metadata"):
+        record = manifest[kind]
+        source = (path.parent / record["file"]).resolve(strict=True)
+        if source.parent != path.parent.resolve() or source.stat().st_size != record["nbytes"]:
+            raise ValueError("GPU-delta metadata path or size differs")
+        raw = source.read_bytes()
+        if sha256(raw) != record["sha256"]:
+            raise ValueError("GPU-delta metadata SHA256 differs")
+        values[kind] = orjson.loads(raw) if kind == "catalog" else load_columns(raw)
+    columns = values["metadata"]
+    entries = values["catalog"]["tensors"]
+    starts = {key: np.r_[0, columns["tensors." + key][:-1]] for key in ("frame_end", "outer_end")}
+
+    def frames(group, end, i):
+        return [
+            {field: int(columns[group + "." + field][j]) for field in _FRAME_FIELDS}
+            for j in range(int(starts[end][i]), int(columns["tensors." + end][i]))
+        ]
+
+    for i, entry in enumerate(entries):
+        entry["changed_bytes"] = int(columns["tensors.changed_bytes"][i])
+        entry["frames"] = frames("frames", "frame_end", i)
+        file_id = int(columns["tensors.payload_file"][i])
+        if file_id >= 0:
+            payload = {
+                "file": manifest["files"][file_id]["name"],
+                "encoded_offset": int(columns["tensors.payload_offset"][i]),
+                "encoded_bytes": int(columns["tensors.payload_nbytes"][i]),
+            }
+            if entry["encoding"] == "raw_bytes":
+                entry["raw"] = payload
+            else:
+                entry["outer"] = payload | {
+                    "decoded_bytes": int(columns["tensors.inner_nbytes"][i]),
+                    "frames": frames("outer_frames", "outer_end", i),
+                }
+    return {key: value for key, value in manifest.items() if key not in {"catalog", "metadata"}} | {"tensors": entries}
 
 
 def write_checkpoint_ready(directory, descriptor):

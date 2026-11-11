@@ -516,9 +516,6 @@ class SGLangApiClient:
             payload["weight_version"] = weight_version
         return await self._make_request("update_weights_from_gpu_delta", payload)
 
-    async def get_gpu_delta_status(self, session_id):
-        return await self._make_request("get_gpu_delta_status", {"session_id": session_id})
-
     async def clear_gpu_delta_state(self):
         return await self._make_request("clear_gpu_delta_state", {})
 

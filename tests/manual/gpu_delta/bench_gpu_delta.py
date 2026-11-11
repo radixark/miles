@@ -46,11 +46,7 @@ import httpx
 import numpy as np
 import zstandard
 
-from miles.backends.training_utils.weight_update.protocols.gpu_delta.session import (
-    activate_publication,
-    merge_plans,
-    negotiate_cohort,
-)
+from miles.backends.training_utils.weight_update.protocols.gpu_delta.session import activate_publication, receiver_pool
 from miles.utils.gpu_delta.publication import (
     CODECS,
     DTYPE_BYTES,
@@ -59,6 +55,9 @@ from miles.utils.gpu_delta.publication import (
     canonical_json,
     configured_codec,
     configured_skip_payload_hash,
+    plan_digest,
+    read_checkpoint_plan,
+    read_publication_metadata,
     seal_publication,
     sha256,
 )
@@ -144,25 +143,25 @@ def _engine_specs(ports):
     ]
 
 
-def _validate_cohort(cohort, engine_count):
+def _validate_pool(pool, engine_count):
     size = 8 // engine_count
-    if sum(len(group) for group in cohort.participants) != 8 or len(cohort.participants) != engine_count:
+    if sum(len(group) for group in pool.participants) != 8 or len(pool.participants) != engine_count:
         raise ValueError("Expected eight original participants across the requested engines")
-    for engine, participants in enumerate(cohort.participants):
+    for engine, participants in enumerate(pool.participants):
         if (
             len(participants) != size
-            or cohort.engine_ids[engine] != f"engine-{engine:05d}"
+            or pool.engine_ids[engine] != f"engine-{engine:05d}"
             or {p["dp_rank"] for p in participants} != set(range(size))
             or {p["tp_rank"] for p in participants} != set(range(size))
             or any(p["pp_rank"] != 0 for p in participants)
         ):
             raise ValueError("Engine participant topology differs from the requested TP/DP/EP layout")
-    arena_ids = [{p["host_cache_id"] for p in participants} for participants in cohort.participants]
+    arena_ids = [{p["host_cache_id"] for p in participants} for participants in pool.participants]
     if any(len(ids) != 1 for ids in arena_ids) or len(set().union(*arena_ids)) != engine_count:
         raise ValueError("Each benchmark engine must own one distinct host arena")
 
 
-def _capture_gpu_processes(cohort, ports):
+def _capture_gpu_processes(pool, ports):
     """Untimed native PID/UUID observation, separate from requested GPU masks."""
     device_text = subprocess.check_output(
         ["nvidia-smi", "--query-gpu=index,uuid", "--format=csv,noheader,nounits"], text=True
@@ -179,7 +178,7 @@ def _capture_gpu_processes(cohort, ports):
         for pid, uuid in (line.split(",") for line in process_text.splitlines() if line.strip())
     ]
     joined = []
-    for spec, participants in zip(_engine_specs(ports), cohort.participants, strict=True):
+    for spec, participants in zip(_engine_specs(ports), pool.participants, strict=True):
         expected = {devices[int(index)] for index in spec["gpu_ids"].split(",")}
         actual = set()
         for participant in participants:
@@ -264,7 +263,7 @@ def _calibrate(plan, seed, target_ratio):
     samples = [t for t in plan if t["name"].endswith(".weight") and t["dtype"] in {"U8", "BF16", "F32"}]
     samples = samples[:: max(1, len(samples) // 24)][:24]
     if not samples:
-        raise ValueError("No supported mutable weights in receiver plan")
+        raise ValueError("No supported mutable weights in checkpoint inventory")
     low, high = 0.000001, 0.02
     for _ in range(16):
         rate = (low + high) / 2
@@ -332,7 +331,10 @@ def _prepare_inputs(args):
     started, cache = time.monotonic(), args.prepared_inputs
     settings = _prepared_settings(args)
     inventory_path = cache / "inventory" / "inventory.json"
-    plan, digest = merge_plans(json.loads(inventory_path.read_text())["descriptions"])
+    plan = read_checkpoint_plan(args.model)
+    digest = plan_digest(plan)
+    inventory_path.parent.mkdir()
+    _save(inventory_path, {"tensors": plan, "plan_digest": digest})
     base_index, index, canonical_bytes = _tensor_index(args.model), {}, 0
     for tensor in plan:
         spec = base_index[tensor["name"]]
@@ -402,8 +404,12 @@ def _load_prepared_inputs(args):
         if not path.is_file() or path.stat().st_size != file["nbytes"]:
             raise ValueError(f"Prepared input file is missing or has changed size: {path}")
     inventory = json.loads((cache / "inventory" / "inventory.json").read_text())
-    _, digest = merge_plans(inventory["descriptions"])
-    if digest != manifest["plan_digest"]:
+    digest = plan_digest(inventory["tensors"])
+    if (
+        digest != inventory["plan_digest"]
+        or digest != manifest["plan_digest"]
+        or inventory["tensors"] != read_checkpoint_plan(args.model)
+    ):
         raise ValueError("Prepared input inventory plan differs from READY")
     return manifest
 
@@ -439,12 +445,17 @@ def _fixture_snapshot(args, index, tensor, version, pinned=False):
 
 def _publication_accounting(publication):
     path = Path(publication["manifest_path"])
-    manifest = json.loads(path.read_text())
+    manifest = read_publication_metadata(path)
     payload_bytes = sum(item["nbytes"] for item in manifest["files"])
     inner_bytes = sum(frame["encoded_bytes"] for tensor in manifest["tensors"] for frame in tensor["frames"])
     outer_bytes = sum(tensor.get("outer", {}).get("encoded_bytes", 0) for tensor in manifest["tensors"])
     raw_bytes = sum(tensor.get("raw", {}).get("encoded_bytes", 0) for tensor in manifest["tensors"])
+    metadata_bytes = {
+        name + "_bytes": (path.parent / filename).stat().st_size
+        for name, filename in (("catalog", "catalog.json"), ("metadata", "metadata.safetensors"))
+    }
     sizes = {
+        **metadata_bytes,
         "raw_tensor_count": sum(tensor["encoding"] == "raw_bytes" for tensor in manifest["tensors"]),
         "raw_target_bytes": raw_bytes,
         "matrix_payload_bytes": outer_bytes,
@@ -454,7 +465,7 @@ def _publication_accounting(publication):
         "payload_file_bytes": payload_bytes,
         "alignment_bytes": payload_bytes - raw_bytes - outer_bytes,
         "manifest_bytes": path.stat().st_size,
-        "publication_bytes": payload_bytes + path.stat().st_size,
+        "publication_bytes": payload_bytes + path.stat().st_size + sum(metadata_bytes.values()),
     }
     return sizes
 
@@ -517,7 +528,13 @@ def _encode_version(args, owner, index, encoder, metadata, version):
             input_read_s += time.monotonic() - reading
             writing = time.monotonic()
             entry = writer.add_raw_tensor(
-                tensor["name"], before, after, dtype=tensor["dtype"], shape=tensor["shape"], views=tensor["views"]
+                tensor["name"],
+                before,
+                after,
+                dtype=tensor["dtype"],
+                shape=tensor["shape"],
+                format=tensor.get("format"),
+                checkpoint_dtype=tensor.get("checkpoint_dtype"),
             )
             publication_write_s += time.monotonic() - writing
             changed += entry["changed_bytes"]
@@ -548,7 +565,8 @@ def _encode_version(args, owner, index, encoder, metadata, version):
                 changed_bytes=count,
                 dtype=tensor["dtype"],
                 shape=tensor["shape"],
-                views=tensor["views"],
+                format=tensor.get("format"),
+                checkpoint_dtype=tensor.get("checkpoint_dtype"),
             )
             publication_write_s += time.monotonic() - writing
             changed += count
@@ -600,7 +618,7 @@ def _fixture(args):
 
     codec = configured_codec()
     inventory = json.loads(args.inventory.read_text())
-    plan, digest = merge_plans(inventory["descriptions"])
+    plan, digest = inventory["tensors"], inventory["plan_digest"]
     index = _read(args.prepared_inputs / "data" / "index.json")
     visible = torch.cuda.device_count()
     owner_count = visible if args.sender_gpus is None else args.sender_gpus
@@ -641,7 +659,7 @@ def _seal_fixture(args, plan, metadata, assignments, results):
         "input_cache_id": args.input_cache_id,
         "rounds": [],
         "calibration": "CPU Zstd level-1 sample-frame estimate; selected-codec size is measured, not forced to this ratio.",
-        "canonical_denominator": "Canonical tensors in the receiver plan; excludes frozen draft and other checkpoint entries.",
+        "canonical_denominator": "Canonical checkpoint/export tensors; excludes frozen draft and static checkpoint entries.",
         "changed_bytes_definition": "Unequal storage bytes, not changed bits or compressed size.",
         "codec": codec,
         "arm": args.arm_name,
@@ -690,7 +708,7 @@ _PUBLICATION_IDENTITY = (
     "frame_bytes",
     "payload_checksum_format",
 )
-_FIXTURE_PLAN_FIELDS = ("name", "dtype", "shape", "encoding", "views")
+_FIXTURE_PLAN_FIELDS = ("name", "dtype", "shape", "encoding", "format", "checkpoint_dtype")
 _PRODUCER_FILES = (
     "tests/manual/gpu_delta/bench_gpu_delta.py",
     "miles/utils/gpu_delta/encoder.py",
@@ -802,8 +820,12 @@ def _producer(spec_path, spec_sha, root, cache, args, metadata):
 
 
 def _check_manifest(path, descriptor, owners, plan, metadata_refs, payload_refs, validate_codec):
-    manifest, ref = _read_fixture_file(path, descriptor["manifest_sha256"], json_data=True)
+    header, ref = _read_fixture_file(path, descriptor["manifest_sha256"], json_data=True)
     metadata_refs.append(ref)
+    for kind in ("catalog", "metadata"):
+        record = header[kind]
+        metadata_refs.append(_read_fixture_file(path.parent / record["file"], record["sha256"]))
+    manifest = read_publication_metadata(path)
     validate_codec(manifest)  # Production codec/frame admission, unchanged.
     _require(all(manifest[k] == descriptor[k] for k in _PUBLICATION_IDENTITY), "Manifest identity differs")
     tensors, files = [], []
@@ -818,7 +840,7 @@ def _check_manifest(path, descriptor, owners, plan, metadata_refs, payload_refs,
     _require(manifest["tensors"] == sorted(tensors, key=lambda t: t["name"]), "Sealed tensors differ from owners")
     _require(manifest["files"] == sorted(files, key=lambda f: f["name"]), "Sealed files differ from owners")
     _require(
-        [{k: t[k] for k in _FIXTURE_PLAN_FIELDS} for t in manifest["tensors"]]
+        [{k: t[k] for k in _FIXTURE_PLAN_FIELDS if k in t} for t in manifest["tensors"]]
         == sorted(plan, key=lambda t: t["name"]),
         "Publication canonical plan differs",
     )
@@ -836,7 +858,7 @@ def _check_manifest(path, descriptor, owners, plan, metadata_refs, payload_refs,
 def _admit_saved_fixtures(args, prepared, plan, assignments, validate_codec):
     """Verify saved publications and return small immutable references, one per arm.
 
-    ``plan`` and ``assignments`` come from the benchmark's production merge_plans
+    ``plan`` and ``assignments`` come from the immutable checkpoint inventory
     and existing whole-layer partitioner. No current encoder is invoked here.
     """
     root, cache = _safe_fixture_path(args.reuse_fixtures), _safe_fixture_path(args.prepared_inputs)
@@ -854,8 +876,7 @@ def _admit_saved_fixtures(args, prepared, plan, assignments, validate_codec):
             value, metadata[relative] = _read_fixture_file(path, json_data=True)
             _require(value == prepared, "Prepared READY changed after admission")
         else:
-            # Inventory is ~381 MB. The production loader already parsed it;
-            # provenance needs its SHA, not a second in-memory JSON copy.
+            # Provenance needs the inventory SHA, not another parsed copy.
             metadata[relative] = _read_fixture_file(path)
     for file in prepared["files"]:
         p = _safe_fixture_path(cache / file["path"], cache)
@@ -1236,15 +1257,11 @@ async def _run(args, phase):
         descriptions = await asyncio.gather(
             *[c.get_gpu_delta_info(engine_id=f"engine-{i:05d}") for i, c in enumerate(clients)]
         )
-        cohort = negotiate_cohort(descriptions)
-        digest = cohort.plan_digest
-        _validate_cohort(cohort, len(clients))
-        _save(args.output / "gpu-processes.json", _capture_gpu_processes(cohort, args.ports))
+        pool = receiver_pool(descriptions)
+        digest = fixture["plan_digest"]
+        _validate_pool(pool, len(clients))
+        _save(args.output / "gpu-processes.json", _capture_gpu_processes(pool, args.ports))
         _save(args.output / "inventory.json", {"descriptions": descriptions, "plan_digest": digest})
-        if phase == "inventory":
-            return
-        if digest != fixture["plan_digest"]:
-            raise ValueError("Fixture plan no longer matches current loaded models")
         _save(args.output / "base-generation.json", await _generation(clients))
         for version in fixture["rounds"]:
             profiled = args.nsys and version["version"] == args.profile_version
@@ -1259,7 +1276,7 @@ async def _run(args, phase):
                         with nvtx.range("gpu_delta.capture_arming"):
                             await asyncio.sleep(0.2)
                         started = time.monotonic()
-                    receipt = await activate_publication(clients, cohort, version["publications"][codec])
+                    receipt = await activate_publication(clients, pool, version["publications"][codec])
                 result = {
                     "version": version["version"],
                     "coordinator_s": time.monotonic() - started,
@@ -1656,7 +1673,7 @@ def _arm_report(output, arm, oracle_records):
         raise ValueError("Sender owner plan differs from the fixture")
     inventory = _read(output / "receiver" / "inventory.json")
     if inventory["plan_digest"] != fixture["plan_digest"]:
-        raise ValueError("Receiver and fixture plans differ")
+        raise ValueError("Activation and fixture canonical digests differ")
     original = [rank["identity"] for engine in inventory["descriptions"] for rank in engine["participants"]]
     identities = {identity["rank_id"]: identity for identity in original}
     routes = {(identity["engine_id"], identity["dp_rank"]) for identity in original}
@@ -1867,7 +1884,6 @@ def _end_to_end(args):
         raise ValueError("Saved-delta apply requires the preserved prepared-input cache; encoding is disabled")
     if not reused:
         args.prepared_inputs.mkdir(parents=True)
-        _run_phase("inventory", args, args.prepared_inputs / "inventory", args.arms[0], records)
         _run_phase("prepare", args, args.prepared_inputs / "data", args.arms[0], records)
     prepared = _load_prepared_inputs(args)
     args.mutation_rate = prepared["rate"]
@@ -1884,7 +1900,7 @@ def _end_to_end(args):
         from sglang.srt.weight_sync.gpu_delta.host_worker import validate_codec
 
         started = time.monotonic()
-        plan, _ = merge_plans(_read(args.prepared_inputs / "inventory" / "inventory.json")["descriptions"])
+        plan = _read(args.prepared_inputs / "inventory" / "inventory.json")["tensors"]
         owners = [o for o in _partition_plan(plan, args.sender_gpus) if o["groups"]]
         assignments = [o | {"tensors": [t["name"] for t in o["tensors"]]} for o in owners]
         fixture_refs = _admit_saved_fixtures(args, prepared, plan, assignments, validate_codec)

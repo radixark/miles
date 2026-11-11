@@ -431,7 +431,7 @@ def test_gpu_delta_owner_failure_drains_later_gathers_and_reports_once(direct_mo
     ]
 
 
-def test_block128_export_uses_negotiated_compact_scales_and_preserves_other_tensors(
+def test_block128_export_uses_checkpoint_compact_scales_and_preserves_other_tensors(
     direct_module, gpu_delta_module, monkeypatch
 ):
     weight_name, scale_name, norm_name = "layer.weight", "layer.weight_scale_inv", "norm.weight"

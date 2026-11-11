@@ -302,7 +302,7 @@ def _assert_gpu_delta_weights_changed(args, version_dir, _rollout_engines):
     """Reject a successful-looking E2E whose learned publications were all no-ops."""
     import torch.distributed as dist
 
-    from miles.utils.gpu_delta.publication import configured_codec
+    from miles.utils.gpu_delta.publication import configured_codec, read_publication_metadata
 
     if dist.get_rank() != 0:
         return
@@ -319,7 +319,7 @@ def _assert_gpu_delta_weights_changed(args, version_dir, _rollout_engines):
     ordinary_codec = configured_codec()
     changed_bytes = []
     for version in range(1, last_version + 1):
-        manifest = json.loads((version_dir.parent / f"weight_v{version:06d}/manifest.json").read_text())
+        manifest = read_publication_metadata(version_dir.parent / f"weight_v{version:06d}/manifest.json")
         assert manifest["stream_id"] == current["stream_id"]
         assert manifest["base_version"] == version - 1 and manifest["target_version"] == version
         expected_codec = initial_codec if version <= startup_publications else ordinary_codec

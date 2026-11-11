@@ -14,7 +14,14 @@ import zstandard
 from tests.manual.gpu_delta.test_gpu_delta_nvcomp import decode
 
 from miles.utils.gpu_delta import encoder as gpu_delta_encoder
-from miles.utils.gpu_delta.publication import CODECS, FRAME_BYTES, PublicationWriter, seal_publication, sha256
+from miles.utils.gpu_delta.publication import (
+    CODECS,
+    FRAME_BYTES,
+    PublicationWriter,
+    read_publication_metadata,
+    seal_publication,
+    sha256,
+)
 
 
 def _decode(frames, payload, outer, old, codec):
@@ -131,6 +138,39 @@ def test_empty_and_all_unchanged_batches(codec):
     assert encoder.stream.query()
 
 
+def test_device_targets_avoid_reupload_and_keep_both_snapshots_immutable(monkeypatch):
+    device = torch.device("cuda", torch.cuda.current_device())
+    encoder = gpu_delta_encoder.GpuBatchEncoder(device, codec="bitcomp-zstd", frame_bytes=1 << 16)
+    old, current, inputs = _snapshots(1 << 16)
+    producer = torch.cuda.Stream(device=device)
+    with torch.cuda.stream(producer):
+        inputs = [
+            (before, after.to(device, non_blocking=True) if index % 2 == 0 else after)
+            for index, (before, after) in enumerate(inputs)
+        ]
+        ready = producer.record_event()
+    encoder.stream.wait_event(ready)
+    xor_frames = gpu_delta_encoder._xor_frames
+    addresses = []
+
+    def capture(previous, target, *args):
+        addresses.extend(value.data_ptr() for value in target)
+        return xor_frames(previous, target, *args)
+
+    monkeypatch.setattr(gpu_delta_encoder, "_xor_frames", capture)
+    results = encoder.finish_device(encoder.encode_device(inputs))
+    for index, ((before, after), result) in enumerate(zip(inputs, results, strict=True)):
+        frames, payload, outer, changed, metrics = result
+        np.testing.assert_array_equal(_decode(frames, payload, outer, old[index], "bitcomp-zstd"), current[index])
+        np.testing.assert_array_equal(before.numpy(), old[index])
+        np.testing.assert_array_equal(after.cpu().numpy(), current[index])
+        assert changed == int(np.count_nonzero(old[index] != current[index]))
+        assert metrics["current_h2d_bytes"] == (after.numel() if after.device.type == "cpu" else 0)
+        if after.device.type == "cuda":
+            assert addresses[index] == after.data_ptr()
+    assert encoder.stream.query()
+
+
 def test_tiled_xor_counts_each_wire_frame_and_partial_tile_exactly():
     device = torch.device("cuda", torch.cuda.current_device())
     sizes = [2 * FRAME_BYTES + (1 << 16) + 1, (1 << 16) - 1, (1 << 16) + 1]
@@ -186,12 +226,14 @@ def test_failed_batch_status_drains_stream_and_keeps_snapshots(stage, codec, mon
 
     monkeypatch.setattr(compressor, "compress", failed_status)
     old, current, inputs = _snapshots()
+    inputs[0] = (inputs[0][0], inputs[0][1].to(encoder.device))
+    encoder.stream.wait_stream(torch.cuda.current_stream())
     with pytest.raises(RuntimeError, match="compression failed"):
         encoder.finish_device(encoder.encode_device(inputs))
     assert pending.query() and encoder.stream.query()
     for index, (before, after) in enumerate(inputs):
         np.testing.assert_array_equal(before.numpy(), old[index])
-        np.testing.assert_array_equal(after.numpy(), current[index])
+        np.testing.assert_array_equal(after.cpu().numpy(), current[index])
 
 
 @pytest.mark.parametrize("codec", CODECS)
@@ -272,7 +314,7 @@ def test_owner_wide_finalization_roundtrip_only_transfers_final_bytes(frame_byte
 def _replay(publication, state, codec):
     path = Path(publication["manifest_path"])
     assert sha256(path.read_bytes()) == publication["manifest_sha256"]
-    manifest = json.loads(path.read_text())
+    manifest = read_publication_metadata(path)
     assert manifest["codec"] == codec
     payloads = {item["name"]: (path.parent / item["name"]).read_bytes() for item in manifest["files"]}
     for item in manifest["files"]:
@@ -338,7 +380,7 @@ def test_cached_recovery_payload_survives_target_and_encoder_reuse(tmp_path, mon
     matrices, raw = names[:4], names[4:]
     batches = [matrices[:2], matrices[2:]]
     plan = {
-        name: {"dtype": "U8", "shape": [1, value.numel()] if name in matrices else [value.numel()], "views": []}
+        name: {"dtype": "U8", "shape": [1, value.numel()] if name in matrices else [value.numel()]}
         for name, value in base.items()
     }
     encoder = gpu_delta_encoder.GpuBatchEncoder(torch.device("cuda", torch.cuda.current_device()), codec=codec)

@@ -1,8 +1,8 @@
-"""Cross-tensor GPU XOR/compression from immutable pinned CPU snapshots.
+"""Cross-tensor GPU XOR/compression from immutable canonical byte snapshots.
 
-One owner uploads a bounded batch and compresses its frames in one inner-codec
-call. Owner-wide finalization optionally adds Zstd and returns one pinned wire
-slab. The encoder does not hash or copy canonical weights back to the CPU.
+One owner uploads pinned baselines and reuses current GPU tensors when available.
+Owner-wide finalization optionally adds Zstd and returns one pinned wire slab.
+The encoder does not hash or copy canonical weights back to the CPU.
 """
 
 from __future__ import annotations
@@ -44,17 +44,19 @@ if triton is not None:
     _xor_count_kernel = triton.jit(_xor_count_kernel, do_not_specialize=["nframes"])
 
 
-def _validate_snapshots(tensors):
+def _validate_snapshots(tensors, device):
     for previous, current in tensors:
-        for value in (previous, current):
+        for index, value in enumerate((previous, current)):
             if (
-                value.device.type != "cpu"
-                or value.dtype != torch.uint8
+                value.dtype != torch.uint8
                 or value.ndim != 1
                 or not value.is_contiguous()
-                or (value.numel() and not value.is_pinned())
+                or not (
+                    (value.device.type == "cpu" and (not value.numel() or value.is_pinned()))
+                    or (index == 1 and value.device == device)
+                )
             ):
-                raise ValueError("GPU batch encoding requires contiguous pinned CPU uint8 snapshots")
+                raise ValueError("GPU batch encoding requires pinned CPU baselines and pinned CPU or device targets")
         if previous.numel() != current.numel():
             raise ValueError("GPU batch snapshots must have equal byte counts")
 
@@ -119,7 +121,7 @@ def _tensor_metrics(tensors, batch_metrics):
         dict(
             encode_wall_s=0.0,
             baseline_h2d_bytes=current.numel(),
-            current_h2d_bytes=current.numel(),
+            current_h2d_bytes=current.numel() if current.device.type == "cpu" else 0,
             baseline_d2h_bytes=0,
             encoded_d2h_bytes=0,
             metadata_wait_s=0.0,
@@ -191,11 +193,12 @@ def _device_results(tensors, descriptions, groups, changed, padding, metrics):
 
 
 class GpuBatchEncoder:
-    """One private stream for bounded batches of immutable pinned snapshots.
+    """One private stream for bounded batches of immutable canonical snapshots.
 
-    ``encode_device`` takes ``[(old_pinned_u8, new_pinned_u8), ...]``.
-    Callers establish the export-D2H dependency before H2D reads and must not
-    modify either input concurrently. Compact inner-codec HBM survives batches
+    ``encode_device`` takes ``[(old_pinned_u8, new_pinned_or_device_u8), ...]``.
+    Callers order this stream after input preparation and must not modify either
+    input concurrently. Device targets avoid an H2D copy; their allocations are
+    retained through the encoder's reads. Compact inner-codec HBM survives batches
     until ``finish_device`` returns the final pinned wire bytes. Inner frames
     are configurable; outer Zstd chunks stay at 1 MiB. The receiver checks
     actual encoded and decoded sizes against its codec/backend limit.
@@ -223,7 +226,7 @@ class GpuBatchEncoder:
             raise RuntimeError("GPU outer Zstd input alignment exceeds the wire contract")
 
     def encode_device(self, tensors):
-        _validate_snapshots(tensors)
+        _validate_snapshots(tensors, self.device)
         if not tensors:
             return []
         started = time.monotonic()
@@ -235,6 +238,9 @@ class GpuBatchEncoder:
             with torch.cuda.device(self.device), torch.cuda.stream(self.stream):
                 previous_gpu = [previous.to(self.device, non_blocking=True) for previous, _ in tensors]
                 current_gpu = [current.to(self.device, non_blocking=True) for _, current in tensors]
+                for _, current in tensors:
+                    if current.device.type == "cuda":
+                        current.record_stream(self.stream)
                 frames, owners, counts = _xor_frames(previous_gpu, current_gpu, self.frame_bytes, xor_metadata)
                 # The one batch may contain frames from many allocations and
                 # tensors. No per-tensor metadata readback serializes submission.
@@ -397,6 +403,22 @@ def _finished_results(tensors, groups, encoded_groups, arenas, offsets, transfer
     return results
 
 
+def append_encoded_tensor(writer, name, result, spec):
+    """Use the same canonical record for ordinary and HF-relative publications."""
+    frames, payload, outer, changed, _ = result
+    writer.add_encoded_tensor(
+        name,
+        frames,
+        payload,
+        outer,
+        changed_bytes=changed,
+        dtype=spec["dtype"],
+        shape=spec["shape"],
+        format=spec.get("format"),
+        checkpoint_dtype=spec.get("checkpoint_dtype"),
+    )
+
+
 @dataclass
 class RecoveryPayload:
     """Compressed matrices own their pinned wire buffers; raw targets own bytes.
@@ -427,14 +449,19 @@ class RecoveryPayload:
     def write(self, directory, metadata, owner, plan, base):
         writer = PublicationWriter(directory, owner=owner, codec=self.codec, frame_bytes=self.frame_bytes, **metadata)
         try:
-            for name, (frames, payload, outer, changed, _) in self.matrices:
-                spec = plan[name]
-                writer.add_encoded_tensor(
-                    name, frames, payload, outer, changed, spec["dtype"], spec["shape"], spec["views"]
-                )
+            for name, result in self.matrices:
+                append_encoded_tensor(writer, name, result, plan[name])
             for name, value in self.raw.items():
                 spec = plan[name]
-                writer.add_raw_tensor(name, base[name].numpy(), value, spec["dtype"], spec["shape"], spec["views"])
+                writer.add_raw_tensor(
+                    name,
+                    base[name].numpy(),
+                    value,
+                    spec["dtype"],
+                    spec["shape"],
+                    spec.get("format"),
+                    spec.get("checkpoint_dtype"),
+                )
             return writer.finish_shard()
         finally:
             writer.close()

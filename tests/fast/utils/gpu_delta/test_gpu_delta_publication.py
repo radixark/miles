@@ -76,7 +76,11 @@ def test_framed_publication_preserves_payload_ranges_and_final_file_hash(tmp_pat
         writer.add_raw_tensor("raw_tail", b"\0\0\0\0", b"1234", "F32", [])
         descriptor = writer.finish()
         manifest_bytes = (directory / "manifest.json").read_bytes()
-        manifest = json.loads(manifest_bytes)
+        manifest = publication.read_publication_metadata(directory / "manifest.json")
+        wire = json.loads(manifest_bytes)
+        assert "tensors" not in wire and "format" not in wire
+        assert wire["catalog"]["file"] == "catalog.json"
+        assert wire["metadata"]["file"] == "metadata.safetensors"
         blob = (directory / "owner-00000.bin").read_bytes()
         assert descriptor["manifest_sha256"] == hashlib.sha256(manifest_bytes).hexdigest()
         assert (
@@ -129,7 +133,7 @@ def test_concurrent_shards_and_raw_targets_have_exclusive_ownership(tmp_path):
             future.result()
     shards = [writer.finish_shard() for writer in writers]
     descriptor = publication.seal_publication(tmp_path, shards)
-    assert len(json.loads((tmp_path / "manifest.json").read_bytes())["tensors"]) == 8
+    assert len(publication.read_publication_metadata(tmp_path / "manifest.json")["tensors"]) == 8
     assert descriptor["target_version"] == 1
     with pytest.raises(FileExistsError):
         publication.seal_publication(tmp_path, shards)
@@ -137,17 +141,16 @@ def test_concurrent_shards_and_raw_targets_have_exclusive_ownership(tmp_path):
 
 def test_unicode_manifest_authenticates_written_bytes_without_changing_plan_json(tmp_path):
     name = "层.é.weight_scale"
-    view = {"id": "完整", "slices": []}
-    plan = {"name": name, "views": [view]}
-    expected_plan_bytes = b'{"name":"\\u5c42.\\u00e9.weight_scale","views":[{"id":"\\u5b8c\\u6574","slices":[]}]}'
+    plan = {"name": name}
+    expected_plan_bytes = b'{"name":"\\u5c42.\\u00e9.weight_scale"}'
     assert publication.canonical_json(plan) == expected_plan_bytes
     writer = _writer(tmp_path)
-    writer.add_raw_tensor(name, b"\0\0\0\0", b"1234", dtype="F32", shape=[], views=[view])
+    writer.add_raw_tensor(name, b"\0\0\0\0", b"1234", dtype="F32", shape=[])
     descriptor = writer.finish()
     manifest_bytes = (tmp_path / "manifest.json").read_bytes()
-    manifest = json.loads(manifest_bytes)
+    manifest = publication.read_publication_metadata(tmp_path / "manifest.json")
     assert manifest["tensors"][0]["name"] == name
-    assert manifest["tensors"][0]["views"] == [view]
+    assert "views" not in manifest["tensors"][0]
     assert descriptor["manifest_sha256"] == hashlib.sha256(manifest_bytes).hexdigest()
     assert publication.canonical_json(plan) == expected_plan_bytes
 
@@ -185,3 +188,67 @@ def test_raw_targets_bypass_compression_and_omit_unchanged(tmp_path, dtype, shap
         blob = (tmp_path / raw["file"]).read_bytes()
         assert blob[raw["encoded_offset"] : raw["encoded_offset"] + raw["encoded_bytes"]] == current.tobytes()
     assert writer.payload_metrics["matrix_inner_arena_bytes"] == writer.payload_metrics["matrix_payload_bytes"] == 0
+
+
+def test_checkpoint_prior_is_receiver_independent_and_keeps_frozen_tensors_out(tmp_path):
+    import torch
+    from safetensors.torch import save_file
+
+    stem = "model.layers.0.mlp.experts.0.gate_proj"
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "num_hidden_layers": 1,
+                "quantization_config": {"quant_method": "fp8", "weight_block_size": [128, 128]},
+            }
+        )
+    )
+    save_file(
+        {
+            stem + ".weight": torch.zeros((128, 128), dtype=torch.float8_e4m3fn),
+            stem + ".weight_scale_inv": torch.ones((1, 1), dtype=torch.float32),
+            stem + ".input_scale": torch.ones(1),
+            "model.layers.1.mlp.weight": torch.ones((2, 2)),
+            "model.layers.0.rotary_emb.inv_freq": torch.ones(2),
+            "model.norm.weight": torch.ones(128, dtype=torch.bfloat16),
+            "model.layers.0.mlp.shared_experts.gate_proj.weight": torch.ones((16, 16), dtype=torch.bfloat16),
+        },
+        tmp_path / "model.safetensors",
+    )
+    (tmp_path / "model.safetensors.index.json").write_text(
+        json.dumps(
+            {
+                "weight_map": {
+                    stem + ".weight": "model.safetensors",
+                }
+            }
+        )
+    )
+    # A non-selected conversion artifact must not replace the agreed prior.
+    save_file({"model.norm.weight": torch.zeros(128, dtype=torch.float32)}, tmp_path / "other.safetensors")
+    plan = publication.read_checkpoint_plan(tmp_path)
+    by_name = {spec["name"]: spec for spec in plan}
+    assert set(by_name) == {
+        stem + ".weight",
+        stem + ".weight_scale_inv",
+        "model.norm.weight",
+        "model.layers.0.mlp.shared_experts.gate_proj.weight",
+    }
+    assert "format" not in by_name["model.layers.0.mlp.shared_experts.gate_proj.weight"]
+    assert by_name["model.norm.weight"]["dtype"] == "BF16"
+    assert by_name[stem + ".weight_scale_inv"] == {
+        "name": stem + ".weight_scale_inv",
+        "dtype": "U8",
+        "shape": [1, 1],
+        "encoding": "raw_bytes",
+        "format": "fp8-block128-ue8m0",
+        "checkpoint_dtype": "F32",
+    }
+    assert by_name[stem + ".weight"]["encoding"] == "xor_bytes"
+    assert by_name["model.norm.weight"]["encoding"] == "raw_bytes"
+    assert all("views" not in spec for spec in plan)
+    assert publication.plan_digest(plan) == publication.plan_digest(plan[::-1])
+    reader = publication.make_checkpoint_reader(tmp_path)
+    assert publication.read_canonical_tensor(
+        reader, stem + ".weight_scale_inv", by_name[stem + ".weight_scale_inv"]
+    ).tolist() == [127]

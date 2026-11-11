@@ -104,7 +104,7 @@ def _gather_batch(batch, weights, rank, tp_group, tp_size, device):
 
 
 def _block_fp8_scales(plan, config):
-    """Validate the immutable format contract once per selected receiver plan."""
+    """Validate the immutable format contract once per immutable checkpoint prior."""
     scales = {}
     for name, spec in plan.items():
         if spec.get("format") != "fp8-block128-ue8m0":
@@ -127,7 +127,7 @@ def _block_fp8_scales(plan, config):
 
 
 def _quantize_block_fp8(named_params, scale_names):
-    # SGLang is optional; use its native quantizer only for this negotiated
+    # SGLang is optional; use its native quantizer only for this canonical
     # format, never its receiver-specific scale packing.
     from sglang.srt.layers.quantization.fp8_utils import quant_weight_ue8m0
 
@@ -180,7 +180,7 @@ class HfWeightIteratorGpuDelta(HfWeightIteratorDirect):
         for named_param in named_params:
             try:
                 if self._block_fp8_scales:
-                    # Ordinary HF naming; negotiated wire format selects scales.
+                    # Ordinary HF naming; checkpoint wire format selects scales.
                     converted = convert_to_hf(self.args, self.model_name, *named_param)
                     yield _quantize_block_fp8(converted, self._block_fp8_scales)
                 else:
