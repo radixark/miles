@@ -32,6 +32,7 @@ import httpx
 from miles.rollout.agentic import rollout_limits
 from miles.rollout.agentic.credentials import PROVIDER_CREDENTIALS
 from miles.rollout.agentic.errors import InfraAbort, RemoteTraceback
+from miles.utils.retry_utils import NonRetryableError
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,10 @@ def worker_secret() -> str | None:
     secret = os.environ.get(SECRET_ENV_VAR, "").strip()
     if not secret and (path := os.environ.get(SECRET_FILE_ENV_VAR, "").strip()):
         secret = Path(path).read_text().strip()
+    if not (secret.isascii() and secret.isprintable()):
+        raise NonRetryableError(
+            f"the agent worker secret in {SECRET_ENV_VAR} or {SECRET_FILE_ENV_VAR} must be printable ASCII on one line"
+        )
     return secret or None
 
 

@@ -53,7 +53,7 @@ from miles.rollout.agentic.agent_function import (
     rollout_abort_scope,
 )
 from miles.rollout.agentic.credentials import provider_env_names
-from miles.rollout.agentic.remote import forwarded_env
+from miles.rollout.agentic.remote import forwarded_env, worker_secret
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
 from miles.rollout.generate_utils.openai_endpoint_utils import OpenAIEndpointTracer
 from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY
@@ -241,6 +241,7 @@ def _aborted_output(input_sample: Sample, exit_status: str, use_v2: bool) -> Gen
 def _worker_options(args) -> dict[str, Any]:
     if args.custom_agent_function_mode != "worker":
         return {}
+    worker_secret()
     return {
         "worker": resolve_worker(args.custom_agent_function_worker),
         "extra_env": forwarded_env(_worker_env_patterns(args)),

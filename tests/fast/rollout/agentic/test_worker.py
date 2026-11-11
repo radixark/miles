@@ -464,6 +464,33 @@ def test_a_caller_and_worker_sharing_the_secret_by_file_run_the_call(serve, monk
     assert httpx.get(f"{url}/health").status_code == 401
 
 
+def _messages_in_chain(error: BaseException | None) -> str:
+    seen = []
+    while error is not None:
+        seen.append(repr(error))
+        error = error.__cause__ or error.__context__
+    return "\n".join(seen)
+
+
+@pytest.mark.parametrize("source", ["env", "file"])
+def test_a_secret_no_http_header_can_carry_is_refused_without_showing_it(serve, monkeypatch, tmp_path, caplog, source):
+    secret = "first-half\nsecond-half"
+    if source == "env":
+        monkeypatch.setenv("MILES_AGENT_WORKER_SECRET", secret)
+    else:
+        (tmp_path / "worker_secret").write_text(secret)
+        monkeypatch.setenv("MILES_AGENT_WORKER_SECRET_FILE", str(tmp_path / "worker_secret"))
+    url = serve(secret="worker-s3cret")
+
+    with pytest.raises(NonRetryableError) as raised:
+        _on_worker(url, stubs.report_pid)
+    with pytest.raises(NonRetryableError) as at_worker_start:
+        create_app()
+
+    shown = _messages_in_chain(raised.value) + _messages_in_chain(at_worker_start.value) + caplog.text
+    assert "first-half" not in shown and "second-half" not in shown
+
+
 def test_an_agent_on_a_worker_with_a_secret_cannot_read_it(serve, monkeypatch, tmp_path):
     secret_file = tmp_path / "worker_secret"
     secret_file.write_text("worker-s3cret")
@@ -471,9 +498,7 @@ def test_an_agent_on_a_worker_with_a_secret_cannot_read_it(serve, monkeypatch, t
     monkeypatch.setenv("MILES_AGENT_WORKER_SECRET_FILE", str(secret_file))
     names = ["MILES_AGENT_WORKER_SECRET", "MILES_AGENT_WORKER_SECRET_FILE"]
 
-    seen = _on_worker(
-        serve(), stubs.read_env, extra_env={"MILES_AGENT_WORKER_SECRET_FILE": "/forwarded"}, names=names
-    )
+    seen = _on_worker(serve(), stubs.read_env, extra_env={"MILES_AGENT_WORKER_SECRET_FILE": "/forwarded"}, names=names)
 
     assert seen == {name: None for name in names}
 
