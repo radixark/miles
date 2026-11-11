@@ -1,6 +1,6 @@
-import copy
 import enum
 import logging
+import pickle
 from argparse import Namespace
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -29,7 +29,7 @@ class _RolloutExecutorOutputSnapshotter:
             "a replayed batch must not be captured again"
         )
 
-        self._snapshots[key] = copy.deepcopy(
+        self._snapshots[key] = _deep_copy(
             _OutputSnapshotEntry(data=data, metadata=metadata, phase=_OutputSnapshotPhase.CAPTURED)
         )
         captured = [one for one, entry in self._snapshots.items() if entry.phase is _OutputSnapshotPhase.CAPTURED]
@@ -57,7 +57,7 @@ class _RolloutExecutorOutputSnapshotter:
         ), f"rollout {rollout_id} of trainer model {trainer_model_id} was already replayed"
 
         self._snapshots[key] = replace(entry, phase=_OutputSnapshotPhase.REPLAYED)
-        return copy.deepcopy(entry)
+        return _deep_copy(entry)
 
     def discard_completed(self, *, completed_rollout_ids: dict[str | None, int]) -> None:
         self._snapshots = {
@@ -125,3 +125,8 @@ class _OutputSnapshotEntry:
     data: list[Sample]
     metadata: dict[str, Any]
     phase: _OutputSnapshotPhase
+
+
+def _deep_copy(entry: _OutputSnapshotEntry) -> _OutputSnapshotEntry:
+    """copy.deepcopy's result through pickle, which walks a sample's token lists in C, not per element in Python."""
+    return pickle.loads(pickle.dumps(entry, protocol=pickle.HIGHEST_PROTOCOL))
