@@ -4446,18 +4446,30 @@ class TestMultimodalTokenSpaceProcessingArgs:
         with pytest.raises(ValueError, match=match):
             _check_multimodal_token_space_processing_args(args, sglang=sglang)
 
-    @pytest.mark.parametrize("train_backend", ["fsdp", "torchtitan"])
-    def test_a_trainer_that_never_consumes_the_rebuilt_features_is_rejected(self, train_backend):
-        """torchtitan has no consumer of multimodal_train_inputs, so it would train on placeholder tokens alone."""
+    def test_a_trainer_that_never_consumes_the_rebuilt_features_is_rejected(self):
+        """FSDP has no consumer of multimodal_train_inputs, so it would train on placeholder tokens alone."""
         args = SimpleNamespace(
             multimodal_token_space_processing=True,
             rollout_external_engine_addrs=None,
             hf_checkpoint="/ckpt",
-            train_backend=train_backend,
+            train_backend="fsdp",
         )
 
-        with pytest.raises(ValueError, match="Megatron backend only"):
+        with pytest.raises(ValueError, match="Megatron and torchtitan backends only"):
             _check_multimodal_token_space_processing_args(args, sglang=make_sglang_config(**self._SUPPORTED))
+
+    def test_torchtitan_passes(self):
+        """torchtitan feeds the rebuilt pixels through the vision tower (image_embeddings.py)."""
+        args = SimpleNamespace(
+            multimodal_token_space_processing=True,
+            rollout_external_engine_addrs=None,
+            trainer_mm_processor_worker_num=1,
+            trainer_mm_io_worker_num=0,
+            hf_checkpoint="/ckpt",
+            train_backend="torchtitan",
+        )
+
+        _check_multimodal_token_space_processing_args(args, sglang=make_sglang_config(**self._SUPPORTED))
 
     def test_supported_settings_pass(self):
         args = SimpleNamespace(

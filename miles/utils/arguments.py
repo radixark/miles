@@ -1050,10 +1050,10 @@ def _check_multimodal_token_space_processing_args(args, *, sglang: SglangConfig)
     """Reject launch settings under which the trainer cannot rebuild the rollout engines' media features."""
     if not args.multimodal_token_space_processing:
         return
-    if args.train_backend != "megatron":
+    if args.train_backend not in ("megatron", "torchtitan"):
         raise ValueError(
-            f"--multimodal-token-space-processing supports the Megatron backend only, not {args.train_backend}: "
-            "the other trainers never consume the rebuilt media features."
+            f"--multimodal-token-space-processing supports the Megatron and torchtitan backends only, not "
+            f"{args.train_backend}: the other trainers never consume the rebuilt media features."
         )
     if not sglang.actor_value("enable_token_space_processor"):
         raise ValueError(
