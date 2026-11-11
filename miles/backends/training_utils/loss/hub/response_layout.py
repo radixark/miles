@@ -40,6 +40,7 @@ from miles.backends.training_utils.loss.hub.math_utils import (
     calculate_log_probs_and_entropy,
     compute_ess_ratio_contribution,
 )
+from miles.backends.training_utils.loss.hub.row_log_prob import RowLogProb
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.lora.utils import is_multi_lora_enabled
 from miles.utils.types import RolloutBatch
@@ -417,6 +418,10 @@ class PaddedRows:
         return self._loss_masks
 
     def score(self, logits, *, with_entropy, entropy_requires_grad):
+        # Decided by the run's arguments, so the old and new log-probs of a run come from one function.
+        # RowLogProb has no entropy gradient and needs the whole vocabulary on this rank.
+        if self.args.entropy_coef == 0 and get_parallel_state().tp.size == 1:
+            return RowLogProb.apply(logits.squeeze(0), self._targets, self.args.rollout_temperature, with_entropy)
         log_probs, entropy = calculate_log_probs_and_entropy(
             logits.squeeze(0),
             self._targets,
