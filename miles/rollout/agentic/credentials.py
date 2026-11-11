@@ -91,6 +91,16 @@ PROVIDER_CREDENTIALS = {
     },
 }
 
+# platforms that serve another provider's API
+PROVIDER_ALIASES = {
+    "agentenv": "e2b",  # AgentENV serves the E2B API
+}
+
+
+def resolve_provider(name: str) -> str:
+    """The `PROVIDER_CREDENTIALS` key *name* selects, following `PROVIDER_ALIASES`."""
+    return PROVIDER_ALIASES.get(name, name)
+
 
 def forward_address(env: dict[str, str], var: str, value: str) -> None:
     """Forward one address-like var by value, refusing one that carries a secret.

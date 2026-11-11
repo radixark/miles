@@ -42,6 +42,23 @@ command below uses E2B:
 mkdir -p ~/.config/e2b && echo e2b_... > ~/.config/e2b/api_key
 ```
 
+On an [AgentENV](https://github.com/kvcache-ai/AgentENV) deployment, launch
+with `HARBOR_ENV_TYPE=agentenv` instead of `e2b` when task Dockerfiles `COPY`
+or `ADD` files or have several `FROM`s: `e2b` cannot build those there, and
+`agentenv` builds them with AgentENV's `aenv` CLI. It takes the same
+`harbor[e2b]` install, E2B endpoint and key, and needs `aenv` 0.2.3 or later
+on the `PATH` of every rollout worker:
+
+```bash
+curl -fsSL https://github.com/kvcache-ai/AgentENV/releases/latest/download/install-cli.sh | bash
+```
+
+The script installs into `/usr/local/bin` when it can write there and into
+`~/.local/bin` otherwise. When the workers' `PATH` has neither, give the script
+a directory it does have, as `| INSTALL_DIR=<dir> bash`. The launcher refuses
+to start without a new enough `aenv` on its own `PATH`, but it cannot check
+other nodes.
+
 Task directories: `HARBOR_TASKS_DIR` must contain one Harbor task dir per
 `metadata.instance_id` in the training data (same as the agent-server example);
 put it on a filesystem every worker can read.

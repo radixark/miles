@@ -6,7 +6,9 @@ description: How a cloud sandbox provider plugs into Miles, and what it takes to
 Connectors that run a task in a container (Harbor, OpenEnv) get that container
 from a sandbox provider. A provider is **one entry in `PROVIDER_CREDENTIALS`**
 (`miles/rollout/agentic/credentials.py`) — no connector code branches on it.
-The in-process Harbor path passes `HARBOR_ENV_TYPE` straight to Harbor; the
+A platform that serves another provider's API is one line in
+`PROVIDER_ALIASES` beside it instead, and uses that provider's entry (AgentENV
+serves E2B's). The in-process Harbor path passes `HARBOR_ENV_TYPE` straight to Harbor; the
 golden test runs one case per registry entry, and the rollout e2e takes its
 provider from `HARBOR_ENV_TYPE`. Setting a provider up as a user is
 [Sandbox Providers](/user-guide/sandbox-providers).
