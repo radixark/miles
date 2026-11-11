@@ -12,11 +12,13 @@ from tests.fast.fixtures.args_fixtures import sglang_router_args
 from tests.fast.ray.rollout.conftest import make_args
 
 from miles.ray.rollout import eval_pool as eval_pool_module
+from miles.ray.rollout import rollout_server as rollout_server_module
 from miles.ray.rollout import server_cell as server_cell_module
 from miles.ray.rollout.cell_state import CellAddrInfo, StateServing
 from miles.ray.rollout.eval_dispatch import EvalDispatcher
 from miles.ray.rollout.eval_fleet import wait_router_generate_ready
 from miles.ray.rollout.eval_pool import EvalPoolCarveOut, InferenceControllerEvalPool
+from miles.ray.rollout.rollout_server import RolloutServer
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
 from miles.utils.context_lock import ContextLock
 from miles.utils.ft_utils.api_server.models import TriState
@@ -285,16 +287,6 @@ class TestCarveOut:
             await pool.carve_out()
 
     @pytest.mark.asyncio
-    async def test_give_back_unpins_every_pinned_engine(self):
-        cells = [_fake_cell(cell_id=f"engine-{i}", gpu_offset=i) for i in range(4)]
-        pool, srv = _pool(cells)
-        await pool.carve_out()
-
-        await pool.give_back()
-
-        assert srv.eval_pinned_cells == {}
-
-    @pytest.mark.asyncio
     async def test_the_version_check_rejects_a_pinned_engine_that_moved(self):
         cells = [_fake_cell(cell_id=f"engine-{i}", gpu_offset=i) for i in range(4)]
         pool, _ = _pool(cells)
@@ -385,6 +377,65 @@ class TestWeightReceivers:
             assert srv.engine_cell_ids == ["engine-0"]
             assert srv.api_clients == ["client-0"]
             assert list(srv.eval_pinned_cells) == ["engine-1"]
+
+
+class TestGiveBackPinnedCells:
+    """Pins whose eval never gave them back, e.g. because the orchestration script died during the eval."""
+
+    @staticmethod
+    def _server(cells: dict) -> RolloutServer:
+        return RolloutServer(
+            all_server_cells=cells,
+            args=make_args(colocate=False),
+            context_lock=ContextLock("InferenceController"),
+            engine_provider=_StubProvider(),
+            init_expected_num_cells=len(cells),
+        )
+
+    @pytest.mark.asyncio
+    async def test_cells_left_pinned_rejoin_the_receivers_and_the_take_over_gate(self, make_serving_cell, monkeypatch):
+        """Left pinned, they are short of the fleet gate of the next script and never receive another update."""
+        monkeypatch.setattr(rollout_server_module, "WAIT_CELLS_INITIAL_DELAY_SECONDS", 0.001)
+        monkeypatch.setattr(rollout_server_module, "WAIT_CELLS_MAX_DELAY_SECONDS", 0.001)
+        cells = {"a": make_serving_cell("http://10.0.0.2:30000"), "b": make_serving_cell("http://10.0.0.3:30000")}
+        await cells["b"].pin_for_eval(eval_router_url=EVAL_ROUTER_URL)
+        srv = self._server(cells)
+
+        async with srv.context_lock:
+            await srv.give_back_eval_pinned_cells()
+            assert srv.eval_pinned_cells == {}
+            assert sorted(srv.weight_receiver_cells) == ["a", "b"]
+        await srv.wait_init_expected_num_cells(timeout=1)
+
+        for cell in cells.values():
+            await cell.dispose()
+
+    @pytest.mark.asyncio
+    async def test_a_cell_that_cannot_leave_the_eval_router_does_not_hold_back_the_others(
+        self, make_serving_cell, router_log, monkeypatch
+    ):
+        cells = {"a": make_serving_cell("http://10.0.0.2:30000"), "b": make_serving_cell("http://10.0.0.3:30000")}
+        for cell in cells.values():
+            await cell.pin_for_eval(eval_router_url=EVAL_ROUTER_URL)
+
+        class _RefusingRegistry(_RecordingRegistry):
+            async def unregister(self, *, worker_url):
+                if worker_url == "http://10.0.0.2:30000":
+                    raise RuntimeError("eval router unreachable")
+                await super().unregister(worker_url=worker_url)
+
+        monkeypatch.setattr(server_cell_module, "_make_registry", lambda url: _RefusingRegistry(router_log, url))
+        monkeypatch.setattr(server_cell_module, "UNREGISTER_FROM_ROUTER_TIMEOUT", 0.01)
+        srv = self._server(cells)
+
+        async with srv.context_lock:
+            with pytest.raises(RuntimeError, match="eval router unreachable"):
+                await srv.give_back_eval_pinned_cells()
+            assert list(srv.eval_pinned_cells) == ["a"]
+        assert cells["b"].is_pending_weights
+
+        for cell in cells.values():
+            await cell.dispose()
 
 
 class _FakeController:

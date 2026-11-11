@@ -393,6 +393,11 @@ class InferenceController:
         ), "this run carves no engines out for eval (--eval-pool-num-engines is 0)"
         await self._eval_fleet.give_back()
 
+    @with_lock
+    async def give_back_eval_pinned_cells(self) -> None:
+        """Unpin the cells a previous orchestration script left pinned for an eval it never finished."""
+        await async_utils.gather_and_raise_first([srv.give_back_eval_pinned_cells() for srv in self.servers.values()])
+
     # -------------------------- misc APIs -----------------------------
 
     @with_lock

@@ -91,8 +91,7 @@ class InferenceControllerEvalPool:
         return EvalPoolCarveOut(weight_version=versions[0], skip_reason=None)
 
     async def give_back(self) -> None:
-        for cell in list(self._srv.eval_pinned_cells.values()):
-            await cell.unpin_from_eval()
+        await self._srv.give_back_eval_pinned_cells()
 
     async def check_version(self, weight_version: str) -> EvalFleetPin:
         """Every pinned cell still holds ``weight_version``; never reload or retry weights."""
