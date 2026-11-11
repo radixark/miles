@@ -2,7 +2,7 @@
 
 A backend module (``openenv_daytona_agent_function``,
 ``openenv_e2b_agent_function``, ``openenv_modal_agent_function``,
-``openenv_novita_agent_function``) owns only what is genuinely provider-specific: how ONE sandbox with the env
+``openenv_novita_agent_function``, ``openenv_runta_agent_function``) owns only what is genuinely provider-specific: how ONE sandbox with the env
 server comes into being (its ``tb2_sandbox_*`` materialization module), which
 errors count as retryable throttling, and its env-var knobs. Everything that
 makes per-episode sandboxes safe under a fanned-out rollout is provider-blind
@@ -53,6 +53,7 @@ AGENT_MODULES = {
     "e2b": "openenv_e2b_agent_function",
     "modal": "openenv_modal_agent_function",
     "novita": "openenv_novita_agent_function",
+    "runta": "openenv_runta_agent_function",
 }
 AGENT_FUNCTIONS = {backend: f"{module}.run" for backend, module in AGENT_MODULES.items()}
 _ALIASES = {"agentenv": "e2b"}

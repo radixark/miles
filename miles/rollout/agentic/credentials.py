@@ -17,6 +17,9 @@ growing a branch:
                  which endpoint/environment it will actually use
   sdk_min_version  optional; the floor the extra in setup.py declares,
                    enforced by preflight_sdk
+  sdk_distribution optional; the installed distribution's name where it is not
+                   the module's (``runta`` ships as ``runta-sdk``), so the
+                   floor is checked against the right package metadata
   env_defaults     optional; provider runtime selectors forwarded with a safe
                    default while still allowing an explicit environment value
 """
@@ -88,6 +91,27 @@ PROVIDER_CREDENTIALS = {
         # region (NOVITA_DOMAIN) and endpoint overrides, read by the SDK itself
         "forward": ("NOVITA_DOMAIN", "NOVITA_API_URL", "NOVITA_SANDBOX_URL"),
         "target": ("NOVITA_DOMAIN", "region domain", "us-phx-1.sandbox.novita.ai (default)"),
+    },
+    "runta": {
+        "provider": "Runta",
+        "key_env_vars": ("RUNTA_TOKEN",),
+        "file_env_var": "RUNTA_TOKEN_FILE",
+        "arg_attr": "runta_token_file",
+        # A bare token, like every other key file here -- not the SDK's own
+        # ~/.config/runta/config.toml, whose TOML a worker could not hand to
+        # RUNTA_TOKEN as it stands.
+        "default_path": "~/.config/runta/token",
+        "provision_hint": "mkdir -p ~/.config/runta && echo rt_... > ~/.config/runta/token",
+        "sdk": "runta",
+        "sdk_distribution": "runta-sdk",
+        "sdk_hint": "pip install -e '<miles>[runta]'",
+        # the release the recipe was written against
+        "sdk_min_version": "0.2.6",
+        # RUNTA_ENDPOINT unset means Runta Cloud. RUNTA_INGRESS_BASE_URL names
+        # where published ports are served when that cannot be derived from
+        # the endpoint (see tb2_sandbox_runta.base_url).
+        "forward": ("RUNTA_ENDPOINT", "RUNTA_INGRESS_BASE_URL"),
+        "target": ("RUNTA_ENDPOINT", "endpoint", "Runta Cloud (default)"),
     },
 }
 
@@ -184,7 +208,12 @@ def sandbox_key_supply(
         )
 
 
-def preflight_sdk(module: str, install_hint: str, min_version: str | None = None) -> None:
+def preflight_sdk(
+    module: str,
+    install_hint: str,
+    min_version: str | None = None,
+    distribution: str | None = None,
+) -> None:
     """Preflight the lazily-imported provider SDK. Without this, a missing
     install only surfaces inside each episode's sandbox start, where the
     failed sample is aborted, the group dropped, and the rollout loop refills
@@ -192,7 +221,10 @@ def preflight_sdk(module: str, install_hint: str, min_version: str | None = None
     *min_version*, when given, is the floor the extra in setup.py declares;
     checking it here catches an SDK installed by hand or preinstalled in an
     image, whose failure mode would otherwise be a provider error with no hint
-    that the version is the cause."""
+    that the version is the cause. *distribution* names the installed package
+    when it is not *module* (``runta`` is installed as ``runta-sdk``): package
+    metadata is keyed by distribution, so looking the floor up under the module
+    name would find nothing and skip the check."""
     try:
         importlib.import_module(module)
     except ImportError as e:
@@ -201,19 +233,22 @@ def preflight_sdk(module: str, install_hint: str, min_version: str | None = None
         ) from e
     if min_version is None:
         return
+    # The module name doubles as the distribution name unless the spec says
+    # otherwise (e2b, modal, and novita_sandbox, whose dist-info is found under
+    # the module name too).
+    package = distribution or module
     try:
-        # Looking the distribution up by the module name assumes the two match,
-        # which holds for every backend that sets a floor today (e2b, modal, and
-        # novita_sandbox, whose dist-info is found under the module name too).
-        installed = importlib.metadata.version(module)
+        installed = importlib.metadata.version(package)
     except importlib.metadata.PackageNotFoundError:
         # Importable but no dist-info (a vendored copy): the version cannot be
         # verified, and blocking a possibly-fine install is worse than leaving
         # a too-old one to fail at the provider with its own error.
-        print(f"{module} has no package metadata; cannot verify {module}>={min_version}", flush=True)
+        print(f"{package} has no package metadata; cannot verify {package}>={min_version}", flush=True)
         return
     if _version_tuple(installed) < _version_tuple(min_version):
-        raise RuntimeError(f"this sandbox mode needs {module}>={min_version} (installed: {installed}): {install_hint}")
+        raise RuntimeError(
+            f"this sandbox mode needs {package}>={min_version} (installed: {installed}): {install_hint}"
+        )
 
 
 def _version_tuple(version: str) -> tuple[int, ...]:
@@ -268,7 +303,12 @@ def provision_provider(env: dict[str, str], spec: dict, *, arg_path: str = "") -
         default_path=spec["default_path"],
         provision_hint=spec["provision_hint"],
     )
-    preflight_sdk(spec["sdk"], spec["sdk_hint"], spec.get("sdk_min_version"))
+    preflight_sdk(
+        spec["sdk"],
+        spec["sdk_hint"],
+        min_version=spec.get("sdk_min_version"),
+        distribution=spec.get("sdk_distribution"),
+    )
     for var, default in spec.get("env_defaults", {}).items():
         forward_address(env, var, os.environ.get(var, "").strip() or default)
     for var in spec["forward"]:

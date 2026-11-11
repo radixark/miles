@@ -16,6 +16,7 @@ one.
 | [E2B](https://e2b.dev/) | ✓ | | | ✓ |
 | [Modal](https://modal.com/) | ✓ | | | ✓ |
 | [Novita](https://docs.novita.ai/) | ✓ | | | ✓ |
+| [Runta](https://runta.com/) | | | | |
 
 The rest of this page is how to set each provider up. Its SDK is installed per
 recipe; the recipe README has that line.
@@ -89,3 +90,24 @@ With nothing else set, the SDK talks to the `us-phx-1` region.
 `NOVITA_DOMAIN=sandbox.novita.ai` selects the legacy `us-virginia-1` region;
 `NOVITA_API_URL` and `NOVITA_SANDBOX_URL` override the two endpoints for an
 internal deployment.
+
+## Runta
+
+```bash
+mkdir -p ~/.config/runta && echo rt_... > ~/.config/runta/token   # or export RUNTA_TOKEN
+```
+
+The file holds the bare token. It is not the `~/.config/runta/config.toml`
+that `runta login` writes: the launcher hands workers a token file's path, and
+a worker reads the token straight out of it.
+
+With nothing else set, the SDK talks to Runta Cloud. `RUNTA_ENDPOINT` points it
+at another deployment; published ports are then expected at
+`https://<port>-<runtime id>.<domain>` for an endpoint of the form
+`api.<domain>`, and `RUNTA_INGRESS_BASE_URL` names the place outright when the
+deployment serves them elsewhere.
+
+Runta is wired into the OpenEnv connector, where a golden episode has run on
+it; its row gains a check once a GPU rollout has. The Harbor connector needs a
+Harbor release that ships a `runta` environment, which is newer than the one
+this repo pins.

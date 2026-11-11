@@ -52,6 +52,12 @@ setup(
         "novita": [
             "novita-sandbox>=2.0.7",
         ],
+        # the openenv runta sandbox backend, imported only when that backend is
+        # selected; 0.2.6 is the release the recipe was written against, and
+        # the SDK is pre-1.0, so the next minor is not assumed compatible
+        "runta": [
+            "runta-sdk>=0.2.6,<0.3",
+        ],
     },
     # sglang needs 3.11; nvidia-resiliency-ext 0.6 has no 3.13 wheel
     python_requires=">=3.11",

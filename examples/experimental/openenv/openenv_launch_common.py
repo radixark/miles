@@ -38,6 +38,7 @@ class LaunchArgs(Protocol):
     e2b_api_key_file: str
     modal_config_file: str
     novita_api_key_file: str
+    runta_token_file: str
     session_server_external_host: str
     miles_host_ip: str
 
