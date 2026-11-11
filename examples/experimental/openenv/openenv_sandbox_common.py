@@ -58,6 +58,11 @@ AGENT_MODULES = {
 AGENT_FUNCTIONS = {backend: f"{module}.run" for backend, module in AGENT_MODULES.items()}
 _ALIASES = {"agentenv": "e2b"}
 
+# The materialization modules with a launch-time check of their own beyond the
+# credential spec: each has a ``preflight()``, called before any sandbox
+# exists. Only a backend with something of its own to check is here.
+LAUNCH_PREFLIGHTS = {"runta": "tb2_sandbox_runta"}
+
 
 def backend_names() -> str:
     """The accepted names, for help text that must not drift from the registry."""
@@ -90,6 +95,17 @@ def load_backend(name: str | None) -> "SandboxBackend":
     each — and a provider's SDK is imported only when it is the one selected.
     """
     return importlib.import_module(AGENT_MODULES[resolve_backend(name)]).BACKEND
+
+
+def preflight_backend(backend: str) -> None:
+    """Run *backend*'s own launch-time check, when it has one (LAUNCH_PREFLIGHTS).
+
+    The launcher's half of failing fast: what would otherwise surface inside
+    each episode's sandbox start — a dropped group, refilled forever — is
+    raised once, at launch.
+    """
+    if backend in LAUNCH_PREFLIGHTS:
+        importlib.import_module(LAUNCH_PREFLIGHTS[backend]).preflight()
 
 
 async def create_once(start_fn: StartFn, task_id: str, tasks_dir: str, *, logger: logging.Logger) -> tuple[Any, str]:

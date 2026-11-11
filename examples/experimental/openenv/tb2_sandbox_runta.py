@@ -158,8 +158,9 @@ _client = None
 
 
 def make_client():
-    """The process's Runta client: token from resolve_token(), endpoint from
-    the optional RUNTA_ENDPOINT, which the SDK reads itself.
+    """The process's Runta client: token from resolve_token(), endpoint left to
+    the SDK's own resolution (api_endpoint reports what that comes to, and
+    relies on none being passed here).
 
     Built once and shared: the client owns a connection pool, and this runs
     once per sandbox-create attempt, retries included, so a client per call
@@ -285,34 +286,72 @@ def ensure_task_checkpoint(
 
 # Where Runta Cloud serves published ports, keyed by its API host. The SDK
 # resolves the API endpoint but exposes no helper for the ingress URL, so the
-# rule Runta's own client uses is repeated in base_url.
-_HOSTED_API_HOST = "api.runta.com"
-_HOSTED_INGRESS_DOMAINS = {_HOSTED_API_HOST: "runta.dev"}
+# rule Runta's own client uses is repeated in ingress.
+_HOSTED_INGRESS_DOMAINS = {"api.runta.com": "runta.dev", "api.runta.me": "runta.sh"}
 
 
-def base_url(runtime) -> str:
-    """The env server's externally reachable URL on port 8000.
+def api_endpoint() -> str:
+    """The API endpoint the SDK client talks to.
 
-    A published port is served at ``https://<port>-<runtime id>.<ingress
-    domain>``. RUNTA_INGRESS_BASE_URL names that domain (and scheme) outright;
-    otherwise it follows from the API endpoint — Runta Cloud's own domain, or
-    ``<domain>`` for a deployment whose API is ``api.<domain>``. The gateway
-    proxies WebSocket as well as HTTP, which OpenEnv needs: its client
-    health-checks over HTTP but runs episode I/O over ``/ws``.
+    make_client passes none, so this is the SDK's own resolution: RUNTA_ENDPOINT,
+    else ``endpoint`` in its config file (~/.config/runta/config.toml, or
+    RUNTA_CONFIG), else Runta Cloud. It is asked of the SDK rather than read
+    off the variable: an endpoint set in the config file would otherwise put
+    the runtimes on one deployment and the health probe on another. The SDK
+    has no public accessor for it, hence the internal import. The token plays
+    no part in the endpoint and a launcher may hold none in its own
+    environment, so a placeholder stands in for it.
     """
-    subdomain = f"{_SERVER_PORT}-{runtime.id}"
+    from runta._internal.config import resolve_config
+
+    endpoint, _token = resolve_config(endpoint=None, token="unused", config_path=None)
+    return endpoint
+
+
+def ingress() -> tuple[str, str]:
+    """``(scheme, domain)`` published ports are served under.
+
+    RUNTA_INGRESS_BASE_URL names both outright; otherwise they follow from the
+    API endpoint — Runta Cloud's own domain, or ``<domain>`` for a deployment
+    whose API is ``api.<domain>`` — and an endpoint that implies neither is a
+    ValueError. No runtime is needed to tell, so it is asked before one exists
+    (preflight, create_task_sandbox).
+    """
     explicit = os.getenv("RUNTA_INGRESS_BASE_URL", "").strip()
     if explicit:
         parts = urlsplit(explicit)
-        return f"{parts.scheme}://{subdomain}.{parts.netloc}"
-    api_host = (urlsplit(os.getenv("RUNTA_ENDPOINT", "").strip()).hostname or _HOSTED_API_HOST).lower()
+        return parts.scheme, parts.netloc
+    endpoint = api_endpoint()
+    api_host = (urlsplit(endpoint).hostname or "").lower()
     domain = _HOSTED_INGRESS_DOMAINS.get(api_host) or api_host.removeprefix("api.")
     if domain == api_host:
         raise ValueError(
-            f"cannot tell where {api_host} serves published ports: "
+            f"cannot tell where {endpoint} serves published ports: "
             "set RUNTA_INGRESS_BASE_URL (e.g. https://ingress.example.com)"
         )
-    return f"https://{subdomain}.{domain}"
+    return "https", domain
+
+
+def preflight() -> None:
+    """The launcher's check of this backend (openenv_sandbox_common.LAUNCH_PREFLIGHTS).
+
+    An endpoint that does not say where published ports are served fails the
+    launch here, instead of every episode after its checkpoint build.
+    """
+    scheme, domain = ingress()
+    print(f"Runta published ports: {scheme}://<port>-<runtime id>.{domain}", flush=True)
+
+
+def base_url(runtime, served_at: tuple[str, str] | None = None) -> str:
+    """The env server's externally reachable URL on port 8000.
+
+    A published port is served at ``<scheme>://<port>-<runtime id>.<ingress
+    domain>``; *served_at* is ingress()'s answer when the caller already has
+    it. The gateway proxies WebSocket as well as HTTP, which OpenEnv needs:
+    its client health-checks over HTTP but runs episode I/O over ``/ws``.
+    """
+    scheme, domain = served_at or ingress()
+    return f"{scheme}://{_SERVER_PORT}-{runtime.id}.{domain}"
 
 
 def _start_keepalive(runtime, task_id: str) -> None:
@@ -378,15 +417,19 @@ def create_task_sandbox(
 
     task_dir = Path(task_dir)
     client = make_client()
+    # Asked first: an endpoint that does not say where published ports are
+    # served must fail with no checkpoint built and no runtime to delete.
+    served_at = ingress()
     checkpoint_id = ensure_task_checkpoint(task_dir)
     # The TTL is deliberately not a parameter: the keepalive thread re-arms
     # _SANDBOX_TTL_S, so a different value passed here would be silently
-    # overwritten at the first beat.
+    # overwritten at the first beat. Nor is the size: a restore comes back at
+    # the checkpoint's own (the builder's task_runtime_resources, which the
+    # checkpoint's name covers), and the SDK drops vcpus/memory_mib on one.
     runtime = _create_runtime(
         client,
         _runtime_name("run", task_dir),
         checkpoint_id=checkpoint_id,
-        **task_runtime_resources(task_dir),
         ingress_specs=[IngressSpec("https", _SERVER_PORT)],
         auto_shutdown_after_secs=_SANDBOX_TTL_S,
         auto_delete_after_secs=_DELETE_AFTER_S,
@@ -394,7 +437,7 @@ def create_task_sandbox(
     try:
         cmd = server_cmd(command_timeout_s, default_task_id=task_dir.name)
         _checked_exec(runtime, _server_run_command(cmd), timeout=120, what="starting the env server")
-        url = base_url(runtime)
+        url = base_url(runtime, served_at)
         # wait_server_ready probes with `requests`; the gateway in front of a
         # published port rejects urllib's default user agent (Cloudflare 1010).
         wait_server_ready(url, timeout_s=ready_timeout_s)

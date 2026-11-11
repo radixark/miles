@@ -1,6 +1,7 @@
 """Tests for the Runta sandbox half: checkpoint naming and reuse, the in-runtime
 image build, the per-episode create and its cleanup, token supply, the
-published-port URL, and the orphan-TTL keepalive lifecycle.
+published-port URL and its launch preflight, and the orphan-TTL keepalive
+lifecycle.
 
 Runs on every PR (stage-a-cpu, by the tests/fast/ convention); locally:
 
@@ -313,13 +314,19 @@ def test_checkpoint_state_is_read_from_the_sdk_enum(monkeypatch, fake_runta):
 # --- create_task_sandbox --------------------------------------------------------
 
 
+def _patch_endpoint(monkeypatch, endpoint="https://api.runta.com"):
+    """What the SDK resolves, without the SDK: the fixture's fake `runta` has no
+    config resolution to ask."""
+    monkeypatch.setattr(sandbox, "api_endpoint", lambda: endpoint)
+    monkeypatch.delenv("RUNTA_INGRESS_BASE_URL", raising=False)
+
+
 def _patch_create(monkeypatch):
     monkeypatch.setattr(sandbox, "ensure_task_checkpoint", lambda task_dir: "ckpt-abc")
     monkeypatch.setattr(sandbox, "server_cmd", lambda *a, **k: "TB2_X=1 serve --port 8000")
     monkeypatch.setattr(sandbox, "wait_server_ready", lambda url, timeout_s: None)
     monkeypatch.setattr(sandbox, "_start_keepalive", lambda runtime, task_id: None)
-    monkeypatch.delenv("RUNTA_ENDPOINT", raising=False)
-    monkeypatch.delenv("RUNTA_INGRESS_BASE_URL", raising=False)
+    _patch_endpoint(monkeypatch)
     monkeypatch.delenv("OPENENV_RUN_ID", raising=False)
 
 
@@ -332,8 +339,9 @@ def test_create_restores_the_checkpoint_with_the_port_published_and_a_ttl(monkey
     assert fake_runta.runtimes.created == [runtime]
     assert runtime.name.startswith("miles-tb2-run-t-")
     assert runtime.kwargs["checkpoint_id"] == "ckpt-abc"
-    assert runtime.kwargs["vcpus"] == 2
-    assert runtime.kwargs["memory_mib"] == 4096 + sandbox._DOCKER_OVERHEAD_MIB
+    # A restore comes back at the checkpoint's size; the SDK drops a size passed
+    # with checkpoint_id, so passing one would only claim a control that is not there.
+    assert runtime.kwargs.keys().isdisjoint({"vcpus", "memory_mib", "memory_max_mib", "resources"})
     assert runtime.kwargs["ingress_specs"] == [("https", 8000)]
     # the dead-man's switch: armed at create, with the shut-down remains reclaimed after
     assert runtime.kwargs["auto_shutdown_after_secs"] == sandbox._SANDBOX_TTL_S
@@ -391,6 +399,22 @@ def test_create_deletes_a_runtime_that_never_becomes_ready(monkeypatch, fake_run
         sandbox.create_task_sandbox(Path("/tasks/t"))
     (runtime,) = fake_runta.runtimes.created
     assert runtime.deleted
+
+
+def test_create_refuses_an_underivable_endpoint_before_anything_is_created(monkeypatch, fake_runta):
+    """Where published ports are served is known before the first API call; an
+    endpoint that does not say must not cost a checkpoint build and a runtime."""
+    _patch_recipe(monkeypatch)
+    _patch_create(monkeypatch)
+    _patch_endpoint(monkeypatch, "http://127.0.0.1:8080")
+    ensured = []
+    monkeypatch.setattr(sandbox, "ensure_task_checkpoint", lambda task_dir: ensured.append(task_dir) or "ckpt-abc")
+
+    with pytest.raises(ValueError, match="RUNTA_INGRESS_BASE_URL"):
+        sandbox.create_task_sandbox(Path("/tasks/t"))
+
+    assert ensured == []
+    assert fake_runta.runtimes.created == []
 
 
 def test_runtime_names_carry_the_run_id_when_set(monkeypatch):
@@ -477,32 +501,92 @@ _RUNTIME = types.SimpleNamespace(id="01a1c7e7-07b3")
 
 
 def test_base_url_defaults_to_runta_cloud(monkeypatch):
-    monkeypatch.delenv("RUNTA_ENDPOINT", raising=False)
-    monkeypatch.delenv("RUNTA_INGRESS_BASE_URL", raising=False)
+    _patch_endpoint(monkeypatch)
     assert sandbox.base_url(_RUNTIME) == "https://8000-01a1c7e7-07b3.runta.dev"
 
 
 def test_base_url_follows_an_api_dot_domain_endpoint(monkeypatch):
-    monkeypatch.delenv("RUNTA_INGRESS_BASE_URL", raising=False)
-    monkeypatch.setenv("RUNTA_ENDPOINT", "https://API.Example.Test/")
+    _patch_endpoint(monkeypatch, "https://API.Example.Test/")
     assert sandbox.base_url(_RUNTIME) == "https://8000-01a1c7e7-07b3.example.test"
-    monkeypatch.setenv("RUNTA_ENDPOINT", "https://api.runta.com")
+
+
+def test_base_url_knows_both_hosted_deployments(monkeypatch):
+    """Runta's hosted ingress domains are not their API domains, so neither
+    follows from the api.<domain> rule: api.runta.me would probe runta.me."""
+    _patch_endpoint(monkeypatch, "https://api.runta.com")
     assert sandbox.base_url(_RUNTIME) == "https://8000-01a1c7e7-07b3.runta.dev"
+    _patch_endpoint(monkeypatch, "https://api.runta.me")
+    assert sandbox.base_url(_RUNTIME) == "https://8000-01a1c7e7-07b3.runta.sh"
 
 
 def test_base_url_ingress_override_wins(monkeypatch):
     # A self-hosted deployment may serve published ports over plain HTTP, on a
     # port, somewhere its API endpoint says nothing about.
-    monkeypatch.setenv("RUNTA_ENDPOINT", "http://127.0.0.1:8080")
+    _patch_endpoint(monkeypatch, "http://127.0.0.1:8080")
+    monkeypatch.setenv("RUNTA_INGRESS_BASE_URL", "http://ingress.internal:9000")
+    assert sandbox.base_url(_RUNTIME) == "http://8000-01a1c7e7-07b3.ingress.internal:9000"
+    # ... and over an endpoint that does imply a domain
+    _patch_endpoint(monkeypatch, "https://api.runta.me")
     monkeypatch.setenv("RUNTA_INGRESS_BASE_URL", "http://ingress.internal:9000")
     assert sandbox.base_url(_RUNTIME) == "http://8000-01a1c7e7-07b3.ingress.internal:9000"
 
 
 def test_base_url_refuses_to_guess_for_an_underivable_endpoint(monkeypatch):
-    monkeypatch.delenv("RUNTA_INGRESS_BASE_URL", raising=False)
-    monkeypatch.setenv("RUNTA_ENDPOINT", "http://127.0.0.1:8080")
+    _patch_endpoint(monkeypatch, "http://127.0.0.1:8080")
     with pytest.raises(ValueError, match="RUNTA_INGRESS_BASE_URL"):
         sandbox.base_url(_RUNTIME)
+
+
+def test_base_url_follows_the_endpoint_the_sdk_resolves(monkeypatch, tmp_path: Path):
+    """The client is built with no endpoint, so the SDK picks it: RUNTA_ENDPOINT,
+    else its config file, else Runta Cloud. The published-port URL must follow
+    that same answer — read off the variable alone, a config-file endpoint puts
+    the runtimes on one deployment and the health probe on another."""
+    runta = pytest.importorskip("runta")
+    config = tmp_path / "config.toml"
+    config.write_text('endpoint = "https://api.selfhosted.test"\n')
+    monkeypatch.setenv("RUNTA_CONFIG", str(config))
+    monkeypatch.delenv("RUNTA_ENDPOINT", raising=False)
+    monkeypatch.delenv("RUNTA_INGRESS_BASE_URL", raising=False)
+
+    def client_endpoint():
+        with runta.Runta(token="rt_test") as client:  # as make_client builds it; no request is made
+            return client._http.endpoint
+
+    assert sandbox.api_endpoint() == client_endpoint() == "https://api.selfhosted.test"
+    assert sandbox.base_url(_RUNTIME) == "https://8000-01a1c7e7-07b3.selfhosted.test"
+
+    monkeypatch.setenv("RUNTA_ENDPOINT", "https://api.runta.me")  # the variable outranks the file
+    assert sandbox.api_endpoint() == client_endpoint() == "https://api.runta.me"
+    assert sandbox.base_url(_RUNTIME) == "https://8000-01a1c7e7-07b3.runta.sh"
+
+    monkeypatch.delenv("RUNTA_ENDPOINT")
+    monkeypatch.setenv("RUNTA_CONFIG", str(tmp_path / "absent.toml"))
+    assert sandbox.api_endpoint() == client_endpoint() == "https://api.runta.com"
+    assert sandbox.base_url(_RUNTIME) == "https://8000-01a1c7e7-07b3.runta.dev"
+
+
+# --- launch preflight --------------------------------------------------------
+
+
+def test_preflight_fails_the_launch_for_an_underivable_endpoint(monkeypatch):
+    """The launcher's check: no SDK call, no client, nothing created — just the
+    error an operator would otherwise meet once per episode."""
+    _patch_endpoint(monkeypatch, "http://127.0.0.1:8080")
+    monkeypatch.setattr(sandbox, "make_client", lambda: pytest.fail("preflight must not need a client"))
+    with pytest.raises(ValueError, match=r"127\.0\.0\.1:8080.*RUNTA_INGRESS_BASE_URL"):
+        sandbox.preflight()
+
+
+def test_preflight_passes_and_echoes_where_ports_are_served(monkeypatch, capsys):
+    _patch_endpoint(monkeypatch, "https://api.runta.me")
+    sandbox.preflight()
+    assert "<port>-<runtime id>.runta.sh" in capsys.readouterr().out
+
+    _patch_endpoint(monkeypatch, "http://127.0.0.1:8080")  # underivable, but named outright
+    monkeypatch.setenv("RUNTA_INGRESS_BASE_URL", "http://ingress.internal:9000")
+    sandbox.preflight()
+    assert "http://<port>-<runtime id>.ingress.internal:9000" in capsys.readouterr().out
 
 
 # --- TTL / keepalive ---------------------------------------------------------

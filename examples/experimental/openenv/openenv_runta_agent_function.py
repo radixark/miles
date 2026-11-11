@@ -58,20 +58,20 @@ def _is_throttle_error(exc: BaseException) -> bool:
     """True when a sandbox create failed only because Runta throttled it.
 
     The SDK raises one ApiError for every API failure and carries the HTTP
-    status on it, so 429 is read off the status; the text match covers a limit
-    that only surfaces as a message.
+    status on it, so 429 is read off the status and nothing else is. The text
+    match the other backends share is deliberately not consulted: a failed
+    create quotes the runtime's UUID and the tail of a docker build log, and a
+    "429" in either would have a deterministic build failure retried as
+    throttling, holding the build lock and a create slot all the while.
     """
     # In-function import, deliberately: this is the class's only use site, it
     # only runs on the failure path (where runta is already in sys.modules,
     # having just raised `exc`), and offline tests must not require the SDK.
     try:
         from runta import ApiError
-
-        if isinstance(exc, ApiError) and exc.status_code == 429:
-            return True
-    except ImportError:  # pragma: no cover - only without the runta SDK
-        pass
-    return common.throttle_text(exc)
+    except ImportError:  # without the SDK nothing raised is a Runta API error
+        return False
+    return isinstance(exc, ApiError) and exc.status_code == 429
 
 
 def _start_sandbox(task_id: str, tasks_dir: str) -> tuple[Any, str]:
