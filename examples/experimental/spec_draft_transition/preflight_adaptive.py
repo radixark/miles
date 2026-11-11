@@ -49,7 +49,7 @@ def main() -> None:
         torch.testing.assert_close(actual,expected,atol=2e-6,rtol=2e-6)
         for a,e in zip(ga,ge):
             torch.testing.assert_close(a,e,atol=0.005,rtol=0.03)
-        errors.append({'loss_abs_error':float((actual-expected).abs()),
+        errors.append({'loss_abs_error':float((actual-expected).detach().abs()),
                        'gradient_max_abs_error':max(float((a-e).abs().max()) for a,e in zip(ga,ge))})
     print(json.dumps({'passed':True,'plateau_switch':800,'amp_checks':errors}))
 

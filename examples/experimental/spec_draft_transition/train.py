@@ -211,7 +211,7 @@ def main(args: Args) -> None:
                     metrics = validate(student, teacher, validation_rows, tokenizer, args)
                 record = {'update':update, 'kind':'validation', **metrics}
                 handle.write(json.dumps(record) + '\n'); handle.flush()
-                run.log({f'validation/{key}':value for key,value in metrics.items()}, step=update)
+                run.log({f'validation/{key}':value for key,value in metrics.items()}, step=update, commit=False)
                 print(json.dumps(record), flush=True)
                 if transition is not None and update % transition.interval == 0:
                     decision = transition.observe(update, metrics['l1'], allow_switch=update < args.updates)
@@ -225,7 +225,7 @@ def main(args: Args) -> None:
                         'relative_threshold':transition.relative_threshold}, indent=2))
                     run.log({'transition/switched':int(transition.switch_step is not None),
                              'transition/relative_improvement':decision['window_relative_best_improvement'],
-                             'transition/switch_step':transition.switch_step}, step=update)
+                             'transition/switch_step':transition.switch_step}, step=update, commit=False)
                     print(json.dumps({'kind':'transition_check', **decision}), flush=True)
                 if update and (update == args.updates or update % 500 == 0):
                     save_checkpoint(student, tokenizer, output, update)
@@ -235,7 +235,7 @@ def main(args: Args) -> None:
                 metrics = train_update(student, teacher, optimizer, train_rows, tokenizer, args, rng, update, transition)
             record = {'update':update + 1, 'kind':'training', 'seconds':time.monotonic() - started, **metrics}
             handle.write(json.dumps(record) + '\n'); handle.flush()
-            run.log({f'train/{key}':value for key,value in metrics.items()}, step=update + 1)
+            run.log({f'train/{key}':value for key,value in metrics.items()}, step=update + 1, commit=False)
             print(json.dumps(record), flush=True)
     (output / 'complete.json').write_text(json.dumps({'seconds':time.monotonic()-started,'updates':args.updates,
         'peak_cuda_memory_bytes':torch.cuda.max_memory_allocated()}))
