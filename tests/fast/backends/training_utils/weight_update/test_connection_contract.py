@@ -19,7 +19,7 @@ def _build_updater(supports_receiver_pools=False) -> WeightUpdater:
     )
     with patch(f"{_UPDATER_MODULE}.get_weight_transfer_protocol", return_value=protocol):
         return WeightUpdater(
-            Namespace(update_weight_transfer_mode="broadcast", colocate=False),
+            Namespace(),
             [],
             weights_getter=lambda: {},
             model_name="test-model",

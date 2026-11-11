@@ -55,8 +55,6 @@ def _make_args(**overrides):
         rollout_num_gpus_per_engine=1,
         hf_checkpoint="/fake/path",
         update_weight_buffer_size=1 << 30,
-        update_weight_transfer_mode="broadcast",
-        colocate=False,
         actor_num_nodes=1,
         actor_num_gpus_per_node=1,
         pause_generation_mode="retract",

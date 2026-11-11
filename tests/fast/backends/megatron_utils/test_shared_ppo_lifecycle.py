@@ -294,8 +294,6 @@ def test_save_model_does_not_manage_lifecycle(actor_module, monkeypatch):
     worker.opt_param_scheduler = object()
     worker.adapter_slots = None
     worker._schedule_first_rollout = 0
-    worker.snapshot_publisher = object()
-    worker.weight_updater = None
     worker.wake_up = Mock()
     worker.sleep = Mock()
     save = Mock()
@@ -339,7 +337,6 @@ def test_force_sync_save_overlaps_hf_export_with_async_checkpoint(actor_module, 
     worker.snapshot_publisher = object()
     worker.adapter_slots = None
     worker._schedule_first_rollout = 0
-    worker.weight_updater = None
     events = []
 
     monkeypatch.setattr(actor_module, "save", lambda *_args, **_kwargs: events.append("save"))
@@ -915,7 +912,6 @@ def _weight_update_worker(actor_module: Any, monkeypatch: pytest.MonkeyPatch) ->
         rematerialize_param_from_master_weight=False,
     )
     worker._asleep = False
-    worker._last_rollout_id = None
     worker._heartbeat = Mock()
     worker.args.colocate = False
     worker._active_model_tag = "actor"

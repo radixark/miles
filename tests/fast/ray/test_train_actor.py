@@ -90,6 +90,17 @@ class TestLoadState:
             actor.load_state(ckpt_load_config=None)
 
 
+class TestEvalSnapshotExport:
+    def test_the_default_export_uses_the_backends_hf_export(self):
+        """Backends without a snapshot override keep the existing completed-HF contract."""
+        actor = TrainRayActor.__new__(TrainRayActor)
+        actor.export_hf = Mock()
+
+        actor.export_eval_snapshot(rollout_id=4, path="/ckpt/eval-4")
+
+        actor.export_hf.assert_called_once_with(4, "/ckpt/eval-4")
+
+
 class TestConfigureMasterAddrAndPort:
     def _make_actor(self) -> TrainRayActor:
         return TrainRayActor.__new__(TrainRayActor)

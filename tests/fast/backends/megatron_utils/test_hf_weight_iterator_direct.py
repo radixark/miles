@@ -339,41 +339,6 @@ class TestExpertParallelGatherFaultHook:
 
 
 @pytest.mark.parametrize("materialize", [False, True])
-def test_batch_overrides_preserve_export_order(direct_module, monkeypatch, materialize):
-    events = []
-    weights = object()
-
-    class Iterator(direct_module.HfWeightIteratorDirect):
-        def _iter_non_expert_batch(self, batch, source, materialize):
-            assert source is weights
-            events.append((batch, materialize))
-            return iter([batch] if materialize else [])
-
-        def _iter_expert_batch(self, batch, source, materialize):
-            assert source is weights
-            events.append((batch, materialize))
-            return iter([batch] if materialize else [])
-
-    iterator = object.__new__(Iterator)
-    iterator.args = Namespace()
-    iterator._non_expert_batches = ["ordinary"]
-    iterator._expert_batches = ["expert"]
-
-    def tower(args, materialize):
-        assert args is iterator.args
-        events.append(("tower", materialize))
-        return iter(["tower"] if materialize else [])
-
-    monkeypatch.setattr(direct_module.dist, "get_rank", lambda: 1)
-    monkeypatch.setattr(direct_module, "_iter_mm_tower_units", tower)
-
-    result = list(iterator._iter_hf_param_units(weights, materialize=materialize))
-
-    assert events == [(name, materialize) for name in ("ordinary", "expert", "tower")]
-    assert result == (["ordinary", "expert", "tower"] if materialize else [])
-
-
-@pytest.mark.parametrize("materialize", [False, True])
 def test_expert_conversion_preserves_ownership_without_empty_units(direct_module, monkeypatch, materialize):
     events = []
     value = torch.arange(4, dtype=torch.float32)

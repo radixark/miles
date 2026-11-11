@@ -307,7 +307,6 @@ def _make_updating_actor(
     )
     train_actor._heartbeat = Mock()
     train_actor._asleep = False
-    train_actor._last_rollout_id = None
     train_actor.weight_updater = updater
     train_actor._get_actor_weight_version = lambda: 7
     return train_actor

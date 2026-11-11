@@ -71,7 +71,7 @@ class TestWeightUpdaterLoraConfig:
         protocol.supports_lora = True
         with patch(f"{_UPDATER_MODULE}.get_weight_transfer_protocol", return_value=protocol):
             return WeightUpdater(
-                args or Namespace(update_weight_transfer_mode="broadcast", colocate=False),
+                args or Namespace(),
                 [MagicMock()],
                 weights_getter=lambda: {},
                 model_name="qwen",
@@ -101,9 +101,7 @@ class TestWeightUpdaterLoraConfig:
             is_lora=True,
             lora_sync_config={"peft_type": "LORA", "r": 8},
             args=Namespace(
-                update_weight_transfer_mode="broadcast",
-                colocate=False,
-                sglang=make_sglang_config(attn_dp_size=8 if attention_dp else 1, enable_dp_attention=False, dp_size=1),
+                sglang=make_sglang_config(attn_dp_size=8 if attention_dp else 1, enable_dp_attention=False, dp_size=1)
             ),
         )
         engines = [MagicMock()]
