@@ -13,6 +13,7 @@ import argparse
 from contextlib import nullcontext
 
 from miles.backends.primus_utils.megatron_compat import install_module_name_kwarg_shims
+from miles.backends.primus_utils.megatron_hooks import install_megatron_hooks
 from miles.backends.primus_utils.patches import PrimusPatchRunner
 
 _runner: PrimusPatchRunner | None = None
@@ -25,6 +26,7 @@ def get_primus_patch_runner() -> PrimusPatchRunner | None:
 def primus_megatron_init(args: argparse.Namespace) -> None:
     global _runner
 
+    install_megatron_hooks()
     chained = args.primus_chained_megatron_init_path
     if chained:
         from miles.utils.function_registry import load_function

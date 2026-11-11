@@ -48,9 +48,6 @@ export RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES=1
 # overwrites it with the trainer. Set 1 only when the engines cannot read the
 # checkpoint and should allocate from its config alone.
 export MILES_SGLANG_DUMMY_LOAD=${MILES_SGLANG_DUMMY_LOAD:-0}
-# NFS checkpoint loads take 25-90 min when many nodes read at once.
-export MILES_CELLS_READY_TIMEOUT_SECONDS=${MILES_CELLS_READY_TIMEOUT_SECONDS:-7200}
-
 export SGLANG_USE_AITER=1
 # rocm: TileLang DSA, AITER MoE, decode CUDA graphs. legacy: image SGLang, graphs off.
 SGLANG_PROFILE=${SGLANG_PROFILE:-rocm}

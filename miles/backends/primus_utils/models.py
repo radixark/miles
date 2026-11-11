@@ -72,12 +72,10 @@ def load_primus_hf_checkpoint(ddp_model, args: argparse.Namespace | Any, load_pa
 
     module_name, func_name = _PRIMUS_MODEL_FAMILIES[model_type][0].split(":")
     loader = getattr(importlib.import_module(module_name), func_name)  # config-access-exempt: loader named by the family table
+    from miles.backends.primus_utils.megatron_hooks import ensure_grouped_weight_views
+
     # Primus-Turbo grouped GEMM registers its per-expert views lazily; the loader writes through them.
-    for chunk in ddp_model:
-        for module in chunk.modules():
-            ensure_weight_views = getattr(module, "_ensure_weight_views", None)  # config-access-exempt: only Primus-Turbo grouped linears define it
-            if callable(ensure_weight_views):
-                ensure_weight_views()
+    ensure_grouped_weight_views(ddp_model)
     num_tensors = loader(ddp_model, load_path)
     logger.info("Loaded %d tensors from HF checkpoint %s with Primus' %s loader", num_tensors, load_path, model_type)
     return True

@@ -333,11 +333,7 @@ def _load_hf_weights_with_mbridge(ddp_model, args, load_path: str) -> None:
 
 
 def _load_checkpoint_hf(ddp_model, optimizer, args, load_path: str):
-    from miles.backends.primus_utils.models import load_primus_hf_checkpoint
-
-    if load_primus_hf_checkpoint(ddp_model, args, load_path):
-        pass
-    elif args.megatron_to_hf_mode != "bridge":
+    if args.megatron_to_hf_mode != "bridge":
         _load_hf_weights_with_mbridge(ddp_model, args, load_path)
     else:
         from megatron.bridge import AutoBridge
