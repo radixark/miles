@@ -188,7 +188,8 @@ by value, and paths among them must exist on the worker. A worker that cannot be
 the sample (`exit_status` `WorkerUnreachable` or `WorkerLost`). A worker cancels a
 call nobody has polled for two minutes. To keep anyone else from submitting calls,
 set the same secret on the worker and on the rollout host, in
-`MILES_AGENT_WORKER_SECRET` or in a file named by `MILES_AGENT_WORKER_SECRET_FILE`;
+`MILES_AGENT_WORKER_SECRET` or in a file named by `MILES_AGENT_WORKER_SECRET_FILE`,
+as one line of printable ASCII;
 the worker then refuses requests without it, and a call it refuses discards the
 sample (`exit_status` `WorkerUnauthorized`). Without a secret the worker accepts
 any request, so run it on a private network.

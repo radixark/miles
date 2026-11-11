@@ -332,6 +332,20 @@ async def test_worker_mode_without_a_worker_fails_before_a_session_opens_and_sto
     assert extra_keys == []
 
 
+@pytest.mark.asyncio
+async def test_a_worker_secret_no_header_can_carry_fails_before_a_session_opens(monkeypatch):
+    extra_keys = _patch_agent(monkeypatch, _Tracer())
+    monkeypatch.setenv("MILES_AGENT_WORKER_SECRET", "first-half\nsecond-half")
+
+    with pytest.raises(NonRetryableError, match="MILES_AGENT_WORKER_SECRET") as raised:
+        await agentic_tool_call.generate(
+            _generate_input(custom_agent_function_mode="worker", custom_agent_function_worker="http://worker:11100")
+        )
+
+    assert "first-half" not in str(raised.value)
+    assert extra_keys == []
+
+
 def test_the_worker_flags_parse_and_the_worker_env_flag_is_gone():
     parser = argparse.ArgumentParser(exit_on_error=False)
     agentic_tool_call.generate.add_arguments(parser)
