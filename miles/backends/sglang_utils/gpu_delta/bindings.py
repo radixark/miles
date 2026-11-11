@@ -76,7 +76,20 @@ class TensorBinding:
 
     @cached_property
     def storage_pointers(self):
-        return tuple(tensor.untyped_storage().data_ptr() for tensor in self.storage)
+        return tuple((tensor.device, tensor.untyped_storage().data_ptr()) for tensor in self.storage)
+
+    def raw_bindings(self):
+        """Reuse one small-mask binding per destination device."""
+        return self._raw_views
+
+    @cached_property
+    def _raw_views(self):
+        devices = {}
+        for target in self.storage:
+            devices.setdefault(target.device, []).append(target)
+        if len(devices) == 1:
+            return (self,)
+        return tuple(replace(self, storage=tuple(targets)) for targets in devices.values())
 
     def apply_bindings(self):
         """Return receiver-local byte-layout pieces of one canonical tensor."""
@@ -120,9 +133,9 @@ def prepare_raw_xor(items, derived_targets=()):
             if not binding.raw_ue8m0 and binding.torch_dtype == target.dtype and id(target) not in derived_targets:
                 prepared.append((target, mask, None))
             else:
-                key = binding.torch_dtype, target.dtype, binding.raw_ue8m0
+                key = binding.torch_dtype, target.dtype, binding.raw_ue8m0, target.device
                 groups.setdefault(key, []).append((target, mask))
-    for (canonical_dtype, target_dtype, ue8m0), members in groups.items():
+    for (canonical_dtype, target_dtype, ue8m0, _), members in groups.items():
         targets, masks = zip(*members, strict=True)
         mask = torch.cat(masks)
         if canonical_dtype == torch.bfloat16 and target_dtype == torch.float32:
@@ -311,7 +324,7 @@ class DerivedImage:
 
     @cached_property
     def source_pointer(self):
-        return self.source.untyped_storage().data_ptr()
+        return self.source.device, self.source.untyped_storage().data_ptr()
 
 
 def _tensor_identity(tensor):

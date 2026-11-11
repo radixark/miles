@@ -41,7 +41,7 @@ class GpuDeltaBackend:
             raise ValueError("GPU_DELTA_LAYERS_PER_BATCH must be positive")
         inventory = read_canonical_checkpoint_inventory(model_runner)
         self.layout = GpuDeltaLayout(model_runner.model, inventory)
-        self.device = next(model_runner.model.parameters()).device
+        self.device = torch.device(model_runner.device, model_runner.gpu_id)
         if self.device.type != "cuda" or self.device.index is None:
             raise ValueError("direct GPU deltas require an explicit CUDA device")
         from miles.utils.gpu_delta.host import HostArena
@@ -255,6 +255,10 @@ class PreparedDelta:
         self.raw_apply = None
         self.raw_apply_inputs = None
         self.raw_apply_group = None
+        self.raw_pointer_host = None
+        self.cpu_storages, self.cpu_mirrors = {}, {}
+        self.cpu_target_groups = []
+        self.cpu_derived = []
         self.batches = []
         self.timings = {}
         self.status_checks = []
@@ -346,9 +350,26 @@ class PreparedDelta:
         self.decoded_ready = [torch.cuda.Event() for _ in range(2)]
         self.decoded_free = [torch.cuda.Event() for _ in range(2)]
         with torch.cuda.stream(self.stream):
-            self.raw_device = self.raw_pinned.to(self.device, non_blocking=True)
+            raw_views = [
+                (view, position, size) for binding, position, size in raw_targets for view in binding.raw_bindings()
+            ]
+            self.raw_device = (
+                self.raw_pinned.to(self.device, non_blocking=True)
+                if any(view.storage[0].device.type == "cuda" for view, _, _ in raw_views)
+                else None
+            )
+            if self.raw_device is None:
+                self.timings["raw_h2d_bytes"] = 0
             raw_updates = prepare_raw_xor(
-                [(binding, self.raw_device[position : position + size]) for binding, position, size in raw_targets],
+                [
+                    (
+                        binding,
+                        (self.raw_pinned if binding.storage[0].device.type == "cpu" else self.raw_device)[
+                            position : position + size
+                        ],
+                    )
+                    for binding, position, size in raw_views
+                ],
                 backend.layout.derived_targets,
             )
             raw_copies = {}
@@ -358,6 +379,15 @@ class PreparedDelta:
                     targets.append(target)
                     sources.append(source)
             self.derived.extend(prepare_updates(backend.layout.derived_updates, raw_copies))
+            gpu_derived = []
+            for image in self.derived:
+                destination = (
+                    self.cpu_derived
+                    if image.source.device.type == "cpu" or image.destination.device.type == "cpu"
+                    else gpu_derived
+                )
+                destination.append(image)
+            self.derived = gpu_derived
             self.error = torch.zeros(1, dtype=torch.int32, device=self.device)
             from miles.utils.gpu_delta.apply import _compiled
 
@@ -425,9 +455,9 @@ class PreparedDelta:
             return False
         from miles.utils.gpu_delta.apply import plan_apply
 
-        masks = torch.cat([mask for _, mask, _ in updates])
         key = tuple(
-            (target.data_ptr(), tuple(target.shape), tuple(target.stride()), target.dtype) for target, _, _ in updates
+            (target.device, target.data_ptr(), tuple(target.shape), tuple(target.stride()), target.dtype)
+            for target, _, _ in updates
         )
         cached = self.backend.raw_plan
         if cached is None or cached[0] != key:
@@ -443,9 +473,29 @@ class PreparedDelta:
             self.backend.raw_plan = key, group
         else:
             group = cached[1]
+        if group.cpu_targets:
+            self.timings["raw_h2d_bytes"] = self.timings.get("raw_h2d_bytes", 0) + sum(
+                mask.numel() * mask.element_size() for _, mask, _ in updates if mask.device.type == "cpu"
+            )
+            masks = torch.cat(
+                [
+                    mask.to(self.device, non_blocking=True) if mask.device.type == "cpu" else mask
+                    for _, mask, _ in updates
+                ]
+            )
+        else:
+            masks = torch.cat([mask for _, mask, _ in updates])
         reused = group.prepare_metadata(self.device.index)
         group.bind(masks)
-        pointers = torch.tensor(list(group.pointer_rows(masks.data_ptr())), dtype=torch.int64, device=self.device)
+        if group.cpu_targets:
+            self.raw_pointer_host = torch.tensor(
+                list(group.pointer_rows(masks.data_ptr(), allow_unbound_cpu=True)), dtype=torch.int64, pin_memory=True
+            )
+            pointers = self.raw_pointer_host.to(self.device, non_blocking=True)
+            self.cpu_storages.update(group.cpu_storages)
+            self.cpu_target_groups.append((group, self.raw_pointer_host.numpy()))
+        else:
+            pointers = torch.tensor(list(group.pointer_rows(masks.data_ptr())), dtype=torch.int64, device=self.device)
         metadata = torch.tensor(group.metadata_rows, dtype=torch.int64, device=self.device)
         self.raw_apply = group.bind_launch(pointers, metadata, self.error)
         self.raw_apply_inputs = masks, pointers, metadata
@@ -465,7 +515,10 @@ class PreparedDelta:
                 continue
             count = 2 * len(group.sources)
             start, stop = position + count, position + count + group.metadata_size
-            self.apply_host_view[position:start] = list(group.pointer_rows(0))
+            self.apply_host_view[position:start] = list(group.pointer_rows(0, allow_unbound_cpu=True))
+            if group.cpu_targets:
+                self.cpu_storages.update(group.cpu_storages)
+                self.cpu_target_groups.append((group, self.apply_host_view[position:start]))
             self.apply_host_view[start:stop] = group.metadata_rows
             pointers = self.apply_metadata[position:start]
             metadata = self.apply_metadata[start:stop]
@@ -515,6 +568,38 @@ class PreparedDelta:
                 # overflow before this vectorized patch. Targets are untouched.
                 self.apply_host_view[indices] = offsets + self.decoded[slot].data_ptr()
         return groups, calls
+
+    @profiling.annotate("gpu_delta.pause.cpu_mirrors")
+    def _bind_cpu_mirrors(self):
+        # Copy current physical bytes only after the reader fence. One complete
+        # storage preserves aliases, affine offsets and untouched padding.
+        for key, storage in self.cpu_storages.items():
+            mirror = torch.empty(storage.numel(), dtype=torch.uint8, device=self.device)
+            self.cpu_mirrors[key] = mirror
+            mirror.copy_(storage, non_blocking=True)
+        for group, pointers in self.cpu_target_groups:
+            for index, address in group.bind_cpu_targets(self.cpu_mirrors):
+                pointers[index] = address
+        if self.raw_pointer_host is not None:
+            self.raw_apply_inputs[1].copy_(self.raw_pointer_host, non_blocking=True)
+        self.timings["cpu_weight_h2d_bytes"] = sum(storage.numel() for storage in self.cpu_storages.values())
+
+    @profiling.annotate("gpu_delta.pause.cpu_commit")
+    def _commit_cpu(self):
+        # The GPU verdict is known before any CPU weight changes. A failure in
+        # copying back still poisons the transaction and requires replacement.
+        with torch.cuda.device(self.device), torch.cuda.stream(self.stream), torch.no_grad():
+            for key, mirror in self.cpu_mirrors.items():
+                self.cpu_storages[key].copy_(mirror)
+            self.timings["cpu_weight_d2h_bytes"] = sum(mirror.numel() for mirror in self.cpu_mirrors.values())
+            pending_gpu = False
+            for image in self.cpu_derived:
+                pending_gpu |= image.destination.device.type == "cuda"
+                image.destination.copy_(image.source, non_blocking=image.destination.device.type == "cuda")
+            if pending_gpu:
+                done = torch.cuda.Event()
+                done.record(self.stream)
+                done.synchronize()
 
     @profiling.annotate("gpu_delta.pause.allocate_bind")
     def _allocate_paused(self):
@@ -575,6 +660,7 @@ class PreparedDelta:
                 "compressed_input_h2d_bytes",
             )
         )
+        self.h2d_bytes += self.timings.get("cpu_weight_h2d_bytes", 0)
 
     @contextmanager
     def _phase(self, name):
@@ -594,6 +680,8 @@ class PreparedDelta:
         with torch.cuda.device(self.device), torch.no_grad():
             self.stream.wait_stream(torch.cuda.default_stream(self.device))
             with torch.cuda.stream(self.stream):
+                if self.cpu_storages:
+                    self._bind_cpu_mirrors()
                 # Queue small XOR masks before allocating and binding matrix buffers.
                 with self._phase("raw_apply"):
                     if self.raw_apply is not None:
@@ -630,6 +718,8 @@ class PreparedDelta:
         self.timings["host_apply_completion_wait_s"] = time.perf_counter() - completion_started
         if self.error.item() != 0:
             raise RuntimeError("direct GPU delta decompression failed; session is poisoned")
+        if self.cpu_storages or self.cpu_derived:
+            self._commit_cpu()
         # Release output/workspace leases before generation resumes. DE allocation
         # free/fence overhead remains included in paused host wall time.
         self._release_gpu()
@@ -703,6 +793,11 @@ class PreparedDelta:
         self.batches.clear()
         self.status_checks.clear()
         self.raw_apply = self.raw_apply_inputs = self.raw_apply_group = None
+        self.raw_pointer_host = None
+        self.cpu_mirrors.clear()
+        self.cpu_storages.clear()
+        self.cpu_target_groups.clear()
+        self.cpu_derived = []
         self.derived = []
         self.apply_bindings.clear()
         self.apply_source_patches.clear()

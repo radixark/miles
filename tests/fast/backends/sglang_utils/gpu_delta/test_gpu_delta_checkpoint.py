@@ -78,6 +78,7 @@ class TestCanonicalCheckpointHeaders(unittest.TestCase):
             ),
             loader=DefaultModelLoader(),
             is_draft_worker=False,
+            server_args=types.SimpleNamespace(cpu_offload_gb=0, offload_group_size=-1),
         )
         loader = types.ModuleType("sglang.srt.model_loader.loader")
         loader.DefaultModelLoader = DefaultModelLoader
@@ -206,6 +207,7 @@ class TestCanonicalCheckpointHeaders(unittest.TestCase):
             pass
 
         cases = [
+            (self.runner.server_args, "offload_group_size", 2, "prefetched group offloading"),
             (self.runner, "loader", CustomLoader(), "standard local checkpoint loader"),
             (self.runner, "is_draft_worker", True, "target model"),
             (self.runner.load_config, "load_format", "pt", "safetensors load format"),

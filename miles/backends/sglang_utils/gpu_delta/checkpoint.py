@@ -24,6 +24,11 @@ def read_canonical_checkpoint_inventory(model_runner):
     config = model_runner.load_config
     model_config = model_runner.model_config
     loader = model_runner.loader
+    # Group offloading retains prefetched GPU copies independently of the CPU
+    # parameter storage. Updating that storage would leave those copies stale.
+    offload = model_runner.server_args
+    if offload.cpu_offload_gb == 0 and offload.offload_group_size > 0:
+        raise ValueError("GPU delta does not support prefetched group offloading")
     # ModelOpt's already-quantized branch delegates to DefaultModelLoader.
     # Subclasses may override the iterator or transform its names and values.
     if type(loader) not in (DefaultModelLoader, ModelOptModelLoader):

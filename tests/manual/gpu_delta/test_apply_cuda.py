@@ -277,6 +277,8 @@ def prepared(groups):
     owner.error = torch.ones(1, dtype=torch.int32, device="cuda")
     owner.batches, owner.status_checks = [], []
     owner.raw_apply = owner.raw_apply_inputs = owner.raw_apply_group = None
+    owner.cpu_storages, owner.cpu_mirrors = {}, {}
+    owner.cpu_target_groups = []
     owner._prepare_apply_bindings()
     return owner
 

@@ -25,7 +25,8 @@ import zstandard as zstd
 
 
 @pytest.mark.parametrize("codec", ["bitcomp", "bitcomp-zstd"])
-def test_bitcomp_receiver_double_buffer_exact_updates_and_stale_target(codec, monkeypatch):
+@pytest.mark.parametrize("residency", ["cuda", "mixed"])
+def test_bitcomp_receiver_double_buffer_exact_updates_and_stale_target(codec, residency, monkeypatch):
     """Real producer/receiver, five batches, omitted frames and small XOR masks."""
     import torch
 
@@ -42,13 +43,29 @@ def test_bitcomp_receiver_double_buffer_exact_updates_and_stale_target(codec, mo
     model.config = SimpleNamespace(architectures=["DeepseekV3ForCausalLM"], num_hidden_layers=5)
     model.num_fused_shared_experts = 0
     model.model = torch.nn.Module()
+    raw_device = "cpu" if residency == "mixed" else device
+    # The first parameter does not determine the serving worker's CUDA device.
+    model.model.raw = torch.nn.Parameter(torch.zeros(17, dtype=torch.uint8, device=raw_device), requires_grad=False)
+    model.model.scalar = torch.nn.Parameter(torch.zeros((), dtype=torch.uint8, device=raw_device), requires_grad=False)
     model.model.layers = torch.nn.ModuleList([torch.nn.Module() for _ in range(5)])
     for layer in model.model.layers:
         layer.weight = torch.nn.Parameter(
             torch.zeros((1, 2 * frame_bytes + 140), dtype=torch.uint8, device=device),
             requires_grad=False,
         )
-    model.model.raw = torch.nn.Parameter(torch.zeros(17, dtype=torch.uint8, device=device), requires_grad=False)
+    host_storage = host_padding = None
+    if residency == "mixed":
+        columns, pitch, offset = frame_bytes + 72, frame_bytes + 88, 4
+        host_storage = torch.full((2 * pitch + offset,), 165, dtype=torch.uint8)
+        weight = host_storage.as_strided((2, columns), (pitch, 1), offset)
+        weight.zero_()
+        model.model.layers[0].weight = torch.nn.Parameter(weight, requires_grad=False)
+        host_padding = torch.ones_like(host_storage, dtype=torch.bool)
+        host_padding.as_strided(weight.shape, weight.stride(), offset).fill_(False)
+    identities = {
+        name: (value.data_ptr(), value.untyped_storage().data_ptr(), value.stride(), value.device)
+        for name, value in model.named_parameters()
+    }
     inventory = {name: {"dtype": "U8", "shape": list(value.shape)} for name, value in model.named_parameters()}
     monkeypatch.setattr(checkpoint, "read_canonical_checkpoint_inventory", lambda _: inventory)
     monkeypatch.setenv("GPU_DELTA_CPU_WORKERS", "4")
@@ -69,7 +86,7 @@ def test_bitcomp_receiver_double_buffer_exact_updates_and_stale_target(codec, mo
             pid=os.getpid(),
             rank_id="bitcomp-original-rank",
         )
-        backend = GpuDeltaBackend(SimpleNamespace(model=model), identity)
+        backend = GpuDeltaBackend(SimpleNamespace(model=model, device="cuda", gpu_id=device.index), identity)
         definitions = [
             dict(
                 name=name,
@@ -87,7 +104,7 @@ def test_bitcomp_receiver_double_buffer_exact_updates_and_stale_target(codec, mo
                 }
                 after = {name: value.clone().pin_memory() for name, value in before.items()}
                 for name, value in after.items():
-                    if name == "model.raw":
+                    if name in {"model.raw", "model.scalar"}:
                         value.bitwise_xor_(version)
                     else:
                         value[:frame_bytes:4096].bitwise_xor_(version)
@@ -113,13 +130,14 @@ def test_bitcomp_receiver_double_buffer_exact_updates_and_stale_target(codec, mo
                             dtype=row["dtype"],
                             shape=row["shape"],
                         )
-                    raw = next(row for row in definitions if row["name"] == "model.raw")
-                    writer.add_raw_xor_tensor(
-                        raw["name"],
-                        np.bitwise_xor(before[raw["name"]].numpy(), after[raw["name"]].numpy()),
-                        raw["dtype"],
-                        raw["shape"],
-                    )
+                    for raw in definitions:
+                        if raw["encoding"] == "xor_raw_bytes":
+                            writer.add_raw_xor_tensor(
+                                raw["name"],
+                                np.bitwise_xor(before[raw["name"]].numpy(), after[raw["name"]].numpy()),
+                                raw["dtype"],
+                                raw["shape"],
+                            )
                     descriptor = writer.finish()
                 finally:
                     writer.close()
@@ -140,6 +158,11 @@ def test_bitcomp_receiver_double_buffer_exact_updates_and_stale_target(codec, mo
                 assert prepared.timings["host_batch_plan_reused"] == int(version > 1)
                 for name, value in model.named_parameters():
                     assert torch.equal(value.cpu().flatten(), before[name])
+                if version == 1 and residency == "mixed":
+                    prepared.close()
+                    for name, value in model.named_parameters():
+                        assert torch.equal(value.cpu().flatten(), before[name])
+                    prepared = prepare_executor.submit(backend.prepare, metadata).result()
                 if version == 3:
                     model.model.layers[0].weight = torch.nn.Parameter(
                         model.model.layers[0].weight.clone(), requires_grad=False
@@ -158,7 +181,15 @@ def test_bitcomp_receiver_double_buffer_exact_updates_and_stale_target(codec, mo
                     assert result["timings"]["de_host_input_bytes"] == 0
                     for name, value in model.named_parameters():
                         assert torch.equal(value.cpu().flatten(), after[name])
+                        assert (
+                            value.data_ptr(),
+                            value.untyped_storage().data_ptr(),
+                            value.stride(),
+                            value.device,
+                        ) == identities[name]
                     prepared.close(True)
+                if host_storage is not None:
+                    assert torch.all(host_storage[host_padding] == 165)
                 prepared = None
         finally:
             if prepared is not None:
@@ -174,6 +205,7 @@ def test_hf_relative_snapshots_are_reversible_with_the_same_update_api(monkeypat
     import torch
 
     from miles.backends.sglang_utils.gpu_delta import checkpoint
+    from miles.backends.sglang_utils.gpu_delta.bindings import DerivedImage
     from miles.backends.sglang_utils.gpu_delta.derived import DerivedUpdate, plan_updates
     from miles.backends.sglang_utils.gpu_delta.receiver import GpuDeltaBackend
     from miles.backends.sglang_utils.gpu_delta.session import DeltaSession
@@ -193,8 +225,10 @@ def test_hf_relative_snapshots_are_reversible_with_the_same_update_api(monkeypat
         layer.weight = torch.nn.Parameter(
             torch.zeros((1, frame_bytes + 7), dtype=torch.uint8, device=device), requires_grad=False
         )
-    model.model.vector = torch.nn.Parameter(torch.arange(17, dtype=torch.uint8, device=device), requires_grad=False)
-    model.model.scalar = torch.nn.Parameter(torch.tensor(1.5, device=device), requires_grad=False)
+    model.model.vector = torch.nn.Parameter(torch.arange(17, dtype=torch.uint8), requires_grad=False)
+    model.model.scalar = torch.nn.Parameter(torch.tensor(1.5), requires_grad=False)
+    model.model.scalar_gpu = torch.nn.Parameter(torch.tensor(1.5, device=device), requires_grad=False)
+    pointers = {name: value.data_ptr() for name, value in model.named_parameters()}
     inventory = {
         name: {"dtype": "F32" if value.dtype == torch.float32 else "U8", "shape": list(value.shape)}
         for name, value in model.named_parameters()
@@ -213,14 +247,24 @@ def test_hf_relative_snapshots_are_reversible_with_the_same_update_api(monkeypat
             pid=os.getpid(),
             rank_id="snapshot-original",
         )
-        backend = GpuDeltaBackend(SimpleNamespace(model=model), identity)
-        derived = torch.empty_like(model.model.scalar)
+        backend = GpuDeltaBackend(SimpleNamespace(model=model, device="cuda", gpu_id=device.index), identity)
+        derived = torch.zeros_like(model.model.scalar_gpu)
+        derived_cpu = torch.zeros_like(model.model.scalar)
+        derived_vector = torch.zeros_like(model.model.vector, device=device)
         backend.layout.finish()
+        sources = (model.model.scalar, model.model.scalar_gpu)
         backend.layout.derived_updates = plan_updates(
-            [DerivedUpdate((model.model.scalar,), (derived,), lambda values: (values[0] * 2,))],
-            [model.model.scalar],
+            [
+                DerivedUpdate(
+                    sources, (derived, derived_cpu), lambda values: (values[0] + values[1], values[0] + values[1])
+                )
+            ],
+            sources,
         )
-        backend.layout.derived_targets = frozenset({id(model.model.scalar)})
+        backend.layout.derived_targets = frozenset(map(id, sources))
+        backend.layout.derived.append(DerivedImage("host-vector", derived_vector, model.model.vector))
+        consumers = (derived, derived_cpu, derived_vector)
+        consumer_pointers = [value.data_ptr() for value in consumers]
         session = DeltaSession(identity, backend)
         definitions = [
             dict(name=name, **meta, encoding="xor_raw_bytes" if len(meta["shape"]) <= 1 else "xor_bytes")
@@ -245,6 +289,7 @@ def test_hf_relative_snapshots_are_reversible_with_the_same_update_api(monkeypat
                         values["model.vector"].bitwise_xor_(43)
                     scalar = torch.tensor(3.0 if label == "A" else 7.5).reshape(-1).view(torch.uint8)
                     values["model.scalar"].copy_(scalar)
+                    values["model.scalar_gpu"].copy_(scalar)
                 if undo:
                     descriptor = published[label]
                 else:
@@ -271,10 +316,13 @@ def test_hf_relative_snapshots_are_reversible_with_the_same_update_api(monkeypat
                         writer.close()
                 request = dict(descriptor, session_id=operation, validate_payload_hash=True, participants=[identity])
                 before = {name: value.detach().clone() for name, value in model.named_parameters()}
+                before_derived = [value.clone() for value in consumers]
                 assert session.prepare(request).result()["state"] == "PREPARED"
                 prepared = session._update.prepared
                 for name, value in model.named_parameters():
                     assert torch.equal(value, before[name])
+                for value, old in zip(consumers, before_derived, strict=True):
+                    assert torch.equal(value, old)
                 if worker is None:
                     worker = backend.host_arena._worker
                 assert backend.host_arena._worker is worker
@@ -286,7 +334,11 @@ def test_hf_relative_snapshots_are_reversible_with_the_same_update_api(monkeypat
                 session._update.release_future.result()
                 for name, value in model.named_parameters():
                     assert torch.equal(value.detach().reshape(-1).view(torch.uint8).cpu(), values[name])
+                    assert value.data_ptr() == pointers[name]
                 assert derived.item() == model.model.scalar.item() * 2
+                assert derived_cpu.item() == derived.item()
+                assert torch.equal(derived_vector.cpu(), model.model.vector)
+                assert [value.data_ptr() for value in consumers] == consumer_pointers
                 if undo or label == "HF":
                     shutil.rmtree(root / label)
             assert session.clear()["state"] == "CLEARED"
@@ -297,7 +349,7 @@ def test_hf_relative_snapshots_are_reversible_with_the_same_update_api(monkeypat
             backend.close()
 
 
-@pytest.mark.parametrize("failure", ["before_apply", "during_apply", "after_apply", "after_resume"])
+@pytest.mark.parametrize("failure", ["before_apply", "during_apply", "decoder_status", "after_apply", "after_resume"])
 def test_bitcomp_failed_transaction_requires_fresh_receiver_recovery(failure, monkeypatch):
     """Exercise transaction recovery around real CUDA writes, not fake payloads."""
     import torch
@@ -326,14 +378,12 @@ def test_bitcomp_failed_transaction_requires_fresh_receiver_recovery(failure, mo
             model.num_fused_shared_experts = 0
             model.model = torch.nn.Module()
             model.model.layers = torch.nn.ModuleList([torch.nn.Module() for _ in range(2)])
-            for layer in model.model.layers:
+            for index, layer in enumerate(model.model.layers):
                 layer.weight = torch.nn.Parameter(
-                    torch.zeros((1, frame_bytes), dtype=torch.uint8, device=device),
+                    torch.zeros((1, frame_bytes), dtype=torch.uint8, device=device if index == 0 else "cpu"),
                     requires_grad=False,
                 )
-            model.model.raw = torch.nn.Parameter(
-                torch.zeros(17, dtype=torch.uint8, device=device), requires_grad=False
-            )
+            model.model.raw = torch.nn.Parameter(torch.zeros(17, dtype=torch.uint8), requires_grad=False)
             inventory = {name: {"dtype": "U8", "shape": list(value.shape)} for name, value in model.named_parameters()}
             monkeypatch.setattr(checkpoint, "read_canonical_checkpoint_inventory", lambda _: inventory)
             identity = dict(
@@ -344,7 +394,7 @@ def test_bitcomp_failed_transaction_requires_fresh_receiver_recovery(failure, mo
                 pid=os.getpid(),
                 rank_id=f"native-receiver-{incarnation}",
             )
-            backend = GpuDeltaBackend(SimpleNamespace(model=model), identity)
+            backend = GpuDeltaBackend(SimpleNamespace(model=model, device="cuda", gpu_id=device.index), identity)
             session = DeltaSession(identity, backend)
             sessions.append(session)
             return model, session
@@ -421,6 +471,8 @@ def test_bitcomp_failed_transaction_requires_fresh_receiver_recovery(failure, mo
                 applications.append(batch)
                 if failure == "during_apply":
                     raise RuntimeError("injected failure after the first CUDA batch")
+                if failure == "decoder_status" and len(applications) == 2:
+                    prepared.error.fill_(1)
 
             monkeypatch.setattr(prepared, "_apply_batch", checked_batch)
 
@@ -428,8 +480,8 @@ def test_bitcomp_failed_transaction_requires_fresh_receiver_recovery(failure, mo
                 if failure == "before_apply":
                     raise RuntimeError("injected reader fence failure")
 
-            if failure in {"before_apply", "during_apply"}:
-                with pytest.raises(RuntimeError, match="injected"):
+            if failure in {"before_apply", "during_apply", "decoder_status"}:
+                with pytest.raises(RuntimeError, match="injected|decompression failed"):
                     session.apply(metadata["session_id"], fence, lambda: None, None)
                 torch.cuda.synchronize(device)
                 assert session.status()["state"] == "POISONED"
@@ -437,7 +489,7 @@ def test_bitcomp_failed_transaction_requires_fresh_receiver_recovery(failure, mo
                 if failure == "before_apply":
                     assert_weights(model, before)
                 else:
-                    assert len(applications) == 1
+                    assert len(applications) == (2 if failure == "decoder_status" else 1)
                     assert torch.equal(
                         model.model.layers[0].weight.cpu().flatten(),
                         after["model.layers.0.weight"],
@@ -446,6 +498,7 @@ def test_bitcomp_failed_transaction_requires_fresh_receiver_recovery(failure, mo
                         model.model.layers[1].weight.cpu().flatten(),
                         before["model.layers.1.weight"],
                     )
+                    assert torch.equal(model.model.raw, before["model.raw"])
                 with pytest.raises(ValueError):
                     session.apply(metadata["session_id"], lambda: None, lambda: None, None)
                 with pytest.raises(ValueError):

@@ -235,6 +235,35 @@ def test_source_bounds_empty_plans_and_missing_destinations(planner):
     assert empty.bind_launch(None, None, None) is None
 
 
+def test_cpu_views_share_one_mirror_and_require_fresh_paused_binding(planner):
+    from miles.backends.sglang_utils.gpu_delta.bindings import TensorBinding
+
+    storage = torch.zeros(96, dtype=torch.uint8)
+    views = (storage[4:20], storage.as_strided((2, 8), (16, 1), 40))
+    outputs = [
+        (TensorBinding(str(index), "U8", (16,), [[0, 16]], (view,), destinations=(view,)), index * 16, 16)
+        for index, view in enumerate(views)
+    ]
+    group = planner.plan_apply(outputs)
+    group.prepare_metadata(0)
+    assert len(group.cpu_storages) == 1
+    key = next(iter(group.cpu_storages))
+    assert group.cpu_storages[key].data_ptr() == storage.data_ptr()
+    with pytest.raises(ValueError, match="paused CUDA mirror"):
+        list(group.pointer_rows(4096))
+    pointers = list(group.pointer_rows(4096, allow_unbound_cpu=True))
+    assert pointers == [4096, 20, 4112, 56]
+    call = group.bind_launch(torch.tensor(pointers), torch.tensor(group.metadata_rows), torch.zeros(1))
+    with pytest.raises(RuntimeError, match="not been bound"):
+        call()
+    mirror = SimpleNamespace(device=torch.device("cuda", 0), data_ptr=lambda: 8192, numel=storage.numel)
+    assert group.bind_cpu_targets({key: mirror}) == [(1, 8196), (3, 8232)]
+    call()
+    assert group.prepare_metadata(0)
+    with pytest.raises(RuntimeError, match="not been bound"):
+        call()
+
+
 def test_aligned_bind_uses_immutable_template_without_replanning(planner, monkeypatch):
     m = planner
     contract = [4100, [4100], [1], [4100], [1]]
@@ -320,6 +349,9 @@ def owner(groups):
     value.error = torch.zeros(1, dtype=torch.int32)
     value.batches, value.status_checks = [], []
     value.raw_apply = value.raw_apply_inputs = value.raw_apply_group = None
+    value.raw_pointer_host = None
+    value.cpu_storages, value.cpu_mirrors = {}, {}
+    value.cpu_target_groups, value.cpu_derived = [], []
     value._prepare_apply_bindings()
     return value
 

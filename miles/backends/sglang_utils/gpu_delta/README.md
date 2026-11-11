@@ -131,6 +131,20 @@ tokenizer owns the following internal phases:
    generation. Miles advances its baseline only after all engines finish.
    Independent engines need not pause together.
 
+Registered weights may reside on CPU or CUDA; the serving worker selects the
+CUDA execution device independently of parameter placement. Preparation leaves
+both kinds of live storage unchanged. After the reader fence, each touched CPU
+storage is copied once to a temporary CUDA mirror. The existing affine XOR
+kernels update those mirrors, preserving views and padding; successful native
+status and GPU completion precede copyback into the original CPU storage.
+Cross-device derived consumers finish updating before `APPLIED`. Cancellation
+uses the same XOR operation for either residency.
+
+This requires spare HBM for all touched CPU storage capacities during apply;
+it is not a bounded-memory CPU-offload implementation. Prefetched group
+offloading is rejected because it retains independent GPU copies. Dynamic
+offloader integration is not covered by the mixed-residency tensor tests.
+
 Dedicated eval uses the same API, prepare/apply/resume phases and single host
 arena. Miles owns the sequence: apply the previous HF-relative publication again
 to cancel it, then apply the new publication. Its eval lock excludes generation

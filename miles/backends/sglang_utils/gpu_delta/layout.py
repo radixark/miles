@@ -152,7 +152,7 @@ class GpuDeltaLayout:
         owners = {}
         for binding in self.bindings:
             for tensor in binding.storage:
-                key = tensor.untyped_storage().data_ptr()
+                key = tensor.device, tensor.untyped_storage().data_ptr()
                 prior = owners.get(key)
                 if prior and prior != binding.name:
                     pair = (prior, binding.name)

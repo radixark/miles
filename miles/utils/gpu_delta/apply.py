@@ -590,10 +590,14 @@ class ByteApplyGroup:
     targets: list[int]
     contracts: tuple
     kernels: tuple = ()
+    cpu_targets: tuple = ()
+    cpu_storages: dict = field(default_factory=dict)
     _prepared_device: int | None = field(default=None, init=False, repr=False)
 
     def prepare_metadata(self, device_index):
         """Prepare immutable device metadata once; return whether it was cached."""
+        if self.cpu_targets:
+            self._cpu_bound = False
         if type(device_index) is int and device_index == self._prepared_device:
             self._restore_aligned_binding()
             return True
@@ -618,7 +622,7 @@ class ByteApplyGroup:
         # preplanned descriptor template. Actual scratch addresses remain unknown.
         self.sources, self.targets = tuple(self.sources), tuple(self.targets)
         self.source_limit = self.source_max_offset = 0
-        alignments, indices, position, pointer_position = [], [], 0, 0
+        alignments, indices, target_indices, position, pointer_position = [], [], [], 0, 0
         for contract, count in self.contracts:
             end = position + count
             offsets, targets = self.sources[position:end], self.targets[position:end]
@@ -631,9 +635,12 @@ class ByteApplyGroup:
             # Empty contracts retain the existing alignment1 convention.
             alignments.append((math.gcd(16, *offsets), math.gcd(16, *targets)) if count else (1, 1))
             indices.extend(range(pointer_position, pointer_position + count))
+            if self.cpu_targets:
+                target_indices.extend(range(pointer_position + count, pointer_position + 2 * count))
             pointer_position += 2 * count
             position = end
         self.source_indices = tuple(indices)
+        self.cpu_pointer_rows = tuple((target_indices[index], key, offset) for index, key, offset in self.cpu_targets)
         self._plan_binding(alignments)
         self._aligned_binding = (
             tuple(self.metadata_rows),
@@ -655,13 +662,36 @@ class ByteApplyGroup:
             self.tiles, self.word32_contracts, self.grid_ctas = tiles, words, grid
             self._binding_aligned = True
 
-    def pointer_rows(self, origin):
+    def pointer_rows(self, origin, allow_unbound_cpu=False):
+        if self.cpu_targets and not allow_unbound_cpu:
+            raise ValueError("CPU delta destinations require paused CUDA mirror binding")
         position = 0
         for _, count in self.contracts:
             end = position + count
             yield from (origin + offset for offset in self.sources[position:end])
+            # CPU entries are explicit placeholders, never host pointers.
             yield from self.targets[position:end]
             position = end
+
+    def bind_cpu_targets(self, mirrors):
+        """Resolve cached CPU byte views only after paused mirror allocation."""
+        rows = []
+        for index, key, offset in self.cpu_pointer_rows:
+            mirror = mirrors[key]
+            if (
+                mirror.device != torch.device("cuda", self._prepared_device)
+                or mirror.data_ptr() % 16
+                or mirror.numel() != self.cpu_storages[key].numel()
+            ):
+                raise ValueError("invalid CPU delta CUDA mirror")
+            rows.append((index, mirror.data_ptr() + offset))
+        self._cpu_bound = True
+        return rows
+
+    def _launch_cpu_bound(self, calls):
+        if not self._cpu_bound:
+            raise RuntimeError("CPU delta destinations have not been bound to CUDA mirrors")
+        _launch_prebound(calls)
 
     def bind(self, scratch):
         """Validate actual scratch, reusing prepared geometry when 16B aligned.
@@ -752,12 +782,14 @@ class ByteApplyGroup:
             )
             for program, grid in zip(self.programs, grids, strict=False)
         )
-        return partial(_launch_prebound, calls) if calls else None
+        if not calls:
+            return None
+        return partial(self._launch_cpu_bound if self.cpu_targets else _launch_prebound, calls)
 
 
 def plan_apply(outputs):
     """One affine batch with runtime contracts, without model names."""
-    groups = {}
+    groups, cpu_storages = {}, {}
     for binding, offset, size in outputs:
         if not binding.destinations:
             raise ValueError("GPU delta apply requires affine byte destinations")
@@ -767,14 +799,32 @@ def plan_apply(outputs):
         for target in binding.destinations:
             ts, tt = _normalize(target.shape, target.stride())
             contract = (math.prod(ss), ss, st, ts, tt)
-            sources, targets = groups.setdefault(contract, ([], []))
+            sources, targets, cpu_targets = groups.setdefault(contract, ([], [], []))
             sources.append(offset + source.storage_offset())
-            targets.append(target.data_ptr())
+            if target.device.type == "cpu":
+                storage = target.untyped_storage()
+                key = target.device, storage.data_ptr()
+                byte_offset = target.data_ptr() - storage.data_ptr()
+                if key not in cpu_storages:
+                    cpu_storages[key] = torch.empty(0, dtype=torch.uint8, device="cpu").set_(
+                        storage, 0, (storage.nbytes(),), (1,)
+                    )
+                cpu_targets.append((len(targets), key, byte_offset))
+                # Mirrors have aligned CUDA bases. This placeholder preserves
+                # offset alignment for preparation but cannot be launched.
+                targets.append(16 + byte_offset)
+            elif target.device.type == "cuda":
+                targets.append(target.data_ptr())
+            else:
+                raise ValueError(f"unsupported GPU delta destination device: {target.device}")
     if not groups:
         return None
-    sources, targets, contracts = [], [], []
-    for contract, (group_sources, group_targets) in groups.items():
+    sources, targets, contracts, cpu_targets = [], [], [], []
+    for contract, (group_sources, group_targets, group_cpu_targets) in groups.items():
         contracts.append((contract, len(group_sources)))
+        cpu_targets.extend((len(targets) + index, key, offset) for index, key, offset in group_cpu_targets)
         sources.extend(group_sources)
         targets.extend(group_targets)
-    return ByteApplyGroup(sources, targets, tuple(contracts))
+    return ByteApplyGroup(
+        sources, targets, tuple(contracts), cpu_targets=tuple(cpu_targets), cpu_storages=cpu_storages
+    )

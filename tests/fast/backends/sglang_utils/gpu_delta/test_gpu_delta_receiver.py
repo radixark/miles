@@ -381,7 +381,8 @@ class TestReceiverPreparation(unittest.TestCase):
             bindings=[],
             excluded={},
         )
-        fake_model = SimpleNamespace(parameters=lambda: iter([SimpleNamespace(device=torch.device("cuda", 0))]))
+        fake_model = SimpleNamespace(parameters=lambda: iter([SimpleNamespace(device=torch.device("cpu"))]))
+        model_runner = SimpleNamespace(model=fake_model, device="cuda", gpu_id=0)
         with (
             patch.dict(receiver.os.environ, GPU_DELTA_LAYERS_PER_BATCH="3"),
             patch.object(receiver, "GpuDeltaLayout", return_value=fake_plan),
@@ -391,8 +392,9 @@ class TestReceiverPreparation(unittest.TestCase):
                 return_value={"weight": {"shape": [1], "dtype": "U8"}},
             ) as read_inventory,
         ):
-            backend = receiver.GpuDeltaBackend(SimpleNamespace(model=fake_model), {"engine_id": "test-engine"})
+            backend = receiver.GpuDeltaBackend(model_runner, {"engine_id": "test-engine"})
             backend.host_arena.register_dtypes.assert_called_once_with(fake_plan.dtype_records)
+            self.assertEqual(backend.device, torch.device("cuda", 0))
             self.assertEqual(backend.decoders, {})
             self.assertIsNone(backend.apply_stream)
             self.assertIsNone(backend.io_stream)
@@ -400,7 +402,7 @@ class TestReceiverPreparation(unittest.TestCase):
             with patch.dict(receiver.os.environ, GPU_DELTA_LAYERS_PER_BATCH="0"):
                 self.assertEqual(backend.layers_per_batch, 3)
                 with self.assertRaisesRegex(ValueError, "must be positive"):
-                    receiver.GpuDeltaBackend(SimpleNamespace(model=fake_model), {"engine_id": "invalid"})
+                    receiver.GpuDeltaBackend(model_runner, {"engine_id": "invalid"})
             read_inventory.assert_called_once()
             backend.host_arena.prepare_publication.side_effect = ValueError("bad manifest")
             with patch.object(torch.cuda, "device", return_value=nullcontext()):

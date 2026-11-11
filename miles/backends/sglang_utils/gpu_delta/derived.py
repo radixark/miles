@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from functools import cached_property
 from itertools import product
 from types import SimpleNamespace
 
@@ -41,6 +42,14 @@ class DerivedUpdate:
     compute: Callable[[tuple[torch.Tensor, ...]], tuple[torch.Tensor, ...]]
     checks: Callable | None = None
 
+    @cached_property
+    def compute_device(self):
+        return next((source.device for source in self.sources if source.is_cuda), self.sources[0].device)
+
+    @cached_property
+    def mixed_sources(self):
+        return any(source.device != self.compute_device for source in self.sources)
+
     def prepare(self, overrides: Mapping[int, torch.Tensor]):
         result, checks = self._prepare(overrides)
         _validate_checks(checks)
@@ -53,6 +62,8 @@ class DerivedUpdate:
         for original, value in zip(self.sources, values, strict=False):
             _same_geometry(original, value, "source")
         with torch.no_grad():
+            if self.mixed_sources:
+                values = tuple(value.to(self.compute_device) for value in values)
             outputs = tuple(self.compute(values))
             if len(outputs) != len(self.destinations):
                 raise ValueError("GPU delta derived output count changed")
@@ -71,21 +82,21 @@ class DerivedUpdate:
 def _validate_checks(checks):
     if not checks:
         return
-    # One small transfer/synchronization for the whole prepared update. Keep
-    # individual results so failures retain their original useful diagnostics.
-    passed = torch.stack([predicate for predicate, _ in checks]).cpu().tolist()
-    for ok, (_, message) in zip(passed, checks, strict=False):
-        if not ok:
-            raise ValueError(message)
+    # Batch each device's predicates; CPU-resident calibration is valid too.
+    by_device = {}
+    for predicate, message in checks:
+        by_device.setdefault(predicate.device, []).append((predicate, message))
+    for group in by_device.values():
+        passed = torch.stack([predicate for predicate, _ in group]).cpu().tolist()
+        for ok, (_, message) in zip(passed, group, strict=False):
+            if not ok:
+                raise ValueError(message)
 
 
 def _same_geometry(original, value, role):
-    if (
-        not isinstance(value, torch.Tensor)
-        or original.shape != value.shape
-        or original.dtype != value.dtype
-        or original.device != value.device
-    ):
+    # A derived result may be computed on CUDA for a CPU consumer (or vice
+    # versa). The paused commit owns the cross-device copy.
+    if not isinstance(value, torch.Tensor) or original.shape != value.shape or original.dtype != value.dtype:
         raise ValueError(f"GPU delta derived {role} geometry changed")
 
 
@@ -304,6 +315,11 @@ def nvfp4_derived_update(layer, backend, quant_mode="w4a4"):
         _validate_checks((((weight13[:, 0] == weight13[:, 1]).all(), tied_clamp_error),))
     situ_beta = config.gemm1_clamp_limit
     neutral13, neutral2 = layer.w13_input_scale_quant, layer.w2_input_scale_quant
+    if per_token and not w4a16:
+        compute_device = next((source.device for source in sources if source.is_cuda), sources[0].device)
+        neutral13, neutral2 = neutral13.to(compute_device), neutral2.to(compute_device)
+        if cute:
+            fixed_input_scale = fixed_input_scale.to(compute_device)
 
     def compute(values):
         weight13, weight2 = values[:2]
