@@ -13,6 +13,7 @@ from miles.rollout.agentic.credentials import PROVIDER_CREDENTIALS, provider_env
 from miles.rollout.agentic.worker import create_app
 from miles.rollout.generate_hub import agentic_tool_call
 from miles.utils.args.custom_function import CustomFunctionConfig
+from miles.utils.retry_utils import NonRetryableError
 from miles.utils.test_utils import agent_function_stubs as stubs
 
 _EXAMPLES = Path(__file__).resolve().parents[3] / "examples"
@@ -68,20 +69,49 @@ def test_a_harness_env_reaches_its_agent_on_a_worker(monkeypatch, directory, mod
     reads = sorted(_env_reads(_EXAMPLES / directory, sources) - _CREDENTIALS - _ROLLOUT_SIDE_ONLY)
     for name in reads:
         monkeypatch.setenv(name, f"set-{name}")
+    extra_env = _worker_call_env(module)
+
+    for name in reads:
+        monkeypatch.delenv(name)
+    assert _read_on_worker(extra_env, reads) == {name: f"set-{name}" for name in reads}
+
+
+@pytest.mark.parametrize("var", ["HARBOR_AGENT_IMPORT_PATH", "HARBOR_VERIFIER_IMPORT_PATH"])
+def test_a_harbor_recipe_module_env_reaches_the_agent_on_a_worker(monkeypatch, tmp_path, var):
+    (tmp_path / "lin2804_recipe.py").write_text('WORKER_ENV = ("LITE_*",)\n\nclass Recipe:\n    pass\n')
+    monkeypatch.syspath_prepend(tmp_path)
+    monkeypatch.syspath_prepend(_EXAMPLES / "experimental/harbor")
+    monkeypatch.setenv(var, "lin2804_recipe:Recipe")
+    monkeypatch.setenv("LITE_EVAL_FILE_CACHE", "/cache")
+
+    extra_env = _worker_call_env("harbor_agent_function")
+
+    monkeypatch.delenv("LITE_EVAL_FILE_CACHE")
+    assert _read_on_worker(extra_env, ["LITE_EVAL_FILE_CACHE"]) == {"LITE_EVAL_FILE_CACHE": "/cache"}
+
+
+def test_a_harbor_recipe_module_that_does_not_import_stops_the_rollout(monkeypatch):
+    monkeypatch.syspath_prepend(_EXAMPLES / "experimental/harbor")
+    monkeypatch.setenv("HARBOR_VERIFIER_IMPORT_PATH", "lin2804_missing_recipe:Verifier")
+
+    with pytest.raises(NonRetryableError, match="HARBOR_VERIFIER_IMPORT_PATH names lin2804_missing_recipe"):
+        _worker_call_env("harbor_agent_function")
+
+
+def _worker_call_env(module: str) -> dict[str, str]:
     args = SimpleNamespace(
         custom_agent_function_mode="worker",
         custom_agent_function_worker="http://unused:1",
         custom_agent_function_path=CustomFunctionConfig(path=f"{module}.run"),
-        custom_agent_function_worker_env=[],
     )
-    extra_env = agentic_tool_call._worker_options(args)["extra_env"]
+    return agentic_tool_call._worker_options(args)["extra_env"]
 
+
+def _read_on_worker(extra_env: dict[str, str], names: list[str]) -> dict:
     async def scenario():
         async with TestServer(create_app()) as server:
             return await call_agent_function(
-                stubs.read_env, mode="worker", worker=str(server.make_url("")), extra_env=extra_env, names=reads
+                stubs.read_env, mode="worker", worker=str(server.make_url("")), extra_env=extra_env, names=names
             )
 
-    for name in reads:
-        monkeypatch.delenv(name)
-    assert asyncio.run(scenario()) == {name: f"set-{name}" for name in reads}
+    return asyncio.run(scenario())
