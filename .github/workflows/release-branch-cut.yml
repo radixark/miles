@@ -32,8 +32,36 @@ permissions:
   statuses: write
 
 jobs:
-  cut-release-branch:
+  sglang-head:
     if: github.repository == 'radixark/miles'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.head.outputs.sha }}
+    steps:
+      - id: head
+        run: |
+          SHA=$(git ls-remote https://github.com/sgl-project/sglang refs/heads/sglang-miles | cut -f1)
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::cannot resolve sglang-miles"; exit 1; }
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+  # the release's pip wheel pins the sglang-miles wheel of the locked commit: build the ones the hourly
+  # build-wheels.yml run has not reached yet
+  sglang-wheels:
+    needs: sglang-head
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/build-wheels.yml
+    with:
+      wheels: sglang
+      sglang_ref: ${{ needs.sglang-head.outputs.sha }}
+    secrets: inherit
+
+  cut-release-branch:
+    needs: [sglang-head, sglang-wheels]
+    # a broken wheel build must not block the release: the cut then records no wheel
+    if: ${{ !cancelled() && needs.sglang-head.result == 'success' }}
     runs-on: ubuntu-latest
     outputs:
       branch_name: ${{ github.event.inputs.branch_name }}
@@ -82,6 +110,8 @@ jobs:
 
       - name: Create branch and freeze release-lock.json
         id: freeze
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           BRANCH_NAME="${{ github.event.inputs.branch_name }}"
           if [ "${{ steps.check_exists.outputs.branch_exists }}" = "true" ]; then
@@ -95,9 +125,14 @@ jobs:
 
           git config user.name "miles-bot"
           git config user.email "miles-bot@users.noreply.github.com"
+          # the cut's tooling is this workflow's, not the cut commit's, which may predate it
+          cp -r .github "$RUNNER_TEMP/workflow-github"
+          RELEASE_SCRIPTS="$RUNNER_TEMP/workflow-github/scripts/release"
           git checkout -b "$BRANCH_NAME" "${{ steps.validate.outputs.commit_sha }}"
 
-          SGLANG_SHA=$(git ls-remote https://github.com/sgl-project/sglang refs/heads/sglang-miles | cut -f1)
+          SGLANG_SHA="${{ needs.sglang-head.outputs.sha }}"
+          SGLANG_WHEEL=$(python3 "$RELEASE_SCRIPTS/sglang_wheel_version.py" "$SGLANG_SHA") \
+            || { echo "::warning::not every Python and arch has a sglang-miles wheel for ${SGLANG_SHA}: this release gets no pip wheel"; SGLANG_WHEEL=""; }
           MEGATRON_SHA=$(git ls-remote https://github.com/radixark/Megatron-LM refs/heads/miles-main | cut -f1)
 
           # Prefer the latest timestamped dev tag; fall back to mutable dev if none exists.
@@ -122,7 +157,7 @@ jobs:
 
           WHEELS_TAG_X86=$(sed -n 's/^ARG WHEELS_TAG_X86=//p' docker/Dockerfile)
           WHEELS_TAG_ARM64=$(sed -n 's/^ARG WHEELS_TAG_ARM64=//p' docker/Dockerfile)
-          python3 .github/scripts/release/write_release_lock.py "$BRANCH_NAME" "$SGLANG_SHA" "$MEGATRON_SHA" \
+          python3 "$RELEASE_SCRIPTS/write_release_lock.py" "$BRANCH_NAME" "$SGLANG_SHA" "$SGLANG_WHEEL" "$MEGATRON_SHA" \
             "$CI_IMAGE_TAG" "$(wheels_fp "$WHEELS_TAG_X86")" "$(wheels_fp "$WHEELS_TAG_ARM64")"
           git add release-lock.json
           git commit -m "release: freeze dependency lockfile for $BRANCH_NAME"

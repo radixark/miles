@@ -55,6 +55,14 @@ on:
         required: false
         default: false
         type: boolean
+  # release-branch-cut.yml builds the sglang wheels of the commit it locks, with wheels=sglang
+  workflow_call:
+    inputs:
+      wheels: {type: string, default: all}
+      force: {type: boolean, default: false}
+      te_ref: {type: string, default: miles-main}
+      sglang_ref: {type: string, default: sglang-miles}
+      keep_superseded: {type: boolean, default: false}
 
 permissions:
   contents: read
