@@ -23,6 +23,7 @@ from miles.backends.sglang_utils.arguments import validate_args as sglang_valida
 from miles.backends.sglang_utils.sglang_config import SglangConfig
 from miles.backends.sglang_utils.sglang_scaling_config import SglangScalingConfig
 from miles.backends.torchtitan_utils.args_namespace import TorchtitanArgsNamespace
+from miles.backends.training_utils.data.token_space_media_process import RolloutEngineProcessorArgs
 from miles.dashboard.args import validate_dashboard_args
 from miles.ray.specs.train import external_trainer_controller_addrs
 from miles.rollout.checkpoint_eval import is_checkpoint_eval_fn
@@ -438,6 +439,7 @@ def parse_args_and_get_parser(
     check_output_store_args(args, sglang=sglang, megatron=raw_megatron)
     _check_stop_token_replace_streaming_session(args, sglang=sglang)
     _check_eval_pool_engines(args, sglang=sglang, sglang_scaling=sglang_scaling)
+    _check_multimodal_token_space_processing_args(args, sglang=sglang)
     values = {name: value for name, value in vars(args).items() if name in AllConfig.model_fields} | {
         "raw_megatron": raw_megatron,
         "raw_fsdp": FsdpArgsNamespace(**backend_values) if backend == "fsdp" else None,
@@ -1087,6 +1089,47 @@ def _apply_custom_config(args, data: dict) -> None:
                 f"Warning: Argument {k} is already set to {getattr(args, k)}, will override with {v}."
             )  # config-access-exempt: attribute selected at runtime from k
         setattr(args, k, v)
+
+
+def _check_multimodal_token_space_processing_args(args, *, sglang: SglangConfig) -> None:
+    """Reject launch settings under which the trainer cannot rebuild the rollout engines' media features."""
+    if not args.multimodal_token_space_processing:
+        return
+    if args.train_backend != "megatron":
+        raise ValueError(
+            f"--multimodal-token-space-processing supports the Megatron backend only, not {args.train_backend}: "
+            "the other trainers never consume the rebuilt media features."
+        )
+    if not sglang.actor_value("enable_token_space_processor"):
+        raise ValueError(
+            "--multimodal-token-space-processing needs the actor engines to expand media placeholders in token "
+            "space; set --sglang-enable-token-space-processor (a frozen reward or reference engine group that "
+            "serves its own requests may override it off)."
+        )
+    if args.rollout_external_engine_addrs:
+        raise ValueError(
+            "--multimodal-token-space-processing builds the trainer's processor from the server args Miles "
+            "launches its engines with, which external engines do not share."
+        )
+    if args.trainer_mm_processor_worker_num < 1:
+        raise ValueError(
+            f"--trainer-mm-processor-worker-num must be at least 1, got {args.trainer_mm_processor_worker_num}"
+        )
+    if args.trainer_mm_io_worker_num < 0:
+        raise ValueError(f"--trainer-mm-io-worker-num must be at least 0, got {args.trainer_mm_io_worker_num}")
+    for name in ("rl_on_policy_target", "true_on_policy_contract", "decrypted_config_file"):
+        if sglang.actor_value(name) is not None:
+            raise ValueError(
+                f"--multimodal-token-space-processing does not support --sglang-{name.replace('_', '-')}: the "
+                "trainer cannot yet build its processor the way the engines then do."
+            )
+    if sglang.actor_value("mm_attention_backend") is not None:
+        raise ValueError(
+            "--multimodal-token-space-processing does not support --sglang-mm-attention-backend: the trainer runs "
+            "the vision tower with the device's default attention kernel, so the engine must too."
+        )
+    # Actor engine groups that disagree on a processor setting fail here, not after the first rollout.
+    RolloutEngineProcessorArgs.from_sglang_config(sglang, hf_checkpoint=args.hf_checkpoint)
 
 
 def miles_validate_args(args):
@@ -1958,6 +2001,9 @@ def miles_validate_args(args):
     if args.skip_actor_forward_only:
         validate_skip_actor_forward_only(args)
 
+    if args.compile_warmup:
+        validate_compile_warmup(args)
+
     validate_score_centering_args(args)
 
     _maybe_apply_dumper_overrides(args)
@@ -2028,6 +2074,44 @@ def validate_skip_actor_forward_only(args) -> None:
             f"{option} requires exactly one optimizer step for {samples_per_rollout} rollout samples; "
             f"got --global-batch-size {args.global_batch_size}"
         )
+
+
+def validate_compile_warmup(args) -> None:
+    """The warmup batch is plain text that each DP rank packs into one microbatch of a separate trainer."""
+    option = "--compile-warmup"
+    if args.train_backend != "torchtitan":
+        raise ValueError(f"{option} only supports --train-backend torchtitan")
+    if not args.use_dynamic_batch_size:
+        raise ValueError(
+            f"{option} packs each DP rank's samples into one microbatch: it needs --use-dynamic-batch-size"
+        )
+    incompatible_options = [
+        name
+        for name, enabled in (
+            ("--colocate", args.colocate),
+            ("--pipeline-model-parallel-size", args.pipeline_model_parallel_size > 1),
+            ("--context-parallel-size", args.context_parallel_size > 1),
+            ("--multimodal-keys", args.multimodal_keys is not None),
+            ("--multimodal-token-space-processing", args.multimodal_token_space_processing),
+            ("--use-rollout-routing-replay", args.use_rollout_routing_replay),
+            ("--use-routing-replay", args.use_routing_replay),
+            ("--use-opd", args.use_opd),
+            ("--use-critic", args.use_critic),
+            ("--enable-witness", args.enable_witness),
+            ("--enable-sample-ownership-checker", args.enable_sample_ownership_checker),
+            ("--use-dynamic-global-batch-size", args.use_dynamic_global_batch_size),
+            ("--rollout-top-logprobs-num", args.rollout_top_logprobs_num > 0),
+            ("--rollout-top-p below 1 or a positive --rollout-top-k", args.use_sampling_support_replay),
+            (
+                "--custom-convert-samples-to-train-data-path",
+                args.custom_convert_samples_to_train_data_path is not None,
+            ),
+            ("--custom-reward-post-process-path", args.custom_reward_post_process_path is not None),
+        )
+        if enabled
+    ]
+    if incompatible_options:
+        raise ValueError(f"{option} is incompatible with: {', '.join(incompatible_options)}")
 
 
 def validate_async_off_policy_correction(args) -> None:

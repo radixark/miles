@@ -11,6 +11,7 @@ Args:
   --sglang-env-script: sglang-torchtpu's environment script, sourced before the server starts.
   --slice-port-base: first of the 9 local ports the shared slice uses (8 slice builders, 1 store).
   --compile-cache-dir: keeps the trainer's compiled programs across runs; one directory per torch_tpu build.
+  --no-compile-warmup: compile the first step's programs in step 0 instead of while the engine starts.
   --extra-args: more train.py flags, appended last.
 
 Examples:
@@ -29,7 +30,10 @@ from scripts.tpu.torchtitan_launch import (
 
 from miles.utils.external_utils import command_utils
 
-MODEL = TitanTpuModel(name="Qwen3-4B", titan_model_name="qwen3", titan_model_flavor="4B")
+# a dense 4B fits its fully gathered params and grads
+MODEL = TitanTpuModel(
+    name="Qwen3-4B", titan_model_name="qwen3", titan_model_flavor="4B", train_args="--titan-fsdp-gather-once "
+)
 
 app = typer.Typer()
 

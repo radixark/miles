@@ -115,6 +115,10 @@ class TITOTokenizer:
     reasoning_parser: str | None = None
     tool_call_parser: str | None = None
 
+    # Keys ``postprocess_completion`` adds to a stored assistant message for later
+    # renders; a client replaying that turn does not send them back.
+    SERVER_MESSAGE_KEYS: tuple[str, ...] = ()
+
     def __init__(
         self,
         tokenizer: Any,
@@ -281,8 +285,17 @@ class TITOTokenizer:
         stored_messages: list[dict[str, Any]],
         request_messages: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        """Restore model-specific server-owned sidecars after client replay."""
-        return list(request_messages)
+        """Restore the ``SERVER_MESSAGE_KEYS`` a client drops when it replays a stored assistant turn."""
+        preserved = list(request_messages)
+        for index, (stored_message, request_message) in enumerate(zip(stored_messages, preserved, strict=False)):
+            sidecars = {key: stored_message[key] for key in self.SERVER_MESSAGE_KEYS if key in stored_message}
+            if (
+                sidecars
+                and stored_message.get("role") == "assistant"
+                and strict_message_matches(stored_message, request_message)
+            ):
+                preserved[index] = {**request_message, **sidecars}
+        return preserved
 
     def _encode_text(self, text: str) -> list[int]:
         return self.tokenizer.encode(text, add_special_tokens=False)
@@ -803,7 +816,7 @@ class DeepSeekV32TITOTokenizer(TITOTokenizer):
     ``last_user_idx``: appending a *user* turn re-classifies every prior
     assistant as "before last user" and strips its thinking block, which is
     not append-only.  The vendored copy honors ``drop_thinking=False`` at the
-    render level (like ``encoding_dsv4``), so every surface pins it and the
+    render level, so every surface pins it and the
     ``{tool, user}`` surface becomes legal.
     """
 
@@ -885,7 +898,7 @@ class DeepSeekV32TITOTokenizer(TITOTokenizer):
 
 
 class DeepSeekV4TITOTokenizer(TITOTokenizer):
-    """DeepSeek V4 — official encoder via miles' vendored ``encoding_dsv4``.
+    """DeepSeek V4 — deepseek-recipe via sglang's ``DeepSeekRecipe``.
 
     Like V3.2, V4 ships no jinja chat_template; miles' ``apply_chat_template``
     routes any V4 tokenizer to the ``chat_template_utils.deepseek`` bridge, and
@@ -898,10 +911,10 @@ class DeepSeekV4TITOTokenizer(TITOTokenizer):
 
     FIXED_TEMPLATE = FixedTemplate(
         template=None,
-        extra_kwargs={"drop_thinking": False},
         allowed_append_roles=frozenset({"tool", "user", "assistant"}),
-        consistant_kwargs=["add_default_bos_token", "context", "reasoning_effort"],
+        consistant_kwargs=["reasoning_effort"],
     )
+    SERVER_MESSAGE_KEYS = (deepseek.CONTENT_LEADING_WHITESPACE_KEY,)
 
     _DEFAULT_ASSISTANT_START = "<｜Assistant｜>"
 
@@ -975,21 +988,57 @@ class DeepSeekV4TITOTokenizer(TITOTokenizer):
         *,
         template_args: dict[str, Any] | None = None,
     ) -> list[int]:
-        """Diff real-history renders because V4 folds adjacent ``tool``/``user`` turns."""
+        """Diff real-history renders because V4 folds adjacent ``tool``/``user`` turns.
+
+        The diff is over recipe's ids where it can be: recipe encodes message text
+        without the added vocabulary, so re-encoding text could turn content into
+        special tokens.
+        """
         assert_messages_append_only_with_allowed_role(old_messages, new_messages, self.allowed_append_roles)
-        text_old = self.apply_chat_template(old_messages, add_generation_prompt=False, template_args=template_args)
-        text_new = self.apply_chat_template(new_messages, add_generation_prompt=True, template_args=template_args)
-        if not text_new.startswith(text_old):
+        ids_old = self.apply_chat_template(
+            old_messages, add_generation_prompt=False, tokenize=True, template_args=template_args
+        )
+        ids_new = self.apply_chat_template(
+            new_messages, add_generation_prompt=True, tokenize=True, template_args=template_args
+        )
+        if ids_new[: len(ids_old)] == ids_old:
+            return ids_new[len(ids_old) :]
+        # A plain-text junction, such as a user turn folded after a tool result, can merge
+        # the prefix's last token with the appended text.  recipe encodes the text between
+        # special tokens on its own, so only the appended text up to the next one changes.
+        added = set(self.tokenizer.added_tokens_decoder)
+        diverged = next(
+            (i for i, (old, new) in enumerate(zip(ids_old, ids_new, strict=False)) if old != new),
+            min(len(ids_old), len(ids_new)),
+        )
+        special = next((i for i in range(diverged, len(ids_new)) if ids_new[i] in added), len(ids_new))
+        text_old = self.tokenizer.decode(ids_old, skip_special_tokens=False)
+        junction = self.tokenizer.decode(ids_new[:special], skip_special_tokens=False)
+        if not junction.startswith(text_old):
             raise ValueError(
                 "deepseek_v4 render is not append-only for the appended messages "
-                "(prefix render changed; check drop_thinking and tool-result ordering)"
+                "(prefix render changed; check tool-result ordering)"
             )
-        return self._encode_text(text_new[len(text_old) :])
+        return deepseek.encode_plain_text(self.tokenizer, junction[len(text_old) :]) + ids_new[special:]
+
+    def postprocess_completion(
+        self,
+        *,
+        choice: dict[str, Any],
+        assistant_message: dict[str, Any],
+        completion_token_ids: list[int],
+    ) -> dict[str, Any]:
+        """Store the whitespace recipe's parser stripped before the content; the client's message stays as is."""
+        text = self.tokenizer.decode(completion_token_ids, skip_special_tokens=False)
+        whitespace = deepseek.stripped_content_whitespace(text, assistant_message.get("content") or "")
+        if not whitespace:
+            return assistant_message
+        return {**assistant_message, deepseek.CONTENT_LEADING_WHITESPACE_KEY: whitespace}
 
 
 class DeepSeekV41TITOTokenizer(DeepSeekV4TITOTokenizer):
-    """DeepSeek V4.1 — official encoder via miles' vendored ``encoding_dsv41``; the
-    V4 incremental-render machinery applies unchanged."""
+    """DeepSeek V4.1 — deepseek-recipe's V4.1 encoding; the V4 incremental-render
+    machinery applies unchanged."""
 
     reasoning_parser = "deepseek-v41"
     tool_call_parser = "deepseekv41"
@@ -1007,6 +1056,28 @@ class DeepSeekV41TITOTokenizer(DeepSeekV4TITOTokenizer):
         }
 
 
+class MuseSparkTITOTokenizer(TITOTokenizer):
+    FIXED_TEMPLATE = FixedTemplate(template="muse_spark_fixed.jinja")
+    reasoning_parser = "muse"
+    tool_call_parser = "muse"
+
+    def __init__(
+        self,
+        tokenizer: Any,
+        chat_template_kwargs: dict[str, Any] | None = None,
+        assistant_start_str: str | None = None,
+    ):
+        # Keep the recipient header and body in one comparator segment; the
+        # message separator is internal to a turn, not a role boundary.
+        super().__init__(
+            tokenizer,
+            chat_template_kwargs=chat_template_kwargs,
+            assistant_start_str=assistant_start_str or "<|start|>assistant",
+            special_token_ids=TokenSeqComparator.collect_special_ids(tokenizer)
+            - {tokenizer.convert_tokens_to_ids("<|message|>")},
+        )
+
+
 class InklingTITOTokenizer(TITOTokenizer):
     """Inkling family (Inkling / Inkling-Small).
 
@@ -1019,6 +1090,7 @@ class InklingTITOTokenizer(TITOTokenizer):
     """
 
     FIXED_TEMPLATE = FixedTemplate(template="inkling_fixed.jinja", consistant_kwargs=["reasoning_effort"])
+    SERVER_MESSAGE_KEYS = ("content_blocks",)
 
     _DEFAULT_ASSISTANT_START = "<|message_model|>"
 
@@ -1063,24 +1135,6 @@ class InklingTITOTokenizer(TITOTokenizer):
             choice["finish_reason"] = "tool_calls"
         return parsed.stored_message
 
-    def preserve_server_message_state(
-        self,
-        stored_messages: list[dict[str, Any]],
-        request_messages: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
-        preserved = list(request_messages)
-        for index, request_message in enumerate(preserved):
-            if index >= len(stored_messages):
-                break
-            stored_message = stored_messages[index]
-            if stored_message.get("role") != "assistant" or not strict_message_matches(
-                stored_message, request_message
-            ):
-                continue
-            if "content_blocks" in stored_message:
-                preserved[index] = {**request_message, "content_blocks": stored_message["content_blocks"]}
-        return preserved
-
 
 # ---------------------------------------------------------------------------
 # Enum + Factory
@@ -1106,6 +1160,7 @@ class TITOTokenizerType(StrEnum):
     DEEPSEEKV4 = "deepseekv4"
     DEEPSEEKV41 = "deepseekv41"
     INKLING = "inkling"
+    MUSE_SPARK = "muse_spark"
 
     @classmethod
     def get_tokenizer_class(cls, t: TITOTokenizerType) -> type[TITOTokenizer]:
@@ -1145,6 +1200,8 @@ class TITOTokenizerType(StrEnum):
                 return DeepSeekV41TITOTokenizer
             case cls.INKLING:
                 return InklingTITOTokenizer
+            case cls.MUSE_SPARK:
+                return MuseSparkTITOTokenizer
             case _:
                 raise ValueError(f"Unknown TITOTokenizerType: {t!r}")
 

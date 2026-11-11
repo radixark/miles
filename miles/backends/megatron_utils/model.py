@@ -338,6 +338,7 @@ def forward_only(
             "tokens",
             "loss_masks",
             "multimodal_train_inputs",
+            "mrope_position_ids",
             "total_lengths",
             "response_lengths",
             "max_seq_lens",
@@ -359,14 +360,11 @@ def forward_only(
         response_lengths = batch["response_lengths"]
         rollout_sampling_mask = get_rollout_sampling_masks(batch) if use_rollout_sampling_mask else None
 
-        if "adapter_token_counts" in batch:
-            from megatron.bridge.peft.multi_lora_layers import set_tokens_per_adapter_slot
-
-            set_tokens_per_adapter_slot(model, batch["adapter_token_counts"])
+        assert "adapter_token_counts" not in batch, "multi-LoRA forwards run through run_forward_backward_pass"
 
         output_tensor = model(
             input_ids=tokens,
-            position_ids=None,
+            position_ids=batch.get("position_ids"),
             attention_mask=None,
             labels=None,
             packed_seq_params=packed_seq_params,
@@ -444,7 +442,14 @@ def _zero_grads(model: Sequence[DDP], optimizer: MegatronOptimizer | None, disab
 
 
 def run_forward_backward_pass(
-    args, dumper_phase_util, data_iterator, model, num_microbatches, num_rollouts, forward_only=False
+    args,
+    dumper_phase_util,
+    data_iterator,
+    model,
+    num_microbatches,
+    num_rollouts,
+    forward_only=False,
+    adapter_slots: BridgeAdapterSlots | None = None,
 ):
     """One pipeline forward/backward pass over the microbatches; no optimizer interaction."""
 
@@ -477,6 +482,7 @@ def run_forward_backward_pass(
             [
                 "tokens",
                 "multimodal_train_inputs",
+                "mrope_position_ids",
                 "packed_seq_params",
                 "total_lengths",
                 "response_lengths",
@@ -505,9 +511,8 @@ def run_forward_backward_pass(
         )
 
         if "adapter_token_counts" in batch:
-            from megatron.bridge.peft.multi_lora_layers import set_tokens_per_adapter_slot
-
-            set_tokens_per_adapter_slot(model, batch["adapter_token_counts"])
+            assert adapter_slots is not None, "a multi-LoRA micro-batch is routed by the model's AdapterSlots"
+            adapter_slots.route_tokens(batch["adapter_token_counts"])
 
         from miles.utils.replay_base import all_replay_managers
 
@@ -520,7 +525,7 @@ def run_forward_backward_pass(
             assert not args.enable_witness, "Witness is not supported with combined 1f1b (build_schedule_plan)"
             output_tensor = model.build_schedule_plan(
                 input_ids=batch["tokens"],
-                position_ids=None,
+                position_ids=batch.get("position_ids"),
                 attention_mask=None,
                 labels=None,
                 packed_seq_params=get_packed_seq_params(batch, args),
@@ -529,7 +534,7 @@ def run_forward_backward_pass(
         else:
             forward_kwargs = {
                 "input_ids": batch["tokens"],
-                "position_ids": None,
+                "position_ids": batch.get("position_ids"),
                 "attention_mask": None,
                 "labels": None,
                 "packed_seq_params": get_packed_seq_params(batch, args),
@@ -1039,9 +1044,10 @@ def load_model_state(
     resume_from_ckpt: bool,
     adapter_slots: BridgeAdapterSlots | NativeAdapterSlots | None = None,
 ) -> LoadCheckpointOutput:
-    if is_multi_lora_enabled(args):
+    if is_multi_lora_enabled(args) and args.megatron_to_hf_mode == "bridge":
         # Hide adapter params so the bridge's conversion-task walk doesn't see them
-        # while loading the base checkpoint.
+        # while loading the base checkpoint; native adapters hold no checkpoint state.
+        # A mode check, not AdapterSlots.adapters_hidden_context: the slots are built after this load.
         from megatron.bridge.peft.multi_lora_layers import hide_adapters
 
         load_ctx = hide_adapters(model)

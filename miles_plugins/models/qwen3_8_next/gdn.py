@@ -16,7 +16,7 @@ from miles.backends.megatron_utils.fp32_param_utils import mark_param_dtype
 from miles_plugins.models.cp_utils import build_gdn_cp_context
 from miles_plugins.models.hf_attention import HuggingfaceAttention
 from miles_plugins.models.linear_attn import gdn_kernel
-from miles_plugins.models.qwen3_5 import _get_text_config
+from miles_plugins.models.qwen3_5.model import _get_text_config
 
 
 # Adapted from Qwen3NextGatedDeltaNet but with separate in_proj_qkv and in_proj_z

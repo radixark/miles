@@ -246,25 +246,27 @@ def _hide_critic_value_head_from_hf_load(ddp_model):
             setattr(chunk, name, head)
 
 
-@contextmanager
-def _hide_native_lora_adapters_from_hf_load(ddp_model):
-    """mbridge maps every parameter to an HF weight, and the base checkpoint has no adapter weights."""
-    from miles.backends.megatron_utils.lora.native.modules.linear import NativeLoRAAdapter
+def create_mbridge_for_model(model, hf_path: str):
+    """An mbridge bridge for ``hf_path`` that loads into ``model``, which miles built rather than mbridge."""
+    import miles_plugins.mbridge  # noqa: F401
+    from mbridge import AutoBridge
 
-    adapters = [
-        (parent, name, child)
-        for chunk in unwrap_model(ddp_model)
-        for parent in list(chunk.modules())
-        for name, child in list(parent.named_children())
-        if isinstance(child, NativeLoRAAdapter)
-    ]
-    for parent, name, _ in adapters:
-        delattr(parent, name)
-    try:
-        yield
-    finally:
-        for parent, name, child in adapters:
-            parent.add_module(name, child)
+    # the built model's rows, not Megatron's padded_vocab_size: Inkling builds unpadded
+    model_vocab_rows = unwrap_model(model)[0].vocab_size
+    # any non-None value turns on mbridge's pad on load
+    bridge = AutoBridge.from_pretrained(hf_path, trust_remote_code=True, make_vocab_size_divisible_by=model_vocab_rows)
+    text_config = bridge.hf_config.get_text_config()
+    # the checkpoint's embedding rows: Inkling's config reports the unpadded vocab as
+    # vocab_size and the rows it stores as padded_vocab_size
+    hf_vocab_size = (
+        getattr(text_config, "padded_vocab_size", None) or text_config.vocab_size
+    )  # config-access-exempt: only checkpoints that store a padded embedding declare it
+    assert (
+        model_vocab_rows >= hf_vocab_size
+    ), f"the model was built with fewer vocab rows ({model_vocab_rows}) than {hf_path} holds ({hf_vocab_size})"
+    # mbridge sets these only in its own model provider
+    bridge.vocab_size, bridge.padded_vocab_size = hf_vocab_size, model_vocab_rows
+    return bridge
 
 
 def _load_hf_weights_with_mbridge(ddp_model, args, load_path: str) -> None:
@@ -273,8 +275,7 @@ def _load_hf_weights_with_mbridge(ddp_model, args, load_path: str) -> None:
 
     import torch
 
-    import miles_plugins.mbridge  # noqa: F401
-    from mbridge import AutoBridge
+    from miles.backends.megatron_utils.lora.native.modules.linear import adapters_hidden_context
 
     if args.offload_train:
         from torch_memory_saver import torch_memory_saver
@@ -292,10 +293,10 @@ def _load_hf_weights_with_mbridge(ddp_model, args, load_path: str) -> None:
     with (
         ModelCompanionInstallationUtils.hide(ddp_model),
         _hide_critic_value_head_from_hf_load(ddp_model),
-        _hide_native_lora_adapters_from_hf_load(ddp_model),
+        adapters_hidden_context(ddp_model),
         bypass,
     ):
-        bridge = AutoBridge.from_pretrained(load_path, trust_remote_code=True)
+        bridge = create_mbridge_for_model(ddp_model, load_path)
         bridge.load_weights(ddp_model, load_path, memory_efficient=True)
     torch.cuda.synchronize()
 

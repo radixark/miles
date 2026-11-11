@@ -13,7 +13,8 @@
         {"id": 258897383, "login": "vedant-harmonic"},
         {"id": 109944218, "login": "JessicaJiang-123"},
         {"id": 214322989, "login": "XinyuJiangCMU"},
-        {"id": 13900043, "login": "michaelzhang-ai"}
+        {"id": 13900043, "login": "michaelzhang-ai"},
+        {"id": 195740905, "login": "bingxche"}
       ]
     },
     "repo_write_access": {
@@ -49,6 +50,7 @@
         "run-ci-miles-plugin",
         "run-ci-model-scripts",
         "run-ci-mooncake",
+        "run-ci-multimodal",
         "run-ci-multi-policy",
         "run-ci-precision",
         "run-ci-qwen35",

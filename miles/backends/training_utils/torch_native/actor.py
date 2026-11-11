@@ -2,7 +2,7 @@ import logging
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import AbstractContextManager, nullcontext
 from functools import partial
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import torch
 import torch.distributed as dist
@@ -10,7 +10,13 @@ from tqdm import tqdm
 from transformers import PretrainedConfig, PreTrainedTokenizerBase
 
 from miles import platforms
-from miles.backends.training_utils.data.rollout import DataIterator, get_batch, get_data_iterator, get_rollout_data
+from miles.backends.training_utils.data.rollout import (
+    DataIterator,
+    get_batch,
+    get_data_iterator,
+    get_rollout_data,
+    prepare_rollout_data,
+)
 from miles.backends.training_utils.loss.hub.logit_processors import get_rollout_topk_mismatch
 from miles.backends.training_utils.loss.hub.response_layout import response_layout_type
 from miles.backends.training_utils.loss.objective import (
@@ -33,6 +39,7 @@ from miles.backends.training_utils.torch_native.step_runner import StepRunner
 from miles.backends.training_utils.types import TrainStepOutcome, TrainStepOutput
 from miles.backends.training_utils.weight_update.updater import WeightUpdater
 from miles.ray.rollout.inference_controller import UpdatableEngines
+from miles.ray.rollout.train_data_conversion import process_rollout_data_shard
 from miles.ray.train_actor import TrainRayActor, WeightUpdateOutput
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.distributed_utils import get_gloo_group
@@ -41,7 +48,7 @@ from miles.utils.lora.utils import build_lora_config, lora_rollout_enabled
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.object_store import StoreObjectRef
 from miles.utils.profile_utils import TrainProfiler
-from miles.utils.timer import inverse_timer, timer
+from miles.utils.timer import Timer, inverse_timer, timer
 
 logger = logging.getLogger(__name__)
 
@@ -166,6 +173,7 @@ class TorchNativeTrainRayActor(TrainRayActor):
                 witness_info=None,
                 train_parallel_config=self.train_parallel_config,
                 sample_device=response_layout_type(self.args).sample_device,
+                token_space_processor=self.token_space_processor,
             )
             with store_get_result:
                 if self.args.debug_rollout_only:
@@ -182,7 +190,42 @@ class TorchNativeTrainRayActor(TrainRayActor):
         self._heartbeat.bump()
         return TrainStepOutput(outcome=TrainStepOutcome.NORMAL)
 
+    def _compile_warmup_passes(self, shard: dict[str, Any]) -> None:
+        """Run the per-rollout passes on a synthetic shard (as the rollout side packages one), leaving the weights
+        alone, so their programs are compiled before rollout 0 arrives (--compile-warmup)."""
+        rollout_data = prepare_rollout_data(
+            self.args,
+            process_rollout_data_shard(self.args, shard),
+            sample_device=response_layout_type(self.args).sample_device,
+        )
+        # rollout 0's perf metrics read every timer: keep the passes' timers out
+        timers = dict(Timer().timers)
+        try:
+            runner = self._step_runner()
+            data_iterator, num_microbatches = self._score_rollout(runner, rollout_data)
+            with routing_replay.stage(routing_replay.REPLAY_BACKWARD):
+                # without the optimizer step the weights stay as rollout 0 was generated with
+                self._forward_backward_steps(
+                    runner, data_iterator, num_microbatches, finish_step=lambda step_id, losses_reduced: None
+                )
+            routing_replay.reset()
+        finally:
+            Timer().timers = timers
+
     def _train_core(self, rollout_id: int, rollout_data: dict) -> None:
+        runner = self._step_runner()
+        data_iterator, num_microbatches = self._score_rollout(runner, rollout_data)
+        log_rollout_data(rollout_id, self.args, rollout_data)
+
+        with routing_replay.stage(routing_replay.REPLAY_BACKWARD), timer("actor_train"):
+            self._optimizer_steps(runner, data_iterator, num_microbatches, rollout_id)
+        routing_replay.reset()
+
+        self.prof.step(rollout_id=rollout_id)
+        self._after_rollout(rollout_id, rollout_data)
+
+    def _score_rollout(self, runner: StepRunner, rollout_data: dict) -> tuple[DataIterator, list[int]]:
+        """The passes before the optimizer steps: ref and actor log-probs, then advantages."""
         data_iterators, num_microbatches = get_data_iterator(self.args, self.model_parts, rollout_data)
         assert num_microbatches, f"empty microbatch schedule for micro_batch_size={self.args.micro_batch_size}"
         routing_replay.fill(
@@ -194,7 +237,6 @@ class TorchNativeTrainRayActor(TrainRayActor):
             align=self.align_token_side_channel,
         )
         data_iterator = data_iterators[0]
-        runner = self._step_runner()
 
         if self.ref_runner is not None:
             with routing_replay.stage(routing_replay.FALLTHROUGH), self._ref_context():
@@ -207,14 +249,7 @@ class TorchNativeTrainRayActor(TrainRayActor):
         on_host = response_layout_type(self.args).sample_device is not None
         whiten_group = get_parallel_state().effective_dp.gloo_group if on_host else None
         compute_advantages_and_returns(self.args, rollout_data, whiten_group=whiten_group)
-        log_rollout_data(rollout_id, self.args, rollout_data)
-
-        with routing_replay.stage(routing_replay.REPLAY_BACKWARD), timer("actor_train"):
-            self._optimizer_steps(runner, data_iterator, num_microbatches, rollout_id)
-        routing_replay.reset()
-
-        self.prof.step(rollout_id=rollout_id)
-        self._after_rollout(rollout_id, rollout_data)
+        return data_iterator, num_microbatches
 
     @torch.no_grad()
     def _log_probs(
@@ -259,20 +294,10 @@ class TorchNativeTrainRayActor(TrainRayActor):
         self, runner: StepRunner, data_iterator: DataIterator, num_microbatches: list[int], rollout_id: int
     ) -> None:
         args = self.args
-        num_step_tokens = _count_step_loss_tokens(data_iterator, num_microbatches)
-        data_iterator.reset()
         state = get_parallel_state()
-        keys = TRAIN_KEYS + SAMPLING_MASK_KEYS if args.use_sampling_support_replay else TRAIN_KEYS
 
-        for step_id, microbatches in enumerate(num_microbatches):
-            runner.zero_grad()
-            progress = tqdm(range(microbatches), desc="actor_train", disable=dist.get_rank() != 0)
-            batches = self._fetch_batches(self.prof.iterate_train_actor(progress), data_iterator, keys)
-            losses_reduced = runner.forward_backward_step(
-                batches, partial(_step_loss, args, microbatches, num_step_tokens[step_id])
-            )
+        def apply_step(step_id: int, losses_reduced: list[dict]) -> None:
             metrics = runner.apply_step()
-
             if args.ci_test:
                 check_grad_norm(
                     args=args,
@@ -293,6 +318,30 @@ class TorchNativeTrainRayActor(TrainRayActor):
                 extra_metrics=metrics.extra_metrics,
                 should_log=state.is_metrics_rank,
             )
+
+        self._forward_backward_steps(runner, data_iterator, num_microbatches, finish_step=apply_step)
+
+    def _forward_backward_steps(
+        self,
+        runner: StepRunner,
+        data_iterator: DataIterator,
+        num_microbatches: list[int],
+        *,
+        finish_step: Callable[[int, list[dict]], None],
+    ) -> None:
+        args = self.args
+        num_step_tokens = _count_step_loss_tokens(data_iterator, num_microbatches)
+        data_iterator.reset()
+        keys = TRAIN_KEYS + SAMPLING_MASK_KEYS if args.use_sampling_support_replay else TRAIN_KEYS
+
+        for step_id, microbatches in enumerate(num_microbatches):
+            runner.zero_grad()
+            progress = tqdm(range(microbatches), desc="actor_train", disable=dist.get_rank() != 0)
+            batches = self._fetch_batches(self.prof.iterate_train_actor(progress), data_iterator, keys)
+            losses_reduced = runner.forward_backward_step(
+                batches, partial(_step_loss, args, microbatches, num_step_tokens[step_id])
+            )
+            finish_step(step_id, losses_reduced)
         # free the last step's gradients before the log-prob passes and the weight sync hold device memory
         runner.zero_grad()
 

@@ -96,63 +96,51 @@ class BaseReplayManager:
         for replay in self.replays:
             replay.clear_forward()
 
+    def get_replay_indices(self, n_tokens, topk):
+        """Consume one forward's indices, independently of how its scores are chunked."""
+        if not self.enabled:
+            return None
+        replay = self.get_current()
+        if self.stage == "replay_forward":
+            top_indices = replay.staged_forward_ids
+            if top_indices is None:
+                top_indices = replay.pop_forward()
+        elif self.stage == "replay_backward":
+            top_indices = replay.pop_backward()
+        else:
+            return None
+        assert (
+            top_indices.shape[0] == n_tokens
+        ), f"rank {_get_rank()}: replay n_tokens {top_indices.shape[0]} does not match scores n_tokens {n_tokens}"
+        assert (
+            top_indices.shape[1] == topk
+        ), f"replay topk does not match expected topk, replay topk {top_indices.shape[1]}, topk {topk}"
+        return top_indices
+
+    def record_indices(self, top_indices):
+        if self.enabled and self.stage == "record":
+            self.get_current().record(top_indices)
+
+    @staticmethod
+    def fill_replay_padding(top_indices, num_scores):
+        # padding rows (all -1) take arange; branchless so fullgraph traces it
+        all_invalid = (top_indices == -1).all(dim=-1)
+        ar = torch.arange(top_indices.shape[1], device=top_indices.device, dtype=top_indices.dtype) % num_scores
+        return torch.where(all_invalid.unsqueeze(-1), ar, top_indices)
+
     def get_topk_fn(self, old_topk_fn, return_probs):
         manager = self
 
-        def _get_replay_result(top_indices, scores, topk, *args, **kwargs):
-            assert (
-                top_indices.shape[0] == scores.shape[0]
-            ), f"rank {_get_rank()}: replay n_tokens {top_indices.shape[0]} does not match scores n_tokens {scores.shape[0]}"
-
-            assert (
-                top_indices.shape[1] == topk
-            ), f"replay topk does not match expected topk, replay topk {top_indices.shape[1]}, topk {topk}"
-
-            if self.enable_check_replay_result:
-                self.check_replay_result(old_topk_fn, scores, topk, top_indices, *args, **kwargs)
-
-            # padding rows (all -1) take arange; branchless so fullgraph traces it
-            all_invalid = (top_indices == -1).all(dim=-1)
-            ar = (
-                torch.arange(top_indices.shape[1], device=top_indices.device, dtype=top_indices.dtype)
-                % scores.shape[1]
-            )
-            top_indices = torch.where(all_invalid.unsqueeze(-1), ar, top_indices)
-
-            if return_probs:
-                return scores.gather(1, top_indices), top_indices
-            else:
-                return top_indices
-
         def new_topk_fn(scores, topk, *args, **kwargs):
-            if not manager.enabled:
-                return old_topk_fn(scores, topk, *args, **kwargs)
-
-            stage = manager.stage
-            replay = manager.get_current()
-
-            if stage == "fallthrough":
-                return old_topk_fn(scores, topk, *args, **kwargs)
-
-            elif stage == "record":
+            top_indices = manager.get_replay_indices(scores.shape[0], topk)
+            if top_indices is None:
                 result = old_topk_fn(scores, topk, *args, **kwargs)
-                if return_probs:
-                    probs, top_indices = result
-                else:
-                    top_indices = result
-                replay.record(top_indices)
+                manager.record_indices(result[1] if return_probs else result)
                 return result
-
-            elif stage == "replay_forward":
-                if replay.staged_forward_ids is not None:
-                    return _get_replay_result(replay.staged_forward_ids, scores, topk, *args, **kwargs)
-                return _get_replay_result(replay.pop_forward(), scores, topk, *args, **kwargs)
-
-            elif stage == "replay_backward":
-                return _get_replay_result(replay.pop_backward(), scores, topk, *args, **kwargs)
-
-            else:
-                return old_topk_fn(scores, topk, *args, **kwargs)
+            if manager.enable_check_replay_result:
+                manager.check_replay_result(old_topk_fn, scores, topk, top_indices, *args, **kwargs)
+            top_indices = manager.fill_replay_padding(top_indices, scores.shape[1])
+            return (scores.gather(1, top_indices), top_indices) if return_probs else top_indices
 
         return new_topk_fn
 
@@ -179,6 +167,10 @@ class BaseReplayManager:
         replay_check_max_mismatch_fraction.
         """
         orig_top_indices = old_topk_fn(scores, topk, *args, **kwargs)
+        self.check_replay_indices(orig_top_indices, top_indices)
+
+    def check_replay_indices(self, orig_top_indices, top_indices):
+        """Check the whole forward, including when selection was computed in chunks."""
         if isinstance(orig_top_indices, tuple):
             _, orig_top_indices = orig_top_indices
 
@@ -223,7 +215,8 @@ class BaseReplayManager:
                 lines.append(f"  token {j}: orig={orig_flat[j].tolist()}, replay={replay_flat[j].tolist()}{marker}")
             logger.warning(
                 f"Replay check (rank {_get_rank()}, stage {self.stage}): "
-                f"token {i} overlap {overlap[i].item()}/{valid_count[i].item()}, topk={topk}\n" + "\n".join(lines)
+                f"token {i} overlap {overlap[i].item()}/{valid_count[i].item()}, topk={orig_flat.shape[-1]}\n"
+                + "\n".join(lines)
             )
 
         if mismatch_count > mismatch_threshold:

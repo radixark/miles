@@ -1,4 +1,5 @@
 import logging
+import time
 from contextlib import contextmanager
 
 import torch
@@ -7,6 +8,7 @@ import torch.distributed as dist
 from miles.backends.megatron_utils.checkpoint_request import MegatronCkptLoadConfig
 from miles.backends.torchtitan_utils import compat
 from miles.backends.torchtitan_utils.args_namespace import TorchtitanArgsNamespace
+from miles.backends.torchtitan_utils.compile_warmup import warmup_shards
 from miles.backends.torchtitan_utils.config import build_trainer_config
 from miles.backends.torchtitan_utils.hf_weight_iterator import TitanHfWeightIterator
 from miles.backends.torchtitan_utils.lora_checkpoint import TorchtitanLoraCheckpoint
@@ -120,6 +122,9 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
 
         self.weight_updater = self._build_weight_updater(self.trainer, TitanHfWeightIterator.build)
 
+        if args.compile_warmup:
+            self._compile_warmup()
+
         clear_memory()
         if args.offload_train:
             self.sleep()
@@ -136,6 +141,25 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
         clear_memory()
         dist.barrier(group=get_gloo_group())
         print_memory(f"after releasing the GPU cache for {where}")
+
+    def _compile_warmup(self) -> None:
+        """Compile the first step's programs on a synthetic batch per length bucket, before the engines are up."""
+        args = self.args
+        state = get_parallel_state()
+        pad_size = state.tp.size * args.data_pad_size_multiplier  # as get_batch pads a packed microbatch
+        seconds_per_bucket = {}
+        shards = warmup_shards(
+            seq_len=args.backend.seq_length,
+            pad_size=pad_size,
+            max_tokens_per_gpu=args.max_tokens_per_gpu,
+            num_samples=args.backend.global_batch_size // state.effective_dp.size,
+        )
+        for bucket, shard in shards:
+            start = time.monotonic()
+            self._compile_warmup_passes(shard)
+            seconds_per_bucket[bucket] = round(time.monotonic() - start, 1)
+        assert seconds_per_bucket, f"--compile-warmup warmed no length bucket of {args.backend.seq_length}"
+        logger.info(f"Compiled the first step's programs; seconds per length bucket: {seconds_per_bucket}")
 
     def _step_runner(self):
         return self.trainer.step_runner()

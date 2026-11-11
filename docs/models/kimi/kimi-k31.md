@@ -135,7 +135,7 @@ The shards are per training rank, so the training layout must stay the same.
 | `run_kimi_k31_w4a16_lora_32xh200.py` | 32 × 16 | 512 | off |
 | `run_kimi_k31_w4a16_lora_16xb300.py` | 16 × 16 | 256 | on, refilled 4 groups at a time |
 
-The filter drops a group whose 16 rewards are all equal and draws new prompts until 16 groups remain; `rollout/raw_reward_unfiltered` keeps the mean reward before the filter.
+The filter drops a group whose 16 rewards are all equal and draws new prompts until 16 groups remain; `rollout/raw_reward` is the mean reward before the filter, and `rollout/raw_reward_filtered` the mean over the kept groups.
 
 [R3](/advanced/miles-router) (`--use-rollout-routing-replay`) is on; indexer replay is off, and the trainer selects the DSA top-k from its own indexer scores.
 
