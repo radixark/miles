@@ -1,0 +1,68 @@
+# doc-dev: docs/developer/ci/04-release.md
+name: Release Wheel
+# Builds the miles wheel at v<version> with that exact version, runs the wheel smoke on it, and uploads
+# the sdist and wheel to the v<version> GitHub release, where the pip index on radixark/miles-wheels
+# lists them within the hour. release-tag.yml dispatches this.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish, without v prefix (e.g., 0.3.0)'
+        required: true
+        type: string
+      ref:
+        description: 'Tag or branch to build from (defaults to v{version})'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  smoke:
+    if: github.repository == 'radixark/miles'
+    uses: ./.github/workflows/wheel-smoke.yml
+    with:
+      ref: ${{ inputs.ref || format('v{0}', inputs.version) }}
+      version: ${{ inputs.version }}
+
+  publish:
+    needs: smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      VERSION: ${{ inputs.version }}
+      TAG: v${{ inputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: miles-dist
+          path: dist
+
+      - name: The dist carries the exact version
+        shell: bash
+        run: |
+          ls dist
+          [ -f "dist/miles-${VERSION}-py3-none-any.whl" ] \
+            || { echo "::error::no miles-${VERSION} wheel in the smoke's dist"; exit 1; }
+
+      - name: Create the release if the tag has none
+        shell: bash
+        run: |
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 && exit 0
+          FLAGS=()
+          case "$VERSION" in *rc*) FLAGS=(--prerelease --latest=false) ;; esac
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title "$TAG" --generate-notes "${FLAGS[@]}"
+
+      # a published file is never replaced: pinned hashes must keep matching
+      - name: Upload the sdist and wheel
+        shell: bash
+        run: |
+          PUBLISHED=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
+          for f in dist/*; do
+            if grep -qx "$(basename "$f")" <<<"$PUBLISHED"; then echo "keeping published $(basename "$f")"; continue; fi
+            gh release upload "$TAG" "$f" --repo "$GITHUB_REPOSITORY"
+          done
