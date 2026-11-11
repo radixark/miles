@@ -197,6 +197,9 @@ def _child_main(parent_pid: int) -> None:
     except BaseException:
         traceback.print_exc()
         _exit(1)
+    # interpreter shutdown runs these before joining threads: they stop executor pools, so idle workers exit
+    for hook in reversed(threading._threading_atexits):
+        hook()
     # the deadline armed once the call was over bounds this wait
     for thread in set(threading.enumerate()) - threads_before:
         if not thread.daemon:
