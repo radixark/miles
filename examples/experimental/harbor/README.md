@@ -120,12 +120,14 @@ Then launch with `--agent-worker http://<cpu-box>:11100`, which passes `--custom
 Each trial still runs this example's agent function through the `subproc` path, now as a child of the worker. Its
 reports and verdict come back to the rollout, and cancelling the rollout's call cancels the trial.
 
-- **Environment.** Each call carries the sandbox providers' key-file and address vars and this example's `WORKER_ENV`
-  (`HARBOR_*`, `AGENT_*`). `--custom-agent-function-worker-env` adds a recipe's own vars, such as `LITE_*` for a recipe
-  whose verifiers read them. Name the ones whose value differs on the worker host, such as the task dir and key file
-  paths, in the worker's `--keep-env`.
+- **Environment.** Each call carries the sandbox providers' key-file and address vars, this example's `HARBOR_*` and
+  `AGENT_*`, and the `WORKER_ENV` tuple of each module `HARBOR_AGENT_IMPORT_PATH` and `HARBOR_VERIFIER_IMPORT_PATH`
+  name. A recipe whose agent or verifier reads its own vars, such as `LITE_*`, declares them there:
+  `WORKER_ENV = ("LITE_*",)` beside its verifier class. Name the vars whose value differs on the worker host, such as
+  the task dir and key file paths, in the worker's `--keep-env`.
 - **Imports.** The worker host needs this checkout and the agent and verifier modules on its `PYTHONPATH`. It needs no
-  torch, sglang or ray.
+  torch, sglang or ray. The rollout host needs harbor and the modules those two vars name as well: it imports them to
+  read their `WORKER_ENV`, and a module that does not import there stops the rollout with an error naming it.
 - **Network.** A host-process harness calls the session servers at `--session-server-external-host` from the worker
   host, so that host needs the route. An installed agent (mini-swe-agent, claude-code) still calls them from its
   sandbox, so the sandbox needs it, as without a worker.

@@ -64,6 +64,7 @@ all-zero rewards.
 """
 
 import asyncio
+import importlib
 import json
 import logging
 import math
@@ -77,10 +78,12 @@ from typing import Any
 from miles.rollout.agentic.agent_function import InfraAbort
 from miles.rollout.agentic.credentials import PROVIDER_CREDENTIALS, resolve_provider_api_key
 from miles.rollout.agentic.session import openai_session_url
+from miles.utils.retry_utils import NonRetryableError
 
 logger = logging.getLogger(__name__)
 
-WORKER_ENV = ("HARBOR_*", "AGENT_*")
+_OWN_WORKER_ENV = ("HARBOR_*", "AGENT_*")
+_MODULE_IMPORT_PATH_VARS = ("HARBOR_AGENT_IMPORT_PATH", "HARBOR_VERIFIER_IMPORT_PATH")
 
 _DEFAULT_AGENT_TRIAL_TIMEOUT_S = 7200
 _SAFE_INSTANCE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -89,6 +92,26 @@ _SAFE_INSTANCE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _TIMEOUT_EXCEPTIONS = {"AgentTimeoutError", "VerifierTimeoutError", "EnvironmentStartTimeoutError"}
 _OUTPUT_LIMIT_EXCEPTIONS = {"MaxSeqLenExceededError", "SingleTurnMaxSeqLenExceededError"}
 _MODEL_SERVICE_EXCEPTIONS = {"APIConnectionError", "ServiceUnavailableError"}
+
+
+def __getattr__(name: str) -> tuple[str, ...]:
+    if name != "WORKER_ENV":
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    return (*_OWN_WORKER_ENV, *(p for var in _MODULE_IMPORT_PATH_VARS for p in _imported_worker_env(var)))
+
+
+def _imported_worker_env(var: str) -> tuple[str, ...]:
+    module_name = os.getenv(var, "").strip().partition(":")[0]
+    if not module_name:
+        return ()
+    try:
+        module = importlib.import_module(module_name)
+    except ImportError as exc:
+        raise NonRetryableError(
+            f"{var} names {module_name}, which does not import in this process: {exc!r}. "
+            "In worker mode the rollout host needs harbor and the agent and verifier modules too."
+        ) from exc
+    return tuple(getattr(module, "WORKER_ENV", ()))  # config-access-exempt: a recipe module may declare no env
 
 
 def _trial_timeout_s() -> int:
