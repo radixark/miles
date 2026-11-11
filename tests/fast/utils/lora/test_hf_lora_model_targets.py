@@ -303,6 +303,13 @@ def test_layouts_name_the_native_specs_projections(model_type, group, overrides)
     assert {target.rsplit(".", 1)[1] for target in getattr(layout, group)} == native_leaves
 
 
+def test_glm5_default_targets_leave_kv_b_proj_frozen():
+    """SGLang's DSA prefill rejects a kv_b_proj adapter; GLM-4.7-Flash shares the layout builder but not that limit."""
+    glm5 = get_hf_lora_targets(_small_config("glm_moe_dsa", {}).to_dict())
+    glm47_flash = get_hf_lora_targets(_small_config("glm4_moe_lite", {}).to_dict())
+    assert set(glm47_flash.attention) - set(glm5.attention) == {"model.layers.*.self_attn.kv_b_proj"}
+
+
 # remote-code families: config fields and checkpoint projection names of XiaomiMiMo/MiMo-7B-RL and
 # jdopensource/JoyAI-LLM-Flash (config.json, model.safetensors.index.json); layer indices folded to *
 _MIMO_7B = {"model_type": "mimo", "num_hidden_layers": 36, "num_nextn_predict_layers": 1}
