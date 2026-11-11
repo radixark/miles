@@ -10,6 +10,7 @@ from argparse import Namespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+import torch
 
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 
@@ -90,3 +91,36 @@ class TestHfWeightIteratorFactory:
         with patch.object(HfWeightIteratorDirect, "__init__", _capture_init):
             self._create("raw", required_placement=keep_pp)
         assert captured["placement"] == keep_pp
+
+
+class TestPpLocalAdapterUnits:
+    def _iter_stage(self, stage_tensors, peer_counts):
+        from miles.backends.megatron_utils.update_weight import hf_weight_iterator as module
+
+        class _Stage(module.MegatronHfWeightIteratorBase):
+            def _iter_hf_param_units(self, weights, *, materialize):
+                yield from ()
+
+            def _export_pp_local_lora(self, adapter):
+                return list(stage_tensors)
+
+        iterator = object.__new__(_Stage)
+        iterator.placement = WeightUpdatePlacement(gather_pp=False)
+
+        def _all_reduce(counts_tensor, group):
+            counts_tensor += torch.tensor(peer_counts)
+
+        pp = Namespace(size=2, group=None)
+        with (
+            patch.object(module, "get_parallel_state", return_value=Namespace(pp=pp)),
+            patch.object(module.dist, "all_reduce", _all_reduce),
+            patch.object(module.torch.cuda, "current_device", return_value="cpu"),
+        ):
+            return list(iterator._iter_hf_adapter_units(None, materialize=True))
+
+    def test_a_stage_without_adapted_layers_sends_nothing(self):
+        assert self._iter_stage([], peer_counts=[2, 2]) == []
+
+    def test_an_adapter_empty_on_every_stage_raises(self):
+        with pytest.raises(RuntimeError, match="zero tensors"):
+            self._iter_stage([], peer_counts=[0, 0])

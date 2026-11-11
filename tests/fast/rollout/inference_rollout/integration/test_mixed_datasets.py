@@ -1,0 +1,182 @@
+"""A train rollout over `--rollout-data-yaml-config` draws its groups from every dataset by weight and budget."""
+
+from collections import Counter
+
+import pytest
+from tests.fast.fixtures.generation_fixtures import extra_argv_for_variant
+from tests.fast.fixtures.rollout_fixtures import RolloutEnvConfig
+from tests.fast.rollout.inference_rollout.integration.utils import MODULAR_ROLLOUT_BASE_ARGV, load_and_call_train
+
+from miles.rollout.generate_hub import single_turn
+from miles.utils.test_utils import mock_tools
+
+_MIXED_DATASETS = {
+    "math": ([{"input": "What is 1+7?", "label": "8"}] * 3, {"samples_per_step": 1}),
+    # below the run's --rollout-max-response-len of 16
+    "science": ([{"input": "What is 1+7?", "label": "8"}] * 5, {"samples_per_step": 3, "max_response_len": 8}),
+}
+
+_BATCH_ARGV = ["--rollout-batch-size", "4", "--n-samples-per-prompt", "2", "--global-batch-size", "8"]
+
+_VARIANTS = [
+    pytest.param(
+        RolloutEnvConfig(
+            extra_argv=MODULAR_ROLLOUT_BASE_ARGV + extra_argv_for_variant("single_turn") + _BATCH_ARGV,
+            mixed_datasets=_MIXED_DATASETS,
+        ),
+        id="new_rollout",
+    ),
+    pytest.param(
+        RolloutEnvConfig(
+            extra_argv=[
+                "--rollout-function-path",
+                "miles.rollout.sglang_rollout.generate_rollout",
+                "--custom-generate-function-path",
+                "miles.rollout.sglang_rollout.generate",
+                *_BATCH_ARGV,
+            ],
+            mixed_datasets=_MIXED_DATASETS,
+        ),
+        id="old_rollout",
+    ),
+]
+
+
+@pytest.mark.parametrize("rollout_env", _VARIANTS, indirect=True)
+def test_train_rollout_mixes_datasets_by_weight_and_budget(rollout_env):
+    out = load_and_call_train(rollout_env.args, rollout_env.data_source)
+
+    groups = out.samples
+    assert len(groups) == 4 and all(len(group) == 2 for group in groups)
+    assert Counter(group[0].metadata["dataset_name"] for group in groups) == {"math": 1, "science": 3}
+    for group in groups:
+        assert len({sample.metadata["dataset_name"] for sample in group}) == 1
+        assert [sample.reward for sample in group] == [1, 1]
+
+    budgets = sorted(request["sampling_params"]["max_new_tokens"] for request in rollout_env.mock_server.request_log)
+    assert budgets == [8] * 6 + [16] * 2
+
+
+_GENERATE_CALLS: Counter = Counter()
+_THIS_MODULE = "tests.fast.rollout.inference_rollout.integration.test_mixed_datasets"
+
+
+async def counted_generate(input):
+    _GENERATE_CALLS[input.sample.metadata["dataset_name"]] += 1
+    return await single_turn.generate(input)
+
+
+@pytest.mark.parametrize(
+    "rollout_env",
+    [
+        pytest.param(
+            RolloutEnvConfig(
+                extra_argv=MODULAR_ROLLOUT_BASE_ARGV + extra_argv_for_variant("single_turn") + _BATCH_ARGV,
+                mixed_datasets={
+                    "math": _MIXED_DATASETS["math"],
+                    "science": (
+                        _MIXED_DATASETS["science"][0],
+                        {"samples_per_step": 3, "custom_generate_function_path": f"{_THIS_MODULE}.counted_generate"},
+                    ),
+                },
+            ),
+            id="new_rollout",
+        )
+    ],
+    indirect=True,
+)
+def test_a_dataset_generate_function_runs_only_on_its_samples(rollout_env):
+    _GENERATE_CALLS.clear()
+    load_and_call_train(rollout_env.args, rollout_env.data_source)
+
+    assert _GENERATE_CALLS == {"science": 6}
+
+
+_AGENT_CALLS_SEEN: list = []
+
+
+async def recording_agent(metadata, request_kwargs, **kwargs):
+    _AGENT_CALLS_SEEN.append((metadata["dataset_name"], metadata.get("agent_config"), request_kwargs["max_tokens"]))
+    return await mock_tools.run_agentic_tool_call(metadata=metadata, request_kwargs=request_kwargs, **kwargs)
+
+
+@pytest.mark.parametrize(
+    "rollout_env",
+    [
+        pytest.param(
+            RolloutEnvConfig(
+                extra_argv=MODULAR_ROLLOUT_BASE_ARGV
+                + extra_argv_for_variant(
+                    "agentic_tool_call", custom_agent_function_path=f"{_THIS_MODULE}.recording_agent"
+                )
+                + _BATCH_ARGV,
+                mixed_datasets={
+                    "math": _MIXED_DATASETS["math"],
+                    "science": (
+                        _MIXED_DATASETS["science"][0],
+                        {"samples_per_step": 3, "agent": {"max_turns": 3}, "max_response_len": 8},
+                    ),
+                },
+            ),
+            id="agentic",
+        )
+    ],
+    indirect=True,
+)
+def test_a_dataset_agent_block_and_budget_reach_the_agent_function(rollout_env):
+    _AGENT_CALLS_SEEN.clear()
+    load_and_call_train(rollout_env.args, rollout_env.data_source)
+
+    assert sorted(_AGENT_CALLS_SEEN, key=str) == sorted(
+        [("math", None, 16)] * 2 + [("science", {"max_turns": 3}, 8)] * 6, key=str
+    )
+
+
+_AGENT_CALLS: Counter = Counter()
+
+
+async def swe_agent(**kwargs):
+    _AGENT_CALLS["swe"] += 1
+    return await mock_tools.run_agentic_tool_call(**kwargs)
+
+
+async def web_agent(**kwargs):
+    _AGENT_CALLS["web"] += 1
+    return await mock_tools.run_agentic_tool_call(**kwargs)
+
+
+_AGENTIC_DATASETS = {
+    "swe": (
+        [{"input": "What is 1+7?", "label": "8"}] * 3,
+        {"samples_per_step": 1, "custom_agent_function_path": f"{_THIS_MODULE}.swe_agent"},
+    ),
+    "web": (
+        [{"input": "What is 1+7?", "label": "8"}] * 3,
+        {"samples_per_step": 1, "custom_agent_function_path": f"{_THIS_MODULE}.web_agent"},
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    "rollout_env",
+    [
+        pytest.param(
+            RolloutEnvConfig(
+                extra_argv=MODULAR_ROLLOUT_BASE_ARGV + extra_argv_for_variant("agentic_tool_call") + _BATCH_ARGV,
+                mixed_datasets=_AGENTIC_DATASETS,
+            ),
+            id="two_agents",
+        )
+    ],
+    indirect=True,
+)
+def test_two_agentic_datasets_each_run_their_own_agent(rollout_env):
+    _AGENT_CALLS.clear()
+    out = load_and_call_train(rollout_env.args, rollout_env.data_source)
+
+    names = Counter(
+        group[0].metadata["dataset_name"] if not isinstance(group[0], list) else group[0][0].metadata["dataset_name"]
+        for group in out.samples
+    )
+    assert names == {"swe": 2, "web": 2}
+    assert _AGENT_CALLS == {"swe": 4, "web": 4}

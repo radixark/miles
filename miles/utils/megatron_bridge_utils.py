@@ -8,6 +8,14 @@ except ImportError:
     unwrap_model = None
 
 
+def load_auto_bridge(hf_checkpoint: str):
+    from megatron.bridge import AutoBridge
+
+    import miles_plugins.megatron_bridge  # noqa: F401
+
+    return AutoBridge.from_hf_pretrained(hf_checkpoint, trust_remote_code=True)
+
+
 @contextmanager
 def patch_megatron_model(model):
     unwrapped_model = unwrap_model(model)[0]

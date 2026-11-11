@@ -1,12 +1,36 @@
 """Shared fakes for the tinker gateway suite."""
 
 import asyncio
+import hashlib
+import json
+from pathlib import Path
 
+import torch
+
+from miles.backends.training_utils.checkpoint.adapter.adapter_exports import (
+    write_external_adapter,
+    write_sampler_adapter,
+)
+from miles.backends.training_utils.checkpoint.adapter.commit import write_adapter_dir
+from miles.backends.training_utils.checkpoint.adapter.parametrization import (
+    AdapterParametrization,
+    write_parametrization,
+)
 from miles.backends.training_utils.checkpoint.io import write_checkpoint_dir
 from miles.tinker.core.future import DONE, PENDING, RequestFuture
 from miles.tinker.core.service import TinkerService
 from miles.tinker.core.types import Command, CommandOp, GatewayConfig
+from miles.tinker.runtime import (
+    classify_lora_groups,
+    commit_adapter,
+    delete_adapter,
+    delete_retired_adapters,
+    resolve_adapter,
+    resolve_checkpoint_files,
+)
+from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
 
+_TARGETS = get_hf_lora_targets({"model_type": "qwen3", "num_hidden_layers": 1})
 ADAM = {
     "learning_rate": 1e-4,
     "beta1": 0.9,
@@ -15,6 +39,34 @@ ADAM = {
     "weight_decay": 0.0,
     "grad_clip_norm": 1.0,
 }
+
+
+def _weights(rank: int) -> dict[str, torch.Tensor]:
+    return {
+        "model.layers.0.self_attn.q_proj.lora_A": torch.zeros(rank, 4),
+        "model.layers.0.self_attn.q_proj.lora_B": torch.zeros(4, rank),
+    }
+
+
+def _parametrization(fields: dict, target_modules=("model.layers.0.self_attn.q_proj",)) -> AdapterParametrization:
+    # tiny modules stand in for the model's targets
+    return AdapterParametrization(**fields, target_modules=target_modules)
+
+
+def write_legacy_checkpoint(path: str, record, config: GatewayConfig) -> None:
+    """A checkpoint dir as main wrote it: META.json and no commit link."""
+    metadata = {
+        "tenant_digest": hashlib.sha256(record.tenant.encode()).hexdigest(),
+        "base_model": record.base_model,
+        "lora_rank": record.lora_rank,
+        "lora_alpha": record.lora_alpha,
+        "lora_type": config.lora_type,
+        "experts_shared_outer_loras": config.experts_shared_outer_loras,
+        "train_attn": config.trains_attn,
+        "train_mlp": config.trains_mlp,
+        "train_unembed": config.trains_unembed,
+    }
+    write_checkpoint_dir(path, lambda directory: (directory / "META.json").write_text(json.dumps(metadata)))
 
 
 class FakeBackend:
@@ -43,10 +95,8 @@ class FakeBackend:
     async def trainer_dead(self):
         return self.dead
 
-    async def load_slot(self, slot, rank, alpha, ckpt_path=None, load_optimizer=True):
-        return self._record(
-            "load_slot", slot=slot, rank=rank, alpha=alpha, ckpt_path=ckpt_path, load_optimizer=load_optimizer
-        )
+    async def load_slot(self, slot, rank, alpha, source=None):
+        return self._record("load_slot", slot=slot, rank=rank, alpha=alpha, source=source)
 
     async def unload_slot(self, slot):
         return self._record("unload_slot", slot=slot)
@@ -77,17 +127,72 @@ class FakeBackend:
             return {slot: failure for slot in adam_params_by_slot}
         return {slot: self.optim_outcomes.get(slot, {"grad_norm": 0.5 + slot}) for slot in adam_params_by_slot}
 
-    async def save_slot(self, slot, path, metadata=None):
-        return self._write_checkpoint("save_slot", path, metadata, slot=slot)
+    async def save_slot(self, slot, root, name, tenant_digest, parametrization_fields):
+        failure = self._record(
+            "save_slot",
+            slot=slot,
+            root=root,
+            adapter_name=name,
+            tenant_digest=tenant_digest,
+            parametrization_fields=parametrization_fields,
+        )
+        assert failure is None, "a trainer's save_slot raises; it never returns a failure"
+        with write_adapter_dir(Path(root), name, tenant_digest=tenant_digest) as written:
+            # the default gateway layout trains attn and mlp
+            targets = ("model.layers.0.self_attn.q_proj", "model.layers.0.mlp.gate_proj")
+            write_parametrization(written.path, _parametrization(parametrization_fields, targets))
+        return written
 
-    async def export_slot(self, slot, rank, alpha, path, metadata=None):
-        return self._write_checkpoint("export_slot", path, metadata, slot=slot, rank=rank, alpha=alpha)
+    commit_adapter = staticmethod(commit_adapter)
+    delete_retired_adapters = staticmethod(delete_retired_adapters)
+    resolve_adapter = staticmethod(resolve_adapter)
+    resolve_checkpoint_files = staticmethod(resolve_checkpoint_files)
+    delete_adapter = staticmethod(delete_adapter)
 
-    def _write_checkpoint(self, name, path, metadata, **kwargs):
-        failure = self._record(name, path=path, metadata=metadata, **kwargs)
-        if failure is None and metadata is not None:
-            write_checkpoint_dir(path, lambda _: None, metadata=metadata, overwrite=name == "save_slot")
-        return failure
+    async def export_external(
+        self, slot, root, name, tenant_digest, parametrization_fields, age_encryption_recipients
+    ):
+        failure = self._record(
+            "export_external",
+            slot=slot,
+            root=root,
+            adapter_name=name,
+            tenant_digest=tenant_digest,
+            parametrization_fields=parametrization_fields,
+            age_encryption_recipients=age_encryption_recipients,
+        )
+        assert failure is None, "a trainer's export_external_slot raises; it never returns a failure"
+        parametrization = _parametrization(parametrization_fields)
+        with write_adapter_dir(Path(root), name, tenant_digest=tenant_digest) as written:
+            write_external_adapter(
+                written.path,
+                _weights(parametrization.lora_rank),
+                parametrization,
+                _TARGETS,
+                age_encryption_recipients=age_encryption_recipients,
+                lora_dropout=0.0,
+            )
+        return written
+
+    def lora_groups(self, target_modules):
+        return classify_lora_groups(target_modules, _TARGETS)
+
+    async def export_slot(self, slot, root, name, tenant_digest, parametrization_fields):
+        failure = self._record(
+            "export_slot",
+            slot=slot,
+            root=root,
+            adapter_name=name,
+            tenant_digest=tenant_digest,
+            parametrization_fields=parametrization_fields,
+        )
+        assert failure is None, "a trainer's export_slot raises; it never returns a failure"
+        parametrization = _parametrization(parametrization_fields)
+        with write_adapter_dir(Path(root), name, tenant_digest=tenant_digest) as written:
+            write_sampler_adapter(
+                written.path, _weights(parametrization.lora_rank), parametrization, _TARGETS, lora_dropout=0.0
+            )
+        return written
 
     async def sample(self, payload, lora_name, lora_path=None):
         failure = self._record("sample", payload=payload, lora_name=lora_name, lora_path=lora_path)
@@ -102,7 +207,13 @@ class FakeBackend:
 
 
 def make_config(checkpoint_root, **overrides) -> GatewayConfig:
-    defaults = dict(base_model="base", n_slots=2, checkpoint_root=str(checkpoint_root), vocab_size=128000)
+    defaults = dict(
+        base_model="base",
+        n_slots=2,
+        checkpoint_root=str(checkpoint_root),
+        vocab_size=128000,
+        exports_tinker_names=True,
+    )
     return GatewayConfig(**{**defaults, **overrides})
 
 

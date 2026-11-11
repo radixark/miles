@@ -22,7 +22,7 @@ class TestSlotOptimizerBackendConfiguration:
         model = optimizer_construction.model
         original_trainability = [parameter.requires_grad for parameter in model.parameters()]
 
-        SlotOptimizer(args=args, model=[model], slot=1)
+        SlotOptimizer(args=args, model=[model], slot=1, slot_params=list(model.adapters[1].parameters()))
 
         assert optimizer_construction.use_gloo == [True]
         assert optimizer_construction.config.bf16 is True
