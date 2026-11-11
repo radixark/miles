@@ -52,3 +52,17 @@ Run `python -m examples.experimental.spec_draft_transition.preflight_adaptive`
 on CUDA before any training. This checks teacher-label shifts, plateau/no-plateau
 cases, the irreversible switch and both stage losses/gradients through BF16 AMP.
 The existing pyproject already declares all dependencies; no new package is needed.
+
+## Completed comparison
+
+`analyze_adaptive` waits for all fits/evaluations, collects the new 30 confirmation
+runs, and combines them with the backed-up 120 baseline runs. It independently
+audits every transition decision and the coefficients used on every update.
+It writes five-method bars (mean ± one crossed-bootstrap SE, y-range 2.4–3.0),
+training curves, switch-step summaries and a concise report. Twelve new paired
+comparisons use Bonferroni-adjusted 95% intervals separately from plot error bars.
+The analysis runs from an independently archived checkout; training stays frozen.
+
+`publish_adaptive` runs on the Mac, reads only completed small report artifacts
+from the devbox, and updates the existing comparison gist. GitHub credentials
+stay on the Mac. It refuses to overwrite a gist edited since the publisher started.
