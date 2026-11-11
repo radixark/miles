@@ -131,3 +131,26 @@ def test_bshd_cp2_tokens_are_single_sliced(monkeypatch):
         ]
     )
     assert torch.equal(out["tokens"], expected)
+
+
+@pytest.mark.parametrize("cp_rank", [0, 1])
+def test_bshd_allgather_cp2_single_row_counts_its_contiguous_chunk(monkeypatch, cp_rank):
+    max_seqlen, length, slot = 16, 11, 2
+    _patch_state(monkeypatch, _parallel_state(cp_rank, cp_size=2))
+    batch = {
+        "tokens": [torch.arange(1, length + 1, dtype=torch.long)],
+        "loss_masks": [torch.ones(4, dtype=torch.int)],
+        "total_lengths": [length],
+        "response_lengths": [4],
+        "adapter_slots": [slot],
+        "max_seq_lens": [max_seqlen],
+    }
+
+    out = get_batch(_FakeIterator(batch, N_ADAPTERS), KEYS + ["max_seq_lens"], qkv_format="bshd", allgather_cp=True)
+
+    local_len = max_seqlen // 2
+    padded = torch.nn.functional.pad(batch["tokens"][0], (0, max_seqlen - length))
+    assert torch.equal(out["tokens"], padded[cp_rank * local_len : (cp_rank + 1) * local_len].unsqueeze(0))
+    expected = [0] * N_ADAPTERS
+    expected[slot] = local_len
+    assert out["adapter_token_counts"].tolist() == expected
