@@ -6,7 +6,6 @@ from typing import Any
 
 from miles.utils.args.custom_function import CustomFunctionConfig
 
-
 _MISSING = object()
 
 # TODO: This is ugly, temporarily leave this. We should unify all the config name for dataset, default, and args. (advice from Tom.)
