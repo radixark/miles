@@ -221,6 +221,16 @@ def test_partial_runs_the_four_layer_checkpoint_on_one_node(monkeypatch, tmp_pat
     ]
 
 
+def test_partial_keeps_the_values_the_caller_set():
+    args = import_launch_script(U.repo_base_dir / _H200).ScriptArgs(
+        partial=True, num_rollout=10, tensor_model_parallel_size=2, rollout_max_response_len=512
+    )
+    assert (args.num_rollout, args.tensor_model_parallel_size, args.rollout_max_response_len) == (10, 2, 512)
+    # The rest still takes the partial's values.
+    assert (args.num_nodes, args.pipeline_model_parallel_size, args.expert_model_parallel_size) == (1, 2, 4)
+    assert (args.rollout_batch_size, args.n_samples_per_prompt, args.rollout_max_context_len) == (4, 4, 4096)
+
+
 @pytest.mark.parametrize("script", [_H200, _B300])
 def test_a_multi_node_entry_point_converts_across_the_ray_cluster(monkeypatch, script):
     conversions = []

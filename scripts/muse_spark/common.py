@@ -33,14 +33,15 @@ Args:
         <run_dir>/checkpoints on storage shared by all nodes. Defaults None: nothing is saved.
     extra_args / extra_env_vars: Additional training flags and runtime environment.
     partial: Smoke-test the recipe on one node with the last-four-layer checkpoint
-        RadixArk/Muse-Spark-Open-last4-partial. Replaces the model, the cluster size, the layout (TP and EP of half
-        the node over two pipeline stages, one engine for the node) and the rollout sizes (3 rollouts of 4x4
-        samples); rewards are random and --ci-test checks log-probs and weight updates. Defaults False.
+        RadixArk/Muse-Spark-Open-last4-partial. Replaces the model and, wherever the entry point's default was
+        kept, the cluster size, the layout (TP and EP of half the node over two pipeline stages, one engine for
+        the node), the rollout sizes (3 rollouts of 4x4 samples) and the token limits (1024 of 4096); rewards
+        are random and --ci-test checks log-probs and weight updates. Defaults False.
 """
 
 import json
 import shlex
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Literal
 
@@ -98,14 +99,26 @@ class ScriptArgs(U.ExecuteTrainConfig):
         if self.partial:
             self.model_org, self.model_name = "RadixArk", "Muse-Spark-Open-last4-partial"
             self.megatron_model_type = "muse-spark-last4-partial"
-            self.num_nodes = 1
-            # PP1 cannot take the edge-stage sizes, so the 4 layers go 2 + 2 over two stages.
-            self.pipeline_model_parallel_size, self.decoder_first_last_pipeline_num_layers = 2, 2
-            self.tensor_model_parallel_size = self.expert_model_parallel_size = self.num_gpus_per_node // 2
-            self.context_parallel_size = 1
-            self.rollout_num_gpus_per_engine = self.num_gpus_per_node
-            self.num_rollout, self.rollout_batch_size, self.n_samples_per_prompt = 3, 4, 4
-            self.rollout_max_response_len, self.rollout_max_context_len = 1024, 4096
+            partial_values = dict(
+                num_nodes=1,
+                # PP1 cannot take the edge-stage sizes, so the 4 layers go 2 + 2 over two stages.
+                pipeline_model_parallel_size=2,
+                decoder_first_last_pipeline_num_layers=2,
+                tensor_model_parallel_size=self.num_gpus_per_node // 2,
+                expert_model_parallel_size=self.num_gpus_per_node // 2,
+                context_parallel_size=1,
+                rollout_num_gpus_per_engine=self.num_gpus_per_node,
+                num_rollout=3,
+                rollout_batch_size=4,
+                n_samples_per_prompt=4,
+                rollout_max_response_len=1024,
+                rollout_max_context_len=4096,
+            )
+            # A value the caller set differs from the entry point's default and is kept.
+            entry_point_defaults = {f.name: f.default for f in fields(self)}
+            for name, value in partial_values.items():
+                if getattr(self, name) == entry_point_defaults[name]:
+                    setattr(self, name, value)
         if self.optimizer == "muon" and self.offload_train_disk_dir is not None:
             raise ValueError("--offload-train-disk-dir requires --optimizer adam")
         if self.chat_template_path is None:
