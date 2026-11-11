@@ -419,6 +419,60 @@ def test_the_provider_names_carry_every_providers_endpoint_but_no_key():
     assert "E2B_API_KEY" not in provider_env_names()
 
 
+def test_a_worker_with_a_secret_refuses_a_caller_without_it(serve, caplog):
+    url = serve(secret="worker-s3cret")
+
+    with pytest.raises(InfraAbort) as raised:
+        _on_worker(url, stubs.report_pid)
+
+    assert raised.value.exit_status == "WorkerUnauthorized"
+    assert httpx.get(f"{url}/health").status_code == 401
+    assert "worker-s3cret" not in str(raised.value) and "worker-s3cret" not in caplog.text
+
+
+def test_a_worker_with_a_secret_refuses_a_wrong_one(serve, monkeypatch):
+    url = serve(secret="worker-s3cret")
+    monkeypatch.setenv("MILES_AGENT_WORKER_SECRET", "guessed")
+
+    with pytest.raises(InfraAbort) as raised:
+        _on_worker(url, stubs.report_pid)
+
+    assert raised.value.exit_status == "WorkerUnauthorized"
+
+
+def test_a_caller_and_worker_sharing_the_secret_by_env_run_the_call(serve, monkeypatch):
+    monkeypatch.setenv("MILES_AGENT_WORKER_SECRET", "worker-s3cret")
+    url = serve()
+    monkeypatch.delenv("MILES_AGENT_WORKER_SECRET")
+    assert httpx.get(f"{url}/health").status_code == 401
+    monkeypatch.setenv("MILES_AGENT_WORKER_SECRET", "worker-s3cret")
+
+    reported = _on_worker(url, stubs.report_pid)
+
+    assert reported["pid"] != os.getpid()
+
+
+def test_a_caller_and_worker_sharing_the_secret_by_file_run_the_call(serve, monkeypatch, tmp_path):
+    secret_file = tmp_path / "worker_secret"
+    secret_file.write_text("worker-s3cret\n")
+    monkeypatch.setenv("MILES_AGENT_WORKER_SECRET_FILE", str(secret_file))
+    url = serve()
+
+    reported = _on_worker(url, stubs.report_pid)
+
+    assert reported["pid"] != os.getpid()
+    assert httpx.get(f"{url}/health").status_code == 401
+
+
+def test_the_worker_secret_is_never_forwarded_to_an_agent_by_value(monkeypatch):
+    monkeypatch.setenv("MILES_AGENT_WORKER_SECRET", "worker-s3cret")
+    monkeypatch.setenv("MILES_AGENT_WORKER_SECRET_FILE", "/secrets/worker")
+
+    env = remote.forwarded_env(["MILES_AGENT_WORKER_*"])
+
+    assert env == {"MILES_AGENT_WORKER_SECRET_FILE": "/secrets/worker"}
+
+
 def test_a_call_whose_caller_vanished_is_cancelled(serve, tmp_path, monkeypatch):
     monkeypatch.setattr("miles.rollout.agentic.worker._REAP_INTERVAL_S", 0.2)
     url = serve(orphan_timeout_s=1.0)

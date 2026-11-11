@@ -10,6 +10,7 @@ env must exist here.
 import argparse
 import asyncio
 import fnmatch
+import hmac
 import importlib
 import json
 import logging
@@ -23,7 +24,7 @@ from aiohttp import web
 from miles.rollout.agentic import rollout_limits
 from miles.rollout.agentic.agent_function import call_agent_function
 from miles.rollout.agentic.errors import InfraAbort
-from miles.rollout.agentic.remote import MAX_POLL_WAIT_S, encode_report
+from miles.rollout.agentic.remote import MAX_POLL_WAIT_S, encode_report, worker_secret
 
 logger = logging.getLogger(__name__)
 
@@ -93,8 +94,17 @@ def create_app(
     orphan_timeout_s: float = _ORPHAN_TIMEOUT_S,
     retention_s: float = _RETENTION_S,
     keep_env: Sequence[str] = (),
+    secret: str | None = None,
 ) -> web.Application:
     calls: dict[str, dict[str, Any]] = {}
+    secret = secret or worker_secret()
+    expected_authorization = f"Bearer {secret}".encode() if secret else None
+
+    @web.middleware
+    async def require_secret(request: web.Request, handler):
+        if not hmac.compare_digest(request.headers.get("Authorization", "").encode(), expected_authorization):
+            raise web.HTTPUnauthorized(text="missing or wrong agent worker secret")
+        return await handler(request)
 
     async def submit(request: web.Request) -> web.Response:
         body = await request.json()
@@ -160,7 +170,9 @@ def create_app(
             if call["task"] is not None and not call["task"].done():
                 call["task"].cancel()
 
-    app = web.Application(client_max_size=64 * 1024 * 1024)
+    app = web.Application(
+        client_max_size=64 * 1024 * 1024, middlewares=[require_secret] if expected_authorization else []
+    )
     app.add_routes(
         [
             web.post("/calls", submit),
