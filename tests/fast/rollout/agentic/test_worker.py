@@ -494,6 +494,25 @@ def test_a_secret_no_http_header_can_carry_is_refused_without_showing_it(serve, 
     assert "first-half" not in shown and "second-half" not in shown
 
 
+@pytest.mark.parametrize("content", [None, b"\xffworker-s3cret"])
+def test_a_secret_file_that_cannot_be_read_stops_the_run_without_showing_it(
+    serve, monkeypatch, tmp_path, caplog, content
+):
+    secret_file = tmp_path / "worker_secret"
+    if content is not None:
+        secret_file.write_bytes(content)
+    monkeypatch.setenv("MILES_AGENT_WORKER_SECRET_FILE", str(secret_file))
+    url = serve(secret="worker-s3cret")
+
+    with pytest.raises(NonRetryableError, match="MILES_AGENT_WORKER_SECRET_FILE") as raised:
+        _on_worker(url, stubs.report_pid)
+    with pytest.raises(NonRetryableError) as at_worker_start:
+        create_app()
+
+    shown = _messages_in_chain(raised.value) + _messages_in_chain(at_worker_start.value) + caplog.text
+    assert "s3cret" not in shown
+
+
 def test_an_agent_on_a_worker_with_a_secret_cannot_read_it(serve, monkeypatch, tmp_path):
     secret_file = tmp_path / "worker_secret"
     secret_file.write_text("worker-s3cret")
