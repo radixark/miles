@@ -134,6 +134,19 @@ def test_the_boot_env_file_joins_the_key(service, tmp_path, monkeypatch):
     }
 
 
+def test_the_hosts_worker_secret_joins_the_boot_env(service, tmp_path, monkeypatch):
+    secret_file = tmp_path / "worker-secret"
+    secret_file.write_text("per-call-secret\n")
+    monkeypatch.setenv("MILES_AGENT_WORKER_SECRET_FILE", str(secret_file))
+
+    _in_sandbox(stubs.report_pid)
+
+    (sandbox,) = FakeSandbox.created
+    assert json.loads(sandbox.written[e2b_start.BOOT_CONFIG]) == {
+        "env": {"E2B_API_KEY": "test-key", "MILES_AGENT_WORKER_SECRET": "per-call-secret"}
+    }
+
+
 def test_a_malformed_boot_env_file_fails_before_any_sandbox(service, tmp_path, monkeypatch):
     env_file = tmp_path / "boot.json"
     env_file.write_text(json.dumps({"N": 1}))
