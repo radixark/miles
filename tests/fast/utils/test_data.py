@@ -359,15 +359,19 @@ class TestProcessRolloutData:
         for shard in shards:
             assert shard["seq_witness_ids"] == [1000 + i for i in shard["sample_indices"]]
 
-    @pytest.mark.parametrize("raw", [_multimodal_batch(), _batch_without_rollout_ids()])
-    def test_unschedulable_batches_fall_back_to_the_strided_split(self, raw: dict[str, Any]):
-        """Multimodal batches and batches without rollout_ids keep the legacy training-side split."""
-        shards = _shards_of_every_rank(raw=raw)
+    def test_batches_without_rollout_ids_fall_back_to_the_strided_split(self):
+        shards = _shards_of_every_rank(raw=_batch_without_rollout_ids())
 
         for dp_rank, shard in enumerate(shards):
             assert "micro_batch_indices" not in shard
             assert "num_rollouts" not in shard
             assert shard["sample_indices"] == list(range(dp_rank, _NUM_SAMPLES, _DP_SIZE))
+
+    def test_multimodal_batches_take_the_rollout_side_schedule(self):
+        shards = _shards_of_every_rank(raw=_multimodal_batch())
+
+        assert all("micro_batch_indices" in shard and "num_rollouts" in shard for shard in shards)
+        assert sorted(i for shard in shards for i in shard["sample_indices"]) == list(range(_NUM_SAMPLES))
 
     def test_a_pre_split_rollout_must_carry_one_shard_per_cell(self):
         """Without the delayed split the rollout side already fixed the shard count, which must match dp_size."""

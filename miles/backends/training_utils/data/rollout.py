@@ -532,6 +532,10 @@ class DataIterator:
         return self
 
 
+def get_steps_per_rollout(args: Namespace) -> int:
+    return max(args.rollout_batch_size * args.n_samples_per_prompt // args.backend.global_batch_size, 1)
+
+
 def get_num_rollouts(args: Namespace, rollout_data: RolloutBatch, num_steps: int) -> list[int]:
     """Per-step rollout counts (total across DP); one entry per training step."""
     if "num_rollouts" in rollout_data:

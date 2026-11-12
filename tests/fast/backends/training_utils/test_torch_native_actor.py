@@ -104,7 +104,7 @@ def step(monkeypatch):
     monkeypatch.setattr(
         TorchNativeTrainRayActor,
         "_optimizer_steps",
-        lambda self, runner, it, n, rollout_id: calls["steps"].append(runner),
+        lambda self, runner, it, n, rollout_id, num_rollouts=None: calls["steps"].append((runner, num_rollouts)),
     )
     monkeypatch.setattr(
         base_module, "compute_advantages_and_returns", lambda args, data, **_kwargs: data.update(adv=True)
@@ -136,7 +136,7 @@ def test_the_rollout_step_runs_ref_then_actor_then_optimizer_under_the_right_sta
         "reset",
     ]
     assert step["log_probs"] == [(actor.ref_runner, "ref_"), (actor.runner, "")]
-    assert step["steps"] == [actor.runner]
+    assert step["steps"] == [(actor.runner, None)]
     assert rollout_data == {"ref_log_probs": [1], "log_probs": [1], "adv": True}
     assert step["replay"].fill.call_args.kwargs["align"] is actor.align_token_side_channel
 
@@ -222,7 +222,7 @@ def _train_one_dp_rank(rank: int, world_size: int, port: int) -> None:
     )
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(base_module, "get_batch", _cpu_batch)
-        patch.setattr(base_module, "aggregate_train_losses", lambda losses: {})
+        patch.setattr(base_module, "aggregate_train_losses", lambda losses, num_rollouts=None: {})
         patch.setattr(base_module, "log_train_step", lambda **kwargs: None)
         # the gloo ranks have no accelerator to reduce the token counts on
         patch.setattr(base_module.platforms.current_platform, "current_device", lambda: torch.device("cpu"))
@@ -376,3 +376,62 @@ class TestFailedTargetStopsTraining:
         assert actor._published_weight_version == 3
         assert all(cell_id in str(raised.value) for cell_id in failed_cell_ids)
         actor.weight_updater.verify_engine_version.assert_not_called()
+
+
+class _RecordingRunner:
+    def __init__(self):
+        self.closures = []
+
+    def zero_grad(self):
+        pass
+
+    def forward_backward_step(self, batches, loss_closure):
+        list(batches)
+        self.closures.append(loss_closure)
+        return []
+
+    def apply_step(self):
+        return SimpleNamespace(grad_norm=0.0, extra_metrics={})
+
+
+def test_the_rollout_step_hands_the_stamped_rollout_counts_to_the_optimizer_steps(step):
+    actor = _Provider()
+
+    actor._train_core(rollout_id=3, rollout_data={"num_rollouts": [32]})
+
+    assert step["steps"] == [(actor.runner, [32])]
+
+
+@pytest.mark.parametrize("per_token", [True, False])
+def test_each_optimizer_step_hands_its_rollout_count_to_the_loss_and_the_metrics(monkeypatch, per_token):
+    metric_counts = []
+    state = SimpleNamespace(intra_dp=SimpleNamespace(group="dp"), is_metrics_rank=False)
+    monkeypatch.setattr(base_module, "get_parallel_state", lambda: state)
+    monkeypatch.setattr(base_module.dist, "get_rank", lambda: 0)
+    monkeypatch.setattr(base_module, "log_train_step", lambda **kwargs: None)
+    monkeypatch.setattr(base_module, "_count_step_loss_tokens", lambda it, steps: torch.ones(len(steps)))
+    monkeypatch.setattr(
+        base_module,
+        "aggregate_train_losses",
+        lambda losses, num_rollouts=None: metric_counts.append(num_rollouts) or {},
+    )
+    monkeypatch.setattr(
+        TorchNativeTrainRayActor, "_fetch_batches", lambda self, progress, it, keys: [{} for _ in progress]
+    )
+    actor = _Provider()
+    actor.args.backend = SimpleNamespace(calculate_per_token_loss=per_token)
+    runner = _RecordingRunner()
+
+    actor._optimizer_steps(runner, _DataIterator(), [2, 3], rollout_id=0, num_rollouts=[5, 6])
+
+    assert [closure.keywords for closure in runner.closures] == [{"num_rollouts": 5}, {"num_rollouts": 6}]
+    assert metric_counts == ([None, None] if per_token else [5, 6])
+
+
+def test_a_rollout_count_per_optimizer_step_is_required():
+    with pytest.raises(AssertionError, match="one rollout count per optimizer step"):
+        _Provider()._optimizer_steps(_RecordingRunner(), _DataIterator(), [2, 3], rollout_id=0, num_rollouts=[5])
+
+
+def test_the_train_keys_carry_the_rollout_mask_sums():
+    assert "rollout_mask_sums" in base_module.TRAIN_KEYS

@@ -3,6 +3,7 @@ from typing import Any
 
 import torch
 
+from miles.backends.training_utils.data.multimodal import trained_total_lengths
 from miles.rollout.generate_utils.rollout_topk_logprobs import validate_rollout_topk_logprobs_sample
 from miles.rollout.reward_shaping import (
     apply_length_penalty,
@@ -424,7 +425,7 @@ def can_precompute_dp_schedule(
         return False
     if is_multi_lora_enabled(args):
         return False
-    if "multimodal_train_inputs" in data or "multimodal_inputs" in data:
+    if "multimodal_inputs" in data:
         return False
     if "rollout_ids" not in data:
         return False
@@ -443,7 +444,7 @@ def split_train_data_by_dp_scheduled_raw(
     partitions, micro_batch_indices, num_microbatches, num_rollouts = build_dp_schedule(
         args,
         train_parallel_config,
-        total_lengths,
+        trained_total_lengths(data["tokens"], data.get("multimodal_train_inputs")),
         global_batch_size=global_batch_size,
         rollout_indices=data["rollout_ids"],
     )
@@ -485,7 +486,9 @@ def split_train_data_by_dp_raw(args, data: dict[str, Any], *, dp_size: int) -> l
     data["total_lengths"] = total_lengths
 
     if args.balance_data:
-        partitions = get_seqlen_balanced_partitions(total_lengths, dp_size, equal_size=True)
+        partitions = get_seqlen_balanced_partitions(
+            trained_total_lengths(data["tokens"], data.get("multimodal_train_inputs")), dp_size, equal_size=True
+        )
     else:
         partitions = [range(i, len(total_lengths), dp_size) for i in range(dp_size)]
 
@@ -495,7 +498,30 @@ def split_train_data_by_dp_raw(args, data: dict[str, Any], *, dp_size: int) -> l
     if adapter_slots is not None:
         partitions = [sorted(p, key=lambda i: adapter_slots[i]) for p in partitions]
 
-    return _package_shards(args, data, partitions)
+    shards = _package_shards(args, data, partitions)
+    if (num_rollouts := _num_rollouts_of_single_step(args, data)) is not None:
+        for shard in shards:
+            shard["num_rollouts"] = num_rollouts
+    return shards
+
+
+def _num_rollouts_of_single_step(args, data: dict[str, Any]) -> list[int] | None:
+    if is_multi_lora_enabled(args) or "rollout_ids" not in data:
+        return None
+    num_samples = len(data["tokens"])
+    num_rollouts = len(set(data["rollout_ids"]))
+    if num_rollouts == num_samples:
+        return None
+    global_batch_size = data.get("dynamic_global_batch_size", args.global_batch_size)
+    if global_batch_size != num_samples:
+        raise ValueError(
+            f"{num_rollouts} rollouts arrived as {num_samples} samples, but this split counts --global-batch-size "
+            f"({global_batch_size}) in samples, so it would cut rollouts across optimizer steps and divide the loss "
+            "by samples. Train where the rollout-side schedule applies (can_precompute_dp_schedule; it also needs "
+            "at least --global-batch-size rollouts per round), or emit a fixed number of samples per rollout and "
+            "set --global-batch-size to the round's sample count."
+        )
+    return [num_rollouts]
 
 
 def _package_shards(args, data: dict[str, Any], partitions) -> list[dict[str, Any]]:
