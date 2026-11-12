@@ -13,6 +13,7 @@ import torch.distributed as dist
 
 from miles.backends.training_utils.data.context_parallel import get_local_response_loss_masks, slice_log_prob_with_cp
 from miles.backends.training_utils.loss.hub.logit_processors import get_log_probs_and_entropy
+from miles.backends.training_utils.loss.hub.math_utils import compute_policy_loss
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.types import RolloutBatch
 
@@ -182,10 +183,14 @@ def ppo_loss_function(
         _local_response_masks(args, batch, log_probs),
         strict=True,
     ):
-        ratio = torch.exp(log_prob - _as_tensor_like(sampling_log_prob, log_prob))
-        advantages = _as_tensor_like(advantage, log_prob)
-        objective = torch.minimum(ratio * advantages, torch.clamp(ratio, clip_low, clip_high) * advantages)
-        per_datum_losses.append(-(objective * mask).sum())
+        # Share native PPO's FP32 log-ratio safeguard before exponentiation.
+        token_loss, _ = compute_policy_loss(
+            _as_tensor_like(sampling_log_prob, log_prob) - log_prob,
+            _as_tensor_like(advantage, log_prob),
+            eps_clip=1.0 - clip_low,
+            eps_clip_high=clip_high - 1.0,
+        )
+        per_datum_losses.append((token_loss * mask).sum())
     return _sum_loss_and_outputs(args, batch, logits, log_probs, per_datum_losses)
 
 
