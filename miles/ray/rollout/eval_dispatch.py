@@ -48,7 +48,7 @@ class EvalDispatcher:
                 try:
                     export_time = await self._export(rollout_id, hf_dir)
                 except Exception as e:
-                    logger.error(f"HF snapshot export for eval {rollout_id} failed: {e}")
+                    logger.error(f"Snapshot export for eval {rollout_id} failed: {e}")
                     await self.rollout_manager.report_eval_skip(rollout_id, "export_failed")
                     return
                 exported_dir = hf_dir
@@ -69,7 +69,7 @@ class EvalDispatcher:
         if self.args.offload_train:
             await self.actor_model.onload()
         try:
-            await self.actor_model.export_hf(rollout_id, hf_dir)
+            await self.actor_model.export_eval_snapshot(rollout_id, hf_dir)
         finally:
             if self.args.offload_train:
                 await self.actor_model.offload()
