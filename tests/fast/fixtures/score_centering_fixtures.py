@@ -1,4 +1,4 @@
-"""Small deterministic samples for score-centering integration tests."""
+"""Small deterministic samples and SGLang reply fields for score-centering and sampling-mask tests."""
 
 from argparse import Namespace
 
@@ -87,33 +87,22 @@ def _turn(prompt: list[int], output: list[int], probabilities: list[float]) -> S
         group_index=0,
         reward=1.0,
     )
-    rows = [[(logp, token, None) for logp, token in zip(logps, output, strict=True)]] * len(output)
-    append_rollout_topk_logprobs(
-        sample,
-        {
-            "output_token_logprobs": [(logp, token, None) for logp, token in zip(logps, output, strict=True)],
-            "output_top_logprobs": rows,
-        },
-        3,
-    )
+    entries = [(logp, token, None) for logp, token in zip(logps, output, strict=True)]
+    rows = [[*entries, *[(-np.inf, -1, None)] * (3 - len(entries))]] * len(output)
+    append_rollout_topk_logprobs(sample, {"output_token_logprobs": entries, **_flat_output_top_logprobs(rows)}, 3)
     return sample
 
 
 def _meta(output: list[int], probabilities: list[float]) -> dict:
+    """An SGLang reply's meta_info with flat base64 candidates, padded to the 3 columns SGLang returns for
+    ``top_logprobs=3`` with low-probability filler tokens."""
     entries = [(float(np.log(p)), token, None) for p, token in zip(probabilities, output, strict=True)]
+    fillers = [(-20.0 - i, 7 - i, None) for i in range(3 - len(entries))]
     return {
         "output_token_logprobs": entries,
-        "output_top_logprobs": [entries] * len(output),
         "finish_reason": {"type": "stop"},
+        **_flat_output_top_logprobs([[*entries, *fillers]] * len(output)),
     }
-
-
-def _flat_meta(output: list[int], probabilities: list[float]) -> dict:
-    """``_meta`` with the candidates in SGLang's flat base64 format, padded to the 3 columns SGLang returns
-    for ``top_logprobs=3`` with a low-probability filler token."""
-    meta = _meta(output, probabilities)
-    rows = [[*row, (-20.0, 7, None)] for row in meta.pop("output_top_logprobs")]
-    return meta | _flat_output_top_logprobs(rows)
 
 
 def _flat_output_top_logprobs(rows: list, *, null_prefix: int = 0) -> dict:
@@ -129,3 +118,18 @@ def _flat_output_top_logprobs(rows: list, *, null_prefix: int = 0) -> dict:
         "output_top_logprobs_val_flat_b64_dtype": "float32",
         "output_top_logprobs_idx_flat_b64_dtype": "int32",
     }
+
+
+def _flat_sampling_mask(supports: list[list[int]], logprobs: list) -> dict:
+    """Encode support rows and their log-probs (a value per row in selected mode, a row of values in support mode)
+    the way SGLang's return_flat_raw_sampling_mask_b64 does."""
+    flat_logprobs = [value for row in logprobs for value in (row if isinstance(row, list) else [row])]
+    fields = {"output_token_sampling_mask_length": len(supports)}
+    for key, values, dtype in (
+        ("output_token_sampling_mask_flat", [token for row in supports for token in row], "<i4"),
+        ("output_token_sampling_mask_lengths", [len(row) for row in supports], "<i4"),
+        ("output_token_sampling_logprobs_flat", flat_logprobs, "<f4"),
+    ):
+        fields[f"{key}_b64"] = pybase64.b64encode(np.asarray(values, dtype=dtype).tobytes()).decode("ascii")
+        fields[f"{key}_b64_dtype"] = np.dtype(dtype).name
+    return fields

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-from tests.fast.fixtures.score_centering_fixtures import _args, _flat_meta, _meta, _Tokenizer
+from tests.fast.fixtures.score_centering_fixtures import _args, _flat_sampling_mask, _meta, _Tokenizer
 from tests.fast.fixtures.session_fixtures import make_session_server_config
 
 from miles.rollout.generate_utils.rollout_topk_logprobs import validate_rollout_topk_logprobs_sample
@@ -57,8 +57,7 @@ def test_score_centering_training_and_evaluation_sessions(registry_type: type, c
                 )
 
 
-@pytest.mark.parametrize("meta", [_meta, _flat_meta], ids=["nested", "flat"])
-def test_session_producer_trims_candidates_with_tito_tokens(meta) -> None:
+def test_session_producer_trims_candidates_with_tito_tokens() -> None:
     records = []
     for prompt, output, probabilities in (([0, 1], [2, 3], [0.5, 0.25]), ([0, 1, 2, 6], [4, 5], [0.55, 0.2])):
         records.append(
@@ -69,7 +68,7 @@ def test_session_producer_trims_candidates_with_tito_tokens(meta) -> None:
                 path="v1/chat/completions",
                 status_code=200,
                 request={"input_ids": prompt, "top_logprobs": 3},
-                response={"choices": [{"meta_info": meta(output, probabilities), "finish_reason": "stop"}]},
+                response={"choices": [{"meta_info": _meta(output, probabilities), "finish_reason": "stop"}]},
             )
         )
     samples = compute_samples_from_openai_records(
@@ -125,12 +124,12 @@ def test_filtered_session_request_and_producer() -> None:
         sampling_support_replay=True,
     )
     assert prepared.body["return_sampling_mask"] is True
+    assert prepared.body["return_flat_raw_sampling_mask"] and prepared.body["return_flat_raw_sampling_mask_b64"]
     assert prepared.body["sampling_logprobs_mode"] == "support"
     assert "top_logprobs" not in prepared.body
     meta = {
         "output_token_logprobs": [(math.log(0.4), 2, None)],
-        "output_token_sampling_mask": [[2, 3]],
-        "output_token_sampling_logprobs": [[math.log(4 / 7), math.log(3 / 7)]],
+        **_flat_sampling_mask([[2, 3]], [[math.log(4 / 7), math.log(3 / 7)]]),
     }
     record = SessionRecord(
         timestamp=2.0,

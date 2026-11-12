@@ -17,12 +17,14 @@ import numpy as np
 import pybase64
 import pytest
 import torch
+from tests.fast.fixtures.score_centering_fixtures import _flat_sampling_mask
 from tests.fast.fixtures.sglang_config_fixtures import make_sglang_config
 from tests.fast.utils.output_store.test_plan import Ref, Spec, fake_store_refs
 
 from miles.rollout.generate_utils import tool_call_utils
 from miles.rollout.generate_utils.generate_endpoint_utils import update_sample_from_response
 from miles.rollout.generate_utils.sample_utils import merge_samples
+from miles.rollout.generate_utils.sampling_mask import configure_sampling_mask_request
 from miles.utils.output_store.plan import (
     MASK_LENGTHS,
     MASK_SUPPORT_LOGPROBS,
@@ -81,11 +83,7 @@ def generate(
         "prompt_tokens": num_tokens,
         "completion_tokens": len(tokens),
     }
-    inline = {
-        **common,
-        "output_token_sampling_mask": supports,
-        "output_token_sampling_logprobs": support_logprobs if mode == "support" else sampled,
-    }
+    inline = {**common, **_flat_sampling_mask(supports, support_logprobs if mode == "support" else sampled)}
     # With the output store, SGLang keeps only the sampled tokens' log-probs inline.
     sampled_key = "output_token_sampling_selected_logprobs" if mode == "support" else "output_token_sampling_logprobs"
     store = {**common, sampled_key: sampled}
@@ -115,6 +113,7 @@ def respond(sample: Sample, meta_info: dict, *, mode: str, k: int, routed_expert
         payload[RoutedExpertsSegments.request_key] = True
     if via_store:
         payload[OUTPUT_STORE_REQUEST_KEY] = True
+    configure_sampling_mask_request(payload)
     args = Namespace(
         rollout_top_logprobs_num=k,
         sglang=make_sglang_config(speculative_algorithm=None),
@@ -224,14 +223,15 @@ def test_store_sample_equals_inline_sample(seed):
 
 
 def test_a_response_without_its_ref_raises():
-    # The router dropped the opt-in, so SGLang answered inline: the plan cannot be built.
+    # The router dropped the opt-in, so SGLang answered without a ref: the plan cannot be built.
     response = generate(
         np.random.default_rng(0), key="a", num_tokens=3, mode="selected", k=0, routed_experts=True, abort=False
     )
+    meta_info = {key: value for key, value in response.store_meta_info.items() if key != OUTPUT_STORE_REF_KEY}
     with pytest.raises(StorePlanError, match="asked for routed_experts"):
         respond(
             Sample(tokens=[1, 2, 3]),
-            response.inline_meta_info,
+            meta_info,
             mode="selected",
             k=0,
             routed_experts=True,
