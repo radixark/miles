@@ -13,11 +13,19 @@ from miles.utils.processing_utils import load_processor
 COUNTED_TITO_MODELS = frozenset({TITOTokenizerType.QWEN3_VL.value, TITOTokenizerType.QWEN38_SMALL.value})
 
 
+def count_kwargs(image_kwargs: dict[str, Any]) -> dict[str, Any]:
+    size = image_kwargs.get("size")
+    rest = {key: value for key, value in image_kwargs.items() if key != "size"}
+    if not isinstance(size, dict):
+        return rest
+    return {"min_pixels": size["shortest_edge"], "max_pixels": size["longest_edge"], **rest}
+
+
 class ImageTokenCounter:
     def __init__(self, processor: Any, placeholder_id: int, image_kwargs: dict[str, Any]) -> None:
         self.processor = processor
         self.placeholder_id = placeholder_id
-        self.image_kwargs = image_kwargs
+        self.image_kwargs = count_kwargs(image_kwargs)
         self._counts: dict[str, int] = {}
 
     def count(self, path: str) -> int:

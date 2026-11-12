@@ -118,10 +118,10 @@ class TokenSpaceChatBackend:
         self._server.stop()
 
     def _count(self, path: str, bias: int) -> int:
+        image_processor = self.vlm.processor.image_processor
         with Image.open(path) as handle:
-            size = (handle.height, handle.width)
-        count = self.vlm.processor._get_num_multimodal_tokens(image_sizes=[size], **self.image_kwargs)
-        return int(count.num_image_tokens[0]) + bias
+            grid = image_processor(images=[handle.convert("RGB")], return_tensors="pt", **self.image_kwargs)
+        return int(grid["image_grid_thw"][0].prod()) // image_processor.merge_size**2 + bias
 
     def _reply(self, payload: dict) -> dict:
         index = len(self.calls) - 1
@@ -325,13 +325,16 @@ class TestEngineExpansionCheck:
             assert response.status_code == 200, response.content
             assert env.backend.calls[-1]["input_ids"].count(vlm.video_pad_id) == 1
 
-    def test_images_are_counted_with_the_engines_image_settings(self, vlm, tmp_path):
-        image = {"min_pixels": 4096, "max_pixels": 16384}
-        count = vlm.processor._get_num_multimodal_tokens
-        assert (
-            count(image_sizes=[(120, 160)], **image).num_image_tokens
-            != count(image_sizes=[(120, 160)]).num_image_tokens
-        )
+    @pytest.mark.parametrize(
+        "image",
+        [{"min_pixels": 4096, "max_pixels": 16384}, {"size": {"shortest_edge": 4096, "longest_edge": 16384}}],
+        ids=["pixels", "size"],
+    )
+    def test_images_are_counted_with_the_engines_image_settings(self, vlm, tmp_path, image):
+        shot = tmp_path / "shot2.png"
+        shot.write_bytes(SHOT2)
+        engine = TokenSpaceChatBackend(vlm, image_kwargs=image)
+        assert engine._count(str(shot), 0) != TokenSpaceChatBackend(vlm)._count(str(shot), 0)
         sglang = make_sglang_config(speculative_algorithm=None, mm_process_config={"image": image})
         with session_server(vlm, tmp_path, engine_image_kwargs=image, sglang=sglang) as env:
             session_id = _create_session(env.url)

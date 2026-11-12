@@ -632,24 +632,27 @@ def test_with_replay_off_no_offset_is_sent_with_media(tokenizer, processor_core,
     assert body["return_routed_experts"] is False and "routed_experts_start_len" not in body
 
 
-SMALL_IMAGES = {"max_pixels": 401408}
-
-
-@pytest.fixture(scope="module")
-def small_images_processor_core(engine_args):
+@pytest.fixture(
+    scope="module",
+    params=[{"max_pixels": 401408}, {"size": {"shortest_edge": 65536, "longest_edge": 401408}}],
+    ids=["max_pixels", "size"],
+)
+def small_images(request, engine_args):
     from miles.backends.training_utils.data.token_space_media_process import build_trainer_processor
 
-    return build_trainer_processor(
-        replace(engine_args, mm_process_config_json=json.dumps({"image": SMALL_IMAGES})),
+    core = build_trainer_processor(
+        replace(engine_args, mm_process_config_json=json.dumps({"image": request.param})),
         mm_processor_worker_num=1,
         mm_io_worker_num=1,
         device=torch.device("cpu"),
     ).core
+    return request.param, core
 
 
-def test_the_image_count_follows_the_engines_image_settings(tokenizer, small_images_processor_core, tmp_path):
-    engine = TokenSpaceEngine(small_images_processor_core, tokenizer)
-    core, registry = _make_core("v2", tokenizer, engine, tmp_path, image_process_config=SMALL_IMAGES)
+def test_the_image_count_follows_the_engines_image_settings(tokenizer, small_images, tmp_path):
+    image, processor_core = small_images
+    engine = TokenSpaceEngine(processor_core, tokenizer)
+    core, registry = _make_core("v2", tokenizer, engine, tmp_path, image_process_config=image)
     counter = build_image_token_counter(core.config, tokenizer)
     core.image_token_counter = counter
     session_id = registry.create_session()
