@@ -35,7 +35,7 @@ from miles.backends.training_utils.checkpoint.adapter.parametrization import (
 from miles.backends.training_utils.checkpoint.adapter.source_error import AdapterSourceError, require_fields
 from miles.utils.lora.hf_lora_targets import HfLoraTargets
 
-_PEFT_FILES = ("adapter_config.json", "adapter_model.safetensors")
+PEFT_FILES = ("adapter_config.json", "adapter_model.safetensors")
 # PEFT features that change what a tensor means; an adapter using them cannot be read as plain LoRA
 _PEFT_CONFIG_MUST_BE_EMPTY = (
     "use_dora",
@@ -79,7 +79,7 @@ class AdapterSource:
 
 
 def _has_peft_files(path: Path) -> bool:
-    return all((path / f).is_file() for f in _PEFT_FILES)
+    return all((path / f).is_file() for f in PEFT_FILES)
 
 
 def _safetensors_names(path: Path) -> list[str]:
