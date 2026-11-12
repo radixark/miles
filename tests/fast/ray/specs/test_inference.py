@@ -580,7 +580,7 @@ class TestInferenceEngineEnvVars:
             fake_dumper_utils,
         )
 
-        envs = compute_inference_engine_env_vars(args)
+        envs = compute_inference_engine_env_vars(args, pp_size=1)
 
         assert get_sglang_env_calls == [args]
         assert envs["DUMPER_SERVER_PORT"] == "reuse"
@@ -590,7 +590,7 @@ class TestInferenceEngineEnvVars:
     @pytest.mark.parametrize("loss_type", ["policy_loss", "score_centering"])
     def test_training_enforces_sampler_logprobs_on_workers(self, monkeypatch, loss_type):
         monkeypatch.setenv("SGLANG_RETURN_ORIGINAL_LOGPROB", "1")
-        envs = compute_inference_engine_env_vars(make_args(loss_type=loss_type))
+        envs = compute_inference_engine_env_vars(make_args(loss_type=loss_type), pp_size=1)
         assert envs["SGLANG_RETURN_ORIGINAL_LOGPROB"] == "0"
 
     def test_a_process_level_override_wins_over_the_built_in_default(self, monkeypatch):
@@ -598,32 +598,24 @@ class TestInferenceEngineEnvVars:
         monkeypatch.setenv("SGLANG_JIT_DEEPGEMM_PRECOMPILE", "true")
         monkeypatch.setenv("SGLANG_MEMORY_SAVER_CUDA_GRAPH", "false")
 
-        envs = compute_inference_engine_env_vars(make_args())
+        envs = compute_inference_engine_env_vars(make_args(), pp_size=1)
 
         assert envs["SGLANG_JIT_DEEPGEMM_PRECOMPILE"] == "true"
         assert envs["SGLANG_MEMORY_SAVER_CUDA_GRAPH"] == "false"
 
-    def test_the_pipeline_layer_partition_reaches_every_engine(self):
+    @pytest.mark.parametrize("pp_size, expected", [(4, "10,8,12,8"), (1, None)])
+    def test_the_pipeline_layer_partition_reaches_only_pipelined_engines(self, pp_size, expected):
         """SGLang reads the per-stage layer split only from its environment."""
-        envs = compute_inference_engine_env_vars(make_args(sglang_pp_layer_partition="10,8,12,8"))
+        envs = compute_inference_engine_env_vars(make_args(sglang_pp_layer_partition="10,8,12,8"), pp_size=pp_size)
 
-        assert envs["SGLANG_PP_LAYER_PARTITION"] == "10,8,12,8"
-
-    def test_without_a_partition_the_engine_splits_layers_evenly(self, monkeypatch):
-        monkeypatch.delenv("SGLANG_PP_LAYER_PARTITION", raising=False)
-
-        envs = compute_inference_engine_env_vars(make_args())
-
-        assert "SGLANG_PP_LAYER_PARTITION" not in envs
+        assert envs.get("SGLANG_PP_LAYER_PARTITION") == expected
 
     @pytest.mark.parametrize("pp_size, expected", [(1, "20"), (8, "160")])
     def test_the_health_check_budget_grows_with_the_pipeline_depth(self, monkeypatch, pp_size, expected):
-        """A cold health request crosses every stage, so SGLang's single-stage budget fails a deep engine."""
-        monkeypatch.delenv("SGLANG_HEALTH_CHECK_TIMEOUT", raising=False)
+        """The startup probe waits on this budget, so the launcher's environment must not change it."""
+        monkeypatch.setenv("SGLANG_HEALTH_CHECK_TIMEOUT", "600")
 
-        envs = compute_inference_engine_env_vars(
-            make_args(sglang_pp_size=pp_size, rollout_num_gpus_per_engine=pp_size)
-        )
+        envs = compute_inference_engine_env_vars(make_args(), pp_size=pp_size)
 
         assert envs["SGLANG_HEALTH_CHECK_TIMEOUT"] == expected
 
@@ -633,7 +625,7 @@ class TestInferenceEngineEnvVars:
         monkeypatch.delenv("SGLANG_MEMORY_SAVER_CUDA_GRAPH", raising=False)
         monkeypatch.delenv("SGLANG_TIMEOUT_KEEP_ALIVE", raising=False)
 
-        envs = compute_inference_engine_env_vars(make_args())
+        envs = compute_inference_engine_env_vars(make_args(), pp_size=1)
 
         assert envs["SGLANG_JIT_DEEPGEMM_PRECOMPILE"] == "false"
         assert envs["SGLANG_MEMORY_SAVER_CUDA_GRAPH"] == "true"
@@ -646,7 +638,7 @@ class TestInferenceEngineEnvVars:
 
         def _value_for(*, colocate: bool, num_gpus_per_engine: int) -> str:
             args = make_args(colocate=colocate, rollout_num_gpus_per_engine=num_gpus_per_engine)
-            return compute_inference_engine_env_vars(args)["SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2"]
+            return compute_inference_engine_env_vars(args, pp_size=1)["SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2"]
 
         assert _value_for(colocate=True, num_gpus_per_engine=2) == "0"
         assert _value_for(colocate=True, num_gpus_per_engine=1) == "1"
@@ -1142,7 +1134,7 @@ class TestEngineBaseGpuId:
 
 
 class TestEngineMetaApiKey:
-    def _meta_for(self, tmp_path, *, overrides_yaml: str = "", **args_overrides):
+    def _meta_for(self, tmp_path, *, overrides_yaml: str = "", num_gpus_per_engine: int = 1, **args_overrides):
         config_path = tmp_path / "sglang.yaml"
         config_path.write_text(
             "sglang:\n"
@@ -1150,7 +1142,7 @@ class TestEngineMetaApiKey:
             "    server_groups:\n"
             "      - worker_type: regular\n"
             "        num_gpus: 8\n"
-            "        num_gpus_per_engine: 1\n" + overrides_yaml
+            f"        num_gpus_per_engine: {num_gpus_per_engine}\n" + overrides_yaml
         )
         args = make_args(sglang_config=str(config_path), rollout_num_gpus=8, **args_overrides)
         (spec,) = specs_inference_engine(args)
@@ -1178,6 +1170,12 @@ class TestEngineMetaApiKey:
             sglang_api_key="from-args",
         )
         assert meta["sglang_api_key"] == ""
+
+    def test_a_group_pipeline_override_sets_its_cells_health_check_budget(self, tmp_path):
+        meta = self._meta_for(
+            tmp_path, num_gpus_per_engine=8, overrides_yaml="        overrides:\n          pp_size: 8\n"
+        )
+        assert meta["health_check_timeout_seconds"] == 160
 
 
 class TestTrailingPartialEngineRejection:
@@ -1572,7 +1570,7 @@ def _fake_engine_provider_factory(args, *, capability):
 class TestTheEngineEnvironment:
     def test_every_engine_is_told_to_report_its_own_env_vars(self) -> None:
         """Without the gate the engine answers /server_info with no env_vars, and the audit is empty."""
-        assert compute_inference_engine_env_vars(make_args())["SGLANG_EXPOSE_OWN_ENV_VARS"] == "1"
+        assert compute_inference_engine_env_vars(make_args(), pp_size=1)["SGLANG_EXPOSE_OWN_ENV_VARS"] == "1"
 
 
 class TestRegistrationWiring:

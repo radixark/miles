@@ -8,8 +8,7 @@ class SglangClientConfig(BaseConfig):
         Arg(
             help=(
                 "Layers per pipeline stage of each SGLang engine, comma-separated (e.g. 10,8,12,8): one entry per "
-                "--sglang-pp-size stage, summing to the model's layer count. Unset, SGLang splits the layers evenly. "
-                "The engines receive it as SGLANG_PP_LAYER_PARTITION."
+                "--sglang-pp-size stage, summing to the model's layer count. Unset, SGLang splits the layers evenly."
             )
         ),
     ] = None

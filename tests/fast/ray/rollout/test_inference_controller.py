@@ -56,6 +56,7 @@ def _make_cell_info(
             sglang_api_key=None,
             needs_offload=False,
             update_weights=True,
+            health_check_timeout_seconds=20,
         ),
     )
 
@@ -1660,6 +1661,7 @@ def _registration_snapshot(*, model_id: str = "model-a", run_uuid: str = _RUN_UU
         sglang_api_key=None,
         needs_offload=False,
         update_weights=True,
+        health_check_timeout_seconds=20,
     )
 
     cell = RegisteredCellInfo(

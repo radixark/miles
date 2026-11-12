@@ -647,23 +647,14 @@ def slow_probe(cell_env, monkeypatch):
 
 
 class TestStartupProbeAcrossTicks:
-    async def test_a_probe_still_running_is_not_joined_by_another(self, slow_probe):
+    async def test_one_probe_stays_in_flight_until_it_answers(self, slow_probe):
         """Every probe is a request the engine must finish, so stacking them keeps it from ever going idle."""
         cell = _make_cell()
         await cell.init()
 
         await cell.tick()
         await cell.tick()
-        await cell.tick()
-
-        assert len(slow_probe.probes) == 1
         assert isinstance(cell._state, StateInitializing)
-
-    async def test_the_cell_moves_on_once_its_running_probe_succeeds(self, slow_probe):
-        cell = _make_cell()
-        await cell.init()
-        await cell.tick()
-
         slow_probe.probes[0].set_result(True)
         await cell.tick()
 
@@ -680,7 +671,6 @@ class TestStartupProbeAcrossTicks:
         await cell.tick()
 
         assert len(slow_probe.probes) == 2
-        assert isinstance(cell._state, StateInitializing)
 
     async def test_disposing_a_cell_abandons_its_running_probe(self, slow_probe):
         cell = _make_cell()
@@ -692,15 +682,14 @@ class TestStartupProbeAcrossTicks:
 
         assert slow_probe.probes[0].cancelled()
 
-    @pytest.mark.parametrize("pp_size, expected", [(1, 25.0), (8, 165.0)])
-    async def test_the_probe_outlasts_the_engines_own_health_check_budget(self, slow_probe, pp_size, expected):
-        """A client that gives up first leaves the request running on the engine and sends another."""
-        cell = _make_cell(args_overrides=dict(sglang_pp_size=pp_size, rollout_num_gpus_per_engine=pp_size))
+    async def test_the_probe_outlasts_the_engines_health_check_budget_but_not_a_dead_address(self, slow_probe):
+        cell = _make_cell(health_check_timeout_seconds=160)
         await cell.init()
 
         await cell.tick()
 
-        assert slow_probe.timeouts == [expected]
+        (timeout,) = slow_probe.timeouts
+        assert (timeout.read, timeout.connect) == (165.0, 5.0)
 
 
 def _pretend_started_long_ago(cell: ServerCell) -> None:

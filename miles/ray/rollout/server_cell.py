@@ -6,10 +6,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+import httpx
 from sglang.srt.constants import GPU_MEMORY_TYPE_WEIGHTS
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient, WorkerType, probe_server_healthy
-from miles.backends.sglang_utils.sglang_engine import build_server_url, compute_health_check_timeout_seconds
+from miles.backends.sglang_utils.sglang_engine import SGLANG_DEFAULT_HEALTH_CHECK_TIMEOUT_SECONDS, build_server_url
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient
 from miles.ray.rollout.cell_state import (
     CellAddrInfo,
@@ -43,8 +44,8 @@ UNREGISTER_FROM_ROUTER_TIMEOUT = 120
 INITIALIZING_TIMEOUT_SECONDS = 1800.0
 ABORT_REQUEST_TIMEOUT_SECONDS = 30.0
 STARTUP_PROBE_WAIT_PER_TICK_SECONDS = 5.0
-# The engine answers 503 within a second of its own health-check budget; this only bounds a wedged one.
 STARTUP_PROBE_CLIENT_MARGIN_SECONDS = 5.0
+STARTUP_PROBE_CONNECT_TIMEOUT_SECONDS = 5.0
 
 
 class ServerCellMetadata(FrozenStrictBaseModel):
@@ -57,6 +58,7 @@ class ServerCellMetadata(FrozenStrictBaseModel):
     worker_name: str
     needs_offload: bool
     update_weights: bool
+    health_check_timeout_seconds: float = SGLANG_DEFAULT_HEALTH_CHECK_TIMEOUT_SECONDS
     workers_hash: str
 
 
@@ -236,14 +238,16 @@ class ServerCell:
             self._mark_serving()
 
     async def _probe_startup_health(self, addr_info: CellAddrInfo) -> bool:
-        # Each /health_generate is a real request on the engine, so one stays in flight across ticks
-        # instead of a new one being stacked on a pass that is still running.
+        # Each /health_generate is a request the engine must finish, so only one is in flight at a time.
         if self._startup_probe is None:
             self._startup_probe = asyncio.create_task(
                 probe_server_healthy(
                     server_url=addr_info.server_url,
                     api_key=self.meta.sglang_api_key,
-                    timeout=compute_health_check_timeout_seconds(self.args) + STARTUP_PROBE_CLIENT_MARGIN_SECONDS,
+                    timeout=httpx.Timeout(
+                        self.meta.health_check_timeout_seconds + STARTUP_PROBE_CLIENT_MARGIN_SECONDS,
+                        connect=STARTUP_PROBE_CONNECT_TIMEOUT_SECONDS,
+                    ),
                 )
             )
         done, _ = await asyncio.wait({self._startup_probe}, timeout=STARTUP_PROBE_WAIT_PER_TICK_SECONDS)

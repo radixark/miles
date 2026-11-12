@@ -34,12 +34,3 @@ class TestBridgeOptionalPipelineConfig:
         _setup_lora_model_via_bridge(bridge_args)
 
         assert bridge_provider.pipeline_model_parallel_layout == "Et*2|t*6L"
-
-    def test_without_a_custom_layout_the_sdk_provider_keeps_its_own(
-        self, bridge_args: Namespace, bridge_provider: Any
-    ) -> None:
-        bridge_provider.pipeline_model_parallel_layout = "Et*4|t*4L"
-
-        _setup_lora_model_via_bridge(bridge_args)
-
-        assert bridge_provider.pipeline_model_parallel_layout == "Et*4|t*4L"

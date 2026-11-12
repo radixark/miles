@@ -7,7 +7,6 @@ from unittest.mock import patch
 
 
 import pytest
-from tests.fast.backends.sglang_utils.conftest import tiny_model_path
 
 pytest.importorskip("sglang")
 
@@ -137,49 +136,3 @@ def test_rollout_kv_cache_dtype_defaults_to_the_platform_choice(
     validate_args(args)
 
     assert args.sglang_kv_cache_dtype == expected
-
-
-class TestPipelinedEngineArgs:
-    @staticmethod
-    def _validated(argv: list[str], *, rollout_num_gpus_per_engine: int):
-        args = _parse_sglang_args(argv)
-        args.hf_checkpoint = str(tiny_model_path())  # 2 layers
-        args.loss_type = None
-        args.rollout_num_gpus_per_engine = rollout_num_gpus_per_engine
-        args.true_on_policy_mode = False
-        args.recompute_logprobs_via_prefill = False
-        args.use_session_server = False
-        args.sglang_router_policy = None
-        args.sglang_router_ip = None
-        validate_args(args)
-        return args
-
-    def test_the_recorded_sglang_tp_size_is_per_pipeline_stage(self):
-        args = self._validated(["--sglang-pp-size", "8"], rollout_num_gpus_per_engine=64)
-
-        assert args.sglang_tp_size == 8
-
-    def test_a_partition_with_one_entry_per_stage_summing_to_the_layer_count_is_accepted(self):
-        args = self._validated(
-            ["--sglang-pp-size", "2", "--sglang-pp-layer-partition", "1,1"], rollout_num_gpus_per_engine=16
-        )
-
-        assert args.sglang_pp_layer_partition == "1,1"
-
-    def test_a_partition_with_the_wrong_number_of_stages_is_refused(self):
-        with pytest.raises(AssertionError, match="3 stages.*--sglang-pp-size 2"):
-            self._validated(
-                ["--sglang-pp-size", "2", "--sglang-pp-layer-partition", "1,1,0"], rollout_num_gpus_per_engine=16
-            )
-
-    def test_a_partition_that_does_not_cover_every_layer_is_refused(self):
-        with pytest.raises(AssertionError, match="3 layers.*has 2"):
-            self._validated(
-                ["--sglang-pp-size", "2", "--sglang-pp-layer-partition", "2,1"], rollout_num_gpus_per_engine=16
-            )
-
-    def test_a_partition_that_is_not_a_list_of_layer_counts_is_refused(self):
-        with pytest.raises(ValueError, match="comma-separated layer counts"):
-            self._validated(
-                ["--sglang-pp-size", "2", "--sglang-pp-layer-partition", "1;1"], rollout_num_gpus_per_engine=16
-            )

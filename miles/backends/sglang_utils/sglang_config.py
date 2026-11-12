@@ -19,6 +19,7 @@ from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.backends.sglang_utils.sglang_scaling_config import ServerGroupScalingConfig, SglangScalingConfig
 from miles.utils.args.configs.sglang_client import SglangClientConfig
 from miles.utils.file_arg_utils import resolve_file_arg
+from miles.utils.hf_utils.config import load_hf_config
 from miles.utils.lora.utils import is_multi_lora_enabled
 from miles.utils.output_store.config import SGLANG_OUTPUT_STORE_FIELDS
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
@@ -200,6 +201,8 @@ class ServerGroupConfig(FrozenStrictBaseModel):
             f"{num_gpus_per_engine} GPUs per engine do not split into pp_size {pp_size} pipeline stages; "
             f"each stage needs the same number of GPUs"
         )
+        if args.sglang_pp_layer_partition is not None and pp_size > 1:
+            _validate_pp_layer_partition(args.sglang_pp_layer_partition, pp_size, overrides["model_path"])
 
         config = cls(
             worker_type=raw.worker_type,
@@ -214,6 +217,17 @@ class ServerGroupConfig(FrozenStrictBaseModel):
         offset_cursor.gpu += raw.num_gpus
         offset_cursor.engine += raw.num_gpus // min(num_gpus_per_engine, args.num_gpus_per_node)
         return config, scaling
+
+
+def _validate_pp_layer_partition(partition: str, pp_size: int, model_path: str) -> None:
+    # SGLang gives the one partition to every pipelined engine and checks it only when loading the model.
+    stage_layers = [int(layers) for layers in partition.split(",")]
+    num_layers = load_hf_config(model_path).get_text_config().num_hidden_layers
+    if len(stage_layers) != pp_size or min(stage_layers) < 1 or sum(stage_layers) != num_layers:
+        raise ValueError(
+            f"--sglang-pp-layer-partition {partition} must give each of the {pp_size} pipeline stages a positive "
+            f"layer count, {num_layers} in total for {model_path}"
+        )
 
 
 class ModelConfig(FrozenStrictBaseModel):
@@ -468,12 +482,12 @@ def _eval_sglang_overrides(args) -> dict:
         "enable_return_indexer_topk": False,
     }
     if args.eval_num_gpus_per_engine != args.rollout_num_gpus_per_engine:
-        # Inheriting these across a different GPU count gives an engine SGLang refuses to boot.
+        # Inheriting these across a different tp gives an engine SGLang refuses to boot.
         tp_coupled = ("dp_size", "pp_size", "ep_size", "attn_cp_size")
         overrides |= dict.fromkeys(tp_coupled, 1)
         logger.info(
-            f"Eval engines have {args.eval_num_gpus_per_engine} GPUs, rollout engines "
-            f"{args.rollout_num_gpus_per_engine}; {', '.join(tp_coupled)} default to 1. Override with --eval-sglang-*."
+            f"Eval tp={args.eval_num_gpus_per_engine} != rollout tp={args.rollout_num_gpus_per_engine}; "
+            f"{', '.join(tp_coupled)} default to 1. Override with --eval-sglang-*."
         )
     return overrides | collect_eval_sglang_overrides(args)
 

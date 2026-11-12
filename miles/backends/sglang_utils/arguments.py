@@ -4,7 +4,6 @@ from sglang.srt.server_args import ServerArgs
 
 from miles.platforms import current_platform
 from miles.utils.args.utils import config_values
-from miles.utils.hf_utils.config import load_hf_config
 from miles.utils.http_utils import wrap_ipv6
 from miles.utils.output_store.config import SGLANG_OUTPUT_STORE_FIELDS
 
@@ -17,8 +16,8 @@ _SKIPPED_SERVER_ARGS = [
     # memory
     "enable_memory_saver",
     # distributed
-    # tp_size stays exposed: scripts pass --sglang-tp-size, but the value is overridden from
-    # --rollout-num-gpus-per-engine and --sglang-pp-size in validate_args below.
+    # tp_size stays exposed: scripts pass --sglang-tp-size, but the value is
+    # overridden from --rollout-num-gpus-per-engine in validate_args below.
     "port",
     "nnodes",
     "node_rank",
@@ -133,12 +132,6 @@ def add_sglang_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentPa
 
 def validate_args(args):
     args.sglang_tp_size = args.rollout_num_gpus_per_engine // args.sglang_pp_size
-    if args.sglang_pp_layer_partition is not None:
-        _validate_pp_layer_partition(
-            args.sglang_pp_layer_partition,
-            pp_size=args.sglang_pp_size,
-            num_layers=load_hf_config(args.hf_checkpoint).get_text_config().num_hidden_layers,
-        )
 
     # "auto" given explicitly counts as unset: on TPU it would mean fp8, which needs an explicit fp8_e4m3
     if args.sglang_kv_cache_dtype == "auto" and current_platform.rollout_kv_cache_dtype is not None:
@@ -176,18 +169,3 @@ def validate_args(args):
 
     if args.sglang_router_ip:
         args.sglang_router_ip = wrap_ipv6(args.sglang_router_ip)
-
-
-def _validate_pp_layer_partition(partition: str, *, pp_size: int, num_layers: int) -> None:
-    try:
-        stage_layers = [int(layers) for layers in partition.split(",")]
-    except ValueError:
-        raise ValueError(
-            f"--sglang-pp-layer-partition must be comma-separated layer counts, got {partition!r}"
-        ) from None
-    assert (
-        len(stage_layers) == pp_size
-    ), f"--sglang-pp-layer-partition {partition} has {len(stage_layers)} stages, --sglang-pp-size {pp_size}"
-    assert (
-        sum(stage_layers) == num_layers
-    ), f"--sglang-pp-layer-partition {partition} covers {sum(stage_layers)} layers, the model has {num_layers}"

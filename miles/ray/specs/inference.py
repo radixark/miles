@@ -328,7 +328,9 @@ class InferenceEngineSpec(BaseCommandSpec):
         )
 
     def env_var(self, ctx: WorkerLaunchContext) -> dict[str, str]:
-        return compute_inference_engine_env_vars(ctx.args)
+        return compute_inference_engine_env_vars(
+            ctx.args, pp_size=ctx.args.sglang.get_value("pp_size", group=self.server_group_config)
+        )
 
     def launch_command(self, ctx: LaunchCommandContext) -> str:
         args = ctx.args
@@ -437,12 +439,15 @@ def _compute_spec_inference_engine(
                 sglang_api_key=args.sglang.get_value("api_key", group=server_group_config),
                 needs_offload=server_group_config.needs_offload,
                 update_weights=model_cfg.update_weights,
+                health_check_timeout_seconds=compute_health_check_timeout_seconds(
+                    pp_size=args.sglang.get_value("pp_size", group=server_group_config)
+                ),
             ),
         ),
     )
 
 
-def compute_inference_engine_env_vars(args) -> dict[str, str]:
+def compute_inference_engine_env_vars(args, *, pp_size: int) -> dict[str, str]:
     env_vars = {name: "1" for name in NOSET_VISIBLE_DEVICES_ENV_VARS_LIST} | {
         key: os.environ.get(key, default_val)
         for key, default_val in {
@@ -458,7 +463,6 @@ def compute_inference_engine_env_vars(args) -> dict[str, str]:
             "SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_FALLBACK_VARIANT": "true",
             "SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION": "false",
             "SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE": "false",
-            "SGLANG_HEALTH_CHECK_TIMEOUT": str(compute_health_check_timeout_seconds(args)),
             # Keep server-side idle closure well after the HTTP client's default 5s expiry. Engines Miles does not
             # launch (--rollout-external-engine-addrs, custom providers) keep SGLang's 5s and can still race the
             # client: https://github.com/radixark/miles/pull/3982
@@ -466,7 +470,9 @@ def compute_inference_engine_env_vars(args) -> dict[str, str]:
             "SGLANG_EXPOSE_OWN_ENV_VARS": "1",
         }.items()
     }
-    if args.sglang_pp_layer_partition is not None:
+    # Not taken from the launcher's environment: the cell's startup probe waits on this same budget.
+    env_vars["SGLANG_HEALTH_CHECK_TIMEOUT"] = str(compute_health_check_timeout_seconds(pp_size=pp_size))
+    if args.sglang_pp_layer_partition is not None and pp_size > 1:
         env_vars["SGLANG_PP_LAYER_PARTITION"] = args.sglang_pp_layer_partition
     if args.dumper_enable or args.dumper_inference:
         from miles.utils import dumper_utils

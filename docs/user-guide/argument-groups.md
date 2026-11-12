@@ -182,12 +182,13 @@ one pipeline stage per node, keeping expert parallelism inside the node:
 ```
 
 `--sglang-pp-layer-partition` gives the layers of each stage, one entry per stage, summing
-to the model's layer count; miles checks both at startup and passes it to every engine as
-`SGLANG_PP_LAYER_PARTITION`. Unset, SGLang splits the layers evenly.
+to the model's layer count. Every pipelined engine receives it as
+`SGLANG_PP_LAYER_PARTITION`, so miles refuses at startup any server group whose `pp_size`
+or model it does not fit. Unset, SGLang splits the layers evenly.
 
-A cold health request crosses every pipeline stage, so miles gives the engine's
-`/health_generate` 20 seconds per stage (`SGLANG_HEALTH_CHECK_TIMEOUT`) instead of SGLang's
-20 in total. Set the variable in the launcher's environment to override it.
+A cold health request crosses every pipeline stage, so miles sets each engine's
+`SGLANG_HEALTH_CHECK_TIMEOUT` (the `/health_generate` budget) to SGLang's default times the
+engine's `pp_size`, and waits on that budget while the engine starts.
 
 <a id="misc-args"></a>
 ## `misc_args` - GPU layout and everything else

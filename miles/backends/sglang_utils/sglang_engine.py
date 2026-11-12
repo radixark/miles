@@ -21,11 +21,13 @@ from miles.utils.workers.argv_utils import _record_field_names
 
 logger = logging.getLogger(__name__)
 
-HEALTH_CHECK_TIMEOUT_SECONDS_PER_PP_STAGE = 20
+# SGLang's default SGLANG_HEALTH_CHECK_TIMEOUT: the /health_generate budget of a single-stage engine.
+SGLANG_DEFAULT_HEALTH_CHECK_TIMEOUT_SECONDS = 20
 
 
-def compute_health_check_timeout_seconds(args) -> int:
-    return HEALTH_CHECK_TIMEOUT_SECONDS_PER_PP_STAGE * args.sglang.base_args["pp_size"]
+def compute_health_check_timeout_seconds(*, pp_size: int) -> int:
+    # A cold health request crosses every pipeline stage.
+    return SGLANG_DEFAULT_HEALTH_CHECK_TIMEOUT_SECONDS * pp_size
 
 
 def format_v6_uri(addr: str | None) -> str | None:
