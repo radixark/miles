@@ -131,6 +131,7 @@ def server_args(shared_media_dir: Path, **extra) -> dict[str, Any]:
     return {
         "miles_router_timeout": 30,
         "hf_checkpoint": CHECKPOINT,
+        "allow_stop_token_replace": False,
         "chat_template_path": None,
         "apply_chat_template_kwargs": None,
         "tito_model": "qwen3_vl",
