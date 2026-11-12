@@ -1069,7 +1069,7 @@ def _check_multimodal_token_space_processing_args(args, *, sglang: SglangConfig)
             "space; set --sglang-enable-token-space-processor (a frozen reward or reference engine group that "
             "serves its own requests may override it off)."
         )
-    if _compute_rollout_external(args):
+    if args.rollout_external:
         raise ValueError(
             "--multimodal-token-space-processing builds the trainer's processor from the server args Miles "
             "launches its engines with, which external engines do not share."
