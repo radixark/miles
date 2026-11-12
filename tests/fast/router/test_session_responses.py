@@ -123,7 +123,9 @@ class TestResponsesRoute:
 
     def test_string_input_and_stream_end_with_response_completed(self, env):
         session_id = _create_session(env.url)
-        resp = _post(env.url, session_id, {"model": "m", "input": "hello", "stream": True})
+        resp = _post(
+            env.url, session_id, {"model": "m", "input": "hello", "stream": True, "text": {"format": {"type": "text"}}}
+        )
 
         assert resp.status_code == 200
         assert resp.headers["content-type"].startswith("text/event-stream")
@@ -220,6 +222,8 @@ class TestResponsesRoute:
         "payload",
         [
             {"input": "hello", "previous_response_id": "resp_1"},
+            {"input": "hello", "text": {"format": {"type": "json_schema", "name": "x", "schema": {}, "strict": True}}},
+            {"input": "hello", "text": {"format": {"type": "json_object"}}},
             {"input": [{"type": "item_reference", "id": "x"}]},
             {"input": [{"type": "message", "role": "user", "content": [{"type": "input_image", "image_url": "u"}]}]},
         ],
