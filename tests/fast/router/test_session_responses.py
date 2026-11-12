@@ -1,3 +1,4 @@
+import copy
 import json
 import uuid
 from contextlib import contextmanager
@@ -135,14 +136,36 @@ class TestResponsesRoute:
             "response.created",
             "response.in_progress",
             "response.output_item.added",
+            "response.content_part.added",
             "response.output_text.delta",
             "response.output_text.done",
+            "response.content_part.done",
             "response.output_item.done",
             "response.completed",
         ]
         assert [event["sequence_number"] for event in events] == list(range(len(events)))
         assert events[-1]["response"]["output"][0]["content"][0]["text"] == "responses-echo"
         assert _records(env.url, session_id)[0]["request"]["messages"] == [{"role": "user", "content": "hello"}]
+
+    @pytest.mark.parametrize("prompt", ["hello", "please use the weather tool"])
+    def test_stream_deltas_accumulate_to_the_final_output(self, env, prompt):
+        session_id = _create_session(env.url)
+        resp = _post(env.url, session_id, {"model": "m", "input": prompt, "tools": [_WEATHER_TOOL], "stream": True})
+
+        events = _sse_events(resp.text)
+        items = {}
+        for event in events:
+            index = event.get("output_index")
+            if event["type"] == "response.output_item.added":
+                items[index] = copy.deepcopy(event["item"])
+            elif event["type"] == "response.content_part.added":
+                items[index]["content"].append(copy.deepcopy(event["part"]))
+            elif event["type"] == "response.output_text.delta":
+                items[index]["content"][event["content_index"]]["text"] += event["delta"]
+            elif event["type"] == "response.function_call_arguments.delta":
+                items[index]["arguments"] += event["delta"]
+        final = events[-1]["response"]["output"]
+        assert [items[index] | {"status": item["status"]} for index, item in enumerate(final)] == final
 
     def test_function_call_round_trip_reuses_prefix_under_strict_matcher(self, env):
         session_id = _create_session(env.url)
