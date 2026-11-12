@@ -562,7 +562,19 @@ def test_a_kwarg_the_protocol_cannot_carry_fails_before_the_call(serve):
         _on_worker(serve(), stubs.report_pid, payload=object())
 
 
-@pytest.mark.parametrize("worker", [None, "", "not_a_url.start"])
+@pytest.mark.parametrize(
+    "worker",
+    [
+        None,
+        "",
+        "not_a_url.start",
+        "http://worker:abc",
+        "http://worker:99999",
+        "http://worker:0",
+        "http://:11100",
+        "ftp://worker",
+    ],
+)
 def test_worker_mode_without_a_worker_url_is_refused(worker):
     with pytest.raises(NonRetryableError, match="--custom-agent-function-worker"):
         asyncio.run(call_agent_function(stubs.report_pid, mode="worker", worker=worker))
