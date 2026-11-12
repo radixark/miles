@@ -11,6 +11,7 @@ from miles.utils.media_refs import collect_media_refs
 from miles.utils.processing_utils import load_processor
 
 COUNTED_TITO_MODELS = frozenset({TITOTokenizerType.QWEN3_VL.value, TITOTokenizerType.QWEN38_SMALL.value})
+COUNTED_IMAGE_SETTINGS = frozenset({"min_pixels", "max_pixels", "size"})
 
 
 def count_kwargs(image_kwargs: dict[str, Any]) -> dict[str, Any]:
@@ -45,6 +46,8 @@ class ImageTokenCounter:
 
 def build_image_token_counter(config: SessionServerConfig, tokenizer: Any) -> ImageTokenCounter | None:
     if not config.multimodal_token_space_processing or config.tito_model not in COUNTED_TITO_MODELS:
+        return None
+    if not set(config.image_process_config) <= COUNTED_IMAGE_SETTINGS:
         return None
     processor = load_processor(config.hf_checkpoint, trust_remote_code=True)
     if processor is None:

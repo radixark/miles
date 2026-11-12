@@ -345,6 +345,19 @@ class TestEngineExpansionCheck:
             response = chat(env, session_id, second)
             assert response.status_code == 200, response.content
 
+    def test_image_settings_the_count_cannot_follow_keep_the_prefix_check(self, vlm, tmp_path):
+        image = {"do_resize": False}
+        square = png(224, 224, (90, 30, 10))
+        shot = tmp_path / "square.png"
+        shot.write_bytes(square)
+        engine = TokenSpaceChatBackend(vlm, image_kwargs=image)
+        assert engine._count(str(shot), 0) != TokenSpaceChatBackend(vlm)._count(str(shot), 0)
+        sglang = make_sglang_config(speculative_algorithm=None, mm_process_config={"image": image})
+        with session_server(vlm, tmp_path, engine_image_kwargs=image, sglang=sglang) as env:
+            session_id = _create_session(env.url)
+            response = chat(env, session_id, [user_turn(square, "one")])
+            assert response.status_code == 200, response.content
+
     def test_an_engine_that_returns_no_prompt_fails_the_counted_check(self, vlm, tmp_path):
         with session_server(vlm, tmp_path, return_prompt=False) as env:
             session_id = _create_session(env.url)
