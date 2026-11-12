@@ -27,8 +27,9 @@ from miles.utils.workers.argv_utils import parse_config_argv
 logger = logging.getLogger(__name__)
 
 # Request headers that must not be forwarded verbatim to the upstream backend. A forwarded
-# "Expect: 100-continue" makes aiohttp wait for a 100 response before sending the body.
-_DROP_REQUEST_HEADERS = ("content-length", "transfer-encoding", "host", "expect")
+# "Expect: 100-continue" makes aiohttp wait for a 100 response before sending the body. This server
+# decodes every reply, so aiohttp negotiates the backend's Accept-Encoding, not the client.
+_DROP_REQUEST_HEADERS = ("content-length", "transfer-encoding", "host", "expect", "accept-encoding")
 
 
 class _TimedBytesPayload(aiohttp.BytesPayload):

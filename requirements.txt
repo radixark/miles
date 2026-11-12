@@ -1,6 +1,7 @@
 accelerate
 aiohttp  # session-server backend proxy; also an sglang dependency
 backports.strenum; python_version < "3.11"
+backports.zstd; python_version < "3.14"  # aiohttp's zstd decoder, for the session server's SGLang replies
 blake3==1.0.9  # disk-delta weight sync (checksum)
 blobfile
 datasets
