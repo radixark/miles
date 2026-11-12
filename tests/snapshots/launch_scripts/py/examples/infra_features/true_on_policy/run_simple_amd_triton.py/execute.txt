@@ -58,7 +58,8 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --eval-max-response-len 1024
   --eval-top-k 1 
   --update-weight-buffer-size 536870912 
-  --ci-test 
+  --ci-test
+  --no-enable-sample-ownership-checker 
   --actor-num-nodes 1
   --actor-num-gpus-per-node 1
   --colocate
@@ -71,3 +72,4 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --attn-implementation triton
   --deterministic-mode
   --true-on-policy-mode  
+  --deploy-component all
