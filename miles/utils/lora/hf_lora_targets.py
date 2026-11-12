@@ -254,6 +254,13 @@ def _qwen3_5_moe_targets(config):
     return _hybrid_attention_targets(config, _GDN_35), mlp
 
 
+def _inkling2_targets(config):
+    # TML's Inkling schema: no adapter on attn_sink_proj; every layer is MoE without shared experts.
+    assert config["n_shared_experts"] == 0, config["n_shared_experts"]
+    attention = _prefix_paths("attn", "wq_du", "wk_dv", "wv_dv", "wr_du", "gate_attn", "wo_ud")
+    return attention, _PACKED_EXPERTS
+
+
 def _inkling_targets(config):
     attention = _prefix_paths("self_attn", "q_proj", "k_proj", "v_proj", "r_proj", "o_proj")
     # Older Inkling configs encode leading dense layers instead of mlp_layer_types.
@@ -354,6 +361,20 @@ _HF_LORA_MODELS = {
     "inkling_mm_model": _HfLoraModelSpec(
         _inkling_targets,
         layer_prefix="model.language_model.layers.*",
+        unwrap_text_config=True,
+        default_train_unembed=True,
+    ),
+    "inkling2": _HfLoraModelSpec(
+        _inkling2_targets,
+        layer_prefix="model.llm.layers.*",
+        unembed="model.llm.unembed",
+        unwrap_text_config=True,
+        default_train_unembed=True,
+    ),
+    "inkling2_mm_model": _HfLoraModelSpec(
+        _inkling2_targets,
+        layer_prefix="model.llm.layers.*",
+        unembed="model.llm.unembed",
         unwrap_text_config=True,
         default_train_unembed=True,
     ),

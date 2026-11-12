@@ -6,6 +6,9 @@ import os
 from typing import Any
 
 _MODEL_TYPES = ("inkling_mm_model", "inkling_mm_model")
+# Inkling2 keeps Inkling's message format but not its multimodal processor; older checkpoints
+# declare inkling2_mm_model.
+_INKLING2_MODEL_TYPES = ("inkling2", "inkling2_mm_model")
 
 
 @functools.cache
@@ -31,8 +34,18 @@ def is_inkling(tokenizer: Any) -> bool:
     )  # config-access-exempt: custom tokenizers may omit a pretrained model path
 
 
+def is_inkling2(tokenizer: Any) -> bool:
+    return (
+        _read_model_type(getattr(tokenizer, "name_or_path", "")) in _INKLING2_MODEL_TYPES
+    )  # config-access-exempt: custom tokenizers may omit a pretrained model path
+
+
 def is_inkling_checkpoint(name_or_path: str) -> bool:
     return _read_model_type(name_or_path) in _MODEL_TYPES
+
+
+def is_inkling2_checkpoint(name_or_path: str) -> bool:
+    return _read_model_type(name_or_path) in _INKLING2_MODEL_TYPES
 
 
 @functools.cache

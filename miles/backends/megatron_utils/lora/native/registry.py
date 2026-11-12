@@ -14,6 +14,7 @@ from miles.backends.megatron_utils.lora.native.spec.attention import (
     Glm5NextAttentionSpec,
     GQAAttentionSpec,
     HybridGQAGDNAttentionSpec,
+    Inkling2AttentionSpec,
     InklingAttentionSpec,
     KimiK3AttentionSpec,
     MLAAttentionSpec,
@@ -21,7 +22,7 @@ from miles.backends.megatron_utils.lora.native.spec.attention import (
 from miles.backends.megatron_utils.lora.native.spec.base import FixedTargets, LoRAArchSpec
 from miles.backends.megatron_utils.lora.native.spec.gdn import Qwen35GDNSpec
 from miles.backends.megatron_utils.lora.native.spec.layout import AttentionSpecBase
-from miles.backends.megatron_utils.lora.native.spec.lm_head import InklingLMHeadSpec, LMHeadSpec
+from miles.backends.megatron_utils.lora.native.spec.lm_head import Inkling2LMHeadSpec, InklingLMHeadSpec, LMHeadSpec
 from miles.backends.megatron_utils.lora.native.spec.mlp import (
     DeepSeekV4SharedExpertSpec,
     FusedGateUpMLPSpec,
@@ -80,6 +81,28 @@ def _inkling_arch_spec() -> LoRAArchSpec:
     )
 
 
+def _inkling2_arch_spec() -> LoRAArchSpec:
+    """TML's Inkling schema: attention, shared-outer routed experts and the unembed."""
+    attention = Inkling2AttentionSpec()
+    return LoRAArchSpec(
+        name=attention.name,
+        attention=attention,
+        mlp=FusedGateUpMLPSpec(),
+        experts=GroupedExpertsSpec(),
+        lm_head=Inkling2LMHeadSpec(),
+        declared_naming=DeclaredNaming(
+            "model.llm.layers.", {"self_attention.": "attn.", "mlp.experts.": "mlp.experts."}
+        ),
+        # Explicit targets: SGLang resolves "all-linear" to every supported module plus embed.
+        fixed_targets=FixedTargets(serving=_inkling2_serving_targets, select_all=True),
+    )
+
+
+def _inkling2_serving_targets(targets: list[str]) -> list[str]:
+    """SGLang serves the checkpoint's unembed as its lm_head module."""
+    return ["lm_head" if target == "model.llm.unembed" else target for target in targets]
+
+
 def _kimi_k3_arch_spec() -> LoRAArchSpec:
     attention = KimiK3AttentionSpec()
     return LoRAArchSpec(
@@ -123,6 +146,7 @@ def _build_model_specs() -> dict[str, LoRAArchSpec]:
         HybridGQAGDNAttentionSpec(), has_linear_attention_layers=True, linear_attention=Qwen35GDNSpec()
     )
     inkling = _inkling_arch_spec()
+    inkling2 = _inkling2_arch_spec()
     return {
         "llama": gqa,
         "qwen2": gqa,
@@ -150,6 +174,8 @@ def _build_model_specs() -> dict[str, LoRAArchSpec]:
         "inkling_text": inkling,
         "inkling_model": inkling,
         "inkling_mm_model": inkling,
+        "inkling2": inkling2,
+        "inkling2_mm_model": inkling2,
     }
 
 

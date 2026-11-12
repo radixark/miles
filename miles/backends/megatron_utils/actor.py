@@ -17,6 +17,7 @@ from miles.backends.megatron_utils.lora.native.checkpoint import NativeAdapterSl
 from miles.backends.megatron_utils.lora.utils import is_lora_enabled, lora_rollout_enabled
 from miles.backends.megatron_utils.megatron_config import has_megatron_checkpoint
 from miles.backends.megatron_utils.megatron_to_hf import converter_model_name
+from miles.backends.megatron_utils.megatron_to_hf.inkling2 import inkling2_quantization_config
 from miles.backends.megatron_utils.rematerialize_utils import build_main_cast_context
 from miles.backends.megatron_utils.update_weight.hf_weight_iterator import get_hf_weight_iterator
 from miles.backends.training_utils.data.rollout import (
@@ -319,6 +320,9 @@ class MegatronTrainRayActor(TrainRayActor):
         quantization_config = getattr(
             self.hf_config, "quantization_config", None
         )  # config-access-exempt: model-family schemas differ in optional quantization_config metadata
+        if "inkling2" in model_name:
+            # The engine serves the experts in the checkpoint's precision (hf_quant_config.json).
+            quantization_config = inkling2_quantization_config(args.hf_checkpoint)
         self.weight_updater = None
         self.snapshot_publisher = None
 
