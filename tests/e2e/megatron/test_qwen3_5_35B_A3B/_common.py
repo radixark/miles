@@ -252,7 +252,8 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
     if case.fully_async:
         misc_args += "--fully-async "
     if case.use_output_store:
-        misc_args += command_utils.get_output_store_args()
+        # Replay for training, buffered and in-flight batches outgrows the default 2 GiB.
+        misc_args += command_utils.get_output_store_args(global_segment_size="8gb" if case.fully_async else None)
     if case.update_weight_transfer_mode is not None:
         misc_args += f"--update-weight-transfer-mode {case.update_weight_transfer_mode} "
     misc_args += f"--moe-token-dispatcher-type {case.megatron_dispatcher} "
