@@ -3,8 +3,9 @@
 With the output store, SGLang writes a training response's replay arrays (routed experts, indexer
 top-k, sampling mask) as one object and returns its ref; the rollout never reads an object. Every
 event on a sample edits its ``StorePlan`` only: which rows of which objects each field takes, and
-where forced rows go. The trainer reads the objects once and has the plan materialize the training
-columns of the inline path.
+where forced rows go. The trainer reads the sampling mask's objects once and has the plan materialize
+its training columns; a forward field's column is its segments, whose rows each trainer rank reads
+per micro batch (``ForwardSegments.range_reads``).
 
 Three things, and nothing else:
 
@@ -23,8 +24,10 @@ rows like the inline path: forward fields ``len(tokens) - 1``, the mask ``respon
 
 from __future__ import annotations
 
+import bisect
+import itertools
 import json
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple
 
@@ -62,6 +65,15 @@ class Seg(NamedTuple):
     ref: StoreRef | None
     start: int
     end: int
+
+
+class RowRead(NamedTuple):
+    """Bytes ``[src_offset, src_offset + nbytes)`` of a field of the object ``ref`` land at ``dst_offset``."""
+
+    ref: StoreRef
+    src_offset: int
+    nbytes: int
+    dst_offset: int
 
 
 # ============================== one field's segments ==============================
@@ -162,6 +174,9 @@ class Segments:
 class ForwardSegments(Segments):
     """A forward output: a row per sequence position but the last.
 
+    Its training column is the segments themselves: each trainer rank reads only its own rows, per micro
+    batch, with ``range_reads``.
+
     The request's start position (``start_key``) alone decides how a response's rows combine
     with the earlier ones; ``from_ref`` reads it once:
 
@@ -216,13 +231,79 @@ class ForwardSegments(Segments):
         support_topk: int,
         indexer_streams: int | None,
     ) -> dict[str, Any]:
-        (name,) = self.stored
-        for key in dict.fromkeys(seg.ref.key for seg in self.segs):
-            self.check(objects[key][name], indexer_streams=indexer_streams)
-        return {self.column: np.concatenate([objects[seg.ref.key][name][seg.start : seg.end] for seg in self.segs])}
+        self.row_format(indexer_streams=indexer_streams)
+        return {self.column: self}
 
-    def check(self, rows: np.ndarray, *, indexer_streams: int | None) -> None:
-        """The field's check of every row one response stored."""
+    def needed(self, *, support_topk: int) -> tuple[str, ...]:
+        # Read per micro batch by range_reads, never whole.
+        return ()
+
+    def row_format(self, *, indexer_streams: int | None = None) -> tuple[np.dtype, tuple[int, ...]]:
+        """The dtype and shape of one stored row, the same in every object the segments use."""
+        (name,) = self.stored
+        specs = {
+            (spec.dtype, tuple(spec.shape[1:])): spec
+            for seg in self.segs
+            if seg.ref is not None
+            for spec in seg.ref.fields
+            if spec.name == name
+        }
+        if len(specs) != 1:
+            raise StorePlanError(
+                f"{name} has rows of {len(specs)} formats in its objects: {sorted(specs)}; expected one"
+            )
+        ((dtype, row_shape), spec) = next(iter(specs.items()))
+        self.check_spec(spec, indexer_streams=indexer_streams)
+        return np.dtype(dtype), row_shape
+
+    def range_reads(
+        self, ranges: Sequence[tuple[int, int]], *, dst_offset: int
+    ) -> tuple[list[RowRead], list[tuple[int, int]]]:
+        """Reads of the rows at a rank's local positions, and the local rows to pad.
+
+        ``ranges`` are the rank's positions of this sample in local order (``CPLayout.local_ranges``).
+        Local row k lands at ``dst_offset + k * row_bytes``. Position p has row p for p < ``num_rows()``;
+        the local rows of later positions come back as ``[start, end)`` spans the caller pads.
+        """
+        dtype, row_shape = self.row_format()
+        row_bytes = dtype.itemsize * int(np.prod(row_shape, dtype=np.int64))
+        # Field row where each segment starts.
+        starts = list(itertools.accumulate((seg.end - seg.start for seg in self.segs), initial=0))
+        num_rows = starts[-1]
+        reads: list[list] = []
+        pads = []
+        local = 0
+        for a, b in ranges:
+            row = a
+            while row < min(b, num_rows):
+                i = bisect.bisect_right(starts, row) - 1
+                seg = self.segs[i]
+                if seg.ref is None:
+                    raise StorePlanError(f"{self.name} rows {starts[i]}-{starts[i + 1]} have no object to read")
+                count = min(b, num_rows, starts[i + 1]) - row
+                src = (seg.start + row - starts[i]) * row_bytes
+                dst = dst_offset + (local + row - a) * row_bytes
+                last = reads[-1] if reads else None
+                if (
+                    last is not None
+                    and last[0].key == seg.ref.key
+                    and last[1] + last[2] == src
+                    and last[3] + last[2] == dst
+                ):
+                    last[2] += count * row_bytes  # e.g. the two zigzag chunks of the last CP rank
+                else:
+                    reads.append([seg.ref, src, count * row_bytes, dst])
+                row += count
+            if max(a, num_rows) < b:
+                pads.append((local + max(a, num_rows) - a, local + b - a))
+            local += b - a
+        return [RowRead(*read) for read in reads], pads
+
+    def check_spec(self, spec: Any, *, indexer_streams: int | None) -> None:
+        """The field's check of a stored array's spec."""
+
+    def check_rows(self, rows: np.ndarray) -> None:
+        """The field's check of rows read from one object."""
 
 
 class RoutedExpertsSegments(ForwardSegments):
@@ -235,8 +316,8 @@ class RoutedExpertsSegments(ForwardSegments):
     column = "rollout_routed_experts"
     start_key = "routed_experts_start_len"
 
-    def check(self, rows: np.ndarray, *, indexer_streams: int | None) -> None:
-        # As on the inline path, per response: all zeros means the engine did not capture routed experts.
+    def check_rows(self, rows: np.ndarray) -> None:
+        # As on the inline path: all zeros means the engine did not capture routed experts.
         if rows.size and not rows.any():
             raise StorePlanError(
                 "routed_experts payload is all zeros: the sglang engine did not capture routed experts "
@@ -254,10 +335,10 @@ class IndexerTopkSegments(ForwardSegments):
     column = "rollout_indexer_topk"
     # No start_key: SGLang stores every indexer row of each forward, so a response replaces them all.
 
-    def check(self, rows: np.ndarray, *, indexer_streams: int | None) -> None:
-        if indexer_streams is not None and rows.shape[1] != indexer_streams:
+    def check_spec(self, spec: Any, *, indexer_streams: int | None) -> None:
+        if indexer_streams is not None and spec.shape[1] != indexer_streams:
             raise StorePlanError(
-                f"stored indexer_topk has {rows.shape[1]} streams but the model has {indexer_streams} indexer layers; "
+                f"stored indexer_topk has {spec.shape[1]} streams but the model has {indexer_streams} indexer layers; "
                 "replaying it would map streams to the wrong layers."
             )
 
@@ -506,18 +587,27 @@ class StorePlan:
         )
 
 
+def is_segments_column(column: Sequence[Any]) -> bool:
+    """Whether a forward replay column holds each sample's ``ForwardSegments`` rather than its rows.
+
+    A shard's forward columns are all from the output store or all inline.
+    """
+    return bool(column) and isinstance(column[0], ForwardSegments)
+
+
 def store_reads(plans: Iterable[StorePlan], *, support_topk: int) -> dict[str, tuple[StoreRef, list[str]]]:
     """What ``materialize`` reads for these plans, by store key: the ref, and the arrays it needs from the object.
 
     Each object and array once; ``support_topk`` as in ``Segments.materialize``. An array the ref
     lacks is still asked for, so the read, not ``materialize``, fails on it. Objects a plan owns
-    without using, such as replaced forward rows, are not read.
+    without using, such as replaced forward rows, are not read, nor are forward fields, which
+    trainer ranks read per micro batch.
     """
     reads: dict[str, tuple[StoreRef, list[str]]] = {}
     for plan in plans:
         for segments in plan.fields.values():
             needed = segments.needed(support_topk=support_topk)
-            for seg in segments.segs:
+            for seg in segments.segs if needed else ():
                 if seg.ref is None:
                     continue
                 names = reads.setdefault(seg.ref.key, (seg.ref, []))[1]
