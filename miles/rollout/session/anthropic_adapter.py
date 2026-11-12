@@ -57,6 +57,9 @@ def _parse_anthropic_request(body: bytes) -> AnthropicMessagesRequest:
     except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
         raise ValueError(f"invalid JSON body: {exc}") from exc
     if isinstance(payload, dict):
+        output_config = payload.get("output_config")
+        if isinstance(output_config, dict) and output_config.get("format") is not None:
+            raise ValueError("output_config.format is not enabled for this deployment")
         payload = {key: value for key, value in payload.items() if key not in ("thinking", "output_config")}
     try:
         return AnthropicMessagesRequest.model_validate(payload)
