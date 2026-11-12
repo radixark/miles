@@ -268,7 +268,9 @@ async def _fail(**kwargs):
 @pytest.mark.parametrize("mode", ["subproc", "inline"])
 async def test_every_mode_sends_the_call_with_its_router_scope(monkeypatch, mode):
     sample = Sample(status=Sample.Status.COMPLETED, response="done", response_length=1, tokens=[1])
-    _patch_agent(monkeypatch, _Tracer(SamplesReply(samples=[sample], session_metadata={}, empty_reason=None)))
+    _patch_agent(
+        monkeypatch, _Tracer(SamplesReply(samples=[sample], session_metadata=_session_metadata(), empty_reason=None))
+    )
     seen: dict = {}
 
     async def fake_call(fn, **kwargs):
@@ -288,7 +290,10 @@ def _running_agent_input(monkeypatch, tmp_path, mode):
     monkeypatch.setattr(dropped, "_dropped", {})
     collected = sample_owning("collected")
     collected.status = Sample.Status.COMPLETED
-    _patch_agent(monkeypatch, _Tracer(SamplesReply(samples=[collected], session_metadata={}, empty_reason=None)))
+    _patch_agent(
+        monkeypatch,
+        _Tracer(SamplesReply(samples=[collected], session_metadata=_session_metadata(), empty_reason=None)),
+    )
     monkeypatch.setattr(agentic_tool_call, "load_function", lambda path: stubs.wait_for_metadata_paths)
     generate_input = _generate_input(custom_agent_function_mode=mode, custom_agent_function_path=None)
     pid_file = tmp_path / "pid"
