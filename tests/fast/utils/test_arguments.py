@@ -4472,6 +4472,7 @@ class TestMultimodalTokenSpaceProcessingArgs:
                 "multimodal_token_space_processing": True,
                 "rollout_external_engine_addrs": None,
                 "custom_inference_engine_provider_path": None,
+                "rollout_external": False,
                 "trainer_mm_processor_worker_num": 1,
                 "trainer_mm_io_worker_num": 0,
                 "hf_checkpoint": "/ckpt",
@@ -4496,6 +4497,7 @@ class TestMultimodalTokenSpaceProcessingArgs:
             multimodal_token_space_processing=True,
             rollout_external_engine_addrs=external_engines,
             custom_inference_engine_provider_path=None,
+            rollout_external=external_engines is not None,
             trainer_mm_processor_worker_num=1,
             trainer_mm_io_worker_num=0,
             hf_checkpoint="/ckpt",
@@ -4513,6 +4515,7 @@ class TestMultimodalTokenSpaceProcessingArgs:
             multimodal_token_space_processing=True,
             rollout_external_engine_addrs=None,
             custom_inference_engine_provider_path=None,
+            rollout_external=False,
             hf_checkpoint="/ckpt",
             train_backend=train_backend,
         )
@@ -4525,6 +4528,7 @@ class TestMultimodalTokenSpaceProcessingArgs:
             multimodal_token_space_processing=True,
             rollout_external_engine_addrs=None,
             custom_inference_engine_provider_path=None,
+            rollout_external=False,
             trainer_mm_processor_worker_num=1,
             trainer_mm_io_worker_num=0,
             hf_checkpoint="/ckpt",
@@ -4540,6 +4544,7 @@ class TestMultimodalTokenSpaceProcessingArgs:
             multimodal_token_space_processing=True,
             rollout_external_engine_addrs=None,
             custom_inference_engine_provider_path=None,
+            rollout_external=False,
             trainer_mm_processor_worker_num=1,
             trainer_mm_io_worker_num=0,
             hf_checkpoint="/ckpt",
@@ -4582,6 +4587,7 @@ class TestMultimodalTokenSpaceProcessingArgs:
             multimodal_token_space_processing=True,
             rollout_external_engine_addrs=None,
             custom_inference_engine_provider_path=None,
+            rollout_external=False,
             trainer_mm_processor_worker_num=1,
             trainer_mm_io_worker_num=0,
             hf_checkpoint="/ckpt",
@@ -4603,11 +4609,25 @@ class TestMultimodalTokenSpaceProcessingArgs:
                 args, sglang=SglangConfig(models=[actor], base_args=self._SUPPORTED)
             )
 
+    _TOKEN_SPACE_ARGV = ("--colocate", "--multimodal-token-space-processing", "--sglang-enable-token-space-processor")
+
+    def test_a_colocated_token_space_run_parses(self):
+        parse_megatron_test_config(*self._TOKEN_SPACE_ARGV)
+
+    def test_a_user_given_engine_provider_is_still_refused(self):
+        with pytest.raises(ValueError, match="external engines"):
+            parse_megatron_test_config(
+                *self._TOKEN_SPACE_ARGV,
+                "--custom-inference-engine-provider-path",
+                "miles.ray.rollout.external_engine_provider.static_inference_engine_provider",
+            )
+
     def test_a_custom_inference_engine_provider_is_rejected(self):
         args = SimpleNamespace(
             multimodal_token_space_processing=True,
             rollout_external_engine_addrs=None,
             custom_inference_engine_provider_path="my.provider.fn",
+            rollout_external=True,
             trainer_mm_processor_worker_num=1,
             trainer_mm_io_worker_num=0,
             hf_checkpoint="/ckpt",
