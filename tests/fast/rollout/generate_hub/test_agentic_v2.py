@@ -137,7 +137,7 @@ async def test_a_max_seq_len_warns_once_that_miles_does_not_stop_the_agent(monke
     warn = agentic_tool_call._warn_max_seq_len_does_not_stop_the_agent
     monkeypatch.setattr(agentic_tool_call, warn.__name__, functools.cache(warn.__wrapped__))
     sample = Sample(status=Sample.Status.COMPLETED, response_length=1, tokens=[1])
-    tracer = _Tracer(SamplesReply(samples=[sample], session_metadata={}, empty_reason=None))
+    tracer = _Tracer(SamplesReply(samples=[sample], session_metadata=_session_metadata(), empty_reason=None))
     _patch_agent(monkeypatch, tracer)
 
     with caplog.at_level(logging.WARNING, logger=agentic_tool_call.__name__):
