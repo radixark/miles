@@ -630,6 +630,68 @@ class TestTick:
         assert isinstance(cell._state, StatePendingWeights)
 
 
+@pytest.fixture
+def slow_probe(cell_env, monkeypatch):
+    """A startup probe the test resolves by hand, with ticks that do not wait for it."""
+    probes: list[asyncio.Future[bool]] = []
+    timeouts: list[float] = []
+
+    async def _probe(server_url: str, api_key, timeout: float = 5.0) -> bool:
+        timeouts.append(timeout)
+        probes.append(asyncio.get_running_loop().create_future())
+        return await probes[-1]
+
+    monkeypatch.setattr(server_cell_module, "probe_server_healthy", _probe)
+    monkeypatch.setattr(server_cell_module, "STARTUP_PROBE_WAIT_PER_TICK_SECONDS", 0.01)
+    return SimpleNamespace(probes=probes, timeouts=timeouts)
+
+
+class TestStartupProbeAcrossTicks:
+    async def test_one_probe_stays_in_flight_until_it_answers(self, slow_probe):
+        """Every probe is a request the engine must finish, so stacking them keeps it from ever going idle."""
+        cell = _make_cell()
+        await cell.init()
+
+        await cell.tick()
+        await cell.tick()
+        assert isinstance(cell._state, StateInitializing)
+        slow_probe.probes[0].set_result(True)
+        await cell.tick()
+
+        assert len(slow_probe.probes) == 1
+        assert isinstance(cell._state, StatePendingWeights)
+
+    async def test_a_failed_probe_is_replaced_on_the_next_tick(self, slow_probe):
+        cell = _make_cell()
+        await cell.init()
+        await cell.tick()
+
+        slow_probe.probes[0].set_result(False)
+        await cell.tick()
+        await cell.tick()
+
+        assert len(slow_probe.probes) == 2
+
+    async def test_disposing_a_cell_abandons_its_running_probe(self, slow_probe):
+        cell = _make_cell()
+        await cell.init()
+        await cell.tick()
+
+        await cell.dispose()
+        await asyncio.sleep(0)
+
+        assert slow_probe.probes[0].cancelled()
+
+    async def test_the_probe_outlasts_the_engines_health_check_budget_but_not_a_dead_address(self, slow_probe):
+        cell = _make_cell(health_check_timeout_seconds=160)
+        await cell.init()
+
+        await cell.tick()
+
+        (timeout,) = slow_probe.timeouts
+        assert (timeout.read, timeout.connect) == (165.0, 5.0)
+
+
 def _pretend_started_long_ago(cell: ServerCell) -> None:
     cell._state = cell._state.model_copy(
         update=dict(start_time=time.monotonic() - server_cell_module.INITIALIZING_TIMEOUT_SECONDS - 1.0)

@@ -1325,7 +1325,7 @@ def test_sglang_parallel_sizes_keep_server_args_destinations():
             "5",
         ]
     )
-    args.rollout_num_gpus_per_engine = 8
+    args.rollout_num_gpus_per_engine = 8 * args.sglang_pp_size
     args.true_on_policy_mode = False
     args.sglang_enable_dp_attention = True
     args.loss_type = "policy_loss"
@@ -3272,7 +3272,7 @@ def test_sglang_parallel_sizes_use_short_namespace_fields(parallel_args, expecte
     assert not hasattr(args, "sglang_pipeline_parallel_size")
     assert not hasattr(args, "sglang_expert_parallel_size")
 
-    args.rollout_num_gpus_per_engine = 8
+    args.rollout_num_gpus_per_engine = 8 * args.sglang_pp_size
     args.true_on_policy_mode = False
     args.recompute_logprobs_via_prefill = False
     args.sglang_router_policy = None

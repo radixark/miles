@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient, WorkerType
+from miles.backends.sglang_utils.sglang_engine import SGLANG_DEFAULT_HEALTH_CHECK_TIMEOUT_SECONDS
 from miles.utils.http_utils import wrap_ipv6
 from miles.utils.retry_utils import retry_until_deadline
 from miles.utils.workers.backend_capability.base import BackendCapability
@@ -137,6 +138,7 @@ def _compute_cells(*, args: Any, engines: list[_ExternalEngineInfo]) -> dict[str
                     sglang_api_key=args.sglang.base_args["api_key"],
                     needs_offload=False,
                     update_weights=True,
+                    health_check_timeout_seconds=SGLANG_DEFAULT_HEALTH_CHECK_TIMEOUT_SECONDS,
                 ),
             ),
             addrs=_compute_engine_addrs(engine),

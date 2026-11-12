@@ -264,6 +264,7 @@ class TestStaticInferenceEngineWorkerProvider:
             sglang_api_key="secret",
             needs_offload=False,
             update_weights=True,
+            health_check_timeout_seconds=20,
         )
 
     async def test_discovery_log_omits_the_engine_api_key(self, monkeypatch, caplog):

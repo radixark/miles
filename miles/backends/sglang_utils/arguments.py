@@ -131,7 +131,7 @@ def add_sglang_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentPa
 
 
 def validate_args(args):
-    args.sglang_tp_size = args.rollout_num_gpus_per_engine
+    args.sglang_tp_size = args.rollout_num_gpus_per_engine // args.sglang_pp_size
 
     # "auto" given explicitly counts as unset: on TPU it would mean fp8, which needs an explicit fp8_e4m3
     if args.sglang_kv_cache_dtype == "auto" and current_platform.rollout_kv_cache_dtype is not None:

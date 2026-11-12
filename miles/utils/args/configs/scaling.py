@@ -33,5 +33,5 @@ class ScalingConfig(BaseConfig):
     ] = 0
     eval_num_gpus_per_engine: A[
         int,
-        Arg(help="GPUs per eval engine (TP size), independent of --rollout-num-gpus-per-engine."),
+        Arg(help="GPUs per eval engine (tp_size times pp_size), independent of --rollout-num-gpus-per-engine."),
     ] = 1

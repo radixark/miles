@@ -156,22 +156,39 @@ constant schedule unless the model page says otherwise.
 ## `sglang_args` - rollout engine passthrough
 
 `sglang_args` configures the inference side. Miles owns
-`--rollout-num-gpus-per-engine`; everything prefixed with `--sglang-` is forwarded to
-`python -m sglang.launch_server` after removing the prefix.
+`--rollout-num-gpus-per-engine` and `--sglang-pp-layer-partition`; everything else prefixed
+with `--sglang-` is forwarded to `python -m sglang.launch_server` after removing the prefix.
 
 Common entries:
 
 | Concern | Flags |
 |---|---|
-| Engine tensor parallelism | `--rollout-num-gpus-per-engine` |
+| Engine size and pipeline stages | `--rollout-num-gpus-per-engine`, `--sglang-pp-size`, `--sglang-pp-layer-partition` |
 | Engine memory | `--sglang-mem-fraction-static` |
 | Context length | `--sglang-context-length` |
 | MoE serving | `--sglang-ep-size`, `--sglang-moe-a2a-backend`, `--sglang-enable-dp-attention` |
 | Debugging | `--sglang-log-level` |
 
 SGLang parallelism is separate from trainer parallelism. For example,
-`--rollout-num-gpus-per-engine` maps to the SGLang server's TP size, not Megatron's
-`--tensor-model-parallel-size`.
+`--rollout-num-gpus-per-engine` sets the SGLang server's GPU count, not Megatron's
+`--tensor-model-parallel-size`. An engine spans `tp_size × pp_size` GPUs, so with
+`--sglang-pp-size N` miles launches it with `--tp-size` set to the engine's GPUs divided by
+`N`; the GPU count must divide evenly. A model too large for one node can run one pipeline
+stage per node, which keeps tensor parallelism inside each node:
+
+```bash
+--rollout-num-gpus-per-engine 64 --sglang-pp-size 8
+--sglang-pp-layer-partition 10,8,12,8,12,8,12,8
+```
+
+`--sglang-pp-layer-partition` gives the layers of each stage, one entry per stage, summing
+to the model's layer count. Every pipelined engine receives it as
+`SGLANG_PP_LAYER_PARTITION`, so miles refuses at startup any server group whose `pp_size`
+or model it does not fit. Unset, SGLang splits the layers evenly.
+
+A cold health request crosses every pipeline stage, so miles sets each engine's
+`SGLANG_HEALTH_CHECK_TIMEOUT` (the `/health_generate` budget) to SGLang's default times the
+engine's `pp_size`, and waits on that budget while the engine starts.
 
 <a id="misc-args"></a>
 ## `misc_args` - GPU layout and everything else

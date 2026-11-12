@@ -1,3 +1,4 @@
+import asyncio
 import dataclasses
 import logging
 import time
@@ -5,10 +6,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+import httpx
 from sglang.srt.constants import GPU_MEMORY_TYPE_WEIGHTS
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient, WorkerType, probe_server_healthy
-from miles.backends.sglang_utils.sglang_engine import build_server_url
+from miles.backends.sglang_utils.sglang_engine import SGLANG_DEFAULT_HEALTH_CHECK_TIMEOUT_SECONDS, build_server_url
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient
 from miles.ray.rollout.cell_state import (
     CellAddrInfo,
@@ -41,6 +43,9 @@ SHUTDOWN_TIMEOUT = 30
 UNREGISTER_FROM_ROUTER_TIMEOUT = 120
 INITIALIZING_TIMEOUT_SECONDS = 1800.0
 ABORT_REQUEST_TIMEOUT_SECONDS = 30.0
+STARTUP_PROBE_WAIT_PER_TICK_SECONDS = 5.0
+STARTUP_PROBE_CLIENT_MARGIN_SECONDS = 5.0
+STARTUP_PROBE_CONNECT_TIMEOUT_SECONDS = 5.0
 
 
 class ServerCellMetadata(FrozenStrictBaseModel):
@@ -53,6 +58,7 @@ class ServerCellMetadata(FrozenStrictBaseModel):
     worker_name: str
     needs_offload: bool
     update_weights: bool
+    health_check_timeout_seconds: float = SGLANG_DEFAULT_HEALTH_CHECK_TIMEOUT_SECONDS
     workers_hash: str
 
 
@@ -67,6 +73,7 @@ class ServerCell:
     _health_checker: BaseHealthChecker = dataclasses.field(init=False)
     _env_reporter: EngineEnvReporter = dataclasses.field(init=False)
     _state: CellState = dataclasses.field(default_factory=StateUninitialized)
+    _startup_probe: asyncio.Task[bool] | None = dataclasses.field(default=None, init=False)
 
     def __post_init__(self) -> None:
         self._env_reporter = EngineEnvReporter(interval_seconds=self.args.env_report_interval_seconds)
@@ -197,7 +204,7 @@ class ServerCell:
 
     async def _tick_when_initializing(self) -> None:
         addr_info = self._state.addr_info
-        if not await probe_server_healthy(server_url=addr_info.server_url, api_key=self.meta.sglang_api_key):
+        if not await self._probe_startup_health(addr_info):
             return
 
         if self.args.check_weight_update_equal and self.meta.update_weights:
@@ -229,6 +236,25 @@ class ServerCell:
 
         if serve_without_weight_update:
             self._mark_serving()
+
+    async def _probe_startup_health(self, addr_info: CellAddrInfo) -> bool:
+        # Each /health_generate is a request the engine must finish, so only one is in flight at a time.
+        if self._startup_probe is None:
+            self._startup_probe = asyncio.create_task(
+                probe_server_healthy(
+                    server_url=addr_info.server_url,
+                    api_key=self.meta.sglang_api_key,
+                    timeout=httpx.Timeout(
+                        self.meta.health_check_timeout_seconds + STARTUP_PROBE_CLIENT_MARGIN_SECONDS,
+                        connect=STARTUP_PROBE_CONNECT_TIMEOUT_SECONDS,
+                    ),
+                )
+            )
+        done, _ = await asyncio.wait({self._startup_probe}, timeout=STARTUP_PROBE_WAIT_PER_TICK_SECONDS)
+        if not done:
+            return False
+        probe, self._startup_probe = self._startup_probe, None
+        return probe.result()
 
     async def mark_weights_ready(self) -> None:
         assert isinstance(self._state, StatePendingWeights), f"{self._state=}"
@@ -264,6 +290,8 @@ class ServerCell:
                 f"Unregistering cell {self.meta.cell_id} from the router failed, disposing anyway", exc_info=True
             )
             self._health_checker.stop()
+        if self._startup_probe is not None:
+            self._startup_probe.cancel()
         self._change_state(
             "dispose",
             (StateUninitialized, StateInitializing, StatePendingWeights, StateServing, StateErrored, StateDisposed),

@@ -19,6 +19,7 @@ from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.backends.sglang_utils.sglang_scaling_config import ServerGroupScalingConfig, SglangScalingConfig
 from miles.utils.args.configs.sglang_client import SglangClientConfig
 from miles.utils.file_arg_utils import resolve_file_arg
+from miles.utils.hf_utils.config import load_hf_config
 from miles.utils.lora.utils import is_multi_lora_enabled
 from miles.utils.output_store.config import SGLANG_OUTPUT_STORE_FIELDS
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
@@ -195,6 +196,13 @@ class ServerGroupConfig(FrozenStrictBaseModel):
             **({"enable_memory_saver": False} if args.offload_rollout and not needs_offload else {}),
             **raw.overrides,
         }
+        pp_size = overrides.get("pp_size", args.sglang_pp_size)
+        assert num_gpus_per_engine % pp_size == 0, (
+            f"{num_gpus_per_engine} GPUs per engine do not split into pp_size {pp_size} pipeline stages; "
+            f"each stage needs the same number of GPUs"
+        )
+        if args.sglang_pp_layer_partition is not None and pp_size > 1:
+            _validate_pp_layer_partition(args.sglang_pp_layer_partition, pp_size, overrides["model_path"])
 
         config = cls(
             worker_type=raw.worker_type,
@@ -209,6 +217,17 @@ class ServerGroupConfig(FrozenStrictBaseModel):
         offset_cursor.gpu += raw.num_gpus
         offset_cursor.engine += raw.num_gpus // min(num_gpus_per_engine, args.num_gpus_per_node)
         return config, scaling
+
+
+def _validate_pp_layer_partition(partition: str, pp_size: int, model_path: str) -> None:
+    # SGLang gives the one partition to every pipelined engine and checks it only when loading the model.
+    stage_layers = [int(layers) for layers in partition.split(",")]
+    num_layers = load_hf_config(model_path).get_text_config().num_hidden_layers
+    if len(stage_layers) != pp_size or min(stage_layers) < 1 or sum(stage_layers) != num_layers:
+        raise ValueError(
+            f"--sglang-pp-layer-partition {partition} must give each of the {pp_size} pipeline stages a positive "
+            f"layer count, {num_layers} in total for {model_path}"
+        )
 
 
 class ModelConfig(FrozenStrictBaseModel):

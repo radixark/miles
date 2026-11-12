@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import msgspec
 import pytest
+from tests.fast.backends.sglang_utils.conftest import tiny_model_path
 from tests.fast.fixtures.sglang_config_fixtures import with_parser_defaults_and_sglang_config
 
 from miles.backends.sglang_utils import sglang_engine
@@ -239,3 +240,51 @@ class TestAttentionDpLoRA:
         pinned = {"lora_name": "miles_lora", "lora_path": "/fake/adapter", "pinned": True}
         assert server_args["lora_paths"] == [pinned if attention_dp else "miles_lora=/fake/adapter"]
         assert server_args["max_loras_per_batch"] == (2 if attention_dp else 1)
+
+
+class TestPipelinedEngine:
+    def test_an_engine_spread_over_pipeline_stages_gets_its_per_stage_tp_size(self):
+        """SGLang sizes an engine as tp_size * pp_size, so 64 GPUs in 8 stages are TP 8 per stage."""
+        args = make_args(rollout_num_gpus=64, rollout_num_gpus_per_engine=64, sglang_pp_size=8)
+
+        server_args = compute(args, num_gpus_per_engine=64)
+
+        assert (server_args["tp_size"], server_args["pp_size"]) == (8, 8)
+
+    def test_a_group_pp_override_sizes_that_groups_tp(self):
+        """An eval group that drops pipeline parallelism uses all of its own GPUs for TP."""
+        args = make_args(rollout_num_gpus=64, rollout_num_gpus_per_engine=64, sglang_pp_size=8)
+
+        server_args = compute(args, num_gpus_per_engine=8, sglang_overrides={"pp_size": 1})
+
+        assert (server_args["tp_size"], server_args["pp_size"]) == (8, 1)
+
+    def test_an_engine_whose_gpus_do_not_split_evenly_into_stages_is_refused(self):
+        """A remainder would leave SGLang an engine whose world size differs from its GPU count."""
+        with pytest.raises(AssertionError, match="12 GPUs per engine.*pp_size 8"):
+            make_args(rollout_num_gpus=12, rollout_num_gpus_per_engine=12, sglang_pp_size=8)
+
+
+class TestPipelineLayerPartition:
+    """SGLang hands one partition to every pipelined engine and checks it only when loading the model."""
+
+    @staticmethod
+    def _make_args(partition: str, *, pp_size: int) -> SimpleNamespace:
+        return make_args(
+            rollout_num_gpus=16,
+            rollout_num_gpus_per_engine=16,
+            sglang_pp_size=pp_size,
+            sglang_pp_layer_partition=partition,
+            hf_checkpoint=str(tiny_model_path()),  # 2 layers
+        )
+
+    def test_a_partition_with_a_stage_per_entry_covering_every_layer_is_accepted(self):
+        assert self._make_args("1,1", pp_size=2).sglang_pp_layer_partition == "1,1"
+
+    @pytest.mark.parametrize("partition, pp_size", [("1,1", 4), ("2,1", 2), ("0,2", 2)])
+    def test_a_partition_that_does_not_fit_the_engine_is_refused(self, partition, pp_size):
+        with pytest.raises(ValueError, match="--sglang-pp-layer-partition"):
+            self._make_args(partition, pp_size=pp_size)
+
+    def test_engines_without_pipeline_stages_ignore_the_partition(self):
+        assert self._make_args("1,1,1", pp_size=1).sglang_pp_layer_partition == "1,1,1"

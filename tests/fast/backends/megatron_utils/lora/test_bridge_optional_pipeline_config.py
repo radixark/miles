@@ -24,3 +24,13 @@ class TestBridgeOptionalPipelineConfig:
         assert bridge_provider.finalized
         assert bridge_provider.num_layers_in_first_pipeline_stage == 7
         assert bridge_provider.num_layers_in_last_pipeline_stage == 8
+
+    def test_a_custom_pipeline_layout_reaches_the_sdk_provider(
+        self, bridge_args: Namespace, bridge_provider: Any
+    ) -> None:
+        """Without it the provider builds an even split, whatever --pipeline-model-parallel-layout asked for."""
+        bridge_args.backend.pipeline_model_parallel_layout = "Et*2|t*6L"
+
+        _setup_lora_model_via_bridge(bridge_args)
+
+        assert bridge_provider.pipeline_model_parallel_layout == "Et*2|t*6L"
