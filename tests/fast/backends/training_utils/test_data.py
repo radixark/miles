@@ -200,30 +200,37 @@ class TestGetRolloutDataMediaRebuild:
 
         class Processor:
             async def process(self, **kwargs):
-                return {"pixel_values": torch.ones(2, 3), "image_grid_thw": torch.tensor([[1, 1, 2]])}
+                return {
+                    "pixel_values": torch.ones(2, 3),
+                    "image_grid_thw": torch.tensor([[1, 1, 2]]),
+                    "mm_modalities": [],
+                    "mm_spans": [],
+                }
 
         monkeypatch.setattr(data_utils, "get_parallel_state", lambda: _parallel_state(dp_size=1))
         monkeypatch.setattr(data_utils, "process_rollout_data", process)
-        monkeypatch.setattr(
-            token_space_media_process,
-            "_trainer_processor",
-            lambda rollout_engine_args, device: token_space_media_process._TrainerProcessor(
-                core=Processor(), image_device=None
-            ),
-        )
-        monkeypatch.setattr(
-            data_utils, "RolloutEngineProcessorArgs", Namespace(from_sglang_config=lambda sglang: None)
-        )
         monkeypatch.setattr(data_utils.current_platform, "current_device", lambda: torch.device("cpu"))
-        args = Namespace(enable_witness=False, qkv_format="thd", sglang=None, backend=Namespace(bf16=bf16, fp16=fp16))
+        args = Namespace(
+            enable_witness=False,
+            qkv_format="thd",
+            multimodal_token_space_processing=True,
+            debug_rollout_only=False,
+            trainer_mm_processor_worker_num=1,
+            train_backend="megatron",
+            megatron_to_hf_mode="bridge",
+            backend=Namespace(bf16=bf16, fp16=fp16),
+        )
 
         rollout, _ = data_utils.get_rollout_data(
             args=args,
             rollout_data_ref=object(),
             train_parallel_config=_parallel_state(dp_size=1).train_parallel_config(supports_precomputed_schedule=True),
+            token_space_processor=token_space_media_process.TrainerProcessor(core=Processor(), image_device=None),
         )
 
-        rebuilt, text_only = rollout["multimodal_train_inputs"]
+        rebuilt, text_only = token_space_media_process.resolved_multimodal_train_inputs(
+            rollout["multimodal_train_inputs"]
+        )
         assert rebuilt["pixel_values"].dtype == expected
         assert rebuilt["image_grid_thw"].dtype == torch.int64
         assert text_only is None
