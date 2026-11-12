@@ -168,7 +168,7 @@ def resolve_worker(worker: str | None) -> str | StartFn:
     for each call."""
     if not worker:
         raise NonRetryableError("--custom-agent-function-mode worker needs --custom-agent-function-worker")
-    if worker.startswith(("http://", "https://")):
+    if worker.lower().startswith(("http://", "https://")):
         try:
             url = httpx.URL(worker)
         except httpx.InvalidURL:
