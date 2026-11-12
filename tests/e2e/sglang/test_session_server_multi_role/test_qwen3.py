@@ -18,7 +18,6 @@ CONFIG = ModelConfig(
     num_gpus=2,
     tp_size=1,
     cycles=2,
-    tool_call_failure_mode="append_tool",
     # Anthropic tool-call conversion preserves structure but normalizes its raw
     # serialization (32/32 formatting-only mismatches in CI); keep OpenAI at 0.25.
     assistant_text_threshold=0.25,

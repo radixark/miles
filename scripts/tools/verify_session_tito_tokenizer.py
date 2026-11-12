@@ -2,18 +2,21 @@
 """CLI: run the multi-role TITO session-server verifier against a real model.
 
 Boots the miles rollout pipeline (sglang + miles-router) under
-``--debug-rollout-only`` and drives the schedule registered for the selected
-family's ``FixedTemplate.allowed_append_roles`` capability (see
-``miles.utils.test_utils.session_verify_agent``).  PASS iff every sample
-completes without HTTP error from the server-side prefix check and the
-custom-generate coverage assertion is satisfied.
+``--debug-rollout-only`` and runs two rollout steps (see
+``miles.utils.test_utils.session_verify_agent``): the spec rollout probes every
+continuation the selected family's ``FixedTemplate`` continuation roles accept
+or refuse, and the normal rollout answers tool calls with tool messages and
+answers with user questions.  PASS iff every sample completes without HTTP
+error from the server-side prefix check, every spec probe gets the status the
+spec decides, and the per-sample mismatch gates hold.
 
 This script is a thin entrypoint over miles' canonical ``parse_args``: all
 flags are miles' canonical flags (``--rollout-num-gpus-per-engine`` instead of
 the old ``--tp-size``, ``--actor-num-gpus-per-node`` instead of ``--num-gpus``,
 ``--n-samples-per-prompt`` instead of ``--n-samples``, ``--sglang-reasoning-parser``
-instead of ``--reasoning-parser``, etc.).  The only wrapper-only knob is
-``--assistant-text-threshold`` (post-process gate on per-sample metrics).
+instead of ``--reasoning-parser``, etc.).  The wrapper-only knobs are
+``--assistant-text-threshold`` (post-process gate on per-sample metrics) and
+``--no-session-verify-spec-trajectory`` (run the normal rollout only).
 
 Usage examples::
 
@@ -54,11 +57,12 @@ import sys
 
 from miles.utils.args.runtime import AllConfig
 from miles.utils.arguments import parse_args
-from miles.utils.test_utils.session_verify_agent import fixed_template_append_roles, select_schedule
+from miles.utils.test_utils.session_verify_agent import fixed_template, spec_probe_steps
 from miles.utils.test_utils.session_verify_runner import (
     SESSION_VERIFY_INVARIANT_ARGS,
     run_session_verify,
     session_verify_extras,
+    session_verify_kinds,
 )
 
 
@@ -68,8 +72,9 @@ def _with_session_verify_defaults(argv: list[str]) -> list[str]:
         SESSION_VERIFY_INVARIANT_ARGS["prompt_data"],
         "--input-key",
         SESSION_VERIFY_INVARIANT_ARGS["input_key"],
+        # parse_args needs a rollout count; the runner derives the run's own from its rollouts.
         "--num-rollout",
-        str(SESSION_VERIFY_INVARIANT_ARGS["num_rollout"]),
+        "1",
         "--rollout-batch-size",
         str(SESSION_VERIFY_INVARIANT_ARGS["rollout_batch_size"]),
         "--rollout-max-response-len",
@@ -101,7 +106,7 @@ def _parse_session_verify_args() -> argparse.Namespace:
     wrapper_values = {}
 
     def extract_wrapper_args(args: argparse.Namespace) -> None:
-        for name in ("assistant_text_threshold", "enable_spec"):
+        for name in ("assistant_text_threshold", "enable_spec", "session_verify_spec_trajectory"):
             wrapper_values[name] = vars(args).pop(name)
 
     config = parse_args(add_custom_arguments=session_verify_extras, preprocess_args=extract_wrapper_args)
@@ -109,7 +114,9 @@ def _parse_session_verify_args() -> argparse.Namespace:
 
 
 # TODO: Migrate the session verifier runner to typed configuration and remove this adapter.
-def _runner_namespace(*, config: AllConfig, assistant_text_threshold: float, enable_spec: bool) -> argparse.Namespace:
+def _runner_namespace(
+    *, config: AllConfig, assistant_text_threshold: float, enable_spec: bool, session_verify_spec_trajectory: bool
+) -> argparse.Namespace:
     generate = config.custom_generate_function_path
     agent = config.custom_agent_function_path
     assert generate is not None and generate.config is not None
@@ -119,7 +126,6 @@ def _runner_namespace(*, config: AllConfig, assistant_text_threshold: float, ena
         hf_checkpoint=config.hf_checkpoint,
         prompt_data=config.prompt_data,
         input_key=config.input_key,
-        num_rollout=config.num_rollout,
         rollout_batch_size=config.rollout_batch_size,
         n_samples_per_prompt=config.n_samples_per_prompt,
         rollout_max_response_len=config.rollout_max_response_len,
@@ -128,7 +134,8 @@ def _runner_namespace(*, config: AllConfig, assistant_text_threshold: float, ena
         custom_generate_function_path=generate.path,
         custom_agent_function_path=agent.path,
         session_verify_cycles=generate_values["session_verify_cycles"],
-        tool_call_failure_mode=generate_values["tool_call_failure_mode"],
+        session_verify_spec_trajectory=session_verify_spec_trajectory,
+        session_verify_gate=True,
         tito_model=config.tito_model,
         session_message_matcher=config.session_message_matcher,
         rollout_num_gpus_per_engine=config.rollout_num_gpus_per_engine,
@@ -161,23 +168,18 @@ def _runner_namespace(*, config: AllConfig, assistant_text_threshold: float, ena
     )
 
 
-def _print_action_table(allowed_roles: list[str], *, cycles: int) -> None:
-    schedule = select_schedule(allowed_roles, cycles=cycles)
-    print("Driver schedule (after initial completion):")
-    for i, action in enumerate(schedule, 1):
-        print(f"  {i}. {action.value}")
+def _print_rollout_table(tito_model: str, *, spec_trajectory: bool) -> None:
+    fixed = fixed_template(tito_model)
+    print("Rollout steps:")
+    for step, kind in enumerate(session_verify_kinds(spec_trajectory)):
+        print(f"  {step}. {kind}")
     print()
-    print("Required per-sample driver events (asserted in generate wrapper):")
-    print("  - rollback         (deterministic; always required)")
-    if "user" in allowed_roles:
-        print("  - append_user      (deterministic; required because 'user' in roles)")
-    if "system" in allowed_roles:
-        print("  - append_system    (deterministic; required because 'system' in roles)")
-    if "assistant" in allowed_roles:
-        print("  - append_assistant (deterministic; required because 'assistant' in roles)")
-    print()
-    print("Required cross-sample driver events (asserted in generate wrapper):")
-    print("  - append_tool      (model-dependent; >=1 sample must emit a tool_call)")
+    print(f"Roles after a tool call:     {sorted(fixed.roles_after_tool_call)}")
+    print(f"Roles after no tool call:    {sorted(fixed.roles_after_no_tool_call)}")
+    if spec_trajectory:
+        print("Spec probes (200 if the spec accepts the role there, else 400):")
+        for step in spec_probe_steps(fixed):
+            print(f"  - {step}")
     print()
 
 
@@ -190,9 +192,9 @@ def main() -> int:
     sys.argv[1:] = _with_session_verify_defaults(sys.argv[1:])
     args = _parse_session_verify_args()
 
-    # Resolve the family-owned capability before any GPU work starts so an
-    # unsupported verifier schedule fails immediately.
-    allowed_roles = list(fixed_template_append_roles(args.tito_model))
+    # Resolve the family-owned contract before any GPU work starts so an
+    # unknown family fails immediately.
+    allowed_roles = sorted(fixed_template(args.tito_model).allowed_append_roles)
 
     print(f"Model:                  {args.hf_checkpoint}")
     print(f"TITO model family:      {args.tito_model}")
@@ -204,17 +206,11 @@ def main() -> int:
     print(f"Actor nodes:            {args.actor_num_nodes}")
     print(f"Actor GPUs per node:    {args.actor_num_gpus_per_node}")
     print(f"Samples per prompt:     {args.n_samples_per_prompt}")
-    print(f"Cycles per sample:      {args.session_verify_cycles}")
-    print(f"Tool-call failure mode: {args.tool_call_failure_mode}")
+    print(f"Normal rollout cycles:  {args.session_verify_cycles}")
+    print(f"Spec rollout:           {args.session_verify_spec_trajectory}")
     print()
 
-    try:
-        select_schedule(allowed_roles, cycles=args.session_verify_cycles)
-    except ValueError as e:
-        print(f"Verdict: FAIL -- {e}", file=sys.stderr)
-        return 1
-
-    _print_action_table(allowed_roles, cycles=args.session_verify_cycles)
+    _print_rollout_table(args.tito_model, spec_trajectory=args.session_verify_spec_trajectory)
 
     try:
         run_session_verify(args=args)
@@ -226,7 +222,7 @@ def main() -> int:
     print()
     print(
         "Verdict: PASS -- TITO incremental tokenization matched standard re-tokenize "
-        "across all required driver actions."
+        "and the session server accepted and refused continuations as the family's spec decides."
     )
     return 0
 

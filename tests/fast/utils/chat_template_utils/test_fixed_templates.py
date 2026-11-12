@@ -88,6 +88,26 @@ def test_fixed_template_rejects_unknown_role():
         FixedTemplate(allowed_append_roles=frozenset({"developer"}))
 
 
+def test_continuation_roles_default_to_the_append_surface():
+    fixed = FixedTemplate(allowed_append_roles=frozenset({"tool", "user"}))
+    assert fixed.roles_after_tool_call == fixed.roles_after_no_tool_call == frozenset({"tool", "user"})
+    assert fixed.roles_after({"role": "assistant", "tool_calls": [{"id": "call_0"}]}) == fixed.roles_after_tool_call
+    assert fixed.roles_after({"role": "assistant", "content": "done"}) == fixed.roles_after_no_tool_call
+
+
+@pytest.mark.parametrize(
+    "continuation,match",
+    [
+        ({"roles_after_no_tool_call": frozenset({"system"})}, "outside allowed_append_roles"),
+        ({"roles_after_tool_call": frozenset({"system", "tool"})}, "outside allowed_append_roles"),
+        ({"roles_after_tool_call": frozenset({"user"})}, "must allow the 'tool' messages"),
+    ],
+)
+def test_fixed_template_rejects_invalid_continuation_roles(continuation, match):
+    with pytest.raises(ValueError, match=match):
+        FixedTemplate(allowed_append_roles=frozenset({"tool", "user"}), **continuation)
+
+
 @pytest.mark.parametrize(
     "tokenizer_cls",
     [

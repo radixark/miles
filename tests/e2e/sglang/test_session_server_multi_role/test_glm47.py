@@ -18,10 +18,10 @@ CONFIG = ModelConfig(
     num_gpus=2,
     tp_size=1,
     enable_spec=True,
-    # Lenient template: tool message is rendered without validating that the
-    # preceding assistant carries a matching tool_call.id, so the APPEND_TOOL
-    # sentinel ("tool_call_id": "none") roundtrips cleanly.
-    tool_call_failure_mode="append_tool",
+    # A user turn after a tool call makes TITO replace the sampled <|observation|> stop
+    # token with <|user|>, so the prompt no longer keeps the sampled tokens unchanged.
+    # The CPU tests pin that replacement; this lane runs the normal rollout only.
+    spec_trajectory=False,
     anthropic_intermediate_system_expectation="required",
 )
 

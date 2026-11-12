@@ -4,6 +4,18 @@ Wired through ``--custom-generate-function-path`` /
 ``--custom-agent-function-path``; consumed by
 ``tests/e2e/sglang/test_session_server_multi_role/`` (one test file per
 model family) and ``scripts/tools/verify_session_tito_tokenizer.py``.
+
+Each sample runs one of two rollouts, named by the ``session_verify_kind`` of
+its prompt record:
+
+- ``normal`` answers a tool call with a ``tool`` message and an answer with
+  the next ``user`` question, the two continuations production harnesses send
+  most.  CI monitors its mismatch rates.
+- ``spec`` walks the family's continuation roles
+  (``FixedTemplate.roles_after_tool_call`` / ``roles_after_no_tool_call``):
+  every continuation the spec refuses must get HTTP 400 and every one it
+  accepts must succeed.  It also rolls back, appends a system message and
+  injects assistant messages, which the session server must handle too.
 """
 
 from __future__ import annotations
@@ -11,7 +23,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from enum import Enum
+from dataclasses import dataclass, field
 from functools import wraps
 
 try:
@@ -23,7 +35,7 @@ import httpx
 
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
 from miles.rollout.generate_hub.agentic_tool_call import generate as _base_generate
-from miles.utils.chat_template_utils.tito_tokenizer import VALID_APPEND_ROLES, TITOTokenizerType
+from miles.utils.chat_template_utils.tito_tokenizer import VALID_APPEND_ROLES, FixedTemplate, TITOTokenizerType
 from miles.utils.test_utils.openai_stream_client import stream_chat_completions
 
 logger = logging.getLogger(__name__)
@@ -74,61 +86,21 @@ def _journal_verifier_assertions(stage: str):
     return decorate
 
 
-class DriverAction(Enum):
-    TOOL_RESULT = "tool_result"
-    USER_FOLLOWUP = "user_followup"
-    SYSTEM_REMINDER = "system_reminder"
-    ASSISTANT_INPUT = "assistant_input"
-    ROLLBACK = "rollback"
-    FORCE_FINAL = "force_final"
+class SessionVerifyKind(StrEnum):
+    NORMAL = "normal"
+    SPEC = "spec"
 
 
-_T = DriverAction.TOOL_RESULT
-_U = DriverAction.USER_FOLLOWUP
-_S = DriverAction.SYSTEM_REMINDER
-_A = DriverAction.ASSISTANT_INPUT
-_R = DriverAction.ROLLBACK
-_F = DriverAction.FORCE_FINAL
+# Prompt-record metadata key that names a sample's rollout.
+SESSION_VERIFY_KIND_KEY = "session_verify_kind"
+# Agent metadata key carrying a spec rollout's expected and actual statuses.
+EXPECTATIONS_KEY = "session_verify_expectations"
 
-
-class ToolCallFailureMode(StrEnum):
-    """Recovery strategy when a TOOL_RESULT step finds the assistant emitted no tool_calls.
-
-    APPEND_TOOL  : Splice a sentinel ``tool`` message and continue.  Works on
-                   lenient templates; strict templates that hard-assert any
-                   ``tool`` role must follow an assistant with ``tool_calls``
-                   (e.g. MiniMax-M2.7) will reject the next request at server-side.
-    APPEND_USER  : Splice a ``user`` message carrying the same failure text as
-                   APPEND_TOOL.  Requires the selected family's fixed template
-                   to support "user"; raises ValueError at agent start otherwise.
-    ROLLBACK     : Pop the offending assistant and let the loop's chat call at
-                   the bottom re-inference.  Universal — no role-surface
-                   dependency — and the default.
-    """
-
-    APPEND_TOOL = "append_tool"
-    APPEND_USER = "append_user"
-    ROLLBACK = "rollback"
-
-
-DEFAULT_TOOL_CALL_FAILURE_MODE = ToolCallFailureMode.ROLLBACK
-
-# Cap consecutive ROLLBACK retries — same context every time, so a model that
-# never tool-calls would loop forever.
-MAX_CONSECUTIVE_TOOL_CALL_FAILURE_ROLLBACKS = 3
-
-# Same body for both APPEND_TOOL and APPEND_USER fallbacks; only the role of
-# the spliced message differs between the two modes.
-TOOL_CALL_PARSE_FAILURE_TEXT = (
-    "Tool call parsing failed: the previous assistant turn did not emit a "
-    "parseable tool_call. Please retry with a valid tool invocation."
-)
-
-# Mismatch tiers reported by the session-server's per-sample comparator
-# (sessions.py:83).  Any occurrence of these "hard" types in a sample's
-# tito_session_mismatch indicates a TITO bug and fails the verifier run.  The
-# soft `assistant_text` tier is excluded — it is aggregated across samples
-# and gated by a ratio threshold instead.
+# Mismatch tiers reported by the session-server's per-sample comparator.  Any
+# occurrence of these "hard" types in a sample's tito_session_mismatch
+# indicates a TITO bug and fails the verifier run.  The soft `assistant_text`
+# tier is excluded: the normal rollout gates it by a ratio threshold, and the
+# spec rollout does not gate it.
 _FORBIDDEN_MISMATCH_TYPES: frozenset[str] = frozenset(
     {"special_token_count", "special_token_type", "non_assistant_text"}
 )
@@ -137,38 +109,47 @@ _FORBIDDEN_MISMATCH_TYPES: frozenset[str] = frozenset(
 # (pytest via ``run_session_verify``).  Smaller-context models with a 4K
 # response budget should drop to 2 to avoid context overflow.
 DEFAULT_CYCLES = 3
-_MAX_INCOMPLETE_TURN_RETRIES = 2
+# Resamples of a turn cut by finish_reason='length', or of a turn that must call a tool and did not.
+_MAX_RESAMPLES = 2
 _RETRY_SEED_STRIDE = 1_000_000
+# Tool rounds the agent answers before it needs a reply without tool calls.
+_MAX_TOOL_ROUNDS = 3
+_ACCEPTED = 200
+_REFUSED = 400
+
+
+def fixed_template(tito_model: TITOTokenizerType | str) -> FixedTemplate:
+    """The selected family's fixed-template contract."""
+    return TITOTokenizerType.get_tokenizer_class(TITOTokenizerType(tito_model)).FIXED_TEMPLATE
 
 
 def fixed_template_append_roles(tito_model: TITOTokenizerType | str) -> tuple[str, ...]:
     """Return the selected family's fixed append capability in canonical order."""
-    tokenizer_type = TITOTokenizerType(tito_model)
-    supported = TITOTokenizerType.get_tokenizer_class(tokenizer_type).FIXED_TEMPLATE.allowed_append_roles
+    supported = fixed_template(tito_model).allowed_append_roles
     return tuple(role for role in VALID_APPEND_ROLES if role in supported)
-
-
-def _build_cycle(role_surface: frozenset[str]) -> list[DriverAction]:
-    cycle: list[DriverAction] = [_T]
-    if "user" in role_surface:
-        cycle.append(_U)
-        cycle.append(_T)
-    if "system" in role_surface:
-        cycle.append(_S)
-    cycle.append(_R)
-    return cycle
 
 
 # English-only on purpose: matches the production agentic flows tokenization
 # and tool-call parsing are tuned against.
 USER_FOLLOWUP_TEXT = "Now check the weather in Shanghai."
+USER_FOLLOWUP_TEXTS = (
+    USER_FOLLOWUP_TEXT,
+    "Now check the weather in Hangzhou.",
+    "Now check the weather in London.",
+)
+# A prompt that asks for an answer without a tool, so the reply carries no tool call.
+NO_TOOL_CALL_USER_TEXT = "Without using any tool, tell me one sentence about Beijing."
+# tool_choice "none" keeps that reply free of parsed tool calls whatever the model writes,
+# and kept special tokens let the server re-render a call the model writes into content.
+NO_TOOL_CALL_REQUEST_ARGS = {"tool_choice": "none", "skip_special_tokens": False}
+# A neutral result for a tool message that answers no call; a retry instruction makes some models loop.
+SENTINEL_TOOL_RESULT = '{"result": "unavailable"}'
 SYSTEM_REMINDER_TEXT = "Note: from now on, answer in a single sentence; skip all pleasantries."
 ASSISTANT_INPUT_TEXTS = (
     "The earlier Beijing weather result was 22 degrees Celsius and sunny.",
     "The earlier Shanghai weather result was 30 degrees Celsius and rainy.",
 )
 ASSISTANT_INPUT_FOLLOWUP_TEXT = "Summarize the two weather results above in one sentence without calling a tool."
-FORCE_FINAL_TEXT = "Please summarize all results inside <final_answer>...</final_answer> tags."
 
 TOOLS = [
     {
@@ -207,32 +188,24 @@ INITIAL_SYSTEM_PROMPT = (
 )
 INITIAL_USER_PROMPT = "What's the weather in Beijing?"
 
+# Roles the spec rollout appends directly after a tool call, in this order.
+_PROBE_ROLES_AFTER_TOOL_CALL = ("user", "system", "assistant")
+_PROBE_MESSAGES = {
+    "user": {"role": "user", "content": USER_FOLLOWUP_TEXT},
+    "system": {"role": "system", "content": SYSTEM_REMINDER_TEXT},
+    "assistant": {"role": "assistant", "content": ASSISTANT_INPUT_TEXTS[0]},
+}
+_SENTINEL_TOOL_MESSAGE = {"role": "tool", "content": SENTINEL_TOOL_RESULT, "tool_call_id": "none"}
 
-def select_schedule(allowed_roles, *, cycles: int = DEFAULT_CYCLES) -> list[DriverAction]:
-    """Build a schedule from the selected FixedTemplate capability."""
-    key = frozenset(allowed_roles)
-    invalid = key - set(VALID_APPEND_ROLES)
-    if invalid:
-        raise ValueError(f"Unknown append roles: {sorted(invalid)}")
-    if "tool" not in key:
-        raise ValueError(f"The session verifier requires 'tool' capability, got {sorted(key)}")
-    if cycles < 1:
-        raise ValueError(f"cycles must be >= 1, got {cycles}")
-    cycle = _build_cycle(key)
-    # Extra R after the first cycle exercises consecutive-rollback adjacency,
-    # which cycle-repeat alone never produces.
-    schedule = list(cycle) + [_R] + cycle * (cycles - 1)
-    if "user" in key:
-        schedule.append(_F)
-    # Keep injected assistants after every rollback: they are prompt messages,
-    # not generated checkpoints, so rollback across them is a separate contract.
-    if "assistant" in key:
-        schedule.append(_A)
-    return schedule
+
+def spec_probe_steps(fixed: FixedTemplate) -> list[str]:
+    """The probes a spec rollout sends for *fixed*, in order; each records one expectation."""
+    roles = [role for role in _PROBE_ROLES_AFTER_TOOL_CALL if role in fixed.allowed_append_roles]
+    return [f"{role} after tool call" for role in roles] + ["tool after no tool call"]
 
 
 def build_initial_messages() -> list[dict]:
-    """The fixed (system, user) prompt all schedules start from."""
+    """The fixed (system, user) prompt both rollouts start from."""
     return [
         {"role": "system", "content": INITIAL_SYSTEM_PROMPT},
         {"role": "user", "content": INITIAL_USER_PROMPT},
@@ -251,196 +224,243 @@ async def _chat(client, base_url, messages, request_kwargs, *, label):
     return resp.json()
 
 
-def _append_tool_results(messages, tool_calls, counters) -> None:
-    """Answer each of *tool_calls* with the next mock tool result."""
-    for i, tc in enumerate(tool_calls):
-        result_idx = (counters["tool_result_count"] + i) % len(MOCK_TOOL_RESULTS)
-        messages.append({"role": "tool", "content": MOCK_TOOL_RESULTS[result_idx], "tool_call_id": tc["id"]})
-    counters["tool_result_count"] += len(tool_calls)
+async def _chat_status(client, base_url, messages, request_kwargs, *, label) -> tuple[int, dict | None]:
+    """Send a request the server may refuse; return its status and, on 200, the response.
+
+    Non-streaming, so a 400 reaches the caller as a status instead of a broken stream.
+    """
+    payload = {"messages": messages, "tools": TOOLS, **request_kwargs, "stream": False}
+    resp = await client.post(f"{base_url}/v1/chat/completions", json=payload)
+    if resp.status_code == _ACCEPTED:
+        return _ACCEPTED, resp.json()
+    assert resp.status_code == _REFUSED, f"{label} failed ({resp.status_code}): {resp.text}"
+    logger.info("%s refused (%d): %s", label, resp.status_code, resp.text[:300])
+    return _REFUSED, None
 
 
-async def _chat_complete(client, base_url, messages, request_kwargs, *, label):
-    for retry in range(_MAX_INCOMPLETE_TURN_RETRIES + 1):
-        attempt_kwargs = request_kwargs
-        if retry and request_kwargs.get("seed") is not None:
-            attempt_kwargs = {
-                **request_kwargs,
-                "seed": request_kwargs["seed"] + retry * _RETRY_SEED_STRIDE,
-            }
-        response = await _chat(client, base_url, messages, attempt_kwargs, label=label)
-        if response["choices"][0].get("finish_reason") != "length":
-            return response
-    raise AssertionError(f"{label} exhausted {_MAX_INCOMPLETE_TURN_RETRIES} retries after finish_reason='length'")
+def _with_retry_seed(request_kwargs: dict, retry: int) -> dict:
+    if not retry or request_kwargs.get("seed") is None:
+        return request_kwargs
+    return {**request_kwargs, "seed": request_kwargs["seed"] + retry * _RETRY_SEED_STRIDE}
+
+
+@dataclass
+class _Driver:
+    """One trajectory's client, events, counters and probe expectations.
+
+    A resample re-sends the same messages, so the server rolls back the reply it replaces.
+    """
+
+    client: httpx.AsyncClient
+    base_url: str
+    request_kwargs: dict
+    events: list[str] = field(default_factory=list)
+    expectations: list[dict] = field(default_factory=list)
+    counters: dict[str, int] = field(
+        default_factory=lambda: dict.fromkeys(
+            (
+                "rollback_count",
+                "user_count",
+                "system_count",
+                "assistant_input_count",
+                "tool_result_count",
+                "tool_call_count",
+            ),
+            0,
+        )
+    )
+
+    async def chat(self, messages, *, label, extra_kwargs=None, need_tool_call=False) -> dict:
+        """Generate the next assistant message, resampling a length cut or, if asked, a reply without calls."""
+        kwargs = {**self.request_kwargs, **(extra_kwargs or {})}
+        for retry in range(_MAX_RESAMPLES + 1):
+            response = await _chat(self.client, self.base_url, messages, _with_retry_seed(kwargs, retry), label=label)
+            choice = response["choices"][0]
+            if choice.get("finish_reason") == "length":
+                continue
+            if need_tool_call and not choice["message"].get("tool_calls"):
+                continue
+            return self._accept(choice["message"])
+        raise AssertionError(
+            f"{label} exhausted {_MAX_RESAMPLES} resamples (finish_reason='length' or no tool call when one is needed)"
+        )
+
+    async def probe(self, messages, *, label, expected_status) -> dict | None:
+        """Send a continuation the spec decides; record its status and return the reply if it was accepted."""
+        for retry in range(_MAX_RESAMPLES + 1):
+            kwargs = _with_retry_seed(self.request_kwargs, retry)
+            status, response = await _chat_status(self.client, self.base_url, messages, kwargs, label=label)
+            if status == _REFUSED or response["choices"][0].get("finish_reason") != "length":
+                break
+        else:
+            raise AssertionError(f"{label} exhausted {_MAX_RESAMPLES} resamples after finish_reason='length'")
+        self.expectations.append({"step": label, "expected_status": expected_status, "actual_status": status})
+        return None if status == _REFUSED else self._accept(response["choices"][0]["message"])
+
+    def _accept(self, message: dict) -> dict:
+        self.counters["tool_call_count"] += len(message.get("tool_calls") or [])
+        return message
+
+    def append_tool_results(self, messages: list[dict], assistant: dict) -> None:
+        """Append *assistant* and answer each of its tool calls with the next mock tool result."""
+        messages.append(assistant)
+        for i, call in enumerate(assistant["tool_calls"]):
+            result = MOCK_TOOL_RESULTS[(self.counters["tool_result_count"] + i) % len(MOCK_TOOL_RESULTS)]
+            messages.append({"role": "tool", "content": result, "tool_call_id": call["id"]})
+        self.counters["tool_result_count"] += len(assistant["tool_calls"])
+        self.events.append("append_tool")
+
+    def append_user(self, messages: list[dict], assistant: dict, text: str) -> None:
+        messages.extend([assistant, {"role": "user", "content": text}])
+        self.counters["user_count"] += 1
+        self.events.append("append_user")
+
+    def next_city_question(self) -> str:
+        return USER_FOLLOWUP_TEXTS[self.counters["user_count"] % len(USER_FOLLOWUP_TEXTS)]
+
+    async def settle(self, messages: list[dict], reply: dict) -> dict:
+        """Answer *reply*'s tool calls until the model answers without one."""
+        for round_index in range(_MAX_TOOL_ROUNDS):
+            if not reply.get("tool_calls"):
+                return reply
+            self.append_tool_results(messages, reply)
+            reply = await self.chat(messages, label=f"tool round {round_index + 1}")
+        assert not reply.get("tool_calls"), f"the model still calls a tool after {_MAX_TOOL_ROUNDS} answered rounds"
+        return reply
+
+
+async def _run_normal(driver: _Driver, *, cycles: int) -> None:
+    """Tool answer after a tool call, next user question after an answer; nothing else."""
+    messages = build_initial_messages()
+    reply = await driver.chat(messages, label="Initial")
+    driver.events.append("initial")
+    # Each cycle is two continuations: with a tool-calling model, one tool answer and one question.
+    for turn in range(2 * cycles):
+        if reply.get("tool_calls"):
+            driver.append_tool_results(messages, reply)
+        else:
+            driver.append_user(messages, reply, driver.next_city_question())
+        reply = await driver.chat(messages, label=f"Turn {turn + 1}")
+
+
+async def _run_spec(driver: _Driver, fixed: FixedTemplate) -> None:
+    """Probe every continuation the spec decides, then roll back, append system and inject assistants."""
+    messages = build_initial_messages()
+    call = await driver.chat(messages, label="Initial", need_tool_call=True)
+    driver.events.append("initial")
+    steps = iter(spec_probe_steps(fixed))
+
+    for role in _PROBE_ROLES_AFTER_TOOL_CALL:
+        if role not in fixed.allowed_append_roles:
+            continue
+        probe = _PROBE_MESSAGES[role]
+        expected = _ACCEPTED if role in fixed.roles_after_tool_call else _REFUSED
+        reply = await driver.probe([*messages, call, probe], label=next(steps), expected_status=expected)
+        driver.events.append(f"probe_{role}_after_tool_call")
+        if reply is None:
+            continue  # refused: the session still ends at `call`
+        messages.extend([call, probe])
+        if not reply.get("tool_calls"):
+            driver.append_user(messages, reply, driver.next_city_question())
+            reply = await driver.chat(messages, label=f"Tool call after {role}", need_tool_call=True)
+        call = reply
+
+    driver.append_tool_results(messages, call)
+    reply = await driver.settle(messages, await driver.chat(messages, label="Tool result"))
+
+    driver.append_user(messages, reply, NO_TOOL_CALL_USER_TEXT)
+    answer = await driver.chat(messages, label="No tool call", extra_kwargs=NO_TOOL_CALL_REQUEST_ARGS)
+    assert not answer.get("tool_calls"), f"tool_choice='none' still returned tool_calls={answer['tool_calls']}"
+    driver.events.append("no_tool_call")
+    expected = _ACCEPTED if "tool" in fixed.roles_after_no_tool_call else _REFUSED
+    reply = await driver.probe(
+        [*messages, answer, _SENTINEL_TOOL_MESSAGE], label=next(steps), expected_status=expected
+    )
+    driver.events.append("probe_tool_after_no_tool_call")
+    if reply is None:
+        driver.append_user(messages, answer, driver.next_city_question())
+        reply = await driver.chat(messages, label="User after refused tool")
+    else:
+        messages.extend([answer, _SENTINEL_TOOL_MESSAGE])
+
+    # Re-sending the request that produced `reply` makes the server roll it back and
+    # regenerate; doing it twice covers a rollback right after a rollback.
+    for _ in range(2):
+        reply = await driver.chat(messages, label="Rollback")
+        driver.counters["rollback_count"] += 1
+        driver.events.append("rollback")
+
+    if "system" in fixed.roles_after_no_tool_call:
+        reply = await driver.settle(messages, reply)
+        messages.extend([reply, {"role": "system", "content": SYSTEM_REMINDER_TEXT}])
+        driver.counters["system_count"] += 1
+        driver.events.append("append_system")
+        reply = await driver.chat(messages, label="System message")
+
+    # Injected assistants come last: they are prompt messages, not generated
+    # checkpoints, so rolling back across them is a separate contract.
+    if "assistant" in fixed.roles_after_no_tool_call:
+        reply = await driver.settle(messages, reply)
+        messages.extend([reply, *({"role": "assistant", "content": text} for text in ASSISTANT_INPUT_TEXTS)])
+        messages.append({"role": "user", "content": ASSISTANT_INPUT_FOLLOWUP_TEXT})
+        driver.counters["assistant_input_count"] += len(ASSISTANT_INPUT_TEXTS)
+        driver.counters["user_count"] += 1
+        driver.events.append("append_assistant")
+        await driver.chat(messages, label="Assistant input")
+
+
+def _assert_spec_rollout_supported(tito_model: str, fixed: FixedTemplate) -> None:
+    # The spec rollout returns to a tool call with a user question after an answer.
+    if "user" not in fixed.roles_after_no_tool_call:
+        raise ValueError(
+            f"the spec rollout needs 'user' after an assistant without tool calls; "
+            f"{tito_model!r} accepts only {sorted(fixed.roles_after_no_tool_call)} there"
+        )
+
+
+def _session_verify_kind(metadata: dict) -> SessionVerifyKind:
+    if SESSION_VERIFY_KIND_KEY not in metadata:
+        raise ValueError(f"session verification needs {SESSION_VERIFY_KIND_KEY!r} in the sample metadata")
+    return SessionVerifyKind(metadata[SESSION_VERIFY_KIND_KEY])
 
 
 @_journal_verifier_assertions("session_verify_agent.run_agent")
 async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
-    """Custom-agent entry point.  Returns ``{"driver_events": [...], **counters}``.
+    """Custom-agent entry point.  Returns ``{"driver_events": [...], EXPECTATIONS_KEY: [...], **counters}``.
 
-    ``tito_model`` must be present in ``metadata`` (the ``generate`` wrapper
-    below injects it from ``args.tito_model``).  The driver schedule is derived
-    from that family's ``FixedTemplate.allowed_append_roles``.
-    ``prompt`` is ignored — the driver synthesizes its own initial conversation
-    from ``build_initial_messages`` so runs are reproducible.
+    ``metadata`` must carry ``tito_model`` (the ``generate`` wrapper below
+    injects it from ``args.tito_model``) and ``session_verify_kind`` (from the
+    prompt record).  ``prompt`` is ignored: both rollouts start from
+    ``build_initial_messages`` so runs are reproducible.
     """
     tito_model = metadata.get("tito_model")
     if tito_model is None:
         raise ValueError("session_verify_agent.run_agent requires tito_model in metadata")
-    allowed_roles = fixed_template_append_roles(tito_model)
-    cycles = metadata.get("session_verify_cycles", DEFAULT_CYCLES)
-    schedule = select_schedule(allowed_roles, cycles=cycles)
-
-    failure_mode = ToolCallFailureMode(metadata.get("tool_call_failure_mode", DEFAULT_TOOL_CALL_FAILURE_MODE))
-    # APPEND_USER injects a user message, so the fixed template must support it.
-    # Refuse up front instead of silently downgrading.
-    if failure_mode is ToolCallFailureMode.APPEND_USER and "user" not in allowed_roles:
-        raise ValueError(
-            f"tool_call_failure_mode=APPEND_USER requires the {tito_model!r} fixed template "
-            f"to support 'user', got {sorted(allowed_roles)}. Pick ROLLBACK (universal) or APPEND_TOOL "
-            "(lenient-template) for tool-only surfaces."
-        )
+    kind = _session_verify_kind(metadata)
+    fixed = fixed_template(tito_model)
+    if kind is SessionVerifyKind.SPEC:
+        _assert_spec_rollout_supported(tito_model, fixed)
 
     rk = {k: v for k, v in request_kwargs.items() if k not in ("tools",)}
-    messages = build_initial_messages()
-    events: list[str] = []
-    counters = {
-        "rollback_count": 0,
-        "user_count": 0,
-        "system_count": 0,
-        "assistant_input_count": 0,
-        "tool_result_count": 0,
-        "tool_call_count": 0,
-    }
-    # Streak of TOOL_RESULT steps that fell into the ROLLBACK fallback without
-    # the model recovering to a real tool_call.  Reset on any successful
-    # tool_call; gated by MAX_CONSECUTIVE_TOOL_CALL_FAILURE_ROLLBACKS to keep
-    # silently-stuck samples from burning wall-time.
-    consecutive_failure_rollbacks = 0
-
     async with httpx.AsyncClient(timeout=180) as client:
-        # Initial completion — no driver action yet.
-        resp = await _chat_complete(client, base_url, messages, rk, label="Initial")
-        assistant = resp["choices"][0]["message"]
-        messages.append(assistant)
-        events.append("initial")
-        counters["tool_call_count"] += len(assistant.get("tool_calls") or [])
+        driver = _Driver(client=client, base_url=base_url, request_kwargs=rk)
+        if kind is SessionVerifyKind.SPEC:
+            await _run_spec(driver, fixed)
+        else:
+            await _run_normal(driver, cycles=metadata.get("session_verify_cycles", DEFAULT_CYCLES))
 
-        for step_idx, action in enumerate(schedule):
-            label = f"Step {step_idx + 1} {action.value}"
-
-            # Answer a tool call before a step that appends another turn:
-            # strict renderers (DeepSeek V4 / V4.1) reject an unanswered call.
-            if action not in (DriverAction.TOOL_RESULT, DriverAction.ROLLBACK) and assistant.get("tool_calls"):
-                _append_tool_results(messages, assistant["tool_calls"], counters)
-                events.append("append_tool")
-
-            if action is DriverAction.TOOL_RESULT:
-                tool_calls = assistant.get("tool_calls") or []
-                if tool_calls:
-                    consecutive_failure_rollbacks = 0
-                    _append_tool_results(messages, tool_calls, counters)
-                    events.append("append_tool")
-                else:
-                    # Model emitted no tool_calls — apply the configured fallback.
-                    # Templates differ on what role may follow a "no tool_calls"
-                    # assistant:
-                    #   - GLM / Nemotron (lenient): a tool message is fine -> APPEND_TOOL.
-                    #   - Kimi: a tool message must carry the id from a valid
-                    #     tool_call, which we don't have -> APPEND_TOOL not OK.
-                    #   - MiniMax: a tool message must follow an assistant with
-                    #     non-empty tool_calls -> APPEND_TOOL not OK.
-                    # If APPEND_TOOL not ok, use APPEND_USER as instead.
-                    match failure_mode:
-                        case ToolCallFailureMode.APPEND_TOOL:
-                            messages.append(
-                                {
-                                    "role": "tool",
-                                    "tool_call_id": "none",
-                                    "content": TOOL_CALL_PARSE_FAILURE_TEXT,
-                                }
-                            )
-                            events.append("tool_call_failure_append_tool")
-                        case ToolCallFailureMode.APPEND_USER:
-                            messages.append({"role": "user", "content": TOOL_CALL_PARSE_FAILURE_TEXT})
-                            counters["user_count"] += 1
-                            events.append("tool_call_failure_append_user")
-                        case ToolCallFailureMode.ROLLBACK:
-                            # Same as the schedule's ROLLBACK
-                            assert messages and messages[-1]["role"] == "assistant", (
-                                f"tool_call_failure_mode=ROLLBACK: tail role is "
-                                f"{messages[-1]['role'] if messages else 'EMPTY'}, expected assistant"
-                            )
-                            consecutive_failure_rollbacks += 1
-                            if consecutive_failure_rollbacks > MAX_CONSECUTIVE_TOOL_CALL_FAILURE_ROLLBACKS:
-                                raise AssertionError(
-                                    f"ROLLBACK fallback hit {consecutive_failure_rollbacks} consecutive "
-                                    f"tool_call failures (limit={MAX_CONSECUTIVE_TOOL_CALL_FAILURE_ROLLBACKS}). "
-                                    "Model is not tool-calling on this prompt — check sampling temperature, "
-                                    "the tool spec, or switch tool_call_failure_mode to APPEND_TOOL/APPEND_USER "
-                                    "if sentinel-driven retry is preferred."
-                                )
-                            messages.pop()
-                            counters["rollback_count"] += 1
-                            events.append("tool_call_failure_rollback")
-                        case _:
-                            raise AssertionError(f"Unknown ToolCallFailureMode {failure_mode!r}")
-
-            elif action is DriverAction.USER_FOLLOWUP:
-                messages.append({"role": "user", "content": USER_FOLLOWUP_TEXT})
-                counters["user_count"] += 1
-                events.append("append_user")
-
-            elif action is DriverAction.SYSTEM_REMINDER:
-                messages.append({"role": "system", "content": SYSTEM_REMINDER_TEXT})
-                counters["system_count"] += 1
-                events.append("append_system")
-
-            elif action is DriverAction.ASSISTANT_INPUT:
-                messages.extend({"role": "assistant", "content": text} for text in ASSISTANT_INPUT_TEXTS)
-                messages.append({"role": "user", "content": ASSISTANT_INPUT_FOLLOWUP_TEXT})
-                counters["assistant_input_count"] += len(ASSISTANT_INPUT_TEXTS)
-                counters["user_count"] += 1
-                events.append("append_assistant")
-
-            elif action is DriverAction.ROLLBACK:
-                # Pop the last assistant from our local copy.  The next
-                # request therefore has one fewer message than what the
-                # server has stored, which is the trigger for its
-                # ``_detect_and_rollback`` path — the server rewinds its
-                # state, then re-inferences.
-                if not messages or messages[-1]["role"] != "assistant":
-                    raise AssertionError(
-                        f"Cannot rollback at step {step_idx}: tail role is "
-                        f"{messages[-1]['role'] if messages else 'EMPTY'}, expected assistant"
-                    )
-                messages.pop()
-                counters["rollback_count"] += 1
-                events.append("rollback")
-
-            elif action is DriverAction.FORCE_FINAL:
-                messages.append({"role": "user", "content": FORCE_FINAL_TEXT})
-                events.append("force_final")
-
-            else:
-                raise AssertionError(f"Unknown DriverAction {action!r}")
-
-            resp = await _chat_complete(client, base_url, messages, rk, label=label)
-            assistant = resp["choices"][0]["message"]
-            messages.append(assistant)
-            counters["tool_call_count"] += len(assistant.get("tool_calls") or [])
-
-    logger.info("Agent done: events=%s counters=%s", events, counters)
-
-    return {"driver_events": events, **counters}
+    logger.info("Agent done: kind=%s events=%s expectations=%s", kind, driver.events, driver.expectations)
+    return {"driver_events": driver.events, EXPECTATIONS_KEY: driver.expectations, **driver.counters}
 
 
-def _verify_tito_samples(samples, events_per_sample, *, allowed_roles) -> None:
+def _verify_tito_samples(samples, *, kind: SessionVerifyKind) -> None:
     """Record every sample and defer hard failures to the run-level gate.
 
     The rollout loop treats custom-generate exceptions as retryable sample
-    failures.  With a metrics sidecar, hard TITO mismatches must therefore be
-    persisted instead of raised here and discarded with the sample.  Direct
-    callers without a sidecar retain the immediate-failure behavior.
+    failures.  With a metrics sidecar, hard TITO mismatches and unmet spec
+    expectations must therefore be persisted instead of raised here and
+    discarded with the sample.  Direct callers without a sidecar retain the
+    immediate-failure behavior.
     """
     metrics_path = os.environ.get("MILES_SESSION_VERIFY_METRICS_PATH")
     for i, sample in enumerate(samples):
@@ -455,105 +475,91 @@ def _verify_tito_samples(samples, events_per_sample, *, allowed_roles) -> None:
         forbidden = [m for m in mismatches if m.get("type") in _FORBIDDEN_MISMATCH_TYPES]
         if forbidden:
             logger.error("Hard TITO mismatch: leaf=%r mismatches=%r", sample.metadata.get("leaf"), forbidden)
-        assistant_mismatches = [m for m in mismatches if m.get("type") == "assistant_text"]
+        expectations = sample.metadata.get(EXPECTATIONS_KEY) or []
+        unmet = [e for e in expectations if e["actual_status"] != e["expected_status"]]
         if metrics_path:
-            had_assistant_mismatch = bool(assistant_mismatches)
-            assistant_example = None
-            if assistant_mismatches:
-                first = assistant_mismatches[0]
-                assistant_example = {
-                    "segment_index": first.get("segment_index"),
-                    "expected_text": (first.get("expected_text") or "")[:300],
-                    "actual_text": (first.get("actual_text") or "")[:300],
-                }
-            hard_example = None
-            if forbidden:
-                first = forbidden[0]
-                hard_example = {
-                    "type": first.get("type"),
-                    "segment_index": first.get("segment_index"),
-                    "detail": str(first.get("detail") or "")[:500],
-                }
-            entry = {
-                "sample_index": i,
-                "driver_events": events_per_sample[i],
-                "had_assistant_mismatch": had_assistant_mismatch,
-                "total_mismatches": len(mismatches),
-                "assistant_mismatch_count": len(assistant_mismatches),
-                "assistant_mismatch_example": assistant_example,
-                "hard_mismatch_count": len(forbidden),
-                "hard_mismatch_types": sorted({m.get("type") for m in forbidden}),
-                "hard_mismatch_example": hard_example,
-            }
-            _append_session_verify_record(entry)
-        elif forbidden:
+            _append_session_verify_record(_sample_record(i, sample, kind, mismatches, forbidden, expectations))
+        elif forbidden or unmet:
             raise AssertionError(
-                f"Session multi-role e2e: sample {i} has forbidden mismatches "
-                f"{forbidden}. allowed_roles={allowed_roles}.  These types must be 0 "
-                f"for any TITO-correct setup."
+                f"Session multi-role e2e: {kind} sample {i} has forbidden mismatches {forbidden} "
+                f"and unmet spec expectations {unmet}.  Both must be empty for any TITO-correct setup."
             )
+
+
+def _sample_record(index, sample, kind, mismatches, forbidden, expectations) -> dict:
+    assistant_mismatches = [m for m in mismatches if m.get("type") == "assistant_text"]
+    assistant_example = None
+    if assistant_mismatches:
+        first = assistant_mismatches[0]
+        assistant_example = {
+            "segment_index": first.get("segment_index"),
+            "expected_text": (first.get("expected_text") or "")[:300],
+            "actual_text": (first.get("actual_text") or "")[:300],
+        }
+    hard_example = None
+    if forbidden:
+        first = forbidden[0]
+        hard_example = {
+            "type": first.get("type"),
+            "segment_index": first.get("segment_index"),
+            "detail": str(first.get("detail") or "")[:500],
+        }
+    return {
+        "sample_index": index,
+        "kind": str(kind),
+        "driver_events": sample.metadata.get("driver_events", []),
+        "expectations": expectations,
+        "had_assistant_mismatch": bool(assistant_mismatches),
+        "total_mismatches": len(mismatches),
+        "assistant_mismatch_count": len(assistant_mismatches),
+        "assistant_mismatch_example": assistant_example,
+        "hard_mismatch_count": len(forbidden),
+        "hard_mismatch_types": sorted({m.get("type") for m in forbidden}),
+        "hard_mismatch_example": hard_example,
+    }
 
 
 @_journal_verifier_assertions("session_verify_agent.generate")
 async def generate(input: GenerateFnInput) -> GenerateFnOutput:
-    """Custom-generate wrapper that asserts driver-action coverage.
+    """Custom-generate wrapper that records each sample and checks rollout coverage.
 
-    - Per-sample: every sample must contain ``rollback``, plus ``append_user``
-      / ``append_system`` / ``append_assistant`` when those roles are allowed.
-    - Cross-sample: at least one sample must contain ``append_tool``
-      (model-dependent on emitting a tool_call).
+    - Spec samples must carry one expectation per probe of the family, in order.
+    - Without a metrics sidecar, at least one normal sample must have answered
+      a tool call (with one, the runner checks this across the run).
     """
     tito_model = input.args.tito_model
-    allowed_roles = list(fixed_template_append_roles(tito_model))
+    kind = _session_verify_kind(input.sample.metadata)
     cycles = getattr(
         input.args, "session_verify_cycles", DEFAULT_CYCLES
-    )  # config-access-exempt: optional custom session-verification hook argument
-    failure_mode = getattr(
-        input.args, "tool_call_failure_mode", DEFAULT_TOOL_CALL_FAILURE_MODE
     )  # config-access-exempt: optional custom session-verification hook argument
     # Sample.metadata is mutable even when the outer dataclass is frozen.
     input.sample.metadata["tito_model"] = tito_model
     input.sample.metadata["session_verify_cycles"] = cycles
-    input.sample.metadata["tool_call_failure_mode"] = failure_mode
 
     output = await _base_generate(input)
 
     samples = output.samples if isinstance(output.samples, list) else [output.samples]
-    events_per_sample = [s.metadata.get("driver_events", []) for s in samples]
-    metrics_path = os.environ.get("MILES_SESSION_VERIFY_METRICS_PATH")
-
     if not samples:
         raise AssertionError("Session multi-role e2e: generate returned no samples")
-    _verify_tito_samples(samples, events_per_sample, allowed_roles=allowed_roles)
+    _verify_tito_samples(samples, kind=kind)
 
-    required_per_sample = ["rollback"]
-    if "user" in allowed_roles:
-        required_per_sample.append("append_user")
-    if "system" in allowed_roles:
-        required_per_sample.append("append_system")
-    if "assistant" in allowed_roles:
-        required_per_sample.append("append_assistant")
-
-    for i, events in enumerate(events_per_sample):
-        missing = [req for req in required_per_sample if req not in events]
-        if missing:
-            raise AssertionError(
-                f"Session multi-role e2e: sample {i} missing required driver events "
-                f"{missing}. allowed_roles={allowed_roles}, events={events}"
-            )
-
-    if not metrics_path and not any("append_tool" in events for events in events_per_sample):
+    if kind is SessionVerifyKind.SPEC:
+        steps = spec_probe_steps(fixed_template(tito_model))
+        for i, sample in enumerate(samples):
+            recorded = [e["step"] for e in sample.metadata.get(EXPECTATIONS_KEY) or []]
+            if recorded != steps:
+                raise AssertionError(
+                    f"Session multi-role e2e: spec sample {i} recorded probes {recorded}, expected {steps}"
+                )
+    elif not os.environ.get("MILES_SESSION_VERIFY_METRICS_PATH") and not any(
+        "append_tool" in sample.metadata.get("driver_events", []) for sample in samples
+    ):
         raise AssertionError(
             "Session multi-role e2e: no sample produced an append_tool action — "
-            f"the model may not be tool-calling.  events_per_sample={events_per_sample}"
+            f"the model may not be tool-calling.  events={[s.metadata.get('driver_events') for s in samples]}"
         )
 
-    logger.info(
-        "Multi-role coverage verified: per_sample=%s, samples=%d, events=%s",
-        required_per_sample,
-        len(samples),
-        events_per_sample,
-    )
+    logger.info("Session verification %s rollout recorded %d samples", kind, len(samples))
     return output
 
 
@@ -563,23 +569,11 @@ def _add_arguments(parser):
         "--session-verify-cycles",
         type=int,
         default=DEFAULT_CYCLES,
-        help="Number of driver schedule cycles per sample for session-server "
-        "TITO verification.  Each cycle exercises recurrent role actions plus "
-        "a rollback; assistant input is exercised once as the terminal action. "
-        "More cycles stress the TITO accumulator longer but expand context "
+        help="Length of the normal session-verification rollout: each cycle is two "
+        "continuations (a tool answer after a tool call, a user question after an "
+        "answer).  More cycles stress the TITO accumulator longer but expand context "
         "length.  Drop to 2 on tighter-context models (e.g. Qwen3 32K with 4K "
         "response budget).",
-    )
-    parser.add_argument(
-        "--tool-call-failure-mode",
-        type=str,
-        default=DEFAULT_TOOL_CALL_FAILURE_MODE.value,
-        choices=[m.value for m in ToolCallFailureMode],
-        help="Recovery mode when a TOOL_RESULT step sees no tool_calls on the "
-        "assistant.  'rollback' (default, universal) pops the assistant and "
-        "re-inferences.  'append_tool' splices a sentinel tool message (only "
-        "works on lenient templates).  'append_user' splices a user message "
-        "with the same failure text — requires the fixed template to support 'user'.",
     )
 
 

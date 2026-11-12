@@ -26,7 +26,6 @@ CONFIG = ModelConfig(
     kv_cache_dtype="fp8_e4m3",
     mamba_full_memory_ratio=4.59,
     cycles=2,
-    tool_call_failure_mode="append_tool",
     # OpenAI assistant_text drift is sampling noise here: 0-7/32 per rollout over
     # 46 nightly passes (median 2/32); 7/32 tripped the 0.2 default once.
     assistant_text_threshold=0.3,

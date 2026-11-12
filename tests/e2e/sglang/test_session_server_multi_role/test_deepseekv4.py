@@ -24,10 +24,6 @@ CONFIG = ModelConfig(
     enable_spec=True,
     cycles=2,
     assistant_text_threshold=0.05,
-    # V4 sorts tool_result blocks by the preceding assistant's tool_calls
-    # order, so a sentinel tool_call_id would not roundtrip; use the
-    # universal rollback recovery when the model emits no tool_calls.
-    tool_call_failure_mode="rollback",
     anthropic_intermediate_system_expectation="forbidden",
 )
 
