@@ -613,7 +613,7 @@ memory is set by the shard, pipeline and tensor degrees together; MoE dispatch b
 replication alone does not.
 
 On TPU each transformer block is compiled with `torch.compile(fullgraph=True)`, microbatches are
-padded to power-of-two lengths up to `--seq-length`, and `--max-tokens-per-gpu` may not exceed
+padded to `--seq-length`, and `--max-tokens-per-gpu` may not exceed
 `--seq-length` (`miles/backends/torchtitan_utils/arguments.py`). `scripts/tpu/README.md` runs it.
 
 `--titan-fsdp-gather-once` sets torchtitan's `fsdp_reshard_after_forward="never"` and

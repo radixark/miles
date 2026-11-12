@@ -190,7 +190,7 @@ class TrainConfig(BaseConfig):
         bool,
         Arg(
             help=(
-                "Compile every training pass for every length bucket on a synthetic batch at the end of the "
+                "Compile every training pass on a synthetic batch at the end of the "
                 "trainer's init, while the rollout engines start, instead of during the first train step. For "
                 "platforms that compile one program per static shape (TPU)."
             )

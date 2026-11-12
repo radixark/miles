@@ -147,7 +147,7 @@ def test_a_tpu_microbatch_cannot_outgrow_the_largest_length_bucket(monkeypatch, 
 
 
 def test_tpu_sequence_length_is_a_whole_number_of_attention_blocks(monkeypatch, on_tpu):
-    """The largest length bucket is --seq-length, and the TPU attention kernel reshapes it into 1024-token blocks."""
+    """Every microbatch pads to --seq-length, which the TPU attention kernel reshapes into 1024-token blocks."""
     monkeypatch.setattr(torch, "__version__", "2.14.0")
     with pytest.raises(ValueError, match="seq-length 3000 must be a multiple of 1024"):
         validate_torchtitan_args(_tpu_args(seq_length=3000, max_seq_len=None, rollout_max_response_len=2048))
@@ -183,18 +183,8 @@ def test_gpu_validation_ignores_the_tpu_limits(monkeypatch):
     )
 
 
-@pytest.mark.parametrize("seq_len", [1000, 1024, 3000, 8192])
-def test_the_recompile_limit_counts_every_length_bucket(seq_len):
-    """A bucket the limit misses is one compile too many, which a fullgraph block turns into a crash."""
-    from miles.utils.data import fixed_shape_length_bucket, fixed_shape_length_buckets
-
-    buckets = {fixed_shape_length_bucket(n, seq_len) for n in range(1, seq_len + 1)}
-    assert buckets == fixed_shape_length_buckets(seq_len)
-    assert max(buckets) == seq_len
-
-
-@pytest.mark.parametrize(("n_tokens", "padded"), [(1, 1024), (1024, 1024), (1025, 2048), (5000, 8192), (8192, 8192)])
-def test_a_static_shape_platform_pads_each_microbatch_to_a_length_bucket(monkeypatch, n_tokens, padded):
+@pytest.mark.parametrize("n_tokens", [1, 1024, 5000, 8192])
+def test_a_static_shape_platform_pads_each_microbatch_to_the_sequence_length(monkeypatch, n_tokens):
     pytest.importorskip("torchtitan")
     from miles.backends.torchtitan_utils.trainer import TitanTrainer
 
@@ -204,8 +194,8 @@ def test_a_static_shape_platform_pads_each_microbatch_to_a_length_bucket(monkeyp
     )
     assert TitanTrainer.padded_length(trainer, n_tokens) == n_tokens, "a dynamic-shape platform keeps the length"
     monkeypatch.setattr(platforms.current_platform, "dynamic_shapes", False)
-    assert TitanTrainer.padded_length(trainer, n_tokens) == padded
-    with pytest.raises(ValueError, match="largest length bucket"):
+    assert TitanTrainer.padded_length(trainer, n_tokens) == 8192
+    with pytest.raises(ValueError, match="the fixed shape every microbatch pads to"):
         TitanTrainer.padded_length(trainer, 8193)
 
 
@@ -251,11 +241,11 @@ def test_a_static_shape_platform_compiles_static_graphs_for_every_pass_and_bucke
 
         monkeypatch.setattr(platforms.current_platform, "dynamic_shapes", False)
         configure_fixed_shape_compile(num_passes=2)
-        # buckets 1024, 2048, 4096, 8192, and two block variants (dense and MoE) per class
-        assert torch._dynamo.config.recompile_limit == 2 * 2 * 4
+        # one shape, and two block variants (dense and MoE) per class
+        assert torch._dynamo.config.recompile_limit == 2 * 2
         assert not torch._dynamo.config.automatic_dynamic_shapes
         configure_fixed_shape_compile(num_passes=3)
-        assert torch._dynamo.config.recompile_limit == 2 * 3 * 4
+        assert torch._dynamo.config.recompile_limit == 2 * 3
 
 
 def test_context_parallelism_is_rejected_for_qwen3_5(monkeypatch):

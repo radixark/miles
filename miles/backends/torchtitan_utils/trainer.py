@@ -15,7 +15,6 @@ from torchtitan.training_engine import TrainingEngine
 from miles import platforms
 from miles.backends.torchtitan_utils import routing_replay
 from miles.backends.training_utils.torch_native.step_runner import StepMetrics
-from miles.utils.data import fixed_shape_length_bucket, fixed_shape_length_buckets
 
 _FLEX_BLOCK = 128
 _CP_LENGTH_BUCKET = 1024
@@ -83,22 +82,15 @@ class TitanTrainer(Configurable):
         return self.engine.num_completed_steps
 
     def padded_length(self, n_tokens: int) -> int:
-        if self.parallelism.pp_enabled:
+        if self.parallelism.pp_enabled or not platforms.current_platform.dynamic_shapes:
+            # PP stages exchange one shape, and a fixed-shape platform compiles a program per shape
             target = self.config.training.max_context_length
             if n_tokens > target:
                 raise ValueError(
-                    f"packed microbatch of {n_tokens} tokens exceeds --seq-length "
-                    f"{target}, which is the fixed shape PP stages exchange"
+                    f"packed microbatch of {n_tokens} tokens exceeds --seq-length {target}, the fixed shape every "
+                    "microbatch pads to"
                 )
             return target
-        if not platforms.current_platform.dynamic_shapes:
-            # one compiled program per shape, so microbatches pad to a few power-of-two buckets
-            target = self.config.training.max_context_length
-            if n_tokens > target:
-                raise ValueError(
-                    f"packed microbatch of {n_tokens} tokens exceeds --seq-length {target}, the largest length bucket"
-                )
-            return fixed_shape_length_bucket(n_tokens, target)
         if self.parallelism.cp_enabled:
             align = max(self.parallelism.cp * _FLEX_BLOCK, _CP_LENGTH_BUCKET)
             return n_tokens + (align - n_tokens % align) % align
@@ -251,14 +243,14 @@ class TitanTrainer(Configurable):
         self.loss_fn.set_context_parallel(self.parallelism.get_mesh("cp"))
 
     def configure_fixed_shape_compile(self, *, num_passes: int) -> None:
-        """Each pass compiles once per length bucket; fullgraph blocks fail past dynamo's recompile limit."""
+        """Each pass compiles once for the fixed shape; fullgraph blocks fail past dynamo's recompile limit."""
         if platforms.current_platform.dynamic_shapes:
             return
         # a second length would otherwise make dynamo mark the dimension dynamic, which the backend rejects
         torch._dynamo.config.automatic_dynamic_shapes = False
         # blocks of one class share a forward, and a class can guard on a per-block flag (DeepSeek-V3-style dense
-        # first layers before MoE ones), so each class may hold two graphs per pass and bucket
-        num_graphs = 2 * num_passes * len(fixed_shape_length_buckets(self.config.training.max_context_length))
+        # first layers before MoE ones), so each class may hold two graphs per pass
+        num_graphs = 2 * num_passes
         torch._dynamo.config.recompile_limit = max(torch._dynamo.config.recompile_limit, num_graphs)
 
     def has_last_stage(self) -> bool:
