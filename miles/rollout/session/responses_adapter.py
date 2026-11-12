@@ -39,12 +39,13 @@ def _responses_error_response(status_code: int, message: str) -> Response:
 
 def _responses_error_message(body: bytes) -> str:
     try:
-        error = json.loads(body).get("error")
+        payload = json.loads(body)
+        error = payload.get("error")
     except (ValueError, AttributeError):
         return body.decode("utf-8", "replace")
     if isinstance(error, dict):
         return str(error.get("message", error))
-    return str(error)
+    return str(error or payload.get("message") or payload.get("detail") or payload)
 
 
 def _responses_text(content) -> str:

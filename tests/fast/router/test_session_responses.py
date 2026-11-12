@@ -6,12 +6,13 @@ from unittest.mock import patch
 
 import pytest
 import requests
+from fastapi.responses import JSONResponse
 from tests.fast.fixtures.session_fixtures import make_session_server_config
 
 from miles.rollout.session import responses_adapter
 from miles.rollout.session.server import SessionServer
 from miles.utils.http_utils import find_available_port
-from miles.utils.test_utils.mock_sglang_server import ProcessResult, with_mock_server
+from miles.utils.test_utils.mock_sglang_server import MockSGLangServer, ProcessResult, with_mock_server
 from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
 
 _WEATHER_CALL = '<tool_call>\n{"name": "get_weather", "arguments": {"city": "Paris", "unit": "C"}}\n</tool_call>'
@@ -243,6 +244,20 @@ class TestResponsesRoute:
 
         assert resp.status_code == 501
         assert _records(env.url, session_id) == []
+
+    def test_sglang_error_body_keeps_its_message(self, env):
+        session_id = _create_session(env.url)
+        error = {"object": "error", "message": "Requested token count exceeds", "type": "BadRequestError", "code": 400}
+
+        async def reject(self, request, compute_fn):
+            return JSONResponse(content={**error, "param": None}, status_code=400)
+
+        with patch.object(MockSGLangServer, "_handle_generate_like_request", new=reject):
+            resp = _post(env.url, session_id, {"model": "m", "input": "hello"})
+
+        assert resp.status_code == 400
+        assert resp.json()["error"]["message"] == "Requested token count exceeds"
+        assert resp.json()["error"]["type"] == "invalid_request_error"
 
     def test_unknown_session_wears_responses_error(self, env):
         resp = _post(env.url, "missing", {"model": "m", "input": "hello"})
