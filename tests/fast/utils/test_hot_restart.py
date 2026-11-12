@@ -134,6 +134,9 @@ class _FakeInferenceController:
     async def abort_update_weights(self) -> None:
         self.calls.append("abort_update_weights")
 
+    async def give_back_eval_pinned_cells(self) -> None:
+        self.calls.append("give_back_eval_pinned_cells")
+
     async def abort_all(self) -> None:
         self.calls.append("abort_all")
         await self._maybe_hang()
@@ -449,6 +452,7 @@ class TestTheInferenceSideIsInitedOrReset:
             "is_initialized",
             "wait_idle",
             "abort_update_weights",
+            "give_back_eval_pinned_cells",
             "wait_expected_num_cells",
             "abort_all",
         ]
@@ -675,6 +679,9 @@ class _WireInferenceController:
     async def abort_update_weights(self) -> None:
         self.calls.append("abort_update_weights")
 
+    async def give_back_eval_pinned_cells(self) -> None:
+        self.calls.append("give_back_eval_pinned_cells")
+
     async def abort_all(self) -> None:
         self.calls.append("abort_all")
 
@@ -693,7 +700,10 @@ class TestTheTakeOverSurfaceCrossesTheWire:
         [
             (TrainerController, {"is_initialized", "load_state"}),
             (RolloutExecutor, {"get_init_state"}),
-            (InferenceController, {"is_initialized", "abort_all", "wait_expected_num_cells"}),
+            (
+                InferenceController,
+                {"is_initialized", "abort_all", "wait_expected_num_cells", "give_back_eval_pinned_cells"},
+            ),
         ],
     )
     def test_the_take_over_surface_is_exposed_over_rpc(self, worker_cls: type, methods: set[str]):
@@ -709,7 +719,13 @@ class TestATakeOverDrivesARealInferenceControllerOverTheWire:
         async with _handle_onto_running_worker(worker, _WireInferenceController) as handle:
             await init_or_reset_inference_controller(handle, args=_BROADCAST_ARGS, trainers=[])
 
-        assert worker.calls == ["is_initialized", "abort_update_weights", "wait_expected_num_cells", "abort_all"]
+        assert worker.calls == [
+            "is_initialized",
+            "abort_update_weights",
+            "give_back_eval_pinned_cells",
+            "wait_expected_num_cells",
+            "abort_all",
+        ]
 
     async def test_the_call_the_previous_script_left_running_is_waited_out_before_the_fleet_is_aborted(
         self, monkeypatch: pytest.MonkeyPatch

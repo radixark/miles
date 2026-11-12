@@ -10,8 +10,9 @@ from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.rollout.eval_fleet import EvalFleetInfo, EvalFleetPin, InferenceControllerEvalFleet
+from miles.ray.rollout.eval_pool import EvalPoolCarveOut, InferenceControllerEvalPool
 from miles.ray.rollout.rollout_server import RolloutServer, create_rollout_servers
-from miles.ray.rollout.router_manager import resolve_router_addrs
+from miles.ray.rollout.router_manager import resolve_router_addrs, wait_eval_pool_router_ready
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
 from miles.utils import async_utils
 from miles.utils.args.component_rollout import InferenceRuntimeImmutState
@@ -53,14 +54,17 @@ class InferenceController:
         *,
         engine_provider: BaseWorkerProvider,
         router_providers: Sequence[BaseWorkerProvider],
+        eval_pool_router_provider: BaseWorkerProvider | None = None,
     ) -> None:
         self._init_once = InitOnce(type(self).__name__)
         self.args = args
         self._engine_provider = engine_provider
         self._router_providers = router_providers
+        self._eval_pool_router_provider = eval_pool_router_provider
         self.context_lock = ContextLock("InferenceController")
         self.servers: dict[str, RolloutServer] = {}
-        self._eval_fleet: InferenceControllerEvalFleet | None = None
+        # the dedicated eval engines (--eval-num-gpus) or the engines carved out for eval (--eval-pool-num-engines)
+        self._eval_fleet: InferenceControllerEvalFleet | InferenceControllerEvalPool | None = None
         self._watcher_disposers: list[StopWatchFn] = []
         self._ticker: SimpleTicker | None = None
 
@@ -82,6 +86,11 @@ class InferenceController:
         )
         if "eval" in self.servers:
             self._eval_fleet = InferenceControllerEvalFleet(self.args, srv=self.servers["eval"])
+        if (provider := self._eval_pool_router_provider) is not None:
+            (srv,) = self.servers.values()
+            self._eval_fleet = InferenceControllerEvalPool(
+                self.args, srv=srv, router=await wait_eval_pool_router_ready(provider=provider)
+            )
 
         self._watcher_disposers.append(await self._engine_provider.watch_cells(self._reconcile))
         self._ticker = SimpleTicker(self._tick_cells, interval_seconds=TICK_INTERVAL_SECONDS)
@@ -243,7 +252,7 @@ class InferenceController:
             engine_gpu_offsets=srv.engine_gpu_offsets,
             engine_cell_ids=srv.engine_cell_ids,
             snapshot_cell_id_to_hashes={
-                cell_id: cell.meta.workers_hash for cell_id, cell in srv.normal_server_cells.items()
+                cell_id: cell.meta.workers_hash for cell_id, cell in srv.weight_receiver_cells.items()
             },
             receiver_pool=receiver_pool,
         )
@@ -302,7 +311,7 @@ class InferenceController:
         deadline = time.monotonic() + CELLS_READY_TIMEOUT_SECONDS
         while True:
             cells = [
-                cell for srv in self._get_servers_of_model_id(model_id) for cell in srv.normal_server_cells.values()
+                cell for srv in self._get_servers_of_model_id(model_id) for cell in srv.weight_receiver_cells.values()
             ]
             if self.args.colocate:
                 await asyncio.gather(*[cell.init() for cell in cells if cell.is_uninitialized])
@@ -369,6 +378,25 @@ class InferenceController:
         if self._eval_fleet is None:
             raise ValueError("This run has no dedicated eval fleet")
         return await self._eval_fleet.check_version(weight_version)
+
+    @with_lock
+    async def carve_out_eval_pool(self) -> EvalPoolCarveOut:
+        assert isinstance(
+            self._eval_fleet, InferenceControllerEvalPool
+        ), "this run carves no engines out for eval (--eval-pool-num-engines is 0)"
+        return await self._eval_fleet.carve_out()
+
+    @with_lock
+    async def give_back_eval_pool(self) -> None:
+        assert isinstance(
+            self._eval_fleet, InferenceControllerEvalPool
+        ), "this run carves no engines out for eval (--eval-pool-num-engines is 0)"
+        await self._eval_fleet.give_back()
+
+    @with_lock
+    async def give_back_eval_pinned_cells(self) -> None:
+        """Unpin the cells a previous orchestration script left pinned for an eval it never finished."""
+        await async_utils.gather_and_raise_first([srv.give_back_eval_pinned_cells() for srv in self.servers.values()])
 
     # -------------------------- misc APIs -----------------------------
 

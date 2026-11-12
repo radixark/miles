@@ -41,7 +41,7 @@ def make_checksum_controller(
         or "default": SimpleNamespace(
             update_weights=True,
             all_server_cells=cells,
-            normal_server_cells=cells,
+            weight_receiver_cells=cells,
             health_checker_activeness=ActivenessTracker(active=True),
             api_clients=[object() for _ in cells],
             engine_gpu_counts=[1 for _ in cells],

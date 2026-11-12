@@ -15,6 +15,7 @@ from miles.ray.rollout.cell_state import (
     CellState,
     StateDisposed,
     StateErrored,
+    StateEvalPinned,
     StateInitializing,
     StatePendingWeights,
     StateServing,
@@ -80,7 +81,7 @@ class ServerCell:
 
     def _get_health_checker_active_and_epoch(self) -> ActiveAndEpoch:
         controller_active_and_epoch = self.health_checker_activeness()
-        cell_active = isinstance(self._state, (StatePendingWeights, StateServing))
+        cell_active = isinstance(self._state, (StatePendingWeights, StateServing, StateEvalPinned))
         return ActiveAndEpoch(
             active=cell_active and controller_active_and_epoch.active, epoch=controller_active_and_epoch.epoch
         )
@@ -105,6 +106,17 @@ class ServerCell:
                         CellCondition.allocated(TriState.TRUE),
                         CellCondition.from_health_checker_status(self._health_checker.status),
                         CellCondition.serving(TriState.TRUE if self.is_serving else TriState.FALSE),
+                    ],
+                    workers_hash=self.meta.workers_hash,
+                )
+
+            case StateEvalPinned():
+                return CellStatus(
+                    phase="Running",
+                    conditions=[
+                        CellCondition.allocated(TriState.TRUE),
+                        CellCondition.from_health_checker_status(self._health_checker.status),
+                        CellCondition.serving(TriState.TRUE),
                     ],
                     workers_hash=self.meta.workers_hash,
                 )
@@ -151,6 +163,10 @@ class ServerCell:
         return isinstance(self._state, StateServing)
 
     @property
+    def is_eval_pinned(self) -> bool:
+        return isinstance(self._state, StateEvalPinned)
+
+    @property
     def is_errored(self) -> bool:
         return isinstance(self._state, StateErrored)
 
@@ -160,7 +176,7 @@ class ServerCell:
 
     @property
     def addr_info(self) -> CellAddrInfo:
-        assert isinstance(self._state, (StateInitializing, StatePendingWeights, StateServing))
+        assert isinstance(self._state, (StateInitializing, StatePendingWeights, StateServing, StateEvalPinned))
         return self._state.addr_info
 
     @property
@@ -235,6 +251,27 @@ class ServerCell:
         await self._register_with_router(addr_info=self._state.addr_info)
         self._mark_serving()
 
+    async def pin_for_eval(self, eval_router_url: str) -> None:
+        """Move a serving cell from the training router to the eval router; its weights stay as they are."""
+        assert isinstance(self._state, StateServing), f"{self._state=}"
+        addr_info = self._state.addr_info
+        await self._unregister_from_router()
+        # Out of both routers until the eval router takes it; a failure here leaves it pending weights,
+        # so the next weight update brings it back to training.
+        self._change_state("pin_for_eval", StateServing, StatePendingWeights(addr_info=addr_info))
+        await _make_registry(eval_router_url).register(
+            worker_url=addr_info.server_url, worker_type=self.meta.worker_type, bootstrap_port=addr_info.bootstrap_port
+        )
+        self._change_state(
+            "pin_for_eval", StatePendingWeights, StateEvalPinned(addr_info=addr_info, eval_router_url=eval_router_url)
+        )
+
+    async def unpin_from_eval(self) -> None:
+        """Leave the eval router; the cell rejoins training only after the next weight update reaches it."""
+        assert isinstance(self._state, StateEvalPinned), f"{self._state=}"
+        await self._unregister_from_eval_router(self._state)
+        self._change_state("unpin_from_eval", StateEvalPinned, StatePendingWeights(addr_info=self._state.addr_info))
+
     async def _register_with_router(self, addr_info: CellAddrInfo) -> None:
         await self._registry.register(
             worker_url=addr_info.server_url,
@@ -253,7 +290,9 @@ class ServerCell:
             return
         await self._leave_service()
         self._change_state(
-            "mark_errored", (StatePendingWeights, StateServing), StateErrored(addr_info=self._state.addr_info)
+            "mark_errored",
+            (StatePendingWeights, StateServing, StateEvalPinned),
+            StateErrored(addr_info=self._state.addr_info),
         )
 
     async def dispose(self) -> None:
@@ -266,18 +305,37 @@ class ServerCell:
             self._health_checker.stop()
         self._change_state(
             "dispose",
-            (StateUninitialized, StateInitializing, StatePendingWeights, StateServing, StateErrored, StateDisposed),
+            (
+                StateUninitialized,
+                StateInitializing,
+                StatePendingWeights,
+                StateServing,
+                StateEvalPinned,
+                StateErrored,
+                StateDisposed,
+            ),
             StateDisposed(),
         )
 
     async def _leave_service(self) -> None:
         if self.is_serving:
             await self._unregister_from_router()
+        elif isinstance(self._state, StateEvalPinned):
+            await self._unregister_from_eval_router(self._state)
         self._health_checker.stop()
 
     async def _unregister_from_router(self) -> None:
         await retry_until_deadline(
             lambda _: self._registry.unregister(worker_url=self.server_url),
+            total_seconds=UNREGISTER_FROM_ROUTER_TIMEOUT,
+            attempt_seconds=SHUTDOWN_TIMEOUT,
+            retry_on=Exception,
+            log_fields={"cell": self.meta.cell_id},
+        )
+
+    async def _unregister_from_eval_router(self, state: StateEvalPinned) -> None:
+        await retry_until_deadline(
+            lambda _: _make_registry(state.eval_router_url).unregister(worker_url=state.addr_info.server_url),
             total_seconds=UNREGISTER_FROM_ROUTER_TIMEOUT,
             attempt_seconds=SHUTDOWN_TIMEOUT,
             retry_on=Exception,
@@ -331,6 +389,10 @@ class ServerCell:
         return await self.api_client.check_weights(
             action=action, allow_quant_error=allow_quant_error, selector=selector, skip_list=skip_list
         )
+
+
+def _make_registry(router_url: str) -> ServingRegistry:
+    return SGLangServingRegistry(client=SGLangRouterApiClient(router_url=router_url))
 
 
 def compute_nodes_per_engine(*, num_gpus_per_engine: int, num_gpus_per_node: int) -> int:

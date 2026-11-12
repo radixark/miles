@@ -103,13 +103,13 @@ class _RecordingServer:
         self._checksum_gate = checksum_gate
 
     @property
-    def normal_server_cells(self) -> dict:
+    def weight_receiver_cells(self) -> dict:
         return {cell_id: cell for cell_id, cell in self.all_server_cells.items() if not cell.is_errored}
 
     @property
     def engine_cells(self) -> list:
         self.engine_cells_calls += 1
-        return sorted(self.normal_server_cells.values(), key=lambda cell: cell.meta.gpu_offset)
+        return sorted(self.weight_receiver_cells.values(), key=lambda cell: cell.meta.gpu_offset)
 
     @property
     def api_clients(self) -> list:
@@ -154,7 +154,9 @@ class _RecordingServer:
 
     async def add_cell(self, cell_meta: ServerCellMetadata):
         self.calls.append(("add", cell_meta.cell_id))
-        self.all_server_cells[cell_meta.cell_id] = SimpleNamespace(meta=cell_meta, is_errored=False)
+        self.all_server_cells[cell_meta.cell_id] = SimpleNamespace(
+            meta=cell_meta, is_errored=False, is_eval_pinned=False
+        )
 
     async def remove_cell(self, cell_id: str):
         self.calls.append(("remove", cell_id))

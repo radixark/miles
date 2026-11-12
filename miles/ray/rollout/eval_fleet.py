@@ -17,6 +17,7 @@ from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.ray.specs.inference import inference_controller_worker_name
 from miles.rollout.checkpoint_eval import EvalSkip, retarget_args
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
+from miles.router.backend import make_router_backend
 from miles.utils.args.component_rollout import InferenceRuntimeMutState
 from miles.utils.http_utils import wait_http_ok
 from miles.utils.workers.rpc.client.misc import ServerRestartedError
@@ -27,6 +28,7 @@ from miles.utils.workers.worker_spec import HostAndPort
 logger = logging.getLogger(__name__)
 
 EVAL_WEIGHT_LOAD_TIMEOUT_SECS = 600.0
+_PROBE_ROUTING_KEY = "router-generate-probe"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -170,11 +172,23 @@ class InferenceControllerEvalFleet:
         async with self._srv.context_lock:
             return list(self._srv.api_clients)
 
-    async def _wait_router_ready(self, timeout: float = 180.0) -> None:
-        """After a revival the router 503s until its health cycle evicts the dead
-        worker; a retried one-token probe proves the route is usable before dispatch."""
-        await wait_http_ok(
-            f"http://{self._srv.router_ip}:{self._srv.router_port}/generate",
-            json_payload={"input_ids": [0], "sampling_params": {"max_new_tokens": 1, "temperature": 0}},
-            timeout=timeout,
+    async def _wait_router_ready(self) -> None:
+        await wait_router_generate_ready(
+            f"http://{self._srv.router_ip}:{self._srv.router_port}", headers=compute_probe_headers(self.args)
         )
+
+
+def compute_probe_headers(args: Namespace) -> dict[str, str]:
+    """A key-routed router (sgl-router manual / consistent_hashing) answers 400 to a request without a routing key."""
+    return make_router_backend(args).routing_headers(_PROBE_ROUTING_KEY, args.sglang.models)
+
+
+async def wait_router_generate_ready(router_url: str, *, headers: dict[str, str], timeout: float = 180.0) -> None:
+    """After a revival the router 503s until its health cycle evicts the dead
+    worker; a retried one-token probe proves the route is usable before dispatch."""
+    await wait_http_ok(
+        f"{router_url}/generate",
+        json_payload={"input_ids": [0], "sampling_params": {"max_new_tokens": 1, "temperature": 0}},
+        headers=headers,
+        timeout=timeout,
+    )

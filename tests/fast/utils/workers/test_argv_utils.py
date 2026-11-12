@@ -118,6 +118,7 @@ class TestConfigToArgv:
             port=30100,
             instance_id="abc",
             backend_url="http://127.0.0.1:30000",
+            eval_backend_url="http://127.0.0.1:30001",
             routing_key_header="X-SMG-Routing-Key",
             timeout=600.0,
             hf_checkpoint="/fake/model",

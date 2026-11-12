@@ -60,7 +60,7 @@ async def train(startup_info: OrchestratorStartupInfo, *, disposer: Disposer):
     if args.offload_rollout:
         await inference_controller.onload_kv()
 
-    eval_dispatcher = EvalDispatcher(args, actor_model, rollout_executor)
+    eval_dispatcher = EvalDispatcher(args, actor_model, rollout_executor, inference_controller)
     disposer.add(eval_dispatcher.drain)
 
     if args.eval_interval is not None and args.start_rollout_id == 0 and not args.skip_eval_before_train:
@@ -140,6 +140,9 @@ async def train(startup_info: OrchestratorStartupInfo, *, disposer: Disposer):
             await offload_train()
             if args.offload_rollout:
                 await inference_controller.onload_weights()
+        eval_due = should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch, args.num_rollout)
+        if eval_due:
+            await eval_dispatcher.make_room_before_weight_update(rollout_id, force=rollout_id == args.num_rollout - 1)
         if weight_update_due:
             if not args.fully_async:
                 # sync generate before update weights to prevent update weight in the middle of generation
@@ -155,7 +158,7 @@ async def train(startup_info: OrchestratorStartupInfo, *, disposer: Disposer):
             if rollout_id + 1 < args.num_rollout:
                 rollout_data_next_future = await eager_create_task(prepare_and_generate(rollout_id + 1))
 
-        if should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch, args.num_rollout):
+        if eval_due:
             await inference_controller.prepare_eval()
             await eval_dispatcher.dispatch(rollout_id, force=rollout_id == args.num_rollout - 1)
 

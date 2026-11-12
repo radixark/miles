@@ -414,6 +414,7 @@ def _build_server_config(
         lora_train_only=False,
         timeout=600.0,
         backend_url=backend_url,
+        eval_backend_url=None,
         routing_key_header="X-SMG-Routing-Key",
         host=ip,
         port=port,
