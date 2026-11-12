@@ -20,6 +20,7 @@ _EXAMPLES = Path(__file__).resolve().parents[3] / "examples"
 _ENV_READ = re.compile(r'(?:getenv|environ\.get|_env_flag|_env_int|_allowed_hosts)\(\s*"(\w+)"|environ\["(\w+)"\]')
 _CREDENTIALS = {name for spec in PROVIDER_CREDENTIALS.values() for name in spec["key_env_vars"]}
 _ROLLOUT_SIDE_ONLY = {"HARBOR_ADMIN_SECRET"}
+_IMPORT_PATH_VARS = {"HARBOR_AGENT_IMPORT_PATH", "HARBOR_VERIFIER_IMPORT_PATH"}
 _OPENENV_LOOP = ("openenv_agent_function.py", "openenv_sandbox_common.py", "tb2_sandbox_recipe.py")
 
 
@@ -66,7 +67,7 @@ def test_a_harness_declares_every_env_var_it_reads(monkeypatch, directory, modul
 def test_a_harness_env_reaches_its_agent_on_a_worker(monkeypatch, directory, module, sources):
     monkeypatch.syspath_prepend(_EXAMPLES / directory)
     importlib.import_module(module)
-    reads = sorted(_env_reads(_EXAMPLES / directory, sources) - _CREDENTIALS - _ROLLOUT_SIDE_ONLY)
+    reads = sorted(_env_reads(_EXAMPLES / directory, sources) - _CREDENTIALS - _ROLLOUT_SIDE_ONLY - _IMPORT_PATH_VARS)
     for name in reads:
         monkeypatch.setenv(name, f"set-{name}")
     extra_env = _worker_call_env(module)
