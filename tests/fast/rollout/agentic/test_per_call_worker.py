@@ -13,7 +13,7 @@ import pytest
 from aiohttp import web
 from examples.experimental.agent_sandbox import local_start
 from tests.fast.fixtures.hook_consumer_fixtures import _hook
-from tests.fast.rollout.generate_hub.test_agentic_v2 import _generate_input, _patch_agent, _Tracer
+from tests.fast.rollout.generate_hub.test_agentic_v2 import _generate_input, _patch_agent, _session_metadata, _Tracer
 from tests.fast.utils.output_store.test_dropped import sample_owning
 
 from miles.backends.megatron_utils.megatron_config import MegatronConfig
@@ -370,7 +370,10 @@ def test_an_abort_while_the_close_waits_for_a_thread_still_closes_the_sandbox(sa
 def _generate_on_started_worker(monkeypatch, instance_id: str):
     collected = sample_owning(f"collected-{instance_id}")
     collected.status = Sample.Status.COMPLETED
-    _patch_agent(monkeypatch, _Tracer(SamplesReply(samples=[collected], session_metadata={}, empty_reason=None)))
+    _patch_agent(
+        monkeypatch,
+        _Tracer(SamplesReply(samples=[collected], session_metadata=_session_metadata(), empty_reason=None)),
+    )
     monkeypatch.setattr(agentic_tool_call, "load_function", lambda path: stubs.report_pid)
     generate_input = _generate_input(
         custom_agent_function_path=None,
