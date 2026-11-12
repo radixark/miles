@@ -353,7 +353,10 @@ def test_on_an_existing_desktop_a_capture_command_takes_the_screenshot(desktop, 
 
 @pytest.mark.parametrize(
     "env",
-    [{"HARBOR_CUA_SCREENSHOT_SIZE": "1280x720"}, {"HARBOR_CUA_CAPTURE_COMMAND": "grab", "HARBOR_CUA_SCREENSHOT_SIZE": ""}],
+    [
+        {"HARBOR_CUA_SCREENSHOT_SIZE": "1280x720"},
+        {"HARBOR_CUA_CAPTURE_COMMAND": "grab", "HARBOR_CUA_SCREENSHOT_SIZE": ""},
+    ],
 )
 def test_on_an_existing_desktop_a_failed_capture_never_hands_back_the_previous_screen(
     desktop, tmp_path, monkeypatch, env
