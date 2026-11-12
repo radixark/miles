@@ -85,8 +85,10 @@ def boot_env() -> dict[str, str]:
 
 def _close(sandbox: Any, task_id: str) -> None:
     _wait_for_agent_exit(sandbox, task_id)
-    _copy_records(sandbox)
-    _kill(sandbox, task_id)
+    try:
+        _copy_records(sandbox)
+    finally:
+        _kill(sandbox, task_id)
 
 
 def _wait_for_agent_exit(sandbox: Any, task_id: str) -> None:
