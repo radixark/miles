@@ -1531,7 +1531,7 @@ def miles_validate_args(args):
             "--update-weight-transfer-mode=disk-delta requires --update-weight-disk-dir to point at "
             "a filesystem shared between the trainer and the rollout engines."
         )
-        assert args.update_weight_local_checkpoint_dir, (
+        assert args.update_weight_delta_encoding == "sparse-xor" or args.update_weight_local_checkpoint_dir, (
             "--update-weight-transfer-mode=disk-delta requires --update-weight-local-checkpoint-dir "
             "(a rollout-host-local directory, e.g. NVMe)."
         )

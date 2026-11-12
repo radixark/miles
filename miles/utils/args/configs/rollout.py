@@ -314,16 +314,28 @@ class RolloutRelatedConfig(BaseConfig):
         str,
         Arg(
             type_parser=None,
-            choices=["xor", "overwrite"],
+            choices=["xor", "overwrite", "sparse-xor"],
             help=(
                 "On-disk delta encoding for disk-delta weight sync. 'xor' (default): new ^ old — "
                 "smallest wire and fastest, but an involution that must be applied exactly once "
                 "against the correct base (applying it twice reverts). 'overwrite': changed positions "
                 "+ new absolute values — larger, but idempotent. Both are byte-level and dtype-blind; "
-                "the engine reads the choice from each version's index metadata."
+                "the engine reads the choice from each version's index metadata. 'sparse-xor': changed "
+                "elements only, encoded on the trainer's GPU and applied to the engine's live weights, "
+                "no local checkpoint or reload; needs --sglang-custom-weight-loader "
+                "miles.utils.sparse_delta.apply_delta."
             ),
         ),
     ] = "xor"
+    update_weight_delta_verify: A[
+        bool,
+        Arg(
+            help=(
+                "'sparse-xor' only. Also publish the full weights on every sync and fail unless a full load "
+                "gives the same bits as the delta. Slow; for validating a new model."
+            ),
+        ),
+    ] = False
     update_weight_delta_checksum: A[
         str,
         Arg(
@@ -343,7 +355,9 @@ class RolloutRelatedConfig(BaseConfig):
                 "Path to a custom function called on each trainer rank after a disk-delta sync's "
                 "files are written, before the engines read them — to publish the writes on a "
                 "non-POSIX filesystem (no cross-host visibility without an explicit sync). "
-                "Signature: ``def hook(args, version_dir: str, rollout_engines) -> None``; the hook gates itself."
+                "Signature: ``def hook(args, version_dir: str, rollout_engines) -> str | None``; the hook gates "
+                "itself. It may return where it serves the files from; 'sparse-xor' passes that to the "
+                "engines' pre-read hook."
             ),
         ),
     ] = None
