@@ -1126,11 +1126,11 @@ class TestCanPrecomputeDpSchedule:
         data["multimodal_train_inputs"] = [multimodal_train_inputs] * 8
         assert can_precompute_dp_schedule(args=args, data=data, train_parallel_config=FULL_SCHEDULE_CONFIG)
 
-    def test_rejects_token_space_media_refs(self):
+    def test_accepts_token_space_media_refs(self):
         args = make_args(balance_data=False, micro_batch_size=1, multi_lora=False)
         data = _make_split_data(8)
-        data["multimodal_inputs"] = [None] * 8
-        assert not can_precompute_dp_schedule(args=args, data=data, train_parallel_config=FULL_SCHEDULE_CONFIG)
+        data["multimodal_inputs"] = [{"images": [f"/shared/{i}.png"]} for i in range(8)]
+        assert can_precompute_dp_schedule(args=args, data=data, train_parallel_config=FULL_SCHEDULE_CONFIG)
 
     def test_rejects_fewer_rollouts_than_gbs(self):
         args = make_args(balance_data=False, micro_batch_size=1, multi_lora=False)  # global_batch_size=8
@@ -1153,6 +1153,18 @@ class TestCanPrecomputeDpSchedule:
 
 
 class TestSplitTrainDataByDpScheduled:
+    def test_token_space_rollouts_of_several_samples_train_as_whole_rollouts(self):
+        args = make_args(balance_data=False, micro_batch_size=1, use_dynamic_batch_size=False, multi_lora=False)
+        data = _make_split_data(16, rollout_ids=[i // 2 for i in range(16)])
+        data["multimodal_inputs"] = [{"images": [f"/shared/{i}.png"]} for i in range(16)]
+
+        shards = split_train_data_by_dp(args=args, data=data, train_parallel_config=FULL_SCHEDULE_CONFIG)
+
+        assert [shard["num_rollouts"] for shard in shards] == [[8], [8]]
+        for shard in shards:
+            assert shard["multimodal_inputs"] == [data["multimodal_inputs"][i] for i in shard["partition"]]
+            assert sorted(i for mbs in shard["micro_batch_indices"] for i in mbs) == list(range(len(shard["tokens"])))
+
     def test_disabled_checker_schedules_without_witness_identity_columns(self) -> None:
         """Ordinary scheduling does not require model companion info metadata."""
         args = make_args(
