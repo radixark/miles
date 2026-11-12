@@ -578,26 +578,35 @@ def run_forward_backward_pass(
         )
 
 
-def train_one_step(
-    args: TrainerConfig,
-    rollout_id: int,
-    step_id: int,
-    data_iterator: Sequence[DataIterator],
-    model: Sequence[DDP],
-    optimizer: MegatronOptimizer | None,
-    opt_param_scheduler: OptimizerParamScheduler | None,
-    num_microbatches: int,
-    num_rollouts: int,
-    witness_info: WitnessInfo | None,
-    attempt: int,
-) -> tuple[dict[str, float], float, TrainStepOutcome]:
+@dataclasses.dataclass(frozen=True)
+class TrainOneStepInput:
+    rollout_id: int
+    step_id: int
+    data_iterator: Sequence[DataIterator]
+    model: Sequence[DDP]
+    optimizer: MegatronOptimizer | None
+    opt_param_scheduler: OptimizerParamScheduler | None
+    num_microbatches: int
+    num_rollouts: int
+    witness_info: WitnessInfo | None
+    attempt: int
+
+
+@dataclasses.dataclass(frozen=True)
+class TrainOneStepOutput:
+    loss_dict: dict[str, float]
+    grad_norm: float
+    outcome: TrainStepOutcome
+
+
+def train_one_step(args: TrainerConfig, input: TrainOneStepInput) -> TrainOneStepOutput:
     """Run pipeline forward/backward, then step the optimizer and scheduler when gradients are valid."""
     parallel_state = get_parallel_state()
-    dumper_phase_util = DumperMegatronUtil(args, model, DumperPhase.FWD_BWD, rollout_id=rollout_id)
-    disable_optimizer = args.debug_disable_optimizer or optimizer is None
+    dumper_phase_util = DumperMegatronUtil(args, input.model, DumperPhase.FWD_BWD, rollout_id=input.rollout_id)
+    disable_optimizer = args.debug_disable_optimizer or input.optimizer is None
     if args.enable_sample_ownership_checker:
-        sample_consumption_start = data_iterator[0].offset
-    _zero_grads(model, optimizer, disable_optimizer)
+        sample_consumption_start = input.data_iterator[0].offset
+    _zero_grads(input.model, input.optimizer, disable_optimizer)
 
     if (x := args.custom_megatron_before_train_step_hook_path) is not None:
         from miles.utils.args.custom_view import compute_custom_function_config
@@ -605,17 +614,19 @@ def train_one_step(
 
         custom_before_train_step_hook = load_function(x)
         fn_args = compute_custom_function_config(args, x)
-        custom_before_train_step_hook(fn_args, rollout_id, step_id, model, optimizer, opt_param_scheduler)
+        custom_before_train_step_hook(
+            fn_args, input.rollout_id, input.step_id, input.model, input.optimizer, input.opt_param_scheduler
+        )
 
     losses_reduced = run_forward_backward_pass(
-        args, dumper_phase_util, data_iterator, model, num_microbatches, num_rollouts
+        args, dumper_phase_util, input.data_iterator, input.model, input.num_microbatches, input.num_rollouts
     )
     if args.enable_sample_ownership_checker:
         local_consumed_identities = SampleIdentityExtractor.get_consumed_sample_identities(
             start_offset=sample_consumption_start,
-            end_offset=data_iterator[0].offset,
-            data=data_iterator[0].rollout_data,
-            micro_batch_indices=data_iterator[0].micro_batch_indices,
+            end_offset=input.data_iterator[0].offset,
+            data=input.data_iterator[0].rollout_data,
+            micro_batch_indices=input.data_iterator[0].micro_batch_indices,
         )
         consumed_identities: list[SampleLineage] = []
 
@@ -625,14 +636,16 @@ def train_one_step(
     indep_dp_loss_reduced: dict[str, float] = {}
 
     if parallel_state.indep_dp.size > 1:
-        assert step_id == 0, "indep-dp does not support multi step per train yet"
+        assert input.step_id == 0, "indep-dp does not support multi step per train yet"
 
-        reach_fault_hook(FaultHookName.TRAINER_STEP_BEFORE_ALLREDUCE, rollout_id=rollout_id, attempt=attempt)
+        reach_fault_hook(
+            FaultHookName.TRAINER_STEP_BEFORE_ALLREDUCE, rollout_id=input.rollout_id, attempt=input.attempt
+        )
 
-        metric_num_rollouts = None if args.backend.calculate_per_token_loss else num_rollouts
+        metric_num_rollouts = None if args.backend.calculate_per_token_loss else input.num_rollouts
         ok, indep_dp_loss_reduced = allreduce_grads_and_losses_across_replicas(
             args,
-            model,
+            input.model,
             parallel_state,
             losses_reduced=losses_reduced,
             num_rollouts=metric_num_rollouts,
@@ -651,11 +664,11 @@ def train_one_step(
             valid_step = False
 
     if (not disable_optimizer) and (not args.backend.check_for_nan_in_loss_and_grad):
-        found_inf_flag = optimizer.prepare_grads()
+        found_inf_flag = input.optimizer.prepare_grads()
         if found_inf_flag:
             valid_step = False
         else:
-            grad_norm = optimizer.get_grad_norm()
+            grad_norm = input.optimizer.get_grad_norm()
             if isinstance(grad_norm, torch.Tensor):
                 valid_step &= not (torch.isnan(grad_norm) or torch.isinf(grad_norm))
             else:
@@ -672,55 +685,55 @@ def train_one_step(
         # under response length <= 128, all outputs are truncated and loss mask is all zeros, so only MTP parameters have non-zero gradients
         from miles.backends.megatron_utils.ci_utils import check_mtp_only_grad
 
-        check_mtp_only_grad(model, step_id)
+        check_mtp_only_grad(input.model, input.step_id)
 
     # Dump backward tensors while gradients are still attached. The optimizer
     # step and subsequent zero_grad release them.
     if outcome == TrainStepOutcome.NORMAL:
-        dumper_phase_util.finalize(model)
+        dumper_phase_util.finalize(input.model)
 
     if not disable_optimizer and valid_step:
-        update_successful, grad_norm, num_zeros_in_grad = optimizer.step()
+        update_successful, grad_norm, num_zeros_in_grad = input.optimizer.step()
         assert update_successful
-        ModelCompanionWeightVersionUtils.bump_weight_version(model)
-        opt_param_scheduler.step(increment=num_rollouts)
+        ModelCompanionWeightVersionUtils.bump_weight_version(input.model)
+        input.opt_param_scheduler.step(increment=input.num_rollouts)
 
     if args.enable_sample_ownership_checker:
         if parallel_state.indep_dp.size == 1:
             consumed_identities = SampleIdentityExtractor.gather_sample_identities(local_consumed_identities)
         if outcome == TrainStepOutcome.NORMAL:
             ModelCompanionSampleConsumptionUtils.record(
-                model=model, samples=consumed_identities, is_skipped=not valid_step
+                model=input.model, samples=consumed_identities, is_skipped=not valid_step
             )
 
-    _zero_grads(model, optimizer, disable_optimizer)
+    _zero_grads(input.model, input.optimizer, disable_optimizer)
 
     log_structured(
         logger.info,
         tag="train",
         op="train_step",
-        rollout=rollout_id,
-        step=step_id,
-        attempt=attempt,
+        rollout=input.rollout_id,
+        step=input.step_id,
+        attempt=input.attempt,
         outcome=outcome.name,
         valid_step=valid_step,
     )
 
     if outcome == TrainStepOutcome.NORMAL:
-        dump_local_weight_checksums(args=args, model=model, optimizer=optimizer)
+        dump_local_weight_checksums(args=args, model=input.model, optimizer=input.optimizer)
         if args.enable_witness:
-            witness_dump_and_clear_stale(model=model, witness_info=witness_info, optimizer=optimizer)
+            witness_dump_and_clear_stale(model=input.model, witness_info=input.witness_info, optimizer=input.optimizer)
 
         if mpu.is_pipeline_last_stage(ignore_virtual=True):
-            metric_num_rollouts = None if args.backend.calculate_per_token_loss else num_rollouts
+            metric_num_rollouts = None if args.backend.calculate_per_token_loss else input.num_rollouts
             loss_reduced = (
                 indep_dp_loss_reduced
                 if parallel_state.indep_dp.size > 1
                 else aggregate_train_losses(losses_reduced, metric_num_rollouts)
             )
-            return loss_reduced, grad_norm, outcome
+            return TrainOneStepOutput(loss_dict=loss_reduced, grad_norm=grad_norm, outcome=outcome)
 
-    return {}, grad_norm, outcome
+    return TrainOneStepOutput(loss_dict={}, grad_norm=grad_norm, outcome=outcome)
 
 
 def finalize_model_grads_with_empty_cache(*args, finalize=finalize_model_grads, **kwargs):
@@ -835,18 +848,20 @@ def train(
     for step_id in range(num_steps_per_rollout):
 
         # Run training step.
-        loss_dict, grad_norm, train_step_outcome = train_one_step(
+        step_output = train_one_step(
             args,
-            rollout_id,
-            step_id,
-            data_iterator,
-            model,
-            optimizer,
-            opt_param_scheduler,
-            num_microbatches[step_id],
-            num_rollouts[step_id],
-            witness_info=witness_info,
-            attempt=attempt,
+            TrainOneStepInput(
+                rollout_id=rollout_id,
+                step_id=step_id,
+                data_iterator=data_iterator,
+                model=model,
+                optimizer=optimizer,
+                opt_param_scheduler=opt_param_scheduler,
+                num_microbatches=num_microbatches[step_id],
+                num_rollouts=num_rollouts[step_id],
+                witness_info=witness_info,
+                attempt=attempt,
+            ),
         )
 
         if step_id == 0:
@@ -881,7 +896,7 @@ def train(
                     check_mtp_loss(mtp_losses)
 
         # per train step log.
-        if (train_step_outcome == TrainStepOutcome.NORMAL) and is_first_replica_megatron_main_rank():
+        if (step_output.outcome == TrainStepOutcome.NORMAL) and is_first_replica_megatron_main_rank():
             accumulated_step_id = rollout_id * num_steps_per_rollout + step_id
             role = getattr(
                 model[0], "role", "actor"
@@ -898,8 +913,8 @@ def train(
 
             log_dict = log_train_step(
                 args=args,
-                loss_dict=loss_dict,
-                grad_norm=grad_norm,
+                loss_dict=step_output.loss_dict,
+                grad_norm=step_output.grad_norm,
                 rollout_id=rollout_id,
                 step_id=step_id,
                 num_steps_per_rollout=num_steps_per_rollout,
@@ -916,7 +931,7 @@ def train(
             if args.ci_test:
                 check_grad_norm(
                     args=args,
-                    grad_norm=grad_norm,
+                    grad_norm=step_output.grad_norm,
                     rollout_id=rollout_id,
                     step_id=step_id,
                     role=role,
@@ -927,7 +942,7 @@ def train(
     if pre_hook_enabled:
         disable_forward_pre_hook(model)
 
-    return train_step_outcome
+    return step_output.outcome
 
 
 def save(
