@@ -455,7 +455,7 @@ class TestAnthropicRoute:
             {"thinking": {"type": "enabled", "budget_tokens": 31999, "display": "updates"}},
             {"thinking": {"type": "adaptive", "display": "updates"}, "output_config": {"effort": "high"}},
             {"thinking": {"type": "disabled"}},
-            {"output_config": {"effort": "low", "format": {"type": "json_schema", "schema": {"type": "object"}}}},
+            {"output_config": {"effort": "low", "format": None}},
         ],
     )
     def test_rollout_owned_settings_are_accepted_and_ignored(self, anthropic_env, settings):
@@ -554,6 +554,14 @@ class TestAnthropicRoute:
         messages = [{"role": "user", "content": "q"}]
         cases = [
             (_payload(messages, betas=["b-1"]), "betas is not enabled for this deployment"),
+            (
+                _payload(
+                    messages,
+                    thinking={"type": "adaptive", "display": "updates"},
+                    output_config={"effort": "high", "format": {"type": "json_schema", "schema": {"type": "object"}}},
+                ),
+                "output_config.format is not enabled for this deployment",
+            ),
             (
                 _payload(messages, tools=[{"type": "web_search_20250305", "name": "web_search"}]),
                 "server tool 'web_search' (type='web_search_20250305') is not enabled for this deployment",
