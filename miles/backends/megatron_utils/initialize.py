@@ -1,6 +1,5 @@
 import dataclasses
 import logging
-import os
 import random
 from typing import Any
 
@@ -15,6 +14,7 @@ from megatron.training.global_vars import _build_tokenizer, set_args
 
 from miles.backends.megatron_utils.checkpoint_request import MegatronCkptLoadConfig
 from miles.backends.megatron_utils.megatron_config import MegatronArgsNamespace
+from miles.backends.training_utils.deterministic import enable_deterministic_algorithms
 from miles.backends.training_utils.parallel import get_parallel_state, set_parallel_state
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.hf_utils.config import register_hf_config_aliases
@@ -144,12 +144,7 @@ def init(
     if args.backend.deterministic_mode:
         if args.backend.rank == 0:
             logger.info("> running in deterministic mode")
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
-        torch.use_deterministic_algorithms(True, warn_only=False)
-        # deterministic mode otherwise fills every torch.empty, which only catches reads of
-        # uninitialized memory and costs ~5% of forward kernel time
-        torch.utils.deterministic.fill_uninitialized_memory = os.environ.get("MILES_FILL_UNINIT", "0") == "1"
+        enable_deterministic_algorithms()
 
     if args.debug_deterministic_collective:
         assert not args.backend.overlap_grad_reduce, "deterministic collectives require synchronous grad sync"

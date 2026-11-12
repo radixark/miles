@@ -392,7 +392,7 @@ contract, session behavior, and model-family selection.
 | `--debug-train-only` | flag | off | Skip SGLang, only spin up Megatron. |
 | `--save-debug-rollout-data` | path | – | Pickle every rollout to disk. The template must contain `{rollout_id}`. |
 | `--load-debug-rollout-data` | path | – | Replay rollouts from disk (implies `--debug-train-only`). |
-| `--deterministic-mode` | flag | off | Megatron deterministic mode. |
+| `--deterministic-mode` | flag | off | Run the training step on deterministic kernels, so that it repeats for the same inputs, seeds and topology: `torch.use_deterministic_algorithms(True)` on the Megatron and FSDP backends, plus flash-attn's deterministic backward on FSDP. Deterministic kernels are slower. |
 
 ### Customization
 

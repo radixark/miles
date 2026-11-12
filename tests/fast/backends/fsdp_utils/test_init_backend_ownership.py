@@ -1,3 +1,6 @@
+import os
+from unittest.mock import Mock
+
 import pytest
 import torch
 from tests.fast.backends.fsdp_utils.init_backend_fixtures import (
@@ -34,6 +37,54 @@ class TestInitBackendOwnership:
             torch.testing.assert_close(torch.rand(5), expected, rtol=0, atol=0)
         finally:
             torch.set_rng_state(previous)
+
+    @pytest.mark.parametrize(
+        "deterministic,flash_env,expected_flash_env", [(False, None, None), (True, None, "1"), (True, "0", "0")]
+    )
+    def test_deterministic_mode_reaches_torch_and_flash_attention(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fsdp_three_rank_state: ParallelState,
+        fsdp_debug_actor: FSDPTrainRayActor,
+        deterministic: bool,
+        flash_env: str | None,
+        expected_flash_env: str | None,
+    ) -> None:
+        """Deterministic mode reaches torch and flash-attn, and leaves an explicit flash-attn setting alone."""
+        use_deterministic_algorithms = Mock()
+        monkeypatch.setattr(torch, "use_deterministic_algorithms", use_deterministic_algorithms)
+        monkeypatch.setattr(torch.backends.cudnn, "deterministic", False)
+        monkeypatch.setattr(torch.backends.cudnn, "benchmark", True)
+        monkeypatch.setattr(torch.utils.deterministic, "fill_uninitialized_memory", True)
+        monkeypatch.setenv("MILES_FILL_UNINIT", "0")
+        # set before deleting, so that monkeypatch also removes a variable the initialization creates
+        monkeypatch.setenv("FLASH_ATTENTION_DETERMINISTIC", "0")
+        if flash_env is None:
+            monkeypatch.delenv("FLASH_ATTENTION_DETERMINISTIC")
+        previous = torch.get_rng_state()
+        try:
+            args = _make_fsdp_init_args(
+                train_backend="fsdp", debug_rollout_only=True, dumper_enable=False, deterministic_mode=deterministic
+            )
+
+            assert (
+                fsdp_debug_actor.init(
+                    args, "actor", indep_dp_info=IndepDPInfo.create_trivial(), indep_dp_store_addr=None
+                )
+                == 0
+            )
+        finally:
+            torch.set_rng_state(previous)
+
+        if deterministic:
+            use_deterministic_algorithms.assert_called_once_with(True, warn_only=False)
+            assert torch.backends.cudnn.deterministic and not torch.backends.cudnn.benchmark
+            assert not torch.utils.deterministic.fill_uninitialized_memory
+        else:
+            use_deterministic_algorithms.assert_not_called()
+            assert not torch.backends.cudnn.deterministic and torch.backends.cudnn.benchmark
+            assert torch.utils.deterministic.fill_uninitialized_memory
+        assert os.environ.get("FLASH_ATTENTION_DETERMINISTIC") == expected_flash_env
 
     @pytest.mark.parametrize("cpu_offload", [False, True])
     @pytest.mark.parametrize("gradient_checkpointing", [False, True])
