@@ -40,6 +40,7 @@ def make_session_server_config(**overrides: Any) -> SessionServerConfig:
         output_store_backend_config=None,
         multimodal_token_space_processing=False,
         run_media_dir=None,
+        image_process_config={},
     )
     defaults.update(overrides)
     return SessionServerConfig(**defaults)

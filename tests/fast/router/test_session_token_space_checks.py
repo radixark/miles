@@ -79,8 +79,16 @@ def user_turn(payload: bytes | None, text: str) -> dict:
 
 
 class TokenSpaceChatBackend:
-    def __init__(self, vlm, *, count_bias_on_call: dict[int, int] | None = None, return_prompt: bool = True):
+    def __init__(
+        self,
+        vlm,
+        *,
+        count_bias_on_call: dict[int, int] | None = None,
+        return_prompt: bool = True,
+        image_kwargs: dict | None = None,
+    ):
         self.vlm = vlm
+        self.image_kwargs = image_kwargs or {}
         self.count_bias_on_call = count_bias_on_call or {}
         self.return_prompt = return_prompt
         self.calls: list[dict[str, Any]] = []
@@ -112,7 +120,8 @@ class TokenSpaceChatBackend:
     def _count(self, path: str, bias: int) -> int:
         with Image.open(path) as handle:
             size = (handle.height, handle.width)
-        return int(self.vlm.processor._get_num_multimodal_tokens(image_sizes=[size]).num_image_tokens[0]) + bias
+        count = self.vlm.processor._get_num_multimodal_tokens(image_sizes=[size], **self.image_kwargs)
+        return int(count.num_image_tokens[0]) + bias
 
     def _reply(self, payload: dict) -> dict:
         index = len(self.calls) - 1
@@ -165,7 +174,7 @@ def server_args(shared_media_dir: Path, **extra) -> dict[str, Any]:
         "use_output_store": False,
         "rollout_top_logprobs_num": 0,
         "rollout_sampling_logprobs_mode": "selected",
-        "sglang": make_sglang_config(speculative_algorithm=None),
+        "sglang": make_sglang_config(speculative_algorithm=None, mm_process_config=None),
         "num_layers": None,
         "raw_megatron": MegatronConfig(trainers=[], base_args={}),
         "save_debug_trajectory_data": None,
@@ -193,9 +202,12 @@ def session_server(
     *,
     count_bias_on_call: dict[int, int] | None = None,
     return_prompt: bool = True,
+    engine_image_kwargs: dict | None = None,
     **extra,
 ):
-    backend = TokenSpaceChatBackend(vlm, count_bias_on_call=count_bias_on_call, return_prompt=return_prompt)
+    backend = TokenSpaceChatBackend(
+        vlm, count_bias_on_call=count_bias_on_call, return_prompt=return_prompt, image_kwargs=engine_image_kwargs
+    )
     backend.start()
     args = SimpleNamespace(**server_args(shared_media_dir, **extra))
     try:
@@ -312,6 +324,23 @@ class TestEngineExpansionCheck:
             response = chat(env, session_id, second)
             assert response.status_code == 200, response.content
             assert env.backend.calls[-1]["input_ids"].count(vlm.video_pad_id) == 1
+
+    def test_images_are_counted_with_the_engines_image_settings(self, vlm, tmp_path):
+        image = {"min_pixels": 4096, "max_pixels": 16384}
+        count = vlm.processor._get_num_multimodal_tokens
+        assert (
+            count(image_sizes=[(120, 160)], **image).num_image_tokens
+            != count(image_sizes=[(120, 160)]).num_image_tokens
+        )
+        sglang = make_sglang_config(speculative_algorithm=None, mm_process_config={"image": image})
+        with session_server(vlm, tmp_path, engine_image_kwargs=image, sglang=sglang) as env:
+            session_id = _create_session(env.url)
+            first = [user_turn(SHOT1, "one")]
+            response = chat(env, session_id, first)
+            assert response.status_code == 200, response.content
+            second = first + [response.json()["choices"][0]["message"], user_turn(SHOT2, "two")]
+            response = chat(env, session_id, second)
+            assert response.status_code == 200, response.content
 
     def test_an_engine_that_returns_no_prompt_fails_the_counted_check(self, vlm, tmp_path):
         with session_server(vlm, tmp_path, return_prompt=False) as env:

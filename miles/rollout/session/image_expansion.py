@@ -14,9 +14,10 @@ COUNTED_TITO_MODELS = frozenset({TITOTokenizerType.QWEN3_VL.value, TITOTokenizer
 
 
 class ImageTokenCounter:
-    def __init__(self, processor: Any, placeholder_id: int) -> None:
+    def __init__(self, processor: Any, placeholder_id: int, image_kwargs: dict[str, Any]) -> None:
         self.processor = processor
         self.placeholder_id = placeholder_id
+        self.image_kwargs = image_kwargs
         self._counts: dict[str, int] = {}
 
     def count(self, path: str) -> int:
@@ -25,7 +26,9 @@ class ImageTokenCounter:
             return cached
         with Image.open(path) as handle:
             size = (handle.height, handle.width)
-        count = int(self.processor._get_num_multimodal_tokens(image_sizes=[size]).num_image_tokens[0])
+        count = int(
+            self.processor._get_num_multimodal_tokens(image_sizes=[size], **self.image_kwargs).num_image_tokens[0]
+        )
         if count <= 0:
             raise ValueError(f"{path} ({size[1]}x{size[0]}) expands into {count} tokens")
         self._counts[path] = count
@@ -43,7 +46,7 @@ def build_image_token_counter(config: SessionServerConfig, tokenizer: Any) -> Im
     placeholder_id = tokenizer.convert_tokens_to_ids(processor.image_token)
     if placeholder_id is None or placeholder_id == tokenizer.unk_token_id:
         raise ValueError(f"tokenizer does not know the image placeholder {processor.image_token!r}")
-    return ImageTokenCounter(processor, int(placeholder_id))
+    return ImageTokenCounter(processor, int(placeholder_id), config.image_process_config)
 
 
 def expand_input_ids(ids: Sequence[int], counts: Sequence[int], placeholder_id: int) -> list[int]:

@@ -429,6 +429,7 @@ def _build_server_config(
         output_store_backend_config=None,
         multimodal_token_space_processing=False,
         run_media_dir=None,
+        image_process_config={},
     )
 
 

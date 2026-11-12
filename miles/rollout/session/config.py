@@ -47,6 +47,7 @@ class SessionServerConfig(FrozenStrictBaseModel):
     # Media on the session path: SGLang expands the placeholders, sources are written to run_media_dir.
     multimodal_token_space_processing: bool
     run_media_dir: str | None
+    image_process_config: dict[str, Any]
 
 
 def compute_session_server_config(
@@ -88,6 +89,11 @@ def compute_session_server_config(
         output_store_backend_config=(output_store_backend_config(args) if args.use_output_store else None),
         multimodal_token_space_processing=args.multimodal_token_space_processing,
         run_media_dir=run_media_dir(args),
+        image_process_config=(
+            (args.sglang.actor_value("mm_process_config") or {}).get("image") or {}
+            if args.multimodal_token_space_processing
+            else {}
+        ),
     )
 
 

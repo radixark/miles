@@ -14,6 +14,7 @@ import json
 import os
 import threading
 import uuid
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -629,6 +630,39 @@ def test_with_replay_off_no_offset_is_sent_with_media(tokenizer, processor_core,
     assert asyncio.run(_chat(core, session_id, [_user("look", _data_url(64, 64, (1, 2, 3)))])).status_code == 200
     (body,) = engine.bodies
     assert body["return_routed_experts"] is False and "routed_experts_start_len" not in body
+
+
+SMALL_IMAGES = {"max_pixels": 401408}
+
+
+@pytest.fixture(scope="module")
+def small_images_processor_core(engine_args):
+    from miles.backends.training_utils.data.token_space_media_process import build_trainer_processor
+
+    return build_trainer_processor(
+        replace(engine_args, mm_process_config_json=json.dumps({"image": SMALL_IMAGES})),
+        mm_processor_worker_num=1,
+        mm_io_worker_num=1,
+        device=torch.device("cpu"),
+    ).core
+
+
+def test_the_image_count_follows_the_engines_image_settings(tokenizer, small_images_processor_core, tmp_path):
+    engine = TokenSpaceEngine(small_images_processor_core, tokenizer)
+    core, registry = _make_core("v2", tokenizer, engine, tmp_path, image_process_config=SMALL_IMAGES)
+    counter = build_image_token_counter(core.config, tokenizer)
+    core.image_token_counter = counter
+    session_id = registry.create_session()
+    response = asyncio.run(_chat(core, session_id, [_user("look", _data_url(1920, 1080, (9, 40, 90)))]))
+    assert response.status_code == 200, response.body
+
+    pad_id = tokenizer.convert_tokens_to_ids(IMAGE_PAD)
+    (path,) = _image_urls(engine.bodies[0]["messages"])
+    assert engine.prompts[0].count(pad_id) == counter.count(path)
+    assert (
+        counter.count(path)
+        < counter.processor._get_num_multimodal_tokens(image_sizes=[(1080, 1920)]).num_image_tokens[0]
+    )
 
 
 @pytest.mark.parametrize("version", ["v1", "v2"])

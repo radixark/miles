@@ -147,6 +147,7 @@ class TestConfigToArgv:
             output_store_backend_config={"master_server_address": "10.0.0.1:50051", "local_hostname": None},
             multimodal_token_space_processing=True,
             run_media_dir="/shared/media",
+            image_process_config={"max_pixels": 1003520},
         )
         assert parse_config_argv(SessionServerConfig, config_to_argv(session_config)) == session_config
 
