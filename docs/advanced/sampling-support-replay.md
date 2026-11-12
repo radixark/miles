@@ -63,7 +63,9 @@ Miles rejects configurations that it cannot replay faithfully:
 - The selected router must preserve `return_sampling_mask`, `return_flat_raw_sampling_mask`
   and `return_flat_raw_sampling_mask_b64`. The Miles router
   forwards raw request bodies. The native SGLang router requires typed chat and
-  generate request schemas that declare the field.
+  generate request schemas that declare the fields;
+  [sgl-router-for-miles #32](https://github.com/radixark/sgl-router-for-miles/pull/32)
+  declares the flat ones.
 
 The SGLang backend must return one complete support and its normalized log
 probability for every sampled token. Miles validates that response contract but
