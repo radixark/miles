@@ -28,11 +28,12 @@ To set the environment up by hand instead, see
 ## Launch training
 
 The TPU launchers live under `scripts/tpu/`, one per model (Qwen3-4B, Qwen3-30B-A3B, and a 4-layer
-GLM-4.7-Flash). Each launcher has a `sglang` and a `train` command. Start the engine in its own shell, then start
-training a minute or two later without waiting for the engine's `/health`: the engine compiles only
-after the trainer has joined the slice.
+GLM-4.7-Flash). Each launcher has a `prepare`, a `sglang` and a `train` command. `prepare` fetches the model and
+datasets. Start the engine in its own shell, then start training a minute or two later without waiting for the
+engine's `/health`: the engine compiles only after the trainer has joined the slice.
 
 ```bash
+python3 scripts/tpu/run_qwen3_4b_torchtitan.py prepare
 python3 scripts/tpu/run_qwen3_4b_torchtitan.py sglang               # devices 4-7
 python3 scripts/tpu/run_qwen3_4b_torchtitan.py train --recipe full  # devices 0-3
 ```

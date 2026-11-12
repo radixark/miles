@@ -125,6 +125,21 @@ Both runner containers can see all eight host GPUs through `/dev/dri`. Each runn
 against the sglang-torchtpu commit `docker/Dockerfile.tpu` pins, on PRs only. Those files skip in
 `stage-a-cpu`, which has the CUDA sglang instead.
 
+## TPU smoke runs
+
+`pr-test-tpu.yml` is also outside the stage inventory: it runs whole `scripts/tpu` launchers rather than registered
+test files. Each run is the launcher's `smoke` recipe (3 rollouts; the sglang-torchtpu engine and the torchtitan
+trainer share one TPU v7x 2x2x1 host and sync weights over ICI) in a JobSet on sglang-torchtpu's GKE CI cluster,
+queued through its Kueue PR-gate queue alongside sglang-torchtpu's PR jobs. A PR runs the Qwen3-4B smoke only while
+it carries `run-ci-tpu`, again on every push; the nightly runs every launcher on `main`, and `workflow_dispatch` takes
+a launcher list and any branch.
+Fork PRs cannot run it: the cluster's credentials come from GitHub's OIDC token through Workload Identity Federation.
+
+The image is the rolling `radixark/miles:dev-tpu`, or `radixark/miles:pr-<number>-tpu` for a PR that changes the TPU
+image's inputs, chosen the way the CUDA suites choose theirs; the pod checks out the commit under test over the
+image's `/root/miles`.
+[`.github/tpu-ci/README.md`](../../../.github/tpu-ci/README.md) covers the cluster side.
+
 ## Assumptions
 
 - Suite-to-stage mappings are maintained manually across `run_suite.py`, the Miles workflows, and the external MI350 nightly workflow.
