@@ -6,7 +6,7 @@ Run with:
 """
 
 import os
-import sys
+from unittest.mock import patch
 
 import torch
 import torch.distributed as dist
@@ -18,7 +18,7 @@ register_cuda_ci(
 )
 register_rocm_ci(est_time=30, suite="nightly-stage-c-4-gpu-mi350", labels=["precision"])
 
-from miles_plugins.models.linear_attn import packed_shard_to_zigzag, zigzag_to_packed_shard
+from miles_plugins.models.cp_utils import packed_shard_to_zigzag, zigzag_to_packed_shard
 
 
 def setup_dist():
@@ -67,40 +67,101 @@ def _build_rank_inputs(rank: int, world_size: int, device: torch.device):
     local_len = zigzag.size(0)
     packed_shard = packed_full[rank * local_len : (rank + 1) * local_len]
     cu_seqlens = torch.tensor(cu, device=device, dtype=torch.int32)
-    return zigzag, packed_shard, cu_seqlens
+    return zigzag, packed_shard, cu_seqlens, tuple(cu)
 
 
-def test_relayout(rank: int, world_size: int):
-    device = torch.device(f"cuda:{rank}")
-    cp_group = dist.group.WORLD
+def test_relayout(rank: int, world_size: int, cp_group):
+    device = torch.device("cuda", torch.cuda.current_device())
 
-    zigzag, expected_packed_shard, cu_seqlens = _build_rank_inputs(rank, world_size, device)
+    zigzag, expected_packed_shard, cu_seqlens, cu_seqlens_host = _build_rank_inputs(rank, world_size, device)
 
-    packed_shard = zigzag_to_packed_shard(zigzag, cu_seqlens, cp_group, rank, world_size)
-    packed_ok = torch.equal(packed_shard, expected_packed_shard)
-    (packed_shard * expected_packed_shard).sum().backward()
-    grad_ok = torch.equal(zigzag.grad, zigzag.detach())
+    for communication in ("all_gather", "all_to_all"):
+        zigzag.grad = None
+        packed_shard = zigzag_to_packed_shard(
+            zigzag,
+            cu_seqlens,
+            cp_group,
+            rank,
+            world_size,
+            communication=communication,
+            cu_seqlens_host=cu_seqlens_host,
+        )
+        torch.testing.assert_close(packed_shard, expected_packed_shard, atol=0, rtol=0)
+        (packed_shard * expected_packed_shard).sum().backward()
+        torch.testing.assert_close(zigzag.grad, zigzag.detach(), atol=0, rtol=0)
 
-    packed_leaf = expected_packed_shard.clone().requires_grad_(True)
-    roundtrip = packed_shard_to_zigzag(packed_leaf, cu_seqlens, cp_group, rank, world_size)
-    roundtrip_ok = torch.equal(roundtrip, zigzag.detach())
-    (roundtrip * zigzag.detach()).sum().backward()
-    grad_ok = grad_ok and torch.equal(packed_leaf.grad, expected_packed_shard)
+        packed_leaf = expected_packed_shard.clone().requires_grad_(True)
+        roundtrip = packed_shard_to_zigzag(
+            packed_leaf,
+            cu_seqlens,
+            cp_group,
+            rank,
+            world_size,
+            communication=communication,
+            cu_seqlens_host=cu_seqlens_host,
+        )
+        torch.testing.assert_close(roundtrip, zigzag.detach(), atol=0, rtol=0)
+        (roundtrip * zigzag.detach()).sum().backward()
+        torch.testing.assert_close(packed_leaf.grad, expected_packed_shard, atol=0, rtol=0)
 
-    passed = packed_ok and roundtrip_ok and grad_ok
     if rank == 0:
-        print(f"\n=== HF Attention Hybrid CP Relayout Test CP={world_size} ===")
-        print(f"zigzag->packed PASS: {packed_ok}")
-        print(f"roundtrip PASS: {roundtrip_ok}")
-        print(f"backward PASS: {grad_ok}")
-        if not passed:
-            sys.exit(1)
+        print(f"CP={world_size}: all-gather/all-to-all layout, inverse and gradients PASS")
+
+
+def test_against_all_gather(rank, cp_size, cp_group):
+    device = torch.device("cuda", torch.cuda.current_device())
+    for boundaries in (
+        [0, cp_size],
+        [0, 8 * cp_size, 10 * cp_size, 13 * cp_size],
+        [cp_size * offset for offset in range(33)],
+        [0, 2 * cp_size, 12 * cp_size],
+    ):
+        local_length = boundaries[-1] // cp_size
+        cu_seqlens = torch.tensor(boundaries, device=device, dtype=torch.int32)
+        for dtype in (torch.float32, torch.bfloat16):
+            torch.manual_seed(17 + rank)
+            hidden = torch.randn(local_length, 3, 2, device=device, dtype=dtype).transpose(1, 2)
+            grad_output = torch.randn_like(hidden.transpose(1, 2)).transpose(1, 2)
+            for transform in (zigzag_to_packed_shard, packed_shard_to_zigzag):
+                reference_input = hidden.detach().requires_grad_(True)
+                reference = transform(reference_input, cu_seqlens, cp_group, rank, cp_size, communication="all_gather")
+                reference.backward(grad_output)
+                candidate_input = hidden.detach().requires_grad_(True)
+                with (
+                    patch.object(torch.Tensor, "cpu", side_effect=AssertionError("GPU-to-CPU copy in relayout")),
+                    patch.object(
+                        torch.Tensor, "tolist", side_effect=AssertionError("Tensor list conversion in relayout")
+                    ),
+                    patch("torch.argsort", side_effect=AssertionError("Sorting in relayout")),
+                    patch("torch.bincount", side_effect=AssertionError("Dynamic-size histogram in relayout")),
+                ):
+                    candidate = transform(
+                        candidate_input,
+                        cu_seqlens,
+                        cp_group,
+                        rank,
+                        cp_size,
+                        cu_seqlens_host=tuple(boundaries),
+                        communication="all_to_all",
+                    )
+                    candidate.backward(grad_output)
+                torch.testing.assert_close(candidate, reference, atol=0, rtol=0)
+                torch.testing.assert_close(candidate_input.grad, reference_input.grad, atol=0, rtol=0)
+    if rank == 0:
+        print(f"CP={cp_size}: exact gradients, zero splits, many short sequences; no cpu/tolist/argsort/bincount")
 
 
 def main():
     rank, world_size, _ = setup_dist()
     try:
-        test_relayout(rank, world_size)
+        for cp_size in sorted({1, 2, world_size}):
+            for start in range(0, world_size, cp_size):
+                ranks = list(range(start, start + cp_size))
+                cp_group = dist.new_group(ranks)
+                if rank in ranks:
+                    test_relayout(rank - start, cp_size, cp_group)
+                    test_against_all_gather(rank - start, cp_size, cp_group)
+                    dist.destroy_process_group(cp_group)
     finally:
         dist.destroy_process_group()
 
