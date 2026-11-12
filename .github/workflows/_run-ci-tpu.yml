@@ -10,7 +10,7 @@ on:
         required: true
         type: string
       image:
-        description: "TPU CI image (_build-tpu-ci-image.yml)"
+        description: "radixark/miles:dev-tpu, or the PR's pr-<number>-tpu"
         required: true
         type: string
       launcher:

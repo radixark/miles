@@ -135,9 +135,9 @@ it carries `run-ci-tpu`, again on every push; the nightly runs every launcher on
 a launcher list and any branch.
 Fork PRs cannot run it: the cluster's credentials come from GitHub's OIDC token through Workload Identity Federation.
 
-The image is `docker/build.py`'s `tpu` variant (what `docker-build.yml` publishes as `radixark/miles:dev-tpu`), built
-on Cloud Build for the commit under test and tagged by a hash of its inputs, so it is rebuilt only when those change;
-the pod checks out the commit under test over the image's `/root/miles`.
+The image is the rolling `radixark/miles:dev-tpu`, or `radixark/miles:pr-<number>-tpu` for a PR that changes the TPU
+image's inputs, chosen the way the CUDA suites choose theirs; the pod checks out the commit under test over the
+image's `/root/miles`.
 [`.github/tpu-ci/README.md`](../../../.github/tpu-ci/README.md) covers the cluster side.
 
 ## Assumptions

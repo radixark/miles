@@ -6,7 +6,7 @@ cluster (`sgl-project/sglang-torchtpu`, `.github/tpu-ci/README.md`): the GKE clu
 account. miles adds no node pool or queue of its own.
 
 ```
-pr-test-tpu.yml: plan ─▶ image (_build-tpu-ci-image.yml) ─▶ smoke × launcher (_run-ci-tpu.yml) ─▶ finish
+pr-test-tpu.yml: plan ─▶ image-build (PRs that change the TPU image) ─▶ smoke × launcher (_run-ci-tpu.yml) ─▶ finish
                                                                render_jobset.py → JobSet (suspended)
                                                                Kueue admits it onto a free 2x2x1 CI host
                                                                the pod runs smoke.sh; run_jobset.sh streams its log
@@ -20,15 +20,11 @@ pr-test-tpu.yml: plan ─▶ image (_build-tpu-ci-image.yml) ─▶ smoke × lau
 
 ## One run
 
-1. **Image.** The image is `docker/build.py`'s `tpu` variant, the one `docker-build.yml` publishes as
-   `radixark/miles:dev-tpu`, built for the commit under test so that a PR changing it runs on its own.
-   `_build-tpu-ci-image.yml` reads the variant's Dockerfile and build args from `build.py` and hashes them with the
-   files `docker-build.yml` rebuilds `dev-tpu` for (`docker/Dockerfile.tpu`, `docker/tpu_patch/*`,
-   `docker/install-kube-tools.sh`, `requirements.txt`) and `cloudbuild.yaml` into the tag `ci-<hash>` of
-   `us-central1-docker.pkg.dev/sglang-torchtpu/sglang-torchtpu-ci/miles-tpu`, next to the TPU nodes. A tag that
-   exists is reused; otherwise Cloud Build builds it (`run_cloudbuild.py`, copied from sglang-torchtpu, streams the
-   build log into the job). A change to miles' code alone never rebuilds the image. The registry deletes tags after
-   21 days, which also bounds how stale a moving input the hash cannot see (the x86 wheels release) gets.
+1. **Image.** As for the CUDA suites (`pr-test.yml`), runs use the rolling `radixark/miles:dev-tpu` that
+   `docker-build.yml` publishes, unless the PR changes the files it rebuilds `dev-tpu` for (`docker/Dockerfile.tpu`,
+   `docker/tpu_patch/`, `docker/install-kube-tools.sh`, `requirements.txt`). Such a PR builds its own
+   `radixark/miles:pr-<number>-tpu` with `docker/build.py --variant tpu` on the `docker-build` runners, and
+   `docker-pr-tag-cleanup.yml` deletes it when the PR closes. A change to miles' code alone never needs a new image.
 2. **JobSet.** `render_jobset.py` prints one single-host JobSet labelled with the queue `tpu-prgate-1h`, the queue
    sglang-torchtpu's PR jobs use: miles and sglang PRs take turns on the same hosts. That pool (`ci-tpu7x-2x2x1`)
    autoscales between 2 and 8 hosts, and its quota covers the maximum, so a job admitted while the pool is short
@@ -52,8 +48,7 @@ Deadlines per launcher are in `pr-test-tpu.yml`'s `plan` step (download, both co
   `projects/180183988733/locations/global/workloadIdentityPools/github/providers/github-oidc-v2` must accept tokens
   from `radixark/miles` (its attribute condition), and `tpu-ci@sglang-torchtpu.iam.gserviceaccount.com` needs
   `roles/iam.workloadIdentityUser` for `principalSet://iam.googleapis.com/projects/180183988733/locations/global/workloadIdentityPools/github/attribute.repository/radixark/miles`.
-  `tpu-ci@` already holds what sglang-torchtpu's CI uses: Cloud Build, the `sglang-torchtpu_cloudbuild` bucket,
-  the `sglang-torchtpu-ci` registry and the `tpu-ci` namespace.
+  `tpu-ci@` already holds the `tpu-ci` namespace, which sglang-torchtpu's CI uses.
 - **GitHub.** Create the `run-ci-tpu` label in `radixark/miles` (`tests/ci/labels.py` lists it).
 - **Hugging Face.** Pods read the optional `hf-token` secret in `tpu-ci`, as sglang-torchtpu's do.
 
@@ -63,4 +58,4 @@ Deadlines per launcher are in `pr-test-tpu.yml`'s `plan` step (download, both co
 |---|---|
 | Run another launcher | Add `scripts/tpu/run_<name>_torchtitan.py` with `prepare` / `sglang` / `train` commands, and its deadline to `plan` in `pr-test-tpu.yml`. |
 | Run it on PRs by default | Add it to the `pull_request` case of `plan`. |
-| Rebuild the image | Change any hashed input; a Dockerfile, `tpu_patch` or `tpu` variant edit already does. |
+| Test a TPU image change | Change `docker/Dockerfile.tpu` or `docker/tpu_patch/` in the PR; its runs build `pr-<number>-tpu`. |

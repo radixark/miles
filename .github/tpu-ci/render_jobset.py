@@ -40,7 +40,8 @@ def render(*, image: str, sha: str, launcher: str, recipe: str, queue: str, dead
             {
                 "name": "test",
                 "image": image,
-                "imagePullPolicy": "IfNotPresent",
+                # dev-tpu and pr-<number>-tpu move; a node's cached copy of either may be stale
+                "imagePullPolicy": "Always",
                 "command": ["bash", "-c"],
                 "args": [SMOKE_SCRIPT.read_text()],
                 "env": [

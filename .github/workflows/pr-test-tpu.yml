@@ -39,7 +39,32 @@ jobs:
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
       ref: ${{ steps.plan.outputs.ref }}
+      image: ${{ steps.image.outputs.image }}
+      build_image: ${{ steps.image.outputs.build }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      # As pr-test.yml does for the CUDA image: the released dev-tpu, unless the PR changes the files docker-build.yml
+      # rebuilds dev-tpu for. The merge commit is compared with its base (HEAD^1), which base.sha can lag.
+      - id: image
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number || '' }}
+        run: |
+          set -euo pipefail
+          image=radixark/miles:dev-tpu
+          build=false
+          if [ -n "$PR_NUMBER" ] && ! git diff --quiet HEAD^1 HEAD -- \
+              docker/Dockerfile.tpu docker/tpu_patch docker/install-kube-tools.sh requirements.txt; then
+            image="radixark/miles:pr-${PR_NUMBER}-tpu"
+            build=true
+          fi
+          echo "TPU image: ${image}"
+          echo "image=${image}" >> "$GITHUB_OUTPUT"
+          echo "build=${build}" >> "$GITHUB_OUTPUT"
+
       - id: plan
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -77,18 +102,47 @@ jobs:
           echo "matrix=${matrix}" >> "$GITHUB_OUTPUT"
           echo "ref=${REF}" >> "$GITHUB_OUTPUT"
 
-  image:
+  # the PR's own image, built and pushed the way _build-pr-ci-image.yml builds pr-<number>
+  image-build:
     needs: plan
-    if: needs.plan.outputs.matrix != '[]'
-    uses: ./.github/workflows/_build-tpu-ci-image.yml
-    with:
-      ref: ${{ needs.plan.outputs.ref }}
-    permissions:
-      contents: read
-      id-token: write
+    if: needs.plan.outputs.matrix != '[]' && needs.plan.outputs.build_image == 'true'
+    runs-on: ["docker-build"]
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      # shared builders fill their disk with idle buildkit cache; see _build-pr-ci-image.yml
+      - name: Free builder disk
+        run: |
+          docker builder prune -af --filter "until=48h" || true
+          docker image prune -af --filter "until=48h" || true
+          docker volume prune -f || true
+      - uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: |
+            image=moby/buildkit:latest
+            network=host
+      - name: Install typer
+        run: |
+          PIP_BSP=""
+          pip3 install --help 2>/dev/null | grep -q -- --break-system-packages && PIP_BSP="--break-system-packages"
+          pip3 install $PIP_BSP --ignore-installed typer
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Build and push pr-<number>-tpu
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: python3 docker/build.py --variant tpu --image-tag custom --custom-tag "pr-${PR_NUMBER}" --push
 
   smoke:
-    needs: [plan, image]
+    needs: [plan, image-build]
+    # image-build is skipped when the released image serves
+    if: >-
+      always() && !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.matrix != '[]' &&
+      needs.image-build.result != 'failure'
     strategy:
       fail-fast: false
       matrix:
@@ -96,7 +150,7 @@ jobs:
     uses: ./.github/workflows/_run-ci-tpu.yml
     with:
       ref: ${{ needs.plan.outputs.ref }}
-      image: ${{ needs.image.outputs.image }}
+      image: ${{ needs.plan.outputs.image }}
       launcher: ${{ matrix.launcher }}
       recipe: smoke
       timeout_minutes: ${{ matrix.timeout_minutes }}
@@ -106,7 +160,7 @@ jobs:
 
   # one check for branch protection: green when skipped (no label), red when any job failed or was cancelled
   pr-test-tpu-finish:
-    needs: [plan, image, smoke]
+    needs: [plan, image-build, smoke]
     if: always()
     runs-on: ubuntu-latest
     steps:
