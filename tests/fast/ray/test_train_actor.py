@@ -279,6 +279,14 @@ class TestTheLocalGpuIsFoundWithoutRay:
 
         assert train_actor.get_local_gpu_id() == 5
 
+    def test_observers_hear_the_gpu_a_pod_rank_runs_on(self, monkeypatch):
+        """A pod rank is outside Ray, so asking Ray would report it on no GPU at all."""
+        monkeypatch.setenv(CELL_INDEX_ENV_VAR, "0")
+        monkeypatch.setenv(SUBPROCESS_INDEX_ENV_VAR, "3")
+        monkeypatch.setattr(train_actor.ray, "get_gpu_ids", lambda: [])
+
+        assert train_actor._held_gpu_ids() == [3]
+
 
 # PCI bus numbers of the eight GPUs on an HGX H200 board, in NVML (physical) index order.
 _PHYSICAL_GPU_PCI_BUSES = [0x18, 0x2A, 0x3A, 0x5D, 0x9A, 0xAB, 0xBA, 0xDB]

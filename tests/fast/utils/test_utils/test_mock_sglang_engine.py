@@ -116,7 +116,7 @@ class TestRealRayActorLifecycle:
         try:
             port = get_free_port(start_port=20000)
             cmd = f"python -m sglang.launch_server --model-path /fake/model --host 127.0.0.1 --port {port}"
-            ray.get(actor.run.remote(cmd=cmd, envs={}))
+            ray.get(actor.run.remote(cmd=cmd, envs={}, gpu_ids=[]))
             ray.get(actor._get_free_port_block.remote(start_port=20100, count=1))
             ray.get(actor.kill_subprocess.remote())
 
