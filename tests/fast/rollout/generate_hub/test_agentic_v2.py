@@ -363,6 +363,19 @@ async def test_a_worker_secret_no_header_can_carry_fails_before_a_session_opens(
     assert extra_keys == []
 
 
+@pytest.mark.asyncio
+async def test_a_missing_worker_secret_file_fails_before_a_session_opens(monkeypatch, tmp_path):
+    extra_keys = _patch_agent(monkeypatch, _Tracer())
+    monkeypatch.setenv("MILES_AGENT_WORKER_SECRET_FILE", str(tmp_path / "missing"))
+
+    with pytest.raises(NonRetryableError, match="MILES_AGENT_WORKER_SECRET_FILE"):
+        await agentic_tool_call.generate(
+            _generate_input(custom_agent_function_mode="worker", custom_agent_function_worker="http://worker:11100")
+        )
+
+    assert extra_keys == []
+
+
 def test_the_worker_flags_parse_and_the_worker_env_flag_is_gone():
     parser = argparse.ArgumentParser(exit_on_error=False)
     agentic_tool_call.generate.add_arguments(parser)
