@@ -143,17 +143,39 @@ class _FakeMachines:
 
 
 class _FakeSnapshots:
+    """Each get pops one state: a status, read at the version saved before the
+    test's own bake, or a ``(status, version)`` pair."""
+
     def __init__(self, client):
         self.client = client
 
     def get(self, name, org=None):
         if not self.client.snapshot_states:
             raise _NotFound(name)
-        return SimpleNamespace(status=self.client.snapshot_states.pop(0))
+        state = self.client.snapshot_states.pop(0)
+        status, version = state if isinstance(state, tuple) else (state, self.client.saved_version)
+        return SimpleNamespace(status=status, version=version)
 
     def create(self, mid, name):
         self.client.calls.append(("snapshot", mid, name))
-        self.client.snapshot_states = ["pending", "ready"]
+        old = self.client.saved_version
+        # a save over an existing name: the earlier version stays readable until the new one is ready
+        stale = [("ready", old)] if old else []
+        self.client.snapshot_states = [("pending", old), *stale, ("ready", old + 1)]
+        return SimpleNamespace(version=old + 1)
+
+
+class _CreateRefused:
+    """The retrying client's machines: a create through it is the bug."""
+
+    def __init__(self, machines):
+        self._machines = machines
+
+    def __getattr__(self, name):
+        return getattr(self._machines, name)
+
+    def create(self, name, **kwargs):
+        raise AssertionError("machine creates go through make_client(retry=False)")
 
 
 class _FakeClient:
@@ -161,8 +183,10 @@ class _FakeClient:
         self.calls = []
         self.created = []
         self.snapshot_states = list(snapshot_states)
+        self.saved_version = 1 if snapshot_states else 0
         self.fail_on = fail_on
-        self.machines = _FakeMachines(self)
+        self.no_retry = SimpleNamespace(machines=_FakeMachines(self))
+        self.machines = _CreateRefused(self.no_retry.machines)
         self.snapshots = _FakeSnapshots(self)
 
     def of(self, kind):
@@ -173,8 +197,8 @@ class _FakeClient:
 def fake(monkeypatch):
     def install(**kwargs):
         client = _FakeClient(**kwargs)
-        monkeypatch.setattr(sandbox, "make_client", lambda: client)
-        monkeypatch.setattr(sandbox, "_snapshot_status", _status_via(client))
+        monkeypatch.setattr(sandbox, "make_client", lambda retry=True: client if retry else client.no_retry)
+        monkeypatch.setattr(sandbox, "_get_snapshot", _snapshot_via(client))
         monkeypatch.setattr(sandbox, "_SNAPSHOT_POLL_S", 0.0)
         monkeypatch.setattr(
             sandbox,
@@ -195,14 +219,14 @@ def fake(monkeypatch):
     return install
 
 
-def _status_via(client):
-    def status(_client, name):
+def _snapshot_via(client):
+    def get(_client, name):
         try:
-            return client.snapshots.get(name).status
+            return client.snapshots.get(name)
         except _NotFound:
             return None
 
-    return status
+    return get
 
 
 # --- bake ---------------------------------------------------------------------
@@ -265,6 +289,47 @@ def test_force_rebuilds_an_existing_snapshot(fake):
     assert len(client.of("create")) == 1
 
 
+def test_a_rebake_waits_for_the_version_it_saved(fake):
+    """Saving a name again keeps the earlier version readable until the new one
+    is ready: the bake must not take that earlier "ready" for its own."""
+    client = fake(snapshot_states=["ready"])
+    sandbox.ensure_task_snapshot(Path("/tasks/t"), force=True)
+    # every state was read, the stale ("ready", 1) included, before the builder went
+    assert client.snapshot_states == []
+    assert client.of("delete") == [("delete", "id-0")]
+
+
+def test_a_snapshot_wait_timeout_leaves_the_builder(fake, monkeypatch):
+    """The save may still be running on the builder: its delete-after timer
+    reclaims it, a delete here could cut the save short."""
+    client = fake()
+
+    def never_ready(_client, name, *, version=None):
+        raise TimeoutError("not ready")
+
+    monkeypatch.setattr(sandbox, "_wait_snapshot_ready", never_ready)
+    with pytest.raises(TimeoutError):
+        sandbox.ensure_task_snapshot(Path("/tasks/t"))
+    assert len(client.of("snapshot")) == 1
+    assert client.of("delete") == []
+
+
+def test_a_snapshot_that_fails_to_save_deletes_the_builder(fake, monkeypatch):
+    client = fake()
+    snapshots = client.snapshots
+    create = snapshots.create
+
+    def create_then_fail(mid, name):
+        saved = create(mid, name)
+        client.snapshot_states = [("failed", 0)]
+        return saved
+
+    snapshots.create = create_then_fail
+    with pytest.raises(RuntimeError, match="'failed'"):
+        sandbox.ensure_task_snapshot(Path("/tasks/t"))
+    assert client.of("delete") == [("delete", "id-0")]
+
+
 def test_a_failed_build_deletes_the_builder_and_raises_with_the_log(fake):
     client = fake(fail_on=("docker build",))
     with pytest.raises(RuntimeError, match="boom"):
@@ -314,7 +379,7 @@ def test_the_max_lifetime_is_the_episode_cap_plus_slack(monkeypatch):
     assert sandbox._max_lifetime_s() == 1000 + sandbox._MAX_LIFETIME_SLACK_S
 
 
-# --- snapshot status against the SDK's shapes -----------------------------------
+# --- snapshot lookup and client against the SDK's shapes -----------------------
 
 
 class _SdkNotFound(Exception):
@@ -326,6 +391,13 @@ def fake_sdk(monkeypatch):
     """A stand-in `boxd` module: the status lookup imports NotFoundError from it."""
     module = types.ModuleType("boxd")
     module.NotFoundError = _SdkNotFound
+    module.built = []
+
+    def boxd_client(**kwargs):
+        module.built.append(kwargs)
+        return SimpleNamespace(options=kwargs)
+
+    module.Boxd = boxd_client
     monkeypatch.setitem(sys.modules, "boxd", module)
     monkeypatch.setenv("BOXD_ORG", "my-org")
 
@@ -334,33 +406,48 @@ def _snapshots(get):
     return SimpleNamespace(snapshots=SimpleNamespace(get=get))
 
 
-def test_snapshot_status_maps_not_found_to_none_and_passes_the_org(fake_sdk):
+def test_get_snapshot_maps_not_found_to_none_and_passes_the_org(fake_sdk):
     seen = {}
 
     def get(name, org=None):
         seen.update(name=name, org=org)
         raise _SdkNotFound(name)
 
-    assert sandbox._snapshot_status(_snapshots(get), "snap") is None
+    assert sandbox._get_snapshot(_snapshots(get), "snap") is None
     assert seen == {"name": "snap", "org": "my-org"}
 
 
-def test_snapshot_status_reads_the_status(fake_sdk):
+def test_get_snapshot_returns_the_snapshot(fake_sdk):
     snap = SimpleNamespace(status="ready", archived=False, storage="local")
-    assert sandbox._snapshot_status(_snapshots(lambda name, org=None: snap), "snap") == "ready"
+    assert sandbox._get_snapshot(_snapshots(lambda name, org=None: snap), "snap") is snap
 
 
 def test_an_archived_snapshot_is_a_clear_error(fake_sdk):
     snap = SimpleNamespace(status="ready", archived=True, storage="archived")
     with pytest.raises(RuntimeError, match="archived"):
-        sandbox._snapshot_status(_snapshots(lambda name, org=None: snap), "snap")
+        sandbox._get_snapshot(_snapshots(lambda name, org=None: snap), "snap")
 
 
-def test_waiting_on_a_pending_snapshot_has_a_deadline(monkeypatch):
-    monkeypatch.setattr(sandbox, "_snapshot_status", lambda client, name: "pending")
+@pytest.mark.parametrize("state", [("pending", 1), ("ready", 1)])
+def test_waiting_on_a_snapshot_has_a_deadline(monkeypatch, state):
+    """Also when the version waited for never shows up behind an earlier ready one."""
+    snap = SimpleNamespace(status=state[0], version=state[1])
+    monkeypatch.setattr(sandbox, "_get_snapshot", lambda client, name: snap)
     monkeypatch.setattr(sandbox, "_SNAPSHOT_POLL_S", 0.0)
     with pytest.raises(TimeoutError):
-        sandbox._wait_snapshot_ready(object(), "snap", timeout_s=0.01)
+        sandbox._wait_snapshot_ready(object(), "snap", version=2, timeout_s=0.01)
+
+
+def test_the_create_client_never_resends_and_both_clients_are_built_once(fake_sdk, monkeypatch):
+    """A resent create whose first send arrived would come back as a name
+    conflict, so the client used for creates has the SDK's retries off."""
+    monkeypatch.setenv("BOXD_API_KEY", "key")
+    monkeypatch.setattr(sandbox, "_clients", {})
+    retrying, creating = sandbox.make_client(), sandbox.make_client(retry=False)
+    assert retrying.options == {"api_key": "key"}
+    assert creating.options == {"api_key": "key", "max_retries": 0}
+    assert sandbox.make_client() is retrying and sandbox.make_client(retry=False) is creating
+    assert len(sys.modules["boxd"].built) == 2
 
 
 def test_delete_sandbox_deletes_by_id(fake):

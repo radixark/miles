@@ -167,6 +167,8 @@ python tb2_sandbox_boxd.py --tasks-dir /workspace/terminal-bench-2 --all
 ```
 
 Machines are isolated: no private network and no boxd credentials inside. The
+env server's URL is public, as on Modal and Novita, and carries no credential:
+access rests on the machine's random name and the episode's short lifetime. The
 backend deletes each machine when its episode ends. One left behind by a dead
 caller hibernates after `OPENENV_BOXD_IDLE_HIBERNATE_S` without traffic and is
 deleted by its delete-after timer, set 30 minutes past
@@ -246,13 +248,13 @@ fails.
 | `WANDB_KEY`, `--wandb-project`, `--wandb-team` | — | W&B logging |
 
 Per-episode sandbox mode (step 2). The two switches come first, then the
-knobs — the ones shared by every backend (`<BACKEND>` is `BOXD`, `DAYTONA`,
+knobs: the ones shared by every backend (`<BACKEND>` is `BOXD`, `DAYTONA`,
 `E2B`, `MODAL`, or `NOVITA`), then each provider's own.
 
 | Flag / env var | Default | Purpose |
 | --- | --- | --- |
 | `OPENENV_TB2_TASKS_DIR` | off | Switches on per-episode sandbox mode and overrides `--openenv-env-url`. Point it at the terminal-bench-2 checkout from step 1 |
-| `OPENENV_SANDBOX_BACKEND` | — | Required whenever `OPENENV_TB2_TASKS_DIR` is set: `agentenv` (alias for `e2b`), `boxd`, `daytona`, `e2b`, `modal`, or `novita`. Only the selected backend's settings below are read — the others are ignored silently |
+| `OPENENV_SANDBOX_BACKEND` | — | Required whenever `OPENENV_TB2_TASKS_DIR` is set: `agentenv` (alias for `e2b`), `boxd`, `daytona`, `e2b`, `modal`, or `novita`. Only the selected backend's settings below are read; the others are ignored silently |
 | Provider credential and endpoint variables (`*_API_KEY`, `*_API_KEY_FILE`, `E2B_API_URL`, `MODAL_*`, `NOVITA_DOMAIN`, `BOXD_REGION`, ...) | — | Read by the selected backend only; names, defaults and semantics are in [Sandbox Providers](../../../docs/user-guide/sandbox-providers.md) |
 | `OPENENV_<BACKEND>_CREATE_CONCURRENCY` | `4` | Max in-flight creates. Size it to what the endpoint can host — one self-hosted AgentENV machine took 16; on Modal the ceiling above it is the plan's container concurrency |
 | `OPENENV_<BACKEND>_CREATE_MAX_RETRIES` | `8` | How many throttled creates to retry before giving up (the backoff curve itself is not tunable) |

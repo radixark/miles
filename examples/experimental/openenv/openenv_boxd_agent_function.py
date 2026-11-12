@@ -3,8 +3,8 @@
 A drop-in alternative to ``openenv_agent_function.run`` for
 ``--custom-agent-function-path``: instead of sharing one env server
 (OPENENV_ENV_URL), every episode gets its OWN `boxd <https://boxd.sh/?ref=miles>`_
-machine — started from a snapshot of the task's OFFICIAL image plus an env
-server layer, deleted when the episode ends.
+machine, started from a snapshot of the task's OFFICIAL image plus an env
+server layer and deleted when the episode ends.
 
 The agent loop and training wrapper live in ``openenv_agent_function``, and
 everything about running episodes on per-episode sandboxes is
@@ -30,8 +30,8 @@ Env vars (the agent-loop ones in ``openenv_agent_function`` apply too):
   OPENENV_BOXD_CREATE_CONCURRENCY   max in-flight machine creates (default 4).
   OPENENV_BOXD_CREATE_MAX_RETRIES   how many throttled creates to retry (default 8).
 
-Everything describing ONE machine — the ready and build deadlines, the
-delete-after and idle-hibernation backstops, the name prefix — is documented
+Everything describing ONE machine (the ready and build deadlines, the
+delete-after and idle-hibernation backstops, the name prefix) is documented
 and read in ``tb2_sandbox_boxd``, and the per-exec timeout inside it
 (TB2_COMMAND_TIMEOUT_S) in ``tb2_sandbox_recipe``, next to the code each one
 steers.

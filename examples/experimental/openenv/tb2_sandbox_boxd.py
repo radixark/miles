@@ -1,7 +1,7 @@
 """boxd materialization of the per-task Terminal-Bench-2 sandbox recipe.
 
-The recipe itself — the shell layers that turn a task's official image into a
-combined task+env-server image — lives in ``tb2_sandbox_recipe`` (sibling
+The recipe itself (the shell layers that turn a task's official image into a
+combined task+env-server image) lives in ``tb2_sandbox_recipe`` (sibling
 module) and is provider-agnostic. This module is everything boxd-specific about
 turning that recipe into a running sandbox on `boxd <https://boxd.sh/?ref=miles>`_.
 
@@ -192,20 +192,27 @@ def _org() -> str | None:
 
 
 _client_lock = threading.Lock()
-_client = None
+_clients: dict[bool, object] = {}
 
 
-def make_client():
+def make_client(*, retry: bool = True):
     """The process's boxd client: key from resolve_api_key(), region from
     optional BOXD_REGION (read by the SDK). Built once and shared, because this
-    runs once per create attempt, retries included."""
-    global _client
+    runs once per create attempt, retries included.
+
+    ``retry=False`` is the client for machine creates. It never resends a
+    request after a connection failure: a create that did reach boxd would
+    answer its resend with a name conflict and hide the machine it made. A
+    failed create surfaces instead, and the caller's next attempt uses a new
+    name.
+    """
     with _client_lock:
-        if _client is None:
+        if retry not in _clients:
             from boxd import Boxd
 
-            _client = Boxd(api_key=resolve_api_key())
-        return _client
+            options = {} if retry else {"max_retries": 0}
+            _clients[retry] = Boxd(api_key=resolve_api_key(), **options)
+        return _clients[retry]
 
 
 def _exec(client, machine_id: str, command: str, *, timeout: float) -> str:
@@ -216,8 +223,9 @@ def _exec(client, machine_id: str, command: str, *, timeout: float) -> str:
     return result.stdout
 
 
-def _snapshot_status(client, name: str) -> str | None:
-    """The snapshot's status ("pending", "ready", "failed"), or None when absent."""
+def _get_snapshot(client, name: str):
+    """The snapshot (``status`` is "pending", "ready" or "failed"; ``version``
+    is its latest ready version), or None when absent."""
     from boxd import NotFoundError
 
     try:
@@ -227,17 +235,26 @@ def _snapshot_status(client, name: str) -> str | None:
     if snapshot.archived:
         # machines can't be created from an archived snapshot, nor can it be saved again
         raise RuntimeError(f"boxd snapshot {name} is archived ({snapshot.storage}); unarchive it to use it")
-    return snapshot.status
+    return snapshot
 
 
-def _wait_snapshot_ready(client, name: str, timeout_s: float = _SNAPSHOT_TIMEOUT_S) -> None:
+def _wait_snapshot_ready(
+    client, name: str, *, version: int | None = None, timeout_s: float = _SNAPSHOT_TIMEOUT_S
+) -> None:
+    """Wait until *name* is ready. With *version* (what a save returned), wait
+    for that version: saving a name again keeps the earlier version readable
+    until the new one is ready, so "ready" alone could still be the old one."""
     deadline = time.monotonic() + timeout_s
-    while (status := _snapshot_status(client, name)) == "pending":
+    while True:
+        snapshot = _get_snapshot(client, name)
+        status = snapshot.status if snapshot else None
+        if status == "ready" and (version is None or (snapshot.version or 0) >= version):
+            return
+        if status not in ("pending", "ready"):
+            raise RuntimeError(f"boxd snapshot {name} is {status!r}, not ready")
         if time.monotonic() > deadline:
             raise TimeoutError(f"boxd snapshot {name} not ready in {timeout_s}s")
         time.sleep(_SNAPSHOT_POLL_S)
-    if status != "ready":
-        raise RuntimeError(f"boxd snapshot {name} is {status!r}, not ready")
 
 
 def _snapshot_labels(task_dir: Path) -> dict[str, str]:
@@ -252,7 +269,7 @@ def _snapshot_labels(task_dir: Path) -> dict[str, str]:
 def _bake(client, task_dir: Path, name: str, *, build_timeout_s: float, on_logs=None) -> None:
     """Build the task image on a fresh builder machine, then save it as *name*."""
     vcpu, memory_mb = machine_size(task_dir)
-    builder = client.machines.create(
+    builder = make_client(retry=False).machines.create(
         _builder_name(task_dir),
         org=_org(),
         isolated=True,
@@ -262,6 +279,7 @@ def _bake(client, task_dir: Path, name: str, *, build_timeout_s: float, on_logs=
         auto_suspend_timeout=0,
         delete_after=int(build_timeout_s + _READY_TIMEOUT_S + _SNAPSHOT_TIMEOUT_S) + _MAX_LIFETIME_SLACK_S,
     )
+    keep_builder = False
     try:
         client.machines.wait_until_ready(builder.id, timeout=_READY_TIMEOUT_S)
         client.machines.files.upload(builder.id, f"{_BUILD_DIR}/Dockerfile", dockerfile(task_dir))
@@ -274,13 +292,19 @@ def _bake(client, task_dir: Path, name: str, *, build_timeout_s: float, on_logs=
         if on_logs:
             for line in log.splitlines():
                 on_logs(line)
-        client.snapshots.create(builder.id, name)
-        _wait_snapshot_ready(client, name)
-    finally:
+        saved = client.snapshots.create(builder.id, name)
         try:
-            client.machines.delete(builder.id)
-        except Exception:
-            pass  # cleanup must not mask the real failure; its delete-after timer reclaims it
+            _wait_snapshot_ready(client, name, version=saved.version)
+        except TimeoutError:
+            # the save may still be running on the builder: leave it to its delete-after timer
+            keep_builder = True
+            raise
+    finally:
+        if not keep_builder:
+            try:
+                client.machines.delete(builder.id)
+            except Exception:
+                pass  # cleanup must not mask the real failure; its delete-after timer reclaims it
 
 
 def ensure_task_snapshot(
@@ -297,7 +321,8 @@ def ensure_task_snapshot(
     # one build per name per rollout: a rollout fans out many episodes of the same task at once,
     # and every concurrent miss would otherwise start its own multi-minute build
     with rollout_lock(f"openenv-boxd-build-{name}"):
-        status = None if force else _snapshot_status(client, name)
+        snapshot = None if force else _get_snapshot(client, name)
+        status = snapshot.status if snapshot else None
         if status == "pending":
             _wait_snapshot_ready(client, name)
         elif status != "ready":
@@ -331,7 +356,7 @@ def create_task_sandbox(
     task_dir = Path(task_dir)
     client = make_client()
     name = ensure_task_snapshot(task_dir)
-    machine = client.machines.create(
+    machine = make_client(retry=False).machines.create(
         _machine_name(task_dir),
         from_snapshot=name,
         org=_org(),

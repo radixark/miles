@@ -20,7 +20,7 @@ import pytest
 
 
 def test_start_hook_creates_per_task_and_closes_by_deleting(monkeypatch):
-    """The machine is per-task (tasks_dir/task_id) and close_fn deletes it by id —
+    """The machine is per-task (tasks_dir/task_id) and close_fn deletes it by id:
     the snapshot stays, the machine must not."""
     deleted = []
     created = {}
