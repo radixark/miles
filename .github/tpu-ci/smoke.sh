@@ -18,6 +18,8 @@ fi
 pip install -q --no-deps -e . || { echo "FAIL: pip install miles"; exit 1; }
 echo "== miles $(git rev-parse HEAD) launcher=${LAUNCHER} recipe=${RECIPE} =="
 
+# the launchers import `scripts.tpu`, which only the repo root on the path provides
+export PYTHONPATH="/root/miles${PYTHONPATH:+:$PYTHONPATH}"
 script="scripts/tpu/run_${LAUNCHER}_torchtitan.py"
 args=(--recipe "$RECIPE" --model-dir /data/models --data-dir /data/datasets)
 
