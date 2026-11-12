@@ -12,8 +12,7 @@ substitutions:
 
 serviceAccount: "projects/sglang-torchtpu/serviceAccounts/tpu-ci@sglang-torchtpu.iam.gserviceaccount.com"
 
-# GCS copy of the build log, which run_cloudbuild.py streams into the Actions job log: most contributors cannot
-# open the project's Cloud Console. LEGACY keeps the console log view working too.
+# run_cloudbuild.py streams this copy into the job log: most contributors cannot open the Cloud Console
 logsBucket: "gs://sglang-torchtpu_cloudbuild/logs"
 
 options:

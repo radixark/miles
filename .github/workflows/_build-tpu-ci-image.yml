@@ -1,10 +1,5 @@
-# Reusable: the TPU CI image for `ref`, keyed by what builds docker/build.py's `tpu` variant.
-#
-# It is the image docker-build.yml publishes as radixark/miles:dev-tpu, built from the same Dockerfile and variant
-# build args, but for the commit under test: a PR that changes the TPU image runs on its own image. A CI pod checks
-# out the commit under test over the image's /root/miles (.github/tpu-ci/smoke.sh), so a change to miles' code
-# reuses the image and only a change to its inputs builds a new one, on Cloud Build as tpu-ci (keyless WIF), pushed
-# to sglang-torchtpu's CI registry in the TPU nodes' region.
+# Reusable: docker/build.py's `tpu` variant (radixark/miles:dev-tpu's recipe) built for `ref` on Cloud Build, tagged
+# by a hash of its inputs so that only a change to them rebuilds it. .github/tpu-ci/README.md describes it.
 name: _build-tpu-ci-image
 
 on:
@@ -68,13 +63,13 @@ jobs:
           dockerfile=$(jq -r '.dockerfile' <<< "$variant")
           build_args=$(jq -r '.build_args | to_entries | map("--build-arg=\(.key)=\(.value)") | join(" ")' <<< "$variant")
 
-          # The files docker-build.yml rebuilds dev-tpu for, the variant's config, and this build's own recipe.
+          # the files docker-build.yml rebuilds dev-tpu for, plus the variant and this build's recipe
           hash=$( (sha256sum "$dockerfile" docker/install-kube-tools.sh docker/tpu_patch/* requirements.txt \
             .github/tpu-ci/cloudbuild.yaml; echo "$variant") | sha256sum | head -c 16)
           tag="ci-${hash}"
 
-          # Tags only: describing an image also queries Container Analysis, which tpu-ci cannot read. A failed
-          # lookup (e.g. the package does not exist yet) counts as a miss and builds.
+          # tags only: describing an image also queries Container Analysis, which tpu-ci cannot read;
+          # a failed lookup (no package yet) counts as a miss
           if cached=$(gcloud artifacts docker tags list "$AR_IMAGE" --filter="tag~'/tags/${tag}$'" \
               --format='value(tag)' --project "$GCP_PROJECT" --access-token-file="$tokfile"); then
             :
@@ -95,8 +90,7 @@ jobs:
           src="${RUNNER_TEMP}/source.tgz"
           tar --exclude=./.git -czf "$src" -C "$GITHUB_WORKSPACE" .
           gcloud storage cp "$src" "gs://${bucket}/${object}" --project "$GCP_PROJECT" --access-token-file="$tokfile"
-          # run_cloudbuild.py streams the build log here, retries one intermittent failure (e.g. a registry
-          # pull), and prints only the pushed digest on stdout
+          # prints only the pushed digest on stdout; the build log streams to stderr
           digest=$(python3 .github/tpu-ci/run_cloudbuild.py \
             --project "$GCP_PROJECT" --config .github/tpu-ci/cloudbuild.yaml \
             --bucket "$bucket" --object "$object" --tag "$tag" --token-file "$tokfile" \

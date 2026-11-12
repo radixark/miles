@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Submit a rendered JobSet (render_jobset.py) to the TPU cluster, wait for Kueue to admit it, stream its pod's log
-# and exit with its verdict. Adapted from sgl-project/sglang-torchtpu .github/workflows/_tpu-test.yml, whose
-# cluster, namespace and queues this shares.
+# Submit a rendered JobSet (render_jobset.py), wait for Kueue to admit it, stream its pod's log and exit with its
+# verdict. Adapted from sgl-project/sglang-torchtpu .github/workflows/_tpu-test.yml.
 #
 # Usage: run_jobset.sh <jobset.json> <label> <run-budget-seconds>
 # Env: WIF_PROVIDER and CI_SA (to re-mint the cluster token), plus the GitHub OIDC request variables.

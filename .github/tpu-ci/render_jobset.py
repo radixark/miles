@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
-"""Print the JobSet (JSON, which kubectl accepts) that runs one TPU launcher's recipe on a v7x 2x2x1 CI host.
+"""Print the JobSet (as JSON) that runs smoke.sh for one TPU launcher on a v7x 2x2x1 CI host.
 
-The shape follows sgl-project/sglang-torchtpu's .github/tpu-ci/jobset-tpu.yaml, whose GKE cluster, `tpu-ci`
-namespace and Kueue queues this CI shares: the JobSet is created suspended with a queue label, and Kueue admits it
-when a whole CI host is free. The pod runs .github/tpu-ci/smoke.sh.
+Shaped after sgl-project/sglang-torchtpu's .github/tpu-ci/jobset-tpu.yaml, whose cluster and Kueue queues it shares.
 """
 
 import argparse
@@ -22,7 +20,7 @@ def render(*, image: str, sha: str, launcher: str, recipe: str, queue: str, dead
             "cloud.google.com/gke-tpu-accelerator": "tpu7x",
             "cloud.google.com/gke-tpu-topology": "2x2x1",
         },
-        # Kueue's ResourceFlavor pins the exact CI pool on admission; this keeps the pod off the developer pools
+        # Kueue's ResourceFlavor picks the CI pool on admission; this keeps the pod off the developer pools
         "affinity": {
             "nodeAffinity": {
                 "requiredDuringSchedulingIgnoredDuringExecution": {
@@ -35,8 +33,7 @@ def render(*, image: str, sha: str, launcher: str, recipe: str, queue: str, dead
             {"name": "dshm", "emptyDir": {"medium": "Memory", "sizeLimit": "64Gi"}},
             # an unmounted /tmp is the node's ephemeral storage; Ray's session logs alone can fill it
             {"name": "tmp", "emptyDir": {"sizeLimit": "64Gi"}},
-            # checkpoints (Qwen3-30B-A3B and GLM-4.7-Flash are ~60 GB each), datasets and the HF cache, in host RAM:
-            # the node's disk is smaller than the checkpoints plus the container's own writes
+            # checkpoints (~60 GB for the MoE models) and datasets: the node's 100 GB disk cannot hold them
             {"name": "data", "emptyDir": {"medium": "Memory", "sizeLimit": "160Gi"}},
         ],
         "containers": [
@@ -56,8 +53,8 @@ def render(*, image: str, sha: str, launcher: str, recipe: str, queue: str, dead
                         "valueFrom": {"secretKeyRef": {"name": "hf-token", "key": "token", "optional": True}},
                     },
                 ],
-                # No ephemeral-storage and no memory limit: the CI ClusterQueues cover only these resources (Kueue
-                # never admits a request for an uncovered one), and the MoE trainers keep their optimizer in host RAM.
+                # Kueue never admits a resource the CI ClusterQueues do not cover (ephemeral-storage); no memory
+                # limit because the MoE trainers keep their optimizer in host RAM
                 "resources": {
                     "requests": {"google.com/tpu": "4", "cpu": "4", "memory": "32Gi"},
                     "limits": {"google.com/tpu": "4"},
@@ -79,9 +76,8 @@ def render(*, image: str, sha: str, launcher: str, recipe: str, queue: str, dead
             "generateName": f"miles-{re.sub('[^a-z0-9]+', '-', launcher.lower())[:24]}-",
             "namespace": NAMESPACE,
             "labels": {
-                # created suspended; Kueue releases it onto a free CI host
                 "kueue.x-k8s.io/queue-name": queue,
-                # lets the workflow's cleanup step find the JobSets of a cancelled run
+                # lets a cancelled run's cleanup step find its JobSets
                 "miles-ci-run": run_label,
             },
         },

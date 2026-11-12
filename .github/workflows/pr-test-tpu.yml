@@ -1,14 +1,7 @@
 # doc-dev: docs/developer/ci/00-stage.md
 name: PR Test (TPU)
 
-# End-to-end GRPO smoke runs on TPU v7x: each scripts/tpu launcher's `smoke` recipe (3 rollouts; sglang-torchtpu
-# engine and torchtitan trainer sharing one 2x2x1 host, weights synced over ICI) on sglang-torchtpu's GKE CI
-# cluster. .github/tpu-ci/README.md describes the setup.
-#
-# * PR: on demand. A PR carrying the `run-ci-tpu` label runs the Qwen3-4B smoke for its head commit, and again
-#   on every push while it carries the label. Fork PRs cannot get the cluster's credentials.
-# * Nightly: every launcher, on main.
-# * Dispatch: any launchers on any branch (`gh workflow run pr-test-tpu.yml --ref <branch> -f launchers=...`).
+# scripts/tpu launchers' smoke recipe on TPU v7x; .github/tpu-ci/README.md has the triggers and the cluster side.
 
 on:
   pull_request:
@@ -27,8 +20,7 @@ permissions:
   contents: read
 
 concurrency:
-  # A new push, or adding / removing `run-ci-tpu`, or closing the PR supersedes the running TPU run. Any other
-  # label event gets a group of its own, so labelling a PR for CUDA CI does not cancel its TPU run.
+  # other labels get a group of their own, so labelling a PR for CUDA CI does not cancel its TPU run
   group: >-
     pr-test-tpu-${{ github.event.pull_request.number || github.event.schedule || github.run_id }}${{
     (github.event.action == 'labeled' || github.event.action == 'unlabeled') &&
@@ -37,7 +29,7 @@ concurrency:
 
 jobs:
   plan:
-    # closing the PR or changing another label only starts a run to supersede (or not disturb) the running one
+    # a close only cancels the running TPU run; another label's event does nothing
     if: >-
       github.event.action != 'closed' &&
       ((github.event.action != 'labeled' && github.event.action != 'unlabeled') ||
@@ -54,11 +46,11 @@ jobs:
           HAS_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'run-ci-tpu') }}
           SAME_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
           INPUT_LAUNCHERS: ${{ github.event.inputs.launchers || '' }}
-          # the PR head (immutable, the pushed code) rather than the merge commit, which lags a force-push
+          # the PR head rather than the merge commit, which lags a force-push
           REF: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
-          # launcher -> the JobSet's deadline in minutes: download, both cold compiles and three steps
+          # launcher -> JobSet deadline in minutes: download, both cold compiles and three steps
           declare -A timeout=([qwen3_4b]=90 [qwen3_30b_a3b]=180 [glm4_7_flash_4layer]=150)
           all="qwen3_4b qwen3_30b_a3b glm4_7_flash_4layer"
           case "$EVENT_NAME" in
@@ -112,7 +104,7 @@ jobs:
       contents: read
       id-token: write
 
-  # One check for branch protection: green when the TPU run was skipped (no label), red when any job failed.
+  # one check for branch protection: green when skipped (no label), red when any job failed or was cancelled
   pr-test-tpu-finish:
     needs: [plan, image, smoke]
     if: always()

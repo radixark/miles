@@ -1,8 +1,5 @@
-# Reusable: run one scripts/tpu launcher's recipe on a TPU v7x 2x2x1 CI host and gate on its exit code.
-#
-# The host comes from sglang-torchtpu's CI cluster (tpu-cluster, namespace tpu-ci): the JobSet goes to Kueue's
-# PR-gate queue, shared with sglang-torchtpu's own PR jobs, and runs once a whole host is free.
-# .github/tpu-ci/README.md describes the setup.
+# Reusable: run one scripts/tpu launcher's recipe on a TPU v7x 2x2x1 host of sglang-torchtpu's CI cluster and gate
+# on its exit code. .github/tpu-ci/README.md describes the setup.
 name: _run-ci-tpu
 
 on:
@@ -87,14 +84,11 @@ jobs:
             --queue "$IN_QUEUE" \
             --deadline-s "$deadline_s" \
             --run-label "$RUN_LABEL" > "$RUNNER_TEMP/jobset.json"
-          # Outlast the JobSet's own deadline so its Failed condition, not this runner, reports a timeout. The margin
-          # also covers a requeue: a pod that waits for the autoscaled CI pool to add a host past Kueue's 5-minute
-          # PodsReady timeout is evicted and admitted again, and its Job's deadline restarts.
+          # outlast the JobSet's deadline, which restarts when a scale-up outlasts Kueue's 5-minute PodsReady wait
           bash .github/tpu-ci/run_jobset.sh "$RUNNER_TEMP/jobset.json" "${IN_LAUNCHER} (${IN_RECIPE})" \
             $((deadline_s + 1800))
 
-      # A cancelled run's step may die before its own trap deletes the JobSet; the label finds it. The kubeconfig's
-      # token may be past its hour by then, so mint a new one first (the auth step's credentials can).
+      # a cancelled step may die before its trap deletes the JobSet, and the kubeconfig token may be past its hour
       - name: Refresh cluster credentials
         if: cancelled()
         uses: google-github-actions/get-gke-credentials@v2

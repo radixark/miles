@@ -130,8 +130,9 @@ against the sglang-torchtpu commit `docker/Dockerfile.tpu` pins, on PRs only. Th
 `pr-test-tpu.yml` is also outside the stage inventory: it runs whole `scripts/tpu` launchers rather than registered
 test files. Each run is the launcher's `smoke` recipe (3 rollouts; the sglang-torchtpu engine and the torchtitan
 trainer share one TPU v7x 2x2x1 host and sync weights over ICI) in a JobSet on sglang-torchtpu's GKE CI cluster,
-queued through its Kueue PR-gate queue alongside sglang-torchtpu's PR jobs. A PR runs the Qwen3-4B smoke only while it carries `run-ci-tpu`, again on
-every push; the nightly runs every launcher on `main`, and `workflow_dispatch` takes a launcher list and any branch.
+queued through its Kueue PR-gate queue alongside sglang-torchtpu's PR jobs. A PR runs the Qwen3-4B smoke only while
+it carries `run-ci-tpu`, again on every push; the nightly runs every launcher on `main`, and `workflow_dispatch` takes
+a launcher list and any branch.
 Fork PRs cannot run it: the cluster's credentials come from GitHub's OIDC token through Workload Identity Federation.
 
 The image is `docker/build.py`'s `tpu` variant (what `docker-build.yml` publishes as `radixark/miles:dev-tpu`), built

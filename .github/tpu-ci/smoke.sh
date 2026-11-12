@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
-# Runs in a TPU CI pod (render_jobset.py): one scripts/tpu launcher's recipe on the pod's whole v7x 2x2x1 host,
-# sglang on devices 4-7 and the torchtitan trainer on devices 0-3, as scripts/tpu/README.md describes.
-#
-# Env: MILES_SHA (the commit under test), LAUNCHER (run_<LAUNCHER>_torchtitan.py), RECIPE (smoke / bench / full).
-# The pod's exit code is the verdict: the trainer's, or 1 when the engine dies before the trainer finishes.
+# TPU CI pod entrypoint (render_jobset.py): run one scripts/tpu launcher's recipe on the pod's v7x 2x2x1 host.
+# Env: MILES_SHA, LAUNCHER (run_<LAUNCHER>_torchtitan.py), RECIPE. Exits with train's code, or 1 if sglang dies first.
 set -uo pipefail
 
 # core files of crashed TPU processes run to tens of GB
@@ -29,8 +26,7 @@ python3 "$script" prepare "${args[@]}" || { echo "FAIL: ${script} prepare"; exit
 
 python3 "$script" sglang "${args[@]}" > >(sed -u 's/^/[sglang] /') 2>&1 &
 engine=$!
-# The engine compiles only after the trainer joins the slice, so the trainer does not wait for /health; a short
-# head start lets the engine bind the slice builders first.
+# the engine compiles only after the trainer joins, so train starts without waiting for /health
 sleep 60
 python3 "$script" train "${args[@]}" &
 trainer=$!

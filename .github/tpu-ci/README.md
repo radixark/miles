@@ -33,8 +33,9 @@ pr-test-tpu.yml: plan ─▶ image (_build-tpu-ci-image.yml) ─▶ smoke × lau
    sglang-torchtpu's PR jobs use: miles and sglang PRs take turns on the same hosts. That pool (`ci-tpu7x-2x2x1`)
    autoscales between 2 and 8 hosts, and its quota covers the maximum, so a job admitted while the pool is short
    makes the cluster autoscaler add a host. That takes longer than Kueue's 5-minute `waitForPodsReady`, so such a
-   job is evicted and admitted once more before it starts; the runner allows for it. Checkpoints, datasets and the HF cache live in a RAM-backed
-   `/data` (160 GiB; the node's disk is 100 GB), caches in `/dev/shm` and `/tmp`, never the container overlay.
+   job is evicted and admitted once more before it starts; the runner allows for it. Checkpoints, datasets and the
+   HF cache live in a RAM-backed `/data` (160 GiB; the node's disk is 100 GB), caches in `/dev/shm` and `/tmp`,
+   never the container overlay.
 3. **Pod.** `smoke.sh` checks out the commit under test over the image's `/root/miles`, installs it without
    dependencies, runs the launcher's `prepare`, starts `sglang` in the background, then `train`. The pod's exit code
    is `train`'s, or 1 if the engine dies first.
