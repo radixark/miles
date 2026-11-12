@@ -6,6 +6,7 @@ import logging
 
 import aiohttp
 import pytest
+import zstandard
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 from tests.fast.fixtures.session_fixtures import make_session_server_config
@@ -59,6 +60,19 @@ def echo_backend():
     async def moved():
         return Response(status_code=307, headers={"location": "/echo"})
 
+    @app.post("/compressed")
+    async def compressed(request: Request):
+        """Compress the echo of the received Accept-Encoding when it lists zstd, as SGLang does."""
+        accept_encoding = request.headers.get("accept-encoding", "")
+        body = json.dumps({"accept-encoding": accept_encoding}).encode()
+        if "zstd" not in accept_encoding:
+            return Response(body, media_type="application/json")
+        return Response(
+            zstandard.ZstdCompressor().compress(body),
+            media_type="application/json",
+            headers={"content-encoding": "zstd"},
+        )
+
     server = UvicornThreadServer(app, host="127.0.0.1", port=find_available_port(32100))
     server.start()
     try:
@@ -94,6 +108,14 @@ class TestDoProxy:
 
         assert result["status_code"] == 201
         assert "expect" not in json.loads(result["response_body"])["headers"]
+
+    def test_negotiates_the_backends_encoding_itself(self, echo_backend):
+        """The agent's Accept-Encoding stays out; aiohttp asks for and decodes zstd on its own."""
+        result = _proxy_to(echo_backend, "compressed", headers={"accept-encoding": "x-agent-only"})
+
+        assert result["headers"]["content-encoding"] == "zstd"
+        accept_encoding = json.loads(result["response_body"])["accept-encoding"]
+        assert "zstd" in accept_encoding and "x-agent-only" not in accept_encoding
 
     def test_returns_the_upstream_status_and_lower_case_headers(self, echo_backend):
         result = _proxy_to(echo_backend, "echo")
