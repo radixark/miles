@@ -1822,12 +1822,9 @@ def miles_validate_args(args):
         assert (
             args.fully_async and args.max_weight_staleness is not None and args.max_weight_staleness >= 0
         ), "--async-submit-within-staleness requires --fully-async and --max-weight-staleness >= 0"
-        assert args.update_weights_interval == 1 and (
-            args.use_dynamic_global_batch_size
-            or args.global_batch_size == args.rollout_batch_size * args.n_samples_per_prompt
-        ), (
-            "--async-submit-within-staleness requires one weight version per step: --update-weights-interval 1 and "
-            "one optimizer step per rollout"
+        assert args.update_weights_interval == 1, (
+            "--async-submit-within-staleness requires one weight version per trained rollout: "
+            "--update-weights-interval 1"
         )
 
     # Multi-LoRA adapters carry their own n_samples_per_prompt; the per-group

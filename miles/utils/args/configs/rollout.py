@@ -533,7 +533,8 @@ class RolloutRelatedRolloutOnlyConfig(BaseConfig):
         Arg(
             help=(
                 "Maximum allowed gap between a group's oldest generated-token weight version and the current "
-                "engine weight version. Prompt KV weight staleness is not considered. "
+                "engine weight version. With --update-weights-interval 1 a version is one trained rollout batch, "
+                "so the gap counts rollouts, not optimizer steps. Prompt KV weight staleness is not considered. "
                 "Groups exceeding this threshold are recycled back to "
                 "the data buffer instead of being sent to training. Only effective in fully "
                 "async mode. None (default) disables staleness filtering."
@@ -547,8 +548,8 @@ class RolloutRelatedRolloutOnlyConfig(BaseConfig):
                 "Also apply --max-weight-staleness N when the fully async producer submits a group: the default "
                 "data buffer admits one only while the buffered and in-flight groups number fewer than "
                 "N * rollout_batch_size, plus one rollout_batch_size while a training step waits for its batch. "
-                "N = 0 makes generation synchronous. Requires one weight version per training step, and a data "
-                "buffer that implements admits()."
+                "N = 0 makes generation synchronous. Requires --update-weights-interval 1, so that each trained "
+                "rollout publishes one weight version, and a data buffer that implements admits()."
             )
         ),
     ] = False

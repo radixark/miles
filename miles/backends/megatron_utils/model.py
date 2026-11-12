@@ -597,6 +597,8 @@ class TrainOneStepOutput:
     loss_dict: dict[str, float]
     grad_norm: float
     outcome: TrainStepOutcome
+    # whether the optimizer stepped, i.e. the weights changed
+    stepped: bool
 
 
 def train_one_step(args: TrainerConfig, input: TrainOneStepInput) -> TrainOneStepOutput:
@@ -692,10 +694,10 @@ def train_one_step(args: TrainerConfig, input: TrainOneStepInput) -> TrainOneSte
     if outcome == TrainStepOutcome.NORMAL:
         dumper_phase_util.finalize(input.model)
 
-    if not disable_optimizer and valid_step:
+    stepped = not disable_optimizer and valid_step
+    if stepped:
         update_successful, grad_norm, num_zeros_in_grad = input.optimizer.step()
         assert update_successful
-        ModelCompanionWeightVersionUtils.bump_weight_version(input.model)
         input.opt_param_scheduler.step(increment=input.num_rollouts)
 
     if args.enable_sample_ownership_checker:
@@ -731,9 +733,9 @@ def train_one_step(args: TrainerConfig, input: TrainOneStepInput) -> TrainOneSte
                 if parallel_state.indep_dp.size > 1
                 else aggregate_train_losses(losses_reduced, metric_num_rollouts)
             )
-            return TrainOneStepOutput(loss_dict=loss_reduced, grad_norm=grad_norm, outcome=outcome)
+            return TrainOneStepOutput(loss_dict=loss_reduced, grad_norm=grad_norm, outcome=outcome, stepped=stepped)
 
-    return TrainOneStepOutput(loss_dict={}, grad_norm=grad_norm, outcome=outcome)
+    return TrainOneStepOutput(loss_dict={}, grad_norm=grad_norm, outcome=outcome, stepped=stepped)
 
 
 def finalize_model_grads_with_empty_cache(*args, finalize=finalize_model_grads, **kwargs):
@@ -844,6 +846,7 @@ def train(
     if parallel_state.indep_dp.size > 1:
         assert num_steps_per_rollout == 1, "indep_dp is incompatible with num_steps_per_rollout>1 currently"
 
+    weights_changed = False
     # Run training iterations till done.
     for step_id in range(num_steps_per_rollout):
 
@@ -863,6 +866,7 @@ def train(
                 attempt=attempt,
             ),
         )
+        weights_changed |= step_output.stepped
 
         if step_id == 0:
             # Enable forward pre-hook after training step has successfully run. All subsequent
@@ -937,6 +941,11 @@ def train(
                     role=role,
                     rank=parallel_state.effective_dp.rank,
                 )
+
+    # One version per rollout, however many optimizer steps it took: a version gap, such as
+    # --max-weight-staleness, then counts trained rollouts.
+    if weights_changed:
+        ModelCompanionWeightVersionUtils.bump_weight_version(model)
 
     # Close out pre-hooks if using distributed optimizer and overlapped param gather.
     if pre_hook_enabled:
