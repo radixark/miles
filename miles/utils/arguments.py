@@ -287,6 +287,7 @@ def parse_args_and_get_parser(
                 hf_config, "compress_ratios", None
             )  # config-access-exempt: model-family schemas differ in optional compress_ratios metadata
             hf_validate_args(args, hf_config)
+            validate_routed_expert_quantization_args(args, hf_config)
 
             if is_dsa(hf_config):
                 getter = getattr(
@@ -331,6 +332,8 @@ def parse_args_and_get_parser(
             args.num_layers = resolve_fsdp_num_layers(load_hf_config(args.hf_checkpoint))
         else:
             args.num_layers = None
+        if args.routed_expert_qat is not None or args.rollout_routed_expert_format is not None:
+            raise ValueError("--routed-expert-qat and --rollout-routed-expert-format require the Megatron backend.")
 
         if backend == "fsdp":
             assert args.context_parallel_size == 1, "Context parallelism is not supported for FSDP backend."
@@ -1100,6 +1103,13 @@ def miles_validate_args(args):
         raise ValueError(f"Unknown --update-weight-transfer-mode {mode!r}")
     if mode == "broadcast_packed" and (args.train_backend != "megatron" or args.colocate):
         raise ValueError("broadcast_packed requires Megatron non-colocated weight transfer")
+    # NCCL has no float8_e8m0fnu type; the packed mode sends the MXFP4 scales as raw bytes. It is the only
+    # non-colocated mode validated with MXFP4 routed experts.
+    if mode != "broadcast_packed" and not args.colocate and args.rollout_routed_expert_format == "mxfp4":
+        raise ValueError(
+            "Without --colocate, --rollout-routed-expert-format mxfp4 supports only the packed transfer mode, "
+            f"not {mode!r}; use --update-weight-transfer-mode broadcast_packed."
+        )
     validate_dashboard_args(args)
     validate_miles_ext_kernels_args(args)
 
@@ -2141,6 +2151,64 @@ def resolve_fsdp_num_layers(hf_config) -> int | None:
             hf_config, "num_hidden_layers", None
         )  # config-access-exempt: model-family schemas differ in optional num_hidden_layers metadata
     return num_layers
+
+
+def validate_routed_expert_quantization_args(args, hf_config) -> None:
+    """Reject routed-expert quantization flags that no code path would apply."""
+    if args.routed_expert_qat is not None:
+        _validate_routed_expert_qat_args(args, hf_config)
+    if args.rollout_routed_expert_format is not None:
+        quantization_config = (
+            getattr(hf_config, "quantization_config", None) or {}
+        )  # config-access-exempt: unquantized HF checkpoints omit quantization_config
+        if hasattr(
+            quantization_config, "to_dict"
+        ):  # config-access-exempt: HF configs hold quantization_config as a dict or a QuantizationConfig
+            quantization_config = quantization_config.to_dict()
+        if quantization_config.get("quant_method") != "fp8":
+            raise ValueError(
+                "--rollout-routed-expert-format overrides the routed experts of a block-wise FP8 rollout "
+                f"checkpoint, but --hf-checkpoint has quantization_config={quantization_config}."
+            )
+
+
+# Models whose routed-expert layout keeps each 1x32 MXFP4 block of the trained weight intact through
+# the conversion to the rollout checkpoint, so that rounding in training matches the rollout encoding.
+_ROUTED_EXPERT_QAT_MODEL_TYPES = ("deepseek_v4",)
+
+
+def _validate_routed_expert_qat_args(args, hf_config) -> None:
+    if args.megatron_to_hf_mode != "bridge":
+        raise ValueError(
+            "--routed-expert-qat is configured through the Megatron-Bridge provider; use --megatron-to-hf-mode bridge."
+        )
+    if args.custom_model_provider_path is not None:
+        raise ValueError(
+            "--routed-expert-qat is configured through the Megatron-Bridge provider, which "
+            "--custom-model-provider-path replaces."
+        )
+    # Whether to round is decided in Python on each forward, which a captured graph does not re-evaluate.
+    if (
+        args.cuda_graph_impl != "none"
+        or getattr(args, "enable_cuda_graph", False)
+        or getattr(args, "external_cuda_graph", False)
+    ):  # config-access-exempt: Megatron's validate_args maps these deprecated flags to cuda_graph_impl and deletes them
+        raise ValueError("--routed-expert-qat does not support Megatron CUDA graphs (--cuda-graph-impl).")
+    if hf_config.model_type not in _ROUTED_EXPERT_QAT_MODEL_TYPES:
+        raise ValueError(
+            f"--routed-expert-qat supports model types {_ROUTED_EXPERT_QAT_MODEL_TYPES}, "
+            f"not {hf_config.model_type!r}."
+        )
+    # The routed-expert weights are rounded in place, which is only straight-through when an optimizer
+    # keeps separate fp32 master weights and overwrites the rounded copies after every step.
+    if not (args.bf16 or args.fp16):
+        raise ValueError("--routed-expert-qat requires --bf16 or --fp16 training with fp32 master weights.")
+    if args.use_precision_aware_optimizer and str(args.main_params_dtype) not in ("fp32", "torch.float32"):
+        raise ValueError("--routed-expert-qat requires fp32 master weights (--main-params-dtype fp32).")
+    if args.fp8_param_gather:
+        raise ValueError("--routed-expert-qat does not support FP8 primary weights (--fp8-param-gather).")
+    if is_lora_enabled(args):
+        raise ValueError("--routed-expert-qat does not support LoRA.")
 
 
 def hf_validate_args(args, hf_config):
