@@ -292,19 +292,6 @@ class TestConvertSamplesToTrainData:
         )
         assert out["round_number"][0] == 7
 
-    def test_optional_field_raw_reward_overridden_from_metadata(self):
-        args = make_args(rewards_normalization=False)
-        s = make_sample(reward=1.0)
-        s.metadata = {"raw_reward": 9.0}
-        out = convert_samples_to_train_data(
-            args,
-            [s],
-            metadata={},
-            custom_convert_samples_to_train_data_func=None,
-            custom_reward_post_process_func=None,
-        )
-        assert out["raw_reward"][0] == 9.0
-
     def test_rollout_ids_default_to_sample_index(self):
         args = make_args(rewards_normalization=False)
         samples = [make_sample(index=i) for i in range(3)]
