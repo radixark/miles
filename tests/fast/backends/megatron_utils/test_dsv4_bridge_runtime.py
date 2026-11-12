@@ -35,6 +35,7 @@ def _runtime_args(**overrides):
         "moe_token_dispatcher_type": "alltoall",
         "decoder_first_pipeline_num_layers": 4,
         "decoder_last_pipeline_num_layers": 3,
+        "pipeline_model_parallel_layout": None,
         "moe_router_bias_update_rate": None,
         "moe_aux_loss_coeff": None,
     }

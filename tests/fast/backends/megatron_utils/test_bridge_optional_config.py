@@ -13,12 +13,14 @@ class TestBridgeOptionalConfig:
         provider = SimpleNamespace(
             num_layers_in_first_pipeline_stage=7,
             num_layers_in_last_pipeline_stage=8,
+            pipeline_model_parallel_layout="Et*4|t*4L",
             moe_router_bias_update_rate=0.5,
             moe_aux_loss_coeff=0.6,
         )
         args = _runtime_args(
             decoder_first_pipeline_num_layers=2 if explicit else None,
             decoder_last_pipeline_num_layers=3 if explicit else None,
+            pipeline_model_parallel_layout="Et*2|t*6L" if explicit else None,
             moe_router_bias_update_rate=0.0 if explicit else None,
             moe_aux_loss_coeff=0.0 if explicit else None,
         )
@@ -27,5 +29,6 @@ class TestBridgeOptionalConfig:
 
         assert provider.num_layers_in_first_pipeline_stage == (2 if explicit else 7)
         assert provider.num_layers_in_last_pipeline_stage == (3 if explicit else 8)
+        assert provider.pipeline_model_parallel_layout == ("Et*2|t*6L" if explicit else "Et*4|t*4L")
         assert provider.moe_router_bias_update_rate == (0.0 if explicit else 0.5)
         assert provider.moe_aux_loss_coeff == (0.0 if explicit else 0.6)

@@ -38,6 +38,7 @@ def test_bridge_provider_receives_backend_runtime_options_and_preserves_unset_ov
         "dsa_kernel_backend",
         "decoder_first_pipeline_num_layers",
         "decoder_last_pipeline_num_layers",
+        "pipeline_model_parallel_layout",
         "moe_router_bias_update_rate",
         "moe_aux_loss_coeff",
     }

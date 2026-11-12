@@ -106,6 +106,8 @@ def _apply_bridge_runtime_config(provider, args: TrainerConfig) -> None:
         provider.num_layers_in_first_pipeline_stage = args.backend.decoder_first_pipeline_num_layers
     if args.backend.decoder_last_pipeline_num_layers is not None:
         provider.num_layers_in_last_pipeline_stage = args.backend.decoder_last_pipeline_num_layers
+    if args.backend.pipeline_model_parallel_layout is not None:
+        provider.pipeline_model_parallel_layout = args.backend.pipeline_model_parallel_layout
 
     # MoE training knobs: override only when explicitly set, else keep the provider's value
     if args.backend.moe_router_bias_update_rate is not None:

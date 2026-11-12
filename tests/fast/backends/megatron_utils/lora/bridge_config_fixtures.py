@@ -93,6 +93,7 @@ def bridge_args(tmp_path: Path) -> Namespace:
         moe_router_use_torch_mm=True,
         decoder_first_pipeline_num_layers=2,
         decoder_last_pipeline_num_layers=3,
+        pipeline_model_parallel_layout=None,
         optimizer="adam",
         accumulate_allreduce_grads_in_fp32=True,
         dsa_kernel_backend="flash_mla",
