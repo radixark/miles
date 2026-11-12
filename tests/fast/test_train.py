@@ -42,6 +42,7 @@ def _make_args(**overrides: Any) -> SimpleNamespace:
         offload_rollout_level="",
         offload_train=False,
         save_interval=None,
+        keep_recent_checkpoints=None,
         save_trigger_sentinel=None,
         skip_eval_before_train=False,
         start_rollout_id=0,
