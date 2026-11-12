@@ -232,3 +232,16 @@ def test_unadapted_weights_pass_through_untouched():
     merged = _merged(module)
     assert merged["norm"] is module.norm
     assert merged["mlp.linear_fc1.weight"] is module.mlp.linear_fc1.weight
+
+
+def test_an_untrained_adapter_exports_the_base_bytes():
+    module = nn.Module()
+    module.mlp = nn.Module()
+    module.mlp.linear_fc1, module.mlp.linear_fc2 = _Linear(10, HIDDEN), _Linear(HIDDEN, 5)
+    with torch.no_grad():
+        module.mlp.linear_fc1.weight[0, :2] = -0.0
+    SplitGateUpMLPSpec().attach(module.mlp, None, named(_context(), "model.layers.0.mlp."))
+    merged = _merged(module)
+    for name, base in module.named_parameters():
+        if "lora" not in name:
+            assert torch.equal(merged[name].view(torch.int32), base.view(torch.int32)), name
