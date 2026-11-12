@@ -60,7 +60,11 @@ def serve():
 
 def _rollout_args(router_port: int = 30000, **overrides):
     return SimpleNamespace(
-        custom_agent_function_path=None, sglang_router_ip="127.0.0.1", sglang_router_port=router_port, **overrides
+        custom_agent_function_path=None,
+        rollout_dataset_agent_functions=[],
+        sglang_router_ip="127.0.0.1",
+        sglang_router_port=router_port,
+        **overrides,
     )
 
 
