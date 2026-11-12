@@ -20,7 +20,7 @@ import torch.distributed as dist
 from transformers import AutoModelForCausalLM
 
 from miles.backends.training_utils.prefix_tree.plan import build_prefix_tree
-from miles.backends.training_utils.prefix_tree.qwen import TreeSFTBatch, enable_qwen_prefix_tree
+from miles.backends.training_utils.prefix_tree.transformers import TreeSFTBatch, enable_transformers_prefix_tree
 
 
 def _local(tensor):
@@ -232,7 +232,7 @@ def _load(args):
     if hasattr(model, "set_experts_implementation"):
         model.set_experts_implementation("eager")
     model.train()
-    enable_qwen_prefix_tree(model)
+    enable_transformers_prefix_tree(model)
     if args.fp32_head:
         original = model.lm_head.forward
 

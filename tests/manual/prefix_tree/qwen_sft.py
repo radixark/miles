@@ -18,7 +18,7 @@ import torch
 from transformers import AutoModelForCausalLM
 
 from miles.backends.training_utils.prefix_tree.plan import build_prefix_tree
-from miles.backends.training_utils.prefix_tree.qwen import TreeSFTBatch, enable_qwen_prefix_tree
+from miles.backends.training_utils.prefix_tree.transformers import TreeSFTBatch, enable_transformers_prefix_tree
 
 
 def _data(prefix_length, suffix_length, branches, vocab_size):
@@ -125,9 +125,9 @@ def run(model_name="Qwen/Qwen3-0.6B", revision="main", prefix=2049, suffix=257, 
     torch.manual_seed(19)
     torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cudnn.allow_tf32 = False
-    print("Loading Qwen", flush=True)
+    print(f"Loading {model_name}", flush=True)
     model = AutoModelForCausalLM.from_pretrained(model_name, revision=revision, dtype=torch.float32).cuda().train()
-    enable_qwen_prefix_tree(model)
+    enable_transformers_prefix_tree(model)
     sequences, targets = _data(prefix, suffix, branches, model.config.vocab_size)
     expanded, expanded_cpu_ms = _batch(sequences, targets, shared=False)
     compact, compact_cpu_ms = _batch(sequences, targets, shared=True)
