@@ -119,6 +119,35 @@ def test_mla_norm_mbridge_round_trip_keeps_hf_order(bridge_module, norm, layout)
     torch.testing.assert_close(bridge._weight_to_mcore_format(name, [exported]), weight, rtol=0, atol=0)
 
 
+_MTP_PARAMS = [
+    "enorm.weight",
+    "hnorm.weight",
+    "eh_proj.weight",
+    "final_layernorm.weight",
+    "{inner}.input_layernorm.weight",
+    "{inner}.self_attention.linear_proj.weight",
+    "{inner}.self_attention.wk.weight",
+    "{inner}.pre_mlp_layernorm.weight",
+    "{inner}.mlp.router.weight",
+    "{inner}.mlp.experts.linear_fc1.weight3",
+    "{inner}.mlp.shared_experts.linear_fc2.weight",
+]
+
+
+@pytest.mark.parametrize("inner", ["transformer_layer", "mtp_model_layer"])
+@pytest.mark.parametrize("param", _MTP_PARAMS)
+def test_mbridge_mtp_import_matches_raw_export(raw_converter, bridge_module, inner, param):
+    bridge = object.__new__(bridge_module.GlmMoeDsaBridge)
+    bridge.hf_config = SimpleNamespace(indexer_rope_interleave=False)
+    bridge.config = SimpleNamespace(num_layers=5, mtp_num_layers=1)
+    args = SimpleNamespace(
+        hidden_size=8, num_attention_heads=2, num_query_groups=1, num_layers=5, indexer_rope_interleave=False
+    )
+    name = "mtp.layers.0." + param.format(inner=inner)
+    exported = raw_converter(args, "module.module." + name, _weight((128, 8)))
+    assert bridge._convert_mtp_param(name) == [hf_name for hf_name, _ in exported]
+
+
 @pytest.fixture(scope="module")
 def native_indexer():
     # Optional MCore import; the numerical test itself uses only CPU tensors.
