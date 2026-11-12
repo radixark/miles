@@ -3,13 +3,13 @@
 # and exit with its verdict. Adapted from sgl-project/sglang-torchtpu .github/workflows/_tpu-test.yml, whose
 # cluster, namespace and queues this shares.
 #
-# Usage: run_jobset.sh <jobset.json> <label> <runtime-wait-seconds>
+# Usage: run_jobset.sh <jobset.json> <label> <run-budget-seconds>
 # Env: WIF_PROVIDER and CI_SA (to re-mint the cluster token), plus the GitHub OIDC request variables.
 set -euo pipefail
 
 job_file=$1
 label=$2
-wait_s=$3
+run_budget_s=$3
 ns=tpu-ci
 # a hosted runner's job dies at 6 hours; queueing comes out of the same budget
 job_ceiling_s=21600
@@ -75,8 +75,8 @@ if [ -z "$(kubectl -n "$ns" get workloads -l "$wl_sel" -o name 2>/dev/null)" ]; 
 fi
 
 # What is left of the runner's 6 hours after the run itself, image pull (900 s) and setup (600 s) goes to queueing.
-admit_s=$((job_ceiling_s - wait_s - 900 - 600))
-echo "budgets for ${label}: admission ${admit_s}s, runtime ${wait_s}s"
+admit_s=$((job_ceiling_s - run_budget_s - 900 - 600))
+echo "budgets for ${label}: admission ${admit_s}s, runtime ${run_budget_s}s"
 echo "workloads in ${ns}:"
 kubectl -n "$ns" get workloads 2>/dev/null || true
 admit_deadline=$(($(date +%s) + admit_s))
@@ -112,7 +112,7 @@ until kubectl -n "$ns" get pods -l "$sel" -o jsonpath='{.items[*].status.phase}'
   sleep 5
 done
 kubectl -n "$ns" get pods -l "$sel" -o wide || true
-deadline=$(($(date +%s) + wait_s))
+deadline=$(($(date +%s) + run_budget_s))
 
 # Stream the pod's log, re-attaching while the JobSet runs: the log is all that leaves the pod.
 refresh_cluster_token || echo "credential refresh failed; continuing with the current token"
@@ -166,7 +166,7 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
   fi
   sleep 5
 done
-echo "❌ ${label} TIMED OUT after ${wait_s}s"
+echo "❌ ${label} TIMED OUT after ${run_budget_s}s"
 kubectl -n "$ns" get pods -l "$sel" -o wide || true
 kubectl -n "$ns" describe "$name" | tail -n 100 || true
 exit 1

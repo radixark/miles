@@ -70,7 +70,6 @@ jobs:
       - name: Run on TPU
         env:
           # inputs reach the scripts through the environment, never by template substitution into the shell
-          IN_REF: ${{ inputs.ref }}
           IN_IMAGE: ${{ inputs.image }}
           IN_LAUNCHER: ${{ inputs.launcher }}
           IN_RECIPE: ${{ inputs.recipe }}
