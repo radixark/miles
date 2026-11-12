@@ -25,6 +25,7 @@ def _make_args(**overrides) -> Namespace:
         prefill_num_servers=None,
         rollout_num_gpus=8,
         rollout_num_gpus_per_engine=1,
+        sglang_pp_size=1,
         num_gpus_per_node=8,
         eval_num_gpus=0,
         eval_num_gpus_per_engine=1,

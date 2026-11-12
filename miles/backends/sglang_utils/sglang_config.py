@@ -195,6 +195,11 @@ class ServerGroupConfig(FrozenStrictBaseModel):
             **({"enable_memory_saver": False} if args.offload_rollout and not needs_offload else {}),
             **raw.overrides,
         }
+        pp_size = overrides.get("pp_size", args.sglang_pp_size)
+        assert num_gpus_per_engine % pp_size == 0, (
+            f"{num_gpus_per_engine} GPUs per engine do not split into pp_size {pp_size} pipeline stages; "
+            f"each stage needs the same number of GPUs"
+        )
 
         config = cls(
             worker_type=raw.worker_type,

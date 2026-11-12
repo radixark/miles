@@ -97,6 +97,7 @@ def _compute_server_args(
 ):
     base_args = args.sglang.base_args
     _gpus_per_engine = num_gpus_per_engine or args.rollout_num_gpus_per_engine
+    pp_size = (sglang_overrides or {}).get("pp_size", base_args["pp_size"])
     nnodes = max(1, _gpus_per_engine // args.num_gpus_per_node)
     kwargs = {
         "model_path": args.hf_checkpoint,
@@ -115,9 +116,10 @@ def _compute_server_args(
         "base_gpu_id": base_gpu_id,
         "gated_launch_port": gated_launch_port,
         # parallel
-        "tp_size": _gpus_per_engine,
+        # An SGLang engine spans tp_size * pp_size GPUs, so its TP is per pipeline stage.
+        "tp_size": _gpus_per_engine // pp_size,
         "dp_size": base_args["dp_size"],
-        "pp_size": base_args["pp_size"],
+        "pp_size": pp_size,
         "ep_size": base_args["ep_size"],
         # always skip warmup to prevent warmup timeout.
         "skip_server_warmup": True,
