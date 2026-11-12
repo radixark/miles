@@ -29,6 +29,15 @@ enabled = false
 [features]
 plugins = false
 """
+_REJECTED_STATUSES = ("400", "409")
+
+
+def _rejected_by_session(message: str) -> bool:
+    if message.startswith("unexpected status "):
+        return message.split()[2] in _REJECTED_STATUSES
+    with contextlib.suppress(ValueError, TypeError, KeyError, AttributeError):
+        return json.loads(message)["error"]["type"] == "invalid_request_error"
+    return False
 
 
 async def run(base_url: str, prompt: list[dict] | str, request_kwargs: dict, metadata: dict, **kwargs) -> dict:
@@ -64,6 +73,8 @@ async def run(base_url: str, prompt: list[dict] | str, request_kwargs: dict, met
         if timed_out:
             return {"reward": 0.0, "exit_status": "TimeLimitExceeded"}
         failed = [event for event in events if event["type"] == "turn.failed"]
+        if failed and _rejected_by_session(failed[-1]["error"]["message"]):
+            return {"reward": 0.0, "exit_status": "RequestRejected"}
         if failed:
             raise InfraAbort("CodexTurnFailed", failed[-1]["error"]["message"])
         if proc.returncode != 0 or not any(event["type"] == "turn.completed" for event in events):
