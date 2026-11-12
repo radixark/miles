@@ -266,6 +266,11 @@ def test_a_url_is_a_fixed_worker_and_a_path_a_start_function():
     assert resolve_worker("examples.experimental.agent_sandbox.local_start.start") is local_start.start
 
 
+@pytest.mark.parametrize("url", ["HTTP://worker:11100", "HtTpS://worker:11100"])
+def test_a_url_scheme_in_any_case_is_still_a_fixed_worker(url):
+    assert resolve_worker(url) == url
+
+
 def _train_args(monkeypatch, *flags: str) -> argparse.Namespace:
     argv = [
         "--custom-generate-function-path=miles.rollout.generate_hub.agentic_tool_call.generate",
