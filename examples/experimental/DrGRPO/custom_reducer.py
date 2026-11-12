@@ -4,13 +4,14 @@ This module provides a custom reducer that divides by a constant instead of
 the number of effective tokens. This is useful for Dr.GRPO algorithm.
 
 Usage:
-    --custom-pg-loss-reducer-function-path examples.experimental.DrGRPO.custom_reducer:get_pg_loss_reducer
+    --custom-pg-loss-reducer-function-path examples.experimental.DrGRPO.custom_reducer.get_pg_loss_reducer
 """
 
 from collections.abc import Callable
 
 import torch
-from megatron.core import mpu
+
+from miles.backends.training_utils.parallel import get_parallel_state
 
 # Constant divisor instead of effective token count
 DIVISOR = 1000.0
@@ -42,7 +43,9 @@ def get_pg_loss_reducer(
     Returns:
         A callable function that takes a tensor and returns a scalar tensor.
     """
-    assert mpu.get_context_parallel_world_size() == 1, "This custom reducer only supports cp_size == 1"
+    # miles' own parallel state, set by every training backend (Megatron, FSDP, torchtitan);
+    # Megatron's mpu is only initialized on the Megatron backend.
+    assert get_parallel_state().cp.size == 1, "This custom reducer only supports cp_size == 1"
 
     if calculate_per_token_loss:
 
