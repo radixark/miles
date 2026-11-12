@@ -298,6 +298,7 @@ def _training_metadata_projection(metadata: dict[str, Any]) -> dict[str, Any]:
     projected = deepcopy(metadata)
     projected.pop("leaf", None)
     projected.pop("max_trim_tokens", None)
+    projected.pop("last_model_call_failed", None)
     # each path opens its own session, so the ids differ by construction
     if "session_id" in projected:
         projected["session_id"] = "<session>"
