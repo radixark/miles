@@ -1,8 +1,13 @@
 from argparse import Namespace
 from collections.abc import Mapping, Sequence
+from typing import Any
 
-from miles.utils.output_store.plan import StorePlanError
-from miles.utils.sampling_mask import RolloutSamplingMask
+import numpy as np
+import pybase64
+import torch
+
+from miles.utils.output_store.plan import OUTPUT_STORE_REQUEST_KEY, StorePlanError
+from miles.utils.sampling_mask import RolloutSamplingMask, validate_sampling_support
 from miles.utils.types import Sample
 
 
@@ -75,19 +80,35 @@ def validate_sampling_support_request(
     return True
 
 
-def _sampling_mask_from_supports(
-    token_ids: Sequence[int],
-    supports: Sequence[Sequence[int]],
-) -> RolloutSamplingMask:
-    if len(token_ids) != len(supports):
-        raise ValueError(f"sampling support length {len(supports)} != token length {len(token_ids)}")
+def configure_sampling_mask_request(request: dict[str, Any]) -> None:
+    """Ask for a requested sampling mask as flat base64 arrays, unless the output store takes it."""
+    inline = request.get("return_sampling_mask", False) and not request.get(OUTPUT_STORE_REQUEST_KEY, False)
+    for key in ("return_flat_raw_sampling_mask", "return_flat_raw_sampling_mask_b64"):
+        if inline:
+            request[key] = True
+        else:
+            request.pop(key, None)
 
-    for token_id, support in zip(token_ids, supports, strict=True):
-        if not support:
-            raise ValueError("sampling support must contain at least one token")
-        if int(token_id) not in support:
-            raise ValueError(f"sampled token {token_id} is absent from its sampling support")
-    return RolloutSamplingMask.from_mask_list(supports)
+
+def decode_flat_sampling_mask(meta_info: Mapping[str, Any]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Support ids, per-token support lengths and log-probs from SGLang's base64 flat sampling mask."""
+
+    def decode(key: str, dtype: type) -> np.ndarray:
+        if f"{key}_b64" not in meta_info:
+            raise ValueError(
+                f"SGLang response is missing {key}_b64; use an SGLang build with return_flat_raw_sampling_mask, "
+                "behind a router that forwards it"
+            )
+        # SGLang writes contiguous little-endian bytes; the dtype marker names only the width.
+        wire_dtype = np.dtype(meta_info[f"{key}_b64_dtype"]).newbyteorder("<")
+        raw = pybase64.b64decode(meta_info[f"{key}_b64"], validate=True)
+        return np.frombuffer(raw, dtype=wire_dtype).astype(dtype)
+
+    return (
+        decode("output_token_sampling_mask_flat", np.int32),
+        decode("output_token_sampling_mask_lengths", np.int32),
+        decode("output_token_sampling_logprobs_flat", np.float32),
+    )
 
 
 def append_sampling_metadata(
@@ -99,39 +120,27 @@ def append_sampling_metadata(
     sampling_logprobs_mode: str = "selected",
 ) -> list[float]:
     """Append SGLang's realized support and return sampled-token log-probs."""
-    supports = meta_info.get("output_token_sampling_mask")
-    log_probs = meta_info.get("output_token_sampling_logprobs")
-    if supports is None or log_probs is None:
-        finish_reason = meta_info.get("finish_reason") or {}
-        if (aborted or finish_reason.get("type") == "abort") and not output_token_ids:
-            _append_sampling_mask(sample, RolloutSamplingMask.from_mask_list([]))
-            return []
-        raise ValueError(
-            "SGLang response is missing output_token_sampling_mask or "
-            "output_token_sampling_logprobs; use an SGLang build with the "
-            "native return_sampling_mask primitive"
-        )
-    if len(log_probs) != len(output_token_ids):
-        raise ValueError(f"sampling log-prob length {len(log_probs)} != output token length {len(output_token_ids)}")
-
-    sampling_mask = _sampling_mask_from_supports(output_token_ids, supports)
-    if sampling_logprobs_mode == "support":
-        selected = []
-        for token_id, support, row in zip(output_token_ids, supports, log_probs, strict=True):
-            if not isinstance(row, (list, tuple)) or len(row) != len(support):
-                raise ValueError("SGLang support log-probs must align with the sampling support IDs")
-            matches = [i for i, candidate in enumerate(support) if candidate == token_id]
-            if len(matches) != 1:
-                raise ValueError("Sampled token must occur exactly once in its sampling support")
-            selected.append(float(row[matches[0]]))
-    elif sampling_logprobs_mode == "selected":
-        if any(isinstance(row, (list, tuple)) for row in log_probs):
-            raise ValueError("SGLang selected sampling log-probs must be scalar")
-        selected = [float(value) for value in log_probs]
-    else:
+    finish_reason = meta_info.get("finish_reason") or {}
+    no_output_abort = not output_token_ids and (aborted or finish_reason.get("type") == "abort")
+    if no_output_abort and "output_token_sampling_mask_flat_b64" not in meta_info:
+        _append_sampling_mask(sample, RolloutSamplingMask.from_mask_list([]))
+        return []
+    if sampling_logprobs_mode not in ("selected", "support"):
         raise ValueError(f"Unsupported sampling logprobs mode: {sampling_logprobs_mode}")
-    _append_sampling_mask(sample, sampling_mask)
-    return selected
+    support_mode = sampling_logprobs_mode == "support"
+
+    ids, lengths, log_probs = decode_flat_sampling_mask(meta_info)
+    tokens = np.asarray(output_token_ids, dtype=np.int32)
+    if len(lengths) != len(tokens):
+        raise ValueError(f"sampling support length {len(lengths)} != token length {len(tokens)}")
+    if len(log_probs) != (len(ids) if support_mode else len(tokens)):
+        raise ValueError(f"SGLang {sampling_logprobs_mode}-mode sampling log-probs do not align with the support")
+    offsets = np.concatenate(([0], np.cumsum(lengths)))
+    validate_sampling_support(ids=ids, offsets=offsets, sampled_tokens=tokens, exactly_once=support_mode)
+    _append_sampling_mask(sample, RolloutSamplingMask(ids=torch.from_numpy(ids), offsets=torch.from_numpy(offsets)))
+    # One hit per row: support mode validated each sampled token as unique in its row.
+    selected = log_probs[ids == np.repeat(tokens, lengths)] if support_mode else log_probs
+    return selected.tolist()
 
 
 def read_sampled_logprobs(
