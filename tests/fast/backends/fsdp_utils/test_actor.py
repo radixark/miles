@@ -130,7 +130,7 @@ class TestFSDPModelInputs:
 
 
 class TestFSDPTrainParallelConfigWiring:
-    def test_init_derives_a_config_without_schedule_support_and_train_forwards_it(
+    def test_init_derives_a_config_with_schedule_support_and_train_forwards_it(
         self,
         monkeypatch: pytest.MonkeyPatch,
         fsdp_three_rank_state: ParallelState,
@@ -164,4 +164,4 @@ class TestFSDPTrainParallelConfigWiring:
         assert received[0].dp_size == fsdp_three_rank_state.effective_dp.size == 3
         assert received[0].cp_size == 1
         assert not received[0].independent_dp
-        assert not received[0].supports_precomputed_schedule
+        assert received[0].supports_precomputed_schedule

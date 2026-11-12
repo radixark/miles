@@ -311,6 +311,7 @@ class PackedSlices:
             qkv_format=args.qkv_format,
             max_seq_lens=batch.get("max_seq_lens"),
             calculate_per_token_loss=args.backend.calculate_per_token_loss,
+            denominators=batch.get("rollout_mask_sums"),
         )
 
     def forward_log_probs(self, logits, *, with_entropy, use_sampling_mask):

@@ -9,6 +9,8 @@ import torch
 from torch.optim.lr_scheduler import LRScheduler
 from typing_extensions import override
 
+from miles.backends.training_utils.data.rollout import get_steps_per_rollout
+
 logger = logging.getLogger(__name__)
 
 
@@ -168,9 +170,7 @@ def get_lr_scheduler(args, optimizer: torch.optim.Optimizer) -> FSDPLRScheduler:
         FSDPLRScheduler: Initialized scheduler bound to ``optimizer``.
     """
     with args.backend.mutable():
-        args.backend.train_iters = (
-            args.num_rollout * args.rollout_batch_size * args.n_samples_per_prompt // args.backend.global_batch_size
-        )
+        args.backend.train_iters = args.num_rollout * get_steps_per_rollout(args)
         if args.backend.lr_decay_iters is None:
             args.backend.lr_decay_iters = args.backend.train_iters
     lr_decay_steps = args.backend.lr_decay_iters
