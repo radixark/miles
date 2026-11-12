@@ -189,6 +189,18 @@ def test_the_records_are_copied_to_the_same_path_before_the_kill(service, tmp_pa
     assert copied_at_kill == [[trials / "x" / "agent" / "timings.jsonl", trials / "x" / "result.json"]]
 
 
+def test_a_record_that_cannot_be_written_here_still_kills_the_sandbox(service, tmp_path, monkeypatch):
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("")
+    trials = blocker / "trials"
+    FakeSandbox.files_on_disk.update({f"{trials}/x/result.json": b'{"reward": 1}'})
+    monkeypatch.setenv("SANDBOX_WORKER_RECORDS_DIR", str(trials))
+
+    assert _in_sandbox(stubs.report_pid)["pid"]
+
+    assert FakeSandbox.killed == ["sbx-0"]
+
+
 @pytest.mark.parametrize("cancel", ["task", "rollout_abort"])
 def test_a_cancelled_agents_cleanup_finishes_before_the_kill(service, tmp_path, monkeypatch, cancel):
     pid_file, cleaned_up = tmp_path / "pid", tmp_path / "cleaned_up"
