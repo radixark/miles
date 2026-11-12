@@ -425,8 +425,6 @@ def can_precompute_dp_schedule(
         return False
     if is_multi_lora_enabled(args):
         return False
-    if "multimodal_inputs" in data:
-        return False
     if "rollout_ids" not in data:
         return False
     global_batch_size = data.get("dynamic_global_batch_size", args.global_batch_size)
