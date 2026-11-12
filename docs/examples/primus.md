@@ -63,5 +63,5 @@ bash examples/primus/run-glm5.3-flash-reasoning-rl.sh
 `zhuzilin/dapo-math-17k` and `zhuzilin/aime-2024`.
 
 Other scripts in this directory are bring-up variants: a BF16 rollout of the
-same math task, an SFT launcher, and a multi-turn HIP-kernel task. The
+same math task and a multi-turn HIP-kernel task. The
 reasoning script above is the one to start from.
