@@ -178,10 +178,21 @@ jobs:
           cluster_name: ${{ env.GKE_CLUSTER }}
           location: ${{ env.GKE_ZONE }}
 
+      # GKE pulls Docker Hub through mirror.gcr.io, which can serve a moved tag's old image; a digest cannot go stale
+      - name: Resolve the image digest
+        id: digest
+        env:
+          IMAGE: ${{ needs.plan.outputs.image }}
+        run: |
+          set -euo pipefail
+          digest=$(docker buildx imagetools inspect "$IMAGE" --format '{{json .Manifest}}' | jq -r .digest)
+          echo "${IMAGE} is ${IMAGE%%:*}@${digest}"
+          echo "image=${IMAGE%%:*}@${digest}" >> "$GITHUB_OUTPUT"
+
       - name: Run on TPU
         env:
           # values reach the scripts through the environment, never by template substitution into the shell
-          IMAGE: ${{ needs.plan.outputs.image }}
+          IMAGE: ${{ steps.digest.outputs.image }}
           LAUNCHER: ${{ matrix.launcher }}
           TIMEOUT_MINUTES: ${{ matrix.timeout_minutes }}
         run: |
