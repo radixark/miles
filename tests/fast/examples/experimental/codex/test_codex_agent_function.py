@@ -8,6 +8,7 @@ from contextlib import contextmanager
 
 import psutil
 import pytest
+from fastapi import HTTPException
 from tests.fast.fixtures.generation_fixtures import (
     DEFAULT_SAMPLING_PARAMS,
     MODEL_NAME,
@@ -43,7 +44,9 @@ while True:
     try:
         output = json.load(urllib.request.urlopen(request, timeout=60))["output"]
     except urllib.error.HTTPError as error:
-        print(json.dumps({{"type": "turn.failed", "error": {{"message": f"unexpected status {{error.code}}"}}}}), flush=True)
+        text = error.read().decode()
+        message = text if error.code == 400 else f"unexpected status {{error.code}} {{error.reason}}: {{text}}"
+        print(json.dumps({{"type": "turn.failed", "error": {{"message": message}}}}), flush=True)
         sys.exit(1)
     items += output
     calls = [item for item in output if item["type"] == "function_call"]
@@ -76,6 +79,12 @@ def _sleep(prompt: str) -> ProcessResult:
 
 def _engine_error(prompt: str) -> ProcessResult:
     raise RuntimeError("engine failure")
+
+
+def _context_overflow(prompt: str) -> ProcessResult:
+    if "<tool_response>" in prompt:
+        raise HTTPException(400, "Requested token count exceeds the model's maximum context length.")
+    return ProcessResult(text=_tool_call("echo 42 > answer.txt"), finish_reason="stop")
 
 
 @pytest.fixture(params=["fake", "real"])
@@ -131,6 +140,14 @@ def test_engine_failure_discards_the_episode(codex):
         (sample,) = _generate(args, _sample(uuid.uuid4().hex))
     assert sample.status == Sample.Status.ABORTED
     assert sample.metadata["exit_status"] == "CodexTurnFailed"
+
+
+def test_context_overflow_scores_zero(codex):
+    with _codex_env(_context_overflow) as args:
+        (sample,) = _generate(args, _sample(uuid.uuid4().hex))
+    assert sample.status == Sample.Status.COMPLETED
+    assert sample.reward == 0.0
+    assert sample.metadata["exit_status"] == "RequestRejected"
 
 
 def test_wall_clock_cap_scores_zero(codex):
