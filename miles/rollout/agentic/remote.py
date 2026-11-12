@@ -49,12 +49,21 @@ _CREDENTIAL_NAMES = frozenset(name for spec in PROVIDER_CREDENTIALS.values() for
 def worker_secret() -> str | None:
     secret = os.environ.get(SECRET_ENV_VAR, "").strip()
     if not secret and (path := os.environ.get(SECRET_FILE_ENV_VAR, "").strip()):
-        secret = Path(path).read_text().strip()
+        secret = _read_secret_file(path)
+        if secret is None:
+            raise NonRetryableError(f"cannot read the agent worker secret from {SECRET_FILE_ENV_VAR}={path!r}")
     if not (secret.isascii() and secret.isprintable()):
         raise NonRetryableError(
             f"the agent worker secret in {SECRET_ENV_VAR} or {SECRET_FILE_ENV_VAR} must be printable ASCII on one line"
         )
     return secret or None
+
+
+def _read_secret_file(path: str) -> str | None:
+    try:
+        return Path(path).read_text().strip()
+    except (OSError, UnicodeDecodeError):
+        return None
 
 
 def function_path(fn: Callable) -> str:
