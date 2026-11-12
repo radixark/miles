@@ -58,7 +58,13 @@ def test_golden_episode(smoke: ModuleType, backend: str):
         pytest.skip(f"no {spec['provider']} credential here; provision it with: {spec['provision_hint']}")
     # lacking the SDK or harbor means this case cannot run, not that it failed
     pytest.importorskip(spec["sdk"], reason=f"{spec['provider']} SDK missing: {spec['sdk_hint']}")
-    pytest.importorskip("harbor", reason="harbor missing; install line in scripts/sandbox_smoke/README.md")
+    harbor_types = pytest.importorskip(
+        "harbor.models.environment_type", reason="harbor missing; install line in scripts/sandbox_smoke/README.md"
+    )
+    # this episode rides the Harbor connector, and a provider can be registered
+    # here ahead of the pinned Harbor shipping an environment for it
+    if backend not in {env_type.value for env_type in harbor_types.EnvironmentType}:
+        pytest.skip(f"the installed harbor has no {backend!r} environment")
     # a wrong endpoint fails as an unexplained AgentError, so name the one in effect
     if spec["target"]:
         var, label, default_desc = spec["target"]

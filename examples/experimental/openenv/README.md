@@ -147,6 +147,33 @@ python tb2_sandbox_novita.py --tasks-dir /workspace/terminal-bench-2 --all
 For the Docker Hub limit above, `Template.from_image` takes `username` /
 `password` for a private registry; the recipe pulls anonymously.
 
+### boxd
+
+Builds one **named snapshot** per task, like E2B's templates: a builder
+machine runs `docker build` on the recipe and is saved with the built image.
+Every episode starts a new machine from that snapshot, runs the env server in
+the task container, and reaches it at the machine's HTTPS URL.
+
+```bash
+pip install -e '<miles>[boxd]'   # boxd>=0.3.1
+export OPENENV_TB2_TASKS_DIR=/workspace/terminal-bench-2
+OPENENV_SANDBOX_BACKEND=boxd python run-openenv-tbench2.py
+```
+
+Snapshots can be built ahead of the run:
+
+```bash
+python tb2_sandbox_boxd.py --tasks-dir /workspace/terminal-bench-2 --all
+```
+
+Machines are isolated: no private network and no boxd credentials inside. The
+backend deletes each machine when its episode ends. One left behind by a dead
+caller hibernates after `OPENENV_BOXD_IDLE_HIBERNATE_S` without traffic and is
+deleted by its delete-after timer, set 30 minutes past
+`OPENENV_MAX_ROLLOUT_TIME_SECONDS`; the
+[materialization module](tb2_sandbox_boxd.py) carries the snippet that deletes
+a run's leftovers by label sooner.
+
 ### Alternative: one shared env server
 
 Rather than a sandbox per episode, one long-lived server can serve them all,
@@ -191,7 +218,7 @@ also gives a baseline solve-rate to compare training against.
 
 ```bash
 export OPENENV_TB2_TASKS_DIR=/workspace/terminal-bench-2
-OPENENV_SANDBOX_BACKEND=e2b python run-openenv-tbench2.py   # or daytona / modal / novita
+OPENENV_SANDBOX_BACKEND=e2b python run-openenv-tbench2.py   # or boxd / daytona / modal / novita
 ```
 
 Against a shared env server instead, name its URL and leave
@@ -214,25 +241,28 @@ fails.
 | `--prompt-data` | `/root/tbench2_train.jsonl` | Prompt set from step 1 |
 | `--num-rollout` | (launcher) | Number of GRPO steps |
 | `OPENENV_MAX_TURNS` | `30` | Max agent turns per episode |
-| `OPENENV_MAX_ROLLOUT_TIME_SECONDS` | `3600` | Per-episode wall-clock cap; a straggler that exceeds it is terminated and scored 0. An E2B sandbox's `max_lifetime_secs` metadata is 30 minutes past it, for servers that end a sandbox at that age |
+| `OPENENV_MAX_ROLLOUT_TIME_SECONDS` | `3600` | Per-episode wall-clock cap; a straggler that exceeds it is terminated and scored 0. An E2B sandbox's `max_lifetime_secs` metadata is 30 minutes past it, for servers that end a sandbox at that age, and so is a boxd machine's delete-after timer |
 | `--dump-details <dir>` | off | Dump per-episode tokens/logprobs/masks/reward for inspection |
 | `WANDB_KEY`, `--wandb-project`, `--wandb-team` | — | W&B logging |
 
 Per-episode sandbox mode (step 2). The two switches come first, then the
-knobs — the ones shared by every backend (`<BACKEND>` is `DAYTONA`, `E2B`,
-`MODAL`, or `NOVITA`), then each provider's own.
+knobs — the ones shared by every backend (`<BACKEND>` is `BOXD`, `DAYTONA`,
+`E2B`, `MODAL`, or `NOVITA`), then each provider's own.
 
 | Flag / env var | Default | Purpose |
 | --- | --- | --- |
 | `OPENENV_TB2_TASKS_DIR` | off | Switches on per-episode sandbox mode and overrides `--openenv-env-url`. Point it at the terminal-bench-2 checkout from step 1 |
-| `OPENENV_SANDBOX_BACKEND` | — | Required whenever `OPENENV_TB2_TASKS_DIR` is set: `agentenv` (alias for `e2b`), `daytona`, `e2b`, `modal`, or `novita`. Only the selected backend's settings below are read — the others are ignored silently |
-| Provider credential and endpoint variables (`*_API_KEY`, `*_API_KEY_FILE`, `E2B_API_URL`, `MODAL_*`, `NOVITA_DOMAIN`, ...) | — | Read by the selected backend only; names, defaults and semantics are in [Sandbox Providers](../../../docs/user-guide/sandbox-providers.md) |
+| `OPENENV_SANDBOX_BACKEND` | — | Required whenever `OPENENV_TB2_TASKS_DIR` is set: `agentenv` (alias for `e2b`), `boxd`, `daytona`, `e2b`, `modal`, or `novita`. Only the selected backend's settings below are read — the others are ignored silently |
+| Provider credential and endpoint variables (`*_API_KEY`, `*_API_KEY_FILE`, `E2B_API_URL`, `MODAL_*`, `NOVITA_DOMAIN`, `BOXD_REGION`, ...) | — | Read by the selected backend only; names, defaults and semantics are in [Sandbox Providers](../../../docs/user-guide/sandbox-providers.md) |
 | `OPENENV_<BACKEND>_CREATE_CONCURRENCY` | `4` | Max in-flight creates. Size it to what the endpoint can host — one self-hosted AgentENV machine took 16; on Modal the ceiling above it is the plan's container concurrency |
 | `OPENENV_<BACKEND>_CREATE_MAX_RETRIES` | `8` | How many throttled creates to retry before giving up (the backoff curve itself is not tunable) |
 | `OPENENV_<BACKEND>_READY_TIMEOUT_S` | `300` | How long the env server has to become ready after its sandbox exists. Modal records a TCP readiness event first; every backend then verifies /health through the client-facing URL |
 | `OPENENV_E2B_SANDBOX_TTL_S` / `OPENENV_NOVITA_SANDBOX_TTL_S` | `1800` | E2B and Novita sandbox TTL, re-armed by a keepalive thread while the creating process lives (Daytona's equivalent backstop is its own auto-stop/auto-delete, not a knob). Novita refuses a value above 3600 without its `long_running` marker |
 | `OPENENV_E2B_THROTTLE_PATTERNS` | — | Extra comma-separated lowercase substrings that count as retryable capacity errors. Exists for self-hosted AgentENV, which words "at capacity" however its operator deployed it |
 | `OPENENV_E2B_URL_SCHEME` | `https` | Scheme for the per-sandbox URL — set `http` for a plain-HTTP self-hosted AgentENV gateway |
+| `OPENENV_BOXD_BUILD_TIMEOUT_S` | `1800` | Wall clock for the `docker build` step of a boxd snapshot bake |
+| `OPENENV_BOXD_IDLE_HIBERNATE_S` | `1800` | Seconds without traffic before a boxd machine hibernates; the env client's WebSocket pings keep a live episode awake, so this only reaches a machine whose caller is gone |
+| `OPENENV_BOXD_NAME_PREFIX` | `tb2-` | Prefix of every boxd machine and snapshot name |
 | `OPENENV_MODAL_APP` | `openenv-tbench2` | App the sandboxes are created under; what a sweep scopes to in a shared workspace |
 | `OPENENV_MODAL_BUILD_LOGS` | off | Stream Modal's image-build logs. Debug-only: it drives a process-wide output manager, so never set it with creates fanned out |
 | `OPENENV_MODAL_CREATE_TIMEOUT_S` | `1800` | Build+create wall clock per Modal sandbox (the first create for a task builds its image, which Modal does not deadline itself) |

@@ -284,6 +284,23 @@ def test_novita_provisioning_forwards_the_region_by_value(monkeypatch, tmp_path)
     assert "nvt_secret" not in str(env)
 
 
+def test_boxd_provisioning_forwards_region_and_org_by_value(monkeypatch, tmp_path):
+    """boxd's region and org are selectors, forwarded by value; the key rides by
+    path like every other single-key provider's."""
+    key_file = tmp_path / "api_key"
+    key_file.write_text("boxd-secret-value\n")
+    monkeypatch.setenv("BOXD_REGION", "nyc")
+    monkeypatch.setenv("BOXD_ORG", "my-org")
+    monkeypatch.setitem(sys.modules, "boxd", types.ModuleType("boxd"))
+    monkeypatch.setattr(credentials.importlib.metadata, "version", lambda name: "0.3.1")
+
+    env: dict[str, str] = {}
+    provision_provider(env, PROVIDER_CREDENTIALS["boxd"], arg_path=str(key_file))
+
+    assert env == {"BOXD_API_KEY_FILE": str(key_file), "BOXD_REGION": "nyc", "BOXD_ORG": "my-org"}
+    assert "boxd-secret-value" not in str(env)
+
+
 def test_credential_available_accepts_either_supply(monkeypatch, tmp_path):
     """The predicate a caller uses to decide rather than fail: a non-empty key
     file, or every one of the provider's credential variables."""

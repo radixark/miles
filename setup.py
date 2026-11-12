@@ -52,6 +52,11 @@ setup(
         "novita": [
             "novita-sandbox>=2.0.7",
         ],
+        # the openenv boxd sandbox backend, imported only when that backend is
+        # selected; 0.3.1 is the release the recipe was written against
+        "boxd": [
+            "boxd>=0.3.1",
+        ],
     },
     # sglang needs 3.11; nvidia-resiliency-ext 0.6 has no 3.13 wheel
     python_requires=">=3.11",
