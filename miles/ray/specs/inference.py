@@ -6,7 +6,7 @@ from typing_extensions import Self
 
 from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig
-from miles.backends.sglang_utils.sglang_engine import compute_engine_launch_cmd
+from miles.backends.sglang_utils.sglang_engine import compute_engine_launch_cmd, compute_health_check_timeout_seconds
 from miles.backends.sglang_utils.sglang_scaling_config import ServerGroupScalingConfig
 from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
 from miles.rollout.session.config import compute_session_server_config
@@ -458,6 +458,7 @@ def compute_inference_engine_env_vars(args) -> dict[str, str]:
             "SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_FALLBACK_VARIANT": "true",
             "SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION": "false",
             "SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE": "false",
+            "SGLANG_HEALTH_CHECK_TIMEOUT": str(compute_health_check_timeout_seconds(args)),
             # Keep server-side idle closure well after the HTTP client's default 5s expiry. Engines Miles does not
             # launch (--rollout-external-engine-addrs, custom providers) keep SGLang's 5s and can still race the
             # client: https://github.com/radixark/miles/pull/3982

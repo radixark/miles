@@ -616,6 +616,17 @@ class TestInferenceEngineEnvVars:
 
         assert "SGLANG_PP_LAYER_PARTITION" not in envs
 
+    @pytest.mark.parametrize("pp_size, expected", [(1, "20"), (8, "160")])
+    def test_the_health_check_budget_grows_with_the_pipeline_depth(self, monkeypatch, pp_size, expected):
+        """A cold health request crosses every stage, so SGLang's single-stage budget fails a deep engine."""
+        monkeypatch.delenv("SGLANG_HEALTH_CHECK_TIMEOUT", raising=False)
+
+        envs = compute_inference_engine_env_vars(
+            make_args(sglang_pp_size=pp_size, rollout_num_gpus_per_engine=pp_size)
+        )
+
+        assert envs["SGLANG_HEALTH_CHECK_TIMEOUT"] == expected
+
     def test_the_built_in_defaults_apply_without_a_process_override(self, monkeypatch):
         """Without an override the engine must still get miles' own safety values rather than sglang's."""
         monkeypatch.delenv("SGLANG_JIT_DEEPGEMM_PRECOMPILE", raising=False)

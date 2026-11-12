@@ -21,6 +21,12 @@ from miles.utils.workers.argv_utils import _record_field_names
 
 logger = logging.getLogger(__name__)
 
+HEALTH_CHECK_TIMEOUT_SECONDS_PER_PP_STAGE = 20
+
+
+def compute_health_check_timeout_seconds(args) -> int:
+    return HEALTH_CHECK_TIMEOUT_SECONDS_PER_PP_STAGE * args.sglang.base_args["pp_size"]
+
 
 def format_v6_uri(addr: str | None) -> str | None:
     if not addr or addr.startswith("["):
