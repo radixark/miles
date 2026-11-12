@@ -236,8 +236,8 @@ def convert_samples_to_train_data(
     return _refuse_dense_alongside_refs(train_data)
 
 
-def _refuse_dense_alongside_refs(train_data: dict) -> dict:
-    if "multimodal_inputs" in train_data and "multimodal_train_inputs" in train_data:
+def _refuse_dense_alongside_refs(train_data: Any) -> Any:
+    if isinstance(train_data, dict) and "multimodal_inputs" in train_data and "multimodal_train_inputs" in train_data:
         raise ValueError(
             "train data carries both media references and dense multimodal_train_inputs; with "
             "--multimodal-token-space-processing the trainer rebuilds the tensors from the references, so a "
