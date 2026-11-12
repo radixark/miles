@@ -16,6 +16,8 @@ from types import SimpleNamespace
 import harbor_agent_function as haf
 import pytest
 
+from miles.utils.retry_utils import NonRetryableError
+
 
 class _EnvironmentType(str, enum.Enum):
     DOCKER = "docker"
@@ -79,6 +81,12 @@ def fake_harbor(monkeypatch):
     FakeTrial.result = None
     FakeTrial.run_delay_s = 0.0
     yield FakeTrial
+
+
+@pytest.fixture(autouse=True)
+def fresh_aenv_preflight():
+    """The worker checks aenv once per process; each test starts unchecked."""
+    haf._preflight_aenv_once.cache_clear()
 
 
 def run_async(coro):
@@ -364,11 +372,12 @@ def test_run_scores_a_timeout_zero(tasks_dir, fake_harbor, monkeypatch):
 
 @pytest.mark.parametrize("env_type", ["e2b", "agentenv"])
 def test_run_resolves_the_provider_key_file_into_the_sdk_env_var(
-    tasks_dir, fake_harbor, tmp_path, monkeypatch, env_type
+    tasks_dir, fake_harbor, fake_aenv, tmp_path, monkeypatch, env_type
 ):
     """The launcher forwards the key by PATH; the SDK reads its own env var, so
     the worker must resolve the file -- the gap the first live e2e run hit."""
     monkeypatch.setenv("HARBOR_ENV_TYPE", env_type)
+    fake_aenv("aenv 0.2.5")
     key_file = tmp_path / "api_key"
     key_file.write_text("e2b_test_key\n")
     monkeypatch.delenv("E2B_API_KEY", raising=False)
@@ -379,22 +388,75 @@ def test_run_resolves_the_provider_key_file_into_the_sdk_env_var(
     assert os.environ["E2B_API_KEY"] == "e2b_test_key"
 
 
-def test_run_raises_when_no_provider_key_is_resolvable(tasks_dir, fake_harbor, monkeypatch):
+def _unresolvable_provider_key(monkeypatch, tasks_dir):
     monkeypatch.delenv("E2B_API_KEY", raising=False)
     monkeypatch.setenv("E2B_API_KEY_FILE", "/nonexistent/api_key")
-    with pytest.raises(RuntimeError, match="no API key"):
+
+
+def _task_dir_escaping_through_a_symlink(monkeypatch, tasks_dir):
+    (tasks_dir / "escape").symlink_to(tasks_dir.parent)
+
+
+@pytest.mark.parametrize(
+    ("break_setup", "instance_id", "error"),
+    [
+        (_unresolvable_provider_key, "task-1", "no API key"),
+        (lambda monkeypatch, tasks_dir: None, "missing", "no Harbor task dir"),
+        (_task_dir_escaping_through_a_symlink, "escape", "escapes HARBOR_TASKS_DIR"),
+        (lambda monkeypatch, tasks_dir: monkeypatch.setenv("HARBOR_ENV_TYPE", "e2bb"), "task-1", "e2bb"),
+        (lambda monkeypatch, tasks_dir: monkeypatch.setenv("HARBOR_ENV_KWARGS", "{not json"), "task-1", "Expecting"),
+        (lambda monkeypatch, tasks_dir: monkeypatch.setenv("AGENT_TRIAL_TIMEOUT", "soon"), "task-1", "soon"),
+        (lambda monkeypatch, tasks_dir: monkeypatch.delenv("HARBOR_TASKS_DIR"), "task-1", "HARBOR_TASKS_DIR"),
+    ],
+    ids=[
+        "provider_key",
+        "missing_task_dir",
+        "escaping_task_dir",
+        "env_type",
+        "env_kwargs",
+        "trial_timeout",
+        "tasks_dir_unset",
+    ],
+)
+def test_a_broken_setup_stops_the_rollout_before_any_trial(
+    tasks_dir, fake_harbor, monkeypatch, break_setup, instance_id, error
+):
+    """A setup that fails every sample must stop the rollout, not abort each sample while the batch refills."""
+    break_setup(monkeypatch, tasks_dir)
+    with pytest.raises(NonRetryableError, match=error):
+        run_async(haf.run("http://s/sessions/s1", [], {}, {"instance_id": instance_id}))
+    assert fake_harbor.created == []
+
+
+def test_run_raises_when_agentenv_has_no_usable_aenv(tasks_dir, fake_harbor, fake_aenv, monkeypatch):
+    """A worker that cannot build task Dockerfiles must stop the run, not fail its trials one by one."""
+    monkeypatch.setenv("HARBOR_ENV_TYPE", "agentenv")
+    fake_aenv("aenv 0.2.2")
+    with pytest.raises(NonRetryableError, match="is aenv 0.2.2"):
         run_async(haf.run("http://s/sessions/s1", [], {}, {"instance_id": "task-1"}))
     assert fake_harbor.created == []
+
+
+def test_an_aenv_that_fails_to_run_costs_only_its_trial(tasks_dir, fake_harbor, fake_aenv, monkeypatch):
+    """A passing failure of `aenv --version` must not stop the rollout."""
+    monkeypatch.setenv("HARBOR_ENV_TYPE", "agentenv")
+    fake_aenv(script="#!/bin/sh\nkill -9 $$\n")
+    with pytest.raises(RuntimeError, match="could not run") as excinfo:
+        run_async(haf.run("http://s/sessions/s1", [], {}, {"instance_id": "task-1"}))
+    assert not isinstance(excinfo.value, NonRetryableError)
+
+
+def test_run_checks_aenv_once_per_process(tasks_dir, fake_harbor, monkeypatch):
+    checked = []
+    monkeypatch.setattr(haf, "preflight_aenv", checked.append)
+    monkeypatch.setenv("HARBOR_ENV_TYPE", "agentenv")
+    fake_harbor.result = _verdict()
+    for _ in range(2):
+        run_async(haf.run("http://s/sessions/s1", [], {}, {"instance_id": "task-1"}))
+    assert checked == ["agentenv"], "the worker re-ran the aenv check for every trial"
 
 
 def test_run_scores_a_trial_exception_zero(tasks_dir, fake_harbor):
     fake_harbor.result = RuntimeError("sandbox exploded")
     out = run_async(haf.run("http://s/sessions/s1", [], {}, {"instance_id": "task-1"}))
     assert out["reward"] == 0.0 and out["exit_status"] == "AgentError"
-
-
-def test_run_raises_on_a_missing_task_instead_of_scoring_zero(tasks_dir, fake_harbor):
-    """A config error fails every sample; raising beats training on silent all-zero rewards."""
-    with pytest.raises(FileNotFoundError):
-        run_async(haf.run("http://s/sessions/s1", [], {}, {"instance_id": "missing"}))
-    assert fake_harbor.created == []

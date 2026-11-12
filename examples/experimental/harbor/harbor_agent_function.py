@@ -55,14 +55,16 @@ Env vars (read on the rollout worker):
 Failure semantics: a verdict is returned as-is; every episode that ends
 without one scores 0 with a named ``exit_status`` (``TimeLimitExceeded``,
 ``SequenceLengthLimitExceeded``, ``AgentError``), matching the agent-server
-path. Configuration errors (missing task dir, bad env vars) raise instead:
-they would fail every sample, and a loud stop beats training on silent
-all-zero rewards. Nothing is discarded here yet; see the tracking issue for
-wiring the platform-side Harbor exceptions to ``InfraAbort`` once that
-contract lands.
+path. A setup that would fail every sample (missing or escaping task dir,
+bad env vars, unresolvable provider key, no usable ``aenv`` for agentenv)
+raises ``NonRetryableError``, which stops the rollout; aborting each sample
+instead would refill the batch forever. Nothing is discarded here yet; see
+the tracking issue for wiring the platform-side Harbor exceptions to
+``InfraAbort`` once that contract lands.
 """
 
 import asyncio
+import functools
 import json
 import logging
 import math
@@ -73,8 +75,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from aenv_cli import preflight_aenv
+
 from miles.rollout.agentic.credentials import PROVIDER_CREDENTIALS, resolve_provider, resolve_provider_api_key
 from miles.rollout.agentic.session import openai_session_url
+from miles.utils.retry_utils import NonRetryableError
 
 logger = logging.getLogger(__name__)
 
@@ -283,16 +288,25 @@ def _task_path(tasks_dir: Path, instance_id: str) -> Path:
     return path
 
 
+def _harbor_env_type() -> str:
+    return os.getenv("HARBOR_ENV_TYPE", "").strip().lower()
+
+
 def _ensure_provider_key() -> None:
     """Resolve the key file the launcher forwarded (by PATH) into the env var the
     provider's SDK reads. Modal needs nothing here: its SDK reads the config file
     MODAL_CONFIG_PATH names."""
-    spec = PROVIDER_CREDENTIALS.get(resolve_provider(os.getenv("HARBOR_ENV_TYPE", "").strip().lower()))
+    spec = PROVIDER_CREDENTIALS.get(resolve_provider(_harbor_env_type()))
     if not spec or len(spec["key_env_vars"]) != 1:
         return
     key_env = spec["key_env_vars"][0]
     if not os.getenv(key_env, "").strip():
         os.environ[key_env] = resolve_provider_api_key(key_env, spec["file_env_var"], spec["default_path"])
+
+
+@functools.cache  # inline mode runs every trial in this one process
+def _preflight_aenv_once(env_type: str) -> None:
+    preflight_aenv(env_type)
 
 
 def _environment_config():
@@ -302,7 +316,7 @@ def _environment_config():
     from harbor.models.environment_type import EnvironmentType
     from harbor.models.trial.config import EnvironmentConfig
 
-    raw = os.getenv("HARBOR_ENV_TYPE", "").strip().lower()
+    raw = _harbor_env_type()
     if not raw:
         raise ValueError("set HARBOR_ENV_TYPE to the Harbor environment type to run trials on (e.g. e2b, daytona)")
     env_type = EnvironmentType(raw)  # raises on an unknown backend instead of guessing
@@ -491,19 +505,21 @@ async def run(
     **kwargs,
 ) -> dict[str, Any]:
     """Run one Harbor trial for the sample; return its verdict as metadata."""
-    from harbor.trial.trial import Trial
-
     metadata = metadata or {}
     request_kwargs = request_kwargs or {}
     session_url = openai_session_url(base_url)
     instance_id = metadata.get("instance_id")
-    trial_timeout_s = _trial_timeout_s()
 
-    # Config errors (missing task dir, bad env vars, unresolvable provider key)
-    # fail every sample the same way; raising beats training on silent all-zero
-    # rewards.
-    _ensure_provider_key()
-    config = build_trial_config(metadata, session_url, request_kwargs)
+    await asyncio.to_thread(_preflight_aenv_once, _harbor_env_type())  # aenv --version would block the loop
+    # a broken setup fails every sample
+    try:
+        from harbor.trial.trial import Trial
+
+        trial_timeout_s = _trial_timeout_s()
+        _ensure_provider_key()
+        config = build_trial_config(metadata, session_url, request_kwargs)
+    except Exception as e:
+        raise NonRetryableError(f"Harbor trial setup failed: {e}") from e
 
     try:
         trial = await Trial.create(config)

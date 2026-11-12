@@ -82,6 +82,9 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
   `max_seq_len`. Forward only the fields your environment needs.
 - Return a dictionary to merge rewards, reports, or metrics into each output
   sample's metadata, or return `None` when there is nothing to add.
+- Raise `NonRetryableError` from `miles.utils.retry_utils` when the setup is
+  broken in a way that fails every sample, such as a missing tool; it stops the
+  rollout. Any other exception aborts only that sample.
 
 For structured parsing, the payload may use SGLang's
 `ChatCompletionRequest`-compatible fields, which extend the OpenAI format.

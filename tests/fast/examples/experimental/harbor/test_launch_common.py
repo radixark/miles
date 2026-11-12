@@ -8,6 +8,8 @@ from types import SimpleNamespace
 import launch_common
 import pytest
 
+from miles.utils.retry_utils import NonRetryableError
+
 
 def _args(**overrides):
     defaults = dict(
@@ -71,7 +73,7 @@ def test_known_provider_is_provisioned_by_key_path(monkeypatch, tmp_path, fake_a
 
 def test_agentenv_without_aenv_stops_the_launch(fake_aenv):
     """Harbor builds task Dockerfiles with aenv; a launch that cannot must not start."""
-    with pytest.raises(RuntimeError, match="aenv is not on PATH"):
+    with pytest.raises(NonRetryableError, match="aenv is not on PATH"):
         launch_common.harbor_env_vars(_args(harbor_env_type="agentenv"))
 
 

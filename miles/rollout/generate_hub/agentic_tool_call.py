@@ -22,6 +22,8 @@ Agent function contract:
   Returning None means no extra metadata to attach.
   Returning a dict merges it into every sample's metadata, so downstream
   reward models (--custom-rm-path) can read whatever the agent left there.
+  Raising NonRetryableError stops the rollout, for a broken setup that would
+  fail every sample; any other exception aborts only this sample.
 
   Under ``subproc`` (the default) each call runs in a child process of its own:
   its arguments and return value must be picklable, and module-level state lasts
@@ -46,6 +48,7 @@ from miles.rollout.generate_utils.openai_endpoint_utils import OpenAIEndpointTra
 from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY
 from miles.utils.function_registry import load_function
 from miles.utils.output_store.dropped import record_dropped_samples
+from miles.utils.retry_utils import NonRetryableError
 from miles.utils.rollout_data_config import lower_limit
 from miles.utils.types import Sample
 
@@ -88,7 +91,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
 
     agent_metadata = None
     collect_failed = False
-    cancelled = False
+    abandoned = False
     t_start = time.monotonic()
     try:
         logger.debug(f"{log_prefix} Starting agent function call")
@@ -102,10 +105,14 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
             metadata=metadata,
         )
         logger.debug(f"{log_prefix} Agent function returned in {time.monotonic()-t_start:.1f}s")
+    except NonRetryableError:
+        # every later sample would fail the same way; aborting each one refills the batch forever
+        abandoned = True
+        raise
     except Exception as e:
         logger.warning(f"{log_prefix} Agent function failed: {e}", exc_info=True)
     except BaseException:
-        cancelled = True
+        abandoned = True
         raise
     finally:
         # Collect even if the agent failed.
@@ -124,7 +131,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
                 f"{log_prefix} collect_samples done: {len(result.samples)} samples, "
                 f"total_time={time.monotonic()-t_start:.1f}s"
             )
-            if cancelled:
+            if abandoned:
                 # The session handed these samples' output store objects to us; nobody will train them.
                 record_dropped_samples(result.samples)
 
