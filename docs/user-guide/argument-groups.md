@@ -173,11 +173,11 @@ SGLang parallelism is separate from trainer parallelism. For example,
 `--rollout-num-gpus-per-engine` sets the SGLang server's GPU count, not Megatron's
 `--tensor-model-parallel-size`. An engine spans `tp_size × pp_size` GPUs, so with
 `--sglang-pp-size N` miles launches it with `--tp-size` set to the engine's GPUs divided by
-`N`; the GPU count must divide evenly. A model whose experts do not fit one node can run
-one pipeline stage per node, keeping expert parallelism inside the node:
+`N`; the GPU count must divide evenly. A model too large for one node can run one pipeline
+stage per node, which keeps tensor parallelism inside each node:
 
 ```bash
---rollout-num-gpus-per-engine 64 --sglang-pp-size 8 --sglang-ep-size 8
+--rollout-num-gpus-per-engine 64 --sglang-pp-size 8
 --sglang-pp-layer-partition 10,8,12,8,12,8,12,8
 ```
 

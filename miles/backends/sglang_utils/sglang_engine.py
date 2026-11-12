@@ -21,7 +21,7 @@ from miles.utils.workers.argv_utils import _record_field_names
 
 logger = logging.getLogger(__name__)
 
-# SGLang's default SGLANG_HEALTH_CHECK_TIMEOUT: the /health_generate budget of a single-stage engine.
+# SGLang's default SGLANG_HEALTH_CHECK_TIMEOUT.
 SGLANG_DEFAULT_HEALTH_CHECK_TIMEOUT_SECONDS = 20
 
 
