@@ -1,8 +1,9 @@
 import importlib.util
 import itertools
 import pathlib
-
 import sys
+from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -18,20 +19,28 @@ pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA requ
 
 from miles.kernels.attention.dsa import causal_ranges, indexer_logits, sparse_attention  # noqa: E402
 from miles.kernels.attention.dsa.sparse_attention import (  # noqa: E402
+    _TUNED,
     SparseAttentionConfig,
+    _default_config,
     cudnn_dsa,
     flash_mla_sparse_fwd,
 )
 from miles.kernels.attention.dsa.topk import torch_dsa_topk  # noqa: E402
 
 BACKENDS = ["tilelang"] + (["flash_mla"] if flash_mla_sparse_fwd is not None else [])
-CONFIGS = ["default", *BACKENDS]
+CONFIGS = [
+    "default",
+    *BACKENDS,
+    pytest.param("tilelang_64k", marks=pytest.mark.skipif(torch.version.hip is None, reason="ROCm tiling")),
+]
 BACKWARD_BACKENDS = ["tilelang"] + (["cudnn"] if cudnn_dsa is not None else [])
 
 
 def _config(backend, backward_backend="tilelang"):
     if backend == "default":
         return None
+    if backend == "tilelang_64k":
+        return replace(_TUNED[("gfx942", False, 8)], backward_backend=backward_backend)
     return SparseAttentionConfig(forward_backend=backend, backward_backend=backward_backend)
 
 
@@ -297,6 +306,55 @@ def test_packed_sequences_end_to_end(segments, heads, d_tail, topk, sink, backen
     assert reference.rel_diff(kv_ref.grad, kv_tl.grad) < 0.05
     if sink:
         assert reference.rel_diff(sink_ref.grad, sink_tl.grad) < 0.05
+
+
+@pytest.mark.skipif(torch.version.hip is None, reason="gfx942 lowering requires the ROCm compiler")
+@pytest.mark.parametrize("heads,tail_dim", [(8, 0), (64, 64)])
+def test_gfx942_tiling_fits_shared_memory(monkeypatch, heads, tail_dim):
+    from tilelang import engine
+    from tvm import target, transform
+
+    from miles.kernels.attention.dsa.tilelang.sparse_attention_bwd import _sparse_attention_bwd_kernel
+    from miles.kernels.attention.dsa.tilelang.sparse_attention_fwd import _sparse_attention_fwd_kernel
+
+    q = torch.empty(1, 1, heads, 512 + tail_dim)
+    kv = torch.empty(1, 128, 1, 512 + tail_dim)
+    with monkeypatch.context() as patch:
+        patch.setattr(torch.cuda, "get_device_properties", lambda device: SimpleNamespace(gcnArchName="gfx942"))
+        config = _default_config(q, kv, 128, 512)
+    kernels = [
+        (
+            _sparse_attention_fwd_kernel,
+            (heads, 512, tail_dim, 128),
+            dict(
+                threads=config.forward_threads, block_I=config.forward_block_size, max_block_H=config.forward_max_heads
+            ),
+        ),
+        (
+            _sparse_attention_bwd_kernel,
+            (heads, 512, tail_dim, 128, 1, 512**-0.5),
+            dict(
+                num_stages=config.backward_stages,
+                split_store=config.backward_split_store,
+                block_size=config.backward_block_size,
+                max_block_H=config.backward_max_heads,
+                threads=config.backward_threads,
+            ),
+        ),
+    ]
+    gfx942 = target.Target("hip -mcpu=gfx942")
+    for kernel, args, kwargs in kernels:
+        with gfx942, transform.PassContext(config=kernel.pass_configs):
+            lowered = engine.lower(
+                kernel.get_tir(*args, **kwargs), target=gfx942, enable_host_codegen=False, enable_device_compile=False
+            )
+        requirements = [
+            int(func.attrs["dyn_shared_memory_buf"])
+            for func in lowered.device_mod.functions.values()
+            if "dyn_shared_memory_buf" in func.attrs
+        ]
+        assert requirements
+        assert max(requirements) <= 65536
 
 
 if __name__ == "__main__":
