@@ -8,10 +8,15 @@ concurrency, and tokenization live one layer up in ``session_state``.
 from dataclasses import dataclass, field, replace
 from typing import Any
 
+import numpy as np
+
+from miles.rollout.session.errors import TokenizationError
 from miles.rollout.session.types import SessionRecord
 from miles.utils.chat_template_utils.message_matcher_hub import SessionMessageMatcher, strict_message_matches
 
 MAX_NODES = 1024
+
+_INT32 = np.iinfo(np.int32)
 
 
 @dataclass
@@ -19,14 +24,15 @@ class TrajectoryNode:
     """End of one model generation (SessionRecord is 1:1 with the node)."""
 
     delta_messages: list[dict[str, Any]]
-    token_ids: list[int]  # full root->node snapshot
+    token_delta: np.ndarray = field(compare=False)
+    parent_reuse: int
     completion_span: tuple[int, int]  # this node's sampled completion within token_ids
     seq: int  # per-session logical commit order — THE ordering key
     committed_at: float  # wall clock, decoration only (NTP-unsafe; never order by this)
     response_id: str  # upstream response id: the agent-branch <-> leaf join key
     record: SessionRecord
     finish_reason: str
-    # Full resolved request for this generation, held by reference: read-only once committed.
+    # Full resolved request for this generation except input_ids, held by reference: read-only once committed.
     turn_args: dict[str, Any] = field(default_factory=dict)
     parent: "TrajectoryNode | None" = None
     children: list["TrajectoryNode"] = field(default_factory=list, repr=False)
@@ -34,6 +40,18 @@ class TrajectoryNode:
     @property
     def truncated(self) -> bool:
         return self.finish_reason == "length"
+
+    @property
+    def num_tokens(self) -> int:
+        return self.parent_reuse + self.token_delta.size
+
+    @property
+    def token_ids(self) -> list[int]:
+        nodes = self.path_nodes()
+        snapshot = np.empty(max(node.num_tokens for node in nodes), dtype=np.int32)
+        for node in nodes:
+            snapshot[node.parent_reuse : node.num_tokens] = node.token_delta
+        return snapshot[: self.num_tokens].tolist()
 
     def path_nodes(self) -> list["TrajectoryNode"]:
         nodes: list[TrajectoryNode] = []
@@ -92,6 +110,8 @@ class SessionTree:
         record: SessionRecord,
         finish_reason: str,
         turn_args: dict[str, Any] | None = None,
+        parent_token_ids: list[int] | None = None,
+        verified_prefix_length: int = 0,
     ) -> TrajectoryNode:
         if len(self.nodes) >= MAX_NODES:
             raise ValueError(
@@ -99,9 +119,20 @@ class SessionTree:
                 f"further — this almost always means the harness is not replaying "
                 f"history verbatim"
             )
+        parent_reuse = (
+            0
+            if parent is None
+            else _reused_parent_prefix(
+                parent,
+                token_ids,
+                parent_token_ids=parent.token_ids if parent_token_ids is None else parent_token_ids,
+                verified_prefix_length=verified_prefix_length,
+            )
+        )
         node = TrajectoryNode(
             delta_messages=list(delta_messages),
-            token_ids=list(token_ids),
+            token_delta=_int32_token_delta(token_ids[parent_reuse:]),
+            parent_reuse=parent_reuse,
             completion_span=completion_span,
             seq=len(self.nodes),
             committed_at=committed_at,
@@ -158,3 +189,32 @@ class SessionTree:
         if best is None:
             return AttachPoint(node=None, matched_messages=0, best_overlap=best_overlap)
         return AttachPoint(node=best, matched_messages=best_matched, best_overlap=best_overlap)
+
+
+def _reused_parent_prefix(
+    parent: TrajectoryNode,
+    token_ids: list[int],
+    *,
+    parent_token_ids: list[int],
+    verified_prefix_length: int,
+) -> int:
+    limit = min(len(token_ids), parent.num_tokens)
+    reuse = min(verified_prefix_length, limit)
+    while reuse < limit and token_ids[reuse] == parent_token_ids[reuse]:
+        reuse += 1
+    prompt_length = max(node.completion_span[0] for node in parent.path_nodes())
+    if reuse < prompt_length:
+        raise TokenizationError(
+            f"boundary rewrite reaches into an earlier turn's prompt: reuses {reuse} tokens, "
+            f"the longest earlier prompt has {prompt_length}"
+        )
+    return reuse
+
+
+def _int32_token_delta(token_ids: list[int]) -> np.ndarray:
+    wide = np.asarray(token_ids, dtype=np.int64)
+    if wide.size and (wide.min() < _INT32.min or wide.max() > _INT32.max):
+        raise TokenizationError("token id outside int32 storage range")
+    delta = wide.astype(np.int32)
+    delta.setflags(write=False)
+    return delta
