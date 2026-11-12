@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 from aiohttp import web
+from tests.ci.ci_register import collect_tests, register_cpu_ci
 
 from miles.rollout.agentic import agent_function, remote
 from miles.rollout.agentic.agent_function import InfraAbort, call_agent_function, cancel_calls, has_calls
@@ -21,6 +22,8 @@ from miles.rollout.inference_rollout import inference_rollout_train
 from miles.utils.misc import call_agent_abort_hook
 from miles.utils.retry_utils import NonRetryableError
 from miles.utils.test_utils import agent_function_stubs as stubs
+
+register_cpu_ci(est_time=70, suite="stage-b-cpu", labels=["rollout"])
 
 
 def _serve_in_thread(app: web.Application):
@@ -578,6 +581,12 @@ def test_a_kwarg_the_protocol_cannot_carry_fails_before_the_call(serve):
 def test_worker_mode_without_a_worker_url_is_refused(worker):
     with pytest.raises(NonRetryableError, match="--custom-agent-function-worker"):
         asyncio.run(call_agent_function(stubs.report_pid, mode="worker", worker=worker))
+
+
+def test_this_slow_file_runs_in_the_slow_cpu_stage():
+    [registry] = collect_tests(["tests/fast/rollout/agentic/test_worker.py"])
+
+    assert (registry.suite, registry.labels, registry.implicit) == ("stage-b-cpu", ["rollout"], False)
 
 
 def test_the_worker_side_imports_without_torch_sglang_or_ray():
