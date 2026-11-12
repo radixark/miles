@@ -12,6 +12,7 @@ one.
 | Sandbox provider | [Harbor](https://github.com/radixark/miles/tree/main/examples/experimental/harbor) | [HUD](https://github.com/radixark/miles/tree/main/examples/experimental/hud) | [NeMo Gym](https://github.com/radixark/miles/tree/main/examples/experimental/nemo-gym) | [OpenEnv](https://github.com/radixark/miles/tree/main/examples/experimental/openenv) |
 |---|:---:|:---:|:---:|:---:|
 | [AgentENV](https://github.com/kvcache-ai/AgentENV) | ✓ | | | [✓](https://github.com/radixark/miles/tree/main/examples/experimental/agentenv) |
+| [boxd](https://boxd.sh/?ref=miles) | | | | |
 | [Daytona](https://www.daytona.io/) | ✓ | ✓ | ✓ | ✓ |
 | [E2B](https://e2b.dev/) | ✓ | | | ✓ |
 | [Modal](https://modal.com/) | ✓ | | | ✓ |
@@ -89,3 +90,19 @@ With nothing else set, the SDK talks to the `us-phx-1` region.
 `NOVITA_DOMAIN=sandbox.novita.ai` selects the legacy `us-virginia-1` region;
 `NOVITA_API_URL` and `NOVITA_SANDBOX_URL` override the two endpoints for an
 internal deployment.
+
+## boxd
+
+```bash
+mkdir -p ~/.config/boxd && echo bxd_... > ~/.config/boxd/api_key   # or export BOXD_API_KEY
+```
+
+An API key belongs to one org; `boxd auth keys create <name> --org <org>` makes
+one. `BOXD_REGION` picks the region (`fra` or `nyc`), and `BOXD_ORG` names
+the org when it should not be the key's own.
+
+boxd is wired into the OpenEnv connector, where the golden sweep
+(`scan_golden.py`) has passed on it; its row gains a check once a GPU rollout
+has. The Harbor connector needs a
+Harbor release that ships a `boxd` environment, which is newer than the one
+this repo pins.

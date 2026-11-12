@@ -27,6 +27,20 @@ import os
 from pathlib import Path
 
 PROVIDER_CREDENTIALS = {
+    "boxd": {
+        "provider": "boxd",
+        "key_env_vars": ("BOXD_API_KEY",),
+        "file_env_var": "BOXD_API_KEY_FILE",
+        "arg_attr": "boxd_api_key_file",
+        "default_path": "~/.config/boxd/api_key",
+        "provision_hint": "mkdir -p ~/.config/boxd && echo bxd_... > ~/.config/boxd/api_key",
+        "sdk": "boxd",
+        "sdk_hint": "pip install -e '<miles>[boxd]'",
+        "sdk_min_version": "0.3.1",
+        # region and org selectors, read by the SDK and the backend themselves
+        "forward": ("BOXD_REGION", "BOXD_ORG"),
+        "target": ("BOXD_REGION", "region", "the SDK default"),
+    },
     "daytona": {
         "provider": "Daytona",
         "key_env_vars": ("DAYTONA_API_KEY",),
@@ -203,8 +217,8 @@ def preflight_sdk(module: str, install_hint: str, min_version: str | None = None
         return
     try:
         # Looking the distribution up by the module name assumes the two match,
-        # which holds for every backend that sets a floor today (e2b, modal, and
-        # novita_sandbox, whose dist-info is found under the module name too).
+        # which holds for every backend that sets a floor today (boxd, e2b, modal,
+        # and novita_sandbox, whose dist-info is found under the module name too).
         installed = importlib.metadata.version(module)
     except importlib.metadata.PackageNotFoundError:
         # Importable but no dist-info (a vendored copy): the version cannot be

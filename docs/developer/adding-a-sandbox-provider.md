@@ -38,7 +38,7 @@ registry entry, and the rollout e2e reads the provider from the environment.
 | Proves | the platform round trip | harness, session server, TITO recording, reward |
 | Needs | a provider credential | that, plus 2 GPUs and the model |
 | Provider axis | one case per registry entry | `HARBOR_ENV_TYPE` |
-| In CI | registered, skipped without a credential | registered, `disabled` |
+| In CI | registered, skipped without a credential or when the installed Harbor has no environment for the provider | registered, `disabled` |
 
 The golden test drives `scripts/sandbox_smoke/run.py`, which stays the entry
 point for the combinations CI does not fix — another agent harness, another

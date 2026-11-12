@@ -1,8 +1,8 @@
 """Shared per-episode sandbox orchestration for the backend agent functions.
 
-A backend module (``openenv_daytona_agent_function``,
-``openenv_e2b_agent_function``, ``openenv_modal_agent_function``,
-``openenv_novita_agent_function``) owns only what is genuinely provider-specific: how ONE sandbox with the env
+A backend module (``openenv_boxd_agent_function``,
+``openenv_daytona_agent_function``, ``openenv_e2b_agent_function``,
+``openenv_modal_agent_function``, ``openenv_novita_agent_function``) owns only what is genuinely provider-specific: how ONE sandbox with the env
 server comes into being (its ``tb2_sandbox_*`` materialization module), which
 errors count as retryable throttling, and its env-var knobs. Everything that
 makes per-episode sandboxes safe under a fanned-out rollout is provider-blind
@@ -49,6 +49,7 @@ StartFn = Callable[[str, str], tuple[Callable[[], None], str]]
 # accepted names and the "agentenv is the e2b backend" aliasing cannot drift.
 # Adding a provider is one entry plus its two modules (backend + materialization).
 AGENT_MODULES = {
+    "boxd": "openenv_boxd_agent_function",
     "daytona": "openenv_daytona_agent_function",
     "e2b": "openenv_e2b_agent_function",
     "modal": "openenv_modal_agent_function",
