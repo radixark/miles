@@ -91,6 +91,9 @@ class DummyTrainActor:
     def export_hf(self, *args: Any, **kwargs: Any) -> None:
         self._record("export_hf", args, kwargs)
 
+    def export_eval_snapshot(self, *args: Any, **kwargs: Any) -> None:
+        self._record("export_eval_snapshot", args, kwargs)
+
     def set_update_weights_return_value(self, value: Any) -> None:
         self._update_weights_return_value = value
 

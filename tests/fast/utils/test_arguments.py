@@ -4100,6 +4100,7 @@ class TestSupportsPartialTargetWeightUpdate:
         [
             (False, "p2p", True),
             (False, "broadcast", False),
+            (False, "gpu-delta", False),
             (True, "p2p", False),
             (True, "broadcast", False),
         ],

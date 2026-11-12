@@ -1,0 +1,758 @@
+"""CPU canonical bindings, physical byte layouts, and format admission contracts."""
+
+from types import SimpleNamespace
+
+import pytest
+import torch
+
+from miles.backends.sglang_utils.gpu_delta import flashinfer as fi
+from miles.backends.sglang_utils.gpu_delta.bindings import (
+    ConsumerSnapshot,
+    TensorBinding,
+    _moe_binding,
+    prepare_raw_xor,
+)
+from miles.backends.sglang_utils.gpu_delta.flashinfer import DestinationSegment, FlashInferLayout
+
+
+def _block_scale_layer():
+    return SimpleNamespace(
+        moe_tp_size=1,
+        _map_global_expert_id_to_local_expert_id=lambda expert: (0 if expert == 2 else -1),
+        w2_weight_scale_inv=torch.full((1, 17, 15), -3.0),
+    )
+
+
+@pytest.mark.parametrize("checkpoint_dtype", ["F32", "U8"])
+def test_block_scale_prior_is_identical_on_local_and_foreign_ranks(
+    checkpoint_dtype,
+):
+    layout = FlashInferLayout("fp8-block128-ue8m0", "trtllm", True)
+    layer = _block_scale_layer()
+    local, foreign = ({"dtype": checkpoint_dtype, "shape": [17, 15]} for _ in range(2))
+    binding = _moe_binding("scale", local, layer, 2, "down", "weight_scale_inv", layout)
+    assert _moe_binding("scale", foreign, layer, 3, "down", "weight_scale_inv", layout) is None
+    expected = {
+        "dtype": "U8",
+        "shape": [17, 15],
+        "format": "fp8-block128-ue8m0",
+        "encoding": "xor_raw_bytes",
+    }
+    if checkpoint_dtype == "F32":
+        expected["checkpoint_dtype"] = "F32"
+    assert local == foreign == expected
+    assert binding.dtype == "U8" and binding.shape == (17, 15)
+    assert binding.encoding == "xor_raw_bytes" and binding.format == "fp8-block128-ue8m0"
+    with pytest.raises(ValueError, match="exact UE8M0"):
+        _moe_binding(
+            "scale",
+            {"dtype": "I32", "shape": [17, 15]},
+            layer,
+            2,
+            "down",
+            "weight_scale_inv",
+            layout,
+        )
+
+
+@pytest.mark.parametrize("kind", ["ue8m0", "bf16-scalar", "bf16-vector", "scalar", "vector"])
+def test_small_xor_is_reversible_without_live_preparation_writes(kind):
+    if kind == "ue8m0":
+        before = torch.arange(255, dtype=torch.uint8)
+        after = before.flip(0)
+        target = before.view(torch.float8_e8m0fnu).float().reshape(17, 15)
+        binding = TensorBinding(
+            "scale",
+            "U8",
+            (17, 15),
+            [[0, 17], [0, 15]],
+            (target,),
+            encoding="xor_raw_bytes",
+            format="fp8-block128-ue8m0",
+        )
+        expected = after.view(torch.float8_e8m0fnu).float().reshape(target.shape)
+    else:
+        before = torch.tensor([1.5, 2.0, 4.0], dtype=torch.bfloat16 if kind.startswith("bf16-") else torch.float32)
+        if kind.endswith("scalar"):
+            before = before[0]
+        after = before * 2
+        target = before.float().clone()
+        binding = TensorBinding(
+            kind,
+            "BF16" if kind.startswith("bf16-") else "F32",
+            tuple(before.shape),
+            [[0, n] for n in before.shape],
+            (target,),
+            encoding="xor_raw_bytes",
+        )
+        expected = after.float()
+        before, after = (value.reshape(-1).view(torch.uint8) for value in (before, after))
+    original = target.clone()
+    mask = before ^ after
+    for wanted in (expected, original):
+        current = target.clone()
+        ((actual, physical_mask, predicted),) = prepare_raw_xor(
+            [(binding, mask)], {id(target)} if kind.endswith("scalar") else ()
+        )
+        assert actual is target and torch.equal(target, current)
+        if kind.endswith("vector"):
+            assert predicted is None
+            if kind == "vector":
+                assert physical_mask.data_ptr() == mask.data_ptr()
+        else:
+            assert torch.equal(predicted, wanted)
+        target.reshape(-1).view(torch.uint8).bitwise_xor_(physical_mask)
+        assert torch.equal(target, wanted)
+    if kind == "ue8m0":
+        assert target.reshape(-1).view(torch.int32)[0].item() == 0x00400000
+
+
+def test_apply_segments_keep_one_canonical_view_and_select_original_payload():
+    target = torch.zeros((3, 5), dtype=torch.uint8)
+    segments = (
+        DestinationSegment(((0, 3), (0, 4)), (target[:, :4],)),
+        DestinationSegment(((0, 3), (4, 5)), (target[:, 4:],)),
+    )
+    binding = TensorBinding("weight", "U8", (3, 5), [[0, 3], [0, 5]], (target,), segments=segments)
+    payload = torch.arange(15, dtype=torch.uint8)
+    proxies = binding.apply_bindings()
+    assert binding.apply_bindings() is proxies
+    assert len(proxies) == 2
+    for proxy in proxies:
+        assert not proxy.segments
+        for destination in proxy.destinations:
+            destination.bitwise_xor_(proxy.selected_bytes(payload).reshape(destination.shape))
+    assert torch.equal(target, payload.view(3, 5))
+    assert binding.shape == (3, 5) and binding.slices == [[0, 3], [0, 5]]
+
+
+def test_nvfp4_activation_calibration_stays_frozen_but_weight_scales_are_local():
+    layer = SimpleNamespace(
+        _map_global_expert_id_to_local_expert_id=lambda expert: (0 if expert == 2 else -1),
+        w13_weight_scale_2=torch.ones(1, 2),
+    )
+    layout = FlashInferLayout("nvfp4", "trtllm", True, "w4a4")
+    meta = {"dtype": "F32", "shape": []}
+    for expert in (2, 3):
+        assert _moe_binding("activation", meta, layer, expert, "up", "input_scale", layout) is None
+    assert _moe_binding("weight", meta, layer, 3, "up", "weight_scale_2", layout) is None
+    binding = _moe_binding("weight", meta, layer, 2, "up", "weight_scale_2", layout)
+    assert binding.storage[0].data_ptr() == layer.w13_weight_scale_2[0, 1].data_ptr()
+
+
+def apply_segments(segments, mask):
+    coverage = torch.zeros(mask.shape, dtype=torch.int32, device=mask.device)
+    for segment in segments:
+        (r0, r1), (c0, c1) = segment.slices
+        coverage[r0:r1, c0:c1] += 1
+        source = mask[r0:r1, c0:c1].contiguous().view(torch.uint8)
+        for target in segment.destinations:
+            target.bitwise_xor_(source.reshape(target.shape))
+    assert torch.all(coverage == 1)
+
+
+def test_cutedsl_bindings_preserve_scale_images_padding_and_aliases():
+    # Independently derive physical indices, including row/column tails. This
+    # catches accidental reshapes that clone, alias double-XOR, and padding writes.
+    for projection, rows, cols in (
+        ("gate", 64, 3),
+        ("up", 192, 19),
+        ("down", 17, 3),
+        ("down", 129, 8),
+        ("down", 191, 19),
+        ("down", 256, 64),
+    ):
+        full_rows = rows if projection == "down" else 2 * rows
+        pr, pc = (full_rows + 127) // 128 * 128, (cols + 3) // 4 * 4
+        for independent in (False, True):
+            primary = torch.randint(256, (pr, pc), dtype=torch.uint8)
+            physical = primary.view(pr // 128, pc // 4, 32, 4, 4)
+            mma = physical.permute(2, 3, 0, 4, 1).unsqueeze(-1)
+            if independent:
+                mma = mma.clone(memory_format=torch.preserve_format)
+            stem = "w2" if projection == "down" else "w13"
+            layer = SimpleNamespace(
+                moe_tp_size=1,
+                **{
+                    f"{stem}_blockscale_swizzled": primary.unsqueeze(0),
+                    f"{stem}_blockscale_mma": mma,
+                    f"{stem}_weight_scale": primary.unsqueeze(0),
+                    f"{stem}_weight": torch.zeros((1, full_rows, cols * 8), dtype=torch.uint8),
+                },
+            )
+            layout = fi.FlashInferLayout("nvfp4", "cutedsl", True, "w4a4", True)
+            layer._map_global_expert_id_to_local_expert_id = lambda expert: expert
+            binding = _moe_binding(
+                "scale",
+                {"dtype": "F8_E4M3", "shape": [rows, cols]},
+                layer,
+                0,
+                projection,
+                "weight_scale",
+                layout,
+            )
+            segments = binding.segments
+            assert len(binding.storage) == 1 + independent
+            images = [primary]
+            if independent:
+                images.append(mma[..., 0].permute(2, 4, 0, 1, 3).view_as(primary))
+            before = [image.clone() for image in images]
+            pointers = [image.data_ptr() for image in images]
+            mask = torch.randint(256, (rows, cols), dtype=torch.uint8)
+            row = torch.arange(rows)[:, None]
+            if projection != "down":
+                row = row // 64 * 128 + row % 64
+                if projection == "gate":
+                    row += 64
+            col = torch.arange(cols)[None, :]
+            offset = (row // 128 * (pc // 4) + col // 4) * 512 + row % 32 * 16 + row % 128 // 32 * 4 + col % 4
+            apply_segments(segments, mask)
+            for image, original in zip(images, before, strict=False):
+                expected = original.flatten().clone()
+                expected[offset.flatten()] ^= mask.flatten()
+                assert torch.equal(image.flatten(), expected)
+            apply_segments(segments, mask)
+            for image, original, pointer in zip(images, before, pointers, strict=False):
+                assert torch.equal(image, original)
+                assert image.data_ptr() == pointer
+
+
+def test_weight_views_share_one_layout_for_both_activation_modes():
+    for mode in ("w4a4", "w4a16"):
+        original = torch.randint(256, (2, 256, 97), dtype=torch.uint8)
+        layer = SimpleNamespace(w13_weight=original.clone())
+        expected = original.clone()
+        for projection, half in (("up", 0), ("gate", 1)):
+            mask = torch.randint(256, (128, 97), dtype=torch.uint8)
+            segments = fi.expert_destinations(
+                layer,
+                fi.FlashInferLayout("nvfp4", "cutedsl", True, mode, True),
+                1,
+                projection,
+                "weight",
+                mask.shape,
+                "U8",
+            )
+            apply_segments(segments, mask)
+            for start in range(0, 128, 64):
+                expected[1, 2 * start + half * 64 : 2 * start + (half + 1) * 64] ^= mask[start : start + 64]
+        assert torch.equal(layer.w13_weight, expected)
+
+
+@pytest.mark.parametrize(
+    "image,served_dtype",
+    [
+        ("weight", torch.uint8),
+        ("weight", torch.int8),
+        ("weight", torch.float8_e5m2),
+        ("scale", torch.int8),
+        ("mma", torch.float8_e5m2),
+    ],
+)
+def test_packed_dtype_admission_preserves_original_storage_types(image, served_dtype):
+    weight = torch.zeros((1, 128, 32), dtype=torch.uint8)
+    primary = torch.zeros((128, 4), dtype=torch.uint8)
+    mma = primary.view(1, 1, 32, 4, 4).permute(2, 3, 0, 4, 1).unsqueeze(-1)
+    mma = mma.clone(memory_format=torch.preserve_format)
+    if image == "weight":
+        weight = weight.view(served_dtype)
+    elif image == "scale":
+        primary = primary.view(served_dtype)
+    else:
+        mma = mma.view(served_dtype)
+    layer = SimpleNamespace(
+        moe_tp_size=1,
+        _map_global_expert_id_to_local_expert_id=lambda expert: expert,
+        w2_weight=weight,
+        w2_weight_scale=primary.unsqueeze(0),
+        w2_blockscale_swizzled=primary.unsqueeze(0),
+        w2_blockscale_mma=mma,
+    )
+    suffix, canonical_dtype, shape = (
+        ("weight", "U8", [128, 32]) if image == "weight" else ("weight_scale", "F8_E4M3", [128, 4])
+    )
+    tensors = (weight, primary, mma)
+    before = [tensor.contiguous().view(torch.uint8).clone() for tensor in tensors]
+
+    def bind():
+        return _moe_binding(
+            "projection",
+            {"dtype": canonical_dtype, "shape": shape},
+            layer,
+            0,
+            "down",
+            suffix,
+            FlashInferLayout("nvfp4", "cutedsl", True),
+        )
+
+    # Binding admits original images, even when the payload has no changed
+    # bytes and the secondary MMA view is reinterpreted as U8.
+    if served_dtype == torch.float8_e5m2:
+        with pytest.raises(fi._DtypeMismatch, match="torch.float8_e5m2"):
+            bind()
+    else:
+        assert bind().storage
+    for tensor, original in zip(tensors, before, strict=True):
+        assert torch.equal(tensor.contiguous().view(torch.uint8), original)
+
+
+def test_blocked_scale_bindings_check_only_the_weight_element_width():
+    # A one-byte weight outside its allowed set is reported once, on the weight binding.
+    layer = SimpleNamespace(
+        w2_weight=torch.zeros((1, 128, 32), dtype=torch.uint8).view(torch.float8_e4m3fn),
+        w2_weight_scale=torch.zeros((1, 512), dtype=torch.uint8),
+    )
+    layout = FlashInferLayout("nvfp4", "trtllm", True, "w4a4")
+    with pytest.raises(fi._DtypeMismatch, match="nvfp4 weight served=torch.float8_e4m3fn"):
+        fi.expert_destinations(layer, layout, 0, "down", "weight", (128, 32), "U8")
+    assert fi.expert_destinations(layer, layout, 0, "down", "weight_scale", (128, 4), "F8_E4M3")
+    # Scale geometry still requires the weight's element width.
+    layer.w2_weight = torch.zeros((1, 128, 16), dtype=torch.int16)
+    with pytest.raises(fi._DtypeMismatch, match="1-byte storage"):
+        fi.expert_destinations(layer, layout, 0, "down", "weight_scale", (128, 4), "F8_E4M3")
+
+
+def _quantized_layer(name, **attrs):
+    config = attrs.pop("quant_config", SimpleNamespace())
+    method = type(name, (), {})()
+    method.__dict__.update(
+        runner=None,
+        dequant_fp4_to_fp8=False,
+        convert_mxfp8_to_block=False,
+        use_mxfp8=False,
+        is_fp4_expert=False,
+    )
+    method.__dict__.update(attrs, quant_config=config)
+    if not hasattr(config, "scale_fmt"):
+        config.scale_fmt = None
+        config.weight_block_size = None
+        if not hasattr(config, "is_checkpoint_fp8_serialized"):
+            config.is_checkpoint_fp8_serialized = False
+    return SimpleNamespace(
+        quant_method=method,
+        quant_config=config,
+        moe_runner_config=SimpleNamespace(is_gated=True),
+        _cutedsl_wrapper=SimpleNamespace(quant_mode="w4a4"),
+    )
+
+
+def test_layout_admission_rejects_conversion_and_unsupported_pairs():
+    nv = _quantized_layer(
+        "ModelOptNvFp4FusedMoEMethod",
+        _is_cutedsl_v2_standard=True,
+        load_up_proj_weight_first=True,
+        quant_config=SimpleNamespace(is_checkpoint_nvfp4_serialized=True),
+    )
+    assert fi.identify_layout(nv, "flashinfer_trtllm") == fi.identify_layout(nv, "flashinfer_trtllm_routed")
+    assert fi.identify_layout(nv, "flashinfer_cutedsl") == fi.FlashInferLayout("nvfp4", "cutedsl", True, "w4a4", True)
+    assert fi.identify_layout(nv, "flashinfer_trtllm").up_first
+    nv._flashinfer_megamoe_layer = SimpleNamespace(
+        _megakernel_config=type("Sm100_Nvfp4_Nvfp4_Bf16_Cutedsl_MegaMoeConfig", (), {})()
+    )
+    assert fi.identify_layout(nv, "flashinfer_megamoe") == fi.FlashInferLayout("nvfp4", "megamoe", True, "w4a4", False)
+    nv._flashinfer_megamoe_layer._megakernel_config = type("Sm100_Bf16_Nvfp4_Bf16_Cutedsl_MegaMoeConfig", (), {})()
+    assert fi.identify_layout(nv, "flashinfer_megamoe").quant_mode == "w4a16"
+    nv._flashinfer_megamoe_layer._megakernel_config = object()
+    with pytest.raises(ValueError, match="unsupported FlashInfer NVFP4 MegaMoE"):
+        fi.identify_layout(nv, "flashinfer_megamoe")
+    nv._cutedsl_wrapper.quant_mode = "w4a16"
+    assert fi.identify_layout(nv, "flashinfer_cutedsl").quant_mode == "w4a16"
+    nv.quant_config.is_checkpoint_nvfp4_serialized = False
+    with pytest.raises(ValueError, match="on-load"):
+        fi.identify_layout(nv, "flashinfer_cutedsl")
+    mx = _quantized_layer(
+        "Fp8MoEMethod",
+        use_mxfp8=True,
+        quant_config=SimpleNamespace(is_checkpoint_fp8_serialized=True),
+    )
+    assert fi.identify_layout(mx, "flashinfer_megamoe").format == "mxfp8"
+    with pytest.raises(ValueError, match="no native"):
+        fi.identify_layout(mx, "flashinfer_cutedsl")
+    mx.quant_method.convert_mxfp8_to_block = True
+    with pytest.raises(ValueError, match="requantization"):
+        fi.identify_layout(mx, "flashinfer_trtllm")
+    with pytest.raises(ValueError, match="native UE8M0"):
+        fi.identify_layout(_quantized_layer("Fp8MoEMethod"), "flashinfer_trtllm")
+
+
+def test_layout_admission_identifies_bf16_mxfp4_and_block128_rows():
+    bf16 = _quantized_layer(
+        "UnquantizedFusedMoEMethod", use_flashinfer_trtllm_moe=True, load_up_proj_weight_first=True
+    )
+    assert fi.identify_layout(bf16, "flashinfer_trtllm") == FlashInferLayout("bf16", "trtllm", True, up_first=True)
+    with pytest.raises(ValueError, match="no native FlashInfer BF16"):
+        fi.identify_layout(bf16, "flashinfer_megamoe")
+
+    # The oracle tests construct this default MXFP4 row directly.
+    shuffled = _quantized_layer("Mxfp4FlashinferTrtllmMoEMethod", _fp8=SimpleNamespace(dequant_fp4_to_fp8=False))
+    assert fi.identify_layout(shuffled, "flashinfer_mxfp4") == FlashInferLayout("mxfp4", "trtllm", True, up_first=True)
+    shuffled.quant_method._fp8.dequant_fp4_to_fp8 = True
+    with pytest.raises(ValueError, match="native packed"):
+        fi.identify_layout(shuffled, "flashinfer_trtllm")
+
+    # Mxfp4MoEMethod's kernel reads the ordinary scale names and owns no clamp tensor.
+    native = _quantized_layer("Mxfp4MoEMethod", _fi_kernel="trtllm_sm100")
+    layout = fi.identify_layout(native, "flashinfer_mxfp4")
+    assert (layout.format, layout.backend, layout.up_first) == ("mxfp4", "trtllm", True)
+    for stem in ("w13", "w2"):
+        setattr(native, f"{stem}_weight", torch.zeros((1, 64, 32), dtype=torch.uint8))
+        setattr(native, f"{stem}_weight_scale", torch.zeros((1, 128, 4), dtype=torch.uint8))
+    *_, w13_scale, w2_scale = fi.consumer_objects(native, layout)
+    assert w13_scale is native.w13_weight_scale and w2_scale is native.w2_weight_scale
+    native.quant_method._fi_kernel = "triton"
+    with pytest.raises(ValueError, match="unsupported native MXFP4"):
+        fi.identify_layout(native, "flashinfer_mxfp4")
+
+    fp4 = _quantized_layer("Fp8MoEMethod", is_fp4_expert=True)
+    assert fi.identify_layout(fp4, "flashinfer_megamoe") == FlashInferLayout("mxfp4", "megamoe", True)
+    with pytest.raises(ValueError, match="require its MXFP4 method"):
+        fi.identify_layout(fp4, "flashinfer_trtllm")
+
+    block = _quantized_layer(
+        "Fp8MoEMethod",
+        quant_config=SimpleNamespace(
+            scale_fmt="ue8m0", weight_block_size=[128, 128], is_checkpoint_fp8_serialized=True
+        ),
+    )
+    assert fi.identify_layout(block, "flashinfer_trtllm") == FlashInferLayout("fp8-block128-ue8m0", "trtllm", True)
+    with pytest.raises(ValueError, match="native UE8M0"):
+        fi.identify_layout(block, "flashinfer_megamoe")
+
+
+@pytest.mark.parametrize(
+    "fmt,backend",
+    [
+        ("nvfp4", "unknown"),
+        ("unknown", "trtllm"),
+        ("bf16", "cutedsl"),
+        ("bf16", "megamoe"),
+        ("fp8-block128-ue8m0", "cutedsl"),
+        ("fp8-block128-ue8m0", "megamoe"),
+        ("mxfp8", "cutedsl"),
+        ("mxfp4", "cutedsl"),
+    ],
+)
+def test_unsupported_layouts_cannot_bypass_admission(fmt, backend):
+    # Down and non-gated projections skip interleaving, but must still reject
+    # unsupported layouts before reading or constructing live tensor views.
+    for projection, gated in (("up", True), ("down", True), ("up", False)):
+        with pytest.raises(ValueError, match="unsupported"):
+            fi.expert_destinations(
+                SimpleNamespace(),
+                fi.FlashInferLayout(fmt, backend, gated),
+                0,
+                projection,
+                "weight",
+                (128, 64),
+                "U8",
+            )
+
+
+def test_nonalias_scale_image_and_incorrect_geometry_fail_closed():
+    layer = SimpleNamespace(
+        w2_weight=torch.zeros((1, 128, 32), dtype=torch.uint8),
+        w2_weight_scale=torch.zeros((1, 128, 4), dtype=torch.uint8),
+        w2_blockscale_swizzled=torch.zeros((1, 128, 4), dtype=torch.uint8),
+    )
+    layout = fi.FlashInferLayout("nvfp4", "cutedsl", True, "w4a4", True)
+    with pytest.raises(ValueError, match="does not alias"):
+        fi.expert_destinations(layer, layout, 0, "down", "weight_scale", (128, 4), "F8_E4M3")
+    layer.w2_weight_scale = layer.w2_blockscale_swizzled
+    with pytest.raises(ValueError, match="row storage"):
+        fi.expert_destinations(layer, layout, 0, "down", "weight_scale", (129, 4), "F8_E4M3")
+    layer.w2_weight = torch.zeros((1, 128), dtype=torch.uint8)
+    with pytest.raises(ValueError, match="packed weight geometry"):
+        fi.expert_destinations(layer, layout, 0, "down", "weight", (128, 1), "U8")
+
+
+def shuffled_rows(value):
+    # Independent equivalent of FlashInfer's dstToSrcBlk32RowMap index_select.
+    return value.reshape(-1, 8, 4, value.shape[-1]).transpose(1, 2).reshape_as(value)
+
+
+def interleave(value, group):
+    rows, cols = value.shape
+    return value.reshape(2, rows // (2 * group), group, cols).transpose(0, 1).reshape(rows, cols)
+
+
+def blocked_scales(value):
+    # FlashInfer to_blocked: pad, block [128,4], transpose [4,32] row factors.
+    rows, cols = value.shape
+    padded = torch.full(((rows + 127) // 128 * 128, (cols + 3) // 4 * 4), 173, dtype=torch.uint8)
+    padded[:rows, :cols] = value
+    pr, pc = padded.shape
+    return (
+        padded.reshape(pr // 128, 128, pc // 4, 4)
+        .permute(0, 2, 1, 3)
+        .reshape(-1, 4, 32, 4)
+        .transpose(1, 2)
+        .contiguous()
+        .flatten()
+    )
+
+
+@pytest.mark.parametrize(
+    "projection,suffix,tp_rank,tp_size,partition",
+    [
+        ("gate", "weight", 1, 2, 128),
+        ("gate", "weight_scale", 1, 2, 128),
+        ("down", "weight", 1, 2, 128),
+        ("down", "weight_scale", 1, 2, 128),
+        ("down", "weight_scale", 3, 4, 64),
+    ],
+)
+def test_trtllm_tp_preserves_padded_loader_offsets(projection, suffix, tp_rank, tp_size, partition):
+    # A 192-wide checkpoint has logical TP2 width 96, but this loader partitions
+    # by its padded width 128: rank one owns [128:192], not [96:192].
+    scale = suffix == "weight_scale"
+    divisor = 16 if scale else 2
+    shape = (192, 128 // divisor) if projection == "gate" else (128, 192 // divisor)
+    rows = 2 * partition if projection == "gate" else 128
+    cols = (128 if projection == "gate" else partition) // divisor
+    logical = torch.zeros(rows, cols, dtype=torch.uint8)
+    physical = blocked_scales(shuffled_rows(logical)) if scale else shuffled_rows(logical)
+    stem = "w13" if projection == "gate" else "w2"
+    layer = SimpleNamespace(
+        moe_tp_size=tp_size,
+        moe_tp_rank=tp_rank,
+        use_padded_loading=True,
+        intermediate_size_per_partition=partition,
+        _map_global_expert_id_to_local_expert_id=lambda _: 0,
+    )
+    weight_cols = (128 if projection == "gate" else partition) // 2
+    setattr(
+        layer,
+        stem + "_weight",
+        torch.zeros(rows, weight_cols, dtype=torch.uint8).unsqueeze(0),
+    )
+    setattr(layer, stem + "_" + suffix, physical.unsqueeze(0))
+    binding = _moe_binding(
+        "expert",
+        {"dtype": "F8_E4M3" if scale else "U8", "shape": list(shape)},
+        layer,
+        0,
+        projection,
+        suffix,
+        FlashInferLayout("nvfp4", "trtllm", True, "w4a4"),
+    )
+    if tp_size == 4:
+        # Padded rank three owns no checkpoint bytes and must leave its entire
+        # zero-filled consumer image untouched.
+        assert binding is None
+    else:
+        mask = torch.randint(256, shape, dtype=torch.uint8)
+        for view in binding.apply_bindings():
+            source = view.selected_bytes(mask.flatten())
+            for target in view.destinations:
+                target.bitwise_xor_(source.reshape(target.shape))
+        if projection == "gate":
+            logical[:128:2] = mask[128:]
+        else:
+            logical[:, : 64 // divisor] = mask[:, 128 // divisor :]
+    expected = shuffled_rows(logical)
+    if scale:
+        expected = blocked_scales(expected)
+    assert torch.equal(physical, expected)
+
+
+@pytest.mark.parametrize(
+    "fmt,backend,group,up_first",
+    [
+        ("nvfp4", "trtllm", 1, False),
+        ("mxfp8", "trtllm", 1, False),
+        ("mxfp4", "trtllm", 1, True),
+        ("bf16", "trtllm", 1, False),
+        ("nvfp4", "megamoe", 16, False),
+        ("mxfp8", "megamoe", 32, False),
+    ],
+)
+def test_factored_destinations_match_loader_permutations(fmt, backend, group, up_first):
+    # Full independent physical replays prove gate/up order, bytes of BF16,
+    # scale row shuffling, both Mega transpose policies, and excluded padding.
+    rows, physical_cols = 192, 384
+    dtype = "BF16" if fmt == "bf16" else "F8_E4M3" if fmt == "mxfp8" else "U8"
+    elem = 2 if fmt == "bf16" else 1
+    layout = fi.FlashInferLayout(fmt, backend, True, up_first=up_first)
+    divisor = {"nvfp4": 8, "mxfp8": 32, "mxfp4": 16}.get(fmt)
+    original = torch.randint(256, (2 * rows, physical_cols), dtype=torch.uint8)
+    scales = torch.randint(256, (2 * rows, physical_cols // divisor), dtype=torch.uint8) if divisor else None
+
+    def weight_transform(value):
+        value = interleave(value, group)
+        if backend == "trtllm":
+            value = shuffled_rows(value)
+        if fmt == "bf16":
+            return value.reshape(2 * rows, physical_cols // 128, 128).transpose(0, 1).contiguous().view(torch.bfloat16)
+        if backend == "megamoe":
+            value = value.T
+            if fmt == "mxfp8":
+                value = value.contiguous()
+        return value
+
+    def scale_transform(value):
+        value = interleave(value, group)
+        if backend == "trtllm":
+            value = shuffled_rows(value)
+        return blocked_scales(value)
+
+    actual = weight_transform(original.clone())
+    layer = SimpleNamespace(w13_weight=actual.unsqueeze(0), quant_method=SimpleNamespace())
+    if fmt == "mxfp4":
+        layer.quant_method = type("Mxfp4FlashinferTrtllmMoEMethod", (), {})()
+    if scales is not None:
+        scale_name = {
+            "nvfp4": "w13_weight_scale",
+            "mxfp8": "w13_weight_scale_inv",
+            "mxfp4": "w13_weight_scale_inv_shuffled",
+        }[fmt]
+        setattr(
+            layer,
+            scale_name,
+            scale_transform(scales).unsqueeze(0),
+        )
+        if fmt == "mxfp4":
+            layer.w13_weight_scale_inv = torch.ones_like(scales, dtype=torch.float32)
+    for projection in ("gate", "up"):
+        half = int((projection == "up") != up_first)
+        # Tail rows and columns create coarse affine rectangles, never padding writes.
+        nr, nc = rows - 3, physical_cols // elem - 3
+        mask = torch.randint(256, (nr, nc * elem), dtype=torch.uint8)
+        segments = fi.expert_destinations(layer, layout, 0, projection, "weight", (nr, nc), dtype)
+        if elem == 2:
+            apply_segments(segments, mask.view(torch.bfloat16))
+        else:
+            apply_segments(segments, mask)
+        original[half * rows : half * rows + nr, : nc * elem] ^= mask
+        assert torch.equal(actual.view(torch.uint8), weight_transform(original).view(torch.uint8))
+        if scales is not None:
+            nc = scales.shape[1] - 1
+            mask = torch.randint(256, (nr, nc), dtype=torch.uint8)
+            segments = fi.expert_destinations(
+                layer,
+                layout,
+                0,
+                projection,
+                "weight_scale",
+                (nr, nc),
+                "F8_E4M3" if fmt == "nvfp4" else "U8",
+            )
+            apply_segments(segments, mask)
+            scales[half * rows : half * rows + nr, :nc] ^= mask
+            target = fi._scale_parameter(layer, "w13", layout)[0]
+            assert torch.equal(target.flatten(), scale_transform(scales))
+    if fmt == "mxfp4":
+        assert torch.equal(layer.w13_weight_scale_inv, torch.ones_like(scales, dtype=torch.float32))
+
+
+def test_block128_complete_scale_view_and_consumer_snapshot():
+    layer = SimpleNamespace(
+        quant_method=SimpleNamespace(runner=None),
+        moe_runner_config=SimpleNamespace(is_gated=True),
+        w13_weight=torch.zeros((1, 512, 256), dtype=torch.float8_e4m3fn),
+        w2_weight=torch.zeros((1, 256, 256), dtype=torch.float8_e4m3fn),
+        w13_weight_scale_inv=torch.ones((1, 4, 2), dtype=torch.float32),
+        w2_weight_scale_inv=torch.ones((1, 2, 2), dtype=torch.float32),
+        _flashinfer_trtllm_gemm1_alpha=None,
+        _flashinfer_trtllm_gemm1_beta=None,
+        _flashinfer_trtllm_gemm1_clamp_limit=None,
+    )
+    layout = fi.FlashInferLayout("fp8-block128-ue8m0", "trtllm", True)
+    target = fi.expert_scale_target(layer, layout, 0, "up", (2, 2))
+    target.fill_(3)
+    assert torch.equal(layer.w13_weight_scale_inv[0, :2], torch.ones((2, 2)))
+    assert torch.equal(layer.w13_weight_scale_inv[0, 2:], torch.full((2, 2), 3.0))
+    before = tuple(map(id, fi.consumer_objects(layer, layout)))
+    layer._flashinfer_trtllm_gemm1_beta = torch.ones(1)
+    assert tuple(map(id, fi.consumer_objects(layer, layout))) != before
+    # A block-scale suffix without byte-layout scales is fatal, not a collected dtype mismatch.
+    with pytest.raises(ValueError, match="unsupported FlashInfer block-scale format") as error:
+        fi.expert_destinations(layer, layout, 0, "up", "weight_scale", (2, 2), "U8")
+    assert not isinstance(error.value, fi._DtypeMismatch)
+
+
+def test_megamoe_mxfp4_packed_ue8m0_views():
+    # The pre-Mega input is four exponent bytes per I32, column-major by MN.
+    # Compose the actual two tensor transforms, independent of address formulas.
+    rows, cols = 256, 512
+    weight = torch.randint(256, (2 * rows, cols), dtype=torch.uint8)
+    scales = torch.randint(256, (2 * rows, cols // 16), dtype=torch.uint8)
+
+    def transform_scale(value):
+        packed = value.contiguous().view(torch.int32)
+        packed = packed.T.contiguous().T
+        interleaved = interleave(packed, 8)
+        transposed = interleaved.reshape(-1, 4, 32, packed.shape[1]).transpose(1, 2).reshape_as(packed)
+        return transposed.T.contiguous().T
+
+    actual_weight = interleave(weight, 8)
+    actual_scale = transform_scale(scales)
+    layer = SimpleNamespace(
+        w13_weight=actual_weight.unsqueeze(0),
+        w13_weight_scale_inv=torch.ones_like(scales, dtype=torch.float32),
+        w13_weight_scale_inv_shuffled=actual_scale.unsqueeze(0),
+        quant_method=SimpleNamespace(),
+    )
+    layout = fi.FlashInferLayout("mxfp4", "megamoe", True)
+    for projection, half in (("gate", 0), ("up", 1)):
+        for suffix, original, live, transform in (
+            ("weight", weight, actual_weight, lambda x: interleave(x, 8)),
+            ("weight_scale", scales, actual_scale, transform_scale),
+        ):
+            r, c = rows - 5, original.shape[1] - 3
+            mask = torch.randint(256, (r, c), dtype=torch.uint8)
+            segments = fi.expert_destinations(layer, layout, 0, projection, suffix, (r, c), "U8")
+            apply_segments(segments, mask)
+            original[half * rows : half * rows + r, :c] ^= mask
+            assert torch.equal(live, transform(original))
+    assert torch.equal(layer.w13_weight_scale_inv, torch.ones_like(scales, dtype=torch.float32))
+
+
+@pytest.mark.parametrize("backend", ["trtllm", "megamoe"])
+def test_consumer_snapshot_tracks_live_scale_and_clamp_storage(backend):
+    def scalar():
+        return torch.ones(1, dtype=torch.float32)
+
+    layer = SimpleNamespace(
+        moe_runner_config=SimpleNamespace(is_gated=True),
+        w13_weight=torch.zeros((1, 256, 128), dtype=torch.uint8),
+        w2_weight=torch.zeros((1, 128, 128), dtype=torch.uint8),
+    )
+    if backend == "trtllm":
+        layer.quant_method = type("Mxfp4FlashinferTrtllmMoEMethod", (), {})()
+        layer.quant_method.runner = None
+        layer.w13_weight_scale_inv = scalar()
+        layer.w2_weight_scale_inv = scalar()
+        layer.w13_weight_scale_inv_shuffled = torch.zeros(512, dtype=torch.uint8)
+        layer.w2_weight_scale_inv_shuffled = torch.zeros(512, dtype=torch.uint8)
+        layer._gemm1_clamp_limit_tensor = scalar()
+        layout = fi.FlashInferLayout("mxfp4", backend, True, up_first=True)
+        changed = ("w13_weight_scale_inv_shuffled", "_gemm1_clamp_limit_tensor")
+    else:
+        layer.quant_method = SimpleNamespace(runner=None)
+        layer.w13_weight_scale = torch.zeros(512, dtype=torch.uint8)
+        layer.w2_weight_scale = torch.zeros(512, dtype=torch.uint8)
+        layer.g1_alphas = scalar()
+        layer.g1_alphas_up = scalar()
+        layer.g2_alphas = scalar()
+        layer.w13_input_scale_quant = scalar()
+        layer.w2_input_scale_quant = scalar()
+        # Current MegaMoE stages calibration per forward from the layer; its
+        # config no longer owns fc1_alpha/fc2_alpha/fc1_norm_const tensors.
+        layer._flashinfer_megamoe_layer = SimpleNamespace(
+            _megakernel_config=SimpleNamespace(input_norm_const=1.0),
+            _kernel=object(),
+            _transformed=(
+                (layer.w13_weight, layer.w13_weight_scale),
+                (layer.w2_weight, layer.w2_weight_scale),
+            ),
+        )
+        layer._flashinfer_megamoe_forward = object()
+        layer._flashinfer_megamoe_input_norm_const = 1.0
+        layout = fi.FlashInferLayout("nvfp4", backend, True)
+        changed = ("g1_alphas", "g2_alphas", "w2_input_scale_quant")
+    for name in changed:
+        snapshot = ConsumerSnapshot(lambda: fi.consumer_objects(layer, layout))
+        snapshot.check_objects()
+        setattr(layer, name, getattr(layer, name).clone())
+        with pytest.raises(RuntimeError, match="consumer storage changed"):
+            snapshot.check_objects()

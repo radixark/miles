@@ -47,6 +47,7 @@ from miles.utils.environ import use_legacy_rollout_v1
 from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
 from miles.utils.file_arg_utils import resolve_file_arg
 from miles.utils.function_registry import load_function
+from miles.utils.gpu_delta.admission import validate_gpu_delta_args
 from miles.utils.hf_utils.config import is_dsa, load_hf_config
 from miles.utils.logging_utils import configure_logger_raw
 from miles.utils.lora.arguments import validate_lora_args, validate_lora_args_after_megatron
@@ -1096,7 +1097,7 @@ def miles_validate_args(args):
 
     validate_length_penalty_args(args)
     mode = args.update_weight_transfer_mode
-    if mode not in ("broadcast", "broadcast_packed", "p2p", "disk-delta", "ici", "http-lora"):
+    if mode not in ("broadcast", "broadcast_packed", "p2p", "disk-delta", "ici", "http-lora", "gpu-delta"):
         raise ValueError(f"Unknown --update-weight-transfer-mode {mode!r}")
     if mode == "broadcast_packed" and (args.train_backend != "megatron" or args.colocate):
         raise ValueError("broadcast_packed requires Megatron non-colocated weight transfer")
@@ -1104,13 +1105,15 @@ def miles_validate_args(args):
     validate_miles_ext_kernels_args(args)
 
     args.ft_components = _resolve_ft_components(args)
-    assert "rollout" not in args.ft_components or supports_partial_target_weight_update(args), (
-        "rollout fault tolerance needs a partial-target weight update (--update-weight-transfer-mode p2p, no "
-        "--colocate): a rollout cell may be stopped during a weight update"
+    supports_receiver_failure = not args.colocate and mode in {"p2p", "gpu-delta"}
+    assert "rollout" not in args.ft_components or supports_receiver_failure, (
+        "rollout fault tolerance needs a partial-target weight update or GPU-delta receiver recovery "
+        "(--update-weight-transfer-mode p2p or gpu-delta, no --colocate): "
+        "a rollout cell may be stopped during a weight update"
     )
     assert "weight_update" not in args.ft_components or (
-        args.train_backend == "megatron" and supports_partial_target_weight_update(args)
-    ), "weight_update FT requires Megatron, --update-weight-transfer-mode p2p, and no --colocate"
+        args.train_backend == "megatron" and supports_receiver_failure
+    ), "weight_update FT requires Megatron, --update-weight-transfer-mode p2p or gpu-delta, and no --colocate"
     assert not ("rollout" in args.ft_components and args.eval_num_gpus > 0), (
         "rollout fault tolerance does not support a dedicated eval fleet (--eval-num-gpus > 0): "
         "the eval fleet pins engine addresses once at startup, so a healed eval cell would make "
@@ -1517,6 +1520,8 @@ def miles_validate_args(args):
         assert args.prefill_num_servers is None, "P2P weight transfer mode has not been tested when PD is enabled."
         assert args.lora_rank <= 0, "LoRA weight sync is not supported for p2p (RDMA) weight transfer."
 
+    validate_gpu_delta_args(args)
+
     if args.update_weight_transfer_mode == "disk-delta":
         assert not args.colocate, (
             "Disk-delta weight transfer mode is not compatible with --colocate. Colocate transfers "
@@ -1632,6 +1637,8 @@ def miles_validate_args(args):
         args.offload_rollout = False
     # One decision for both the colocated LoRA weight sync and the trainer's host backup.
     args.lora_sync_sends_base = lora_sync_sends_base(args)
+    if args.update_weight_transfer_mode == "gpu-delta":
+        assert not args.offload_rollout, "GPU delta requires resident original rollout weight storage"
 
     if args.offload_train:
         args.disable_grad_buffers_cpu_backup = True

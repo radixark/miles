@@ -421,6 +421,13 @@ class TrainerController:
             max_attempts=_RETRY_MAX_ATTEMPTS,
         )
 
+    async def export_eval_snapshot(self, rollout_id: int, path: str) -> None:
+        """Export one immutable eval snapshot using the first available trainer cell."""
+        await retry(
+            lambda _: self._execute_first_alive("export_eval_snapshot", rollout_id=rollout_id, path=path),
+            max_attempts=_RETRY_MAX_ATTEMPTS,
+        )
+
     async def update_weights(self, info: UpdatableEngines, rollout_id: int | None = None) -> WeightUpdateOutput:
         """Broadcast weights to rollout engines and return which of them now serve which version."""
         log_structured(logger.info, tag="ft", op="update_weights", phase="start", rollout=rollout_id)
@@ -465,6 +472,7 @@ class TrainerController:
         self, info: UpdatableEngines, *, debug_weight_update_id: str, rollout_id: int | None
     ) -> WeightUpdateOutput:
         # Catch with vanilla retry: cells w/ exceptions are auto marked errored, thus retry will find the next one
+        # GPU-delta's XOR baseline cannot be handed to a different sender after failure.
         outputs = await retry(
             lambda _: self._execute_first_alive(
                 "update_weights",
@@ -473,7 +481,7 @@ class TrainerController:
                 debug_weight_update_id=debug_weight_update_id,
                 rollout_id=rollout_id,
             ),
-            max_attempts=_RETRY_MAX_ATTEMPTS,
+            max_attempts=1 if self.args.update_weight_transfer_mode == "gpu-delta" else _RETRY_MAX_ATTEMPTS,
         )
         return _unique(outputs)
 
