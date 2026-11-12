@@ -321,12 +321,15 @@ async def test_worker_mode_sends_the_call_to_the_worker_with_the_runs_env(monkey
 
 
 @pytest.mark.asyncio
-async def test_worker_mode_without_a_worker_fails_before_a_session_opens_and_stops_the_rollout(monkeypatch):
+@pytest.mark.parametrize("worker", [None, "http://worker:abc"])
+async def test_worker_mode_without_a_usable_worker_fails_before_a_session_opens_and_stops_the_rollout(
+    monkeypatch, worker
+):
     extra_keys = _patch_agent(monkeypatch, _Tracer())
 
     with pytest.raises(NonRetryableError, match="--custom-agent-function-worker"):
         await agentic_tool_call.generate(
-            _generate_input(custom_agent_function_mode="worker", custom_agent_function_worker=None)
+            _generate_input(custom_agent_function_mode="worker", custom_agent_function_worker=worker)
         )
 
     assert extra_keys == []
