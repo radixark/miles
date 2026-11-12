@@ -74,6 +74,11 @@ Env vars (read on the rollout worker):
     HARBOR_CUA_SCREENSHOT_SIZE
                          ``WIDTHxHEIGHT`` the screenshot is resized to in the
                          sandbox (default: the desktop's own size)
+    HARBOR_CUA_CAPTURE_COMMAND
+                         shell command run in the sandbox as ``<command> <png>
+                         [<width> <height>]`` to write the screenshot, the size
+                         passed only with HARBOR_CUA_SCREENSHOT_SIZE (default:
+                         ImageMagick's ``import`` and ``convert``)
     HARBOR_CUA_KEEP_SCREENSHOTS
                          most screenshots one request carries, the current
                          one included (default: Harbor's own trimming)
@@ -289,11 +294,12 @@ def apply_existing_desktop() -> None:
         raise ValueError(f"HARBOR_CUA_DESKTOP={desktop!r}; the only supported value is existing")
     settle_sec = float(os.getenv("HARBOR_CUA_SETTLE_SEC", "2.0"))
     size = _screenshot_size()
+    capture = os.getenv("HARBOR_CUA_CAPTURE_COMMAND", "").strip() or None
     keep = _env_int("HARBOR_CUA_KEEP_SCREENSHOTS")
     if keep is not None and keep < 1:
         raise ValueError("HARBOR_CUA_KEEP_SCREENSHOTS must be at least 1: the request needs the current screen")
     _patch_desktop_prompt()
-    _patch_desktop_session(settle_sec=settle_sec, size=size)
+    _patch_desktop_session(settle_sec=settle_sec, size=size, capture=capture)
     if keep is not None:
         _patch_screenshot_history(keep=keep)
     _desktop_applied = True
@@ -318,7 +324,7 @@ def _patch_desktop_prompt() -> None:
     generic.GenericJsonProvider.from_agent = classmethod(from_agent_on_desktop)
 
 
-def _patch_desktop_session(*, settle_sec: float, size: tuple[int, int] | None) -> None:
+def _patch_desktop_session(*, settle_sec: float, size: tuple[int, int] | None, capture: str | None) -> None:
     from harbor.agents.computer_1 import runtime
 
     session = runtime.Computer1Session
@@ -361,11 +367,15 @@ def _patch_desktop_session(*, settle_sec: float, size: tuple[int, int] | None) -
         if PurePosixPath(target).suffix.lower() != ".png":
             raise ValueError(f"a desktop session writes PNG screenshots, not {target!r}")
         png = shlex.quote(f"{runtime._SCREENSHOT_DIR}/latest.png")
-        resize = f" && convert {png} -resize {size[0]}x{size[1]}! {png}" if size else ""
+        if capture:
+            grab = f"{capture} {png}" + (f" {size[0]} {size[1]}" if size else "")
+        else:
+            resize = f" && convert {png} -resize {size[0]}x{size[1]}! {png}" if size else ""
+            grab = f"import -window root {png}{resize}"
         script = (
             f"set -e; export DISPLAY={runtime._DEFAULT_DISPLAY}; "
             f"mkdir -p {shlex.quote(runtime._SCREENSHOT_DIR)} {shlex.quote(str(PurePosixPath(target).parent))}; "
-            f"import -window root {png}{resize}; cp {png} {shlex.quote(target)}"
+            f"{grab}; cp {png} {shlex.quote(target)}"
         )
         await self._exec(
             runtime._bash_inline(script), timeout_sec=max(30, self._request_timeout_sec), label="screenshot"

@@ -337,6 +337,18 @@ def test_on_an_existing_desktop_the_screenshot_is_a_resized_png(desktop):
     assert '"navigate"' not in provider.record_text("task") and "zoom_region" not in provider.record_text("task")
 
 
+@pytest.mark.parametrize("size, args", [("1280x720", " 1280 720"), ("", "")])
+def test_on_an_existing_desktop_a_capture_command_takes_the_screenshot(desktop, size, args):
+    capture = "/opt/env/venv/bin/python /opt/capture.py"
+    session, _, commands = _started(desktop(HARBOR_CUA_SCREENSHOT_SIZE=size, HARBOR_CUA_CAPTURE_COMMAND=capture))
+
+    asyncio.run(session.fetch_screenshot("/logs/agent/screenshot_1.png"))
+    script = shlex.split(commands[0])[2]
+    png = "/tmp/computer_1-screenshots/latest.png"
+    assert f"; {capture} {png}{args}; cp {png} /logs/agent/screenshot_1.png" in script
+    assert "import -window" not in script and "convert" not in script
+
+
 def test_on_an_existing_desktop_a_request_carries_at_most_the_kept_screenshots(desktop, chat_server):
     base_url, requests = chat_server
     agent = desktop(f"{base_url}/sessions/s1/v1", HARBOR_CUA_KEEP_SCREENSHOTS="2")

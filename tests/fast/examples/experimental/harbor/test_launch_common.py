@@ -99,6 +99,7 @@ def test_agent_and_verifier_classes_are_forwarded_with_their_kwargs(monkeypatch)
         "HARBOR_CUA_DESKTOP": "existing",
         "HARBOR_CUA_SETTLE_SEC": "2.0",
         "HARBOR_CUA_SCREENSHOT_SIZE": "1280x720",
+        "HARBOR_CUA_CAPTURE_COMMAND": "/opt/env/venv/bin/python /opt/capture.py",
         "HARBOR_CUA_KEEP_SCREENSHOTS": "2",
         "HARBOR_AGENT_KWARGS": '{"coordinate_space": "normalized_0_999"}',
         "HARBOR_VERIFIER_IMPORT_PATH": "pkg.verify:HostVerifier",
