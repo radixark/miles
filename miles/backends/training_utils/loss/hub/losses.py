@@ -460,6 +460,7 @@ def sft_loss_function(
         response_lengths=response_lengths,
         with_entropy=False,
         max_seq_lens=batch.get("max_seq_lens", None),
+        lm_head=batch.get("lm_head"),
     )
 
     log_probs = log_probs_and_entropy["log_probs"]

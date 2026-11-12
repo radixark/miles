@@ -1,5 +1,6 @@
 from argparse import Namespace
 from collections.abc import Iterator, Sequence
+from typing import Protocol
 
 import torch
 import torch.distributed as dist
@@ -22,6 +23,16 @@ from miles.backends.training_utils.loss.hub.score_centering import selected_log_
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.sampling_mask import RolloutSamplingMask
 from miles.utils.types import RolloutBatch
+
+# [4096, V / TP] bf16 logits: 0.5 GiB at a 128K vocabulary over TP 2
+DEFAULT_LM_HEAD_TILE_ROWS = 4096
+
+
+class LMHead(Protocol):
+    """The micro-batch's output layer under `--log-probs-backend fused_lm_head` (megatron_utils.lm_head.LMHeadContext)."""
+
+    def project(self, hidden_rows: torch.Tensor) -> torch.Tensor:  # [n, H] -> this rank's [n, V / TP] logits
+        ...
 
 
 def _flatten_logits(logits: torch.Tensor, qkv_format: str, max_seq_lens: list[int] | None) -> torch.Tensor:
@@ -165,6 +176,7 @@ def get_log_probs_and_entropy(
     non_loss_data: bool = True,
     max_seq_lens: list[int] | None = None,
     rollout_sampling_mask: Sequence[RolloutSamplingMask] | None = None,
+    lm_head: LMHead | None = None,
 ) -> dict[str, list[torch.Tensor]]:
     """Compute per-token log-probabilities (and optionally entropy) on responses.
 
@@ -188,6 +200,8 @@ def get_log_probs_and_entropy(
         non_loss_data: Unused; kept for API compatibility.
         rollout_sampling_mask: One ``RolloutSamplingMask`` per sample,
             covering every response token.
+        lm_head: With `--log-probs-backend fused_lm_head`, the output layer, and
+            `logits` is its input: the `[1, T, H]` hidden states.
 
     Returns:
         Dict with key "log_probs" mapping to a list of `[R]` tensors per
@@ -204,8 +218,11 @@ def get_log_probs_and_entropy(
                     f"sampling-mask length {len(sampling_mask)} != response length "
                     f"{response_length} for sample {sample_index}"
                 )
-    if args.log_probs_backend == "fused":
-        assert rollout_sampling_mask is None, "--log-probs-backend fused does not take a sampling mask"
+    if args.log_probs_backend in ("fused", "fused_lm_head"):
+        assert (
+            rollout_sampling_mask is None
+        ), f"--log-probs-backend {args.log_probs_backend} does not take a sampling mask"
+        assert (lm_head is not None) == (args.log_probs_backend == "fused_lm_head"), "fused_lm_head needs the lm_head"
         res = _fused_log_probs_and_entropy(
             logits,
             args=args,
@@ -215,6 +232,7 @@ def get_log_probs_and_entropy(
             with_entropy=with_entropy,
             entropy_requires_grad=entropy_requires_grad,
             max_seq_lens=max_seq_lens,
+            lm_head=lm_head,
         )
     else:
         res = _torch_log_probs_and_entropy(
@@ -417,12 +435,18 @@ def _fused_log_probs_and_entropy(
     with_entropy: bool,
     entropy_requires_grad: bool,
     max_seq_lens: list[int] | None,
+    lm_head: LMHead | None,
 ) -> dict[str, list[torch.Tensor]]:
-    """All samples' response rows through one ``fused_log_probs_and_entropy`` call."""
+    """All samples' response rows through one ``fused_log_probs_and_entropy`` call. With ``lm_head``,
+    ``logits`` is the output layer's input and ``fused_lm_head_log_probs_and_entropy`` projects the scored
+    rows a tile at a time."""
     # imported here: the op needs triton, which not every host that imports the losses has
-    from miles.backends.training_utils.loss.hub.fused_log_probs import fused_log_probs_and_entropy
+    from miles.backends.training_utils.loss.hub.fused_log_probs import (
+        fused_lm_head_log_probs_and_entropy,
+        fused_log_probs_and_entropy,
+    )
 
-    flat_logits, layout = _local_response_layout(
+    flat_output, layout = _local_response_layout(
         logits,
         args=args,
         unconcat_tokens=unconcat_tokens,
@@ -436,15 +460,13 @@ def _fused_log_probs_and_entropy(
         row_ranges.extend(sample_ranges)
         targets.append(tokens_chunk)
         lengths.append(tokens_chunk.size(0))
-    device = flat_logits.device
+    device = flat_output.device
     # built on the CPU and copied once: one arange kernel per run would be hundreds of tiny launches;
     # from pinned memory the copy queues behind the model forward instead of waiting for it to finish
     rows = torch.cat([torch.arange(row_start, row_end) for row_start, row_end in row_ranges])
     rows = rows.pin_memory().to(device, non_blocking=True)
-    log_probs, entropy = fused_log_probs_and_entropy(
-        flat_logits,
-        rows,
-        torch.cat(targets).to(device),
+    all_targets = torch.cat(targets).to(device)
+    common = dict(
         tp_group=get_parallel_state().tp.group,
         vocab_size=(
             args.backend.vocab_size if args.train_backend == "megatron" else None
@@ -452,9 +474,25 @@ def _fused_log_probs_and_entropy(
         temperature=args.rollout_temperature,
         with_entropy=with_entropy,
         entropy_requires_grad=entropy_requires_grad,
-        # the checkpointed loss replays its forward on these logits during backward
-        inplace_backward=not args.recompute_loss_function,
     )
+    if lm_head is not None:
+        log_probs, entropy = fused_lm_head_log_probs_and_entropy(
+            flat_output,
+            lm_head.project,
+            rows,
+            all_targets,
+            tile_rows=args.log_probs_chunk_size if args.log_probs_chunk_size > 0 else DEFAULT_LM_HEAD_TILE_ROWS,
+            **common,
+        )
+    else:
+        log_probs, entropy = fused_log_probs_and_entropy(
+            flat_output,
+            rows,
+            all_targets,
+            # the checkpointed loss replays its forward on these logits during backward
+            inplace_backward=not args.recompute_loss_function,
+            **common,
+        )
     res = {"log_probs": list(log_probs.split(lengths))}
     if with_entropy:
         res["entropy"] = list(entropy.split(lengths))
