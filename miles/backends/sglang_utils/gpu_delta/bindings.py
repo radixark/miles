@@ -1,10 +1,3 @@
-# Copyright 2026 SGLang Team
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-
 """Shared canonical byte bindings and admitted FlashInfer storage layouts."""
 
 from __future__ import annotations
@@ -18,6 +11,7 @@ import torch
 
 from miles.backends.sglang_utils.gpu_delta.flashinfer import (
     DestinationSegment,
+    _byte_view,
     _DtypeMismatch,
     expert_destinations,
     expert_scale_target,
@@ -58,18 +52,18 @@ class TensorBinding:
     destinations: tuple[torch.Tensor, ...] = ()
     segments: tuple[DestinationSegment, ...] = ()
     format: str | None = None
-    checkpoint_dtype: str | None = None
-    dtype_checks: tuple[dict, ...] = ()
 
     def __post_init__(self):
         # The admitted binding is immutable for the session. Keep dtype and
         # slicing metadata off the paused per-tensor application path.
         self.torch_dtype = _TORCH_DTYPES[self.dtype]
+        if self.encoding == "xor_raw_bytes":
+            self.is_raw = True
+        elif self.encoding == "xor_bytes":
+            self.is_raw = False
+        else:
+            raise ValueError(f"unsupported GPU delta tensor encoding: {self.encoding}")
         self.raw_ue8m0 = self.format == "fp8-block128-ue8m0" and self.dtype == "U8"
-        if self.raw_ue8m0 and (
-            self.encoding != "xor_raw_bytes" or any(target.dtype != torch.float32 for target in self.storage)
-        ):
-            raise ValueError("block128 UE8M0 requires the admitted FP32 API image")
         self._selection = tuple(slice(start, stop) for start, stop in self.slices)
         layer = re.search(r"(?:^|\.)layers\.(\d+)\.", self.name)
         self.layer = int(layer[1]) if layer else None
@@ -146,12 +140,16 @@ def prepare_raw_xor(items, derived_targets=()):
             if any(id(target) in derived_targets for target in targets):
                 old = torch.cat([target.detach().reshape(-1) for target in targets])
                 new = old.view(torch.uint8).bitwise_xor(physical_mask).view(target_dtype)
-        else:
+        elif (ue8m0 and canonical_dtype == torch.uint8 and target_dtype == torch.float32) or (
+            not ue8m0 and canonical_dtype == target_dtype
+        ):
             old = torch.cat([target.detach().reshape(-1) for target in targets])
             canonical = old.to(torch.float8_e8m0fnu if ue8m0 else canonical_dtype)
             updated = canonical.view(torch.uint8).bitwise_xor(mask)
             new = updated.view(canonical.dtype).to(target_dtype)
             physical_mask = old.view(torch.uint8).bitwise_xor(new.view(torch.uint8)) if ue8m0 else mask
+        else:
+            raise ValueError(f"unsupported raw XOR representation: {canonical_dtype} -> {target_dtype}")
         offset = 0
         for target in targets:
             count = target.numel()
@@ -165,16 +163,6 @@ def prepare_raw_xor(items, derived_targets=()):
             )
             offset += count
     return prepared
-
-
-def _byte_view(tensor):
-    # A strided outer dimension is fine, but dtype reinterpretation requires
-    # contiguous elements within each row. Never silently clone a destination.
-    if tensor.ndim == 0:
-        tensor = tensor.reshape(1)
-    if tensor.stride(-1) != 1:
-        raise ValueError("delta destination requires a contiguous innermost dimension")
-    return tensor.detach().view(torch.uint8)
 
 
 def _direct_binding(name, meta, target, slices=None):
@@ -196,7 +184,6 @@ def _direct_binding(name, meta, target, slices=None):
         encoding="xor_raw_bytes" if direct else "xor_bytes",
         destinations=() if direct else (_byte_view(target),),
         format=meta.get("format"),
-        checkpoint_dtype=meta.get("checkpoint_dtype"),
     )
 
 
@@ -222,8 +209,15 @@ def _moe_binding(name, meta, layer, expert, projection, suffix, layout):
     _normalize_expert_meta(meta, layout, suffix)
     if not layout.gated and projection == "gate":
         raise ValueError("non-gated experts have no gate projection")
-    stem = "w2" if projection == "down" else "w13"
-    half = 0 if projection == "gate" else 1  # scalar metadata stays gate-first
+    # Scalar metadata stays gate-first.
+    if projection == "gate":
+        stem, half = "w13", 0
+    elif projection == "up":
+        stem, half = "w13", 1
+    elif projection == "down":
+        stem, half = "w2", None
+    else:
+        raise ValueError(f"unsupported expert projection: {projection}")
     if suffix == "input_scale" and layout.format == "nvfp4":
         # Activation calibration belongs to the immutable checkpoint prior.
         # Only weight-derived scales change during training.
@@ -241,6 +235,9 @@ def _moe_binding(name, meta, layer, expert, projection, suffix, layout):
     local_shape = tuple(stop - start for start, stop in slices)
     if not all(local_shape):
         return None
+    # The FlashInfer layout helpers rely on this one check of the local projection.
+    if len(local_shape) != 2 or any(type(value) is not int for value in (local, *local_shape)):
+        raise ValueError(f"expert byte layout requires an integer matrix and local expert: {name}")
     if layout.format == "fp8-block128-ue8m0" and suffix == "weight_scale_inv":
         target = expert_scale_target(layer, layout, local, projection, local_shape)
         return TensorBinding(
@@ -251,15 +248,12 @@ def _moe_binding(name, meta, layer, expert, projection, suffix, layout):
             (target,),
             encoding="xor_raw_bytes",
             format=meta["format"],
-            checkpoint_dtype=meta.get("checkpoint_dtype"),
-            dtype_checks=({"served": [str(target.dtype)], "allowed_served": [str(torch.float32)]},),
         )
     byte_suffix = suffix
     if layout.format == "mxfp8" and suffix == "weight_scale_inv":
         byte_suffix = "weight_scale"
     elif layout.format == "mxfp4" and suffix == "weight_packed":
         byte_suffix = "weight"
-    dtype_checks = []
     segments = expert_destinations(
         layer,
         layout,
@@ -268,7 +262,6 @@ def _moe_binding(name, meta, layer, expert, projection, suffix, layout):
         byte_suffix,
         local_shape,
         meta["dtype"],
-        dtype_checks,
     )
     segments = tuple(
         DestinationSegment(
@@ -292,8 +285,6 @@ def _moe_binding(name, meta, layer, expert, projection, suffix, layout):
         tuple(storage.values()),
         segments=segments,
         format=layout.format,
-        checkpoint_dtype=meta.get("checkpoint_dtype"),
-        dtype_checks=tuple(dtype_checks),
     )
 
 
@@ -365,18 +356,19 @@ def dense_target(name, meta, module, target, slices):
             if len(mismatches) != 1 or len(target.shape) != len(meta["shape"]):
                 raise ValueError(f"unclassified dense shape mapping: {name}")
             dim = mismatches[0]
-            allowed_dim = (
-                getattr(
+            from sglang.srt.layers.linear import ColumnParallelLinear, RowParallelLinear
+
+            if isinstance(module, RowParallelLinear):
+                allowed_dim = getattr(
                     target, "input_dim", None
                 )  # config-access-exempt: SGLang parameter loaders attach the row-parallel sharding axis.
-                if type(module).__name__ == "RowParallelLinear"
-                else getattr(
+            elif isinstance(module, ColumnParallelLinear):
+                allowed_dim = getattr(
                     target, "output_dim", None
                 )  # config-access-exempt: SGLang parameter loaders attach the column-parallel sharding axis.
-            )
-            if dim != allowed_dim or not hasattr(
-                module, "tp_group"
-            ):  # config-access-exempt: Only TP-partitioned modules carry a partition group.
+            else:
+                raise ValueError(f"unclassified tensor-parallel mapping: {name}")
+            if dim != allowed_dim:
                 raise ValueError(f"unclassified tensor-parallel mapping: {name}")
             from sglang.srt.distributed.utils import get_group_rank_size
 
@@ -423,8 +415,7 @@ class ParameterBindings:
         self.params = dict(model.named_parameters(remove_duplicate=False))
         self.gate_up_params = [(source, shard) for target, source, shard in stacked_params if target == "gate_up_proj"]
         self.excluded = {}
-        self.moe_layers = {}
-        self.moe_layouts = {}
+        self.moe_layers = {}  # prefix -> (layer, identified FlashInferLayout)
 
     def bind(self, name, meta, target_name, target=None):
         if meta["dtype"] not in _DTYPES.values():
@@ -438,8 +429,7 @@ class ParameterBindings:
             if prefix not in self.moe_layers:
                 if layer.use_presharded_weights:
                     raise ValueError("GPU delta requires an unsharded canonical checkpoint")
-                self.moe_layouts[prefix] = _identify_moe_layout(layer)
-                self.moe_layers[prefix] = layer
+                self.moe_layers[prefix] = layer, _identify_moe_layout(layer)
             binding = _moe_binding(
                 name,
                 meta,
@@ -447,7 +437,7 @@ class ParameterBindings:
                 int(expert),
                 projection,
                 suffix,
-                self.moe_layouts[prefix],
+                self.moe_layers[prefix][1],
             )
             if binding is None:
                 self.excluded[name] = (

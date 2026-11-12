@@ -67,7 +67,6 @@ def make_client(engine_id, version=0):
     )
 
 
-@pytest.mark.asyncio
 async def test_nonconsecutive_eval_points_pin_independent_base_relative_snapshots(tmp_path):
     base = tmp_path / "base"
     clients = [make_client("e0"), make_client("e1")]
@@ -97,7 +96,6 @@ async def test_nonconsecutive_eval_points_pin_independent_base_relative_snapshot
 
 
 @pytest.mark.parametrize("invalid", ["hash", "base", "prior"])
-@pytest.mark.asyncio
 async def test_invalid_snapshot_never_reaches_xor_apply(tmp_path, invalid):
     base, path = tmp_path / "base", tmp_path / "snapshot"
     overrides = {"base_version": 2} if invalid == "base" else {}
@@ -111,7 +109,6 @@ async def test_invalid_snapshot_never_reaches_xor_apply(tmp_path, invalid):
     client.update_weights_from_gpu_delta.assert_not_awaited()
 
 
-@pytest.mark.asyncio
 async def test_failed_pin_settles_other_engines_without_replaying_xor(tmp_path):
     base, path = tmp_path / "base", tmp_path / "snapshot"
     write_snapshot(path, base)
@@ -149,7 +146,6 @@ async def test_failed_pin_settles_other_engines_without_replaying_xor(tmp_path):
 
 
 @pytest.mark.parametrize("version", [0, 1])
-@pytest.mark.asyncio
 async def test_initial_hf_eval_only_labels_fresh_base_engines(tmp_path, version):
     client = make_client("e0", version)
     updater = EvalSnapshotUpdater(tmp_path, "job")
@@ -163,7 +159,6 @@ async def test_initial_hf_eval_only_labels_fresh_base_engines(tmp_path, version)
     client.update_weights_from_gpu_delta.assert_not_awaited()
 
 
-@pytest.mark.asyncio
 async def test_gpu_delta_eval_exports_coherent_snapshot_then_queues_generation(tmp_path):
     args = SimpleNamespace(
         update_weight_transfer_mode="gpu-delta",
@@ -197,7 +192,6 @@ async def test_gpu_delta_eval_exports_coherent_snapshot_then_queues_generation(t
 
 
 @pytest.mark.parametrize("outcome", ["success", "lost_reply", "stale_version"])
-@pytest.mark.asyncio
 async def test_eval_fleet_pins_gpu_delta_once_and_verifies_serving_version(outcome):
     client = SimpleNamespace(
         get_weight_version=AsyncMock(return_value="5" if outcome == "success" else "4"),

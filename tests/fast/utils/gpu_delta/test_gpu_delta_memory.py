@@ -11,17 +11,8 @@ import pytest
 from miles.utils.gpu_delta import memory as memory
 
 
-@pytest.mark.parametrize(
-    "pinned,registration_failure,pin_later",
-    [
-        (False, False, False),
-        (True, False, False),
-        (True, True, False),
-        (False, False, True),
-        (False, True, True),
-    ],
-)
-def test_shared_host_registration_owns_mapping_until_close(monkeypatch, pinned, registration_failure, pin_later):
+@pytest.mark.parametrize("pin,registration_failure", [(False, False), (True, False), (True, True)])
+def test_shared_host_registration_owns_mapping_until_close(monkeypatch, pin, registration_failure):
     mapping = mmap.mmap(-1, 4096)
     calls = []
     contexts = [13]
@@ -57,32 +48,25 @@ def test_shared_host_registration_owns_mapping_until_close(monkeypatch, pinned, 
             cuCtxPopCurrent=pop,
         ),
     )
+    allocation = memory.HostMapping(mapping)
+    assert not allocation.registered
     if registration_failure:
-        if pin_later:
-            allocation = memory.HostMapping(mapping, pinned=False)
-            with pytest.raises(RuntimeError, match="cuMemHostRegister"):
-                allocation.pin()
-            allocation.close()
-        else:
-            with pytest.raises(RuntimeError, match="cuMemHostRegister"):
-                memory.HostMapping(mapping, pinned)
+        with pytest.raises(RuntimeError, match="cuMemHostRegister"):
+            allocation.pin()
+        assert not allocation.registered
+        allocation.close()
         assert len(calls) == 1
     else:
-        allocation = memory.HostMapping(mapping, pinned)
         allocation.view[:4] = b"test"
         escaped = allocation.view[:4]
-        assert allocation.registered is pinned
-        if pin_later:
+        if pin:
             allocation.pin()
-        registered = pinned or pin_later
-        if registered:
             allocation.pin()  # Reusing a warm mapping must not register again.
             assert allocation.registered
+            assert ctypes.string_at(allocation.address, 4) == b"test"
         assert allocation.mapping is mapping and bytes(escaped) == b"test"
         assert mapping[:4] == b"test"
-        if registered:
-            assert ctypes.string_at(allocation.address, 4) == b"test"
-        assert allocation.capacity == 4096 and allocation.mapping is mapping
+        assert allocation.capacity == 4096
         contexts[-1] = 29  # Explicit clear can run on a different caller thread.
         allocation.close()
         allocation.close()
@@ -97,7 +81,7 @@ def test_shared_host_registration_owns_mapping_until_close(monkeypatch, pinned, 
                 ("unregister", allocation.address),
                 ("pop", 13),
             ]
-            if registered
+            if pin
             else []
         )
     assert not mapping.closed  # This local owner outlives the allocation wrapper.
@@ -154,14 +138,6 @@ class Driver:
         self.calls.append("create")
         return 0, 11
 
-    def cuMemGetAllocationPropertiesFromHandle(self, handle):
-        assert handle == 11
-        properties = self.CUmemAllocationProp()
-        properties.location.type = 3
-        # CUDA may not echo HW_DECOMPRESS; the mapped pointer still must admit it.
-        properties.allocFlags.usage = 0
-        return 0, properties
-
     def cuMemAddressReserve(self, size, alignment, hint, flags):
         assert (size, alignment, hint, flags) == (8192, 0, 0, 0)
         self.calls.append("reserve")
@@ -180,10 +156,12 @@ class Driver:
         self.calls.append("access")
         return (0,)
 
-    def cuPointerGetAttribute(self, attribute, address):
-        assert attribute == 21
+    def cuPointerGetAttribute(self, output, attribute, address):
+        # The mapped pointer, not the creation request, must admit HW-DE support.
+        assert attribute == 21 and address == ctypes.addressof(self.backing)
         self.calls.append("capability")
-        return 0, self.failure != "capability"
+        ctypes.cast(output, ctypes.POINTER(ctypes.c_uint))[0] = self.failure != "capability"
+        return 0
 
     def cuMemUnmap(self, address, size):
         self.calls.append("unmap")
@@ -199,8 +177,10 @@ class Driver:
 
 
 @pytest.mark.parametrize("failure", [None, "map", "capability"])
-def test_original_host_vmm_admission_and_cleanup(failure):
+def test_original_host_vmm_admission_and_cleanup(monkeypatch, failure):
     driver = Driver(failure)
+    # Stand in for the ctypes driver symbol: CPU tests never load libcuda.
+    monkeypatch.setattr(memory, "_pointer_attribute_query", lambda: driver.cuPointerGetAttribute)
     with patch.object(memory, "_driver", return_value=driver):
         if failure:
             error = "cuMemMap" if failure == "map" else "not hardware-decompression capable"
@@ -238,67 +218,35 @@ def test_cuda_driver_initialization_is_cached_and_checks_status(monkeypatch):
 
 
 @pytest.mark.parametrize("status,capable", [(0, 1), (0, 0), (1, 1)])
-def test_unsupported_typed_pointer_attribute_still_requires_driver_capability(monkeypatch, status, capable):
-    driver = Driver()
-    calls = []
+def test_de_capability_uses_the_cached_driver_symbol_abi(monkeypatch, status, capable):
+    calls, libraries = [], []
 
-    def unsupported(attribute, pointer):
-        assert attribute == 21 and pointer == 0x123456780000
-        raise TypeError("Unsupported attribute: CU_POINTER_ATTRIBUTE_IS_HW_DECOMPRESS_CAPABLE")
-
-    def native(output, attribute, pointer):
+    def query(output, attribute, pointer):
         calls.append((attribute, pointer))
         ctypes.cast(output, ctypes.POINTER(ctypes.c_uint))[0] = capable
         return status
-
-    driver.cuPointerGetAttribute = unsupported
-    monkeypatch.setattr(memory, "_driver", lambda: driver)
-    monkeypatch.setattr(memory, "_pointer_attribute_query", lambda: native)
-    if status or not capable:
-        with pytest.raises(
-            RuntimeError,
-            match="CUDA 1" if status else "not hardware-decompression capable",
-        ):
-            memory.require_de_capable(0x123456780000)
-    else:
-        memory.require_de_capable(0x123456780000)
-    assert calls == [(21, 0x123456780000)]
-
-
-@pytest.mark.parametrize("failure", [TypeError("invalid pointer"), (1, 1)])
-def test_pointer_attribute_fallback_does_not_mask_other_failures(monkeypatch, failure):
-    driver = Driver()
-
-    def query(attribute, pointer):
-        if isinstance(failure, Exception):
-            raise failure
-        return failure
-
-    driver.cuPointerGetAttribute = query
-    monkeypatch.setattr(memory, "_driver", lambda: driver)
-    monkeypatch.setattr(memory, "_pointer_attribute_query", lambda: pytest.fail("unexpected fallback"))
-    with pytest.raises((TypeError, RuntimeError), match="invalid pointer|CUDA 1"):
-        memory.require_de_capable(0x123456780000)
-
-
-def test_pointer_attribute_native_symbol_uses_cuda_abi_and_is_cached(monkeypatch):
-    query = SimpleNamespace()
-    libraries = []
 
     def load(name):
         libraries.append(name)
         return SimpleNamespace(cuPointerGetAttribute=query)
 
-    memory._pointer_attribute_query.cache_clear()
+    monkeypatch.setattr(memory, "_driver", Driver)
     monkeypatch.setattr(memory.ctypes, "CDLL", load)
+    memory._pointer_attribute_query.cache_clear()
     try:
-        assert memory._pointer_attribute_query() is query
-        assert memory._pointer_attribute_query() is query
-        assert libraries == ["libcuda.so.1"]
-        assert query.argtypes == [ctypes.c_void_p, ctypes.c_int, ctypes.c_uint64]
-        assert query.restype is ctypes.c_int
+        for _ in range(2):
+            if status or not capable:
+                with pytest.raises(RuntimeError, match="CUDA 1" if status else "not hardware-decompression capable"):
+                    memory.require_de_capable(0x123456780000)
+            else:
+                memory.require_de_capable(0x123456780000)
     finally:
         memory._pointer_attribute_query.cache_clear()
+    assert calls == [(21, 0x123456780000)] * 2
+    # A fake symbol never enforces argtypes: (void *value, int attribute, uint64 CUdeviceptr) -> CUresult.
+    assert libraries == ["libcuda.so.1"]
+    assert query.argtypes == [ctypes.c_void_p, ctypes.c_int, ctypes.c_uint64]
+    assert query.restype is ctypes.c_int
 
 
 class DeviceDriver:

@@ -12,6 +12,7 @@ from unittest.mock import patch
 import torch
 
 from miles.backends.sglang_utils.gpu_delta import derived
+from miles.backends.sglang_utils.gpu_delta.flashinfer import FlashInferLayout
 
 _root = Path(importlib.util.find_spec("sglang").origin).parent / "srt"
 
@@ -36,9 +37,9 @@ def _production_helpers(relative_path, names):
     return SimpleNamespace(**{name: scope[name] for name in names})
 
 
-def _layer(backend, w4a16=False):
-    cute = backend == "flashinfer_cutedsl"
-    mega = backend == "flashinfer_megamoe"
+def _layer(backend):
+    cute = backend == "cutedsl"
+    mega = backend == "megamoe"
     vector_input = cute
     return SimpleNamespace(
         num_local_experts=2,
@@ -64,7 +65,6 @@ def _layer(backend, w4a16=False):
         w2_input_scale_quant=torch.ones(2) if cute or mega else torch.tensor(1.0),
         gemm1_clamp_limit=None,
         gemm1_beta=torch.zeros(2) if not (cute or mega) else None,
-        _cutedsl_wrapper=(SimpleNamespace(quant_mode="w4a16" if w4a16 else "w4a4") if cute else None),
         _cutedsl_scales=(torch.zeros(2), torch.ones(1), torch.zeros(2)),
         _cutedsl_input_scale=torch.ones(1),
         _flashinfer_megamoe_input_norm_const=0.25,
@@ -72,13 +72,25 @@ def _layer(backend, w4a16=False):
     )
 
 
+def _update(layer, backend, quant_mode="w4a4"):
+    return derived.nvfp4_derived_update(layer, FlashInferLayout("nvfp4", backend, True, quant_mode))
+
+
+def _prepare(update, overrides):
+    # prepare_updates validates a batch's predicates together; validate one update here.
+    copies, checks = update._prepare(overrides)
+    derived._validate_checks(checks)
+    return copies
+
+
 def _value(copies, destination):
     return next(copy.source for copy in copies if copy.destination is destination)
 
 
-def _prepare_updates(updates, raw_copies):
-    targets = [target for group, _ in raw_copies.values() for target in group]
-    return derived.prepare_updates(derived.plan_updates(updates, targets), raw_copies)
+def _prepare_updates(updates, raw):
+    targets = [target for target, _ in raw]
+    plans = derived.plan_updates(updates, targets)
+    return derived.prepare_updates(plans, {id(target): value for target, value in raw})
 
 
 class TestDerivedNvfp4(unittest.TestCase):
@@ -122,47 +134,40 @@ class TestDerivedNvfp4(unittest.TestCase):
         self.addCleanup(self.trt_patch.stop)
 
     def test_activation_only_update_prepares_complete_values_without_mutation(self):
-        for backend in ("flashinfer_trtllm", "flashinfer_trtllm_routed"):
-            with self.subTest(backend=backend):
-                layer = _layer(backend)
-                update = derived.nvfp4_derived_update(layer, backend)
-                before = [
-                    (tensor, tensor.clone(), tensor.data_ptr()) for tensor in (*update.sources, *update.destinations)
-                ]
-                incoming = torch.tensor([1.0, 2.0, 3.0, 8.0])
-                copies = _prepare_updates(
-                    (update,),
-                    {torch.float32: ([layer.w13_input_scale[3:4]], [incoming[3:4]])},
-                )
-                torch.testing.assert_close(_value(copies, layer.g1_alphas), torch.tensor([16.0, 32.0]))
-                torch.testing.assert_close(_value(copies, layer.g1_alphas_up), torch.tensor([24.0, 40.0]))
-                torch.testing.assert_close(_value(copies, layer.g2_alphas), torch.tensor([48.0, 56.0]))
-                torch.testing.assert_close(_value(copies, layer.g1_scale_c), torch.tensor([3.0, 5.0]))
-                torch.testing.assert_close(_value(copies, layer.gemm1_beta), torch.tensor([1 / 24, 1 / 40]))
-                for tensor, old, pointer in before:
-                    torch.testing.assert_close(tensor, old)
-                    self.assertEqual(tensor.data_ptr(), pointer)
-                incoming.fill_(100)
-                torch.testing.assert_close(_value(copies, layer.g1_alphas), torch.tensor([16.0, 32.0]))
+        layer = _layer("trtllm")
+        update = _update(layer, "trtllm")
+        before = [(tensor, tensor.clone(), tensor.data_ptr()) for tensor in (*update.sources, *update.destinations)]
+        incoming = torch.tensor([1.0, 2.0, 3.0, 8.0])
+        copies = _prepare_updates((update,), [(layer.w13_input_scale[3:4], incoming[3:4])])
+        torch.testing.assert_close(_value(copies, layer.g1_alphas), torch.tensor([16.0, 32.0]))
+        torch.testing.assert_close(_value(copies, layer.g1_alphas_up), torch.tensor([24.0, 40.0]))
+        torch.testing.assert_close(_value(copies, layer.g2_alphas), torch.tensor([48.0, 56.0]))
+        torch.testing.assert_close(_value(copies, layer.g1_scale_c), torch.tensor([3.0, 5.0]))
+        torch.testing.assert_close(_value(copies, layer.gemm1_beta), torch.tensor([1 / 24, 1 / 40]))
+        for tensor, old, pointer in before:
+            torch.testing.assert_close(tensor, old)
+            self.assertEqual(tensor.data_ptr(), pointer)
+        incoming.fill_(100)
+        torch.testing.assert_close(_value(copies, layer.g1_alphas), torch.tensor([16.0, 32.0]))
 
     def test_trtllm_clamping_rejects_block_scale_requantization(self):
-        layer = _layer("flashinfer_trtllm")
+        layer = _layer("trtllm")
         layer.moe_runner_config.gemm1_clamp_limit = 24.0
         layer.gemm1_clamp_limit = torch.zeros(2)
         with self.assertRaisesRegex(ValueError, "block-scale requantization"):
-            derived.nvfp4_derived_update(layer, "trtllm")
+            _update(layer, "trtllm")
         layer.w13_weight_scale_2[:, 1].copy_(layer.w13_weight_scale_2[:, 0])
-        update = derived.nvfp4_derived_update(layer, "trtllm")
-        copies = update.prepare({})
+        update = _update(layer, "trtllm")
+        copies = _prepare(update, {})
         torch.testing.assert_close(_value(copies, layer.gemm1_clamp_limit), torch.tensor([3.0, 1.5]))
         with self.assertRaisesRegex(ValueError, "block-scale requantization"):
-            update.prepare({id(layer.w13_weight_scale_2): torch.tensor([[2.0, 3.0], [4.0, 4.0]])})
+            _prepare(update, {id(layer.w13_weight_scale_2): torch.tensor([[2.0, 3.0], [4.0, 4.0]])})
         torch.testing.assert_close(layer.g1_alphas, torch.zeros(2))
 
     def test_cutedsl_local_experts_and_shared_fc2_quantization(self):
-        layer = _layer("flashinfer_cutedsl")
-        update = derived.nvfp4_derived_update(layer, "flashinfer_cutedsl")
-        copies = update.prepare({id(layer.w2_input_scale): torch.tensor([100.0, 200.0, 10.0, 20.0])})
+        layer = _layer("cutedsl")
+        update = _update(layer, "cutedsl")
+        copies = _prepare(update, {id(layer.w2_input_scale): torch.tensor([100.0, 200.0, 10.0, 20.0])})
         torch.testing.assert_close(_value(copies, layer.g2_alphas), torch.tensor([60.0, 140.0]))
         # Standard CuTe scalarizes only this rank's selected experts for FC2.
         torch.testing.assert_close(_value(copies, layer._cutedsl_scales[1]), torch.tensor([0.05]))
@@ -170,8 +175,8 @@ class TestDerivedNvfp4(unittest.TestCase):
         torch.testing.assert_close(_value(copies, layer._cutedsl_input_scale), torch.tensor([0.25]))
 
     def test_w4a16_retains_copy_only_semantics(self):
-        layer = _layer("flashinfer_cutedsl", w4a16=True)
-        update = derived.nvfp4_derived_update(layer, "flashinfer_cutedsl")
+        layer = _layer("cutedsl")
+        update = _update(layer, "cutedsl", "w4a16")
         self.assertEqual(len(update.sources), 2)
         weight = torch.tensor([[11.0, 13.0], [17.0, 19.0]])
         with patch.object(
@@ -179,58 +184,59 @@ class TestDerivedNvfp4(unittest.TestCase):
             "_normal_scale_helpers",
             side_effect=AssertionError("W4A16 needs no arithmetic helper"),
         ):
-            copies = update.prepare({id(layer.w13_weight_scale_2): weight})
+            copies = _prepare(update, {id(layer.w13_weight_scale_2): weight})
         torch.testing.assert_close(_value(copies, layer.g1_alphas), torch.tensor([11.0, 17.0]))
         torch.testing.assert_close(_value(copies, layer.g1_alphas_up), torch.tensor([13.0, 19.0]))
         torch.testing.assert_close(_value(copies, layer._cutedsl_scales[0]), torch.tensor([11.0, 17.0]))
         self.assertTrue(all(copy.destination is not layer._cutedsl_input_scale for copy in copies))
         # MegaMoE W4A16 has the same weight bytes, but no captured input norm.
-        layer = _layer("flashinfer_megamoe", w4a16=True)
+        layer = _layer("megamoe")
         layer._flashinfer_megamoe_input_norm_const = None
         layer._flashinfer_megamoe_layer._megakernel_config = SimpleNamespace()
-        update = derived.nvfp4_derived_update(layer, "megamoe", "w4a16")
+        update = _update(layer, "megamoe", "w4a16")
         self.assertEqual((len(update.sources), len(update.destinations)), (2, 3))
         with patch.object(derived, "_normal_scale_helpers", side_effect=AssertionError):
-            copies = update.prepare({id(layer.w13_weight_scale_2): torch.tensor([[11.0, 11.0], [17.0, 17.0]])})
+            copies = _prepare(update, {id(layer.w13_weight_scale_2): torch.tensor([[11.0, 11.0], [17.0, 17.0]])})
         torch.testing.assert_close(_value(copies, layer.g1_alphas), torch.tensor([11.0, 17.0]))
         with self.assertRaisesRegex(ValueError, "matching gate/up"):
-            update.prepare({id(layer.w13_weight_scale_2): weight})
+            _prepare(update, {id(layer.w13_weight_scale_2): weight})
 
     def test_megamoe_rejects_captured_scalar_change_and_gate_up_mismatch(self):
-        layer = _layer("flashinfer_megamoe")
+        layer = _layer("megamoe")
         layer.w13_weight_scale_2[:, 1].copy_(layer.w13_weight_scale_2[:, 0])
-        update = derived.nvfp4_derived_update(layer, "flashinfer_megamoe")
-        copies = update.prepare({id(layer.w2_input_scale): torch.tensor([1.0, 1.0, 3.0, 5.0])})
+        update = _update(layer, "megamoe")
+        copies = _prepare(update, {id(layer.w2_input_scale): torch.tensor([1.0, 1.0, 3.0, 5.0])})
         torch.testing.assert_close(_value(copies, layer.g2_alphas), torch.tensor([18.0, 35.0]))
         with self.assertRaisesRegex(ValueError, "input normalization changed"):
-            update.prepare({id(layer.w13_input_scale): torch.tensor([1.0, 2.0, 3.0, 5.0])})
+            _prepare(update, {id(layer.w13_input_scale): torch.tensor([1.0, 2.0, 3.0, 5.0])})
         with self.assertRaisesRegex(ValueError, "matching gate/up"):
-            update.prepare({id(layer.w13_weight_scale_2): torch.tensor([[2.0, 3.0], [4.0, 4.0]])})
+            _prepare(update, {id(layer.w13_weight_scale_2): torch.tensor([[2.0, 3.0], [4.0, 4.0]])})
         torch.testing.assert_close(layer.g1_alphas, torch.zeros(2))
 
-        layer = _layer("flashinfer_megamoe")
+        layer = _layer("megamoe")
         layer.w13_weight_scale_2[:, 1].copy_(layer.w13_weight_scale_2[:, 0])
-        update = derived.nvfp4_derived_update(layer, "megamoe")
+        update = _update(layer, "megamoe")
         near = layer.w13_weight_scale_2.clone()
         near[:, 1] += 1e-6
-        update.prepare({id(layer.w13_weight_scale_2): near})
+        _prepare(update, {id(layer.w13_weight_scale_2): near})
         near[0, 1] = float("nan")
         with self.assertRaisesRegex(ValueError, "matching gate/up"):
-            update.prepare({id(layer.w13_weight_scale_2): near})
+            _prepare(update, {id(layer.w13_weight_scale_2): near})
         layer._flashinfer_megamoe_input_norm_const = 0.1
         layer._flashinfer_megamoe_layer._megakernel_config.input_norm_const = 0.1
-        update = derived.nvfp4_derived_update(layer, "megamoe")
+        update = _update(layer, "megamoe")
         with self.assertRaisesRegex(ValueError, "input normalization changed"):
-            update.prepare({id(layer.w13_input_scale): torch.full((4,), 10.0)})
+            _prepare(update, {id(layer.w13_input_scale): torch.full((4,), 10.0)})
 
     def test_megamoe_batch_validates_once_before_returning_any_copies(self):
-        layers = [_layer("flashinfer_megamoe") for _ in range(2)]
+        layers = [_layer("megamoe") for _ in range(2)]
         for layer in layers:
             layer.w13_weight_scale_2[:, 1].copy_(layer.w13_weight_scale_2[:, 0])
-        updates = [derived.nvfp4_derived_update(layer, "megamoe") for layer in layers]
+        updates = [_update(layer, "megamoe") for layer in layers]
         targets = [layer.w2_weight_scale_2[:1] for layer in layers]
         plans = derived.plan_updates(updates, targets)
-        raw = {torch.float32: (targets, [torch.tensor([11.0]), torch.tensor([13.0])])}
+        values = [torch.tensor([11.0]), torch.tensor([13.0])]
+        raw = {id(target): value for target, value in zip(targets, values, strict=True)}
         cpu = torch.Tensor.cpu
         transfers = []
 
@@ -266,11 +272,11 @@ class TestDerivedNvfp4(unittest.TestCase):
             torch.testing.assert_close(layer.g1_alphas, torch.zeros(2))
 
     def test_helpers_are_resolved_once_and_per_token_constants_are_reused(self):
-        for backend in ("flashinfer_trtllm", "flashinfer_cutedsl"):
+        for backend in ("trtllm", "cutedsl"):
             with self.subTest(backend=backend):
                 layer = _layer(backend)
                 layer.quant_config.use_per_token_activation = True
-                update = derived.nvfp4_derived_update(layer, backend)
+                update = _update(layer, backend)
                 weights = torch.tensor([[11.0, 13.0], [17.0, 19.0]])
                 with (
                     patch.object(derived, "_normal_scale_helpers", side_effect=AssertionError),
@@ -282,24 +288,24 @@ class TestDerivedNvfp4(unittest.TestCase):
                         side_effect=AssertionError("neutral tensors already exist"),
                     ),
                 ):
-                    copies = update.prepare({id(layer.w13_weight_scale_2): weights})
+                    copies = _prepare(update, {id(layer.w13_weight_scale_2): weights})
                 torch.testing.assert_close(_value(copies, layer.g1_alphas), weights[:, 0])
                 torch.testing.assert_close(_value(copies, layer.g1_alphas_up), weights[:, 1])
                 torch.testing.assert_close(
                     _value(copies, layer.w13_input_scale_quant),
                     layer.w13_input_scale_quant,
                 )
-                if backend == "flashinfer_cutedsl":
+                if backend == "cutedsl":
                     torch.testing.assert_close(
                         _value(copies, layer._cutedsl_input_scale),
                         layer._cutedsl_input_scale,
                     )
 
     def test_prepare_updates_overlays_gate_up_scalars(self):
-        layer = _layer("flashinfer_trtllm")
-        update = derived.nvfp4_derived_update(layer, "trtllm")
-        other = _layer("flashinfer_trtllm")
-        unchanged = derived.nvfp4_derived_update(other, "trtllm")
+        layer = _layer("trtllm")
+        update = _update(layer, "trtllm")
+        other = _layer("trtllm")
+        unchanged = _update(other, "trtllm")
         sources_before = [source.clone() for source in update.sources]
         for complete in (False, True):
             with self.subTest(complete=complete):
@@ -317,38 +323,31 @@ class TestDerivedNvfp4(unittest.TestCase):
                     ]
                     values = [torch.tensor([11.0]), torch.tensor([17.0])]
                     expected_gate, expected_up = [8.0, 68.0], [44.0, 20.0]
-                copies = _prepare_updates((update, unchanged), {torch.float32: (targets, values)})
+                copies = _prepare_updates((update, unchanged), list(zip(targets, values, strict=True)))
                 torch.testing.assert_close(_value(copies, layer.g1_alphas), torch.tensor(expected_gate))
                 torch.testing.assert_close(_value(copies, layer.g1_alphas_up), torch.tensor(expected_up))
                 self.assertEqual(len(copies), len(update.destinations))
-        self.assertEqual(_prepare_updates((update,), {}), ())
+        self.assertEqual(_prepare_updates((update,), []), ())
         for source, before in zip(update.sources, sources_before, strict=False):
             torch.testing.assert_close(source, before)
 
-    def test_derived_source_destination_and_patch_geometry_fail_before_writes(self):
-        layer = _layer("flashinfer_trtllm")
-        update = derived.nvfp4_derived_update(layer, "flashinfer_trtllm")
-        with self.assertRaisesRegex(ValueError, "source geometry changed"):
-            update.prepare({id(layer.w2_weight_scale_2): torch.ones(3)})
+    def test_derived_destination_and_patch_geometry_fail_before_writes(self):
+        layer = _layer("trtllm")
+        update = _update(layer, "trtllm")
         layer.g1_alphas.resize_(3)
         with self.assertRaisesRegex(ValueError, "destination geometry changed"):
-            update.prepare({})
+            _prepare(update, {})
         torch.testing.assert_close(layer.g2_alphas, torch.zeros(2))
 
         allocation = torch.arange(4, dtype=torch.float32)
         source = allocation[:2]
         update = derived.DerivedUpdate((source,), (torch.zeros(2),), lambda values: values)
         with self.assertRaisesRegex(ValueError, "outside its source"):
-            _prepare_updates((update,), {torch.float32: ([allocation[3:4]], [torch.tensor([9.0])])})
+            _prepare_updates((update,), [(allocation[3:4], torch.tensor([9.0]))])
         with self.assertRaisesRegex(ValueError, "updates overlap"):
             _prepare_updates(
                 (update,),
-                {
-                    torch.float32: (
-                        [source[:1], source[:1]],
-                        [torch.tensor([9.0]), torch.tensor([9.0])],
-                    )
-                },
+                [(source[:1], torch.tensor([9.0])), (source[:1], torch.tensor([9.0]))],
             )
         torch.testing.assert_close(allocation, torch.arange(4, dtype=torch.float32))
 

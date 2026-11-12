@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 
 import numpy as np
 import pytest
@@ -21,6 +21,8 @@ from miles.backends.training_utils.weight_update import updater as updater_modul
 from miles.backends.training_utils.weight_update.protocols.gpu_delta import protocol as gpu_delta
 from miles.utils.gpu_delta import encoder as gpu_delta_encoder
 from miles.utils.gpu_delta import publication as gpu_delta_publication
+
+_PARALLEL_STATE = SimpleNamespace(is_metrics_rank=True)
 
 
 class _Engine:
@@ -185,32 +187,6 @@ def test_checkpoint_reader_rejects_different_canonical_layout_before_rollout(tmp
     assert not protocol._baseline_captured and not events
 
 
-def test_ue8m0_canonical_baseline_losslessly_reads_every_finite_exponent(tmp_path):
-    exponents = np.arange(255, dtype=np.uint8)
-    scales = np.exp2(exponents.astype(np.float64) - 127).astype(np.float32)
-    safetensors.numpy.save_file({"scale": scales}, tmp_path / "model.safetensors")
-    reader = gpu_delta_publication.make_checkpoint_reader(str(tmp_path))
-    spec = {"dtype": "U8", "shape": [255], "format": "fp8-block128-ue8m0", "checkpoint_dtype": "F32"}
-    actual = gpu_delta_publication.read_canonical_tensor(reader, "scale", spec)
-    np.testing.assert_array_equal(actual, exponents)
-    assert actual.dtype == np.uint8
-    with pytest.raises(ValueError, match="Unsupported GPU-delta checkpoint representation"):
-        gpu_delta_publication.read_canonical_tensor(reader, "scale", {k: v for k, v in spec.items() if k != "format"})
-    with pytest.raises(ValueError, match="Checkpoint tensor metadata changed: scale"):
-        gpu_delta_publication.read_canonical_tensor(
-            reader, "scale", {k: v for k, v in spec.items() if k != "checkpoint_dtype"}
-        )
-
-
-@pytest.mark.parametrize("value", [0.0, -1.0, 1.5, float("nan"), float("inf"), 2.0**-128])
-def test_ue8m0_canonical_baseline_rejects_rounding_or_invalid_values(tmp_path, value):
-    safetensors.numpy.save_file({"scale": np.array([value], dtype=np.float32)}, tmp_path / "model.safetensors")
-    reader = gpu_delta_publication.make_checkpoint_reader(str(tmp_path))
-    spec = {"dtype": "U8", "shape": [1], "format": "fp8-block128-ue8m0", "checkpoint_dtype": "F32"}
-    with pytest.raises(ValueError, match="not exact positive finite UE8M0"):
-        gpu_delta_publication.read_canonical_tensor(reader, "scale", spec)
-
-
 @pytest.mark.parametrize("duplicate_owner", [False, True])
 def test_pipeline_stage_inventory_requires_unique_owners_before_baseline_declaration(
     tmp_path, single_rank, monkeypatch, duplicate_owner
@@ -268,10 +244,10 @@ def test_initial_delta_publishes_loaded_trainer_then_switches_to_cached_update_c
     else:
         monkeypatch.setenv("GPU_DELTA_CODEC", codec)
         monkeypatch.setenv("GPU_DELTA_INITIAL_SYNC_CODEC", initial_codec)
-    protocol, events = _setup(tmp_path, frame_bytes=frame_bytes)
+    protocol = _ready_protocol(tmp_path, monkeypatch, connect=False, frame_bytes=frame_bytes)
+    events = protocol.rollout_engines[0].events
     monkeypatch.setenv("GPU_DELTA_CODEC", "invalid-after-construction")
     monkeypatch.setenv("GPU_DELTA_INITIAL_SYNC_CODEC", "invalid-after-construction")
-    protocol._staging_stream = Mock()
     protocol._next_snapshot = {"w": torch.empty(4, dtype=torch.uint8)}
     encoders = {}
 
@@ -283,18 +259,10 @@ def test_initial_delta_publishes_loaded_trainer_then_switches_to_cached_update_c
 
     encoder_type = Mock(side_effect=make_encoder)
     monkeypatch.setattr(gpu_delta_encoder, "GpuBatchEncoder", encoder_type)
-    monkeypatch.setattr(gpu_delta, "get_data_replica_rank_and_size", lambda *args: (0, 1))
-    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
-    monkeypatch.setattr(torch.cuda, "current_stream", lambda: Mock())
-    monkeypatch.setattr(torch.cuda, "stream", lambda _: nullcontext())
-    monkeypatch.setattr(torch.cuda, "Event", Mock)
-    monkeypatch.setattr(torch.Tensor, "record_stream", lambda *args: None)
-    monkeypatch.setattr(gpu_delta.dist, "get_world_size", lambda: 1)
-    monkeypatch.setattr(gpu_delta.dist, "gather_object", lambda shard, shards, **kwargs: shards.__setitem__(0, shard))
     read_baseline = Mock(wraps=gpu_delta_publication.make_checkpoint_reader(str(tmp_path)))
     monkeypatch.setattr(gpu_delta_publication, "make_checkpoint_reader", lambda _: read_baseline)
 
-    protocol.connect(protocol.rollout_engines, None, [0, 1], ["cell-0", "cell-1"], None, None, None)
+    protocol.connect(protocol.rollout_engines, None, [0, 1], ["cell-0", "cell-1"], _PARALLEL_STATE, None, None)
     assert set(protocol.cell_updaters_of_cell_id) == {"cell-0", "cell-1"}
     assert all(not updater.is_errored for updater in protocol.cell_updaters_of_cell_id.values())
     assert set(encoders) == {initial_codec}
@@ -334,7 +302,7 @@ def test_initial_delta_publishes_loaded_trainer_then_switches_to_cached_update_c
         previous = current
     assert encoder_type.call_count == len({initial_codec, codec})
     assert set(encoders) == {initial_codec, codec}
-    read_baseline.assert_called_once_with("w", expected_dtype="U8", expected_shape=(4,))
+    read_baseline.assert_called_once_with("w", expected_dtype="U8", expected_shape=[4])
 
 
 def _encoded_batch(tensors):
@@ -504,9 +472,9 @@ def test_raw_cpu_write_bypasses_gpu_batches_and_overlaps_compression(monkeypatch
         assert raw_started.wait(2), "Raw work did not overlap GPU batches"
         return encode(tensors)
 
-    def raw(name, mask, **kwargs):
+    def raw(name, mask, spec):
         assert "drain" in events
-        assert name == "scale" and kwargs["shape"] == []
+        assert name == "scale" and spec["shape"] == []
         np.testing.assert_array_equal(mask, 1)
         raw_started.set()
         assert encoding_started.wait(2), "Raw work serialized the first GPU batch"
@@ -626,8 +594,10 @@ def test_gpu_baseline_swaps_only_after_successful_receiver_activation(monkeypatc
         assert not protocol._uncommitted
 
 
-def _ready_protocol(tmp_path, monkeypatch, receiver_version=0, connect=True):
-    protocol, _ = _setup(tmp_path)
+def _ready_protocol(
+    tmp_path, monkeypatch, receiver_version=0, connect=True, frame_bytes=gpu_delta_publication.FRAME_BYTES
+):
+    protocol, _ = _setup(tmp_path, frame_bytes=frame_bytes)
     monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
     monkeypatch.setattr(torch.cuda, "current_stream", Mock)
     monkeypatch.setattr(torch.cuda, "Stream", Mock)
@@ -649,7 +619,7 @@ def _ready_protocol(tmp_path, monkeypatch, receiver_version=0, connect=True):
         return protocol
     for client in protocol.rollout_engines:
         client.delta_version = receiver_version
-    protocol.connect(protocol.rollout_engines, [1, 1], [0, 1], ["cell-0", "cell-1"], None, None, None)
+    protocol.connect(protocol.rollout_engines, [1, 1], [0, 1], ["cell-0", "cell-1"], _PARALLEL_STATE, None, None)
     protocol._error, protocol._seen = None, set()
     protocol._capture_baseline(_buckets)
     return protocol
@@ -673,7 +643,7 @@ def test_failed_receiver_description_keeps_healthy_cohort_and_failed_cell(tmp_pa
     monkeypatch.setattr(gpu_delta, "get_data_replica_rank_and_size", lambda *a: (0, 1))
     committed = failure.startswith("committed")
     if committed:
-        protocol.connect(protocol.rollout_engines, [1, 1], [0, 1], ["cell-0", "cell-1"], None, None, None)
+        protocol.connect(protocol.rollout_engines, [1, 1], [0, 1], ["cell-0", "cell-1"], _PARALLEL_STATE, None, None)
         protocol._committed_incarnations = protocol._incarnations()
         protocol._publication_version = 3
         for client in protocol.rollout_engines:
@@ -695,7 +665,7 @@ def test_failed_receiver_description_keeps_healthy_cohort_and_failed_cell(tmp_pa
 
     monkeypatch.setattr(_Engine, "get_gpu_delta_info", describe_once)
     original_clients = list(protocol.rollout_engines)
-    protocol.connect(original_clients, [1, 1], [0, 1], ["cell-0", "cell-1"], None, None, None)
+    protocol.connect(original_clients, [1, 1], [0, 1], ["cell-0", "cell-1"], _PARALLEL_STATE, None, None)
     assert sorted(calls) == ["engine-00000", "engine-00001"]
     assert protocol.rollout_engines == original_clients[:1]
     assert protocol._engine_cell_ids == ("cell-0",)
@@ -752,7 +722,7 @@ def test_failed_receiver_keeps_healthy_progress_then_new_incarnation_recovers(tm
 
     protocol.rollout_engines[1].index = "replacement"
     protocol.rollout_engines[0].delta_version = 1
-    protocol.connect(protocol.rollout_engines, [1, 1], [0, 1], ["cell-0", "cell-1"], None, None, None)
+    protocol.connect(protocol.rollout_engines, [1, 1], [0, 1], ["cell-0", "cell-1"], _PARALLEL_STATE, None, None)
     for version, values in ((2, [9, 10, 11, 12]), (3, [13, 14, 15, 16])):
         assert protocol.begin_sync(version, _buckets, rollout_id=version - 1)
         protocol.send_bucket([("w", torch.tensor(values, dtype=torch.uint8))])
@@ -812,6 +782,13 @@ def test_checkpoint_target_reuse_and_healthy_updates_skip_recovery_encoding(tmp_
     assert cached.raw["w"] == bytes([4, 4, 4, 12])
     assert protocol._recovery_payload is cached
     assert protocol.update_weight_metrics["perf/gpu_delta/recovery_owner_encode_s"] == 0
+    # Completion logging receives this update's rollout and the connect-time metrics rank.
+    completed = dict(protocol.update_weight_metrics)
+    log = Mock()
+    monkeypatch.setattr(gpu_delta.gpu_delta_metrics, "log_completed_update", log)
+    protocol.after_engines_resumed()
+    log.assert_called_once_with(protocol.args, ANY, rollout_id=1, is_primary_rank=True)
+    assert log.call_args.args[1].items() > completed.items() and protocol.update_weight_metrics == {}
     # The earlier checkpoint remains intact; no recovery publication is needed.
     assert not (protocol._stream_dir / "recovery_v000002").exists()
     # Eval after commit uses the already captured current target, even though
@@ -826,6 +803,18 @@ def test_checkpoint_target_reuse_and_healthy_updates_skip_recovery_encoding(tmp_
     assert protocol._snapshot is current and protocol._next_snapshot is reusable
     assert protocol._publication_version == 2 and protocol._target_step is None
     assert protocol._committed_incarnations == incarnations and not protocol._uncommitted
+
+
+@pytest.mark.parametrize("metrics_rank", [True, False])
+def test_completed_update_logs_only_on_connected_metrics_rank(tmp_path, single_rank, monkeypatch, metrics_rank):
+    protocol = _ready_protocol(tmp_path, monkeypatch, connect=False)
+    parallel_state = SimpleNamespace(is_metrics_rank=metrics_rank)
+    protocol.connect(protocol.rollout_engines, [1, 1], [0, 1], ["cell-0", "cell-1"], parallel_state, None, None)
+    protocol._started, protocol._rollout_id, protocol.update_weight_metrics = 0.0, 3, {}
+    log = Mock()
+    monkeypatch.setattr(gpu_delta.gpu_delta_metrics, "log_completed_update", log)
+    protocol.after_engines_resumed()
+    assert log.call_args.kwargs == {"rollout_id": 3, "is_primary_rank": metrics_rank}
 
 
 def test_eval_snapshot_needs_no_receivers_and_shares_checkpoint_payload(tmp_path, single_rank, monkeypatch):
@@ -967,7 +956,7 @@ def test_restarted_engine_uses_negotiated_update_and_retains_cache(
     # Existing Miles FT replaced one engine between ordinary weight updates.
     protocol.rollout_engines[1].index = 2
     protocol.rollout_engines[0].delta_version = 1
-    protocol.connect(protocol.rollout_engines, [1, 1], [0, 1], ["cell-0", "cell-1"], None, None, None)
+    protocol.connect(protocol.rollout_engines, [1, 1], [0, 1], ["cell-0", "cell-1"], _PARALLEL_STATE, None, None)
     assert protocol.begin_sync(model_version, _buckets, rollout_id=rollout_id)
     assert protocol.requires_export
     expected = bytes([5, 6, 7, 8] if reuse_payload else [9, 10, 11, 12])
@@ -1036,10 +1025,8 @@ def _updater(monkeypatch, requires_export):
     protocol.group_name = "test"
     protocol.cell_updaters_of_cell_id = {}
     protocol.finalize.return_value = None
-    protocol.pop_metrics.return_value = {"perf/update_weights_gpu_delta_s": 1.0}
     updater.protocol = protocol
     updater._uses_gpu_delta = True
-    updater.parallel_state = SimpleNamespace(is_metrics_rank=False)
     updater._receiver_pools = updater_module.ReceiverPools()
     updater.is_lora = False
     updater.args = SimpleNamespace(check_lora_weight_equal=False, update_weight_transfer_mode="gpu-delta")
@@ -1070,4 +1057,5 @@ def test_checkpoint_target_reuse_skips_all_weight_export(monkeypatch, requires_e
     protocol.begin_sync.assert_called_once_with(42, updater._iter_base_buckets, 9)
     protocol.finalize.assert_called_once_with(42)
     protocol.after_engines_resumed.assert_called_once_with()
+    protocol.pop_metrics.assert_not_called()  # The protocol logs its completed update.
     assert "weight_version" not in vars(updater)

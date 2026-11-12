@@ -243,6 +243,7 @@
        "advanced/p2p-weight-transfer",
        "advanced/mooncake-rollout-transfer",
        "advanced/disaggregated-rollout",
+       "advanced/gpu-delta-weight-transfer",
        "advanced/disk-offload"
       ]
      },

@@ -1,15 +1,7 @@
-# Copyright 2026 SGLang Team
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-
 """CUDA-only receiver preparation and double-buffer transfer/decode/apply scheduling."""
 
 from __future__ import annotations
 
-import math
 import os
 import time
 from collections.abc import Callable
@@ -19,11 +11,12 @@ from dataclasses import dataclass
 import numpy as np
 import torch
 
-from miles.backends.sglang_utils.gpu_delta.bindings import TensorBinding, _byte_view, prepare_raw_xor
+from miles.backends.sglang_utils.gpu_delta.bindings import TensorBinding, prepare_raw_xor
 from miles.backends.sglang_utils.gpu_delta.derived import prepare_updates
+from miles.backends.sglang_utils.gpu_delta.flashinfer import _byte_view
 from miles.backends.sglang_utils.gpu_delta.layout import GpuDeltaLayout
 from miles.utils.gpu_delta import profiling
-from miles.utils.gpu_delta.publication import DTYPE_BYTES, plan_digest
+from miles.utils.gpu_delta.publication import _CATALOG_FIELDS, plan_digest, tensor_metadata
 
 
 class GpuDeltaBackend:
@@ -40,14 +33,17 @@ class GpuDeltaBackend:
         if self.layers_per_batch < 1:
             raise ValueError("GPU_DELTA_LAYERS_PER_BATCH must be positive")
         inventory = read_canonical_checkpoint_inventory(model_runner)
-        self.layout = GpuDeltaLayout(model_runner.model, inventory)
+        try:
+            self.layout = GpuDeltaLayout(model_runner.model, inventory)
+        except ValueError as error:
+            # A failed describe may reply without an identity; name the rejecting rank.
+            raise ValueError(f"tp_rank={identity['tp_rank']} dp_rank={identity['dp_rank']}: {error}") from error
         self.device = torch.device(model_runner.device, model_runner.gpu_id)
         if self.device.type != "cuda" or self.device.index is None:
             raise ValueError("direct GPU deltas require an explicit CUDA device")
         from miles.utils.gpu_delta.host import HostArena
 
         self.host_arena = HostArena(identity["engine_id"], self.device.index, identity)
-        self.host_arena.register_dtypes(self.layout.dtype_records)
         self.decoders = {}
         self.apply_stream = None
         self.io_stream = None
@@ -89,7 +85,7 @@ class _BindingTable:
         self.bindings = tuple(layout.bindings)
         self.ordinals = np.asarray([entries[b.name][0] for b in self.bindings], dtype=np.int64)
         self.nbytes = np.asarray([entries[b.name][1]["nbytes"] for b in self.bindings], dtype=np.int64)
-        self.raw = np.asarray([b.encoding == "xor_raw_bytes" for b in self.bindings], dtype=bool)
+        self.raw = np.asarray([b.is_raw for b in self.bindings], dtype=bool)
         non_layers = {"embed_tokens": [], "lm_head": [], "standalone": []}
         layers, storage_rows = {}, {}
         for row, binding in enumerate(self.bindings):
@@ -129,9 +125,6 @@ def _plan_layers(backend, table, rows):
     """Cache membership, canonical offsets and apply geometry, never wire frames."""
     key = rows.tobytes()
     if backend.batch_plan is None or backend.batch_plan[0] != key:
-        if not len(rows):
-            backend.batch_plan = (key, [])
-            return []
         from miles.utils.gpu_delta.apply import plan_apply
 
         active = np.zeros(len(table.bindings), dtype=bool)
@@ -214,25 +207,11 @@ def _qualify_canonical_plan(backend, publication):
             "loader ignores computed rotary frequencies",
         }:
             raise ValueError(f"delta publication has an unadmitted tensor: {name}")
-        canonical = backend.layout.inventory[name]
-        definition = {
-            "name": name,
-            "dtype": canonical["dtype"],
-            "shape": canonical["shape"],
-            "encoding": canonical.get("encoding", "xor_raw_bytes" if len(canonical["shape"]) <= 1 else "xor_bytes"),
-        }
-        for key in ("format", "checkpoint_dtype"):
-            if key in canonical:
-                definition[key] = canonical[key]
-        if any(entry.get(key) != value for key, value in definition.items()) or any(
-            key in entry and key not in definition for key in ("format", "checkpoint_dtype")
-        ):
+        spec = {"name": name, **backend.layout.inventory[name]}
+        expected = tensor_metadata(**spec)
+        if entry != {key: value for key, value in expected.items() if key in _CATALOG_FIELDS}:
             raise ValueError(f"canonical tensor metadata mismatch: {name}")
-        if entry["byte_order"] != "little" or entry["nbytes"] != (
-            math.prod(canonical["shape"]) * DTYPE_BYTES[canonical["dtype"]]
-        ):
-            raise ValueError(f"unsupported canonical tensor size/encoding: {name}")
-        definitions.append(definition)
+        definitions.append(spec)
     missing = {binding.name for binding in backend.layout.bindings} - entries.keys()
     if missing:
         raise ValueError(f"publication is missing local tensors: {sorted(missing)}")
@@ -263,7 +242,6 @@ class PreparedDelta:
         self.timings = {}
         self.status_checks = []
         self.apply_bindings, self.apply_source_patches = [], []
-        self.apply_fallback_groups = set()
         self.apply_host_view = None
         self.backend, self.device = backend, backend.device
 
@@ -283,7 +261,7 @@ class PreparedDelta:
         if inner_codec not in backend.decoders:
             backend.decoders[inner_codec] = NvcompDecoder(self.device, inner_codec)
         self.decoder = backend.decoders[inner_codec]
-        self.hardware = self.decoder.backend == "hardware"
+        self.hardware = self.decoder.hardware
         self.target_version = publication.header["target_version"]
         plan_started = time.perf_counter()
         table, reused_plan = _qualify_canonical_plan(backend, publication)
@@ -372,13 +350,8 @@ class PreparedDelta:
                 ],
                 backend.layout.derived_targets,
             )
-            raw_copies = {}
-            for target, _, source in raw_updates:
-                if source is not None:
-                    targets, sources = raw_copies.setdefault(target.dtype, ([], []))
-                    targets.append(target)
-                    sources.append(source)
-            self.derived.extend(prepare_updates(backend.layout.derived_updates, raw_copies))
+            raw_values = {id(target): source for target, _, source in raw_updates if source is not None}
+            self.derived.extend(prepare_updates(backend.layout.derived_updates, raw_values))
             gpu_derived = []
             for image in self.derived:
                 destination = (
@@ -520,16 +493,8 @@ class PreparedDelta:
                 self.cpu_storages.update(group.cpu_storages)
                 self.cpu_target_groups.append((group, self.apply_host_view[position:start]))
             self.apply_host_view[start:stop] = group.metadata_rows
-            pointers = self.apply_metadata[position:start]
-            metadata = self.apply_metadata[start:stop]
             self.apply_bindings.append(
-                (
-                    start,
-                    stop,
-                    pointers,
-                    metadata,
-                    group.bind_launch(pointers, metadata, self.error),
-                )
+                group.bind_launch(self.apply_metadata[position:start], self.apply_metadata[start:stop], self.error)
             )
             slot = index % 2
             indices[slot].extend(position + i for i in group.source_indices)
@@ -544,30 +509,18 @@ class PreparedDelta:
 
     @profiling.annotate("gpu_delta.pause.bind_apply_metadata")
     def _bind_apply_metadata(self):
-        """Patch only actual source bases; misalignment retains the generic path."""
-        groups, calls = [], []
+        """Validate decoded slots, then patch only actual source bases."""
+        groups = []
         for index, (_, _, group) in enumerate(self.static_plans):
-            if group is None:
-                calls.append(None)
-                continue
-            start, stop, pointers, metadata, prepared_call = self.apply_bindings[index]
-            aligned = group.bind(self.decoded[index % 2])
-            if not aligned or index in self.apply_fallback_groups:
-                self.apply_host_view[start:stop] = group.metadata_rows
-            if aligned:
-                self.apply_fallback_groups.discard(index)
-                call = prepared_call
-            else:
-                self.apply_fallback_groups.add(index)
-                call = group.bind_launch(pointers, metadata, self.error)
-            groups.append(group)
-            calls.append(call)
+            if group is not None:
+                group.bind(self.decoded[index % 2])
+                groups.append(group)
         for slot, (indices, offsets) in enumerate(self.apply_source_patches):
             if indices.size:
                 # Each group's constant-time bound check above proves no int64
                 # overflow before this vectorized patch. Targets are untouched.
                 self.apply_host_view[indices] = offsets + self.decoded[slot].data_ptr()
-        return groups, calls
+        return groups, self.apply_bindings
 
     @profiling.annotate("gpu_delta.pause.cpu_mirrors")
     def _bind_cpu_mirrors(self):
@@ -604,15 +557,10 @@ class PreparedDelta:
     @profiling.annotate("gpu_delta.pause.allocate_bind")
     def _allocate_paused(self):
         """Allocate reusable decoded outputs, then bind their pointers."""
-        from miles.utils.gpu_delta.memory import device_empty
-
         started = time.perf_counter()
-        allocate = device_empty if self.hardware else torch.empty
         with torch.cuda.stream(self.stream):
             self.decoded = (
-                [allocate(self.max_decoded, dtype=torch.uint8, device=self.device) for _ in range(2)]
-                if self.static_plans
-                else []
+                [self.decoder._empty(self.max_decoded, torch.uint8) for _ in range(2)] if self.static_plans else []
             )
             decoders = self.decode_plan.bind_outputs(self.decoded) if self.decode_plan else []
             apply_groups, apply_calls = self._bind_apply_metadata()
@@ -761,10 +709,7 @@ class PreparedDelta:
             self.stream.wait_event(self.decoded_ready[slot])
             if index + 1 < len(self.batches):
                 self._copy_batch(self.batches[index + 1], index + 1)
-            with self._phase("decode"):
-                if batch.zero_ranges:
-                    torch._foreach_zero_(batch.zero_ranges)
-                batch.decoder.enqueue()
+            self._enqueue_decode(batch)
             self.decoded_free[slot].record(self.stream)
             self._apply_batch(batch)
 
@@ -774,11 +719,15 @@ class PreparedDelta:
             slot = index % 2
             if index >= 2:
                 stream.wait_event(self.decoded_free[slot])
-            with self._phase("decode"):
-                if batch.zero_ranges:
-                    torch._foreach_zero_(batch.zero_ranges)
-                batch.decoder.enqueue()
+            self._enqueue_decode(batch)
             self.decoded_ready[slot].record(stream)
+
+    def _enqueue_decode(self, batch):
+        # Zero unwritten gaps, then decode, both on the caller's current stream.
+        with self._phase("decode"):
+            if batch.zero_ranges:
+                torch._foreach_zero_(batch.zero_ranges)
+            batch.decoder.enqueue()
 
     def _apply_batch(self, batch):
         # Sticky status and every consumer of it are ordered on the apply
@@ -801,7 +750,6 @@ class PreparedDelta:
         self.derived = []
         self.apply_bindings.clear()
         self.apply_source_patches.clear()
-        self.apply_fallback_groups.clear()
         self.apply_host_view = None
         self.apply_metadata = self.apply_host_metadata = None
         self.decoded = self.raw_device = self.error = self.workspace = self.decode_plan = None

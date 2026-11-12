@@ -46,6 +46,47 @@ def _load_library():
     return library, distribution.version
 
 
+class _NvcompApi:
+    """One codec and direction of the nvCOMP 6 batched C API.
+
+    Subclasses load the library and set ``_prefix``, ``_label`` and ``_options``
+    before ``_bind_queries`` binds the shared workspace and alignment queries.
+    """
+
+    def _bind(self, suffix, arguments):
+        function = getattr(
+            self._library, self._prefix + suffix
+        )  # config-access-exempt: nvCOMP C symbol is selected by codec and operation
+        function.argtypes, function.restype = arguments, ctypes.c_int
+        return function
+
+    def _check(self, status):
+        if status:
+            raise RuntimeError(f"nvCOMP {self._label} failed: status={status}")
+
+    def _bind_queries(self):
+        options, pointer, size = type(self._options), ctypes.c_void_p, ctypes.c_size_t
+        self._temporary = self._bind("GetTempSize", [size, size, options, ctypes.POINTER(size), size, pointer])
+        align = self._bind("GetRequiredAlignments", [options, ctypes.POINTER(_Alignments)])
+        self.alignments = _Alignments()
+        self._check(align(self._options, ctypes.byref(self.alignments)))
+        self._temporary_sizes = {}
+
+    def temporary_bytes(self, geometry: tuple[int, int, int], cuda_stream: int) -> int:
+        """Workspace bytes for (frame count, maximum frame, total bytes) on one stream."""
+        count, maximum, total = geometry
+        if not count:
+            return 0
+        key = count, maximum, total, cuda_stream
+        if key not in self._temporary_sizes:
+            size = ctypes.c_size_t()
+            # The query enqueues no work. Cache its result for the batch geometry
+            # and stream on this instance's fixed device/options.
+            self._check(self._temporary(count, maximum, self._options, ctypes.byref(size), total, cuda_stream))
+            self._temporary_sizes[key] = size.value
+        return self._temporary_sizes[key]
+
+
 @dataclass(frozen=True)
 class CompressionBatch:
     """Retain until sizes/statuses and payload transfers finish on the caller stream."""
@@ -56,7 +97,7 @@ class CompressionBatch:
     keepalive: tuple
 
 
-class NvcompCompressor:
+class NvcompCompressor(_NvcompApi):
     """One device/codec, with caller-owned memory and no host synchronization.
 
     Inputs are already framed contiguous uint8 CUDA views. The caller performs
@@ -71,12 +112,13 @@ class NvcompCompressor:
         if self.device.type != "cuda" or self.device.index is None:
             raise ValueError("GPU delta compressor requires an explicit CUDA device")
         self._library, self.version = _load_library()
-        self._symbol, options = {
+        symbol, options = {
             "snappy": ("Snappy", _Options),
             "lz4": ("LZ4", _LZ4Options),
             "zstd": ("Zstd", _Options),
             "bitcomp": ("Bitcomp", _BitcompOptions),
         }[codec]
+        self._prefix, self._label = f"nvcompBatched{symbol}Compress", f"{codec} compression"
         pointer, size = ctypes.c_void_p, ctypes.c_size_t
         self._options = options()
         if codec == "bitcomp":
@@ -84,37 +126,17 @@ class NvcompCompressor:
             self._options.algorithm = 1
             self._options.data_type = 1  # NVCOMP_TYPE_UCHAR
             self._options.mode = 0  # BITCOMP_LOSSLESS; delta remains zero.
+        elif codec in ("snappy", "lz4", "zstd"):
+            # Keep zeroed options: Snappy/Zstd fields are all reserved; LZ4 zeros select CHAR without bitshuffle.
+            pass
+        else:
+            raise ValueError(f"unsupported GPU delta compression codec: {codec}")
         self._bound = self._bind("GetMaxOutputChunkSize", [size, options, ctypes.POINTER(size)])
-        self._temporary = self._bind("GetTempSize", [size, size, options, ctypes.POINTER(size), size, pointer])
-        align = self._bind("GetRequiredAlignments", [options, ctypes.POINTER(_Alignments)])
         self._compress = self._bind(
             "Async", [pointer, pointer, size, size, pointer, size, pointer, pointer, options, pointer, pointer]
         )
-        self._alignments = _Alignments()
-        self._check(align(self._options, ctypes.byref(self._alignments)))
-        self._size_cache, self._bound_cache = {}, {}
-
-    def _bind(self, suffix, arguments):
-        function = getattr(
-            self._library, "nvcompBatched" + self._symbol + "Compress" + suffix
-        )  # config-access-exempt: nvCOMP C symbol is selected by codec and operation
-        function.argtypes, function.restype = arguments, ctypes.c_int
-        return function
-
-    def _check(self, status):
-        if status:
-            raise RuntimeError(f"nvCOMP {self.codec} compression failed: status={status}")
-
-    def _temporary_bytes(self, count, maximum, total, stream):
-        stream_handle = stream.cuda_stream
-        key = count, maximum, total, stream_handle
-        if key not in self._size_cache:
-            temporary = ctypes.c_size_t()
-            # The query enqueues no work. Cache its result for the batch geometry
-            # and stream on this compressor's fixed device/options.
-            self._check(self._temporary(count, maximum, self._options, ctypes.byref(temporary), total, stream_handle))
-            self._size_cache[key] = temporary.value
-        return self._size_cache[key]
+        self._bind_queries()
+        self._bound_cache = {}
 
     def _output_bound(self, length):
         if length not in self._bound_cache:
@@ -134,7 +156,7 @@ class NvcompCompressor:
                 or frame.dtype != torch.uint8
                 or not frame.is_contiguous()
                 or not 0 < frame.numel() <= 1 << 24
-                or frame.data_ptr() % self._alignments.input
+                or frame.data_ptr() % self.alignments.input
             ):
                 raise ValueError("nvCOMP frames must be aligned contiguous CUDA uint8, with 1..16 MiB bytes")
         with torch.cuda.device(self.device), torch.cuda.stream(stream):
@@ -144,7 +166,7 @@ class NvcompCompressor:
         offsets, total = [], 0
         for length in lengths:
             size = self._output_bound(length)
-            total = (total + self._alignments.output - 1) // self._alignments.output * self._alignments.output
+            total = (total + self.alignments.output - 1) // self.alignments.output * self.alignments.output
             offsets.append((total, size))
             total += size
         arena = torch.empty(total, dtype=torch.uint8, device=self.device)
@@ -158,7 +180,7 @@ class NvcompCompressor:
             return CompressionBatch([], sizes, statuses, ())
         lengths = [frame.numel() for frame in frames]
         maximum = max(lengths)
-        temporary_bytes = self._temporary_bytes(count, maximum, sum(lengths), stream)
+        temporary_bytes = self.temporary_bytes((count, maximum, sum(lengths)), stream.cuda_stream)
         # One output allocation avoids per-frame allocator traffic. Rounded
         # strides preserve the independently queried nvCOMP output alignment.
         if compact_outputs:
@@ -166,12 +188,12 @@ class NvcompCompressor:
             # maximum bound for every tiny tensor can waste model-sized HBM.
             output, outputs = self._compact_outputs(lengths)
         else:
-            alignment = self._alignments.output
+            alignment = self.alignments.output
             stride = (self._output_bound(maximum) + alignment - 1) // alignment * alignment
             output = torch.empty((count, stride), dtype=torch.uint8, device=self.device)
             outputs = list(output.unbind())
         temporary = torch.empty(temporary_bytes, dtype=torch.uint8, device=self.device)
-        if output.data_ptr() % self._alignments.output or temporary.data_ptr() % self._alignments.temp:
+        if output.data_ptr() % self.alignments.output or temporary.data_ptr() % self.alignments.temp:
             raise RuntimeError("CUDA allocator does not satisfy nvCOMP compression alignment")
         parameters = torch.empty((3, count), dtype=torch.int64, device="cpu", pin_memory=True)
         parameters.numpy()[:] = [[frame.data_ptr() for frame in frames], lengths, [out.data_ptr() for out in outputs]]

@@ -107,11 +107,7 @@ def test_batched_plans_share_metadata_and_reuse_tensor_scratch(codec, sort_chunk
     assert plans[0].statuses.data_ptr() == plans[2].statuses.data_ptr()
     assert plans[0].actual_sizes.data_ptr() == plans[2].actual_sizes.data_ptr()
     assert all(plan.host_input is host for plan in plans)
-    for batch in plans:
-        assert batch.stream is de_stream
-        assert batch._arguments[-1] == batch.stream.cuda_stream
-        temporary = workspace.temporary
-        assert batch._arguments[5:7] == (temporary.data_ptr(), temporary.numel())
+    assert all(batch.stream is de_stream for batch in plans)
     prepared = PreparedDelta.__new__(PreparedDelta)
     prepared.device = device
     prepared.stream, prepared.io_stream = stream, de_stream
@@ -191,6 +187,10 @@ def test_batched_plans_share_metadata_and_reuse_tensor_scratch(codec, sort_chunk
     prepared._apply_batch = observe
     prepared.timings, prepared.events = {}, {}
     prepared.raw_apply = prepared.raw_apply_inputs = prepared.raw_apply_group = None
+    prepared.raw_pointer_host = None
+    # No CPU-resident destinations: apply skips paused mirrors and the CPU commit.
+    prepared.cpu_storages, prepared.cpu_mirrors = {}, {}
+    prepared.cpu_target_groups, prepared.cpu_derived = [], []
     prepared.derived = []
     prepared.batches = list(prepared_batches)
     prepared.status_checks, prepared.apply_bindings, prepared.apply_source_patches = (
@@ -198,7 +198,6 @@ def test_batched_plans_share_metadata_and_reuse_tensor_scratch(codec, sort_chunk
         [],
         [],
     )
-    prepared.apply_fallback_groups = set()
     prepared.decoded, prepared.workspace, prepared.decode_plan = (
         decoded,
         workspace,
@@ -269,7 +268,6 @@ def test_batched_plans_share_metadata_and_reuse_tensor_scratch(codec, sort_chunk
     prepared.batches = prepared_batches
     prepared.status_checks = []
     prepared.apply_bindings, prepared.apply_source_patches = [], []
-    prepared.apply_fallback_groups = set()
     prepared.raw_apply = prepared.raw_apply_inputs = prepared.raw_apply_group = None
     prepared.decoded = decoded
     prepared.workspace = workspace
@@ -323,41 +321,39 @@ def test_cuda_decode_overlaps_h2d_and_reuses_double_buffer(algorithm, monkeypatc
     table, counts = _frame_table(batches)
     plan = decoder.prepare_batches(table, counts, host, compute)
     assert not plan.input_slots  # No compressed device arena before the pause.
-    with torch.cuda.stream(compute):
-        outputs = [torch.empty(max(map(len, references)), dtype=torch.uint8, device=device) for _ in range(2)]
-        plans = plan.bind_outputs(outputs)
-        error = torch.zeros(1, dtype=torch.int32, device=device)
-        checks = [prepare_status_check(batch, error) for batch in plans]
-        initialized = torch.cuda.Event()
-        initialized.record(compute)
-    h2d.wait_event(initialized)
-    ready, free = [[torch.cuda.Event() for _ in range(2)] for _ in range(2)]
+    prepared = PreparedDelta.__new__(PreparedDelta)
+    prepared.stream, prepared.io_stream = compute, h2d
+    prepared.decoded_ready = [torch.cuda.Event() for _ in range(2)]
+    prepared.decoded_free = [torch.cuda.Event() for _ in range(2)]
     snapshots = []
-    plans[0].copy_input(h2d)
-    ready[0].record(h2d)
-    for index, batch in enumerate(plans):
-        slot = index % 2
-        compute.wait_event(ready[slot])
-        if index + 1 < len(plans):
-            next_slot = (index + 1) % 2
-            if index >= 1:
-                h2d.wait_event(free[next_slot])
-            plans[index + 1].copy_input(h2d)
-            ready[next_slot].record(h2d)
-        with torch.cuda.stream(compute):
-            outputs[slot].fill_(0xA5)
-            batch.enqueue()
-            free[slot].record(compute)
-            checks[index]()
-            if batches[index]:
-                snapshots.append(outputs[slot][: len(references[index])].clone())
+
+    def snapshot():
+        # Apply follows its decode on the compute stream. Poison the slot again,
+        # so the next decode into it must write every frame byte.
+        index = len(snapshots)
+        slot = outputs[index % 2]
+        snapshots.append(slot[: len(references[index])].clone())
+        slot.fill_(0xA5)
+
+    with torch.cuda.stream(compute):
+        outputs = [torch.full((max(map(len, references)),), 0xA5, dtype=torch.uint8, device=device) for _ in range(2)]
+        error = torch.zeros(1, dtype=torch.int32, device=device)
+        prepared.batches = [
+            _PreparedBatch(
+                decoder=batch, apply=snapshot, zero_ranges=[], check_status=prepare_status_check(batch, error)
+            )
+            for batch in plan.bind_outputs(outputs)
+        ]
+        # Run the production H2D/decode/apply double-buffer schedule.
+        h2d.wait_stream(compute)
+        prepared._copy_batch(prepared.batches[0], 0)
+        prepared._apply_cuda_batches()
     compute.synchronize()
     h2d.synchronize()
     assert error.item() == 0
     assert len(plan.input_slots) == 2
     assert plan.input_capacity_bytes <= 2 * len(payload)
-    for index, actual in enumerate(snapshots):
-        assert actual.cpu().numpy().tobytes() == references[index]
+    assert [actual.cpu().numpy().tobytes() for actual in snapshots] == references
 
 
 if __name__ == "__main__":

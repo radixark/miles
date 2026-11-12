@@ -6,11 +6,18 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import torch
+from sglang.srt.layers.linear import ColumnParallelLinear, RowParallelLinear
 
 from miles.backends.sglang_utils.gpu_delta import bindings as byte_layout
 from miles.backends.sglang_utils.gpu_delta import layout
 from miles.backends.sglang_utils.gpu_delta.flashinfer import FlashInferLayout
-from miles.utils.gpu_delta.host_worker import validate_dtype_records
+
+
+def _linear(cls):
+    # Skip SGLang's constructor: the mapper reads only the partition group and sharding axis.
+    module = cls.__new__(cls)
+    torch.nn.Module.__init__(module)
+    return module
 
 
 def _nvfp4_method():
@@ -123,7 +130,7 @@ class TestFlashInferDeltaLayout(unittest.TestCase):
         shared = layer.mlp.shared_experts = torch.nn.Module()
         shared.gate_up_proj = torch.nn.Module()
         # The mapper follows the ordinary loader's input_dim for row parallel.
-        shared.down_proj = type("RowParallelLinear", (torch.nn.Module,), {})()
+        shared.down_proj = _linear(RowParallelLinear)
         selection = slice(tp_rank * shard, (tp_rank + 1) * shard)
         shared.gate_up_proj.weight = torch.nn.Parameter(
             torch.cat([before["gate"][selection], before["up"][selection]]),
@@ -157,11 +164,7 @@ class TestFlashInferDeltaLayout(unittest.TestCase):
             ("kv_b_proj", (40, hidden), 0),
             ("o_proj", (hidden, 24), 1),
         ):
-            module = type(
-                "RowParallelLinear" if axis == 1 else "ColumnParallelLinear",
-                (torch.nn.Module,),
-                {},
-            )()
+            module = _linear(RowParallelLinear if axis == 1 else ColumnParallelLinear)
             module.tp_group = attn_group
             value = torch.randn(shape).bfloat16()
             attention_before[name] = value
@@ -186,9 +189,8 @@ class TestFlashInferDeltaLayout(unittest.TestCase):
             attn.q_b_proj_qrep_weight = attention_before["q_b_proj"][16:].clone()
             attn.w_kc_qrep = attention_before["kv_b_proj"][20:].reshape(2, 10, hidden)[:, :4].clone()
         plan = layout.GpuDeltaLayout(root, inventory)
-        validate_dtype_records(plan.dtype_records)
         if dcp:
-            # Discovery must pin auxiliary consumers before child admission;
+            # Discovery must pin auxiliary consumers at construction;
             # deferred finishing cannot silently accept a replacement image.
             original_qrep = attn.q_b_proj_qrep_weight
             attn.q_b_proj_qrep_weight = original_qrep.clone()
@@ -319,12 +321,6 @@ class TestFlashInferDeltaLayout(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "parameter identity changed"):
             plan.check_identity()
 
-        # Never discard a different expectation for a repeated object. If a
-        # consumer was captured after geometry changed, admission must fail.
-        plan._consumers.append(byte_layout.ConsumerSnapshot(lambda: (root.weight,)))
-        with self.assertRaisesRegex(RuntimeError, "changed during admission"):
-            plan._prepare_identity_checks()
-
     def test_w4a16_calibration_is_static_but_weight_scales_remain_mutable(self):
         prefix = "model.layers.0.mlp.experts"
         layer = SimpleNamespace(
@@ -339,10 +335,8 @@ class TestFlashInferDeltaLayout(unittest.TestCase):
             w2_weight_scale_2=torch.ones(2),
         )
         plan = byte_layout.ParameterBindings.__new__(byte_layout.ParameterBindings)
-        plan.modules, plan.moe_layers, plan.excluded = {prefix: layer}, {}, {}
-        plan.moe_layouts = {}
-        plan.moe_layers[prefix] = layer
-        plan.moe_layouts[prefix] = FlashInferLayout("nvfp4", "cutedsl", True, "w4a16")
+        plan.modules, plan.excluded = {prefix: layer}, {}
+        plan.moe_layers = {prefix: (layer, FlashInferLayout("nvfp4", "cutedsl", True, "w4a16"))}
         meta = {"dtype": "F32", "shape": []}
         for projection in ("gate", "up", "down"):
             for expert in (0, 3):
@@ -404,11 +398,11 @@ class TestFlashInferDeltaLayout(unittest.TestCase):
         }
         before = {name: (_bytes(value).clone(), value.data_ptr()) for name, value in parameters.items()}
 
-        plan = layout.GpuDeltaLayout(root, inventory)
         with self.assertRaises(ValueError) as caught:
-            validate_dtype_records(plan.dtype_records)
+            layout.GpuDeltaLayout(root, inventory)
 
         message = str(caught.exception)
+        self.assertIn(f"Found {len(mismatches)} mismatched tensors", message)
         for name, (checkpoint_dtype, served_dtype) in mismatches.items():
             rows = [row for row in message.splitlines() if name in row]
             self.assertEqual(len(rows), 1, message)
@@ -515,7 +509,6 @@ class TestFlashInferDeltaLayout(unittest.TestCase):
             ) as require_topology,
         ):
             plan = layout.GpuDeltaLayout(root, inventory)
-            validate_dtype_records(plan.dtype_records)
             plan.finish()
         require_topology.assert_called_once_with(moe)
         self.assertEqual(len(plan.excluded), 2)
@@ -610,7 +603,6 @@ class TestFlashInferDeltaLayout(unittest.TestCase):
             )
             plan = byte_layout.ParameterBindings.__new__(byte_layout.ParameterBindings)
             plan.modules, plan.moe_layers, plan.excluded = {prefix: layer}, {}, {}
-            plan.moe_layouts = {}
             with (
                 self.subTest(override=override),
                 self.assertRaises(ValueError),

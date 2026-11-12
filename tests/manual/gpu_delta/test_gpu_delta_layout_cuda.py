@@ -281,6 +281,7 @@ def test_expert_delta_matches_full_loader_layout_and_scale_refresh(monkeypatch, 
     images = {name: parameter for name, parameter in live.named_parameters(remove_duplicate=False)}
     images.update({f"wrapper.{i}": tensor for i, tensor in enumerate(live._cutedsl_scales)})
     pointers = {name: tensor.data_ptr() for name, tensor in images.items()}
+    layout = FlashInferLayout("nvfp4", "cutedsl", True, "w4a16", up_first=True)
     bindings, masks, raw_items = [], [], []
     for (projection, suffix), before in old.items():
         after = new[projection, suffix]
@@ -299,7 +300,7 @@ def test_expert_delta_matches_full_loader_layout_and_scale_refresh(monkeypatch, 
                 local + 2,
                 projection,
                 suffix,
-                FlashInferLayout("nvfp4", "cutedsl", True, "w4a16", up_first=True),
+                layout,
             )
             mask = value.reshape(-1).view(torch.uint8) ^ after[local].reshape(-1).view(torch.uint8)
             if binding.encoding == "xor_raw_bytes":
@@ -307,17 +308,14 @@ def test_expert_delta_matches_full_loader_layout_and_scale_refresh(monkeypatch, 
             else:
                 bindings.append(binding)
                 masks.append(mask)
-    update = nvfp4_derived_update(live, "cutedsl")
+    update = nvfp4_derived_update(live, layout)
     targets = [target for binding, _ in raw_items for target in binding.storage]
     raw_updates = prepare_raw_xor(raw_items, {id(target) for target in targets})
-    raw_copies = {}
-    for target, _, predicted in raw_updates:
-        destinations, sources = raw_copies.setdefault(target.dtype, ([], []))
-        destinations.append(target)
-        sources.append(predicted)
     plans = plan_updates([update], targets)
     before = [target.clone() for target in update.destinations]
-    derived = prepare_updates(plans, raw_copies)
+    derived = prepare_updates(
+        plans, {id(target): predicted for target, _, predicted in raw_updates if predicted is not None}
+    )
     for target, original in zip(update.destinations, before, strict=False):
         torch.testing.assert_close(target, original, rtol=0, atol=0)
     device = torch.device("cuda", torch.cuda.current_device())

@@ -60,17 +60,9 @@ async def activate_publication(
     session_id = session_id or uuid.uuid4().hex
     if len(clients) != len(pool.engine_ids) or len(clients) != len(pool.participants):
         raise ValueError("GPU-delta client and pool sizes differ")
-    common = {
-        key: publication[key]
-        for key in ("manifest_path", "manifest_sha256", "stream_id", "base_version", "target_version", "plan_digest")
-    }
-    # Serving reports the actor's model version, while publication/receipt
-    # versions retain their consecutive XOR-stream identity.
-    common.update(session_id=session_id, weight_version=weight_version)
-    common["validate_payload_hash"] = not configured_skip_payload_hash()
     responses = await asyncio.gather(
         *[
-            _activate_engine(client, common, participants, request_timeout)
+            activate_engine(client, publication, participants, session_id, weight_version, request_timeout)
             for client, participants in zip(clients, pool.participants, strict=True)
         ],
         return_exceptions=True,
@@ -99,13 +91,22 @@ async def activate_publication(
     }
 
 
-async def _activate_engine(client, common, participants, timeout):
+async def activate_engine(client, publication, participants, session_id, weight_version, timeout):
+    """Activate one engine; its receipts must prove this session's completed activation."""
+    request = {
+        key: publication[key]
+        for key in ("manifest_path", "manifest_sha256", "stream_id", "base_version", "target_version", "plan_digest")
+    }
+    # Serving reports the actor's model version, while publication/receipt
+    # versions retain their consecutive XOR-stream identity.
+    request.update(session_id=session_id, weight_version=weight_version)
+    request["validate_payload_hash"] = not configured_skip_payload_hash()
     response = await asyncio.wait_for(
-        client.update_weights_from_gpu_delta(**common, participants=participants), timeout
+        client.update_weights_from_gpu_delta(**request, participants=participants), timeout
     )
     if not response["success"]:
         raise RuntimeError(f"GPU-delta RPC failed: {response['message']}")
-    check_resumed(response["participants"], participants, common)
+    check_resumed(response["participants"], participants, request)
     return response
 
 

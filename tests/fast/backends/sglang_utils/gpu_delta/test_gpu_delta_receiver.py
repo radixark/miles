@@ -33,7 +33,6 @@ class TestCanonicalPlanCache(unittest.TestCase):
                 "encoding": "xor_bytes",
                 "byte_order": "little",
                 "nbytes": 8,
-                "frames": [],
             }
             for name in ("local", "foreign")
         ]
@@ -44,13 +43,15 @@ class TestCanonicalPlanCache(unittest.TestCase):
             layers_per_batch=1,
             layout=SimpleNamespace(
                 finish=Mock(),
-                inventory={name: {"dtype": "U8", "shape": [2, 4]} for name in ("local", "foreign")},
+                inventory={
+                    name: {"dtype": "U8", "shape": [2, 4], "encoding": "xor_bytes"} for name in ("local", "foreign")
+                },
                 excluded={"foreign": "expert projection owned by another EP/TP rank"},
                 bindings=[
                     SimpleNamespace(
                         name="local",
                         slices=[[0, 2], [0, 2]],
-                        encoding="xor_bytes",
+                        is_raw=False,
                         raw_ue8m0=False,
                         layer=None,
                         storage_pointers=(),
@@ -69,11 +70,16 @@ class TestCanonicalPlanCache(unittest.TestCase):
         }
 
     def test_warm_plan_reuses_admitted_digest_with_fresh_payloads(self):
-        backend, publication = self.publication()
-        admitted, reused = receiver._qualify_canonical_plan(backend, publication_view(publication))
-        self.assertFalse(reused)
-        np.testing.assert_array_equal(admitted.ordinals, [1])
-        np.testing.assert_array_equal(admitted.nbytes, [8])
+        # One canonical catalog admits every rank-local slice cold, without per-rank views.
+        for slices in ([[0, 2], [2, 4]], [[0, 2], [0, 4]], [[0, 2], [0, 2]]):
+            backend, publication = self.publication()
+            backend.layout.bindings[0].slices = slices
+            admitted, reused = receiver._qualify_canonical_plan(backend, publication_view(publication))
+            self.assertFalse(reused)
+            self.assertEqual(admitted.bindings[0].slices, slices)
+            np.testing.assert_array_equal(admitted.ordinals, [1])
+            np.testing.assert_array_equal(admitted.nbytes, [8])
+            self.assertTrue(all("views" not in entry for entry in publication["tensors"]))
         updated = publication_view(publication)
         with (
             patch.object(receiver, "plan_digest", side_effect=AssertionError("cold only")),
@@ -85,16 +91,6 @@ class TestCanonicalPlanCache(unittest.TestCase):
         self.assertEqual(backend._canonical_plan_digest, publication["plan_digest"])
         with self.assertRaisesRegex(ValueError, "plan changed"):
             receiver._qualify_canonical_plan(backend, publication_view(publication | {"plan_digest": "changed"}))
-
-    def test_one_canonical_publication_binds_different_rank_local_slices(self):
-        for slices in ([[0, 2], [0, 2]], [[0, 2], [2, 4]], [[0, 2], [0, 4]]):
-            backend, publication = self.publication()
-            backend.layout.bindings[0].slices = slices
-            table, reused = receiver._qualify_canonical_plan(backend, publication_view(publication))
-            self.assertFalse(reused)
-            self.assertEqual(table.bindings[0].slices, slices)
-            np.testing.assert_array_equal(table.nbytes, [8])
-            self.assertTrue(all("views" not in entry for entry in publication["tensors"]))
 
     def test_compact_scale_format_matches_the_checkpoint_prior(self):
         backend, publication = self.publication()
@@ -119,23 +115,20 @@ class TestCanonicalPlanCache(unittest.TestCase):
             receiver._qualify_canonical_plan(backend, publication_view(publication))
 
     def test_failed_cold_qualification_does_not_admit_a_cache(self):
-        backend, publication = self.publication()
-        invalid = copy.deepcopy(publication)
-        invalid["plan_digest"] = "invalid"
-        with self.assertRaisesRegex(ValueError, "canonical tensor plan"):
-            receiver._qualify_canonical_plan(backend, publication_view(invalid))
-        self.assertFalse(receiver._qualify_canonical_plan(backend, publication_view(publication))[1])
-        backend, publication = self.publication()
-        invalid = copy.deepcopy(publication)
-        invalid["tensors"].pop(1)
-        with self.assertRaisesRegex(ValueError, "missing local tensors"):
-            receiver._qualify_canonical_plan(backend, publication_view(invalid))
-        self.assertIsNone(backend._canonical_plan_digest)
-        self.assertFalse(receiver._qualify_canonical_plan(backend, publication_view(publication))[1])
-        backend, publication = self.publication()
-        backend.layout.excluded["local"] = "static bundled draft"
-        with self.assertRaisesRegex(ValueError, "unadmitted tensor"):
-            receiver._qualify_canonical_plan(backend, publication_view(publication))
+        for message, mutate in (
+            ("canonical tensor plan", lambda _, catalog: catalog.update(plan_digest="invalid")),
+            ("missing local tensors", lambda _, catalog: catalog["tensors"].pop(1)),
+            ("unadmitted tensor", lambda backend, _: backend.layout.excluded.update(local="static bundled draft")),
+        ):
+            with self.subTest(message):
+                backend, publication = self.publication()
+                invalid = copy.deepcopy(publication)
+                mutate(backend, invalid)
+                with self.assertRaisesRegex(ValueError, message):
+                    receiver._qualify_canonical_plan(backend, publication_view(invalid))
+                self.assertIsNone(backend._canonical_plan_digest)
+                backend.layout.excluded.pop("local", None)
+                self.assertFalse(receiver._qualify_canonical_plan(backend, publication_view(publication))[1])
 
 
 class TestReceiverPreparation(unittest.TestCase):
@@ -250,7 +243,7 @@ class TestReceiverPreparation(unittest.TestCase):
     def test_prepare_uses_shared_publication_and_only_local_ordinals(self):
         backend, catalog = TestCanonicalPlanCache().publication()
         backend.device = torch.device("cpu")
-        backend.decoders = {"lz4": SimpleNamespace(backend="hardware")}
+        backend.decoders = {"lz4": SimpleNamespace(hardware=True)}
         refs = []
 
         class TrackedEntry(dict):
@@ -374,26 +367,19 @@ class TestReceiverPreparation(unittest.TestCase):
         self.assertEqual(derived, [image])
 
     def test_backend_reads_inventory_once_and_drains_all_streams_on_failure(self):
-        fake_plan = SimpleNamespace(
-            check_identity=lambda: None,
-            finish=Mock(),
-            dtype_records={"checks": [], "errors": []},
-            bindings=[],
-            excluded={},
-        )
+        fake_plan = SimpleNamespace(check_identity=lambda: None, finish=Mock(), bindings=[], excluded={})
         fake_model = SimpleNamespace(parameters=lambda: iter([SimpleNamespace(device=torch.device("cpu"))]))
         model_runner = SimpleNamespace(model=fake_model, device="cuda", gpu_id=0)
         with (
             patch.dict(receiver.os.environ, GPU_DELTA_LAYERS_PER_BATCH="3"),
-            patch.object(receiver, "GpuDeltaLayout", return_value=fake_plan),
-            patch("miles.utils.gpu_delta.host.HostArena"),
+            patch.object(receiver, "GpuDeltaLayout", return_value=fake_plan) as layout_type,
+            patch("miles.utils.gpu_delta.host.HostArena") as arena_type,
             patch(
                 "miles.backends.sglang_utils.gpu_delta.checkpoint.read_canonical_checkpoint_inventory",
                 return_value={"weight": {"shape": [1], "dtype": "U8"}},
             ) as read_inventory,
         ):
             backend = receiver.GpuDeltaBackend(model_runner, {"engine_id": "test-engine"})
-            backend.host_arena.register_dtypes.assert_called_once_with(fake_plan.dtype_records)
             self.assertEqual(backend.device, torch.device("cuda", 0))
             self.assertEqual(backend.decoders, {})
             self.assertIsNone(backend.apply_stream)
@@ -404,6 +390,12 @@ class TestReceiverPreparation(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "must be positive"):
                     receiver.GpuDeltaBackend(model_runner, {"engine_id": "invalid"})
             read_inventory.assert_called_once()
+            # Dtype admission rejects at construction, names the rank and creates no host resources.
+            layout_type.side_effect = ValueError("mismatched dtypes")
+            rejected = {"engine_id": "rejected", "tp_rank": 1, "dp_rank": 2}
+            with self.assertRaisesRegex(ValueError, "^tp_rank=1 dp_rank=2: mismatched dtypes$"):
+                receiver.GpuDeltaBackend(model_runner, rejected)
+            arena_type.assert_called_once_with("test-engine", 0, {"engine_id": "test-engine"})
             backend.host_arena.prepare_publication.side_effect = ValueError("bad manifest")
             with patch.object(torch.cuda, "device", return_value=nullcontext()):
                 with self.assertRaisesRegex(ValueError, "bad manifest"):

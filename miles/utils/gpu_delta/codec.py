@@ -21,10 +21,14 @@ import numpy as np
 import torch
 
 from miles.utils.gpu_delta import profiling
-from miles.utils.gpu_delta.nvcomp import _Alignments, _load_library
+from miles.utils.gpu_delta.nvcomp import _load_library, _NvcompApi
 
 
-class _SnappyOptions(ctypes.Structure):
+class _DecompressOptions(ctypes.Structure):
+    # nvCOMP 6 Snappy, LZ4 and Bitcomp decompression options are 64 bytes that
+    # start with the backend enum. Snappy and LZ4 follow it with the DE sorting
+    # flag, which Bitcomp reserves. Zero later bytes keep LZ4 at NVCOMP_TYPE_CHAR
+    # without bitshuffle.
     _fields_ = [
         ("backend", ctypes.c_int),
         ("sort_before_hw_decompress", ctypes.c_int),
@@ -32,45 +36,24 @@ class _SnappyOptions(ctypes.Structure):
     ]
 
 
-class _Lz4Options(ctypes.Structure):
-    _fields_ = [
-        ("backend", ctypes.c_int),
-        ("sort_before_hw_decompress", ctypes.c_int),
-        ("data_type", ctypes.c_int),
-        ("bitshuffle_mode", ctypes.c_int),
-        ("reserved", ctypes.c_char * 48),
-    ]
-
-
-class _BitcompOptions(ctypes.Structure):
-    _fields_ = [("backend", ctypes.c_int), ("reserved", ctypes.c_char * 60)]
-
-
-_DECOMPRESS_OPTIONS = {
-    "snappy": ("Snappy", _SnappyOptions),
-    "lz4": ("LZ4", _Lz4Options),
-    "bitcomp": ("Bitcomp", _BitcompOptions),
-}
+_ALGORITHMS = {"snappy": "Snappy", "lz4": "LZ4", "bitcomp": "Bitcomp"}
 _MAX_FRAME_BYTES = 4 << 20
 _INT64_MAX = np.iinfo(np.int64).max
 
 
 def _require_hardware_device(device: torch.device, algorithm: str) -> int:
-    from miles.utils.gpu_delta.memory import _driver
+    from miles.utils.gpu_delta.memory import _check, _driver
 
     driver = _driver()
-    status, mask = driver.cuDeviceGetAttribute(
-        driver.CUdevice_attribute.CU_DEVICE_ATTRIBUTE_MEM_DECOMPRESS_ALGORITHM_MASK,
-        device.index,
+    attributes = driver.CUdevice_attribute
+    mask = _check(
+        driver.cuDeviceGetAttribute(attributes.CU_DEVICE_ATTRIBUTE_MEM_DECOMPRESS_ALGORITHM_MASK, device.index),
+        "MEM_DECOMPRESS_ALGORITHM_MASK",
     )
-    if status:
-        raise RuntimeError(f"GPU-delta DE device admission failed: CUDA {status}")
-    status, maximum = driver.cuDeviceGetAttribute(
-        driver.CUdevice_attribute.CU_DEVICE_ATTRIBUTE_MEM_DECOMPRESS_MAXIMUM_LENGTH,
-        device.index,
+    maximum = _check(
+        driver.cuDeviceGetAttribute(attributes.CU_DEVICE_ATTRIBUTE_MEM_DECOMPRESS_MAXIMUM_LENGTH, device.index),
+        "MEM_DECOMPRESS_MAXIMUM_LENGTH",
     )
-    if status:
-        raise RuntimeError(f"GPU-delta DE device admission failed: CUDA {status}")
     algorithms = driver.CUmemDecompressAlgorithm
     required = {
         "Snappy": algorithms.CU_MEM_DECOMPRESS_ALGORITHM_SNAPPY,
@@ -92,107 +75,58 @@ class DecodeWorkspace:
 
 @cache
 def decoder_backend(device, inner_codec):
-    """One backend choice for the decoder and its engine-host publication."""
-    hardware = inner_codec in {"snappy", "lz4"} and torch.cuda.get_device_capability(device) in {(10, 0), (10, 3)}
-    return "hardware" if hardware else "cuda"
+    """Hardware DE for Snappy/LZ4 on SM100/SM103; CUDA decoding for Bitcomp and on other devices."""
+    if inner_codec in {"snappy", "lz4"}:
+        return "hardware" if torch.cuda.get_device_capability(device) in {(10, 0), (10, 3)} else "cuda"
+    elif inner_codec == "bitcomp":
+        return "cuda"
+    else:
+        raise ValueError(f"unsupported GPU delta inner codec: {inner_codec}")
 
 
-class NvcompDecoder:
+class NvcompDecoder(_NvcompApi):
     """DE for Snappy/LZ4 on SM100/103; CUDA decoding for other combinations."""
 
     def __init__(self, device: torch.device, inner_codec: str):
         self.device = torch.device(device)
         if self.device.type != "cuda" or self.device.index is None:
             raise ValueError("Delta decoder requires an explicit CUDA device")
-        if inner_codec not in _DECOMPRESS_OPTIONS:
+        if inner_codec not in _ALGORITHMS:
             raise ValueError("GPU delta inner codec must be snappy, lz4 or bitcomp")
-        self.inner_codec = inner_codec
-        self._algorithm, options_type = _DECOMPRESS_OPTIONS[inner_codec]
+        self.inner_codec, algorithm = inner_codec, _ALGORITHMS[inner_codec]
         sorting = os.environ.get("GPU_DELTA_SORT_BEFORE_HW_DECOMPRESS", "0")
         if sorting not in {"0", "1"}:
             raise ValueError("GPU_DELTA_SORT_BEFORE_HW_DECOMPRESS must be 0 or 1")
         self._library, _ = _load_library()
         self.backend = decoder_backend(self.device, inner_codec)
-        hardware = self.backend == "hardware"
-        self._options = options_type()
-        self._options.backend = 1 if hardware else 2
-        if inner_codec in {"snappy", "lz4"}:
-            self._options.sort_before_hw_decompress = int(sorting) if hardware else 0
-        if self._algorithm == "LZ4":
-            self._options.data_type = 0  # NVCOMP_TYPE_CHAR
-            self._options.bitshuffle_mode = 0  # NVCOMP_BITSHUFFLE_NONE
-        self.maximum_chunk_bytes = _require_hardware_device(self.device, self._algorithm) if hardware else _INT64_MAX
-        pointer, size = ctypes.c_void_p, ctypes.c_size_t
-        self._temporary = self._bind(
-            "GetTempSize",
-            [size, size, options_type, ctypes.POINTER(size), size, pointer],
+        if self.backend == "hardware":
+            self.hardware = True
+        elif self.backend == "cuda":
+            self.hardware = False
+        else:
+            raise ValueError(f"unsupported nvCOMP decoder backend: {self.backend}")
+        self._prefix, self._label = f"nvcompBatched{algorithm}Decompress", f"{inner_codec}/{self.backend}"
+        # Only the hardware (Snappy/LZ4 DE) backend reads the sorting flag.
+        self._options = _DecompressOptions(
+            backend=1 if self.hardware else 2, sort_before_hw_decompress=int(sorting) if self.hardware else 0
         )
-        required_alignments = self._bind("GetRequiredAlignments", [options_type, ctypes.POINTER(_Alignments)])
+        self.maximum_chunk_bytes = _require_hardware_device(self.device, algorithm) if self.hardware else _INT64_MAX
+        pointer, size = ctypes.c_void_p, ctypes.c_size_t
         self._decode = self._bind(
             "Async",
-            [
-                pointer,
-                pointer,
-                pointer,
-                pointer,
-                size,
-                pointer,
-                size,
-                pointer,
-                options_type,
-                pointer,
-                pointer,
-            ],
+            [pointer, pointer, pointer, pointer, size, pointer, size, pointer, _DecompressOptions, pointer, pointer],
         )
-        self.alignments = _Alignments()
-        self._check(required_alignments(self._options, ctypes.byref(self.alignments)))
-        self._temporary_sizes: dict[tuple[int, int, int, int], int] = {}
-
-    def _bind(self, suffix, arguments):
-        function = (
-            getattr(  # config-access-exempt: Resolve the selected nvCOMP codec and operation from its C ABI symbol.
-                self._library,
-                "nvcompBatched" + self._algorithm + "Decompress" + suffix,
-            )
-        )
-        function.argtypes, function.restype = arguments, ctypes.c_int
-        return function
-
-    def _check(self, status):
-        if status != 0:
-            raise RuntimeError(f"nvCOMP {self.inner_codec}/{self.backend} failed: status={status}")
-
-    def temporary_bytes(self, geometry: tuple[int, int, int], cuda_stream: int) -> int:
-        if not geometry[0]:
-            return 0
-        key = (*geometry, cuda_stream)
-        cached = self._temporary_sizes.get(key)
-        if cached is not None:
-            return cached
-        size = ctypes.c_size_t()
-        with torch.cuda.device(self.device):
-            self._check(
-                self._temporary(
-                    geometry[0],
-                    geometry[1],
-                    self._options,
-                    ctypes.byref(size),
-                    geometry[2],
-                    cuda_stream,
-                )
-            )
-        self._temporary_sizes[key] = size.value
-        return size.value
+        self._bind_queries()
 
     def _empty(self, shape, dtype):
-        if self.backend == "hardware":
+        if self.hardware:
             from miles.utils.gpu_delta.memory import device_empty
 
             return device_empty(shape, dtype=dtype, device=self.device)
         return torch.empty(shape, dtype=dtype, device=self.device)
 
     def _record_stream(self, tensor, stream):
-        if self.backend == "hardware":
+        if self.hardware:
             from miles.utils.gpu_delta.memory import record_device_stream
 
             record_device_stream(tensor, stream)
@@ -290,7 +224,7 @@ class NvcompDecoder:
             host_rows[1:3] = table[1:3]
             metadata = self._empty(host.shape, torch.int64)
             if metadata.numel():
-                first = 0 if self.backend == "hardware" else 1
+                first = 0 if self.hardware else 1
                 metadata[first:3].copy_(host[first:3], non_blocking=True)
         return PreparedDecodePlan(
             self,
@@ -381,7 +315,7 @@ class PreparedDecodePlan:
                 statuses.data_ptr(),
                 stream.cuda_stream,
             )
-            if decoder.backend == "cuda":
+            if not decoder.hardware:
                 inputs, sizes = input_frames[:, offset : offset + count]
                 input_offsets, copy_ranges, capacity = _pack_inputs(inputs, sizes, decoder.alignments.input)
                 self.input_bounds[slot] = max(self.input_bounds[slot], capacity)
@@ -434,8 +368,6 @@ class PreparedDecodePlan:
         The caller waits for prior apply readers before reusing each output and
         its status/actual-size row. Scratch is reused on the selected decode stream.
         """
-        from miles.utils.gpu_delta.memory import require_de_capable
-
         if len(decoded_slots) != 2:
             raise ValueError("Decoded output count differs from prepared slots")
         for tensor in decoded_slots:
@@ -460,11 +392,7 @@ class PreparedDecodePlan:
         for tensor in decoded_slots:
             self.decoder._record_stream(tensor, self.stream)
         with torch.cuda.device(self.decoder.device), torch.cuda.stream(self.stream):
-            if self.decoder.backend == "hardware":
-                for base, capacity in zip(bases, capacities, strict=False):
-                    if capacity:
-                        require_de_capable(base)
-            else:
+            if not self.decoder.hardware:
                 self.input_slots[:] = [self.decoder._empty(size, torch.uint8) for size in self.input_bounds]
                 self.input_capacity_bytes = sum(self.input_bounds)
                 for index, batch in enumerate(self.batches):

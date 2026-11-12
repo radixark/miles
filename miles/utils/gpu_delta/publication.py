@@ -51,10 +51,35 @@ DTYPE_BYTES = {
     "I64": 8,
     "F64": 8,
 }
+# The safetensors format's own header limit; a corrupt length must not allocate unbounded memory.
+_MAX_HEADER_BYTES = 100_000_000
+
+
+def read_safetensors_headers(files):
+    """Locate every tensor from safetensors headers alone; names must be unique across files.
+
+    Returns ``{name: (path, offset, nbytes, dtype, shape)}`` without reading tensor data.
+    """
+    locations = {}
+    for path in files:
+        with open(path, "rb") as source:
+            header_bytes = struct.unpack("<Q", source.read(8))[0]
+            if header_bytes > _MAX_HEADER_BYTES:
+                raise ValueError(f"Invalid safetensors header length in {path}")
+            header = json.loads(source.read(header_bytes))
+        # Name order within a file matches safetensors' safe_open keys.
+        for name, metadata in sorted(header.items()):
+            if name == "__metadata__":
+                continue
+            if name in locations:
+                raise ValueError(f"Ambiguous canonical checkpoint tensor: {name}")
+            start, end = metadata["data_offsets"]
+            locations[name] = (path, 8 + header_bytes + start, end - start, metadata["dtype"], metadata["shape"])
+    return locations
 
 
 def _checkpoint_locations(checkpoint):
-    """Select indexed checkpoint shards and reject ambiguous tensor names."""
+    """Locate tensors in the indexed checkpoint shards, or in every shard without an index."""
     checkpoint = Path(checkpoint)
     index = checkpoint / "model.safetensors.index.json"
     files = (
@@ -62,25 +87,7 @@ def _checkpoint_locations(checkpoint):
         if index.exists()
         else sorted(checkpoint.glob("*.safetensors"))
     )
-    locations = {}
-    for path in files:
-        with path.open("rb") as source:
-            header_bytes = struct.unpack("<Q", source.read(8))[0]
-            header = json.loads(source.read(header_bytes))
-        for name, metadata in header.items():
-            if name == "__metadata__":
-                continue
-            if name in locations:
-                raise ValueError(f"Ambiguous canonical checkpoint tensor: {name}")
-            start, end = metadata["data_offsets"]
-            locations[name] = (
-                path,
-                8 + header_bytes + start,
-                end - start,
-                metadata["dtype"],
-                tuple(metadata["shape"]),
-            )
-    return locations
+    return read_safetensors_headers(files)
 
 
 def make_checkpoint_reader(checkpoint):
@@ -91,7 +98,7 @@ def make_checkpoint_reader(checkpoint):
         path, offset, size, dtype, shape = locations[name]
         if dtype != expected_dtype or shape != expected_shape:
             raise ValueError(f"Checkpoint tensor metadata changed: {name}")
-        with path.open("rb") as source:
+        with open(path, "rb") as source:
             source.seek(offset)
             return np.frombuffer(source.read(size), dtype=np.uint8)
 
@@ -149,7 +156,7 @@ def read_canonical_tensor(reader, name, spec):
         spec.get("format") == "fp8-block128-ue8m0" and dtype == "F32" and spec["dtype"] == "U8"
     ):
         raise ValueError(f"Unsupported GPU-delta checkpoint representation for {name!r}")
-    raw = reader(name, expected_dtype=dtype, expected_shape=tuple(spec["shape"]))
+    raw = reader(name, expected_dtype=dtype, expected_shape=list(spec["shape"]))
     if dtype == spec["dtype"]:
         if spec.get("format") == "fp8-block128-ue8m0" and dtype == "U8" and raw.max(initial=0) == 255:
             raise ValueError(f"Checkpoint scale {name!r} contains UE8M0 NaN")
@@ -181,7 +188,13 @@ def configured_codec(initial_sync: bool = False) -> str:
 
 
 def configured_skip_payload_hash() -> bool:
-    return os.environ.get("GPU_DELTA_SKIP_PAYLOAD_HASH") == "1"
+    value = os.environ.get("GPU_DELTA_SKIP_PAYLOAD_HASH", "0")
+    if value == "0":
+        return False
+    elif value == "1":
+        return True
+    else:
+        raise ValueError("GPU_DELTA_SKIP_PAYLOAD_HASH must be 0 or 1")
 
 
 def tensor_metadata(name, dtype, shape, encoding="xor_bytes", format=None, checkpoint_dtype=None):
@@ -215,6 +228,8 @@ class PublicationWriter:
     A CPU worker writes scalar/vector XOR masks while matrix compression runs
     on the GPU. The lock serializes final byte appends and optional CPU hashes.
     Partial files are preserved on failure and never overwritten by a retry.
+    Tensor specs are canonical plan entries; only their dtype, shape, format and
+    checkpoint_dtype are read.
     """
 
     def __init__(
@@ -252,9 +267,11 @@ class PublicationWriter:
         self._lock = threading.Lock()
         self._entries: dict[str, dict] = {}
 
-    def add_raw_xor_tensor(self, name, mask, dtype, shape, format=None, checkpoint_dtype=None):
+    def add_raw_xor_tensor(self, name, mask, spec):
         """Write an uncompressed scalar/vector XOR mask, omitting all-zero masks."""
-        entry = tensor_metadata(name, dtype, shape, "xor_raw_bytes", format, checkpoint_dtype)
+        entry = tensor_metadata(
+            name, spec["dtype"], spec["shape"], "xor_raw_bytes", spec.get("format"), spec.get("checkpoint_dtype")
+        )
         mask = np.frombuffer(mask, dtype=np.uint8)
         if mask.size != entry["nbytes"]:
             raise ValueError(f"Canonical tensor byte count differs for {name}")
@@ -273,11 +290,11 @@ class PublicationWriter:
             self._entries[name] = entry
         return entry
 
-    def add_encoded_tensor(
-        self, name, frames, payload, outer, changed_bytes, dtype, shape, format=None, checkpoint_dtype=None
-    ):
+    def add_encoded_tensor(self, name, frames, payload, outer, changed_bytes, spec):
         """Publish finalized matrix bytes; optional CPU hashing covers only final wire bytes."""
-        entry = tensor_metadata(name, dtype, shape, "xor_bytes", format, checkpoint_dtype)
+        entry = tensor_metadata(
+            name, spec["dtype"], spec["shape"], "xor_bytes", spec.get("format"), spec.get("checkpoint_dtype")
+        )
         entry["changed_bytes"] = changed_bytes
         # The encoder owns frame construction and checks native sizes/statuses.
         entry["frames"] = frames
@@ -347,6 +364,15 @@ _CATALOG_FIELDS = ("name", "dtype", "shape", "nbytes", "encoding", "byte_order",
 _FRAME_FIELDS = ("encoded_offset", "encoded_bytes", "decoded_offset", "decoded_bytes")
 
 
+def _is_raw_encoding(encoding):
+    if encoding == "xor_raw_bytes":
+        return True
+    elif encoding == "xor_bytes":
+        return False
+    else:
+        raise ValueError(f"unsupported GPU-delta tensor encoding: {encoding}")
+
+
 def write_publication_metadata(directory, manifest):
     """Seal readable static catalog and named numeric columns, then the manifest.
 
@@ -377,7 +403,7 @@ def write_publication_metadata(directory, manifest):
     columns.update({group + "." + field: [] for group in ("frames", "outer_frames") for field in _FRAME_FIELDS})
     columns.update({"gaps.offset": [], "gaps.nbytes": []})
     for entry in entries:
-        raw = entry["encoding"] == "xor_raw_bytes"
+        raw = _is_raw_encoding(entry["encoding"])
         payload = entry.get("raw" if raw else "outer")
         values = {
             "changed_bytes": entry["changed_bytes"],
@@ -461,7 +487,7 @@ def read_publication_metadata(path):
                 "encoded_offset": int(columns["tensors.payload_offset"][i]),
                 "encoded_bytes": int(columns["tensors.payload_nbytes"][i]),
             }
-            if entry["encoding"] == "xor_raw_bytes":
+            if _is_raw_encoding(entry["encoding"]):
                 entry["raw"] = payload
             else:
                 entry["outer"] = payload | {

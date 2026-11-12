@@ -12,9 +12,9 @@ import pytest
 import torch
 import triton
 import triton.language as tl
+from tests.fast.utils.gpu_delta.test_gpu_delta_apply import owner
 
 from miles.backends.sglang_utils.gpu_delta.bindings import _direct_binding
-from miles.backends.sglang_utils.gpu_delta.receiver import PreparedDelta
 from miles.utils.gpu_delta.apply import (
     BLOCK,
     ByteApplyGroup,
@@ -126,8 +126,9 @@ def test_runtime_geometry_word_units_tails_and_byte_fallback():
         error = torch.zeros(1, dtype=torch.int32, device="cuda")
         for grid in (1, group.tiles):
             target.copy_(before_target)
-            launch = group.bind_launch(pointers, metadata, error, tuple((grid, 1, 1) for _ in group.programs))
-            launch()
+            for program in group.programs:
+                program.grid = (grid, 1, 1)
+            group.bind_launch(pointers, metadata, error)()
             torch.testing.assert_close(target, expected, rtol=0, atol=0)
             torch.testing.assert_close(source, before_source, rtol=0, atol=0)
 
@@ -251,7 +252,9 @@ def test_grid_stride_covers_group_boundaries_empty_groups_and_partial_tiles():
     error = torch.zeros(1, dtype=torch.int32, device="cuda")
     assert group.grid_ctas == sum(min(p.tiles, 4 * p.resident_ctas) for p in group.programs)
     for grid in (1, 2, 4, group.tiles - 1, group.tiles, group.tiles + 1):
-        launch = group.bind_launch(pointers, metadata, error, tuple((grid, 1, 1) for p in group.programs))
+        for program in group.programs:
+            program.grid = (grid, 1, 1)
+        launch = group.bind_launch(pointers, metadata, error)
         for target in targets:
             target.fill_(0x5A)
         error.fill_(1)
@@ -265,25 +268,7 @@ def test_grid_stride_covers_group_boundaries_empty_groups_and_partial_tiles():
         assert _compiled.cache_info().misses == misses
 
 
-def prepared(groups):
-    owner = PreparedDelta.__new__(PreparedDelta)
-    owner.static_plans = [(None, None, group) for group in groups]
-    owner.apply_bindings = []
-    owner.apply_source_patches = []
-    owner.apply_fallback_groups = set()
-    size = sum(2 * len(g.sources) + g.metadata_size for g in groups if g is not None)
-    owner.apply_host_metadata = torch.empty(size, dtype=torch.int64, pin_memory=True)
-    owner.apply_metadata = torch.empty(size, dtype=torch.int64, device="cuda")
-    owner.error = torch.ones(1, dtype=torch.int32, device="cuda")
-    owner.batches, owner.status_checks = [], []
-    owner.raw_apply = owner.raw_apply_inputs = owner.raw_apply_group = None
-    owner.cpu_storages, owner.cpu_mirrors = {}, {}
-    owner.cpu_target_groups = []
-    owner._prepare_apply_bindings()
-    return owner
-
-
-def test_preplanned_slab_aligned_fallback_restoration_all_families_status_and_leases():
+def test_preplanned_slab_all_families_status_and_leases():
     geometries = [
         ((8192,), (1,)),
         ((3, 5, 7, 4), (140, 4, 20, 1)),
@@ -304,45 +289,45 @@ def test_preplanned_slab_aligned_fallback_restoration_all_families_status_and_le
     group.prepare_metadata(torch.cuda.current_device())
     assert [p.family for p in group.programs] == ["packed", "word_affine", "general"]
     cache = _compiled.cache_info()
-    owner = prepared([group])
+    prepared = owner([group], device="cuda")
+    prebound = prepared.apply_bindings[0]
     prepared_descriptors = tuple(group.metadata_rows)
     buffers = [torch.randint(256, (524320,), dtype=torch.uint8, device="cuda") for _ in range(2)]
     buffer_before = [b.clone() for b in buffers]
-    # Same template, actual misaligned caller, then recovery to aligned state.
-    for skew in (0, 1, 16):
-        owner.decoded = [b[skew : skew + 524288] for b in buffers]
+    # The same prepared template and launch serve every 16-byte aligned origin.
+    for skew in (0, 16):
+        prepared.decoded = [b[skew : skew + 524288] for b in buffers]
         for storage in storage_rows:
             storage.fill_(0x5A)
         before = [storage.clone() for storage in storage_rows]
         expected = []
         for offset, target, storage, (contract, _) in zip(offsets, target_rows, storage_rows, contracts, strict=False):
-            target.bitwise_xor_(owner.decoded[0][offset : offset + contract[0]].reshape(target.shape))
+            target.bitwise_xor_(prepared.decoded[0][offset : offset + contract[0]].reshape(target.shape))
             expected.append(storage.clone())
             storage.fill_(0x5A)
-        _, calls = owner._bind_apply_metadata()
-        owner.apply_metadata.copy_(owner.apply_host_metadata, non_blocking=True)
-        owner.error.fill_(1)
+        _, calls = prepared._bind_apply_metadata()
+        prepared.apply_metadata.copy_(prepared.apply_host_metadata, non_blocking=True)
+        prepared.error.fill_(1)
         calls[0]()
         for storage, original in zip(storage_rows, before, strict=False):
             torch.testing.assert_close(storage, original, rtol=0, atol=0)
-        owner.error.zero_()
+        prepared.error.zero_()
         calls[0]()
         for storage, wanted in zip(storage_rows, expected, strict=False):
             torch.testing.assert_close(storage, wanted, rtol=0, atol=0)
         for buffer, original in zip(buffers, buffer_before, strict=False):
             torch.testing.assert_close(buffer, original, rtol=0, atol=0)
-        if skew % 16 == 0:
-            assert tuple(group.metadata_rows) == prepared_descriptors
-            assert calls[0] is owner.apply_bindings[0][-1]
+        assert tuple(group.metadata_rows) == prepared_descriptors
+        assert calls[0] is prebound
         assert _compiled.cache_info().misses == cache.misses
     torch.cuda.synchronize()
-    owner.batches = [SimpleNamespace(apply=calls[0])]
-    metadata_ref = weakref.ref(owner.apply_metadata)
-    del calls
-    owner._release_gpu()
+    prepared.batches = [SimpleNamespace(apply=calls[0])]
+    metadata_ref = weakref.ref(prepared.apply_metadata)
+    del calls, prebound
+    prepared._release_gpu()
     gc.collect()
     assert metadata_ref() is None
-    assert owner.apply_host_view is None and owner.apply_bindings == []
+    assert prepared.apply_host_view is None and prepared.apply_bindings == []
 
 
 def test_prebound_launch_graph_replay_keeps_status_gate_and_prepared_leases():
@@ -354,11 +339,11 @@ def test_prebound_launch_graph_replay_keeps_status_gate_and_prepared_leases():
         contract = (8192, (8192,), (1,), (8192,), (1,))
         group = ByteApplyGroup([0], [target.data_ptr()], ((contract, 1),))
         group.prepare_metadata(source.device.index)
-        owner = prepared([group])
-        owner.decoded = [source, source]
-        _, calls = owner._bind_apply_metadata()
-        owner.apply_metadata.copy_(owner.apply_host_metadata, non_blocking=True)
-        owner.error.zero_()
+        prepared = owner([group], device="cuda")
+        prepared.decoded = [source, source]
+        _, calls = prepared._bind_apply_metadata()
+        prepared.apply_metadata.copy_(prepared.apply_host_metadata, non_blocking=True)
+        prepared.error.zero_()
         calls[0]()
         target.copy_(before)
     stream.synchronize()
@@ -370,12 +355,12 @@ def test_prebound_launch_graph_replay_keeps_status_gate_and_prepared_leases():
     stream.synchronize()
     torch.testing.assert_close(target, before ^ source, rtol=0, atol=0)
     with torch.cuda.stream(stream):
-        owner.error.fill_(1)
+        prepared.error.fill_(1)
         graph.replay()
     stream.synchronize()
     torch.testing.assert_close(target, before ^ source, rtol=0, atol=0)
     del graph, calls
-    owner._release_gpu()
+    prepared._release_gpu()
 
 
 @triton.jit

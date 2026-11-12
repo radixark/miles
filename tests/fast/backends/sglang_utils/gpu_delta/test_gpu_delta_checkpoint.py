@@ -15,7 +15,6 @@ from typing import Optional
 from unittest.mock import patch
 
 import torch
-from safetensors import SafetensorError, safe_open
 from safetensors.torch import save_file
 
 from miles.backends.sglang_utils.gpu_delta import checkpoint
@@ -119,31 +118,13 @@ class TestCanonicalCheckpointHeaders(unittest.TestCase):
             "model.layers.9.mtp.weight": torch.zeros(2, dtype=torch.bfloat16),
             "model.layers.0.self_attn.rotary_emb.inv_freq": torch.zeros(2),
         }
-        self.save("model.safetensors", tensors)
-
-        class MetadataOnly:
-            def __init__(self, *args, **kwargs):
-                self.source = safe_open(*args, **kwargs)
-
-            def __enter__(self):
-                self.source.__enter__()
-                return self
-
-            def __exit__(self, *args):
-                return self.source.__exit__(*args)
-
-            def keys(self):
-                return self.source.keys()
-
-            def get_slice(self, name):
-                return self.source.get_slice(name)
-
-            def get_tensor(self, name):
-                raise AssertionError("metadata admission must not materialize tensors")
-
-        with patch.object(checkpoint, "safe_open", MetadataOnly):
-            inventory = self.read()
-        self.assertEqual(set(inventory), set(tensors))
+        path = self.save("model.safetensors", tensors)
+        # Metadata admission must not materialize tensors: keep only the length prefix and JSON header.
+        with path.open("r+b") as source:
+            source.truncate(8 + int.from_bytes(source.read(8), "little"))
+        inventory = self.read()
+        # Header order differs across dtypes; the inventory keeps safe_open's sorted key order.
+        self.assertEqual(list(inventory), sorted(tensors))
         for name, tensor in tensors.items():
             self.assertEqual(inventory[name]["shape"], list(tensor.shape))
         self.assertEqual(inventory["model.layers.0.self_attn.indexer.k_norm.weight"]["dtype"], "BF16")
@@ -177,7 +158,7 @@ class TestCanonicalCheckpointHeaders(unittest.TestCase):
         (self.folder / "model.safetensors.index.json").unlink()
         for name in ("first.safetensors", "second.safetensors"):
             self.save(name, {"weight": torch.zeros(1)})
-        with self.assertRaisesRegex(ValueError, "ambiguous"):
+        with self.assertRaisesRegex(ValueError, "Ambiguous canonical checkpoint tensor: weight"):
             self.read()
 
     def test_empty_and_truncated_checkpoints_reject(self):
@@ -186,8 +167,9 @@ class TestCanonicalCheckpointHeaders(unittest.TestCase):
         path = self.save("model.safetensors", {})
         with self.assertRaisesRegex(ValueError, "empty"):
             self.read()
+        # A corrupt header length is rejected before the header is read.
         path.write_bytes(b"truncated")
-        with self.assertRaises(SafetensorError):
+        with self.assertRaisesRegex(ValueError, "Invalid safetensors header length"):
             self.read()
 
     def test_accepts_standard_formats_and_prequantized_modelopt_delegation(self):
@@ -244,7 +226,7 @@ class TestCanonicalCheckpointHeaders(unittest.TestCase):
                 patch.object(obj, key, value, create=True),
                 patch.object(
                     checkpoint,
-                    "safe_open",
+                    "read_safetensors_headers",
                     side_effect=AssertionError("opened unsupported source"),
                 ),
                 self.assertRaisesRegex(ValueError, message),

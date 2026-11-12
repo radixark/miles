@@ -117,6 +117,7 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         self.cell_updaters_of_cell_id = create_rollout_cell_updaters(self.args, rollout_engines, engine_cell_ids)
         self._engine_ids = tuple(f"engine-{offset:05d}" for offset in engine_gpu_offsets)
         self.group_name = "miles-gpu-delta"
+        self._is_metrics_rank = parallel_state.is_metrics_rank
         self.initialize_export(parallel_state, placement)
         descriptions = _on_root(self._describe)
         active = [i for i, description in enumerate(descriptions) if description is not None]
@@ -203,6 +204,7 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         # A rollout can contain multiple model versions; external benchmarks
         # without a rollout identity always export.
         self._source_step = (rollout_id, weight_version) if rollout_id is not None else object()
+        self._rollout_id = rollout_id
         initial_sync = self._publication_version == 0
         if not self._baseline_captured:
             self._capture_baseline(iter_buckets)
@@ -421,7 +423,7 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
                 self._encode_wall_s += metrics["encode_wall_s"]
                 for key in self._encoded_transfer_bytes:
                     self._encoded_transfer_bytes[key] += metrics[key]
-                gpu_delta_encoder.append_encoded_tensor(self._writer, name, result, self._plan[name])
+                self._writer.add_encoded_tensor(name, *result[:4], self._plan[name])
         finally:
             if pool is not None:
                 # Always drain the one raw writer before closing payloads or
@@ -437,14 +439,8 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
     def _write_raw_tensors(self):
         started = time.monotonic()
         for name in self._raw_names:
-            spec = self._plan[name]
             self._writer.add_raw_xor_tensor(
-                name,
-                np.bitwise_xor(self._snapshot[name].numpy(), self._next_snapshot[name].numpy()),
-                dtype=spec["dtype"],
-                shape=spec["shape"],
-                format=spec.get("format"),
-                checkpoint_dtype=spec.get("checkpoint_dtype"),
+                name, np.bitwise_xor(self._snapshot[name].numpy(), self._next_snapshot[name].numpy()), self._plan[name]
             )
         self._raw_cpu_write_s = time.monotonic() - started
 
@@ -884,6 +880,9 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
                 "perf/gpu_delta/trainer_logging_rank": dist.get_rank(),
                 "perf/gpu_delta/trainer_logging_rank_blocked_s": time.monotonic() - self._started,
             }
+        )
+        gpu_delta_metrics.log_completed_update(
+            self.args, self.pop_metrics(), rollout_id=self._rollout_id, is_primary_rank=self._is_metrics_rank
         )
 
 

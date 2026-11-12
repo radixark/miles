@@ -1,4 +1,4 @@
-"""CPU codec admission, outer payload integrity and prepared metadata ownership."""
+"""CPU nvCOMP ABI, codec admission, outer payload integrity and prepared metadata ownership."""
 
 import ctypes
 import sys
@@ -11,8 +11,10 @@ import pytest
 import torch
 import zstandard as zstd
 
-from miles.utils.gpu_delta import codec, nvcomp
+from miles.utils.gpu_delta import codec, memory, nvcomp
 from miles.utils.gpu_delta.host_worker import HostPayloadPool, validate_codec
+
+P, S = ctypes.c_void_p, ctypes.c_size_t
 
 
 def _frame_table(batches):
@@ -21,44 +23,137 @@ def _frame_table(batches):
     return table, list(map(len, batches))
 
 
+@pytest.fixture
+def fake_nvcomp(monkeypatch):
+    """A recording nvCOMP 6 stand-in for both compression and decompression symbols."""
+    fake = SimpleNamespace(calls=[], paths=[], functions={})
+    fake.distribution = SimpleNamespace(version="6.0.0.12", locate_file=lambda path: path)
+
+    class Function:
+        def __init__(self, suffix):
+            self.suffix = suffix
+
+        def __call__(self, *args):
+            fake.calls.append((self.suffix, args))
+            if self.suffix == "GetRequiredAlignments":
+                ctypes.cast(args[1], ctypes.POINTER(nvcomp._Alignments))[0] = nvcomp._Alignments(1, 16, 256)
+            elif self.suffix == "GetTempSize":
+                ctypes.cast(args[3], ctypes.POINTER(S))[0] = 4096
+            elif self.suffix == "GetMaxOutputChunkSize":
+                ctypes.cast(args[2], ctypes.POINTER(S))[0] = args[0] + 16
+            return 0
+
+    class Library:
+        def __getattr__(self, name):
+            for suffix in ("GetRequiredAlignments", "GetTempSize", "GetMaxOutputChunkSize", "Async"):
+                if name.endswith(suffix):
+                    return fake.functions.setdefault(name, Function(suffix))
+            raise AttributeError(name)
+
+    monkeypatch.setattr(nvcomp.importlib.metadata, "distribution", lambda _: fake.distribution)
+    monkeypatch.setattr(nvcomp.ctypes, "CDLL", lambda path: fake.paths.append(path) or Library())
+    monkeypatch.setattr(torch.version, "cuda", "13.0")
+    return fake
+
+
+def _assert_bound_abi(fake, prefix, options, **signatures):
+    """Plain fake callables never enforce argtypes; restate the nvCOMP 6 header signatures."""
+    expected = {
+        "GetTempSize": [S, S, options, ctypes.POINTER(S), S, P],
+        "GetRequiredAlignments": [options, ctypes.POINTER(nvcomp._Alignments)],
+        **signatures,
+    }
+    assert {name: (function.argtypes, function.restype) for name, function in fake.functions.items()} == {
+        prefix + suffix: (argtypes, ctypes.c_int) for suffix, argtypes in expected.items()
+    }
+
+
 @pytest.mark.parametrize(
-    "name,algorithm,options_type,reserved_offset,capability,hardware",
+    "name,symbol,options",
     [
-        ("snappy", "Snappy", codec._SnappyOptions, 8, (10, 0), True),
-        ("lz4", "LZ4", codec._Lz4Options, 16, (10, 3), True),
-        ("snappy", "Snappy", codec._SnappyOptions, 8, (9, 0), False),
-        ("lz4", "LZ4", codec._Lz4Options, 16, (9, 0), False),
-        ("bitcomp", "Bitcomp", codec._BitcompOptions, 4, (10, 3), False),
-        ("bitcomp", "Bitcomp", codec._BitcompOptions, 4, (9, 0), False),
+        ("snappy", "Snappy", nvcomp._Options),
+        ("zstd", "Zstd", nvcomp._Options),
+        ("lz4", "LZ4", nvcomp._LZ4Options),
+        ("bitcomp", "Bitcomp", nvcomp._BitcompOptions),
     ],
 )
-@pytest.mark.parametrize("sorting", ["0", "1"])
-def test_codec_abi_and_frozen_hardware_options(
-    monkeypatch,
-    request,
-    name,
-    algorithm,
-    options_type,
-    reserved_offset,
-    capability,
-    hardware,
-    sorting,
+def test_compressor_abi_and_stream_bound_workspace_queries(fake_nvcomp, name, symbol, options):
+    compressor = nvcomp.NvcompCompressor(name, torch.device("cuda", 0))
+    assert fake_nvcomp.paths == ["nvidia/libnvcomp/lib64/libnvcomp.so.6"]
+    assert ctypes.sizeof(options) == 64
+    if name == "bitcomp":
+        assert ctypes.alignment(options) == 8
+        assert [options.algorithm.offset, options.data_type.offset, options.delta.offset, options.mode.offset] == [
+            0,
+            4,
+            8,
+            16,
+        ]
+        assert compressor._options.algorithm == 1 and compressor._options.data_type == 1
+        assert compressor._options.mode == 0 and compressor._options.delta == 0.0
+        assert bytes(compressor._options)[20:] == bytes(44)
+    else:
+        assert bytes(compressor._options) == bytes(64)
+        assert ctypes.alignment(options) == (ctypes.alignment(ctypes.c_int) if name == "lz4" else 1)
+    if name == "lz4":
+        assert options.data_type.offset == 0 and options.bitshuffle_mode.offset == 4 and options.reserved.offset == 8
+        assert compressor._options.data_type == 0  # NVCOMP_TYPE_CHAR, not FLOAT8_E4M3.
+    assert ctypes.sizeof(nvcomp._Alignments) == 24 and ctypes.alignment(nvcomp._Alignments) == 8
+    assert [nvcomp._Alignments.input.offset, nvcomp._Alignments.output.offset, nvcomp._Alignments.temp.offset] == [
+        0,
+        8,
+        16,
+    ]
+    _assert_bound_abi(
+        fake_nvcomp,
+        f"nvcompBatched{symbol}Compress",
+        options,
+        GetMaxOutputChunkSize=[S, options, ctypes.POINTER(S)],
+        Async=[P, P, S, S, P, S, P, P, options, P, P],
+    )
+    assert (compressor.alignments.input, compressor.alignments.output, compressor.alignments.temp) == (1, 16, 256)
+    assert compressor.temporary_bytes((2, 1024, 1536), 17) == 4096
+    assert compressor.temporary_bytes((2, 1024, 1536), 17) == 4096
+    assert compressor.temporary_bytes((2, 1024, 1536), 23) == 4096
+    assert compressor.temporary_bytes((3, 1024, 2048), 23) == 4096
+    queries = [args for suffix, args in fake_nvcomp.calls if suffix == "GetTempSize"]
+    assert [(args[0], args[1], args[4], args[5]) for args in queries] == [
+        (2, 1024, 1536, 17),
+        (2, 1024, 1536, 23),
+        (3, 1024, 2048, 23),
+    ]
+    assert compressor._output_bound(1024) == compressor._output_bound(1024) == 1040
+    assert sum(suffix == "GetMaxOutputChunkSize" for suffix, _ in fake_nvcomp.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "name,algorithm,capability,hardware,sorting",
+    [
+        ("snappy", "Snappy", (10, 0), True, "0"),
+        ("snappy", "Snappy", (10, 0), True, "1"),
+        ("lz4", "LZ4", (10, 3), True, "0"),
+        ("lz4", "LZ4", (10, 3), True, "1"),
+        # Requested sorting must stay off outside DE.
+        ("snappy", "Snappy", (9, 0), False, "1"),
+        ("lz4", "LZ4", (9, 0), False, "1"),
+        ("bitcomp", "Bitcomp", (10, 3), False, "1"),
+        ("bitcomp", "Bitcomp", (9, 0), False, "1"),
+    ],
+)
+def test_decoder_abi_and_frozen_hardware_options(
+    fake_nvcomp, monkeypatch, request, name, algorithm, capability, hardware, sorting
 ):
     codec.decoder_backend.cache_clear()
     request.addfinalizer(codec.decoder_backend.cache_clear)
-    # Match nvCOMP 6 shared_types.h, snappy.h and lz4.h. In particular, LZ4
-    # inserts two enums before reserved bytes despite both structs being 64B.
-    assert ctypes.sizeof(options_type) == 64
-    assert ctypes.alignment(options_type) == ctypes.alignment(ctypes.c_int)
-    assert options_type.backend.offset == 0
-    if name != "bitcomp":
-        assert options_type.sort_before_hw_decompress.offset == 4
-    assert options_type.reserved.offset == reserved_offset
-    if name == "lz4":
-        assert options_type.data_type.offset == 8
-        assert options_type.bitshuffle_mode.offset == 12
+    # Match nvCOMP 6 snappy.h, lz4.h and bitcomp.h: 64-byte options led by the backend
+    # enum and the DE sorting flag (reserved in Bitcomp); zero later bytes select LZ4
+    # CHAR without bitshuffle.
+    options = codec._DecompressOptions
+    assert ctypes.sizeof(options) == 64 and ctypes.alignment(options) == ctypes.alignment(ctypes.c_int)
+    assert options.backend.offset == 0 and options.sort_before_hw_decompress.offset == 4
+    assert options.reserved.offset == 8
     monkeypatch.setenv("GPU_DELTA_SORT_BEFORE_HW_DECOMPRESS", sorting)
-    calls, device_queries = [], []
+    device_queries = []
     attributes = {136: {"Snappy": 2, "LZ4": 4, "Bitcomp": 0}[algorithm], 137: 4 << 20}
 
     def device_attribute(attribute, device):
@@ -69,6 +164,7 @@ def test_codec_abi_and_frozen_hardware_options(
         sys.modules,
         "miles.utils.gpu_delta.memory",
         SimpleNamespace(
+            _check=memory._check,
             _driver=lambda: SimpleNamespace(
                 CUdevice_attribute=SimpleNamespace(
                     CU_DEVICE_ATTRIBUTE_MEM_DECOMPRESS_ALGORITHM_MASK=136,
@@ -79,38 +175,9 @@ def test_codec_abi_and_frozen_hardware_options(
                     CU_MEM_DECOMPRESS_ALGORITHM_LZ4=4,
                 ),
                 cuDeviceGetAttribute=device_attribute,
-            )
+            ),
         ),
     )
-
-    class Function:
-        def __init__(self, suffix):
-            self.suffix = suffix
-
-        def __call__(self, *arguments):
-            options = arguments[0 if self.suffix == "GetRequiredAlignments" else 2]
-            assert type(options) is options_type
-            calls.append((self.suffix, bytes(options)))
-            if self.suffix == "GetRequiredAlignments":
-                ctypes.cast(arguments[1], ctypes.POINTER(codec._Alignments))[0] = codec._Alignments(16, 16, 16)
-            else:
-                ctypes.cast(arguments[3], ctypes.POINTER(ctypes.c_size_t))[0] = 64
-            return 0
-
-    functions = {
-        "nvcompBatched" + algorithm + "Decompress" + suffix: Function(suffix)
-        for suffix in ("GetRequiredAlignments", "GetTempSize", "Async")
-    }
-    distribution = SimpleNamespace(version="6.0.0.12", locate_file=lambda path: path)
-    monkeypatch.setattr(nvcomp.importlib.metadata, "distribution", lambda _: distribution)
-
-    def load_library(path):
-        assert path == "nvidia/libnvcomp/lib64/libnvcomp.so.6"
-        return SimpleNamespace(**functions)
-
-    monkeypatch.setattr(codec.ctypes, "CDLL", load_library)
-    monkeypatch.setattr(torch.version, "cuda", "13.0")
-    monkeypatch.setattr(torch.cuda, "device", lambda _: nullcontext())
     capability_queries = []
     monkeypatch.setattr(
         torch.cuda,
@@ -128,6 +195,7 @@ def test_codec_abi_and_frozen_hardware_options(
             lambda *a: pytest.fail("global allocator access"),
         )
     decoder = codec.NvcompDecoder(torch.device("cuda", 0), name)
+    assert fake_nvcomp.paths == ["nvidia/libnvcomp/lib64/libnvcomp.so.6"]
     assert decoder.inner_codec == name
     assert decoder.backend == ("hardware" if hardware else "cuda")
     assert codec.decoder_backend(decoder.device, name) == decoder.backend
@@ -135,42 +203,20 @@ def test_codec_abi_and_frozen_hardware_options(
     assert capability_queries == ([decoder.device] if name != "bitcomp" else [])
     assert decoder.maximum_chunk_bytes == ((4 << 20) if hardware else codec._INT64_MAX)
     assert decoder._options.backend == (1 if hardware else 2)
-    if name != "bitcomp":
-        assert decoder._options.sort_before_hw_decompress == (int(sorting) if hardware else 0)
+    assert decoder._options.sort_before_hw_decompress == (int(sorting) if hardware else 0)
     assert bytes(decoder._options)[8:] == bytes(56)
-    align_function = functions[f"nvcompBatched{algorithm}DecompressGetRequiredAlignments"]
-    assert align_function.argtypes == [options_type, ctypes.POINTER(codec._Alignments)]
-    assert decoder._temporary.argtypes == [
-        ctypes.c_size_t,
-        ctypes.c_size_t,
-        options_type,
-        ctypes.POINTER(ctypes.c_size_t),
-        ctypes.c_size_t,
-        ctypes.c_void_p,
-    ]
-    assert decoder._decode.argtypes == [
-        ctypes.c_void_p,
-        ctypes.c_void_p,
-        ctypes.c_void_p,
-        ctypes.c_void_p,
-        ctypes.c_size_t,
-        ctypes.c_void_p,
-        ctypes.c_size_t,
-        ctypes.c_void_p,
-        options_type,
-        ctypes.c_void_p,
-        ctypes.c_void_p,
-    ]
-    assert decoder._decode.restype is ctypes.c_int
+    _assert_bound_abi(
+        fake_nvcomp,
+        f"nvcompBatched{algorithm}Decompress",
+        options,
+        Async=[P, P, P, P, S, P, S, P, options, P, P],
+    )
+    assert (decoder.alignments.input, decoder.alignments.output, decoder.alignments.temp) == (1, 16, 256)
     # Alignment and workspace queries must receive the same admitted options.
-    geometry = (1, 64, 64)
-    assert decoder.temporary_bytes(geometry, 7) == 64
-    assert [suffix for suffix, _ in calls] == [
-        "GetRequiredAlignments",
-        "GetTempSize",
-    ]
-    assert calls[0][1] == calls[1][1]
-    assert decoder.temporary_bytes(geometry, 7) == 64
+    assert decoder.temporary_bytes((1, 64, 64), 7) == decoder.temporary_bytes((1, 64, 64), 7) == 4096
+    [(first, align), (second, query)] = fake_nvcomp.calls
+    assert (first, second) == ("GetRequiredAlignments", "GetTempSize")
+    assert align[0] is query[2] is decoder._options
     assert device_queries == ([(136, 0), (137, 0)] if hardware else [])
     # Allocation capability alone does not prove this codec exists. Frame
     # lengths are checked against the cached device limit during preparation.
@@ -184,20 +230,27 @@ def test_codec_abi_and_frozen_hardware_options(
         attributes[137] = 0
         with pytest.raises(RuntimeError, match="positive hardware decompression limit"):
             codec.NvcompDecoder(decoder.device, name)
-    distribution.version = "5.3.0.16"
-    with pytest.raises(RuntimeError, match="nvCOMP 6 ABI"):
-        codec.NvcompDecoder(decoder.device, name)
 
 
-def test_workspace_query_cache_uses_geometry_and_stream_and_preserves_failure(
-    monkeypatch,
-):
-    # Exercise the real query/cache code without a CUDA allocation or library.
+@pytest.mark.parametrize("version", ["5.3.0.16", "7.0.0.0"])
+@pytest.mark.parametrize(
+    "create",
+    [lambda device: nvcomp.NvcompCompressor("snappy", device), lambda device: codec.NvcompDecoder(device, "snappy")],
+    ids=["compressor", "decoder"],
+)
+def test_other_nvcomp_major_versions_fail_before_loading_library(fake_nvcomp, create, version):
+    fake_nvcomp.distribution.version = version
+    with pytest.raises(RuntimeError, match="64-bit nvCOMP 6 ABI"):
+        create(torch.device("cuda", 0))
+    assert fake_nvcomp.paths == []
+
+
+def test_workspace_query_cache_uses_geometry_and_stream_and_preserves_failure():
+    # Exercise the real shared query/cache code without a CUDA device guard,
+    # allocation or library; prepare_batches already selects the device.
     decoder = object.__new__(codec.NvcompDecoder)
-    decoder.device = torch.device("cuda", 0)
-    decoder.backend = "hardware"
-    decoder.inner_codec = "snappy"
-    decoder._options = codec._SnappyOptions()
+    decoder._label = "snappy/hardware"
+    decoder._options = codec._DecompressOptions()
     decoder._temporary_sizes = {}
     calls, fail = [], True
 
@@ -210,7 +263,6 @@ def test_workspace_query_cache_uses_geometry_and_stream_and_preserves_failure(
         return 0
 
     decoder._temporary = query
-    monkeypatch.setattr(torch.cuda, "device", lambda device: nullcontext())
 
     assert decoder.temporary_bytes((0, 0, 0), 7) == 0
     assert decoder.temporary_bytes((2, 20, 30), 7) == 0
@@ -234,17 +286,17 @@ def test_prepared_stream_scratch_and_slot_status_ownership(monkeypatch):
     # requirements without a device. Native tests cover actual DE and ring reuse.
     decoder = object.__new__(codec.NvcompDecoder)
     decoder.device = torch.device("cpu")
-    decoder.backend = "hardware"
-    decoder.alignments = codec._Alignments(16, 16, 16)
-    decoder._options = codec._SnappyOptions()
+    decoder.hardware = True
+    decoder.alignments = nvcomp._Alignments(16, 16, 16)
+    decoder._options = codec._DecompressOptions()
     decoder.temporary_bytes = lambda geometry, stream: geometry[0] * 13
     recorded = []
+    # DE outputs were admitted by device_empty; binding queries no capability.
     monkeypatch.setitem(
         sys.modules,
         "miles.utils.gpu_delta.memory",
         SimpleNamespace(
             device_empty=lambda shape, dtype, device: torch.empty(shape, dtype=dtype),
-            require_de_capable=lambda _: None,
             record_device_stream=lambda tensor, stream: recorded.append(
                 (tensor.untyped_storage().data_ptr(), stream.cuda_stream)
             ),
@@ -311,10 +363,10 @@ def test_host_input_plans_reject_invalid_geometry_before_device_work(monkeypatch
     # vector arithmetic and output-lease failures here without a fake CUDA API.
     decoder = object.__new__(codec.NvcompDecoder)
     decoder.device = torch.device("cpu")
-    decoder.backend = "hardware"
+    decoder.hardware = True
     decoder.inner_codec = "snappy"
     decoder.maximum_chunk_bytes = 4 << 20
-    decoder.alignments = codec._Alignments(16, 16, 16)
+    decoder.alignments = nvcomp._Alignments(16, 16, 16)
     table, counts = _frame_table([[(0, 20, 64, 0), (32, 17, 32, 128)]])
     geometry, bounds, remainders = decoder._frame_geometry(table, counts, 0, 512)
     assert (geometry, bounds, remainders) == (
@@ -362,7 +414,6 @@ def test_host_input_plans_reject_invalid_geometry_before_device_work(monkeypatch
         "miles.utils.gpu_delta.memory",
         SimpleNamespace(
             device_empty=lambda *a, **kw: pytest.fail("allocated device storage"),
-            require_de_capable=lambda _: pytest.fail("queried device"),
             record_device_stream=lambda *a: pytest.fail("recorded device"),
         ),
     )

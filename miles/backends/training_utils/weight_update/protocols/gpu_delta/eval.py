@@ -6,8 +6,7 @@ import json
 import uuid
 from pathlib import Path
 
-from miles.backends.training_utils.weight_update.protocols.gpu_delta.session import _activate_engine, receiver_pool
-from miles.utils.gpu_delta.publication import configured_skip_payload_hash
+from miles.backends.training_utils.weight_update.protocols.gpu_delta.session import activate_engine, receiver_pool
 
 _UNKNOWN = object()
 
@@ -107,27 +106,9 @@ class EvalSnapshotUpdater:
             return
         # No operation is replayable after dispatch: a lost reply could hide a
         # completed XOR. Healthy engines keep their independent progress.
+        # Cancel and apply are distinct receiver sessions on the same engine.
         self._engines[engine_id] = incarnation, _UNKNOWN
         if previous is not None:
-            await self._apply(client, previous, participants, "0", timeout)
-        await self._apply(client, publication, participants, weight_version, timeout)
+            await activate_engine(client, previous, participants, uuid.uuid4().hex, "0", timeout)
+        await activate_engine(client, publication, participants, uuid.uuid4().hex, weight_version, timeout)
         self._engines[engine_id] = incarnation, publication
-
-    async def _apply(self, client, publication, participants, weight_version, timeout):
-        request = {
-            key: publication[key]
-            for key in (
-                "manifest_path",
-                "manifest_sha256",
-                "stream_id",
-                "base_version",
-                "target_version",
-                "plan_digest",
-            )
-        }
-        request.update(
-            session_id=uuid.uuid4().hex,
-            weight_version=weight_version,
-            validate_payload_hash=not configured_skip_payload_hash(),
-        )
-        await _activate_engine(client, request, participants, timeout)

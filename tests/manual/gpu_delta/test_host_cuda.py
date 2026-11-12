@@ -6,7 +6,6 @@ DE test requires two SM100/SM103 GPUs; its barriers coordinate the oracle, not
 production preparation.
 """
 
-import hashlib
 import json
 import mmap
 import multiprocessing
@@ -24,78 +23,134 @@ import snappy
 import zstandard as zstd
 
 
+def storage_identity(value):
+    return value.data_ptr(), value.untyped_storage().data_ptr(), value.stride(), value.device
+
+
+def tiny_receiver(monkeypatch, directory, rank_id, weights, extra):
+    """A DeepseekV3-shaped receiver with one U8 layer per `weights` matrix plus `extra` parameters.
+
+    Every parameter keeps its tensor's device, shape and strides, so CPU-resident
+    and padded views reach the receiver unchanged. F32 parameters keep an F32
+    canonical dtype; every other parameter is U8. Parameter storage identities are
+    taken before the backend exists, so admission cannot rebind one unnoticed.
+    """
+    import torch
+
+    from miles.backends.sglang_utils.gpu_delta import checkpoint
+    from miles.backends.sglang_utils.gpu_delta.receiver import GpuDeltaBackend
+    from miles.utils.gpu_delta.host import host_cache_id
+
+    device = torch.device("cuda", torch.cuda.current_device())
+    model = torch.nn.Module()
+    model.config = SimpleNamespace(architectures=["DeepseekV3ForCausalLM"], num_hidden_layers=len(weights))
+    model.num_fused_shared_experts = 0
+    model.model = torch.nn.Module()
+    model.model.layers = torch.nn.ModuleList([torch.nn.Module() for _ in weights])
+    for layer, weight in zip(model.model.layers, weights, strict=True):
+        layer.weight = torch.nn.Parameter(weight, requires_grad=False)
+    for name, value in extra.items():
+        setattr(model.model, name, torch.nn.Parameter(value, requires_grad=False))
+    inventory = {
+        name: {"dtype": "F32" if value.dtype == torch.float32 else "U8", "shape": list(value.shape)}
+        for name, value in model.named_parameters()
+    }
+    monkeypatch.setattr(checkpoint, "read_canonical_checkpoint_inventory", lambda _: inventory)
+    for name, value in (
+        ("GPU_DELTA_HOST_CACHE_DIR", str(Path(directory) / "cache")),
+        ("GPU_DELTA_CPU_WORKERS", "4"),
+        ("GPU_DELTA_LAYERS_PER_BATCH", "1"),
+        # The producer reads its payload hash policy when each writer is constructed.
+        ("GPU_DELTA_SKIP_PAYLOAD_HASH", "0"),
+    ):
+        monkeypatch.setenv(name, value)
+    identity = dict(
+        engine_id=directory,
+        rank_id=rank_id,
+        host_cache_id=host_cache_id(directory),
+        pid=os.getpid(),
+        tp_rank=0,
+        dp_rank=0,
+        pp_rank=0,
+    )
+    # The serving worker's CUDA device comes from its model runner, never from a parameter.
+    runner = SimpleNamespace(model=model, device="cuda", gpu_id=device.index)
+    identities = {name: storage_identity(value) for name, value in model.named_parameters()}
+    return model, inventory, identity, GpuDeltaBackend(runner, identity), identities
+
+
+def publish(encoder, codec, directory, stream_id, base_version, target_version, inventory, before, after):
+    """Seal the canonical XOR publication between `before` and `after` byte views of every tensor."""
+    from miles.utils.gpu_delta.publication import PublicationWriter, plan_digest
+
+    definitions = [
+        dict(name=name, **meta, encoding="xor_raw_bytes" if len(meta["shape"]) <= 1 else "xor_bytes")
+        for name, meta in inventory.items()
+    ]
+    matrices = [row for row in definitions if row["encoding"] == "xor_bytes"]
+    encoded = encoder.finish_device(
+        encoder.encode_device([(before[row["name"]], after[row["name"]]) for row in matrices])
+    )
+    writer = PublicationWriter(
+        directory,
+        stream_id,
+        base_version,
+        target_version,
+        plan_digest(definitions),
+        codec,
+        frame_bytes=encoder.frame_bytes,
+    )
+    try:
+        for row, result in zip(matrices, encoded, strict=True):
+            writer.add_encoded_tensor(row["name"], *result[:4], row)
+        for row in definitions:
+            if row["encoding"] == "xor_raw_bytes":
+                mask = np.bitwise_xor(before[row["name"]].numpy(), after[row["name"]].numpy())
+                writer.add_raw_xor_tensor(row["name"], mask, row)
+        return writer.finish()
+    finally:
+        writer.close()
+
+
 @pytest.mark.parametrize("codec", ["bitcomp", "bitcomp-zstd"])
 @pytest.mark.parametrize("residency", ["cuda", "mixed"])
 def test_bitcomp_receiver_double_buffer_exact_updates_and_stale_target(codec, residency, monkeypatch):
     """Real producer/receiver, five batches, omitted frames and small XOR masks."""
     import torch
 
-    from miles.backends.sglang_utils.gpu_delta import checkpoint
-    from miles.backends.sglang_utils.gpu_delta.receiver import GpuDeltaBackend
-    from miles.utils.gpu_delta import publication
     from miles.utils.gpu_delta.encoder import GpuBatchEncoder
-    from miles.utils.gpu_delta.host import host_cache_id
-    from miles.utils.gpu_delta.publication import PublicationWriter
 
     device = torch.device("cuda", torch.cuda.current_device())
     frame_bytes = 1 << 16
-    model = torch.nn.Module()
-    model.config = SimpleNamespace(architectures=["DeepseekV3ForCausalLM"], num_hidden_layers=5)
-    model.num_fused_shared_experts = 0
-    model.model = torch.nn.Module()
+    # Five one-layer batches; each row ends in a 140-byte frame after an unchanged middle frame.
+    weights = [torch.zeros((1, 2 * frame_bytes + 140), dtype=torch.uint8, device=device) for _ in range(5)]
+    # model.raw is the first parameter (direct parameters precede the layers); it
+    # does not determine the serving worker's CUDA device.
     raw_device = "cpu" if residency == "mixed" else device
-    # The first parameter does not determine the serving worker's CUDA device.
-    model.model.raw = torch.nn.Parameter(torch.zeros(17, dtype=torch.uint8, device=raw_device), requires_grad=False)
-    model.model.scalar = torch.nn.Parameter(torch.zeros((), dtype=torch.uint8, device=raw_device), requires_grad=False)
-    model.model.layers = torch.nn.ModuleList([torch.nn.Module() for _ in range(5)])
-    for layer in model.model.layers:
-        layer.weight = torch.nn.Parameter(
-            torch.zeros((1, 2 * frame_bytes + 140), dtype=torch.uint8, device=device),
-            requires_grad=False,
-        )
     host_storage = host_padding = None
     if residency == "mixed":
         columns, pitch, offset = frame_bytes + 72, frame_bytes + 88, 4
         host_storage = torch.full((2 * pitch + offset,), 165, dtype=torch.uint8)
         weight = host_storage.as_strided((2, columns), (pitch, 1), offset)
         weight.zero_()
-        model.model.layers[0].weight = torch.nn.Parameter(weight, requires_grad=False)
+        weights[0] = weight
         host_padding = torch.ones_like(host_storage, dtype=torch.bool)
         host_padding.as_strided(weight.shape, weight.stride(), offset).fill_(False)
-    identities = {
-        name: (value.data_ptr(), value.untyped_storage().data_ptr(), value.stride(), value.device)
-        for name, value in model.named_parameters()
-    }
-    inventory = {name: {"dtype": "U8", "shape": list(value.shape)} for name, value in model.named_parameters()}
-    monkeypatch.setattr(checkpoint, "read_canonical_checkpoint_inventory", lambda _: inventory)
-    monkeypatch.setenv("GPU_DELTA_CPU_WORKERS", "4")
-    monkeypatch.setenv("GPU_DELTA_LAYERS_PER_BATCH", "1")
-    monkeypatch.setenv("GPU_DELTA_SKIP_PAYLOAD_HASH", "0")
     encoder = GpuBatchEncoder(device, codec=codec, frame_bytes=frame_bytes)
     with (
         tempfile.TemporaryDirectory(prefix="gpu-delta-bitcomp-", dir="/dev/shm") as directory,
         ThreadPoolExecutor(max_workers=1) as prepare_executor,
     ):
-        root = Path(directory)
-        monkeypatch.setenv("GPU_DELTA_HOST_CACHE_DIR", str(root / "cache"))
-        identity = dict(
-            engine_id=directory,
-            host_cache_id=host_cache_id(directory),
-            tp_rank=0,
-            dp_rank=0,
-            pid=os.getpid(),
-            rank_id="bitcomp-original-rank",
+        model, inventory, identity, backend, identities = tiny_receiver(
+            monkeypatch,
+            directory,
+            "bitcomp-original-rank",
+            weights,
+            extra={
+                "raw": torch.zeros(17, dtype=torch.uint8, device=raw_device),
+                "scalar": torch.zeros((), dtype=torch.uint8, device=raw_device),
+            },
         )
-        backend = GpuDeltaBackend(SimpleNamespace(model=model, device="cuda", gpu_id=device.index), identity)
-        definitions = [
-            dict(
-                name=name,
-                **meta,
-                encoding="xor_raw_bytes" if len(meta["shape"]) <= 1 else "xor_bytes",
-            )
-            for name, meta in inventory.items()
-        ]
-        plan_digest = publication.plan_digest(definitions)
         prepared = None
         try:
             for version in range(1, 4):
@@ -109,38 +164,17 @@ def test_bitcomp_receiver_double_buffer_exact_updates_and_stale_target(codec, re
                     else:
                         value[:frame_bytes:4096].bitwise_xor_(version)
                         value[-140:].bitwise_xor_(version + 7)
-                matrices = [row for row in definitions if row["encoding"] == "xor_bytes"]
-                encoded = encoder.finish_device(
-                    encoder.encode_device([(before[row["name"]], after[row["name"]]) for row in matrices])
-                )
-                writer = PublicationWriter(
-                    root / str(version),
+                descriptor = publish(
+                    encoder,
+                    codec,
+                    Path(directory) / str(version),
                     "tiny-receiver",
                     version - 1,
                     version,
-                    plan_digest,
-                    codec,
-                    frame_bytes=frame_bytes,
+                    inventory,
+                    before,
+                    after,
                 )
-                try:
-                    for row, result in zip(matrices, encoded, strict=True):
-                        writer.add_encoded_tensor(
-                            row["name"],
-                            *result[:4],
-                            dtype=row["dtype"],
-                            shape=row["shape"],
-                        )
-                    for raw in definitions:
-                        if raw["encoding"] == "xor_raw_bytes":
-                            writer.add_raw_xor_tensor(
-                                raw["name"],
-                                np.bitwise_xor(before[raw["name"]].numpy(), after[raw["name"]].numpy()),
-                                raw["dtype"],
-                                raw["shape"],
-                            )
-                    descriptor = writer.finish()
-                finally:
-                    writer.close()
                 metadata = dict(
                     descriptor,
                     session_id="tiny-receiver",
@@ -181,12 +215,7 @@ def test_bitcomp_receiver_double_buffer_exact_updates_and_stale_target(codec, re
                     assert result["timings"]["de_host_input_bytes"] == 0
                     for name, value in model.named_parameters():
                         assert torch.equal(value.cpu().flatten(), after[name])
-                        assert (
-                            value.data_ptr(),
-                            value.untyped_storage().data_ptr(),
-                            value.stride(),
-                            value.device,
-                        ) == identities[name]
+                        assert storage_identity(value) == identities[name]
                     prepared.close(True)
                 if host_storage is not None:
                     assert torch.all(host_storage[host_padding] == 165)
@@ -204,50 +233,30 @@ def test_hf_relative_snapshots_are_reversible_with_the_same_update_api(monkeypat
 
     import torch
 
-    from miles.backends.sglang_utils.gpu_delta import checkpoint
     from miles.backends.sglang_utils.gpu_delta.bindings import DerivedImage
     from miles.backends.sglang_utils.gpu_delta.derived import DerivedUpdate, plan_updates
-    from miles.backends.sglang_utils.gpu_delta.receiver import GpuDeltaBackend
     from miles.backends.sglang_utils.gpu_delta.session import DeltaSession
-    from miles.utils.gpu_delta import apply, publication
+    from miles.utils.gpu_delta import apply
     from miles.utils.gpu_delta.encoder import GpuBatchEncoder
-    from miles.utils.gpu_delta.host import host_cache_id
-    from miles.utils.gpu_delta.publication import PublicationWriter
 
     device = torch.device("cuda", torch.cuda.current_device())
     frame_bytes = 1 << 16
-    model = torch.nn.Module()
-    model.config = SimpleNamespace(architectures=["DeepseekV3ForCausalLM"], num_hidden_layers=2)
-    model.num_fused_shared_experts = 0
-    model.model = torch.nn.Module()
-    model.model.layers = torch.nn.ModuleList([torch.nn.Module() for _ in range(2)])
-    for layer in model.model.layers:
-        layer.weight = torch.nn.Parameter(
-            torch.zeros((1, frame_bytes + 7), dtype=torch.uint8, device=device), requires_grad=False
-        )
-    model.model.vector = torch.nn.Parameter(torch.arange(17, dtype=torch.uint8), requires_grad=False)
-    model.model.scalar = torch.nn.Parameter(torch.tensor(1.5), requires_grad=False)
-    model.model.scalar_gpu = torch.nn.Parameter(torch.tensor(1.5, device=device), requires_grad=False)
-    pointers = {name: value.data_ptr() for name, value in model.named_parameters()}
-    inventory = {
-        name: {"dtype": "F32" if value.dtype == torch.float32 else "U8", "shape": list(value.shape)}
-        for name, value in model.named_parameters()
-    }
-    monkeypatch.setattr(checkpoint, "read_canonical_checkpoint_inventory", lambda _: inventory)
-    monkeypatch.setenv("GPU_DELTA_CPU_WORKERS", "4")
     encoder = GpuBatchEncoder(device, codec="bitcomp-zstd", frame_bytes=frame_bytes)
     with tempfile.TemporaryDirectory(prefix="gpu-delta-snapshot-", dir="/dev/shm") as directory:
         root = Path(directory)
-        monkeypatch.setenv("GPU_DELTA_HOST_CACHE_DIR", str(root / "cache"))
-        identity = dict(
-            engine_id=directory,
-            host_cache_id=host_cache_id(directory),
-            tp_rank=0,
-            dp_rank=0,
-            pid=os.getpid(),
-            rank_id="snapshot-original",
+        # 7-byte tail frames, a CPU raw vector and F32 scalars on CPU and CUDA
+        # whose derived values are refreshed.
+        model, inventory, identity, backend, identities = tiny_receiver(
+            monkeypatch,
+            directory,
+            "snapshot-original",
+            [torch.zeros((1, frame_bytes + 7), dtype=torch.uint8, device=device) for _ in range(2)],
+            extra={
+                "vector": torch.arange(17, dtype=torch.uint8),
+                "scalar": torch.tensor(1.5),
+                "scalar_gpu": torch.tensor(1.5, device=device),
+            },
         )
-        backend = GpuDeltaBackend(SimpleNamespace(model=model, device="cuda", gpu_id=device.index), identity)
         derived = torch.zeros_like(model.model.scalar_gpu)
         derived_cpu = torch.zeros_like(model.model.scalar)
         derived_vector = torch.zeros_like(model.model.vector, device=device)
@@ -266,11 +275,6 @@ def test_hf_relative_snapshots_are_reversible_with_the_same_update_api(monkeypat
         consumers = (derived, derived_cpu, derived_vector)
         consumer_pointers = [value.data_ptr() for value in consumers]
         session = DeltaSession(identity, backend)
-        definitions = [
-            dict(name=name, **meta, encoding="xor_raw_bytes" if len(meta["shape"]) <= 1 else "xor_bytes")
-            for name, meta in inventory.items()
-        ]
-        digest = publication.plan_digest(definitions)
         base = {
             name: value.detach().reshape(-1).view(torch.uint8).cpu().pin_memory()
             for name, value in model.named_parameters()
@@ -293,27 +297,9 @@ def test_hf_relative_snapshots_are_reversible_with_the_same_update_api(monkeypat
                 if undo:
                     descriptor = published[label]
                 else:
-                    writer = PublicationWriter(
-                        root / label, "eval-snapshots", 0, 1, digest, "bitcomp-zstd", frame_bytes=frame_bytes
+                    descriptor = published[label] = publish(
+                        encoder, "bitcomp-zstd", root / label, "eval-snapshots", 0, 1, inventory, base, values
                     )
-                    matrices = [row for row in definitions if row["encoding"] == "xor_bytes"]
-                    encoded = encoder.finish_device(
-                        encoder.encode_device([(base[row["name"]], values[row["name"]]) for row in matrices])
-                    )
-                    try:
-                        for row, result in zip(matrices, encoded, strict=True):
-                            writer.add_encoded_tensor(row["name"], *result[:4], dtype=row["dtype"], shape=row["shape"])
-                        for row in definitions:
-                            if row["encoding"] == "xor_raw_bytes":
-                                writer.add_raw_xor_tensor(
-                                    row["name"],
-                                    np.bitwise_xor(base[row["name"]].numpy(), values[row["name"]].numpy()),
-                                    row["dtype"],
-                                    row["shape"],
-                                )
-                        descriptor = published[label] = writer.finish()
-                    finally:
-                        writer.close()
                 request = dict(descriptor, session_id=operation, validate_payload_hash=True, participants=[identity])
                 before = {name: value.detach().clone() for name, value in model.named_parameters()}
                 before_derived = [value.clone() for value in consumers]
@@ -334,7 +320,7 @@ def test_hf_relative_snapshots_are_reversible_with_the_same_update_api(monkeypat
                 session._update.release_future.result()
                 for name, value in model.named_parameters():
                     assert torch.equal(value.detach().reshape(-1).view(torch.uint8).cpu(), values[name])
-                    assert value.data_ptr() == pointers[name]
+                    assert storage_identity(value) == identities[name]
                 assert derived.item() == model.model.scalar.item() * 2
                 assert derived_cpu.item() == derived.item()
                 assert torch.equal(derived_vector.cpu(), model.model.vector)
@@ -354,99 +340,52 @@ def test_bitcomp_failed_transaction_requires_fresh_receiver_recovery(failure, mo
     """Exercise transaction recovery around real CUDA writes, not fake payloads."""
     import torch
 
-    from miles.backends.sglang_utils.gpu_delta import checkpoint
-    from miles.backends.sglang_utils.gpu_delta.receiver import GpuDeltaBackend
     from miles.backends.sglang_utils.gpu_delta.session import DeltaSession
-    from miles.utils.gpu_delta import publication
     from miles.utils.gpu_delta.encoder import GpuBatchEncoder
-    from miles.utils.gpu_delta.host import host_cache_id
-    from miles.utils.gpu_delta.publication import PublicationWriter
 
     device = torch.device("cuda", torch.cuda.current_device())
     frame_bytes = 1 << 20
-    monkeypatch.setenv("GPU_DELTA_CPU_WORKERS", "4")
-    monkeypatch.setenv("GPU_DELTA_LAYERS_PER_BATCH", "1")
     encoder = GpuBatchEncoder(device, codec="bitcomp-zstd", frame_bytes=frame_bytes)
     sessions = []
     with tempfile.TemporaryDirectory(prefix="gpu-delta-ft-", dir="/dev/shm") as directory:
         root = Path(directory)
-        monkeypatch.setenv("GPU_DELTA_HOST_CACHE_DIR", str(root / "cache"))
 
         def receiver(incarnation):
-            model = torch.nn.Module()
-            model.config = SimpleNamespace(architectures=["DeepseekV3ForCausalLM"], num_hidden_layers=2)
-            model.num_fused_shared_experts = 0
-            model.model = torch.nn.Module()
-            model.model.layers = torch.nn.ModuleList([torch.nn.Module() for _ in range(2)])
-            for index, layer in enumerate(model.model.layers):
-                layer.weight = torch.nn.Parameter(
-                    torch.zeros((1, frame_bytes), dtype=torch.uint8, device=device if index == 0 else "cpu"),
-                    requires_grad=False,
-                )
-            model.model.raw = torch.nn.Parameter(torch.zeros(17, dtype=torch.uint8), requires_grad=False)
-            inventory = {name: {"dtype": "U8", "shape": list(value.shape)} for name, value in model.named_parameters()}
-            monkeypatch.setattr(checkpoint, "read_canonical_checkpoint_inventory", lambda _: inventory)
-            identity = dict(
-                engine_id=directory,
-                host_cache_id=host_cache_id(directory),
-                tp_rank=0,
-                dp_rank=0,
-                pid=os.getpid(),
-                rank_id=f"native-receiver-{incarnation}",
+            # One 1 MiB frame per layer batch, so a failure can follow a partial apply.
+            # Layer 1 and the raw vector are CPU-resident behind paused CUDA mirrors.
+            model, inventory, identity, backend, _ = tiny_receiver(
+                monkeypatch,
+                directory,
+                f"native-receiver-{incarnation}",
+                [
+                    torch.zeros((1, frame_bytes), dtype=torch.uint8, device=device),
+                    torch.zeros((1, frame_bytes), dtype=torch.uint8),
+                ],
+                extra={"raw": torch.zeros(17, dtype=torch.uint8)},
             )
-            backend = GpuDeltaBackend(SimpleNamespace(model=model, device="cuda", gpu_id=device.index), identity)
-            session = DeltaSession(identity, backend)
-            sessions.append(session)
-            return model, session
+            sessions.append(DeltaSession(identity, backend))
+            return model, inventory, sessions[-1]
 
-        def publish(model, session, version):
+        def fill_update(model, inventory, session, version):
             before = {name: value.detach().cpu().flatten().pin_memory() for name, value in model.named_parameters()}
             after = {name: torch.full_like(value, 16 + version).pin_memory() for name, value in before.items()}
-            definitions = [
-                dict(
-                    name=name,
-                    dtype="U8",
-                    shape=list(value.shape),
-                    encoding="xor_raw_bytes" if value.ndim <= 1 else "xor_bytes",
-                )
-                for name, value in model.named_parameters()
-            ]
-            matrices = [row for row in definitions if row["encoding"] == "xor_bytes"]
-            encoded = encoder.finish_device(
-                encoder.encode_device([(before[row["name"]], after[row["name"]]) for row in matrices])
-            )
-            writer = PublicationWriter(
+            descriptor = publish(
+                encoder,
+                "bitcomp-zstd",
                 root / str(version),
                 "native-ft-stream",
                 version - 1,
                 version,
-                publication.plan_digest(definitions),
-                "bitcomp-zstd",
-                frame_bytes=frame_bytes,
+                inventory,
+                before,
+                after,
             )
-            try:
-                for row, result in zip(matrices, encoded, strict=True):
-                    writer.add_encoded_tensor(
-                        row["name"],
-                        *result[:4],
-                        dtype=row["dtype"],
-                        shape=row["shape"],
-                    )
-                raw = next(row for row in definitions if row["name"] == "model.raw")
-                writer.add_raw_xor_tensor(
-                    raw["name"],
-                    np.bitwise_xor(before[raw["name"]].numpy(), after[raw["name"]].numpy()),
-                    raw["dtype"],
-                    raw["shape"],
-                )
-                metadata = dict(
-                    writer.finish(),
-                    session_id=f"native-ft-update-{version}",
-                    validate_payload_hash=True,
-                    participants=[session.identity],
-                )
-            finally:
-                writer.close()
+            metadata = dict(
+                descriptor,
+                session_id=f"native-ft-update-{version}",
+                validate_payload_hash=True,
+                participants=[session.identity],
+            )
             return metadata, before, after
 
         def prepare(session, metadata):
@@ -458,8 +397,8 @@ def test_bitcomp_failed_transaction_requires_fresh_receiver_recovery(failure, mo
                 assert torch.equal(value.detach().cpu().flatten(), expected[name]), name
 
         try:
-            model, session = receiver("original")
-            metadata, before, after = publish(model, session, 1)
+            model, inventory, session = receiver("original")
+            metadata, before, after = fill_update(model, inventory, session, 1)
             prepare(session, metadata)
             assert_weights(model, before)
             prepared = session._update.prepared
@@ -523,14 +462,14 @@ def test_bitcomp_failed_transaction_requires_fresh_receiver_recovery(failure, mo
             session.backend.close()
             # Replacement starts from actual fresh model storage and a new rank
             # identity; only this incarnation may consume the base-zero payload.
-            model, session = receiver("replacement")
+            model, inventory, session = receiver("replacement")
             metadata = dict(metadata, participants=[session.identity])
             prepare(session, metadata)
             resumed = []
             session.apply(metadata["session_id"], lambda: None, lambda: None, None)
             session.resume(metadata["session_id"], resumed.append)
             assert_weights(model, after)
-            metadata, before, after = publish(model, session, 2)
+            metadata, before, after = fill_update(model, inventory, session, 2)
             prepare(session, metadata)
             assert_weights(model, before)
             session.apply(metadata["session_id"], lambda: None, lambda: None, None)
@@ -556,9 +495,10 @@ def _pinned_mapping_consumer(rank, path, expected, barrier, output):
     with Path(path).open("r+b") as source:
         inode = (os.fstat(source.fileno()).st_dev, os.fstat(source.fileno()).st_ino)
         mapping = mmap.mmap(source.fileno(), 0)
-    allocation = HostMapping(mapping, True)
+    allocation = HostMapping(mapping)
     tensor = torch.frombuffer(allocation.view, dtype=torch.uint8)
     try:
+        allocation.pin()
         assert tensor.is_pinned()
         with torch.cuda.stream(stream):
             copied = tensor.to("cuda", non_blocking=True)
@@ -615,96 +555,53 @@ def test_shared_pinned_mapping_survives_peer_unregister():
 
 
 def _publication(directory, version, repeat, codec):
+    """Real Snappy or LZ4 inner frames; the DE oracle decodes Snappy after 1 MiB outer Zstd chunks."""
+    from miles.utils.gpu_delta.publication import PublicationWriter
+
     expected = {f"tensor-{i}": random.Random(i + version).randbytes(256 * repeat) for i in range(8)}
-    expected["raw"] = b"unaligned-raw-target"
-    blob, entries = bytearray(), []
-    for name, value in expected.items():
-        blob.extend(bytes((-len(blob)) % 16))
-        start = len(blob)
-        inner = (
-            value
-            if name == "raw"
-            else (snappy.compress(value) if codec == "snappy-zstd" else lz4.block.compress(value, store_size=False))
-        )
-        encoded, outer_frames = bytearray(), []
-        if name == "raw" or codec == "lz4":
-            encoded.extend(inner)
-        else:
-            for offset in range(0, len(inner), 1 << 20):
+    writer = PublicationWriter(
+        directory,
+        "native-shared-stream",
+        version - 1,
+        version,
+        "native-host-plan",
+        codec,
+        frame_bytes=(1 << 19) if version < 3 else (1 << 20),
+    )
+    try:
+        for name, value in expected.items():
+            if codec == "snappy-zstd":
+                inner = snappy.compress(value)
+            else:
+                inner = lz4.block.compress(value, store_size=False)
+            payload, outer_frames = bytearray(), []
+            for offset in range(0, len(inner), 1 << 20) if codec == "snappy-zstd" else ():
                 chunk = inner[offset : offset + (1 << 20)]
-                encoded.extend(bytes((-len(encoded)) % 16))
+                payload.extend(bytes((-len(payload)) % 16))
                 compressed = zstd.ZstdCompressor(write_checksum=True).compress(chunk)
                 outer_frames.append(
                     dict(
-                        encoded_offset=len(encoded),
+                        encoded_offset=len(payload),
                         encoded_bytes=len(compressed),
                         decoded_offset=offset,
                         decoded_bytes=len(chunk),
                     )
                 )
-                encoded.extend(compressed)
-        blob.extend(encoded)
-        entry = {
-            "name": name,
-            "encoding": "xor_raw_bytes" if name == "raw" else "xor_bytes",
-            "nbytes": len(value),
-            "changed_bytes": len(value),
-            "frames": (
-                []
-                if name == "raw"
-                else [
-                    {
-                        "encoded_offset": 0,
-                        "encoded_bytes": len(inner),
-                        "decoded_offset": 0,
-                        "decoded_bytes": len(value),
-                    }
-                ]
-            ),
-        }
-        if name == "raw":
-            entry["raw"] = {
-                "file": "owner.bin",
-                "encoded_offset": start,
-                "encoded_bytes": len(value),
-            }
-        else:
-            entry["outer"] = {
-                "file": "owner.bin",
-                "encoded_offset": start,
-                "encoded_bytes": len(encoded),
-                "decoded_bytes": len(inner),
-                "frames": outer_frames,
-            }
-        entries.append(entry)
-    (directory / "owner.bin").write_bytes(blob)
-    for entry in entries:
-        size = len(expected["raw"]) if entry["name"] == "raw" else 1 << 20
-        shape = [size] if entry["encoding"] == "xor_raw_bytes" else [1, size]
-        entry.update(
-            dtype="U8",
-            shape=shape,
-            nbytes=size,
-            byte_order="little",
-        )
-    manifest = {
-        "codec": codec,
-        "base_version": version - 1,
-        "target_version": version,
-        "plan_digest": "native-host-plan",
-        "frame_bytes": (1 << 19) if version < 3 else (1 << 20),
-        "files": [
-            {
-                "name": "owner.bin",
-                "nbytes": len(blob),
-                "sha256": hashlib.sha256(blob).hexdigest(),
-            }
-        ],
-        "tensors": entries,
-    }
-    from miles.utils.gpu_delta.publication import write_publication_metadata
-
-    descriptor = write_publication_metadata(directory, manifest)
+                payload.extend(compressed)
+            payload = bytes(payload) if outer_frames else inner
+            writer.add_encoded_tensor(
+                name,
+                [dict(encoded_offset=0, encoded_bytes=len(inner), decoded_offset=0, decoded_bytes=len(value))],
+                payload,
+                dict(encoded_bytes=len(payload), decoded_bytes=len(inner), frames=outer_frames),
+                len(value),
+                dict(dtype="U8", shape=[1, 1 << 20]),
+            )
+        expected["raw"] = b"unaligned-raw-target"
+        writer.add_raw_xor_tensor("raw", expected["raw"], dict(dtype="U8", shape=[len(expected["raw"])]))
+        descriptor = writer.finish()
+    finally:
+        writer.close()
     return Path(descriptor["manifest_path"]), descriptor["manifest_sha256"], expected
 
 
@@ -726,16 +623,16 @@ def _consumer(rank, engine, workers, publications, cache, barrier, output):
     participants = [
         dict(
             engine_id=engine,
+            rank_id=f"{engine}-original-{local}",
             host_cache_id=identity,
+            pid=100 + local,
             tp_rank=local,
             dp_rank=0,
-            pid=100 + local,
-            rank_id=f"{engine}-original-{local}",
+            pp_rank=0,
         )
         for local in range(2)
     ]
     arena = host.HostArena(engine, device.index, participants[rank % 2])
-    arena.register_dtypes({"checks": [], "errors": []})
     stream = torch.cuda.Stream(device=device)
     records = []
     try:
@@ -788,7 +685,8 @@ def _consumer(rank, engine, workers, publications, cache, barrier, output):
             decoder = NvcompDecoder(device, codec.removesuffix("-zstd"))
             table = np.asarray(frames, dtype=np.int64).T.copy()
             plan = decoder.prepare_batches(table, [len(frames)], source, stream)
-            decoded = [torch.empty(size, dtype=torch.uint8, device=device) for _ in range(2)]
+            # DE writes only to hardware-decompression-capable outputs; bind_outputs does not recheck them.
+            decoded = [memory.device_empty(size, dtype=torch.uint8, device=device) for _ in range(2)]
             stream.wait_stream(torch.cuda.current_stream(device))
             plans = plan.bind_outputs(decoded)
             with torch.cuda.stream(stream):
@@ -843,16 +741,16 @@ def _consumer(rank, engine, workers, publications, cache, barrier, output):
 
 
 @pytest.mark.parametrize("workers", [4, 8])
-def test_two_engines_reuse_host_de_capacity_and_grow(workers):
+def test_two_engines_reuse_host_de_capacity_and_grow(workers, monkeypatch):
     context = multiprocessing.get_context("spawn")
+    # The producer reads its payload hash policy when each writer is constructed.
+    monkeypatch.setenv("GPU_DELTA_SKIP_PAYLOAD_HASH", "0")
     with tempfile.TemporaryDirectory(prefix="gpu-delta-native-", dir="/dev/shm") as directory:
         root = Path(directory)
         publications = []
         for version, repeat in enumerate((2048, 1024, 4096), 1):
-            version_dir = root / str(version)
-            version_dir.mkdir()
             path, digest, expected = _publication(
-                version_dir, version, repeat, ("lz4", "snappy-zstd", "lz4")[version - 1]
+                root / str(version), version, repeat, ("lz4", "snappy-zstd", "lz4")[version - 1]
             )
             publications.append((str(path), digest, expected))
         barriers, output = [context.Barrier(2), context.Barrier(2)], context.Queue()

@@ -1,10 +1,3 @@
-# Copyright 2026 SGLang Team
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-
 """Feature-owned startup mappings for canonical model parameter names."""
 
 from __future__ import annotations
@@ -14,13 +7,8 @@ from dataclasses import replace
 
 import torch
 
-from miles.backends.sglang_utils.gpu_delta.bindings import (
-    ConsumerSnapshot,
-    DerivedImage,
-    ParameterBindings,
-    _byte_view,
-)
-from miles.backends.sglang_utils.gpu_delta.flashinfer import DestinationSegment
+from miles.backends.sglang_utils.gpu_delta.bindings import ConsumerSnapshot, DerivedImage, ParameterBindings
+from miles.backends.sglang_utils.gpu_delta.flashinfer import DestinationSegment, _byte_view, _DtypeMismatch
 
 
 def _with_replicated_projection(binding, target, rows_per_head, key_rows=None):
@@ -121,7 +109,12 @@ class DeepSeekMlaMapping:
                 if target_name.endswith(marker):
                     candidate = target_name[: -len(marker)] + ".indexer.wk_weights_proj.weight"
                     target = self.parameters.params.get(candidate)
-                    if target is not None and meta["dtype"] == "BF16":
+                    if target is not None:
+                        if meta["dtype"] != "BF16":
+                            # The loader dequantizes other checkpoint dtypes into this BF16 parameter.
+                            raise _DtypeMismatch(
+                                f"fused DSA indexer requires BF16 canonical weights, got {meta['dtype']}"
+                            )
                         rows = meta["shape"][0]
                         target = target[-rows:] if at_end else target[:rows]
                         target_name = candidate

@@ -20,225 +20,105 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 import zstandard as zstd
-from safetensors.numpy import save as save_columns
+from safetensors.numpy import load as load_columns
 
 from miles.utils.gpu_delta import host as host
 from miles.utils.gpu_delta import host_worker as worker
 from miles.utils.gpu_delta.host_worker import HostPayloadPool
-
+from miles.utils.gpu_delta.publication import PublicationWriter, seal_publication
 
 TENSOR_IDS = {name: i for i, name in enumerate(("dense", "expert", "foreign", "raw"))}
+DENSE = bytes(range(251)) * 100
+FOREIGN = b"foreign-inner-frame"
 
 
-def fixture_columns(entries, files):
-    """Independent small fixture encoder for the public named-column contract."""
-    fields = ("encoded_offset", "encoded_bytes", "decoded_offset", "decoded_bytes")
-    columns = {
-        "tensors." + field: []
-        for field in (
-            "changed_bytes",
-            "payload_file",
-            "payload_offset",
-            "payload_nbytes",
-            "inner_nbytes",
-            "frame_end",
-            "outer_end",
-            "gap_end",
+def matrix(data, nbytes=None, parts=1, wrapped=True):
+    """An identity inner frame in outer Zstd chunks, shaped like GpuBatchEncoder.finish_device output."""
+    frames = [dict(encoded_offset=0, encoded_bytes=len(data), decoded_offset=0, decoded_bytes=len(data))]
+    payload, outer, step = bytearray(), [], -(-len(data) // parts)
+    for offset in range(0, len(data), step) if wrapped else ():
+        chunk = data[offset : offset + step]
+        encoded = zstd.ZstdCompressor(write_checksum=True).compress(chunk)
+        outer.append(
+            dict(
+                encoded_offset=len(payload),
+                encoded_bytes=len(encoded),
+                decoded_offset=offset,
+                decoded_bytes=len(chunk),
+            )
         )
-    }
-    columns.update({group + "." + field: [] for group in ("frames", "outer_frames") for field in fields})
-    columns.update({"gaps.offset": [], "gaps.nbytes": []})
-    for entry in entries:
-        raw = entry["encoding"] == "xor_raw_bytes"
-        payload = entry.get("raw" if raw else "outer", {})
-        for field, value in {
-            "changed_bytes": entry.get("changed_bytes", 0),
-            "payload_file": files.index(payload["file"]) if payload else -1,
-            "payload_offset": payload.get("encoded_offset", 0),
-            "payload_nbytes": payload.get("encoded_bytes", 0),
-            "inner_nbytes": 0 if raw else payload.get("decoded_bytes", 0),
-        }.items():
-            columns["tensors." + field].append(value)
-        for group, frames in (
-            ("frames", entry.get("frames", [])),
-            ("outer_frames", payload.get("frames", [])),
-        ):
-            for field in fields:
-                columns[group + "." + field].extend(frame[field] for frame in frames)
-        columns["tensors.frame_end"].append(len(columns["frames.encoded_bytes"]))
-        columns["tensors.outer_end"].append(len(columns["outer_frames.encoded_bytes"]))
-        cursor = 0
-        if not raw:
-            for frame in entry.get("frames", []):
-                if cursor < frame["decoded_offset"]:
-                    columns["gaps.offset"].append(cursor)
-                    columns["gaps.nbytes"].append(frame["decoded_offset"] - cursor)
-                cursor = frame["decoded_offset"] + frame["decoded_bytes"]
-            if cursor < entry.get("nbytes", 0):
-                columns["gaps.offset"].append(cursor)
-                columns["gaps.nbytes"].append(entry["nbytes"] - cursor)
-        columns["tensors.gap_end"].append(len(columns["gaps.offset"]))
-    return {key: np.asarray(value, dtype="<i8") for key, value in columns.items()}
-
-
-def write_manifest(path, manifest, version=1):
-    manifest.update(base_version=version - 1, target_version=version, plan_digest="fixture-plan")
-    path = path.with_name(f"manifest-v{version}.json")
-    entries = sorted(manifest["tensors"], key=lambda entry: entry["name"])
-    fields = ("name", "dtype", "shape", "nbytes", "encoding", "byte_order")
-    catalog = {
-        "plan_digest": manifest["plan_digest"],
-        "tensors": [{key: e[key] for key in fields} for e in entries],
-    }
-    columns = fixture_columns(entries, [record["name"] for record in manifest["files"]])
-    records = {}
-    for kind, suffix, raw in (
-        ("catalog", "json", json.dumps(catalog, sort_keys=True).encode()),
-        ("metadata", "safetensors", save_columns(columns)),
-    ):
-        filename = f"{kind}-v{version}.{suffix}"
-        (path.parent / filename).write_bytes(raw)
-        records[kind] = {
-            "file": filename,
-            "nbytes": len(raw),
-            "sha256": hashlib.sha256(raw).hexdigest(),
-        }
-    content = json.dumps({key: value for key, value in manifest.items() if key != "tensors"} | records).encode()
-    path.write_bytes(content)
-    return path, hashlib.sha256(content).hexdigest()
-
-
-def numeric_arena_inputs(entries, file_spans):
-    return (
-        np.array([entry["encoding"] == "xor_raw_bytes" for entry in entries]),
-        np.asarray(list(file_spans.values()), dtype=np.int64).reshape(-1, 2),
-        fixture_columns(entries, list(file_spans)),
-        np.arange(len(entries)),
+        payload.extend(encoded)
+    payload = bytes(payload) if wrapped else data
+    return dict(
+        frames=frames,
+        payload=payload,
+        outer=dict(encoded_bytes=len(payload), decoded_bytes=len(data), frames=outer),
+        changed_bytes=len(data),
+        nbytes=nbytes or len(data),
     )
 
 
-def fixture(directory, raw_repeat=1):
-    expected = {
-        "dense": bytes(range(251)) * 100 + b"d" * (raw_repeat - 1) * 4,
-        "expert": b"snappy-bytes" * 50,
-        "raw": b"abcd",
-    }
-    blob, tensors = bytearray(), []
-    for name, data in expected.items():
-        blob.extend(bytes((-len(blob)) % 16))
-        start = len(blob)
-        encoded = data if name == "raw" else zstd.ZstdCompressor(write_checksum=True).compress(data)
-        blob.extend(encoded)
-        entry = {
-            "name": name,
-            "encoding": "xor_raw_bytes" if name == "raw" else "xor_bytes",
-            "nbytes": len(data),
-            "changed_bytes": len(data),
-            "frames": (
-                []
-                if name == "raw"
-                else [
-                    {
-                        "encoded_offset": 0,
-                        "encoded_bytes": len(data),
-                        "decoded_offset": 0,
-                        "decoded_bytes": len(data),
-                    }
-                ]
-            ),
-        }
-        if name == "raw":
-            entry["raw"] = {
-                "file": "owner.bin",
-                "encoded_offset": start,
-                "encoded_bytes": len(data),
-            }
-        else:
-            entry["outer"] = {
-                "file": "owner.bin",
-                "encoded_offset": start,
-                "encoded_bytes": len(encoded),
-                "decoded_bytes": len(data),
-                "frames": [
-                    {
-                        "encoded_offset": 0,
-                        "encoded_bytes": len(encoded),
-                        "decoded_offset": 0,
-                        "decoded_bytes": len(data),
-                    }
-                ],
-            }
-        tensors.append(entry)
-    # Every tensor is prepared once, including an expert this rank never copies.
-    foreign_plain = b"foreign-inner-frame"
-    foreign = zstd.ZstdCompressor(write_checksum=True).compress(foreign_plain)
-    tensors.append(
-        {
-            "name": "foreign",
-            "encoding": "xor_bytes",
-            "nbytes": len(foreign_plain),
-            "changed_bytes": len(foreign_plain),
-            "frames": [
-                dict(
-                    encoded_offset=0,
-                    encoded_bytes=len(foreign_plain),
-                    decoded_offset=0,
-                    decoded_bytes=len(foreign_plain),
+def write_publication(directory, owners, version=1, codec="snappy-zstd", payload_hash=True):
+    """Seal one publication with the production writer, one payload file per owner.
+
+    Owners map names to raw XOR masks (bytes) or matrix() records. The writer
+    creates every file exclusively, so each publication needs a fresh directory.
+    """
+    # The producer reads its payload hash policy when the writer is constructed.
+    with patch.dict(os.environ, {"GPU_DELTA_SKIP_PAYLOAD_HASH": str(int(not payload_hash))}):
+        writers = [
+            PublicationWriter(
+                directory, "stream", version - 1, version, "fixture-plan", codec, owner=owner, publication_id="fixture"
+            )
+            for owner in range(len(owners))
+        ]
+    for writer, tensors in zip(writers, owners, strict=True):
+        for name, tensor in tensors.items():
+            if isinstance(tensor, bytes):
+                writer.add_raw_xor_tensor(name, tensor, dict(dtype="U8", shape=[len(tensor)]))
+            else:
+                writer.add_encoded_tensor(
+                    name,
+                    tensor["frames"],
+                    tensor["payload"],
+                    tensor["outer"],
+                    tensor["changed_bytes"],
+                    dict(dtype="U8", shape=[1, tensor["nbytes"]]),
                 )
-            ],
-            "outer": {
-                "file": "foreign.bin",
-                "encoded_offset": 0,
-                "encoded_bytes": len(foreign),
-                "decoded_bytes": len(foreign_plain),
-                "frames": [
-                    dict(
-                        encoded_offset=0,
-                        encoded_bytes=len(foreign),
-                        decoded_offset=0,
-                        decoded_bytes=len(foreign_plain),
-                    )
-                ],
-            },
-        }
+    descriptor = seal_publication(directory, [writer.finish_shard() for writer in writers])
+    return Path(descriptor["manifest_path"]), descriptor["manifest_sha256"]
+
+
+def fixture(directory, version=1, codec="snappy-zstd", dense=DENSE, foreign=None, payload_hash=True):
+    """Owner 0 writes dense (a 1 MiB row with a trailing gap), expert and raw; owner 1 writes foreign.
+
+    The returned bytes cover the tensors a rank selects by default; the shared image also prepares foreign.
+    """
+    expected = {"dense": dense, "expert": b"snappy-bytes" * 50, "raw": b"abcd"}
+    owners = [
+        {"dense": matrix(dense, nbytes=1 << 20), "expert": matrix(expected["expert"]), "raw": expected["raw"]},
+        {"foreign": foreign or matrix(FOREIGN)},
+    ]
+    path, digest = write_publication(directory, owners, version, codec, payload_hash)
+    return path, digest, expected
+
+
+def arena_inputs(path):
+    """Catalog names, raw mask, payload backing, file spans and columns as the CPU child maps them."""
+    manifest = json.loads(path.read_bytes())
+    catalog = json.loads((path.parent / "catalog.json").read_bytes())["tensors"]
+    payloads = [(path.parent / record["name"]).read_bytes() for record in manifest["files"]]
+    sizes = np.array([len(payload) for payload in payloads], dtype=np.int64)
+    return (
+        [entry["name"] for entry in catalog],
+        np.array([entry["encoding"] == "xor_raw_bytes" for entry in catalog]),
+        memoryview(b"".join(payloads)),
+        np.column_stack((np.cumsum(sizes) - sizes, sizes)),
+        load_columns((path.parent / "metadata.safetensors").read_bytes()),
     )
-    (directory / "owner.bin").write_bytes(blob)
-    (directory / "foreign.bin").write_bytes(foreign)
-    manifest = {
-        "codec": "snappy-zstd",
-        "frame_bytes": 1 << 20,
-        "files": [
-            {
-                "name": "owner.bin",
-                "nbytes": len(blob),
-                "sha256": hashlib.sha256(blob).hexdigest(),
-            },
-            {
-                "name": "foreign.bin",
-                "nbytes": len(foreign),
-                "sha256": hashlib.sha256(foreign).hexdigest(),
-            },
-        ],
-        "tensors": tensors,
-    }
-    for entry in tensors:
-        size = 1 << 20 if entry["name"] == "dense" else entry["nbytes"]
-        shape = [size] if entry["encoding"] == "xor_raw_bytes" else [1, size]
-        entry.update(
-            dtype="U8",
-            shape=shape,
-            nbytes=size,
-            byte_order="little",
-        )
-    path, digest = write_manifest(directory / "manifest.json", manifest)
-    return path, digest, manifest, expected
 
 
-def local_entries(manifest, names):
-    return [entry for entry in manifest["tensors"] if entry["name"] in names]
-
-
-def prepare_snapshot(arena, path, digest, entries, pool, timings, metadata, cancelled=None):
+def prepare_snapshot(arena, path, digest, names, pool, timings, metadata, cancelled=None):
     if arena._worker is not None:
         arena._worker.builder.pool = pool
     publication = arena.prepare_publication(
@@ -246,7 +126,13 @@ def prepare_snapshot(arena, path, digest, entries, pool, timings, metadata, canc
         timings,
         cancelled,
     )
-    return arena.prepare_local(publication, [TENSOR_IDS[e["name"]] for e in entries], timings)
+    return arena.prepare_local(publication, [TENSOR_IDS[name] for name in names], timings)
+
+
+def one_poll():
+    """A cancellation event that aborts a follower after its first state poll."""
+    polled = threading.Event()
+    return SimpleNamespace(is_set=polled.is_set, wait=lambda timeout: polled.set())
 
 
 def fake_fallocate(fd, offset, length):
@@ -267,8 +153,8 @@ class FakeHostAllocation:
 class FakeHostMapping:
     """Keep real shared mmap semantics without registering it with CUDA."""
 
-    def __init__(self, mapping, pinned):
-        self.registered = pinned
+    def __init__(self, mapping):
+        self.registered = False
         self.mapping = mapping
         self.capacity = len(mapping)
         self.view = memoryview(mapping)
@@ -284,43 +170,32 @@ class FakeHostMapping:
 class InlineCpuWorker:
     """Use the real CPU builder for deterministic unit fault injection."""
 
-    def __init__(self, directory, device, owner, pool):
+    def __init__(self, directory, pool):
         with patch.object(worker, "HostPayloadPool", return_value=pool):
-            self.builder = worker.HostBuilder(
-                directory,
-                pool.workers,
-                {name: host.decoder_backend(device, name) for name in ("snappy", "lz4", "bitcomp")},
-                owner,
-            )
+            self.builder = worker.HostBuilder(directory, pool.workers)
 
     def prepare(self, expected, namespace, metrics, cancelled):
         result = self.builder.prepare(expected, namespace)
         metrics.update(result["metrics"])
         return result["index"]
 
-    def release(self, ready_state):
-        return self.builder.release(ready_state)
+    def release(self, token):
+        return self.builder.release(token)
 
     def close(self):
         self.builder.close()
-
-
-def shared_publication(directory, raw_repeat=1, version=1):
-    path, _, manifest, expected = fixture(directory, raw_repeat)
-    manifest["codec"] = "bitcomp-zstd"
-    path, digest = write_manifest(path, manifest, version)
-    return path, digest, manifest, expected | {"foreign": b"foreign-inner-frame"}
 
 
 def shared_participants(engine="a"):
     return [
         dict(
             engine_id=engine,
+            rank_id=f"{engine}-original-{rank}",
             host_cache_id="shared-host-" + engine,
+            pid=100 + rank,
             tp_rank=rank,
             dp_rank=0,
-            pid=100 + rank,
-            rank_id=f"{engine}-original-{rank}",
+            pp_rank=0,
         )
         for rank in range(2)
     ]
@@ -329,7 +204,6 @@ def shared_participants(engine="a"):
 def _shared_child(rank, publications, barrier, output):
     participants = shared_participants()
     arena = host.HostArena("a", 0, participants[rank])
-    arena.register_dtypes({"checks": [], "errors": []})
     records, reads = [], []
     read_bytes = Path.read_bytes
 
@@ -343,7 +217,7 @@ def _shared_child(rank, publications, barrier, output):
             patch("torch.cuda.set_device") as set_device,
             patch.object(Path, "read_bytes", new=observed_read),
         ):
-            for version, (path, digest, _manifest, expected) in enumerate(publications, 1):
+            for version, (path, digest, expected) in enumerate(publications, 1):
                 hardware = version == 4
                 barrier.wait(timeout=10)
                 metrics = {}
@@ -417,19 +291,10 @@ class TestHostSnapshot(unittest.TestCase):
             patch.object(host, "_cache_base", return_value=self.cache),
             patch.object(host, "_CAPACITY_ALIGNMENT", 1024),
             patch.object(worker, "_CAPACITY_ALIGNMENT", 1024),
-            patch.object(
-                host,
-                "CpuWorker",
-                side_effect=lambda directory, device, owner: InlineCpuWorker(directory, device, owner, self.pool),
-            ),
+            patch.object(host, "CpuWorker", side_effect=lambda directory: InlineCpuWorker(directory, self.pool)),
             patch.object(host, "HostAllocation", FakeHostAllocation),
             patch.object(host, "HostMapping", FakeHostMapping),
             patch("torch.cuda.set_device"),
-            patch.object(
-                host,
-                "decoder_backend",
-                side_effect=lambda device, codec: ("cuda" if codec == "bitcomp" else "hardware"),
-            ),
             patch.object(os, "posix_fallocate", side_effect=fake_fallocate, create=True),
         ):
             replacement.start()
@@ -438,23 +303,62 @@ class TestHostSnapshot(unittest.TestCase):
     def arena(self, engine="a", rank=0):
         arenas = [host.HostArena(engine, 0, identity) for identity in shared_participants(engine)]
         for arena in arenas:
-            arena.register_dtypes({"checks": [], "errors": []})
             self.addCleanup(arena.close)
         return arenas[rank]
 
+    def held_build(self, build, while_held=lambda: None, *, after_read=False):
+        """Run build() while one payload read is held.
+
+        Default: owner 1's read waits before its I/O; owner 0's read has finished by while_held().
+        after_read: owner 0's read holds its pool worker after its I/O; owner 1's read starts only
+        then and must finish meanwhile, so the two owner-file reads must run in parallel.
+        """
+        held, release, first_read, outcome = threading.Event(), threading.Event(), threading.Event(), []
+        original_read = worker._read_verify_payload
+        held_name = "owner-00000.bin" if after_read else "owner-00001.bin"
+
+        def gated_read(source, destination, record, skip_payload_hash):
+            if source.name == held_name:
+                result = original_read(source, destination, record, skip_payload_hash) if after_read else None
+                held.set()
+                assert release.wait(5)
+                return result if after_read else original_read(source, destination, record, skip_payload_hash)
+            if after_read:
+                assert held.wait(5)
+            try:
+                return original_read(source, destination, record, skip_payload_hash)
+            finally:
+                first_read.set()
+
+        def run():
+            try:
+                outcome.append(build())
+            except BaseException as error:
+                outcome.append(error)
+
+        thread = threading.Thread(target=run)
+        with (
+            patch.object(worker, "_read_verify_payload", side_effect=gated_read),
+            patch.object(self.pool, "decode_zstd", wraps=self.pool.decode_zstd) as decode,
+        ):
+            thread.start()
+            try:
+                self.assertTrue(held.wait(5) and first_read.wait(5))
+                # Shared decode starts only after every payload read drains, including after a failure.
+                self.assertTrue(thread.is_alive())
+                decode.assert_not_called()
+                while_held()
+            finally:
+                release.set()
+                thread.join(5)
+        self.assertFalse(thread.is_alive())
+        return outcome
+
     def test_empty_publication_authenticates_sidecars_without_allocating_payload(self):
-        path, digest = write_manifest(
-            self.root / "manifest.json",
-            {
-                "codec": "bitcomp-zstd",
-                "frame_bytes": 1 << 20,
-                "files": [],
-                "tensors": [],
-            },
-        )
+        path, digest = write_publication(self.root / "empty", [{}], codec="bitcomp-zstd")
         wire = json.loads(path.read_bytes())
         for kind in ("catalog", "metadata"):
-            sidecar = self.root / wire[kind]["file"]
+            sidecar = path.parent / wire[kind]["file"]
             original = sidecar.read_bytes()
             sidecar.write_bytes(original[:-1] + bytes([original[-1] ^ 1]))
             with self.assertRaisesRegex(ValueError, "metadata changed or SHA256"):
@@ -478,87 +382,24 @@ class TestHostSnapshot(unittest.TestCase):
             "REUSABLE",
         )
 
-    def test_verified_cache_precedes_local_decode_and_retains_immutable_bytes(self):
-        path, digest, manifest, expected = fixture(self.root)
-        arena, metrics = self.arena(), {}
-        entered, release, finished = [threading.Event() for _ in range(3)]
-        snapshots, errors = [], []
-        peer_finished = threading.Event()
-        original_read = worker._read_verify_payload
+    def test_verified_cache_precedes_shared_decode_and_failures_never_release(self):
+        path, digest, expected = fixture(self.root / "verified")
+        arena, metrics = self.arena("verified"), {}
 
-        def delayed_read(source, destination, expected, skip_payload_hash):
-            if source.name == "foreign.bin":
-                assert entered.wait(5)
-            result = original_read(source, destination, expected, skip_payload_hash)
-            if source.name == "owner.bin":
-                entered.set()
-                assert release.wait(5)
-            else:
-                peer_finished.set()
-            return result
+        def while_held():
+            self.assertIsNone(arena.allocation)
+            self.assertEqual(json.loads((arena.directory / "state.json").read_bytes())["state"], "BUILDING")
+            (path.parent / "owner-00000.bin").write_bytes(b"changed after retained read")
 
-        def build():
-            try:
-                snapshots.append(
-                    prepare_snapshot(
-                        arena,
-                        path,
-                        digest,
-                        local_entries(manifest, expected),
-                        self.pool,
-                        metrics,
-                        metadata(),
-                    )
-                )
-            except BaseException as error:
-                errors.append(error)
-            finally:
-                finished.set()
-
-        with (
-            patch.object(worker, "_read_verify_payload", side_effect=delayed_read),
-            patch.object(self.pool, "decode_zstd", wraps=self.pool.decode_zstd) as decode,
-        ):
-            builder = threading.Thread(target=build)
-            builder.start()
-            try:
-                self.assertTrue(entered.wait(5))
-                self.assertTrue(peer_finished.wait(5))
-                self.assertFalse(finished.is_set())
-                decode.assert_not_called()
-                self.assertIsNone(arena.allocation)
-                state = json.loads(next(self.cache.glob("*/*/state.json")).read_text())
-                self.assertEqual(state["state"], "BUILDING")
-                (self.root / "owner.bin").write_bytes(b"changed after retained read")
-            finally:
-                release.set()
-                builder.join(5)
-        self.assertFalse(builder.is_alive())
-        self.assertEqual(errors, [])
-        self.assertEqual(metrics["host_encoded_cache_hash_files"], 2)
-        self.assertEqual(metrics["host_encoded_cache_skip_payload_hash"], 0)
-        self.assertGreaterEqual(
-            metrics["host_prepared_cache_build_s"],
-            metrics["host_rank_outer_zstd_decode_s"],
+        (snapshot,) = self.held_build(
+            lambda: prepare_snapshot(arena, path, digest, expected, self.pool, metrics, metadata(engine="verified")),
+            while_held,
+            after_read=True,
         )
+        self.assertGreaterEqual(metrics["host_prepared_cache_build_s"], metrics["host_rank_outer_zstd_decode_s"])
         self.assertGreaterEqual(metrics["host_encoded_cache_access_s"], metrics["host_encoded_cache_wait_s"])
-        snapshot = snapshots[0]
         self.assertIs(snapshot.get(TENSOR_IDS["dense"]).obj, arena.mapping.obj)
         self.assertEqual({name: bytes(snapshot.get(TENSOR_IDS[name])) for name in expected}, expected)
-        follower_metrics = {}
-        follower = prepare_snapshot(
-            self.arena(rank=1),
-            path,
-            digest,
-            local_entries(manifest, ["dense"]),
-            self.pool,
-            follower_metrics,
-            metadata(),
-        )
-        self.assertEqual(bytes(follower.get(TENSOR_IDS["dense"])), expected["dense"])
-        self.assertEqual(follower_metrics["host_encoded_cache_hash_files"], 0)
-        self.assertEqual(follower_metrics["host_rank_outer_zstd_tensors"], 0)
-        follower.close()
         publication = snapshot.publication
         snapshot.close()
         catalog = publication.directory / publication.index["catalog"]["file"]
@@ -566,12 +407,34 @@ class TestHostSnapshot(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "shared canonical catalog changed"):
             publication.read_catalog()
 
+        path, digest, expected = fixture(self.root / "corrupt")
+        payload = path.parent / "owner-00000.bin"
+        corrupted = bytearray(payload.read_bytes())
+        corrupted[-1] ^= 1
+        payload.write_bytes(corrupted)
+        arena = self.arena("corrupt")
+        outcome = self.held_build(
+            lambda: prepare_snapshot(arena, path, digest, expected, self.pool, {}, metadata(engine="corrupt"))
+        )
+        self.assertEqual([str(error) for error in outcome], ["delta payload SHA256 mismatch"])
+        # The child never retries a publication that failed before READY.
+        with self.assertRaisesRegex(ValueError, "failed or already released"):
+            prepare_snapshot(arena, path, digest, expected, self.pool, {}, metadata(engine="corrupt"))
+
+        # Verification alone cannot publish READY when shared outer decoding fails.
+        foreign = matrix(FOREIGN)
+        foreign["payload"] = b"not-zstd".ljust(len(foreign["payload"]), b" ")
+        path, digest, _ = fixture(self.root / "bad-decode", foreign=foreign)
+        arena = self.arena("bad-decode")
+        with self.assertRaises(zstd.ZstdError):
+            prepare_snapshot(arena, path, digest, ["foreign"], self.pool, {}, metadata(engine="bad-decode"))
+        with self.assertRaisesRegex(ValueError, "engine APPLIED release"):
+            prepare_snapshot(arena, path, digest, ["foreign"], self.pool, {}, metadata(2, "bad-decode"))
+
     def test_payload_hash_policy_follows_publication_and_requires_peer_agreement(self):
-        path, digest, manifest, expected = fixture(self.root)
-        strict = self.arena("strict")
-        peer = self.arena("strict")
+        strict, peer = self.arena("strict"), self.arena("strict", rank=1)
         for version, validate in enumerate((True, False, True), 1):
-            path, digest = write_manifest(path, manifest, version)
+            path, digest, expected = fixture(self.root / f"strict-{version}", version)
             metrics = {}
             # A legacy inherited environment cannot override the request policy.
             with patch.dict(os.environ, {"GPU_DELTA_SKIP_PAYLOAD_HASH": str(int(validate))}):
@@ -579,7 +442,7 @@ class TestHostSnapshot(unittest.TestCase):
                     strict,
                     path,
                     digest,
-                    local_entries(manifest, expected),
+                    expected,
                     self.pool,
                     metrics,
                     metadata(version, "strict", validate),
@@ -591,30 +454,22 @@ class TestHostSnapshot(unittest.TestCase):
                 {name: bytes(snapshot.get(TENSOR_IDS[name])) for name in expected},
                 expected,
             )
-            with self.assertRaisesRegex(ValueError, "requires prior engine APPLIED release"):
+            # A peer requesting the other policy polls for its own token, never adopting this one.
+            with self.assertRaisesRegex(RuntimeError, "aborted"):
                 prepare_snapshot(
-                    peer,
-                    path,
-                    digest,
-                    local_entries(manifest, expected),
-                    self.pool,
-                    {},
-                    metadata(version, "strict", not validate),
+                    peer, path, digest, expected, self.pool, {}, metadata(version, "strict", not validate), one_poll()
                 )
             snapshot.close(True)
 
         # The manifest itself still has an exact digest; only payload SHA is skipped.
-        manifest["payload_checksum_format"] = "none"
-        for record in manifest["files"]:
-            record["sha256"] = None
-        path, digest = write_manifest(path, manifest)
+        path, digest, expected = fixture(self.root / "unchecked", payload_hash=False)
         for arena, created in ((self.arena(), 1), (self.arena(rank=1), 0)):
             metrics = {}
             snapshot = prepare_snapshot(
                 arena,
                 path,
                 digest,
-                local_entries(manifest, expected),
+                expected,
                 self.pool,
                 metrics,
                 metadata(validate_payload_hash=False),
@@ -633,129 +488,25 @@ class TestHostSnapshot(unittest.TestCase):
                 self.arena("require-checksum"),
                 path,
                 digest,
-                local_entries(manifest, expected),
+                expected,
                 self.pool,
                 {},
                 metadata(engine="require-checksum"),
             )
 
-    def test_hash_and_shared_decode_failure_never_release_cache(self):
-        path, digest, manifest, expected = fixture(self.root)
-        with self.assertRaisesRegex(ValueError, "immutable delta manifest SHA256 mismatch"):
-            self.arena("bad-manifest").prepare_publication(
-                metadata(engine="bad-manifest") | dict(manifest_path=str(path), manifest_sha256="0" * 64),
-                {},
-            )
-        manifest["files"][0]["sha256"] = "0" * 64
-        path, digest = write_manifest(path, manifest)
-        peer_entered, release, failed = [threading.Event() for _ in range(3)]
-        finished, errors = threading.Event(), []
-        original_read = worker._read_verify_payload
-
-        def blocked_peer(source, destination, record, skip_payload_hash):
-            if source.name == "foreign.bin":
-                peer_entered.set()
-                assert release.wait(5)
-            try:
-                return original_read(source, destination, record, skip_payload_hash)
-            except ValueError:
-                failed.set()
-                raise
-
-        def build():
-            try:
-                prepare_snapshot(
-                    self.arena(),
-                    path,
-                    digest,
-                    local_entries(manifest, expected),
-                    self.pool,
-                    {},
-                    metadata(),
-                )
-            except ValueError as error:
-                errors.append(str(error))
-            finally:
-                finished.set()
-
-        with (
-            patch.object(worker, "_read_verify_payload", side_effect=blocked_peer),
-            patch.object(self.pool, "decode_zstd", wraps=self.pool.decode_zstd) as decode,
-        ):
-            thread = threading.Thread(target=build)
-            thread.start()
-            try:
-                self.assertTrue(peer_entered.wait(5))
-                self.assertTrue(failed.wait(5))
-                self.assertFalse(finished.is_set())
-                decode.assert_not_called()
-            finally:
-                release.set()
-                thread.join(5)
-        self.assertFalse(thread.is_alive())
-        self.assertEqual(errors, ["delta payload SHA256 mismatch"])
-        with self.assertRaisesRegex(ValueError, "failed or already released"):
-            prepare_snapshot(
-                self.arena(),
-                path,
-                digest,
-                local_entries(manifest, expected),
-                self.pool,
-                {},
-                metadata(),
-            )
-        # Verification alone cannot publish READY when shared outer decoding fails.
-        manifest["files"][0]["sha256"] = hashlib.sha256((self.root / "owner.bin").read_bytes()).hexdigest()
-        invalid = b"not-zstd".ljust(manifest["files"][1]["nbytes"], b" ")
-        (self.root / "foreign.bin").write_bytes(invalid)
-        manifest["files"][1]["sha256"] = hashlib.sha256(invalid).hexdigest()
-        path, digest = write_manifest(path, manifest)
-        arena = self.arena("bad-decode")
-        with self.assertRaises(zstd.ZstdError):
-            prepare_snapshot(
-                arena,
-                path,
-                digest,
-                local_entries(manifest, ["foreign"]),
-                self.pool,
-                {},
-                metadata(engine="bad-decode"),
-            )
-        with self.assertRaisesRegex(ValueError, "engine APPLIED release"):
-            prepare_snapshot(
-                arena,
-                path,
-                digest,
-                local_entries(manifest, ["foreign"]),
-                self.pool,
-                {},
-                metadata(2, "bad-decode"),
-            )
-
     def test_shared_preparation_has_one_owner_and_reuses_or_grows_one_inode(self):
-        publications = []
-        for version, repeat in enumerate((1, 1, 20000, 1, 1), 1):
-            directory = self.root / f"version-{version}"
-            directory.mkdir()
-            publication = shared_publication(directory, repeat, version)
-            if version in (2, 4):
-                path, _, manifest, expected = publication
-                if version == 2:
-                    foreign = manifest["tensors"][-1]
-                    foreign["frames"] = []
-                    foreign["changed_bytes"] = 0
-                    expected.pop("foreign")
-                    manifest["tensors"].reverse()
-                else:
-                    manifest["codec"] = "snappy-zstd"
-                path, digest = write_manifest(path, manifest, version)
-                publication = (
-                    path,
-                    digest,
-                    manifest,
-                    expected,
-                )
-            publications.append(publication)
+        variants = {
+            # Owner 1 keeps foreign's outer payload but omits its inner frames, so nothing is prepared.
+            2: dict(foreign=dict(matrix(FOREIGN), frames=[], changed_bytes=0)),
+            3: dict(dense=DENSE + b"d" * 80000),
+            4: dict(codec="snappy-zstd"),
+        }
+        publications = [
+            fixture(
+                self.root / f"version-{version}", version, **({"codec": "bitcomp-zstd"} | variants.get(version, {}))
+            )
+            for version in range(1, 6)
+        ]
         context = multiprocessing.get_context("fork")
         barrier, output = context.Barrier(2), context.Queue()
         children = [
@@ -816,7 +567,7 @@ class TestHostSnapshot(unittest.TestCase):
             self.assertGreater(row["metrics"]["host_rank_private_capacity_bytes"], 0)
             self.assertEqual(
                 row["metrics"]["host_rank_staging_copy_bytes"],
-                sum(len(publications[3][3][name]) for name in names),
+                sum(len(publications[3][2][name]) for name in names),
             )
         for rows in records.values():
             first, warm, grown, de, restored = rows
@@ -837,11 +588,9 @@ class TestHostSnapshot(unittest.TestCase):
             self.assertEqual(grown["shared_capacity"], restored["shared_capacity"])
 
     def test_failed_shared_creator_cannot_publish_or_release_prepared_bytes(self):
-        path, digest, manifest, _ = shared_publication(self.root)
+        path, digest, _ = fixture(self.root / "v1", codec="bitcomp-zstd")
         participants = shared_participants()
         owner, peer = [host.HostArena("a", 0, identity) for identity in participants]
-        for arena in (owner, peer):
-            arena.register_dtypes({"checks": [], "errors": []})
         self.addCleanup(owner.close)
         self.addCleanup(peer.close)
         request = metadata() | dict(participants=participants)
@@ -852,9 +601,7 @@ class TestHostSnapshot(unittest.TestCase):
         )
         prior = owner.prepare_local(prior_publication, [TENSOR_IDS["dense"]], prior_metrics, False)
         prior.close(True)
-        manifest["tensors"][-1]["frames"] = []
-        manifest["tensors"][-1]["changed_bytes"] = 0
-        path, digest = write_manifest(path, manifest, 2)
+        path, digest, _ = fixture(self.root / "v2", 2, "bitcomp-zstd")
         request = metadata(2) | dict(participants=participants)
         with patch.object(worker, "_prepare_arena", side_effect=RuntimeError("decode failed")):
             with self.assertRaisesRegex(RuntimeError, "decode failed"):
@@ -938,19 +685,11 @@ class TestHostSnapshot(unittest.TestCase):
                 worker._read_verify_payload(path, destination, {"nbytes": 79, "sha256": "0" * 64}, True)
 
     def test_followers_wait_for_shared_ready_without_blocking_other_engines(self):
-        path, digest, manifest, expected = fixture(self.root)
+        path, digest, _ = fixture(self.root / "v1")
         first, follower, other = self.arena(), self.arena(rank=1), self.arena("b")
-        previous = prepare_snapshot(
-            first,
-            path,
-            digest,
-            local_entries(manifest, ["dense"]),
-            self.pool,
-            {},
-            metadata(),
-        )
+        previous = prepare_snapshot(first, path, digest, ["dense"], self.pool, {}, metadata())
         previous.close(True)
-        path, digest = write_manifest(path, manifest, 2)
+        path, digest, expected = fixture(self.root / "v2", 2)
         slow_pool = HostPayloadPool(2)
         self.addCleanup(slow_pool.close)
         entered, release, follower_started, follower_finished = [threading.Event() for _ in range(4)]
@@ -988,7 +727,7 @@ class TestHostSnapshot(unittest.TestCase):
                         arena,
                         path,
                         digest,
-                        local_entries(manifest, selected),
+                        selected,
                         pool,
                         metrics if finished is not None else {},
                         metadata(2),
@@ -1020,15 +759,7 @@ class TestHostSnapshot(unittest.TestCase):
                 self.assertNotIn((threads[1], "index.json"), reads)
                 threads[0].start()
                 self.assertTrue(entered.wait(5))
-                third = prepare_snapshot(
-                    other,
-                    path,
-                    digest,
-                    local_entries(manifest, ["expert"]),
-                    self.pool,
-                    {},
-                    metadata(2, engine="b"),
-                )
+                third = prepare_snapshot(other, path, digest, ["expert"], self.pool, {}, metadata(2, engine="b"))
                 self.assertEqual(bytes(third.get(TENSOR_IDS["expert"])), expected["expert"])
                 self.assertFalse(release.is_set())
                 self.assertFalse(follower_finished.is_set())
@@ -1060,24 +791,9 @@ class TestHostSnapshot(unittest.TestCase):
             snapshot.close()
 
     def test_rank_capacity_reuse_growth_and_late_encoded_release(self):
-        path, digest, manifest, expected = fixture(self.root)
+        path, digest, expected = fixture(self.root / "v1")
         arena, first_metrics = self.arena(), {}
-        first = prepare_snapshot(
-            arena,
-            path,
-            digest,
-            local_entries(manifest, expected),
-            self.pool,
-            first_metrics,
-            metadata(),
-        )
-        with patch.object(Path, "read_bytes", autospec=True, side_effect=Path.read_bytes) as read:
-            reused = arena.prepare_publication(metadata() | dict(manifest_path=str(path), manifest_sha256=digest), {})
-        self.assertEqual(reused.header["target_version"], 1)
-        self.assertEqual(
-            [call.args[0] for call in read.call_args_list],
-            [arena.directory / "state.json"],
-        )
+        first = prepare_snapshot(arena, path, digest, expected, self.pool, first_metrics, metadata())
         original = arena.capacity.copy()
         self.assertEqual(
             original["capacity"],
@@ -1085,68 +801,36 @@ class TestHostSnapshot(unittest.TestCase):
         )
         self.assertEqual(
             first_metrics["host_encoded_cache_capacity_bytes"],
-            (sum(file["nbytes"] for file in manifest["files"]) + 1023) // 1024 * 1024,
+            (sum(file["nbytes"] for file in json.loads(path.read_bytes())["files"]) + 1023) // 1024 * 1024,
         )
+        request = metadata() | dict(manifest_path=str(path), manifest_sha256=digest)
+        # The child returns its own unreleased READY image again; nothing is rebuilt.
+        reused = {}
+        with patch.object(Path, "read_bytes", autospec=True, side_effect=Path.read_bytes) as read:
+            again = arena.prepare_publication(request, reused)
+        self.assertEqual(again.index, first.publication.index)
+        self.assertEqual([call.args[0] for call in read.call_args_list], [arena.directory / "state.json"])
+        for kind in ("encoded", "prepared"):
+            self.assertEqual((reused[f"host_{kind}_cache_reused"], reused[f"host_{kind}_cache_created"]), (1, 0))
         first.close(True)
-        path, digest = write_manifest(path, manifest, 2)
+        # A released publication is never rebuilt, so its applied XOR mask cannot be served again.
+        with self.assertRaisesRegex(ValueError, "failed or already released"):
+            arena.prepare_publication(request, {})
+        path, digest, _ = fixture(self.root / "v2", 2)
         warm = {}
-        second = prepare_snapshot(
-            arena,
-            path,
-            digest,
-            local_entries(manifest, expected),
-            self.pool,
-            warm,
-            metadata(2),
-        )
+        second = prepare_snapshot(arena, path, digest, expected, self.pool, warm, metadata(2))
         self.assertEqual(arena.capacity, original)
         self.assertEqual(warm["host_rank_allocation_calls"], 0)
         self.assertEqual(warm["host_encoded_cache_allocation_calls"], 0)
         self.assertEqual(warm["host_rank_mapping_reused"], 1)
         first.close(True)
         with self.assertRaisesRegex(ValueError, "engine APPLIED release"):
-            prepare_snapshot(
-                arena,
-                path,
-                digest,
-                local_entries(manifest, expected),
-                self.pool,
-                {},
-                metadata(3),
-            )
+            prepare_snapshot(arena, path, digest, expected, self.pool, {}, metadata(3))
         second.close(True)
         large = hashlib.shake_256(b"growth").digest(original["capacity"] * 2 + 1)
-        encoded = zstd.ZstdCompressor(write_checksum=True).compress(large)
-        payload = (self.root / "owner.bin").read_bytes() + encoded
-        dense = next(entry for entry in manifest["tensors"] if entry["name"] == "dense")
-        dense["changed_bytes"] = len(large)
-        dense["frames"][0].update(encoded_bytes=len(large), decoded_bytes=len(large))
-        dense["outer"].update(
-            encoded_offset=len(payload) - len(encoded),
-            encoded_bytes=len(encoded),
-            decoded_bytes=len(large),
-            frames=[
-                dict(
-                    encoded_offset=0,
-                    encoded_bytes=len(encoded),
-                    decoded_offset=0,
-                    decoded_bytes=len(large),
-                )
-            ],
-        )
-        (self.root / "owner.bin").write_bytes(payload)
-        manifest["files"][0].update(nbytes=len(payload), sha256=hashlib.sha256(payload).hexdigest())
-        path, digest = write_manifest(path, manifest, 3)
+        path, digest, expected = fixture(self.root / "v3", 3, dense=large)
         growth = {}
-        third = prepare_snapshot(
-            arena,
-            path,
-            digest,
-            local_entries(manifest, expected),
-            self.pool,
-            growth,
-            metadata(3),
-        )
+        third = prepare_snapshot(arena, path, digest, expected, self.pool, growth, metadata(3))
         self.assertEqual(bytes(third.get(TENSOR_IDS["dense"])), large)
         self.assertNotEqual(arena.capacity["identity"], original["identity"])
         self.assertEqual(arena.capacity["generation"], 2)
@@ -1157,120 +841,36 @@ class TestHostSnapshot(unittest.TestCase):
         )
         self.assertEqual(
             growth["host_encoded_cache_capacity_bytes"],
-            (2 * sum(file["nbytes"] for file in manifest["files"]) + 1023) // 1024 * 1024,
+            (2 * sum(file["nbytes"] for file in json.loads(path.read_bytes())["files"]) + 1023) // 1024 * 1024,
         )
         third.close()
         with self.assertRaisesRegex(ValueError, "engine APPLIED release"):
-            prepare_snapshot(
-                arena,
-                path,
-                digest,
-                local_entries(manifest, expected),
-                self.pool,
-                {},
-                metadata(4),
-            )
+            prepare_snapshot(arena, path, digest, expected, self.pool, {}, metadata(4))
         arena.close()
         self.assertIsNone(arena.mapping)
 
 
-def decode_fixture(codec):
-    blobs = {"payload": bytearray(b"first-file"), "other": bytearray(b"second-file")}
-    entries, expected = [], {}
-    for i in range(97):
-        filename = "other" if i % 3 == 0 else "payload"
-        blob = blobs[filename]
-        value = bytes([i % 251]) * (31 + i * 31)
-        if i == 33:
-            value = bytes(j % 251 for j in range(len(value)))
-        encoded, outer_frames = value, []
-        if codec != "lz4":
-            parts = (value[: len(value) // 2], value[len(value) // 2 :]) if i == 33 else (value,)
-            encoded, decoded_offset = bytearray(), 0
-            for part in parts:
-                frame = zstd.ZstdCompressor(write_checksum=True).compress(part)
-                outer_frames.append(
-                    {
-                        "encoded_offset": len(encoded),
-                        "encoded_bytes": len(frame),
-                        "decoded_offset": decoded_offset,
-                        "decoded_bytes": len(part),
-                    }
-                )
-                encoded.extend(frame)
-                decoded_offset += len(part)
-        blob.extend(bytes(-len(blob) % 16))
-        start = len(blob)
-        blob.extend(encoded)
-        name = f"t{i}"
-        expected[name] = value
-        entries.append(
-            {
-                "name": name,
-                "encoding": "xor_bytes",
-                "nbytes": len(value),
-                "changed_bytes": len(value),
-                "frames": [
-                    dict(
-                        encoded_offset=0,
-                        encoded_bytes=len(value),
-                        decoded_offset=0,
-                        decoded_bytes=len(value),
-                    )
-                ],
-                "outer": {
-                    "file": filename,
-                    "encoded_offset": start,
-                    "encoded_bytes": len(encoded),
-                    "decoded_bytes": len(value),
-                    "frames": outer_frames,
-                },
-            }
-        )
-    for name, value in (
-        ("raw", b"raw-target-value"),
-        ("raw-large", bytes(range(256)) * 256),
-    ):
-        filename = "payload" if name == "raw" else "other"
-        blob = blobs[filename]
-        start = len(blob)
-        blob.extend(value)
-        expected[name] = value
-        entries.append(
-            {
-                "name": name,
-                "encoding": "xor_raw_bytes",
-                "nbytes": len(value),
-                "changed_bytes": len(value),
-                "frames": [],
-                "raw": {
-                    "file": filename,
-                    "encoded_offset": start,
-                    "encoded_bytes": len(value),
-                },
-            }
-        )
-    ordinals = {entry["name"]: i for i, entry in enumerate(entries)}
-    tensors = np.zeros(len(entries), dtype=worker.TENSOR_DTYPE)
-    size = 0
-    for name, ordinal in ordinals.items():
-        size = (size + 15) // 16 * 16
-        tensors[ordinal]["prepared_offset"] = size
-        tensors[ordinal]["prepared_nbytes"] = len(expected[name])
-        size += len(expected[name])
-    file_spans, position = {}, 0
-    for name, blob in blobs.items():
-        file_spans[name] = (position, len(blob))
-        position += len(blob)
-    backing = memoryview(b"".join(blobs.values()))
-    return entries, tensors, ordinals, size, backing, file_spans, expected
-
-
 @pytest.mark.parametrize("codec", ["snappy-zstd", "lz4-zstd", "lz4"])
-def test_bounded_jobs_decode_raw_and_compressed_bytes_exactly(codec):
-    entries, tensors, ordinals, size, encoded, file_spans, expected = decode_fixture(codec)
-    backing = bytearray(b"left" + bytes(size) + b"right")
+def test_bounded_jobs_decode_raw_and_compressed_bytes_exactly(codec, tmp_path):
+    expected = {f"t{i}": bytes([i % 251]) * (31 + i * 31) for i in range(97)}
+    expected["t33"] = bytes(j % 251 for j in range(len(expected["t33"])))
+    owners = [{}, {}]
+    for i, (name, value) in enumerate(expected.items()):
+        # Every third matrix lives in the second owner file; t33 spans two outer frames.
+        owners[int(i % 3 == 0)][name] = matrix(value, parts=2 if i == 33 else 1, wrapped=codec != "lz4")
+    expected |= {"raw": b"raw-target-value", "raw-large": bytes(range(256)) * 256}
+    owners[0]["raw"], owners[1]["raw-large"] = expected["raw"], expected["raw-large"]
+    path, _ = write_publication(tmp_path / "publication", owners, codec=codec)
+    names, raw, encoded, file_spans, columns = arena_inputs(path)
+    tensors = np.zeros(len(names), dtype=worker.TENSOR_DTYPE)
+    tensors["prepared_nbytes"] = [len(expected[name]) for name in names]
+    aligned = (tensors["prepared_nbytes"] + 15) // 16 * 16
+    tensors["prepared_offset"] = np.cumsum(aligned) - aligned
+    backing = bytearray(
+        b"left" + bytes(int(np.max(tensors["prepared_offset"] + tensors["prepared_nbytes"]))) + b"right"
+    )
     destination = memoryview(backing)[4:-5]
+    order = np.arange(len(names))
     metrics = {name: 0 for name in worker._PREPARE_METRICS}
     pool = HostPayloadPool(2)
     try:
@@ -1279,14 +879,7 @@ def test_bounded_jobs_decode_raw_and_compressed_bytes_exactly(codec):
             patch.object(pool, "decode_zstd", wraps=pool.decode_zstd) as decode,
         ):
             worker._prepare_arena(
-                memoryview(destination),
-                tensors,
-                numeric_arena_inputs(entries, file_spans)[0],
-                encoded,
-                *numeric_arena_inputs(entries, file_spans)[1:],
-                pool,
-                metrics,
-                codec,
+                memoryview(destination), tensors, raw, encoded, file_spans, columns, order, pool, metrics, codec
             )
         assert submit.call_count == 4 * pool.workers
         assert metrics["host_rank_outer_zstd_tensors"] == (0 if codec == "lz4" else 97)
@@ -1298,35 +891,28 @@ def test_bounded_jobs_decode_raw_and_compressed_bytes_exactly(codec):
             )
         else:
             assert decode.call_count == submit.call_count
-        for name, ordinal in ordinals.items():
+        for ordinal, name in enumerate(names):
             row = tensors[ordinal]
             start, count = int(row["prepared_offset"]), int(row["prepared_nbytes"])
             assert destination[start : start + count] == expected[name]
         assert backing[:4] == b"left" and backing[-5:] == b"right"
-        # A span cannot read the following logical file in the shared backing.
+        # A span cannot read the following logical file in the shared backing. The production
+        # writer never emits such an offset, so a copy of its columns is mutated by hand.
         for name in ("t1", "raw"):
-            entry = next(entry for entry in entries if entry["name"] == name)
-            payload = entry["raw"] if name == "raw" else entry["outer"]
-            original_offset = payload["encoded_offset"]
-            payload["encoded_offset"] = file_spans[payload["file"]][1]
+            ordinal = names.index(name)
+            offsets = columns["tensors.payload_offset"].copy()
+            offsets[ordinal] = file_spans[columns["tensors.payload_file"][ordinal], 1]
+            escaped = columns | {"tensors.payload_offset": offsets}
             with pytest.raises(ValueError, match="span escapes declared file"):
                 worker._prepare_arena(
-                    destination,
-                    tensors,
-                    numeric_arena_inputs(entries, file_spans)[0],
-                    encoded,
-                    *numeric_arena_inputs(entries, file_spans)[1:],
-                    pool,
-                    metrics,
-                    codec,
+                    destination, tensors, raw, encoded, file_spans, escaped, order, pool, metrics, codec
                 )
-            payload["encoded_offset"] = original_offset
     finally:
         pool.close()
 
 
 @pytest.mark.parametrize("codec", ["snappy-zstd", "lz4"])
-def test_failed_tensor_drains_other_groups_before_releasing_views(codec):
+def test_failed_tensor_drains_other_groups_before_releasing_views(codec, tmp_path):
     entered, release, finished = threading.Event(), threading.Event(), threading.Event()
     attempted, errors = [], []
 
@@ -1345,27 +931,14 @@ def test_failed_tensor_drains_other_groups_before_releasing_views(codec):
             decode_one(memoryview(payload), destination[offset : offset + size])
         return 0.0
 
-    entries = [
-        {
-            "name": str(i),
-            "encoding": "xor_bytes",
-            "outer": {
-                "file": "p",
-                "encoded_offset": i,
-                "encoded_bytes": 1,
-                "decoded_bytes": 1,
-                "frames": [
-                    dict(
-                        encoded_offset=0,
-                        encoded_bytes=1,
-                        decoded_offset=0,
-                        decoded_bytes=1,
-                    )
-                ],
-            },
-        }
-        for i in range(20)
-    ]
+    frame = dict(encoded_offset=0, encoded_bytes=1, decoded_offset=0, decoded_bytes=1)
+    outer = dict(encoded_bytes=1, decoded_bytes=1, frames=[frame] if codec.endswith("-zstd") else [])
+    # One-byte payloads name their tensor; zero padding keeps sorted ordinals in that order.
+    owner = {
+        f"{i:02d}": dict(frames=[frame], payload=bytes([i]), outer=outer, changed_bytes=1, nbytes=1) for i in range(20)
+    }
+    path, _ = write_publication(tmp_path / "publication", [owner], codec=codec)
+    _, raw, encoded, file_spans, columns = arena_inputs(path)
     tensors = np.zeros(20, dtype=worker.TENSOR_DTYPE)
     tensors["prepared_offset"] = np.arange(20)
     tensors["prepared_nbytes"] = 1
@@ -1376,9 +949,11 @@ def test_failed_tensor_drains_other_groups_before_releasing_views(codec):
             worker._prepare_arena(
                 memoryview(bytearray(20)),
                 tensors,
-                numeric_arena_inputs(entries, {"p": (0, 20)})[0],
-                memoryview(bytes(range(20))),
-                *numeric_arena_inputs(entries, {"p": (0, 20)})[1:],
+                raw,
+                encoded,
+                file_spans,
+                columns,
+                np.arange(20),
                 pool,
                 {name: 0 for name in worker._PREPARE_METRICS},
                 codec,
@@ -1408,7 +983,6 @@ def test_failed_tensor_drains_other_groups_before_releasing_views(codec):
 @pytest.mark.parametrize("finish", ["close", "failure"])
 def test_cpu_process_reuses_exact_publications_without_torch(tmp_path, monkeypatch, finish):
     monkeypatch.setattr(host, "configured_cpu_workers", lambda: 2)
-    monkeypatch.setattr(host, "decoder_backend", lambda device, codec: "cuda")
     cache = tmp_path / "cache"
     cache.mkdir()
     guard = tmp_path / "import-guard"
@@ -1434,40 +1008,13 @@ runpy.run_path(entry, run_name='__main__')
         return process
 
     monkeypatch.setattr(host.subprocess, "Popen", launch)
-    participants = shared_participants()
-    namespace = {"stream_id": "stream", "participants": participants}
-    dtype_paths = []
-    for identity in participants:
-        name = f"dtypes-{identity['rank_id']}"
-        worker._write_record(
-            tmp_path,
-            name,
-            {
-                "identity": identity,
-                "checks": [
-                    dict(name="scalar", checkpoint_dtype="BF16", dtype="BF16", served=["F32"], shape=[]),
-                    dict(name="norm", checkpoint_dtype="BF16", dtype="BF16", served=["BF16", "F32"], shape=[4]),
-                    dict(name="matrix", checkpoint_dtype="F32", dtype="F32", served=["F32"], shape=[2, 2]),
-                    dict(
-                        name="packed",
-                        checkpoint_dtype="F8_E4M3",
-                        dtype="F8_E4M3",
-                        served=["U8", "F8_E4M3"],
-                        allowed_served=["U8", "I8", "F8_E4M3"],
-                        shape=[2, 2],
-                    ),
-                ],
-                "errors": [],
-            },
-        )
-        dtype_paths.append(tmp_path / (name + ".json"))
-    client = host.CpuWorker(cache, 0, participants[0])
+    namespace = {"stream_id": "stream", "participants": shared_participants()}
+    client = host.CpuWorker(cache)
     previous, identities, metrics_by_version = None, [], []
     try:
         for version in (1, 2):
-            directory = tmp_path / str(version)
-            directory.mkdir()
-            path, digest, _, expected = shared_publication(directory, version=version)
+            path, digest, expected = fixture(tmp_path / str(version), version, "bitcomp-zstd")
+            expected["foreign"] = FOREIGN
             expected_publication = {
                 "manifest_path": str(path),
                 "manifest_sha256": digest,
@@ -1479,10 +1026,6 @@ runpy.run_path(entry, run_name='__main__')
             }
             metrics = {}
             current = client.prepare(expected_publication, namespace, metrics, None)
-            if version == 1:
-                # Immutable discovery facts are consumed only once by this child.
-                for dtype_path in dtype_paths:
-                    dtype_path.unlink()
             assert current["cpu_worker"]["pid"] == client.process.pid != os.getpid()
             identities.append(current["cpu_worker"])
             catalog = json.loads((cache / current["catalog"]["file"]).read_bytes())
@@ -1506,10 +1049,9 @@ runpy.run_path(entry, run_name='__main__')
                     )
                 )
             metrics_by_version.append(metrics)
-            ready_state = json.loads((cache / "state.json").read_text())
-            assert ready_state["state"] == "READY"
-            client.release(ready_state)
-            assert json.loads((cache / "state.json").read_text())["state"] == "REUSABLE"
+            assert json.loads((cache / "state.json").read_text()) == {"token": current["token"], "state": "READY"}
+            client.release(current["token"])
+            assert json.loads((cache / "state.json").read_text()) == {"token": current["token"], "state": "REUSABLE"}
             previous = current
         assert identities[0] == identities[1] and guard.exists()
         assert metrics_by_version[0]["host_cpu_worker_spawn_s"] > 0
@@ -1534,79 +1076,12 @@ runpy.run_path(entry, run_name='__main__')
         client.close()
 
 
-@pytest.mark.parametrize("fault", ["mismatches", "missing", "identity"])
-def test_cpu_process_dtype_admission_rejects_all_ranks_before_payload_build(tmp_path, monkeypatch, fault):
-    monkeypatch.setattr(host, "_cache_base", lambda: tmp_path / "cache")
-    (tmp_path / "cache").mkdir()
-    monkeypatch.setattr(host, "configured_cpu_workers", lambda: 2)
-    monkeypatch.setattr(host, "decoder_backend", lambda device, codec: "cuda")
-    participants = shared_participants()
-    owner, peer = [host.HostArena("a", 0, identity) for identity in participants]
-    for rank, arena in enumerate((owner, peer)):
-        records = {"checks": [], "errors": []}
-        if fault == "mismatches":
-            records["checks"].append(
-                dict(
-                    name=f"unchanged.layers.{rank}.weight",
-                    checkpoint_dtype="BF16",
-                    dtype="BF16",
-                    served=["F32"],
-                    shape=[2, 2],
-                )
-            )
-            if rank == 1:
-                records["checks"].append(
-                    dict(
-                        name="packed.weight",
-                        checkpoint_dtype="F8_E4M3",
-                        dtype="F8_E4M3",
-                        served=["F8_E5M2"],
-                        allowed_served=["U8", "I8", "F8_E4M3"],
-                        shape=[2, 2],
-                    )
-                )
-                records["errors"].append("packed.scale: expected one-byte storage, served=F32")
-        arena.register_dtypes(records)
-    path, digest, _, _ = shared_publication(tmp_path)
-    request = metadata() | dict(manifest_path=str(path), manifest_sha256=digest)
-    try:
-        if fault == "missing":
-            peer._dtype_path.unlink()
-        elif fault == "identity":
-            record = json.loads(peer._dtype_path.read_bytes())
-            record["identity"]["pid"] += 1
-            peer._dtype_path.write_text(json.dumps(record))
-        with pytest.raises(ValueError) as failure:
-            owner.prepare_publication(request, {})
-        message = str(failure.value)
-        if fault == "mismatches":
-            assert all(
-                name in message
-                for name in ("unchanged.layers.0.weight", "unchanged.layers.1.weight", "packed.weight", "packed.scale")
-            )
-            assert "checkpoint=BF16" in message and "served=['F32']" in message
-        else:
-            assert ("missing" if fault == "missing" else "identity differs") in message
-        assert not (owner.directory / "index.json").exists()
-        assert json.loads((owner.directory / "state.json").read_bytes())["state"] == "FAILED"
-        with pytest.raises(ValueError) as follower_failure:
-            peer.prepare_publication(request, {})
-        assert str(follower_failure.value) == message
-        assert peer._worker is None and owner._worker.process.poll() is not None
-    finally:
-        paths = [arena._dtype_path for arena in (owner, peer)]
-        owner.close()
-        peer.close()
-        assert all(not path.exists() for path in paths)
-
-
 @pytest.mark.parametrize("abort", ["cancel", "child-exit"])
 def test_cpu_process_failure_stops_writer_and_never_releases_publication(tmp_path, monkeypatch, abort):
     cache = tmp_path / "cache"
     cache.mkdir()
     monkeypatch.setattr(host, "_cache_base", lambda: cache)
     monkeypatch.setattr(host, "configured_cpu_workers", lambda: 2)
-    monkeypatch.setattr(host, "decoder_backend", lambda device, codec: "cuda")
     ready_r, ready_w = os.pipe()
     release_r, release_w = os.pipe()
     cancelled, finished = threading.Event(), threading.Event()
@@ -1619,8 +1094,9 @@ from multiprocessing.connection import Connection
 from pathlib import Path
 fd = int(sys.argv[sys.argv.index('--socket-fd') + 1])
 connection = Connection(fd)
-request = json.loads(connection.recv_bytes())
-directory = Path(request['configuration']['directory'])
+directory = Path(json.loads(connection.recv_bytes())['directory'])
+# Like the real child, consume the prepare request before building.
+assert json.loads(connection.recv_bytes())['command'] == 'prepare'
 with (directory / '.lock').open('a+b') as lock:
     fcntl.flock(lock, fcntl.LOCK_EX)
     (directory / 'state.json').write_text(json.dumps({{'state': 'BUILDING'}}))
@@ -1640,9 +1116,8 @@ with (directory / '.lock').open('a+b') as lock:
         return process
 
     monkeypatch.setattr(host.subprocess, "Popen", launch)
-    path, digest, _, _ = shared_publication(tmp_path)
+    path, digest, _ = fixture(tmp_path / "publication", codec="bitcomp-zstd")
     arena = host.HostArena("a", 0, shared_participants()[0])
-    arena.register_dtypes({"checks": [], "errors": []})
 
     def build():
         try:

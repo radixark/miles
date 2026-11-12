@@ -167,27 +167,23 @@ def test_changed_membership_reuses_modules_and_preserves_pointer_order(planner):
         ((1, 1, 4), ((1 << 63) - 1, 17, 1)),
     ],
 )
-def test_word_coordinates_match_original_bytes_and_alignment_fallback(planner, shape, strides):
+def test_word_coordinates_match_original_bytes_for_each_source_alignment(planner, shape, strides):
     m, size = planner, math.prod(shape)
     contract = (size, (size,), (1,), shape, strides)
-    group = m.ByteApplyGroup([0], [0x100000], ((contract, 1),))
-    group.prepare_metadata(0)
-    initial = list(group.metadata_rows)
-    capacity = group.metadata_size
-    for address in (4096, 4097, 8192):
-        aligned = group.bind(scratch(address=address))
-        [(family, row)] = records(group)
+    # A 16-byte aligned record offset admits word coordinates; an odd one keeps bytes.
+    for source, family in ((0, 1), (1, 2)):
+        group = m.ByteApplyGroup([source], [0x100000], ((contract, 1),))
+        group.prepare_metadata(0)
+        [(stored_family, row)] = records(group)
         axes = row[10]
         begin = 11 + 2 * axes
         stored_shape = row[begin : begin + axes]
         stored_stride = row[begin + axes : begin + 2 * axes]
         unit = 4 if family == 1 else 1
-        assert family == (1 if aligned else 2)
+        assert stored_family == family
         assert math.prod(stored_shape) * unit == size
         for index in range(size // unit):
             assert unit * byte_offset(index, stored_shape, stored_stride) == byte_offset(index * unit, shape, strides)
-        assert len(group.metadata_rows) == capacity
-    assert group.metadata_rows == initial
 
 
 @pytest.mark.parametrize(
@@ -231,7 +227,7 @@ def test_source_bounds_empty_plans_and_missing_destinations(planner):
     empty = m.ByteApplyGroup([], [], ((linear((1 << 63) - 1), 0),))
     assert not empty.prepare_metadata(0)
     assert empty.prepare_metadata(0)
-    assert empty.bind(scratch(0, 0))
+    empty.bind(scratch(0, 0))
     assert empty.bind_launch(None, None, None) is None
 
 
@@ -264,7 +260,7 @@ def test_cpu_views_share_one_mirror_and_require_fresh_paused_binding(planner):
         call()
 
 
-def test_aligned_bind_uses_immutable_template_without_replanning(planner, monkeypatch):
+def test_bind_uses_immutable_template_and_never_replans(planner, monkeypatch):
     m = planner
     contract = [4100, [4100], [1], [4100], [1]]
     sources, targets = [0], [4096]
@@ -272,15 +268,14 @@ def test_aligned_bind_uses_immutable_template_without_replanning(planner, monkey
     assert not group.prepare_metadata(0)
     initial = list(group.metadata_rows)
     contract[1][0], sources[0], targets[0] = 1, 99, 101
-    assert not group.bind(scratch(address=4097))
     assert group.prepare_metadata(0)
-    assert group.bind(scratch(address=8192))
+    group.bind(scratch(address=8192))
     assert group.metadata_rows == initial
     assert list(group.pointer_rows(8192)) == [8192, 4096]
     state = group.metadata_rows, group.programs
 
     def forbidden(*args):
-        pytest.fail("aligned paused bind rebuilt a prepared plan")
+        pytest.fail("paused bind rebuilt a prepared plan")
 
     monkeypatch.setattr(group, "_plan_binding", forbidden)
     monkeypatch.setattr(group, "pointer_rows", forbidden)
@@ -289,7 +284,9 @@ def test_aligned_bind_uses_immutable_template_without_replanning(planner, monkey
     monkeypatch.setattr(m, "_resident_ctas", forbidden)
     for address in (16384, 32768):
         assert group.prepare_metadata(0)
-        assert group.bind(scratch(address=address))
+        group.bind(scratch(address=address))
+        with pytest.raises(ValueError, match="16-byte aligned"):
+            group.bind(scratch(address=address + 4))
         assert all(a is b for a, b in zip(state, (group.metadata_rows, group.programs), strict=False))
 
 
@@ -298,7 +295,6 @@ def test_metadata_cache_rebuilds_for_changed_device_and_rejects_invalid_devices(
     group = planner.ByteApplyGroup([0], [4096], ((linear(81920), 1),))
     group.prepare_metadata(0)
     original_kernels = group.kernels
-    assert not group.bind(scratch(address=4097))
     assert not group.prepare_metadata(1)
     assert group.kernels != original_kernels
     assert group.programs[0].grid == (16, 1, 1)
@@ -306,7 +302,7 @@ def test_metadata_cache_rebuilds_for_changed_device_and_rejects_invalid_devices(
     assert not group.prepare_metadata(0)
     assert group.kernels == original_kernels
     assert group.programs[0].grid == (8, 1, 1)
-    assert group.bind(scratch())
+    group.bind(scratch())
     assert len(planner.warmed) == 6
 
     for device in (-1, False, 0.0, None):
@@ -334,19 +330,19 @@ def test_failed_metadata_preparation_cannot_bind_and_is_retryable(planner, monke
             group.bind(scratch())
     assert not group.prepare_metadata(0)
     assert group.prepare_metadata(0)
-    assert group.bind(scratch())
+    group.bind(scratch())
 
 
-def owner(groups):
+def owner(groups, device="cpu"):
+    """A PreparedDelta apply owner over real tensors; tests/manual reuses it on CUDA."""
     value = PreparedDelta.__new__(PreparedDelta)
     value.static_plans = [(None, None, g) for g in groups]
     value.apply_bindings, value.apply_source_patches = [], []
-    value.apply_fallback_groups = set()
     size = sum(2 * len(g.sources) + g.metadata_size for g in groups if g is not None)
-    # Real CPU tensors exercise the exact NumPy slab patch and tensor-view leases.
-    value.apply_host_metadata = torch.empty(size, dtype=torch.int64)
-    value.apply_metadata = torch.empty(size, dtype=torch.int64)
-    value.error = torch.zeros(1, dtype=torch.int32)
+    # Real tensors exercise the exact NumPy slab patch and tensor-view leases.
+    value.apply_host_metadata = torch.empty(size, dtype=torch.int64, pin_memory=device != "cpu")
+    value.apply_metadata = torch.empty(size, dtype=torch.int64, device=device)
+    value.error = torch.zeros(1, dtype=torch.int32, device=device)
     value.batches, value.status_checks = [], []
     value.raw_apply = value.raw_apply_inputs = value.raw_apply_group = None
     value.raw_pointer_host = None
@@ -356,52 +352,20 @@ def owner(groups):
     return value
 
 
-def test_cached_preparation_restores_fallback_before_fresh_owner(planner):
-    contract = (420, (420,), (1,), (3, 5, 7, 4), (140, 4, 20, 1))
-    group = planner.ByteApplyGroup([0], [4096], ((contract, 1),))
-    group.prepare_metadata(0)
-    aligned = tuple(group.metadata_rows)
-    first = owner([group])
-    first.decoded = [scratch(address=4097), scratch()]
-    first._bind_apply_metadata()
-    assert group.programs[0].family == "general"
-
-    assert group.prepare_metadata(0)
-    assert tuple(group.metadata_rows) == aligned
-    assert group.programs[0].family == "word_affine"
-    second = owner([group])
-    assert second.apply_metadata is not first.apply_metadata
-    assert second.error is not first.error
-    first_refs = weakref.ref(first.apply_metadata), weakref.ref(first.error)
-    first._release_gpu()
-    gc.collect()
-    assert all(ref() is None for ref in first_refs)
-
-    second.decoded = [scratch(address=8192), scratch()]
-    _, calls = second._bind_apply_metadata()
-    assert calls[0] is second.apply_bindings[0][-1]
-    start, stop, *_ = second.apply_bindings[0]
-    assert second.apply_host_view[start:stop].tolist() == list(aligned)
-    del calls, _
-    second_refs = weakref.ref(second.apply_metadata), weakref.ref(second.error)
-    second._release_gpu()
-    gc.collect()
-    assert all(ref() is None for ref in second_refs)
-
-
-def test_slab_patch_restores_fallback_and_releases_prebound_views(planner):
+def test_slab_patch_rejects_bad_slots_and_rebinds_fresh_owners_from_cache(planner):
     m = planner
     affine = (420, (420,), (1,), (3, 5, 7, 4), (140, 4, 20, 1))
     g = m.ByteApplyGroup([0, 8192], [4096, 16384], ((linear(4100), 1), (affine, 1)))
     h = m.ByteApplyGroup([0], [65537], ((linear(17), 1),))
     for group in (g, h):
         group.prepare_metadata(0)
-    prepared = owner([g, None, h])
-    original = prepared.apply_host_view.copy()
-    original_calls = [row[-1] if row else None for row in prepared.apply_bindings]
-    for origin in (4096, 4097, 8192):
-        prepared.decoded = [scratch(address=origin), scratch(address=origin + 4096)]
-        _, calls = prepared._bind_apply_metadata()
+    template = tuple(g.metadata_rows)
+    first = owner([g, None, h])
+    prebound = list(first.apply_bindings)
+    for origin in (4096, 8192):
+        first.decoded = [scratch(address=origin), scratch(address=origin + 4096)]
+        _, calls = first._bind_apply_metadata()
+        assert calls == prebound
         position = 0
         for index, group in enumerate((g, None, h)):
             if group is None:
@@ -409,51 +373,59 @@ def test_slab_patch_restores_fallback_and_releases_prebound_views(planner):
                 continue
             middle = position + 2 * len(group.sources)
             stop = middle + group.metadata_size
-            assert prepared.apply_host_view[position:middle].tolist() == list(
-                group.pointer_rows(prepared.decoded[index % 2].data_ptr())
+            assert first.apply_host_view[position:middle].tolist() == list(
+                group.pointer_rows(first.decoded[index % 2].data_ptr())
             )
-            assert prepared.apply_host_view[middle:stop].tolist() == group.metadata_rows
+            assert first.apply_host_view[middle:stop].tolist() == group.metadata_rows
             assert middle % 2 == position % 2 == 0
             position = stop
-        if origin % 16 == 0:
-            assert calls == original_calls
-    assert not prepared.apply_fallback_groups
-    for start, stop, *_ in (row for row in prepared.apply_bindings if row):
-        assert prepared.apply_host_view[start:stop].tolist() == original[start:stop].tolist()
-    del _  # the loop temporary above held tensor views
-    before = prepared.apply_host_view.copy()
-    prepared.decoded = [scratch(1), scratch()]
-    with pytest.raises(ValueError, match="exceeds decoded"):
-        prepared._bind_apply_metadata()
-    assert prepared.apply_host_view.tolist() == before.tolist()
-    # Bound closures own tensor views until explicit release; the cached group
+    # Undersized or misaligned slots fail before any slab patch.
+    before = first.apply_host_view.copy()
+    for decoded, error in (
+        ([scratch(1), scratch()], "exceeds decoded"),
+        ([scratch(address=4104), scratch()], "16-byte aligned"),
+    ):
+        first.decoded = decoded
+        with pytest.raises(ValueError, match=error):
+            first._bind_apply_metadata()
+        assert first.apply_host_view.tolist() == before.tolist()
+    # The cached template, still unchanged, prepares a fresh owner's own slab
+    # and error gate before any later bind.
+    assert g.prepare_metadata(0)
+    assert tuple(g.metadata_rows) == template
+    assert [program.family for program in g.programs] == ["packed", "word_affine"]
+    second = owner([g, None, h])
+    assert second.apply_metadata is not first.apply_metadata and second.error is not first.error
+    # Bound closures own tensor views until explicit release; the cached groups
     # must not retain those per-update tensors afterward.
-    host_ref = weakref.ref(prepared.apply_host_metadata)
-    gpu_ref = weakref.ref(prepared.apply_metadata)
-    del calls, original_calls
-    prepared._release_gpu()
+    first_refs = [weakref.ref(t) for t in (first.apply_host_metadata, first.apply_metadata, first.error)]
+    del calls, prebound
+    first._release_gpu()
     gc.collect()
-    assert host_ref() is None and gpu_ref() is None
+    assert all(ref() is None for ref in first_refs)
+    prebound = list(second.apply_bindings)
+    second.decoded = [scratch(address=8192), scratch()]
+    _, calls = second._bind_apply_metadata()
+    assert calls == prebound
+    middle = 2 * len(g.sources)
+    assert second.apply_host_view[middle : middle + g.metadata_size].tolist() == list(template)
+    second_refs = [weakref.ref(t) for t in (second.apply_host_metadata, second.apply_metadata, second.error)]
+    del calls, prebound
+    second._release_gpu()
+    gc.collect()
+    assert all(ref() is None for ref in second_refs)
 
 
-def test_prebound_launch_default_custom_grids_and_error_gate_identity(planner):
+def test_prebound_launch_uses_program_grids_and_error_gate_identity(planner):
     group = planner.ByteApplyGroup([0], [4096], ((linear(4100), 1),))
     group.prepare_metadata(0)
     pointers, metadata, error = object(), list(group.metadata_rows), object()
+    planned = group.programs[0].grid
     default = group.bind_launch(pointers, metadata, error)
-    custom = group.bind_launch(pointers, metadata, error, ((1, 1, 1),))
+    group.programs[0].grid = (1, 1, 1)  # CUDA tests vary grids through the mutable program.
+    custom = group.bind_launch(pointers, metadata, error)
     assert planner.launched == []
     default()
     custom()
-    assert [c[0] for c in planner.launched] == [group.programs[0].grid, (1, 1, 1)]
+    assert [c[0] for c in planner.launched] == [planned, (1, 1, 1)]
     assert all(c[1] is pointers and c[3] is error for c in planner.launched)
-    for grids in (
-        (),
-        ((0, 1, 1),),
-        ((True, 1, 1),),
-        ((1, 2, 1),),
-        ((1, 1),),
-        ((1 << 31, 1, 1),),
-    ):
-        with pytest.raises(ValueError, match="family launch grids"):
-            group.bind_launch(pointers, metadata, error, grids)

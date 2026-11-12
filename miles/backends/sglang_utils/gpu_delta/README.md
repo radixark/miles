@@ -20,9 +20,12 @@ Its `host_worker.py` runs by absolute file path in a clean CPU-only interpreter;
 it owns publication transactions, the worker pool and shared encoded, prepared
 and metadata buffers for one engine-host.
 
-The [development guide](../../../../tests/manual/gpu_delta/README.md) owns sender,
-training, recovery and benchmark instructions. This document describes the
-receiver contract and resource lifecycle.
+[GPU-Delta Weight Transfer](../../../../docs/advanced/gpu-delta-weight-transfer.md)
+describes the trainer side, recovery, eval snapshots and W&B metrics; the
+[development guide](../../../../tests/manual/gpu_delta/README.md) owns development
+variables, the E2E test and the benchmark. This document is the receiver contract:
+admission, control APIs, resource lifecycle, payload and cache contracts, decoder
+scheduling and receipts.
 
 ## Admission and supported layouts
 
@@ -110,6 +113,8 @@ endpoints are an internal interface to Miles:
 | `update_weights_from_gpu_delta` | Prepare, apply and resume one publication, returning compact APPLIED acknowledgements, full RESUMED receipts and server timings. |
 | `clear_gpu_delta_state` | Release retained delta resources while preserving weights and committed version. |
 
+Each participant identity carries the engine ID, a random rank ID, hostname, host
+cache ID, PID, process start ticks and TP/DP/PP ranks.
 The update request carries the admitted participants, caller-generated session
 ID and publication descriptor: manifest path/SHA256, stream, base/target versions
 and plan digest, plus `validate_payload_hash=true` by default. Rolling updates and
@@ -151,7 +156,7 @@ to cancel it, then apply the new publication. Its eval lock excludes generation
 across both calls. Each request uses a fresh session ID; a failed or uncertain
 operation requires receiver replacement. The receiver does not interpret eval
 or rollout modes. Snapshot scheduling and shared publication storage are described in the
-[eval contract](../../../../tests/manual/gpu_delta/README.md#dedicated-eval-snapshots).
+[eval contract](../../../../docs/advanced/gpu-delta-weight-transfer.md#dedicated-eval-snapshots).
 
 Preparation failure aborts that engine's preparation while old-version serving
 continues. Failed or aborted delta sessions require restart before another update.
@@ -172,7 +177,7 @@ transport's target sequence; omission uses the transport target version.
 `clear_gpu_delta_state` is valid when idle or successfully resumed. It drains each
 rank's FIFO release work, closes workers/host allocations and drops
 planning, decoder and stream objects. After every rank acknowledges, one process
-per engine-host deletes the shared encoded and prepared caches. Weights,
+per hostname and host cache ID deletes the shared encoded and prepared caches. Weights,
 publications, committed
 version, process identity, small provenance and pause state remain unchanged.
 Describe can recreate the backend at that version. Framework allocator/JIT caches
@@ -210,13 +215,16 @@ There is no full-publication HBM copy.
 Unchanged frames are omitted. Scalars/vectors and compact UE8M0 scales use
 `xor_raw_bytes`: uncompressed canonical XOR masks, omitted when unchanged.
 Preparation computes complete scalar targets for derived calibration without
-changing live weights. Discovery records dtype metadata for the full local
-checkpoint inventory, including unchanged tensors. The engine-host CPU prepare
-process checks all ranks' records once and reports incompatible dtypes together
-before processing a payload. Packed-layout safety checks remain part of binding
-construction. Matrices require matching logical dtypes; no matrix values are
-scanned for cast compatibility. BF16 scalars/vectors may use FP32 storage:
-the dtype policy is independent of model or parameter name. It relies on
+changing live weights. Dtype admission runs on each rank when
+`get_gpu_delta_info` constructs its backend: binding checks every bound tensor of
+the full local checkpoint inventory, including tensors whose delta stays empty,
+against the served dtypes its direct or packed layout allows. A rank reports all
+of its mismatches in one error prefixed `tp_rank=<t> dp_rank=<d>: `, and the
+failed query returns every rejecting rank's message before any publication is
+read; the CPU child performs no dtype admission. Matrices require matching
+logical dtypes; no matrix values are scanned for cast compatibility. BF16
+scalars/vectors may use FP32 storage: the dtype policy is independent of model or
+parameter name. It relies on
 served values remaining lossless checkpoint images and masks using checkpoint
 dtypes; arbitrary edits to served FP32 buffers are outside this contract.
 Preparation performs no live-value validation or host synchronization for dtype
@@ -230,14 +238,19 @@ all tasks drain before READY or failure. Namespace/publication records bind the
 original cohort, stream, path, digest, session, versions and hash policy. Mapped
 encoded bytes remain owned until every submitted worker drains.
 
-For every codec, one fixed original rank per engine-host owns a persistent CPU
-child that parses the manifest and prepares the complete canonical image. The
-child owns its reusable payload pool, publication lock, current index and buffer
-growth. It uses a separate Python interpreter/GIL, imports no Torch and performs
-no CUDA work. Small IPC records describe the shared files; payloads and numeric
-metadata do not cross the IPC channel. The child publishes READY after building
-the image and accepts REUSABLE only for the exact released publication.
-Cancellation terminates and reaps the child, ending its write lease. A late abort
+For every codec, one fixed original rank per engine-host (the lowest TP rank, DP
+rank, PID and rank ID) owns a persistent CPU child that parses the manifest and
+prepares the complete canonical image. The child owns its reusable payload pool,
+publication lock, current index and buffer growth. It uses a separate Python
+interpreter/GIL, imports no Torch and performs no CUDA work. Small IPC records
+describe the shared files; payloads and numeric metadata do not cross the IPC
+channel. The child reads its cache directory and worker count once at spawn and
+publishes READY after building the image. A release names the publication token
+and marks only that READY publication REUSABLE. The child never rebuilds the
+token recorded in its cache state, whatever that state is: its XOR mask may
+already be applied. It returns only its own unreleased READY index for that
+token again. Cancellation terminates and reaps the child, ending its write
+lease. A late abort
 may retain a complete READY image but never makes it reusable. Clear drains and
 closes the child; parent death also terminates it. Wrapped
 codecs use one native Zstd `BufferWithSegments` per bounded worker group over the
@@ -260,9 +273,9 @@ granularity. Growth reserves twice the required extent; fitting
 updates reuse storage and CUDA registrations. Shared prepared capacity is counted
 once per engine-host, while DE rank-private capacity is counted per rank.
 
-Successful all-rank apply precedes resume. The owner queues exact-state release
-after its resume, and ordered release/view cleanup on the same FIFO executor
-completes before the next preparation can reuse the arena.
+Successful all-rank apply precedes resume. The owner queues the release of that
+publication token after its resume, and ordered release/view cleanup on the same
+FIFO executor completes before the next preparation can reuse the arena.
 BUILDING precedes overwrite; failed/aborted publications remain nonreusable, and
 late old releases cannot release newer bytes. Explicit clear removes retained
 encoded and prepared files only after the rank-close barrier.
@@ -281,15 +294,16 @@ fixed Triton families and caches occupancy per module/device, then prebinds laun
 closures. No model geometry enters compilation-cache keys. The families cover
 packed contiguous/two-axis word access, contiguous-source word-affine targets and
 general byte/affine fallback. The policy uses a full word-affine tile grid and at
-most four resident waves for packed/general; custom grids are test-only controls.
-There is no online autotuning or pause-time scratch fitting.
+most four resident waves for packed/general. There is no online autotuning or
+pause-time scratch fitting.
 
 After the reader fence, exactly two largest-batch decoded HBM slots are allocated
 when compressed work exists. One DE stream shares temporary workspace; each slot
 has its own status/size row. One apply stream owns the sticky error gate. DE slot
-`i % 2` is reused only after its prior apply completes. DE0 starts first, overlapping
-small uncompressed XOR updates. Apply i is queued before host submission of DE i+1 because
-nvCOMP's Async call can wait for prior work on its calling stream.
+`i % 2` is reused only after its prior apply completes. Small uncompressed XOR updates
+and metadata uploads are queued on the apply stream first; DE0 waits for them. Apply i is
+queued before host submission of DE i+1 because nvCOMP's Async call can wait for prior
+work on its calling stream.
 
 The CUDA path uses one compute stream for decode, status checks and Triton apply.
 A separate copy stream prefetches compressed data into two batch-sized slots.
@@ -300,10 +314,10 @@ calling stream to inspect headers; the prequeued copy can still overlap GPU work
 Large compressed and decoded slots are allocated only after the reader fence.
 
 Only omitted frame gaps/tails are zeroed. A fully covered batch skips zeroing; one
-status kernel checks native sizes/statuses before each grouped XOR. Aligned source
-binding patches the prepared pointer slab and uploads it once. Unexpected source
-misalignment rebuilds conservative runtime descriptors; later aligned binding
-restores the template. Derived consumer copies are gated by the sticky error.
+status kernel checks native sizes/statuses before each grouped XOR. Source binding
+requires 16-byte aligned decoded slots, patches the prepared pointer slab and uploads
+it once; a misaligned slot is rejected because there is no fallback descriptor path.
+Derived consumer copies are gated by the sticky error.
 Completion joins transfer, decode and apply before scratch release; failed cleanup
 attempts to drain both streams. Foreign tensor aliases retain allocations and registered
 producer/consumer streams are fenced before free in their original CUDA context.
@@ -378,7 +392,8 @@ device bandwidth from host durations.
 | `host_metadata_prepare_s`, `host_metadata_wait_s` | Small GPU input/status setup including its own stream waits / those waits alone |
 | `host_apply_kernel_prepare_s`, `apply_kernel_cache_misses`, `apply_kernel_cache_reused` | Record construction and fixed-module cache lookup; misses are Python cache misses, not necessarily compilation |
 | `paused_setup_host_s`, `paused_apply_host_wall_s` | Slot allocation/binding/uploads / complete apply through completion and scratch release |
-| `h2d_bytes`, `apply_metadata_h2d_bytes`, `apply_descriptor_h2d_bytes`, `decoder_metadata_h2d_bytes` | Explicit raw, metadata and CUDA compressed-input uploads; descriptor bytes are a subset of apply metadata bytes |
+| `h2d_bytes`, `apply_metadata_h2d_bytes`, `apply_descriptor_h2d_bytes`, `decoder_metadata_h2d_bytes` | Explicit raw, metadata, CUDA compressed-input and CPU-resident mirror uploads; descriptor bytes are a subset of apply metadata bytes |
+| `cpu_weight_h2d_bytes`, `cpu_weight_d2h_bytes` | Touched CPU-resident storage copied to temporary CUDA mirrors after the reader fence / copied back after successful apply; present only with CPU-resident targets |
 | `compressed_input_buffers`, `compressed_input_capacity_bytes`, `compressed_input_h2d_bytes` | CUDA input-slot count, total input-slot capacity and copied bytes including alignment padding; zero on DE |
 | `de_host_input_bytes` | Compressed bytes read directly by DE, not an explicit H2D transfer |
 | `decode_stages`, `decoded_buffers`, `decoded_scratch_bytes`, `decoder_workspace_bytes` | Fixed 2; actual slots (0 for raw-only); total slot bytes; temporary workspace, not peak HBM |
@@ -434,49 +449,21 @@ can overlap, and Async enqueue durations can include GPU backpressure.
 
 ## Validation
 
-The CPU suite is grouped by contract: `bindings` covers canonical slicing and
-FlashInfer byte maps; `layout` covers model mapping and consumer admission;
-`receiver` covers preparation, plan caches and the decode/apply lifecycle;
-`apply` and `derived` cover execution planning and consumer updates.
-`codec_admission` covers ABI/frame geometry and outer decoding. The API suite
-groups HTTP routing, tokenizer coordination and reply correlation. Checkpoint,
-host-cache, memory and session/scheduler tests retain separate fixtures. The
-independent CPU model mapping exercises extensibility, not a newly qualified
-serving model. CPU mocks do not prove CUDA/native behavior.
+CPU mocks do not prove CUDA/native behavior. Each manual test's docstring states its
+hardware and package prerequisites; without CUDA the layout and apply tests skip, and
+any other missing prerequisite fails. From the Miles checkout, run each command in a
+fresh process:
 
 ```bash
 python -m pytest -q tests/fast/utils/gpu_delta tests/fast/backends/sglang_utils/gpu_delta
-python -m pytest -q tests/manual/gpu_delta/test_gpu_delta_layout_cuda.py
-python -m pytest -q tests/manual/gpu_delta/test_codec.py
-python -m pytest -q tests/manual/gpu_delta/test_host_cuda.py
-python -m pytest -q tests/manual/gpu_delta/test_apply_cuda.py
-python -m pytest -q tests/manual/gpu_delta/test_device_allocator_cuda.py
-```
-
-Run these commands from the Miles repository on the validation devbox. Fast tests
-cover shared primitives and the SGLang adapter separately. Manual layout CUDA
-cases use serving-image FlashInfer/CuTe dependencies without nvCOMP. They compare
-against ordinary loader/preprocessing helpers and check padding,
-independent/aliased images, exact bytes, failure gates and graph addresses.
-
-Manual tests use the paired CUDA 13 Miles image, `nvidia-libnvcomp-cu13==6.0.0.12`,
-`zstandard`, `python-snappy` and `lz4`; missing prerequisites fail. The Snappy/LZ4
-DE cases and the DE allocator test require SM100/SM103. CUDA Bitcomp/Snappy/LZ4
-cases do not require DE. Together they exercise sorting off/on, fixed-slot reuse,
-known byte output and ownership without sending malformed compressed streams into
-nvCOMP. The host tests additionally check one-owner preparation, shared bytes and
-capacity reuse/growth, cancellation and failure lifetimes. The host CUDA test
-checks shared registered mappings and asynchronous H2D after a peer unregisters,
-plus private DE rank allocations and once-per-engine file verification. Its
-two-engine DE case
-and the allocator context-restoration test each require two DE-capable devices.
-Use separate fresh processes for each ambient allocator mode:
-
-```bash
-PYTORCH_ALLOC_CONF=backend:native,expandable_segments:True \
-  python -m pytest -q tests/manual/gpu_delta/test_device_allocator_cuda.py tests/manual/gpu_delta/test_codec.py
-PYTORCH_ALLOC_CONF=backend:cudaMallocAsync,expandable_segments:False \
-  python -m pytest -q tests/manual/gpu_delta/test_device_allocator_cuda.py tests/manual/gpu_delta/test_codec.py
+for test in test_gpu_delta_layout_cuda test_codec test_host_cuda test_apply_cuda test_device_allocator_cuda; do
+  python -m pytest -q "tests/manual/gpu_delta/$test.py"
+done
+# Repeat the allocator-sensitive tests once per ambient allocator mode.
+for conf in backend:native,expandable_segments:True backend:cudaMallocAsync,expandable_segments:False; do
+  PYTORCH_ALLOC_CONF="$conf" python -m pytest -q \
+    tests/manual/gpu_delta/test_device_allocator_cuda.py tests/manual/gpu_delta/test_codec.py
+done
 ```
 
 See [NVIDIA's DE requirements](https://docs.nvidia.com/cuda/nvcomp/decompression_engine_faq.html).

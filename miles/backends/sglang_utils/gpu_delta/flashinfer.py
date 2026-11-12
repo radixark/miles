@@ -1,10 +1,3 @@
-# Copyright 2026 SGLang Team
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-
 """FlashInfer expert layouts expressed as views of live consumer bytes.
 
 The apply kernel knows only affine byte coordinates. These admission-time
@@ -17,7 +10,7 @@ Padding is deliberately outside every destination.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 
 import torch
@@ -28,12 +21,83 @@ class _DtypeMismatch(ValueError):
 
 
 @dataclass(frozen=True)
+class _Format:
+    """Canonical checkpoint bytes shared by every backend of one format."""
+
+    weight: str
+    weight_served: tuple[torch.dtype, ...]
+    scale: str | None = None
+    scale_divisor: int = 0  # physical weight bytes per block scale
+
+
+@dataclass(frozen=True)
+class _Pair:
+    """Live storage of one admitted (backend, format) expert layout."""
+
+    scale: str | None  # scale parameter suffix
+    group: int  # gate/up interleave rows; zero keeps plain halves
+    shuffle: bool  # TRTLLM's 32-row transpose
+    weight: str  # physical weight orientation: rows, blocked, transposed or k_major
+    scale_image: str | None  # physical scale layout: blocked, cutedsl or deepgemm
+    scale_served: tuple[torch.dtype, ...] = ()
+    consumers: tuple[str, ...] = ()  # required TRTLLM consumer fields
+
+
+_PACKED = (torch.uint8, torch.int8)
+# SGLang's MegaMoE NVFP4 path serves FlashInfer's packed weights as float4_e2m1fn_x2,
+# the checkpoint's two-E2M1-per-byte U8 bytes unchanged.
+_NVFP4_PACKED = _PACKED + (torch.float4_e2m1fn_x2,)
+_E4M3 = (torch.float8_e4m3fn, torch.uint8, torch.int8)
+_UE8M0 = (torch.uint8, torch.int8, torch.float8_e8m0fnu)
+_FORMATS = {
+    "bf16": _Format("BF16", (torch.bfloat16,)),
+    "nvfp4": _Format("U8", _NVFP4_PACKED, "F8_E4M3", 8),
+    "mxfp4": _Format("U8", _PACKED, "U8", 16),
+    "mxfp8": _Format("F8_E4M3", _E4M3, "U8", 32),
+    "fp8-block128-ue8m0": _Format("F8_E4M3", _E4M3),
+}
+_TRTLLM_GEMM1 = (
+    "_flashinfer_trtllm_gemm1_alpha",
+    "_flashinfer_trtllm_gemm1_beta",
+    "_flashinfer_trtllm_gemm1_clamp_limit",
+)
+_PAIRS = {
+    ("trtllm", "bf16"): _Pair(None, 1, True, "blocked", None),
+    ("trtllm", "nvfp4"): _Pair("weight_scale", 1, True, "rows", "blocked", _E4M3),
+    ("trtllm", "mxfp4"): _Pair(
+        "weight_scale_inv_shuffled", 1, True, "rows", "blocked", _UE8M0, ("_gemm1_clamp_limit_tensor",)
+    ),
+    ("trtllm", "mxfp8"): _Pair("weight_scale_inv", 1, True, "rows", "blocked", _UE8M0, _TRTLLM_GEMM1),
+    # Block-128 projections use plain halves; their FP32 scales are complete values.
+    ("trtllm", "fp8-block128-ue8m0"): _Pair("weight_scale_inv", 0, False, "rows", None, consumers=_TRTLLM_GEMM1),
+    # Standard W4A4/W4A16: Up64, Gate64, Up64, Gate64, ...
+    ("cutedsl", "nvfp4"): _Pair("weight_scale", 64, False, "rows", "cutedsl", _E4M3),
+    # Gate16, Up16, Gate16, Up16, ...
+    ("megamoe", "nvfp4"): _Pair("weight_scale", 16, False, "transposed", "blocked", _E4M3),
+    ("megamoe", "mxfp8"): _Pair("weight_scale_inv", 32, False, "k_major", "blocked", _UE8M0),
+    # Retain checkpoint scales separately; target the shuffled consumer.
+    ("megamoe", "mxfp4"): _Pair("weight_scale_inv_shuffled", 8, False, "rows", "deepgemm", (torch.int32,)),
+}
+# Mxfp4MoEMethod's TRTLLM kernel reads the loader's scale name and owns no clamp tensor.
+_MXFP4_MOE_METHOD = replace(_PAIRS["trtllm", "mxfp4"], scale="weight_scale", consumers=())
+
+
+@dataclass(frozen=True)
 class FlashInferLayout:
     format: str
     backend: str
     gated: bool
     quant_mode: str = ""
     up_first: bool = False
+    # identify_layout sets this only for a method whose storage differs from its pair's row.
+    override: _Pair | None = None
+
+    @property
+    def pair(self):
+        pair = self.override or _PAIRS.get((self.backend, self.format))
+        if pair is None:
+            raise ValueError(f"unsupported FlashInfer expert layout: {self.backend}/{self.format}")
+        return pair
 
 
 @dataclass(frozen=True)
@@ -67,8 +131,6 @@ def identify_layout(layer, backend):
     """Identify an existing inference path; do not select or construct one."""
     backend = _backend(backend)
     method = layer.quant_method
-    if method.runner is not None and _backend(method.runner.runner_backend) != backend:
-        raise ValueError("FlashInfer selection does not match the live expert runner")
     name = type(method).__name__
     gated = bool(layer.moe_runner_config.is_gated)
     if name == "UnquantizedFusedMoEMethod":
@@ -114,7 +176,7 @@ def identify_layout(layer, backend):
     elif name == "Mxfp4MoEMethod":
         if backend != "trtllm" or method._fi_kernel != "trtllm_sm100":
             raise ValueError("unsupported native MXFP4 FlashInfer expert path")
-        layout = FlashInferLayout("mxfp4", backend, gated, up_first=True)
+        layout = FlashInferLayout("mxfp4", backend, gated, up_first=True, override=_MXFP4_MOE_METHOD)
     elif name == "Fp8MoEMethod":
         if backend == "cutedsl":
             raise ValueError("ordinary CuTe DSL MoE has no native FP8/MXFP4 path")
@@ -143,12 +205,19 @@ def identify_layout(layer, backend):
     return layout
 
 
-def _bytes(tensor):
+def _byte_view(tensor):
+    # A strided outer dimension is fine, but dtype reinterpretation requires
+    # contiguous elements within each row. Never silently clone a destination.
     if tensor.ndim == 0:
-        tensor = tensor.view(1)
+        tensor = tensor.reshape(1)
     if tensor.stride(-1) != 1:
-        raise ValueError("FlashInfer image requires contiguous innermost elements")
+        raise ValueError("delta destination requires a contiguous innermost dimension")
     return tensor.detach().view(torch.uint8)
+
+
+def _check_served(image, allowed, role):
+    if image.dtype not in allowed:
+        raise _DtypeMismatch(f"{role} served={image.dtype}, allowed_served={[str(dtype) for dtype in allowed]}")
 
 
 def _same_image(a, b):
@@ -167,21 +236,21 @@ def _unique_images(images):
     return unique
 
 
-def _cutedsl_scale_images(layer, stem, expert, dtype_checks):
+def _cutedsl_scale_images(layer, stem, expert, allowed):
     primary = getattr(layer, f"{stem}_blockscale_swizzled")[
         expert
     ]  # config-access-exempt: Select the admitted gate/up or down CuTe scale image.
-    if primary.element_size() != 1:
-        raise _DtypeMismatch(f"NVFP4 scales require one-byte storage, served={primary.dtype}")
-    images = [primary]
-    served_dtypes = [str(primary.dtype)]
+    source = getattr(layer, f"{stem}_weight_scale")[
+        expert
+    ]  # config-access-exempt: Select the admitted gate/up or down scale parameter.
     mma = getattr(
         layer, f"{stem}_blockscale_mma", None
     )  # config-access-exempt: CuTe may retain an additional MMA scale image for this projection.
+    # Admit the original storage types; the MMA image is viewed as primary's dtype below.
+    for image in (primary, source) if mma is None else (primary, mma, source):
+        _check_served(image, allowed, "NVFP4 CuTe DSL scale")
+    images = [primary]
     if mma is not None:
-        if mma.element_size() != 1:
-            raise _DtypeMismatch(f"NVFP4 MMA scales require one-byte storage, served={mma.dtype}")
-        served_dtypes.append(str(mma.dtype))
         # Public MMA axes: (32,4,mtiles,4,ktiles,E). This permutation
         # recovers physical order and creates no temporary scale tensor.
         physical = mma[..., expert].permute(2, 4, 0, 1, 3)
@@ -189,16 +258,6 @@ def _cutedsl_scale_images(layer, stem, expert, dtype_checks):
             raise ValueError("unsupported nonstandard CuTe DSL MMA physical strides")
         images.append(physical.view(primary.shape).view(primary.dtype))
     images = _unique_images(images)
-    source = getattr(layer, f"{stem}_weight_scale")[
-        expert
-    ]  # config-access-exempt: Select the admitted gate/up or down scale parameter.
-    served_dtypes.append(str(source.dtype))
-    dtype_checks.append(
-        {
-            "served": served_dtypes,
-            "allowed_served": [str(torch.float8_e4m3fn), str(torch.uint8), str(torch.int8)],
-        }
-    )
     if not any(_same_image(source, image) for image in images):
         raise ValueError("NVFP4 source scale does not alias a prepared scale image")
     return images
@@ -245,7 +304,7 @@ def _factored_segments(
     columns = [(0, full)] if full else []
     if full < byte_cols:
         columns.append((full, byte_cols))
-    images = tuple(_bytes(image) for image in _unique_images(images))
+    images = tuple(_byte_view(image) for image in _unique_images(images))
     result = []
     for r0, r1, unit in _row_pieces(rows):
         bits = [1 << bit for bit in reversed(range(unit.bit_length() - 1))]
@@ -274,122 +333,68 @@ def _factored_segments(
     return tuple(result)
 
 
+def _blocked_scale_segments(images, rows, cols, padded_cols, mapped):
+    """FlashInfer's to_blocked scales: [128, 4] tiles with transposed [4, 32] row factors."""
+
+    def row_offset(row):
+        row = mapped(row)
+        return row // 128 * padded_cols * 128 + row % 32 * 16 + row % 128 // 32 * 4
+
+    return _factored_segments(images, rows, cols, 1, row_offset, 4, 1, 512)
+
+
 def _scale_parameter(layer, stem, layout):
-    if layout.backend == "trtllm":
-        if layout.format == "nvfp4":
-            suffix = "weight_scale"
-        elif layout.format == "mxfp4":
-            method = type(layer.quant_method).__name__
-            if method == "Mxfp4MoEMethod":
-                suffix = "weight_scale"
-            elif method == "Mxfp4FlashinferTrtllmMoEMethod":
-                suffix = "weight_scale_inv_shuffled"
-            else:
-                raise ValueError(f"unsupported TRTLLM MXFP4 method: {method}")
-        elif layout.format in {"mxfp8", "fp8-block128-ue8m0"}:
-            suffix = "weight_scale_inv"
-        else:
-            raise ValueError(f"unsupported TRTLLM scale format: {layout.format}")
-    elif layout.backend == "cutedsl":
-        if layout.format == "nvfp4":
-            suffix = "weight_scale"
-        else:
-            raise ValueError(f"unsupported CuTe DSL scale format: {layout.format}")
-    elif layout.backend == "megamoe":
-        if layout.format == "nvfp4":
-            suffix = "weight_scale"
-        elif layout.format == "mxfp4":
-            # Retain checkpoint scales separately; target the shuffled consumer.
-            suffix = "weight_scale_inv_shuffled"
-        elif layout.format == "mxfp8":
-            suffix = "weight_scale_inv"
-        else:
-            raise ValueError(f"unsupported MegaMoE scale format: {layout.format}")
-    else:
-        raise ValueError(f"unsupported FlashInfer expert backend: {layout.backend}")
     return getattr(
-        layer, f"{stem}_{suffix}"
+        layer, f"{stem}_{layout.pair.scale}"
     )  # config-access-exempt: Resolve the admitted backend-specific expert scale field.
 
 
+def _stem(projection):
+    if projection == "down":
+        return "w2"
+    elif projection in {"gate", "up"}:
+        return "w13"
+    else:
+        raise ValueError(f"unsupported FlashInfer expert projection: {projection}")
+
+
+def _packed_image(image, layout):
+    if image.element_size() != 1:
+        raise _DtypeMismatch(f"{layout.format} weight layout requires 1-byte storage, served={image.dtype}")
+    if image.ndim != 2:
+        raise ValueError("unexpected FlashInfer packed weight geometry")
+    return image
+
+
 def _weight_image(layer, stem, expert, layout):
+    """Return the live weight image, its physical rows and its physical byte columns.
+
+    Scale bindings derive their geometry from this image, so only its element
+    width is checked here; the weight's own binding admits its served dtype.
+    """
     image = getattr(layer, f"{stem}_weight")[
         expert
     ]  # config-access-exempt: Select the admitted gate/up or down weight image.
-    if layout.format == "bf16":
+    orientation = layout.pair.weight
+    if orientation == "blocked":
         if image.element_size() != 2:
-            raise _DtypeMismatch(f"BF16 weight layout requires two-byte storage, served={image.dtype}")
+            raise _DtypeMismatch(f"{layout.format} weight layout requires 2-byte storage, served={image.dtype}")
         if image.ndim != 3 or image.shape[-1] != 64:
             raise ValueError("unexpected TRTLLM BF16 blocked weight geometry")
+        return image, image.shape[1], image.shape[0] * 128
+    elif orientation == "rows":
+        image = _packed_image(image, layout)
+        return image, image.shape[0], image.shape[1]
+    elif orientation == "transposed":
+        # NVFP4 MegaMoE retains the transpose as a view; recover physical packed rows.
+        image = _packed_image(image, layout).transpose(0, 1)
+        return image, image.shape[0], image.shape[1]
+    elif orientation == "k_major":
+        # MXFP8 MegaMoE materializes the transpose; its physical rows are K-major.
+        image = _packed_image(image, layout)
+        return image, image.shape[1], image.shape[0]
     else:
-        if image.element_size() != 1:
-            raise _DtypeMismatch(
-                f"{layout.format} packed weight layout requires one-byte storage, served={image.dtype}"
-            )
-        if image.ndim != 2:
-            raise ValueError("unexpected FlashInfer packed weight geometry")
-
-    if layout.backend == "trtllm":
-        if layout.format == "bf16":
-            rows, cols = image.shape[1], image.shape[0] * 128
-        elif layout.format in {"nvfp4", "mxfp4", "mxfp8", "fp8-block128-ue8m0"}:
-            rows, cols = image.shape[0], image.shape[1]
-        else:
-            raise ValueError(f"unsupported TRTLLM weight format: {layout.format}")
-    elif layout.backend == "cutedsl":
-        if layout.format == "nvfp4":
-            rows, cols = image.shape[0], image.shape[1]
-        else:
-            raise ValueError(f"unsupported CuTe DSL weight format: {layout.format}")
-    elif layout.backend == "megamoe":
-        if layout.format == "nvfp4":
-            # NVFP4 retains the transpose as a view; recover physical packed rows.
-            image = image.transpose(0, 1)
-            rows, cols = image.shape[0], image.shape[1]
-        elif layout.format == "mxfp8":
-            # MXFP8 materializes the transpose; its physical rows are K-major.
-            rows, cols = image.shape[1], image.shape[0]
-        elif layout.format == "mxfp4":
-            rows, cols = image.shape[0], image.shape[1]
-        else:
-            raise ValueError(f"unsupported MegaMoE weight format: {layout.format}")
-    else:
-        raise ValueError(f"unsupported FlashInfer expert backend: {layout.backend}")
-    return image, rows, cols
-
-
-def _mapping(layout, projection):
-    if layout.backend == "trtllm":
-        if layout.format in {"bf16", "nvfp4", "mxfp4", "mxfp8"}:
-            group, shuffle = 1, True
-        elif layout.format == "fp8-block128-ue8m0":
-            # Block-128 projections use plain halves, handled separately below.
-            group, shuffle = 0, False
-        else:
-            raise ValueError(f"unsupported TRTLLM expert format: {layout.format}")
-    elif layout.backend == "cutedsl":
-        if layout.format == "nvfp4":
-            # Standard W4A4/W4A16: Up64, Gate64, Up64, Gate64, ...
-            group, shuffle = 64, False
-        else:
-            raise ValueError(f"unsupported CuTe DSL expert format: {layout.format}")
-    elif layout.backend == "megamoe":
-        if layout.format == "nvfp4":
-            # NVFP4 MegaMoE: Gate16, Up16, Gate16, Up16, ...
-            group, shuffle = 16, False
-        elif layout.format == "mxfp8":
-            group, shuffle = 32, False
-        elif layout.format == "mxfp4":
-            group, shuffle = 8, False
-        else:
-            raise ValueError(f"unsupported MegaMoE expert format: {layout.format}")
-    else:
-        raise ValueError(f"unsupported FlashInfer expert backend: {layout.backend}")
-    if projection == "down" or not layout.gated:
-        group, half = 0, 0
-    else:
-        half = int((projection == "up") != layout.up_first)
-    return group, half, shuffle
+        raise ValueError(f"unsupported FlashInfer weight orientation: {orientation}")
 
 
 def expert_scale_target(layer, layout, local_expert, projection, canonical_shape):
@@ -398,18 +403,7 @@ def expert_scale_target(layer, layout, local_expert, projection, canonical_shape
     Preparation translates the canonical exponent XOR to a physical FP32 XOR;
     ordinary byte-layout views cannot express this change of representation.
     """
-    if layout.format != "fp8-block128-ue8m0" or layout.backend != "trtllm":
-        raise ValueError("FP32 scale target requires native block-128 UE8M0")
-    if (
-        projection not in {"gate", "up", "down"}
-        or (projection == "gate" and not layout.gated)
-        or len(canonical_shape) != 2
-        or any(type(n) is not int or n <= 0 for n in canonical_shape)
-        or type(local_expert) is not int
-        or local_expert < 0
-    ):
-        raise ValueError("invalid block-128 scale projection")
-    stem = "w2" if projection == "down" else "w13"
+    stem = _stem(projection)
     target = getattr(layer, f"{stem}_weight_scale_inv")[
         local_expert
     ]  # config-access-exempt: Select the admitted block128 projection scale parameter.
@@ -440,15 +434,24 @@ def expert_slices(layer, layout, projection, suffix, shape):
     """
     slices = [[0, extent] for extent in shape]
     if layer.moe_tp_size != 1:
-        axis = 1 if projection == "down" else 0
+        if projection == "down":
+            axis = 1
+        elif projection in {"gate", "up"}:
+            axis = 0
+        else:
+            raise ValueError(f"unsupported FlashInfer expert projection: {projection}")
         extent = shape[axis]
         if layer.use_padded_loading:
             divisor = 1
             if suffix in {"weight_scale", "weight_scale_inv"}:
                 if layout.format == "fp8-block128-ue8m0":
                     divisor = 128
+                elif axis == 1 and layout.format == "nvfp4":
+                    divisor = 16
+                elif axis == 1 and layout.format in {"mxfp4", "mxfp8"}:
+                    divisor = 32
                 elif axis == 1:
-                    divisor = 16 if layout.format == "nvfp4" else 32
+                    raise ValueError(f"unsupported FlashInfer padded scale format: {layout.format}")
             elif axis == 1 and layout.format in {"nvfp4", "mxfp4"}:
                 divisor = 2
             width = (layer.intermediate_size_per_partition + divisor - 1) // divisor
@@ -461,246 +464,121 @@ def expert_slices(layer, layout, projection, suffix, shape):
     return slices
 
 
-def expert_destinations(
-    layer, layout, local_expert, projection, suffix, canonical_shape, canonical_dtype, dtype_checks=None
-):
+def expert_destinations(layer, layout, local_expert, projection, suffix, canonical_shape, canonical_dtype):
     """Return disjoint canonical rectangles and live bit-preserving views.
 
     Canonical shapes are the local logical projection, excluding padding.
     Scalar calibration and FP32 scale expansion use separately prepared physical
     XOR masks; they cannot use the canonical mask's byte-layout destinations.
     """
-    if projection not in {"gate", "up", "down"}:
-        raise ValueError(f"unknown expert projection: {projection}")
-    if dtype_checks is None:
-        dtype_checks = []
-    if not layout.gated and projection == "gate":
-        raise ValueError("non-gated experts have no gate projection")
-    if (
-        len(canonical_shape) != 2
-        or any(type(n) is not int or n <= 0 for n in canonical_shape)
-        or type(local_expert) is not int
-        or local_expert < 0
-    ):
-        raise ValueError("expert byte layout requires a nonempty matrix and local expert")
-    group, half, shuffle = _mapping(layout, projection)
+    pair, fmt = layout.pair, _FORMATS[layout.format]
+    stem = _stem(projection)
+    if projection == "down" or not layout.gated:
+        group, half = 0, 0
+    else:
+        group, half = pair.group, int((projection == "up") != layout.up_first)
+
+    def mapped(row):
+        return _row_map(row, group, half, pair.shuffle)
+
     rows, cols = canonical_shape
-    stem = "w2" if projection == "down" else "w13"
-    if layout.backend == "cutedsl" and layout.format == "nvfp4" and suffix == "weight_scale":
-        if canonical_dtype != "F8_E4M3":
+    if pair.scale_image == "cutedsl" and suffix == "weight_scale":
+        if canonical_dtype != fmt.scale:
             raise _DtypeMismatch(f"checkpoint={canonical_dtype}; NVFP4 block scales require canonical F8_E4M3 bytes")
-        images = _cutedsl_scale_images(layer, stem, local_expert, dtype_checks)
+        images = _cutedsl_scale_images(layer, stem, local_expert, pair.scale_served)
         primary = images[0]
         if primary.ndim != 2 or any(not image.is_contiguous() or image.numel() != primary.numel() for image in images):
             raise ValueError("unexpected CuTe DSL block-scale padding geometry")
         padded_rows, padded_cols = primary.shape
         if padded_rows % 128 or padded_cols % 4 or cols > padded_cols:
             raise ValueError("unexpected CuTe DSL block-scale padding geometry")
-        max_rows = padded_rows // 2 if group else padded_rows
-        if rows > max_rows:
+        if rows > (padded_rows // 2 if group else padded_rows):
             raise ValueError("canonical scale projection exceeds FlashInfer row storage")
+        return _blocked_scale_segments(images, rows, cols, padded_cols, mapped)
 
-        def scale_row_offset(row):
-            row = _row_map(row, group, half, shuffle)
-            return row // 128 * padded_cols * 128 + row % 32 * 16 + row % 128 // 32 * 4
-
-        segments = _factored_segments(images, rows, cols, 1, scale_row_offset, 4, 1, 512)
-    else:
-        weight, physical_rows, physical_cols = _weight_image(layer, stem, local_expert, layout)
-        if suffix == "weight":
-            if layout.format == "bf16":
-                allowed = [torch.bfloat16]
-            elif layout.format in {"nvfp4", "mxfp4"}:
-                allowed = [torch.uint8, torch.int8]
-            elif layout.format in {"mxfp8", "fp8-block128-ue8m0"}:
-                allowed = [torch.float8_e4m3fn, torch.uint8, torch.int8]
-            else:
-                raise ValueError(f"unsupported FlashInfer weight format: {layout.format}")
-            dtype_checks.append({"served": [str(weight.dtype)], "allowed_served": [str(dtype) for dtype in allowed]})
-        if not weight.is_contiguous():
-            raise ValueError("unexpected noncontiguous FlashInfer physical storage")
-        half_rows = physical_rows // (2 if layout.gated and projection != "down" else 1)
-        if rows > half_rows:
-            raise ValueError("canonical projection exceeds FlashInfer row storage")
-        if group and half_rows % group:
-            raise ValueError("invalid FlashInfer gate/up group alignment")
-        if shuffle and physical_rows % 32:
-            raise ValueError("TRTLLM weight row shuffle requires a multiple of 32")
-
-        def mapped(row):
-            return _row_map(row, group, half, shuffle)
-
+    weight, physical_rows, physical_cols = _weight_image(layer, stem, local_expert, layout)
+    if suffix == "weight":
+        _check_served(weight, fmt.weight_served, f"{layout.format} weight")
+    if not weight.is_contiguous():
+        raise ValueError("unexpected noncontiguous FlashInfer physical storage")
+    half_rows = physical_rows // (2 if layout.gated and projection != "down" else 1)
+    if rows > half_rows:
+        raise ValueError("canonical projection exceeds FlashInfer row storage")
+    if group and half_rows % group:
+        raise ValueError("invalid FlashInfer gate/up group alignment")
+    if pair.shuffle and physical_rows % 32:
+        raise ValueError("TRTLLM weight row shuffle requires a multiple of 32")
+    if suffix == "weight":
+        if canonical_dtype != fmt.weight:
+            raise _DtypeMismatch(
+                f"checkpoint={canonical_dtype}; {layout.format} weights require canonical {fmt.weight}, "
+                f"served={weight.dtype}"
+            )
+        # _weight_image admitted this width for the layout's orientation.
+        element_size = weight.element_size()
+        if cols * element_size > physical_cols:
+            raise ValueError("canonical weight exceeds FlashInfer column storage")
         if layout.format == "fp8-block128-ue8m0":
-            if suffix != "weight":
-                raise ValueError("block-128 scales require complete-value expansion")
-            if canonical_dtype != "F8_E4M3":
-                raise _DtypeMismatch(
-                    f"checkpoint={canonical_dtype}; block128 weights require canonical F8_E4M3, served={weight.dtype}"
-                )
             start = half_rows if layout.gated and projection == "up" else 0
-            if cols > physical_cols:
-                raise ValueError("canonical weight exceeds FlashInfer column storage")
-            segments = (
-                DestinationSegment(
-                    ((0, rows), (0, cols)),
-                    (_bytes(weight[start : start + rows, :cols]),),
-                ),
-            )
-        elif suffix == "weight":
-            if layout.format == "bf16":
-                dtype = "BF16"
-            elif layout.format in {"nvfp4", "mxfp4"}:
-                dtype = "U8"
-            elif layout.format == "mxfp8":
-                dtype = "F8_E4M3"
-            else:
-                raise ValueError(f"unsupported FlashInfer weight format: {layout.format}")
-            if canonical_dtype != dtype:
-                raise _DtypeMismatch(
-                    f"checkpoint={canonical_dtype}; {layout.format} weights require canonical {dtype}, served={weight.dtype}"
-                )
-            element_size = 2 if layout.format == "bf16" else 1
-            if cols * element_size > physical_cols:
-                raise ValueError("canonical weight exceeds FlashInfer column storage")
-            if layout.backend == "trtllm":
-                if layout.format == "bf16":
-
-                    def row_offset(row):
-                        return mapped(row) * 128
-
-                    block, stride, block_stride = 128, 1, physical_rows * 128
-                elif layout.format in {"nvfp4", "mxfp4", "mxfp8"}:
-
-                    def row_offset(row):
-                        return mapped(row) * physical_cols
-
-                    block, stride, block_stride = 1, 1, 1
-                else:
-                    raise ValueError(f"unsupported TRTLLM weight format: {layout.format}")
-            elif layout.backend == "cutedsl":
-                if layout.format == "nvfp4":
-
-                    def row_offset(row):
-                        return mapped(row) * physical_cols
-
-                    block, stride, block_stride = 1, 1, 1
-                else:
-                    raise ValueError(f"unsupported CuTe DSL weight format: {layout.format}")
-            elif layout.backend == "megamoe":
-                if layout.format == "mxfp8":
-                    row_offset = mapped
-                    block, stride, block_stride = 1, physical_rows, physical_rows
-                elif layout.format in {"nvfp4", "mxfp4"}:
-
-                    def row_offset(row):
-                        return mapped(row) * physical_cols
-
-                    block, stride, block_stride = 1, 1, 1
-                else:
-                    raise ValueError(f"unsupported MegaMoE weight format: {layout.format}")
-            else:
-                raise ValueError(f"unsupported FlashInfer expert backend: {layout.backend}")
-            segments = _factored_segments(
-                [weight],
-                rows,
-                cols,
-                element_size,
-                row_offset,
-                block,
-                stride,
-                block_stride,
-            )
-        elif suffix == "weight_scale":
-            if layout.format == "nvfp4":
-                dtype, scale_divisor = "F8_E4M3", 8
-            elif layout.format == "mxfp4":
-                dtype, scale_divisor = "U8", 16
-            elif layout.format == "mxfp8":
-                dtype, scale_divisor = "U8", 32
-            else:
-                raise ValueError(f"unsupported FlashInfer block-scale format: {layout.format}")
-            if canonical_dtype != dtype:
-                raise _DtypeMismatch(
-                    f"checkpoint={canonical_dtype}; {layout.format} block scales require canonical {dtype}"
-                )
-            if physical_cols % scale_divisor:
-                raise ValueError("weight columns do not cover complete scale groups")
-            scale_cols = physical_cols // scale_divisor
-            if cols > scale_cols:
-                raise ValueError("canonical scales exceed FlashInfer column storage")
-            images = [_scale_parameter(layer, stem, layout)[local_expert]]
-            if layout.backend == "megamoe" and layout.format == "mxfp4":
-                allowed = [torch.int32]
-            elif layout.format == "nvfp4":
-                allowed = [torch.float8_e4m3fn, torch.uint8, torch.int8]
-            elif layout.format in {"mxfp4", "mxfp8"}:
-                allowed = [torch.uint8, torch.int8, torch.float8_e8m0fnu]
-            else:
-                raise ValueError(f"unsupported FlashInfer scale format: {layout.format}")
-            dtype_checks.append(
-                {
-                    "served": [str(image.dtype) for image in images],
-                    "allowed_served": [str(dtype) for dtype in allowed],
-                }
-            )
-            if layout.backend == "megamoe" and layout.format == "mxfp4":
-                # DeepGEMM packs four UE8M0 bytes per int32 in MN-major storage;
-                # MegaMoE then transposes each [4,32] row group for UTCCP.
-                scale = images[0]
-                if scale.dtype != torch.int32:
-                    raise _DtypeMismatch(
-                        f"checkpoint={canonical_dtype}; packed UE8M0 scale layout requires served=torch.int32, found {scale.dtype}"
-                    )
-                if (
-                    scale.ndim != 2
-                    or tuple(scale.shape) != (physical_rows, (scale_cols + 3) // 4)
-                    or scale.stride() != (1, physical_rows)
-                    or physical_rows % 128
-                ):
-                    raise ValueError("unexpected DeepGEMM packed UE8M0 scale geometry")
-
-                def row_offset(row):
-                    row = mapped(row)
-                    return (row // 128 * 128 + row % 32 * 4 + row % 128 // 32) * 4
-
-                segments = _factored_segments(
-                    [scale.transpose(0, 1)],
-                    rows,
-                    cols,
-                    1,
-                    row_offset,
-                    4,
-                    1,
-                    physical_rows * 4,
-                )
-            elif (layout.backend == "trtllm" and layout.format in {"nvfp4", "mxfp4", "mxfp8"}) or (
-                layout.backend == "megamoe" and layout.format in {"nvfp4", "mxfp8"}
-            ):
-                padded_rows = (physical_rows + 127) // 128 * 128
-                padded_cols = (scale_cols + 3) // 4 * 4
-                for image in images:
-                    if image.element_size() != 1:
-                        raise _DtypeMismatch(
-                            f"checkpoint={canonical_dtype}; {layout.format} block scales require one-byte storage, served={image.dtype}"
-                        )
-                    if not image.is_contiguous() or image.numel() != padded_rows * padded_cols:
-                        raise ValueError("unexpected FlashInfer block-scale padding geometry")
-
-                def row_offset(row):
-                    row = mapped(row)
-                    return row // 128 * padded_cols * 128 + row % 32 * 16 + row % 128 // 32 * 4
-
-                segments = _factored_segments(images, rows, cols, 1, row_offset, 4, 1, 512)
-            else:
-                raise ValueError(f"unsupported FlashInfer scale layout: {layout.backend}/{layout.format}")
+            return (DestinationSegment(((0, rows), (0, cols)), (_byte_view(weight[start : start + rows, :cols]),)),)
+        # Physical byte strides of one canonical row, column and column block.
+        if pair.weight == "blocked":
+            row_stride, block, stride, block_stride = 128, 128, 1, physical_rows * 128
+        elif pair.weight == "k_major":
+            row_stride, block, stride, block_stride = 1, 1, physical_rows, physical_rows
+        elif pair.weight in {"rows", "transposed"}:
+            row_stride, block, stride, block_stride = physical_cols, 1, 1, 1
         else:
-            raise ValueError(f"unsupported FlashInfer expert suffix: {suffix}")
-    return segments
+            raise ValueError(f"unsupported FlashInfer weight orientation: {pair.weight}")
+
+        def row_offset(row):
+            return mapped(row) * row_stride
+
+        return _factored_segments([weight], rows, cols, element_size, row_offset, block, stride, block_stride)
+    if suffix != "weight_scale":
+        raise ValueError(f"unsupported FlashInfer expert suffix: {suffix}")
+    if fmt.scale is None:
+        raise ValueError(f"unsupported FlashInfer block-scale format: {layout.format}")
+    if canonical_dtype != fmt.scale:
+        raise _DtypeMismatch(
+            f"checkpoint={canonical_dtype}; {layout.format} block scales require canonical {fmt.scale}"
+        )
+    if physical_cols % fmt.scale_divisor:
+        raise ValueError("weight columns do not cover complete scale groups")
+    scale_cols = physical_cols // fmt.scale_divisor
+    if cols > scale_cols:
+        raise ValueError("canonical scales exceed FlashInfer column storage")
+    scale = _scale_parameter(layer, stem, layout)[local_expert]
+    _check_served(scale, pair.scale_served, f"{layout.format} block scale")
+    if pair.scale_image == "deepgemm":
+        # DeepGEMM packs four UE8M0 bytes per int32 in MN-major storage;
+        # MegaMoE then transposes each [4,32] row group for UTCCP.
+        if (
+            scale.ndim != 2
+            or tuple(scale.shape) != (physical_rows, (scale_cols + 3) // 4)
+            or scale.stride() != (1, physical_rows)
+            or physical_rows % 128
+        ):
+            raise ValueError("unexpected DeepGEMM packed UE8M0 scale geometry")
+
+        def packed_row_offset(row):
+            row = mapped(row)
+            return (row // 128 * 128 + row % 32 * 4 + row % 128 // 32) * 4
+
+        return _factored_segments([scale.transpose(0, 1)], rows, cols, 1, packed_row_offset, 4, 1, physical_rows * 4)
+    elif pair.scale_image == "blocked":
+        padded_cols = (scale_cols + 3) // 4 * 4
+        if not scale.is_contiguous() or scale.numel() != (physical_rows + 127) // 128 * 128 * padded_cols:
+            raise ValueError("unexpected FlashInfer block-scale padding geometry")
+        return _blocked_scale_segments([scale], rows, cols, padded_cols, mapped)
+    else:
+        raise ValueError(f"unsupported FlashInfer block-scale image: {pair.scale_image}")
 
 
 def consumer_objects(layer, layout):
     """Snapshot selected consumer objects and non-parameter tensor identities."""
     method = layer.quant_method
+    pair = layout.pair
     objects = [
         method,
         method.runner,
@@ -709,7 +587,7 @@ def consumer_objects(layer, layout):
         layer.w13_weight,
         layer.w2_weight,
     ]
-    if layout.format != "bf16":
+    if pair.scale is not None:
         objects.extend(
             (
                 _scale_parameter(layer, "w13", layout),
@@ -727,8 +605,6 @@ def consumer_objects(layer, layout):
             )
         )
     if layout.backend == "cutedsl":
-        if layout.format != "nvfp4":
-            raise ValueError(f"unsupported CuTe DSL consumer format: {layout.format}")
         objects.extend(
             (
                 layer._cutedsl_wrapper,
@@ -752,8 +628,6 @@ def consumer_objects(layer, layout):
             )
         )
     elif layout.backend == "megamoe":
-        if layout.format not in {"nvfp4", "mxfp4", "mxfp8"}:
-            raise ValueError(f"unsupported MegaMoE consumer format: {layout.format}")
         mega = layer._flashinfer_megamoe_layer
         if mega is None:
             raise ValueError("FlashInfer MegaMoE must be warmed before admission")
@@ -776,39 +650,20 @@ def consumer_objects(layer, layout):
                     layer._flashinfer_megamoe_input_norm_const,
                 )
             )
-    elif layout.backend == "trtllm":
-        if layout.format == "nvfp4":
-            # Activation-dependent optional tensors; absence is itself captured.
-            objects.extend(
-                getattr(
-                    layer, name, None
-                )  # config-access-exempt: Snapshot optional backend-owned consumer fields for identity checks.
-                for name in (
-                    "gemm1_alpha",
-                    "gemm1_beta",
-                    "gemm1_clamp_limit",
-                    "g1_scale_c",
-                )
+    elif layout.format == "nvfp4":
+        # TRTLLM activation-dependent optional tensors; absence is itself captured.
+        objects.extend(
+            getattr(
+                layer, name, None
+            )  # config-access-exempt: Snapshot optional backend-owned consumer fields for identity checks.
+            for name in (
+                "gemm1_alpha",
+                "gemm1_beta",
+                "gemm1_clamp_limit",
+                "g1_scale_c",
             )
-        elif layout.format in {"mxfp8", "fp8-block128-ue8m0"}:
-            objects.extend(
-                (
-                    layer._flashinfer_trtllm_gemm1_alpha,
-                    layer._flashinfer_trtllm_gemm1_beta,
-                    layer._flashinfer_trtllm_gemm1_clamp_limit,
-                )
-            )
-        elif layout.format == "mxfp4":
-            if type(method).__name__ == "Mxfp4FlashinferTrtllmMoEMethod":
-                objects.append(layer._gemm1_clamp_limit_tensor)
-            elif type(method).__name__ == "Mxfp4MoEMethod":
-                pass
-            else:
-                raise ValueError("unsupported TRTLLM MXFP4 consumer")
-        elif layout.format == "bf16":
-            pass
-        else:
-            raise ValueError(f"unsupported TRTLLM consumer format: {layout.format}")
-    else:
-        raise ValueError(f"unsupported FlashInfer expert backend: {layout.backend}")
+        )
+    objects.extend(
+        getattr(layer, name) for name in pair.consumers
+    )  # config-access-exempt: Snapshot the admitted pair's required consumer fields.
     return tuple(objects)

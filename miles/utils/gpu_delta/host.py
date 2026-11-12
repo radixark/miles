@@ -1,16 +1,3 @@
-# Copyright 2026 SGLang Team
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 """Verified engine-host encoded cache and persistent pinned input arenas.
 
 Each engine host shares a prepared tmpfs image built by its persistent CPU child.
@@ -20,7 +7,6 @@ rank-private hardware-decompression-capable input storage.
 
 import fcntl
 import hashlib
-import json
 import mmap
 import os
 import socket
@@ -37,12 +23,11 @@ import numpy as np
 import orjson
 
 from miles.utils.gpu_delta import profiling
-from miles.utils.gpu_delta.codec import decoder_backend
 from miles.utils.gpu_delta.host_worker import (
     _CAPACITY_ALIGNMENT,
     _map_cache,
     _metadata_views,
-    _write_record,
+    _MetadataMapping,
     configured_cpu_workers,
     copy_bytes,
     new_metrics,
@@ -94,20 +79,24 @@ def host_cache_id(engine_id):
         return value
 
 
+def _byte_tensor(mapping):
+    import torch
+
+    return torch.frombuffer(mapping, dtype=torch.uint8) if mapping is not None else torch.empty(0, dtype=torch.uint8)
+
+
 class CpuWorker:
     """One clean interpreter per owner, with descriptor-only request/reply IPC."""
 
-    def __init__(self, directory, device, owner):
-        self.configuration = {
-            "directory": str(directory),
-            "workers": configured_cpu_workers(),
-            "backends": {name: decoder_backend(device, name) for name in ("snappy", "lz4", "bitcomp")},
-            "owner": owner,
-        }
+    def __init__(self, directory):
+        configuration = orjson.dumps({"directory": str(directory), "workers": configured_cpu_workers()})
         local, child = socket.socketpair()
+        self.connection = Connection(local.detach())
         parent_fd = None
         started = time.perf_counter()
         try:
+            # The child reads its fixed configuration before any request.
+            self.connection.send_bytes(configuration)
             parent_fd = os.pidfd_open(os.getpid())
             self.process = subprocess.Popen(
                 [
@@ -134,13 +123,12 @@ class CpuWorker:
                 },
             )
         except BaseException:
-            local.close()
+            self.connection.close()
             raise
         finally:
             child.close()
             if parent_fd is not None:
                 os.close(parent_fd)
-        self.connection = Connection(local.detach())
         self.spawn_s = time.perf_counter() - started
 
     def _request(self, request, cancelled=None):
@@ -156,8 +144,6 @@ class CpuWorker:
             response = orjson.loads(self.connection.recv_bytes(1 << 20))
             if cancelled is not None and cancelled.is_set():
                 raise RuntimeError("GPU-delta host preparation aborted")
-            if response["token"] != request["token"]:
-                raise RuntimeError("GPU-delta CPU worker returned a different publication")
             if response["status"] != "OK":
                 error = ValueError if response["error_type"] == "ValueError" else RuntimeError
                 raise error(response["error"])
@@ -172,32 +158,16 @@ class CpuWorker:
     @profiling.annotate("gpu_delta.host.cpu_worker_wait")
     def prepare(self, expected, namespace, metrics, cancelled):
         started = time.perf_counter()
-        response = self._request(
-            {
-                "command": "prepare",
-                "token": publication_token(expected),
-                "configuration": self.configuration,
-                "expected": expected,
-                "namespace": namespace,
-            },
-            cancelled,
-        )
+        response = self._request({"command": "prepare", "expected": expected, "namespace": namespace}, cancelled)
         metrics.update(response["metrics"])
         metrics["host_cpu_worker_spawn_s"] = self.spawn_s
         metrics["host_cpu_worker_wait_s"] = time.perf_counter() - started
         self.spawn_s = 0.0
         return response["index"]
 
-    def release(self, ready_state):
-        if self.connection is None:
-            return
-        self._request(
-            {
-                "command": "release",
-                "token": ready_state["token"],
-                "ready_state": ready_state,
-            }
-        )
+    def release(self, token):
+        if self.connection is not None:
+            self._request({"command": "release", "token": token})
 
     def close(self, terminate=False):
         if self.connection is None:
@@ -216,7 +186,7 @@ class CpuWorker:
             self.connection = None
 
 
-class HostArena:
+class HostArena(_MetadataMapping):
     """Persistent input storage with an engine-host encoded cache.
 
     The original engine cohort shares encoded files under each publication's hash
@@ -236,22 +206,12 @@ class HostArena:
         self.owner = False
         self._metadata_mapping = self._metadata_capacity = None
         self._worker = None
-        self._dtype_path = None
 
     @cached_property
     def root(self):
         return _cache_root(self.engine_id)
 
-    def register_dtypes(self, records):
-        # Discovery returns only after every original rank has published these
-        # immutable facts. The CPU child therefore needs no admission barrier.
-        name = f"dtypes-{self.identity['rank_id']}"
-        _write_record(self.root, name, records | {"identity": self.identity})
-        self._dtype_path = self.root / (name + ".json")
-
     def _reserve_rank_arena(self, size, metrics):
-        import torch
-
         if self.capacity is not None and size <= self.capacity["capacity"] and self.hardware:
             metrics["host_rank_mapping_reused"] = 1
             return
@@ -266,11 +226,7 @@ class HostArena:
         self.allocation = allocation
         self.hardware = True
         self.mapping = allocation.view if allocation is not None else None
-        self.tensor = (
-            torch.frombuffer(self.mapping, dtype=torch.uint8)
-            if self.mapping is not None
-            else torch.empty(0, dtype=torch.uint8)
-        )
+        self.tensor = _byte_tensor(self.mapping)
         generation = previous["generation"] + 1 if previous else 1
         self.capacity = {
             "generation": generation,
@@ -290,7 +246,7 @@ class HostArena:
             self._close_shared()
             if prepared["capacity"]:
                 mapping = _map_cache(self.directory, prepared, flags=mmap.MAP_SHARED | mmap.MAP_POPULATE)
-                self.shared_allocation = HostMapping(mapping, pinned=False)
+                self.shared_allocation = HostMapping(mapping)
             self.shared_capacity = prepared
         if not hardware:
             if self.shared_allocation is not None and not self.shared_allocation.registered:
@@ -305,11 +261,6 @@ class HostArena:
             else:
                 metrics["host_rank_mapping_reused"] = 1
 
-    def _attach_metadata(self, allocation):
-        if self._metadata_capacity != allocation:
-            self._metadata_mapping = _map_cache(self.directory, allocation)
-            self._metadata_capacity = allocation
-
     @profiling.annotate("gpu_delta.host.prepare_encoded")
     def prepare_publication(self, request, timings, cancelled=None):
         """The original owner authenticates and prepares one shared publication."""
@@ -318,8 +269,7 @@ class HostArena:
         namespace = {"stream_id": request["stream_id"], "participants": participants}
         if self._namespace is None:
             self._namespace = namespace
-            key = hashlib.sha256(json.dumps(namespace, sort_keys=True).encode()).hexdigest()
-            self.directory = self.root / key
+            self.directory = self.root / publication_token(namespace)
             self.directory.mkdir(mode=0o700, exist_ok=True)
             owner = min(
                 (
@@ -350,7 +300,7 @@ class HostArena:
         metrics = new_metrics()
         if self.owner:
             if self._worker is None:
-                self._worker = CpuWorker(self.directory, self.device, self.identity)
+                self._worker = CpuWorker(self.directory)
             index = self._worker.prepare(expected, namespace, metrics, cancelled)
         else:
             token = publication_token(expected)
@@ -368,9 +318,7 @@ class HostArena:
                         state = orjson.loads(state_path.read_bytes()) if state_path.exists() else None
                         if state is not None and state["token"] == token:
                             if state["state"] != "READY":
-                                raise ValueError(
-                                    state.get("error", "encoded publication is failed or already released")
-                                )
+                                raise ValueError("encoded publication is failed or already released")
                             index = orjson.loads((self.directory / "index.json").read_bytes())
                             if index["namespace"] != namespace or index["token"] != token:
                                 raise ValueError("encoded cache publication differs")
@@ -380,12 +328,10 @@ class HostArena:
                         time.sleep(0.01)
                     else:
                         cancelled.wait(0.01)
-            metrics.update(
-                host_encoded_cache_wait_s=time.perf_counter() - waiting,
-                host_encoded_cache_reused=1,
-                host_prepared_cache_reused=1,
-            )
-            metrics["host_prepared_cache_wait_s"] = metrics["host_encoded_cache_wait_s"]
+            metrics.update(host_encoded_cache_wait_s=time.perf_counter() - waiting, host_encoded_cache_reused=1)
+        # The prepared image is created, awaited and reused together with its encoded cache.
+        for name in ("created", "reused", "wait_s"):
+            metrics["host_prepared_cache_" + name] = metrics["host_encoded_cache_" + name]
         self._attach_metadata(index["metadata"])
         result = HostPublication(self, index)
         metrics["host_encoded_cache_access_s"] = time.perf_counter() - started
@@ -410,8 +356,6 @@ class HostArena:
     @profiling.annotate("gpu_delta.host.prepare_local")
     def prepare_local(self, publication, tensor_ids, timings, hardware=True):
         """Bind rank inputs using canonical ordinals, with DE-local rebasing."""
-        if publication.header["backend"] != ("hardware" if hardware else "cuda"):
-            raise ValueError("engine-host decoder backends differ")
         index, tensors = publication.index, publication.tensors
         self._attach_shared_arena(index["prepared"], timings, hardware)
         layout_started = time.perf_counter()
@@ -444,17 +388,11 @@ class HostArena:
                     staging_bytes += count
             staging_s = time.perf_counter() - prepare_started
         else:
-            import torch
-
             prepare_started = time.perf_counter()
             if self.hardware is not False or self.capacity != index["prepared"]:
                 self._close_private()
                 self.mapping = self.shared_allocation.view if self.shared_allocation is not None else None
-                self.tensor = (
-                    torch.frombuffer(self.mapping, dtype=torch.uint8)
-                    if self.mapping is not None
-                    else torch.empty(0, dtype=torch.uint8)
-                )
+                self.tensor = _byte_tensor(self.mapping)
                 self.hardware, self.capacity = False, index["prepared"]
             staging_s = 0.0
         timings["host_rank_prepare_call_s"] = time.perf_counter() - prepare_started
@@ -490,11 +428,6 @@ class HostArena:
         self._close_private()
         self._close_shared()
         self._metadata_mapping = self._metadata_capacity = None
-        if self._dtype_path is not None:
-            # Clear closes all ranks before shared cache removal. A replacement
-            # publishes a new incarnation; another rank's facts are never removed.
-            self._dtype_path.unlink(missing_ok=True)
-            self._dtype_path = None
 
 
 class HostPublication:
@@ -532,14 +465,7 @@ class HostPreparedSnapshot:
         # this publication. Failure cleanup drops the lease without releasing it.
         try:
             if reuse_host and self.arena is not None and self.arena.owner:
-                index = self.publication.index
-                self.arena._worker.release(
-                    {
-                        "token": index["token"],
-                        "state": "READY",
-                        "generation": index["encoded"]["generation"],
-                    }
-                )
+                self.arena._worker.release(self.publication.index["token"])
         finally:
             # Backend retains its mapping after all DE or H2D readers drain.
             self.arena = None

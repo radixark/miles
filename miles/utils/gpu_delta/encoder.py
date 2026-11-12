@@ -209,9 +209,9 @@ class GpuBatchEncoder:
         self.finalization_metrics = {}
         with torch.cuda.device(self.device), torch.cuda.stream(self.stream):
             self._alignment_padding = torch.zeros(15, dtype=torch.uint8, device=self.device)
-        if frame_bytes % self.compressor._alignments.input:
+        if frame_bytes % self.compressor.alignments.input:
             raise ValueError("GPU delta frame_bytes must preserve nvCOMP input alignment")
-        if self.outer_compressor is not None and 16 % self.outer_compressor._alignments.input:
+        if self.outer_compressor is not None and 16 % self.outer_compressor.alignments.input:
             raise RuntimeError("GPU outer Zstd input alignment exceeds the wire contract")
 
     def encode_device(self, tensors):
@@ -392,22 +392,6 @@ def _finished_results(tensors, groups, encoded_groups, arenas, offsets, transfer
     return results
 
 
-def append_encoded_tensor(writer, name, result, spec):
-    """Use the same canonical record for ordinary and HF-relative publications."""
-    frames, payload, outer, changed, _ = result
-    writer.add_encoded_tensor(
-        name,
-        frames,
-        payload,
-        outer,
-        changed_bytes=changed,
-        dtype=spec["dtype"],
-        shape=spec["shape"],
-        format=spec.get("format"),
-        checkpoint_dtype=spec.get("checkpoint_dtype"),
-    )
-
-
 @dataclass
 class RecoveryPayload:
     """Compressed matrices own pinned wire buffers; small XOR masks own bytes.
@@ -439,17 +423,9 @@ class RecoveryPayload:
         writer = PublicationWriter(directory, owner=owner, codec=self.codec, frame_bytes=self.frame_bytes, **metadata)
         try:
             for name, result in self.matrices:
-                append_encoded_tensor(writer, name, result, plan[name])
+                writer.add_encoded_tensor(name, *result[:4], plan[name])
             for name, value in self.raw.items():
-                spec = plan[name]
-                writer.add_raw_xor_tensor(
-                    name,
-                    value,
-                    spec["dtype"],
-                    spec["shape"],
-                    spec.get("format"),
-                    spec.get("checkpoint_dtype"),
-                )
+                writer.add_raw_xor_tensor(name, value, plan[name])
             return writer.finish_shard()
         finally:
             writer.close()

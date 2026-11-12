@@ -8,7 +8,7 @@ model methods are never modified.
 
 from pathlib import Path
 
-from safetensors import safe_open
+from miles.utils.gpu_delta.publication import read_safetensors_headers
 
 
 def read_canonical_checkpoint_inventory(model_runner):
@@ -60,21 +60,10 @@ def read_canonical_checkpoint_inventory(model_runner):
     files = maybe_add_mtp_safetensors(files, str(folder), "model.safetensors.index.json", model_config.hf_config)
     if not files:
         raise ValueError("GPU delta checkpoint has no selected safetensors shards")
-    return _read_headers(files)
-
-
-def _read_headers(files):
-    inventory = {}
-    for path in files:
-        with safe_open(path, framework="pt", device="cpu") as source:
-            for name in source.keys():  # noqa: SIM118 - safe_open is not iterable.
-                if name in inventory:
-                    raise ValueError(f"ambiguous canonical checkpoint tensor: {name}")
-                tensor_slice = source.get_slice(name)
-                inventory[name] = {
-                    "shape": tensor_slice.get_shape(),
-                    "dtype": tensor_slice.get_dtype(),
-                }
+    inventory = {
+        name: {"shape": shape, "dtype": dtype}
+        for name, (_, _, _, dtype, shape) in read_safetensors_headers(files).items()
+    }
     if not inventory:
         raise ValueError("canonical checkpoint metadata is empty")
     return inventory

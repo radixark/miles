@@ -1,8 +1,9 @@
 """PP-local ordinary ownership and targeted TP export for GPU delta."""
 
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import torch
 import torch.distributed as dist
@@ -17,6 +18,9 @@ from miles.backends.megatron_utils.update_weight.hf_weight_iterator_direct impor
 )
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.types import ParamInfo
+
+if TYPE_CHECKING:
+    from miles.backends.training_utils.weight_update.protocols.gpu_delta.protocol import UpdateWeightFromGpuDelta
 
 
 @dataclass(frozen=True)
@@ -61,10 +65,16 @@ def _ordinary_batches(args, param_infos, owners, tp_ranks):
             partitions = []
             for info in batch:
                 attrs = info.attrs
+                if attrs["parallel_mode"] == "duplicated":
+                    replicated = True
+                elif attrs["parallel_mode"] in (None, "column", "row"):
+                    replicated = False
+                else:
+                    raise ValueError(f"Unsupported TE parallel_mode {attrs['parallel_mode']!r} for {info.name!r}")
                 sharded = (
                     len(tp_ranks) > 1
                     and attrs["tensor_model_parallel"]
-                    and attrs["parallel_mode"] != "duplicated"
+                    and not replicated
                     and "expert_bias" not in info.name
                 )
                 partitions.append(
@@ -107,8 +117,10 @@ def _block_fp8_scales(plan, config):
     """Validate the immutable format contract once per immutable checkpoint prior."""
     scales = {}
     for name, spec in plan.items():
-        if spec.get("format") != "fp8-block128-ue8m0":
+        if spec.get("format") is None:
             continue
+        if spec["format"] != "fp8-block128-ue8m0":
+            raise ValueError(f"Unsupported canonical format {spec['format']!r} for {name!r}")
         weight_name = name.removesuffix("_scale_inv")
         scale_name = weight_name + "_scale_inv"
         weight, scale = plan.get(weight_name, {}), plan.get(scale_name, {})
@@ -158,9 +170,8 @@ class HfWeightIteratorGpuDelta(HfWeightIteratorDirect):
         self._rank = dist.get_rank()
         self._tp_group, self._tp_size = parallel.tp.group, parallel.tp.size
         self._device = torch.cuda.current_device()
-        self.local_consumer: Callable[[list[tuple[str, torch.Tensor]]], None] | None = None
-        self.local_error_consumer: Callable[[Exception], None] | None = None
-        self.local_plan_getter: Callable[[], dict] | None = None
+        # The protocol consumes owner units and export errors and supplies its canonical plan.
+        self.local_consumer: UpdateWeightFromGpuDelta | None = None
         self._canonical_plan, self._block_fp8_scales = None, {}
 
     def _hf_atomic_update_groups(self):
@@ -169,13 +180,13 @@ class HfWeightIteratorGpuDelta(HfWeightIteratorDirect):
         return []
 
     def _convert_to_hf_param_units(self, named_params):
-        plan = self.local_plan_getter() if self.local_plan_getter is not None else {}
+        plan = self.local_consumer.get_export_plan()
         if plan is not self._canonical_plan:
             try:
                 self._block_fp8_scales = _block_fp8_scales(plan, self.quantization_config or {})
                 self._canonical_plan = plan
             except Exception as error:
-                self.local_error_consumer(error)
+                self.local_consumer.record_export_error(error)
                 return
         for named_param in named_params:
             try:
@@ -186,7 +197,7 @@ class HfWeightIteratorGpuDelta(HfWeightIteratorDirect):
                 else:
                     yield from super()._convert_to_hf_param_units([named_param])
             except Exception as error:
-                self.local_error_consumer(error)
+                self.local_consumer.record_export_error(error)
 
     def _iter_non_expert_batch(self, batch, weights, materialize):
         pending = _gather_batch(
@@ -199,11 +210,11 @@ class HfWeightIteratorGpuDelta(HfWeightIteratorDirect):
                         stride, dim = partition
                         tensor = _gather_with_stride(outputs, dim, stride)
                     for unit in self._convert_to_hf_param_units([(name, tensor)]):
-                        self.local_consumer(unit)
+                        self.local_consumer.send_bucket(unit)
             except Exception as error:
                 # Gather handles have drained before owner-only reconstruction
                 # or conversion can fail. Peers must still visit later batches.
-                self.local_error_consumer(error)
+                self.local_consumer.record_export_error(error)
         return ()
 
     def _iter_expert_batch(self, batch, weights, materialize):
@@ -220,4 +231,4 @@ class HfWeightIteratorGpuDelta(HfWeightIteratorDirect):
             if info.src_rank == self._rank:
                 param = weights[info.name].detach().to(device=self._device, non_blocking=True)
                 for unit in self._convert_to_hf_param_units([(info.name, param)]):
-                    self.local_consumer(unit)
+                    self.local_consumer.send_bucket(unit)

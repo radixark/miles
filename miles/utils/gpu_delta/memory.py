@@ -1,10 +1,3 @@
-# Copyright 2026 SGLang Team
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-
 """CUDA-only host registration and hardware-decompression device allocations.
 
 Prepared input shares a tmpfs mapping. CUDA decoders register it for H2D copies;
@@ -39,30 +32,20 @@ def _check(result, operation):
 
 @cache
 def _pointer_attribute_query():
-    # cuda-bindings 13.3.1 exports the new enum but its typed result dispatcher
-    # rejects it before calling CUDA. Keep the image's bindings and query the
-    # same driver API directly in that specific case. CUdeviceptr is uint64;
-    # IS_HW_DECOMPRESS_CAPABLE writes an unsigned-int boolean.
-    library = ctypes.CDLL("libcuda.so.1")
-    query = library.cuPointerGetAttribute
+    # Some cuda-bindings releases (13.3.1) export this attribute but reject it in
+    # their typed result dispatcher, so query the driver API directly. CUdeviceptr
+    # is uint64; IS_HW_DECOMPRESS_CAPABLE writes an unsigned-int boolean.
+    query = ctypes.CDLL("libcuda.so.1").cuPointerGetAttribute
     query.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_uint64]
     query.restype = ctypes.c_int
     return query
 
 
 def require_de_capable(pointer):
-    driver = _driver()
-    attribute = driver.CUpointer_attribute.CU_POINTER_ATTRIBUTE_IS_HW_DECOMPRESS_CAPABLE
-    try:
-        result = driver.cuPointerGetAttribute(attribute, pointer)
-    except TypeError as error:
-        if str(error) != "Unsupported attribute: CU_POINTER_ATTRIBUTE_IS_HW_DECOMPRESS_CAPABLE":
-            raise
-        capable = ctypes.c_uint(0)
-        status = _pointer_attribute_query()(ctypes.byref(capable), int(attribute), int(pointer))
-        result = status, capable.value
-    capable = _check(result, "IS_HW_DECOMPRESS_CAPABLE")
-    if not capable:
+    attribute = _driver().CUpointer_attribute.CU_POINTER_ATTRIBUTE_IS_HW_DECOMPRESS_CAPABLE
+    capable = ctypes.c_uint(0)
+    status = _pointer_attribute_query()(ctypes.byref(capable), int(attribute), int(pointer))
+    if not _check((status, capable.value), "IS_HW_DECOMPRESS_CAPABLE"):
         raise RuntimeError("GPU-delta pointer is not hardware-decompression capable")
 
 
@@ -165,23 +148,17 @@ def record_device_stream(tensor, stream):
 
 
 class HostMapping:
-    """Own an engine-shared mapping, optionally registered for CUDA H2D reads.
+    """Own an engine-shared mapping; ``pin`` registers it for CUDA H2D reads.
 
     The caller drains CPU tasks and H2D readers before closing or replacing the
     mapping. Registration persists across publications that fit this capacity.
     """
 
-    def __init__(self, mapping, pinned):
+    def __init__(self, mapping):
         self.mapping = mapping
         self.capacity = len(mapping)
         self.view = memoryview(mapping)
         self.registered = False
-        try:
-            if pinned:
-                self.pin()
-        except BaseException:
-            self.close()
-            raise
 
     def pin(self):
         """Register the existing CPU mapping once, without replacing its views."""
@@ -252,14 +229,6 @@ class HostAllocation:
             )
             self.capacity = (capacity + granularity - 1) // granularity * granularity
             self.handle = _check(driver.cuMemCreate(self.capacity, properties, 0), "cuMemCreate")
-            properties = _check(
-                driver.cuMemGetAllocationPropertiesFromHandle(self.handle),
-                "cuMemGetAllocationPropertiesFromHandle",
-            )
-            # Drivers may omit the requested usage flags from this query. The
-            # mapped-pointer capability check below admits actual HW-DE support.
-            if properties.location.type != driver.CUmemLocationType.CU_MEM_LOCATION_TYPE_HOST_NUMA:
-                raise RuntimeError("GPU-delta host allocation is not HOST_NUMA")
             self.address = _check(
                 driver.cuMemAddressReserve(self.capacity, 0, 0, 0),
                 "cuMemAddressReserve",

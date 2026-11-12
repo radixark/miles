@@ -507,9 +507,14 @@ def _partition_plan(plan, owner_count):
 
 
 def _encode_version(args, owner, index, encoder, metadata, version):
-    tensors = owner["tensors"]
-    raw_plan = [tensor for tensor in tensors if tensor["encoding"] == "xor_raw_bytes"]
-    matrix_plan = [tensor for tensor in tensors if tensor["encoding"] == "xor_bytes"]
+    raw_plan, matrix_plan = [], []
+    for tensor in owner["tensors"]:
+        if tensor["encoding"] == "xor_raw_bytes":
+            raw_plan.append(tensor)
+        elif tensor["encoding"] == "xor_bytes":
+            matrix_plan.append(tensor)
+        else:
+            raise ValueError(f"Unsupported GPU-delta encoding {tensor['encoding']!r} for {tensor['name']!r}")
     writer = PublicationWriter(
         args.output / metadata["codec"] / f"v{version}",
         **metadata,
@@ -527,14 +532,7 @@ def _encode_version(args, owner, index, encoder, metadata, version):
             before, after = _fixture_snapshot(args, index, tensor, version)
             input_read_s += time.monotonic() - reading
             writing = time.monotonic()
-            entry = writer.add_raw_xor_tensor(
-                tensor["name"],
-                np.bitwise_xor(before, after),
-                dtype=tensor["dtype"],
-                shape=tensor["shape"],
-                format=tensor.get("format"),
-                checkpoint_dtype=tensor.get("checkpoint_dtype"),
-            )
+            entry = writer.add_raw_xor_tensor(tensor["name"], np.bitwise_xor(before, after), tensor)
             publication_write_s += time.monotonic() - writing
             changed += entry["changed_bytes"]
         for tensor in matrix_plan:
@@ -556,17 +554,7 @@ def _encode_version(args, owner, index, encoder, metadata, version):
         ):
             batch_wall_s += metrics["encode_wall_s"]
             writing = time.monotonic()
-            writer.add_encoded_tensor(
-                tensor["name"],
-                frames,
-                payload,
-                outer,
-                changed_bytes=count,
-                dtype=tensor["dtype"],
-                shape=tensor["shape"],
-                format=tensor.get("format"),
-                checkpoint_dtype=tensor.get("checkpoint_dtype"),
-            )
+            writer.add_encoded_tensor(tensor["name"], frames, payload, outer, count, tensor)
             publication_write_s += time.monotonic() - writing
             changed += count
         writing = time.monotonic()
@@ -1245,12 +1233,12 @@ def _profile_update(enabled):
     return nvtx.range("gpu_delta_benchmark_capture")
 
 
-async def _run(args, phase):
+async def _run(args, *, oracle):
     codec = configured_codec()
     fixture = json.loads((args.fixture / "fixture.json").read_text()) if args.fixture else None
-    model = Path(fixture["target_checkpoint"]) if phase == "oracle" else args.model
+    model = Path(fixture["target_checkpoint"]) if oracle else args.model
     async with _engines(args, model) as clients:
-        if phase == "oracle":
+        if oracle:
             _save(args.output / "target-generation.json", await _generation(clients))
             return
         descriptions = await asyncio.gather(
@@ -1422,21 +1410,12 @@ def _rank_rows(update, publication, identities):
             raise ValueError("Scheduler pause endpoints differ from reported duration")
         if start != stages[0][rank]["scheduler_timing"]["pause_started_ns"]:
             raise ValueError("Apply and resume pause endpoints differ")
-        result, metrics = resumed["result"], resumed["result"]["timings"]
-        # Older receipts may contain CUDA-event diagnostics; fresh runs use Nsight.
-        cuda = metrics["cuda_event_ms"] if result.get("timing_enabled", False) else None
+        metrics = resumed["result"]["timings"]
         rows.append(
             {
                 "identity": identities[rank],
                 "outer_cpu_s": _seconds(metrics["host_rank_outer_zstd_decode_s"]),
                 "plain_copy_s": _seconds(metrics["host_rank_encoded_copy_s"]),
-                "de_stream_cuda_s": _seconds(cuda["decode"]) / 1000 if cuda is not None else None,
-                "matrix_apply_cuda_s": _seconds(cuda["layout_apply"]) / 1000 if cuda is not None else None,
-                "gpu_pipeline_s": (
-                    _seconds(cuda["paused_gpu_pipeline"]) / 1000
-                    if cuda is not None and "paused_gpu_pipeline" in cuda
-                    else None
-                ),
                 "prepare_s": _seconds(metrics["host_prepare_s"]),
                 "pause_s": pause,
                 "skip_payload_hash": metrics["host_encoded_cache_skip_payload_hash"],
@@ -1447,15 +1426,8 @@ def _rank_rows(update, publication, identities):
     return sorted(rows, key=lambda row: (row["identity"]["engine_id"], row["identity"]["dp_rank"]))
 
 
-def _owner_compression(metrics, codec):
+def _owner_compression(metrics):
     final = metrics["finalization"]
-    # Saved fixtures retain their original diagnostics, never new measurements.
-    inner_cuda = metrics.get("batch_cuda_s", {})
-    outer_cuda = final.get("finalize_cuda_phase_s", {})
-    inner = _seconds(inner_cuda["compression_s"]) if "compression_s" in inner_cuda else None
-    outer = (
-        _seconds(outer_cuda["outer_zstd_s"]) if CODECS[codec][1] is not None and "outer_zstd_s" in outer_cuda else None
-    )
     combined = _seconds(metrics["compression_and_publication_s"])
     if not math.isclose(
         combined,
@@ -1467,8 +1439,6 @@ def _owner_compression(metrics, codec):
     return {
         "compression_and_publication_s": combined,
         "publication_write_s": _seconds(metrics["publication_write_s"]),
-        "inner_cuda_s": inner,
-        "outer_cuda_s": outer,
         "batch_wall_s": _seconds(metrics["batch_wall_s"]),
         "finalization_wall_s": _seconds(final["finalize_wall_s"]),
         "outer_wall_s": _seconds(final["outer_zstd_wall_s"]),
@@ -1479,7 +1449,7 @@ def _owner_compression(metrics, codec):
     }
 
 
-def _compression(row, codec, assignments):
+def _compression(row, assignments):
     metrics = row["compression"]["owners"]
     by_owner = {owner["owner"]: owner for owner in metrics}
     if len(by_owner) != len(metrics) or set(by_owner) != set(assignments):
@@ -1487,7 +1457,7 @@ def _compression(row, codec, assignments):
     for owner, value in by_owner.items():
         if any(value[key] != assignments[owner][key] for key in ("gpu", "groups", "canonical_bytes")):
             raise ValueError("Compression owner assignment differs")
-    owners = [_owner_compression(value, codec) for value in metrics]
+    owners = [_owner_compression(value) for value in metrics]
     if not owners or sum(owner["raw_metrics"]["canonical_bytes"] for owner in owners) != row["canonical_bytes"]:
         raise ValueError("Compression owners do not cover the canonical bytes")
     return {
@@ -1496,8 +1466,6 @@ def _compression(row, codec, assignments):
             for key in (
                 "compression_and_publication_s",
                 "publication_write_s",
-                "inner_cuda_s",
-                "outer_cuda_s",
                 "batch_wall_s",
                 "finalization_wall_s",
                 "outer_wall_s",
@@ -1534,19 +1502,9 @@ def _markdown(summary):
     lines = [
         "# GPU delta end-to-end benchmark",
         "",
-        f"Status: **{summary['status']}**. "
-        + (
-            "Final target oracle NOT_RUN: no target-equivalence or full correctness claim. Apply/resume receipts and per-update ordinary generations were checked."
-            if summary.get("final_target_validation") == "NOT_RUN"
-            else "Every arm's final selected text, token IDs and full input/output logprobs are compared with one independently loaded target checkpoint on every route; see `comparison.json`."
-        ),
+        f"Status: **{summary['status']}**. Final target oracle: {summary['final_target_validation']}.",
         "",
-        "One row per arm/version, including the first update. SHA on/off controls both sender payload "
-        "hashing and receiver verification; manifest SHA remains enabled. Versions are cumulative synthetic "
-        "targets, not learned updates or statistical repeats. Selected outputs do not prove every weight byte. "
-        "Startup and oracle generation are outside the update timings.",
-        "",
-        f"Prepared inputs: `{summary['inputs']['path']}`; reused: {summary['inputs']['reused']}. Input construction is shared across all arms and excluded from compression measurements; its metadata remains in `inputs.json`.",
+        f"Prepared inputs: `{summary['inputs']['path']}`; reused: {summary['inputs']['reused']}.",
         "",
     ]
     if any("profile" in row for _, row in versions):
@@ -1581,7 +1539,7 @@ def _markdown(summary):
                     if "profile" in row
                     else row["version"]
                 ),
-                row["compression"].get("measurement_scope", "current_run"),
+                row["compression"]["measurement_scope"],
                 _format(row["compression"]["owner_max"]["compression_and_publication_s"]),
                 _format(row["receiver_max"]["prepare_s"]),
                 _format(row["receiver_max"]["pause_s"], scale=1000),
@@ -1596,30 +1554,6 @@ def _markdown(summary):
             for arm, row in versions
         ),
     )
-    lines += [
-        "In saved-delta apply mode, every sender/read/encode/seal/compression timing is historical from "
-        "the referenced fixture, never current-run encoder performance. Validation I/O is recorded separately "
-        "in fixture-verification.json; no encoding time is invented or included in current totals. "
-        "New receiver apply/resume/generation measurements remain current. The final oracle is opt-in.",
-        "",
-        "Compression is the maximum owner compression/publication wall time, including optional payload SHA, "
-        "H2D/XOR/final D2H, writes and shard flush/fsync. It excludes prepared-input reads/pinning, shared input "
-        "construction and parent manifest sealing. Prepare is the maximum receiver background-preparation "
-        "wall time. Pause is the maximum actual scheduler pause from completed pause/resume timestamps. "
-        "These independent owner/rank maxima can come from different processes and must not be added.",
-        "",
-        "Sizes sum across all owners; GiB = 2^30 bytes. Inner is the compressed frame bytes before outer Zstd. "
-        "Outer is the stored Zstd matrix payload; it is absent for unwrapped codecs. Payload includes all stored "
-        "matrix/raw bytes and alignment, excluding the manifest. The packed inner arena, exact byte counts, "
-        "manifest/publication sizes, frame sizes and canonical/changed bytes remain in `summary.json`.",
-        "",
-        "`summary.json` retains every owner/rank receipt at full precision, including input read/pin and "
-        "owner elapsed time, publication writes, finalization, pack/D2H, parent sealing, "
-        "CPU outer decode/plain copy and coordinator time. Components overlap. CUDA intervals from "
-        "older fixtures/receipts remain historical diagnostics, including wrapper/launch gaps; fresh runs "
-        "leave them unmeasured and use Nsight for GPU profiling. The table rounds values to three decimal places.",
-        "",
-    ]
     lines += _report_table(
         [
             "Codec",
@@ -1628,8 +1562,6 @@ def _markdown(summary):
             "Kernel cache misses/rank",
             "Paused setup ms",
             "Apply wall ms",
-            "Layout CUDA ms",
-            "GPU pipeline ms",
             "Descriptor KiB",
             "Apply metadata KiB",
         ],
@@ -1641,21 +1573,12 @@ def _markdown(summary):
                 _format(row["receiver_max"]["kernel_cache_misses"]),
                 _format(row["receiver_max"]["setup_s"], scale=1000),
                 _format(row["receiver_max"]["apply_host_s"], scale=1000),
-                _format(row["receiver_max"]["matrix_apply_cuda_s"], scale=1000),
-                _format(row["receiver_max"]["gpu_pipeline_s"], scale=1000),
                 _format(row["receiver_max"]["descriptor_h2d_bytes"], scale=1 / 1024),
                 _format(row["receiver_max"]["apply_metadata_h2d_bytes"], scale=1 / 1024),
             ]
             for arm, row in versions
         ),
     )
-    lines += [
-        "Kernel preparation occurs before the serving pause and includes the cached kernel lookup or first "
-        "compilation/loading. Cache misses count per-process module warmup requests per update; a request may compile or load a disk-cached binary. Missing counters in older "
-        "receipts remain unmeasured. Descriptor bytes are included in total apply metadata bytes. Each cell is "
-        "an independent rank maximum; nested host spans and overlapping CUDA events must not be added.",
-        "",
-    ]
     return "\n".join(lines) + "\n"
 
 
@@ -1696,7 +1619,7 @@ def _arm_report(output, arm, oracle_records):
         ranks = _rank_rows(update, publication, identities)
         if any(rank["skip_payload_hash"] != arm["skip_payload_hash"] for rank in ranks):
             raise ValueError("Receiver hash policy differs from arm")
-        compression = _compression(row, codec, assignments)
+        compression = _compression(row, assignments)
         compression["measurement_scope"] = "historical_saved_fixture" if reuse else "current_run"
         if any(owner["raw_metrics"]["payload_checksum_format"] != checksum for owner in compression["owners"]):
             raise ValueError("Sender owner hash policy differs from arm")
@@ -1717,9 +1640,6 @@ def _arm_report(output, arm, oracle_records):
                     for key in (
                         "outer_cpu_s",
                         "plain_copy_s",
-                        "de_stream_cuda_s",
-                        "matrix_apply_cuda_s",
-                        "gpu_pipeline_s",
                         "prepare_s",
                         "pause_s",
                         "kernel_prepare_s",
@@ -1835,8 +1755,12 @@ def _phase(phase, args, directory, settings, arm):
             _prepare_inputs(stage)
         elif phase == "fixture":
             _fixture(stage)
+        elif phase == "run":
+            asyncio.run(_run(stage, oracle=False))
+        elif phase == "oracle":
+            asyncio.run(_run(stage, oracle=True))
         else:
-            asyncio.run(_run(stage, phase))
+            raise ValueError(f"Unknown benchmark phase {phase!r}")
 
 
 def _run_phase(phase, args, directory, arm, records):

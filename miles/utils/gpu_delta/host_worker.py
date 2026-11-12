@@ -1,16 +1,3 @@
-# Copyright 2026 SGLang Team
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 """CPU-only builder for one engine host; shared files carry all bulk data.
 
 Launched by absolute file path so the child never imports SGLang or Torch.
@@ -35,12 +22,8 @@ import numpy as np
 import orjson
 from safetensors.numpy import load as load_columns
 
-if os.environ.get("SGLANG_ENABLE_NVTX_OPERATIONS", "").lower() in {
-    "1",
-    "true",
-    "yes",
-    "y",
-}:
+# CpuWorker passes exactly "1" or "0".
+if os.environ.get("SGLANG_ENABLE_NVTX_OPERATIONS") == "1":
     from nvtx import annotate
 else:
 
@@ -82,30 +65,6 @@ def configured_cpu_workers():
     if not 1 <= value <= 64:
         raise ValueError("GPU_DELTA_CPU_WORKERS must be between 1 and 64")
     return value
-
-
-def validate_dtype_records(records):
-    """Admit full-inventory logical dtypes without importing model or CUDA code."""
-    errors = list(records["errors"])
-    for row in records["checks"]:
-        if "allowed_served" in row:
-            allowed = set(row["allowed_served"])
-        else:
-            allowed = {row["dtype"]}
-            if row["dtype"] == "BF16" and len(row["shape"]) <= 1:
-                allowed.add("F32")
-        if any(dtype not in allowed for dtype in row["served"]):
-            errors.append(
-                f"{row['name']}: checkpoint={row['checkpoint_dtype']}, canonical={row['dtype']}, "
-                f"served={row['served']}, allowed_served={sorted(allowed)}, shape={row['shape']}"
-            )
-    if errors:
-        raise ValueError(
-            "GPU-delta XOR apply/cancel requires matching checkpoint and served dtypes "
-            "or an explicit lossless representation (including BF16->FP32 scalar/vector widening). "
-            f"Found {len(errors)} mismatched tensors while planning the full checkpoint "
-            "(including unchanged tensors); no delta has been applied:\n" + "\n".join(errors)
-        )
 
 
 def copy_bytes(destination, source):
@@ -153,6 +112,11 @@ def _identity(info):
     return [info.st_dev, info.st_ino, info.st_size]
 
 
+def _stat_key(info):
+    """Changes whenever a publication source file is replaced or rewritten."""
+    return info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
+
+
 def _map_cache(directory, allocation, flags=mmap.MAP_SHARED):
     """Attach the exact retained cache inode, without resizing its storage."""
     with (directory / allocation["file"]).open("r+b") as source:
@@ -161,6 +125,15 @@ def _map_cache(directory, allocation, flags=mmap.MAP_SHARED):
         return (
             mmap.mmap(source.fileno(), allocation["capacity"], flags=flags) if allocation["capacity"] else bytearray()
         )
+
+
+class _MetadataMapping:
+    """The child and every rank remap metadata only for a new capacity generation."""
+
+    def _attach_metadata(self, allocation):
+        if self._metadata_capacity != allocation:
+            self._metadata_mapping = _map_cache(self.directory, allocation)
+            self._metadata_capacity = allocation
 
 
 # Cold capacity fits the required extent; growth reserves twice the new extent.
@@ -205,13 +178,8 @@ def _read_verify_payload(source, destination, expected, skip_payload_hash):
             if not count:
                 raise ValueError("truncated delta payload")
             position += count
-        after = os.fstat(incoming.fileno())
-        if incoming.read(1) or (
-            before.st_ino,
-            before.st_size,
-            before.st_mtime_ns,
-            before.st_ctime_ns,
-        ) != (after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+        after = _stat_key(os.fstat(incoming.fileno()))
+        if incoming.read(1) or _stat_key(before) != after:
             raise ValueError("delta payload size mismatch or source changed")
     read_s = time.perf_counter() - started
     if skip_payload_hash:
@@ -228,11 +196,10 @@ def _read_verify_payloads(publication, backing, file_spans, definitions, pool, m
     started = time.perf_counter()
     futures, error = [], None
     try:
-        for name, record in definitions.items():
+        for (name, record), (start, size) in zip(definitions.items(), file_spans, strict=True):
             source = (publication.parent / name).resolve(strict=True)
             if source.parent != publication.parent:
                 raise ValueError("delta payload escapes immutable publication")
-            start, size = file_spans[name]
             futures.append(
                 pool.executor.submit(
                     _read_verify_payload,
@@ -261,20 +228,25 @@ def _natural_key(name):
     return tuple(int(piece) if piece.isdigit() else piece for piece in re.split(r"(\d+)", name))
 
 
+def _is_raw(encoding):
+    # The isolated child cannot import publication.py, which owns the same two encodings.
+    if encoding == "xor_raw_bytes":
+        return True
+    elif encoding == "xor_bytes":
+        return False
+    else:
+        raise ValueError(f"unsupported GPU-delta tensor encoding: {encoding}")
+
+
 def _read_sidecar(publication, record):
     path = (publication.parent / record["file"]).resolve(strict=True)
     if path.parent != publication.parent or path.stat().st_size != record["nbytes"]:
         raise ValueError("delta metadata path or size differs")
     with path.open("rb") as source:
-        before = os.fstat(source.fileno())
+        before = _stat_key(os.fstat(source.fileno()))
         raw = source.read()
-        after = os.fstat(source.fileno())
-    if (before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
-        after.st_ino,
-        after.st_size,
-        after.st_mtime_ns,
-        after.st_ctime_ns,
-    ) or hashlib.sha256(raw).hexdigest() != record["sha256"]:
+        after = _stat_key(os.fstat(source.fileno()))
+    if before != after or hashlib.sha256(raw).hexdigest() != record["sha256"]:
         raise ValueError("delta metadata changed or SHA256 differs")
     return raw
 
@@ -360,10 +332,12 @@ def _prepare_arena(destination, tensors, raw, backing, file_spans, columns, orde
     futures, error = [], None
     active = order[tensors["prepared_nbytes"][order] != 0]
     jobs = active[~raw[active]]
-    if not codec.endswith("-zstd"):
+    if codec in {"lz4", "bitcomp"}:
         worker, phase = _copy_group, "host_rank_encoded_copy_s"
-    else:
+    elif codec in {"snappy-zstd", "lz4-zstd", "bitcomp-zstd"}:
         worker, phase = _decode_zstd_group, "host_rank_outer_zstd_decode_s"
+    else:
+        raise ValueError(f"unsupported GPU-delta codec: {codec}")
     try:
         for ordinal in active[raw[active]]:
             _copy_tensor(ordinal, destination, backing, file_spans, columns, tensors)
@@ -391,20 +365,16 @@ def _prepare_arena(destination, tensors, raw, backing, file_spans, columns, orde
         except BaseException as exc:  # noqa: BLE001 - drain peers before re-raise
             if error is None:
                 error = exc
-    metrics["host_rank_outer_zstd_decode_s"] = 0.0
-    metrics["host_rank_encoded_copy_s"] = 0.0
     metrics[phase] = time.perf_counter() - started
     if error is not None:
         raise error
 
 
 def _map_encoded(directory, encoded, definitions):
-    file_spans, position = {}, 0
-    for name, record in definitions.items():
-        file_spans[name] = (position, record["nbytes"])
-        position += record["nbytes"]
+    # Rows follow the manifest's file order, which payload_file indexes.
+    sizes = np.asarray([record["nbytes"] for record in definitions.values()], dtype=np.int64)
     # The view owns its mmap, including while drained failure tracebacks retain it.
-    return memoryview(_map_cache(directory, encoded)), file_spans
+    return memoryview(_map_cache(directory, encoded)), np.column_stack((np.cumsum(sizes) - sizes, sizes))
 
 
 def new_metrics():
@@ -423,8 +393,6 @@ def new_metrics():
             "host_encoded_cache_allocation_s",
             "host_encoded_cache_allocation_calls",
             "host_encoded_cache_allocation_bytes",
-            "host_prepared_cache_created",
-            "host_prepared_cache_reused",
             "host_prepared_cache_layout_s",
             "host_prepared_cache_allocation_s",
             "host_prepared_cache_allocation_calls",
@@ -455,52 +423,25 @@ def _write_record(directory, name, record):
     temporary.replace(directory / (name + ".json"))
 
 
-class HostBuilder:
+def process_start_ticks():
+    """Clock-tick start time of this process; with its PID it names one incarnation."""
+    # proc stat starttime is the 22nd field; comm may contain spaces and ')'.
+    with open("/proc/self/stat") as source:
+        return int(source.read().rsplit(")", 1)[1].split()[19])
+
+
+class HostBuilder(_MetadataMapping):
     """Persistent CPU state; no device, model, CUDA registration or rank objects."""
 
-    def __init__(self, directory, workers, backends, owner):
+    def __init__(self, directory, workers):
         self.directory = Path(directory)
-        self.backends = backends
-        self.owner = owner
-        self._dtypes_admitted = False
         self._shared_order = self._raw = None
         self._index = None
         self._metadata_mapping = self._metadata_capacity = None
         self._prepared_capacity = None
         self._prepared_view = memoryview(b"")
         self.pool = HostPayloadPool(workers)
-        stat = Path("/proc/self/stat").read_text()
-        self.identity = {
-            "pid": os.getpid(),
-            "start_ticks": int(stat[stat.rfind(")") + 2 :].split()[19]),
-            "workers": workers,
-        }
-
-    def _admit_dtypes(self, namespace):
-        if self._dtypes_admitted:
-            return
-        participants = [
-            identity
-            for identity in namespace["participants"]
-            if identity["engine_id"] == self.owner["engine_id"]
-            and identity["host_cache_id"] == self.owner["host_cache_id"]
-        ]
-        if not participants:
-            raise ValueError("GPU-delta dtype admission requires the original local participants")
-        combined = {"checks": [], "errors": []}
-        for identity in participants:
-            path = self.directory.parent / f"dtypes-{identity['rank_id']}.json"
-            try:
-                record = orjson.loads(path.read_bytes())
-            except FileNotFoundError as error:
-                raise ValueError(f"GPU-delta dtype metadata missing for rank {identity['rank_id']}") from error
-            if record["identity"] != identity:
-                raise ValueError(f"GPU-delta dtype metadata identity differs for rank {identity['rank_id']}")
-            prefix = f"rank {identity['rank_id']}: "
-            combined["checks"].extend(row | {"name": prefix + row["name"]} for row in record["checks"])
-            combined["errors"].extend(prefix + error for error in record["errors"])
-        validate_dtype_records(combined)
-        self._dtypes_admitted = True
+        self.identity = {"pid": os.getpid(), "start_ticks": process_start_ticks(), "workers": workers}
 
     def prepare(self, expected, namespace):
         token = publication_token(expected)
@@ -510,72 +451,62 @@ class HostBuilder:
             wait_s = time.perf_counter() - waiting
             state_path = self.directory / "state.json"
             state = orjson.loads(state_path.read_bytes()) if state_path.exists() else None
-            if self._index is None and (self.directory / "index.json").exists():
-                self._index = orjson.loads((self.directory / "index.json").read_bytes())
             previous = self._index
             if previous and previous["namespace"] != namespace:
                 raise ValueError("encoded cache namespace differs")
-            try:
-                self._admit_dtypes(namespace)
-            except ValueError as error:
-                _write_record(self.directory, "state", {"token": token, "state": "FAILED", "error": str(error)})
-                raise
-            if previous and previous["token"] == token:
-                if state is None or state["state"] != "READY" or state["token"] != token:
+            if state is not None and state["token"] == token:
+                # Never rebuild a publication: its XOR mask may already be applied.
+                # Only this child's own unreleased READY image is returned again.
+                if state["state"] != "READY" or not previous or previous["token"] != token:
                     raise ValueError("encoded publication is failed or already released")
                 result = {"index": previous, "metrics": new_metrics()}
-                result["metrics"].update(host_encoded_cache_reused=1, host_prepared_cache_reused=1)
-            else:
-                if previous and (
-                    state is None
-                    or state["state"] != "REUSABLE"
-                    or state["token"] != previous["token"]
-                    or previous["publication"]["plan_digest"] != expected["plan_digest"]
-                ):
-                    raise ValueError("encoded cache requires prior engine APPLIED release before overwrite")
-                self._index = {
-                    "namespace": namespace,
-                    "publication": expected,
-                    "token": token,
-                }
-                _write_record(self.directory, "index", self._index)
-                _write_record(self.directory, "state", {"token": token, "state": "BUILDING"})
-                result = self.build(self._index, previous)
-                self._index = index = result["index"]
-                _write_record(self.directory, "index", index)
-                _write_record(
-                    self.directory,
-                    "state",
-                    {
-                        "token": token,
-                        "state": "READY",
-                        "generation": index["encoded"]["generation"],
-                    },
-                )
-                if previous:
-                    for kind in ("encoded", "prepared", "metadata"):
-                        if previous[kind]["file"] != index[kind]["file"]:
-                            (self.directory / previous[kind]["file"]).unlink()
-            result["metrics"].update(host_encoded_cache_wait_s=wait_s, host_prepared_cache_wait_s=wait_s)
+                result["metrics"].update(host_encoded_cache_reused=1, host_encoded_cache_wait_s=wait_s)
+                return result
+            if previous and (
+                state is None
+                or state["state"] != "REUSABLE"
+                or state["token"] != previous["token"]
+                or previous["publication"]["plan_digest"] != expected["plan_digest"]
+            ):
+                raise ValueError("encoded cache requires prior engine APPLIED release before overwrite")
+            self._index = {
+                "namespace": namespace,
+                "publication": expected,
+                "token": token,
+            }
+            _write_record(self.directory, "index", self._index)
+            _write_record(self.directory, "state", {"token": token, "state": "BUILDING"})
+            result = self.build(self._index, previous)
+            self._index = index = result["index"]
+            _write_record(self.directory, "index", index)
+            _write_record(self.directory, "state", {"token": token, "state": "READY"})
+            if previous:
+                for kind in ("encoded", "prepared", "metadata"):
+                    if previous[kind]["file"] != index[kind]["file"]:
+                        (self.directory / previous[kind]["file"]).unlink()
+            result["metrics"]["host_encoded_cache_wait_s"] = wait_s
             return result
 
-    def release(self, ready_state):
+    def release(self, token):
         with (self.directory / ".lock").open("a+b") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             state = orjson.loads((self.directory / "state.json").read_bytes())
-            if state == ready_state:
-                _write_record(self.directory, "state", state | {"state": "REUSABLE"})
+            if state["state"] == "READY" and state["token"] == token:
+                _write_record(self.directory, "state", {"token": token, "state": "REUSABLE"})
+            elif state["state"] == "READY":
+                pass  # A late release of an older publication never frees newer bytes.
+            elif state["state"] == "REUSABLE":
+                pass  # Already released; a repeated release grants nothing more.
+            elif state["state"] == "BUILDING":
+                pass  # A build that failed before READY stays nonreusable.
+            else:
+                raise ValueError(f"unknown GPU-delta host cache state: {state['state']}")
 
     def _attach_prepared(self, allocation):
         if self._prepared_capacity != allocation:
             self._prepared_view.release()
             self._prepared_view = memoryview(_map_cache(self.directory, allocation))
             self._prepared_capacity = allocation
-
-    def _attach_metadata(self, allocation):
-        if self._metadata_capacity != allocation:
-            self._metadata_mapping = _map_cache(self.directory, allocation)
-            self._metadata_capacity = allocation
 
     def _catalog(self, publication, manifest, previous):
         source = manifest["catalog"]
@@ -595,7 +526,7 @@ class HostBuilder:
             if catalog is None:
                 catalog = orjson.loads((self.directory / "catalog.json").read_bytes())
             entries = catalog["tensors"]
-            self._raw = np.array([entry["encoding"] == "xor_raw_bytes" for entry in entries], dtype=bool)
+            self._raw = np.array([_is_raw(entry["encoding"]) for entry in entries], dtype=bool)
             self._shared_order = np.array(
                 sorted(
                     range(len(entries)),
@@ -669,7 +600,7 @@ class HostBuilder:
             tensors,
             self._raw,
             backing,
-            np.asarray(list(file_spans.values()), dtype=np.int64).reshape(-1, 2),
+            file_spans,
             columns,
             self._shared_order,
             self.pool,
@@ -700,10 +631,7 @@ class HostBuilder:
         validate_codec(manifest)
         if any(manifest[key] != expected[key] for key in ("base_version", "target_version", "plan_digest")):
             raise ValueError("publication header differs from prepare request")
-        index["publication"] = expected | {
-            "codec": manifest["codec"],
-            "backend": self.backends[manifest["codec"].removesuffix("-zstd")],
-        }
+        index["publication"] = expected | {"codec": manifest["codec"]}
         definitions = {}
         for record in manifest["files"]:
             if record["nbytes"] < 0:
@@ -744,7 +672,7 @@ class HostBuilder:
         release_started = time.perf_counter()
         del manifest, content, backing
         metrics["host_rank_metadata_release_s"] = time.perf_counter() - release_started
-        metrics["host_prepared_cache_created"] = metrics["host_encoded_cache_created"] = 1
+        metrics["host_encoded_cache_created"] = 1
         index["cpu_worker"] = self.identity
         return {"index": index, "metrics": metrics}
 
@@ -770,29 +698,23 @@ def main():
     connection = Connection(args.socket_fd)
     builder = None
     try:
+        builder = HostBuilder(**orjson.loads(connection.recv_bytes(1 << 20)))
         while True:
             request = orjson.loads(connection.recv_bytes(1 << 20))
             if request is None:
                 break
             try:
-                if builder is None:
-                    builder = HostBuilder(**request["configuration"])
                 if request["command"] == "prepare":
                     result = builder.prepare(request["expected"], request["namespace"])
-                else:
-                    builder.release(request["ready_state"])
+                elif request["command"] == "release":
+                    builder.release(request["token"])
                     result = {}
-                result.update(token=request["token"], status="OK")
+                else:
+                    raise ValueError(f"unknown GPU-delta CPU worker command: {request['command']}")
+                result["status"] = "OK"
             except BaseException as error:
                 connection.send_bytes(
-                    orjson.dumps(
-                        {
-                            "token": request["token"],
-                            "status": "FAILED",
-                            "error_type": type(error).__name__,
-                            "error": str(error),
-                        }
-                    )
+                    orjson.dumps({"status": "FAILED", "error_type": type(error).__name__, "error": str(error)})
                 )
                 raise
             connection.send_bytes(orjson.dumps(result))

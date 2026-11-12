@@ -1,10 +1,3 @@
-# Copyright 2026 SGLang Team
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-
 """CUDA-only byte-affine XOR kernels; imported only at receiver admission."""
 
 import math
@@ -462,11 +455,15 @@ def _word_bytes(contract, alignment):
 
 
 def _row_alignment(shape, stride, alignment):
-    if _access_mode(shape, stride, BLOCK) != 2:
+    mode = _access_mode(shape, stride, BLOCK)
+    if mode in (0, 1):
         return alignment
-    # The inner row coordinate is BLOCK aligned. Include every active outer
-    # stride so a16B base pointer never overstates a4B-aligned row start.
-    return math.gcd(alignment, *(step for n, step in zip(shape[:-1], stride[:-1], strict=False) if n > 1))
+    elif mode == 2:
+        # The inner row coordinate is BLOCK aligned. Include every active outer
+        # stride so a16B base pointer never overstates a4B-aligned row start.
+        return math.gcd(alignment, *(step for n, step in zip(shape[:-1], stride[:-1], strict=False) if n > 1))
+    else:
+        raise ValueError(f"invalid GPU delta access mode: {mode}")
 
 
 def _validate_contract(contract, count):
@@ -490,12 +487,11 @@ def _validate_contract(contract, count):
 
 
 def _record(contract, count, alignment, position):
-    """Prepare one record from its original byte contract and pointer position.
+    """Prepare one record from its validated byte contract and pointer position.
 
     Classify once in byte units. Only word-affine coordinate descriptors are then
     normalized into uint32-word units; size/count/tile fields remain byte-based.
     """
-    _validate_contract(contract, count)
     if len(alignment) != 2 or any(a not in (1, 2, 4, 8, 16) for a in alignment):
         raise ValueError("invalid GPU delta apply pointer alignment")
     if type(position) is not int or not 0 <= position <= _INT64_MAX - 2 * count:
@@ -599,7 +595,6 @@ class ByteApplyGroup:
         if self.cpu_targets:
             self._cpu_bound = False
         if type(device_index) is int and device_index == self._prepared_device:
-            self._restore_aligned_binding()
             return True
         self._prepared_device = None
         for contract, count in self.contracts:
@@ -631,8 +626,8 @@ class ByteApplyGroup:
                 maximum = max(offsets)
                 self.source_limit = max(self.source_limit, maximum + span)
                 self.source_max_offset = max(self.source_max_offset, maximum)
-            # For origin %16 ==0, capped gcd(origin+offsets) equals gcd(16,offsets).
-            # Empty contracts retain the existing alignment1 convention.
+            # bind() requires origin %16 ==0, so capped gcd(origin+offsets) equals
+            # gcd(16,offsets). Empty contracts retain the existing alignment1 convention.
             alignments.append((math.gcd(16, *offsets), math.gcd(16, *targets)) if count else (1, 1))
             indices.extend(range(pointer_position, pointer_position + count))
             if self.cpu_targets:
@@ -642,25 +637,8 @@ class ByteApplyGroup:
         self.source_indices = tuple(indices)
         self.cpu_pointer_rows = tuple((target_indices[index], key, offset) for index, key, offset in self.cpu_targets)
         self._plan_binding(alignments)
-        self._aligned_binding = (
-            tuple(self.metadata_rows),
-            tuple(self.programs),
-            self.tiles,
-            self.word32_contracts,
-            self.grid_ctas,
-        )
-        self._binding_aligned = True
         self._prepared_device = device_index
         return False
-
-    def _restore_aligned_binding(self):
-        if not self._binding_aligned:
-            rows, programs, tiles, words, grid = self._aligned_binding
-            # A fallback may replace the current descriptors; retain the
-            # immutable aligned template across preparation and binding.
-            self.metadata_rows, self.programs = list(rows), list(programs)
-            self.tiles, self.word32_contracts, self.grid_ctas = tiles, words, grid
-            self._binding_aligned = True
 
     def pointer_rows(self, origin, allow_unbound_cpu=False):
         if self.cpu_targets and not allow_unbound_cpu:
@@ -694,10 +672,10 @@ class ByteApplyGroup:
         _launch_prebound(calls)
 
     def bind(self, scratch):
-        """Validate actual scratch, reusing prepared geometry when 16B aligned.
+        """Validate actual scratch against the prepared geometry.
 
-        Allocation alignment is checked, never assumed. The uncommon misaligned
-        caller still uses the same conservative runtime descriptor construction.
+        Allocation alignment is checked, never assumed: the prepared descriptors
+        require a 16-byte aligned origin.
         """
         if self._prepared_device is None:
             raise RuntimeError("GPU delta apply kernel must be prepared before pause")
@@ -710,26 +688,13 @@ class ByteApplyGroup:
             or (self.sources and (origin == 0 or origin + self.source_max_offset > _INT64_MAX))
         ):
             raise ValueError("invalid GPU delta apply source pointer")
-        if origin % 16 == 0:
-            self._restore_aligned_binding()
-            return True
-        alignments, position = [], 0
-        for _, count in self.contracts:
-            end = position + count
-            addresses = [origin + i for i in self.sources[position:end]]
-            common = (math.gcd(*addresses), math.gcd(*self.targets[position:end]))
-            alignments.append(tuple(min(16, v & -v) if v else 1 for v in common))
-            position = end
-        self._plan_binding(alignments)
-        self._binding_aligned = False
-        return False
+        if origin % 16:
+            raise ValueError("GPU delta apply source must be 16-byte aligned")
 
     def _plan_binding(self, alignments):
-        """Build descriptors/launches before pause, or for a misaligned fallback."""
+        """Build descriptors and launch programs once, before pause."""
         # Keep the single global pointer table in its original order. Only
         # descriptor records are partitioned, with original pointer positions.
-        if len(alignments) != len(self.contracts):
-            raise ValueError("GPU delta apply alignment count mismatch")
         position, families, self.word32_contracts = 0, [[], [], []], 0
         for (contract, count), alignment in zip(self.contracts, alignments, strict=False):
             family, record = _record(contract, count, alignment, position)
@@ -747,7 +712,12 @@ class ByteApplyGroup:
                 # Keep the fixed family policy: word-affine uses a full grid;
                 # packed/general reuse descriptors over four occupancy waves.
                 # Broader word-affine admission requires fresh measurements.
-                grid_ctas = tiles if family == 1 else min(tiles, RESIDENT_WAVES * resident)
+                if family == 1:
+                    grid_ctas = tiles
+                elif family in (0, 2):
+                    grid_ctas = min(tiles, RESIDENT_WAVES * resident)
+                else:
+                    raise ValueError(f"invalid GPU delta apply family: {family}")
                 self.programs.append(
                     ApplyProgram(
                         ("packed", "word_affine", "general")[family],
@@ -764,23 +734,16 @@ class ByteApplyGroup:
             raise RuntimeError("GPU delta family metadata capacity exceeded")
         self.grid_ctas = sum(program.grid[0] for program in self.programs)
 
-    def bind_launch(self, pointers, metadata, error, grids=None):
-        """Bind retained metadata views once; optional grids support validation."""
-        if grids is None:
-            grids = tuple(program.grid for program in self.programs)
-        if len(grids) != len(self.programs) or any(
-            len(grid) != 3 or grid[1:] != (1, 1) or type(grid[0]) is not int or not 0 < grid[0] <= _MAX_TILES
-            for grid in grids
-        ):
-            raise ValueError("invalid GPU delta family launch grids")
+    def bind_launch(self, pointers, metadata, error):
+        """Bind retained metadata views once, at each program's planned grid."""
         calls = tuple(
             partial(
-                program.kernel[grid],
+                program.kernel[program.grid],
                 pointers,
                 metadata[program.metadata_start : program.metadata_stop],
                 error,
             )
-            for program, grid in zip(self.programs, grids, strict=False)
+            for program in self.programs
         )
         if not calls:
             return None

@@ -6,7 +6,7 @@ from argparse import Namespace
 
 from tests.ci.ci_register import register_cpu_ci
 
-register_cpu_ci(est_time=60, suite="stage-b-cpu", labels=["megatron"])
+register_cpu_ci(est_time=60, suite="stage-b-cpu", labels=["megatron", "weight-update"])
 
 import pytest
 import torch
@@ -71,9 +71,7 @@ def test_owner_consumer_skips_gathers_and_normal_export_still_gathers(
     ]
     iterator._convert_to_hf_param_units = convert
     iterator._convert_experts_before_gather = True
-    iterator.local_consumer = None
-    if consume_locally:
-        iterator.local_consumer = consume
+    iterator.local_consumer = types.SimpleNamespace(send_bucket=consume) if consume_locally else None
     monkeypatch.setattr(direct_module.dist, "get_rank", lambda: 0)
     monkeypatch.setattr(direct_module.torch.cuda, "current_device", lambda: 0)
     monkeypatch.setattr(direct_module, "_iter_mm_tower_units", lambda *args, **kwargs: iter(()))
@@ -183,7 +181,7 @@ def test_gpu_delta_etp2_gathers_complete_experts_before_sender_conversion(
     iterator._convert_to_hf_param_units = convert
     protocol = UpdateWeightFromGpuDelta(Namespace(custom_update_weight_post_write_path=None))
     protocol.send_bucket = lambda unit: pytest.fail("ETP-sharded experts must not use the owner-local consumer")
-    iterator.local_consumer = protocol.send_bucket
+    iterator.local_consumer = protocol
     monkeypatch.setattr(direct_module.dist, "get_rank", lambda: 0)
     monkeypatch.setattr(direct_module.dist, "all_gather", all_gather)
     monkeypatch.setattr(
@@ -315,7 +313,6 @@ def test_gpu_delta_cached_owners_select_one_tp_replica_and_reconstruct_current_v
     monkeypatch.setattr(
         direct_module.dist, "get_process_group_ranks", lambda pg: pytest.fail("topology must be cached")
     )
-    iterator.local_error_consumer = lambda error: pytest.fail(str(error))
     calls, consumed, loaded, waited = [], {}, [], []
     shards = {}
 
@@ -343,7 +340,11 @@ def test_gpu_delta_cached_owners_select_one_tp_replica_and_reconstruct_current_v
         return Work(name)
 
     monkeypatch.setattr(direct_module.dist, "gather", gather)
-    iterator.local_consumer = lambda unit: consumed.update({name: value.clone() for name, value in unit})
+    iterator.local_consumer = types.SimpleNamespace(
+        send_bucket=lambda unit: consumed.update({name: value.clone() for name, value in unit}),
+        record_export_error=lambda error: pytest.fail(str(error)),
+        get_export_plan=dict,
+    )
     for update in range(2):
         calls.clear()
         consumed.clear()
@@ -395,7 +396,6 @@ def test_gpu_delta_owner_failure_drains_later_gathers_and_reports_once(direct_mo
     iterator.model_name, iterator.quantization_config, iterator.packed_weight_basenames = "test", None, None
     iterator._rank, iterator._tp_size, iterator._tp_group, iterator._device = 7, 2, object(), "cpu"
     iterator._non_expert_batches, iterator._expert_batches = batches, []
-    iterator.local_plan_getter = None
     iterator._canonical_plan, iterator._block_fp8_scales = None, {}
     events, errors = [], []
     failure = ValueError("quantization failed")
@@ -416,8 +416,11 @@ def test_gpu_delta_owner_failure_drains_later_gathers_and_reports_once(direct_mo
     monkeypatch.setattr(direct_module.dist, "gather", gather)
     monkeypatch.setattr(direct_module, "convert_to_hf", convert)
     monkeypatch.setattr(direct_module, "_iter_mm_tower_units", lambda *args, **kwargs: iter(()))
-    iterator.local_error_consumer = errors.append
-    iterator.local_consumer = lambda unit: events.append(("consume", [name for name, _ in unit]))
+    iterator.local_consumer = types.SimpleNamespace(
+        send_bucket=lambda unit: events.append(("consume", [name for name, _ in unit])),
+        record_export_error=errors.append,
+        get_export_plan=dict,
+    )
     assert list(iterator.iter_hf_weights({name: torch.ones(2, 2) for name in names}, materialize=True)) == []
     assert errors == [failure]
     assert events == [
@@ -462,9 +465,8 @@ def test_block128_export_uses_checkpoint_compact_scales_and_preserves_other_tens
     iterator = gpu_delta_module.HfWeightIteratorGpuDelta.__new__(gpu_delta_module.HfWeightIteratorGpuDelta)
     iterator.args, iterator.model_name = Namespace(), "test"
     iterator.quantization_config = {"quant_method": "fp8", "weight_block_size": [128, 128]}
-    iterator.local_plan_getter = lambda: plan
+    iterator.local_consumer = types.SimpleNamespace(get_export_plan=lambda: plan, record_export_error=errors.append)
     iterator._canonical_plan, iterator._block_fp8_scales = None, {}
-    iterator.local_error_consumer = errors.append
     output = dict(next(iterator._convert_to_hf_param_units([("trainer.weight", weight)])))
     assert calls == ["name_conversion", "quantize"] and not errors
     assert output[weight_name] is packed and output[norm_name] is norm

@@ -1,10 +1,3 @@
-# Copyright 2026 SGLang Team
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-
 """Immutable canonical layout admission and live-consumer identity checks."""
 
 from __future__ import annotations
@@ -27,48 +20,35 @@ class GpuDeltaLayout:
         if not inventory:
             raise ValueError("canonical checkpoint metadata is unavailable")
         # Normalize canonical wire metadata without changing checkpoint inventory.
-        self.inventory = {name: dict(meta) for name, meta in inventory.items()}
+        self.inventory = {
+            name: {"encoding": "xor_raw_bytes" if len(meta["shape"]) <= 1 else "xor_bytes", **meta}
+            for name, meta in inventory.items()
+        }
         mapping = model_mapping(model)
         self.bindings = []
         self.excluded = mapping.parameters.excluded
-        self.dtype_records = {"checks": [], "errors": []}
+        errors = []
         for name, meta in self.inventory.items():
             try:
                 binding = mapping.bind(name, meta)
+                if binding is not None and binding.format is None:
+                    _check_direct_dtype(binding)
             except _DtypeMismatch as error:
-                # Invalid packed storage cannot form safe views. Collect its
-                # diagnostic without preventing admission of the other tensors.
-                self.dtype_records["errors"].append(
+                # Report every mismatch together, including tensors whose delta stays empty.
+                errors.append(
                     f"{name}: checkpoint={meta.get('checkpoint_dtype', meta['dtype'])}, "
                     f"canonical={meta['dtype']}; {error}"
                 )
                 continue
             if binding is not None:
                 self.bindings.append(binding)
-                if binding.format is None:
-                    # Pure metadata collected during the existing mapping walk.
-                    # The shared CPU prepare process checks it once, before any
-                    # payload work, including tensors with an empty delta.
-                    self.dtype_records["checks"].append(
-                        {
-                            "name": name,
-                            "checkpoint_dtype": meta.get("checkpoint_dtype", meta["dtype"]),
-                            "dtype": binding.dtype,
-                            "served": list(dict.fromkeys(_dtype_name(t.dtype) for t in binding.storage)),
-                            "shape": list(binding.shape),
-                        }
-                    )
-                else:
-                    self.dtype_records["checks"].extend(
-                        {
-                            "name": name,
-                            "checkpoint_dtype": meta.get("checkpoint_dtype", meta["dtype"]),
-                            "dtype": binding.dtype,
-                            "shape": list(binding.shape),
-                            **check,
-                        }
-                        for check in binding.dtype_checks
-                    )
+        if errors:
+            raise ValueError(
+                "GPU-delta XOR apply/cancel requires matching checkpoint and served dtypes "
+                "or an explicit lossless representation (including BF16->FP32 scalar/vector widening). "
+                f"Found {len(errors)} mismatched tensors while planning the full checkpoint "
+                "(including unchanged tensors); no delta has been applied:\n" + "\n".join(errors)
+            )
         self.bindings.sort(key=lambda b: _natural_key(b.name))
         self._parameter_roots = [
             (module, name, tensor, _tensor_identity(tensor))
@@ -77,8 +57,7 @@ class GpuDeltaLayout:
             if tensor is not None
         ]
         self._consumers = list(mapping.consumers)
-        for prefix, layer in mapping.parameters.moe_layers.items():
-            layout = mapping.parameters.moe_layouts[prefix]
+        for layer, layout in mapping.parameters.moe_layers.values():
             self._consumers.append(
                 ConsumerSnapshot(lambda layer=layer, layout=layout: consumer_objects(layer, layout))
             )
@@ -86,7 +65,7 @@ class GpuDeltaLayout:
         self._mapping = mapping
 
     def finish(self):
-        """Finish rank-local consumers only after CPU-process dtype admission."""
+        """Finish rank-local consumers on the first prepare, not during describe."""
         mapping = self._mapping
         if mapping is None:
             return
@@ -96,17 +75,21 @@ class GpuDeltaLayout:
 
             _require_fixed_moe_topology(get_exec().moe)
         self.derived = []
-        self.derived_updates = []
-        for prefix, layer in mapping.parameters.moe_layers.items():
-            layout = mapping.parameters.moe_layouts[prefix]
+        updates = []
+        for layer, layout in mapping.parameters.moe_layers.values():
             if layout.format == "nvfp4":
-                self.derived_updates.append(nvfp4_derived_update(layer, layout.backend, layout.quant_mode))
+                updates.append(nvfp4_derived_update(layer, layout))
+            elif layout.format in {"bf16", "mxfp4", "mxfp8", "fp8-block128-ue8m0"}:
+                # These formats carry no per-tensor scale, so no consumer value derives from one.
+                continue
+            else:
+                raise ValueError(f"unsupported GPU delta expert format: {layout.format}")
         self.derived_updates = plan_updates(
-            self.derived_updates,
-            [target for binding in self.bindings if binding.encoding == "xor_raw_bytes" for target in binding.storage],
+            updates,
+            [target for binding in self.bindings if binding.is_raw for target in binding.storage],
         )
         self.derived_targets = frozenset(
-            id(target) for plan in self.derived_updates for source in plan.sources for target in source.targets
+            id(target) for _, sources in self.derived_updates for _, targets in sources for target in targets
         )
         mapping.finish()
         self.derived.extend(mapping.derived)
@@ -126,12 +109,7 @@ class GpuDeltaLayout:
         )
         unique = {}
         for tensor, expected, kind in checks:
-            key = id(tensor)
-            prior = unique.get(key)
-            if prior is None:
-                unique[key] = (tensor, expected, kind)
-            elif prior[1] != expected:
-                raise RuntimeError(f"GPU delta {kind} changed during admission; readmission required")
+            unique.setdefault(id(tensor), (tensor, expected, kind))
         self._tensor_checks = tuple(unique.values())
 
     @profiling.annotate("gpu_delta.check_identity")
@@ -161,6 +139,16 @@ class GpuDeltaLayout:
                     ):
                         raise ValueError(f"unclassified live weight alias: {pair}")
                 owners[key] = binding.name
+
+
+def _check_direct_dtype(binding):
+    allowed = {binding.dtype}
+    if binding.dtype == "BF16" and len(binding.shape) <= 1:
+        # prepare_raw_xor widens BF16 scalar/vector masks into FP32 storage losslessly.
+        allowed.add("F32")
+    served = list(dict.fromkeys(_dtype_name(target.dtype) for target in binding.storage))
+    if any(dtype not in allowed for dtype in served):
+        raise _DtypeMismatch(f"served={served}, allowed_served={sorted(allowed)}, shape={list(binding.shape)}")
 
 
 def _gate_up_alias(a, b):

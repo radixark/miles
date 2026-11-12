@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import pytest
+import safetensors.numpy
 
 from miles.utils.gpu_delta import publication
 
@@ -51,8 +52,7 @@ def _add(writer, name):
         name,
         *_encoded(writer.metadata["codec"]),
         changed_bytes=42,
-        dtype="U8",
-        shape=[1, 2 * publication.FRAME_BYTES + 139]
+        spec={"dtype": "U8", "shape": [1, 2 * publication.FRAME_BYTES + 139]},
     )
 
 
@@ -69,11 +69,11 @@ def test_framed_publication_preserves_payload_ranges_and_final_file_hash(tmp_pat
         writer = _writer(directory, codec=codec)
         # Changing the environment after construction must not change this file's policy.
         monkeypatch.setenv("GPU_DELTA_SKIP_PAYLOAD_HASH", "0" if skip_hash else "1")
-        writer.add_raw_xor_tensor("raw_prefix", b"abc", "U8", [3])
+        writer.add_raw_xor_tensor("raw_prefix", b"abc", {"dtype": "U8", "shape": [3]})
         entry = _add(writer, "w")
         for name, shape in (("unchanged", [1, 2 * publication.FRAME_BYTES + 139]), ("empty", [1, 0])):
-            writer.add_encoded_tensor(name, [], b"", None, changed_bytes=0, dtype="U8", shape=shape)
-        writer.add_raw_xor_tensor("raw_tail", b"1234", "F32", [])
+            writer.add_encoded_tensor(name, [], b"", None, changed_bytes=0, spec={"dtype": "U8", "shape": shape})
+        writer.add_raw_xor_tensor("raw_tail", b"1234", {"dtype": "F32", "shape": []})
         descriptor = writer.finish()
         manifest_bytes = (directory / "manifest.json").read_bytes()
         manifest = publication.read_publication_metadata(directory / "manifest.json")
@@ -145,7 +145,7 @@ def test_unicode_manifest_authenticates_written_bytes_without_changing_plan_json
     expected_plan_bytes = b'{"name":"\\u5c42.\\u00e9.weight_scale"}'
     assert publication.canonical_json(plan) == expected_plan_bytes
     writer = _writer(tmp_path)
-    writer.add_raw_xor_tensor(name, b"1234", dtype="F32", shape=[])
+    writer.add_raw_xor_tensor(name, b"1234", {"dtype": "F32", "shape": []})
     descriptor = writer.finish()
     manifest_bytes = (tmp_path / "manifest.json").read_bytes()
     manifest = publication.read_publication_metadata(tmp_path / "manifest.json")
@@ -158,7 +158,7 @@ def test_unicode_manifest_authenticates_written_bytes_without_changing_plan_json
 @pytest.mark.parametrize("conflict", ["tensor", "metadata", "file", "checksum-policy"])
 def test_conflicting_owner_shards_cannot_publish(tmp_path, conflict):
     writer = _writer(tmp_path)
-    writer.add_raw_xor_tensor("scale", b"1234", dtype="F32", shape=[])
+    writer.add_raw_xor_tensor("scale", b"1234", {"dtype": "F32", "shape": []})
     shard = writer.finish_shard()
     duplicate = copy.deepcopy(shard)
     if conflict == "metadata":
@@ -179,8 +179,8 @@ def test_raw_masks_bypass_compression_omit_unchanged_and_cancel(tmp_path, dtype,
     previous = np.full(size, 3, np.uint8)
     current = np.full(size, 7, np.uint8)
     mask = np.bitwise_xor(previous, current)
-    changed = writer.add_raw_xor_tensor("changed", mask, dtype=dtype, shape=shape)
-    same = writer.add_raw_xor_tensor("same", np.zeros_like(mask), dtype=dtype, shape=shape)
+    changed = writer.add_raw_xor_tensor("changed", mask, {"dtype": dtype, "shape": shape})
+    same = writer.add_raw_xor_tensor("same", np.zeros_like(mask), {"dtype": dtype, "shape": shape})
     writer.finish()
     assert changed["frames"] == same["frames"] == []
     assert "outer" not in changed and "raw" not in same
@@ -253,7 +253,33 @@ def test_checkpoint_prior_is_receiver_independent_and_keeps_frozen_tensors_out(t
     assert by_name["model.norm.weight"]["encoding"] == "xor_raw_bytes"
     assert all("views" not in spec for spec in plan)
     assert publication.plan_digest(plan) == publication.plan_digest(plan[::-1])
-    reader = publication.make_checkpoint_reader(tmp_path)
-    assert publication.read_canonical_tensor(
-        reader, stem + ".weight_scale_inv", by_name[stem + ".weight_scale_inv"]
-    ).tolist() == [127]
+    # Writers take plan specs directly, including their explicit wire format.
+    scale = by_name[stem + ".weight_scale_inv"]
+    writer = _writer(tmp_path / "publication")
+    entry = writer.add_raw_xor_tensor(scale["name"], bytes(1), scale)
+    writer.close()
+    assert {key: entry[key] for key in scale} == scale
+
+
+def test_ue8m0_canonical_baseline_losslessly_reads_every_finite_exponent(tmp_path):
+    exponents = np.arange(255, dtype=np.uint8)
+    scales = np.exp2(exponents.astype(np.float64) - 127).astype(np.float32)
+    safetensors.numpy.save_file({"scale": scales}, tmp_path / "model.safetensors")
+    reader = publication.make_checkpoint_reader(str(tmp_path))
+    spec = {"dtype": "U8", "shape": [255], "format": "fp8-block128-ue8m0", "checkpoint_dtype": "F32"}
+    actual = publication.read_canonical_tensor(reader, "scale", spec)
+    np.testing.assert_array_equal(actual, exponents)
+    assert actual.dtype == np.uint8
+    with pytest.raises(ValueError, match="Unsupported GPU-delta checkpoint representation"):
+        publication.read_canonical_tensor(reader, "scale", {k: v for k, v in spec.items() if k != "format"})
+    with pytest.raises(ValueError, match="Checkpoint tensor metadata changed: scale"):
+        publication.read_canonical_tensor(reader, "scale", {k: v for k, v in spec.items() if k != "checkpoint_dtype"})
+
+
+@pytest.mark.parametrize("value", [0.0, -1.0, 1.5, float("nan"), float("inf"), 2.0**-128])
+def test_ue8m0_canonical_baseline_rejects_rounding_or_invalid_values(tmp_path, value):
+    safetensors.numpy.save_file({"scale": np.array([value], dtype=np.float32)}, tmp_path / "model.safetensors")
+    reader = publication.make_checkpoint_reader(str(tmp_path))
+    spec = {"dtype": "U8", "shape": [1], "format": "fp8-block128-ue8m0", "checkpoint_dtype": "F32"}
+    with pytest.raises(ValueError, match="not exact positive finite UE8M0"):
+        publication.read_canonical_tensor(reader, "scale", spec)

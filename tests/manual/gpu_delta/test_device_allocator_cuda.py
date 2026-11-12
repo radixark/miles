@@ -1,5 +1,7 @@
 """Scoped DE allocation under the caller's unchanged Torch allocator.
 
+Manual-only: requires CUDA 13 and an SM100/SM103 (DE-capable) GPU; the
+context-restoration test requires two such GPUs. Missing prerequisites fail.
 Run this and test_codec.py in separate fresh processes for each ambient mode:
   PYTORCH_ALLOC_CONF=backend:native,expandable_segments:True
   PYTORCH_ALLOC_CONF=backend:cudaMallocAsync,expandable_segments:False

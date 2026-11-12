@@ -262,25 +262,27 @@ def _assert_gpu_delta_performance(report_path):
     assert all(
         rank["apply_kernel_cache_misses"] == 0 for rank in warm
     ), "GPU-delta CI warm updates must reuse the prepared Triton kernels"
-    # Provisional five-layer CI limits: allow CPU headroom over the full-model <5s prepare proxy.
-    for name, limit in (("prepare_s", 6.0), ("pause_s", 0.3)):
+    # About 3x the worst recent B300 warm maxima (prepare 0.51 s, pause 0.058 s);
+    # the rest is headroom for cluster CPU variance.
+    for name, limit in (("prepare_s", 1.5), ("pause_s", 0.15)):
         failures = [rank[name] for rank in warm if not 0 <= rank[name] < limit]
         assert not failures, f"GPU-delta CI warm {name} must be <{limit}s; violations={failures}"
     warm_engines = [engine for update in report["updates"] for engine in update["engines"]]
     assert set(engines) == {
         engine["engine"] for engine in warm_engines
     }, "GPU-delta CI requires warm all-TP apply/resume timing for every engine"
-    failures = [engine["apply_and_resume_s"] for engine in warm_engines if not 0 <= engine["apply_and_resume_s"] < 0.3]
-    assert not failures, f"GPU-delta CI warm engine apply/resume must be <0.3s; violations={failures}"
+    # Includes the scheduler pause; about 3x the worst recent B300 warm maximum (0.066 s).
+    failures = [engine["apply_and_resume_s"] for engine in warm_engines if not 0 <= engine["apply_and_resume_s"] < 0.2]
+    assert not failures, f"GPU-delta CI warm engine apply/resume must be <0.2s; violations={failures}"
     owners = [owner for update in report["encoding_updates"].values() for owner in update["owners"]]
     nonempty_owners = {owner["owner_rank"] for owner in owners if owner["nonempty"]}
     warm_owners = [owner for owner in owners if owner["warm"]]
     assert nonempty_owners and nonempty_owners == {
         owner["owner_rank"] for owner in warm_owners
     }, "GPU-delta CI requires nonempty warm ordinary encoding for every matrix-producing owner"
-    # Provisional budget from full-model measured encoding stages, not pure compression.
-    # Leave CPU headroom until timings are calibrated on the registered CI runner.
-    encoding_limit_s = 6.0
+    # Measured encoding stages, not pure compression: about 3x the worst recent B300 warm
+    # maximum (0.48 s); the rest is headroom for cluster CPU variance.
+    encoding_limit_s = 1.5
     failures = [
         owner["encoding_stage_wall_s"]
         for owner in warm_owners

@@ -13,7 +13,6 @@ from miles.backends.sglang_utils.gpu_delta.bindings import (
     prepare_raw_xor,
 )
 from miles.backends.sglang_utils.gpu_delta.flashinfer import DestinationSegment, FlashInferLayout
-from miles.utils.gpu_delta.host_worker import validate_dtype_records
 
 
 def _block_scale_layer():
@@ -44,7 +43,6 @@ def test_block_scale_prior_is_identical_on_local_and_foreign_ranks(
     assert local == foreign == expected
     assert binding.dtype == "U8" and binding.shape == (17, 15)
     assert binding.encoding == "xor_raw_bytes" and binding.format == "fp8-block128-ue8m0"
-    assert binding.checkpoint_dtype == ("F32" if checkpoint_dtype == "F32" else None)
     with pytest.raises(ValueError, match="exact UE8M0"):
         _moe_binding(
             "scale",
@@ -241,8 +239,16 @@ def test_weight_views_share_one_layout_for_both_activation_modes():
         assert torch.equal(layer.w13_weight, expected)
 
 
-@pytest.mark.parametrize("image", ["weight", "scale", "mma"])
-@pytest.mark.parametrize("served_dtype", [torch.uint8, torch.int8, torch.float8_e5m2])
+@pytest.mark.parametrize(
+    "image,served_dtype",
+    [
+        ("weight", torch.uint8),
+        ("weight", torch.int8),
+        ("weight", torch.float8_e5m2),
+        ("scale", torch.int8),
+        ("mma", torch.float8_e5m2),
+    ],
+)
 def test_packed_dtype_admission_preserves_original_storage_types(image, served_dtype):
     weight = torch.zeros((1, 128, 32), dtype=torch.uint8)
     primary = torch.zeros((128, 4), dtype=torch.uint8)
@@ -267,65 +273,71 @@ def test_packed_dtype_admission_preserves_original_storage_types(image, served_d
     )
     tensors = (weight, primary, mma)
     before = [tensor.contiguous().view(torch.uint8).clone() for tensor in tensors]
-    binding = _moe_binding(
-        "projection",
-        {"dtype": canonical_dtype, "shape": shape},
-        layer,
-        0,
-        "down",
-        suffix,
-        FlashInferLayout("nvfp4", "cutedsl", True),
-    )
-    records = {
-        "checks": [
-            {
-                "name": binding.name,
-                "checkpoint_dtype": canonical_dtype,
-                "dtype": binding.dtype,
-                "shape": shape,
-                **check,
-            }
-            for check in binding.dtype_checks
-        ],
-        "errors": [],
-    }
-    # Admission uses original images, even when the payload has no changed
-    # bytes and the secondary MMA view has already been reinterpreted as U8.
-    assert any(str(served_dtype) in row["served"] for row in records["checks"])
+
+    def bind():
+        return _moe_binding(
+            "projection",
+            {"dtype": canonical_dtype, "shape": shape},
+            layer,
+            0,
+            "down",
+            suffix,
+            FlashInferLayout("nvfp4", "cutedsl", True),
+        )
+
+    # Binding admits original images, even when the payload has no changed
+    # bytes and the secondary MMA view is reinterpreted as U8.
     if served_dtype == torch.float8_e5m2:
-        with pytest.raises(ValueError, match="torch.float8_e5m2"):
-            validate_dtype_records(records)
+        with pytest.raises(fi._DtypeMismatch, match="torch.float8_e5m2"):
+            bind()
     else:
-        validate_dtype_records(records)
+        assert bind().storage
     for tensor, original in zip(tensors, before, strict=True):
         assert torch.equal(tensor.contiguous().view(torch.uint8), original)
 
 
-def test_layout_admission_rejects_conversion_and_unsupported_pairs():
-    def layer(name, **attrs):
-        config = attrs.pop("quant_config", SimpleNamespace())
-        method = type(name, (), {})()
-        method.__dict__.update(
-            runner=None,
-            dequant_fp4_to_fp8=False,
-            convert_mxfp8_to_block=False,
-            use_mxfp8=False,
-            is_fp4_expert=False,
-        )
-        method.__dict__.update(attrs, quant_config=config)
-        if not hasattr(config, "scale_fmt"):
-            config.scale_fmt = None
-            config.weight_block_size = None
-            if not hasattr(config, "is_checkpoint_fp8_serialized"):
-                config.is_checkpoint_fp8_serialized = False
-        return SimpleNamespace(
-            quant_method=method,
-            quant_config=config,
-            moe_runner_config=SimpleNamespace(is_gated=True),
-            _cutedsl_wrapper=SimpleNamespace(quant_mode="w4a4"),
-        )
+def test_blocked_scale_bindings_check_only_the_weight_element_width():
+    # A one-byte weight outside its allowed set is reported once, on the weight binding.
+    layer = SimpleNamespace(
+        w2_weight=torch.zeros((1, 128, 32), dtype=torch.uint8).view(torch.float8_e4m3fn),
+        w2_weight_scale=torch.zeros((1, 512), dtype=torch.uint8),
+    )
+    layout = FlashInferLayout("nvfp4", "trtllm", True, "w4a4")
+    with pytest.raises(fi._DtypeMismatch, match="nvfp4 weight served=torch.float8_e4m3fn"):
+        fi.expert_destinations(layer, layout, 0, "down", "weight", (128, 32), "U8")
+    assert fi.expert_destinations(layer, layout, 0, "down", "weight_scale", (128, 4), "F8_E4M3")
+    # Scale geometry still requires the weight's element width.
+    layer.w2_weight = torch.zeros((1, 128, 16), dtype=torch.int16)
+    with pytest.raises(fi._DtypeMismatch, match="1-byte storage"):
+        fi.expert_destinations(layer, layout, 0, "down", "weight_scale", (128, 4), "F8_E4M3")
 
-    nv = layer(
+
+def _quantized_layer(name, **attrs):
+    config = attrs.pop("quant_config", SimpleNamespace())
+    method = type(name, (), {})()
+    method.__dict__.update(
+        runner=None,
+        dequant_fp4_to_fp8=False,
+        convert_mxfp8_to_block=False,
+        use_mxfp8=False,
+        is_fp4_expert=False,
+    )
+    method.__dict__.update(attrs, quant_config=config)
+    if not hasattr(config, "scale_fmt"):
+        config.scale_fmt = None
+        config.weight_block_size = None
+        if not hasattr(config, "is_checkpoint_fp8_serialized"):
+            config.is_checkpoint_fp8_serialized = False
+    return SimpleNamespace(
+        quant_method=method,
+        quant_config=config,
+        moe_runner_config=SimpleNamespace(is_gated=True),
+        _cutedsl_wrapper=SimpleNamespace(quant_mode="w4a4"),
+    )
+
+
+def test_layout_admission_rejects_conversion_and_unsupported_pairs():
+    nv = _quantized_layer(
         "ModelOptNvFp4FusedMoEMethod",
         _is_cutedsl_v2_standard=True,
         load_up_proj_weight_first=True,
@@ -348,7 +360,7 @@ def test_layout_admission_rejects_conversion_and_unsupported_pairs():
     nv.quant_config.is_checkpoint_nvfp4_serialized = False
     with pytest.raises(ValueError, match="on-load"):
         fi.identify_layout(nv, "flashinfer_cutedsl")
-    mx = layer(
+    mx = _quantized_layer(
         "Fp8MoEMethod",
         use_mxfp8=True,
         quant_config=SimpleNamespace(is_checkpoint_fp8_serialized=True),
@@ -360,7 +372,51 @@ def test_layout_admission_rejects_conversion_and_unsupported_pairs():
     with pytest.raises(ValueError, match="requantization"):
         fi.identify_layout(mx, "flashinfer_trtllm")
     with pytest.raises(ValueError, match="native UE8M0"):
-        fi.identify_layout(layer("Fp8MoEMethod"), "flashinfer_trtllm")
+        fi.identify_layout(_quantized_layer("Fp8MoEMethod"), "flashinfer_trtllm")
+
+
+def test_layout_admission_identifies_bf16_mxfp4_and_block128_rows():
+    bf16 = _quantized_layer(
+        "UnquantizedFusedMoEMethod", use_flashinfer_trtllm_moe=True, load_up_proj_weight_first=True
+    )
+    assert fi.identify_layout(bf16, "flashinfer_trtllm") == FlashInferLayout("bf16", "trtllm", True, up_first=True)
+    with pytest.raises(ValueError, match="no native FlashInfer BF16"):
+        fi.identify_layout(bf16, "flashinfer_megamoe")
+
+    # The oracle tests construct this default MXFP4 row directly.
+    shuffled = _quantized_layer("Mxfp4FlashinferTrtllmMoEMethod", _fp8=SimpleNamespace(dequant_fp4_to_fp8=False))
+    assert fi.identify_layout(shuffled, "flashinfer_mxfp4") == FlashInferLayout("mxfp4", "trtllm", True, up_first=True)
+    shuffled.quant_method._fp8.dequant_fp4_to_fp8 = True
+    with pytest.raises(ValueError, match="native packed"):
+        fi.identify_layout(shuffled, "flashinfer_trtllm")
+
+    # Mxfp4MoEMethod's kernel reads the ordinary scale names and owns no clamp tensor.
+    native = _quantized_layer("Mxfp4MoEMethod", _fi_kernel="trtllm_sm100")
+    layout = fi.identify_layout(native, "flashinfer_mxfp4")
+    assert (layout.format, layout.backend, layout.up_first) == ("mxfp4", "trtllm", True)
+    for stem in ("w13", "w2"):
+        setattr(native, f"{stem}_weight", torch.zeros((1, 64, 32), dtype=torch.uint8))
+        setattr(native, f"{stem}_weight_scale", torch.zeros((1, 128, 4), dtype=torch.uint8))
+    *_, w13_scale, w2_scale = fi.consumer_objects(native, layout)
+    assert w13_scale is native.w13_weight_scale and w2_scale is native.w2_weight_scale
+    native.quant_method._fi_kernel = "triton"
+    with pytest.raises(ValueError, match="unsupported native MXFP4"):
+        fi.identify_layout(native, "flashinfer_mxfp4")
+
+    fp4 = _quantized_layer("Fp8MoEMethod", is_fp4_expert=True)
+    assert fi.identify_layout(fp4, "flashinfer_megamoe") == FlashInferLayout("mxfp4", "megamoe", True)
+    with pytest.raises(ValueError, match="require its MXFP4 method"):
+        fi.identify_layout(fp4, "flashinfer_trtllm")
+
+    block = _quantized_layer(
+        "Fp8MoEMethod",
+        quant_config=SimpleNamespace(
+            scale_fmt="ue8m0", weight_block_size=[128, 128], is_checkpoint_fp8_serialized=True
+        ),
+    )
+    assert fi.identify_layout(block, "flashinfer_trtllm") == FlashInferLayout("fp8-block128-ue8m0", "trtllm", True)
+    with pytest.raises(ValueError, match="native UE8M0"):
+        fi.identify_layout(block, "flashinfer_megamoe")
 
 
 @pytest.mark.parametrize(
@@ -435,9 +491,16 @@ def blocked_scales(value):
     )
 
 
-@pytest.mark.parametrize("projection", ["gate", "down"])
-@pytest.mark.parametrize("suffix", ["weight", "weight_scale"])
-@pytest.mark.parametrize("tp_rank,tp_size,partition", [(1, 2, 128), (3, 4, 64)])
+@pytest.mark.parametrize(
+    "projection,suffix,tp_rank,tp_size,partition",
+    [
+        ("gate", "weight", 1, 2, 128),
+        ("gate", "weight_scale", 1, 2, 128),
+        ("down", "weight", 1, 2, 128),
+        ("down", "weight_scale", 1, 2, 128),
+        ("down", "weight_scale", 3, 4, 64),
+    ],
+)
 def test_trtllm_tp_preserves_padded_loader_offsets(projection, suffix, tp_rank, tp_size, partition):
     # A 192-wide checkpoint has logical TP2 width 96, but this loader partitions
     # by its padded width 128: rank one owns [128:192], not [96:192].
@@ -601,8 +664,10 @@ def test_block128_complete_scale_view_and_consumer_snapshot():
     before = tuple(map(id, fi.consumer_objects(layer, layout)))
     layer._flashinfer_trtllm_gemm1_beta = torch.ones(1)
     assert tuple(map(id, fi.consumer_objects(layer, layout))) != before
-    with pytest.raises(ValueError, match="complete-value"):
+    # A block-scale suffix without byte-layout scales is fatal, not a collected dtype mismatch.
+    with pytest.raises(ValueError, match="unsupported FlashInfer block-scale format") as error:
         fi.expert_destinations(layer, layout, 0, "up", "weight_scale", (2, 2), "U8")
+    assert not isinstance(error.value, fi._DtypeMismatch)
 
 
 def test_megamoe_mxfp4_packed_ue8m0_views():

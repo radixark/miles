@@ -133,15 +133,25 @@ class DeltaSession:
                 released.result()
             prepared = self.backend.prepare(session.request, session.cancelled)
             with self._lock:
-                if session.state != "ABORTED":
+                if session.state == "PREPARING":
                     session.prepared = prepared
                     session.state = "PREPARED"
                     prepared = None
+                elif session.state == "ABORTED":
+                    # abort() settled this update; finally discards the late preparation.
+                    pass
+                else:
+                    raise ValueError(f"unexpected delta preparation state: {session.state}")
         except Exception as exc:
             with self._lock:
-                if session.state != "ABORTED":
+                if session.state == "PREPARING":
                     session.state = "FAILED"
                     session.message = f"preparation failed: {exc}"
+                elif session.state == "ABORTED":
+                    # abort() settled this update; a late failure must not replace ABORTED.
+                    pass
+                else:
+                    raise ValueError(f"unexpected delta preparation state: {session.state}") from exc
         finally:
             if prepared is not None:
                 self.backend.discard(prepared)
@@ -383,17 +393,15 @@ class GpuDeltaSchedulerControl:
         if self.session is None:
             from miles.backends.sglang_utils.gpu_delta.receiver import GpuDeltaBackend
             from miles.utils.gpu_delta.host import host_cache_id
+            from miles.utils.gpu_delta.host_worker import process_start_ticks
 
-            # proc stat starttime is the 22nd field; comm may contain spaces.
-            with open("/proc/self/stat") as source:
-                start_ticks = int(source.read().rsplit(")", 1)[1].split()[19])
             identity = {
                 "engine_id": engine_id,
                 "rank_id": uuid.uuid4().hex,
                 "hostname": socket.gethostname(),
                 "host_cache_id": host_cache_id(engine_id),
                 "pid": os.getpid(),
-                "start_ticks": start_ticks,
+                "start_ticks": process_start_ticks(),
                 "tp_rank": parallel.tp_rank,
                 "dp_rank": 0 if parallel.dp_rank is None else parallel.dp_rank,
                 "pp_rank": parallel.pp_rank,
@@ -470,7 +478,23 @@ class GpuDeltaSchedulerControl:
                 receipt = self.session.abort(request.session_id)
             else:
                 raise ValueError("unknown delta operation")
-            success = receipt["state"] not in {"FAILED", "POISONED"}
+            state = receipt["state"]
+            if state in {"FAILED", "POISONED"}:
+                success = False
+            elif state in {
+                "IDLE",
+                "CLEARED",
+                "PREPARING",
+                "PREPARED",
+                "ABORTED",
+                "APPLYING",
+                "APPLIED",
+                "RESUMING",
+                "RESUMED",
+            }:
+                success = True
+            else:
+                raise ValueError(f"unknown delta receipt state: {state}")
             message = receipt.get("message", "")
         except Exception as exc:
             receipt = self.session.status() if self.session is not None else {"identity": None, "state": "REJECTED"}

@@ -1,10 +1,3 @@
-# Copyright 2026 SGLang Team
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-
 """Prepare small derived consumer values without modifying live model state.
 
 Weight and block-scale permutations belong to byte bindings. These updates only
@@ -13,7 +6,7 @@ handle NVFP4's complete scalar calibration values, never decoded XOR masks.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import cached_property
 from itertools import product
@@ -50,17 +43,10 @@ class DerivedUpdate:
     def mixed_sources(self):
         return any(source.device != self.compute_device for source in self.sources)
 
-    def prepare(self, overrides: Mapping[int, torch.Tensor]):
-        result, checks = self._prepare(overrides)
-        _validate_checks(checks)
-        return result
-
     def _prepare(self, overrides):
-        # The batch preparer collects device predicates across layers. Public
-        # prepare() still validates before returning any prepared copies.
+        # Device predicates are returned unchecked: prepare_updates validates
+        # every update's predicates once, before returning any prepared copies.
         values = tuple(overrides.get(id(source), source) for source in self.sources)
-        for original, value in zip(self.sources, values, strict=False):
-            _same_geometry(original, value, "source")
         with torch.no_grad():
             if self.mixed_sources:
                 values = tuple(value.to(self.compute_device) for value in values)
@@ -69,7 +55,7 @@ class DerivedUpdate:
                 raise ValueError("GPU delta derived output count changed")
             result, snapshots = [], {}
             for destination, value in zip(self.destinations, outputs, strict=False):
-                _same_geometry(destination, value, "destination")
+                _same_geometry(destination, value)
                 # Retain complete target values independently of live buffers;
                 # later source copies must not alter a prepared update.
                 if id(value) not in snapshots:
@@ -93,11 +79,11 @@ def _validate_checks(checks):
                 raise ValueError(message)
 
 
-def _same_geometry(original, value, role):
+def _same_geometry(destination, value):
     # A derived result may be computed on CUDA for a CPU consumer (or vice
     # versa). The paused commit owns the cross-device copy.
-    if not isinstance(value, torch.Tensor) or original.shape != value.shape or original.dtype != value.dtype:
-        raise ValueError(f"GPU delta derived {role} geometry changed")
+    if not isinstance(value, torch.Tensor) or destination.shape != value.shape or destination.dtype != value.dtype:
+        raise ValueError("GPU delta derived destination geometry changed")
 
 
 def _storage_key(tensor):
@@ -111,20 +97,11 @@ def _element_offsets(tensor):
     ]
 
 
-@dataclass(frozen=True)
-class _SourcePlan:
-    source: torch.Tensor
-    targets: tuple[torch.Tensor, ...]
-
-
-@dataclass(frozen=True)
-class _UpdatePlan:
-    update: DerivedUpdate
-    sources: tuple[_SourcePlan, ...]
-
-
 def plan_updates(updates, targets):
-    """Validate and cache scalar patch geometry once at admission."""
+    """Validate and cache scalar patch geometry once at admission.
+
+    Each plan is ``(update, ((source, targets), ...))``.
+    """
     by_storage = {}
     for target in targets:
         by_storage.setdefault(_storage_key(target), []).append(target)
@@ -151,26 +128,23 @@ def plan_updates(updates, targets):
                 if len(offsets) != target.numel() or offsets & written:
                     raise ValueError("GPU delta scalar updates overlap")
                 written.update(offsets)
-            sources.append(_SourcePlan(original, tuple(patches)))
-        plans.append(_UpdatePlan(update, tuple(sources)))
+            sources.append((original, tuple(patches)))
+        plans.append((update, tuple(sources)))
     return tuple(plans)
 
 
-def prepare_updates(plans, raw_copies):
-    """Patch cached scalar views, then validate device predicates once per update."""
-    incoming = {
-        id(target): value
-        for targets, values in raw_copies.values()
-        for target, value in zip(targets, values, strict=False)
-    }
+def prepare_updates(plans, raw_values):
+    """Patch cached scalar views, then validate device predicates once per update.
+
+    ``raw_values`` maps ``id(target)`` of a raw binding target to its predicted value.
+    """
     prepared, checks = [], []
-    for plan in plans:
+    for update, sources in plans:
         overrides = {}
-        for source_plan in plan.sources:
-            changed = [target for target in source_plan.targets if id(target) in incoming]
+        for original, targets in sources:
+            changed = [target for target in targets if id(target) in raw_values]
             if not changed:
                 continue
-            original = source_plan.source
             # Admission proves the patches are disjoint and within this source.
             # Read live values only when some elements remain unchanged.
             complete = (
@@ -180,15 +154,13 @@ def prepare_updates(plans, raw_copies):
             )
             destinations, values = [], []
             for target in changed:
-                value = incoming[id(target)]
-                _same_geometry(target, value, "raw source")
                 offset = target.storage_offset() - original.storage_offset()
                 destinations.append(complete.as_strided(target.shape, target.stride(), offset))
-                values.append(value)
+                values.append(raw_values[id(target)])
             torch._foreach_copy_(destinations, values)
             overrides[id(original)] = complete
         if overrides:
-            copies, predicates = plan.update._prepare(overrides)
+            copies, predicates = update._prepare(overrides)
             prepared.extend(copies)
             checks.extend(predicates)
     _validate_checks(checks)
@@ -215,7 +187,7 @@ def _trtllm_scale_helper():
     return _compute_g1_scale_c
 
 
-def nvfp4_derived_update(layer, backend, quant_mode="w4a4"):
+def nvfp4_derived_update(layer, layout):
     """Describe the selected FlashInfer consumer's small NVFP4 scale updates.
 
     This mirrors the ordinary loader's scale policy and reuses its pure helpers.
@@ -223,17 +195,23 @@ def nvfp4_derived_update(layer, backend, quant_mode="w4a4"):
     MegaMOE's input normalization is a captured scalar, so a change to that
     scalar is rejected during preparation, before any live weight is modified.
     """
-    backend = backend.removeprefix("flashinfer_")
-    if backend == "trtllm_routed":
-        backend = "trtllm"
-    if backend not in {"trtllm", "cutedsl", "megamoe"}:
+    # identify_layout read the backend and quant mode from the warmed consumer;
+    # finish() rechecks that consumer's identity before building this update.
+    backend = layout.backend
+    if backend == "trtllm":
+        trtllm, cute, mega = True, False, False
+    elif backend == "cutedsl":
+        trtllm, cute, mega = False, True, False
+    elif backend == "megamoe":
+        trtllm, cute, mega = False, False, True
+    else:
         raise ValueError(f"unsupported NVFP4 derived consumer: {backend}")
-    cute = backend == "cutedsl"
-    mega = backend == "megamoe"
-    wrapper = layer._cutedsl_wrapper if cute else None
-    if cute and (wrapper is None or wrapper.quant_mode not in {"w4a4", "w4a16"}):
-        raise ValueError("CuTe DSL wrapper must be warmed before GPU delta admission")
-    w4a16 = (cute and wrapper.quant_mode == "w4a16") or (mega and quant_mode == "w4a16")
+    if layout.quant_mode == "w4a4":
+        w4a16 = False
+    elif layout.quant_mode == "w4a16" and not trtllm:
+        w4a16 = True
+    else:
+        raise ValueError(f"unsupported NVFP4 derived quant mode for {backend}: {layout.quant_mode!r}")
     per_token = bool(layer.quant_config.use_per_token_activation)
     neutral_input = w4a16 or per_token
     config = layer.moe_runner_config
@@ -256,10 +234,10 @@ def nvfp4_derived_update(layer, backend, quant_mode="w4a4"):
     # refresh rather than recomputing those constants every update.
     if not w4a16:
         destinations.extend((layer.w13_input_scale_quant, layer.w2_input_scale_quant))
-    if backend == "trtllm":
+    if trtllm:
         destinations.append(layer.g1_scale_c)
     extra_names = []
-    if backend == "trtllm" and gated:
+    if trtllm and gated:
         if (
             getattr(layer, "gemm1_clamp_limit", None) is not None
         ):  # config-access-exempt: The selected TRTLLM inference path may retain a clamp image.
@@ -298,7 +276,7 @@ def nvfp4_derived_update(layer, backend, quant_mode="w4a4"):
     if cute and not w4a16:
         cutedsl_values = _cutedsl_scale_helper()
         fixed_input_scale = layer._cutedsl_input_scale
-    if backend == "trtllm":
+    if trtllm:
         trtllm_scale_c = _trtllm_scale_helper()
     clamp = config.gemm1_clamp_limit or config.swiglu_limit
     if "gemm1_clamp_limit" in extra_names and (clamp is None or activation == "situ"):
@@ -314,6 +292,20 @@ def nvfp4_derived_update(layer, backend, quant_mode="w4a4"):
         weight13 = layer.w13_weight_scale_2
         _validate_checks((((weight13[:, 0] == weight13[:, 1]).all(), tied_clamp_error),))
     situ_beta = config.gemm1_clamp_limit
+    extra_outputs = []
+    for name in extra_names:
+        if name == "gemm1_clamp_limit":
+            extra_outputs.append(lambda shadow: (clamp / shadow.g1_alphas).to(torch.float32))
+        elif name == "gemm1_beta":
+            # SGLang's get_activation_type admits silu, gelu and situ for gated TRTLLM experts.
+            if activation == "situ":
+                extra_outputs.append(lambda shadow: torch.full_like(shadow.g1_alphas, situ_beta))
+            elif activation in {"silu", "gelu"}:
+                extra_outputs.append(lambda shadow: (1 / shadow.g1_alphas_up).to(torch.float32))
+            else:
+                raise ValueError(f"unsupported TRTLLM gemm1_beta activation: {activation}")
+        else:
+            raise ValueError(f"unsupported TRTLLM GEMM1 image: {name}")
     neutral13, neutral2 = layer.w13_input_scale_quant, layer.w2_input_scale_quant
     if per_token and not w4a16:
         compute_device = next((source.device for source in sources if source.is_cuda), sources[0].device)
@@ -321,13 +313,16 @@ def nvfp4_derived_update(layer, backend, quant_mode="w4a4"):
         if cute:
             fixed_input_scale = fixed_input_scale.to(compute_device)
 
+    def gate_up(weight13):
+        if gated and weight13.ndim == 2 and weight13.shape[1] >= 2:
+            return weight13[:, 0], weight13[:, 1]
+        gate = weight13.reshape(weight13.shape[0])
+        return gate, gate
+
     def compute(values):
         weight13, weight2 = values[:2]
         if w4a16:
-            if gated and weight13.ndim == 2 and weight13.shape[1] >= 2:
-                gate, up = weight13[:, 0], weight13[:, 1]
-            else:
-                gate = up = weight13.reshape(weight13.shape[0])
+            gate, up = gate_up(weight13)
             return (gate, up, weight2, gate, weight2) if cute else (gate, up, weight2)
 
         shadow = SimpleNamespace(
@@ -341,10 +336,7 @@ def nvfp4_derived_update(layer, backend, quant_mode="w4a4"):
             # Per-token consumers already have neutral activation constants.
             # Reuse those captured tensors rather than allocating ones and
             # recomputing their reciprocals for every update.
-            if gated and weight13.ndim == 2 and weight13.shape[1] >= 2:
-                shadow.g1_alphas, shadow.g1_alphas_up = weight13[:, 0], weight13[:, 1]
-            else:
-                shadow.g1_alphas = shadow.g1_alphas_up = weight13.reshape(weight13.shape[0])
+            shadow.g1_alphas, shadow.g1_alphas_up = gate_up(weight13)
             shadow.g2_alphas = weight2
             shadow.w13_input_scale_quant = neutral13
             shadow.w2_input_scale_quant = neutral2
@@ -370,7 +362,7 @@ def nvfp4_derived_update(layer, backend, quant_mode="w4a4"):
             shadow.w13_input_scale_quant,
             shadow.w2_input_scale_quant,
         ]
-        if backend == "trtllm":
+        if trtllm:
             outputs.append(
                 trtllm_scale_c(
                     shadow.w2_input_scale_quant,
@@ -380,13 +372,7 @@ def nvfp4_derived_update(layer, backend, quant_mode="w4a4"):
                     activation,
                 )
             )
-        for name in extra_names:
-            if name == "gemm1_clamp_limit":
-                outputs.append((clamp / shadow.g1_alphas).to(torch.float32))
-            elif activation == "situ":
-                outputs.append(torch.full_like(shadow.g1_alphas, situ_beta))
-            else:
-                outputs.append((1 / shadow.g1_alphas_up).to(torch.float32))
+        outputs.extend(output(shadow) for output in extra_outputs)
         if cute:
             w1, fc2_input, w2, input_scale = cutedsl_values(shadow)
             if per_token:

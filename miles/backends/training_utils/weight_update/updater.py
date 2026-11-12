@@ -21,7 +21,6 @@ from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.conn_status import ConnStatusManager
 from miles.backends.training_utils.weight_update.protocol import get_weight_transfer_protocol
-from miles.backends.training_utils.weight_update.protocols.gpu_delta.metrics import log_completed_update
 from miles.backends.training_utils.weight_update.receiver_pool import ReceiverPools
 from miles.backends.training_utils.weight_update.rollout_cell_updater import _RolloutCellUpdater
 from miles.backends.training_utils.weight_update.session import (
@@ -76,9 +75,7 @@ class WeightUpdater:
             quantization_config=quantization_config,
         )
         if self._uses_gpu_delta:
-            self._hf_weight_iterator.local_consumer = self.protocol.send_bucket
-            self._hf_weight_iterator.local_error_consumer = self.protocol.record_export_error
-            self._hf_weight_iterator.local_plan_getter = self.protocol.get_export_plan
+            self._hf_weight_iterator.local_consumer = self.protocol
         self.weights_getter = weights_getter
         self.is_lora = is_lora
         if is_lora:
@@ -160,7 +157,7 @@ class WeightUpdater:
 
     @torch.no_grad()
     def update_weights(self, weight_version: int, rollout_id: int | None = None) -> bool:
-        """Sync the actor's model version and log completed GPU-delta metrics."""
+        """Run one weight sync: session frame + base-bucket stream + adapter pushes for LoRA."""
         protocol = self.protocol
         if self._uses_gpu_delta:
             started = protocol.begin_sync(weight_version, self._iter_base_buckets, rollout_id)
@@ -224,15 +221,6 @@ class WeightUpdater:
             _mark_cells_errored_on_any_rank(cell_updaters)
             dist.barrier(group=get_gloo_group())
         protocol.after_engines_resumed()
-        if self._uses_gpu_delta:
-            metrics = protocol.pop_metrics()
-            if metrics:
-                log_completed_update(
-                    self.args,
-                    metrics,
-                    rollout_id=rollout_id,
-                    is_primary_rank=self.parallel_state.is_metrics_rank,
-                )
         return True
 
     def _iter_base_buckets(self, *, materialize: bool):
