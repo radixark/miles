@@ -465,6 +465,8 @@ def compute_inference_engine_env_vars(args) -> dict[str, str]:
             "SGLANG_EXPOSE_OWN_ENV_VARS": "1",
         }.items()
     }
+    if args.sglang_pp_layer_partition is not None:
+        env_vars["SGLANG_PP_LAYER_PARTITION"] = args.sglang_pp_layer_partition
     if args.dumper_enable or args.dumper_inference:
         from miles.utils import dumper_utils
 

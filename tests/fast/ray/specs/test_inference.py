@@ -603,6 +603,19 @@ class TestInferenceEngineEnvVars:
         assert envs["SGLANG_JIT_DEEPGEMM_PRECOMPILE"] == "true"
         assert envs["SGLANG_MEMORY_SAVER_CUDA_GRAPH"] == "false"
 
+    def test_the_pipeline_layer_partition_reaches_every_engine(self):
+        """SGLang reads the per-stage layer split only from its environment."""
+        envs = compute_inference_engine_env_vars(make_args(sglang_pp_layer_partition="10,8,12,8"))
+
+        assert envs["SGLANG_PP_LAYER_PARTITION"] == "10,8,12,8"
+
+    def test_without_a_partition_the_engine_splits_layers_evenly(self, monkeypatch):
+        monkeypatch.delenv("SGLANG_PP_LAYER_PARTITION", raising=False)
+
+        envs = compute_inference_engine_env_vars(make_args())
+
+        assert "SGLANG_PP_LAYER_PARTITION" not in envs
+
     def test_the_built_in_defaults_apply_without_a_process_override(self, monkeypatch):
         """Without an override the engine must still get miles' own safety values rather than sglang's."""
         monkeypatch.delenv("SGLANG_JIT_DEEPGEMM_PRECOMPILE", raising=False)

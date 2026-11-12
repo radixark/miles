@@ -468,12 +468,12 @@ def _eval_sglang_overrides(args) -> dict:
         "enable_return_indexer_topk": False,
     }
     if args.eval_num_gpus_per_engine != args.rollout_num_gpus_per_engine:
-        # Inheriting these across a different tp gives an engine SGLang refuses to boot.
+        # Inheriting these across a different GPU count gives an engine SGLang refuses to boot.
         tp_coupled = ("dp_size", "pp_size", "ep_size", "attn_cp_size")
         overrides |= dict.fromkeys(tp_coupled, 1)
         logger.info(
-            f"Eval tp={args.eval_num_gpus_per_engine} != rollout tp={args.rollout_num_gpus_per_engine}; "
-            f"{', '.join(tp_coupled)} default to 1. Override with --eval-sglang-*."
+            f"Eval engines have {args.eval_num_gpus_per_engine} GPUs, rollout engines "
+            f"{args.rollout_num_gpus_per_engine}; {', '.join(tp_coupled)} default to 1. Override with --eval-sglang-*."
         )
     return overrides | collect_eval_sglang_overrides(args)
 

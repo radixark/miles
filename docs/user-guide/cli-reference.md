@@ -24,7 +24,7 @@ This page has two passes.
 | `--actor-num-nodes` | `1` | Total nodes for the actor. |
 | `--actor-num-gpus-per-node` | `8` | GPUs per actor node. |
 | `--rollout-num-gpus` | derived | GPUs for SGLang rollout (ignored when `--colocate`). |
-| `--rollout-num-gpus-per-engine` | `1` | TP size of each SGLang engine. |
+| `--rollout-num-gpus-per-engine` | `1` | GPUs of each SGLang engine: its TP size times `--sglang-pp-size`. |
 | `--colocate` | off | Share GPUs between actor and rollout. |
 | `--run-uuid` | generated | Machine-readable id for this launch; 16 lowercase hex characters. |
 
@@ -146,7 +146,8 @@ Sections mirror the launch-script argument groups.
 | `--actor-num-nodes` | int | `1` | Total nodes for actor training. |
 | `--actor-num-gpus-per-node` | int | `8` | GPUs per actor node. |
 | `--rollout-num-gpus` | int | derived | Ignored under `--colocate`. |
-| `--rollout-num-gpus-per-engine` | int | `1` | TP size of each SGLang engine. |
+| `--rollout-num-gpus-per-engine` | int | `1` | GPUs of each SGLang engine: its TP size times `--sglang-pp-size`, which must divide it. |
+| `--sglang-pp-layer-partition` | str | – | Layers per engine pipeline stage, comma-separated, one per `--sglang-pp-size` stage and summing to the model's layer count; checked at startup and passed to the engines as `SGLANG_PP_LAYER_PARTITION`. Unset splits the layers evenly. See [Argument Groups](/user-guide/argument-groups#sglang-args). |
 | `--colocate` | flag | off | Share GPUs between actor and rollout. Implicitly enables `--offload-train`, `--offload-rollout`, and defaults `--sglang-cuda-graph-backend-prefill=disabled`. |
 
 ### Model and checkpoints
@@ -212,7 +213,7 @@ Sections mirror the launch-script argument groups.
 | `--eval-top-p` | float | – | Eval top-p. Inherits from rollout if unset. |
 | `--eval-top-k` | int | – | Eval top-k. Inherits from rollout if unset. |
 | `--eval-num-gpus` | int | `0` | Dedicated eval fleet size. `0` = shared-engine eval. Requires `train_async.py`. |
-| `--eval-num-gpus-per-engine` | int | `1` | Eval engine TP, independent of rollout TP. |
+| `--eval-num-gpus-per-engine` | int | `1` | GPUs of each eval engine (its TP size times its pp size), independent of the rollout engines. |
 | `--eval-hf-dir` | str | – | Staging dir for per-eval HF snapshots (tmpfs recommended). Unset + `--save-hf` = reuse mode. |
 | `--eval-max-in-flight` | int | `2` | Snapshots the trainer may export ahead of the eval backend. Evals are serialized, so this buys lead time, not concurrency — and one more staged snapshot. |
 | `--eval-overflow-policy` | str | `backpressure` | At the cap: await the oldest eval, or `skip` the new point (logged as `eval/skipped_busy`). |
