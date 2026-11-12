@@ -48,8 +48,9 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 # Attention + MLA only, EXCLUDING the DSA indexer (wq_b/wk/weights_proj) — on
 # tilelang the indexer adapter gets no gradient at all — and EXCLUDING the MLP/MoE
 # leaves (gate_proj/up_proj/down_proj): this is the MoE-LoRA-off ablation, so all
-# experts (routed + shared) and the dense MLP stay frozen.
-_DEFAULT_TARGET_MODULES = "o_proj,q_a_proj,kv_a_proj_with_mqa,q_b_proj,kv_b_proj"
+# experts (routed + shared) and the dense MLP stay frozen. kv_b_proj stays frozen too:
+# SGLang's DSA prefill rejects its adapter.
+_DEFAULT_TARGET_MODULES = "o_proj,q_a_proj,kv_a_proj_with_mqa,q_b_proj"
 
 
 @dataclass

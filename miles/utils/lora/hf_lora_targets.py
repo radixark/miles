@@ -180,6 +180,12 @@ def _glm_dsa_targets(config):
     return _mla_attention_targets(config), tuple(mlp)
 
 
+def _glm5_targets(config):
+    # SGLang's DSA prefill rejects a kv_b_proj adapter (sgl-project/sglang#49848)
+    attention, mlp = _glm_dsa_targets(config)
+    return tuple(target for target in attention if target != "self_attn.kv_b_proj"), mlp
+
+
 def _glm5_next_targets(config):
     # GLM-5.3-Flash interleaves KDA layers into the GLM-5 DSA stack
     dsa_attention, mlp = _glm_dsa_targets(config)
@@ -338,7 +344,7 @@ _HF_LORA_MODELS = {
     "glm4_moe": _HfLoraModelSpec(_glm4_moe_targets),
     # GLM-4.7-Flash: MLA attention with dense / sparse MLPs chosen per layer, as GLM-5's DSA stack
     "glm4_moe_lite": _HfLoraModelSpec(_glm_dsa_targets),
-    "glm_moe_dsa": _HfLoraModelSpec(_glm_dsa_targets),
+    "glm_moe_dsa": _HfLoraModelSpec(_glm5_targets),
     "glm5_next": _HfLoraModelSpec(
         _glm5_next_targets, layer_prefix="model.language_model.layers.*", unwrap_text_config=True
     ),

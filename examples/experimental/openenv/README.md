@@ -214,7 +214,7 @@ fails.
 | `--prompt-data` | `/root/tbench2_train.jsonl` | Prompt set from step 1 |
 | `--num-rollout` | (launcher) | Number of GRPO steps |
 | `OPENENV_MAX_TURNS` | `30` | Max agent turns per episode |
-| `OPENENV_MAX_ROLLOUT_TIME_SECONDS` | `3600` | Per-episode wall-clock cap; a straggler that exceeds it is terminated and scored 0 |
+| `OPENENV_MAX_ROLLOUT_TIME_SECONDS` | `3600` | Per-episode wall-clock cap; a straggler that exceeds it is terminated and scored 0. An E2B sandbox's `max_lifetime_secs` metadata is 30 minutes past it, for servers that end a sandbox at that age |
 | `--dump-details <dir>` | off | Dump per-episode tokens/logprobs/masks/reward for inspection |
 | `WANDB_KEY`, `--wandb-project`, `--wandb-team` | — | W&B logging |
 
