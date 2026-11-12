@@ -160,8 +160,8 @@ def test_proxy_chat_postprocesses_completion_before_commit(router_env, monkeypat
     committed_messages = []
     original_commit = session_core_v2.commit_generation
 
-    def postprocess(self, *, choice, assistant_message, completion_token_ids):
-        calls.append((choice, assistant_message, completion_token_ids))
+    def postprocess(self, *, choice, assistant_message, completion_token_ids, template_args):
+        calls.append((choice, assistant_message, completion_token_ids, template_args))
         choice["message"] = {**assistant_message, "reasoning_content": "parsed"}
         return {**choice["message"], "_server_state": "stored"}
 

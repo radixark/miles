@@ -170,13 +170,14 @@ class TestSessionProxy:
         calls = []
         original = TITOTokenizer.postprocess_completion
 
-        def tracked_postprocess(self, *, choice, assistant_message, completion_token_ids):
-            calls.append((choice, assistant_message, completion_token_ids))
+        def tracked_postprocess(self, *, choice, assistant_message, completion_token_ids, template_args):
+            calls.append((choice, assistant_message, completion_token_ids, template_args))
             return original(
                 self,
                 choice=choice,
                 assistant_message=assistant_message,
                 completion_token_ids=completion_token_ids,
+                template_args=template_args,
             )
 
         monkeypatch.setattr(TITOTokenizer, "postprocess_completion", tracked_postprocess)
@@ -190,9 +191,10 @@ class TestSessionProxy:
 
         assert response.status_code == 200
         assert len(calls) == 1
-        choice, assistant_message, completion_token_ids = calls[0]
+        choice, assistant_message, completion_token_ids, template_args = calls[0]
         assert choice["message"] is assistant_message
         assert completion_token_ids
+        assert template_args == {"enable_thinking": False}
 
     def test_proxy_chat_response_has_no_duplicate_server_or_date_header(self, router_env):
         # Both the backend and this server run under uvicorn, so each emits its own

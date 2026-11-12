@@ -27,6 +27,7 @@ from miles.utils.chat_template_utils.message_matcher_hub import (
     assert_messages_append_only_with_allowed_role,
     strict_message_matches,
 )
+from miles.utils.chat_template_utils.templates import encoding_dsv4
 from miles.utils.chat_template_utils.token_seq_comparator import TokenSeqComparator
 
 logger = logging.getLogger(__name__)
@@ -271,12 +272,15 @@ class TITOTokenizer:
         choice: dict[str, Any],
         assistant_message: dict[str, Any],
         completion_token_ids: list[int],
+        template_args: dict[str, Any],
     ) -> dict[str, Any]:
         """Postprocess an upstream completion and return the message to store.
 
-        The default path trusts SGLang's parsed message. Model families that
-        need token-aware response handling override this hook and may update
-        ``choice`` before returning their server-side message representation.
+        ``template_args`` are the turn's resolved renderer kwargs, the ones the
+        stored message is later re-rendered with.  The default path trusts
+        SGLang's parsed message. Model families that need token-aware response
+        handling override this hook and may update ``choice`` before returning
+        their server-side message representation.
         """
         return assistant_message
 
@@ -939,6 +943,13 @@ class DeepSeekV4TITOTokenizer(TITOTokenizer):
             tokenizer.convert_tokens_to_ids("</think>"),
         }
         self.trailing_token_ids = frozenset({self._assistant_id} | self._think_bracket_ids)
+        # The vendored encoder's own completion parser.  Parser and renderer
+        # come from one module, so a parsed turn re-renders to the sampled
+        # tokens by construction; sglang's parser (deepseek-recipe since
+        # v0.5.23) drops the newlines the model emits after ``</think>``.
+        self._completion_parser: Callable[[str, str], dict[str, Any]] | None = (
+            encoding_dsv4.parse_message_from_completion_text
+        )
 
     def request_arg_rules(self) -> list[Callable[..., None]]:
         rules = super().request_arg_rules()
@@ -980,6 +991,51 @@ class DeepSeekV4TITOTokenizer(TITOTokenizer):
             kwargs.pop(alias, None)
         # SGLang's reasoning parser reads the canonical thinking flag.
         kwargs["thinking"] = thinking
+
+    def postprocess_completion(
+        self,
+        *,
+        choice: dict[str, Any],
+        assistant_message: dict[str, Any],
+        completion_token_ids: list[int],
+        template_args: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Re-derive the message from the sampled tokens with the vendored parser.
+
+        The parsed text replaces sglang's; sglang's tool-call ids are kept.
+        The client receives the same message the session stores, so its
+        replay still matches the stored turn.  Where the parser rejects the
+        sample (no EOS after a length-truncated turn, a tool-call block inside
+        an unclosed thinking block, a tool-call count sglang disagrees with),
+        the render could not reproduce it either: sglang's message is stored
+        as is and the reason recorded in ``meta_info``, as Inkling does.
+        """
+        if self._completion_parser is None:
+            return assistant_message
+        thinking_mode = "thinking" if deepseek.V4.render_thinking_enabled(template_args) else "chat"
+        completion_text = self.tokenizer.decode(completion_token_ids, skip_special_tokens=False)
+        meta_info = choice.setdefault("meta_info", {})
+        meta_info["miles_response_parser"] = "encoding_dsv4"
+        try:
+            parsed = self._completion_parser(completion_text, thinking_mode)
+            tool_calls = [
+                {**upstream_call, "function": parsed_call["function"]}
+                for upstream_call, parsed_call in zip(
+                    assistant_message.get("tool_calls") or [], parsed["tool_calls"], strict=True
+                )
+            ]
+        except (AssertionError, ValueError) as exc:
+            meta_info["miles_response_parse_error"] = str(exc)
+            return assistant_message
+        restored = {
+            **assistant_message,
+            "content": parsed["content"],
+            "reasoning_content": parsed["reasoning_content"] or None,
+        }
+        if tool_calls:
+            restored["tool_calls"] = tool_calls
+        choice["message"] = restored
+        return restored
 
     def tokenize_additional_messages(
         self,
@@ -1054,6 +1110,9 @@ class DeepSeekV41TITOTokenizer(DeepSeekV4TITOTokenizer):
             **self.chat_template_kwargs,
             "thinking": deepseek.V41.render_thinking_enabled(self.chat_template_kwargs),
         }
+        # ``encoding_dsv41`` vendors no completion parser, and the V4 one does
+        # not read V4.1's tool-call block, so V4.1 stores sglang's message.
+        self._completion_parser = None
 
 
 class MuseSparkTITOTokenizer(TITOTokenizer):
@@ -1119,6 +1178,7 @@ class InklingTITOTokenizer(TITOTokenizer):
         choice: dict[str, Any],
         assistant_message: dict[str, Any],
         completion_token_ids: list[int],
+        template_args: dict[str, Any],
     ) -> dict[str, Any]:
         if self._response_parser is None:
             self._response_parser = InklingResponseParser(self.tokenizer)
