@@ -19,14 +19,14 @@ from collections import Counter
 from pathlib import Path
 
 import numpy as np
-import tinker
 import torch
-from tinker import types
+from examples.multi_lora.custom_gspo import make_gspo_loss
+from examples.multi_lora.custom_maxpo import compute_mean_maxpo_advantages
 from tinker_cookbook import renderers
 from transformers import AutoTokenizer
 
-from examples.multi_lora.custom_gspo import make_gspo_loss
-from examples.multi_lora.custom_maxpo import compute_mean_maxpo_advantages
+import tinker
+from tinker import types
 
 SYSTEM = """You are an expert math problem solver specializing in grade school math word problems. Your task is to solve math word problems step-by-step.
 

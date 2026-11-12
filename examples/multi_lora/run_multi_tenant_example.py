@@ -73,7 +73,9 @@ async def run_client(index: int, args) -> dict:
     completion = tokenizer.decode(response.sequences[0].tokens)
 
     ok = losses[-1] < losses[0] and marker in completion
-    print(f"[{tag}] {'PASS' if ok else 'FAIL'} loss {losses[0]:.3f} -> {losses[-1]:.3f}, marker {marker!r}, completion {completion!r}")
+    print(
+        f"[{tag}] {'PASS' if ok else 'FAIL'} loss {losses[0]:.3f} -> {losses[-1]:.3f}, marker {marker!r}, completion {completion!r}"
+    )
     return {"tag": tag, "ok": ok}
 
 
