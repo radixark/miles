@@ -61,6 +61,10 @@ def expand_input_ids(ids: Sequence[int], counts: Sequence[int], placeholder_id: 
     return expanded
 
 
+def carries_only_images(request_body: dict[str, Any]) -> bool:
+    return set(collect_media_refs(request_body.get("messages") or [], None) or {}) <= {"images"}
+
+
 def expected_engine_prompt(request_body: dict[str, Any], counter: ImageTokenCounter) -> list[int]:
     start = request_body[MM_TOKEN_EXPANSION_START_LEN]
     ids = request_body["input_ids"]

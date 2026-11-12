@@ -47,7 +47,10 @@ def load_vlm(checkpoint: str, chat_template_path: str | None = None) -> SimpleNa
         pytest.skip(f"{checkpoint} processor unavailable")
     tokenizer = load_tokenizer(checkpoint, chat_template_path=chat_template_path, trust_remote_code=True)
     return SimpleNamespace(
-        processor=processor, tokenizer=tokenizer, pad_id=tokenizer.convert_tokens_to_ids(processor.image_token)
+        processor=processor,
+        tokenizer=tokenizer,
+        pad_id=tokenizer.convert_tokens_to_ids(processor.image_token),
+        video_pad_id=tokenizer.convert_tokens_to_ids(processor.video_token),
     )
 
 
@@ -123,7 +126,12 @@ class TokenSpaceChatBackend:
             counts = iter([self._count(path, bias) for path in new_images])
             expanded = []
             for token_id in tail:
-                expanded.extend([token_id] * next(counts) if token_id == self.vlm.pad_id else [token_id])
+                if token_id == self.vlm.pad_id:
+                    expanded.extend([token_id] * next(counts))
+                elif token_id == self.vlm.video_pad_id:
+                    expanded.extend([token_id] * VIDEO_TOKENS)
+                else:
+                    expanded.append(token_id)
             prompt = prompt[:start] + expanded
         output_ids = self.vlm.tokenizer.encode(f"reply {index}", add_special_tokens=False)
         choice = {
@@ -215,6 +223,15 @@ def collect(env, session_id: str) -> list[Sample]:
     return decode_samples_and_merge_input_sample(response.content, Sample(), fields=COMPUTED_FIELDS_V2).samples
 
 
+VIDEO_TOKENS = 6
+CLIP = b"\x00\x00\x00\x18ftypmp42clip"
+
+
+def video_turn(text: str) -> dict:
+    url = f"data:video/mp4;base64,{base64.b64encode(CLIP).decode('ascii')}"
+    return {"role": "user", "content": [{"type": "video", "video": url}, {"type": "text", "text": text}]}
+
+
 SHOT1 = png(120, 80, (10, 20, 30))
 SHOT2 = png(160, 120, (40, 80, 120))
 SHOT1_TWIN = png(120, 80, (200, 190, 180))
@@ -283,6 +300,18 @@ class TestEngineExpansionCheck:
             session_id = _create_session(env.url)
             assert chat(env, session_id, [user_turn(SHOT1, "one")]).status_code == 200
         assert ran == expected
+
+    @pytest.mark.parametrize("use_session_server", ["v1", "v2"])
+    def test_a_video_turn_the_engine_expanded_keeps_the_prefix_check(self, vlm, tmp_path, use_session_server):
+        with session_server(vlm, tmp_path, use_session_server=use_session_server) as env:
+            session_id = _create_session(env.url)
+            first = [user_turn(SHOT1, "one")]
+            response = chat(env, session_id, first)
+            assert response.status_code == 200, response.content
+            second = first + [response.json()["choices"][0]["message"], video_turn("two")]
+            response = chat(env, session_id, second)
+            assert response.status_code == 200, response.content
+            assert env.backend.calls[-1]["input_ids"].count(vlm.video_pad_id) == 1
 
     def test_an_engine_that_returns_no_prompt_fails_the_counted_check(self, vlm, tmp_path):
         with session_server(vlm, tmp_path, return_prompt=False) as env:

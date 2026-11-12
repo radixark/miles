@@ -28,7 +28,11 @@ from miles.rollout.session.errors import (
     UpstreamGenerationAbortedError,
     UpstreamResponseError,
 )
-from miles.rollout.session.image_expansion import ImageTokenCounter, assert_engine_expansion_matches
+from miles.rollout.session.image_expansion import (
+    ImageTokenCounter,
+    assert_engine_expansion_matches,
+    carries_only_images,
+)
 from miles.rollout.session.linear_trajectory import LinearTrajectory, SessionRegistry
 from miles.rollout.session.request_args import ClientResponseIntent, filter_turn_args, parse_chat_request
 from miles.rollout.session.samples.codec import COMPUTED_FIELDS, ROLLOUT_SAMPLING_MASK_FIELDS, encode_samples
@@ -547,10 +551,10 @@ class SessionCore:
         )
 
     def _check_engine_prompt(self, request_body: dict, choice: dict) -> None:
-        if self.image_token_counter is None:
-            check_engine_prompt(request_body, choice)
-        else:
+        if self.image_token_counter is not None and carries_only_images(request_body):
             assert_engine_expansion_matches(request_body, choice, self.image_token_counter)
+        else:
+            check_engine_prompt(request_body, choice)
 
     def _store_message_media(self, client_args: dict) -> dict:
         return store_message_media(
