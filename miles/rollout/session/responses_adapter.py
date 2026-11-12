@@ -157,6 +157,9 @@ def _responses_to_chat_body(body: bytes, *, merge_inline_system: bool) -> tuple[
         raise ValueError("request body must be a JSON object")
     if request.get("previous_response_id"):
         raise ValueError("previous_response_id is not supported: replay the full input instead")
+    text_format = (request.get("text") or {}).get("format") or {}
+    if text_format.get("type", "text") != "text":
+        raise ValueError(f"text.format type {text_format['type']!r} is not supported by this endpoint")
     chat_tools, custom_names = _responses_tools_to_chat(request.get("tools"))
     chat = {key: request[key] for key in ("model", "temperature", "top_p") if request.get(key) is not None}
     chat["messages"] = _responses_input_to_messages(
