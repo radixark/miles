@@ -73,3 +73,42 @@ def test_cancelling_the_call_runs_the_agent_cleanup_and_stops_the_worker(started
 
     assert _wait_for(cleaned_up)
     assert _is_down(urls[0])
+
+
+def test_a_slow_cancel_cleanup_finishes_before_the_worker_stops(started_urls, tmp_path):
+    pid_file, cleaned_up = tmp_path / "pid", tmp_path / "cleaned_up"
+
+    async def cancel_once_running():
+        task = asyncio.create_task(
+            call_agent_function(
+                stubs.clean_up_slowly,
+                mode="worker",
+                worker=START_PATH,
+                pid_file=str(pid_file),
+                cleaned_up=str(cleaned_up),
+                cleanup_s=3.0,
+            )
+        )
+        while not pid_file.exists():
+            await asyncio.sleep(0.1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(cancel_once_running())
+
+    assert cleaned_up.exists()
+    assert _is_down(started_urls[0])
+
+
+def test_cleanup_left_running_after_the_call_finishes_before_the_worker_stops(started_urls, tmp_path):
+    marker = tmp_path / "cleaned_up"
+
+    asyncio.run(
+        call_agent_function(
+            stubs.leave_cleanup_thread, mode="worker", worker=START_PATH, marker=str(marker), delay_s=3.0
+        )
+    )
+
+    assert marker.exists()
+    assert _is_down(started_urls[0])
