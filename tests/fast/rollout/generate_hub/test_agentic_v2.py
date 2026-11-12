@@ -50,6 +50,7 @@ def _generate_input(
             "session_server_instances": [SessionServerInstance(addr="127.0.0.1:12345")],
             "custom_agent_function_path": "test.fake_agent",
             "custom_agent_function_mode": "inline",
+            "rollout_dataset_agent_functions": [],
             "sglang_router_ip": "127.0.0.1",
             "sglang_router_port": 30000,
             "max_seq_len": None,
