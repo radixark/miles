@@ -100,7 +100,12 @@ def collect_media_refs(messages: Iterable[dict[str, Any]], media_dir: str | None
 
 def has_message_media(messages: Iterable[dict[str, Any]]) -> bool:
     """Whether any message holds an image, audio or video part."""
-    return any(next(_media_parts(message), None) is not None for message in messages)
+    return any(
+        isinstance(part, dict) and part.get("type") in _PART_TYPES
+        for message in messages
+        if isinstance(message.get("content"), list)
+        for part in message["content"]
+    )
 
 
 def materialize_message_media(messages: list[dict[str, Any]], media_dir: str | None) -> list[dict[str, Any]]:
