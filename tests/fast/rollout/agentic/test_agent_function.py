@@ -147,6 +147,18 @@ def test_leftover_cleanup_is_cut_at_its_deadline(monkeypatch):
     assert asyncio.run(call_and_watch()), "the agent process outlived its leftover-cleanup deadline"
 
 
+def test_idle_module_pool_workers_do_not_hold_the_process(tmp_path):
+    """A pool's queued work still runs, then its idle workers exit long before the leftover-cleanup deadline."""
+    marker = tmp_path / "logged"
+
+    async def call_and_watch() -> bool:
+        pid = await call_agent_function(stubs.leave_module_pool_work, mode="subproc", marker=str(marker), delay_s=1.0)
+        return await _wait_until_gone(pid, timeout_s=30)
+
+    assert asyncio.run(call_and_watch()), "idle pool workers held the agent process"
+    assert marker.exists(), "the agent process exited before its pool's queued work ran"
+
+
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="PR_SET_PDEATHSIG exists only on Linux")
 def test_the_agent_process_dies_with_the_rollout_process(tmp_path):
     pid_file = tmp_path / "agent_pid"
