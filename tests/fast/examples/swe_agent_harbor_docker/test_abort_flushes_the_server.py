@@ -20,6 +20,7 @@ def test_a_rollout_abort_cancels_the_call_and_still_flushes_the_agent_server(mon
     swe_agent_function = importlib.import_module("swe_agent_function")
     args = ImmutableNamespace(
         custom_agent_function_path=_hook("swe_agent_function.run"),
+        rollout_dataset_agent_functions=[],
         session_server_instances=[SimpleNamespace(instance_id="instance-1")],
         sglang_router_ip="127.0.0.1",
         sglang_router_port=30000,

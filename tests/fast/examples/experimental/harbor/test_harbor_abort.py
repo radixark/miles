@@ -9,7 +9,12 @@ from miles.utils.misc import call_agent_abort_hook
 
 blocking_environment = pytest.importorskip("tests.fast.examples.experimental.harbor.blocking_environment")
 
-TRAINING = SimpleNamespace(custom_agent_function_path=None, sglang_router_ip="127.0.0.1", sglang_router_port=30000)
+TRAINING = SimpleNamespace(
+    custom_agent_function_path=None,
+    rollout_dataset_agent_functions=[],
+    sglang_router_ip="127.0.0.1",
+    sglang_router_port=30000,
+)
 
 
 def _write_task(tasks_dir: Path) -> None:

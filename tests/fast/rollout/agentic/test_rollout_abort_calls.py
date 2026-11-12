@@ -12,7 +12,12 @@ from miles.rollout.agentic.agent_function import InfraAbort, call_agent_function
 from miles.utils.misc import call_agent_abort_hook
 from miles.utils.test_utils import agent_function_stubs as stubs
 
-TRAINING = SimpleNamespace(custom_agent_function_path=None, sglang_router_ip="127.0.0.1", sglang_router_port=30000)
+TRAINING = SimpleNamespace(
+    custom_agent_function_path=None,
+    rollout_dataset_agent_functions=[],
+    sglang_router_ip="127.0.0.1",
+    sglang_router_port=30000,
+)
 TRAINING_SCOPE = "127.0.0.1:30000"
 EVAL_SCOPE = "127.0.0.1:31000"
 
