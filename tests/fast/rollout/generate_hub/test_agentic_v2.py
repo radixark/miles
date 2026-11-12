@@ -225,7 +225,7 @@ async def test_infra_abort_cause_outranks_a_failed_collection(monkeypatch, colle
 @pytest.mark.asyncio
 async def test_any_other_agent_error_keeps_the_recorded_session(monkeypatch):
     sample = Sample(status=Sample.Status.COMPLETED, response="done", response_length=1, tokens=[1])
-    tracer = _Tracer(SamplesReply(samples=[sample], session_metadata={}, empty_reason=None))
+    tracer = _Tracer(SamplesReply(samples=[sample], session_metadata=_session_metadata(), empty_reason=None))
     _patch_agent(monkeypatch, tracer)
     monkeypatch.setattr(agentic_tool_call, "load_function", lambda path: _fail)
 
