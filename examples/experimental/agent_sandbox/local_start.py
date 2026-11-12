@@ -12,6 +12,10 @@ import subprocess
 import sys
 from collections.abc import Callable
 
+import psutil
+
+from miles.rollout.agentic.agent_function import _CANCEL_GRACE_S, _LEFTOVER_CLEANUP_S
+
 _STOP_TIMEOUT_S = 30.0
 
 
@@ -31,9 +35,18 @@ def _free_port() -> int:
 
 
 def _stop(proc: subprocess.Popen) -> None:
+    _wait_for_agent_exit(proc)
     proc.terminate()
     try:
         proc.wait(timeout=_STOP_TIMEOUT_S)
     except subprocess.TimeoutExpired:
         proc.kill()
         proc.wait()
+
+
+def _wait_for_agent_exit(proc: subprocess.Popen) -> None:
+    try:
+        agents = psutil.Process(proc.pid).children()
+    except psutil.NoSuchProcess:
+        return
+    psutil.wait_procs(agents, timeout=_CANCEL_GRACE_S + _LEFTOVER_CLEANUP_S)
