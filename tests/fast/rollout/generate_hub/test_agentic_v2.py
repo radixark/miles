@@ -285,7 +285,9 @@ async def test_every_mode_sends_the_call_with_its_router_scope(monkeypatch, mode
 @pytest.mark.asyncio
 async def test_worker_mode_sends_the_call_to_the_worker_with_the_runs_env(monkeypatch):
     sample = Sample(status=Sample.Status.COMPLETED, response="done", response_length=1, tokens=[1])
-    _patch_agent(monkeypatch, _Tracer(SamplesReply(samples=[sample], session_metadata={}, empty_reason=None)))
+    _patch_agent(
+        monkeypatch, _Tracer(SamplesReply(samples=[sample], session_metadata=_session_metadata(), empty_reason=None))
+    )
     monkeypatch.setenv("TEST_HARNESS_DIR", "/tasks")
     monkeypatch.setenv("TEST_RECIPE_KNOB", "not-in-worker-env")
     monkeypatch.setenv("E2B_API_URL", "https://sandbox-service.example")
