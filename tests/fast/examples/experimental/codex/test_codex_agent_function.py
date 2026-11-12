@@ -2,7 +2,6 @@ import asyncio
 import os
 import shutil
 import sys
-import time
 import uuid
 from contextlib import contextmanager
 
@@ -178,8 +177,7 @@ async def _cancel_during_model_call(args, marker: str) -> tuple[list[psutil.Proc
     task = asyncio.create_task(
         _call_generate(args, _sample(marker), DEFAULT_SAMPLING_PARAMS, variant="agentic_tool_call")
     )
-    deadline = time.monotonic() + 180
-    while not (procs := _codex_processes(marker)) and not task.done() and time.monotonic() < deadline:
+    while not (procs := _codex_processes(marker)) and not task.done():
         await asyncio.sleep(0.2)
     await asyncio.sleep(1)
     task.cancel()
