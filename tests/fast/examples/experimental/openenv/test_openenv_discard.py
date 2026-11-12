@@ -120,7 +120,7 @@ def test_episode_without_a_verdict_drops_the_group(rollout_env, monkeypatch, fir
 
 @pytest.mark.parametrize("rollout_env", [pytest.param(_config(), id="rollout")], indirect=True)
 def test_timeout_stays_scored_zero(rollout_env, monkeypatch):
-    monkeypatch.setattr(oaf, "_MAX_ROLLOUT_TIME_S", 3.0)
+    monkeypatch.setattr(oaf, "MAX_ROLLOUT_TIME_S", 3.0)
 
     out = _rollout(rollout_env, monkeypatch, _evaluate_stalls)
 
