@@ -14,6 +14,7 @@ from miles.rollout.generate_utils.rollout_topk_logprobs import (
 )
 from miles.rollout.generate_utils.sampling_mask import (
     append_sampling_metadata,
+    configure_sampling_mask_request,
     read_sampled_logprobs,
     should_return_sampling_mask,
 )
@@ -167,6 +168,7 @@ def compute_request_payload(
         # TODO: sweep the run's unreferenced objects periodically; a retried request orphans the one an earlier
         # attempt stored.
         payload[OUTPUT_STORE_REQUEST_KEY] = True
+    configure_sampling_mask_request(payload)
     return payload, None
 
 

@@ -32,6 +32,8 @@ import numpy as np
 import torch
 
 from miles.utils.retry_utils import NonRetryableError
+from miles.utils.rollout_topk_logprobs import rollout_topk_from_support
+from miles.utils.sampling_mask import validate_sampling_support
 
 if TYPE_CHECKING:
     from radix_transfer_plugins import StoreRef
@@ -324,57 +326,24 @@ class SamplingMaskSegments(Segments):
         offsets = np.concatenate(([0], np.cumsum(row_lengths)))
         ids = np.concatenate(ids).astype(np.int32, copy=False)
         forced = np.concatenate(forced)
-        _check_support(ids=ids, offsets=offsets, sampled_tokens=response_tokens, exactly_once=support_mode)
         columns = {
             "rollout_sampling_mask_ids": torch.from_numpy(ids),
             "rollout_sampling_mask_offsets": torch.from_numpy(offsets),
         }
-        if support_mode:
-            topk_ids, topk_logprobs = _support_topk(
-                ids=ids, offsets=offsets, logprobs=np.concatenate(logprobs), forced=forced, k=support_topk
+        try:
+            validate_sampling_support(
+                ids=ids, offsets=offsets, sampled_tokens=response_tokens, exactly_once=support_mode
             )
-            columns["rollout_topk_token_ids"] = topk_ids
-            columns["rollout_topk_log_probs"] = topk_logprobs
+            if support_mode:
+                columns["rollout_topk_token_ids"], columns["rollout_topk_log_probs"] = rollout_topk_from_support(
+                    ids=ids, offsets=offsets, logprobs=np.concatenate(logprobs), forced=forced, k=support_topk
+                )
+        except ValueError as exc:
+            raise StorePlanError(str(exc)) from exc
         return columns
 
 
 FIELDS: tuple[type[Segments], ...] = (RoutedExpertsSegments, IndexerTopkSegments, SamplingMaskSegments)
-
-
-def _check_support(ids: np.ndarray, offsets: np.ndarray, sampled_tokens: np.ndarray, *, exactly_once: bool) -> None:
-    """Every support is non-empty and holds its sampled token (exactly once in support mode)."""
-    row_lengths = np.diff(offsets)
-    if (empty := row_lengths == 0).any():
-        raise StorePlanError(f"sampling support must contain at least one token (row {int(np.argmax(empty))})")
-    entry_row = np.repeat(np.arange(len(row_lengths)), row_lengths)
-    hits = np.bincount(entry_row[ids == sampled_tokens[entry_row]], minlength=len(row_lengths))
-    bad = hits != 1 if exactly_once else hits == 0
-    if bad.any():
-        row = int(np.argmax(bad))
-        what = "must occur exactly once in" if exactly_once else "is absent from"
-        raise StorePlanError(f"sampled token {int(sampled_tokens[row])} {what} its sampling support (row {row})")
-
-
-def _support_topk(
-    ids: np.ndarray, offsets: np.ndarray, logprobs: np.ndarray, forced: np.ndarray, k: int
-) -> tuple[np.ndarray, np.ndarray]:
-    """Support-mode top-k candidates ``[rows, k]``: each row's support and its log-probs.
-
-    Unused slots and forced rows hold -1 / -inf, as the inline path pads them.
-    """
-    row_lengths = np.diff(offsets)
-    if (too_long := (row_lengths > k) & ~forced).any():
-        raise StorePlanError(
-            f"Rollout top-k logprobs sampling support exceeds --rollout-top-logprobs-num (row {int(np.argmax(too_long))})"
-        )
-    out_ids = np.full((len(row_lengths), k), -1, dtype=np.int32)
-    out_logprobs = np.full((len(row_lengths), k), -np.inf, dtype=np.float32)
-    entry_row = np.repeat(np.arange(len(row_lengths)), row_lengths)
-    entry_col = np.arange(len(entry_row)) - offsets[entry_row]
-    keep = ~forced[entry_row]
-    out_ids[entry_row[keep], entry_col[keep]] = ids[keep]
-    out_logprobs[entry_row[keep], entry_col[keep]] = logprobs[keep]
-    return out_ids, out_logprobs
 
 
 # ============================== one sample's plan ==============================

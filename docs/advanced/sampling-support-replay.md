@@ -37,7 +37,8 @@ ROLLOUT_ARGS+=(
 Replay is enabled whenever `--rollout-top-p` is below `1` or
 `--rollout-top-k` is positive. A finite top-p run must also set a positive
 top-k so that the captured support is bounded. Miles asks SGLang to capture its
-native sampling support with `return_sampling_mask` and uses the returned
+native sampling support with `return_sampling_mask`, returned as base64 flat arrays
+(`return_flat_raw_sampling_mask`) unless the output store takes it, and uses the returned
 support-normalized log probability as the rollout log probability.
 
 `--rollout-top-k` is the default for rollout requests, not a global upper bound
@@ -59,7 +60,8 @@ Miles rejects configurations that it cannot replay faithfully:
   transformations.
 - `--recompute-logprobs-via-prefill` is incompatible because that path does not
   preserve the per-token support.
-- The selected router must preserve `return_sampling_mask`. The Miles router
+- The selected router must preserve `return_sampling_mask`, `return_flat_raw_sampling_mask`
+  and `return_flat_raw_sampling_mask_b64`. The Miles router
   forwards raw request bodies. The native SGLang router requires typed chat and
   generate request schemas that declare the field.
 
