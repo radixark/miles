@@ -60,3 +60,4 @@ class TestBuildDeterministicTestArgs:
         )
 
         assert "--save-debug-event-data /dumps/run/" in args
+        assert "--log-inference-engine-weight-checksums" in args

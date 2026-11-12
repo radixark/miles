@@ -1,0 +1,185 @@
+import copy
+from typing import TYPE_CHECKING
+
+import torch
+import torch.nn as nn
+import transformer_engine.pytorch as te
+from megatron.core.models.gpt import GPTModel
+from megatron.core.models.gpt.gpt_layer_specs import get_gpt_decoder_block_spec
+from megatron.core.process_groups_config import ProcessGroupCollection
+from megatron.core.transformer.spec_utils import ModuleSpec
+from megatron.core.transformer.transformer_block import get_num_layers_to_build
+from megatron.core.transformer.transformer_layer import get_transformer_layer_offset
+from megatron.training.arguments import core_transformer_config_from_args
+from transformers import AutoConfig
+from transformers.models.qwen3_next.modeling_qwen3_next import Qwen3NextRMSNorm
+
+from miles.backends.megatron_utils.megatron_to_hf.linear_attn_layout import gdn_heads
+from miles.utils.hf_utils.config import load_hf_config
+from miles_plugins.models.linear_attn import GatedDeltaNet, LinearAttentionLayer
+
+if TYPE_CHECKING:
+    from miles.utils.args.runtime import TrainerConfig
+
+
+def _get_text_config(hf_config):
+    """Extract text config from a VLM config if needed."""
+    if hasattr(
+        hf_config, "text_config"
+    ):  # config-access-exempt: HF configs may wrap text_config for multimodal checkpoints
+        return hf_config.text_config
+    return hf_config
+
+
+class _TEZeroCenteredRMSNorm(te.RMSNorm):
+    get_extra_state = nn.Module.get_extra_state
+    set_extra_state = nn.Module.set_extra_state
+
+
+def gdn_input_layernorm(kind: str, hidden_size: int, eps: float, params_dtype: torch.dtype) -> nn.Module:
+    """``weight`` holds w of the ``(1 + w)`` scale under either kernel, so checkpoints and conversion see the same
+    parameter."""
+    if kind == "hf":
+        return Qwen3NextRMSNorm(hidden_size, eps=eps)
+    return _TEZeroCenteredRMSNorm(hidden_size, eps=eps, zero_centered_gamma=True, params_dtype=params_dtype)
+
+
+class Qwen3_5GatedDeltaNet(GatedDeltaNet):
+    """Qwen3.5 / 3.6 / 3.8 GDN: ``in_proj_qkv`` (group-major rows), ``in_proj_z``, ``in_proj_b``, ``in_proj_a``."""
+
+    def _build_projections(self):
+        hidden, local = self.config.hidden_size, self.local
+        self.in_proj_qkv = self.sharded_linear("in_proj_qkv", hidden, local.num_k_heads * local.group_qkv_dim)
+        self.in_proj_z = self.sharded_linear("in_proj_z", hidden, local.value_dim)
+        self.in_proj_b = self.sharded_linear("in_proj_b", hidden, local.num_v_heads)
+        self.in_proj_a = self.sharded_linear("in_proj_a", hidden, local.num_v_heads)
+
+    def in_proj_sections(self):
+        return self.in_proj_qkv.weight, self.in_proj_z.weight, self.in_proj_b.weight, self.in_proj_a.weight
+
+
+class Attention(LinearAttentionLayer):
+    """GDN ``self_attention``; ``core_cls`` picks the family's HF projection layout."""
+
+    core_cls: type[GatedDeltaNet] = Qwen3_5GatedDeltaNet
+
+    def __init__(self, args, config, layer_number: int, cp_comm_type=None, pg_collection=None, name=None):
+        if pg_collection is None:
+            pg_collection = ProcessGroupCollection.use_mpu_process_groups(required_pgs=["tp", "cp"])
+        text_config = _get_text_config(load_hf_config(args.hf_checkpoint))
+        linear_attn = self.core_cls(
+            config,
+            heads=gdn_heads(text_config),
+            conv_kernel_size=text_config.linear_conv_kernel_dim,
+            norm_eps=text_config.rms_norm_eps,
+            tp_group=pg_collection.tp,
+            backend=args.linear_attention_backend,
+            norm_activation=text_config.hidden_act,
+        )
+        input_layernorm = gdn_input_layernorm(
+            args.linear_attention_input_norm, text_config.hidden_size, text_config.rms_norm_eps, config.params_dtype
+        )
+        super().__init__(config, linear_attn, input_layernorm, pg_collection, allgather_cp=args.allgather_cp)
+
+
+def get_qwen3_5_spec(args, config, vp_stage):
+    # always use the moe path for MoE models
+    if not args.backend.num_experts:
+        config.moe_layer_freq = [0] * config.num_layers
+
+    # Define the decoder block spec
+    kwargs = {
+        "use_transformer_engine": True,
+    }
+    if vp_stage is not None:
+        kwargs["vp_stage"] = vp_stage
+    transformer_layer_spec = get_gpt_decoder_block_spec(config, **kwargs)
+
+    assert config.pipeline_model_parallel_layout is None, "not support this at the moment"
+
+    # Slice the layer specs to only include the layers that are built in this pipeline stage.
+    num_layers_to_build = get_num_layers_to_build(config, vp_stage=vp_stage)
+    offset = get_transformer_layer_offset(config, vp_stage=vp_stage)
+
+    hf_config = AutoConfig.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
+    text_config = _get_text_config(hf_config)
+
+    # Compute layer_types if the config class doesn't expose it
+    if not hasattr(text_config, "layer_types"):  # config-access-exempt: older HF checkpoints omit explicit layer_types
+        interval = getattr(
+            text_config, "full_attention_interval", 4
+        )  # config-access-exempt: older HF checkpoints encode full-attention cadence with this optional field
+        n = text_config.num_hidden_layers
+        text_config.layer_types = [
+            "full_attention" if (i + 1) % interval == 0 else "linear_attention" for i in range(n)
+        ]
+
+    for layer_id in range(num_layers_to_build):
+        if text_config.layer_types[layer_id + offset] == "linear_attention":
+            layer_specs = copy.deepcopy(transformer_layer_spec.layer_specs[layer_id])
+            layer_specs.submodules.self_attention = ModuleSpec(
+                module=Attention,
+                params={"args": args},
+            )
+            transformer_layer_spec.layer_specs[layer_id] = layer_specs
+    return transformer_layer_spec
+
+
+def qwen3_5_mm_model_provider(
+    pre_process: bool = True, post_process: bool = True, vp_stage: int | None = None, *, args: "TrainerConfig"
+) -> GPTModel:
+    """Multimodal provider: the plugin Qwen3.5 text model with mRoPE plus the frozen vision tower.
+
+    A separate entry point instead of a CLI switch: launch with
+    ``--custom-model-provider-path miles_plugins.models.qwen3_5.qwen3_5_mm_model_provider`` and
+    ``--multimodal-token-space-processing``. The text parameters keep this module's names, so checkpoints,
+    conversion and weight sync are the text model's; the tower is loaded from the HF checkpoint by
+    ``mm_towers`` and never trained; every weight sync re-sends it from the checkpoint.
+    """
+    from miles_plugins.models.qwen3_5.mm_towers import check_multimodal_setup, wire_mm_towers
+
+    if not args.multimodal_token_space_processing:
+        raise ValueError(
+            "the Qwen3.5 multimodal model takes its mRoPE positions from SGLang's token-space processor; "
+            "set --multimodal-token-space-processing"
+        )
+    if args.qkv_format != "thd" or args.allgather_cp:
+        raise ValueError(
+            "the Qwen3.5 multimodal model packs its mRoPE positions per sample; use --qkv-format thd without --allgather-cp"
+        )
+    if args.megatron_to_hf_mode != "raw":
+        raise ValueError(
+            "the Qwen3.5 multimodal model takes its media row placement and mRoPE positions from the trainer, "
+            "which builds them under --megatron-to-hf-mode raw only"
+        )
+    backend = args.backend
+    if backend.mtp_num_layers:
+        raise ValueError("the Qwen3.5 multimodal model is built without MTP layers")
+    if backend.overlap_moe_expert_parallel_comm:
+        raise ValueError("the Qwen3.5 multimodal model merges media in forward, which the 1F1B schedule plan skips")
+    if backend.fp8_param_gather:
+        raise ValueError("the Qwen3.5 multimodal model does not support --fp8-param-gather")
+
+    config = core_transformer_config_from_args(backend)
+    rope_parameters = load_hf_config(args.hf_checkpoint).text_config.rope_parameters
+    config.mrope_section = rope_parameters["mrope_section"]
+    config.mrope_interleaved = rope_parameters["mrope_interleaved"]
+    check_multimodal_setup(config, args.sglang)
+    model = GPTModel(
+        config=config,
+        transformer_layer_spec=get_qwen3_5_spec(args, config, vp_stage),
+        vocab_size=backend.padded_vocab_size,
+        max_sequence_length=backend.max_position_embeddings,
+        pre_process=pre_process,
+        post_process=post_process,
+        fp16_lm_cross_entropy=backend.fp16_lm_cross_entropy,
+        parallel_output=True,
+        share_embeddings_and_output_weights=not backend.untie_embeddings_and_output_weights,
+        position_embedding_type="mrope",
+        rotary_percent=backend.rotary_percent,
+        rotary_base=backend.rotary_base,
+        rope_scaling=backend.use_rope_scaling,
+        vp_stage=vp_stage,
+    )
+    wire_mm_towers(model, args.hf_checkpoint)
+    return model

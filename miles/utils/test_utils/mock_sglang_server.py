@@ -139,7 +139,11 @@ class MockSGLangServer:
             **process_result.meta_info.to_dict(),
         }
 
-        return {"text": process_result.text, "meta_info": meta_info}
+        response = {"text": process_result.text, "meta_info": meta_info}
+        if payload.get("return_prompt_token_ids"):
+            # The mock expands nothing, so the prompt comes back as sent.
+            response["prompt_token_ids"] = list(input_ids)
+        return response
 
     def _compute_chat_completions_response(self, payload: dict) -> dict:
         messages = payload.get("messages", [])

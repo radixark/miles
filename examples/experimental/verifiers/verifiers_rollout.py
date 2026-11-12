@@ -40,6 +40,7 @@ from miles.rollout.base_types import (
 from miles.rollout.filter_hub.base_types import MetricGatherer
 from miles.rollout.filter_hub.common_filters import apply_preput_filters
 from miles.rollout.generate_utils.prefill_logprobs import recompute_samples_rollout_logprobs_via_prefill
+from miles.router.backend import make_router_backend
 from miles.utils.args.custom_view import ImmutableNamespace
 from miles.utils.lora.utils import LORA_ADAPTER_NAME, is_lora_enabled
 from miles.utils.types import Sample
@@ -310,7 +311,7 @@ class MilesSGLangTransport:
         values["spaces_between_special_tokens"] = False
         values["n"] = 1
 
-        context_limit = self.args.rollout_max_context_len
+        context_limit = self.args.max_seq_len
         response_limit = self.args.rollout_max_response_len
         requested = int(values.get("max_new_tokens", response_limit))
         if context_limit is not None:
@@ -318,9 +319,7 @@ class MilesSGLangTransport:
         values["max_new_tokens"] = min(requested, response_limit)
         if values["max_new_tokens"] <= 0:
             runtime = _import_verifiers()
-            raise runtime.OverlongPromptError(
-                f"prompt has {prompt_len} tokens, rollout_max_context_len={context_limit}"
-            )
+            raise runtime.OverlongPromptError(f"prompt has {prompt_len} tokens, max_seq_len={context_limit}")
         return values
 
     async def post(self, endpoint: str, *, body: dict[str, Any], options=None, **_kwargs) -> httpx.Response:
@@ -356,9 +355,11 @@ class MilesSGLangTransport:
         if body.get("cache_salt") is not None:
             payload["extra_key"] = body["cache_salt"]
 
-        request_headers = None
-        if self.args.sglang_router_policy in ("consistent_hashing", "manual") and session_id:
-            request_headers = {"X-SMG-Routing-Key": session_id}
+        request_headers = (
+            (make_router_backend(self.args).routing_headers(session_id, self.args.sglang.models) or None)
+            if session_id
+            else None
+        )
 
         from miles.utils.http_utils import post
 
@@ -555,7 +556,6 @@ def _make_eval_args(args: ImmutableNamespace) -> Namespace:
         ("eval_top_p", "rollout_top_p"),
         ("eval_top_k", "rollout_top_k"),
         ("eval_max_response_len", "rollout_max_response_len"),
-        ("eval_max_context_len", "rollout_max_context_len"),
     ):
         if (
             value := getattr(args, eval_name)

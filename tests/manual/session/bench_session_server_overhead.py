@@ -392,12 +392,15 @@ def _build_server_config(
     postprocessor stay unset, matching `SessionServerConfig.from_args` defaults.
     """
     from miles.rollout.session.config import SessionServerConfig
+    from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
 
+    tito_type = TITOTokenizerType(bench_args.tito_model)
     return SessionServerConfig(
         hf_checkpoint=bench_args.hf_checkpoint,
         chat_template_path=chat_template_path,
         apply_chat_template_kwargs=chat_template_kwargs,
         tito_model=bench_args.tito_model,
+        allow_stop_token_replace=TITOTokenizerType.get_tokenizer_class(tito_type).allow_stop_token_replace,
         use_rollout_routing_replay=True,
         use_rollout_indexer_replay=False,
         rollout_indexer_topk_num_streams=None,
@@ -411,6 +414,7 @@ def _build_server_config(
         lora_train_only=False,
         timeout=600.0,
         backend_url=backend_url,
+        routing_key_header="X-SMG-Routing-Key",
         host=ip,
         port=port,
         instance_id=f"bench-i{instance_idx}",

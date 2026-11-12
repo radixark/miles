@@ -61,6 +61,29 @@ class DataConfig(BaseConfig):
             )
         ),
     ] = None
+    rollout_data_yaml_config: A[
+        str | None,
+        Arg(
+            help=(
+                "Path to a YAML file, or an inline `base64:<payload>`, listing the training datasets to mix and "
+                "how much each contributes per rollout step (`samples_per_step` weights). Replaces --prompt-data "
+                "and selects miles.rollout.data_source.MixedRolloutDataSource; needs --num-rollout."
+            )
+        ),
+    ] = None
+    rollout_data_reset_on_load: A[
+        bool,
+        Arg(
+            help=(
+                "With --load, start every training dataset over when the checkpoint cannot be resumed under the "
+                "current --rollout-data-yaml-config (other datasets, a changed file or dataset field, or a "
+                "--prompt-data checkpoint), and drop the prompt groups and untrained batches drawn from the old "
+                "data. The model, optimizer, rollout step and sample ids still resume; a checkpoint that does match "
+                "resumes in place, so the flag can stay set. A mix resumed under --prompt-data starts over without "
+                "this flag."
+            )
+        ),
+    ] = False
     apply_chat_template: A[bool, Arg()] = False
     # Temporarily be JSON-serialized str, will be a real dict after using Omegaconf
     apply_chat_template_kwargs: A[Any, Arg(type_parser=json.loads)] = "{}"
@@ -89,6 +112,34 @@ class DataConfig(BaseConfig):
             help=(
                 'JSON string for multimodal data mapping media types to data keys. Example: \'{"image": "image_file"}\''
             ),
+        ),
+    ] = None
+    multimodal_token_space_processing: A[
+        bool,
+        Arg(
+            help=(
+                "SGLang expands media placeholders and the trainer builds the processor inputs "
+                "(models with an SGLang token-space strategy); Megatron backend only for now. Engines that serve "
+                "Miles's multimodal prompts need --sglang-enable-token-space-processor; a frozen reward or reference "
+                "engine group that serves its own requests may override it off."
+            )
+        ),
+    ] = False
+    trainer_mm_processor_worker_num: A[
+        int,
+        Arg(
+            help="Workers each trainer rank processes multimodal inputs with: threads building token-space inputs, and the SGLang processor's media workers."
+        ),
+    ] = 1
+    trainer_mm_io_worker_num: A[
+        int,
+        Arg(help="Media I/O threads (decoding) of each trainer rank's SGLang processor; 0 lets SGLang choose."),
+    ] = 0
+    shared_media_dir: A[
+        str | None,
+        Arg(
+            help="Token space only: directory shared with every SGLang engine and every trainer rank; media that "
+            "is not a file path yet is written here."
         ),
     ] = None
     metadata_key: A[str, Arg(help="JSON dataset key")] = "metadata"

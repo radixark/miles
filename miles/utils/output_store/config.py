@@ -92,6 +92,11 @@ def check_output_store_args(args: argparse.Namespace, *, sglang: SglangConfig, m
                 "a custom convert function would bypass the output store plan column",
             ),
             (
+                args.custom_async_data_buffer_path is not None,
+                "a custom DataBuffer (--custom-async-data-buffer-path) may drop or restore groups without "
+                "recording their output store refs",
+            ),
+            (
                 megatron.is_multi_policy,
                 "multi-policy training is not supported: stored objects are released per rollout id",
             ),
@@ -108,8 +113,8 @@ def check_output_store_args(args: argparse.Namespace, *, sglang: SglangConfig, m
             (
                 indexer_topk_bytes is not None and indexer_topk_bytes > buffer_bytes,
                 f"--output-store-local-buffer-size {args.output_store_local_buffer_size} cannot hold the "
-                f"{indexer_topk_bytes} bytes of indexer top-k that the longest sequence the --rollout-max-*-len "
-                "flags allow stores",
+                f"{indexer_topk_bytes} bytes of indexer top-k of the longest sequence known at launch from "
+                "--max-seq-len or the --rollout-max-*-len flags",
             ),
             *(
                 (value is not None, f"{flag} is not supported: saved output store refs do not outlive their run")
@@ -207,9 +212,13 @@ def output_store_reader(args: argparse.Namespace) -> Callable | None:
 
 
 def _max_indexer_topk_bytes(args: argparse.Namespace) -> int | None:
-    """Bytes of the indexer top-k of the longest sequence the length flags allow, or None if unknown.
+    """Bytes of the indexer top-k of the longest sequence known at launch, or None if unknown.
 
-    Without --rollout-max-context-len, a response cut at --rollout-max-response-len after a prompt of
+    /generate caps every request at --max-seq-len. Under the session server the agent decides when to stop; one
+    that stops once its prompt fills --max-seq-len sends at most a prompt one token short of it plus a full
+    --rollout-max-response-len response, or a prompt of --max-seq-len when that is unset; an agent that ignores the
+    limit can send more, which no launch check sees.
+    Without --max-seq-len, a response cut at --rollout-max-response-len after a prompt of
     --rollout-max-prompt-len tokens, or of one when that is unset, is the longest sequence known at launch.
     Only this field is sized at launch: on DeepSeek-V3.2 it takes about 0.5 MB per token, routed experts take
     about 2 KB, and a sampling mask row holds the sampled support, which only sampling knows.
@@ -219,8 +228,10 @@ def _max_indexer_topk_bytes(args: argparse.Namespace) -> int | None:
     streams, width = args.rollout_indexer_topk_num_streams, args.rollout_indexer_topk_width
     if not (streams and width):
         return None
-    if args.rollout_max_context_len is not None:
-        num_tokens = args.rollout_max_context_len
+    if args.max_seq_len is not None:
+        num_tokens = args.max_seq_len
+        if args.use_session_server and args.rollout_max_response_len is not None:
+            num_tokens += args.rollout_max_response_len - 1
     elif args.rollout_max_response_len is not None:
         num_tokens = (args.rollout_max_prompt_len or 1) + args.rollout_max_response_len
     else:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 import torch
-from megatron.core.fusions import fused_cross_entropy
+from miles.backends.training_utils.loss.hub import math_utils
 
 from miles.backends.training_utils.loss.hub.math_utils import compute_log_probs
 
@@ -18,11 +18,7 @@ def _record_fused_calls(monkeypatch: pytest.MonkeyPatch) -> list[tuple[bool, boo
         calls.append((torch.is_grad_enabled(), logits.requires_grad))
         return logits.sum(dim=-1) * 0
 
-    monkeypatch.setattr(
-        fused_cross_entropy,
-        "fused_vocab_parallel_cross_entropy",
-        fake_fused_cross_entropy,
-    )
+    monkeypatch.setattr(math_utils, "vocab_parallel_cross_entropy", fake_fused_cross_entropy)
     return calls
 
 

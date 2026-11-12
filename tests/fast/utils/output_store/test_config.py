@@ -67,6 +67,7 @@ class TestLaunchChecks:
             ({"rollout_external": True}, "external rollout engines"),
             ({"rollout_external_router_pd": True}, "PD disaggregation"),
             ({"custom_convert_samples_to_train_data_path": "my.convert"}, "custom convert function"),
+            ({"custom_async_data_buffer_path": "my.buffer"}, "custom DataBuffer"),
             ({"deploy_component": "trainer"}, "--deploy-component all"),
             ({"debug_rollout_only": True}, "--debug-rollout-only"),
             ({"multimodal_keys": {"image": "images"}}, "--multimodal-keys"),
@@ -84,22 +85,43 @@ class TestLaunchChecks:
             "use_rollout_indexer_replay": True,
             "rollout_indexer_topk_num_streams": 61,
             "rollout_indexer_topk_width": 2048,
-            "rollout_max_context_len": 32769,
+            "max_seq_len": 32769,
         }
         # 32768 rows x 61 streams x 2048 ids x 4 bytes: under the 16gb default, over 15gb
         launch.check(make_args(**dsa))
         with pytest.raises(ValueError, match="cannot hold the 16374562816 bytes of indexer top-k"):
             launch.check(make_args(**dsa, output_store_local_buffer_size="15gb"))
-        launch.check(make_args(**{**dsa, "rollout_max_context_len": None}, output_store_local_buffer_size="15gb"))
+        launch.check(make_args(**{**dsa, "max_seq_len": None}, output_store_local_buffer_size="15gb"))
 
-    def test_without_a_context_length_the_response_length_bounds_the_indexer_top_k(self, launch):
+    def test_under_the_session_server_a_turn_adds_a_full_response_to_the_context(self, launch):
+        dsa = {
+            "use_rollout_indexer_replay": True,
+            "rollout_indexer_topk_num_streams": 61,
+            "rollout_indexer_topk_width": 2048,
+            "max_seq_len": 16385,
+            "rollout_max_response_len": 16385,
+            "use_session_server": "v1",
+        }
+        # An agent that stops once its prompt fills max_seq_len may still send a 16384-token prompt and get a
+        # 16385-token response: 32768 rows, under the 16gb default and over 15gb.
+        launch.check(make_args(**dsa))
+        with pytest.raises(ValueError, match="cannot hold the 16374562816 bytes of indexer top-k"):
+            launch.check(make_args(**dsa, output_store_local_buffer_size="15gb"))
+        # /generate caps every request at max_seq_len: 16384 rows fit.
+        launch.check(make_args(**{**dsa, "use_session_server": None}, output_store_local_buffer_size="15gb"))
+        # Without a response limit the session check is still sized, from max_seq_len alone.
+        no_response_limit = {**dsa, "max_seq_len": 32769, "rollout_max_response_len": None}
+        with pytest.raises(ValueError, match="cannot hold the 16374562816 bytes of indexer top-k"):
+            launch.check(make_args(**no_response_limit, output_store_local_buffer_size="15gb"))
+
+    def test_without_max_seq_len_the_response_length_bounds_the_indexer_top_k(self, launch):
         dsa = {
             "use_rollout_indexer_replay": True,
             "rollout_indexer_topk_num_streams": 61,
             "rollout_indexer_topk_width": 2048,
             "rollout_max_response_len": 32768,
         }
-        # A response cut at 32768 tokens stores at least 32768 rows, as a 32769-token context does.
+        # A response cut at 32768 tokens stores at least 32768 rows, as a 32769-token --max-seq-len does.
         launch.check(make_args(**dsa))
         with pytest.raises(ValueError, match="cannot hold the 16374562816 bytes of indexer top-k"):
             launch.check(make_args(**dsa, output_store_local_buffer_size="15gb"))

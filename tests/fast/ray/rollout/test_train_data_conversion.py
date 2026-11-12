@@ -91,6 +91,27 @@ class TestConvertSamplesToTrainData:
             assert key in out, f"missing required key {key}"
         assert len(out["tokens"]) == len(samples)
 
+    @pytest.mark.parametrize("token_space", [False, True])
+    def test_media_refs_ship_only_in_token_space(self, token_space):
+        args = make_args(
+            advantage_estimator="grpo", rewards_normalization=False, multimodal_token_space_processing=token_space
+        )
+        samples = make_samples_grouped(n_groups=1, group_size=2)
+        samples[0].multimodal_inputs = {"images": ["/shared/a.png", "/shared/b.png"]}
+
+        out = convert_samples_to_train_data(
+            args,
+            samples,
+            metadata={},
+            custom_convert_samples_to_train_data_func=None,
+            custom_reward_post_process_func=None,
+        )
+
+        if token_space:
+            assert out["multimodal_inputs"] == [{"images": ["/shared/a.png", "/shared/b.png"]}, None]
+        else:
+            assert "multimodal_inputs" not in out
+
     def test_loss_mask_none_filled_with_ones(self):
         args = make_args(rewards_normalization=False)
         s = make_sample(response_length=5)
@@ -575,7 +596,7 @@ class TestPostProcessRewards:
 
         with pytest.raises(
             ValueError,
-            match=r"all samples in rollout 11 must share one reward; rows \[1, 2\] have rewards \[2.0, 6.0\]",
+            match=r"all samples in a rollout must share one reward; rows \[1, 2\] have rewards \[2.0, 6.0\]",
         ):
             _post_process_rewards(args, samples, custom_reward_post_process_func=None)
 
@@ -1089,6 +1110,12 @@ class TestCanPrecomputeDpSchedule:
         args = make_args(balance_data=False, micro_batch_size=1, multi_lora=False)
         data = _make_split_data(8)
         data["multimodal_train_inputs"] = [None] * 8
+        assert not can_precompute_dp_schedule(args=args, data=data, train_parallel_config=FULL_SCHEDULE_CONFIG)
+
+    def test_rejects_token_space_media_refs(self):
+        args = make_args(balance_data=False, micro_batch_size=1, multi_lora=False)
+        data = _make_split_data(8)
+        data["multimodal_inputs"] = [None] * 8
         assert not can_precompute_dp_schedule(args=args, data=data, train_parallel_config=FULL_SCHEDULE_CONFIG)
 
     def test_rejects_fewer_rollouts_than_gbs(self):

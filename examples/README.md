@@ -8,6 +8,8 @@ End-to-end training workflows — the place to start.
 
 - **[geo3k_vlm](./geo3k_vlm)**: Training VLMs with FSDP using GRPO on the GEO3K dataset.
   - **[multi_turn](./geo3k_vlm/multi_turn)**: The same dataset over multiple turns, with the model cropping images through an interactive environment.
+- **[timelens_video](./timelens_video)**: Video temporal-grounding RL for Qwen3.5 with token-space media and a frozen vision tower.
+- **[avqa_audio](./avqa_audio)**: AVQA audio RL for Inkling-Small with token-space audio and a LoRA on one node.
 - **[lora](./lora)**: LoRA fine-tuning with the Megatron backend.
 - **[multi_lora](./multi_lora)**: Serve concurrent LoRA fine-tuning clients on one shared base model through the Tinker protocol.
   - **[harbor_tinker](./multi_lora/harbor_tinker)**: Terminal-Bench 2 training with Harbor sandboxes and the official Tinker cookbook RL loop.
@@ -19,6 +21,7 @@ End-to-end training workflows — the place to start.
 - **[primus](./primus)**: GRPO on GLM-5.3-Flash with the Primus trainer, FP8 rollout from the released checkpoint, and context-parallel dynamic batching.
 - **[retool_v2](./retool_v2)**: Tool-enabled language model generation with sandboxed Python code execution interleaved with thinking.
 - **[swe-agent-harbor-docker](./swe-agent-harbor-docker)**: Trains coding and terminal agents with Harbor-managed local Docker sandboxes and verifier rewards.
+- **[text_to_sql](./text_to_sql)**: Multi-turn text-to-SQL RL on BIRD-Platinum with a read-only SQLite tool, following River's recipe on Qwen3.6-35B-A3B.
 
 ## [Infra Features](./infra_features)
 

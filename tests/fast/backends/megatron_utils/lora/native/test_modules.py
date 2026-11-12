@@ -164,7 +164,7 @@ def test_a_column_adapter_reads_its_fused_norm_hosts_own_norm_output():
     with torch.no_grad():
         adapter.up_A.normal_()
         adapter.up_B.normal_()
-    attach_adapter_forward(host, adapter, context.lora.scale)
+    attach_adapter_forward(host, adapter)
     x = torch.randn(3, 6)
 
     out, bias = host(x)
