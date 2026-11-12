@@ -229,6 +229,11 @@ async def _run_client(provider, slot, args, rows, tests, renderer, semaphore, re
     service = tinker.ServiceClient(api_key=key, **({"base_url": args.miles_url} if provider == "miles" else {}))
     services.append(service)
     training = await service.create_lora_training_client_async(base_model=args.model, rank=32, train_unembed=False)
+    if args.initial_checkpoint is not None:
+        if provider != "miles":
+            raise ValueError("Initial gateway checkpoints require --providers miles")
+        imported = await training.load_state_async(args.initial_checkpoint.format(client=slot))
+        await imported
     model_id = training.model_id
     _write(
         output / "status.json",
@@ -377,6 +382,7 @@ def main():
     parser.add_argument("--miles-url", default="http://127.0.0.1:10613")
     parser.add_argument("--model", default="Qwen/Qwen3.5-4B")
     parser.add_argument("--tokenizer", default="Qwen/Qwen3.5-4B")
+    parser.add_argument("--initial-checkpoint", help="Initial Miles weights checkpoint; {client} selects the tenant.")
     parser.add_argument("--providers", nargs="+", choices=["miles", "tinker"], default=["miles", "tinker"])
     parser.add_argument("--clients", type=int, default=8)
     parser.add_argument("--updates", type=int, default=100)
