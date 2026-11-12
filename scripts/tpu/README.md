@@ -48,7 +48,7 @@ the trainer's init.
 
 ## Run
 
-One launcher per model, each with the same `sglang` and `train` commands:
+One launcher per model, each with the same `prepare`, `sglang` and `train` commands:
 
 | Launcher | Model | Trainer |
 |---|---|---|
@@ -60,11 +60,17 @@ The MoE trainers keep every expert on each rank (EP 1); sglang serves them with 
 smoke recipe end to end on one v7x 2x2x1 host (cold compile caches; steps 1-2): Qwen3-30B-A3B at 266-313 s a step
 with 14 s weight syncs, GLM-4.7-Flash 4-layer at 80-82 s with 0.6-0.9 s syncs. The GLM engine traces with dynamo:
 the direct tracer aborts the MLA backend at startup. Model and data
-default to `/root/models` and `/root/datasets` (`--model-dir`, `--data-dir`); `train` downloads the
-model, dapo-math-17k and aime-2024 there if missing. The GLM launcher serves the cut checkpoint, so run its
-`prepare` before `sglang`. The steps below use Qwen3-4B.
+default to `/root/models` and `/root/datasets` (`--model-dir`, `--data-dir`); `prepare` (and `train`, which runs
+it first) downloads the model, dapo-math-17k and aime-2024 there if missing, and the GLM launcher's cuts the
+checkpoint it serves. The steps below use Qwen3-4B.
 
-1. Start sglang on devices 4-7, in its own shell. It waits for the trainer to join the slice before it
+1. Fetch the model and datasets:
+
+   ```bash
+   python3 scripts/tpu/run_qwen3_4b_torchtitan.py prepare
+   ```
+
+2. Start sglang on devices 4-7, in its own shell. It waits for the trainer to join the slice before it
    compiles, so `/health` returns 200 only after `train` has started; start `train` a minute or two after
    sglang, without waiting for it:
 
@@ -72,7 +78,7 @@ model, dapo-math-17k and aime-2024 there if missing. The GLM launcher serves the
    python3 scripts/tpu/run_qwen3_4b_torchtitan.py sglang
    ```
 
-2. Train on devices 0-3:
+3. Train on devices 0-3:
 
    ```bash
    python3 scripts/tpu/run_qwen3_4b_torchtitan.py train --recipe full
@@ -83,6 +89,9 @@ model, dapo-math-17k and aime-2024 there if missing. The GLM launcher serves the
    Pass extra `train.py` flags through `--extra-args`.
 
 wandb is on when `WANDB_API_KEY` is set.
+
+CI runs each launcher's smoke recipe this way on a v7x host (`.github/workflows/pr-test-tpu.yml`, label
+`run-ci-tpu`; `.github/tpu-ci/README.md`).
 
 `--extra-args "--titan-fsdp-reduce-dtype bfloat16 --no-titan-fsdp-gather-once"` reduce-scatters FSDP's
 gradients in bfloat16, halving the reduce buffers and the bytes over ICI. The Qwen3-4B launcher passes

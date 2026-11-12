@@ -1,0 +1,129 @@
+# doc-dev: docs/developer/ci/00-stage.md
+name: PR Test (TPU)
+
+# End-to-end GRPO smoke runs on TPU v7x: each scripts/tpu launcher's `smoke` recipe (3 rollouts; sglang-torchtpu
+# engine and torchtitan trainer sharing one 2x2x1 host, weights synced over ICI) on sglang-torchtpu's GKE CI
+# cluster. .github/tpu-ci/README.md describes the setup.
+#
+# * PR: on demand. A PR carrying the `run-ci-tpu` label runs the Qwen3-4B smoke for its head commit, and again
+#   on every push while it carries the label. Fork PRs cannot get the cluster's credentials.
+# * Nightly: every launcher, on main.
+# * Dispatch: any launchers on any branch (`gh workflow run pr-test-tpu.yml --ref <branch> -f launchers=...`).
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled, closed]
+  schedule:
+    - cron: '0 12 * * *'
+  workflow_dispatch:
+    inputs:
+      launchers:
+        description: 'Comma-separated launchers (qwen3_4b, qwen3_30b_a3b, glm4_7_flash_4layer); empty runs all'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  # A new push, or adding / removing `run-ci-tpu`, or closing the PR supersedes the running TPU run. Any other
+  # label event gets a group of its own, so labelling a PR for CUDA CI does not cancel its TPU run.
+  group: >-
+    pr-test-tpu-${{ github.event.pull_request.number || github.event.schedule || github.run_id }}${{
+    (github.event.action == 'labeled' || github.event.action == 'unlabeled') &&
+    github.event.label.name != 'run-ci-tpu' && format('-{0}', github.run_id) || '' }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    # closing the PR or changing another label only starts a run to supersede (or not disturb) the running one
+    if: >-
+      github.event.action != 'closed' &&
+      ((github.event.action != 'labeled' && github.event.action != 'unlabeled') ||
+        github.event.label.name == 'run-ci-tpu') &&
+      (github.event_name != 'schedule' || github.repository == 'radixark/miles')
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      ref: ${{ steps.plan.outputs.ref }}
+    steps:
+      - id: plan
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          HAS_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'run-ci-tpu') }}
+          SAME_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+          INPUT_LAUNCHERS: ${{ github.event.inputs.launchers || '' }}
+          # the PR head (immutable, the pushed code) rather than the merge commit, which lags a force-push
+          REF: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          # launcher -> the JobSet's deadline in minutes: download, both cold compiles and three steps
+          declare -A timeout=([qwen3_4b]=90 [qwen3_30b_a3b]=180 [glm4_7_flash_4layer]=150)
+          all="qwen3_4b qwen3_30b_a3b glm4_7_flash_4layer"
+          case "$EVENT_NAME" in
+            pull_request)
+              selected=""
+              if [ "$HAS_LABEL" = true ]; then
+                if [ "$SAME_REPO" != true ]; then
+                  echo "::error::TPU CI cannot run on a fork PR (no cluster credentials); push the branch to radixark/miles"
+                  exit 1
+                fi
+                selected="qwen3_4b"
+              fi
+              ;;
+            schedule) selected="$all" ;;
+            *) selected="${INPUT_LAUNCHERS//,/ }"; selected="${selected:-$all}" ;;
+          esac
+          entries=()
+          for launcher in $selected; do
+            [ -n "${timeout[$launcher]:-}" ] || { echo "::error::unknown launcher '$launcher' (known: $all)"; exit 1; }
+            entries+=("{\"launcher\":\"${launcher}\",\"timeout_minutes\":${timeout[$launcher]}}")
+          done
+          matrix="[$(IFS=,; echo "${entries[*]}")]"
+          echo "TPU launchers: ${matrix}"
+          echo "matrix=${matrix}" >> "$GITHUB_OUTPUT"
+          echo "ref=${REF}" >> "$GITHUB_OUTPUT"
+
+  image:
+    needs: plan
+    if: needs.plan.outputs.matrix != '[]'
+    uses: ./.github/workflows/_build-tpu-ci-image.yml
+    with:
+      ref: ${{ needs.plan.outputs.ref }}
+    permissions:
+      contents: read
+      id-token: write
+
+  smoke:
+    needs: [plan, image]
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    uses: ./.github/workflows/_run-ci-tpu.yml
+    with:
+      ref: ${{ needs.plan.outputs.ref }}
+      image: ${{ needs.image.outputs.image }}
+      launcher: ${{ matrix.launcher }}
+      recipe: smoke
+      timeout_minutes: ${{ matrix.timeout_minutes }}
+    permissions:
+      contents: read
+      id-token: write
+
+  # One check for branch protection: green when the TPU run was skipped (no label), red when any job failed.
+  pr-test-tpu-finish:
+    needs: [plan, image, smoke]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          failed=$(jq -r 'to_entries[] | select(.value.result == "failure" or .value.result == "cancelled") | .key' <<<"$NEEDS")
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<<"$NEEDS"
+          if [ -n "$failed" ]; then
+            echo "TPU CI failed: ${failed//$'\n'/, }"
+            exit 1
+          fi
