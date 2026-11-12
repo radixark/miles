@@ -123,9 +123,15 @@ class BaseReplayManager:
 
     @staticmethod
     def fill_replay_padding(top_indices, num_scores):
-        # padding rows (all -1) take arange; branchless so fullgraph traces it
+        # Padding rows (all -1) are spread round-robin over all experts: bshd pads every sample to
+        # the batch max length, and sending all of it to experts 0..topk-1 overloads EP rank 0
+        # (memory spikes, RCCL allocation failures). Branchless so fullgraph traces it.
         all_invalid = (top_indices == -1).all(dim=-1)
-        ar = torch.arange(top_indices.shape[1], device=top_indices.device, dtype=top_indices.dtype) % num_scores
+        n_tokens, k = top_indices.shape
+        ar = (
+            torch.arange(n_tokens, device=top_indices.device, dtype=top_indices.dtype).unsqueeze(-1) * k
+            + torch.arange(k, device=top_indices.device, dtype=top_indices.dtype)
+        ) % num_scores
         return torch.where(all_invalid.unsqueeze(-1), ar, top_indices)
 
     def get_topk_fn(self, old_topk_fn, return_probs):

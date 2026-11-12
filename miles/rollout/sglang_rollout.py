@@ -46,6 +46,7 @@ from .generate_utils.generate_endpoint_utils import (
     compute_routing_headers,
     get_indexer_topk_from_response,
     router_routes_by_key,
+    split_output_token_logprobs,
     token_space_request_fields,
     truncate_to_max_seq_len,
 )
@@ -266,11 +267,7 @@ async def generate(
             sample.metadata.setdefault("opd_student_top_logprobs", [])
             sample.metadata["opd_student_top_logprobs"].extend(output_top_logprobs)
 
-    if "output_token_logprobs" in output["meta_info"]:
-        new_response_tokens = [item[1] for item in output["meta_info"]["output_token_logprobs"]]
-        new_response_log_probs = [item[0] for item in output["meta_info"]["output_token_logprobs"]]
-    else:
-        new_response_tokens, new_response_log_probs = [], []
+    new_response_tokens, new_response_log_probs = split_output_token_logprobs(sample, output["meta_info"])
 
     if payload.get("return_sampling_mask", False):
         new_response_log_probs = append_sampling_metadata(

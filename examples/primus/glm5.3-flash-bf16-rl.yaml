@@ -1,0 +1,53 @@
+work_group: miles
+user_name: miles
+exp_name: glm5_3_flash_bf16_rl
+workspace: ${PRIMUS_WORKSPACE:/tmp/primus}
+
+# GLM-5.3-Flash is built by Primus (model_type glm5_next): KDA via fla chunk_kda,
+# DSA via Primus' Triton kpool indexer + sparse MLA, mHC streams in fp32.
+# Miles routes model build, HF load and weight export through Primus for this
+# model_type, so the run needs --megatron-to-hf-mode raw.
+modules:
+  pre_trainer:
+    framework: megatron
+    config: pre_trainer.yaml
+    model: glm5_3_flash.yaml
+    overrides:
+      bf16: true
+      fp16: false
+      tokenizer_model: ${GLM5_TOKENIZER:zai-org/GLM-5.3-Flash}
+
+      kda_backend: fla
+      dsa_backend: triton
+
+      # RL from the released checkpoint: keep the router's expert bias as released
+      # and train without a load-balancing loss.
+      moe_router_bias_update_rate: 0.0
+      moe_router_load_balancing_type: none
+      moe_aux_loss_coeff: 0.0
+      # Primus' fused Triton unpermute hangs in autotuning at 288 experts on this image.
+      moe_permute_fusion: false
+
+      # Turbo only for the expert grouped GEMM: TE's ROCm grouped GEMM backward hangs
+      # here (36 local experts per EP rank, some receive no tokens).
+      enable_primus_turbo: true
+      use_turbo_rms_norm: false
+      use_turbo_attention: false
+      use_turbo_gemm: false
+      use_turbo_parallel_linear: false
+      use_turbo_grouped_gemm: true
+      use_turbo_grouped_mlp: false
+      use_turbo_deepep: false
+      moe_use_fused_router_with_aux_score: false
+      moe_use_legacy_grouped_gemm: false
+
+      exit_on_missing_checkpoint: false
+      enable_one_logger: false
+      eval_interval: null
+      eval_iters: 0
+      save_interval: null
+
+      micro_batch_size: 1
+      train_iters: null
+      lr_warmup_iters: 0
+      override_opt_param_scheduler: false
