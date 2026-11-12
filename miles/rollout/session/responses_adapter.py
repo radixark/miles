@@ -243,27 +243,44 @@ def _chat_to_response(chat_response: dict, request: dict, custom_names: set[str]
     }
 
 
+def _responses_item_sse_events(index: int, item: dict) -> list[dict]:
+    if item["type"] == "message":
+        part = item["content"][0]
+        added = {**item, "status": "in_progress", "content": []}
+        ids = {"output_index": index, "item_id": item["id"], "content_index": 0}
+        return [
+            {"type": "response.output_item.added", "output_index": index, "item": added},
+            {"type": "response.content_part.added", **ids, "part": {**part, "text": ""}},
+            {"type": "response.output_text.delta", **ids, "delta": part["text"], "logprobs": []},
+            {"type": "response.output_text.done", **ids, "text": part["text"], "logprobs": []},
+            {"type": "response.content_part.done", **ids, "part": part},
+            {"type": "response.output_item.done", "output_index": index, "item": item},
+        ]
+    if item["type"] == "function_call":
+        added = {**item, "status": "in_progress", "arguments": ""}
+        ids = {"output_index": index, "item_id": item["id"]}
+        return [
+            {"type": "response.output_item.added", "output_index": index, "item": added},
+            {"type": "response.function_call_arguments.delta", **ids, "delta": item["arguments"]},
+            {
+                "type": "response.function_call_arguments.done",
+                **ids,
+                "name": item["name"],
+                "arguments": item["arguments"],
+            },
+            {"type": "response.output_item.done", "output_index": index, "item": item},
+        ]
+    return [
+        {"type": "response.output_item.added", "output_index": index, "item": item},
+        {"type": "response.output_item.done", "output_index": index, "item": item},
+    ]
+
+
 def _responses_sse_events(response: dict) -> list[dict]:
     started = {**response, "status": "in_progress", "output": [], "usage": None}
     events = [{"type": "response.created", "response": started}, {"type": "response.in_progress", "response": started}]
     for index, item in enumerate(response["output"]):
-        events.append({"type": "response.output_item.added", "output_index": index, "item": item})
-        if item["type"] == "message":
-            text = item["content"][0]["text"]
-            delta = {"output_index": index, "content_index": 0, "item_id": item["id"], "logprobs": []}
-            events.append({"type": "response.output_text.delta", **delta, "delta": text})
-            events.append({"type": "response.output_text.done", **delta, "text": text})
-        elif item["type"] == "function_call":
-            events.append(
-                {
-                    "type": "response.function_call_arguments.done",
-                    "output_index": index,
-                    "item_id": item["id"],
-                    "name": item["name"],
-                    "arguments": item["arguments"],
-                }
-            )
-        events.append({"type": "response.output_item.done", "output_index": index, "item": item})
+        events.extend(_responses_item_sse_events(index, item))
     final_type = "response.completed" if response["status"] == "completed" else "response.incomplete"
     events.append({"type": final_type, "response": response})
     return [{**event, "sequence_number": number} for number, event in enumerate(events)]
