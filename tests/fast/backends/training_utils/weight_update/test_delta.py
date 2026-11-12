@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from miles.backends.training_utils.weight_update.protocols import delta as delta_module
 from miles.backends.training_utils.weight_update.protocols.delta import UpdateWeightFromDiskDelta
 
 _DELTA_MODULE = "miles.backends.training_utils.weight_update.protocols.delta"
@@ -171,3 +172,13 @@ class TestDeltaPublicationLifecycle:
 
         assert receiver.transport_version == 4
         assert receiver.served_versions == ["8", "8", "15", "2"]
+
+
+class TestAtomicWrite:
+    @pytest.mark.parametrize("sync", [True, False])
+    def test_fsync_only_when_sync(self, tmp_path: Path, sync: bool) -> None:
+        with patch(f"{_DELTA_MODULE}.os.fsync") as fsync:
+            delta_module._atomic_write(str(tmp_path / "file"), b"delta", sync=sync)
+
+        assert fsync.called is sync
+        assert (tmp_path / "file").read_bytes() == b"delta"
