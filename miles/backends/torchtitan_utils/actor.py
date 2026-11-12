@@ -69,7 +69,7 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
         config = build_trainer_config(
             args,
             hf_assets_path=args.hf_checkpoint,
-            lr_total_steps=args.num_rollout * _steps_per_rollout(args),
+            lr_total_steps=self._lr_total_steps(),
             dump_subdir="actor",
             with_lora=is_lora_enabled(args),
         )
@@ -108,11 +108,11 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
         iteration = None
         # only saves and --lora-adapter-path use it, and building it probes the layout collectively
         if is_lora_enabled(args) and (args.backend.save is not None or args.lora_adapter_path is not None):
-            self._lora_checkpoint = TorchtitanLoraCheckpoint(self.trainer, args, _steps_per_rollout(args))
+            self._lora_checkpoint = TorchtitanLoraCheckpoint(self.trainer, args, self._steps_per_rollout())
             if args.lora_adapter_path is not None:
                 iteration = self._lora_checkpoint.restore()
         # after the restore, which may set the step
-        start_rollout_id = self.trainer.step // _steps_per_rollout(args) if iteration is None else iteration + 1
+        start_rollout_id = self.trainer.step // self._steps_per_rollout() if iteration is None else iteration + 1
         # after the restore: setup keeps the moments it wrote
         if args.stream_optimizer_state_to_disk:
             setup_adam_state_on_disk(self.optimizers, state_dir_root=optimizer_state_dir_root(args))
@@ -120,7 +120,7 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
         if with_ref:
             self.ref_runner = self._build_ref_runner(args)
 
-        self.weight_updater = self._build_weight_updater(self.trainer, TitanHfWeightIterator.build)
+        self._init_training_state()
 
         if args.compile_warmup:
             self._compile_warmup()
@@ -130,6 +130,15 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
             self.sleep()
         self.prof.on_init_end()
         return args.start_rollout_id if args.start_rollout_id is not None else start_rollout_id
+
+    def _steps_per_rollout(self) -> int:
+        return _steps_per_rollout(self.args)
+
+    def _lr_total_steps(self) -> int:
+        return self.args.num_rollout * self._steps_per_rollout()
+
+    def _init_training_state(self) -> None:
+        self.weight_updater = self._build_weight_updater(self.trainer, TitanHfWeightIterator.build)
 
     def _move_train_state(self, *, to_host: bool) -> None:
         if not self.args.backend.optimizer_cpu_offload:

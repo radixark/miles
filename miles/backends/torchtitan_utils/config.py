@@ -29,6 +29,7 @@ from miles.backends.torchtitan_utils.loss import RLLossAdapter
 from miles.backends.torchtitan_utils.trainer import TitanTrainer
 from miles.utils.args.runtime import TrainerConfig
 from miles.utils.hf_utils.config import load_hf_config
+from miles.utils.lora.utils import is_multi_lora_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -297,11 +298,22 @@ def build_trainer_config(
     model.enable_weight_tying = ties_embeddings
     if ties_embeddings:
         logger.info("Checkpoint ties lm_head to the embedding; excluding lm_head.weight from the HF export")
+    multi_lora = with_lora and is_multi_lora_enabled(args)
     if with_lora:
         model = lora.convert_model_config(
-            model, hf_targets=args.hf_lora_targets, rank=args.lora_rank, alpha=args.lora_alpha
+            model,
+            hf_targets=args.hf_lora_targets,
+            rank=args.lora_rank,
+            alpha=args.lora_alpha,
+            num_slots=args.multi_lora_n_adapters if multi_lora else None,
+            lora_type=args.lora_type,
         )
     compile_backend = _compile_backend()
+    if multi_lora and compile_backend is not None:
+        raise ValueError(
+            "multi-LoRA routes each forward's tokens by slot counts that change every batch, which a fixed-shape "
+            "compiled block would recompile for; run it on a dynamic-shape platform"
+        )
     if compile_backend is not None:
         _prepare_blocks_for_compile(model)
 

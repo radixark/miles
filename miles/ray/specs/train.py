@@ -49,6 +49,10 @@ _TRAINER_ACTOR_CLASSES = {
     "fsdp": "miles.backends.fsdp_utils.actor.FSDPTrainRayActor",
     "torchtitan": "miles.backends.torchtitan_utils.actor.TorchtitanTrainRayActor",
 }
+_MULTI_LORA_ACTOR_CLASSES = {
+    "megatron": "miles.backends.megatron_utils.lora.actor.MultiLoRATrainRayActor",
+    "torchtitan": "miles.backends.torchtitan_utils.lora_actor.TorchtitanMultiLoRATrainRayActor",
+}
 
 _NUM_GPUS_PER_TRAINER_WORKER = 0.4
 
@@ -163,10 +167,8 @@ class TrainerSpec(BaseServeSpec):
             ],
             partial_static_meta=StaticMeta(values=dict(role=config.trainer_role), include_cell_index=True),
             worker_class=(
-                "miles.backends.megatron_utils.lora.actor.MultiLoRATrainRayActor"
-                if config.train_backend == "megatron"
-                and config.trainer_role == ACTOR_ROLE
-                and is_multi_lora_enabled(config)
+                _MULTI_LORA_ACTOR_CLASSES[config.train_backend]
+                if config.trainer_role == ACTOR_ROLE and is_multi_lora_enabled(config)
                 else _TRAINER_ACTOR_CLASSES[config.train_backend]
             ),
             concurrency_groups=TRAINER_CONCURRENCY_GROUPS if config.use_fault_tolerance else None,

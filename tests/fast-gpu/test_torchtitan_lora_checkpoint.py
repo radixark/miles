@@ -356,6 +356,7 @@ def test_the_adapter_state_carries_moments_only_when_they_are_saved(save_moments
     param = torch.nn.Parameter(torch.ones(2, 2))
     slots = SimpleNamespace(
         parameters={_LORA_A: param},
+        slot_params=lambda slot: [param],
         slot_parameters=lambda slot: [param],
         get_local_shard_specs=lambda slot: [SimpleNamespace(key="q_proj.lora_A", local_shape=(2, 2))],
         local_pieces=lambda slot, tensors: tensors,

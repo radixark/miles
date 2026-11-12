@@ -54,6 +54,7 @@ def _args(**overrides) -> Namespace:
         lr_decay_iters=None,
         lora_rank=0,
         lora_type="lora",
+        multi_lora_n_adapters=0,
         lora_A_init_method="kaiming",
         lora_dropout=0.0,
         lora_adapter_path=None,
@@ -301,6 +302,10 @@ def test_lora_flags_torchtitan_cannot_honor_are_rejected(monkeypatch):
         validate_torchtitan_args(_args(lora_rank=8, titan_model_name="glm5_next"))
     with pytest.raises(ValueError, match="--lora-type lora"):
         validate_torchtitan_args(_args(lora_rank=8, lora_type="canonical_lora"))
+    # multi-LoRA slots give each projection of a fused one its own adapter
+    validate_torchtitan_args(_args(lora_rank=8, lora_type="canonical_lora", multi_lora_n_adapters=2))
+    with pytest.raises(ValueError, match="context parallelism"):
+        validate_torchtitan_args(_args(lora_rank=8, multi_lora_n_adapters=2, context_parallel_size=2))
     with pytest.raises(ValueError, match="kaiming"):
         validate_torchtitan_args(_args(lora_rank=8, lora_A_init_method="xavier"))
     with pytest.raises(ValueError, match="no dropout"):
