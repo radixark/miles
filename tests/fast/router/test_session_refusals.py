@@ -33,19 +33,19 @@ def _records(url: str, session_id: str) -> list:
 def test_generating_route_outside_the_recorded_ones_is_refused(env):
     calls = []
 
-    @env.backend.app.post("/v1/responses")
-    async def responses():
+    @env.backend.app.post("/v1/completions")
+    async def completions():
         calls.append(1)
-        return JSONResponse(content={"id": "resp_1", "output": [{"type": "message"}]})
+        return JSONResponse(content={"id": "cmpl_1", "choices": [{"text": "hello"}]})
 
     session_id = _create_session(env.url)
     response = requests.post(
-        f"{env.url}/sessions/{session_id}/v1/responses", json={"model": "m", "input": "hi"}, timeout=5.0
+        f"{env.url}/sessions/{session_id}/v1/completions", json={"model": "m", "prompt": "hi"}, timeout=5.0
     )
 
     assert response.status_code == 404
     error = response.json()["error"]
-    assert error.startswith("POST /v1/responses is not served by the session server")
+    assert error.startswith("POST /v1/completions is not served by the session server")
     assert "POST /v1/chat/completions, POST /v1/messages" in error
     assert "GET /v1/models" in error
     assert calls == []
