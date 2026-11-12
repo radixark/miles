@@ -119,7 +119,7 @@ ray job submit --address="http://127.0.0.1:8265" \
   --n-samples-per-prompt 8 \
   --global-batch-size "$(( ${ROLLOUT_BATCH_SIZE:-8} * 8 ))" \
   --rollout-max-response-len "${RESPONSE_LEN}" \
-  --rollout-max-context-len "$(( RESPONSE_LEN + 2048 ))" \
+  --max-seq-len "$(( RESPONSE_LEN + 2048 ))" \
   --rollout-temperature 1.0 \
   --eval-interval "${EVAL_INTERVAL:-10}" \
   --eval-prompt-data aime24 "${DATA_DIR}/aime-2024/aime-2024.jsonl" \

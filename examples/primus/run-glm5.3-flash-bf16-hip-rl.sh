@@ -102,7 +102,6 @@ ray job submit --address="http://127.0.0.1:8265" \
   --global-batch-size "$(( ${ROLLOUT_BATCH_SIZE:-8} * 8 ))" \
   --rollout-max-response-len "${RESPONSE_LEN}" \
   --rollout-max-prompt-len "${PROMPT_LEN}" \
-  --rollout-max-context-len "${SGLANG_CONTEXT_LEN}" \
   --rollout-temperature 1.0 \
   --eval-interval "${EVAL_INTERVAL:-100000}" \
   --eval-prompt-data hipval "${HIP_VAL}" \

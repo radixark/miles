@@ -84,7 +84,7 @@ ray job submit --address="http://127.0.0.1:8265" \
   --rollout-batch-size 4 \
   --n-samples-per-prompt 8 \
   --rollout-max-response-len "${ROLLOUT_MAX_RESPONSE_LEN:-8192}" \
-  --rollout-max-context-len "${ROLLOUT_MAX_CONTEXT_LEN:-16384}" \
+  --max-seq-len "${ROLLOUT_MAX_CONTEXT_LEN:-16384}" \
   --rollout-temperature 1.0 \
   --global-batch-size 32 \
   --eval-interval "${EVAL_INTERVAL:-5}" \
