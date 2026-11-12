@@ -65,7 +65,7 @@ def block_fp8(weight, block_size):
     block_max = torch.max(torch.abs(qweight), dim=1, keepdim=True)[0]
     block_max = torch.max(block_max, dim=3, keepdim=True)[0]
 
-    scale = block_max.to(torch.float32) / FP8_MAX
+    scale = block_max.clamp(min=1e-10).to(torch.float32) / FP8_MAX
     qweight = (
         (qweight / scale)
         .clamp(min=FP8_MIN, max=FP8_MAX)
