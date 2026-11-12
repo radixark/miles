@@ -15,7 +15,8 @@ move from trainer to engine over ICI (`--update-weight-transfer-mode ici`) witho
 ## Image
 
 The engine and the trainer share one Python environment, built by `docker/Dockerfile.tpu` on
-sglang-torchtpu's release image:
+sglang-torchtpu's release image. CI rebuilds it next to the CUDA image and publishes it as
+`radixark/miles:dev-tpu` (and `latest-tpu`). To build it yourself:
 
 ```bash
 python docker/build.py --variant tpu --image-tag dev    # radixark/miles:dev-tpu
