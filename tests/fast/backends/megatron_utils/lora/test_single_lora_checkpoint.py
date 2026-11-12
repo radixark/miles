@@ -33,11 +33,12 @@ from miles.backends.training_utils.checkpoint.adapter.parametrization_conversion
 )
 from miles.backends.training_utils.checkpoint.adapter.readers import AdapterSourceKind
 from miles.backends.training_utils.checkpoint.adapter.source_error import AdapterSourceError
+from miles.backends.training_utils.model_companion import ModelCompanion, ModelCompanionWeightVersionUtils
 
 _MODULE = "miles.backends.megatron_utils.lora.checkpoint"
 
 
-def _restore(path, *, convert_save=None):
+def _restore(path, *, convert_save=None, model=()):
     """``restore_single_lora`` with the model-facing pieces mocked; returns (its result, scheduler, mocks)."""
     args = SimpleNamespace(
         hf_checkpoint="/hf",
@@ -65,7 +66,7 @@ def _restore(path, *, convert_save=None):
     ) as mocks:
         mocks["load_adapter_source"].return_value = SimpleNamespace(lora_alpha=16.0)
         restored = restore_single_lora(
-            [], args, adapter_slots=slots, optimizer=MagicMock(), opt_param_scheduler=scheduler
+            model, args, adapter_slots=slots, optimizer=MagicMock(), opt_param_scheduler=scheduler
         )
     return restored, scheduler, mocks
 
@@ -90,6 +91,29 @@ def test_a_torchtitan_dir_reports_the_rollout_its_schedule_started_at(tmp_path):
         restored, scheduler, _ = _restore(tmp_path)
     assert restored == (6, False, 5)
     scheduler.load_state_dict.assert_not_called()
+
+
+def test_a_resume_continues_the_weight_version_its_save_recorded(tmp_path):
+    saved = ModelCompanion(pipeline_rank=0, chunk_index=0, replica_id=(0, 0, 0))
+    for _ in range(5):
+        ModelCompanionWeightVersionUtils.bump_weight_version([saved])
+    args = SimpleNamespace(
+        lora_dropout=0.05,
+        backend=SimpleNamespace(save=str(tmp_path), no_save_optim=False, use_precision_aware_optimizer=False),
+    )
+    with patch.multiple(
+        _MODULE,
+        DistributedOptimizerMembers=DEFAULT,
+        single_lora_parametrization=DEFAULT,
+        save_and_commit_adapter_dir=DEFAULT,
+    ) as mocks:
+        lora_checkpoint.save_single_lora([saved], MagicMock(), None, MagicMock(), args, iteration=4, first_rollout=0)
+    training_state = json.loads(json.dumps(mocks["save_and_commit_adapter_dir"].call_args.kwargs["training_state"]))
+
+    resumed = ModelCompanion(pipeline_rank=0, chunk_index=0, replica_id=(0, 0, 0))
+    with patch(f"{_MODULE}.read_training_state", return_value=training_state):
+        _restore(tmp_path, model=[resumed])
+    assert ModelCompanionWeightVersionUtils.weight_version([resumed]) == 5
 
 
 def test_a_source_without_training_state_restarts_at_rollout_0(tmp_path):
