@@ -4478,7 +4478,7 @@ class TestMultimodalTokenSpaceProcessingArgs:
                 "hf_checkpoint": "/ckpt",
                 "train_backend": "megatron",
                 "use_session_server": False,
-                "use_miles_router": False,
+                "router": RouterKind.SGLANG,
                 **overrides,
             }
         )
@@ -4637,8 +4637,16 @@ class TestMultimodalTokenSpaceProcessingArgs:
             _check_multimodal_token_space_processing_args(args, sglang=make_sglang_config(**self._SUPPORTED))
 
     def test_the_session_server_with_the_miles_router_passes(self):
-        args = self._args(use_session_server="v2", use_miles_router=True)
+        args = self._args(use_session_server="v2", router=RouterKind.MILES)
         _check_multimodal_token_space_processing_args(args, sglang=make_sglang_config(**self._SUPPORTED))
+
+    def test_a_session_server_run_with_the_miles_router_parses(self):
+        args = parse_megatron_test_config(*self._TOKEN_SPACE_ARGV, "--use-session-server", "v2", "--use-miles-router")
+        assert args.router == RouterKind.MILES
+
+    def test_a_session_server_run_without_the_miles_router_is_refused_at_parse(self):
+        with pytest.raises(ValueError, match="needs --use-miles-router"):
+            parse_megatron_test_config(*self._TOKEN_SPACE_ARGV, "--use-session-server", "v2")
 
     def test_a_custom_inference_engine_provider_is_rejected(self):
         args = SimpleNamespace(
