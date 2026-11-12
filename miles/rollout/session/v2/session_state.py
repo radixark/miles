@@ -53,7 +53,7 @@ class SessionStateV2:
     tree: SessionTree = field(default_factory=SessionTree)
     evaluation: bool = False
     sampling_defaults: dict[str, Any] = field(default_factory=dict)
-    sampling_support_replay: bool = False
+    return_sampling_mask: bool = False
     extra_key: str | None = None
 
     def snapshot(self) -> "SessionStateV2":
@@ -115,7 +115,6 @@ def prepare_token_ids_and_request_args(
         turn_args=parent.turn_args if parent is not None else None,
         evaluation=state.evaluation,
         sampling_defaults=state.sampling_defaults,
-        sampling_support_replay=state.sampling_support_replay,
     )
     prepared.body["input_ids"] = _render_token_ids(
         parent, request_messages, template_args=prepared.template_args, tito_tokenizer=tito_tokenizer
@@ -230,14 +229,14 @@ class SessionRegistryV2(SessionRegistry):
         *,
         evaluation: bool = False,
         sampling_defaults: dict[str, Any] | None = None,
-        sampling_support_replay: bool = False,
+        return_sampling_mask: bool = False,
         extra_key: str | None = None,
     ) -> str:
         session_id = uuid.uuid4().hex
         self.sessions[session_id] = SessionStateV2(
             evaluation=evaluation,
             sampling_defaults=dict(sampling_defaults or {}),
-            sampling_support_replay=sampling_support_replay,
+            return_sampling_mask=return_sampling_mask,
             extra_key=extra_key,
         )
         return session_id

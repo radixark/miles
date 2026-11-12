@@ -14,7 +14,9 @@ from miles.rollout.generate_utils.rollout_topk_logprobs import (
 )
 from miles.rollout.generate_utils.sampling_mask import (
     append_sampling_metadata,
+    configure_sampling_logprobs_request,
     read_sampled_logprobs,
+    read_selected_sampling_logprobs,
     should_return_sampling_mask,
 )
 from miles.router.backend import make_router_backend
@@ -160,6 +162,7 @@ def compute_request_payload(
 
     if not evaluation:
         configure_rollout_topk_logprobs_request(args, payload)
+        configure_sampling_logprobs_request(payload, payload["sampling_params"])
     if args.use_output_store and not evaluation and any(payload.get(field.request_key) for field in FIELDS):
         if "image_data" in payload:
             # A media prompt's routed experts have one row per expanded media token, not per prompt token.
@@ -229,6 +232,8 @@ async def update_sample_from_response(
                 output["meta_info"],
                 sampling_logprobs_mode=sampling_logprobs_mode,
             )
+    elif payload.get("sampling_logprobs_mode") == "selected":
+        new_response_log_probs = read_selected_sampling_logprobs(output["meta_info"], new_response_tokens)
 
     # Update sample with tokens directly - avoiding re-tokenization
     sample.tokens = sample.tokens + new_response_tokens

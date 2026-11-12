@@ -16,7 +16,7 @@ def test_candidate_collection_retains_full_vocabulary_kl_scores(monkeypatch: pyt
         use_kl_loss=True,
         entropy_coef=0,
         observe_training_entropy=False,
-        use_sampling_support_replay=True,
+        use_rollout_sampling_support_replay=True,
         train_backend="megatron",
         backend=Namespace(vocab_size=4),
         rollout_temperature=0.7,

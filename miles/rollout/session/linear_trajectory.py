@@ -93,7 +93,7 @@ class LinearTrajectory:
     turn_args_history: list[dict[str, Any]] = field(default_factory=list)
     evaluation: bool = False
     sampling_defaults: dict[str, Any] = field(default_factory=dict)
-    sampling_support_replay: bool = False
+    return_sampling_mask: bool = False
 
     def snapshot(self) -> "LinearTrajectory":
         """Copy the mutable containers, sharing committed payloads read-only. Caller holds the lock."""
@@ -150,7 +150,6 @@ class LinearTrajectory:
             turn_args=turn_args,
             evaluation=self.evaluation,
             sampling_defaults=self.sampling_defaults,
-            sampling_support_replay=self.sampling_support_replay,
         )
         prepared.body["input_ids"] = self._render_token_ids(
             request_messages,
@@ -403,7 +402,7 @@ class SessionRegistry:
         *,
         evaluation: bool = False,
         sampling_defaults: dict[str, Any] | None = None,
-        sampling_support_replay: bool = False,
+        return_sampling_mask: bool = False,
         extra_key: str | None = None,
     ) -> str:
         assert extra_key is None, (
@@ -414,7 +413,7 @@ class SessionRegistry:
         self.sessions[session_id] = LinearTrajectory(
             evaluation=evaluation,
             sampling_defaults=dict(sampling_defaults or {}),
-            sampling_support_replay=sampling_support_replay,
+            return_sampling_mask=return_sampling_mask,
         )
         return session_id
 

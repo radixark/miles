@@ -27,7 +27,7 @@ def make_args(**overrides) -> Namespace:
             "use_output_store": True,
             "use_rollout_routing_replay": True,
             # Derived by miles_validate_args, which runs before these checks; not a parser flag.
-            "use_sampling_support_replay": False,
+            "use_rollout_sampling_support_replay": False,
             "object_store_backend": "mooncake",
             "mooncake_store_init_kwargs": dict(MOONCAKE),
             "rollout_external": False,
@@ -53,7 +53,7 @@ class TestLaunchChecks:
     def test_a_supported_launch_passes(self, launch):
         launch.check(make_args())
         launch.check(make_args(save_debug_train_data="/tmp/{rollout_id}.pt"))
-        launch.check(make_args(use_rollout_routing_replay=False, use_sampling_support_replay=True))
+        launch.check(make_args(use_rollout_routing_replay=False, use_rollout_sampling_support_replay=True))
 
     def test_without_the_switch_nothing_is_checked(self, launch):
         launch.pd = True

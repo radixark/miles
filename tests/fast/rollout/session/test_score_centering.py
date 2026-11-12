@@ -113,7 +113,7 @@ def test_filtered_session_request_and_producer() -> None:
         rollout_top_logprobs_num=3,
         rollout_sampling_logprobs_mode="support",
         rollout_temperature=0.7,
-        use_sampling_support_replay=True,
+        use_rollout_sampling_support_replay=True,
     )
     tokenizer = SimpleNamespace(resolve_request_args=lambda request, **kwargs: request)
     prepared = prepare_chat_request(
@@ -122,7 +122,6 @@ def test_filtered_session_request_and_producer() -> None:
         config=config,
         turn_args=None,
         sampling_defaults={"temperature": 0.7, "top_p": 0.6, "top_k": 3},
-        sampling_support_replay=True,
     )
     assert prepared.body["return_sampling_mask"] is True
     assert prepared.body["sampling_logprobs_mode"] == "support"
@@ -168,12 +167,11 @@ def test_session_request_owns_sampling_logprobs_mode(candidate_count: int, filte
             rollout_top_logprobs_num=candidate_count,
             rollout_sampling_logprobs_mode=mode,
             rollout_temperature=0.7,
-            use_sampling_support_replay=filtered,
+            use_rollout_sampling_support_replay=filtered,
         ),
         turn_args=None,
         evaluation=evaluation,
         sampling_defaults={"temperature": 0.7, "top_p": 0.6 if filtered else 1.0, "top_k": 3 if filtered else -1},
-        sampling_support_replay=filtered,
     )
     assert prepared.body.get("return_sampling_mask", False) is (filtered and not evaluation)
     if candidate_count and not evaluation:
@@ -192,7 +190,7 @@ def test_session_request_owns_sampling_logprobs_mode(candidate_count: int, filte
     "override,match",
     [
         ({"temperature": 0.8}, "Rollout top-k logprobs"),
-        ({"top_p": 0.9}, "bounded training-request sampling"),
+        ({"top_p": 0.9}, "launched without top-p/top-k"),
         ({"min_p": 0.1}, "Rollout top-k logprobs"),
         ({"logit_bias": {"1": 2}}, "Rollout top-k logprobs"),
     ],
@@ -221,3 +219,29 @@ def test_nullable_sampling_fields_receive_explicit_defaults() -> None:
         "top_k": -1,
         "min_p": 0.0,
     }
+
+
+@pytest.mark.parametrize(
+    "registry_type,core_type", [(SessionRegistry, SessionCore), (SessionRegistryV2, SessionCoreV2)]
+)
+@pytest.mark.parametrize(
+    ("replay", "mode", "expected"),
+    [(False, "support", True), (True, "support", True), (False, "selected", False)],
+    ids=["support-candidates", "replay", "selected-candidates"],
+)
+def test_training_sessions_return_the_mask_for_replay_or_support_candidates(
+    registry_type: type, core_type: type, replay: bool, mode: str, expected: bool
+) -> None:
+    """Support-mode candidates are built from the mask even when the trainer does not replay it."""
+    config = make_session_server_config(
+        rollout_top_logprobs_num=3,
+        rollout_sampling_logprobs_mode=mode,
+        use_rollout_sampling_support_replay=replay,
+    )
+    tokenizer = SimpleNamespace(create_comparator=lambda: None, chat_template_kwargs={})
+    registry = registry_type(tokenizer=None, tito_tokenizer=tokenizer)
+    core = core_type(None, registry, config)
+    for evaluation in (False, True):
+        response = asyncio.run(core.create_session(evaluation=evaluation))
+        session = registry.get_session(json.loads(response.body)["session_id"])
+        assert session.return_sampling_mask is (expected and not evaluation)

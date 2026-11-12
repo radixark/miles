@@ -96,7 +96,7 @@ class TestBackendTrainLoopOptions:
             enable_witness=False,
             save_local_weight_checksum=False,
             dumper_enable=False,
-            use_sampling_support_replay=False,
+            use_rollout_sampling_support_replay=False,
             ci_test=False,
             trainer_model_id=None,
         )

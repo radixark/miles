@@ -54,7 +54,7 @@ def _serve_router(extra_args: dict | None = None):
             "use_rollout_routing_replay": False,
             "use_rollout_indexer_replay": False,
             "rollout_indexer_topk_num_streams": None,
-            "use_sampling_support_replay": False,
+            "use_rollout_sampling_support_replay": False,
             "use_output_store": False,
             "rollout_top_logprobs_num": 0,
             "rollout_sampling_logprobs_mode": "selected",

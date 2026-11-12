@@ -154,7 +154,7 @@ class TestBackendTrainingDimensions:
             enable_witness=False,
             save_local_weight_checksum=False,
             dumper_enable=False,
-            use_sampling_support_replay=False,
+            use_rollout_sampling_support_replay=False,
             ci_test=False,
             enable_mtp_training=False,
             use_rollout_entropy=False,
@@ -203,7 +203,7 @@ class TestBackendTrainingDimensions:
             enable_witness=False,
             save_local_weight_checksum=False,
             dumper_enable=False,
-            use_sampling_support_replay=False,
+            use_rollout_sampling_support_replay=False,
             ci_test=False,
             enable_mtp_training=False,
         )
@@ -256,7 +256,7 @@ class TestBackendTrainingValidation:
             enable_witness=False,
             save_local_weight_checksum=False,
             dumper_enable=False,
-            use_sampling_support_replay=False,
+            use_rollout_sampling_support_replay=False,
             ci_test=False,
             enable_mtp_training=False,
         )

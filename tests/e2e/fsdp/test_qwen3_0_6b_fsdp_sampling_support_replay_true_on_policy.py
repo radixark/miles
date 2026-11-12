@@ -45,6 +45,7 @@ def execute() -> None:
         "--rollout-temperature 1 "
         "--rollout-top-p 0.8 "
         "--rollout-top-k 32 "
+        "--use-rollout-sampling-support-replay "
         "--global-batch-size 16 "
     )
 

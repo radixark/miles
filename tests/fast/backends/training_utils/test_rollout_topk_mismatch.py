@@ -32,7 +32,7 @@ def _args(log_probs_chunk_size: int = -1) -> Namespace:
         backend=Namespace(bf16=False, fp16=False),
         true_on_policy_mode=True,
         log_probs_chunk_size=log_probs_chunk_size,
-        use_sampling_support_replay=False,
+        use_rollout_sampling_support_replay=False,
         rollout_temperature=1.0,
         qkv_format="thd",
         allgather_cp=False,

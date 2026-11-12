@@ -93,7 +93,7 @@ def _check_loss(
         entropy_coef=0.03,
         observe_training_entropy=True,
         use_kl_loss=use_kl,
-        use_sampling_support_replay=replay,
+        use_rollout_sampling_support_replay=replay,
         use_unbiased_kl=False,
         kl_loss_type="k2",
         kl_loss_coef=0.1,

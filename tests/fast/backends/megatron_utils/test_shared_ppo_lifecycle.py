@@ -265,7 +265,7 @@ def test_compute_log_prob_replays_sampling_support_only_for_actor_scores(
     """Policy log-prob forwards preserve the model's logits precision."""
     worker = object.__new__(actor_module.MegatronTrainRayActor)
     worker._config_snapshot_train_recorded = True
-    worker.args = make_trainer_args(use_sampling_support_replay=True)
+    worker.args = make_trainer_args(use_rollout_sampling_support_replay=True)
     worker.model = [object()]
     forward_only = Mock(return_value={"log_probs": []})
     monkeypatch.setattr(actor_module, "forward_only", forward_only)

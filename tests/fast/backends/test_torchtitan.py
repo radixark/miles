@@ -69,7 +69,7 @@ def _args(**overrides) -> Namespace:
         tensor_model_parallel_size=1,
         true_on_policy_mode=False,
         allgather_cp=False,
-        use_sampling_support_replay=False,
+        use_rollout_sampling_support_replay=False,
         use_opsm=False,
         use_tis=False,
         get_mismatch_metrics=False,

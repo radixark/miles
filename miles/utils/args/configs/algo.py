@@ -253,6 +253,16 @@ class AlgoConfig(BaseConfig):
         bool,
         Arg(help="Replay indexer topk from rollout during training."),
     ] = False
+    use_rollout_sampling_support_replay: A[
+        bool,
+        Arg(
+            help=(
+                "Replay the rollout's top-p/top-k sampling support in training: SGLang returns the tokens each "
+                "sampling step kept and the actor's softmax is renormalized over them. Requires a positive "
+                "--rollout-top-k. Without it the trainer scores the full vocabulary against the sampler's log-probs."
+            )
+        ),
+    ] = False
     use_opsm: A[
         bool,
         Arg(help="Whether to enable Off-Policy Sequence Masking (OPSM)."),

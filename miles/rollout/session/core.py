@@ -40,6 +40,7 @@ from miles.rollout.session.samples.merge import (
 from miles.rollout.session.store_refs import response_store_ref
 from miles.rollout.session.types import GetSessionResponse, SessionRecord
 from miles.utils.output_store.plan import StorePlanError
+from miles.utils.rollout_topk_logprobs import requests_support_logprobs
 
 logger = logging.getLogger(__name__)
 
@@ -290,7 +291,8 @@ class SessionCore:
         session_id = self.registry.create_session(
             evaluation=evaluation,
             sampling_defaults=sampling_defaults,
-            sampling_support_replay=not evaluation and self.config.use_sampling_support_replay,
+            return_sampling_mask=not evaluation
+            and (self.config.use_rollout_sampling_support_replay or requests_support_logprobs(self.config)),
             extra_key=extra_key,
         )
         return Response(content=_render_json({"session_id": session_id}), status_code=200, media_type=JSON_MEDIA_TYPE)
@@ -341,7 +343,7 @@ class SessionCore:
         metadata = self._session_metadata(session_id, session)
         tokenizer = self.registry.tokenizer
         fields = COMPUTED_FIELDS
-        if session.sampling_support_replay:
+        if session.return_sampling_mask:
             fields += ROLLOUT_SAMPLING_MASK_FIELDS
         if not session.records:
             return _samples_response(encode_samples([], metadata, empty_reason="no_records", fields=fields))

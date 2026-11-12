@@ -48,6 +48,7 @@ from miles.utils.audit_utils.witness.module import witness_dump_and_clear_stale
 from miles.utils.dumper_utils import DumperMegatronUtil, DumperPhase
 from miles.utils.lora.utils import is_multi_lora_enabled
 from miles.utils.memory_utils import clear_memory
+from miles.utils.rollout_topk_logprobs import candidates_reference_sampling_mask
 from miles.utils.test_utils.fault_injector.controller import reach_fault_hook
 from miles.utils.test_utils.fault_injector.models import FaultHookName
 from miles.utils.tracking_utils.structured_log import log_structured
@@ -455,7 +456,11 @@ def run_forward_backward_pass(
 
     sampling_mask_keys = (
         ("rollout_sampling_mask_ids", "rollout_sampling_mask_offsets")
-        if args.use_sampling_support_replay and args.loss_type in ("policy_loss", "score_centering", "custom_loss")
+        if (
+            args.use_rollout_sampling_support_replay
+            and args.loss_type in ("policy_loss", "score_centering", "custom_loss")
+        )
+        or candidates_reference_sampling_mask(args)
         else ()
     )
 
