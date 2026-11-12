@@ -12,6 +12,7 @@ from tests.ci.ci_register import register_cpu_ci
 from tests.fast.fixtures.generation_fixtures import GenerateEnv, generation_env, listify, make_sample, run_generate
 
 from miles.rollout.session.types import SessionServerInstance
+from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY
 from miles.utils.chat_template_utils import TITOTokenizerType, get_tito_tokenizer
 from miles.utils.function_registry import function_registry
 from miles.utils.processing_utils import load_tokenizer
@@ -138,6 +139,7 @@ def verify_samples(actual: Sample | list[Sample], expected: list[ExpectedSampleI
             "lifecycle",
             "leaf",
             "turn_args",
+            SESSION_ROLLOUT_METRICS_KEY,
         ):
             actual_partial.metadata.pop(key, None)
         assert actual_partial == expected_item.partial_sample
