@@ -6,10 +6,10 @@ cluster (`sgl-project/sglang-torchtpu`, `.github/tpu-ci/README.md`): the GKE clu
 account. miles adds no node pool or queue of its own.
 
 ```
-pr-test-tpu.yml: plan ─▶ image-build (PRs that change the TPU image) ─▶ smoke × launcher (_run-ci-tpu.yml) ─▶ finish
-                                                               render_jobset.py → JobSet (suspended)
-                                                               Kueue admits it onto a free 2x2x1 CI host
-                                                               the pod runs smoke.sh; run_jobset.sh streams its log
+pr-test-tpu.yml: plan ─▶ image-build (PRs that change the TPU image) ─▶ smoke × launcher ─▶ finish
+                                                                        render_jobset.py → JobSet (suspended)
+                                                                        Kueue admits it onto a free 2x2x1 CI host
+                                                                        the pod runs smoke.sh; run_jobset.sh streams its log
 ```
 
 | When | Runs |
