@@ -53,7 +53,9 @@ from .generate_utils.prefill_logprobs import recompute_samples_rollout_logprobs_
 from .generate_utils.sample_utils import reward_log_summary, sample_text_preview
 from .generate_utils.sampling_mask import (
     append_sampling_metadata,
+    configure_sampling_logprobs_request,
     configure_sampling_mask_request,
+    read_selected_sampling_logprobs,
     should_return_sampling_mask,
 )
 from .rm_hub import async_rm, batched_async_rm
@@ -224,6 +226,7 @@ async def generate(
         payload["top_logprobs_num"] = opd_top_k
     if not evaluation:
         configure_rollout_topk_logprobs_request(args, payload)
+        configure_sampling_logprobs_request(payload, sampling_params)
 
     if (extra_key := sample.kv_cache_namespace) is not None:
         payload["extra_key"] = extra_key
@@ -284,6 +287,8 @@ async def generate(
             output["meta_info"],
             sampling_logprobs_mode=payload.get("sampling_logprobs_mode", "selected"),
         )
+    elif payload.get("sampling_logprobs_mode") == "selected":
+        new_response_log_probs = read_selected_sampling_logprobs(output["meta_info"], new_response_tokens)
 
     # Update sample with tokens directly - avoiding re-tokenization
     sample.tokens = sample.tokens + new_response_tokens

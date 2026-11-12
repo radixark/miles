@@ -12,7 +12,6 @@ class RolloutRelatedConfig(BaseConfig):
     custom_agent_function_path: A[CustomFunctionConfig | None, Arg()] = None
     # agent functions --rollout-data-yaml-config datasets name, resolved at startup; abort fans out to them
     rollout_dataset_agent_functions: list[CustomFunctionConfig] = []
-    use_sampling_support_replay: bool
     rollout_sampling_logprobs_mode: Literal["selected", "support"]
     rollout_top_logprobs_num: A[int, Arg()] = 0
 
@@ -76,8 +75,8 @@ class RolloutRelatedConfig(BaseConfig):
         float,
         Arg(
             help=(
-                "the top-p for the inference engine during rollout. Values below 1 enable "
-                "sampling-support replay and require a positive --rollout-top-k."
+                "the top-p for the inference engine during rollout. "
+                "--use-rollout-sampling-support-replay replays the filtered support in training."
             )
         ),
     ] = 1.0
@@ -85,8 +84,8 @@ class RolloutRelatedConfig(BaseConfig):
         int,
         Arg(
             help=(
-                "the top-k for the inference engine during rollout. Positive values enable "
-                "sampling-support replay. SGLang's --sampling-mask-max-tokens is the physical "
+                "the top-k for the inference engine during rollout. --use-rollout-sampling-support-replay "
+                "requires a positive value; SGLang's --sampling-mask-max-tokens is the physical "
                 "returned-support limit because cutoff ties can retain more than top-k tokens."
             )
         ),

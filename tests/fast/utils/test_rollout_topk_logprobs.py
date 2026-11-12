@@ -2,7 +2,7 @@ from argparse import Namespace
 
 import pytest
 
-from miles.utils.rollout_topk_logprobs import validate_rollout_topk_logprobs_args
+from miles.utils.rollout_topk_logprobs import candidates_reference_sampling_mask, validate_rollout_topk_logprobs_args
 
 
 def _args(**overrides: object) -> Namespace:
@@ -58,3 +58,26 @@ def test_consistent_settings_pass(overrides: dict) -> None:
 def test_inconsistent_settings_are_rejected(overrides: dict, match: str) -> None:
     with pytest.raises(ValueError, match=match):
         validate_rollout_topk_logprobs_args(_args(**overrides))
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    [
+        ({"loss_type": "score_centering"}, False),
+        ({"loss_type": "score_centering", "rollout_top_logprobs_num": 64}, False),
+        (
+            {
+                "loss_type": "score_centering",
+                "rollout_top_logprobs_num": 64,
+                "rollout_sampling_logprobs_mode": "support",
+            },
+            True,
+        ),
+        (
+            {"loss_type": "policy_loss", "rollout_top_logprobs_num": 64, "rollout_sampling_logprobs_mode": "support"},
+            False,
+        ),
+    ],
+)
+def test_score_centering_support_candidates_reference_the_sampling_mask(overrides: dict, expected: bool) -> None:
+    assert candidates_reference_sampling_mask(_args(**overrides)) is expected

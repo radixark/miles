@@ -153,7 +153,7 @@ def test_filtered_session_support_does_not_use_top_logprobs_router_cap(session: 
             rollout_top_p=0.9,
             rollout_top_k=64,
             rollout_sampling_logprobs_mode="support",
-            use_sampling_support_replay=True,
+            use_rollout_sampling_support_replay=True,
         )
     )
 

@@ -19,7 +19,11 @@ from miles.rollout.generate_utils.generate_endpoint_utils import (
 )
 from miles.rollout.generate_utils.rollout_topk_logprobs import append_rollout_topk_logprobs
 from miles.rollout.generate_utils.sample_utils import merge_samples
-from miles.rollout.generate_utils.sampling_mask import append_sampling_metadata, read_sampled_logprobs
+from miles.rollout.generate_utils.sampling_mask import (
+    append_sampling_metadata,
+    read_sampled_logprobs,
+    read_selected_sampling_logprobs,
+)
 from miles.rollout.session.types import SessionRecord
 from miles.utils.lifecycle import attach_lifecycle_metadata
 from miles.utils.output_store.plan import (
@@ -151,6 +155,8 @@ def _compute_sample_from_openai_record(
                 aborted=finish_reason == "abort",
                 sampling_logprobs_mode=sampling_logprobs_mode,
             )
+    elif record.request.get("sampling_logprobs_mode") == "selected":
+        output_log_probs = read_selected_sampling_logprobs(choice["meta_info"], output_token_ids)
     sample.tokens = prompt_token_ids + output_token_ids
     sample.rollout_log_probs = output_log_probs
     sample.response = tokenizer.decode(output_token_ids)

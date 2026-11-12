@@ -87,7 +87,7 @@ def test_filtered_loss_matches_dense_support_gradient(single_rank: None, mode: s
         rollout_top_p=0.6,
         rollout_top_k=3,
         rollout_sampling_logprobs_mode="support",
-        use_sampling_support_replay=True,
+        use_rollout_sampling_support_replay=True,
         entropy_coef=0.03,
     )
     validate_score_centering_args(args)
@@ -246,7 +246,7 @@ def test_compact_session_object_store_and_iterator(single_rank, ray_local_mode, 
     other.index = 1
     args = _args(
         rollout_sampling_logprobs_mode="support",
-        use_sampling_support_replay=True,
+        use_rollout_sampling_support_replay=True,
         ci_test=True,
         use_kl_loss=use_kl,
         use_unbiased_kl=True,

@@ -19,6 +19,7 @@ import orjson
 
 from miles.rollout.generate_utils.rollout_topk_logprobs import configure_rollout_topk_logprobs_request
 from miles.rollout.generate_utils.sampling_mask import (
+    configure_sampling_logprobs_request,
     configure_sampling_mask_request,
     validate_sampling_support_request,
 )
@@ -27,6 +28,7 @@ from miles.rollout.session.errors import MessageValidationError
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer, extract_template_args
 from miles.utils.lora.utils import LORA_ADAPTER_NAME, lora_rollout_enabled
 from miles.utils.output_store.plan import FIELDS, OUTPUT_STORE_REQUEST_KEY, REPLAY_LAYER_SPLITS_KEY
+from miles.utils.rollout_topk_logprobs import requests_support_logprobs
 
 DEFAULT_TURN_ARGS_DROP_KEYS = ("input_ids", "messages")
 
@@ -78,7 +80,6 @@ def prepare_chat_request(
     turn_args: dict[str, Any] | None,
     evaluation: bool = False,
     sampling_defaults: dict[str, Any] | None = None,
-    sampling_support_replay: bool = False,
 ) -> PreparedChatRequest:
     """Resolve an owned request using server rules, session defaults, model rules, and prior turn args.
 
@@ -106,7 +107,8 @@ def prepare_chat_request(
             configure_rollout_topk_logprobs_request(config, request_args, openai=True)
             return_sampling_mask = validate_sampling_support_request(
                 request_args,
-                replay_enabled=sampling_support_replay,
+                replay_enabled=config.use_rollout_sampling_support_replay,
+                support_logprobs=requests_support_logprobs(config),
                 expected_temperature=(sampling_defaults or {}).get("temperature"),
             )
         except ValueError as e:
@@ -115,6 +117,7 @@ def prepare_chat_request(
             request_args["return_sampling_mask"] = True
         else:
             request_args.pop("return_sampling_mask", None)
+            configure_sampling_logprobs_request(request_args, request_args)
     # The launch flag owns the output store, as it owns the replay outputs, and the run's pipeline layout owns the
     # layer splits: a client's values are replaced.
     request_args.pop(OUTPUT_STORE_REQUEST_KEY, None)

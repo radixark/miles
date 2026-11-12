@@ -45,7 +45,7 @@ def _make_args() -> SimpleNamespace:
         max_seq_len=None,
         use_rollout_routing_replay=False,
         use_rollout_indexer_replay=False,
-        use_sampling_support_replay=False,
+        use_rollout_sampling_support_replay=False,
         rollout_top_logprobs_num=0,
         rollout_temperature=1.0,
         lora_rank=0,
