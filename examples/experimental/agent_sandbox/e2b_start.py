@@ -5,7 +5,8 @@
 
 The template's start command waits for ``BOOT_CONFIG`` (``{"env": {...}}``), adds that env, and serves
 ``python -m miles.rollout.agentic.worker`` on ``WORKER_PORT``. The boot env holds the E2B key, for the sandboxes the
-agent creates, and the strings in ``SANDBOX_WORKER_BOOT_ENV_FILE``. The worker is reached at ``get_host(WORKER_PORT)``.
+agent creates, the strings in ``SANDBOX_WORKER_BOOT_ENV_FILE``, and this host's agent worker secret when it has one.
+The worker is reached at ``get_host(WORKER_PORT)``.
 
 Closing the sandbox waits for the worker's agent processes to exit, so a cancelled agent's own cleanup finishes, then
 copies the ``SANDBOX_WORKER_RECORDS`` files of each dir under ``SANDBOX_WORKER_RECORDS_DIR`` to the same path on this
@@ -34,6 +35,7 @@ from typing import Any
 
 from miles.rollout.agentic.agent_function import _CANCEL_GRACE_S, _LEFTOVER_CLEANUP_S
 from miles.rollout.agentic.credentials import PROVIDER_CREDENTIALS, resolve_provider_api_key
+from miles.rollout.agentic.remote import SECRET_ENV_VAR, worker_secret
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +78,8 @@ def boot_env() -> dict[str, str]:
         if not isinstance(extra, dict) or not all(isinstance(v, str) for v in extra.values()):
             raise ValueError(f"{path} must hold a JSON object of strings")
         env.update(extra)
+    if secret := worker_secret():
+        env[SECRET_ENV_VAR] = secret
     return env
 
 
