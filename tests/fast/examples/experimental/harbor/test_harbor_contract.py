@@ -12,7 +12,9 @@ required-field and enum drift is caught.)
 import asyncio
 import base64
 import json
+import os
 import shlex
+import subprocess
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import PurePosixPath
@@ -329,7 +331,7 @@ def test_on_an_existing_desktop_the_screenshot_is_a_resized_png(desktop):
     asyncio.run(session.fetch_screenshot("/logs/agent/screenshot_1.png"))
     png = "/tmp/computer_1-screenshots/latest.png"
     assert (
-        f"import -window root {png} && convert {png} -resize 1280x720! {png}; cp {png} " in shlex.split(commands[0])[2]
+        f"import -window root {png}; convert {png} -resize 1280x720! {png}; cp {png} " in shlex.split(commands[0])[2]
     )
     with pytest.raises(ValueError, match="PNG"):
         asyncio.run(session.fetch_screenshot("/logs/agent/screenshot_1.webp"))
@@ -347,6 +349,32 @@ def test_on_an_existing_desktop_a_capture_command_takes_the_screenshot(desktop, 
     png = "/tmp/computer_1-screenshots/latest.png"
     assert f"; {capture} {png}{args}; cp {png} /logs/agent/screenshot_1.png" in script
     assert "import -window" not in script and "convert" not in script
+
+
+@pytest.mark.parametrize(
+    "env",
+    [{"HARBOR_CUA_SCREENSHOT_SIZE": "1280x720"}, {"HARBOR_CUA_CAPTURE_COMMAND": "grab", "HARBOR_CUA_SCREENSHOT_SIZE": ""}],
+)
+def test_on_an_existing_desktop_a_failed_capture_never_hands_back_the_previous_screen(
+    desktop, tmp_path, monkeypatch, env
+):
+    shots = tmp_path / "shots"
+    shots.mkdir()
+    (shots / "latest.png").write_bytes(b"previous screen")
+    monkeypatch.setattr(runtime, "_SCREENSHOT_DIR", str(shots))
+    failing = {f"BASH_FUNC_{name}%%": "() { return 1; }" for name in ("import", "grab")}
+
+    async def bash(command, timeout_sec=None, user=None, **kwargs):
+        done = subprocess.run(["bash", "-c", command], capture_output=True, text=True, env={**os.environ, **failing})
+        return SimpleNamespace(stdout=done.stdout, stderr=done.stderr, return_code=done.returncode)
+
+    agent = desktop(**env)
+    agent._session = session = Computer1Session(SimpleNamespace(exec=bash, default_user=None), PurePosixPath(tmp_path))
+    target = tmp_path / "agent" / "screenshot_2.png"
+
+    with pytest.raises(RuntimeRequestError):
+        asyncio.run(session.fetch_screenshot(str(target)))
+    assert not target.exists()
 
 
 def test_on_an_existing_desktop_a_request_carries_at_most_the_kept_screenshots(desktop, chat_server):

@@ -370,7 +370,7 @@ def _patch_desktop_session(*, settle_sec: float, size: tuple[int, int] | None, c
         if capture:
             grab = f"{capture} {png}" + (f" {size[0]} {size[1]}" if size else "")
         else:
-            resize = f" && convert {png} -resize {size[0]}x{size[1]}! {png}" if size else ""
+            resize = f"; convert {png} -resize {size[0]}x{size[1]}! {png}" if size else ""
             grab = f"import -window root {png}{resize}"
         script = (
             f"set -e; export DISPLAY={runtime._DEFAULT_DISPLAY}; "
