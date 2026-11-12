@@ -3,9 +3,11 @@ from setuptools import setup
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 import torch
 
+is_hip = torch.version.hip is not None
+
 # Get CUDA arch list
 arch_list = []
-if torch.cuda.is_available():
+if not is_hip and torch.cuda.is_available():
     for i in range(torch.cuda.device_count()):
         major, minor = torch.cuda.get_device_capability(i)
         arch_list.append(f"{major}.{minor}")
@@ -21,6 +23,15 @@ if not arch_list:
         # Default to common architectures (Volta, Turing, Ampere, Ada, Hopper)
         arch_list = ["8.0", "8.6", "8.9", "9.0"]
 
+if is_hip:
+    nvcc_flags = ["-O3"]
+else:
+    nvcc_flags = (
+        ["-O3", "--expt-relaxed-constexpr", "-Xcompiler", "-fPIC"]
+        + [f'-gencode=arch=compute_{arch.replace(".", "")},code=sm_{arch.replace(".", "")}' for arch in arch_list]
+        + ["-gencode=arch=compute_90a,code=sm_90a"]
+    )
+
 setup(
     name="fake_int4_quant_cuda",
     ext_modules=[
@@ -31,17 +42,7 @@ setup(
                 "cxx": [
                     "-O3",
                 ],
-                "nvcc": [
-                    "-O3",
-                    "--expt-relaxed-constexpr",
-                    "-Xcompiler",
-                    "-fPIC",
-                ]
-                + [
-                    f'-gencode=arch=compute_{arch.replace(".", "")},code=sm_{arch.replace(".", "")}'
-                    for arch in arch_list
-                ]
-                + ["-gencode=arch=compute_90a,code=sm_90a"],
+                "nvcc": nvcc_flags,
             },
         )
     ],

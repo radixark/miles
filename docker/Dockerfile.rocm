@@ -240,6 +240,8 @@ RUN git clone https://github.com/radixark/miles.git /root/miles && \
     git checkout ${MILES_COMMIT} && \
     pip install -e . --no-deps
 
+RUN pip install /root/miles/miles/kernels/quant/int4_fake --no-build-isolation --no-deps
+
 RUN python -c "import miles.backends.fsdp_utils.actor; import miles.backends.fsdp_utils.arguments; import miles.backends.megatron_utils; print('miles backends: OK')"
 
 # ====================================== Install sgl-model-gateway ============================================
@@ -264,10 +266,14 @@ RUN --mount=type=cache,target=/root/.cache/pip \
       cp /build/sgl-model-gateway/target/release/sgl-model-gateway /usr/local/bin/sgl-model-gateway && \
       chmod +x /usr/local/bin/sgl-model-gateway && \
       pip install --force-reinstall --no-deps /build/gateway_wheels/sglang_router-*.whl && \
-      rm -rf /root/.cargo /root/.rustup /build/sgl-model-gateway /build/gateway_wheels; \
+      rm -rf /build/sgl-model-gateway /build/gateway_wheels; \
     fi
 
 RUN rm -rf /tmp/wheels
+
+# SGLang's Rust extension loader fingerprints the workspace-pinned toolchain.
+RUN cd /sgl-workspace/sglang/rust && rustup toolchain install --no-self-update && \
+    RUSTUP_AUTO_INSTALL=0 cargo --version --verbose
 
 # Collapse duplicate wheel-SDK libs (devel vs core/libraries) that can be loaded twice (ROCm/TheRock#7818).
 RUN set -eux; \
