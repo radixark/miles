@@ -10,7 +10,7 @@ from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
 from miles.utils.media_refs import collect_media_refs
 from miles.utils.processing_utils import load_processor
 
-COUNTED_TITO_MODELS = frozenset({TITOTokenizerType.QWEN3_VL.value})
+COUNTED_TITO_MODELS = frozenset({TITOTokenizerType.QWEN3_VL.value, TITOTokenizerType.QWEN38_SMALL.value})
 
 
 class ImageTokenCounter:

@@ -22,6 +22,7 @@ from tests.fast.fixtures.session_fixtures import make_session_server_config
 
 from miles.rollout.session.core import SessionCore
 from miles.rollout.session.errors import MessageValidationError, TokenizationError, UpstreamResponseError
+from miles.rollout.session.image_expansion import build_image_token_counter
 from miles.rollout.session.linear_trajectory import SessionRegistry
 from miles.rollout.session.samples.codec import (
     COMPUTED_FIELDS,
@@ -628,3 +629,24 @@ def test_with_replay_off_no_offset_is_sent_with_media(tokenizer, processor_core,
     assert asyncio.run(_chat(core, session_id, [_user("look", _data_url(64, 64, (1, 2, 3)))])).status_code == 200
     (body,) = engine.bodies
     assert body["return_routed_experts"] is False and "routed_experts_start_len" not in body
+
+
+@pytest.mark.parametrize("version", ["v1", "v2"])
+def test_the_session_servers_image_count_matches_the_engines_expansion(version, tokenizer, processor_core, tmp_path):
+    engine = TokenSpaceEngine(processor_core, tokenizer)
+    core, registry = _make_core(version, tokenizer, engine, tmp_path)
+    counter = build_image_token_counter(core.config, tokenizer)
+    core.image_token_counter = counter
+    session_id = registry.create_session()
+    messages = []
+    for size in ((1280, 720), (1920, 1080), (333, 517)):
+        messages.append(_user("look", _data_url(*size, (size[0] % 256, 40, 90))))
+        response = asyncio.run(_chat(core, session_id, messages))
+        assert response.status_code == 200, response.body
+        messages.append(json.loads(response.body)["choices"][0]["message"])
+
+    pad_id = tokenizer.convert_tokens_to_ids(IMAGE_PAD)
+    paths = _image_urls(engine.bodies[-1]["messages"])
+    assert [prompt.count(pad_id) for prompt in engine.prompts] == [
+        sum(counter.count(path) for path in paths[: turn + 1]) for turn in range(3)
+    ]

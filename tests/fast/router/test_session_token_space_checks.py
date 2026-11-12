@@ -24,6 +24,7 @@ from miles.rollout.session import image_expansion
 from miles.rollout.session.config import compute_session_server_config
 from miles.rollout.session.samples.codec import COMPUTED_FIELDS_V2, decode_samples_and_merge_input_sample
 from miles.rollout.session.server import SessionServer
+from miles.utils.chat_template_utils import resolve_fixed_chat_template
 from miles.utils.http_utils import find_available_port
 from miles.utils.media_refs import collect_media_refs, release_run_media
 from miles.utils.processing_utils import load_processor, load_tokenizer
@@ -33,17 +34,31 @@ from miles.utils.types import Sample
 register_cpu_ci(est_time=50, suite="stage-b-cpu", labels=["rollout"])
 
 CHECKPOINT = "Qwen/Qwen3-VL-2B-Instruct"
+QWEN38 = {
+    "hf_checkpoint": "Qwen/Qwen3.8-27B",
+    "tito_model": "qwen38small",
+    "chat_template_path": resolve_fixed_chat_template("qwen38small")[0],
+}
+
+
+def load_vlm(checkpoint: str, chat_template_path: str | None = None) -> SimpleNamespace:
+    processor = load_processor(checkpoint, trust_remote_code=True)
+    if processor is None:
+        pytest.skip(f"{checkpoint} processor unavailable")
+    tokenizer = load_tokenizer(checkpoint, chat_template_path=chat_template_path, trust_remote_code=True)
+    return SimpleNamespace(
+        processor=processor, tokenizer=tokenizer, pad_id=tokenizer.convert_tokens_to_ids(processor.image_token)
+    )
 
 
 @pytest.fixture(scope="module")
 def vlm():
-    processor = load_processor(CHECKPOINT, trust_remote_code=True)
-    if processor is None:
-        pytest.skip(f"{CHECKPOINT} processor unavailable")
-    tokenizer = load_tokenizer(CHECKPOINT, trust_remote_code=True)
-    return SimpleNamespace(
-        processor=processor, tokenizer=tokenizer, pad_id=tokenizer.convert_tokens_to_ids(processor.image_token)
-    )
+    return load_vlm(CHECKPOINT)
+
+
+@pytest.fixture(scope="module")
+def qwen38():
+    return load_vlm(QWEN38["hf_checkpoint"], QWEN38["chat_template_path"])
 
 
 def png(width: int, height: int, color: tuple[int, int, int]) -> bytes:
@@ -275,6 +290,24 @@ class TestEngineExpansionCheck:
             response = chat(env, session_id, [user_turn(SHOT1, "one")])
             assert response.status_code == 502
             assert b"--enable-token-space-processor" in response.content
+
+
+class TestQwen38ExpansionCheck:
+    def test_matching_expansions_pass_across_turns(self, qwen38, tmp_path):
+        with session_server(qwen38, tmp_path, **QWEN38) as env:
+            session_id = _create_session(env.url)
+            first = [user_turn(SHOT1, "one")]
+            response = chat(env, session_id, first)
+            assert response.status_code == 200, response.content
+            second = first + [response.json()["choices"][0]["message"], user_turn(SHOT2, "two")]
+            assert chat(env, session_id, second).status_code == 200
+
+    def test_an_image_expanded_differently_fails(self, qwen38, tmp_path):
+        with session_server(qwen38, tmp_path, count_bias_on_call={0: 1}, **QWEN38) as env:
+            session_id = _create_session(env.url)
+            response = chat(env, session_id, [user_turn(SHOT1, "one")])
+            assert response.status_code == 502
+            assert b"expanded prompt differs" in response.content
 
 
 class TestScreenshotFolding:
