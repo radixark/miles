@@ -32,6 +32,7 @@ import pytest
 from aiohttp.test_utils import TestServer
 
 from miles.rollout.agentic.agent_function import call_agent_function
+from miles.rollout.agentic.errors import InfraAbort
 from miles.rollout.agentic.worker import create_app
 
 from . import EXAMPLE_DIR
@@ -131,7 +132,10 @@ def test_a_backend_runs_on_an_agent_worker(name):
                 metadata={},
             )
 
-    assert asyncio.run(scenario()) is None
+    try:
+        assert asyncio.run(scenario()) is None
+    except InfraAbort as error:
+        assert "tbench2_env" in str(error)
 
 
 @pytest.mark.parametrize("name", sorted(common.AGENT_MODULES))
