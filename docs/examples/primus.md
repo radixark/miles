@@ -47,9 +47,6 @@ response and a 2048-token prompt. CP shares the trainer GPUs with EP; it does
 not add nodes. `CP_SIZE=1` falls back to one sample per micro-batch and no
 dynamic batching.
 
-`--distributed-timeout-minutes` is 30. The Gloo group uses that same timeout,
-so a long context-parallel step is not killed at PyTorch's 10-minute default.
-
 ## Launch
 
 Bring up Ray, then on the head:
