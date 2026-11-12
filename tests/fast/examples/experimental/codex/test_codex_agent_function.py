@@ -178,8 +178,8 @@ async def _cancel_during_model_call(args, marker: str) -> tuple[list[psutil.Proc
     task = asyncio.create_task(
         _call_generate(args, _sample(marker), DEFAULT_SAMPLING_PARAMS, variant="agentic_tool_call")
     )
-    deadline = time.monotonic() + 30
-    while not (procs := _codex_processes(marker)) and time.monotonic() < deadline:
+    deadline = time.monotonic() + 180
+    while not (procs := _codex_processes(marker)) and not task.done() and time.monotonic() < deadline:
         await asyncio.sleep(0.2)
     await asyncio.sleep(1)
     task.cancel()
