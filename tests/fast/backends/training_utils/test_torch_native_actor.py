@@ -64,7 +64,8 @@ class _Provider(TorchNativeTrainRayActor):
             data_pad_size_multiplier=1,
             qkv_format="thd",
             ci_test=False,
-            use_sampling_support_replay=False,
+            use_rollout_sampling_support_replay=False,
+            rollout_top_logprobs_num=0,
         )
         self.model_parts = [MagicMock()]
         self.optimizers = [object()]
@@ -204,7 +205,8 @@ def _train_one_dp_rank(rank: int, world_size: int, port: int) -> None:
     actor.args = make_args(
         loss_type="sft_loss",
         calculate_per_token_loss=True,
-        use_sampling_support_replay=False,
+        use_rollout_sampling_support_replay=False,
+        rollout_top_logprobs_num=0,
         data_pad_size_multiplier=1,
         ci_test=False,
     )

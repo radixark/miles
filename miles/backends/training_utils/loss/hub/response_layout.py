@@ -63,7 +63,7 @@ _UNSUPPORTED_FEATURES: dict[str, Callable[[Namespace], bool]] = {
     "--true-on-policy-mode": lambda args: args.true_on_policy_mode,
     "--log-probs-backend fused": lambda args: args.log_probs_backend == "fused",
     "--allgather-cp": lambda args: args.allgather_cp,
-    "--use-sampling-support-replay": lambda args: args.use_sampling_support_replay,
+    "--use-rollout-sampling-support-replay": lambda args: args.use_rollout_sampling_support_replay,
     "--use-opsm": lambda args: args.use_opsm,
     "--use-tis": lambda args: args.use_tis,
     "--get-mismatch-metrics": lambda args: args.get_mismatch_metrics,
@@ -326,7 +326,7 @@ class PackedSlices:
         )
 
     def _sampling_masks(self):
-        return get_rollout_sampling_masks(self.batch) if self.args.use_sampling_support_replay else None
+        return get_rollout_sampling_masks(self.batch) if self.args.use_rollout_sampling_support_replay else None
 
     def _local_positions(self) -> list[torch.Tensor]:
         """Per sample, the response position of each of this rank's rows."""

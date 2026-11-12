@@ -1213,8 +1213,12 @@ def test_recompute_logprobs_via_prefill_flag_is_parsed():
         (["--rollout-top-p", "0"], "--rollout-top-p must be in"),
         (["--rollout-top-k", "0"], "--rollout-top-k must be -1 or at least 1"),
         (
-            ["--rollout-top-p", "0.95"],
-            "--rollout-top-p below 1 requires a positive --rollout-top-k",
+            ["--rollout-top-p", "0.95", "--use-rollout-sampling-support-replay"],
+            "requires a positive --rollout-top-k",
+        ),
+        (
+            ["--rollout-top-p", "0.95", "--rollout-top-logprobs-num", "64"],
+            "requires a positive --rollout-top-k",
         ),
         (
             [
@@ -1225,7 +1229,11 @@ def test_recompute_logprobs_via_prefill_flag_is_parsed():
                 "--true-on-policy-mode",
                 "--recompute-logprobs-via-prefill",
             ],
-            "sampling-support replay cannot be combined with --recompute-logprobs-via-prefill",
+            "cannot be combined with --recompute-logprobs-via-prefill",
+        ),
+        (
+            ["--rollout-top-p", "0.95", "--true-on-policy-mode"],
+            "requires --use-rollout-sampling-support-replay",
         ),
         (
             [
@@ -1233,6 +1241,7 @@ def test_recompute_logprobs_via_prefill_flag_is_parsed():
                 "0.95",
                 "--rollout-top-k",
                 "32",
+                "--use-rollout-sampling-support-replay",
                 "--kl-coef",
                 "0.1",
             ],
@@ -1244,6 +1253,7 @@ def test_recompute_logprobs_via_prefill_flag_is_parsed():
                 "0.95",
                 "--rollout-top-k",
                 "32",
+                "--use-rollout-sampling-support-replay",
                 "--use-kl-loss",
             ],
             "cannot currently be combined with reference KL or teacher distillation",
@@ -1254,6 +1264,7 @@ def test_recompute_logprobs_via_prefill_flag_is_parsed():
                 "0.95",
                 "--rollout-top-k",
                 "32",
+                "--use-rollout-sampling-support-replay",
                 "--use-opd",
             ],
             "cannot currently be combined with reference KL or teacher distillation",
@@ -1272,40 +1283,51 @@ def test_sampling_support_arguments_fail_closed(extra, message):
     ("extra", "vocab_size", "message"),
     [
         (["--true-on-policy-mode"], 151_936, "does not support --true-on-policy-mode"),
-        (["--rollout-top-k", "32"], 151_936, "does not support sampling-support replay"),
+        (
+            ["--rollout-top-k", "32", "--use-rollout-sampling-support-replay"],
+            151_936,
+            "does not support --use-rollout-sampling-support-replay",
+        ),
         ([], None, "needs --vocab-size"),
     ],
-    ids=["true_on_policy", "sampling_support_replay", "no_vocab_size"],
+    ids=["true_on_policy", "rollout_sampling_support_replay", "no_vocab_size"],
 )
 def test_fused_log_probs_backend_rejects_what_it_does_not_cover(extra, vocab_size, message):
     parser = argparse.ArgumentParser()
     get_miles_extra_args_provider()(parser)
     args = parser.parse_args(["--log-probs-backend", "fused", "--num-rollout", "1"] + extra + REQUIRED_ARGS)
     args.vocab_size = vocab_size  # a Megatron flag, absent from this parser
-    args.use_sampling_support_replay = "--rollout-top-k" in extra  # derived by miles_validate_args
 
     with pytest.raises(ValueError, match=message):
         validate_log_probs_backend_args(args)
 
 
 @pytest.mark.parametrize(
-    ("sampling_args", "expected"),
+    ("sampling_args", "replay"),
     [
         ([], False),
-        (["--rollout-top-k", "32"], True),
-        (["--rollout-top-p", "0.95", "--rollout-top-k", "32"], True),
+        (["--rollout-top-k", "32"], False),
+        (["--rollout-top-p", "0.95", "--rollout-top-k", "32"], False),
+        (["--rollout-top-k", "32", "--use-rollout-sampling-support-replay"], True),
     ],
 )
 @pytest.mark.parametrize("candidate_count", [0, 64])
-def test_sampling_replay_and_logprobs_mode_are_derived_from_rollout_filters(sampling_args, expected, candidate_count):
+def test_sampling_replay_is_opt_in_and_support_mode_follows_the_recorded_support(
+    sampling_args, replay, candidate_count
+):
+    """Top-p/top-k never turn replay on; the support is recorded for replay or for
+    candidates of filtered sampling."""
     parser = get_megatron_arg_parser()
     args = parser.parse_args(
         sampling_args + ["--num-rollout", "1", "--rollout-top-logprobs-num", str(candidate_count)] + REQUIRED_ARGS
     )
 
     miles_validate_args(args)
-    assert args.use_sampling_support_replay is expected
-    assert args.rollout_sampling_logprobs_mode == ("support" if expected else "selected")
+    filtered = "--rollout-top-k" in sampling_args
+    assert args.use_rollout_sampling_support_replay is replay
+    assert args.rollout_sampling_logprobs_mode == (
+        "support" if replay or (filtered and candidate_count) else "selected"
+    )
 
 
 def test_sglang_parallel_sizes_keep_server_args_destinations():
@@ -2033,7 +2055,7 @@ class TestCustomConfigAppliedBeforeDerivedArgs:
         with pytest.raises(ValueError, match="--rollout-top-logprobs-num"):
             miles_validate_args(args)
 
-    def test_filtered_score_centering_enables_replay_at_startup(self, tmp_path: Path) -> None:
+    def test_filtered_score_centering_records_the_support_without_replay(self, tmp_path: Path) -> None:
         args = self._parse(
             tmp_path,
             [
@@ -2047,7 +2069,7 @@ class TestCustomConfigAppliedBeforeDerivedArgs:
             "loss_type: score_centering\n",
         )
         miles_validate_args(args)
-        assert args.use_sampling_support_replay is True
+        assert args.use_rollout_sampling_support_replay is False
         assert args.rollout_sampling_logprobs_mode == "support"
 
     @pytest.mark.parametrize("filtered", [False, True])

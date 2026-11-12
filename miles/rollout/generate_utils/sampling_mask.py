@@ -1,7 +1,9 @@
 from argparse import Namespace
 from collections.abc import Mapping, Sequence
+from typing import Any
 
 from miles.utils.output_store.plan import StorePlanError
+from miles.utils.rollout_topk_logprobs import requests_support_logprobs
 from miles.utils.sampling_mask import RolloutSamplingMask
 from miles.utils.types import Sample
 
@@ -19,7 +21,8 @@ def should_return_sampling_mask(
     params = sampling_params or {}
     return validate_sampling_support_request(
         params,
-        replay_enabled=args.use_sampling_support_replay,
+        replay_enabled=args.use_rollout_sampling_support_replay,
+        support_logprobs=requests_support_logprobs(args),
         expected_temperature=float(args.rollout_temperature),
     )
 
@@ -28,19 +31,23 @@ def validate_sampling_support_request(
     sampling_params: Mapping[str, object],
     *,
     replay_enabled: bool,
+    support_logprobs: bool,
     expected_temperature: float | None,
 ) -> bool:
-    """Validate one resolved training request against its sampling replay contract."""
+    """Validate one resolved training request against its sampling-support contract; whether it returns the mask."""
     request_top_p = float(1.0 if sampling_params.get("top_p") is None else sampling_params["top_p"])
     if not 0.0 < request_top_p <= 1.0:
         raise ValueError(f"training request top_p must be in (0, 1], got {request_top_p}")
 
     if not replay_enabled:
-        raw_top_k = sampling_params.get("top_k")
-        request_top_k = -1 if raw_top_k is None else int(raw_top_k)
-        if request_top_p < 1.0 or request_top_k > 0:
-            raise ValueError("bounded training-request sampling requires bounded rollout sampling")
-        return False
+        if not support_logprobs:
+            return False
+        request_top_k = sampling_params.get("top_k")
+        if request_top_k is None or int(request_top_k) <= 0:
+            raise ValueError(
+                f"support-mode rollout top-k logprobs require a positive request top_k, got {request_top_k}"
+            )
+        return True
 
     missing_params = [name for name in ("top_p", "top_k", "temperature") if sampling_params.get(name) is None]
     if missing_params:
@@ -73,6 +80,19 @@ def validate_sampling_support_request(
                 "the trainer cannot reproduce its logit transformation"
             )
     return True
+
+
+def configure_sampling_logprobs_request(request: dict[str, Any], sampling: Mapping[str, object]) -> None:
+    """Without the mask, ask a training request that filters its sampling for the sampler's own log-probs."""
+    if request.get("return_sampling_mask", False):
+        return
+    top_p, top_k, min_p = sampling.get("top_p"), sampling.get("top_k"), sampling.get("min_p")
+    if (
+        (top_p is not None and float(top_p) < 1.0)
+        or (top_k is not None and int(top_k) > 0)
+        or (min_p is not None and float(min_p) > 0.0)
+    ):
+        request["sampling_logprobs_mode"] = "selected"
 
 
 def _sampling_mask_from_supports(
@@ -132,6 +152,17 @@ def append_sampling_metadata(
         raise ValueError(f"Unsupported sampling logprobs mode: {sampling_logprobs_mode}")
     _append_sampling_mask(sample, sampling_mask)
     return selected
+
+
+def read_selected_sampling_logprobs(meta_info: Mapping[str, Any], output_token_ids: Sequence[int]) -> list[float]:
+    """The sampled tokens' log-probs under the filtered sampling distribution, from a request without the mask."""
+    log_probs = meta_info.get("output_token_sampling_logprobs", [])
+    if len(log_probs) != len(output_token_ids):
+        raise ValueError(
+            f"SGLang response output_token_sampling_logprobs has {len(log_probs)} values for "
+            f"{len(output_token_ids)} output tokens"
+        )
+    return [float(value) for value in log_probs]
 
 
 def read_sampled_logprobs(

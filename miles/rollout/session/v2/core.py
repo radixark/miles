@@ -130,7 +130,7 @@ class SessionCoreV2(SessionCore):
     ) -> Response:
         metadata = self._session_metadata(session_id, session)
         fields = COMPUTED_FIELDS_V2
-        if session.sampling_support_replay:
+        if session.return_sampling_mask:
             fields += ROLLOUT_SAMPLING_MASK_FIELDS
         if agent_metadata is not None:
             metadata["agent"] = agent_metadata

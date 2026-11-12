@@ -134,10 +134,9 @@ class TestPrepareChatRequest:
         prepared = prepare_chat_request(
             {"top_p": 0.8, "custom_params": {"caller_option": "kept"}},
             self._tito(),
-            config=make_session_server_config(),
+            config=make_session_server_config(use_rollout_sampling_support_replay=True),
             turn_args=None,
             sampling_defaults={"temperature": 0.7, "top_p": 0.95, "top_k": 32},
-            sampling_support_replay=True,
         )
 
         assert prepared.body["return_sampling_mask"] is True
@@ -150,10 +149,9 @@ class TestPrepareChatRequest:
         prepared = prepare_chat_request(
             {"return_sampling_mask": False},
             self._tito(),
-            config=make_session_server_config(),
+            config=make_session_server_config(use_rollout_sampling_support_replay=True),
             turn_args=None,
             sampling_defaults={"temperature": 0.7, "top_p": 0.95, "top_k": 32},
-            sampling_support_replay=True,
         )
 
         assert prepared.body["return_sampling_mask"] is True
@@ -186,14 +184,34 @@ class TestPrepareChatRequest:
 
         assert prepared.body.get(OUTPUT_STORE_REQUEST_KEY, False) is expected
 
-    def test_bounded_request_requires_session_sampling_replay(self):
-        with pytest.raises(MessageValidationError, match="bounded training-request sampling"):
-            prepare_chat_request(
-                {"temperature": 1.0, "top_p": 1.0, "top_k": 32},
-                self._tito(),
-                config=make_session_server_config(),
-                turn_args=None,
-            )
+    @pytest.mark.parametrize(
+        ("sampling", "mode"),
+        [({"top_p": 1.0, "top_k": 32}, "selected"), ({"top_p": 1.0, "top_k": -1}, None)],
+        ids=["filtered", "unfiltered"],
+    )
+    def test_filtered_request_without_replay_asks_for_the_sampler_logprobs(self, sampling, mode):
+        """Without replay a filtered training request returns no mask but asks for the
+        sampler's own log-probs; a client cannot choose the mode."""
+        prepared = prepare_chat_request(
+            {"temperature": 1.0, "sampling_logprobs_mode": "support", **sampling},
+            self._tito(),
+            config=make_session_server_config(),
+            turn_args=None,
+        )
+
+        assert "return_sampling_mask" not in prepared.body
+        assert prepared.body.get("sampling_logprobs_mode") == mode
+
+    def test_evaluation_requests_no_sampler_logprobs(self):
+        prepared = prepare_chat_request(
+            {"temperature": 1.0, "top_p": 0.9, "top_k": 32},
+            self._tito(),
+            config=make_session_server_config(),
+            turn_args=None,
+            evaluation=True,
+        )
+
+        assert "sampling_logprobs_mode" not in prepared.body
 
     @pytest.mark.parametrize("client_tools", [None, [], [{"function": {"name": "override"}}]])
     def test_launch_tools_stay_top_level_and_client_tools_override_them(self, client_tools):
@@ -327,7 +345,11 @@ def test_eval_keeps_sampling_resolution_and_overrides_model_replay(sampling):
             request_args["routed_experts_start_len"] = 7
             return request_args
 
-    config = make_session_server_config(use_rollout_routing_replay=True, use_rollout_indexer_replay=True)
+    config = make_session_server_config(
+        use_rollout_routing_replay=True,
+        use_rollout_indexer_replay=True,
+        use_rollout_sampling_support_replay=True,
+    )
     client_args = {**sampling, "return_sampling_mask": True, "routed_experts_start_len": 99}
     history = {"temperature": 0.3, "chat_template_kwargs": {}}
     original, original_history = deepcopy(client_args), deepcopy(history)
@@ -337,7 +359,6 @@ def test_eval_keeps_sampling_resolution_and_overrides_model_replay(sampling):
         config=config,
         turn_args=history,
         evaluation=True,
-        sampling_support_replay=True,
     )
     assert {key: prepared.body[key] for key in ("temperature", "top_p", "top_k")} == {
         "temperature": 0.7,
@@ -365,7 +386,6 @@ def test_session_sampling_defaults_fill_only_omitted_fields(evaluation):
         turn_args=None,
         evaluation=evaluation,
         sampling_defaults={"temperature": 0.6, "top_p": 0.9, "top_k": 20},
-        sampling_support_replay=not evaluation,
     )
     assert {key: prepared.body[key] for key in ("temperature", "top_p", "top_k")} == {
         "temperature": temperature,

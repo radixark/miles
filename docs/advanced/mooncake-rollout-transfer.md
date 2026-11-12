@@ -254,8 +254,9 @@ Additional replicas require additional Store capacity.
 
 With `--use-output-store`, SGLang writes the replay arrays of each training response to
 this Mooncake and returns a ref instead: routed experts (`--use-rollout-routing-replay`),
-indexer top-k (`--use-rollout-indexer-replay`) and the sampling mask (a positive
-`--rollout-top-k`). The trainer reads them back and receives the same columns as without
+indexer top-k (`--use-rollout-indexer-replay`) and the sampling mask
+(`--use-rollout-sampling-support-replay`, or `--rollout-top-logprobs-num` under top-p/top-k
+sampling). The trainer reads them back and receives the same columns as without
 the option. Miles deletes the objects once nothing can read them, at the latest after the
 rollout's `train` step.
 

@@ -48,6 +48,7 @@ from miles.utils.lora.utils import build_lora_config, lora_rollout_enabled
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.object_store import StoreObjectRef
 from miles.utils.profile_utils import TrainProfiler
+from miles.utils.rollout_topk_logprobs import candidates_reference_sampling_mask
 from miles.utils.timer import Timer, inverse_timer, timer
 
 logger = logging.getLogger(__name__)
@@ -258,7 +259,7 @@ class TorchNativeTrainRayActor(TrainRayActor):
         args = self.args
         forward_store: list[dict] = []
         data_iterator.reset()
-        use_rollout_sampling_mask = store_prefix == "" and args.use_sampling_support_replay
+        use_rollout_sampling_mask = store_prefix == "" and args.use_rollout_sampling_support_replay
         keys = FORWARD_ONLY_KEYS + SAMPLING_MASK_KEYS if use_rollout_sampling_mask else FORWARD_ONLY_KEYS
         # Scored here, with the weights that generated the rollout: after the first optimizer step they differ.
         check_rollout_topk = (
@@ -332,7 +333,11 @@ class TorchNativeTrainRayActor(TrainRayActor):
         args = self.args
         num_step_tokens = _count_step_loss_tokens(data_iterator, num_microbatches)
         data_iterator.reset()
-        keys = TRAIN_KEYS + SAMPLING_MASK_KEYS if args.use_sampling_support_replay else TRAIN_KEYS
+        keys = (
+            TRAIN_KEYS + SAMPLING_MASK_KEYS
+            if args.use_rollout_sampling_support_replay or candidates_reference_sampling_mask(args)
+            else TRAIN_KEYS
+        )
 
         for step_id, microbatches in enumerate(num_microbatches):
             runner.zero_grad()

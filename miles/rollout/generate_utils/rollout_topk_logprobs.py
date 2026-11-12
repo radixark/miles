@@ -37,6 +37,11 @@ def configure_rollout_topk_logprobs_request(args: Namespace, request: dict[str, 
         ):
             request.pop(key, None)
         request["sampling_logprobs_mode"] = "support"
+    elif sampling["top_p"] < 1.0 or sampling["top_k"] > 0:
+        raise ValueError(
+            "Rollout top-k logprobs collection launched without top-p/top-k records full-vocabulary "
+            "candidates; a request that filters its sampling needs --rollout-top-p/--rollout-top-k at launch"
+        )
     elif openai:
         request.pop("sampling_logprobs_mode", None)
         request["top_logprobs"] = k

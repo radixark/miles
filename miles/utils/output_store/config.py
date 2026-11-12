@@ -22,6 +22,7 @@ from sglang.srt.server_args import ServerArgs
 
 from miles.utils.environ import use_legacy_rollout_v1
 from miles.utils.object_store_config import _parse_size, compute_mooncake_store_config
+from miles.utils.rollout_topk_logprobs import requests_support_logprobs
 from miles.utils.workers.argv_utils import _record_field_names
 from miles.utils.workers.types import DeployComponent
 
@@ -59,10 +60,11 @@ def check_output_store_args(args: argparse.Namespace, *, sglang: SglangConfig, m
                 not (
                     args.use_rollout_routing_replay
                     or args.use_rollout_indexer_replay
-                    or args.use_sampling_support_replay
+                    or args.use_rollout_sampling_support_replay
+                    or requests_support_logprobs(args)
                 ),
-                "no request would use it: pass --use-rollout-routing-replay or --use-rollout-indexer-replay, or a "
-                "positive --rollout-top-k for sampling-support replay",
+                "no request would use it: pass --use-rollout-routing-replay, --use-rollout-indexer-replay, "
+                "--use-rollout-sampling-support-replay, or --rollout-top-logprobs-num with --rollout-top-p/--rollout-top-k",
             ),
             (
                 args.object_store_backend != _BACKEND,

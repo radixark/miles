@@ -311,7 +311,7 @@ def _startup_args(**overrides) -> Namespace:
         true_on_policy_mode=False,
         log_probs_backend="torch",
         allgather_cp=False,
-        use_sampling_support_replay=False,
+        use_rollout_sampling_support_replay=False,
         use_opsm=False,
         use_tis=False,
         get_mismatch_metrics=False,
@@ -347,7 +347,10 @@ def test_a_static_shape_platform_pads_the_losses_written_on_the_layout(static_sh
     "overrides,refused",
     [
         (dict(use_tis=True), "--use-tis"),
-        (dict(loss_type="score_centering", use_sampling_support_replay=True), "--use-sampling-support-replay"),
+        (
+            dict(loss_type="score_centering", use_rollout_sampling_support_replay=True),
+            "--use-rollout-sampling-support-replay",
+        ),
         (dict(context_parallel_size=2), "--context-parallel-size 1"),
         (dict(advantage_estimator="gspo"), "--advantage-estimator"),
         (dict(log_probs_backend="fused"), "--log-probs-backend fused"),

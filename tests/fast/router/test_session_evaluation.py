@@ -67,7 +67,7 @@ class _Backend:
         }
 
 
-async def _serve_env(tokenizer, monkeypatch, version, *, use_sampling_support_replay=False):
+async def _serve_env(tokenizer, monkeypatch, version, *, use_rollout_sampling_support_replay=False):
     monkeypatch.setattr(sessions, "load_tokenizer", lambda *args, **kwargs: tokenizer)
     backend = _Backend(tokenizer)
     config = make_session_server_config(
@@ -76,7 +76,7 @@ async def _serve_env(tokenizer, monkeypatch, version, *, use_sampling_support_re
         use_session_server=version,
         use_rollout_routing_replay=True,
         use_rollout_indexer_replay=True,
-        use_sampling_support_replay=use_sampling_support_replay,
+        use_rollout_sampling_support_replay=use_rollout_sampling_support_replay,
         session_sample_picker_path="miles.rollout.session.v2.picker_hub.drop_same_prompt_retries",
         session_sample_postprocessor_path="miles.rollout.session.v2.postprocessor_hub.default_postprocess",
     )
@@ -98,7 +98,7 @@ async def replay_env(request, tokenizer, monkeypatch):
         tokenizer,
         monkeypatch,
         request.param,
-        use_sampling_support_replay=True,
+        use_rollout_sampling_support_replay=True,
     ):
         yield value
 

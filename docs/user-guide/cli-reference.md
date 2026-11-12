@@ -80,8 +80,8 @@ then push up until you OOM.
 | Flag | Default | What |
 |---|---|---|
 | `--rollout-temperature` | `1.0` | Sampling temperature. |
-| `--rollout-top-p` | `1.0` | Top-p truncation. Values below `1` enable [sampling-support replay](/advanced/sampling-support-replay) and require a positive top-k. |
-| `--rollout-top-k` | `-1` | Top-k truncation. Positive values enable [sampling-support replay](/advanced/sampling-support-replay). |
+| `--rollout-top-p` | `1.0` | Top-p truncation. |
+| `--rollout-top-k` | `-1` | Top-k truncation. |
 | `--rollout-max-response-len` | `–` | Max tokens per response. |
 | `--rollout-stop-token-ids` | model default | Stop token IDs. Override when generations don't stop. |
 | `--apply-chat-template` | off | Apply the tokenizer's chat template. |
@@ -195,8 +195,8 @@ Sections mirror the launch-script argument groups.
 | `--rollout-max-response-len` | int | – | Max tokens per response. |
 | `--max-seq-len` | int | – | Total tokens per session, including prompts, completions, and environment responses. Sample assembly truncates each collected trajectory to it, and the agent receives it in `metadata`; Miles does not stop the agent at it (see [Choose the session behavior](/user-guide/agentic-rollout#choose-the-session-behavior)). On `/generate`, each request's `max_new_tokens` is capped to fit it, and a request with no room left stops the sample as `TRUNCATED`. Defaults `--rollout-max-prompt-len` to one less. |
 | `--rollout-temperature` | float | `1.0` | Sampling temperature. |
-| `--rollout-top-p` | float | `1.0` | Top-p truncation. Values below `1` require bounded [sampling-support replay](/advanced/sampling-support-replay). |
-| `--rollout-top-k` | int | `-1` | Top-k truncation (`-1` disables). Positive values enable [sampling-support replay](/advanced/sampling-support-replay). |
+| `--rollout-top-p` | float | `1.0` | Top-p truncation. |
+| `--rollout-top-k` | int | `-1` | Top-k truncation (`-1` disables). |
 | `--rollout-stop` | str+ | – | Stop strings. |
 | `--rollout-stop-token-ids` | int+ | – | Stop token IDs. |
 
@@ -256,6 +256,7 @@ Sections mirror the launch-script argument groups.
 | `--use-tis` | flag | off | Truncated Importance Sampling. |
 | `--use-routing-replay` | flag | off | Forward/backward routing consistency. |
 | `--use-rollout-routing-replay` | flag | off | R3 — capture inference-side expert routing and replay it during training. |
+| `--use-rollout-sampling-support-replay` | flag | off | Renormalize the actor over the rollout's top-p/top-k sampling support ([sampling-support replay](/advanced/sampling-support-replay)). Requires a positive `--rollout-top-k`. |
 | `--calculate-per-token-loss` | flag | off | Per-token loss reduction. |
 | `--no-check-for-nan-in-loss-and-grad` | flag | off | Skip NaN/Inf guard (Megatron flag, debug only). |
 | `--true-on-policy-mode` | flag | off | Strict on-policy: reject samples from a prior policy. |

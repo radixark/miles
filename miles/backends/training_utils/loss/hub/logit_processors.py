@@ -259,7 +259,7 @@ def get_rollout_topk_mismatch(
     """
     assert args.true_on_policy_mode, "the rollout top-k candidate check scores with the true-on-policy math"
     parallel_state = get_parallel_state()
-    sampling_masks = get_rollout_sampling_masks(batch) if args.use_sampling_support_replay else None
+    sampling_masks = get_rollout_sampling_masks(batch) if args.use_rollout_sampling_support_replay else None
     result = {"topk_logprob_abs_diff": [], "topk_set_mismatch": []}
     chunks = _iter_response_chunks(
         logits,
