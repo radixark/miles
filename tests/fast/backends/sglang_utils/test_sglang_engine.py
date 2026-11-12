@@ -178,3 +178,62 @@ class TestTheLaunchGateSglangMustServe:
 
         with pytest.raises(AssertionError, match="--gated-launch-port"):
             _assert_launch_gate_served()
+
+
+@dataclasses.dataclass
+class _RequestWithSupportLogprobs:
+    text: str = ""
+    return_sampling_mask: bool = False
+    sampling_logprobs_mode: str | None = None
+
+
+@dataclasses.dataclass
+class _RequestWithMaskOnly:
+    """sglang-miles v0.5.19: the sampling mask, but no support-mode log-probs."""
+
+    text: str = ""
+    return_sampling_mask: bool = False
+
+
+@dataclasses.dataclass
+class _RequestWithoutSamplingMask:
+    text: str = ""
+
+
+class TestSamplingSupportReplaySglangMustServe:
+    @staticmethod
+    def _pretend_generate_request_is(monkeypatch, request: type) -> None:
+        from sglang.srt.managers import io_struct
+
+        monkeypatch.setattr(io_struct, "GenerateReqInput", request)
+        sglang_engine._assert_sampling_support_replay_served.cache_clear()
+
+    def test_the_installed_sglang_serves_replay(self) -> None:
+        """The pinned sglang must pass the check, or no replay run could start."""
+        sglang_engine._assert_sampling_support_replay_served.cache_clear()
+
+        sglang_engine._assert_sampling_support_replay_served()
+
+    @pytest.mark.parametrize(
+        ("request_type", "missing"),
+        [
+            (_RequestWithMaskOnly, "sampling_logprobs_mode"),
+            (_RequestWithoutSamplingMask, "return_sampling_mask, sampling_logprobs_mode"),
+        ],
+    )
+    def test_a_replay_run_is_refused_at_launch(self, monkeypatch, request_type, missing) -> None:
+        """Without the fields the run would start and fail only when the first rollout comes back."""
+        self._pretend_generate_request_is(monkeypatch, request_type)
+
+        with pytest.raises(RuntimeError, match=f"take {missing},"):
+            _cmd(args=make_engine_args(use_sampling_support_replay=True))
+
+    def test_a_run_without_replay_launches_on_an_older_sglang(self, monkeypatch) -> None:
+        self._pretend_generate_request_is(monkeypatch, _RequestWithoutSamplingMask)
+
+        assert "sglang.launch_server" in _cmd(args=make_engine_args(use_sampling_support_replay=False))
+
+    def test_a_replay_run_launches_when_sglang_serves_it(self, monkeypatch) -> None:
+        self._pretend_generate_request_is(monkeypatch, _RequestWithSupportLogprobs)
+
+        assert "sglang.launch_server" in _cmd(args=make_engine_args(use_sampling_support_replay=True))
