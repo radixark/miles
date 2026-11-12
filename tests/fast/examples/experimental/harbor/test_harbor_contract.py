@@ -132,6 +132,82 @@ def test_without_a_coordinate_space_clicks_stay_desktop_pixels(full_hd_computer_
     assert (action.x, action.y) == (999, 500)
 
 
+def _reply(action: dict) -> LLMResponse:
+    return LLMResponse(content=json.dumps({"analysis": "", "plan": "", "action": action}))
+
+
+@pytest.mark.parametrize(
+    "action",
+    [
+        {"type": "click", "x": [499, 284]},
+        {"type": "click", "x": [499], "y": [284]},
+        {"type": "click", "x": [499, 284], "y": [499, 284]},
+        {"type": "click", "coordinate": [499, 284]},
+        {"type": "click", "x": ["499", 284.0]},
+    ],
+)
+def test_a_point_written_as_a_list_lands_where_it_pointed(full_hd_computer_1, monkeypatch, action):
+    monkeypatch.setenv("HARBOR_CUA_COORDINATE_SPACE", "normalized_0_999")
+    provider = full_hd_computer_1()
+
+    step = provider.parse(_reply(action))
+    click = normalize_completion_action(step.action, DisplayGeometry(desktop_width=1920, desktop_height=1080))
+    assert (click.x, click.y) == (959, 307)
+
+
+@pytest.mark.parametrize(
+    "action",
+    [
+        {"type": "drag", "x": [133, 29], "end_x": [700, 400]},
+        {"type": "drag", "x": [133], "y": [29], "end_x": [700], "end_y": [400]},
+    ],
+)
+def test_a_drag_written_as_lists_moves_between_both_points(full_hd_computer_1, monkeypatch, action):
+    monkeypatch.setenv("HARBOR_CUA_COORDINATE_SPACE", "normalized_0_999")
+    provider = full_hd_computer_1()
+
+    step = provider.parse(_reply(action))
+    drag = normalize_completion_action(step.action, DisplayGeometry(desktop_width=1920, desktop_height=1080))
+    assert (drag.x, drag.y, drag.end_x, drag.end_y) == (255, 31, 1345, 432)
+
+
+@pytest.mark.parametrize(
+    ("action", "missing"),
+    [
+        ({"type": "click", "x": 992}, '"x" and "y"'),
+        ({"type": "click"}, '"x" and "y"'),
+        ({"type": "right_click", "x": [1, 2, 3]}, '"x" and "y"'),
+        ({"type": "click", "x": [499, 284], "y": [500, 300]}, '"x" and "y"'),
+        ({"type": "drag", "x": 133, "y": 29}, '"end_x" and "end_y"'),
+        ({"type": "drag", "x": 133, "y": 29, "end_x": [1, 2, 3]}, '"end_x" and "end_y"'),
+    ],
+)
+def test_a_pointer_action_with_no_readable_point_is_retried_not_clicked_at_the_corner(
+    full_hd_computer_1, monkeypatch, action, missing
+):
+    monkeypatch.setenv("HARBOR_CUA_COORDINATE_SPACE", "normalized_0_999")
+    provider = full_hd_computer_1()
+
+    reply = _reply(action)
+    step = provider.parse(reply)
+    assert step.needs_retry and step.action is None
+    assert missing in step.feedback
+    assert step.llm_response is reply
+
+
+def test_actions_without_a_point_and_scalar_points_parse_as_before(full_hd_computer_1, monkeypatch):
+    monkeypatch.setenv("HARBOR_CUA_COORDINATE_SPACE", "normalized_0_999")
+    provider = full_hd_computer_1()
+
+    key = provider.parse(_reply({"type": "key", "keys": ["ctrl", "s"]}))
+    assert not key.needs_retry and key.action.keys == ["ctrl", "s"]
+    scroll = provider.parse(_reply({"type": "scroll", "scroll_y": 300}))
+    assert not scroll.needs_retry and (scroll.action.x, scroll.action.y) == (None, None)
+    reply = _reply({"type": "click", "x": 999, "y": 500})
+    click = provider.parse(reply)
+    assert click.message == reply.content and click.llm_response is reply
+
+
 def test_an_unknown_coordinate_space_stops_the_run(monkeypatch):
     monkeypatch.setattr(haf, "_coordinate_space_applied", False, raising=False)
     monkeypatch.setenv("HARBOR_CUA_COORDINATE_SPACE", "pixels")

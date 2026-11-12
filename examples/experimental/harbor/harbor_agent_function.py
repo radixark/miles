@@ -145,7 +145,50 @@ def _allowed_hosts(var: str) -> list[str]:
 
 
 _NORMALIZED_GRID = 1000
+_NEEDS_POINT = frozenset(
+    {
+        "click",
+        "double_click",
+        "triple_click",
+        "right_click",
+        "mouse_down",
+        "mouse_up",
+        "mouse_move",
+        "drag",
+        "type_text_at",
+    }
+)
 _coordinate_space_applied = False
+
+
+def _scalar_pair(action: dict[str, Any], x_key: str, y_key: str) -> tuple[Any, Any]:
+    x, y = action.get(x_key), action.get(y_key)
+    if isinstance(x, list) and len(x) == 2 and (y is None or y == x):
+        return x[0], x[1]
+    if isinstance(x, list) and len(x) == 1 and isinstance(y, list) and len(y) == 1:
+        return x[0], y[0]
+    return x, y
+
+
+def _read_list_points(action, reply: str) -> None:
+    from harbor.agents.computer_1.providers.generic import _coerce_int, _extract_json_object
+
+    raw = json.loads(_extract_json_object(reply)[0])["action"]
+    coordinate = raw.get("coordinate")
+    if raw.get("x") is None and isinstance(coordinate, list) and len(coordinate) == 2:
+        raw = {**raw, "x": coordinate[0], "y": coordinate[1]}
+    for x_key, y_key in (("x", "y"), ("end_x", "end_y")):
+        x, y = _scalar_pair(raw, x_key, y_key)
+        setattr(action, x_key, _coerce_int(x))
+        setattr(action, y_key, _coerce_int(y))
+
+
+def _missing_point(action) -> str:
+    if action.type in _NEEDS_POINT and None in (action.x, action.y):
+        return '"x" and "y"'
+    if action.type == "drag" and None in (action.end_x, action.end_y):
+        return '"end_x" and "end_y"'
+    return ""
 
 
 def apply_coordinate_space() -> None:
@@ -156,6 +199,7 @@ def apply_coordinate_space() -> None:
         return
     if space != "normalized_0_999":
         raise ValueError(f"HARBOR_CUA_COORDINATE_SPACE={space!r}; the only supported value is normalized_0_999")
+    from harbor.agents.computer_1.providers.base import ModelStep
     from harbor.agents.computer_1.providers.generic import GenericJsonProvider
     from harbor.agents.computer_1.runtime import CoordinateSpace
 
@@ -169,8 +213,16 @@ def apply_coordinate_space() -> None:
 
     def parse_on_grid(self, llm_response):
         step = parse(self, llm_response)
-        if step.action is not None:
-            step.action.source = CoordinateSpace.NORMALIZED_0_999.value
+        if step.action is None:
+            return step
+        _read_list_points(step.action, llm_response.content)
+        if missing := _missing_point(step.action):
+            return ModelStep(
+                needs_retry=True,
+                feedback=f'ERROR: a {step.action.type!r} action needs integer {missing}, e.g. "x": 500, "y": 300',
+                llm_response=llm_response,
+            )
+        step.action.source = CoordinateSpace.NORMALIZED_0_999.value
         return step
 
     GenericJsonProvider.from_agent = classmethod(from_agent_on_grid)
