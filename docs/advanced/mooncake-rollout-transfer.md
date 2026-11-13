@@ -260,7 +260,11 @@ the option. Miles deletes the objects once nothing can read them, at the latest 
 rollout's `train` step. Each trainer rank reads only its own rows: with Megatron pipeline
 parallelism, Miles sends the layers where its stages meet with each request
 (`replay_layer_splits`), SGLang stores routed experts and indexer top-k in parts split at
-them, and each stage reads only the parts of its layers.
+them, and each stage reads only the parts of its layers. The split points follow the pipeline
+sizes and `--decoder-first/last-pipeline-num-layers`; a stage placed otherwise
+(`--pipeline-model-parallel-layout`, `--account-for-embedding-in-pipeline-split`,
+`--account-for-loss-in-pipeline-split`, or a `--megatron-config` trainer that overrides the
+pipeline) reads every part that holds one of its layers, so more than its own.
 
 ```bash
 --object-store-backend mooncake \
@@ -305,10 +309,7 @@ Rejected at launch: no replay array enabled, `--cluster-backend kubernetes`, PD
 disaggregation, external rollout engines, the legacy rollout, a custom convert function,
 a custom `DataBuffer` (`--custom-async-data-buffer-path`), multi-policy training, split
 deployments, `--debug-rollout-only`, `--multimodal-keys`, and saving (including
-`--dump-details`), loading or injecting debug rollout data. With pipeline parallelism also:
-`--pipeline-model-parallel-layout`, `--account-for-embedding-in-pipeline-split`,
-`--account-for-loss-in-pipeline-split`, and a `--megatron-config` trainer that overrides the
-pipeline layout.
+`--dump-details`), loading or injecting debug rollout data.
 
 Stored objects may not survive a restart, so on resume Miles does not replay untrained
 rollout batches that carry refs, or inline replay arrays saved without the option. It

@@ -186,7 +186,7 @@ class TestPrepareChatRequest:
         )
 
         assert prepared.body.get(OUTPUT_STORE_REQUEST_KEY, False) is expected
-        # The trainer's pipeline layout owns the splits, sent only with the store.
+        # The run's pipeline layout owns the splits, sent only with the store.
         assert prepared.body.get(REPLAY_LAYER_SPLITS_KEY) == ([12, 24, 36] if expected else None)
 
     def test_bounded_request_requires_session_sampling_replay(self):

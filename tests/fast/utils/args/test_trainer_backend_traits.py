@@ -64,3 +64,12 @@ class TestTrainerBackendTraits:
 
     def test_a_non_megatron_backend_has_no_replay_layer_splits(self) -> None:
         assert parse_fsdp_test_config().replay_layer_splits == []
+
+    def test_a_non_megatron_output_store_run_resolves_its_trainer(self) -> None:
+        """FSDP has no pipeline arguments, which resolving a store run's trainer must not read."""
+        config = parse_fsdp_test_config(
+            "--use-output-store", "--use-rollout-routing-replay", "--object-store-backend", "mooncake"
+        )
+        trainer = compute_trainer_config(config, config.raw_megatron.trainers[0])
+
+        assert trainer.backend.replay_layer_splits == []

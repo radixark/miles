@@ -112,8 +112,8 @@ def prepare_chat_request(
             request_args["return_sampling_mask"] = True
         else:
             request_args.pop("return_sampling_mask", None)
-    # The launch flag owns the output store, as it owns the replay outputs, and the trainer's pipeline layout owns
-    # the layer splits: a client's values are replaced.
+    # The launch flag owns the output store, as it owns the replay outputs, and the run's pipeline layout owns the
+    # layer splits: a client's values are replaced.
     request_args.pop(OUTPUT_STORE_REQUEST_KEY, None)
     request_args.pop(REPLAY_LAYER_SPLITS_KEY, None)
     if (

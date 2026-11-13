@@ -15,7 +15,7 @@ import yaml
 from miles.utils.args.custom_function import resolve_custom_function_overrides
 from miles.utils.args.enhanced_argparse_namespace import EnhancedArgparseNamespace, SerializableConfigDict
 from miles.utils.file_arg_utils import resolve_file_arg
-from miles.utils.megatron_args_utils import compute_trainer_num_cells, pp_layer_splits
+from miles.utils.megatron_args_utils import compute_trainer_num_cells
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.workers.argv_utils import coerce_dict_to_args, declared_arg_dests
 from miles.utils.workers.naming import DNS_LABEL_PATTERN, TRAINER_ID_MAX_LENGTH
@@ -377,13 +377,6 @@ def compute_trainer_args(args: Namespace, trainer: MegatronTrainerConfig) -> Nam
             f"parser does not know"
         )
         setattr(ans, key, value)
-
-    # The rollout sends the run's replay_layer_splits with every output store request, so a trainer whose pipeline
-    # stages meet elsewhere would read parts SGLang never stored.
-    assert not ans.use_output_store or pp_layer_splits(ans) == args.replay_layer_splits, (
-        f"--megatron-config trainer {trainer.trainer_id!r} overrides the pipeline layout: its stages meet at layers "
-        f"{pp_layer_splits(ans)}, but --use-output-store requests store replay split at {args.replay_layer_splits}"
-    )
 
     _apply_critical_derived_overrides(ans, base=args, trainer=trainer)
 
