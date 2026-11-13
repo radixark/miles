@@ -102,7 +102,7 @@ Custom rollout producers must supply these fields with probabilities from the ac
 ## Metrics and verification
 
 Training logs include `sc_correction`, `sc_train_head_mass`, `sc_rollout_head_mass`, `sc_tail_ratio`, `sc_importance_weight`, `train_rollout_kl`, and `train_rollout_logprob_abs_diff`, under the usual `train/` namespace. Small head mass means more of the distribution is approximated by the tail model. Large tail ratios indicate a substantial mismatch in remaining mass.
-For filtered sampling, the head covers the full support, so both head masses and the tail ratio should be approximately one.
+For filtered sampling, the head covers the full support, so both head masses should be approximately one and the tail ratio is exactly one.
 
 The numerical tests compare gradients against an independent dense-distribution oracle for all three weighting modes, including sampled tokens outside the head, constant rewards, and tiny tails. Pipeline tests exercise real native/session producers, serialization, data-parallel splitting, masks, advantage computation, regularization, and checkpointed loss scaling. Run the focused tests in the repository's test environment:
 

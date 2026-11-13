@@ -304,6 +304,34 @@ def test_unclipped_importance_sampling_has_no_correction() -> None:
 
 
 @pytest.mark.parametrize("mode", ["none", "tis", "mis"])
+def test_complete_support_ignores_head_mass_rounding(mode: str) -> None:
+    """#4204: a head that misses 1 by more than eps from fp32 renormalization still has no tail."""
+    generator = torch.Generator().manual_seed(0)
+    p = torch.randn(3, 20, dtype=torch.float64, generator=generator).log_softmax(-1)
+    q = torch.randn(3, 20, dtype=torch.float64, generator=generator).log_softmax(-1)
+
+    def correction(train_head: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        _, metrics = score_centering_loss(
+            ScoreCenteringInputs(
+                train_log_probs=train_head[:, 0],
+                train_head_log_probs=train_head,
+                rollout_log_probs=q[:, 0],
+                rollout_head_log_probs=q,
+                head_mask=torch.ones(3, 20, dtype=torch.bool),
+                advantages=torch.ones(3),
+                mode=mode,
+                complete_support=True,
+            ),
+        )
+        return metrics.correction, metrics.tail_ratio
+
+    rounded, tail_ratio = correction(p + math.log1p(-2e-6))
+    exact, _ = correction(p)
+    torch.testing.assert_close(tail_ratio, torch.ones(3, dtype=torch.float64), atol=0, rtol=0)
+    torch.testing.assert_close(rounded, exact, atol=1e-5, rtol=0)
+
+
+@pytest.mark.parametrize("mode", ["none", "tis", "mis"])
 def test_tiny_tails_and_padding_are_finite_and_detached(mode: str) -> None:
     logits = torch.tensor([[40.0, -40.0, -80.0]], requires_grad=True)
     head = logits.log_softmax(-1)[:, :2]
