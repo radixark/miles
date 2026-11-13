@@ -46,6 +46,9 @@ CELLS_READY_TIMEOUT_SECONDS = 3600.0
 
 @enforce_lock_discipline
 class InferenceController:
+    # cells that died while nothing would restart them; the next rollout or weight update fails the run
+    _lost_cell_ids: tuple[str, ...] = ()
+
     @lock_exempt
     def __init__(
         self,
@@ -129,11 +132,13 @@ class InferenceController:
 
     @with_lock
     async def prepare_rollout(self, rollout_id: int, model_id: str | None = None) -> None:
+        self._raise_if_cells_lost()
         await self._health_monitoring_resume(model_id)
         await dashboard_hooks.register_engines(self.servers, provider=self._engine_provider)
 
     @with_lock
     async def prepare_eval(self, model_id: str | None = None) -> None:
+        self._raise_if_cells_lost()
         await self._health_monitoring_resume(model_id)
 
     @with_lock
@@ -301,6 +306,7 @@ class InferenceController:
     async def _ensure_cells_ready(self, model_id: str | None = None) -> None:
         deadline = time.monotonic() + CELLS_READY_TIMEOUT_SECONDS
         while True:
+            self._raise_if_cells_lost()
             cells = [
                 cell for srv in self._get_servers_of_model_id(model_id) for cell in srv.normal_server_cells.values()
             ]
@@ -443,6 +449,7 @@ class InferenceController:
             await self.servers[observed_cell_meta.model_id].add_cell(observed_cell_meta)
 
         async def _remove(remove_cell_id: str) -> None:
+            self._record_lost_cell(remove_cell_id)
             await actual_srv.remove_cell(remove_cell_id)
 
         await apply_cell_observation(
@@ -452,6 +459,29 @@ class InferenceController:
             add=_add,
             remove=_remove,
         )
+
+    @requires_lock
+    def _record_lost_cell(self, cell_id: str) -> None:
+        """A tracked cell leaves the fleet when its workers die, or when rollout fault tolerance suspends it to
+        restart it. If neither that component nor the provider brings it back, the run would carry on with
+        fewer engines (or none), silently."""
+        if "rollout" in self.args.ft_components or self._engine_provider.restarts_lost_cells:
+            return
+        logger.error(
+            f"Rollout engine cell {cell_id} died and rollout fault tolerance is off, so nothing will restart it; "
+            f"the run fails at its next rollout or weight update"
+        )
+        self._lost_cell_ids = (*self._lost_cell_ids, cell_id)
+
+    @requires_lock
+    def _raise_if_cells_lost(self) -> None:
+        if lost := list(self._lost_cell_ids):
+            raise RuntimeError(
+                f"Rollout engine cell(s) {lost} died during the run. Without rollout fault tolerance nothing "
+                f"restarts them, so the run stops instead of continuing on the remaining engines. Check the "
+                f"engine logs for the cause, or pass --use-fault-tolerance (with 'rollout' in --ft-components) "
+                f"to restart dead engines."
+            )
 
     # -------------------------- utils -----------------------------
 

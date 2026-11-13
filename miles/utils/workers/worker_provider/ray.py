@@ -27,6 +27,11 @@ class RayWorkerProvider(BaseWorkerProvider):
         self._category = category
         self._poll_interval_seconds = poll_interval_seconds
 
+    @property
+    def restarts_lost_cells(self) -> bool:
+        # the worker manager tears a cell down once it loses a worker and only starts it again when asked to
+        return False
+
     # TEMPORARY: this layer is not meant to serve a suspend the inference controller drives, deliberately
     # violated until the weight-update fault tolerance work removes the need
     async def stop_cells(self, *, cell_ids: list[str]) -> None:
