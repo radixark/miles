@@ -1,4 +1,5 @@
 import importlib.util
+import os
 import shlex
 import sys
 from pathlib import Path
@@ -35,6 +36,11 @@ def shell_safe_model_args(model_type: str | None) -> str:
 
 
 # ==================== what a model script may call ====================
+
+
+def moe_permute_fusion() -> str:
+    """--moe-permute-fusion unless MODEL_ARGS_MOE_PERMUTE_FUSION=0; megatron has no --no- form to undo it."""
+    return "" if os.environ.get("MODEL_ARGS_MOE_PERMUTE_FUSION", "1") == "0" else "--moe-permute-fusion "
 
 
 def moe_layer_freq(*, nlayers: int, first_k_dense_replace: int) -> str:

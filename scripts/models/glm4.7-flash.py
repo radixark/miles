@@ -1,3 +1,6 @@
+from model_args_utils import moe_permute_fusion
+
+
 MOE_ROUTED_EXPERTS = 64
 MOE_ACTIVE_ROUTED_EXPERTS = 4
 MOE_SHARED_EXPERTS = 1
@@ -17,7 +20,7 @@ def model_args() -> str:
         f"--moe-shared-expert-intermediate-size {MOE_SHARED_EXPERT_INTERMEDIATE_SIZE} "
         f"--moe-router-topk {MOE_ACTIVE_ROUTED_EXPERTS} "
         "--moe-grouped-gemm "
-        "--moe-permute-fusion "
+        f"{moe_permute_fusion()}"
         f"--moe-ffn-hidden-size {MOE_FFN_HIDDEN} "
         "--moe-router-score-function sigmoid "
         "--moe-router-pre-softmax "
