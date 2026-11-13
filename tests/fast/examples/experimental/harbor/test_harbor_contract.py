@@ -28,7 +28,7 @@ def tasks_dir(tmp_path, monkeypatch):
     return tmp_path
 
 
-@pytest.mark.parametrize("env_type", ["docker", "daytona", "e2b", "modal"])
+@pytest.mark.parametrize("env_type", ["docker", "daytona", "e2b", "agentenv", "modal"])
 def test_the_pass_through_environment_types_exist(env_type):
     assert EnvironmentType(env_type).value == env_type
 

@@ -50,7 +50,7 @@ from types import SimpleNamespace
 
 from tests.ci.ci_register import register_cuda_ci
 
-from miles.rollout.agentic.credentials import PROVIDER_CREDENTIALS
+from miles.rollout.agentic.credentials import PROVIDER_CREDENTIALS, resolve_provider
 from miles.utils.external_utils import command_utils
 
 register_cuda_ci(
@@ -110,7 +110,7 @@ def probe_e2b_endpoint() -> None:
     enough to prove it answers.
     """
     api_url = os.environ.get("E2B_API_URL", "").strip()
-    if os.environ.get("HARBOR_ENV_TYPE", "").strip().lower() != "e2b" or not api_url:
+    if resolve_provider(os.environ.get("HARBOR_ENV_TYPE", "").strip().lower()) != "e2b" or not api_url:
         return
     try:
         request = urllib.request.Request(f"{api_url}/nodes", headers={"X-API-Key": "probe"})

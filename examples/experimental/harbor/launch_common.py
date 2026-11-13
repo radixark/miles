@@ -2,13 +2,15 @@
 
 Separate from run.py so it imports without the trainer's heavy dependencies:
 the launchers pull in miles' command utils, while this module needs only the
-credential contract.
+credential contract and the aenv preflight.
 """
 
 import os
 from pathlib import Path
 
-from miles.rollout.agentic.credentials import PROVIDER_CREDENTIALS, provision_provider
+from aenv_cli import preflight_aenv
+
+from miles.rollout.agentic.credentials import PROVIDER_CREDENTIALS, provision_provider, resolve_provider
 
 HARBOR_EXAMPLE_DIR = Path(__file__).resolve().parent
 # reward_func / RolloutFn (agent-metric aggregation) are reused from the agent-server example
@@ -56,8 +58,8 @@ def harbor_env_vars(args) -> dict[str, str]:
     """The Harbor-side environment for rollout workers, preflighted on the launcher.
 
     HARBOR_ENV_TYPE is passed through untouched (Harbor validates it). The
-    provider's credential goes by key-file PATH, its endpoint variables by
-    value, on the contract every sandbox backend shares.
+    credential of the provider it runs on goes by key-file PATH, its endpoint
+    variables by value, on the contract every sandbox backend shares.
     """
     # normalized the same way the agent function reads it, so the guards
     # below see the value the worker will act on
@@ -70,6 +72,7 @@ def harbor_env_vars(args) -> dict[str, str]:
         raise ValueError(
             "docker needs a Docker daemon next to Trial.run(); use examples/swe-agent-harbor-docker (agent server) for it"
         )
+    preflight_aenv(env_type)
     try:
         import harbor  # noqa: F401  # the fork branch, see README
     except ImportError as e:
@@ -86,7 +89,7 @@ def harbor_env_vars(args) -> dict[str, str]:
     }
     if args.harbor_env_kwargs:
         env["HARBOR_ENV_KWARGS"] = args.harbor_env_kwargs
-    if spec := PROVIDER_CREDENTIALS.get(env_type):
+    if spec := PROVIDER_CREDENTIALS.get(resolve_provider(env_type)):
         provision_provider(
             env, spec, arg_path=getattr(args, spec["arg_attr"], "") or ""
         )  # config-access-exempt: provider registry selects credential fields; launchers may instead use environment credentials
