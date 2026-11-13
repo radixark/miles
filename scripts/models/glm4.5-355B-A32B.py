@@ -1,3 +1,6 @@
+from model_args_utils import moe_permute_fusion
+
+
 N_DENSE_LAYERS = 3
 N_MOE_LAYERS = 89
 
@@ -36,6 +39,6 @@ def model_args() -> str:
         "--num-experts 160 "
         "--moe-grouped-gemm "
         "--moe-router-dtype fp32 "
-        "--moe-permute-fusion "
+        f"{moe_permute_fusion()}"
         "--moe-aux-loss-coeff 0 "
     )
