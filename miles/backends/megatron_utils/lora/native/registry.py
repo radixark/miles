@@ -102,10 +102,17 @@ def _glm5_next_arch_spec() -> LoRAArchSpec:
         name=attention.name,
         attention=attention,
         mlp=SplitGateUpMLPSpec(),
-        # the checkpoint nests the text stack under model.language_model., which the raw converter drops
+        experts=PackedGroupedExpertsSpec(),
+        # the HF model nests KDA's f_a/f_b projections under forget_gate., which the checkpoint's
+        # tensor names, and so the converter's, do not
         declared_naming=DeclaredNaming(
             "model.language_model.layers.",
-            {"self_attention.": "self_attn.", "mlp.": "mlp.", "mlp.shared_experts.": "mlp.shared_experts."},
+            {
+                "self_attention.": "self_attn.",
+                "mlp.": "mlp.",
+                "mlp.experts.": "mlp.experts.",
+                "mlp.shared_experts.": "mlp.shared_experts.",
+            },
         ),
     )
 
