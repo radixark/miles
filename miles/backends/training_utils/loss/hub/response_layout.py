@@ -50,10 +50,10 @@ logger = logging.getLogger(__name__)
 ROW_CHUNKS = 8
 _PADDED_ROWS_LOSS_TYPES = ("policy_loss", "score_centering")
 _PADDED_ROWS_ADVANTAGE_ESTIMATORS = ("grpo", "reinforce_plus_plus", "reinforce_plus_plus_baseline")
-# what PaddedRows assumes about the run: only without CP or PP is every padded row a whole packed sample
+# what PaddedRows assumes about the run: without PP every padded row is a whole packed sample (the torchtitan
+# trainer all-gathers the logits of its CP ranks before the loss)
 _PADDED_ROWS_REQUIREMENTS: dict[str, Callable[[Namespace], bool]] = {
     "--qkv-format thd": lambda args: args.qkv_format == "thd",
-    "--context-parallel-size 1": lambda args: args.context_parallel_size == 1,
     "--pipeline-model-parallel-size 1": lambda args: args.pipeline_model_parallel_size == 1,
     f"--advantage-estimator in {_PADDED_ROWS_ADVANTAGE_ESTIMATORS}": lambda args: args.advantage_estimator
     in _PADDED_ROWS_ADVANTAGE_ESTIMATORS,
