@@ -30,6 +30,7 @@ from miles.rollout.session.errors import MessageValidationError, TokenizationErr
 from miles.rollout.session.linear_trajectory import SessionRegistry, assert_pretokenized_prefix
 from miles.rollout.session.request_args import PreparedChatRequest, prepare_chat_request
 from miles.rollout.session.store_refs import SessionStoreRefs
+from miles.rollout.session.token_space import engine_prompt_ids
 from miles.rollout.session.types import SessionRecord
 from miles.rollout.session.v2.tree_trajectory import AttachPoint, SessionTree, TrajectoryNode
 from miles.utils.chat_template_utils.message_matcher_hub import SessionMessageMatcher
@@ -200,11 +201,14 @@ def commit_generation(
 
     parent_messages = parent.path_messages() if parent is not None else []
     delta = list(request_messages[len(parent_messages) :]) + [assistant_message]
+    # The span is in the engine's form, as the samples are (token_space): a prompt with media is longer
+    # there than in token_ids, which the tree keeps in TITO's form for its prefix checks.
+    completion_start = len(engine_prompt_ids(record))
     node = state.tree.create_node(
         parent,
         delta_messages=delta,
         token_ids=all_token_ids,
-        completion_span=(len(prompt_token_ids), len(all_token_ids)),
+        completion_span=(completion_start, completion_start + len(completion_token_ids)),
         committed_at=record.timestamp,
         response_id=response_id,
         record=record,
