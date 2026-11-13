@@ -937,6 +937,44 @@ def validate_log_probs_backend_args(args) -> None:
         )
 
 
+def _validate_reinforce_zero_args(args: argparse.Namespace) -> None:
+    """REINFORCE Zero is a fixed recipe: reject the settings that would change its loss, at startup.
+
+    Its loss is `-mean_responses(mean_tokens(A * pi_theta / mu))` with group-mean advantages and the
+    importance weight against the recorded rollout log-probs, unclipped and without rejection gates.
+    """
+    unsupported = [
+        reason
+        for condition, reason in (
+            (args.loss_type != "policy_loss", "it is a policy loss; use --loss-type policy_loss"),
+            (
+                not args.use_rollout_logprobs,
+                "its importance weight divides by the rollout log-probs; add --use-rollout-logprobs",
+            ),
+            (not args.rewards_normalization, "its advantage is the reward minus the group mean"),
+            (args.normalize_advantages, "its advantages are not whitened; drop --normalize-advantages"),
+            (args.use_tis, "its importance weight is unclipped; drop --use-tis"),
+            (args.use_opsm, "it has no rejection gates; drop --use-opsm"),
+            (
+                args.get_mismatch_metrics,
+                "--get-mismatch-metrics applies the TIS/rejection function to the policy loss",
+            ),
+            (args.eps_clip_c is not None, "it has no clipping; drop --eps-clip-c"),
+            (
+                args.custom_pg_loss_reducer_function_path is not None,
+                "it averages tokens within each response, then responses",
+            ),
+            (
+                args.calculate_per_token_loss,
+                "it averages tokens within each response; drop --calculate-per-token-loss",
+            ),
+        )
+        if condition
+    ]
+    if unsupported:
+        raise ValueError(f"--advantage-estimator reinforce_zero: {'; '.join(unsupported)}")
+
+
 def _resolve_event_logging(args: argparse.Namespace) -> None:
     if args.dump_details is not None:
         args.save_debug_event_data = f"{args.dump_details}/{EVENTS_DIRNAME}"
@@ -1371,6 +1409,9 @@ def miles_validate_args(args):
             "The 'reinforce_plus_plus' and 'reinforce_plus_plus_baseline' advantage estimators "
             "require advantage normalization. Please add `--normalize-advantages` to your command."
         )
+
+    if args.advantage_estimator == "reinforce_zero":
+        _validate_reinforce_zero_args(args)
 
     if args.use_rollout_logprobs:
         assert not args.use_tis, "use_rollout_logprobs and use_tis cannot be set at the same time."

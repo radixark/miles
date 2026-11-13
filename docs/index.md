@@ -53,7 +53,8 @@ the largest models all live on Megatron-LM. See
   and Qwen3.5. See [Supported models](#supported-models).
 - **Extensive hardware support.** NVIDIA from H100 through GB300, and AMD MI300X through
   MI355X via ROCm. See [Supported hardware](#supported-hardware).
-- **Wide recipe support.** GRPO, GSPO, PPO and REINFORCE++ for RL, plus SFT and
+- **Wide recipe support.** GRPO, GSPO, PPO, REINFORCE++ and
+  [REINFORCE Zero](/advanced/algorithms/reinforce-zero) for RL, plus SFT and
   [on-policy distillation](/advanced/on-policy-distillation).
 - **Agentic environments.** Train coding and computer-use agents through connectors for
   Harbor, HUD, NeMo Gym, OpenEnv, Verifiers and more, each plugging into the rollout

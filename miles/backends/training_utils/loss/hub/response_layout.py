@@ -49,7 +49,7 @@ logger = logging.getLogger(__name__)
 # chunks a padded microbatch is scored in, whatever its length
 ROW_CHUNKS = 8
 _PADDED_ROWS_LOSS_TYPES = ("policy_loss", "score_centering")
-_PADDED_ROWS_ADVANTAGE_ESTIMATORS = ("grpo", "reinforce_plus_plus", "reinforce_plus_plus_baseline")
+_PADDED_ROWS_ADVANTAGE_ESTIMATORS = ("grpo", "reinforce_plus_plus", "reinforce_plus_plus_baseline", "reinforce_zero")
 # what PaddedRows assumes about the run: only without CP or PP is every padded row a whole packed sample
 _PADDED_ROWS_REQUIREMENTS: dict[str, Callable[[Namespace], bool]] = {
     "--qkv-format thd": lambda args: args.qkv_format == "thd",
