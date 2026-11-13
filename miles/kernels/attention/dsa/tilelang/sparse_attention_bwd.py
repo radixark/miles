@@ -6,6 +6,8 @@ import tilelang
 import torch
 from tilelang import language as T
 
+from miles.kernels.attention.dsa.triton.topk_union import topk_union
+
 
 @tilelang.jit(out_idx=[-1])
 def _bwd_preprocess_kernel(
@@ -95,15 +97,22 @@ def _sparse_attention_bwd_kernel(
     sm_scale,
     num_stages,
     split_store,
+    query_block=1,
     block_size=32,
     indices_dtype=T.int32,
     dtype=T.bfloat16,
     accum_dtype=T.float32,
 ):
+    """One CTA per (query, head tile) over the query's ``topk`` keys. With ``query_block`` > 1, one CTA
+    holds that many consecutive queries (rows = query_block x heads, row r is head r % heads of query
+    r // heads) and loops over the block's key union: ``Indices`` [B, blocks, 1, cap] and ``Mask``
+    [B, blocks, 1, cap] (bit q set when query q selected the key) from ``topk_union``, ``Lengths``
+    [B, blocks] distinct keys per block. ``Mask`` and ``Lengths`` are unread when ``query_block`` is 1."""
     assert topk % block_size == 0, "otherwise will load some index=0 thus causing wrong kv to be loaded"
     assert dtype == T.bfloat16
     assert accum_dtype == T.float32
     assert indices_dtype == T.int32
+    assert query_block == 1 or kv_group == 1, "a query block shares one key union, so one KV group"
 
     if sm_scale is None:
         sm_scale = (D + D_tail) ** (-0.5)
@@ -111,20 +120,21 @@ def _sparse_attention_bwd_kernel(
 
     H_kv = H // kv_group
     B = T.dynamic("batch")
-    S = T.dynamic("seq_len")
+    S = T.dynamic("seq_len")  # query blocks when query_block > 1
     S_kv = T.dynamic("seq_len_kv")
-    q_shape = [B, S, H, D + D_tail]
+    q_shape = [B, S, H * query_block, D + D_tail]
     k_shape = [B, S_kv, kv_group, D + D_tail]
-    o_shape = [B, S, H, D]
-    indices_shape = [B, S, kv_group, topk]
-    delta_shape = [B, S, H]
-    lse_shape = [B, S, H]
+    o_shape = [B, S, H * query_block, D]
+    indices_shape = [B, S, kv_group, topk]  # also the mask's shape, so one query per CTA passes the indices twice
+    lengths_shape = [B, S]
+    delta_shape = [B, S, H * query_block]
+    lse_shape = [B, S, H * query_block]
     assert indices_dtype == T.int32
     assert dtype == T.bfloat16
     assert accum_dtype == T.float32
 
     H = H_kv
-    padded_H = max(tilelang.math.next_power_of_2(H_kv), 16)
+    padded_H = max(tilelang.math.next_power_of_2(H_kv * query_block), 16)
     is_rocm = os.getenv("MILES_HARDWARE_PLATFORM") == "rocm"
     max_block_H = 32 if is_rocm and padded_H >= 64 else 64
     block_H = min(max_block_H, padded_H)
@@ -140,6 +150,8 @@ def _sparse_attention_bwd_kernel(
         KV: T.Tensor(k_shape, dtype),
         dO: T.Tensor(o_shape, dtype),
         Indices: T.Tensor(indices_shape, indices_dtype),
+        Mask: T.Tensor(indices_shape, indices_dtype),
+        Lengths: T.Tensor(lengths_shape, indices_dtype),
         Lse: T.Tensor(lse_shape, accum_dtype),
         Delta: T.Tensor(delta_shape, accum_dtype),
         dQ: T.Tensor(q_shape, dtype),
@@ -150,6 +162,8 @@ def _sparse_attention_bwd_kernel(
             KV_shared = T.alloc_shared([BS, D], dtype)
             dO_shared = T.alloc_shared([block_H, D], dtype)
             mask = T.alloc_fragment([BS], "bool")
+            if query_block > 1:
+                mask_bits = T.alloc_fragment([BS], indices_dtype)
 
             P_shared_cast = T.alloc_shared([block_H, BS], dtype)
             dP_shared_cast = T.alloc_shared([block_H, BS], dtype)
@@ -176,15 +190,27 @@ def _sparse_attention_bwd_kernel(
                 T.copy(Q[by, s_i, bz * block_H : (bz + 1) * block_H, D:], Q_tail_shared)
                 T.clear(acc_dq_tail)
 
-            # Process each block of indices
-            for i_i in T.Pipelined(NS, num_stages=num_stages):
-                # Check which indices are valid
-                for bi_i in T.Parallel(BS):
-                    mask[bi_i] = Indices[by, s_i, bz // NH, i_i * BS + bi_i] != -1
+            # Process each block of indices; a query block has as many as its union holds
+            if query_block > 1:
+                num_key_blocks = T.ceildiv(Lengths[by, s_i], BS)
+            else:
+                num_key_blocks = NS
+            for i_i in T.Pipelined(num_key_blocks, num_stages=num_stages):
+                # Check which indices are valid: for a query block, per row's query
+                if query_block > 1:
+                    for bi_i in T.Parallel(BS):
+                        mask_bits[bi_i] = Mask[by, s_i, 0, i_i * BS + bi_i]
+                    for h_i, bi_i in T.Parallel(block_H, BS):
+                        acc_p[h_i, bi_i] = T.if_then_else(
+                            ((mask_bits[bi_i] >> ((bz * block_H + h_i) // H)) & 1) != 0, 0, -T.infinity(acc_p.dtype)
+                        )
+                else:
+                    for bi_i in T.Parallel(BS):
+                        mask[bi_i] = Indices[by, s_i, bz // NH, i_i * BS + bi_i] != -1
 
-                # Compute attention scores
-                for h_i, bi_i in T.Parallel(block_H, BS):
-                    acc_p[h_i, bi_i] = T.if_then_else(mask[bi_i], 0, -T.infinity(acc_p.dtype))
+                    # Compute attention scores
+                    for h_i, bi_i in T.Parallel(block_H, BS):
+                        acc_p[h_i, bi_i] = T.if_then_else(mask[bi_i], 0, -T.infinity(acc_p.dtype))
 
                 # Load KV, V for this block of indices
                 for bi_i, d_i in T.Parallel(BS, D):
@@ -283,10 +309,12 @@ def _sparse_attention_bwd_kernel(
     return sparse_mla_bwd_kernel
 
 
-def sparse_attention_bwd(q, kv, o, do, indices, lse, d_v, *, sm_scale, num_stages, split_store):
+def sparse_attention_bwd(q, kv, o, do, indices, lse, d_v, *, sm_scale, num_stages, split_store, query_block=1):
     """Shapes as in sparse_attention_fwd, plus o/do [B, S, H, d_v] and lse [B, S, H].
     Returns dq [B, S, H, d_v + d_tail] bf16, dkv [B, S_kv, G, d_v + d_tail] bf16 and delta [B, S, H] fp32
-    (rowsum(o * do), which the caller needs for the attention-sink gradient)."""
+    (rowsum(o * do), which the caller needs for the attention-sink gradient).
+    ``query_block`` > 1 runs that many consecutive queries per CTA over the union of their keys (one KV
+    group); a short last block is padded with queries that select no key."""
     assert q.is_contiguous() and kv.is_contiguous() and indices.is_contiguous() and lse.is_contiguous()
     B, S, H, dim_plus_tail_dim = q.shape
     _, S_kv, kv_group, _ = kv.shape
@@ -296,11 +324,25 @@ def sparse_attention_bwd(q, kv, o, do, indices, lse, d_v, *, sm_scale, num_stage
     topk = indices.shape[-1]
     assert indices.shape == (B, S, kv_group, topk)
     assert lse.shape == (B, S, H)
+    assert query_block == 1 or kv_group == 1, f"a query block shares one key union, so one KV group, got {kv_group}"
 
     delta = _bwd_preprocess_kernel(H, d_v)(o, do)
     dkv = torch.zeros_like(kv, dtype=torch.float32)
+    if query_block > 1:
+        pad = -S % query_block
+        if pad:  # the padding queries select no key, so their rows add nothing and their dq is dropped
+            q, do = (torch.nn.functional.pad(t, (0, 0, 0, 0, 0, pad)) for t in (q, do))
+            lse, delta = (torch.nn.functional.pad(t, (0, 0, 0, pad)) for t in (lse, delta))
+            indices = torch.nn.functional.pad(indices, (0, 0, 0, 0, 0, pad), value=-1)
+        blocks = (S + pad) // query_block
+        keys, mask, lengths = topk_union(indices.view(B * (S + pad), topk), query_block)
+        keys, mask, lengths = keys.view(B, blocks, 1, -1), mask.view(B, blocks, 1, -1), lengths.view(B, blocks)
+        q, do = q.view(B, blocks, query_block * H, -1), do.view(B, blocks, query_block * H, -1)
+        lse, delta = lse.view(B, blocks, query_block * H), delta.view(B, blocks, query_block * H)
+    else:  # the kernel reads neither the mask nor the lengths
+        keys, mask, lengths = indices, indices, indices.new_empty((B, S))
     dq = _sparse_attention_bwd_kernel(
-        H, d_v, D_tail, topk, kv_group, sm_scale, num_stages=num_stages, split_store=split_store
-    )(q, kv, do, indices, lse, delta, dkv)
+        H, d_v, D_tail, keys.shape[-1], kv_group, sm_scale, num_stages, split_store, query_block=query_block
+    )(q, kv, do, keys, mask, lengths, lse, delta, dkv)
     dkv = _bwd_postprocess_kernel(d_v, D_tail, kv_group)(dkv)
-    return dq, dkv, delta
+    return dq.view(B, -1, H, dim_plus_tail_dim)[:, :S], dkv, delta.view(B, -1, H)[:, :S]
